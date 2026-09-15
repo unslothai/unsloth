@@ -6,6 +6,7 @@ import test from "node:test";
 import ts from "typescript";
 import { readSrc, readText } from "./helpers/kit.ts";
 import { AUTH_SESSION_ENDING_EVENT } from "../src/features/auth/session-events.ts";
+import { readTranscriptDraft, writeTranscriptDraft } from "../src/features/audio/transcript-draft.ts";
 
 const source = readSrc("features/audio/audio-page.tsx");
 
@@ -209,6 +210,15 @@ test("logout checks unsaved transcripts before revoking the session or navigatin
   for (const handler of handlers) {
     for (const scenario of ["decline", "accept", "saved", "exported", "unmounted"]) {
       const events: string[] = [];
+      const drafts = new Map<string, string>();
+      Object.defineProperty(globalThis, "sessionStorage", {
+        configurable: true,
+        value: {
+          getItem: (key: string) => drafts.get(key) ?? null,
+          setItem: (key: string, value: string) => drafts.set(key, value),
+          removeItem: (key: string) => drafts.delete(key),
+        },
+      });
       const target = new EventTarget();
       const window = Object.assign(target, {
         confirm: () => {
@@ -220,6 +230,10 @@ test("logout checks unsaved transcripts before revoking the session or navigatin
         transcript: "unsaved text",
         transcriptRecord: scenario === "saved" ? { id: "saved" } : null,
         transcriptExported: scenario === "exported",
+        draftKey: "test-draft",
+        transcribedName: "speech.wav",
+        transcriptModel: "tiny",
+        writeTranscriptDraft,
         isTauri: false,
         window,
         AUTH_SESSION_ENDING_EVENT: eventName,
@@ -248,6 +262,38 @@ test("logout checks unsaved transcripts before revoking the session or navigatin
             : ["logout", "navigate"],
       );
       cleanup?.();
+      assert.deepEqual(
+        readTranscriptDraft("test-draft"),
+        scenario === "decline" || scenario === "unmounted"
+          ? { text: "unsaved text", title: "speech.wav", model: "tiny" }
+          : null,
+      );
     }
   }
+});
+
+test("remounting audio restores the unsaved transcript and its origin", () => {
+  const tree = ts.createSourceFile("audio-page.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const names = new Set(["draftKey", "recoveredTranscript", "transcript", "transcribedName", "transcriptModel"]);
+  const declarations: string[] = [];
+  function visit(node: ts.Node) {
+    if (ts.isVariableDeclaration(node) && ts.isArrayBindingPattern(node.name)) {
+      const name = node.name.elements[0]?.getText(tree);
+      if (name && names.has(name)) declarations.push(`const ${node.getText(tree)};`);
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(tree);
+  const draft = { text: "recovered speech", title: "speech.wav", model: "tiny" };
+  const { outputText } = ts.transpileModule(
+    declarations.join("\n") + "\nreturn {text: transcript, title: transcribedName, model: transcriptModel};",
+    { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
+  );
+  const scope = {
+    useState: (initial: unknown) => [typeof initial === "function" ? initial() : initial, () => {}],
+    transcriptDraftKey: () => "test-draft",
+    readTranscriptDraft: () => draft,
+  };
+  const restored = new Function(...Object.keys(scope), outputText)(...Object.values(scope));
+  assert.deepEqual(restored, draft);
 });

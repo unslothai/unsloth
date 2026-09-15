@@ -85,6 +85,11 @@ import {
 import { sttModelSize } from "@/features/settings/stores/stt-model-catalog";
 import { TranscriptGallery } from "./transcript-gallery";
 import { AUTH_SESSION_ENDING_EVENT } from "@/features/auth";
+import {
+  readTranscriptDraft,
+  transcriptDraftKey,
+  writeTranscriptDraft,
+} from "./transcript-draft";
 import { downloadTranscript } from "./transcript-download";
 import { TranscriptionProgress } from "./transcription-progress";
 import type { TranscriptRecord, TranscriptProgress } from "./transcript-stream";
@@ -404,9 +409,11 @@ export function AudioPage({
   const [downloadedSttArtifacts, setDownloadedSttArtifacts] = useState<
     SttDownloadedArtifact[]
   >([]);
-  const [transcript, setTranscript] = useState("");
-  const [transcribedName, setTranscribedName] = useState<string | null>(null);
-  const [transcriptModel, setTranscriptModel] = useState("");
+  const [draftKey] = useState(transcriptDraftKey);
+  const [recoveredTranscript] = useState(() => readTranscriptDraft(draftKey));
+  const [transcript, setTranscript] = useState(recoveredTranscript?.text ?? "");
+  const [transcribedName, setTranscribedName] = useState<string | null>(recoveredTranscript?.title ?? null);
+  const [transcriptModel, setTranscriptModel] = useState(recoveredTranscript?.model ?? "");
   const [transcriptRecord, setTranscriptRecord] = useState<TranscriptRecord | null>(null);
   const [transcriptExported, setTranscriptExported] = useState(false);
   const transcriptVersion = useRef(0);
@@ -576,6 +583,16 @@ export function AudioPage({
     const unsaved = Boolean(
       transcript && transcriptRecord === null && !transcriptExported,
     );
+    if (!writeTranscriptDraft(
+      draftKey,
+      unsaved ? {
+        text: transcript,
+        title: transcribedName ?? "Transcript",
+        model: transcriptModel,
+      } : null,
+    )) {
+      toast.error("Could not update transcript recovery. Download unsaved text before leaving.");
+    }
     if (isTauri) {
       void import("@tauri-apps/api/core")
         .then(({ invoke }) =>
@@ -598,7 +615,12 @@ export function AudioPage({
         !window.confirm(
           "This transcript could not be saved. Download it before logging out, or log out and discard it?",
         )
-      ) event.preventDefault();
+      ) {
+        event.preventDefault();
+      } else if (!writeTranscriptDraft(draftKey, null)) {
+        event.preventDefault();
+        toast.error("Could not discard the transcript recovery copy. Try again.");
+      }
     };
     window.addEventListener("beforeunload", warn);
     window.addEventListener(AUTH_SESSION_ENDING_EVENT, confirmLogout);
@@ -606,7 +628,7 @@ export function AudioPage({
       window.removeEventListener("beforeunload", warn);
       window.removeEventListener(AUTH_SESSION_ENDING_EVENT, confirmLogout);
     };
-  }, [transcript, transcriptRecord, transcriptExported]);
+  }, [draftKey, transcript, transcribedName, transcriptModel, transcriptRecord, transcriptExported]);
 
   const refreshSttStatus = useCallback(async () => {
     const generation = ++sttStatusRefreshGeneration.current;
