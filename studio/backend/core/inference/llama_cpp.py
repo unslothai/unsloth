@@ -468,7 +468,9 @@ from utils.code_integrity import code_integrity_block_reason, code_integrity_use
 # Unsloth's Python is, so it must not make the whole models package a hard import dependency.
 from utils.gguf_archs import (
     SPEECH_GGUF_ARCHS as _SPEECH_GGUF_ARCHS,
+    is_no_vocab_output_gguf_architecture,
     is_speech_gguf_architecture,
+    is_target_output_inheriting_gguf_architecture,
 )
 
 logger = get_logger(__name__)
@@ -5580,6 +5582,10 @@ def _extra_args_draft_offloaded_to_cpu(
     device flag has no env). An embedded MTP head follows the main -ngl, so these
     draft-only flags don't move it. Last-wins, so only each flag's final value counts.
 
+    A main ``--device`` is NOT read: llama.cpp gives a separate drafter the draft
+    device list (common_base_params_to_speculative), unset meaning every device, so
+    inheriting the main pin under-counted a drafter really on a GPU.
+
     A count BETWEEN 0 and the drafter's block count is a split, not an offload; see
     ``_draft_is_split_across_host``."""
     last_ngl = _extra_args_draft_gpu_layers(extra_args, env)
@@ -5714,6 +5720,27 @@ def _extra_args_draft_device_pin(extra_args: Optional[Iterable[str]]) -> Optiona
     if not devs or all(d.lower() in ("cpu", "none") for d in devs):
         return None
     return last_dev
+
+
+def _extra_args_effective_draft_device_pin(extra_args: Optional[Iterable[str]]) -> Optional[str]:
+    """Return the GPU device selection the separate drafter will inherit.
+
+    An explicit draft-device value owns the drafter, including cpu/none. When
+    Studio owns the speculative block, load_model copies the main device selection
+    into the generated draft flags, so budgeting must honor that placement. A
+    user-owned --spec-type emits no generated flag and therefore inherits nothing.
+    """
+    if _extra_args_draft_device(extra_args) is not None:
+        return _extra_args_draft_device_pin(extra_args)
+    if _extra_args_set_spec_type(extra_args):
+        return None
+    main_dev = _extra_args_main_device(extra_args)
+    if main_dev is None:
+        return None
+    devs = [d.strip() for d in main_dev.split(",") if d.strip()]
+    if not devs or all(d.lower() in _CPU_DEVICE_VALUES for d in devs):
+        return None
+    return main_dev
 
 
 def _emitted_n_batch(n_batch: Optional[int], n_parallel: int) -> Optional[int]:
@@ -8850,6 +8877,355 @@ class LlamaCppBackend:
         return total
 
     @staticmethod
+    def _host_pinned_weight_bytes(model_path: str) -> int:
+        """Bytes for embeddings llama.cpp keeps on the host.
+
+        ``token_embd.weight`` and ``per_layer_token_embd`` stay host buffers even on a
+        fully offloaded model. Unreadable or incomplete returns 0, the old budget.
+        """
+        identity = LlamaCppBackend._gguf_load_source_identity(model_path)
+        if identity is None:
+            return 0
+        return LlamaCppBackend._host_pinned_weight_bytes_cached(identity)
+
+    @staticmethod
+    @functools.lru_cache(maxsize = 64)
+    def _host_pinned_weight_bytes_cached(identity: tuple) -> int:
+        try:
+            return sum(
+                size
+                for entry in identity
+                for _name, size in LlamaCppBackend._gguf_scan_host_pinned_tensors(entry[0])
+            )
+        except Exception as exc:  # noqa: BLE001 - budget must not fail a launch
+            logger.debug("host-pinned probe failed for %s (%s)", identity, exc)
+            return 0
+
+    @staticmethod
+    def _host_pinned_weight_items(model_path: str) -> "tuple[tuple[str, int], ...]":
+        """Concrete host-pinned tensor names and bytes, or empty when unreadable."""
+        identity = LlamaCppBackend._gguf_load_source_identity(model_path)
+        if identity is None:
+            return ()
+        return LlamaCppBackend._host_pinned_weight_items_cached(identity)
+
+    @staticmethod
+    @functools.lru_cache(maxsize = 64)
+    def _host_pinned_weight_items_cached(identity: tuple) -> "tuple[tuple[str, int], ...]":
+        try:
+            return tuple(
+                item
+                for entry in identity
+                for item in LlamaCppBackend._gguf_scan_host_pinned_tensors(entry[0])
+            )
+        except Exception as exc:  # noqa: BLE001 - budget must not fail a launch
+            logger.debug("host-pinned item probe failed for %s (%s)", identity, exc)
+            return ()
+
+    @staticmethod
+    def _tensor_override_mappings(
+        extra_args: Optional[Iterable[str]],
+        env: Optional[Mapping[str, str]] = None,
+        *,
+        draft_model: bool = False,
+    ) -> "tuple[tuple[str, str], ...]":
+        """Parsed pattern/buffer mappings for the target or separate drafter."""
+        argv = [str(a) for a in extra_args or ()]
+        values: list[str] = []
+        flags = (
+            ("-otd", "--override-tensor-draft", "--spec-draft-override-tensor")
+            if draft_model
+            else ("-ot", "--override-tensor")
+        )
+        for i, tok in enumerate(argv):
+            base, _, inline = tok.partition("=")
+            if _flag_name(base) in flags:
+                value = inline if inline else (argv[i + 1] if i + 1 < len(argv) else "")
+                if value:
+                    values.append(value)
+        inherited = (
+            None
+            if draft_model
+            else (os.environ if env is None else env).get("LLAMA_ARG_OVERRIDE_TENSOR")
+        )
+        if inherited:
+            values.append(str(inherited))
+        mappings = []
+        for spec in values:
+            for mapping in spec.split(","):
+                pattern, sep, buft = mapping.rpartition("=")
+                if not sep or not pattern:
+                    continue
+                mappings.append((pattern, buft.strip()))
+        return tuple(mappings)
+
+    @staticmethod
+    def _override_moves_host_pinned(
+        extra_args: Optional[Iterable[str]],
+        env: Optional[Mapping[str, str]] = None,
+        *,
+        draft_model: bool = False,
+    ) -> bool:
+        """Whether a tensor override moves normally host-pinned embeddings off CPU.
+
+        The per-layer embedding family is open-ended and llama.cpp applies arbitrary
+        regexes before its CPU fallback, so any non-CPU mapping drops the discount
+        rather than proving a regex cannot match. ``-ot`` and ``-otd`` are separate
+        tables upstream.
+        """
+        argv = [str(a) for a in extra_args or ()]
+        values: list[str] = []
+        flags = (
+            ("-otd", "--override-tensor-draft", "--spec-draft-override-tensor")
+            if draft_model
+            else ("-ot", "--override-tensor")
+        )
+        for i, tok in enumerate(argv):
+            base, _, inline = tok.partition("=")
+            if _flag_name(base) in flags:
+                value = inline if inline else (argv[i + 1] if i + 1 < len(argv) else "")
+                if value:
+                    values.append(value)
+        inherited = (
+            None
+            if draft_model
+            else (os.environ if env is None else env).get("LLAMA_ARG_OVERRIDE_TENSOR")
+        )
+        if inherited:
+            values.append(str(inherited))
+        for spec in values:
+            for mapping in spec.split(","):
+                pattern, sep, buft = mapping.rpartition("=")
+                if not sep or not pattern or buft.strip().upper() == "CPU":
+                    continue
+                return True
+        return False
+
+    def _host_pinned_floor_bytes(
+        self,
+        model_path: str,
+        extra_args: Optional[Iterable[str]],
+        *,
+        env: Optional[Mapping[str, str]] = None,
+        draft_model: bool = False,
+    ) -> int:
+        """Host bytes left after only provable exact-name GPU overrides.
+
+        Regexes are not interpreted: Python and llama.cpp semantics need not agree,
+        and a later CPU rule could restore a tensor, so either uncertainty charges the
+        raw floor.
+        """
+        items = self._host_pinned_weight_items(model_path)
+        raw = (
+            sum(size for _name, size in items)
+            if items
+            else self._host_pinned_weight_bytes(model_path)
+        )
+        mappings = self._tensor_override_mappings(
+            extra_args,
+            env,
+            draft_model = draft_model,
+        )
+        if not mappings or any(buft.upper() == "CPU" for _pattern, buft in mappings):
+            return raw
+        if not items:
+            return raw
+        exact_gpu_names = {pattern for pattern, buft in mappings if buft.upper() != "CPU"}
+        return sum(size for name, size in items if name not in exact_gpu_names)
+
+    @staticmethod
+    def _host_pinned_vram_discount(
+        model_path: str,
+        extra_args: Optional[Iterable[str]],
+        *,
+        env: Optional[Mapping[str, str]] = None,
+        shared_memory: bool = False,
+        draft_model: bool = False,
+    ) -> int:
+        """Bytes safe to remove from a discrete-device VRAM budget."""
+        if shared_memory or LlamaCppBackend._override_moves_host_pinned(
+            extra_args, env, draft_model = draft_model
+        ):
+            return 0
+        return LlamaCppBackend._host_pinned_weight_bytes(model_path)
+
+    @staticmethod
+    def _gguf_shard_paths(model_path: str) -> "list[Path]":
+        """Return the launched model's exact 1..N shard set in name order."""
+        main = Path(model_path)
+        m = _SHARD_FULL_RE.match(main.name)
+        if not m:
+            return [main]
+        prefix, _, num_total = m.groups()
+        return [
+            main.with_name(f"{prefix}-{index:05d}-of-{num_total}{main.suffix}")
+            for index in range(1, int(num_total) + 1)
+        ]
+
+    @staticmethod
+    def _tied_output_bytes(model_path: str) -> int:
+        """Bytes llama.cpp allocates ON TOP of the file for a tied-embedding model.
+
+        A tied model ships no ``output.weight``, and llama.cpp does not reuse
+        ``token_embd.weight`` in place: it re-creates the output tensor from it as
+        ``TENSOR_DUPLICATED`` (models/llama.cpp:41-45, models/qwen3.cpp:22-25 and
+        every other tied arch), so a second vocabulary matrix is really allocated
+        and the file size alone under-counts. 0 rather than raising for anything
+        unreadable, so a surprising GGUF costs the old budget, not a failed launch.
+        """
+        # Keyed on device and inode: a file rebuilt in place keeps its name and size.
+        identity = LlamaCppBackend._gguf_load_source_identity(model_path)
+        if identity is None:
+            return 0
+        return LlamaCppBackend._tied_output_bytes_cached(identity)
+
+    @staticmethod
+    @functools.lru_cache(maxsize = 64)
+    def _tied_output_bytes_cached(identity: tuple) -> int:
+        try:
+            architecture: Optional[str] = None
+            embd = 0
+            # Every shard: a split model puts token_embd in shard 1 and output.weight
+            # in the last, so shard 1 alone would call every large model tied.
+            for position, entry in enumerate(identity):
+                shard_arch, has_output, shard_embd = LlamaCppBackend._gguf_scan_output_tensors(
+                    entry[0]
+                )
+                if has_output:
+                    return 0
+                if position == 0:
+                    architecture = shard_arch
+                if shard_embd:
+                    embd = shard_embd
+            # Encoder-only: no vocabulary head, so the missing output.weight is not tying.
+            if is_no_vocab_output_gguf_architecture(architecture):
+                return 0
+            # A dflash/eagle3 sidecar inherits the target's output projection: nothing is duplicated.
+            if is_target_output_inheriting_gguf_architecture(architecture):
+                return 0
+            return embd
+        except Exception as exc:  # noqa: BLE001 - budget must not fail a launch
+            logger.debug("tied-output probe failed for %s (%s)", identity, exc)
+            return 0
+
+    def _separate_drafter_weight_vram_bytes(
+        self,
+        model_path: str,
+        host_pinned_bytes: int = 0,
+    ) -> int:
+        """Weight bytes a separate GPU drafter actually allocates in VRAM."""
+        return max(
+            0,
+            self._get_gguf_size_bytes(model_path)
+            + self._tied_output_bytes(model_path)
+            - max(0, int(host_pinned_bytes)),
+        )
+
+    @staticmethod
+    def _gguf_scan_output_tensors(path: str) -> tuple[Optional[str], bool, int]:
+        """(architecture, ships output.weight, token_embd bytes) from one GGUF header.
+
+        Streamed rather than through ``gguf.GGUFReader``, whose ``__init__``
+        materialises the tokenizer vocabulary: 12.1 s on gemma-4-E2B-it UD-Q4_K_XL
+        against 30-90 ms here, and this runs under ``self._lock`` before the spawn,
+        so it stalls every load.
+        """
+        from gguf.constants import GGML_QUANT_SIZES
+
+        architecture: Optional[str] = None
+        token_embd_bytes = 0
+        alignment = 32  # GGUF's default when general.alignment is absent
+        # A quant type the pinned gguf package predates: sized from the data layout instead.
+        unsized_at: Optional[int] = None
+        with open(path, "rb") as f:
+            if struct.unpack("<I", f.read(4))[0] != 0x46554747:  # b"GGUF"
+                return None, False, 0
+            f.seek(4, 1)  # version
+            n_tensors, n_kv = struct.unpack("<QQ", f.read(16))
+            for _ in range(n_kv):
+                key = f.read(struct.unpack("<Q", f.read(8))[0])
+                value_type = struct.unpack("<I", f.read(4))[0]
+                if key == b"general.architecture" and value_type == 8:
+                    raw = f.read(struct.unpack("<Q", f.read(8))[0])
+                    architecture = raw.decode("utf-8", "replace")
+                    continue
+                if key == b"general.alignment" and value_type == 4:
+                    alignment = max(1, struct.unpack("<I", f.read(4))[0])
+                    continue
+                LlamaCppBackend._gguf_skip_value(f, value_type)
+            for _ in range(n_tensors):
+                name = f.read(struct.unpack("<Q", f.read(8))[0])
+                n_dims = struct.unpack("<I", f.read(4))[0]
+                dims = struct.unpack(f"<{n_dims}Q", f.read(8 * n_dims))
+                ggml_type = struct.unpack("<I", f.read(4))[0]
+                offset = struct.unpack("<Q", f.read(8))[0]
+                if unsized_at is not None:
+                    # Tensors follow their info records, padded, so the next offset
+                    # bounds the previous one: over by under an alignment unit.
+                    token_embd_bytes = offset - unsized_at
+                    unsized_at = None
+                if name == b"output.weight":
+                    return architecture, True, 0
+                if name == b"token_embd.weight":
+                    # Quantised rows are stored in blocks: elements are not bytes.
+                    block = GGML_QUANT_SIZES.get(ggml_type)
+                    if block is None:
+                        unsized_at = offset
+                    else:
+                        token_embd_bytes = math.prod(dims) // block[0] * block[1]
+            if unsized_at is not None:
+                # Last tensor, so the data section bounds it.
+                data_start = -(-f.tell() // alignment) * alignment
+                token_embd_bytes = max(0, os.path.getsize(path) - data_start - unsized_at)
+        return architecture, False, token_embd_bytes
+
+    @staticmethod
+    def _gguf_scan_host_pinned_tensors(path: str) -> "tuple[tuple[str, int], ...]":
+        """Host-pinned embedding names and stored bytes from one GGUF header."""
+        from gguf.constants import GGML_QUANT_SIZES
+
+        alignment = 32
+        items: list[tuple[str, int]] = []
+        unsized: Optional[tuple[str, int]] = None
+        with open(path, "rb") as f:
+            if struct.unpack("<I", f.read(4))[0] != 0x46554747:
+                return ()
+            f.seek(4, 1)
+            n_tensors, n_kv = struct.unpack("<QQ", f.read(16))
+            for _ in range(n_kv):
+                key = f.read(struct.unpack("<Q", f.read(8))[0])
+                value_type = struct.unpack("<I", f.read(4))[0]
+                if key == b"general.alignment" and value_type == 4:
+                    alignment = max(1, struct.unpack("<I", f.read(4))[0])
+                    continue
+                LlamaCppBackend._gguf_skip_value(f, value_type)
+            for _ in range(n_tensors):
+                raw_name = f.read(struct.unpack("<Q", f.read(8))[0])
+                n_dims = struct.unpack("<I", f.read(4))[0]
+                dims = struct.unpack(f"<{n_dims}Q", f.read(8 * n_dims))
+                ggml_type = struct.unpack("<I", f.read(4))[0]
+                offset = struct.unpack("<Q", f.read(8))[0]
+                if unsized is not None:
+                    items.append((unsized[0], offset - unsized[1]))
+                    unsized = None
+                if raw_name == b"token_embd.weight" or raw_name.startswith(b"per_layer_token_embd"):
+                    name = raw_name.decode("utf-8", "replace")
+                    block = GGML_QUANT_SIZES.get(ggml_type)
+                    if block is None:
+                        unsized = (name, offset)
+                    else:
+                        items.append((name, math.prod(dims) // block[0] * block[1]))
+            if unsized is not None:
+                data_start = -(-f.tell() // alignment) * alignment
+                items.append(
+                    (
+                        unsized[0],
+                        max(0, os.path.getsize(path) - data_start - unsized[1]),
+                    )
+                )
+        return tuple(items)
+
+    @staticmethod
     def _installed_ggml_backends(binary: Optional[str] = None) -> frozenset[str]:
         """Backend libraries shipped beside llama-server."""
         binary = binary or LlamaCppBackend._find_llama_server_binary()
@@ -9482,6 +9858,34 @@ class LlamaCppBackend:
         return tuple(int(i) for i in order)
 
     @staticmethod
+    def _vulkan_rows_target_igpus(
+        rows: Iterable[Mapping],
+        gpu_indices = None,
+        *,
+        conservative_on_unknown: bool = False,
+    ) -> bool:
+        """Classify the selected devices from one Vulkan inventory snapshot.
+
+        ``conservative_on_unknown`` also covers a row whose TYPE could not be read:
+        the probe degrades a failed registry lookup to ``is_igpu = 0``, which reads
+        the same as a proved dGPU. ``type_known`` is the difference.
+        """
+        rows = list(rows or ())
+        if not rows:
+            return conservative_on_unknown
+        wanted = set(gpu_indices) if gpu_indices else None
+        selected = [r for r in rows if wanted is None or r["index"] in wanted]
+        if (
+            wanted is not None
+            and conservative_on_unknown
+            and {r["index"] for r in selected} != wanted
+        ):
+            return conservative_on_unknown
+        if conservative_on_unknown and not all(r.get("type_known", True) for r in selected):
+            return True
+        return any(r["is_igpu"] for r in selected)
+
+    @staticmethod
     def _vulkan_probe_answered(binary: Optional[str]) -> bool:
         """Whether the Vulkan device probe produced rows at all.
 
@@ -9495,7 +9899,12 @@ class LlamaCppBackend:
             return False
 
     @staticmethod
-    def _vulkan_targets_are_igpus(binary: Optional[str], gpu_indices = None) -> bool:
+    def _vulkan_targets_are_igpus(
+        binary: Optional[str],
+        gpu_indices = None,
+        *,
+        conservative_on_unknown: bool = False,
+    ) -> bool:
         """True when any Vulkan device in play is integrated.
 
         An iGPU's reported "VRAM" is shared system RAM (see
@@ -9508,12 +9917,12 @@ class LlamaCppBackend:
         try:
             rows = LlamaCppBackend._run_vulkan_probe(binary)
         except Exception:
-            return False
-        if not rows:
-            return False
-        wanted = set(gpu_indices) if gpu_indices else None
-        selected = [r for r in rows if wanted is None or r["index"] in wanted]
-        return any(r["is_igpu"] for r in selected)
+            return conservative_on_unknown
+        return LlamaCppBackend._vulkan_rows_target_igpus(
+            rows,
+            gpu_indices,
+            conservative_on_unknown = conservative_on_unknown,
+        )
 
     def _weights_in_host_memory(
         self,
@@ -9739,7 +10148,7 @@ class LlamaCppBackend:
                 return set()
             if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
                 return set()
-            from core.training.worker import _rocm_classify_unified_memory
+            from utils.rocm_topology import rocm_classify_unified_memory
 
             # Map visible ordinal -> physical id via the active ROCm mask (HIP,
             # then ROCR, then CUDA), mirroring _get_gpu_memory's ROCm branch.
@@ -9747,7 +10156,7 @@ class LlamaCppBackend:
             unified: set[int] = set()
             for ordinal in range(torch.cuda.device_count()):
                 try:
-                    _arch, is_unified = _rocm_classify_unified_memory(
+                    _arch, is_unified = rocm_classify_unified_memory(
                         torch.cuda.get_device_properties(ordinal)
                     )
                 except Exception:
@@ -9778,7 +10187,7 @@ class LlamaCppBackend:
                 return None
             if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
                 return None
-            from core.training.worker import _rocm_classify_unified_memory
+            from utils.rocm_topology import rocm_classify_unified_memory
 
             wanted = None if gpu_indices is None else set(gpu_indices)
             physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
@@ -9794,7 +10203,7 @@ class LlamaCppBackend:
                     continue
                 try:
                     props = torch.cuda.get_device_properties(ordinal)
-                    _arch, is_unified = _rocm_classify_unified_memory(props)
+                    _arch, is_unified = rocm_classify_unified_memory(props)
                 except Exception:
                     return None
                 if not is_unified:
@@ -9853,12 +10262,12 @@ class LlamaCppBackend:
                 return arch_by_id
             if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
                 return arch_by_id
-            from core.training.worker import _rocm_classify_unified_memory
+            from utils.rocm_topology import rocm_classify_unified_memory
 
             physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
             for ordinal in range(torch.cuda.device_count()):
                 try:
-                    _arch, _is_unified = _rocm_classify_unified_memory(
+                    _arch, _is_unified = rocm_classify_unified_memory(
                         torch.cuda.get_device_properties(ordinal)
                     )
                 except Exception:
@@ -10026,6 +10435,84 @@ class LlamaCppBackend:
             if gpu_indices is None:
                 return bool(integrated)
             return any(_i in integrated for _i in gpu_indices)
+        except Exception:
+            return False
+
+    # Deliberately absent: gfx1103 (Phoenix iGPU), gfx1150-1152 (unified-memory APUs), and
+    # gfx942, shared by the discrete MI300X/MI325X and the MI300A APU (ROCm/ROCm#4825),
+    # whose is_integrated reads 0 before rocm-6.1.2.
+    _ROCM_PROVED_DISCRETE_ARCHS = frozenset(
+        {
+            "gfx803",
+            "gfx900",
+            "gfx906",
+            "gfx908",
+            "gfx90a",
+            "gfx950",
+            "gfx1010",
+            "gfx1011",
+            "gfx1012",
+            "gfx1030",
+            "gfx1031",
+            "gfx1032",
+            "gfx1034",
+            "gfx1100",
+            "gfx1101",
+            "gfx1102",
+            "gfx1200",
+            "gfx1201",
+        }
+    )
+
+    @staticmethod
+    def _torch_unified_memory_classification_known(gpu_indices = None) -> bool:
+        """Whether every selected CUDA/ROCm device was classifiable.
+
+        The older boolean helpers collapse "proved discrete" and "probe failed" into
+        False for callers that should fail open; this discount cannot afford that.
+        """
+        try:
+            import torch
+
+            if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
+                return False
+            is_rocm = LlamaCppBackend._torch_is_rocm(torch)
+            rocm_classifier = None
+            rocm_arch_overridden = False
+            if is_rocm:
+                from utils.rocm_topology import rocm_classify_unified_memory
+                rocm_classifier = rocm_classify_unified_memory
+                # HSA_OVERRIDE_GFX_VERSION rewrites the reported arch for kernel
+                # compatibility, not topology: a gfx1035 APU presents as gfx1030.
+                rocm_arch_overridden = bool(
+                    str(os.environ.get("HSA_OVERRIDE_GFX_VERSION", "")).strip()
+                )
+            physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
+            wanted = set(gpu_indices) if gpu_indices else None
+            seen: set[int] = set()
+            for ordinal in range(torch.cuda.device_count()):
+                pid = (
+                    physical_ids[ordinal]
+                    if physical_ids is not None and ordinal < len(physical_ids)
+                    else ordinal
+                )
+                if wanted is not None and pid not in wanted:
+                    continue
+                props = torch.cuda.get_device_properties(ordinal)
+                if is_rocm:
+                    _arch, is_unified = rocm_classifier(props)
+                    if not is_unified and (
+                        rocm_arch_overridden
+                        or (_arch or "").strip().lower()
+                        not in LlamaCppBackend._ROCM_PROVED_DISCRETE_ARCHS
+                    ):
+                        # No reliable negative signal: older wheels omit or zero
+                        # is_integrated even for Phoenix gfx1103 APUs.
+                        return False
+                elif not (hasattr(props, "is_integrated") or hasattr(props, "integrated")):
+                    return False
+                seen.add(pid)
+            return bool(seen) and (wanted is None or seen == wanted)
         except Exception:
             return False
 
@@ -11995,7 +12482,7 @@ class LlamaCppBackend:
         rows: list[dict] = []
         for line in result.stdout.strip().splitlines():
             parts = line.split("\t")
-            # 4 columns from an older probe (no name); 5 with the name column.
+            # 4 columns from an older probe, 5 with the name, 6 with type-known.
             if len(parts) not in (4, 5, 6):
                 continue
             try:
@@ -12030,7 +12517,9 @@ class LlamaCppBackend:
         return rows
 
     @staticmethod
-    def _get_gpu_free_memory_vulkan(binary: Optional[str] = None) -> list[tuple[int, int, int]]:
+    def _get_gpu_free_memory_vulkan(
+        binary: Optional[str] = None, *, rows: Optional[Iterable[Mapping]] = None
+    ) -> list[tuple[int, int, int]]:
         """Query free (and total) VRAM per device via the bundled ggml Vulkan backend.
 
         Fit-oriented view of ``_run_vulkan_probe``: returns (device_index,
@@ -12039,7 +12528,8 @@ class LlamaCppBackend:
         their real total through. [] when no Vulkan build or device is reachable.
         """
         gpus: list[tuple[int, int, int]] = []
-        for row in LlamaCppBackend._run_vulkan_probe(binary):
+        probe_rows = LlamaCppBackend._run_vulkan_probe(binary) if rows is None else rows
+        for row in probe_rows:
             idx, free_mib, is_igpu = row["index"], row["free_mib"], row["is_igpu"]
             # iGPU "total" is shared RAM, not a VRAM budget -> keep 0 so the
             # fit stays on free*frac (the host reserve below is its
@@ -12456,6 +12946,8 @@ class LlamaCppBackend:
         child_has_no_gpu: bool = False,
         avail_mib: Optional[int] = None,
         shared_gpu_ids: Iterable[int] = (),
+        host_only_bytes: int = 0,
+        additional_host_only_bytes: Optional[int] = 0,
         honor_opt_out: bool = True,
     ) -> Optional[str]:
         """Warning when the weights alone do not fit in free VRAM plus available RAM.
@@ -12488,6 +12980,9 @@ class LlamaCppBackend:
         owners are released; the launch reads what is available now. ``shared_gpu_ids``
         names Vulkan iGPUs whose reported free memory overlaps the host pool. Either
         reading can hold the remaining weights, but they must never be added together.
+        ``host_only_bytes`` is the part of the model file that stays in system RAM even
+        when surplus VRAM could hold the rest; ``additional_host_only_bytes`` is the
+        same for a companion allocation outside the file, and is additive.
         """
         argv = [str(a) for a in cmd or ()]
         if not argv:
@@ -12516,7 +13011,10 @@ class LlamaCppBackend:
         shared = set(shared_gpu_ids or ())
         free_vram_mib = sum(max(0, row[1]) for row in gpus if row[0] not in shared)
         heap_free_mib, heap_bytes = self._shared_heap_budget(gpus, shared, model_bytes, argv, _env)
-        offload_bytes = model_bytes - free_vram_mib * 1024 * 1024
+        host_floor = max(0, int(host_only_bytes or 0))
+        additional_host = max(0, int(additional_host_only_bytes or 0))
+        heap_bytes = additional_host + max(host_floor, heap_bytes)
+        offload_bytes = additional_host + max(host_floor, model_bytes - free_vram_mib * 1024 * 1024)
         # A carve-out can satisfy the dedicated-VRAM shortfall. Skip card-resident
         # loads so a cgroup budget is never applied to a nonpositive need.
         if 0 < offload_bytes and heap_bytes <= heap_free_mib * 1024 * 1024:
@@ -13088,6 +13586,7 @@ class LlamaCppBackend:
         env: Optional[Mapping[str, str]],
         avail_mib: Optional[int],
         pageable_note: Optional[str] = None,
+        additional_host_only_bytes: int = 0,
     ) -> None:
         """Re-price the host memory advisory once a Vulkan crash is replayed on CPU.
 
@@ -13149,6 +13648,7 @@ class LlamaCppBackend:
             env,
             child_has_no_gpu = True,
             avail_mib = avail_mib,
+            additional_host_only_bytes = additional_host_only_bytes,
         )
         note = pageable_note or ""
         current = self._last_load_warning
@@ -14764,6 +15264,9 @@ class LlamaCppBackend:
         if not drafter_path:
             return 0
         try:
+            # No tied-output charge: CPU-pinned by definition, so both layers land in
+            # the one CPU buffer-type context and llama.cpp hands back the original
+            # token_embd instead of a second matrix (llama-model-loader.cpp:1437-1443).
             weights = self._get_gguf_size_bytes(drafter_path)
         except Exception:
             weights = 0
@@ -20411,6 +20914,7 @@ class LlamaCppBackend:
         *,
         drop_full_offload_threads: bool = False,
         avail_mib: Optional[int] = None,
+        additional_host_only_bytes: Optional[int] = 0,
     ) -> Optional[tuple[list[str], Optional[str], Optional[str]]]:
         """Build the CPU replay, or None when this install cannot host one.
 
@@ -20421,7 +20925,9 @@ class LlamaCppBackend:
 
         ``avail_mib`` is the host pool the preflight read, carried down so the rewrite
         below and ``_reprice_after_cpu_only_fallback`` price the replay against the same
-        number and cannot reach opposite conclusions about the same child.
+        number and cannot reach opposite conclusions about the same child. A None
+        companion footprint is conservatively oversized: an unmapped CPU replay cannot
+        prove that an unsized drafter fits in host RAM.
         """
         # Staging only removes GPU backends; a non-Vulkan install would report a
         # Vulkan crash that never happened.
@@ -20461,13 +20967,15 @@ class LlamaCppBackend:
             # honor_opt_out=False for the same reason _launch_is_oversized reads it that
             # way: UNSLOTH_ALLOW_HOST_OFFLOAD silences a message and must never withdraw
             # the rewrite that makes the load possible.
-            lambda: bool(
+            lambda: additional_host_only_bytes is None
+            or bool(
                 self._launch_host_shortfall_message(
                     _priced_replay,
                     (),
                     env,
                     child_has_no_gpu = True,
                     avail_mib = avail_mib,
+                    additional_host_only_bytes = additional_host_only_bytes,
                     honor_opt_out = False,
                 )
             ),
@@ -21894,6 +22402,20 @@ class LlamaCppBackend:
                 total_by_idx: dict[int, int] = {}
                 _gpu_mem: list[tuple[int, int, int]] = []
                 model_size = None  # set in the fit try; used by the APU RAM guard
+                # Bound before the fit try: a probe failure falls through to preflight.
+                _host_pinned = 0
+                _draft_host_pinned = 0
+                # Physical residency: a placement can earn no discount while its embeddings stay in RAM.
+                _host_pinned_floor = 0
+                _draft_host_pinned_floor = 0
+                _tied_output_charge = 0
+                _draft_host_pinned_candidate = 0
+                _mtp_draft_weights_candidate = 0
+                _candidate_target_discount_applied = 0
+                _candidate_draft_discount_applied = 0
+                _candidate_mmproj_discount_applied = 0
+                _cpu_draft_fit_bytes: Optional[int] = 0
+                _replay_draft_fit_bytes: Optional[int] = 0
                 _mtp_will_engage = False
                 _separate_draft_launches = False  # a sidecar displaces an embedded head
                 # "none" once the fit proves the load needs no demand paging, else None
@@ -21952,7 +22474,73 @@ class LlamaCppBackend:
                     if _user_mmproj_offload is False and launch_mmproj_path:
                         # Still in system RAM, which the APU shortfall guard prices.
                         _mmproj_pinned_bytes = self._mmproj_vram_bytes(launch_mmproj_path)
-                    model_size = gguf_size + mmproj_size
+                    # Charge the tied duplicate, then discount host-pinned embeddings on
+                    # discrete devices only.
+                    _tied_output_charge = self._tied_output_bytes(model_path)
+                    weights_size = gguf_size + _tied_output_charge
+                    from utils.hardware import is_apple_silicon
+
+                    _vulkan_probe_rows = (
+                        self._run_vulkan_probe(binary) if is_vulkan_backend else None
+                    )
+                    _gpu_mem = (
+                        self._get_gpu_free_memory_vulkan(binary, rows = _vulkan_probe_rows)
+                        if is_vulkan_backend
+                        else self._get_gpu_memory(binary, for_llama_server = not gpu_ids)
+                    )
+                    _shared_memory = (
+                        is_apple_silicon()
+                        or self._amd_apu_wants_unified_memory(gpu_ids)
+                        or self._integrated_cuda_unified_memory(gpu_ids)
+                        or (
+                            bool(_gpu_mem)
+                            and not is_vulkan_backend
+                            and not self._torch_unified_memory_classification_known(gpu_ids)
+                        )
+                        or (
+                            is_vulkan_backend
+                            and self._vulkan_rows_target_igpus(
+                                _vulkan_probe_rows,
+                                gpu_ids,
+                                conservative_on_unknown = True,
+                            )
+                        )
+                    )
+                    _host_pinned_candidate = self._host_pinned_vram_discount(
+                        model_path,
+                        extra_args,
+                        env = os.environ,
+                        shared_memory = False,
+                    )
+                    # Opposite questions under a tensor override: an unknown non-CPU
+                    # mapping may move embeddings to VRAM, but proves none left RAM.
+                    _host_pinned_floor = (
+                        self._host_pinned_floor_bytes(
+                            model_path,
+                            extra_args,
+                            env = os.environ,
+                        )
+                        if self._override_moves_host_pinned(extra_args, os.environ)
+                        else _host_pinned_candidate
+                    )
+                    # The placement the child receives: gpu_ids strips main-device
+                    # flags and their env twins before launch.
+                    _placement_extras = extra_args
+                    _placement_env: Mapping[str, str] = os.environ
+                    if gpu_ids is not None:
+                        _placement_extras = self._strip_device_extra_args(extra_args)
+                        _placement_env = dict(os.environ)
+                        self._clear_device_placement_env(_placement_env)
+                    # A CPU device selection keeps the whole target in RAM, so no GPU
+                    # budget sheds its embeddings; the floor below still prices them.
+                    _target_device_is_cpu = _device_selection_is_cpu(
+                        _placement_extras, _placement_env
+                    )
+                    _host_pinned = (
+                        0 if (_shared_memory or _target_device_is_cpu) else _host_pinned_candidate
+                    )
+                    _model_weight_vram_bytes = max(0, weights_size - _host_pinned)
+                    model_size = _model_weight_vram_bytes + mmproj_size
                     # 2-tuple gpus for existing logic + a total map for the absolute
                     # per-GPU headroom (correct when the GPU is already partly used).
                     # Pass binary so a Vulkan build probes ggml's Vulkan ordinals.
@@ -21961,7 +22549,6 @@ class LlamaCppBackend:
                     # `--fit on`, yet `gpu_indices` is restored from `gpu_ids` below
                     # so the pin happens anyway. A pinned uncovered GPU is the user's
                     # call and already reports "device kernel image is invalid".
-                    _gpu_mem = self._get_gpu_memory(binary, for_llama_server = not gpu_ids)
                     # Every present device gated out (#7624). Left alone the launch
                     # takes the `--fit on` arm with `gpu_indices` still None, so no
                     # mask is written, the child enumerates every unsupported card and
@@ -22005,6 +22592,9 @@ class LlamaCppBackend:
                                 "get GPU inference back.",
                                 _present,
                             )
+                    # Keep the pre-filter inventory: Vulkan Auto drops integrated
+                    # siblings, but a trailing --device can put the child back on one.
+                    _visible_gpu_mem = list(_gpu_mem)
                     if is_vulkan_backend and not gpu_ids and gpu_memory_mode != "manual":
                         _gpu_mem = self._vulkan_auto_gpu_memory(_gpu_mem)
                     gpus = [(idx, free) for idx, free, _t in _gpu_mem]
@@ -22030,7 +22620,7 @@ class LlamaCppBackend:
                         # load on CPU (issue #7164).
                         _sel_gpus = [g for g in gpus if g[0] in _wanted_ids]
                         gpus = _sel_gpus if _sel_gpus else gpus
-                    total_by_idx = {idx: total for idx, _f, total in _gpu_mem}
+                    total_by_idx = {idx: total for idx, _f, total in _visible_gpu_mem}
                     # GPU picker: restrict every mode to the chosen devices, so
                     # auto selection only considers them and manual mask to
                     # them (the env block below pins CUDA/HIP_VISIBLE_DEVICES).
@@ -22045,11 +22635,67 @@ class LlamaCppBackend:
                     _detected_gpus = list(gpus)
                     # Vulkan reports total 0 only for integrated GPUs. Their
                     # free "VRAM" is the same host pool the RAM guard prices.
-                    _shared_gpu_ids = (
-                        {idx for idx, _free in _detected_gpus if total_by_idx.get(idx, 1) <= 0}
-                        if is_vulkan_backend
-                        else set()
-                    )
+                    _unclassified_gpu_ids: set[int] = set()
+                    if is_vulkan_backend:
+                        _shared_gpu_ids = {
+                            idx for idx, _free, total in _visible_gpu_mem if total <= 0
+                        }
+                        # An unreadable type reports a heap like a dGPU, so total > 0 misses it.
+                        _unclassified_gpu_ids = {
+                            int(row["index"])
+                            for row in (_vulkan_probe_rows or ())
+                            if not row.get("type_known", True)
+                        }
+                        # Never credited on top of host RAM either. Vulkan only: elsewhere
+                        # "unclassified" can just mean torch is absent.
+                        _shared_gpu_ids |= _unclassified_gpu_ids
+                    else:
+                        _unclassified_gpu_ids = {
+                            idx
+                            for idx, _free in _detected_gpus
+                            if not self._torch_unified_memory_classification_known([idx])
+                        }
+                        _shared_gpu_ids = {
+                            idx
+                            for idx, _free in _detected_gpus
+                            if self._amd_apu_wants_unified_memory([idx])
+                            or self._integrated_cuda_unified_memory([idx])
+                        }
+
+                    def _candidate_targets_proved_discrete(candidate_ids) -> bool:
+                        _candidate_ids = {int(idx) for idx in (candidate_ids or ())}
+                        if (
+                            not _candidate_ids
+                            or _target_device_is_cpu
+                            or (_candidate_ids & (_shared_gpu_ids | _unclassified_gpu_ids))
+                        ):
+                            return False
+                        # Advanced Arguments land after the generated pin, last-wins.
+                        # Vulkan names map exactly to probe ordinals, so a restatement is
+                        # safe; CUDA/ROCm names cannot be mapped through the masks here.
+                        _pass_through_device = _extra_args_main_device(extra_args)
+                        if _pass_through_device is not None:
+                            _named_devices = {
+                                name.strip().lower()
+                                for name in str(_pass_through_device).split(",")
+                                if name.strip()
+                            }
+                            if not is_vulkan_backend or _named_devices != {
+                                f"vulkan{idx}" for idx in _candidate_ids
+                            }:
+                                return False
+                        return True
+
+                    def _candidate_target_host_pinned_delta(candidate_ids) -> int:
+                        """Target-weight discount for this effective placement."""
+                        _base_host_pinned = _host_pinned - _candidate_target_discount_applied
+                        if (
+                            _host_pinned_candidate <= _base_host_pinned
+                            or not _candidate_targets_proved_discrete(candidate_ids)
+                        ):
+                            return 0
+                        return _host_pinned_candidate - _base_host_pinned
+
                     # The --fit fallback is llama.cpp's own fitter, which knows nothing
                     # about this budget: it keeps its own margin and packs the rest on,
                     # so the slider never reached the path that runs when the fit is
@@ -22324,8 +22970,12 @@ class LlamaCppBackend:
                     _separate_draft_launches = bool(_mtp_draft_for_budget)
                     # Drafter offloaded to CPU keeps its weights+KV off the GPU, so
                     # drop it from the budget (an embedded head stays in the model).
-                    # Consult the env too: the child honors LLAMA_ARG_N_GPU_LAYERS_DRAFT.
-                    _draft_on_cpu = _extra_args_draft_offloaded_to_cpu(extra_args, env = os.environ)
+                    # A raw ``--device none`` stripped by gpu_ids cannot delete a GPU
+                    # drafter here. Draft-specific pins still count.
+                    _draft_on_cpu = _extra_args_draft_offloaded_to_cpu(
+                        _placement_extras,
+                        env = _placement_env,
+                    )
                     # Kept for the load-mode fit, which the nulling below would leave
                     # short a whole draft GGUF: dropping the drafter from the VRAM budget
                     # moves those bytes to host RAM rather than deleting them. See
@@ -22336,9 +22986,75 @@ class LlamaCppBackend:
                     _mtp_draft_weights = 0
                     if _mtp_draft_for_budget:
                         try:
-                            _mtp_draft_weights = self._get_gguf_size_bytes(_mtp_draft_for_budget)
+                            _draft_host_pinned_candidate = self._host_pinned_vram_discount(
+                                _mtp_draft_for_budget,
+                                extra_args,
+                                env = os.environ,
+                                shared_memory = False,
+                                draft_model = True,
+                            )
+                            _draft_host_pinned_floor = (
+                                self._host_pinned_floor_bytes(
+                                    _mtp_draft_for_budget,
+                                    extra_args,
+                                    env = os.environ,
+                                    draft_model = True,
+                                )
+                                if self._override_moves_host_pinned(
+                                    extra_args,
+                                    os.environ,
+                                    draft_model = True,
+                                )
+                                else _draft_host_pinned_candidate
+                            )
+                            _draft_host_pinned = (
+                                0 if _shared_memory else _draft_host_pinned_candidate
+                            )
+                            _mtp_draft_weights = self._separate_drafter_weight_vram_bytes(
+                                _mtp_draft_for_budget,
+                                _draft_host_pinned,
+                            )
+                            _mtp_draft_weights_candidate = self._separate_drafter_weight_vram_bytes(
+                                _mtp_draft_for_budget,
+                                _draft_host_pinned_candidate,
+                            )
                         except Exception:
+                            _draft_host_pinned = 0
+                            _draft_host_pinned_floor = 0
+                            _draft_host_pinned_candidate = 0
                             _mtp_draft_weights = 0
+                            _mtp_draft_weights_candidate = 0
+
+                    def _candidate_draft_host_pinned_delta(candidate_ids) -> int:
+                        _candidate_ids = {int(idx) for idx in (candidate_ids or ())}
+                        _base_draft_host_pinned = (
+                            _draft_host_pinned - _candidate_draft_discount_applied
+                        )
+                        if (
+                            not _mtp_draft_for_budget
+                            or not _candidate_ids
+                            or _draft_host_pinned_candidate <= _base_draft_host_pinned
+                            or (_candidate_ids & (_shared_gpu_ids | _unclassified_gpu_ids))
+                        ):
+                            return 0
+                        _draft_pin = _extra_args_effective_draft_device_pin(extra_args)
+                        if _draft_pin is not None:
+                            _draft_devices = {
+                                name.strip().lower()
+                                for name in str(_draft_pin).split(",")
+                                if name.strip()
+                            }
+                            if not is_vulkan_backend or _draft_devices != {
+                                f"vulkan{idx}" for idx in _candidate_ids
+                            }:
+                                return 0
+                        return max(0, _mtp_draft_weights - _mtp_draft_weights_candidate)
+
+                    def _candidate_host_pinned_delta(candidate_ids) -> int:
+                        return _candidate_target_host_pinned_delta(
+                            candidate_ids
+                        ) + _candidate_draft_host_pinned_delta(candidate_ids)
+
                     # Draft K/V types (f16 by default; independent extras overrides).
                     _mtp_draft_ck, _mtp_draft_cv = _extra_args_draft_cache_types(extra_args)
                     # The control underneath them: emitted before the extras, so an
@@ -22424,7 +23140,11 @@ class LlamaCppBackend:
                                     n_ubatch = _n_ubatch,
                                     flash_attn = _flash_attn,
                                 )
-                                return v if v is not None else 0
+                                return (
+                                    max(0, v - _candidate_draft_discount_applied)
+                                    if v is not None
+                                    else 0
+                                )
 
                     def _mtp_bytes(
                         ctx: int,
@@ -22670,6 +23390,33 @@ class LlamaCppBackend:
                         )
                         _mtp_kv_unsized = False
 
+                    def _ranked_candidate_subsets(ranked, min_count: int = 1):
+                        """Mixed-ranking prefixes plus discount-eligible alternatives.
+
+                        A shared GPU can rank first, leaving the ordinary prefixes as
+                        the shared singleton then the mixed pair, while the discrete
+                        sibling fits alone only once discounted. An unclassified device
+                        keeps its VRAM in the prefixes but stays out of this arm.
+                        """
+                        discountable = [
+                            gpu
+                            for gpu in ranked
+                            if gpu[0] not in (_shared_gpu_ids | _unclassified_gpu_ids)
+                        ]
+                        subsets = []
+                        seen = set()
+                        for count in range(min_count, len(ranked) + 1):
+                            for source in (ranked, discountable):
+                                subset = source[:count]
+                                if len(subset) != count:
+                                    continue
+                                key = tuple(idx for idx, _free in subset)
+                                if key in seen:
+                                    continue
+                                seen.add(key)
+                                subsets.append(subset)
+                        return subsets
+
                     # Projector placement, the FIRST thing given up when the load does
                     # not fit: the encoder runs once per image, layers once per token,
                     # so host RAM is its better home when it is what costs residency.
@@ -22700,7 +23447,8 @@ class LlamaCppBackend:
                         # including the drop probe below: it sees the lighter footprint
                         # and gives the drafter up only if the pin was not enough.
                         mmproj_size = 0
-                        model_size = gguf_size
+                        model_size = _model_weight_vram_bytes
+                        # The pin moves only the projector, not either correction.
                         # What the startup-recovery pin reports, so a CPU-resident
                         # projector is announced whether it was predicted or salvaged;
                         # otherwise image encoding just gets mysteriously slower. After
@@ -22780,8 +23528,8 @@ class LlamaCppBackend:
                             if explicit_ctx
                             else min(self._MMPROJ_FIT_FLOOR_CTX, effective_ctx)
                         )
-                        _mm_need = (
-                            gguf_size
+                        _mm_base_need = (
+                            _model_weight_vram_bytes
                             + mmproj_size
                             + _compute_buffer_pipeline
                             + self._CUDA_CONTEXT_RESERVE_BYTES
@@ -22789,7 +23537,7 @@ class LlamaCppBackend:
                             + (self._MTP_DRAFT_COMPUTE_BYTES if _mm_mtp_on_gpu else 0)
                         )
                         if _mm_floor_ctx > 0 and self._can_estimate_kv():
-                            _mm_need += (
+                            _mm_base_need += (
                                 _kv_bytes(_mm_floor_ctx)
                                 + _cc_bytes(_mm_floor_ctx)
                                 + _mtp_bytes(_mm_floor_ctx)
@@ -22802,7 +23550,7 @@ class LlamaCppBackend:
                             # Rebound rather than used inline so the log below names the
                             # length this actually priced against.
                             _mm_floor_ctx = self._context_length or effective_ctx or 4096
-                            _mm_need += _mtp_bytes(_mm_floor_ctx)
+                            _mm_base_need += _mtp_bytes(_mm_floor_ctx)
                         # Run through whichever selector the branch below will use, at
                         # the same fraction and per-device overhead, so "does not fit"
                         # here is a placement that branch could not have chosen either.
@@ -22821,27 +23569,41 @@ class LlamaCppBackend:
                         # whether _mm_need carries a context-compute term, so the two
                         # cannot drift apart.
                         _mm_split_aware = self._can_estimate_kv()
-                        _, _mm_needs_fit = (
-                            self._select_gpus_split_aware(
-                                _mm_need,
-                                _mm_budgeted_gpus,
-                                usable_fraction = _mm_frac,
-                                total_by_idx = total_by_idx,
-                                per_device_overhead_bytes = _pipeline_overhead_bytes
-                                + _cc_bytes(_mm_floor_ctx),
-                                min_gpus = _layer_min_gpus,
-                                split_extra_bytes = _cc_split_extra(_mm_floor_ctx),
-                            )
-                            if _mm_split_aware
-                            else self._select_gpus(
-                                _mm_need,
-                                _mm_budgeted_gpus,
-                                usable_fraction = _mm_frac,
-                                total_by_idx = total_by_idx,
-                                per_device_overhead_bytes = _pipeline_overhead_bytes,
-                                min_gpus = _layer_min_gpus,
-                            )
+                        _mm_ranked = sorted(
+                            _mm_budgeted_gpus,
+                            key = lambda g: _gpu_usable(g, _mm_frac),
+                            reverse = True,
                         )
+                        _mm_min_gpus = max(1, min(_layer_min_gpus, len(_mm_ranked)))
+                        _mm_needs_fit = True
+                        for _mm_subset in _ranked_candidate_subsets(_mm_ranked, _mm_min_gpus):
+                            _mm_need = _mm_base_need - _candidate_host_pinned_delta(
+                                [_idx for _idx, _free in _mm_subset]
+                            )
+                            _, _mm_subset_needs_fit = (
+                                self._select_gpus_split_aware(
+                                    _mm_need,
+                                    _mm_subset,
+                                    usable_fraction = _mm_frac,
+                                    total_by_idx = total_by_idx,
+                                    per_device_overhead_bytes = _pipeline_overhead_bytes
+                                    + _cc_bytes(_mm_floor_ctx),
+                                    min_gpus = len(_mm_subset),
+                                    split_extra_bytes = _cc_split_extra(_mm_floor_ctx),
+                                )
+                                if _mm_split_aware
+                                else self._select_gpus(
+                                    _mm_need,
+                                    _mm_subset,
+                                    usable_fraction = _mm_frac,
+                                    total_by_idx = total_by_idx,
+                                    per_device_overhead_bytes = _pipeline_overhead_bytes,
+                                    min_gpus = len(_mm_subset),
+                                )
+                            )
+                            if not _mm_subset_needs_fit:
+                                _mm_needs_fit = False
+                                break
                         if _mm_needs_fit:
                             if tensor_parallel:
                                 # Held, not dropped. Applying it here would price a
@@ -22892,7 +23654,11 @@ class LlamaCppBackend:
                                 else 0.0
                             )
 
-                        def _probe_base(drafter: bool, n: int) -> int:
+                        def _probe_base(
+                            drafter: bool,
+                            n: int,
+                            subset = None,
+                        ) -> int:
                             # model_size_fit's terms, before it is built below.
                             _soft = self._CUDA_CONTEXT_RESERVE_BYTES
                             if effective_is_vision and mmproj_size > 0:
@@ -22901,6 +23667,11 @@ class LlamaCppBackend:
                                 _soft += self._MTP_DRAFT_COMPUTE_BYTES
                             return (
                                 model_size
+                                - (
+                                    _candidate_host_pinned_delta
+                                    if drafter
+                                    else _candidate_target_host_pinned_delta
+                                )([_idx for _idx, _free in (subset or ())])
                                 + _compute_buffer_pipeline
                                 + _soft
                                 + max(0, n - 1) * _pipeline_overhead_bytes
@@ -22955,10 +23726,12 @@ class LlamaCppBackend:
                             if _both_fit_somewhere:
                                 break
                             _probe_min_gpus = _probe_floor(_probe_ranked, False)
-                            for _n in range(_probe_min_gpus, len(_probe_ranked) + 1):
-                                _subset = _probe_ranked[:_n]
+                            for _subset in _ranked_candidate_subsets(
+                                _probe_ranked, _probe_min_gpus
+                            ):
+                                _n = len(_subset)
                                 _cc_n = lambda c, _k = _n: _cc_bytes(c, _k)
-                                _base_wo = _probe_base(False, _n)
+                                _base_wo = _probe_base(False, _n, _subset)
                                 _budget_wo = _pool_budget_mib(_subset, _probe_frac(False))
                                 # Explicit context is honored verbatim, so that is what the
                                 # drafter has to fit alongside; Auto gets its own best cap.
@@ -23024,7 +23797,7 @@ class LlamaCppBackend:
                                     if _foot_wo > _budget_wo:
                                         continue
                                 _foot_w = (
-                                    _probe_base(True, _n) + _shared + _mtp_bytes(_ctx_wo)
+                                    _probe_base(True, _n, _subset) + _shared + _mtp_bytes(_ctx_wo)
                                 ) / (1024 * 1024)
                                 _budget_w = _pool_budget_mib(_subset, _probe_frac(True))
                                 if not _target_fits_somewhere:
@@ -23049,7 +23822,7 @@ class LlamaCppBackend:
                                     else self._fit_context_to_vram(
                                         _ctx_wo,
                                         _budget_w,
-                                        _probe_base(True, _n),
+                                        _probe_base(True, _n, _subset),
                                         cache_type_kv,
                                         swa_full = swa_full,
                                         n_parallel = n_parallel,
@@ -23068,7 +23841,7 @@ class LlamaCppBackend:
                                 if (
                                     _ctx_w > 0
                                     and (
-                                        _probe_base(True, _n)
+                                        _probe_base(True, _n, _subset)
                                         + _kv_bytes(_ctx_w)
                                         + _cc_n(_ctx_w)
                                         + _mtp_bytes(_ctx_w)
@@ -23080,6 +23853,14 @@ class LlamaCppBackend:
                         if _target_fits_somewhere and not _both_fit_somewhere:
                             _spec_dropped_no_vram = True
                             _mtp_will_engage = False
+                            # No separate drafter in the final argv, so neither its
+                            # host-pinned floor nor a CPU replay may keep bytes for it.
+                            _draft_host_pinned = 0
+                            _draft_host_pinned_floor = 0
+                            _draft_host_pinned_candidate = 0
+                            _mtp_draft_weights = 0
+                            _mtp_draft_weights_candidate = 0
+                            _candidate_draft_discount_applied = 0
                             # Clearing the flag alone leaves the reserve: the _mtp_bytes
                             # sites are unconditional and _fit_context_to_vram invokes any
                             # non-None mtp_overhead_fn whatever mtp_engaged says, so the
@@ -23153,20 +23934,82 @@ class LlamaCppBackend:
                     # projector, costing context rather than correctness.
                     _shared_pool_mmproj = (
                         _mmproj_pinned_bytes
-                        if (not gpus or len(_mm_budgeted_gpus) < len(gpus))
+                        if (not gpus or bool(_shared_gpu_ids | _unclassified_gpu_ids))
                         else 0
                     )
                     model_size_fit = (
                         model_size + _compute_buffer_pipeline + _soft_overhead + _shared_pool_mmproj
                     )
 
-                    def _subset_model_size(n_gpus: int) -> int:
-                        return model_size_fit + max(0, n_gpus - 1) * _pipeline_overhead_bytes
+                    def _candidate_shared_pool_mmproj_delta(candidate_ids) -> int:
+                        """CPU-projector bytes removed only when the effective target
+                        placement is the same proved-discrete candidate."""
+                        _available = _shared_pool_mmproj + _candidate_mmproj_discount_applied
+                        return (
+                            _available
+                            if _available > 0 and _candidate_targets_proved_discrete(candidate_ids)
+                            else 0
+                        )
+
+                    def _apply_candidate_discounts(candidate_ids) -> tuple[int, int, int]:
+                        """Make candidate-specific accounting exactly match this set.
+
+                        Returns signed target, drafter, and projector changes. Negative
+                        values restore bytes when placement moves back to shared or
+                        unclassified memory.
+                        """
+                        nonlocal _candidate_target_discount_applied
+                        nonlocal _candidate_draft_discount_applied
+                        nonlocal _candidate_mmproj_discount_applied
+                        nonlocal _host_pinned, _draft_host_pinned
+                        nonlocal _model_weight_vram_bytes, model_size, model_size_fit
+                        nonlocal _shared_pool_mmproj
+
+                        _target = _candidate_target_host_pinned_delta(candidate_ids)
+                        _draft = _candidate_draft_host_pinned_delta(candidate_ids)
+                        _projector = _candidate_shared_pool_mmproj_delta(candidate_ids)
+                        _target_change = _target - _candidate_target_discount_applied
+                        _draft_change = _draft - _candidate_draft_discount_applied
+                        _projector_change = _projector - _candidate_mmproj_discount_applied
+
+                        _candidate_target_discount_applied = _target
+                        _candidate_draft_discount_applied = _draft
+                        _candidate_mmproj_discount_applied = _projector
+                        _host_pinned += _target_change
+                        _draft_host_pinned += _draft_change
+                        _model_weight_vram_bytes = max(0, _model_weight_vram_bytes - _target_change)
+                        model_size = max(0, model_size - _target_change)
+                        model_size_fit = max(
+                            0,
+                            model_size_fit - _target_change - _projector_change,
+                        )
+                        _shared_pool_mmproj = max(0, _shared_pool_mmproj - _projector_change)
+                        return _target_change, _draft_change, _projector_change
+
+                    def _subset_model_size(n_gpus: int, subset = None) -> int:
+                        size = model_size_fit + max(0, n_gpus - 1) * _pipeline_overhead_bytes
+                        if subset:
+                            _subset_ids = [idx for idx, _free in subset]
+                            size -= _candidate_host_pinned_delta(_subset_ids)
+                            size -= _candidate_shared_pool_mmproj_delta(_subset_ids)
+                        return size
 
                     # Unified-memory budget (0 off Apple Silicon) for the no-GPU Metal cap below.
                     _apple_budget_mib = self._apple_metal_memory_budget_bytes() // (1024 * 1024)
 
                     if tensor_parallel and tp_gpus:
+                        _tp_candidate_ids = [idx for idx, _free in tp_gpus]
+                        _tp_target_discount = _candidate_target_host_pinned_delta(_tp_candidate_ids)
+                        _tp_draft_discount = _candidate_draft_host_pinned_delta(_tp_candidate_ids)
+                        _tp_model_size = max(
+                            0,
+                            model_size - _tp_target_discount,
+                        )
+
+                        def _tp_mtp_bytes(ctx: int) -> int:
+                            return max(0, _mtp_bytes(ctx) - _tp_draft_discount)
+
+                        _tp_mtp_overhead_fn = _tp_mtp_bytes if mtp_overhead_fn is not None else None
                         # Pooled usable budget (after each device's compute buffer)
                         # must hold the non-shrinkable footprint: weights + the MTP
                         # reserve. The planner can shrink ctx/KV, not these.
@@ -23179,7 +24022,7 @@ class LlamaCppBackend:
                             # target keeps no state of its own (no GPU bytes at all).
                             _tp_mtp_floor = 0
                         elif mtp_overhead_fn is not None and not _mtp_kv_unsized:
-                            _tp_mtp_floor = _mtp_bytes(
+                            _tp_mtp_floor = _tp_mtp_bytes(
                                 min(2048, effective_ctx) if effective_ctx > 0 else 2048
                             )
                         else:
@@ -23188,9 +24031,11 @@ class LlamaCppBackend:
                             # cushion, never below the known byte reserve.
                             _tp_mtp_floor = max(
                                 _tp_flat_mtp,
-                                _mtp_bytes(min(2048, effective_ctx) if effective_ctx > 0 else 2048),
+                                _tp_mtp_bytes(
+                                    min(2048, effective_ctx) if effective_ctx > 0 else 2048
+                                ),
                             )
-                        _tp_required_mib = (model_size + _tp_mtp_floor + _soft_overhead) / (
+                        _tp_required_mib = (_tp_model_size + _tp_mtp_floor + _soft_overhead) / (
                             1024 * 1024
                         )
                         if _tp_weight_budget_mib <= _tp_required_mib:
@@ -23224,7 +24069,7 @@ class LlamaCppBackend:
                                     _soft_overhead += self._MTP_DRAFT_COMPUTE_BYTES
                                 _shared_pool_mmproj = (
                                     _mmproj_pinned_bytes
-                                    if (not gpus or len(_mm_budgeted_gpus) < len(gpus))
+                                    if (not gpus or bool(_shared_gpu_ids | _unclassified_gpu_ids))
                                     else 0
                                 )
                                 model_size_fit = (
@@ -23255,13 +24100,13 @@ class LlamaCppBackend:
                             tp_tensor_split,
                         ) = self._plan_tensor_parallel(
                             tp_gpus,
-                            model_size,
+                            _tp_model_size,
                             target_ctx,
                             cache_type_kv = cache_type_kv,
                             scratch_cache_type_kv = _scratch_cache_type_kv,
                             n_parallel = n_parallel,
                             mtp_engaged = _mtp_reserves_gpu,
-                            mtp_overhead_fn = mtp_overhead_fn,
+                            mtp_overhead_fn = _tp_mtp_overhead_fn,
                             mtp_flat_reserve_bytes = _tp_unsized_mtp_reserve,
                             # Report the UI ceiling from native ctx, not the
                             # explicit small request.
@@ -23292,13 +24137,13 @@ class LlamaCppBackend:
                             )
                             best_cap = 0
                             _cap_fraction = _vram_frac - _flat_mtp_reserve
-                            for n_gpus in range(1, len(ranked_for_cap) + 1):
-                                subset = ranked_for_cap[:n_gpus]
+                            for subset in _ranked_candidate_subsets(ranked_for_cap):
+                                n_gpus = len(subset)
                                 # Per-GPU-consistent pool budget (fixes mixed
                                 # known/unknown totals); pass it as an absolute
                                 # budget so the fit and the check below agree.
                                 pool_budget = _pool_budget_mib(subset, _cap_fraction)
-                                _ms = _subset_model_size(n_gpus)
+                                _ms = _subset_model_size(n_gpus, subset)
                                 # Compute buffer is replicated per device in a layer
                                 # split, so scale the context term by the subset size.
                                 _cc_sub = lambda c, n = n_gpus: _cc_bytes(c, n)
@@ -23365,6 +24210,40 @@ class LlamaCppBackend:
                                 min_gpus = _layer_min_gpus,
                                 split_extra_bytes = _cc_split_extra(effective_ctx),
                             )
+                            if use_fit and (
+                                _host_pinned_candidate > _host_pinned
+                                or _draft_host_pinned_candidate > _draft_host_pinned
+                                or _shared_pool_mmproj > 0
+                            ):
+                                _discountable_gpus = [
+                                    gpu
+                                    for gpu in gpus
+                                    if gpu[0] not in (_shared_gpu_ids | _unclassified_gpu_ids)
+                                ]
+                                if _discountable_gpus:
+                                    _candidate_total = (
+                                        requested_total
+                                        - _candidate_host_pinned_delta(
+                                            [idx for idx, _free in _discountable_gpus]
+                                        )
+                                        - _candidate_shared_pool_mmproj_delta(
+                                            [idx for idx, _free in _discountable_gpus]
+                                        )
+                                    )
+                                    _candidate_indices, _candidate_fit = (
+                                        self._select_gpus_split_aware(
+                                            _candidate_total,
+                                            _discountable_gpus,
+                                            usable_fraction = _pin_fraction,
+                                            total_by_idx = total_by_idx,
+                                            per_device_overhead_bytes = _pipeline_overhead_bytes
+                                            + _cc_bytes(effective_ctx),
+                                            min_gpus = _layer_min_gpus,
+                                            split_extra_bytes = _cc_split_extra(effective_ctx),
+                                        )
+                                    )
+                                    if not _candidate_fit:
+                                        gpu_indices, use_fit = _candidate_indices, False
                             # No silent shrink: effective_ctx stays == requested_ctx.
                         else:
                             # Auto context: prefer fewer GPUs, cap to fit. Same
@@ -23389,15 +24268,22 @@ class LlamaCppBackend:
                                     or 1,
                                 ),
                             )
-                            for n_gpus in range(_auto_min_gpus, len(ranked) + 1):
-                                subset = ranked[:n_gpus]
+                            _auto_subsets = _ranked_candidate_subsets(ranked, _auto_min_gpus)
+                            _auto_target_ctx = effective_ctx
+                            _auto_best = None
+                            for subset in _auto_subsets:
+                                n_gpus = len(subset)
+                                # Compare same-size peers before widening: a shared singleton
+                                # may hold less than a discounted sibling.
+                                if _auto_best is not None and n_gpus > _auto_best[2]:
+                                    break
                                 pool_budget = _pool_budget_mib(subset, pin_fraction)
-                                _ms = _subset_model_size(n_gpus)
+                                _ms = _subset_model_size(n_gpus, subset)
                                 # Compute buffer is replicated per device in a layer
                                 # split, so scale the context term by the subset size.
                                 _cc_sub = lambda c, n = n_gpus: _cc_bytes(c, n)
                                 capped = self._fit_context_to_vram(
-                                    effective_ctx,
+                                    _auto_target_ctx,
                                     pool_budget,
                                     _ms,
                                     cache_type_kv,
@@ -23451,21 +24337,26 @@ class LlamaCppBackend:
                                     ) / (1024 * 1024)
                                     if footprint_mib > pool_budget:
                                         continue
-                                effective_ctx = capped
-                                gpu_indices = sorted(idx for idx, _ in subset)
+                                if _auto_best is None or capped > _auto_best[0]:
+                                    _auto_best = (
+                                        capped,
+                                        sorted(idx for idx, _ in subset),
+                                        n_gpus,
+                                    )
+                            if _auto_best is not None:
+                                effective_ctx, gpu_indices, _chosen_count = _auto_best
                                 use_fit = False
-                                break
                             else:
                                 # No discrete-GPU subset holds the model at a fitted
                                 # context. Prefer a useful chat context before
                                 # handing placement to --fit on and host offload.
                                 effective_ctx = min(_AUTO_OFFLOAD_CTX, effective_ctx)
                                 if effective_ctx > 0:
-                                    for n_gpus in range(_auto_min_gpus, len(ranked) + 1):
-                                        subset = ranked[:n_gpus]
+                                    for subset in _auto_subsets:
+                                        n_gpus = len(subset)
                                         kv = _kv_bytes(effective_ctx)
                                         footprint_mib = (
-                                            _subset_model_size(n_gpus)
+                                            _subset_model_size(n_gpus, subset)
                                             + kv
                                             + _mtp_bytes(effective_ctx)
                                             + _cc_bytes(effective_ctx, n_gpus)
@@ -23504,6 +24395,33 @@ class LlamaCppBackend:
                             per_device_overhead_bytes = _pipeline_overhead_bytes,
                             min_gpus = _layer_min_gpus,
                         )
+                        if use_fit and (
+                            _host_pinned_candidate > _host_pinned
+                            or _draft_host_pinned_candidate > _draft_host_pinned
+                            or _shared_pool_mmproj > 0
+                        ):
+                            _discountable_gpus = [
+                                gpu
+                                for gpu in gpus
+                                if gpu[0] not in (_shared_gpu_ids | _unclassified_gpu_ids)
+                            ]
+                            if _discountable_gpus:
+                                _candidate_indices, _candidate_fit = self._select_gpus(
+                                    _fs_total
+                                    - _candidate_host_pinned_delta(
+                                        [idx for idx, _free in _discountable_gpus]
+                                    )
+                                    - _candidate_shared_pool_mmproj_delta(
+                                        [idx for idx, _free in _discountable_gpus]
+                                    ),
+                                    _discountable_gpus,
+                                    usable_fraction = _pin_fraction,
+                                    total_by_idx = total_by_idx,
+                                    per_device_overhead_bytes = _pipeline_overhead_bytes,
+                                    min_gpus = _layer_min_gpus,
+                                )
+                                if not _candidate_fit:
+                                    gpu_indices, use_fit = _candidate_indices, False
                         if use_fit and not explicit_ctx:
                             # Without KV metadata, llama.cpp owns the fit. Keep the
                             # same useful Auto default as the measured offload path.
@@ -23714,6 +24632,10 @@ class LlamaCppBackend:
                                 nothing_fits = _apple_nothing_fits,
                             )
 
+                    # Auto stays conservative while any visible device is shared or
+                    # unclassified; a discrete-only selection adopts the discount.
+                    _apply_candidate_discounts(gpu_indices)
+
                     # Prefer fewer serving slots on GPU over --fit on offload: when the extra
                     # --parallel slots push the footprint past the pin budget, llama-server
                     # offloads layers to host and decode collapses ~3x (#6718). Retry the fit
@@ -23726,6 +24648,16 @@ class LlamaCppBackend:
                         and self._can_estimate_kv()
                         and effective_ctx > 0
                     ):
+                        # Pin the slot search to that placement: the mixed pool with a
+                        # discounted footprint could move to shared memory unrestored.
+                        _slot_gpus = gpus
+                        if gpu_indices and (
+                            _candidate_target_discount_applied
+                            or _candidate_draft_discount_applied
+                            or _candidate_mmproj_discount_applied
+                        ):
+                            _slot_ids = set(gpu_indices)
+                            _slot_gpus = [gpu for gpu in gpus if gpu[0] in _slot_ids]
                         # The PROBE context for the search below, not the context the load
                         # runs at: the re-fit further down awards that, from the final slot
                         # count. So price the search at the fit search floor, never at
@@ -23760,7 +24692,7 @@ class LlamaCppBackend:
                         _gi_slots, _uf_slots, _slots = self._slots_that_fit_on_gpu(
                             n_parallel,
                             _reduce_ctx,
-                            gpus,
+                            _slot_gpus,
                             total_by_idx,
                             _base_footprint,
                             cache_type_kv,
@@ -23874,7 +24806,9 @@ class LlamaCppBackend:
                             # re-select GPUs and load. Not a hardware maximum -- a larger
                             # request can reduce slots further and free KV for more.
                             _ceiling = (
-                                _refit if len(_plan_gpus) == len(gpus) else _largest_ctx(gpus)
+                                _refit
+                                if len(_plan_gpus) == len(_slot_gpus)
+                                else _largest_ctx(_slot_gpus)
                             )
                             if _ceiling is not None:
                                 # Replaces the anchor rather than raising it. Reaching here
@@ -23885,6 +24819,10 @@ class LlamaCppBackend:
                                 # the launched plan cannot serve, which is the same ceiling /
                                 # selection inversion #9492 removed, pointing the other way.
                                 max_available_ctx = _ceiling[0]
+
+                    # Slot reduction can be the first concrete selection, so adopt its
+                    # accounting before load-mode, spill and host-RAM read it.
+                    _apply_candidate_discounts(gpu_indices)
 
                     # Pass the final slot and micro-batch values instead of the defaults
                     # captured before slot reduction.
@@ -24055,6 +24993,23 @@ class LlamaCppBackend:
                         n_ubatch = _effective_ubatch,
                         flash_attn = planned_flash_attn,
                     )
+                    # A Vulkan CPU replay moves a GPU drafter to the host too, so price
+                    # the whole drafter, not just the floor off its GPU budget.
+                    _replay_draft_fit_bytes = self._cpu_resident_draft_bytes(
+                        effective_ctx,
+                        drafter_path = (
+                            None
+                            if _spec_dropped_no_vram
+                            else (_cpu_draft_path or _mtp_draft_for_budget)
+                        ),
+                        draft_cache_type_k = _mtp_draft_ck,
+                        draft_cache_type_v = _mtp_draft_cv,
+                        n_parallel = n_parallel,
+                        swa_full = swa_full,
+                        kv_unified = planned_kv_unified,
+                        n_ubatch = _effective_ubatch,
+                        flash_attn = planned_flash_attn,
+                    )
                     # The extras and env as the child really gets them: a gpu_ids pin
                     # drops the device flags AND their env twins, so classifying on
                     # either would void the VRAM term for a "--device none" the launch
@@ -24086,7 +25041,8 @@ class LlamaCppBackend:
                     # host RAM. Nothing here says which slice stays on the card, so this
                     # is the "engaged but unsized" case the fit abstains on.
                     _draft_split_across_host = bool(
-                        _mtp_draft_for_budget
+                        _mtp_will_engage
+                        and _mtp_draft_for_budget
                         and _draft_is_split_across_host(
                             _fit_extras,
                             _fit_env,
@@ -24147,12 +25103,17 @@ class LlamaCppBackend:
                     _fit_env_mmproj_on_host = (
                         _resolved_mmproj_offload(_fit_extras, _fit_env) is False
                     )
+                    # The floor, not the discount, is what RAM holds; moved to host_only_bytes below.
+                    _fit_extra_host_pinned = max(0, _host_pinned_floor - _host_pinned)
+                    _fit_extra_draft_pinned = max(0, _draft_host_pinned_floor - _draft_host_pinned)
                     _fit_model_size = model_size
                     if _fit_env_mmproj_unsized:
                         # Same abstain the other unreadable terms take.
                         _fit_model_size = None
                     elif _fit_model_size and not _fit_env_mmproj_on_host:
                         _fit_model_size += _fit_env_mmproj_bytes
+                    if _fit_model_size:
+                        _fit_model_size = max(0, _fit_model_size - _fit_extra_host_pinned)
                     _fit_soft_overhead = _soft_overhead + self._inherited_mmproj_soft_overhead(
                         _fit_env_mmproj_bytes,
                         on_host = _fit_env_mmproj_on_host,
@@ -24180,7 +25141,7 @@ class LlamaCppBackend:
                         # price them by their own route.
                         kv_cache_bytes = _kv_bytes(effective_ctx, _effective_ctx_checkpoints),
                         kv_sized = self._can_estimate_kv(),
-                        mtp_bytes = _mtp_bytes(effective_ctx),
+                        mtp_bytes = max(0, _mtp_bytes(effective_ctx) - _fit_extra_draft_pinned),
                         # _flat_mtp_engages whole: its other arm, _mtp_kv_unsized,
                         # prices weights but NO draft KV, and the placement covers that
                         # gap with a flat cushion this footprint has no term for --
@@ -24190,9 +25151,15 @@ class LlamaCppBackend:
                             or _cpu_draft_fit_bytes is None
                             or _draft_split_across_host
                         ),
-                        # Host-only, not pooled: -ngld 0 puts the drafter in RAM, which
-                        # free VRAM cannot pay for.
-                        host_only_bytes = _cpu_draft_fit_bytes or 0,
+                        # Host-only, not pooled: free VRAM cannot pay for a drafter
+                        # -ngld 0 puts in RAM, nor for the floors moved out above.
+                        host_only_bytes = (
+                            (_cpu_draft_fit_bytes or 0)
+                            + _host_pinned
+                            + _fit_extra_host_pinned
+                            + _draft_host_pinned
+                            + _fit_extra_draft_pinned
+                        ),
                         # One lump on the layer path, where the graph buffer is
                         # allocated once. A tensor split replicates it on every selected
                         # device, so pricing one LAYER-mode buffer there understates a
@@ -24270,6 +25237,24 @@ class LlamaCppBackend:
                     and _detected_gpus
                 ):
                     gpu_indices = sorted(idx for idx, _free in _detected_gpus)
+
+                    # Auto Vulkan narrows the child to the dGPU set only here, after the
+                    # spill snapshot, so re-point it at the argv that launches.
+                    if _spill_inputs is not None:
+                        _apply_candidate_discounts(gpu_indices)
+                        _mtp_reserve_bytes = (
+                            _mtp_bytes(effective_ctx, n_parallel, _effective_ubatch)
+                            if _mtp_will_engage
+                            else 0
+                        )
+                        _spill_inputs["model_size"] = model_size
+                        _spill_inputs["gpu_indices"] = gpu_indices
+                        _spill_inputs["extra_gpu_bytes"] = (
+                            mmproj_size + _shared_pool_mmproj + _mtp_reserve_bytes
+                        )
+                        _spill_inputs["shared_gpu_ids"] = set(_shared_gpu_ids or ()) & set(
+                            gpu_indices
+                        )
 
                 # Status reports the explicit subset the launch actually uses,
                 # while reload dedupe compares requested_gpu_ids so repeating a
@@ -24931,6 +25916,18 @@ class LlamaCppBackend:
                         # A property of the build, not the file, so a repair must not reload.
                         _suppressed_draft_reason = "paravirtual"
                     launch_mtp_draft_path = None
+                    # Fit ran before this guard and the final argv loads no drafter, so
+                    # clear every ledger the preflight, replay or retry would carry on.
+                    _mtp_will_engage = False
+                    _draft_host_pinned = 0
+                    _draft_host_pinned_floor = 0
+                    _draft_host_pinned_candidate = 0
+                    _mtp_draft_weights = 0
+                    _mtp_draft_weights_candidate = 0
+                    _candidate_draft_discount_applied = 0
+                    _replay_draft_fit_bytes = 0
+                    mtp_overhead_fn = None
+                    _mtp_kv_unsized = False
                     if extra_args:
                         # Same reason: record the extras as REQUESTED next to the
                         # launched ones. Both comparators key on the caller's list,
@@ -26047,7 +27044,9 @@ class LlamaCppBackend:
                         engages = mtp_engages
                     if model_size is None or not self._launch_forces_full_offload(run_argv, env):
                         return None
-                    need = int(model_size)
+                    # Back to the file: model_size spends any discrete discount and
+                    # charges the tied duplicate, which the token_embd kept below stands for.
+                    need = int(model_size) + int(_host_pinned) - int(_tied_output_charge)
                     if mmproj_size and not _argv_keeps_projector_on_gpu(run_argv, env):
                         need -= int(mmproj_size)
                     # dev_input is CPU-pinned even at full offload, so token_embd never
@@ -26056,7 +27055,15 @@ class LlamaCppBackend:
                     if layout is None or not getattr(layout, "complete", True):
                         return None
                     if int(getattr(layout, "lm_head_bytes", 0) or 0):
+                        # Every *token_embd* tensor, per_layer_token_embd included.
                         need -= int(getattr(layout, "token_embd_bytes", 0) or 0)
+                    else:
+                        # The per-layer table is input-layer too and never duplicated.
+                        need -= sum(
+                            size
+                            for name, size in self._host_pinned_weight_items(model_path)
+                            if name.startswith("per_layer_token_embd")
+                        )
                     if not engages and self._nextn_predict_layers:
                         need -= int(getattr(layout, "excluded_block_bytes", 0) or 0)
                     return need
@@ -26484,6 +27491,10 @@ class LlamaCppBackend:
                     child_has_no_gpu = _child_has_no_gpu,
                     avail_mib = _preflight_avail_mib,
                     shared_gpu_ids = _shared_gpu_ids,
+                    host_only_bytes = _host_pinned_floor,
+                    additional_host_only_bytes = (
+                        (_cpu_draft_fit_bytes or 0) + _draft_host_pinned_floor
+                    ),
                 )
                 # Snapshotted BEFORE the override note is appended below, so a re-price
                 # that promotes this notice appends that note once rather than twice.
@@ -26502,6 +27513,10 @@ class LlamaCppBackend:
                     hides a message, and hiding a message must not withdraw the rewrite
                     that makes the load possible.
                     """
+                    # None is the engaged-but-unsized CPU drafter: it cannot prove an
+                    # unmapped load fits RAM, so keep the demand-paging valve.
+                    if _cpu_draft_fit_bytes is None:
+                        return True
                     if _apu_ram_oversized or _offload_msg:
                         return True
                     if not self._host_offload_warning_opted_out():
@@ -26513,6 +27528,10 @@ class LlamaCppBackend:
                             env,
                             child_has_no_gpu = _child_has_no_gpu,
                             shared_gpu_ids = _shared_gpu_ids,
+                            host_only_bytes = _host_pinned_floor,
+                            additional_host_only_bytes = (
+                                (_cpu_draft_fit_bytes or 0) + _draft_host_pinned_floor
+                            ),
                             honor_opt_out = False,
                         )
                     )
@@ -27018,6 +28037,7 @@ class LlamaCppBackend:
                         # The same host pool the preflight and the reprice below read,
                         # so the rewrite and the advisory answer one question once.
                         avail_mib = _preflight_avail_mib,
+                        additional_host_only_bytes = _replay_draft_fit_bytes,
                     )
                     if prepared is None:
                         return False
@@ -27113,6 +28133,7 @@ class LlamaCppBackend:
                         env = env,
                         avail_mib = _preflight_avail_mib,
                         pageable_note = _cpu_pageable_note,
+                        additional_host_only_bytes = _replay_draft_fit_bytes or 0,
                     )
                     # This return skips the commit block below, so write the drafter
                     # records here too: left describing the PREVIOUS load, the comparator
@@ -27200,6 +28221,7 @@ class LlamaCppBackend:
                             server_caps,
                             drop_full_offload_threads = _drop_full_offload_threads,
                             avail_mib = _preflight_avail_mib,
+                            additional_host_only_bytes = _replay_draft_fit_bytes,
                         )
                         if prepared is None:
                             if _load_cancelled():
@@ -27345,6 +28367,10 @@ class LlamaCppBackend:
                         _retry_unified_helps = self._unified_memory_for_launch(
                             _remaining, _unified_need_now(), opted_in = _unified_opt_in
                         )
+                        _retry_discount_changes = _apply_candidate_discounts(_remaining)
+                        _retry_restored_discount = sum(
+                            max(0, -change) for change in _retry_discount_changes
+                        )
                         # Everything recorded so far priced the CRASHED selection, and
                         # that placement is gone: the canonical #7624 shape pins the APU
                         # whose shared-pool "free memory" outranked the dGPU, warns that
@@ -27377,7 +28403,7 @@ class LlamaCppBackend:
                         if model_size is not None and _retry_wants_unified:
                             _apu_avail_mib = self._available_system_memory_mib()
                             _retry_apu_msg = self._apu_ram_shortfall_message(
-                                model_size + _mmproj_pinned_bytes,
+                                model_size + _host_pinned + _mmproj_pinned_bytes,
                                 _apu_avail_mib,
                             )
                             # Same contract as the preflight above: the opt-out takes
@@ -27389,7 +28415,91 @@ class LlamaCppBackend:
                                 self._record_load_warning(_retry_apu_msg)
                         # host guard credited the whole pool; the respawn reaches only _remaining
                         _retry_rows = [row for row in _detected_gpus if row[0] in set(_remaining)]
-                        _retry_host_msg = self._launch_host_shortfall_message(cmd, _retry_rows, env)
+                        # The crashed placement's discounts bought a larger Auto context, so
+                        # re-fit on the restored footprint. A hand-set context is never reduced.
+                        if (
+                            not explicit_ctx
+                            and _retry_restored_discount > 0
+                            and self._can_estimate_kv()
+                            and effective_ctx > 0
+                            and _retry_rows
+                        ):
+                            _retry_n_gpus = len(_retry_rows)
+                            _retry_budget_mib = _pool_budget_mib(_retry_rows, _pin_fraction)
+                            _retry_model_size_fit = (
+                                model_size_fit
+                                + max(0, _retry_n_gpus - 1) * _pipeline_overhead_bytes
+                            )
+                            _retry_cc = lambda c: _cc_bytes(c, _retry_n_gpus)
+                            _retry_ctx = self._fit_context_to_vram(
+                                effective_ctx,
+                                _retry_budget_mib,
+                                _retry_model_size_fit,
+                                cache_type_kv,
+                                swa_full = swa_full,
+                                n_parallel = n_parallel,
+                                kv_unified = planned_kv_unified,
+                                n_ubatch = _effective_ubatch,
+                                ctx_checkpoints = _effective_ctx_checkpoints,
+                                flash_attn = planned_flash_attn,
+                                mtp_engaged = _mtp_reserves_gpu,
+                                mtp_overhead_fn = mtp_overhead_fn,
+                                compute_ctx_bytes_fn = _retry_cc,
+                                budget_frac = 1.0,
+                                pooled = True,
+                                total_mib = None,
+                            )
+                            _retry_footprint_mib = (
+                                _retry_model_size_fit
+                                + _kv_bytes(_retry_ctx)
+                                + _mtp_bytes(_retry_ctx)
+                                + _retry_cc(_retry_ctx)
+                            ) / (1024 * 1024)
+                            _retry_fit_proved = (
+                                _retry_footprint_mib <= _retry_budget_mib
+                                and self._every_gpu_holds_reserve(
+                                    (_gpu_usable(g, _pin_fraction) for g in _retry_rows),
+                                    (_pipeline_overhead_bytes if _retry_n_gpus > 1 else 0)
+                                    + _retry_cc(_retry_ctx) // _retry_n_gpus,
+                                )
+                            )
+                            if not _retry_fit_proved:
+                                _retry_ctx = min(_AUTO_OFFLOAD_CTX, effective_ctx)
+                            if _retry_ctx != effective_ctx and "-c" in cmd:
+                                _ctx_pos = cmd.index("-c")
+                                if _ctx_pos + 1 < len(cmd):
+                                    cmd[_ctx_pos + 1] = str(_retry_ctx)
+                                    effective_ctx = _retry_ctx
+                                    max_available_ctx = min(max_available_ctx, _retry_ctx)
+                                    # Published before the first spawn: rebind them to
+                                    # the retry's command, not the crashed one.
+                                    self._effective_context_length = _retry_ctx
+                                    self._max_context_length = _retry_ctx
+                                    logger.info(
+                                        "Arch-crash retry restored %.1f GB of "
+                                        "discrete-only budget relief; replanned "
+                                        "Auto context to %d.",
+                                        _retry_restored_discount / (1024**3),
+                                        _retry_ctx,
+                                    )
+                            if not _retry_fit_proved and fully_gpu_offloaded:
+                                # The first --fit is Unsloth's; a pass-through pair is
+                                # appended later and keeps last-wins ownership.
+                                _fit_pos = cmd.index("--fit") if "--fit" in cmd else -1
+                                if _fit_pos >= 0 and _fit_pos + 1 < len(cmd):
+                                    cmd[_fit_pos + 1] = "on"
+                                fully_gpu_offloaded = False
+                                use_fit = fit_is_effectively_on(cmd, env)
+                                _placement_verdict_partial = bool(use_fit)
+                        _retry_host_msg = self._launch_host_shortfall_message(
+                            cmd,
+                            _retry_rows,
+                            env,
+                            host_only_bytes = _host_pinned_floor,
+                            additional_host_only_bytes = (
+                                (_cpu_draft_fit_bytes or 0) + _draft_host_pinned_floor
+                            ),
+                        )
                         _host_ram_msg = _retry_host_msg
                         self._record_load_warning(_retry_host_msg)
                         logger.warning(
@@ -27649,6 +28759,8 @@ class LlamaCppBackend:
                         # allocate the whole model in host RAM and be OOM-killed. Same
                         # condition, same helper, before the respawn rather than after.
                         def _retry_is_oversized() -> bool:
+                            if _cpu_draft_fit_bytes is None:
+                                return True
                             if _retry_apu_msg or _retry_host_msg:
                                 return True
                             # The opt-out silences the message, never the rewrite.
@@ -27656,7 +28768,14 @@ class LlamaCppBackend:
                                 return False
                             return bool(
                                 self._launch_host_shortfall_message(
-                                    cmd, _retry_rows, env, honor_opt_out = False
+                                    cmd,
+                                    _retry_rows,
+                                    env,
+                                    host_only_bytes = _host_pinned_floor,
+                                    additional_host_only_bytes = (
+                                        (_cpu_draft_fit_bytes or 0) + _draft_host_pinned_floor
+                                    ),
+                                    honor_opt_out = False,
                                 )
                             )
 
@@ -28251,6 +29370,7 @@ class LlamaCppBackend:
                             if isinstance(_restored_cpu_reprice, str)
                             else None
                         ),
+                        additional_host_only_bytes = _replay_draft_fit_bytes or 0,
                     )
                 if not self._publish_healthy():
                     # Teardown began between the 200 and this commit; publishing

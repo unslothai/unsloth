@@ -1546,53 +1546,14 @@ def _ensure_mamba_ssm(event_queue: Any, model_name: str) -> None:
     )
 
 
-def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
-    """Classify a ROCm device as unified-memory (APU) or discrete, returning ``(gcn_arch,
-    is_unified)``. ``gcn_arch`` is the canonical arch string (e.g. ``"gfx1151"``) when a known
-    attribute is present, else ``""``; ``is_unified`` is True for AMD APUs with a shared
-    GPU/system-RAM pool (gfx1150 Strix Point, gfx1151 Strix Halo, gfx1152 Krackan Point), which need
-    a lower ``set_per_process_memory_fraction`` cap to leave OS headroom.
-
-    Classification priority: (1) ``props.is_integrated`` truthy (hipDeviceProp_t.integrated, the
-    driver's own unified-memory answer, which covers APUs beyond the hardcoded arch set such as
-    gfx1103 Phoenix) and only ever upgrades to unified; (2) ``gcnArchName`` / variant spellings,
-    stable and naming-independent; (3) device-name substring match as a last resort when all arch
-    attrs are absent, since AMD SDK / Radeon wheels may not populate them -- gfx1150 is ``Radeon
-    890M`` / ``880M``, gfx1151 is ``Radeon 8065S`` / ``8060S`` / ``8050S``, gfx1152 is ``Radeon
-    860M`` / ``840M``.
-    """
-    gcn_arch = ""
-    for _attr in ("gcnArchName", "gcn_arch_name", "arch_name", "gfx_arch_name"):
-        _v = (getattr(props, _attr, "") or "").split(":")[0].strip()
-        if _v:
-            gcn_arch = _v
-            break
-
-    # Driver's own answer first: hipDeviceProp_t.integrated (props.is_integrated, the same gate PR #5988's UMA
-    # safetensors fast-load uses). Strictly additive -- only a truthy value upgrades to unified, so a wheel that omits
-    # the field can't downgrade the known APU set. Covers unified APUs outside the hardcoded arches (gfx1103 Phoenix,
-    # future).
-    if getattr(props, "is_integrated", 0):
-        return gcn_arch, True
-
-    if gcn_arch:
-        # gfx1152 is Krackan Point: same shared GPU/system-RAM pool as gfx1150/gfx1151. Case-folded: the attribute is
-        # lowercase in practice but is not guaranteed.
-        return gcn_arch, gcn_arch.lower() in {"gfx1150", "gfx1151", "gfx1152"}
-
-    # Arch attrs absent -- fall back to device-name matching. Only reached under _hw.IS_ROCM, so the NVIDIA GeForce
-    # 840M cannot collide with the Krackan markers.
-    dev_lower = (getattr(props, "name", "") or "").lower()
-    is_unified = (
-        "890m" in dev_lower
-        or "880m" in dev_lower
-        or "8065s" in dev_lower
-        or "8060s" in dev_lower
-        or "8050s" in dev_lower
-        or "860m" in dev_lower
-        or "840m" in dev_lower
-    )
-    return gcn_arch, is_unified
+# Defined in utils.rocm_topology, which the chat backend can import without the
+# training stack: a GGUF-only (--no-torch) install has none of this module's
+# imports, and the inference side silently read every ROCm device as
+# unclassifiable when it had to come through here. Re-exported so callers and
+# tests that import it from worker keep working.
+from utils.rocm_topology import (  # noqa: E402,F401
+    rocm_classify_unified_memory as _rocm_classify_unified_memory,
+)
 
 
 # 16 GiB, not a percentage: on a 128 GiB Strix Halo a flat 20% withholds 25.6 GiB, while 0.90 there reserves 12.8 GiB
