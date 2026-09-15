@@ -71,9 +71,7 @@ def patched_torch(monkeypatch):
     original = torch.__dict__.get("__getattr__")
     assert original is not None, "torch has no module-level __getattr__ to wrap"
     assert import_fixes.patch_torch_missing_attribute_error() is True
-    monkeypatch.setitem(
-        import_fixes._TORCH_ATTRIBUTE_FLOORS, "unsloth_probe_dtype", "2.7.0"
-    )
+    monkeypatch.setitem(import_fixes._TORCH_ATTRIBUTE_FLOORS, "unsloth_probe_dtype", "2.7.0")
     try:
         yield torch
     finally:
@@ -115,9 +113,7 @@ def test_an_unknown_attribute_still_gets_the_diagnosis_without_a_floor(patched_t
     "requester",
     ["__main__", "my_training_script", "torch._inductor.analysis.device_info"],
 )
-def test_user_and_torch_frames_are_left_exactly_as_torch_wrote_them(
-    patched_torch, requester
-):
+def test_user_and_torch_frames_are_left_exactly_as_torch_wrote_them(patched_torch, requester):
     """A typo in user code, or torch asking itself, is not a version report."""
     with pytest.raises(AttributeError) as raised:
         _access_from(requester, "unsloth_probe_dtype")
@@ -191,7 +187,11 @@ _UNGUARDED_SHIM = textwrap.dedent(
 )
 
 
-def _fake_triton(tmp_path, source, backend = "nvidia"):
+def _fake_triton(
+    tmp_path,
+    source,
+    backend = "nvidia",
+):
     driver = tmp_path / "triton" / "backends" / backend / "driver.c"
     driver.parent.mkdir(parents = True)
     driver.write_text(source, encoding = "utf-8")
@@ -249,9 +249,9 @@ def test_the_installed_triton_is_not_flagged():
     if sys.version_info >= (3, 13):
         pytest.skip("the probe is inert on Python 3.13 and later")
     offenders = import_fixes._triton_driver_shims_missing_py_ssize_t_clean()
-    assert offenders == [], (
-        f"the installed triton would fail at the first kernel launch: {offenders}"
-    )
+    assert (
+        offenders == []
+    ), f"the installed triton would fail at the first kernel launch: {offenders}"
 
 
 def test_the_triton_probe_is_wired_into_gpu_init():
@@ -331,9 +331,7 @@ def test_a_patch_is_called_once_and_gets_its_phase():
         raise ValueError("a patch may legitimately raise this")
 
     logger = _CollectingLogger()
-    run = _isolated_run_temporary_patches(
-        [takes_phase, takes_nothing, raises_value_error], logger
-    )
+    run = _isolated_run_temporary_patches([takes_phase, takes_nothing, raises_value_error], logger)
 
     run("pre_compile")
 

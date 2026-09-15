@@ -1866,21 +1866,23 @@ _TORCH_ATTRIBUTE_FLOORS = {
 # Packages unsloth imports and cannot add a missing torch attribute to. The same
 # AttributeError raised from user code is a typo, so it is left exactly as torch
 # wrote it.
-_TORCH_ATTRIBUTE_DEPENDENTS = frozenset((
-    "accelerate",
-    "bitsandbytes",
-    "cut_cross_entropy",
-    "diffusers",
-    "peft",
-    "torchao",
-    "torchaudio",
-    "torchvision",
-    "transformers",
-    "trl",
-    "unsloth_zoo",
-    "vllm",
-    "xformers",
-))
+_TORCH_ATTRIBUTE_DEPENDENTS = frozenset(
+    (
+        "accelerate",
+        "bitsandbytes",
+        "cut_cross_entropy",
+        "diffusers",
+        "peft",
+        "torchao",
+        "torchaudio",
+        "torchvision",
+        "transformers",
+        "trl",
+        "unsloth_zoo",
+        "vllm",
+        "xformers",
+    )
+)
 
 
 class UnslothTorchTooOldError(AttributeError):
@@ -2089,7 +2091,6 @@ def check_triton_py_ssize_t_clean():
         f"{', '.join(path for _, path in offenders)}. Set "
         f"UNSLOTH_SKIP_TRITON_SHIM_CHECK=1 to silence this."
     )
-
 
 
 # Fix TRL OpenEnv 0.26 NameError: name 'SamplingParams' is not defined
