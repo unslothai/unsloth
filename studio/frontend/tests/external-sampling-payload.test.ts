@@ -126,6 +126,15 @@ for (const providerType of ["vllm", "openrouter", "llama_cpp"]) {
   });
 }
 
+test("top_p at Off is left out so a provider that forbids it alongside temperature accepts the request", () => {
+  for (const providerType of ["custom", "vllm", "openrouter"]) {
+    const body = bodyFor(providerType, { ...PARAMS, topP: 1 });
+    assert.ok(!("top_p" in body), providerType);
+    assert.equal(body.temperature, PARAMS.temperature, providerType);
+    assert.equal(bodyFor(providerType).top_p, PARAMS.topP, providerType);
+  }
+});
+
 test("custom stays on the OpenAI-compatible baseline", () => {
   const body = bodyFor("custom");
   assert.ok(!("min_p" in body));

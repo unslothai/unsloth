@@ -71,6 +71,7 @@ from core.inference.context_window import (
     tool_result_budget,
     turn_is_servable,
 )
+from core.inference.llama_tool_schema import llama_grammar_tools
 from core.inference.stream_errors import stream_error_from_chunk
 from core.inference.llama_server_args import (
     _CACHE_RAM_FLAGS,
@@ -89,6 +90,8 @@ from core.inference.llama_server_args import (
     apply_model_memory_policy,
     resolve_ctx_checkpoints,
     extra_args_disable_mmproj,
+    extra_args_image_max_tokens,
+    extra_args_mmproj_auto,
     extra_args_select_load_mode,
     fit_is_enabled_in,
     force_pageable_load,
@@ -2544,10 +2547,24 @@ def _resolve_swa_pattern(
 
 
 def _hf_repo_from_url(url: Optional[str]) -> Optional[str]:
-    """Strip `https://huggingface.co/owner/name(/...)` -> `owner/name`."""
-    if not url or "huggingface.co/" not in url:
+    """Strip `https://huggingface.co/owner/name(/...)` -> `owner/name`.
+
+    A mirrored HF_ENDPOINT is recognised too, so a URL recorded on a mirror
+    still resolves to its repo id. huggingface.co stays accepted either way:
+    the same install can hold entries written before the mirror was set.
+    """
+    if not url:
         return None
-    tail = url.split("huggingface.co/", 1)[1].rstrip("/")
+    from utils.hf_endpoint import get_hf_endpoint
+
+    marker = "huggingface.co/"
+    if marker not in url:
+        mirror = get_hf_endpoint().split("://", 1)[-1].rstrip("/") + "/"
+        if mirror in url:
+            marker = mirror
+        else:
+            return None
+    tail = url.split(marker, 1)[1].rstrip("/")
     parts = tail.split("/")
     if len(parts) < 2:
         return None
@@ -4308,6 +4325,17 @@ def _strip_flag_pairs(args: Iterable[str], flags: frozenset[str]) -> list[str]:
 # common_params defaults in the bundled llama.cpp runtime.
 _DEFAULT_LLAMA_N_BATCH = 2048
 _DEFAULT_LLAMA_N_UBATCH = 512
+# Non-causal image decoding requires one image chunk to fit in the micro-batch.
+# These are the per-image limits from clip.cpp. Exact values avoid excess VRAM use.
+_MMPROJ_NON_CAUSAL_IMAGE_TOKENS = {
+    "gemma4v": 1120,
+    "gemma4uv": 1120,
+    "gemma3": 256,
+    "deepseek4v": 384,
+}
+# A projector whose family we cannot read gets headroom instead of a ceiling.
+_MMPROJ_UNKNOWN_UBATCH = 2048
+_GEMMA4V_CAUSAL_TEXT_N_EMBD = frozenset({1536, 2560})  # E2B and E4B
 _LLAMA_ARG_TRUE_VALUES = frozenset({"on", "enabled", "true", "1"})
 _LLAMA_ARG_FALSE_VALUES = frozenset({"off", "disabled", "false", "0"})
 _LLAMA_ARG_AUTO_VALUES = frozenset({"auto", "-1"})
@@ -4962,6 +4990,69 @@ def _extra_args_mmproj_offload_value(extra_args: Optional[Sequence[str]]) -> Opt
 # LLAMA_ARG_NO_ form first and forces falsey on PRESENCE, empty value included.
 _MMPROJ_OFFLOAD_ENV_VAR = "LLAMA_ARG_MMPROJ_OFFLOAD"
 _MMPROJ_OFFLOAD_NEG_ENV_VAR = "LLAMA_ARG_NO_MMPROJ_OFFLOAD"
+
+# Gemma 4 expects video at up to 1 fps; llama-server defaults to 4.
+_LLAMA_VIDEO_FPS = "1"
+_VIDEO_FPS_ENV_VAR = "LLAMA_ARG_VIDEO_FPS"
+
+
+def _video_fps_flags(
+    server_caps: Mapping[str, object], env: Optional[Mapping[str, str]] = None
+) -> list[str]:
+    """Return the default FPS flag unless unsupported or set in the environment.
+
+    User extras are appended later and retain their last-wins override.
+    """
+    if not server_caps.get("supports_video_fps"):
+        return []
+    source = os.environ if env is None else env
+    if source.get(_VIDEO_FPS_ENV_VAR) is not None:
+        return []
+    return ["--video-fps", _LLAMA_VIDEO_FPS]
+
+
+def requested_video_fps(
+    extra_args: Optional[Sequence[str]] = None, env: Optional[Mapping[str, str]] = None
+) -> Optional[float]:
+    """The frame rate the USER asked llama-server for, if they asked at all.
+
+    Preprocessing has to know this: it transcodes before llama-server samples,
+    and the server can only duplicate frames the transcode already dropped. So
+    an explicit 8 fps has to reach the encoder, or the override silently buys
+    nothing but duplicates.
+
+    ARGV FIRST, then the environment. llama.cpp reads the env var while
+    registering the option and argv overrides it afterwards, so an inherited
+    LLAMA_ARG_VIDEO_FPS=1 alongside an advanced `--video-fps 8` samples at 8.
+    Verified against b10976 on a 5s clip: env=1 alone costs 2796 prompt tokens,
+    env=8 alone 19392, and env=1 with argv=8 also 19392.
+
+    Within argv the LAST occurrence wins, which is how llama.cpp resolves a
+    repeated flag ("only last value will be used"). Matching goes through
+    `_flag_name`, so the underscore spelling llama.cpp also accepts
+    (`--video_fps`, `--video_fps=8`) is caught rather than silently missed.
+
+    None when the user said nothing, or said something that is not a rate.
+    """
+    args = [str(a) for a in (extra_args or ())]
+    raw = None
+    for i in range(len(args) - 1, -1, -1):
+        if _flag_name(args[i]) != "--video-fps":
+            continue
+        raw = (
+            args[i].split("=", 1)[1]
+            if "=" in args[i]
+            else (args[i + 1] if i + 1 < len(args) else None)
+        )
+        break
+    if raw is None:
+        source = os.environ if env is None else env
+        raw = source.get(_VIDEO_FPS_ENV_VAR)
+    try:
+        rate = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return rate if rate > 0 else None
 
 
 def _env_sets_mmproj_offload(env: Optional[Mapping[str, str]] = None) -> bool:
@@ -5748,26 +5839,22 @@ def _extra_args_n_parallel(
     return found
 
 
-def _extra_args_n_ubatch(
+def _named_batch_sizes(
     extra_args: Optional[Iterable[str]],
     env: Optional[Mapping[str, str]] = None,
-    n_ctx: Optional[int] = None,
-    *,
     n_batch: Optional[int] = None,
     n_ubatch: Optional[int] = None,
-) -> Optional[int]:
-    """Effective ubatch after llama.cpp normalizes it, or None at defaults.
+) -> tuple[int, int, bool, bool]:
+    """Resolve batch sizes and whether each was explicitly set.
 
-    Precedence mirrors the launched command line: env, then the first-class
-    n_batch / n_ubatch fields (emitted as flags, so they beat env), then user
-    extra_args (appended last, so they last-wins-override the emitted flags).
+    Precedence is environment, first-class fields, then extra arguments.
     """
     values = {
         "batch": _DEFAULT_LLAMA_N_BATCH,
         "ubatch": _DEFAULT_LLAMA_N_UBATCH,
     }
+    named = {"batch": False, "ubatch": False}
     source_env = os.environ if env is None else env
-    overridden = False
     for key, env_name in (
         ("batch", "LLAMA_ARG_BATCH"),
         ("ubatch", "LLAMA_ARG_UBATCH"),
@@ -5776,16 +5863,16 @@ def _extra_args_n_ubatch(
         if raw:
             try:
                 values[key] = int(raw)
-                overridden = True
+                named[key] = True
             except (TypeError, ValueError):
                 pass
 
     if n_batch is not None:
         values["batch"] = int(n_batch)
-        overridden = True
+        named["batch"] = True
     if n_ubatch is not None:
         values["ubatch"] = int(n_ubatch)
-        overridden = True
+        named["ubatch"] = True
 
     args = [str(a) for a in extra_args] if extra_args else []
     flags = {
@@ -5803,10 +5890,26 @@ def _extra_args_n_ubatch(
         value = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
         try:
             values[key] = int(value)
-            overridden = True
+            named[key] = True
         except (TypeError, ValueError):
             continue
-    if not overridden:
+    return values["batch"], values["ubatch"], named["batch"], named["ubatch"]
+
+
+def _extra_args_n_ubatch(
+    extra_args: Optional[Iterable[str]],
+    env: Optional[Mapping[str, str]] = None,
+    n_ctx: Optional[int] = None,
+    *,
+    n_batch: Optional[int] = None,
+    n_ubatch: Optional[int] = None,
+) -> Optional[int]:
+    """Effective ubatch after llama.cpp normalizes it, or None at defaults."""
+    _batch, _ubatch, _batch_named, _ubatch_named = _named_batch_sizes(
+        extra_args, env, n_batch, n_ubatch
+    )
+    values = {"batch": _batch, "ubatch": _ubatch}
+    if not (_batch_named or _ubatch_named):
         return None
 
     # common_params stores signed values, then llama_context_params converts
@@ -5819,6 +5922,135 @@ def _extra_args_n_ubatch(
     if n_ctx is not None and n_ctx > 0:
         effective = min(effective, n_ctx)
     return effective
+
+
+def _read_gguf_embedding_length(path: Optional[str]) -> Optional[int]:
+    """``{arch}.embedding_length``, cached, or None. Thin import-local wrapper."""
+    if not path:
+        return None
+    try:
+        from utils.models.gguf_metadata import read_gguf_embedding_length
+        return read_gguf_embedding_length(str(path))
+    except Exception as e:
+        logger.debug(f"embedding length read failed: {e}")
+        return None
+
+
+def _unknown_projector_ubatch(
+    extra_args: Optional[Iterable[str]] = None, env: Optional[Mapping[str, str]] = None
+) -> int:
+    """Return conservative headroom for an unclassified projector."""
+    return max(_MMPROJ_UNKNOWN_UBATCH, extra_args_image_max_tokens(extra_args, env) or 0)
+
+
+def _mmproj_required_ubatch(
+    mmproj_path: Optional[str],
+    n_embd_text: Optional[int] = None,
+    extra_args: Optional[Iterable[str]] = None,
+    env: Optional[Mapping[str, str]] = None,
+) -> int:
+    """Return the required micro-batch, or 0 when the default is sufficient.
+
+    Inspect the image tower because audio-only projectors may still be marked as vision.
+    """
+    if not mmproj_path:
+        return 0
+    try:
+        from utils.models.gguf_metadata import (
+            mmproj_accepts_image,
+            read_mmproj_vision_projector_type,
+        )
+        if not mmproj_accepts_image(mmproj_path):
+            return 0
+        family = (read_mmproj_vision_projector_type(mmproj_path) or "").strip().lower()
+    except Exception as e:
+        logger.debug(f"mmproj capability read failed: {e}")
+        family = ""
+    custom = extra_args_image_max_tokens(extra_args, env) or 0
+    if not family:
+        return _unknown_projector_ubatch(extra_args, env)
+    if family not in _MMPROJ_NON_CAUSAL_IMAGE_TOKENS:
+        return 0
+    if family == "gemma4v" and n_embd_text in _GEMMA4V_CAUSAL_TEXT_N_EMBD:
+        return 0
+    # A custom image limit can exceed the family's built-in ceiling.
+    ceiling = max(_MMPROJ_NON_CAUSAL_IMAGE_TOKENS[family], custom)
+    return ceiling if ceiling > _DEFAULT_LLAMA_N_UBATCH else 0
+
+
+def _launch_required_ubatch(
+    mmproj_path: Optional[str],
+    n_embd_text: Optional[int] = None,
+    extra_args: Optional[Iterable[str]] = None,
+    *,
+    is_vision: bool = True,
+    vision_off: bool = False,
+    env: Optional[Mapping[str, str]] = None,
+) -> int:
+    """Return the largest micro-batch required by any possible launch projector.
+
+    Taking the maximum avoids duplicating llama.cpp's projector precedence and only
+    over-reserves when multiple image towers are supplied.
+    """
+    required = 0
+
+    # Pass-through arguments override managed projector flags.
+    override = _extra_args_device(extra_args, {"--mmproj", "-mm"})
+    if override:
+        required = max(
+            required, _mmproj_required_ubatch(str(override), n_embd_text, extra_args, env)
+        )
+
+    if not vision_off:
+        # Inherited projectors survive --no-mmproj but not the vision switch.
+        source_env = os.environ if env is None else env
+        if (source_env.get("LLAMA_ARG_MMPROJ_URL") or "").strip():
+            required = max(required, _unknown_projector_ubatch(extra_args, env))
+        inherited = (source_env.get("LLAMA_ARG_MMPROJ") or "").strip()
+        if inherited:
+            required = max(
+                required, _mmproj_required_ubatch(inherited, n_embd_text, extra_args, env)
+            )
+
+    if is_vision and not vision_off and not extra_args_disable_mmproj(extra_args):
+        if mmproj_path:
+            required = max(
+                required, _mmproj_required_ubatch(str(mmproj_path), n_embd_text, extra_args, env)
+            )
+
+    if not vision_off and extra_args_mmproj_auto(extra_args, env):
+        # llama-server's adjacent-projector search can disagree with ours.
+        required = max(
+            required,
+            _mmproj_required_ubatch(str(mmproj_path), n_embd_text, extra_args, env)
+            if mmproj_path
+            else _unknown_projector_ubatch(extra_args, env),
+        )
+
+    return required
+
+
+def _batch_ubatch_for_mmproj(
+    required_ubatch: int,
+    n_batch: Optional[int],
+    n_ubatch: Optional[int],
+    extra_args: Optional[Iterable[str]],
+    env: Optional[Mapping[str, str]] = None,
+) -> tuple[Optional[int], Optional[int]]:
+    """Raise an unset micro-batch, capped by the effective batch size."""
+    if required_ubatch <= 0:
+        return n_batch, n_ubatch
+    batch, ubatch, batch_named, ubatch_named = _named_batch_sizes(
+        extra_args, env, n_batch, n_ubatch
+    )
+    if ubatch_named:
+        return n_batch, n_ubatch
+    # Match llama_context_params, which converts the signed batch to uint32_t.
+    batch &= 0xFFFFFFFF
+    target = min(required_ubatch, batch)
+    if target <= ubatch:
+        return n_batch, n_ubatch
+    return n_batch, target
 
 
 def _build_ngram_mod_flags(
@@ -7962,8 +8194,18 @@ class LlamaCppBackend:
             # while sibling build layouts are checked. include_denied returns an
             # unavailable path instead: diffusion asset lookup only needs its dir.
             non_executable = None
+            from utils.llama_cpp_path_settings import prefer_gpu_capable
+
+            statuses = {p: _file_status(p) for p in paths}
+            first = next((p for p in paths if statuses[p] == "file"), None)
+            # A first hit proven CPU-only yields to a GPU-capable sibling build (#5941), unless
+            # a denied candidate precedes it: that denial stops discovery, it is not skipped over.
+            if first is not None and not any(
+                statuses[p] == "denied" for p in paths[: paths.index(first)]
+            ):
+                paths = prefer_gpu_capable(paths, lambda p: statuses[p] == "file")
             for p in paths:
-                st = _file_status(p)
+                st = statuses[p]
                 if st == "file":
                     return str(p), None
                 if st == "denied":
@@ -8043,7 +8285,9 @@ class LlamaCppBackend:
         # 5-6. Legacy: in-tree build (older setup.sh / setup.ps1). A fallback,
         # so a denied candidate here just continues (no no-fallback halt).
         project_root = Path(__file__).resolve().parents[4]
-        for p in _layout_candidates(project_root / "llama.cpp"):
+        from utils.llama_cpp_path_settings import prefer_gpu_capable
+
+        for p in prefer_gpu_capable(_layout_candidates(project_root / "llama.cpp"), _is_file):
             if _is_file(p):
                 return str(p)
 
@@ -8157,6 +8401,7 @@ class LlamaCppBackend:
                 "supports_metrics": False,
                 "supports_slot_save": False,
                 "supports_no_mmproj_offload": False,
+                "supports_video_fps": False,
                 "supports_load_mode": False,
                 "spec_draft_ngl_flag": None,
                 "spec_draft_cache_k_flag": None,
@@ -8204,6 +8449,7 @@ class LlamaCppBackend:
         supports_metrics = False
         supports_slot_save = False
         supports_no_mmproj_offload = False
+        supports_video_fps = False
         supports_load_mode = False
         spec_draft_ngl_flag = None
         spec_draft_cache_k_flag = None
@@ -8429,6 +8675,7 @@ class LlamaCppBackend:
             supports_metrics = _is_real("--metrics")
             supports_slot_save = _is_real("--slot-save-path")
             supports_no_mmproj_offload = _is_real("--no-mmproj-offload")
+            supports_video_fps = _is_real("--video-fps")
             # --load-mode supersedes --mlock / --no-mmap, which are deprecated.
             # Pre-initialised above: a failed probe must fall back, not raise.
             supports_load_mode = _is_real("--load-mode")
@@ -8521,6 +8768,7 @@ class LlamaCppBackend:
             "supports_metrics": supports_metrics,
             "supports_slot_save": supports_slot_save,
             "supports_no_mmproj_offload": supports_no_mmproj_offload,
+            "supports_video_fps": supports_video_fps,
             "supports_load_mode": supports_load_mode,
             "spec_draft_ngl_flag": spec_draft_ngl_flag,
             "spec_draft_cache_k_flag": spec_draft_cache_k_flag,
@@ -10316,6 +10564,8 @@ class LlamaCppBackend:
     # only under PCI_BUS_ID, so a caller pinning the child's device order has to
     # know which it holds (#10613).
     _GPU_IDS_ARE_PCI_INDICES = None
+    # index -> inherited uuid, when CUDA_VISIBLE_DEVICES named the NVML rows by uuid.
+    _NVML_ROWS: list = []  # the last NVML inventory; _child_visibility_for reads it
 
     # Boot-time property: read once, not per launch (the #10613 host has 175
     # groups). Only the default root is cached; an explicit root (tests) re-reads.
@@ -11482,6 +11732,127 @@ class LlamaCppBackend:
             return f"the reason could not be determined ({type(e).__name__})"
 
     @staticmethod
+    def _nvidia_probe_script() -> Optional[Path]:
+        """studio/nvidia_probe.py, the installers' NVML / CUDA driver reader (UNSLOTH_NVIDIA_PROBE wins)."""
+        from utils.prebuilt.update_flow import find_installer_script
+        return find_installer_script(env_var = "UNSLOTH_NVIDIA_PROBE", script_name = "nvidia_probe.py")
+
+    @staticmethod
+    def _nvml_rows_visible(rows: list[dict]) -> list[dict]:
+        """The NVML rows CUDA_VISIBLE_DEVICES permits, in mask order: an index or a GPU-/MIG-
+        uuid prefix per entry, as the CUDA runtime reads it. An entry naming no single device
+        ends the mask there: "0,2,-1,1" exposes 0 and 2, "-1" alone hides every GPU. A GPU in
+        MIG mode is one slice to CUDA (the first, when the mask does not name one), so its
+        first slice row stands in for the parent's whole-card memory, and a second slice of
+        the same card is dropped: the rows are keyed by physical index, and one slice per
+        card is what the driver exposed before R570 and what the child is pinned to."""
+        raw = os.environ.get("CUDA_VISIBLE_DEVICES")
+        parents = [r for r in rows if not r.get("mig")]
+
+        def as_cuda_sees(r: dict) -> dict:
+            if r.get("mig"):
+                return r  # a slice the mask named stays that slice
+            slices = [
+                s for s in rows if s.get("mig") and str(s.get("index")) == str(r.get("index"))
+            ]
+            return slices[0] if slices else r
+
+        tokens = [t.strip() for t in (raw or "").split(",") if t.strip()]
+        picked: list[dict] = []
+        if raw is None:
+            picked = [as_cuda_sees(r) for r in parents]
+        for token in tokens:
+            if token.isdigit():
+                hits = [r for r in parents if str(r.get("index")) == token]
+            elif token.startswith("GPU-"):
+                hits = [r for r in parents if str(r.get("uuid", "")).startswith(token)]
+            elif token.startswith("MIG-"):
+                # A MIG- entry names a slice row the probe lists under its parent.
+                hits = [
+                    r for r in rows if r.get("mig") and str(r.get("uuid", "")).startswith(token)
+                ]
+            else:
+                hits = []
+            if len(hits) != 1:
+                break
+            picked.extend(
+                r
+                for r in map(as_cuda_sees, hits)
+                if str(r.get("index")) not in {str(p.get("index")) for p in picked}
+            )
+        return picked
+
+    @staticmethod
+    def _uuid_by_index(rows: list[dict]) -> dict[int, str]:
+        """The uuid each visible index stands for: every row when the mask named rows by
+        uuid, else only a slice standing in for its MIG parent (a slice has no index of its
+        own). Derived from the rows and the mask on each call, so it belongs to no probe."""
+        tokens = [t.strip() for t in (os.environ.get("CUDA_VISIBLE_DEVICES") or "").split(",")]
+        by_uuid = any(t and not t.isdigit() for t in tokens)
+        return {
+            int(r["index"]): str(r["uuid"])
+            for r in LlamaCppBackend._nvml_rows_visible(rows)
+            if str(r.get("index", "")).isdigit() and (by_uuid or r.get("mig"))
+        }
+
+    @staticmethod
+    def _child_visibility_for(gpu_indices) -> str:
+        """The mask for these indices: the inherited uuids when the mask named the rows by
+        uuid (a MIG slice must stay a MIG- entry), else the indices themselves."""
+        ids = [int(i) for i in gpu_indices]
+        by_index = LlamaCppBackend._uuid_by_index(LlamaCppBackend._NVML_ROWS)
+        if by_index and all(i in by_index for i in ids):
+            return ",".join(by_index[i] for i in ids)
+        return ",".join(str(i) for i in ids)
+
+    @staticmethod
+    def _get_gpu_memory_nvml() -> list[tuple[int, int, int]]:
+        """Free and total memory per NVIDIA GPU from NVML (studio/nvidia_probe.py in a child
+        with a deadline), for a host whose nvidia-smi is absent, stale or hung: read as "no
+        GPU", it pinned the embedding server to the CPU. Physical indices, masked like the
+        nvidia-smi rows; a visible row without a memory reading voids the answer, so the
+        torch probe decides."""
+        if sys.platform == "darwin" or os.environ.get("UNSLOTH_NVIDIA_LIBRARY_PROBE", "1") == "0":
+            return []
+        script = LlamaCppBackend._nvidia_probe_script()
+        if script is None:
+            return []
+        try:
+            result = subprocess.run(
+                [sys.executable, "-I", str(script), "--json"],
+                capture_output = True,
+                text = True,
+                encoding = "utf-8",
+                errors = "replace",
+                timeout = 10,
+                env = utf8_child_env(child_env_without_native_path_secret()),
+                **_windows_hidden_subprocess_kwargs(),
+            )
+            payload = json.loads(result.stdout or "null")
+        except Exception as e:
+            logger.debug(f"NVML probe failed: {e}")
+            return []
+        if not isinstance(payload, dict) or payload.get("source") != "nvml":
+            return []
+        LlamaCppBackend._NVML_ROWS = list(payload.get("devices") or [])
+        gpus: list[tuple[int, int, int]] = []
+        for row in LlamaCppBackend._nvml_rows_visible(LlamaCppBackend._NVML_ROWS):
+            try:
+                idx = int(row["index"])
+                free_mib = int(row.get("memory_free_mib") or 0)
+                total_mib = int(row.get("memory_total_mib") or 0)
+            except (KeyError, TypeError, ValueError):
+                return []
+            if total_mib <= 0:
+                # The probe writes a failed reading as total 0. One visible GPU without a
+                # reading voids the answer: a partial list would place and split across
+                # fewer GPUs than the child enumerates. A full card (free 0) is a reading.
+                return []
+            gpus.append((idx, free_mib, total_mib))
+        gpus.sort(key = lambda g: g[0])
+        return gpus
+
+    @staticmethod
     def _get_gpu_memory(
         binary: Optional[str] = None, *, for_llama_server: bool = False
     ) -> list[tuple[int, int, int]]:
@@ -11563,6 +11934,12 @@ class LlamaCppBackend:
                     return gpus
         except Exception as e:
             logger.debug(f"nvidia-smi probe failed: {e}")
+
+        # ── NVIDIA via NVML, when nvidia-smi is absent, stale or hung ────
+        nvml_gpus = LlamaCppBackend._get_gpu_memory_nvml()
+        if nvml_gpus:
+            LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = True
+            return nvml_gpus
 
         # ── AMD ROCm via amd-smi ─────────────────────────────────────
         rocm_gpus = LlamaCppBackend._get_gpu_memory_amd_smi(
@@ -13708,10 +14085,11 @@ class LlamaCppBackend:
             # /usr/local/cuda.
             import glob as _glob
 
+            # glob.escape: a prefix with [brackets] is otherwise read as a pattern.
+            _site = os.path.join(_glob.escape(sys.prefix), "lib", "python*", "site-packages")
             for _nv_pattern in [
-                os.path.join(sys.prefix, "lib", "python*", "site-packages", "nvidia", _sub, "lib")
-                for _sub in ("cu*", "cudnn", "nvjitlink")
-            ]:
+                os.path.join(_site, "nvidia", _sub, "lib") for _sub in ("cu*", "cudnn", "nvjitlink")
+            ] + [os.path.join(_site, "torch", "lib")]:
                 for _nv_dir in _glob.glob(_nv_pattern):
                     if os.path.isdir(_nv_dir):
                         lib_dirs.append(_nv_dir)
@@ -21226,6 +21604,26 @@ class LlamaCppBackend:
                 logger.info("Load cancelled after download phase")
                 return False
 
+            # Decide after downloading the projector and before pricing the load.
+            n_batch, n_ubatch = _batch_ubatch_for_mmproj(
+                _launch_required_ubatch(
+                    None
+                    if (disable_vision or not is_vision)
+                    else self._resolve_launch_mmproj_path(
+                        model_path = model_path,
+                        mmproj_path = mmproj_path,
+                    ),
+                    # Use the same order-independent metadata read as the estimators.
+                    _read_gguf_embedding_length(model_path),
+                    extra_args,
+                    is_vision = is_vision,
+                    vision_off = disable_vision,
+                ),
+                n_batch,
+                n_ubatch,
+                extra_args,
+            )
+
             # Backstop for everything the pre-teardown probes fail open on: refuse from the
             # header rather than watching llama-server die as "failed to start".
             non_chat = self._non_chat_gguf_refusal(model_path)
@@ -24308,6 +24706,9 @@ class LlamaCppBackend:
                             "llama-server has no --cache-ram; skipping the requested %s MiB.",
                             cache_ram,
                         )
+                # On every launch, not only where Studio emits --mmproj: a projector
+                # from the extras or LLAMA_ARG_MMPROJ takes video too.
+                cmd.extend(_video_fps_flags(server_caps))
 
                 # Report a clean public model id (matching GET /v1/models) rather
                 # than the raw -m path in llama-server's own /v1/models and the
@@ -26045,7 +26446,7 @@ class LlamaCppBackend:
                     # enumerates every agent first, which segfaults on a deselected
                     # unsupported GPU (e.g. gfx1036 iGPU under a gfx103X prebuilt).
                     self._emit_child_gpu_visibility(
-                        env, ",".join(str(i) for i in gpu_indices), prefer_rocr = True
+                        env, LlamaCppBackend._child_visibility_for(gpu_indices), prefer_rocr = True
                     )
                     _child_gpu_physical_ids = tuple(int(i) for i in gpu_indices)
                     _launch_pinned_ids = list(gpu_indices)
@@ -31608,6 +32009,56 @@ class LlamaCppBackend:
                     continue
                 raise
 
+    @staticmethod
+    def decode_slot_from_chunk(chunk) -> Optional[int]:
+        """The llama-server slot a stream chunk was decoded on, None if it does not say.
+
+        Only the final result carries ``__verbose``, and only when asked for.
+        """
+        if not isinstance(chunk, dict):
+            return None
+        verbose = chunk.get("__verbose")
+        if not isinstance(verbose, dict):
+            return None
+        slot = verbose.get("id_slot")
+        if type(slot) is not int or slot < 0:
+            return None
+        return slot
+
+    def release_idle_chat_slot(self, base_url: str, slot: int) -> bool:
+        """Erase one completed round's cached context, True once the engine says so.
+
+        Declines unless the round decoded on this server, which a reload renumbers, and
+        unless --slot-save-path is in play, which the endpoint requires. An erase aimed at
+        a slot since handed to another request is deferred rather than dropped, so even a
+        timeout can cost that chat its prefix.
+        """
+        if (
+            not self._slot_save_dir
+            or base_url != self.base_url
+            or type(slot) is not int
+            or slot < 0
+        ):
+            return False
+        try:
+            response = httpx.post(
+                f"{base_url}/slots/{slot}",
+                params = {"action": "erase"},
+                headers = self._auth_headers,
+                timeout = 2.0,
+                trust_env = False,
+            )
+            response.raise_for_status()
+            result = response.json()
+            return (
+                result.get("id_slot") == slot
+                and type(result.get("n_erased")) is int
+                and result["n_erased"] >= 0
+            )
+        except Exception:
+            logger.debug("Approval cache reclamation failed; retaining reservation", exc_info = True)
+            return False
+
     def generate_chat_completion(
         self,
         messages: list[dict],
@@ -32056,6 +32507,7 @@ class LlamaCppBackend:
         # MAY BLOCK: recost_waiting waits for cache room. Safe at the top of a round,
         # where the previous round's request has completed.
         on_conversation_grew: Optional[Callable[[list], None]] = None,
+        on_decode_slot: Optional[Callable[[str, int], None]] = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -32774,6 +33226,9 @@ class LlamaCppBackend:
 
             # Progress events feed the first-token deadline; timings stay opt-in.
             payload["return_progress"] = True
+            if on_decode_slot is not None:
+                payload["verbose"] = True
+                payload["response_fields"] = ["id_slot"]
             if perf_callback is not None:
                 payload["timings_per_token"] = True
             if logit_bias:
@@ -32781,7 +33236,7 @@ class LlamaCppBackend:
             # As in the passthrough builder: if every name carried markup the catalog is
             # now empty, and "tools": [] would still advertise tool use.
             if safe_tools:
-                payload["tools"] = safe_tools
+                payload["tools"] = llama_grammar_tools(safe_tools)
                 payload["tool_choice"] = requested_choice
             if _reasoning_kw is not None:
                 payload["chat_template_kwargs"] = _reasoning_kw
@@ -33057,6 +33512,10 @@ class LlamaCppBackend:
 
                             try:
                                 chunk_data = json.loads(line[6:])
+                                if on_decode_slot is not None:
+                                    slot = self.decode_slot_from_chunk(chunk_data)
+                                    if slot is not None:
+                                        on_decode_slot(self.base_url, slot)
 
                                 _report_live_llama_timings(perf_callback, chunk_data)
                                 _ct = chunk_data.get("timings")
@@ -36122,7 +36581,7 @@ class LlamaCppBackend:
                     # through, otherwise tool-schema tokens go uncounted.
                     template_body = {"messages": template_messages}
                     if tools:
-                        template_body["tools"] = tools
+                        template_body["tools"] = llama_grammar_tools(tools)
                     # Layered over the load-time --chat-template-kwargs: only keys sent here move.
                     if chat_template_kwargs:
                         template_body["chat_template_kwargs"] = chat_template_kwargs

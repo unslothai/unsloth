@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useAppShellReadySignal } from "@/components/app-readiness";
+import { useHfEndpoint } from "@/lib/hf-endpoint";
 import { usePlatformStore } from "@/config/env";
 import {
   applyActiveModelStatusToStore,
@@ -107,7 +108,6 @@ import {
   registerRefresh,
   supersedingRefresh,
 } from "./lib/superseded-refresh";
-import { fingerprintToken } from "./lib/token-fingerprint";
 import { studioPageForTask } from "./lib/unsloth-support";
 import {
   buildDiscoverRows,
@@ -117,7 +117,11 @@ import {
   matchesFormat,
 } from "./lib/view-models";
 import { hfApiToken, useHfTokenStore } from "./stores/hf-token-store";
-import { isChannelEntryFresh, useHubFeedStore } from "./stores/hub-feed-store";
+import {
+  feedIdentity,
+  isChannelEntryFresh,
+  useHubFeedStore,
+} from "./stores/hub-feed-store";
 import type {
   CachedInventoryRow,
   CapabilityFilter,
@@ -760,9 +764,10 @@ export function ModelsPage() {
   const hfToken = useHfTokenStore((s) => s.token);
   const debouncedHfToken = useDebouncedValue(hfToken, 500);
   const apiHfToken = hfApiToken(debouncedHfToken);
+  const hubHfEndpoint = useHfEndpoint();
   const tokenFingerprint = useMemo(
-    () => fingerprintToken(apiHfToken),
-    [apiHfToken],
+    () => feedIdentity(hubHfEndpoint, apiHfToken),
+    [hubHfEndpoint, apiHfToken],
   );
   const deferredFormatFilter = useDeferredValue(formatFilter);
   const deferredCapabilityFilter = useDeferredValue(capabilityFilter);
