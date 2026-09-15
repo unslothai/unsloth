@@ -2340,7 +2340,10 @@ def to_sharegpt(
     all_shuffled = [dataset]
     for j in range(1, n_extensions+1):
         shuffled = dataset.shuffle(seed = random_state+j).rename_columns({"conversations0" : f"conversations{j}"})
-        all_shuffled.append(shuffled)
+        # Only the conversations come from the shuffled copies. Any other column
+        # the caller kept is still on the first one, and concatenating it once
+        # per extension is what datasets rejects as a duplicated column.
+        all_shuffled.append(shuffled.select_columns([f"conversations{j}"]))
     dataset = concatenate_datasets(all_shuffled, axis = 1)
 
     n_extensions += 1
@@ -2359,7 +2362,9 @@ def to_sharegpt(
         __combine_conversations__,
         batched = True,
         desc = "Extending conversations",
-        remove_columns = dataset.column_names if remove_unused_columns else None,
+        # Remove unused columns! The numbered conversation columns are scaffolding
+        # rather than the caller's data, so they go either way.
+        remove_columns = dataset.column_names if remove_unused_columns else conversation_columns,
     )
     return dataset
 
