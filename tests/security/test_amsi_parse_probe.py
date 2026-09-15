@@ -282,3 +282,125 @@ def test_the_mark_of_the_web_is_written_the_documented_way() -> None:
         "a failed stamp is no longer reported. A scan of a MyComputer-zone file is a weaker test "
         "than this lane claims to run, and a reader has to know which one they got."
     )
+
+
+def _amsi_step_script() -> str:
+    """The body of the step that turns probe results into a verdict, as CI runs it."""
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    for step in workflow["jobs"]["measure"]["steps"]:
+        if step.get("id") == "amsi":
+            return step["run"]
+    raise AssertionError(
+        "the workflow no longer has a step with id 'amsi'. This test drives the REAL verdict logic "
+        "by extracting it, so that it cannot pass against a copy that has drifted from CI."
+    )
+
+
+def _verdict_logic() -> str:
+    """Everything from the per-row control onwards, with the row collection left to the caller."""
+    script = _amsi_step_script()
+    marker = "# The control decides whether any of this means anything"
+    assert marker in script, (
+        "the per-row control block is gone from the workflow, so there is nothing to exercise"
+    )
+    return script[script.index(marker) :]
+
+
+def _run_verdict(tmp_path: Path, rows_ps: str, no_result_ps: str = "@()") -> tuple[int, str]:
+    """Run the extracted verdict logic against synthetic probe rows."""
+    pwsh = shutil.which("pwsh")
+    if pwsh is None:
+        pytest.skip("pwsh is unavailable")
+    out = tmp_path / "github_output"
+    out.write_text("", encoding="utf-8")
+    script = tmp_path / "verdict.ps1"
+    script.write_text(
+        f"$env:GITHUB_OUTPUT = '{out.as_posix()}'\n"
+        f"$rows = {rows_ps}\n"
+        f"$noResult = {no_result_ps}\n" + _verdict_logic(),
+        encoding="utf-8",
+    )
+    done = run_pwsh(
+        [pwsh, "-NoProfile", "-NonInteractive", "-File", str(script)],
+        capture_output = True,
+        text = True,
+        timeout = 120,
+    )
+    return done.returncode, done.stdout + done.stderr + out.read_text(encoding="utf-8")
+
+
+def _row(side: str, name: str, *, control: bool, result: str) -> str:
+    control_ps = (
+        f"@{{ label = 'control (AMSI test sample)'; blocked = ${str(control).lower()}; errorId = "
+        f"$(if (${str(control).lower()}) {{ 'ScriptContainedMaliciousContent' }} else {{ '' }}) }}"
+    )
+    return (
+        f"[pscustomobject]@{{ side = '{side}'; name = '{name}'; "
+        f"data = [pscustomobject]@{{ results = @({control_ps}, {result}) }} }}"
+    )
+
+
+_COMPILED = "@{ label = 'f.ps1'; blocked = $false; errorId = '' }"
+_BLOCKED = "@{ label = 'f.ps1'; blocked = $true; errorId = 'ScriptContainedMaliciousContent' }"
+_SYNTAX = "@{ label = 'f.ps1'; blocked = $false; errorId = 'ExpectedExpression' }"
+_MISSING = "@{ label = 'f.ps1'; blocked = $false; errorId = ''; missing = $true }"
+_UNREADABLE = "@{ label = 'f.ps1'; blocked = $false; errorId = ''; unreadable = $true }"
+
+
+@pytest.mark.parametrize(
+    ("label", "head", "head_control", "expect_code", "expect_text"),
+    [
+        ("both sides compiled", _COMPILED, True, 0, "verdict=clean"),
+        ("head refused by a provider", _BLOCKED, True, 1, "AMSI refused head/"),
+        ("head did not compile", _SYNTAX, True, 1, "verdict=broken"),
+        ("head file missing", _MISSING, True, 0, "verdict=unmeasured"),
+        ("head file unreadable", _UNREADABLE, True, 0, "verdict=unmeasured"),
+        ("head control silent", _COMPILED, False, 0, "verdict=unmeasured"),
+    ],
+)
+def test_the_head_verdict_is_never_clean_unless_head_was_really_measured(
+    tmp_path: Path, label: str, head: str, head_control: bool, expect_code: int, expect_text: str
+) -> None:
+    """Every way a head measurement can fail must stop short of publishing "clean".
+
+    A lane that reports clean when it did not measure is worse than no lane: it converts an absent
+    scanner, an unreadable candidate or a candidate that never compiled into a green check, and this
+    repository has already shipped three releases whose scan step was green because nothing scanned.
+    The base side is held healthy in every case so that the head side is the only variable.
+    """
+    rows = f"@({_row('base', 'install.ps1', control=True, result=_COMPILED)}, " + _row(
+        "head", "install.ps1", control=head_control, result=head
+    ) + ")"
+    code, text = _run_verdict(tmp_path, rows)
+    assert code == expect_code, f"{label}: expected exit {expect_code}, got {code}\n{text}"
+    assert expect_text in text, f"{label}: expected {expect_text!r} in output\n{text}"
+    if expect_text != "verdict=clean":
+        assert "verdict=clean" not in text, f"{label}: published a clean verdict anyway\n{text}"
+
+
+def test_a_probe_that_wrote_no_result_is_not_silently_dropped(tmp_path: Path) -> None:
+    """The row simply vanished before, and a head file that vanishes leaves zero blocked: clean."""
+    rows = f"@({_row('base', 'install.ps1', control=True, result=_COMPILED)}, " + _row(
+        "head", "install.ps1", control=True, result=_COMPILED
+    ) + ")"
+    code, text = _run_verdict(tmp_path, rows, no_result_ps="@('head/setup.ps1 [the probe wrote no result]')")
+    assert code == 0
+    assert "verdict=unmeasured" in text, text
+    assert "verdict=clean" not in text, text
+
+
+def test_a_control_firing_elsewhere_does_not_vouch_for_this_process(tmp_path: Path) -> None:
+    """The exact borrowing the per-row control exists to stop.
+
+    AMSI initialises per process. A live base invocation followed by a head invocation where no
+    provider loaded used to set one job-wide flag to true, and every row was then trusted, so the
+    head answer -- taken in a process that would have said "not blocked" to anything at all --
+    was published as clean.
+    """
+    rows = f"@({_row('base', 'install.ps1', control=True, result=_BLOCKED)}, " + _row(
+        "head", "install.ps1", control=False, result=_COMPILED
+    ) + ")"
+    code, text = _run_verdict(tmp_path, rows)
+    assert code == 0
+    assert "verdict=unmeasured" in text, text
+    assert "verdict=clean" not in text, text

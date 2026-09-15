@@ -141,6 +141,7 @@ jobs:
           }
 
           $rows = @()
+          $noResult = @()
           foreach ($side in 'base', 'head') {
             foreach ($file in (Get-ChildItem -LiteralPath (Join-Path $env:ROOT $side) -Filter '*.ps1' -ErrorAction SilentlyContinue)) {
               $json = Join-Path $out "$side-$($file.BaseName).json"
@@ -151,7 +152,11 @@ jobs:
               & $ps51 -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned `
                   -File $probe -Control -Path $file.FullName -OutFile $json
               if (-not (Test-Path -LiteralPath $json)) {
+                # Not `continue` alone: dropping the row shrinks the measured set silently, and a
+                # head file that vanishes from the set leaves headBlocked at zero, which reads as
+                # clean. Record it so the verdict below has to account for it.
                 Write-Host "::warning::the probe wrote no result for $side/$($file.Name)"
+                $noResult += "$side/$($file.Name) [the probe wrote no result]"
                 continue
               }
               $rows += [pscustomobject]@{
@@ -167,23 +172,39 @@ jobs:
             exit 1
           }
 
-          # The control decides whether any of this means anything.
-          $controlFired = $false
+          # The control decides whether any of this means anything, and it decides it PER ROW.
+          # -Control runs in the same process as the file it vouches for, so its outcome is a
+          # property of that one measurement. A job-wide flag would let a process where AMSI never
+          # initialised borrow the credibility of one where it did, which is precisely how "no
+          # provider was listening" turns into "nothing was detected".
           foreach ($row in $rows) {
-            foreach ($r in $row.data.results) {
-              if ($r.label -like 'control*' -and $r.blocked) { $controlFired = $true }
-            }
+            $fired = @($row.data.results | Where-Object { $_.label -like 'control*' -and $_.blocked }).Count
+            $row | Add-Member -NotePropertyName controlFired -NotePropertyValue ([bool]$fired)
           }
 
           $blocked = @()
+          $unmeasured = @($noResult)
+          $didNotCompile = @()
           foreach ($row in $rows) {
             foreach ($r in $row.data.results) {
               if ($r.label -like 'control*') { continue }
-              if ($r.blocked) { $blocked += "$($row.side)/$($row.name) [$($r.errorId)]" }
+              $where = "$($row.side)/$($row.name)"
+              if (-not $row.controlFired) {
+                $unmeasured += "$where [the control did not fire in this process]"
+                continue
+              }
+              if ($r.blocked) { $blocked += "$where [$($r.errorId)]"; continue }
+              if ($r.missing)    { $unmeasured += "$where [the probe could not find the file]"; continue }
+              if ($r.unreadable) { $unmeasured += "$where [the probe could not read the file]"; continue }
+              # blocked=false with an errorId set is a compile failure, not a scanner verdict. The
+              # probe already separates the two; dropping the result here put a candidate that never
+              # compiled into the same bucket as one that compiled cleanly.
+              if ($r.errorId) { $didNotCompile += "$where [$($r.errorId)]"; continue }
             }
           }
 
           Write-Host ''
+          $controlFired = @($rows | Where-Object { $_.controlFired }).Count -gt 0
           if (-not $controlFired) {
             # Never clean. On this runner Defender is in passive mode with both drive roots excluded,
             # so this is the expected outcome more often than not, and saying "no detections" would be
@@ -196,6 +217,23 @@ jobs:
           }
 
           Write-Host 'control: the AMSI test sample was refused, so a provider is live and this process can answer.'
+
+          $headDidNotCompile = @($didNotCompile | Where-Object { $_ -like 'head/*' })
+          if ($headDidNotCompile.Count) {
+            foreach ($c in $headDidNotCompile) { Write-Host "::error::the candidate did not compile: $c" }
+            Write-Host '::error::A shipped script that does not parse is a defect in its own right, and it also means AMSI never got to judge it. Not clean, and not merely unmeasured.'
+            "verdict=broken" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            exit 1
+          }
+
+          $headUnmeasured = @($unmeasured | Where-Object { $_ -like 'head/*' })
+          if ($headUnmeasured.Count) {
+            foreach ($u in $headUnmeasured) { Write-Host "::warning::could not measure $u" }
+            Write-Host '::warning::At least one candidate was never actually put to a live provider, so there is no clean verdict to give for the head side.'
+            "verdict=unmeasured" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            exit 0
+          }
+
           $headBlocked = @($blocked | Where-Object { $_ -like 'head/*' })
           $baseBlocked = @($blocked | Where-Object { $_ -like 'base/*' })
 
@@ -264,6 +302,7 @@ jobs:
           Write-Host ''
 
           $flagged = @()
+          $unscanned = @()
           foreach ($side in 'base', 'head') {
             foreach ($file in (Get-ChildItem -LiteralPath (Join-Path $env:ROOT $side) -Filter '*.ps1' -ErrorAction SilentlyContinue)) {
               # Mark of the web, so block-at-first-sight consults the cloud rather than treating a
@@ -293,14 +332,25 @@ jobs:
               # -DisableRemediation, or a detection deletes the file and the next step reports it
               # missing rather than flagged.
               $text = (& $mp -Scan -ScanType 3 -File $file.FullName -DisableRemediation 2>&1 | Out-String)
-              # Read the output, not just the exit code: MpCmdRun has returned 0 with a threat named
-              # in its text.
+              # Captured immediately. A native command's exit code is not affected by
+              # $ErrorActionPreference and $LASTEXITCODE is overwritten by the next external call,
+              # so reading it later reads something else.
+              $code = $LASTEXITCODE
+              # Read the output AND the exit code. MpCmdRun has returned 0 with a threat named in its
+              # text, so the text alone is not enough; and a scan that never ran produces neither a
+              # match nor an error here, so the text alone would call it clean. 0 is the only
+              # documented clean code. This is the contract release-desktop.yml:1472-1489 already
+              # uses, reused rather than re-derived.
               $hit = [bool]($text -match 'found\s+([1-9]\d*)\s+threat')
-              Write-Host ("  {0,-8} {1,-24} {2}" -f $side, $file.Name, $(if ($hit) { 'FLAGGED' } else { 'clean' }))
+              $state = if ($hit) { 'FLAGGED' } elseif ($code -ne 0) { "UNSCANNED (exit $code)" } else { 'clean' }
+              Write-Host ("  {0,-8} {1,-24} {2}" -f $side, $file.Name, $state)
               if ($hit) {
                 $flagged += "$side/$($file.Name)"
                 ($text -split "`r?`n" | Where-Object { $_ -match 'Threat|found' } | Select-Object -First 5) |
                   ForEach-Object { Write-Host "      $_" }
+              } elseif ($code -ne 0) {
+                Write-Host "::warning::MpCmdRun did not complete a scan of $side/$($file.Name) (exit $code)"
+                $unscanned += "$side/$($file.Name) [exit $code]"
               }
             }
           }
@@ -314,6 +364,14 @@ jobs:
           }
 
           $headFlagged = @($flagged | Where-Object { $_ -like 'head/*' })
+          $headUnscanned = @($unscanned | Where-Object { $_ -like 'head/*' })
+          if ($headFlagged.Count -eq 0 -and $headUnscanned.Count) {
+            # Not "nothing was flagged". Nothing was scanned, which is the same sentence a reader
+            # would otherwise take as a clean result.
+            foreach ($u in $headUnscanned) { Write-Host "::warning::Defender could not scan $u" }
+            Write-Host '::warning::COULD NOT MEASURE on head: at least one candidate was never scanned, so there is no clean Defender verdict to report.'
+            exit 0
+          }
           if ($headFlagged.Count -eq 0) {
             Write-Host 'Defender: nothing on head was flagged.'
             exit 0
