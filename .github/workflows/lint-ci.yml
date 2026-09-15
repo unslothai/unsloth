@@ -170,6 +170,29 @@ jobs:
         run: |
           ruff check unsloth unsloth_cli studio tests cli.py unsloth-cli.py
 
+      # main only, and deliberately not on a pull request: there pre-commit.ci already
+      # checks this, and a PR branched before a formatting fix landed would go red for
+      # its base rather than for anything it did. What is missing is a signal HERE,
+      # after the merge. pre-commit.ci's autofix is computed against the PR merged with
+      # main, so unformatted files on main make its patch unappliable to every PR head:
+      # every open PR goes red carrying a delta it cannot self-heal, and a PR that
+      # cannot be autofixed then merges red and adds more. That ran for hours (#11019)
+      # and was only found by running the hook by hand.
+      #
+      # Its own venv: the job installs a much newer ruff above for `ruff check`, and the
+      # two formatters disagree. The pin and the file set come out of
+      # .pre-commit-config.yaml, not a second copy here.
+      - name: main is at the formatter's fixed point
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          pin=$(python scripts/check_tree_is_formatted.py --print-pin)
+          python -m venv "$RUNNER_TEMP/ruff-fmt"
+          "$RUNNER_TEMP/ruff-fmt/bin/pip" install --quiet "ruff==$pin"
+          PATH="$RUNNER_TEMP/ruff-fmt/bin:$PATH" \
+            "$RUNNER_TEMP/ruff-fmt/bin/python" scripts/check_tree_is_formatted.py
+
       - name: Import-hoist verifier self-test
         # scripts/verify_import_hoist.py is a scope-aware (LEGB) AST
         # resolver that gates import-hoisting / alias-rename refactors
