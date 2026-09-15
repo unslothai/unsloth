@@ -2209,9 +2209,14 @@ STUB_EOF
             # the echo prints a truncated path and the rest is run as a command. & is legal in a
             # Windows account name, so this is reachable. Inside double quotes it is literal.
             _css_win_temp_raw=$(cmd.exe /d /c 'echo "%TEMP%"' 2>/dev/null \
-                | tr -d '\r' | tail -n 1 | sed 's/[[:space:]]*$//') || _css_win_temp_raw=""
+                | tr -d '\r' | tail -n 1) || _css_win_temp_raw=""
+            # Quotes off FIRST, blanks second. Win32 strips trailing spaces from a path while
+            # [ -d ] does not, so they have to go; but with the closing quote still the last
+            # character there is no trailing blank to find, and trimming first silently did nothing
+            # for a %TEMP% like "C:\Temp   ".
             _css_win_temp_raw=${_css_win_temp_raw#\"}
             _css_win_temp_raw=${_css_win_temp_raw%\"}
+            _css_win_temp_raw=$(printf '%s' "$_css_win_temp_raw" | sed 's/[[:space:]]*$//')
             case "$_css_win_temp_raw" in
                 ""|"%TEMP%") _css_win_temp="" ;;
                 *) _css_win_temp=$(wslpath -u "$_css_win_temp_raw" 2>/dev/null) || _css_win_temp="" ;;

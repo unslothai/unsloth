@@ -233,14 +233,18 @@ while [ "\$_i" -le "\${#_cmd}" ]; do
     fi
     _first="\$_first\$_ch"; _i=\$((_i+1))
 done
-# Only the echo command's argument is printed, with the quotes consumed the way cmd consumes them.
-_out=\$(printf '%s' "\$_first" | sed 's/^echo //' | sed 's/^"//; s/"\$//')
+# cmd's echo prints its argument VERBATIM, quotes included: `echo "x"` outputs "x" with the
+# quotes. Stripping them here would hide whether install.sh strips them itself, which is the whole
+# point of the quoting, and it hid the order in which install.sh trims trailing blanks.
+_out=\$(printf '%s' "\$_first" | sed 's/^echo //')
 printf '%s\r\n' "\$_out"
 [ -n "\$_rest" ] && printf "'%s' is not recognized as an internal or external command\r\n" "\$_rest"
 exit 0
 STUB
     chmod +x "$STUBS/cmd.exe"
-    make_wslpath_stub "$1" "$WINTEMP"
+    # Trimmed, like the other stub: Win32 strips trailing blanks from a path, so the block must hand
+    # wslpath the trimmed value and this has to agree or the case could never pass.
+    make_wslpath_stub "$(printf '%s' "$1" | sed 's/[[:space:]]*$//')" "$WINTEMP"
 }
 
 # A plain path through the faithful stub: the quoting must not corrupt the ordinary case.
@@ -259,6 +263,16 @@ SCRIPT=$(printf '%s' "$OUT" | sed -n 2p)
 [ -n "$SCRIPT" ] && ok "a script path was allocated despite the ampersand" || bad "the ampersand killed shortcut creation"
 rm -f "$WINTEMP"/unsloth-shortcut-*.ps1
 
+
+# Trailing blanks THROUGH the quoting path. The older trailing-blank case used the fixed-string
+# stub, which emits the value unquoted, so it never saw that the trim now runs against a string
+# whose last character is a closing quote. Win32 strips trailing spaces from a path and [ -d ] does
+# not, so a %TEMP% of "C:\Temp   " has to come back as C:\Temp or the directory check clears it and
+# shortcut creation is skipped.
+make_parsing_cmd_stub 'C:\Users\ci\AppData\Local\Temp   '
+OUT=$(run_block)
+assert_eq "trailing blanks are trimmed after the quotes come off" "$WINTEMP" "$(printf '%s' "$OUT" | sed -n 1p)"
+rm -f "$WINTEMP"/unsloth-shortcut-*.ps1
 
 echo ""
 echo "  $PASS passed, $FAIL failed"
