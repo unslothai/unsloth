@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Rework GGUF chat videos before llama-server samples their frames.
-
-Smaller frames reduce prompt tokens and projector prefill time, and dropping
-the frames the sampler will discard keeps the result inside the upload cap.
-A clip too short for the sampler to land on is padded so it still arrives.
-Conversion failures leave the clip unchanged.
-"""
+"""Rework GGUF chat videos before llama-server samples their frames."""
 
 from __future__ import annotations
 
@@ -28,20 +22,11 @@ logger = logging.getLogger(__name__)
 
 # An area, not an edge, so portrait and landscape clips get the same budget.
 MAX_FRAME_PIXELS = 640 * 360
-# llama-server's own --video-fps default. Re-encoding above the rate anything
-# will sample spends bytes on frames mtmd drops, and those bytes count against
-# max_bytes: a legal 53 MB 12-minute 1080p30 upload transcodes to over 64 MB,
-# trips the cap guard below and is forwarded at full size after a 25s ffmpeg
-# pass. Capping at llama-server's default keeps every configuration whole --
-# Studio asks for 1 fps, a build too old for --video-fps samples at 4.
+# llama-server's --video-fps default: encoding above it buys frames mtmd drops,
+# and those bytes count against max_bytes.
 MAX_FRAME_RATE = 4
-# Studio pins --video-fps 1, and ffmpeg's fps filter places its first output
-# frame half an interval in, so a clip shorter than ~0.5s decodes to NO frames
-# and the model answers about a video it never saw. Measured against
-# llama-server's own `-vf fps=1` call: 0.4s emits 0 frames, 0.49s emits 1. At
-# the previous 4 fps default those clips worked, so the floor is a regression
-# guard, not a new feature. One whole second, not 0.5, to leave room for the
-# rate a user can still pass in the advanced arguments.
+# `fps` places its first output frame half an interval in, so at --video-fps 1 a
+# clip under ~0.5s decodes to NO frames. A whole second leaves user-rate headroom.
 MIN_SAMPLED_SECONDS = 1.0
 _PROBE_TIMEOUT_S = 30
 _SHRINK_TIMEOUT_S = 300
@@ -61,11 +46,7 @@ def _run(argv: list[str], timeout: float) -> subprocess.CompletedProcess:
 def _frame_geometry(
     ffprobe: str, clip: Path
 ) -> tuple[Optional[int], Optional[float], Optional[float]]:
-    """The first video stream's pixel area, average frame rate and duration.
-
-    Any of them may be None when ffprobe cannot answer, which the caller treats
-    the same way it treats a failed conversion: leave the clip alone.
-    """
+    """Any field is None when ffprobe cannot answer; the caller then leaves the clip alone."""
     result = _run(
         [
             ffprobe,
@@ -85,9 +66,8 @@ def _frame_geometry(
     )
     if result.returncode != 0:
         return None, None, None
-    # ffprobe answers `-of json` with an object, but a build that hands back
-    # anything else must fall back rather than raise AttributeError past the
-    # caller's except clause.
+    # A build answering `-of json` with a non-object must fall back, not raise
+    # AttributeError past the caller's except clause.
     payload = json.loads(result.stdout or b"{}")
     if not isinstance(payload, dict):
         return None, None, None
@@ -110,17 +90,9 @@ def _frame_geometry(
 
 
 def _packet_duration(ffprobe: str, clip: Path) -> Optional[float]:
-    """Duration from packet timestamps, for containers that carry none.
-
-    A raw elementary stream (`.h264`, rawvideo) has no `format.duration` at
-    all, so the sub-second floor never fired and a 0.3s clip still reached the
-    model with no frames. Reading packets answers it without a container.
-
-    Bounded by `-read_intervals` to twice the floor: the only question is
-    whether the clip is SHORTER than the floor, so a clip still producing
-    packets past that window is long enough by definition and there is no
-    reason to walk the rest of it.
-    """
+    """Duration from packet timestamps, for containers that carry none: a raw
+    elementary stream has no `format.duration`, so the sub-second floor never fired
+    on one. Bounded to twice the floor, past which a clip is long enough anyway."""
     result = _run(
         [
             ffprobe,
@@ -156,8 +128,8 @@ def _packet_duration(ffprobe: str, clip: Path) -> Optional[float]:
         try:
             end = max(end, float(packet.get("pts_time")) + span)
         except (TypeError, ValueError):
-            # Annex B carries no timestamps at all, only per-packet durations,
-            # so summing them is the only reading available for a raw stream.
+            # Annex B carries no timestamps, only durations: summing is the only
+            # reading available for a raw stream.
             continue
     return (end or total) or None
 
@@ -181,13 +153,9 @@ def _scale_filter(max_pixels: int) -> str:
 
 
 def _rate_ceiling(sampled_fps: Optional[float]) -> float:
-    """The highest rate worth encoding: never below llama-server's own default.
-
-    MAX_FRAME_RATE covers the two rates Studio can produce on its own (it asks
-    for 1, a build too old for the flag samples at 4). A user who asks for more
-    than that in the advanced arguments has to raise it, because the server
-    samples AFTER this transcode and can only duplicate what was dropped here.
-    """
+    """The highest rate worth encoding. A user asking for more than MAX_FRAME_RATE
+    raises it: the server samples AFTER this transcode and can only duplicate what
+    was dropped here."""
     if sampled_fps is not None and sampled_fps > MAX_FRAME_RATE:
         return float(sampled_fps)
     return float(MAX_FRAME_RATE)
@@ -200,22 +168,11 @@ def _filter_chain(
     oversized: bool,
     sampled_fps: Optional[float] = None,
 ) -> str:
-    """Tail pad, then rate cap, then scale -- each only when it is needed.
-
-    The pad comes FIRST because the rate cap has the same blind spot the pad
-    exists to cover: `fps=4` on a 0.1s clip also lands its first frame past the
-    end and emits nothing, leaving tpad with no frame to clone and the result
-    empty. Padding to a full second first gives both filters something to work
-    on. It holds the LAST frame rather than stretching timestamps, so every
-    real frame keeps the moment it was shot at and only the tail is invented.
-
-    The rate cap only ever goes downwards: `fps` DUPLICATES frames when asked
-    for more than the source has, so a timelapse recorded at 1 fps would come
-    back four times heavier.
-
-    Scaling is skipped for a clip already inside the budget, since the factor
-    would be greater than one and `scale` would happily UPSCALE it.
-    """
+    """Tail pad, then rate cap, then scale, each only when needed. Order matters:
+    the cap shares the blind spot the pad covers (`fps=4` on a 0.1s clip also emits
+    nothing, leaving tpad no frame to clone), the cap only goes downwards since
+    `fps` DUPLICATES when asked for more than the source has, and scale is skipped
+    inside the budget where it would UPSCALE."""
     ceiling = _rate_ceiling(sampled_fps)
     chain = []
     if duration is not None and 0 < duration < MIN_SAMPLED_SECONDS:
@@ -235,12 +192,8 @@ def shrink_video_for_llama(
 ) -> str:
     """Make a clip cheap and safe for llama-server to sample, as bare base64.
 
-    Shrinks oversized frames, caps the frame rate at the highest rate anything
-    will sample (``sampled_fps`` raises that ceiling when the user asked
-    llama-server for more), and pads a sub-second clip out far enough that one
-    frame still survives the sampler. Keeps only video and preserves the timing of every
-    real frame. Missing tools, conversion failures, and a result that would not
-    fit in ``max_bytes`` return the input unchanged.
+    ``sampled_fps`` raises the rate ceiling. Keeps only video and the timing of every
+    real frame. Missing tools, failures and an over-``max_bytes`` result pass through.
     """
     ffmpeg = shutil.which("ffmpeg")
     ffprobe = shutil.which("ffprobe")
@@ -261,9 +214,7 @@ def shrink_video_for_llama(
             too_short = duration is not None and 0 < duration < MIN_SAMPLED_SECONDS
             if not oversized and not too_short:
                 return video_b64
-            # The source bytes are on disk now, and holding the decoded copy to
-            # the end just to log its length keeps 64 MiB alive alongside the
-            # output and both base64 strings.
+            # Keeping the decoded copy alive just to log its length costs 64 MiB.
             raw_bytes = len(raw)
             del raw
             shrunk = Path(tmp) / "shrunk.mkv"
@@ -285,9 +236,8 @@ def shrink_video_for_llama(
                     _filter_chain(max_pixels, rate, duration, oversized, sampled_fps),
                     "-c:v",
                     "mpeg4",
-                    # Widely available, but still outgrows a low-bitrate source:
-                    # -fs only bounds the result at the upload cap, it does not
-                    # keep it near the original size.
+                    # Widely available, but outgrows a low-bitrate source: -fs
+                    # bounds at the upload cap, not near the original.
                     "-q:v",
                     "5",
                     "-fs",

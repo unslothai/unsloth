@@ -24550,8 +24550,7 @@ class LlamaCppBackend:
                             cache_ram,
                         )
                 # On every launch, not only where Studio emits --mmproj: a projector
-                # from the extras or LLAMA_ARG_MMPROJ takes video too, and llama-server
-                # ignores the flag when no projector loads.
+                # from the extras or LLAMA_ARG_MMPROJ takes video too.
                 cmd.extend(_video_fps_flags(server_caps))
 
                 # Report a clean public model id (matching GET /v1/models) rather

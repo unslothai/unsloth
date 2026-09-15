@@ -23345,9 +23345,8 @@ async def produce_openai_chat_completions(
             if video_rejection is not None:
                 raise _reject(*video_rejection)
             try:
-                # The transcode runs BEFORE llama-server samples, and the server
-                # can only duplicate frames dropped here, so an explicit rate in
-                # the advanced arguments has to reach the encoder.
+                # The transcode runs BEFORE llama-server samples and the server can
+                # only duplicate what was dropped, so an explicit rate must reach it.
                 video_b64 = await asyncio.to_thread(
                     shrink_video_for_llama,
                     video_b64,
@@ -23355,10 +23354,9 @@ async def produce_openai_chat_completions(
                     sampled_fps = requested_video_fps(getattr(llama_backend, "extra_args", None)),
                 )
             except Exception as e:
-                # The helper absorbs its own ffmpeg failures, so reaching here
-                # means something it does not model went wrong. Reject through
-                # _reject like the audio path above, rather than letting a raw
-                # 500 escape and leak the monitor entry with it.
+                # The helper absorbs its own ffmpeg failures, so reaching here means
+                # something it does not model went wrong. Reject like the audio path
+                # above, rather than letting a raw 500 leak the monitor entry with it.
                 logger.warning("Video preprocessing failed: %s", e, exc_info = True)
                 raise _reject(400, "Could not process the provided video file.")
 
