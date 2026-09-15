@@ -2183,7 +2183,10 @@ class DiffusionBackend:
             # A cancelled/superseded load raised below; don't log/stamp it onto the current load.
             if self._load_token != token:
                 return
-            logger.error("diffusion.load_failed: %s", exc)
+            # exc_info: the client only ever gets str(exc) (see below), so without the traceback
+            # here a one-line failure is unattributable to any call site. #10350 and #10963 both
+            # sat unreproducible for want of the frames this logs.
+            logger.error("diffusion.load_failed: %s", exc, exc_info = True)
             if self._state is not None:
                 from .gpu_arbiter import DIFFUSION, restore_owner_account
                 from hub.services.models.account_access import restore_resident_metadata
@@ -4438,6 +4441,23 @@ class DiffusionBackend:
                         te_quant = te_quant,
                         logger = logger,
                     )
+
+                    # apply_memory_plan's offload step imports diffusers.hooks, which eagerly imports
+                    # torch._dynamo (@torch.compiler.disable() at class-body time). Finish that import
+                    # here, on this one thread, before the offload APIs can start it concurrently with
+                    # anything else in the server: a half-built torch._dynamo read from another thread
+                    # raises "partially initialized module 'torch._dynamo' has no attribute 'utils'"
+                    # and, since nothing on this path is guarded, fails the whole load (#10350, #10963).
+                    # Normally a no-op: the background torch warm already did it at boot, so this
+                    # is the belt for hosts where that warm is disabled or failed. Guarded around
+                    # the IMPORT as well as the call, because utils.torch_warmup reaches
+                    # importlib._bootstrap._ModuleLockManager, a private CPython name: a build
+                    # lacking it must not take the load down. Best-effort, never a new failure.
+                    try:
+                        from utils.torch_warmup import ensure_dynamo_imported
+                        ensure_dynamo_imported()
+                    except Exception as exc:  # noqa: BLE001 - optimisation only
+                        logger.debug("dynamo pre-import skipped: %r", exc)
 
                     # Apply the planned placement; apply_memory_plan returns what ACTUALLY engaged so status stays
                     # honest.

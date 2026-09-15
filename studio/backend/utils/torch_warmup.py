@@ -207,6 +207,13 @@ def _warm_inference_backend() -> None:
     # Its constructor reaches hw.get_device(), so whoever builds it first pays for detection, which lazily is some request, and sync helpers call the getter inline from async handlers. Building it here makes the getter a dict read. After hardware, to reuse it.
     from core.inference import get_inference_backend
     get_inference_backend()
+    # Before _prime_nvlink_topology, which is the first thread this module starts: once that
+    # exists, "the first torch._dynamo import is single-threaded" stops being true. Folded into
+    # this stage rather than added as a fifth one on purpose -- _STAGES carries a purge-on-
+    # failure contract (_STAGE_PACKAGE) whose only sensible entry here would be torch, and
+    # purging torch is never right. ensure_dynamo_imported never raises, so this stage's
+    # failure semantics are unchanged.
+    ensure_dynamo_imported()
     _prime_nvlink_topology()
 
 
@@ -243,6 +250,58 @@ def _prime_nvlink_topology() -> Optional[threading.Thread]:
     worker = threading.Thread(target = _probe, daemon = True, name = "nvlink-topology-prime")
     worker.start()
     return worker
+
+
+_dynamo_lock = threading.Lock()
+_dynamo_done = False
+
+
+def ensure_dynamo_imported() -> bool:
+    """Finish ``import torch._dynamo`` on ONE thread. True iff dynamo is importable.
+
+    ``torch/__init__.py`` makes ``_dynamo`` a LAZY submodule, so any ``torch._dynamo.X``
+    calls ``importlib.import_module``, which hands back whatever is in ``sys.modules`` -- a
+    still-initialising module included, since ``_lock_unlock_module`` swallows ``_DeadlockError``
+    to avoid deadlocking. The import takes ~0.6-3.9s and binds ``.config`` at ~0.007s but
+    ``.utils`` only at ~0.284s, so for most of it the module is present and ``.utils`` is not.
+    Anything reading it in that window raises ``partially initialized module 'torch._dynamo'
+    has no attribute 'utils'`` (#10350, #10963).
+
+    The window is opened by ordinary loads, not by torch.compile: ``diffusers.hooks``
+    evaluates ``@torch.compiler.disable()`` at class-body time and ``torch/compiler/__init__.py``
+    is ``import torch._dynamo``, so the CPU-offload step of any diffusion load opens it well
+    outside every compile gate. Accelerate hit the same thing and wrapped it lazily; diffusers
+    does not.
+
+    Doing the first import once, early and single-threaded is what closes it: measured on torch
+    2.10.0 (the version both reports carry), 4-8 threads entering the dynamo/inductor cycle
+    together failed 19/20 runs without this and 0/20 with it.
+
+    Honest limit: this makes the first import single-threaded IN PRACTICE by getting there
+    first. It cannot make a genuinely concurrent first import safe -- CPython's per-module lock
+    is the thing being contended, and third-party code reaches dynamo without passing through
+    here. Never fatal: a host with no torch, or a dynamo that legitimately fails to import,
+    reports False and leaves callers on their existing eager fallbacks."""
+    global _dynamo_done
+    if _dynamo_done:
+        return True
+    with _dynamo_lock:
+        if _dynamo_done:
+            return True
+        try:
+            import torch  # noqa: PLC0415
+            import torch._dynamo  # noqa: PLC0415
+            import torch._dynamo.utils  # noqa: F401, PLC0415
+            # By ATTRIBUTE, not just by import: a submodule already in sys.modules is returned
+            # by `import` without being bound on its parent, which is the broken state itself.
+            # torch's own compile stack reads it this way (_functorch/aot_autograd.py).
+            if getattr(torch._dynamo, "utils", None) is None:
+                return False
+        except Exception as exc:  # noqa: BLE001 -- no torch, or a dynamo that cannot import
+            logger.debug("torch._dynamo warm skipped: %r", exc)
+            return False
+        _dynamo_done = True
+        return True
 
 
 _STAGES = (
