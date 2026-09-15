@@ -3872,7 +3872,7 @@ get_torch_index_url() {
                 # wheels that do not exist. Untested: nothing routes here on its own.
                 if _amd_therock_extra=$(_therock_device_extra_for_gfx "$_amd_unsup_gfx" 2>/dev/null); then
                     echo "[INFO] Untested: AMD's TheRock publishes nightly $_amd_unsup_gfx wheels. To try them, export both and re-run:" >&2
-                    echo "[INFO]   export UNSLOTH_TORCH_INDEX_URL=$THEROCK_MIRROR" >&2
+                    echo "[INFO]   export UNSLOTH_TORCH_INDEX_URL='$THEROCK_MIRROR'" >&2
                     echo "[INFO]   export UNSLOTH_TORCH_EXTRA=$_amd_therock_extra" >&2
                 fi
                 echo "$_base/cpu"; return
