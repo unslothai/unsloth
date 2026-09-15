@@ -524,6 +524,55 @@ def test_personalization_get_flags_legacy_fields(monkeypatch):
     assert body["greetingSlothSaved"] is False
 
 
+def test_personalization_legacy_chat_width_presence(monkeypatch):
+    store = {
+        pers.PERSONALIZATION_SETTING_KEY: {
+            "appearance": {"customization": {"uiFont": "Georgia"}},
+        }
+    }
+    client = _shared_setup_1(monkeypatch, store)
+    body = client.get("/api/settings/personalization").json()
+    assert body["customizationSaved"] is True
+    assert body["chatWidthSaved"] is False
+    assert body["appearance"]["customization"]["chatWidth"] == "standard"
+
+    put = client.put(
+        "/api/settings/personalization",
+        json = {"appearance": {"customization": {"uiFont": "Arial"}}},
+    )
+    assert put.status_code == 200
+    assert client.get("/api/settings/personalization").json()["chatWidthSaved"] is False
+    assert "chatWidth" not in store[pers.PERSONALIZATION_SETTING_KEY]["appearance"]["customization"]
+
+    put = client.put(
+        "/api/settings/personalization",
+        json = {"appearance": {"customization": {"chatWidth": "full"}}},
+    )
+    assert put.status_code == 200
+    body = client.get("/api/settings/personalization").json()
+    assert body["chatWidthSaved"] is True
+    assert body["appearance"]["customization"]["chatWidth"] == "full"
+    assert body["appearance"]["customization"]["uiFont"] == "Arial"
+
+
+@pytest.mark.parametrize("width", ["standard", "wide", "full"])
+def test_personalization_saved_chat_width_survives_stale_write(monkeypatch, width):
+    store = {
+        pers.PERSONALIZATION_SETTING_KEY: {
+            "appearance": {"customization": {"chatWidth": width}},
+        }
+    }
+    client = _shared_setup_1(monkeypatch, store)
+    put = client.put(
+        "/api/settings/personalization",
+        json = {"appearance": {"customization": {"uiFont": "Georgia"}}},
+    )
+    assert put.status_code == 200
+    body = client.get("/api/settings/personalization").json()
+    assert body["chatWidthSaved"] is True
+    assert body["appearance"]["customization"]["chatWidth"] == width
+
+
 def test_personalization_put_preserves_absent_fields(monkeypatch):
     # A stale client that omits palette/customization must not materialize them,
     # so the record stays legacy and GET keeps reporting those fields unsaved.
