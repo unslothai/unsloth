@@ -21,6 +21,23 @@ export interface SoleQuantEntry<T> {
   quant: T | null;
 }
 
+/** Collapse a Hub row only after a Hub-aware response verified every dependency. */
+export function verifiedSoleHubVariant<T extends { downloaded?: boolean }>(
+  variants: readonly T[],
+  resolvedLocally: boolean,
+  dependenciesResolved: boolean,
+): T | null {
+  if (
+    resolvedLocally ||
+    !dependenciesResolved ||
+    variants.length !== 1 ||
+    variants[0].downloaded !== true
+  ) {
+    return null;
+  }
+  return variants[0];
+}
+
 /** Identity of one repo's probe. Moves when that repo's variants cache is invalidated, the row
  *  points at another directory, or the bytes on disk change under us. */
 export function soleQuantKey(

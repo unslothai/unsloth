@@ -29,7 +29,7 @@ def _manifest_dir(root, model = "foo"):
 def _write_good_model(
     root,
     model = "good",
-    blob = "sha256-abc123",
+    blob = "sha256:abc123",
 ):
     """A manifest whose model layer resolves to a real blob, i.e. one the scan must surface."""
     blobs = root / "blobs"

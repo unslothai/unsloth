@@ -35,6 +35,7 @@ export {
   useDownloadManagerStore,
 } from "./download-manager-state";
 export type {
+  DownloadPresentation,
   DownloadRequest,
   JobListeners,
   ManagedDownload,

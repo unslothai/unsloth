@@ -41,6 +41,9 @@ on:
       # install_python_stack.py imports this; interrupted-install-ci.yml already
       # lists it for the same reason.
       - 'studio/install_manifest.py'
+      # Imported by BOTH files above, and it decides whether a CUDA build is a candidate
+      # at all, so editing it changes what this matrix installs on a Mac too.
+      - 'studio/nvidia_probe.py'
   push:
     branches: [main]
     # Same list as the PR filter. Without it this workflow ran on EVERY commit to
@@ -80,6 +83,9 @@ on:
       # install_python_stack.py imports this; interrupted-install-ci.yml already
       # lists it for the same reason.
       - 'studio/install_manifest.py'
+      # Imported by BOTH files above, and it decides whether a CUDA build is a candidate
+      # at all, so editing it changes what this matrix installs on a Mac too.
+      - 'studio/nvidia_probe.py'
   workflow_dispatch:
 
 concurrency:

@@ -13,6 +13,20 @@ from typing import Iterable, Optional
 
 
 # model_config imports this module, so the naming helpers are pulled in per call rather than at import; they stay where they are because they are constants and pure functions shared with non-drafter code (gguf_variants, the auto download paths), so the GGUF naming rules keep one home.
+def is_published_drafter_filename(
+    name: str,
+    *,
+    kind: str,
+    allow_legacy_suffix: bool = True,
+) -> bool:
+    """Whether *name* uses an allowed published sidecar form for this layout."""
+    lower = Path(name).name.lower()
+    if not lower.endswith(".gguf"):
+        return False
+    stem = re.sub(r"-[0-9]{5}-of-[0-9]{5}$", "", Path(lower).stem)
+    return lower.startswith(f"{kind}-") or (allow_legacy_suffix and stem.endswith(f"-{kind}"))
+
+
 def _drafter_pairing_stem(name: str, *, kind: str) -> str:
     """The model family a drafter filename names, stripped of its own markers. Both published schemes are handled, ``<kind>-<model>`` and the older ``<model>-<KIND>``. The shard suffix sits outside the quant token, so it goes first or the anchored quant strip below cannot match. Full quant vocabulary, not a subset: K/IQ/UD/MXFP drafters pair too, and the optional bpw modifier goes with it, as _extract_quant_label does."""
     stem = Path(name).stem.lower()
