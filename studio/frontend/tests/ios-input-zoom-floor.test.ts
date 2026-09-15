@@ -8,9 +8,7 @@ import { readSrc } from "./helpers/kit.ts";
 
 const css = readSrc("index.css");
 
-// The rule that stops iOS Safari zooming into a focused field: a 16px floor for
-// every text-entry control on a coarse pointer. Anything below 16px zooms, and the
-// zoom does not come back out, which pushes the header and send button off screen.
+// Below 16px iOS Safari zooms into a focused field and never zooms back out.
 const FLOOR_BLOCK =
   /@layer base \{\s*@media \(hover: none\) and \(pointer: coarse\) \{([\s\S]*?)\n\t\}\n\}/;
 
@@ -18,8 +16,7 @@ test("the focus-zoom floor sits in @layer base so it beats important utilities",
   const block = css.match(FLOOR_BLOCK);
   assert.ok(block, "the coarse-pointer font-size floor is gone from index.css");
 
-  // Important declarations reverse layer order, so base beats the utilities layer.
-  // An unlayered copy would lose to text-ui-13! and the field would still zoom.
+  // Important declarations reverse layer order, so base beats text-ui-13!.
   assert.match(block[1], /font-size:\s*max\(16px, 1rem \* var\(--ui-font-scale, 1\)\) !important;/);
   assert.match(block[1], /\btextarea\b/);
   assert.match(block[1], /\bselect\b/);
@@ -43,9 +40,7 @@ test("the floor skips controls that render no text of their own", () => {
   }
 });
 
-// Three controls were measured against 9-12px text and pin a width or height that
-// the 16px floor overflows: the value is clipped on a phone or tablet. Each one
-// carries a pointer-coarse companion, which leaves every mouse layout untouched.
+// Three controls pin a box sized for 9-12px text, so the floor clips their value.
 const COARSE_COMPANIONS: [string, RegExp][] = [
   ["features/studio/sections/progress-section.tsx", /pointer-coarse:h-auto[\s\S]{0,80}pointer-coarse:min-w-0/],
   ["features/studio/sections/params-section-controls.tsx", /w-12 pointer-coarse:w-16/],
