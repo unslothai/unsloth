@@ -8130,6 +8130,29 @@ def _binary_image_runs(
     return True
 
 
+def _kept_install_covers_host(marker: "dict[str, Any] | None", host: HostInfo) -> bool:
+    """Whether the bundle's recorded GPU coverage still includes this host's GPU.
+
+    A same-vendor card swap passes the vendor checks, and `--version` runs no kernels, so
+    the recorded supported_sms / mapped_targets are the only record of the arch the bundle
+    was built for. A marker without them (CPU, Vulkan, older) cannot tell and passes.
+    """
+    marker = marker or {}
+    backend = marker_backend(marker)
+    if backend == "cuda":
+        supported = set(normalize_compute_caps(marker.get("supported_sms") or []))
+        host_sms = normalize_compute_caps(host.compute_caps or [])
+        return not supported or not host_sms or all(sm in supported for sm in host_sms)
+    if backend == "rocm":
+        mapped = {
+            str(t).strip().lower() for t in marker.get("mapped_targets") or [] if str(t).strip()
+        }
+        gfx = (host.rocm_gfx_target or "").strip().lower()
+        family = str(marker.get("gfx_target") or "").strip().lower()
+        return not mapped or not gfx or gfx in mapped or gfx == family
+    return True
+
+
 def _existing_install_runs(install_dir: Path, host: HostInfo) -> bool:
     """Check whether the setup scripts could reuse and run this install."""
     if not _install_tree_is_usable(install_dir, host):
@@ -10354,7 +10377,10 @@ def main() -> int:
         # since the update that failed usually failed for want of one.
         install_dir = Path(args.check_installed)
         try:
-            runs = _existing_install_runs(install_dir, detect_host())
+            host = detect_host()
+            runs = _existing_install_runs(install_dir, host) and _kept_install_covers_host(
+                load_prebuilt_metadata(install_dir), host
+            )
         except Exception as exc:
             print(f"install check failed: {exc}", file = sys.stderr)
             runs = False

@@ -241,8 +241,7 @@ def test_the_kept_tree_is_checked_offline_the_way_the_updater_checks_it():
     assert '--check-installed "$1"' in runs and "--validate-install" not in runs
 
 
-@requires_bash
-def test_check_installed_answers_with_the_updaters_own_check(tmp_path, monkeypatch):
+def _load_ilp():
     import importlib.util
 
     spec = importlib.util.spec_from_file_location(
@@ -251,6 +250,93 @@ def test_check_installed_answers_with_the_updaters_own_check(tmp_path, monkeypat
     ilp = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = ilp
     spec.loader.exec_module(ilp)
+    return ilp
+
+
+def _linux_host(ilp, **fields):
+    base = dict(
+        system = "Linux",
+        machine = "x86_64",
+        is_windows = False,
+        is_linux = True,
+        is_macos = False,
+        is_x86_64 = True,
+        is_arm64 = False,
+        nvidia_smi = None,
+        driver_cuda_version = None,
+        compute_caps = [],
+        visible_cuda_devices = None,
+        has_physical_nvidia = False,
+        has_usable_nvidia = False,
+    )
+    base.update(fields)
+    return ilp.HostInfo(**base)
+
+
+class TestTheKeptBundleMustStillCoverTheCard:
+    """A same-vendor card swap passes the vendor check and --version; the marker does not."""
+
+    def test_a_cuda_bundle_is_kept_only_for_the_sms_it_was_built_for(self):
+        ilp = _load_ilp()
+        marker = {"backend": "cuda", "supported_sms": ["7.5", "8.6", "8.9"]}
+        assert ilp._kept_install_covers_host(marker, _linux_host(ilp, compute_caps = ["8.9"]))
+        assert not ilp._kept_install_covers_host(
+            marker, _linux_host(ilp, compute_caps = ["12.0"])
+        )
+        # Two cards: every one must be covered.
+        assert not ilp._kept_install_covers_host(
+            marker, _linux_host(ilp, compute_caps = ["8.9", "12.0"])
+        )
+
+    def test_a_rocm_bundle_is_kept_for_its_mapped_targets_or_family(self):
+        ilp = _load_ilp()
+        marker = {
+            "backend": "rocm",
+            "gfx_target": "gfx110X",
+            "mapped_targets": ["gfx1100", "gfx1101", "gfx1102"],
+        }
+        for gfx in ("gfx1100", "GFX1101", "gfx110X"):
+            assert ilp._kept_install_covers_host(marker, _linux_host(ilp, rocm_gfx_target = gfx))
+        assert not ilp._kept_install_covers_host(
+            marker, _linux_host(ilp, rocm_gfx_target = "gfx1201")
+        )
+
+    def test_a_marker_without_coverage_cannot_tell_and_passes(self):
+        ilp = _load_ilp()
+        host = _linux_host(ilp, compute_caps = ["12.0"], rocm_gfx_target = "gfx1201")
+        for marker in (
+            None,
+            {"backend": "cuda"},
+            {"backend": "rocm", "mapped_targets": []},
+            {"backend": "vulkan"},
+            {"llama_backend": "cpu"},
+        ):
+            assert ilp._kept_install_covers_host(marker, host)
+        # An unknown host SM (masked) cannot be checked either.
+        assert ilp._kept_install_covers_host(
+            {"backend": "cuda", "supported_sms": ["8.9"]}, _linux_host(ilp)
+        )
+
+    def test_check_installed_refuses_a_bundle_that_no_longer_covers_the_card(
+        self, tmp_path, monkeypatch
+    ):
+        ilp = _load_ilp()
+        monkeypatch.setattr(ilp, "detect_host", lambda **k: _linux_host(ilp, compute_caps = ["12.0"]))
+        monkeypatch.setattr(ilp, "_existing_install_runs", lambda d, h: True)
+        monkeypatch.setattr(
+            ilp,
+            "load_prebuilt_metadata",
+            lambda d: {"backend": "cuda", "supported_sms": ["8.9"]},
+        )
+        monkeypatch.setattr(
+            sys, "argv", ["install_llama_prebuilt.py", "--check-installed", str(tmp_path)]
+        )
+        assert ilp.main() == 2
+
+
+@requires_bash
+def test_check_installed_answers_with_the_updaters_own_check(tmp_path, monkeypatch):
+    ilp = _load_ilp()
     seen = {}
     monkeypatch.setattr(ilp, "detect_host", lambda **k: "host")
 
@@ -278,6 +364,13 @@ def test_check_installed_answers_with_the_updaters_own_check(tmp_path, monkeypat
 def test_an_intel_host_on_cpu_is_named_too():
     window = _between("caught here, after the fact", "# Swap only after build succeeds")
     assert "_setup_has_intel_gpu" in window
+
+
+def test_the_arm64_cpu_prebuilt_fallback_is_named_in_the_footer_too():
+    window = _between(
+        'step "llama.cpp" "arm64 CPU prebuilt installed', "_STUDIO_OWNED_MARKER"
+    )
+    assert "_LLAMA_CPU_ONLY_ON_GPU_HOST=true" in window
 
 
 def test_a_kept_prebuilt_is_not_reported_as_a_failed_build():

@@ -3962,6 +3962,9 @@ if [ "$_LLAMA_CPP_DEGRADED" = true ] \
     if run_quiet_no_exit "arm64 CPU prebuilt" "${_ARM64_CPU_CMD[@]}"; then
         step "llama.cpp" "arm64 CPU prebuilt installed (GPU build unavailable)" "$C_WARN"
         _LLAMA_CPP_DEGRADED=false
+        if [ "$_setup_nvidia_physical" = true ] || [ "$_setup_amd_detected" = true ]; then
+            _LLAMA_CPU_ONLY_ON_GPU_HOST=true
+        fi
         print_installed_llama_prebuilt_release "$LLAMA_CPP_DIR"
     fi
 fi
