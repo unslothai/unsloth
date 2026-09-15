@@ -142,6 +142,25 @@ class TestTheMemoryProbeFallsBackToNvml:
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "MIG-dddd")
         assert LlamaCppBackend._get_gpu_memory() == []
 
+    def test_a_uuid_mask_is_handed_to_the_child_as_uuids(self, monkeypatch, probe_script):
+        _failing_smi(monkeypatch)
+        slice_row = dict(_row(0, 9000, 20480, uuid = "MIG-cccc3333-0"), mig = "1")
+        probe_script(_payload([_row(0, 60000, 81920, uuid = "GPU-aaaa1111-0"), _row(1, 20000, uuid = "GPU-bbbb2222-1"), slice_row]))
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "MIG-cccc")
+        assert LlamaCppBackend._get_gpu_memory() == [(0, 9000, 20480)]
+        # The launch must not turn the slice into its parent's index.
+        assert LlamaCppBackend._child_visibility_for([0]) == "MIG-cccc3333-0"
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-bbbb,GPU-aaaa")
+        LlamaCppBackend._get_gpu_memory()
+        assert LlamaCppBackend._child_visibility_for([1, 0]) == "GPU-bbbb2222-1,GPU-aaaa1111-0"
+        # A numeric or absent mask re-emits indices as before.
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1")
+        LlamaCppBackend._get_gpu_memory()
+        assert LlamaCppBackend._child_visibility_for([1]) == "1"
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES")
+        LlamaCppBackend._get_gpu_memory()
+        assert LlamaCppBackend._child_visibility_for([0, 1]) == "0,1"
+
     def test_rows_without_a_memory_reading_are_not_evidence(self, monkeypatch, probe_script):
         _failing_smi(monkeypatch)
         probe_script(_payload([_row(0, 0, 0)], source = "cuda"))
@@ -309,8 +328,10 @@ class TestAGpuCapableBuildIsPreferred:
         nodes.add("/dev/nvidiactl")
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
         assert ps.host_gpu_vendors() == {"amd"}
+        # Detected but nothing reachable is an empty set, not unknown: only Vulkan fits then.
         monkeypatch.setenv("HIP_VISIBLE_DEVICES", "-1")
-        assert ps.host_gpu_vendors() is None
+        assert ps.host_gpu_vendors() == set()
+        assert ps._fits_host({"cuda"}, set()) is False and ps._fits_host({"vulkan"}, set()) is True
 
     def test_a_first_hit_of_unknown_layout_keeps_its_place(self, tmp_path):
         from utils import llama_cpp_path_settings as ps

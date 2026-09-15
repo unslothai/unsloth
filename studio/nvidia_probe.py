@@ -137,7 +137,7 @@ def _probe_nvml() -> dict | None:
         for index in range(count.value):
             handle = ctypes.c_void_p()
             if get_handle(index, ctypes.byref(handle)) != 0:
-                continue
+                return None  # a GPU this reader cannot see is a GPU the selectors would miss
             name = ctypes.create_string_buffer(96)
             uuid = ctypes.create_string_buffer(96)
             major, minor = ctypes.c_int(0), ctypes.c_int(0)

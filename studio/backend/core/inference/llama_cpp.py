@@ -10495,6 +10495,8 @@ class LlamaCppBackend:
     # only under PCI_BUS_ID, so a caller pinning the child's device order has to
     # know which it holds (#10613).
     _GPU_IDS_ARE_PCI_INDICES = None
+    # index -> inherited uuid, when CUDA_VISIBLE_DEVICES named the NVML rows by uuid.
+    _VISIBLE_UUID_BY_INDEX: dict = {}
 
     # Boot-time property: read once, not per launch (the #10613 host has 175
     # groups). Only the default root is cached; an explicit root (tests) re-reads.
@@ -11672,6 +11674,7 @@ class LlamaCppBackend:
         uuid prefix per entry, as the CUDA runtime reads it; any other entry hides every GPU."""
         raw = os.environ.get("CUDA_VISIBLE_DEVICES")
         gpus = [r for r in rows if not r.get("mig")]
+        LlamaCppBackend._VISIBLE_UUID_BY_INDEX = {}
         if raw is None:
             return gpus
         picked: list[dict] = []
@@ -11687,7 +11690,23 @@ class LlamaCppBackend:
             else:
                 return []
             picked.extend(r for r in hits if r not in picked)
+        if any(not t.strip().isdigit() for t in raw.split(",") if t.strip()):
+            # The launch re-emits a selection as indices; a slice has only its parent's, so
+            # remember the uuid each index stands for and hand that back instead.
+            LlamaCppBackend._VISIBLE_UUID_BY_INDEX = {
+                int(r["index"]): str(r["uuid"]) for r in picked if str(r.get("index", "")).isdigit()
+            }
         return picked
+
+    @staticmethod
+    def _child_visibility_for(gpu_indices) -> str:
+        """The mask for these indices: the inherited uuids when the mask named the rows by
+        uuid (a MIG slice must stay a MIG- entry), else the indices themselves."""
+        ids = [int(i) for i in gpu_indices]
+        by_index = LlamaCppBackend._VISIBLE_UUID_BY_INDEX
+        if by_index and all(i in by_index for i in ids):
+            return ",".join(by_index[i] for i in ids)
+        return ",".join(str(i) for i in ids)
 
     @staticmethod
     def _get_gpu_memory_nvml() -> list[tuple[int, int, int]]:
@@ -26322,7 +26341,7 @@ class LlamaCppBackend:
                     # enumerates every agent first, which segfaults on a deselected
                     # unsupported GPU (e.g. gfx1036 iGPU under a gfx103X prebuilt).
                     self._emit_child_gpu_visibility(
-                        env, ",".join(str(i) for i in gpu_indices), prefer_rocr = True
+                        env, LlamaCppBackend._child_visibility_for(gpu_indices), prefer_rocr = True
                     )
                     _child_gpu_physical_ids = tuple(int(i) for i in gpu_indices)
                     _launch_pinned_ids = list(gpu_indices)

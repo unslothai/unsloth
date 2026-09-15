@@ -128,8 +128,9 @@ def _mask_hides_all(*names: str) -> bool:
 
 def host_gpu_vendors() -> Optional[set[str]]:
     """GPU vendors this process can reach: DRM sysfs vendors whose device node is present and
-    whose visibility mask is not empty on Linux, the vendors' driver DLLs on Windows; None
-    when nothing answers, so an unknown host filters nothing."""
+    whose visibility mask is not empty on Linux, the vendors' driver DLLs on Windows. None when
+    nothing was detected at all (an unknown host filters nothing); an empty set when GPUs were
+    detected but none is reachable, so only vendor-agnostic backends fit."""
     vendors: set[str] = set()
     if sys.platform == "darwin":
         return {"apple"}
@@ -148,6 +149,7 @@ def host_gpu_vendors() -> Optional[set[str]]:
                 vendors.add(vendor)
         if os.path.isdir("/proc/driver/nvidia"):
             vendors.add("nvidia")
+        detected = set(vendors)
         # A container that exposes only one vendor's device nodes, or a mask hiding a vendor,
         # must not make its backend look runnable on a hybrid box.
         if "nvidia" in vendors and (
@@ -159,6 +161,7 @@ def host_gpu_vendors() -> Optional[set[str]]:
             or _mask_hides_all("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES")
         ):
             vendors.discard("amd")
+        return vendors if detected else None
     return vendors or None
 
 
