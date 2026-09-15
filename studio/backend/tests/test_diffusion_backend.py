@@ -7376,155 +7376,21 @@ def test_download_plan_stages_nothing_for_a_base_wholly_in_the_other_root(monkey
     assert plan["entries"] == [], "a base living entirely in one root is already loadable"
 
 
-def test_download_plan_plans_the_checkpoint_of_an_unrecognised_gguf_instead_of_raising(monkeypatch):
+def test_download_plan_declines_an_unrecognised_gguf_instead_of_raising(monkeypatch):
     # A neutral repo whose id AND filename match no family resolves no companions, and the family
-    # fallback used to raise on None. The picker asks for a plan on every hub pick, so that 500s the
-    # route. There is still exactly one file this pick names, and a caller that downloads WITHOUT
-    # loading (the Download only action) has nothing else to go on, so the checkpoint is planned.
-    _fake_hf_api(
-        monkeypatch,
-        {
-            "someone/mixed-gguf-collection": [
-                _FakeSibling("totally-unknown-thing-Q4_K_M.gguf", 4_000),
-                _FakeSibling("something-else-Q8_0.gguf", 9_000),
-            ]
-        },
-    )
-
-    plan = DiffusionBackend().download_plan(
-        "someone/mixed-gguf-collection",
-        gguf_filename = "totally-unknown-thing-Q4_K_M.gguf",
-        model_kind = "gguf",
-    )
-
-    assert plan["entries"] == [
-        {
-            "repo_id": "someone/mixed-gguf-collection",
-            "files": ["totally-unknown-thing-Q4_K_M.gguf"],
-            "bytes": 4_000,
-            "gguf_filename": "totally-unknown-thing-Q4_K_M.gguf",
-            "checkpoint": True,
-        }
-    ], "only the selected file, never its unrelated neighbours in the same repo"
-    assert plan["total_bytes"] == 4_000 and plan["checkpoint_bytes"] == 4_000
-    # Nothing failed: the companion set is empty, not undiscovered, and marking it incomplete would
-    # make the media auto-switch refuse a pick whose size is known exactly.
-    assert not plan.get("plan_failed")
-
-
-def test_an_unrecognised_gguf_already_on_disk_plans_nothing(monkeypatch):
-    _fake_hf_api(
-        monkeypatch,
-        {"someone/mixed-gguf-collection": [_FakeSibling("unknown-Q4_K_M.gguf", 4_000)]},
-    )
-    monkeypatch.setattr(DiffusionBackend, "_hub_file_is_cached", staticmethod(lambda *a, **k: True))
-
-    plan = DiffusionBackend().download_plan(
-        "someone/mixed-gguf-collection",
-        gguf_filename = "unknown-Q4_K_M.gguf",
-        model_kind = "gguf",
-    )
-
-    assert plan["entries"] == [] and plan["total_bytes"] == 0
-
-
-def test_an_unrecognised_gguf_still_plans_when_the_hub_lookup_fails(monkeypatch):
-    """Sizing is best-effort everywhere else in this planner, and it stays best-effort here: an
-    unknown size must not cost the user the download itself."""
-    _fake_hf_api(monkeypatch, {})  # every model_info call raises KeyError
-
-    plan = DiffusionBackend().download_plan(
-        "someone/mixed-gguf-collection",
-        gguf_filename = "unknown-Q4_K_M.gguf",
-        model_kind = "gguf",
-    )
-
-    assert [entry["files"] for entry in plan["entries"]] == [["unknown-Q4_K_M.gguf"]]
-    assert plan["total_bytes"] == 0
-
-
-def test_a_local_unrecognised_gguf_path_plans_no_download(monkeypatch, tmp_path):
-    local = tmp_path / "unknown-Q4_K_M.gguf"
-    local.write_bytes(b"0")
+    # fallback used to raise on None. The picker asks for a plan on every hub pick, so that 500s
+    # the route; planning no work is the honest answer. /images/download-plan refuses this pick
+    # outright before the planner is reached (see test_diffusion_routes.py), so nothing downstream
+    # depends on the shape of this answer.
     _fake_hf_api(monkeypatch, {})
 
     plan = DiffusionBackend().download_plan(
-        str(tmp_path), gguf_filename = local.name, model_kind = "gguf"
+        "someone/mixed-gguf-collection",
+        gguf_filename = "totally-unknown-thing-Q4_K_M.gguf",
+        model_kind = "gguf",
     )
 
     assert plan == {"entries": [], "total_bytes": 0, "required_bytes": 0, "checkpoint_bytes": 0}
-
-
-def test_a_failed_prequant_lookup_marks_the_plan_incomplete(monkeypatch):
-    """The dense transformer shards are already excluded for a GGUF pick, so a swallowed prequant
-    lookup leaves a plan naming NEITHER transformer source. A caller that downloads and then loads
-    is fine (the loader fetches it inline); one that must not download afterwards has to be told the
-    list is partial, or Download only reports success and the load still pulls multi-GB on use."""
-    _fake_hf_api(
-        monkeypatch,
-        {
-            "someone/mixed-gguf-collection": [
-                _FakeSibling("totally-unknown-thing-Q4_K_M.gguf", 4_000)
-            ],
-            "unsloth/Z-Image-Turbo": _ZIMAGE_BASE_SIBLINGS,
-        },
-    )
-    _no_cache(monkeypatch)
-    boom = RuntimeError("model_info timed out")
-
-    def failing_source(
-        self,
-        fam,
-        kind,
-        hf_token,
-        kwargs,
-        failures_out = None,
-    ):
-        if failures_out is not None:
-            failures_out.append(boom)
-        return None
-
-    monkeypatch.setattr(DiffusionBackend, "_dit_prequant_plan_source", failing_source)
-
-    plan = DiffusionBackend().download_plan(
-        "someone/mixed-gguf-collection",
-        gguf_filename = "totally-unknown-thing-Q4_K_M.gguf",
-        model_kind = "gguf",
-        base_repo = "unsloth/Z-Image-Turbo",
-    )
-
-    assert (
-        plan["plan_failed"] is True
-    ), "a swallowed prequant lookup left the plan calling itself complete"
-
-
-def test_a_prequant_lookup_that_finds_nothing_is_not_a_failure(monkeypatch):
-    """None is also the ordinary answer when the pick uses no hosted prequant at all. Only the
-    swallowed exception counts, or every dense pick would report an incomplete plan."""
-    _fake_hf_api(
-        monkeypatch,
-        {
-            "someone/mixed-gguf-collection": [
-                _FakeSibling("totally-unknown-thing-Q4_K_M.gguf", 4_000)
-            ],
-            "unsloth/Z-Image-Turbo": _ZIMAGE_BASE_SIBLINGS,
-        },
-    )
-    _no_cache(monkeypatch)
-    monkeypatch.setattr(
-        DiffusionBackend,
-        "_dit_prequant_plan_source",
-        lambda self, fam, kind, hf_token, kwargs, failures_out = None: None,
-    )
-
-    plan = DiffusionBackend().download_plan(
-        "someone/mixed-gguf-collection",
-        gguf_filename = "totally-unknown-thing-Q4_K_M.gguf",
-        model_kind = "gguf",
-        base_repo = "unsloth/Z-Image-Turbo",
-    )
-
-    assert plan["plan_failed"] is False
 
 
 def test_download_plan_still_plans_an_unrecognised_gguf_given_an_explicit_base(monkeypatch):
