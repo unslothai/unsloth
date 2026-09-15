@@ -779,6 +779,7 @@ class ExportBackend:
         # save_pretrained_merged is a no-op merge for non-PEFT base models, so one path covers both.
 
         output_path: Optional[str] = None
+        save_dir_was_empty = False
         # Two backends: compressed-tensors (llm-compressor, NVIDIA-only) and portable torchao FP8/INT8.
         # The alias comes from compressed_method (the "all formats" dropdown) or the format_type label.
         _LABEL_TO_ALIAS = {
@@ -879,6 +880,10 @@ class ExportBackend:
             if save_directory:
                 save_directory = str(resolve_export_write_dir(save_directory))
                 logger.info(f"Saving merged model locally to: {save_directory}")
+                # Leftovers in a reused folder would be uploaded too, so only a fresh one is pushed as is.
+                save_dir_was_empty = not (
+                    Path(save_directory).is_dir() and any(Path(save_directory).iterdir())
+                )
                 ensure_dir(Path(save_directory))
 
                 # No push, but the merge resolves the base repo and save.py turns None into
@@ -947,7 +952,11 @@ class ExportBackend:
                                 token = hf_token,
                                 private = private,
                             )
-                elif output_path and Path(output_path).is_dir():
+                elif (
+                    output_path
+                    and Path(output_path).is_dir()
+                    and (is_compressed or is_torchao or save_dir_was_empty)
+                ):
                     # Upload the artifact already built in output_path; push_to_hub_merged(save_method=...) would
                     # redo the expensive merge and quantization.
                     hf_api = HfApi(token = hf_token)

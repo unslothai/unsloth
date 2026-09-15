@@ -182,6 +182,27 @@ def test_merged_export_push_uploads_the_saved_folder_instead_of_merging_again(
     assert seen["uploaded"] == ["export_metadata.json", "model.safetensors"]
 
 
+def test_merged_export_push_to_a_reused_folder_does_not_upload_its_leftovers(tmp_path, monkeypatch):
+    calls: list[str] = []
+    seen: dict = {}
+    backend = _non_mlx_backend(monkeypatch, "test_export_hub_push_merged_backend", calls, seen)
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    (export_dir / "adapter_config.json").write_text("{}")
+
+    success, message, output_path = backend.export_merged_model(
+        str(export_dir),
+        push_to_hub = True,
+        repo_id = "model",
+        hf_token = "hf_fake",
+    )
+
+    assert success is True, message
+    assert output_path == str(export_dir.resolve())
+    assert backend.current_model.merges == ["merged_16bit", "push_to_hub_merged"]
+    assert "upload_folder" not in calls
+
+
 def test_merged_export_push_card_does_not_name_a_local_base_model(tmp_path, monkeypatch):
     calls: list[str] = []
     seen: dict = {}
