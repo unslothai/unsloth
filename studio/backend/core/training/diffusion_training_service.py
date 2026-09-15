@@ -728,14 +728,19 @@ class DiffusionTrainingService:
             proc = self._proc
             pump = self._pump
             account = self._result_account
-        if proc is None or not proc.is_alive():
+
+        def settled():
+            # The pump writes the run record after the child exits, so wait for it too.
+            return (proc is None or not proc.is_alive()) and (pump is None or not pump.is_alive())
+
+        if settled():
             return True
-        # The signal path runs as the owner, which job_control refuses for a managed account's run.
-        run_as(account, self.stop, save = True)
+        if proc is not None and proc.is_alive():
+            # The signal path runs as the owner, which job_control refuses for a managed account's run.
+            run_as(account, self.stop, save = True)
         deadline = time.monotonic() + max(0.0, timeout)
         while time.monotonic() < deadline:
-            # The pump writes the run record after the child exits, so wait for it too.
-            if not proc.is_alive() and (pump is None or not pump.is_alive()):
+            if settled():
                 return True
             time.sleep(0.25)
         return False
