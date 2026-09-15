@@ -3291,9 +3291,7 @@ def _cwds_after_cd(workdir: str, text: str) -> "list[tuple[int, int, str]]":
             # The directories walked so far stop being where a later path opens from, so every span
             # still open ends HERE. Without this the earlier move still covered the rest of the
             # command and the return changed nothing.
-            walked = [
-                (offset, min(limit, match.start()), cwd) for offset, limit, cwd in walked
-            ]
+            walked = [(offset, min(limit, match.start()), cwd) for offset, limit, cwd in walked]
             # Those spans are closed, so the SAME directory walked into again afterwards is a new
             # span rather than a repeat: `cd ../..; cd -; cd ../..` reaches the root twice, and the
             # dedup that stops padding from spending the budget hid the second one.
@@ -3343,7 +3341,9 @@ def _cwds_after_cd(workdir: str, text: str) -> "list[tuple[int, int, str]]":
 
 
 def _references_studio_credential_here(
-    text: str, workdir: "str | None", _unescaped: bool = False
+    text: str,
+    workdir: "str | None",
+    _unescaped: bool = False,
 ) -> bool:
     """`_references_studio_credential`, plus the relative paths *text* would open from *workdir*.
 

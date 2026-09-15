@@ -432,7 +432,6 @@ def test_the_real_stream_generator_masks_a_key_across_chunk_boundaries():
     # deleted the redaction from both of that generator's `_masked` return paths and all 94 tests
     # here still passed, because the test below re-implements the loop instead of running it.
     from core.inference.tool_stream_exec import stream_tool_execution
-
     key = "sk-unsloth-0123456789abcdef0123456789abcdef"
     for chunks in (
         [key],
@@ -2297,8 +2296,11 @@ def test_a_long_run_of_escapes_is_a_decision_rather_than_a_crash(monkeypatch, tm
             False
         )
         # The one level it needs still works.
-        assert tools._references_studio_credential_here(
-            'c\\d ../..; sqlite3 auth/auth.db "select jwt_secret from auth_user"', workdir
-        ) is True
+        assert (
+            tools._references_studio_credential_here(
+                'c\\d ../..; sqlite3 auth/auth.db "select jwt_secret from auth_user"', workdir
+            )
+            is True
+        )
     finally:
         tools._studio_auth_markers_cache = None
