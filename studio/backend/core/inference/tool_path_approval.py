@@ -666,6 +666,12 @@ _STDOUT_FLAGS = frozenset({"-c", "--stdout", "--to-stdout"})
 _PATH_DEST_LAST_COMMANDS = frozenset({"cp", "mv", "install", "ln", "rsync"})
 
 
+# `zip -h`: "zip [options] [zipfile list]", so the FIRST positional is the archive being written and
+# every later one is a source it reads. Scoring them all as writes prompted on archiving anything
+# out of a read-silent root. `-m` deletes the sources after adding them, which makes them writes.
+_PATH_DEST_FIRST_COMMANDS = frozenset({"zip"})
+
+
 # Commands whose SOURCE operand is checked as a write. `mv --help`: "Rename SOURCE to DEST", so the
 # source is gone afterwards. `ln` does not remove its target, but it hands the sandbox a name that
 # WRITES to it: after `ln -s /scan/model.gguf local`, an ordinary relative write through `local`
@@ -934,6 +940,9 @@ _PATH_FLAG_SPECS = {
         "--directory": "extract_dir",
         "-T": "read",
         "--files-from": "read",
+        # `tar --help`: `--add-file=FILE` adds the named file, so it is read exactly as `-T`'s
+        # list members are. Unmodelled, the whole token was discarded and the path never seen.
+        "--add-file": "read",
         "-X": "read",
         "--exclude-from": "read",
         "--exclude": "skip",
@@ -1234,6 +1243,12 @@ def _terminal_path_operands(tokens, text = None) -> "list[tuple[str, bool]]":
     # A backtick substitution runs as a command of its own, so it is scanned as one IN ADDITION to
     # the pass above. Not instead of: `cat `echo /media/x`` puts the path in the outer command's
     # operand position too, and replacing the tokens dropped exactly that reading.
+    # A `cd` to an absolute directory moves where every RELATIVE path after it lands, and those are
+    # the paths this scan deliberately treats as sandbox-local. Rather than tracking a working
+    # directory (which the classifier has no state for), the destination is charged as a write when
+    # anything after it writes: `cd /models && touch weights.gguf` then asks, while `cd /models &&
+    # ls` does not.
+    operands.extend(_directory_change_write_targets(tokens))
     nested = _split_backticks(tokens, text)
     if nested != list(tokens):
         operands.extend(_terminal_path_operands(nested, text))
@@ -1624,6 +1639,13 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
                 or command in _PATH_SOURCE_MUTATING_COMMANDS
                 or (position == len(positionals) - 1 and len(positionals) > 1)
             )
+        elif command in _PATH_DEST_FIRST_COMMANDS:
+            writing = position == 0 or any(
+                arg == "-m"
+                or arg == "--move"
+                or (arg.startswith("-") and not arg.startswith("--") and "m" in arg.lstrip("-"))
+                for arg in args
+            )
         else:
             # `creating and position == 0` is the LEGACY form, `tar cf out.tar src`, where the
             # archive occupies the first positional. With `-f` the archive arrived as a flag value
@@ -1671,6 +1693,36 @@ def _seven_zip_operands(args, creating: bool) -> "list[tuple[str, bool]]":
                 for path in _substitution_operand_paths(arg)
             )
     return operands
+
+
+# Commands whose presence after a `cd` means something under the new directory is written.
+_DIRECTORY_CHANGE_COMMANDS = frozenset({"cd", "pushd"})
+
+
+def _directory_change_write_targets(tokens) -> "list[tuple[str, bool]]":
+    """The absolute destination of a `cd` that is followed by a write, as a write operand."""
+    targets: "list[str]" = []
+    writes_after = False
+    for index, token in enumerate(tokens):
+        base = _token_command_base(token)
+        if base in _DIRECTORY_CHANGE_COMMANDS:
+            operand = tokens[index + 1] if index + 1 < len(tokens) else ""
+            if _looks_absolute(operand):
+                targets.append(operand)
+            continue
+        if not targets:
+            continue
+        if (
+            base in _PATH_WRITE_COMMANDS
+            or base in _PATH_DEST_LAST_COMMANDS
+            or base in _PATH_ARCHIVE_COMMANDS
+            or base in ("rm", "rmdir", "dd", "shred", "sed", "perl")
+            or _REDIR_WRITE_RE.match(token)
+            or _REDIR_PREFIX_RE.match(token)
+            and ">" in token
+        ):
+            writes_after = True
+    return [(target, True) for target in targets] if writes_after else []
 
 
 def _serializes_to_second_arg(func, module_aliases: "dict | None" = None) -> bool:

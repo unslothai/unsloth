@@ -3374,6 +3374,11 @@ _ALLOWLISTED_PYTHON = (
 # Routes that reach an out-of-sandbox path WITHOUT naming it in an operand position. Each of these ran silently
 # before the operand scan learned about them.
 _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
+    # A `cd` to an absolute directory moves where every later RELATIVE write lands.
+    f"cd {_OUTSIDE_DIR} && touch weights.gguf",
+    f"cd {_OUTSIDE_DIR} && echo hi > out.txt",
+    # `tar --add-file=FILE` adds that file, so it is read.
+    f"tar -cf out.tar --add-file={_OUTSIDE_FILE}",
     # `tar --help`: `--delete` removes members and `-A` appends archives, both mutating `-f`.
     f"tar --delete -f {_OUTSIDE_DIR}/a.tar member",
     f"tar -A -f {_OUTSIDE_DIR}/a.tar b.tar",
@@ -3760,6 +3765,13 @@ _INDIRECT_BENIGN_TERMINAL = (
     "zstd out.txt",
     "7z a out.7z src",
     "7z x out.7z",
+    # A `cd` with nothing writing after it, and a relative one, are both ordinary.
+    "cd /usr/share/doc && ls",
+    "cd /usr/share/doc && grep -rn TODO .",
+    "cd build && touch x",
+    "tar -cf out.tar --add-file=local.txt",
+    # `zip archive src`: the archive is written, the sources are read.
+    "zip local.zip /usr/share/doc/file",
     "cat <(cat $(echo notes.txt))",
     "diff <(sort a) <(sort b)",
     # `test`/`[` only stat the operand of a FILE operator; the rest is string comparison.
