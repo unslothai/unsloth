@@ -4,9 +4,13 @@
 // Mount the real view against an in-memory queue; no model or backend is needed.
 import { StrictMode, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { MotionConfig } from "motion/react";
 import { PromptQueueList } from "@/components/assistant-ui/prompt-queue-list";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { type PromptQueueUIItem, reorderPromptQueueItems } from "@/features/chat";
+import {
+  type PromptQueueUIItem,
+  reorderPromptQueueItems,
+} from "@/features/chat";
 import "./src/index.css";
 
 const initialItems: PromptQueueUIItem[] = [
@@ -30,6 +34,7 @@ function App() {
   const [paused, setPaused] = useState(false);
   const [rejectMoves, setRejectMoves] = useState(false);
   const [steered, setSteered] = useState("");
+  const [moveAttempts, setMoveAttempts] = useState(0);
   return (
     <TooltipProvider>
       <div style={{ padding: 16 }}>
@@ -40,6 +45,7 @@ function App() {
             setPaused(false);
             setRejectMoves(false);
             setSteered("");
+            setMoveAttempts(0);
           }}
         >
           Reset fixture
@@ -49,6 +55,23 @@ function App() {
         </button>
         <button type="button" onClick={() => setItems((old) => old.slice(1))}>
           Dispatch first
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setMoveAttempts(0);
+            setItems(
+              Array.from({ length: 12 }, (_, index) => ({
+                ...initialItems[0],
+                id: `long-${index}`,
+                prompt: `Queued prompt ${index + 1}`,
+                position: index + 1,
+                total: 12,
+              })),
+            );
+          }}
+        >
+          Long queue
         </button>
         <button
           type="button"
@@ -65,6 +88,7 @@ function App() {
           Lock prompts
         </button>
         <output aria-label="Steered prompt">{steered}</output>
+        <output aria-label="Move attempts">{moveAttempts}</output>
       </div>
       <main style={{ maxWidth: 850, margin: "180px auto 0" }}>
         <PromptQueueList
@@ -91,6 +115,7 @@ function App() {
             return true;
           }}
           onMove={(id, targetId) => {
+            setMoveAttempts((count) => count + 1);
             if (rejectMoves) return false;
             const reordered = reorderPromptQueueItems(
               items,
@@ -120,6 +145,8 @@ function App() {
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <App />
+    <MotionConfig reducedMotion="user">
+      <App />
+    </MotionConfig>
   </StrictMode>,
 );

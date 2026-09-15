@@ -143,6 +143,138 @@ def check_actions(page):
     )
 
 
+def check_motion(page, reduced = False):
+    rows = page.locator("[data-queue-item-id]")
+    queue = page.locator('[aria-label^="Prompt queue,"]')
+    attempts = page.get_by_label("Move attempts", exact = True)
+
+    def reset():
+        page.get_by_role("button", name = "Reset fixture", exact = True).click()
+        expect(rows).to_have_count(3)
+
+    def row(item):
+        return page.locator(f'[data-queue-item-id="{item}"]')
+
+    def order(ids):
+        assert rows.evaluate_all("rows => rows.map(row => row.dataset.queueItemId)") == ids
+
+    def settle():
+        rows.evaluate_all(
+            "rows => Promise.all(rows.flatMap(row => row.getAnimations()).map(animation => animation.finished.catch(() => {})))"
+        )
+
+    def grab(item):
+        handle = row(item).get_by_role("button", name = re.compile("^Reorder queued prompt"))
+        box = handle.bounding_box()
+        point = (box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+        page.mouse.move(*point)
+        page.mouse.down()
+        return point
+
+    reset()
+    first = row("q0").bounding_box()
+    third = row("q2").bounding_box()
+    x, y = grab("q2")
+    page.mouse.move(x, y - 14, steps = 3)
+    expect(row("q2")).to_have_attribute("data-queue-dragging", "true")
+    page.wait_for_function(
+        "top => Math.abs(document.querySelector('[data-queue-item-id=\"q2\"]').getBoundingClientRect().top - top) < 1",
+        arg = third["y"] - 14,
+    )
+    order(["q0", "q1", "q2"])
+    expect(attempts).to_have_text("0")
+
+    page.mouse.move(x, first["y"] + first["height"] / 2 + 8, steps = 8)
+    page.wait_for_function(
+        "top => Math.abs(document.querySelector('[data-queue-item-id=\"q0\"]').getBoundingClientRect().top - top) < 1",
+        arg = first["y"] + third["height"],
+    )
+    if reduced:
+        assert row("q0").evaluate("row => row.style.transition") == "none"
+    order(["q0", "q1", "q2"])
+    expect(attempts).to_have_text("0")
+    page.mouse.up()
+    expect(attempts).to_have_text("1")
+    order(["q2", "q0", "q1"])
+    if reduced:
+        assert rows.evaluate_all(
+            "rows => rows.every(row => row.getAnimations().every(animation => animation.effect.getKeyframes().every(frame => frame.transform === undefined)))"
+        )
+    settle()
+    assert abs(row("q2").bounding_box()["y"] - first["y"]) < 1
+    expect(page.locator('[data-queue-dragging="true"]')).to_have_count(0)
+
+    if reduced:
+        print("PASS: reduced motion keeps direct dragging without settling animations", flush = True)
+        return
+
+    # Cancelled gestures never reach the queue engine.
+    for cancel in ("escape", "outside", "pointercancel"):
+        reset()
+        target = row("q2").bounding_box()
+        x, y = grab("q0")
+        page.mouse.move(x, target["y"] + target["height"] / 2, steps = 6)
+        expect(row("q0")).to_have_attribute("data-queue-dragging", "true")
+        if cancel == "escape":
+            page.keyboard.press("Escape")
+        elif cancel == "outside":
+            page.mouse.move(queue.bounding_box()["x"] - 30, y)
+        else:
+            row("q0").get_by_role(
+                "button", name = re.compile("^Reorder queued prompt")
+            ).dispatch_event("pointercancel")
+        page.mouse.up()
+        settle()
+        order(["q0", "q1", "q2"])
+        expect(attempts).to_have_text("0")
+        expect(page.locator('[data-queue-dragging="true"]')).to_have_count(0)
+
+    reset()
+    page.get_by_role("button", name = "Simulate dispatch race", exact = True).click()
+    target = row("q0").bounding_box()
+    x, y = grab("q2")
+    page.mouse.move(x, target["y"] + target["height"] / 2, steps = 6)
+    page.mouse.up()
+    expect(attempts).to_have_text("1")
+    settle()
+    order(["q0", "q1", "q2"])
+    assert abs(row("q0").bounding_box()["y"] - target["y"]) < 1
+    expect(page.get_by_role("status").filter(has_text = "queue changed")).to_be_attached()
+
+    reset()
+    x, y = grab("q0")
+    page.mouse.move(x, y + 60, steps = 5)
+    expect(row("q0")).to_have_attribute("data-queue-dragging", "true")
+    page.get_by_role("button", name = "Dispatch first", exact = True).evaluate(
+        "button => button.click()"
+    )
+    expect(row("q0")).to_have_count(0)
+    page.mouse.up()
+    order(["q1", "q2"])
+    expect(attempts).to_have_text("0")
+    expect(page.locator('[data-queue-dragging="true"]')).to_have_count(0)
+
+    # Holding at the edge scrolls without further pointer events.
+    reset()
+    page.get_by_role("button", name = "Long queue", exact = True).click()
+    expect(rows).to_have_count(12)
+    bounds = queue.bounding_box()
+    x, y = grab("long-0")
+    page.mouse.move(x, bounds["y"] + bounds["height"] - 5, steps = 10)
+    page.wait_for_function(
+        "() => { const list = document.querySelector('[aria-label^=\"Prompt queue,\"]'); return list.scrollTop >= list.scrollHeight - list.clientHeight - 1; }"
+    )
+    expect(attempts).to_have_text("0")
+    page.mouse.up()
+    expect(attempts).to_have_text("1")
+    settle()
+    order([f"long-{i}" for i in range(1, 12)] + ["long-0"])
+    print(
+        "PASS: continuous drag, sliding rows, deferred commit, cancellation, dispatch race and edge scrolling",
+        flush = True,
+    )
+
+
 def check_touch(browser, url):
     context = browser.new_context(
         viewport = {"width": 320, "height": 812}, is_mobile = True, has_touch = True
@@ -201,7 +333,17 @@ def main():
                 page.on("pageerror", lambda error: errors.append(str(error)))
                 page.goto(url)
                 check_actions(page)
+                check_motion(page)
                 assert not errors, errors
+                reduced_context = browser.new_context(
+                    reduced_motion = "reduce", viewport = {"width": 1100, "height": 800}
+                )
+                try:
+                    reduced_page = reduced_context.new_page()
+                    reduced_page.goto(url)
+                    check_motion(reduced_page, reduced = True)
+                finally:
+                    reduced_context.close()
                 if engine == "chromium":
                     check_touch(browser, url)
             finally:

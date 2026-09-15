@@ -22,6 +22,7 @@ import {
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
 import { NonModalDropdownMenu } from "@/components/ui/non-modal-dropdown-menu";
+import { usePromptQueueReorder } from "./use-prompt-queue-reorder";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import {
   type PromptQueueUIEntry,
@@ -54,51 +55,35 @@ export function PromptQueueList({
 }: PromptQueueListProps) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
-  const [draggingId, setDraggingId] = useState<string | null>(null);
-  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   const [announcement, setAnnouncement] = useState("");
-  const listRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const editFromMenuRef = useRef(false);
-  const pointerDragRef = useRef<{
-    id: string;
-    pointerId: number;
-    y: number;
-    moved: boolean;
-  } | null>(null);
   const instructionsId = useId();
   const editingItem = items.find(
     (item) => item.id === editingId && item.canEdit,
   );
   const activeEditingId = editingItem?.id;
   const movableItems = items.filter((item) => item.canEdit && item.canRemove);
-  const draggingIndex = items.findIndex((item) => item.id === draggingId);
+  const {
+    listRef,
+    draggingId,
+    move,
+    cancelDrag,
+    onPointerDown,
+    onPointerMove,
+    onPointerUp,
+  } = usePromptQueueReorder(
+    items,
+    Boolean(activeEditingId),
+    onMove,
+    setAnnouncement,
+  );
 
   useEffect(() => {
     if (!activeEditingId) return;
     inputRef.current?.focus();
     inputRef.current?.select();
   }, [activeEditingId]);
-
-  function endDrag() {
-    pointerDragRef.current = null;
-    setDraggingId(null);
-    setDropTargetId(null);
-  }
-
-  function move(id: string, targetId: string | undefined) {
-    if (!targetId || id === targetId) return;
-    if (onMove(id, targetId)) {
-      const position = items.findIndex((item) => item.id === targetId) + 1;
-      setAnnouncement(
-        `Prompt moved to position ${position} of ${items.length}.`,
-      );
-    } else {
-      setAnnouncement(
-        "The queue changed before this prompt could be moved. Try again.",
-      );
-    }
-  }
 
   function startEditing(item: PromptQueueUIItem) {
     setDraft(item.prompt);
@@ -132,19 +117,6 @@ export function PromptQueueList({
     }
   }
 
-  function canDropOn(id: string) {
-    return id !== draggingId && movableItems.some((item) => item.id === id);
-  }
-
-  function pointerTarget(clientX: number, clientY: number) {
-    const list = listRef.current;
-    const row = document
-      .elementFromPoint(clientX, clientY)
-      ?.closest<HTMLElement>("[data-queue-item-id]");
-    const id = row && list?.contains(row) ? row.dataset.queueItemId : undefined;
-    return id && canDropOn(id) ? id : null;
-  }
-
   return (
     <div
       ref={listRef}
@@ -165,23 +137,22 @@ export function PromptQueueList({
           const moveIndex = movableItems.findIndex(
             (candidate) => candidate.id === item.id,
           );
-          const canMove = moveIndex >= 0 && movableItems.length > 1;
+          const canMove =
+            !activeEditingId && moveIndex >= 0 && movableItems.length > 1;
           const previous = movableItems[moveIndex - 1];
           const next = movableItems[moveIndex + 1];
-          const marker = dropTargetId === item.id && draggingIndex >= 0;
           return (
             <div
               key={item.id}
               role="listitem"
               data-queue-item-id={item.id}
+              data-queue-dragging={draggingId === item.id || undefined}
               aria-label={`Queued prompt ${position} of ${items.length}: ${item.prompt}`}
               className={cn(
                 "group relative rounded-lg transition-colors",
-                draggingId === item.id && "opacity-40",
-                marker &&
-                  "bg-accent/60 after:pointer-events-none after:absolute after:inset-x-1 after:h-0.5 after:rounded-full after:bg-primary",
-                marker &&
-                  (draggingIndex < index ? "after:bottom-0" : "after:top-0"),
+                draggingId && "will-change-transform",
+                draggingId === item.id &&
+                  "z-10 bg-background shadow-lg ring-1 ring-border/60 dark:bg-muted",
               )}
             >
               {isEditing ? (
@@ -234,59 +205,15 @@ export function PromptQueueList({
                     aria-describedby={instructionsId}
                     className="h-8 w-4 shrink-0 touch-none cursor-grab text-muted-foreground/50 hover:text-muted-foreground active:cursor-grabbing pointer-coarse:h-11 pointer-coarse:w-8"
                     disabled={!canMove}
-                    onPointerDown={(event) => {
-                      if (event.button !== 0 || !canMove || !event.isPrimary)
-                        return;
-                      event.preventDefault();
-                      event.currentTarget.focus({ preventScroll: true });
-                      pointerDragRef.current = {
-                        id: item.id,
-                        pointerId: event.pointerId,
-                        y: event.clientY,
-                        moved: false,
-                      };
-                      event.currentTarget.setPointerCapture(event.pointerId);
-                    }}
-                    onPointerMove={(event) => {
-                      const drag = pointerDragRef.current;
-                      if (!drag || drag.pointerId !== event.pointerId) return;
-                      if (!drag.moved && Math.abs(event.clientY - drag.y) < 5)
-                        return;
-                      drag.moved = true;
-                      setDraggingId(drag.id);
-                      const list = listRef.current;
-                      const bounds = list?.getBoundingClientRect();
-                      if (list && bounds) {
-                        if (event.clientY < bounds.top + 28)
-                          list.scrollTop -= 12;
-                        if (event.clientY > bounds.bottom - 28)
-                          list.scrollTop += 12;
-                      }
-                      setDropTargetId(
-                        pointerTarget(event.clientX, event.clientY),
-                      );
-                    }}
-                    onPointerUp={(event) => {
-                      const drag = pointerDragRef.current;
-                      if (!drag || drag.pointerId !== event.pointerId) return;
-                      const target = pointerTarget(
-                        event.clientX,
-                        event.clientY,
-                      );
-                      if (drag.moved && target) move(drag.id, target);
-                      endDrag();
-                    }}
-                    onPointerCancel={() => {
-                      if (pointerDragRef.current) endDrag();
-                    }}
-                    onLostPointerCapture={() => {
-                      if (pointerDragRef.current) endDrag();
-                    }}
+                    onPointerDown={(event) => onPointerDown(event, item.id)}
+                    onPointerMove={onPointerMove}
+                    onPointerUp={onPointerUp}
+                    onPointerCancel={cancelDrag}
+                    onLostPointerCapture={cancelDrag}
                     onKeyDown={(event) => {
-                      if (pointerDragRef.current && event.key === "Escape") {
+                      if (event.key === "Escape" && cancelDrag()) {
                         event.preventDefault();
                         event.stopPropagation();
-                        endDrag();
                         return;
                       }
                       const targets: Record<string, string | undefined> = {
