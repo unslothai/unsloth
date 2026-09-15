@@ -3433,11 +3433,7 @@ def _python_builds_a_credential_path(code: str, workdir: "str | None") -> bool:
                     restore.append((bound, cwds))
                 cwds = (moved + [c for c in cwds if c not in moved])[:_MAX_TRACKED_CWDS]
             continue
-        if (
-            isinstance(node, ast.Call)
-            and dir_fds
-            and _call_opens_under_a_descriptor(node, dir_fds)
-        ):
+        if isinstance(node, ast.Call) and dir_fds and _call_opens_under_a_descriptor(node, dir_fds):
             return True
         if isinstance(node, ast.Call) and _call_runs_from_a_credential_directory(
             node, cwds, name_bases, process_aliases, process_functions

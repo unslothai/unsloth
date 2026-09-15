@@ -2056,9 +2056,9 @@ def test_a_child_cwd_and_a_directory_descriptor_both_carry_the_studio_root(monke
     monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
     try:
         for code in (
-            'import subprocess, os\n'
+            "import subprocess, os\n"
             'subprocess.run(["cat", "auth/auth.db"], cwd = os.environ["UNSLOTH_STUDIO_HOME"])',
-            'import subprocess, os\n'
+            "import subprocess, os\n"
             'subprocess.run(["cat", "auth/.desktop_secret"], cwd = os.getenv("STUDIO_HOME"))',
             'import os\nroot = os.open("../..", os.O_RDONLY)\n'
             'fd = os.open("auth/auth.db", os.O_RDONLY, dir_fd = root)',
