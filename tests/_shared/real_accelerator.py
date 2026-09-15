@@ -65,10 +65,10 @@ def _record() -> None:
         _REAL_ACCELERATOR, _REAL_CUDA = False, False
         return
     _REAL_CUDA = _ask(lambda: hasattr(torch, "cuda") and torch.cuda.is_available())
-    _REAL_ACCELERATOR = _REAL_CUDA or _ask(
-        lambda: hasattr(torch, "xpu") and torch.xpu.is_available()
-    ) or _ask(
-        lambda: hasattr(torch, "accelerator") and torch.accelerator.is_available()
+    _REAL_ACCELERATOR = (
+        _REAL_CUDA
+        or _ask(lambda: hasattr(torch, "xpu") and torch.xpu.is_available())
+        or _ask(lambda: hasattr(torch, "accelerator") and torch.accelerator.is_available())
     )
 
 

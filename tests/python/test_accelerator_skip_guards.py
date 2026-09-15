@@ -528,6 +528,7 @@ def test_no_cuda_only_test_is_gated_on_the_broad_accelerator_probe():
 
 def test_the_cuda_gate_scanner_would_catch_a_regression():
     """Not vacuous, and not over-broad: the narrow gate and a non-device string both pass."""
+
     def offenders(source):
         tree = ast.parse(source)
         return [
