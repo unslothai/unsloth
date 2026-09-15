@@ -90,7 +90,7 @@ Turing has no bfloat16; Unsloth falls back to float16 there. AMD GPUs are not su
 
 | Port | Service | Image |
 |---|---|---|
-| 8000 | Unsloth Studio | `latest` |
+| 8000 | Unsloth Studio (`UNSLOTH_STUDIO_PORT`) | `latest` |
 | 8888 | JupyterLab | both |
 | 22 | SSH, key only, off unless `SSH_KEY` or `PUBLIC_KEY` is set | `latest` |
 
@@ -101,6 +101,7 @@ Turing has no bfloat16; Unsloth falls back to float16 there. AMD GPUs are not su
 | `UNSLOTH_STUDIO_PASSWORD` | Initial Studio admin password for user `unsloth`; ignored once a password is stored. Unset: generated once and printed in the logs, and Studio stops after an hour unless it is changed (`UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0` disables). |
 | `JUPYTER_PASSWORD` | JupyterLab password. Unset: generated once and printed in the logs. |
 | `JUPYTER_PORT` | JupyterLab port inside the container. Default `8888`. |
+| `UNSLOTH_STUDIO_PORT` | Studio port inside the container, for `--network host` when 8000 is taken. Default `8000`. |
 | `SSH_KEY` or `PUBLIC_KEY` | OpenSSH public key for root login. Enables sshd on port 22. Password login is never enabled. |
 | `UNSLOTH_ALLOW_CPU=1` | Allow starting without a GPU (`latest` already does). Dropped when a GPU is visible, where it would turn off Unsloth's training patches. |
 | `UNSLOTH_JUPYTER_CLOUDFLARE=1` | Publish JupyterLab through a Cloudflare quick tunnel and print the URL. |
