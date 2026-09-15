@@ -3,17 +3,13 @@
 
 """Check width presets against a running Studio with a saved conversation.
 
-BASE_URL identifies the disposable test instance. The password is STUDIO_NEW_PW,
-or STUDIO_PW; on an instance still holding its bootstrap password, the sign-in
-below rotates it to that value the way the other drivers here do.
+BASE_URL is the disposable instance, STUDIO_NEW_PW (or STUDIO_PW) its password.
 
-CHAT_THREAD_ID is optional. Without it this seeds its own conversation through
-the chat history API, which is what lets CI run this at all: the surface being
-measured is a rendered assistant bubble, and before this the driver could only
-be pointed at a thread somebody else had already produced. No CI step could hand
-it one, so no step ran it, and the presets shipped ungated. Seeding costs no
-model: /api/chat/threads/{id}/messages stores whatever roles it is given, and
-the thread renders from that.
+CHAT_THREAD_ID is optional; without it this seeds its own thread. That is what
+lets CI run this at all: it measures a rendered assistant bubble, no CI step can
+hand one over, so before this no step ran it and the presets shipped ungated.
+Seeding costs no model, since the messages endpoint stores whatever roles it is
+given and the thread renders from that.
 
 Run with: python tests/studio/playwright_chat_width.py
 """
@@ -61,9 +57,8 @@ def api(
 def sign_in(page):
     """Rotate the bootstrap password if the instance still has one, else log in.
 
-    Same two-branch shape as playwright_thread_scoped_settings.py. A fresh CI boot
-    lands on /change-password, a re-run against the same server lands on /login, and
-    a driver that only knows one of them fails on whichever it did not expect.
+    Two branches, as in playwright_thread_scoped_settings.py: a fresh CI boot lands on
+    /change-password, a re-run against the same server on /login.
     """
     page.goto(f"{BASE}/change-password", wait_until = "domcontentloaded", timeout = TIMEOUT_MS)
     try:
@@ -94,11 +89,10 @@ def sign_in(page):
 def seed_thread(page, token):
     """A saved conversation carrying one user turn and one assistant turn.
 
-    The assistant turn is the point: `.aui-assistant-message-root` is the surface every
-    assertion below measures, and it exists only for a message with that role. The text
-    is long enough to reach the column's max width at every viewport tested, so a preset
-    that fails to widen the column shows up as a narrower bubble rather than as a bubble
-    that was never wide enough to tell.
+    The assistant turn is the point: only that role renders the
+    `.aui-assistant-message-root` every assertion below measures. Its text is long enough
+    to reach the column cap at every viewport tested, so a preset that fails to widen
+    reads as a narrower bubble rather than as one that was never wide enough to tell.
     """
     thread_id = str(uuid.uuid4())
     now = int(time.time() * 1000)
@@ -191,12 +185,10 @@ def check_widths(page):
             assert full[surface] >= wide[surface] - 1, (width, surface, full, wide)
             assert wide[surface] >= standard[surface] - 1, (width, surface, wide, standard)
         assert not any(measurements[preset][width]["overflow"] for preset in measurements)
-    # The ordering above is >=, so three presets pinned to the same width satisfy every
-    # line of it: a regression that stops the setting doing anything at all reads as a
-    # pass. At the widest viewport the three are separated by construction --
-    # appearance-custom-store.ts caps standard at 48rem and wide at 72rem, while full is
-    # max(72rem, 100% - 6rem) -- so require the separation there, and the setting cannot
-    # go dead quietly.
+    # The ordering above is >=, so three presets pinned to one width satisfy all of it and
+    # a setting that stopped working entirely would read as a pass. At the widest viewport
+    # they are separated by construction (appearance-custom-store.ts: 48rem, 72rem,
+    # max(72rem, 100% - 6rem)), so require that separation.
     widest = max(measurements["Standard"])
     for surface in ("message", "composer"):
         standard = measurements["Standard"][widest][surface]

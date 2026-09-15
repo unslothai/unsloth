@@ -593,10 +593,8 @@ jobs:
           mkdir -p logs/playwright_fontscale
           python tests/studio/playwright_ui_font_scale.py
 
-      # Seeds its own conversation through the chat history API, so it needs no model and
-      # no thread id from an earlier step. Here rather than in the chat shard because that
-      # one ends by clicking Shutdown, and this is a seven-viewport sweep over three
-      # presets that wants a server still running.
+      # Seeds its own thread, so it needs no model and no id from an earlier step. Not in
+      # the chat shard: that one ends by clicking Shutdown, and this sweeps 7 viewports.
       - name: Chat width presets (Playwright)
         if: matrix.shard == 'extra'
         env:
