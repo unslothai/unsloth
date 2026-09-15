@@ -1389,9 +1389,7 @@ class DiffusionBackend:
                     # the eject is trying to take.
                     with self._load_cancel_lock:
                         fenced_by_unload = bool(self._unload_waiters)
-                    gate = (
-                        self._unload_fence_clear if fenced_by_unload else self._teardown_drained
-                    )
+                    gate = self._unload_fence_clear if fenced_by_unload else self._teardown_drained
                     if gate.wait(timeout = 0.1):
                         break
             from hub.services.models.account_access import media_generation_slot
