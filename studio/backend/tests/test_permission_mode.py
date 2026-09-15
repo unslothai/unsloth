@@ -3573,6 +3573,11 @@ _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
 )
 
 _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
+    # The constructor's mode applies to the keyword spelling of the path too.
+    "import h5py\nh5py.File(name = '/usr/share/doc/model.h5', mode = 'w')",
+    # `sqlite3.Connection` is the public constructor `connect` returns; it opens the same file.
+    "import sqlite3\nsqlite3.Connection('/media/alice/private.db')",
+    "import apsw\napsw.Connection(filename = '/media/alice/private.db')",
     # `h5py.File(path, "w")` truncates the file the constructor names.
     "import h5py\nh5py.File('/usr/share/doc/model.h5', 'w')",
     "import netCDF4\nnetCDF4.Dataset('/usr/share/doc/grid.nc', mode = 'a')",
@@ -3893,6 +3898,7 @@ _INDIRECT_BENIGN_TERMINAL = (
 )
 
 _INDIRECT_BENIGN_PYTHON = (
+    "import h5py\nh5py.File(name = '/usr/share/doc/model.h5', mode = 'r')",
     "import h5py\nh5py.File('/usr/share/doc/model.h5', 'r')",
     "import os, subprocess\nos.chdir('/usr/share/doc')\nsubprocess.run(['ls', '-la'])",
     "import zipfile\nz = zipfile.ZipFile('out.zip', 'w')\nz.write('notes.txt')",

@@ -3144,7 +3144,7 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
                 given = next((kw.value for kw in _call_keywords(node) if kw.arg == "files"), None)
             for element in _sequence_elements(given, containers):
                 add(element, False)
-        elif name == "connect" and receiver_name in ("sqlite3", "apsw"):
+        elif name in ("connect", "Connection") and receiver_name in ("sqlite3", "apsw"):
             # A connection CREATES the file if it is missing and can write it afterwards, so the
             # database is a write target unless the URI says otherwise. (The whole call already
             # prompts through the existing sqlite rule; this makes the operand itself accurate.)
@@ -3158,7 +3158,10 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
                 )
             add(given, not _sqlite_opens_read_only(node, given))
         elif name in _PY_PATH_OPENING_CTORS:
-            add(first, _ctor_opens_for_write(node))
+            # The mode applies to the keyword spelling of the path too (`h5py.File(name = ...,
+            # mode = "w")`), which reaches the shared keyword loop rather than this `add`.
+            writing_default = _ctor_opens_for_write(node)
+            add(first, writing_default)
         elif name in _PY_PATH_READ_CALLS:
             add(first, False)
             if is_method:
