@@ -2930,15 +2930,17 @@ def _rebinds_the_studio_home_first(text: str) -> bool:
 
 
 def _studio_root_spellings() -> "list[str]":
-    """Every lowered spelling of the Studio root: the literal path and its environment variables."""
+    """Every lowered spelling of the Studio root: the literal path and its environment variables.
+
+    The variables come from `_studio_home_variable_spellings`, which drops one that is SET to some
+    other directory: `STUDIO_HOME` is a generic name another application can own, and registering it
+    unconditionally refused `find "$STUDIO_HOME" ...` against that application's tree.
+    """
     root = _studio_home_for_guard()
     if not root:
         return []
     spellings = [root.lower()]
-    for variable in _STUDIO_HOME_ENV_VARS:
-        spellings.extend(
-            (f"${variable}".lower(), f"${{{variable}}}".lower(), f"%{variable}%".lower())
-        )
+    spellings.extend(spelling.lower() for spelling in _studio_home_variable_spellings(root))
     return spellings
 
 
@@ -4189,11 +4191,16 @@ def _code_reads_the_working_directory(code: str) -> bool:
 
 
 def _studio_home_for_guard() -> "str | None":
-    """This install's studio root, derived from the same resolution the markers use."""
+    """This install's studio root, derived from the same resolution the markers use.
+
+    From the ORIGINAL spelling, not the folded one: a root with an uppercase character in it would
+    otherwise be reconstructed in lowercase, and on a case-sensitive host the marker check then
+    rejected its own synthesized path, letting a move to the real root through.
+    """
     auth_markers, _variable_markers, _cd_re = _studio_auth_dir_markers()
     if not auth_markers:
         return None
-    return os.path.dirname(auth_markers[0][0].rstrip("/\\")) or None
+    return os.path.dirname(auth_markers[0][2].rstrip("/\\")) or None
 
 
 def _needs_a_workdir(text: str) -> bool:

@@ -2285,6 +2285,65 @@ def test_enumerating_the_studio_root_for_a_credential_name_is_refused(monkeypatc
         tools._studio_auth_markers_cache = None
 
 
+def test_an_uppercase_studio_root_is_reconstructed_with_its_case(monkeypatch, tmp_path):
+    # The root was rebuilt from the FOLDED marker, so a path with an uppercase character in it came
+    # back lowercase; the case-sensitive check then rejected the guard's own synthesized path and a
+    # move to the real root went through.
+    home = tmp_path / "Studio-Home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        assert tools._studio_home_for_guard() == str(home)
+        code = 'import os\nos.chdir(os.environ["UNSLOTH_STUDIO_HOME"])\nopen("auth/auth.db")'
+        assert tools._python_exec(code, None, 30, _SESSION, disable_sandbox = True) == (
+            tools._STUDIO_CREDENTIAL_BLOCKED
+        )
+        assert (
+            tools._python_exec('open("notes.txt")', None, 30, _SESSION, disable_sandbox = True)
+            != tools._STUDIO_CREDENTIAL_BLOCKED
+        )
+    finally:
+        tools._studio_auth_markers_cache = None
+
+
+def test_a_foreign_studio_home_variable_is_not_this_installs_root(monkeypatch, tmp_path):
+    # `STUDIO_HOME` is a generic name another application can own. Registered unconditionally, the
+    # recursive-root check refused a walk of that application's tree in every permission mode.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    other = tmp_path / "other-app"
+    other.mkdir()
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setenv("STUDIO_HOME", str(other))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        assert (
+            tools._bash_exec(
+                'find "$STUDIO_HOME" -type f -exec cat {} +',
+                None,
+                30,
+                _SESSION,
+                disable_sandbox = True,
+            )
+            != tools._STUDIO_CREDENTIAL_BLOCKED
+        )
+        assert (
+            tools._bash_exec(
+                'find "$UNSLOTH_STUDIO_HOME" -type f -exec cat {} +',
+                None,
+                30,
+                _SESSION,
+                disable_sandbox = True,
+            )
+            == tools._STUDIO_CREDENTIAL_BLOCKED
+        )
+    finally:
+        tools._studio_auth_markers_cache = None
+
+
 def test_a_definition_time_call_is_not_inert(monkeypatch, tmp_path):
     # Default arguments and decorators run when the function is DEFINED, so the move happens even
     # though nothing calls `f`. Only the BODY of an uncalled function is inert.
