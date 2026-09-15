@@ -273,11 +273,11 @@ jobs:
         # duplicate that was already in the file is printed and ignored while one
         # this PR introduced fails. Comparing added LINES instead would miss the
         # case where the new copy is inserted ABOVE the old one, since the finding
-        # is reported at the second, unchanged definition. There are 37 pre-existing
-        # findings on main today; they are a separate cleanup, not a reason to leave
-        # the gate off. Four of those are only visible once each control-flow branch is
-        # scanned on its own: a repeated `from unsloth import is_bfloat16_supported`
-        # inside one `if __name__ == "__main__":` block in four of the saving tests.
+        # is reported at the second, unchanged definition. That tolerance was there
+        # for a backlog of 37 pre-existing findings on main; the backlog is now zero
+        # and the whole-tree step below holds it there, so this step keeps doing the
+        # one job it is good at -- naming the PR that introduces a duplicate, on a
+        # diff, without waiting on a full-tree scan.
         if: github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -318,6 +318,17 @@ jobs:
           printf 'checking %d file(s)\n' "${#CHANGED[@]}"
           python scripts/lint_duplicate_definitions.py \
             --before "$MERGE_BASE" --after "$HEAD_SHA" "${CHANGED[@]}"
+
+      - name: Duplicate definitions (whole tree)
+        # The diff-scoped step above is one-way on its own: it stops new damage but
+        # can never confirm the old damage is gone, because a finding it did not
+        # introduce is printed and passed. The backlog is zero as of this step
+        # landing, so scan the whole tree and keep it there. Same paths as the ruff
+        # step, plus scripts/. Stdlib-only AST walk over ~2k files, sub-second, and
+        # it runs on push as well as on a PR so a direct commit cannot reopen it.
+        run: |
+          python scripts/lint_duplicate_definitions.py \
+            unsloth unsloth_cli studio scripts tests cli.py unsloth-cli.py
 
       - name: No silent llama-server parallel-slot downgrades
         # #7717 clamped --parallel to 1 whenever MTP resolved, costing batched
