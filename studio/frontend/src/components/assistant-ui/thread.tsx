@@ -3733,8 +3733,10 @@ const Composer: FC<{
         deferModelResolution:
           chatStateAtQueueStart.modelLoading &&
           parseExternalModelId(
-            chatStateAtQueueStart.loadingModelPick?.id ??
-              chatStateAtQueueStart.params.checkpoint,
+            chatStateAtQueueStart.loadingModelPick &&
+            !chatStateAtQueueStart.loadingModelPick.selectionSuperseded
+              ? chatStateAtQueueStart.loadingModelPick.id
+              : chatStateAtQueueStart.params.checkpoint,
           ) === null,
       },
     );

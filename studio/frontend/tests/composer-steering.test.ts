@@ -441,12 +441,17 @@ function composerCallbackJs(name: string) {
 const factoryJs = composerCallbackJs("startHydratedPromptQueue");
 const targetFactoryJs = composerCallbackJs("createPromptQueueTarget");
 
-async function targetForSelection(checkpoint: string, modelLoading: boolean, incoming: string | null) {
+async function targetForSelection(
+  checkpoint: string,
+  modelLoading: boolean,
+  incoming: string | null,
+  selectionSuperseded = false,
+) {
   let settings!: ReturnType<typeof snapshotQueuedChatRunSettings>;
   const runtime = {
     params: { checkpoint, temperature: 0.4 },
     activeGgufVariant: "old-Q4.gguf",
-    loadingModelPick: incoming ? { id: incoming } : null,
+    loadingModelPick: incoming ? { id: incoming, selectionSuperseded } : null,
     modelLoading,
     permissionMode: "ask",
     toolsEnabled: true,
@@ -1058,3 +1063,21 @@ test("a model load starting during the document probe defers the pending append"
   assert.equal(w.run().items[0].dispatched, false);
   assert.equal(w.dispatchRetries(), 1);
 });
+
+for (const behavior of ["queue", "steer"] as const) {
+  test(`an explicit hosted selection during a local load retains its provider: ${behavior}`, async () => {
+    const w = world();
+    w.setModelLoading(true);
+    const selected = "external::new-provider::selected-model";
+    const { target, settings } = await targetForSelection(
+      selected, true, "incoming-local", true,
+    );
+    assert.equal(target.usesLocalModel, false);
+    assert.equal(settings.params.checkpoint, selected);
+    w.startPromptQueue(["use the selected provider"], target, false, behavior);
+    w.handlePromptQueueRunFailed(undefined, true);
+    const run = w.run();
+    await w.dispatchQueuedPrompt(run, run.items[run.index]);
+    assert.deepEqual(w.appended, ["use the selected provider"]);
+  });
+}

@@ -2437,7 +2437,7 @@ type ChatRuntimeStore = {
    *  conversation's, and a background run may not write it. */
   contextUsageByThreadId: Record<string, ContextUsageSnapshot>;
   modelLoading: boolean;
-  loadingModelPick: LoadingModelPick | null;
+  loadingModelPick: (LoadingModelPick & { selectionSuperseded: boolean }) | null;
   // What the resident model loaded from, when that is not its id: a reload rebuilds its target
   // from the checkpoint, so without this it goes back down the ref the pin avoided.
   activeLoadId: string | null;
@@ -4272,7 +4272,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       set({ modelLoading: false });
     }
   },
-  setLoadingModelPick: (pick) => set({ loadingModelPick: pick }),
+  setLoadingModelPick: (pick) =>
+    set({
+      loadingModelPick: pick
+        ? { ...pick, selectionSuperseded: false }
+        : null,
+    }),
   clearLoadingModelPick: (expected) =>
     set((state) => {
       const current = state.loadingModelPick;
@@ -4643,6 +4648,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         : nextParams;
       return {
         params: restoredParams,
+        loadingModelPick:
+          checkpointChanged && state.loadingModelPick
+            ? { ...state.loadingModelPick, selectionSuperseded: true }
+            : state.loadingModelPick,
         ...getReplayStatePatch(state, nextParams, outgoing, baseParams),
         activeGgufVariant: nextGgufVariant,
         ...(queuedSettingsChanged
