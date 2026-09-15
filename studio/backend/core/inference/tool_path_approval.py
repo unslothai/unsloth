@@ -2095,6 +2095,22 @@ def _capped_alternates(values) -> "list[str]":
     return (ranked[0] + ranked[1] + ranked[2])[:_MAX_REBOUND_ALTERNATES]
 
 
+def _call_keywords(node) -> "list":
+    """A call's keywords, with a LITERAL `**{...}` splat expanded into the keywords it stands for.
+
+    `pd.read_csv(**{"filepath_or_buffer": "/media/x"})` passes the path under its own parameter
+    name; the splat arrives as a keyword whose `arg` is None, so the name was never matched.
+    """
+    keywords = list(node.keywords)
+    for keyword in node.keywords:
+        if keyword.arg is not None or not isinstance(keyword.value, ast.Dict):
+            continue
+        for key, value in zip(keyword.value.keys, keyword.value.values):
+            if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                keywords.append(ast.keyword(arg = key.value, value = value))
+    return keywords
+
+
 def _python_literal_containers(tree) -> dict:
     """Name -> the absolute-looking strings a literal list, tuple or dict assigned to it holds."""
     containers: dict = {}
@@ -2325,12 +2341,16 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
             # Qualified, because the bare name is ambiguous: `numpy.load(p)` opens a path while
             # `json.load(f)`, `pickle.load(f)` and `torch.load(f)` all take an already-open file.
             add(first, False)
-        elif name == "input" and is_method and getattr(func.value, "id", "") == "fileinput":
-            # Qualified so the builtin input("/data directory: ") prompt is not read as a file.
+        elif name in ("input", "FileInput") and is_method and receiver_name == "fileinput":
+            # Qualified so the builtin input("/data directory: ") prompt is not read as a file, and
+            # through the import aliases so `import fileinput as fi` resolves back. `FileInput` is
+            # the constructor `input` returns, and iterates the same files.
             # `files = ` is the keyword spelling of the same argument, and takes a sequence too.
             given = first
             if given is None:
-                given = next((kw.value for kw in node.keywords if kw.arg == "files"), None)
+                given = next(
+                    (kw.value for kw in _call_keywords(node) if kw.arg == "files"), None
+                )
             for element in given.elts if isinstance(given, (ast.List, ast.Tuple)) else [given]:
                 add(element, False)
         elif name in _PY_PATH_READ_CALLS:
@@ -2339,7 +2359,7 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
                 add(func.value, False)
         else:
             continue
-        for keyword in node.keywords:
+        for keyword in _call_keywords(node):
             if keyword.arg in _PY_PATH_KWARGS_BY_CALL.get(name, ()):
                 # A parameter name only this callable uses, so it is read per call rather than from the
                 # shared list: `ConfigParser.read(filenames = ...)` takes a sequence as readily as a str.

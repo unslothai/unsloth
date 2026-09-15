@@ -3499,6 +3499,12 @@ _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
 )
 
 _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
+    # A literal `**{...}` passes the path under its own parameter name, and the splat arrives as a
+    # keyword whose `arg` is None, so the name was never matched.
+    f"import pandas as pd\npd.read_csv(**{{'filepath_or_buffer': {_OUTSIDE_FILE!r}}})",
+    # The aliased receiver and the constructor `input` returns, which iterates the same files.
+    f"import fileinput as fi\nfor line in fi.input({_OUTSIDE_FILE!r}):\n    print(line)",
+    f"import fileinput\nfor line in fileinput.FileInput({_OUTSIDE_FILE!r}):\n    print(line)",
     # Nothing dynamic in either: the container, the index and the path are all literals.
     f"paths = [{_OUTSIDE_FILE!r}]\nopen(paths[0]).read()",
     f"cfg = {{'db': {_OUTSIDE_FILE!r}}}\nopen(cfg['db']).read()",
@@ -3681,6 +3687,9 @@ _INDIRECT_BENIGN_TERMINAL = (
 )
 
 _INDIRECT_BENIGN_PYTHON = (
+    "import pandas as pd\npd.read_csv(**{'filepath_or_buffer': 'data.csv'})",
+    "import fileinput as fi\nfor line in fi.input('notes.txt'):\n    print(line)",
+    "value = input('/data directory: ')",
     "paths = ['notes.txt', 'data.csv']\nopen(paths[0]).read()",
     "import io\nio.FileIO('notes.txt').read()",
     # A child command the scan DOES classify, and one that takes no path operand at all: prompting
