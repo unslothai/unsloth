@@ -1509,7 +1509,7 @@ def fake_studio(tmp_path, monkeypatch):
         error = None,
     ):
         calls.append((method, url, payload))
-        if url.endswith("/v1/models"):
+        if url.endswith("/api/inference/loaded-models"):
             return {"object": "list", "data": state["models"]}
         if url.endswith("/api/inference/status"):
             return {"is_gguf": True, "model_identifier": state["models"][0]["id"]}
@@ -2384,7 +2384,7 @@ def test_resolve_model_matches_loaded_canonical_case_after_load(monkeypatch, cap
         error = None,
     ):
         calls.append((method, url, payload))
-        if url.endswith("/v1/models"):
+        if url.endswith("/api/inference/loaded-models"):
             return {
                 "data": [
                     {
@@ -2426,7 +2426,7 @@ def test_resolve_model_matches_snapshot_path_by_public_id(monkeypatch):
         timeout = 30,
         error = None,
     ):
-        if url.endswith("/v1/models"):
+        if url.endswith("/api/inference/loaded-models"):
             return {"data": [{"id": "abc123"}] if state["loaded"] else []}
         if url.endswith("/api/inference/load"):
             state["loaded"] = True
@@ -2489,7 +2489,7 @@ def test_resolve_model_loads_when_catalog_hit_is_not_loaded(monkeypatch):
         error = None,
     ):
         calls.append((method, url))
-        if url.endswith("/v1/models"):
+        if url.endswith("/api/inference/loaded-models"):
             return {
                 "data": [
                     {
@@ -2521,7 +2521,7 @@ def test_resolve_model_does_not_attach_if_catalog_stays_unloaded(monkeypatch):
         timeout = 30,
         error = None,
     ):
-        if url.endswith("/v1/models"):
+        if url.endswith("/api/inference/loaded-models"):
             return {
                 "data": [
                     {
@@ -2555,7 +2555,7 @@ def test_resolve_model_attaches_to_loaded_catalog_hit_without_reload(monkeypatch
         error = None,
     ):
         calls.append((method, url))
-        if url.endswith("/v1/models"):
+        if url.endswith("/api/inference/loaded-models"):
             return {
                 "data": [{"id": "unsloth/Gemma-4-GGUF", "loaded": True, "context_length": 131072}]
             }
@@ -2604,7 +2604,7 @@ def test_resolve_model_remote_studio_does_not_casefold_attach(monkeypatch):
         error = None,
     ):
         calls.append((method, url))
-        if url.endswith("/v1/models"):
+        if url.endswith("/api/inference/loaded-models"):
             return {
                 "data": [{"id": "unsloth/Gemma-4-GGUF", "loaded": True, "context_length": 131072}]
             }
@@ -2810,7 +2810,7 @@ def test_connect_skips_cached_keys_the_server_rejects(fake_studio, tmp_path, mon
         timeout = 30,
         error = None,
     ):
-        if url.endswith("/v1/models") and token == "sk-unsloth-stale":
+        if url.endswith("/api/inference/loaded-models") and token == "sk-unsloth-stale":
             raise urllib.error.HTTPError(url, 401, "Unauthorized", None, None)
         return inner(method, url, token, payload, timeout, error)
 
@@ -2838,7 +2838,7 @@ def test_connect_saved_key_server_outage_surfaces_not_reminted(fake_studio, tmp_
         timeout = 30,
         error = None,
     ):
-        if url.endswith("/v1/models") and token == "sk-unsloth-saved":
+        if url.endswith("/api/inference/loaded-models") and token == "sk-unsloth-saved":
             raise urllib.error.HTTPError(url, 503, "Service Unavailable", None, None)
         return inner(method, url, token, payload, timeout, error)
 
@@ -2929,7 +2929,7 @@ def test_connect_model_flag_matches_canonical_id(fake_studio, monkeypatch):
     ):
         if url.endswith("/api/inference/load"):
             return {"model": canonical, "display_name": canonical}
-        if url.endswith("/v1/models"):
+        if url.endswith("/api/inference/loaded-models"):
             # Decoy sorts first, so models[0] is the wrong pick on the old code.
             return {"object": "list", "data": [MODEL, {"id": canonical, "context_length": 4096}]}
         return inner(method, url, token, payload, timeout, error)
@@ -3548,7 +3548,7 @@ def test_connect_requested_model_not_loaded_fails(fake_studio, monkeypatch):
     ):
         if url.endswith("/api/inference/load"):
             return {}
-        if url.endswith("/v1/models"):
+        if url.endswith("/api/inference/loaded-models"):
             return {"object": "list", "data": [MODEL]}  # decoy; request never appears
         return inner(method, url, token, payload, timeout, error)
 
@@ -3684,7 +3684,9 @@ def test_connect_minted_cache_requires_identity_check(fake_studio, tmp_path, mon
     result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
     assert result.exit_code == 1
     assert "--api-key" in result.output
-    assert not any(c[1].endswith("/v1/models") for c in fake_studio)  # minted key never sent
+    assert not any(
+        c[1].endswith("/api/inference/loaded-models") for c in fake_studio
+    )  # minted key never sent
 
 
 def test_connect_explicit_key_skips_identity_check(fake_studio, monkeypatch):
@@ -4233,7 +4235,7 @@ def test_resolve_model_refused_load_reports_survivor(monkeypatch, capsys):
     ):
         if url.endswith("/api/inference/status"):
             return {"is_gguf": True, "gguf_variant": "Q4_K_M"}
-        assert url.endswith("/v1/models"), url
+        assert url.endswith("/api/inference/loaded-models"), url
         return {"data": models}
 
     def refuse_load(base, key, model, load, payload):
@@ -4300,7 +4302,7 @@ def test_resolve_model_failed_load_stays_quiet_when_model_gone(monkeypatch, caps
     ):
         if url.endswith("/api/inference/status"):
             return {"is_gguf": True, "gguf_variant": "Q4_K_M"}
-        assert url.endswith("/v1/models"), url
+        assert url.endswith("/api/inference/loaded-models"), url
         return {"data": []}
 
     def failing_load(base, key, model, load, payload):
@@ -6430,7 +6432,7 @@ def test_agent_api_key_auto_started_rejected_env_key_falls_back(fake_studio, tmp
         timeout = 30,
         error = None,
     ):
-        if url.endswith("/v1/models") and token == "sk-unsloth-other-server":
+        if url.endswith("/api/inference/loaded-models") and token == "sk-unsloth-other-server":
             raise urllib.error.HTTPError(url, 401, "Unauthorized", None, None)
         return inner(method, url, token, payload, timeout, error)
 
@@ -7867,7 +7869,7 @@ def test_codex_preload_gate_checks_direct_path_identity(fake_studio, monkeypatch
         timeout = 30,
         error = None,
     ):
-        if url.endswith("/v1/models"):
+        if url.endswith("/api/inference/loaded-models"):
             return {"data": [{"id": "foo-Q4_K_M", "loaded": True}]}
         if url.endswith("/api/inference/status"):
             return {

@@ -49,13 +49,20 @@ done
 # The legacy single sidecar. Its tiered replacements land under the stage root and
 # may never be activated, so removing this during a staged run leaves the running
 # install with no sidecar at all.
-_sh_legacy=$(sed -n '/^if \[ -d "\$STUDIO_HOME\/\.venv_t5" \]; then$/,/^fi$/p' "$SETUP_SH")
+# The offline fast path took the plain `if` for itself, so the migration branch that
+# these two assertions are about is the `elif`. Both anchors are asserted non-empty:
+# a reshape that stops matching must fail here, not silently grep an empty string.
+_sh_legacy=$(sed -n '/^elif \[ -d "\$STUDIO_HOME\/\.venv_t5" \]; then$/,/^fi$/p' "$SETUP_SH")
+check "setup.sh legacy sidecar block found" \
+    "$([ -n "$_sh_legacy" ] && echo 0 || echo 1)"
 check "setup.sh guards the legacy sidecar removal on STAGE_ROOT" \
     "$(printf '%s' "$_sh_legacy" | grep -qF '[ -z "$STAGE_ROOT" ]' && echo 0 || echo 1)"
 check "setup.sh still removes it on a live update" \
     "$(printf '%s' "$_sh_legacy" | grep -qF 'rm -rf "$STUDIO_HOME/.venv_t5"' && echo 0 || echo 1)"
 
-_ps_legacy=$(sed -n '/^if (Test-Path -LiteralPath \$VenvT5Legacy) {$/,/^}$/p' "$SETUP_PS1")
+_ps_legacy=$(sed -n '/^} elseif (Test-Path -LiteralPath \$VenvT5Legacy) {$/,/^}$/p' "$SETUP_PS1")
+check "setup.ps1 legacy sidecar block found" \
+    "$([ -n "$_ps_legacy" ] && echo 0 || echo 1)"
 check "setup.ps1 guards the legacy sidecar removal on StageRoot" \
     "$(printf '%s' "$_ps_legacy" | grep -qF 'if (-not $StageRoot)' && echo 0 || echo 1)"
 check "setup.ps1 still removes it on a live update" \
