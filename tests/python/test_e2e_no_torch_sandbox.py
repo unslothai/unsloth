@@ -925,8 +925,8 @@ def _server_port() -> int:
 
 server = pytest.mark.server
 
-# Hide torch from imports, find_spec() and metadata. from_name as well as discover: only
-# 3.11+ routes named lookups through discover, and Distribution.name is absent on 3.9.
+# from_name as well as discover: only 3.11+ routes named lookups through discover, and
+# Distribution.name is absent on 3.9.
 _HIDE_TORCH_SITECUSTOMIZE = textwrap.dedent(
     """
     import importlib.metadata as _metadata
