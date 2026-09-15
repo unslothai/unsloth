@@ -22,6 +22,8 @@ already_imported = [mod for mod in critical_modules if mod in sys.modules]
 
 from .import_fixes import (
     fix_message_factory_issue,
+    patch_torch_missing_attribute_error,
+    check_triton_py_ssize_t_clean,
     fix_torch_check_is_size,
     fix_torchao_torch_symbol_skew,
     propagate_torchao_fix_to_subprocesses,
@@ -62,6 +64,10 @@ try:
 except Exception:
     pass
 
+# Ahead of every fix below and of `import unsloth_zoo`, because those are what
+# import transformers, and a transformers newer than this torch raises its bare
+# AttributeError at the first one of them to reach it (#8933).
+patch_torch_missing_attribute_error()
 # Configure libdrm ids table path early so ROCm can resolve AMD GPU names.
 configure_amdgpu_asic_id_table_path()
 # Must precede `import unsloth_zoo` below, which imports bnb on ROCm.
@@ -76,6 +82,8 @@ fix_torchao_torch_symbol_skew()
 propagate_torchao_fix_to_subprocesses()
 # Warn, do not raise: this only adds the correct remedy just before transformers prints its misleading one.
 check_transformers_dependency_versions()
+# Same reason: nothing has failed yet, and a run that launches no Triton kernel never will.
+check_triton_py_ssize_t_clean()
 check_fbgemm_gpu_version()
 torchvision_compatibility_check()
 # Ahead of `import unsloth_zoo` below, deliberately not down with the other import fixes: unsloth_zoo's
@@ -91,11 +99,13 @@ del fix_bitsandbytes_rocm_arch_detection
 del disable_broken_causal_conv1d
 del disable_broken_vllm
 del fix_message_factory_issue
+del patch_torch_missing_attribute_error
 del fix_torch_check_is_size
 del fix_torchao_torch_symbol_skew
 del propagate_torchao_fix_to_subprocesses
 del check_fbgemm_gpu_version
 del check_transformers_dependency_versions
+del check_triton_py_ssize_t_clean
 del torchvision_compatibility_check
 del fix_diffusers_warnings
 del fix_huggingface_hub
