@@ -436,6 +436,10 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
         await runRecoverableOp(() =>
           loadCheckpoint({
             checkpoint_path: checkpointPath,
+            // Checkpoint mode always resolves to a local Studio checkpoint.
+            // It may inherit custom model code from its base model, so allow
+            // that local code during export just like other local sources.
+            trust_remote_code: true,
             hf_token: params.loadToken ?? null,
           }),
         );

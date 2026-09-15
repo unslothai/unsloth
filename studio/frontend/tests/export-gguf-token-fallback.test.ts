@@ -102,3 +102,26 @@ test("the load phase keeps using the load token on its own", async () => {
   assert.ok(load, "no load request was made");
   assert.equal((load.args[0] as Record<string, unknown>).hf_token, "hf_load");
 });
+
+test("checkpoint load always trusts the local checkpoint", async () => {
+  stub.resetStub();
+
+  await useExportRuntimeStore.getState().runExport(
+    params({
+      sourceMode: "checkpoint",
+      checkpointPath: "/tmp/studio-run/checkpoint-10",
+      source: "checkpoint-10",
+      modelSource: "hf",
+      trustRemoteCode: false,
+      loadToken: "hf_load",
+    }),
+  );
+
+  const load = stub.calls.find((entry) => entry.name === "loadCheckpoint");
+  assert.ok(load, "no checkpoint load request was made");
+
+  const body = load.args[0] as Record<string, unknown>;
+  assert.equal(body.checkpoint_path, "/tmp/studio-run/checkpoint-10");
+  assert.equal(body.trust_remote_code, true);
+  assert.equal(body.hf_token, "hf_load");
+});
