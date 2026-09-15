@@ -38,6 +38,8 @@ _FUNCTIONS = (
 _HARNESS = """
 set -u
 . "$1"
+# Stubbed: the real one reads this host's /sys/class/drm.
+_setup_has_intel_gpu() { [ "${_setup_intel_gpu:-false}" = true ]; }
 if _kept="$(_gpu_prebuilt_to_keep_over_cpu_build "$2")"; then
     printf 'KEEP %s' "$_kept"
 else
@@ -116,6 +118,18 @@ class TestTheKeepDecision:
     def test_an_amd_prebuilt_on_an_amd_host_is_kept(self, tmp_path, backend):
         install_dir = _install(tmp_path, {"backend": backend})
         assert _decide(tmp_path, install_dir, _setup_amd_detected = "true") == f"KEEP {backend}"
+
+    def test_a_rocm_prebuilt_needs_the_amd_gpu_not_just_any_gpu(self, tmp_path):
+        # An AMD-to-NVIDIA swap: the ROCm binary cannot run here, so the CPU build wins.
+        install_dir = _install(tmp_path, {"backend": "rocm"})
+        assert _decide(tmp_path, install_dir, _setup_nvidia_physical = "true") == "REPLACE"
+
+    def test_a_vulkan_prebuilt_is_kept_for_every_vendor(self, tmp_path):
+        # The Intel-only host is the one the Vulkan route exists for.
+        install_dir = _install(tmp_path, {"backend": "vulkan"})
+        assert _decide(tmp_path, install_dir, _setup_intel_gpu = "true") == "KEEP vulkan"
+        assert _decide(tmp_path, install_dir, _setup_nvidia_physical = "true") == "KEEP vulkan"
+        assert _decide(tmp_path, install_dir) == "REPLACE"
 
     def test_the_marker_backend_is_read_case_insensitively(self, tmp_path):
         install_dir = _install(tmp_path, {"backend": " CUDA "})

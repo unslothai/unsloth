@@ -2949,11 +2949,16 @@ print(backend.strip().lower() if isinstance(backend, str) else "")
 PY
 }
 
+# An Intel GPU by DRM vendor id, the probe the prebuilt router uses for the Vulkan route.
+_setup_has_intel_gpu() {
+    grep -qs -i "^0x8086" /sys/class/drm/card*/device/vendor 2>/dev/null
+}
+
 # A CPU-only source build must not replace a working GPU prebuilt while the GPU is still
 # there: the prebuilt update failed for a reason a CPU binary cannot repair (network, a
 # GitHub limit, a bad release) and the swap below is for good (#9255). Prints the backend
 # to keep. False when there is nothing to keep, the GPU the marker names is gone, or the
-# build was asked for by hand.
+# build was asked for by hand. Vulkan runs on any of the three vendors.
 _gpu_prebuilt_to_keep_over_cpu_build() {
     local install_dir=$1 backend
     [ "$_LLAMA_FORCE_COMPILE" != "1" ] || return 1
@@ -2962,7 +2967,10 @@ _gpu_prebuilt_to_keep_over_cpu_build() {
     backend="$(_installed_prebuilt_backend "$install_dir")"
     case "$backend" in
         cuda) [ "$_setup_nvidia_physical" = true ] || return 1 ;;
-        rocm|vulkan) [ "$_setup_amd_detected" = true ] || [ "$_setup_nvidia_physical" = true ] || return 1 ;;
+        rocm) [ "$_setup_amd_detected" = true ] || return 1 ;;
+        vulkan)
+            [ "$_setup_amd_detected" = true ] || [ "$_setup_nvidia_physical" = true ] \
+                || _setup_has_intel_gpu || return 1 ;;
         *) return 1 ;;
     esac
     printf '%s' "$backend"
