@@ -248,5 +248,10 @@ runs:
         pinned="$(git -C "$RUNNER_TEMP/unsloth-zoo" rev-parse HEAD)"
         echo "unsloth_zoo revision under test: $pinned"
         if [ -n "$head" ] && [ "$head" != "$pinned" ]; then
-          echo "::warning title=unsloth_zoo is not at main::Testing $pinned; unslothai/unsloth-zoo main is now $head. If this job is a --failed re-run, it kept the revision resolved on the first attempt. Re-run ALL jobs to pick up main."
+          # Worded for both ways of getting here, because the action cannot tell them
+          # apart: resolve-zoo-ref hands it a sha either way, so a deliberate
+          # workflow_dispatch pin and a stale re-run look identical from here. Re-running
+          # is only the remedy for the second: rerun preserves the original inputs, so a
+          # pinned dispatch would resolve the same non-main ref again and warn again.
+          echo "::warning title=unsloth_zoo is not at main::Testing $pinned; unslothai/unsloth-zoo main is now $head. If this run pinned unsloth_zoo_ref deliberately, that is expected and re-running keeps the pin. Otherwise this is a --failed re-run that kept the revision resolved on the first attempt: re-run ALL jobs, or start a new run, to pick up main."
         fi

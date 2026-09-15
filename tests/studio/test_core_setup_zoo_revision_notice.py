@@ -211,3 +211,30 @@ def test_a_hanging_remote_lookup_does_not_hold_the_step(tmp_path):
         "a lookup that never answered must stay quiet rather than claim staleness:\n"
         + combined[-2000:]
     )
+
+
+def test_the_warning_does_not_prescribe_a_remedy_that_cannot_work(tmp_path):
+    """A deliberately pinned unsloth_zoo_ref reaches this code looking exactly like a
+    stale re-run: resolve-zoo-ref hands over a sha either way, so the action cannot tell
+    them apart. Re-running is the remedy for only one of them, because a rerun preserves
+    the original inputs and a pinned dispatch resolves the same non-main ref again.
+
+    So the message has to hold for both readings rather than assert the one."""
+    proc = _run_notice(
+        tmp_path,
+        git_exit = 0,
+        git_stdout = "1111111111111111111111111111111111111111\trefs/heads/main\n",
+    )
+    combined = proc.stdout + proc.stderr
+    warning = next(
+        (line for line in combined.splitlines() if "::warning" in line), None
+    )
+    assert warning is not None, combined[-2000:]
+    lowered = warning.lower()
+    assert "pinned" in lowered or "deliberate" in lowered, (
+        "the warning tells the reader to re-run without allowing that the ref may have "
+        f"been pinned on purpose, which re-running will not change:\n{warning}"
+    )
+    assert "re-run all jobs" in lowered, (
+        f"the warning no longer names the remedy for the stale-re-run case:\n{warning}"
+    )
