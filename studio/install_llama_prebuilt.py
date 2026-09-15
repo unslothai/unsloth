@@ -1021,14 +1021,11 @@ def synthetic_checksums_for_release(
 def _masked_nvidia_selection_host(host: HostInfo) -> HostInfo | None:
     """The host to select CUDA for when CUDA_VISIBLE_DEVICES hides its NVIDIA GPU, else None.
 
-    physical-without-usable means exactly one thing: the GPU is there and the mask is empty
-    or -1. The mask is scoped to this process; the install tree is not, so one masked run
-    (a container build, a scheduler, the backend pinning GPUs for itself) left a CUDA
-    machine on the CPU bundle for good. Select CUDA as if unmasked: nvidia-smi is NVML and
-    still answers under the mask, and at run time the CUDA build sees no devices and runs
-    on CPU exactly as the CPU bundle would. Against the PHYSICAL caps: the visible ones are
-    empty by construction, which is the selector's unknown-SM path, so a masked sm_61 host
-    would accept an sm_70 floor and offload nothing once unmasked.
+    physical-without-usable means the GPU is there and the mask is empty or -1. The mask is
+    per process, the install tree is not, so one masked run left a CUDA machine on the CPU
+    bundle for good. Select CUDA against the PHYSICAL caps: the visible ones are empty, the
+    selector's unknown-SM path, which would let a masked sm_61 host accept an sm_70 floor.
+    A CUDA build under the mask runs on CPU exactly as the CPU bundle would.
     None with usable ROCm (that host keeps ROCm) and for an explicit CPU request, which
     never arrives here because _apply_host_overrides has cleared has_physical_nvidia.
     """
