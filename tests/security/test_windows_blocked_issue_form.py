@@ -1,0 +1,159 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""The Windows-blocked issue form has to keep asking for the three fields a vendor needs.
+
+#8523, #6326, #6588, #6648, #10540 and #10805 all reported a security product blocking Unsloth and
+named no product, no detection name and no AMSI provider, so not one of them could be submitted to a
+vendor or proven fixed. The form exists to make those fields required; if a later edit relaxes them,
+or breaks the collection script that produces them, we are back to unactionable reports and nothing
+would otherwise fail.
+
+The collection script is checked by parsing it. A diagnostic that does not run is worse than none: it
+costs the user a round trip and produces an error message about our form instead of about their
+antivirus. That is not hypothetical here -- the first version of this form put the script in a YAML
+folded scalar (`>`), which joins the lines and silently destroyed every newline in it.
+"""
+
+from __future__ import annotations
+
+import re
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+import yaml
+
+
+REPO = Path(__file__).resolve().parents[2]
+FORM = REPO / ".github" / "ISSUE_TEMPLATE" / "install-blocked-windows.yml"
+
+# The three things a false-positive submission cannot be made without, plus the error id that says
+# which mechanism blocked it.
+REQUIRED_FIELD_IDS = ("av-product", "detection-name", "error-text", "probe")
+
+
+def _form() -> dict:
+    return yaml.safe_load(FORM.read_text(encoding = "utf-8"))
+
+
+def _fields() -> dict:
+    return {
+        item["id"]: item
+        for item in _form()["body"]
+        if isinstance(item, dict) and "id" in item
+    }
+
+
+def _snippet() -> str:
+    """The PowerShell the form asks the reporter to run."""
+    for item in _form()["body"]:
+        description = (item.get("attributes") or {}).get("description") or ""
+        match = re.search(r"```powershell\n(.*?)```", description, re.S)
+        if match:
+            return match.group(1)
+    raise AssertionError(
+        "the form contains no ```powershell block with newlines in it. The overwhelmingly likely "
+        "cause is that its `description:` uses a YAML folded scalar (`>`) instead of a literal one "
+        "(`|`): folding joins every line, so the fence and the code end up on one line and the "
+        "script the reporter pastes is unusable. That exact mistake shipped in the first draft."
+    )
+
+
+def test_the_form_exists_and_is_valid_yaml() -> None:
+    assert FORM.is_file(), f"missing {FORM.relative_to(REPO)}"
+    form = _form()
+    assert form.get("name"), "an issue form needs a name or GitHub will not offer it"
+    assert isinstance(form.get("body"), list) and form["body"], "the form has no body"
+
+
+@pytest.mark.parametrize("field_id", REQUIRED_FIELD_IDS)
+def test_the_fields_a_vendor_needs_stay_required(field_id: str) -> None:
+    fields = _fields()
+    assert field_id in fields, (
+        f"the form no longer has a {field_id!r} field. Every report of this class before the form "
+        f"existed named no product and no detection name, and none of them could be submitted."
+    )
+    validations = fields[field_id].get("validations") or {}
+    assert validations.get("required") is True, (
+        f"{field_id!r} is no longer required. A markdown template could not enforce this, which is "
+        f"why this is a form; making the field optional gives that up for nothing."
+    )
+
+
+def test_the_collection_script_survived_the_yaml() -> None:
+    """A folded scalar joins lines and would ship a one-line, unusable script."""
+    snippet = _snippet()
+    assert snippet.count("\n") > 20, (
+        "the collection script has collapsed to almost nothing. Its `description` must use a "
+        "literal block scalar (`|`), not a folded one (`>`): folding joins the lines and destroys "
+        "every newline in the code block."
+    )
+    # Each section the triage actually reads. Losing one silently narrows what a report can answer.
+    for marker in (
+        "SecurityCenter2",
+        "AMSI\\Providers",
+        "InprocServer32",
+        "Get-MpComputerStatus",
+        "AMRunningMode",
+    ):
+        assert marker in snippet, f"the collection script no longer gathers {marker}"
+
+
+def test_the_collection_script_parses() -> None:
+    """Parsed, not eyeballed. It is pasted verbatim by people who are already stuck."""
+    pwsh = shutil.which("pwsh")
+    if pwsh is None:
+        pytest.skip("pwsh is unavailable")
+
+    snippet = _snippet()
+    probe = (
+        "$ErrorActionPreference = 'Stop'; $errors = $null; $tokens = $null; "
+        "$null = [System.Management.Automation.Language.Parser]::ParseInput("
+        "[System.IO.File]::ReadAllText($env:UNSLOTH_SNIPPET_PATH), [ref]$tokens, [ref]$errors); "
+        "if ($errors.Count) { $errors | ForEach-Object { $_.Message }; exit 1 }; "
+        "Write-Output \"OK $($tokens.Count)\""
+    )
+    # Through a file and an environment variable, so nothing about the snippet's own quoting can
+    # change how it is handed to the parser.
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "snippet.ps1"
+        path.write_text(snippet, encoding = "utf-8")
+        result = subprocess.run(
+            [pwsh, "-NoProfile", "-NonInteractive", "-Command", probe],
+            capture_output = True,
+            text = True,
+            timeout = 120,
+            env = {**__import__("os").environ, "UNSLOTH_SNIPPET_PATH": str(path)},
+        )
+
+    assert result.returncode == 0, (
+        f"the collection script in {FORM.name} does not parse:\n{result.stdout}\n{result.stderr}"
+    )
+
+
+def test_the_collection_script_only_reads() -> None:
+    """It runs on a stranger's machine while they are already having a bad day.
+
+    No downloads, no execution of anything fetched, and nothing that writes. It also must not carry
+    the shapes the installers are being cleaned of, or the diagnostic gets blocked by the same
+    product that blocked the installer.
+    """
+    snippet = _snippet()
+    for banned, why in (
+        ("Invoke-WebRequest", "a diagnostic must not download"),
+        ("Invoke-RestMethod", "a diagnostic must not download"),
+        ("Invoke-Expression", "a diagnostic must not evaluate strings"),
+        ("iex", "a diagnostic must not evaluate strings"),
+        ("Add-Type", "that compiles C# through csc.exe, which is the shape being removed"),
+        ("FromBase64String", "encode-then-run is the shape being removed"),
+        ("Set-MpPreference", "a diagnostic must never change the scanner it is reporting on"),
+        ("Add-MpPreference", "a diagnostic must never change the scanner it is reporting on"),
+        ("Remove-Item", "a diagnostic must not delete"),
+        ("Set-Content", "a diagnostic must not write"),
+        ("Start-Process", "a diagnostic must not launch anything"),
+    ):
+        assert banned not in snippet, f"the collection script uses {banned}: {why}"
