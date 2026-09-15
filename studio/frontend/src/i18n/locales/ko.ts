@@ -1025,6 +1025,13 @@ export const ko = {
         minimal: "미니멀",
       },
       custom: {
+        chatWidth: {
+          label: "채팅 너비",
+          description: "메시지와 입력창의 너비를 설정합니다. 전체 너비는 사이드바 사이의 공간을 사용합니다.",
+          standard: "표준",
+          wide: "넓게",
+          full: "전체 너비",
+        },
         reset: "초기화",
         resetAll: "사용자 지정 초기화",
         preferencesTitle: "환경설정",
@@ -1074,6 +1081,10 @@ export const ko = {
           errorStorageFull:
             "이 글꼴을 저장할 로컬 저장 공간이 부족합니다. 가져온 글꼴을 먼저 제거하세요.",
           errorFailed: "이 글꼴 파일을 불러올 수 없습니다.",
+        },
+        interfaceScale: {
+          label: "인터페이스 배율",
+          description: "모든 인터페이스 요소의 크기를 조정합니다.",
         },
         uiFontSize: {
           label: "UI 글꼴 크기",

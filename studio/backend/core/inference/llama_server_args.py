@@ -992,6 +992,59 @@ def extra_args_disable_mmproj(args: Optional[Iterable[str]]) -> bool:
     return disabled
 
 
+def extra_args_image_max_tokens(
+    args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> Optional[int]:
+    """Return the effective positive ``--image-max-tokens`` value."""
+    found: Optional[int] = None
+    raw_env = (os.environ if env is None else env).get("LLAMA_ARG_IMAGE_MAX_TOKENS")
+    if raw_env:
+        try:
+            parsed_env = int(str(raw_env).strip())
+        except (TypeError, ValueError):
+            parsed_env = 0
+        if parsed_env > 0:
+            found = parsed_env
+    tokens = [str(a) for a in (args or ())]
+    for index, raw in enumerate(tokens):
+        if raw.startswith("--image-max-tokens="):
+            value = raw.partition("=")[2]
+        elif raw == "--image-max-tokens" and index + 1 < len(tokens):
+            value = tokens[index + 1]
+        else:
+            continue
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0:
+            found = parsed
+    return found
+
+
+def extra_args_mmproj_auto(
+    args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> bool:
+    """Return whether llama-server will discover an adjacent projector."""
+    source_env = os.environ if env is None else env
+    enabled = False
+    if source_env.get("LLAMA_ARG_NO_MMPROJ_AUTO") is not None:
+        enabled = False
+    else:
+        raw = source_env.get("LLAMA_ARG_MMPROJ_AUTO")
+        if raw is not None:
+            enabled = str(raw).strip().lower() in _ENV_TRUE_VALUES
+    if not args:
+        return enabled
+    for raw in args:
+        flag = _flag_name(str(raw))
+        if flag in _MMPROJ_ENABLE_FLAGS:
+            enabled = True
+        elif flag in _MMPROJ_DISABLE_FLAGS:
+            enabled = False
+    return enabled
+
+
 def strip_shadowing_flags(
     args: Iterable[str],
     *,

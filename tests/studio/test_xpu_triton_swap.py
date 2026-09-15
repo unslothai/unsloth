@@ -40,23 +40,62 @@ def _load_real_index_env_scrub():
     It is defined below the slice the swap comes from, so it is pulled in separately rather
     than stubbed -- a hand-written copy here would agree with a broken original forever.
     """
+    import ast as _ast
+    import atexit as _atexit
+    import functools as _functools
+    import locale as _locale
     import os as _os
+    import shutil as _shutil
+    import subprocess as _subprocess
+    import sys as _sys
+    import tempfile as _tempfile
 
     src = STACK.read_text(encoding = "utf-8")
-    ns: dict = {"os": _os}
+    ns: dict = {
+        "os": _os,
+        "ast": _ast,
+        "atexit": _atexit,
+        "functools": _functools,
+        "shutil": _shutil,
+        "subprocess": _subprocess,
+        "locale": _locale,
+        "sys": _sys,
+        "tempfile": _tempfile,
+        # The one dependency of the extracted code that is not a module.
+        "_windows_hidden_subprocess_kwargs": dict,
+    }
     for anchor, end, keep in (
         ("_UV_INDEX_ENV_VARS = (", "\n)\n", 2),
-        # _install_env_for_cmd calls both of these, and they resolve from this namespace at CALL time, so omitting
-        # either only shows up as a NameError once a test actually invokes the scrub.
-        ("_PM_POLICY_ENV_VARS = (", "\n)\n", 2),
+        # Resolved from this namespace at CALL time, so an omission is a NameError later.
+        ("_PM_HASH_ENV_VARS = (", "\n)\n", 2),
+        ("_PM_FORCE_SOURCE_ENV_VARS = (", "\n)\n", 2),
+        # One line, so it ends at the first newline; "\n)\n" would swallow the file.
+        ("_PINNED_PIP_CONFIG_KEEP_KEYS = (", "\n)\n", 2),
+        ("_PINNED_PIP_CONFIG_GLOBAL_SECTION = ", "\n", 1),
+        ("_PINNED_PIP_CONFIG_DEFAULT_SECTION = ", "\n", 1),
+        ("_PINNED_PIP_CONFIG_SEPARATORS = ", "\n", 1),
+        ("_PINNED_PIP_CONFIG_ACCUMULATING = ", "\n", 1),
+        ("_PINNED_PIP_CONFIG_LISTING: ", "\n", 1),
+        ("_PINNED_PIP_CONFIG_TIMEOUT = ", "\n", 1),
+        ("_PINNED_PIP_CONFIG_ATTEMPTS = ", "\n", 1),
+        ("def _pip_subcommand_of(", "\n\ndef ", 0),
+        ("def _decode_pip_output(", "\n\ndef ", 0),
+        ("def _pinned_pip_config_overrides(", "\n\ndef ", 0),
+        # Omitting it made the exec'd scrub raise into a broad except and agree with
+        # anything.
+        ("def _parse_pinned_pip_config(", "\n\ndef ", 0),
         ("def _relaxed_pip_policy_env(", "\n\ndef ", 0),
+        ("def _is_pip_subcommand(", "\n\ndef ", 0),
         ("def _is_pinned_index_cmd(", "\n\ndef ", 0),
         ("def _install_env_for_cmd(", "\n\ndef ", 0),
     ):
         start = src.index(anchor)
         exec(compile(src[start : src.index(end, start) + keep], str(STACK), "exec"), ns)
     assert "PIP_NO_INDEX" in ns["_UV_INDEX_ENV_VARS"], "extraction lost the pip vars"
-    assert "PIP_REQUIRE_HASHES" in ns["_PM_POLICY_ENV_VARS"], "extraction lost the policy vars"
+    assert "PIP_REQUIRE_HASHES" in ns["_PM_HASH_ENV_VARS"], "extraction lost the hash vars"
+    # Execute it once: a missing dependency here is otherwise an inert scrub that passes.
+    parsed = ns["_parse_pinned_pip_config"](b"global.cert='/etc/corp/ca.pem'\n")
+    assert parsed == {"PIP_CERT": "/etc/corp/ca.pem"}, f"extraction is inert: {parsed}"
     return ns["_install_env_for_cmd"]
 
 
@@ -197,6 +236,12 @@ def _load(
         # pip check only runs when something said it changed the environment.
         "_count_install_action": lambda: counted.append(1),
         "_red": lambda s: s,
+        # _ensure_xpu_triton reads the setup-script handover through this helper rather
+        # than inline, so the slice needs it by name or the guard tests NameError at call
+        # time. Same semantics as the real one: the env var, lowercased.
+        "_handover_torch_flavor_tag": (
+            lambda: os.environ.get("UNSLOTH_EXPECTED_TORCH_TAG", "").strip().lower()
+        ),
         # _safe_print, not print: the slice calls it by name, so stubbing "print" would leave _safe_print undefined at
         # exec time.
         "_safe_print": (
@@ -406,12 +451,26 @@ class TestTheFetchIgnoresTheUsersIndexEnvironment:
         assert var not in env
 
     def test_the_fetch_neutralises_the_pip_config_file(self, monkeypatch, tmp_path):
-        # A pip.conf index-url outranks nothing on the CLI, but no-index in it does.
+        # A config no-index outranks the CLI pin, and devnull is the only spelling that
+        # reaches a SITE or GLOBAL file.
         mod, _ = _load(monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1")
         mod.__dict__["_ensure_xpu_triton"]()
         env = mod.__dict__["_test_download_envs"][0]
         assert env["PIP_CONFIG_FILE"] == os.devnull
         assert env["UV_NO_CONFIG"] == "1"
+
+    def test_the_fetch_keeps_the_operators_build_policy(self, monkeypatch, tmp_path):
+        # The pin is a wheel, so only-binary costs it nothing; this is `pip download`.
+        monkeypatch.setenv("PIP_ONLY_BINARY", ":all:")
+        monkeypatch.setenv("PIP_REQUIRE_HASHES", "1")
+        monkeypatch.setenv("UV_EXCLUDE_NEWER", "2024-01-01T00:00:00Z")
+        mod, _ = _load(monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1")
+        mod.__dict__["_ensure_xpu_triton"]()
+        env = mod.__dict__["_test_download_envs"][0]
+        assert env["PIP_ONLY_BINARY"] == ":all:"
+        assert "PIP_REQUIRE_HASHES" not in env
+        # The pip leg cannot express an upload cutoff.
+        assert "UV_EXCLUDE_NEWER" not in env
 
     def test_unrelated_environment_survives(self, monkeypatch, tmp_path):
         # Scrub the index vars, not the environment: HTTPS_PROXY and friends are how a corporate host reaches the index
