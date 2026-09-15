@@ -35,6 +35,19 @@ Downloads are staged and verified before activation; failures leave the server
 disabled and can be retried with **Enable Blender MCP**. Merely opening the dialog
 or launching Studio does not download anything.
 
+## Large tool catalogs
+
+A server can expose dozens of tools with long descriptions and deeply nested
+parameter schemas, which would cost tens of thousands of tokens on every request.
+A tool whose description and schema together exceed about 1,500 characters is
+listed in a compact form: its first sentence plus its top-level parameters with
+their types, required flags and short enums. Smaller tools are listed in full.
+
+When any tool is listed compactly the model also gets `mcp_tool_schema`, which
+returns a tool's full description and JSON Schema on demand. A compact tool called
+without one of its required arguments answers with that schema instead of reaching
+the server.
+
 ## Studio's own MCP server
 
 Unsloth can expose a local MCP server so an MCP client can inspect models and
