@@ -19682,7 +19682,7 @@ class LlamaCppBackend:
     @staticmethod
     def _cache_tuning_target_unknown(
         extra_args: Optional[Iterable[str]],
-        gpu_ids: Optional[Iterable[int]],
+        device_flags_owned: bool,
         env: Mapping[str, str],
     ) -> bool:
         """Whether the device this cache tuning would be chosen against is the one
@@ -19690,13 +19690,13 @@ class LlamaCppBackend:
 
         A user device selection is not stripped on an automatic load and llama.cpp
         reads it last (argv) or first (env, before argv either way), so it, not the
-        automatic placement, names the target. Both spellings count: only an explicit
-        ``gpu_ids`` clears LLAMA_ARG_DEVICE, so on an automatic load the env twin
-        survives into the child verbatim. Fail-closed by design -- the failure that
+        automatic placement, names the target. Both spellings count: only a pick that
+        OWNS placement clears LLAMA_ARG_DEVICE, so otherwise the env twin survives
+        into the child verbatim. Fail-closed by design -- the failure that
         matters is emitting --cache-ram 0 against a shared pool, while keeping the
         prompt cache on a discrete card only forgoes a tuning.
         """
-        if gpu_ids is not None:
+        if device_flags_owned:
             return False
         return bool(
             _extra_args_set_any_flag(extra_args, _DEVICE_FLAGS)
@@ -24087,7 +24087,7 @@ class LlamaCppBackend:
                     _fit_env = dict(os.environ)
                     if gpu_memory_mode == "manual":
                         self._clear_manual_placement_env(_fit_env)
-                    if gpu_ids is not None:
+                    if _gpu_ids_own_device_flags:
                         self._clear_device_placement_env(_fit_env)
                     # What the placement branch below will emit, so the effective
                     # (last-wins) fitter state is readable before the final argv exists.
@@ -25286,7 +25286,7 @@ class LlamaCppBackend:
                 # LLAMA_ARG_DEVICE, and llama.cpp reads it before argv, so an automatic
                 # load can place against a target the generated pin never names.
                 _cache_target_unknown = self._cache_tuning_target_unknown(
-                    extra_args, gpu_ids, os.environ
+                    extra_args, _gpu_ids_own_device_flags, os.environ
                 )
                 _shared_memory_offload = (
                     sys.platform == "win32"
