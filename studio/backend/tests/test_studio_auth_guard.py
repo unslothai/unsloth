@@ -2011,3 +2011,34 @@ def test_a_singleton_class_and_an_escaped_builtin_are_the_literals_they_expand_t
             ), ordinary
     finally:
         tools._studio_auth_markers_cache = None
+
+
+def test_a_chdir_to_the_studio_home_variable_moves_there(monkeypatch, tmp_path):
+    # `os.chdir(os.environ["UNSLOTH_STUDIO_HOME"])` names the root without spelling it, and bypass
+    # keeps that variable in the child, so the move is real. The fold has no value for a subscript,
+    # which left the walk sitting in the sandbox and the later relative path looking ordinary.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        for code in (
+            'import os\nos.chdir(os.environ["UNSLOTH_STUDIO_HOME"])\nprint(open("auth/auth.db").read())',
+            # Windows upper-cases every key `os.environ` is handed, so the lower-case spelling
+            # resolves to the same directory there.
+            'import os\nos.chdir(os.environ["unsloth_studio_home"])\nprint(open("auth/.desktop_secret").read())',
+            'import os\nos.chdir(os.getenv("STUDIO_HOME"))\nprint(open("auth/auth.db").read())',
+        ):
+            assert tools._python_exec(code, None, 30, _SESSION, disable_sandbox = True) == (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), code
+        for ordinary in (
+            'import os\nos.chdir("data")\nprint(open("notes.txt").read())',
+            'import os\nos.chdir(os.environ["HOME"])\nprint(open("notes.txt").read())',
+        ):
+            assert tools._python_exec(ordinary, None, 30, _SESSION, disable_sandbox = True) != (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), ordinary
+    finally:
+        tools._studio_auth_markers_cache = None

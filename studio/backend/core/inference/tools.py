@@ -3395,6 +3395,13 @@ def _python_builds_a_credential_path(code: str, workdir: "str | None") -> bool:
                 root = _studio_home_for_guard()
                 if root:
                     targets = [root]
+            # `os.chdir(os.environ["UNSLOTH_STUDIO_HOME"])` names the root without spelling it, and
+            # `_build_bypass_env` keeps that variable in the child, so the move is real. The fold
+            # has no value for a subscript, which left the walk sitting in the sandbox.
+            if not targets and _names_the_studio_home_env(argument):
+                root = _studio_home_for_guard()
+                if root:
+                    targets = [root]
             if not targets and target and "\x00" not in target:
                 # `os.chdir(Path.cwd().parents[1])` is an ordinary move, and the fold writes the
                 # walk as one marker, so resolve it here rather than ignoring the move.
@@ -3815,6 +3822,35 @@ def _is_chdir_call(
             modules or {"os", "contextlib"}
         )
     return isinstance(func, ast.Name) and func.id in bare
+
+
+def _names_the_studio_home_env(node) -> bool:
+    """True when *node* reads an environment variable that holds the studio home.
+
+    `os.environ["UNSLOTH_STUDIO_HOME"]`, the `.get` spelling and `os.getenv` all return the same
+    directory. Case-insensitive, because `os.environ` upper-cases every key it is handed on Windows.
+    """
+    if node is None:
+        return False
+    if isinstance(node, ast.Subscript):
+        receiver = node.value
+        named = getattr(receiver, "attr", None) or getattr(receiver, "id", None)
+        key = node.slice
+        return named == "environ" and (
+            isinstance(key, ast.Constant)
+            and isinstance(key.value, str)
+            and key.value.upper() in _STUDIO_HOME_ENV_VARS
+        )
+    if isinstance(node, ast.Call) and node.args:
+        called = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
+        first = node.args[0]
+        return (
+            called in ("get", "getenv")
+            and isinstance(first, ast.Constant)
+            and isinstance(first.value, str)
+            and first.value.upper() in _STUDIO_HOME_ENV_VARS
+        )
+    return False
 
 
 def _code_reads_the_studio_home(code: str) -> bool:
