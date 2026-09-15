@@ -486,7 +486,9 @@ def _blocked_matching_glob(base: str) -> "set[str]":
     """Blocked command names a command-position glob can expand to."""
     if not _is_unresolved_command_glob(base):
         return set()
-    return {name for name in _BLOCKED_COMMANDS if fnmatch.fnmatchcase(name, base)}
+    return {
+        name for name in _BLOCKED_COMMANDS | _SSH_GATED_COMMANDS if fnmatch.fnmatchcase(name, base)
+    }
 
 
 def _is_sed_command(base: str) -> bool:

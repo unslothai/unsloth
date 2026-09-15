@@ -186,6 +186,7 @@ def _parse_ssh_cli_options(tokens: list[str], command: str) -> tuple[list[str], 
     positional: list[str] = []
     hosts: set[str] = set()
     dynamic = False
+    configuration_disabled = False
     index = 0
     while index < len(tokens):
         token = tokens[index]
@@ -215,11 +216,10 @@ def _parse_ssh_cli_options(tokens: list[str], command: str) -> tuple[list[str], 
                 dynamic = True
                 break
             flags = ""
-            if (
-                option == "F"
-                or (command == "scp" and option in {"D", "S"})
-                or (command == "sftp" and option in {"D", "S"})
-            ):
+            if option == "F":
+                configuration_disabled = value == "none"
+                dynamic |= not configuration_disabled
+            elif command in {"scp", "sftp"} and option in {"D", "S"}:
                 dynamic = True
             elif option == "J":
                 found, unknown = _host_from_ssh_option("proxyjump", value)
@@ -232,7 +232,7 @@ def _parse_ssh_cli_options(tokens: list[str], command: str) -> tuple[list[str], 
                 )
                 hosts.update(found)
                 dynamic |= unknown
-    return positional, hosts, dynamic
+    return positional, hosts, dynamic or not configuration_disabled
 
 
 def _scp_remote_candidates(tokens: list[str]) -> list[str]:
@@ -325,9 +325,12 @@ def _ssh_client_bindings(tree: ast.AST, bindings: dict[str, str]) -> dict[str, s
     """Map variables assigned from SSH client factories."""
     clients: dict[str, str] = {}
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+        if isinstance(node, ast.AnnAssign):
+            target = node.target
+        elif isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target = node.targets[0]
+        else:
             continue
-        target = node.targets[0]
         if not isinstance(target, ast.Name) or not isinstance(node.value, ast.Call):
             continue
         fq = _fq_name(node.value.func)
@@ -476,6 +479,42 @@ def _ssh_call_span(node: ast.Call) -> tuple[int, int, int, int]:
     return lineno, col, end_lineno, end_col
 
 
+def _ssh_python_configuration_is_explicit(
+    node: ast.Call, ssh_call: str, bindings: dict[str, str]
+) -> bool:
+    """Reject library configuration which can hide destinations."""
+    if not ssh_call.startswith(("asyncssh.", "fabric.")):
+        return True
+    if any(kw.arg is None for kw in node.keywords):
+        return False
+    kwargs = {kw.arg: kw.value for kw in node.keywords}
+    config = kwargs.get("config")
+    if ssh_call.startswith("asyncssh."):
+        if not isinstance(config, ast.Constant) or config.value is not None:
+            return False
+        return all(
+            isinstance(kwargs[key], ast.Constant) and kwargs[key].value is None
+            for key in ("options", "tunnel", "proxy_command", "sock")
+            if key in kwargs
+        )
+    if not isinstance(config, ast.Call) or config.args or len(config.keywords) != 1:
+        return False
+    root, sep, rest = _fq_name(config.func).partition(".")
+    factory = bindings.get(root, root) + (sep + rest if sep else "")
+    lazy = config.keywords[0]
+    return (
+        factory in {"fabric.Config", "fabric.config.Config"}
+        and lazy.arg == "lazy"
+        and isinstance(lazy.value, ast.Constant)
+        and lazy.value.value is True
+        and (
+            "gateway" not in kwargs
+            or isinstance(kwargs["gateway"], ast.Constant)
+            and kwargs["gateway"].value in (None, False)
+        )
+    )
+
+
 def _scan_ssh_python_usage(
     code: str,
 ) -> tuple[set[str], bool, bool, list[tuple[int, int, int, int]]]:
@@ -500,6 +539,7 @@ def _scan_ssh_python_usage(
             ssh_call = _resolve_ssh_call(node.func, bindings, clients)
             if ssh_call:
                 uses_ssh = True
+                dynamic |= not _ssh_python_configuration_is_explicit(node, ssh_call, bindings)
                 connect_spans.append(_ssh_call_span(node))
                 host_lit: Optional[str] = None
                 if node.args:
@@ -611,7 +651,8 @@ def check_ssh_command_access(command: str, session_id: Optional[str]) -> Optiona
     if dynamic:
         return (
             "Blocked: SSH command includes a non-literal or redirected target that "
-            "is not approved. Use a literal hostname for an approved server."
+            "is not approved. Use -F none to disable implicit SSH configuration and "
+            "a literal hostname for an approved server."
         )
     return None
 
@@ -623,8 +664,9 @@ def check_ssh_python_access(code: str, session_id: Optional[str]) -> Optional[st
         return None
     if uses_ssh and not hosts and dynamic:
         return (
-            "Blocked: SSH library usage with a non-literal host requires approving "
-            "the target server first."
+            "Blocked: SSH usage with a non-literal host or implicit configuration is not allowed. "
+            "Disable configuration with -F none for OpenSSH, config=None for AsyncSSH, "
+            "or config=fabric.Config(lazy=True) for Fabric."
         )
     if uses_ssh and not hosts and not dynamic:
         return "Blocked: SSH usage detected without a literal, approved target server."
@@ -637,8 +679,9 @@ def check_ssh_python_access(code: str, session_id: Optional[str]) -> Optional[st
         )
     if dynamic:
         return (
-            "Blocked: SSH library usage with a non-literal host requires approving "
-            "the target server first."
+            "Blocked: SSH usage with a non-literal host or implicit configuration is not allowed. "
+            "Disable configuration with -F none for OpenSSH, config=None for AsyncSSH, "
+            "or config=fabric.Config(lazy=True) for Fabric."
         )
     return None
 
