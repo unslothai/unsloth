@@ -54,14 +54,20 @@ $setupPs1 = Join-Path $root "studio\setup.ps1"
 
 Write-Host ""
 Write-Host "=== shared inventory helper ==="
-$installBlock = @(Get-HelperSources $installPs1 @("Get-NvidiaLibraryInventory"))[0]
-$setupBlock = @(Get-HelperSources $setupPs1 @("Get-NvidiaLibraryInventory"))[0]
+$blockNames = @("Get-NvidiaNvmlLibraryPath", "Get-NvidiaLibraryProbeType", "Read-NvidiaLibraryRaw", "Get-NvidiaLibraryInventory")
+$installParts = @(Get-HelperSources $installPs1 $blockNames)
+$setupParts = @(Get-HelperSources $setupPs1 $blockNames)
+$installBlock = $installParts[3]
+$setupBlock = $setupParts[3]
+$setupPath = $setupParts[0]
+$readBlock = $setupParts[2]
 # install.ps1 nests its helpers one level deeper; compare the two copies without indentation.
 $strip = { param($text) ($text -split "`n" | ForEach-Object { $_.TrimStart() }) -join "`n" }
-Check "install.ps1 and setup.ps1 carry the same helper" ((& $strip $installBlock) -eq (& $strip $setupBlock))
-$installPath = @(Get-HelperSources $installPs1 @("Get-NvidiaNvmlLibraryPath"))[0]
-$setupPath = @(Get-HelperSources $setupPs1 @("Get-NvidiaNvmlLibraryPath"))[0]
-Check "both copies find nvml.dll the same way" ((& $strip $installPath) -eq (& $strip $setupPath))
+for ($k = 0; $k -lt $blockNames.Count; $k++) {
+    Check "install.ps1 and setup.ps1 carry the same $($blockNames[$k])" ((& $strip $installParts[$k]) -eq (& $strip $setupParts[$k]))
+}
+# The installer must not spawn a C# compiler (windows-no-compiler-ci): the methods are emitted.
+Check "the inventory compiles nothing" ((($setupParts -join "`n") -notmatch 'Add-Type') -and ($setupParts[1] -match 'New-StudioEmittedNativeType'))
 Invoke-Expression $setupPath
 $pathRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-nvml-" + [guid]::NewGuid().ToString("N"))
 $sys32 = Join-Path (Join-Path $pathRoot "root") "System32"
@@ -81,12 +87,13 @@ try {
     Remove-Item -LiteralPath $pathRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 Check "a failed driver-version read is not an inventory" (
-    $setupBlock -match 'nvmlSystemGetCudaDriverVersion_v2\(out version\) != 0' -and
-    $setupBlock -match 'cuDriverGetVersion\(out version\) != 0')
+    $readBlock -match 'nvmlSystemGetCudaDriverVersion_v2\(\[ref\]\$ver\) -ne 0' -and
+    $readBlock -match 'cuDriverGetVersion\(\[ref\]\$ver\) -ne 0')
 
 # The real libraries, in a child so the fake type below can own this session.
 $helperFile = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-inventory-" + [System.IO.Path]::GetRandomFileName() + ".ps1")
-Set-Content -LiteralPath $helperFile -Value ($setupBlock + "`n`$inv = Get-NvidiaLibraryInventory`nif (`$inv) { `$inv | ConvertTo-Json -Compress } else { 'null' }")
+$emitters = @(Get-HelperSources $setupPs1 @("New-StudioDynamicAssembly", "New-StudioEmittedNativeType"))
+Set-Content -LiteralPath $helperFile -Value ((($emitters + $setupParts) -join "`n") + "`n`$inv = Get-NvidiaLibraryInventory`nif (`$inv) { `$inv | ConvertTo-Json -Compress } else { 'null' }")
 $pwshExe = (Get-Process -Id $PID).Path
 $realJson = & $pwshExe -NoProfile -File $helperFile 2>&1 | Select-Object -Last 1
 $offJson = & $pwshExe -NoProfile -Command "`$env:UNSLOTH_NVIDIA_LIBRARY_PROBE = '0'; & '$helperFile'" 2>&1 | Select-Object -Last 1
@@ -102,17 +109,13 @@ if ("$realJson" -ne "null" -and "$realJson" -match '^\{') {
     Write-Host "  (no NVIDIA driver library on this host; the real-inventory checks are skipped)"
 }
 
-# The parser, over a stand-in for the compiled probe: the helper reuses a type that exists.
-Add-Type -TypeDefinition @'
-public static class UnslothNvidiaProbe {
-    public static string Raw = "";
-    public static string Probe(int timeoutMs) { return Raw; }
-}
-'@
+# The parser, over a stand-in for the library reader.
 Invoke-Expression $setupBlock
+$script:FakeRaw = ""
+function Read-NvidiaLibraryRaw { param([int]$TimeoutMs = 10000) return $script:FakeRaw }
 function Probe-Raw($raw) {
     $script:NvidiaLibraryInventoryProbed = $false
-    [UnslothNvidiaProbe]::Raw = $raw
+    $script:FakeRaw = $raw
     return Get-NvidiaLibraryInventory
 }
 $parsed = Probe-Raw "nvml;13;1;8.9,12.0"
@@ -124,7 +127,7 @@ Check "an empty probe is no inventory" ($null -eq (Probe-Raw ""))
 Check "a zero driver version is no inventory" ($null -eq (Probe-Raw "nvml;0;0;8.9"))
 Check "no capabilities is no inventory" ($null -eq (Probe-Raw "nvml;13;0;"))
 Check "an unreadable capability voids the inventory" ($null -eq (Probe-Raw "nvml;13;0;N/A,8.9"))
-Check "one unreadable GPU voids the compiled probe's source too" ($setupBlock -notmatch '\bcontinue;')
+Check "one unreadable GPU voids the reader's source too" ($readBlock -notmatch '\bcontinue\b')
 Check "setup.ps1 initialises the cache with its other script state" (
     (Get-Content -LiteralPath $setupPs1 -Raw) -match '(?m)^\$script:NvidiaLibraryInventoryProbed = \$false')
 Check "the answer is cached" ($null -eq (Get-NvidiaLibraryInventory))

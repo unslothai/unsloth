@@ -919,9 +919,99 @@ function Get-NvidiaNvmlLibraryPath {
     if ($env:ProgramFiles) { $dirs += (Join-Path $env:ProgramFiles "NVIDIA Corporation\NVSMI") }
     foreach ($dir in $dirs) {
         $candidate = Join-Path $dir "nvml.dll"
-        if (Test-Path -LiteralPath $candidate) { return $candidate.Replace('\', '\\') }  # a C# literal
+        if (Test-Path -LiteralPath $candidate) { return $candidate }
     }
     return "nvml.dll"
+}
+
+# The driver's libraries as P/Invoke methods, emitted rather than compiled: the installer must
+# not spawn csc.exe (New-StudioEmittedNativeType). $null when the type cannot be built. A
+# missing library throws at the first call, not here.
+function Get-NvidiaLibraryProbeType {
+    $name = "UnslothNvidiaProbeV2"
+    $existing = $name -as [type]
+    if ($existing) { return $existing }
+    $windows = ($env:OS -eq "Windows_NT")
+    $nvml = if ($windows) { Get-NvidiaNvmlLibraryPath } else { "libnvidia-ml.so.1" }
+    $cuda = if ($windows) { "nvcuda.dll" } else { "libcuda.so.1" }
+    $int = [int]; $uint = [uint32]; $refInt = [int].MakeByRefType()
+    $refUInt = [uint32].MakeByRefType(); $refPtr = [IntPtr].MakeByRefType()
+    try {
+        $null = New-StudioEmittedNativeType -TypeName $name -Imports @(
+            @{ Name = "nvmlInit_v2"; Library = $nvml; Return = $int; Args = @(); Ansi = $true },
+            @{ Name = "nvmlShutdown"; Library = $nvml; Return = $int; Args = @(); Ansi = $true },
+            @{ Name = "nvmlSystemGetCudaDriverVersion_v2"; Library = $nvml; Return = $int; Args = @($refInt); Out = @(1); Ansi = $true },
+            @{ Name = "nvmlDeviceGetCount_v2"; Library = $nvml; Return = $int; Args = @($refUInt); Out = @(1); Ansi = $true },
+            @{ Name = "nvmlDeviceGetHandleByIndex_v2"; Library = $nvml; Return = $int; Args = @($uint, $refPtr); Out = @(2); Ansi = $true },
+            @{ Name = "nvmlDeviceGetCudaComputeCapability"; Library = $nvml; Return = $int; Args = @([IntPtr], $refInt, $refInt); Out = @(2, 3); Ansi = $true },
+            @{ Name = "cuInit"; Library = $cuda; Return = $int; Args = @($uint); Ansi = $true },
+            @{ Name = "cuDriverGetVersion"; Library = $cuda; Return = $int; Args = @($refInt); Out = @(1); Ansi = $true },
+            @{ Name = "cuDeviceGetCount"; Library = $cuda; Return = $int; Args = @($refInt); Out = @(1); Ansi = $true },
+            @{ Name = "cuDeviceGet"; Library = $cuda; Return = $int; Args = @($refInt, $int); Out = @(1); Ansi = $true },
+            @{ Name = "cuDeviceGetAttribute"; Library = $cuda; Return = $int; Args = @($refInt, $int, $int); Out = @(1); Ansi = $true }
+        )
+    } catch { return $null }
+    return ($name -as [type])
+}
+
+# "source;cudaMajor;cudaMinor;cap,cap" from NVML, else the CUDA driver API; "" when neither
+# answers. Versions are major*1000 + minor*10. Read in a runspace of its own under a deadline:
+# a wedged driver can block inside the library, and the deadline leaves that runspace behind.
+function Read-NvidiaLibraryRaw {
+    param([int]$TimeoutMs = 10000)
+    $type = Get-NvidiaLibraryProbeType
+    if (-not $type) { return "" }
+    $reader = {
+        param($T)
+        function Read-Nvml {
+            if ($T::nvmlInit_v2() -ne 0) { return "" }
+            try {
+                [uint32]$count = 0
+                if ($T::nvmlDeviceGetCount_v2([ref]$count) -ne 0 -or $count -eq 0) { return "" }
+                [int]$ver = 0
+                if ($T::nvmlSystemGetCudaDriverVersion_v2([ref]$ver) -ne 0 -or $ver -lt 1000) { return "" }
+                $caps = @()
+                for ([uint32]$i = 0; $i -lt $count; $i++) {
+                    [IntPtr]$dev = [IntPtr]::Zero; [int]$major = 0; [int]$minor = 0
+                    # One unreadable GPU voids the source: a partial list misleads the pre-Turing cap.
+                    if ($T::nvmlDeviceGetHandleByIndex_v2($i, [ref]$dev) -ne 0) { return "" }
+                    if ($T::nvmlDeviceGetCudaComputeCapability($dev, [ref]$major, [ref]$minor) -ne 0) { return "" }
+                    $caps += "$major.$minor"
+                }
+                return "nvml;$([int][math]::Floor($ver / 1000));$([int][math]::Floor(($ver % 1000) / 10));$($caps -join ',')"
+            } finally { $null = $T::nvmlShutdown() }
+        }
+        function Read-Cuda {
+            if ($T::cuInit([uint32]0) -ne 0) { return "" }
+            [int]$count = 0
+            if ($T::cuDeviceGetCount([ref]$count) -ne 0 -or $count -eq 0) { return "" }
+            [int]$ver = 0
+            if ($T::cuDriverGetVersion([ref]$ver) -ne 0 -or $ver -lt 1000) { return "" }
+            $caps = @()
+            for ($i = 0; $i -lt $count; $i++) {
+                [int]$dev = 0; [int]$major = 0; [int]$minor = 0
+                if ($T::cuDeviceGet([ref]$dev, $i) -ne 0) { return "" }
+                # CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR = 75, _MINOR = 76.
+                if ($T::cuDeviceGetAttribute([ref]$major, 75, $dev) -ne 0) { return "" }
+                if ($T::cuDeviceGetAttribute([ref]$minor, 76, $dev) -ne 0) { return "" }
+                $caps += "$major.$minor"
+            }
+            return "cuda;$([int][math]::Floor($ver / 1000));$([int][math]::Floor(($ver % 1000) / 10));$($caps -join ',')"
+        }
+        $r = ""
+        try { $r = Read-Nvml } catch { $r = "" }
+        if (-not $r) { try { $r = Read-Cuda } catch { $r = "" } }
+        return "$r"
+    }
+    $ps = $null; $handle = $null
+    try {
+        $ps = [powershell]::Create()
+        $null = $ps.AddScript($reader.ToString()).AddArgument($type)
+        $handle = $ps.BeginInvoke()
+        if (-not $handle.AsyncWaitHandle.WaitOne($TimeoutMs)) { return "" }
+        return "$(@($ps.EndInvoke($handle)) | Select-Object -Last 1)"
+    } catch { return "" }
+    finally { if ($ps -and $handle -and $handle.IsCompleted) { $ps.Dispose() } }
 }
 
 # NVIDIA inventory from the driver's own libraries (NVML, then the CUDA driver API), for a
@@ -933,76 +1023,7 @@ function Get-NvidiaLibraryInventory {
     $script:NvidiaLibraryInventoryProbed = $true
     $script:NvidiaLibraryInventory = $null
     if ("$($env:UNSLOTH_NVIDIA_LIBRARY_PROBE)".Trim() -eq "0") { return $null }
-    $windows = ($env:OS -eq "Windows_NT")
-    $nvml = if ($windows) { Get-NvidiaNvmlLibraryPath } else { "libnvidia-ml.so.1" }
-    $cuda = if ($windows) { "nvcuda.dll" } else { "libcuda.so.1" }
-    $source = @'
-using System;
-using System.Runtime.InteropServices;
-using System.Text;
-using System.Threading.Tasks;
-public static class UnslothNvidiaProbe {
-    [DllImport("NVML_LIB")] static extern int nvmlInit_v2();
-    [DllImport("NVML_LIB")] static extern int nvmlShutdown();
-    [DllImport("NVML_LIB")] static extern int nvmlSystemGetCudaDriverVersion_v2(out int version);
-    [DllImport("NVML_LIB")] static extern int nvmlDeviceGetCount_v2(out uint count);
-    [DllImport("NVML_LIB")] static extern int nvmlDeviceGetHandleByIndex_v2(uint index, out IntPtr device);
-    [DllImport("NVML_LIB")] static extern int nvmlDeviceGetCudaComputeCapability(IntPtr device, out int major, out int minor);
-    [DllImport("CUDA_LIB")] static extern int cuInit(uint flags);
-    [DllImport("CUDA_LIB")] static extern int cuDriverGetVersion(out int version);
-    [DllImport("CUDA_LIB")] static extern int cuDeviceGetCount(out int count);
-    [DllImport("CUDA_LIB")] static extern int cuDeviceGet(out int device, int ordinal);
-    [DllImport("CUDA_LIB")] static extern int cuDeviceGetAttribute(out int value, int attribute, int device);
-    // "source;cudaMajor;cudaMinor;cap,cap", "" when neither library answers. Versions are
-    // major*1000 + minor*10. A missing library raises DllNotFoundException, caught in Read.
-    static string Nvml() {
-        if (nvmlInit_v2() != 0) return "";
-        try {
-            uint count; if (nvmlDeviceGetCount_v2(out count) != 0 || count == 0) return "";
-            int version; if (nvmlSystemGetCudaDriverVersion_v2(out version) != 0 || version < 1000) return "";
-            var caps = new StringBuilder();
-            for (uint i = 0; i < count; i++) {
-                IntPtr device; int major, minor;
-                // One unreadable GPU voids the source: a partial list misleads the pre-Turing cap.
-                if (nvmlDeviceGetHandleByIndex_v2(i, out device) != 0) return "";
-                if (nvmlDeviceGetCudaComputeCapability(device, out major, out minor) != 0) return "";
-                if (caps.Length > 0) caps.Append(',');
-                caps.Append(major).Append('.').Append(minor);
-            }
-            return "nvml;" + (version / 1000) + ";" + ((version % 1000) / 10) + ";" + caps;
-        } finally { nvmlShutdown(); }
-    }
-    static string Cuda() {
-        if (cuInit(0) != 0) return "";
-        int count; if (cuDeviceGetCount(out count) != 0 || count == 0) return "";
-        int version; if (cuDriverGetVersion(out version) != 0 || version < 1000) return "";
-        var caps = new StringBuilder();
-        for (int i = 0; i < count; i++) {
-            int device, major, minor;
-            if (cuDeviceGet(out device, i) != 0) return "";
-            // CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR = 75, _MINOR = 76.
-            if (cuDeviceGetAttribute(out major, 75, device) != 0) return "";
-            if (cuDeviceGetAttribute(out minor, 76, device) != 0) return "";
-            if (caps.Length > 0) caps.Append(',');
-            caps.Append(major).Append('.').Append(minor);
-        }
-        return "cuda;" + (version / 1000) + ";" + ((version % 1000) / 10) + ";" + caps;
-    }
-    static string Read() {
-        try { var r = Nvml(); if (r != "") return r; } catch (Exception) { }
-        try { return Cuda(); } catch (Exception) { return ""; }
-    }
-    // A wedged driver can block inside the library; the deadline leaves that thread behind.
-    public static string Probe(int timeoutMs) {
-        var task = Task.Run(new Func<string>(Read));
-        return task.Wait(timeoutMs) ? task.Result : "";
-    }
-}
-'@ -replace "NVML_LIB", $nvml -replace "CUDA_LIB", $cuda
-    try {
-        if (-not ("UnslothNvidiaProbe" -as [type])) { Add-Type -TypeDefinition $source -ErrorAction Stop }
-        $raw = [UnslothNvidiaProbe]::Probe($TimeoutSec * 1000)
-    } catch { return $null }
+    try { $raw = Read-NvidiaLibraryRaw -TimeoutMs ($TimeoutSec * 1000) } catch { return $null }
     $parts = "$raw".Split(";")
     if ($parts.Count -ne 4 -or -not $parts[3] -or [int]$parts[1] -lt 1) { return $null }
     $caps = @($parts[3].Split(","))
