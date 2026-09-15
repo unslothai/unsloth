@@ -681,6 +681,13 @@ def _completed_step_poller(pump: Any, poll_seconds: float = 0.1):
 # workflow runs them. Wrapping the bound method is the one hook every family shares.
 _DECODE_ATTRS = ("vae", "audio_vae")
 
+# How hard the end-of-denoise marker tries before it gives up and flips the phase at the host
+# position. The hold-off refuses without blocking, so most refusals are the 10 Hz poller holding
+# the lock for a couple of event queries; 20 tries 20 ms apart covers several poll ticks and costs
+# nothing when uncontended, while a real capture outlasts it and takes the host-position fallback.
+_BOUNDARY_MARK_ATTEMPTS = 20
+_BOUNDARY_MARK_RETRY_SECONDS = 0.02
+
 
 @contextlib.contextmanager
 def _decode_phase(pipe: Any, on_decode: Any):
@@ -5992,12 +5999,20 @@ class VideoBackend:
                     boundary in the stream and let the poller flip when the GPU reaches it. With no
                     event to wait on there is no queue to have run ahead of, so flip at once.
 
-                    Marking records an event, so it takes the capture hold-off too. A capture running
-                    in another pipeline right at this instant leaves nothing to wait on, and the
-                    honest thing then is to flip at the host position rather than strand the bar in
-                    the denoise phase for the rest of the render."""
-                    with _hold_off_cuda_graph_capture() as clear:
-                        marked = ticker.mark_boundary() if clear else False
+                    Marking records an event, so it takes the capture hold-off too, and it RETRIES:
+                    the hold-off acquires its lock without blocking, so a refusal can mean nothing
+                    worse than the 10 Hz poller holding it for its own queries at that instant, and
+                    giving up there would flip the bar to steps/steps with the denoise queue still
+                    draining, which is the exact lie this boundary exists to remove. The retries are
+                    short and only run when contended. A capture that outlasts them really does leave
+                    nothing to wait on, and the host position is then the only answer there is."""
+                    marked = False
+                    for _ in range(_BOUNDARY_MARK_ATTEMPTS):
+                        with _hold_off_cuda_graph_capture() as clear:
+                            if clear:
+                                marked = ticker.mark_boundary()
+                                break
+                        time.sleep(_BOUNDARY_MARK_RETRY_SECONDS)
                     if not marked:
                         _enter_decode_phase()
 

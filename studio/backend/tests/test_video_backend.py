@@ -9499,3 +9499,55 @@ def test_the_tick_marks_every_step_again_once_the_capture_is_over(fake_runtime, 
     backend.generate(prompt = "a fox", steps = 5, num_frames = 9, fps = 24)
 
     assert len(events) == 6  # five steps plus the boundary
+
+
+def test_the_boundary_marker_waits_out_a_busy_capture_lock(fake_runtime, monkeypatch):
+    # hold_off_capture acquires without blocking, so a refusal can mean nothing worse than the
+    # poller holding the lock for its own queries at that instant. Giving up on the first refusal
+    # would flip the bar to steps/steps with the queue still draining, so the marker retries.
+    import core.inference.video as video_mod
+
+    _patch_events(monkeypatch, done = True)
+
+    # Refuses everything for a window that covers the decode entry, then frees up. Shorter than
+    # the retry budget (20 x 20 ms), so a marker that waits gets its event and one that gives up
+    # never calls mark_boundary at all.
+    busy_until = {"t": 0.0}
+
+    @contextlib.contextmanager
+    def _busy_window():
+        yield time.monotonic() >= busy_until["t"]
+
+    marks = {"calls": 0, "ok": None}
+    original_mark = video_mod._CompletedStepTicker.mark_boundary
+
+    def _counted(self):
+        marks["calls"] += 1
+        marks["ok"] = original_mark(self)
+        return marks["ok"]
+
+    monkeypatch.setattr(video_mod._CompletedStepTicker, "mark_boundary", _counted)
+
+    backend = VideoBackend()
+    backend.load_pipeline(
+        "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v", model_kind = "pipeline"
+    )
+    pipe = _FakeHV15Pipeline.instance
+    at_decode: dict = {}
+    pipe.vae.on_decode = lambda: _settle(backend, at_decode)
+
+    def _contend(n):
+        # Armed on the last step, so the lock is busy exactly across the decode entry.
+        if n == 5:
+            busy_until["t"] = time.monotonic() + 0.2
+            monkeypatch.setattr(video_mod, "_hold_off_cuda_graph_capture", _busy_window)
+
+    pipe.scheduler.on_step = _contend
+
+    backend.generate(prompt = "a fox", steps = 5, num_frames = 9, fps = 24)
+
+    # It waited the lock out and marked a real boundary instead of flipping blind. Before the
+    # retry, a refusal at this instant meant mark_boundary was never called at all.
+    assert marks["calls"] == 1
+    assert marks["ok"] is True
+    assert at_decode.get("phase") == "decode"
