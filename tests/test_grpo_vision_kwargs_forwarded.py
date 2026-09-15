@@ -1,0 +1,201 @@
+"""Both GRPO logprob paths forward every multimodal key TRL produced.
+
+Regression cover for unslothai/unsloth#6960. The no-grad old/reference pass lives here,
+in `grpo_trainer__get_per_token_logps_and_entropies`, and the gradient pass lives in
+unsloth_zoo's `grpo_accumulated_loss`. They used to read two hand written lists of four
+keys, so `spatial_shapes` (LFM2-VL), `num_tiles` (LFM2-VL, InternVL) and
+`image_position_ids` (Gemma 4) reached neither, and `pixel_values` reached neither for any
+model that does not emit `image_grid_thw`.
+"""
+
+import inspect
+import os
+
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+SOURCE_PATH = os.path.join(REPO_ROOT, "unsloth", "models", "rl_replacements.py")
+
+
+def _read_source() -> str:
+    with open(SOURCE_PATH, "r", encoding = "utf-8") as fh:
+        return fh.read()
+
+
+def test_the_key_tuple_lives_in_one_place():
+    """unsloth must not keep a second copy of the key list."""
+    src = _read_source()
+    assert "grpo_get_vision_inputs" in src
+    # Every multimodal key is read off the shared mapping, in both the logprob pass and
+    # compute_loss, so the tuple in unsloth_zoo is the only list of names.
+    assert src.count("vision_inputs.get(") >= 10
+    # The one remaining direct probe is the old-zoo guard, which only needs pixel_values.
+    assert src.count('kwargs.get("pixel_values", None)') == 1
+    for gone in (
+        'kwargs.get("image_grid_thw", None)',
+        'kwargs.get("num_images", None)',
+    ):
+        assert gone not in src, gone
+
+
+def test_no_grad_pass_uses_the_shared_chunker():
+    from unsloth.models.rl_replacements import grpo_trainer__get_per_token_logps_and_entropies
+
+    patched = grpo_trainer__get_per_token_logps_and_entropies(
+        "_get_per_token_logps_and_entropies", ""
+    )
+    assert "grpo_vision_chunks" in patched
+    assert "**vision_chunk" in patched
+    # The per-key chunk lists the old implementation zipped are gone.
+    for gone in (
+        "pixel_values_chunks",
+        "image_grid_thw_chunks",
+        "pixel_attention_mask_chunks",
+        "image_sizes_chunks",
+        "_extra_vision_kwargs",
+    ):
+        assert gone not in patched, gone
+
+
+def test_compute_loss_hands_the_whole_set_to_the_gradient_pass():
+    from unsloth.models.rl_replacements import grpo_trainer_compute_loss
+
+    patched = grpo_trainer_compute_loss("compute_loss", "")
+    assert "**_vision_inputs" in patched
+    assert patched.count("**_vision_inputs") == 2, "both the modern and the legacy call"
+    # Neither grpo_accumulated_loss call may name the multimodal kwargs by hand any more,
+    # or a key added to the tuple would reach the logprob pass and not the loss.
+    for call in patched.split("grpo_accumulated_loss(")[1:]:
+        body = call.split("\n                )")[0]
+        for gone in (
+            "pixel_values =",
+            "image_grid_thw =",
+            "pixel_attention_mask =",
+            "image_sizes =",
+            "num_images =",
+            "token_type_ids =",
+        ):
+            assert gone not in body, gone
+
+
+def test_both_paths_call_the_same_helper():
+    from unsloth_zoo.rl_replacements import grpo_accumulated_loss, grpo_vision_chunks
+
+    grad_source = inspect.getsource(grpo_accumulated_loss)
+    assert "grpo_vision_chunks" in grad_source
+    # One object, so a slicing fix cannot land on one path only.
+    from unsloth_zoo import rl_replacements as zoo_rl
+
+    assert zoo_rl.RL_REPLACEMENTS["grpo_vision_chunks"] is grpo_vision_chunks
+
+
+def test_old_zoo_without_the_helper_fails_loudly_for_vision_runs():
+    from unsloth.models.rl_replacements import grpo_trainer__get_per_token_logps_and_entropies
+
+    patched = grpo_trainer__get_per_token_logps_and_entropies(
+        "_get_per_token_logps_and_entropies", ""
+    )
+    assert "Please upgrade unsloth_zoo" in patched
+    assert "grpo_vision_chunks" in patched
+
+
+def test_lfm2vl_keys_reach_the_forward_kwargs():
+    """End to end on the shared chunker with LFM2-VL shaped inputs."""
+    import torch
+    from unsloth_zoo.rl_replacements import grpo_get_vision_inputs, grpo_vision_chunks
+
+    num_tiles = [2, 3]
+    total_tiles = sum(num_tiles)
+    # What TRL's _generate_and_score_completions puts in the inputs dict for LFM2-VL.
+    inputs = {
+        "advantages": torch.zeros(2),
+        "pixel_values": torch.randn(total_tiles, 3, 16, 16),
+        "pixel_attention_mask": torch.ones(total_tiles, 16, 16),
+        "spatial_shapes": torch.tensor([[2, 2]] * total_tiles),
+        "num_tiles": num_tiles,
+        "num_images": [1, 1],
+    }
+    chunks = grpo_vision_chunks(grpo_get_vision_inputs(inputs), 2, 1)
+    assert [c["pixel_values"].shape[0] for c in chunks] == [2, 3]
+    assert [c["spatial_shapes"].shape[0] for c in chunks] == [2, 3]
+    assert [c["pixel_attention_mask"].shape[0] for c in chunks] == [2, 3]
+
+
+def test_legacy_fallback_list_matches_the_zoo_tuple():
+    """The old-zoo fallback in compute_loss must name every key the tuple names."""
+    import ast
+    import re
+
+    from unsloth_zoo.rl_replacements import GRPO_VISION_KEYS
+
+    src = _read_source()
+    match = re.search(
+        r"_vision_inputs = \{\s*key: inputs\.get\(key, None\)\s*for key in (\([^)]*\))",
+        src,
+        re.DOTALL,
+    )
+    assert match, "the old-zoo fallback key list moved; update this gate"
+    fallback = ast.literal_eval(match.group(1))
+    assert set(fallback) == set(GRPO_VISION_KEYS), (
+        "the fallback list and unsloth_zoo.GRPO_VISION_KEYS have drifted: "
+        f"{sorted(set(GRPO_VISION_KEYS) - set(fallback))} missing"
+    )
+
+
+def test_generate_forward_wrapper_keeps_the_real_signature():
+    """transformers' generate validates kwargs against inspect.signature(self.forward).
+
+    A bare (*args, **kwargs) wrapper makes every kwarg a VLM takes only on forward look
+    unused, which is how LFM2-VL GRPO died on "The following `model_kwargs` are not used
+    by the model: ['pixel_values', 'pixel_attention_mask', 'spatial_shapes']".
+    """
+    import inspect as _inspect
+
+    import torch
+
+    from unsloth.models.rl import _install_grpo_hidden_states_forward_wrapper
+
+    class _Toy(torch.nn.Module):
+        config = type("cfg", (), {"is_encoder_decoder": False})()
+
+        def forward(
+            self,
+            input_ids = None,
+            pixel_values = None,
+            spatial_shapes = None,
+            **kwargs,
+        ):
+            return input_ids
+
+    model = _Toy()
+    before = list(_inspect.signature(model.forward).parameters)
+    installed = _install_grpo_hidden_states_forward_wrapper(model)
+    assert installed, "the wrapper did not install on a model without hidden-state support"
+    after = list(_inspect.signature(model.forward).parameters)
+    assert after == before, f"signature lost: {before} became {after}"
+    assert "pixel_values" in after and "spatial_shapes" in after
+
+
+def test_num_tiles_survives_the_output_dict_rewrite():
+    """TRL 1.7.0 nested num_tiles inside the num_images block; the insert must go after it."""
+    from unsloth.models.rl_replacements import grpo_trainer__generate_and_score_completions
+
+    source = (
+        '        if "image_sizes" in forward_kwargs:\n'
+        '            output["image_sizes"] = forward_kwargs["image_sizes"]\n'
+        "        if images is not None:\n"
+        '            output["num_images"] = num_images\n'
+        "            if num_tiles is not None:\n"
+        '                output["num_tiles"] = num_tiles\n'
+        "        return output\n"
+    )
+    patched = grpo_trainer__generate_and_score_completions(
+        "_generate_and_score_completions", source
+    )
+    lines = patched.splitlines()
+    num_images_at = next(i for i, l in enumerate(lines) if 'output["num_images"]' in l)
+    num_tiles_at = next(i for i, l in enumerate(lines) if 'output["num_tiles"]' in l)
+    except_at = next((i for i, l in enumerate(lines) if l.strip() == "except NameError:"), None)
+    assert except_at is not None, "the sampling logprob block was not inserted"
+    # num_tiles must still sit directly under num_images, above the inserted block.
+    assert num_images_at < num_tiles_at < except_at
+    # And it must still be nested inside `if images is not None:`, at 12 spaces.
+    assert lines[num_tiles_at].startswith(" " * 16)
