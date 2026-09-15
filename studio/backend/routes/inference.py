@@ -1611,12 +1611,12 @@ try:
         _emitted_n_batch,
         _extra_args_draft_device_pin,
         _extra_args_n_ubatch,
-        _flash_attn_enabled_from_args,
         _hf_offline_if_unreachable,
         _hf_offline_if_unreachable_for,
         _kv_bytes_per_elem,
         _kv_unified_from_args,
         _metal_device_is_paravirtual,
+        _planned_flash_attn_state,
         _planned_main_cache_types,
         _planned_scratch_cache_type,
         _swa_full_from_args_or_env,
@@ -1669,12 +1669,12 @@ except ImportError:
         _emitted_n_batch,
         _extra_args_draft_device_pin,
         _extra_args_n_ubatch,
-        _flash_attn_enabled_from_args,
         _hf_offline_if_unreachable,
         _hf_offline_if_unreachable_for,
         _kv_bytes_per_elem,
         _kv_unified_from_args,
         _metal_device_is_paravirtual,
+        _planned_flash_attn_state,
         _planned_main_cache_types,
         _planned_scratch_cache_type,
         _swa_full_from_args_or_env,
@@ -10730,19 +10730,26 @@ def _gguf_runtime_bytes(
         # capability probe, then llama.cpp's own env-then-last-wins-argv rule. A
         # quantized V still forces it on top of all that, because llama-context.cpp
         # turns it on itself rather than refusing the load.
-        _fa_default = True
+        _fa_supported = True
         try:
             _fa_caps = LlamaCppBackend.probe_server_capabilities()
             # Same ``found`` test as the checkpoint probe above: the defaults dict
             # reports nothing supported, so keying on the flag alone would size every
             # unprobed host as flash-attention-less.
             if _fa_caps.get("found") and not _fa_caps.get("supports_flash_attn", True):
-                _fa_default = False
+                _fa_supported = False
         except Exception as _fa_exc:
             logger.debug("flash-attention capability probe failed: %s", _fa_exc)
-        flash_attn = (
-            _flash_attn_enabled_from_args(llama_extra_args, default = _fa_default, env = os.environ)
-            or v_forces_flash_attn
+        # One resolver, shared with load_model, so this estimate and the launch cannot
+        # answer differently (#9697, #10489). It also closes the gap the two-step form
+        # here had: a quantized V forced flash attention on even on a build with no
+        # --flash-attn to emit, where the launch instead rewrites the V cache to f16 and
+        # the padded, f16-floored arm of the estimator is the right price.
+        flash_attn = _planned_flash_attn_state(
+            llama_extra_args,
+            planned_cache_types = planned_cache_types,
+            supports_flash_attn = _fa_supported,
+            env = os.environ,
         )
         kv = probe._estimate_kv_cache_bytes(
             ctx,
