@@ -1212,6 +1212,18 @@ class VideoBackend:
             from .diffusion_families import assert_pipeline_class_available
             assert_pipeline_class_available(fam.pipeline_class, fam.name)
             if fam.modular_workflow:
+                # Validation runs on the request thread and reaches diffusers before the load
+                # worker does, so it is this path's first dynamo importer, not an afterthought:
+                # `import diffusers` pulls torch._dynamo in by itself (diffusers.hooks evaluates
+                # @torch.compiler.disable() at class-body time). The server accepts requests as
+                # soon as the socket binds, so a video load issued right after startup can meet
+                # the background warm still inside that import (#10350, #10963).
+                try:
+                    from utils.torch_warmup import close_dynamo_import_window
+                    close_dynamo_import_window(logger)
+                except Exception as exc:  # noqa: BLE001 - optimisation only
+                    logger.debug("dynamo pre-import skipped: %r", exc)
+
                 import diffusers
                 if not hasattr(diffusers, fam.transformer_class):
                     raise ValueError(
@@ -3454,6 +3466,15 @@ class VideoBackend:
                 local_files_only = local_files_only,
             )
             return self.status()
+
+        # Below the H3 native return, which is the one video path that never imports diffusers,
+        # and above every consumer that does. Same window as diffusion.py: `import diffusers`
+        # is itself a torch._dynamo importer, and so is the offload step further down.
+        try:
+            from utils.torch_warmup import close_dynamo_import_window
+            close_dynamo_import_window(logger)
+        except Exception as exc:  # noqa: BLE001 - optimisation only
+            logger.debug("dynamo pre-import skipped: %r", exc)
 
         import diffusers
         import torch

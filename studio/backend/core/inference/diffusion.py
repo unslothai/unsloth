@@ -3418,22 +3418,10 @@ class DiffusionBackend:
         # offload. Whichever gets there first is the one that can lose the concurrent import
         # race, and several of them swallow their own failure by design, so placing this after
         # any of them would only observe an already-poisoned module (#10350, #10963).
-        # Normally a no-op: the background torch warm already did it at boot. Guarded around the
-        # IMPORT as well as the call, because utils.torch_warmup reaches
-        # importlib._bootstrap._ModuleLockManager, a private CPython name: a build lacking it
-        # must not take the load down. Best-effort, never a new failure.
+        # Normally a no-op: the background torch warm already did it at boot.
         try:
-            from utils.torch_warmup import ensure_dynamo_imported
-            if not ensure_dynamo_imported():
-                # Not fatal, and deliberately not a retry: measured on torch 2.10, a process that
-                # has lost this race does not recover (0 of 14 retries resolved), and evicting the
-                # half-built package to re-import is the C-extension purge that
-                # purge_partial_import already refuses. So the useful thing is a breadcrumb: if
-                # anything below dies on dynamo, this line says the condition predates the load.
-                logger.warning(
-                    "diffusion.load: torch._dynamo is not importable in this process; "
-                    "if this load fails on a dynamo import, restart Unsloth"
-                )
+            from utils.torch_warmup import close_dynamo_import_window
+            close_dynamo_import_window(logger)
         except Exception as exc:  # noqa: BLE001 - optimisation only
             logger.debug("dynamo pre-import skipped: %r", exc)
 

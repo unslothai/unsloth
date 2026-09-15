@@ -306,6 +306,28 @@ def ensure_dynamo_imported() -> bool:
         return True
 
 
+def close_dynamo_import_window(log) -> bool:
+    """``ensure_dynamo_imported()`` plus the breadcrumb, for a caller about to import diffusers.
+
+    Every media load path reaches diffusers, and `import diffusers` is itself a dynamo importer,
+    so each one owes this call in front of its first such import. The warning is deliberately not
+    a retry: measured on torch 2.10, a process that has lost this race does not recover (0 of 14
+    retries resolved), and evicting the half-built package to re-import is the C-extension purge
+    that ``purge_partial_import`` already refuses. What is useful is a breadcrumb, so that if
+    anything below dies on dynamo the log already says the condition predates the load.
+
+    Call sites still wrap the IMPORT of this module as well as the call: this file reaches
+    ``importlib._bootstrap._ModuleLockManager``, a private CPython name, and a build lacking it
+    must not take a load down. Best-effort throughout, never a new failure."""
+    if ensure_dynamo_imported():
+        return True
+    log.warning(
+        "torch._dynamo is not importable in this process; "
+        "if this load fails on a dynamo import, restart Unsloth"
+    )
+    return False
+
+
 _STAGES = (
     ("hardware", _warm_hardware),
     ("inference_backend", _warm_inference_backend),

@@ -176,7 +176,7 @@ def test_load_path_closes_the_window_before_every_dynamo_consumer():
             lines.setdefault(node.func.id, node.lineno)
         elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
             lines.setdefault(node.func.attr, node.lineno)
-    assert "ensure_dynamo_imported" in lines, "the load path never closes the dynamo window"
+    assert "close_dynamo_import_window" in lines, "the load path never closes the dynamo window"
     for consumer in (
         "hidream_te4_kwargs",   # FP8 text-encoder cast -> diffusion_precision -> diffusers.hooks
         "apply_step_cache",     # diffusion_cache -> diffusers.hooks
@@ -186,7 +186,7 @@ def test_load_path_closes_the_window_before_every_dynamo_consumer():
     ):
         assert consumer in lines, f"{consumer} is no longer on this path; re-check the ordering"
         assert (
-            lines["ensure_dynamo_imported"] < lines[consumer]
+            lines["close_dynamo_import_window"] < lines[consumer]
         ), f"the dynamo pre-import runs after {consumer}, which can reach dynamo first"
 
     # And ahead of the plain `import diffusers` too, which pulls dynamo in by itself: every
@@ -196,9 +196,34 @@ def test_load_path_closes_the_window_before_every_dynamo_consumer():
         n for n, line in enumerate(src, 1)
         if line.strip() == "import diffusers" and n > body.lineno
     )
-    assert lines["ensure_dynamo_imported"] < first_diffusers, (
+    assert lines["close_dynamo_import_window"] < first_diffusers, (
         "the pre-import runs after `import diffusers`, which triggers the dynamo import itself"
     )
+
+
+def test_the_video_path_closes_the_window_before_each_of_its_diffusers_imports():
+    """The image path is not the only one that reaches diffusers.
+
+    ``core/inference/video.py`` imports it twice: once during modular validation, which runs on
+    the REQUEST thread, and once during pipeline assembly. The server accepts requests as soon as
+    the socket binds, while the background warm may still be inside ``import torch._dynamo``, so
+    a video load issued right after startup can recreate exactly the race this PR closes for
+    images. Every ``import diffusers`` in this file must be preceded by the guard.
+    """
+    src = (_BACKEND / "core/inference/video.py").read_text(encoding = "utf-8").splitlines()
+    guards = [n for n, line in enumerate(src, 1) if "close_dynamo_import_window(" in line]
+    imports = [n for n, line in enumerate(src, 1) if line.strip() == "import diffusers"]
+
+    assert imports, "video.py no longer imports diffusers; re-check this test"
+    assert guards, "the video path never closes the dynamo window"
+    for imp in imports:
+        assert any(g < imp for g in guards), (
+            f"`import diffusers` at video.py:{imp} has no dynamo guard above it"
+        )
+        # Above it in the same block, not merely somewhere earlier in a 6000-line file.
+        assert imp - max(g for g in guards if g < imp) < 40, (
+            f"the guard for video.py:{imp} is too far above it to be the one protecting it"
+        )
 
 
 def test_load_failure_is_logged_with_a_traceback():
