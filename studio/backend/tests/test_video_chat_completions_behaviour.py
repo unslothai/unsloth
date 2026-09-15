@@ -1,0 +1,566 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""What a client actually gets back when it attaches a clip, by status code and wire shape.
+
+The existing video tests read ``routes/inference.py`` as text and assert that a line is present.
+That pins the source but not the behaviour, and it is how the non-GGUF regression this file was
+written for went unnoticed: the source assertion still passed while the request 400'd.
+
+Every test here drives the real router through ``TestClient`` with a stubbed backend, so it fails
+on what a caller would see. The dispatch boundary is the ``messages`` kwarg handed to
+``generate_chat_completion`` -- that list is the JSON llama-server receives.
+
+The governing invariant, asserted per route rather than once: the ``video_url`` content part and
+the legacy top-level ``video_base64`` field must behave identically everywhere. A client picks a
+spelling; it should not thereby pick a different set of refusals.
+
+Wire shapes are pinned against llama.cpp ``tools/server/server-common.cpp``, where ``handle_media``
+reads ``input_video`` as ``json_value(input_video, "data", json_value(input_video, "url", ""))``
+and caps a remote download at 10 MB.
+"""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+import pytest
+
+pytest.importorskip("torch")
+
+from fastapi import FastAPI  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+
+from auth.authentication import get_current_subject  # noqa: E402
+import routes.inference as inference_route  # noqa: E402
+
+from .llama_backend_double import FakeLlamaCppBackend  # noqa: E402
+
+_CLIP_B64 = "AAAAGGZ0eXBtcDQy"  # a bare mp4 box header
+_DATA_URI = f"data:video/mp4;base64,{_CLIP_B64}"
+_REMOTE = "https://example.com/clip.mp4"
+
+
+# ── harness ──────────────────────────────────────────────────────────────────────
+
+
+class _VideoGguf(FakeLlamaCppBackend):
+    """A loaded GGUF whose llama-server /props reported ``modalities.video``."""
+
+    is_vision = True
+    _has_video_input = True
+
+    def __init__(self, *, has_video = True):
+        self._has_video_input = has_video
+        self.dispatched: list[dict] = []
+
+    def generate_chat_completion(self, **kwargs):
+        self.dispatched.append(kwargs)
+        yield "ok"
+        yield {"type": "metadata", "usage": {}, "timings": {}}
+
+
+def _no_gguf():
+    """The resident backend is transformers or MLX, so ``using_gguf`` is False."""
+    return SimpleNamespace(
+        is_loaded = False, supports_tools = False, is_vision = False, context_length = None
+    )
+
+
+def _client(monkeypatch, backend = None, *, prefix = "/v1"):
+    async def _no_switch(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(
+        inference_route, "get_llama_cpp_backend", lambda: backend if backend else _no_gguf()
+    )
+    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _no_switch)
+
+    app = FastAPI()
+    app.include_router(inference_route.router, prefix = prefix)
+    app.dependency_overrides[get_current_subject] = lambda: "tester"
+    return TestClient(app, raise_server_exceptions = False)
+
+
+def _part_body(*urls, text = "what happens here?", **extra):
+    parts = [{"type": "video_url", "video_url": {"url": u}} for u in urls]
+    parts.append({"type": "text", "text": text})
+    return {
+        "model": "test/model.gguf",
+        "stream": False,
+        "messages": [{"role": "user", "content": parts}],
+        **extra,
+    }
+
+
+def _field_body(clip = _DATA_URI, text = "what happens here?", **extra):
+    return {
+        "model": "test/model.gguf",
+        "stream": False,
+        "messages": [{"role": "user", "content": [{"type": "text", "text": text}]}],
+        "video_base64": clip,
+        **extra,
+    }
+
+
+def _detail(response) -> str:
+    """The human message, whether the route raised a bare detail or an OpenAI error body.
+
+    Falls back to the raw text: a request that gets past the refusals answers with an SSE
+    stream or an empty body, and a test asserting a refusal is *absent* has to read those too.
+    """
+    try:
+        body = response.json()
+    except ValueError:
+        return response.text
+    if not isinstance(body, dict):
+        return str(body)
+    detail = body.get("detail", body)
+    if isinstance(detail, dict):
+        return str(detail.get("error", detail).get("message", detail))
+    return str(detail)
+
+
+def _sent_parts(backend, index = -1):
+    """Parts of a dispatched user turn. A system turn is prepended, so index from the user ones."""
+    user_turns = [
+        m for m in backend.dispatched[0]["messages"]
+        if m.get("role") == "user" and isinstance(m.get("content"), list)
+    ]
+    return user_turns[index]["content"]
+
+
+def _sent_media(backend):
+    """Every input_video part across every dispatched turn, in order."""
+    return [
+        part
+        for message in backend.dispatched[0]["messages"]
+        if isinstance(message.get("content"), list)
+        for part in message["content"]
+        if isinstance(part, dict) and part.get("type") == "input_video"
+    ]
+
+
+# ── the wire shape llama-server receives ─────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "url, expected",
+    [
+        (_DATA_URI, {"data": _CLIP_B64}),
+        # The header is not payload; llama.cpp's own base64 decoder takes the body alone.
+        (f"DATA:video/mp4;BASE64,{_CLIP_B64}", {"data": _CLIP_B64}),
+        ("data:video/webm;base64,REVG", {"data": "REVG"}),
+        # Bare base64 with no header: handle_media's final fallback treats it as payload.
+        (_CLIP_B64, {"data": _CLIP_B64}),
+        # Remote is forwarded whole, for llama-server to fetch under its own 10 MB ceiling.
+        (_REMOTE, {"url": _REMOTE}),
+        ("http://example.com/clip.mp4", {"url": "http://example.com/clip.mp4"}),
+        ("HTTPS://EXAMPLE.COM/clip.mp4", {"url": "HTTPS://EXAMPLE.COM/clip.mp4"}),
+    ],
+)
+def test_a_clip_reaches_llama_server_as_input_video(monkeypatch, url, expected):
+    backend = _VideoGguf()
+    with _client(monkeypatch, backend) as client:
+        response = client.post("/v1/chat/completions", json = _part_body(url))
+    assert response.status_code == 200
+    assert _sent_media(backend) == [{"type": "input_video", "input_video": expected}]
+
+
+def test_the_translated_part_is_the_only_video_key_left(monkeypatch):
+    """A part left spelled video_url would be refused by llama-server as an unsupported type:
+    it accepts image_url, input_audio and input_video, and nothing else."""
+    backend = _VideoGguf()
+    with _client(monkeypatch, backend) as client:
+        client.post("/v1/chat/completions", json = _part_body(_DATA_URI))
+    types = [p.get("type") for p in _sent_parts(backend)]
+    assert "video_url" not in types
+    assert len(_sent_media(backend)) == 1
+
+
+def test_the_text_of_the_turn_survives_translation(monkeypatch):
+    backend = _VideoGguf()
+    with _client(monkeypatch, backend) as client:
+        client.post("/v1/chat/completions", json = _part_body(_DATA_URI, text = "what colour?"))
+    assert {"type": "text", "text": "what colour?"} in _sent_parts(backend)
+
+
+def test_every_clip_in_a_turn_is_translated(monkeypatch):
+    backend = _VideoGguf()
+    with _client(monkeypatch, backend) as client:
+        client.post("/v1/chat/completions", json = _part_body(_DATA_URI, _REMOTE))
+    assert [p["input_video"] for p in _sent_media(backend)] == [
+        {"data": _CLIP_B64}, {"url": _REMOTE}
+    ]
+
+
+def test_a_clip_in_an_older_turn_is_translated_too(monkeypatch):
+    """_inject_video_part only ever touches the newest user turn, so a parts-carried clip on an
+    earlier turn would otherwise reach llama-server still spelled video_url."""
+    backend = _VideoGguf()
+    body = {
+        "model": "test/model.gguf",
+        "stream": False,
+        "messages": [
+            {"role": "user", "content": [{"type": "video_url", "video_url": {"url": _DATA_URI}}]},
+            {"role": "assistant", "content": "a red square"},
+            {"role": "user", "content": [{"type": "text", "text": "and now?"}]},
+        ],
+    }
+    with _client(monkeypatch, backend) as client:
+        client.post("/v1/chat/completions", json = body)
+    # The clip stayed on the turn that carried it, translated in place.
+    assert _sent_parts(backend, 0)[0]["type"] == "input_video"
+    assert len(_sent_media(backend)) == 1
+
+
+def test_the_legacy_field_still_rides_the_newest_user_turn(monkeypatch):
+    """Backwards compatibility: the spelling the Studio frontend sends is unchanged."""
+    backend = _VideoGguf()
+    with _client(monkeypatch, backend) as client:
+        response = client.post("/v1/chat/completions", json = _field_body())
+    assert response.status_code == 200
+    assert _sent_parts(backend)[-1] == {"type": "input_video", "input_video": {"data": _CLIP_B64}}
+
+
+def test_both_spellings_of_the_same_clip_produce_the_same_wire_shape(monkeypatch):
+    """The invariant the whole change rests on, asserted on the dispatched body itself."""
+    part_backend, field_backend = _VideoGguf(), _VideoGguf()
+    with _client(monkeypatch, part_backend) as client:
+        client.post("/v1/chat/completions", json = _part_body(_DATA_URI))
+    with _client(monkeypatch, field_backend) as client:
+        client.post("/v1/chat/completions", json = _field_body())
+
+    assert _sent_media(part_backend) == _sent_media(field_backend)
+
+
+# ── backend capability ───────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("body", [_part_body(_DATA_URI), _field_body()])
+def test_a_gguf_without_a_video_projector_refuses_either_spelling(monkeypatch, body):
+    with _client(monkeypatch, _VideoGguf(has_video = False)) as client:
+        response = client.post("/v1/chat/completions", json = body)
+    assert response.status_code == 400
+    assert "cannot take video input" in _detail(response)
+
+
+@pytest.mark.parametrize("body", [_part_body(_DATA_URI), _field_body()])
+def test_a_non_gguf_backend_is_offered_the_clip_rather_than_refused_outright(monkeypatch, body):
+    """The regression guard. A blanket 'not using_gguf' refusal ahead of _local_video_clip
+    refuses video on transformers and MLX for BOTH spellings, including the legacy field the
+    Studio frontend sends -- so it breaks working MLX video on macOS. Reaching the gate is the
+    whole assertion; what the gate then decides is _local_video_clip's business.
+    """
+    reached: list[dict] = []
+
+    def _gate(payload, model_info):
+        reached.append(model_info)
+        return _CLIP_B64
+
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: SimpleNamespace(
+            active_model_name = "mlx-model",
+            models = {"mlx-model": {"is_vision": True, "has_video_input": True}},
+        ),
+    )
+    monkeypatch.setattr(inference_route, "_local_video_clip", _gate)
+    with _client(monkeypatch, None) as client:
+        response = client.post("/v1/chat/completions", json = body)
+
+    # The gate saw the clip, and nothing downstream then refused it for not being GGUF. The
+    # second half is the half that matters: a blanket refusal placed after the gate still lets
+    # the gate run, so "was it reached" alone cannot tell the regression from the fix.
+    assert reached == [{"is_vision": True, "has_video_input": True}]
+    assert "only supported on a local GGUF model" not in _detail(response)
+    assert inference_route._VIDEO_INPUT_REFUSAL not in _detail(response)
+
+
+def test_the_non_gguf_gate_reads_both_spellings(monkeypatch):
+    """_local_video_clip predates the part, so left reading payload.video_base64 alone it would
+    hand an MLX model nothing while the legacy field worked."""
+    from models.inference import ChatCompletionRequest
+
+    info = {"is_vision": True, "has_video_input": True}
+    field = ChatCompletionRequest(model = "m", messages = [], video_base64 = _DATA_URI)
+    part = ChatCompletionRequest.model_validate(_part_body(_DATA_URI))
+    assert inference_route._local_video_clip(field, info) == _CLIP_B64
+    assert inference_route._local_video_clip(part, info) == _CLIP_B64
+
+
+def test_a_non_gguf_backend_without_video_refuses_by_name():
+    from fastapi import HTTPException
+    from models.inference import ChatCompletionRequest
+
+    payload = ChatCompletionRequest.model_validate(_part_body(_DATA_URI))
+    with pytest.raises(HTTPException) as exc:
+        inference_route._local_video_clip(payload, {"is_vision": True})
+    assert exc.value.status_code == 400
+    assert exc.value.detail == inference_route._VIDEO_INPUT_REFUSAL
+    # The refusal names MLX: that backend serves video, so a GGUF-only message misinforms.
+    assert "MLX" in inference_route._VIDEO_INPUT_REFUSAL
+
+
+def test_a_remote_clip_is_refused_on_a_non_gguf_backend():
+    """Only llama-server fetches a clip for itself. A transformers or MLX model is handed bytes,
+    so forwarding the URL would feed it the text of the URL instead of the video."""
+    from fastapi import HTTPException
+    from models.inference import ChatCompletionRequest
+
+    payload = ChatCompletionRequest.model_validate(_part_body(_REMOTE))
+    with pytest.raises(HTTPException) as exc:
+        inference_route._local_video_clip(payload, {"is_vision": True, "has_video_input": True})
+    assert exc.value.status_code == 400
+    assert "remote video URL" in exc.value.detail
+
+
+# ── URL schemes ──────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "file:///etc/passwd",
+        "FILE:///etc/passwd",
+        "ftp://example.com/clip.mp4",
+        "gopher://example.com/clip.mp4",
+    ],
+)
+def test_an_unsupported_scheme_is_refused_by_name(monkeypatch, url):
+    """llama.cpp reads input_video as data-or-url and hands the one string it finds to
+    handle_media regardless, and handle_media honours file:// whenever llama-server runs with
+    --media-path. Forwarding the clip as opaque payload therefore does not neutralise the
+    scheme, so it is refused here rather than left to mean whatever llama-server decides.
+    """
+    with _client(monkeypatch, _VideoGguf()) as client:
+        response = client.post("/v1/chat/completions", json = _part_body(url))
+    assert response.status_code == 400
+    assert "Unsupported video URL scheme" in _detail(response)
+
+
+def test_a_bare_path_is_refused_without_naming_a_scheme(monkeypatch):
+    with _client(monkeypatch, _VideoGguf()) as client:
+        response = client.post("/v1/chat/completions", json = _part_body("/tmp/clip.mp4"))
+    # No colon, so it is indistinguishable from base64 payload and llama-server owns the verdict.
+    assert response.status_code == 200
+
+
+def test_bare_base64_is_not_mistaken_for_a_scheme(monkeypatch):
+    """':' is not in the base64 alphabet, which is what separates a URL from payload. A scheme
+    check that scanned the whole string would refuse legitimate clips."""
+    backend = _VideoGguf()
+    with _client(monkeypatch, backend) as client:
+        response = client.post("/v1/chat/completions", json = _part_body("QUJDREVGR0hJSktM"))
+    assert response.status_code == 200
+    assert _sent_media(backend) == [
+        {"type": "input_video", "input_video": {"data": "QUJDREVGR0hJSktM"}}
+    ]
+
+
+# ── size ─────────────────────────────────────────────────────────────────────────
+
+
+def test_an_oversized_clip_is_refused_in_either_spelling():
+    """Asserted on the shared rule rather than over HTTP: the body would be 85 MB of JSON, and
+    the ordering guarantee (refuse before the model switch) is pinned separately in
+    test_video_attachment_part.py, where the switch stub asserts it never ran."""
+    from models.inference import ChatCompletionRequest
+    from routes.inference import _MAX_VIDEO_B64_CHARS
+
+    over = "data:video/mp4;base64," + "A" * (_MAX_VIDEO_B64_CHARS + 1)
+    for payload in (
+        ChatCompletionRequest.model_validate(_part_body(over)),
+        ChatCompletionRequest.model_validate(_field_body(over)),
+    ):
+        assert inference_route._request_video_rejection(payload)[0] == 413
+
+
+def test_a_clip_of_exactly_the_cap_is_admitted():
+    """The boundary the cap exists to allow: refusing it would reject a file the composer offers."""
+    from models.inference import ChatCompletionRequest
+    from routes.inference import _MAX_VIDEO_B64_CHARS
+
+    at_cap = "data:video/mp4;base64," + "A" * _MAX_VIDEO_B64_CHARS
+    payload = ChatCompletionRequest.model_validate(_part_body(at_cap))
+    assert inference_route._request_video_rejection(payload) is None
+
+
+def test_a_data_uri_with_no_payload_is_refused(monkeypatch):
+    with _client(monkeypatch, _VideoGguf()) as client:
+        response = client.post("/v1/chat/completions", json = _part_body("data:video/mp4;base64,"))
+    assert response.status_code == 400
+    assert "Could not read the provided video file" in _detail(response)
+
+
+def test_a_remote_url_is_not_measured_against_the_64_mb_cap(monkeypatch):
+    """The bytes are never in our hands, so the cap cannot see them; llama.cpp's own 10 MB
+    download ceiling is the limit that actually holds. Measuring the URL string instead would
+    make the cap look enforced while admitting any size of clip."""
+    backend = _VideoGguf()
+    with _client(monkeypatch, backend) as client:
+        response = client.post("/v1/chat/completions", json = _part_body(_REMOTE))
+    assert response.status_code == 200
+    assert inference_route._REMOTE_VIDEO_ADMISSION_B64_CHARS < inference_route._MAX_VIDEO_B64_CHARS
+
+
+def test_admission_prices_a_remote_clip_at_llama_cpp_s_download_ceiling():
+    """10 MB, matching common_remote_params.max_size in handle_media."""
+    import math
+
+    assert inference_route._REMOTE_VIDEO_ADMISSION_B64_CHARS == 4 * math.ceil(
+        (10 * 1024 * 1024) / 3
+    )
+
+
+# ── routes that cannot serve a clip ──────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("body", [_part_body(_DATA_URI), _field_body()])
+def test_an_external_provider_refuses_either_spelling(monkeypatch, body):
+    """_build_external_messages rebuilds from an allowlist, so a clip left standing is dropped
+    and the provider answers a prompt the caller did not send."""
+    body = {**body, "provider_type": "openai", "provider_api_key": "sk-test"}
+    with _client(monkeypatch, _VideoGguf()) as client:
+        response = client.post("/v1/chat/completions", json = body)
+    assert response.status_code == 400
+    assert response.json()["detail"] == inference_route._VIDEO_INPUT_REFUSAL
+
+
+@pytest.mark.parametrize("body", [_part_body(_DATA_URI), _field_body()])
+def test_token_counting_refuses_either_spelling(monkeypatch, body):
+    """llama-server samples the frames at completion time, so counting here undercounts."""
+    body = {k: v for k, v in body.items() if k != "stream"}
+    with _client(monkeypatch, _VideoGguf(), prefix = "") as client:
+        response = client.post("/chat/count_tokens", json = body)
+    assert response.status_code == 503
+    assert "video" in _detail(response)
+
+
+@pytest.mark.parametrize("body", [_part_body(_DATA_URI), _field_body()])
+def test_the_speech_route_refuses_a_clip_rather_than_speaking_past_it(monkeypatch, body):
+    """/audio/generate keeps only text, so before this refusal a clip was dropped in silence and
+    the text was spoken as though nothing had been attached. Registering video_url as a known
+    tag is what removed the unknown-part guard that used to cover it.
+    """
+    body = {k: v for k, v in body.items() if k != "stream"}
+    with _client(monkeypatch, _VideoGguf(), prefix = "") as client:
+        response = client.post("/audio/generate", json = body)
+    assert response.status_code == 400
+    assert "Video input is not supported here" in _detail(response)
+
+
+def test_the_speech_route_still_speaks_a_plain_text_turn(monkeypatch):
+    """The control for the refusal above: it must not swallow ordinary requests."""
+    body = {"model": "default", "messages": [{"role": "user", "content": "read this out"}]}
+    with _client(monkeypatch, _VideoGguf(), prefix = "") as client:
+        response = client.post("/audio/generate", json = body)
+    assert "Video input is not supported here" not in _detail(response)
+
+
+@pytest.mark.parametrize("body", [_part_body(_DATA_URI), _field_body()])
+def test_the_tool_passthrough_path_refuses_either_spelling(monkeypatch, body):
+    """That branch forwards an explicit field list, so the clip would be dropped silently."""
+    body = {
+        **body,
+        "tools": [
+            {
+                "type": "function",
+                "function": {"name": "f", "parameters": {"type": "object", "properties": {}}},
+            }
+        ],
+    }
+
+    class _ToolGguf(_VideoGguf):
+        supports_tools = True
+
+    with _client(monkeypatch, _ToolGguf()) as client:
+        response = client.post("/v1/chat/completions", json = body)
+    assert response.status_code == 400
+    assert "guided decoding" in _detail(response)
+
+
+# ── message roles ────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("role", ["system", "assistant"])
+def test_a_clip_on_a_non_user_turn_is_refused(monkeypatch, role):
+    """OpenAI places media on user turns only, and llama-server renders the marker into whichever
+    turn carried it, so anywhere else the result is template-dependent."""
+    body = {
+        "model": "test/model.gguf",
+        "stream": False,
+        "messages": [
+            {"role": role, "content": [{"type": "video_url", "video_url": {"url": _DATA_URI}}]},
+            {"role": "user", "content": "go"},
+        ],
+    }
+    with _client(monkeypatch, _VideoGguf()) as client:
+        response = client.post("/v1/chat/completions", json = body)
+    assert response.status_code == 422
+
+
+def test_a_clip_on_a_user_turn_is_accepted(monkeypatch):
+    """The control: the role rule must not refuse the placement it exists to protect."""
+    with _client(monkeypatch, _VideoGguf()) as client:
+        response = client.post("/v1/chat/completions", json = _part_body(_DATA_URI))
+    assert response.status_code == 200
+
+
+# ── accounting ───────────────────────────────────────────────────────────────────
+
+
+def test_admission_charges_each_clip_once_and_not_as_prompt_text():
+    """Pricing a megabytes-long data URI as prompt text would swamp the estimate."""
+    from models.inference import ChatCompletionRequest
+
+    big = "data:video/mp4;base64," + "A" * 40_000
+    one = ChatCompletionRequest.model_validate(_part_body(big))
+    two = ChatCompletionRequest.model_validate(_part_body(big, big))
+    charge_one = inference_route._openai_llama_admission_media_tokens(one)
+    charge_two = inference_route._openai_llama_admission_media_tokens(two)
+    assert charge_two - charge_one == pytest.approx(charge_one, rel = 0.05)
+
+    estimate, _ = inference_route._openai_llama_admission_messages_for_estimate(
+        [m.model_dump(exclude_none = True) for m in one.messages]
+    )
+    assert "A" * 40_000 not in str(estimate)
+
+
+def test_admission_prices_the_two_spellings_of_one_clip_alike():
+    from models.inference import ChatCompletionRequest
+
+    clip = "data:video/mp4;base64," + "A" * 40_000
+    part = ChatCompletionRequest.model_validate(_part_body(clip))
+    field = ChatCompletionRequest.model_validate(_field_body(clip))
+    assert inference_route._openai_llama_admission_media_tokens(
+        part
+    ) == inference_route._openai_llama_admission_media_tokens(field)
+
+
+def test_the_rolling_context_does_not_price_a_clip_as_text():
+    """Trimming counts a turn to decide what to drop; a clip counted as text would evict the
+    conversation around it."""
+    from core.inference.context_window import _UNPRICED_MEDIA_TYPES
+
+    assert {"video_url", "input_video"} <= set(_UNPRICED_MEDIA_TYPES)
+
+
+# ── the behaviour this replaced ──────────────────────────────────────────────────
+
+
+def test_an_unknown_part_type_is_still_refused_by_name(monkeypatch):
+    """video_url used to land here. Registering it must not have widened the catch-all: an
+    unregistered type still has to be refused rather than silently dropped."""
+    body = {
+        "model": "test/model.gguf",
+        "stream": False,
+        "messages": [
+            {"role": "user", "content": [{"type": "hologram_url", "hologram_url": {"url": "x"}}]}
+        ],
+    }
+    with _client(monkeypatch, _VideoGguf()) as client:
+        response = client.post("/v1/chat/completions", json = body)
+    assert response.status_code == 400
+    assert "hologram_url" in _detail(response)
