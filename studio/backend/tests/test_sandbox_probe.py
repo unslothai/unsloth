@@ -444,10 +444,6 @@ def test_the_payload_requires_the_abstract_socket_to_be_out_of_reach():
 
 
 def test_the_symlink_leg_survives_a_probe_base_reached_through_a_symlink(monkeypatch):
-    """macOS puts the probe base under /tmp, which is a symlink to /private/tmp,
-    and this test's double compares the path as written. Resolving only one side
-    made it refuse its own workdir, so the probe failed before reaching the leg
-    above and reported a confinement error for a path-spelling reason."""
     # Short names, under the same short root the probe itself prefers: a base over
     # _MAX_PROBE_BASE_LEN makes the fd-passing control's AF_UNIX address too long
     # and the HOST half fails, which says nothing about the symlink.
@@ -476,10 +472,6 @@ def test_the_symlink_leg_survives_a_probe_base_reached_through_a_symlink(monkeyp
 
 
 def test_the_landlock_helper_imports_where_it_will_never_be_used():
-    """ctypes.CDLL(None) means "the running process" only where dlopen has that
-    convention. On Windows ctypes tests the name for a path separator first and
-    raises TypeError, which the import guard did not catch, so importing this
-    Linux-only helper aborted collection on a platform that never calls it."""
     source = pathlib.Path(sandbox_landlock.__file__).read_text(encoding = "utf-8")
     guard = re.search(r"except \(([^)]*)\):[^\n]*\n(?:\s*#[^\n]*\n)*\s*_libc = None", source)
     assert guard, "the CDLL(None) import guard moved; this test no longer checks it"

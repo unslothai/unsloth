@@ -507,10 +507,6 @@ def test_a_platform_with_no_backend_still_refuses_in_required(monkeypatch):
 
 
 def test_the_tool_descriptions_are_untouched_by_this_change():
-    """A sentence about OS isolation here would be decided at import time, putting a
-    bwrap launch in the import path of tools.py, and would need a matching
-    _FULL_ACCESS_SUBSTITUTIONS entry or Full access advertises a sandbox it
-    disabled."""
     note = tools._build_sandbox_paths_note()
     assert "isolation" not in note.lower()
     full = tools._to_full_access(
@@ -518,11 +514,6 @@ def test_the_tool_descriptions_are_untouched_by_this_change():
     )
     assert "in a sandbox" not in full
     assert "sandbox is disabled" in full
-
-
-# A backend can decline a specific launch long after the probe said yes, and an
-# ML project workdir crosses the 50,000-entry limit as a matter of course. In
-# auto that must be a fallback, not the end of the session.
 
 
 def _declining_backend(
@@ -704,12 +695,6 @@ def test_a_planner_os_error_refuses_rather_than_running_unisolated(monkeypatch):
 
 
 def test_an_unisolated_launch_cannot_be_hooked_by_a_planted_usercustomize(tmp_path):
-    """site imports `usercustomize` from sys.path at interpreter startup whenever
-    ENABLE_USER_SITE is on, which it is for any non-venv interpreter. The session
-    packages directory is writable by the tool call and goes on PYTHONPATH, so
-    without PYTHONNOUSERSITE a call could leave a payload that runs on the host at
-    the start of every later unisolated call, ahead of that call's own analysed
-    script. Measured on a system python3 before this was set."""
     workdir = tmp_path / "session"
     (workdir / os_sandbox.SESSION_PACKAGES_RELPATH).mkdir(parents = True)
     env = tools._with_session_packages({"PATH": "/usr/bin"}, str(workdir))
@@ -717,10 +702,6 @@ def test_an_unisolated_launch_cannot_be_hooked_by_a_planted_usercustomize(tmp_pa
 
 
 def test_the_shipped_sitecustomize_is_found_before_the_session_packages(tmp_path):
-    """The other half, and the reason no separate guard is needed for it: site
-    always imports `sitecustomize`, and PYTHONNOUSERSITE does not stop that. What
-    stops a planted one is ordering, so the ordering is pinned here. The shim
-    directory _build_safe_env sets must stay AHEAD of the writable directory."""
     workdir = tmp_path / "session"
     (workdir / os_sandbox.SESSION_PACKAGES_RELPATH).mkdir(parents = True)
     env = tools._with_session_packages({"PYTHONPATH": tools._SANDBOX_SITE_DIR}, str(workdir))

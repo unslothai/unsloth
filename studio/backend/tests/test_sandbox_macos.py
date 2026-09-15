@@ -134,9 +134,6 @@ def test_both_private_spellings_are_emitted_for_the_workdir(profile):
 
 
 def test_a_non_ascii_workdir_reaches_the_profile_unescaped(monkeypatch):
-    """SBPL is TinyScheme and has no \\u escape, so json's default spelling of an
-    accented path is a rule that matches nothing: the workdir would be unwritable
-    and the live probe would report the whole backend unavailable."""
     workdir = "/tmp/unsloth-session-caf\u00e9"
     private_tmp = "/tmp/us-seatbelt-\u00fcber"
     real_exists, real_isdir = os.path.exists, os.path.isdir
@@ -521,16 +518,6 @@ def test_a_framework_build_gets_its_dyld_image(monkeypatch, tmp_path):
 
 
 def test_a_runtime_under_the_workdir_is_denied_write_after_the_allowance(tmp_path, monkeypatch):
-    """The macOS half of the same rule as the Linux backend.
-
-    runtime_read_paths drops a runtime inside the workdir so a <workdir>/venv/lib
-    symlinked at ~/.ssh is not granted by name, but file-write* covers the workdir
-    subpath, so dropping alone left Studio's own venv writable when it sits under
-    the workdir. A tool call could rewrite site-packages or the interpreter and the
-    next server subprocess started from sys.executable would run it with the
-    server's authority. Denied AFTER the allowance, because Seatbelt is
-    last-match-wins and a deny before it would be overridden.
-    """
     workdir = tmp_path / "session"
     venv = workdir / "venv"
     (venv / "lib").mkdir(parents = True)
@@ -560,11 +547,6 @@ def test_no_write_denial_is_emitted_when_the_runtime_is_outside_the_workdir(tmp_
 
 
 def test_the_openssl_directory_is_granted_by_component_not_whole(profile):
-    """A locally managed OpenSSL keeps private keys in a directory beside the
-    certificates, so a recursive rule over /etc/ssl is an exfiltratable key with
-    the network open. Linux names the public components one by one; this asserts
-    macOS does too. The ancestor `file-read-metadata` literals are the exception:
-    they carry no contents, and every allowed path needs them."""
     for spelling in ("/etc/ssl", "/private/etc/ssl"):
         for line in profile.splitlines():
             if line.startswith("(allow file-read-metadata"):
@@ -583,11 +565,6 @@ def test_the_openssl_directory_is_granted_by_component_not_whole(profile):
     reason = "root reads and writes regardless of the mode bits, so the premise is void",
 )
 def test_a_toolchain_directory_the_user_can_write_is_not_trusted(tmp_path):
-    """`xcode-select -p` honours $DEVELOPER_DIR, so a Studio started with that
-    aimed at a directory under $HOME would otherwise hand recursive file-read*
-    over a home subtree to a profile whose claim is that $HOME is unreadable.
-    The variable is stripped from the subprocess, and the answer is checked
-    rather than trusted, which is what this pins."""
     mine = tmp_path / "FakeXcode.app" / "Contents" / "Developer"
     mine.mkdir(parents = True)
     assert backend._trusted_system_dir(str(mine)) is False
@@ -634,10 +611,6 @@ def _profile_for(workdir, monkeypatch, prefix):
 def test_a_runtime_under_a_symlinked_workdir_is_denied_through_both_spellings(
     tmp_path, monkeypatch
 ):
-    """build_profile is handed the caller's spelling of the workdir, and its write
-    allowance covers the resolved form too. Measuring containment against the alias
-    alone rejected every runtime path, so NO denial was emitted and a tool could
-    rewrite the interpreter a later host subprocess runs."""
     real = tmp_path / "real"
     venv = real / "venv"
     (venv / "lib").mkdir(parents = True)
@@ -660,10 +633,6 @@ def test_a_runtime_under_a_symlinked_workdir_is_denied_through_both_spellings(
 def test_the_framework_python_image_is_denied_when_the_prefix_is_under_the_workdir(
     tmp_path, monkeypatch
 ):
-    """A python.org framework's top-level `Python` is the dyld image, and
-    runtime_read_paths already names it. Left out of the denial it stayed under
-    the workdir's write allowance, which is the one file a later host subprocess
-    maps."""
     workdir = tmp_path / "session"
     prefix = workdir / "Python.framework" / "Versions" / "3.12"
     (prefix / "lib").mkdir(parents = True)
@@ -676,10 +645,6 @@ def test_the_framework_python_image_is_denied_when_the_prefix_is_under_the_workd
 
 
 def test_an_optional_search_root_that_resolves_out_of_its_prefix_is_dropped(monkeypatch):
-    """Homebrew on Intel chowns /usr/local to the user, so /usr/local/bin aimed at
-    the home directory is something a user, or an earlier unisolated tool call,
-    can arrange. _path_filters resolves before it emits, so the recursive subpath
-    would be over a home subtree."""
     home = os.path.expanduser("~")
     real = os.path.realpath
 
@@ -703,9 +668,6 @@ def test_an_optional_search_root_that_resolves_out_of_its_prefix_is_dropped(monk
 
 
 def test_an_editable_checkout_is_listable_but_not_readable(tmp_path, monkeypatch):
-    """The import root has to be listed for the interpreter to find anything in
-    it, and a literal grants exactly that. A subpath would grant the checkout,
-    which is the whole point of naming the packages one by one."""
     checkout = tmp_path / "checkout"
     package = checkout / "demo"
     package.mkdir(parents = True)
@@ -729,11 +691,6 @@ def test_an_editable_checkout_is_listable_but_not_readable(tmp_path, monkeypatch
 
 
 def test_a_standalone_interpreter_in_the_workdir_is_denied_writes(tmp_path, monkeypatch):
-    """The Linux twin's case, on this backend. A standalone build sits directly
-    in its own prefix, so when that prefix IS the workdir none of the named
-    children exist and nothing was denied: the workdir-wide file-write* left the
-    interpreter replaceable, and sandbox_probe runs sys.executable on the HOST
-    for its positive control, so the replacement runs outside Seatbelt."""
     workdir = tmp_path / "session"
     workdir.mkdir()
     executable = workdir / "python"
@@ -754,11 +711,6 @@ def test_a_standalone_interpreter_in_the_workdir_is_denied_writes(tmp_path, monk
 def test_a_workdir_this_backend_cannot_name_fails_the_call_rather_than_de_isolating_it(
     tmp_path, launchable
 ):
-    """_validated refuses a path the profile cannot carry, but it raised the BASE
-    SandboxUnavailableError, which is what `auto` answers by running with
-    software safeguards. So a workdir carrying bytes surrogateescape cannot
-    encode bought itself an unisolated launch: the silent loss the refusal was
-    added to prevent. WorkdirUnsafeError is the type tools.py re-raises."""
     with pytest.raises(WorkdirUnsafeError):
         backend.prepare(
             ToolLaunchPlan(argv = ("/usr/bin/true",), workdir = "/tmp/session-\udcff", env = {})
@@ -766,10 +718,6 @@ def test_a_workdir_this_backend_cannot_name_fails_the_call_rather_than_de_isolat
 
 
 def test_an_interpreter_in_a_home_directory_does_not_grant_the_home(tmp_path, monkeypatch):
-    """The Linux twin's case. The candidate was the executable's PARENT, so a
-    standalone build sitting directly in a user directory turned into a recursive
-    subpath allowance over that whole directory in a profile whose one claim is
-    that $HOME is unreadable."""
     home = tmp_path / "alice"
     (home / ".ssh").mkdir(parents = True)
     executable = home / "python"
@@ -782,11 +730,6 @@ def test_an_interpreter_in_a_home_directory_does_not_grant_the_home(tmp_path, mo
 
 
 def test_a_runtime_origin_is_excluded_under_either_workdir_spelling(tmp_path, monkeypatch):
-    """The mirror image of the Linux case: there sys.prefix held the alias and
-    the caller passed the canonical root, here the caller passes the alias and
-    sys.prefix holds the canonical one. Either way a lexical test against one
-    spelling misses the candidate, and the loop then resolves it and adds the
-    secret behind it to the read roots."""
     real = tmp_path / "real"
     real.mkdir()
     alias = tmp_path / "alias"
@@ -822,10 +765,6 @@ def test_an_interpreter_symlinked_out_of_the_workdir_fails_the_call(tmp_path, mo
 
 
 def test_a_path_with_a_control_byte_is_refused(tmp_path):
-    """json emits \\b, \\f and \\u00XX for control bytes other than the ones
-    already rejected, and the TinyScheme grammar knows none of those three, so
-    the profile either fails to compile or names a different path -- while
-    `auto` promises the call keeps working."""
     for control in ("\x0c", "\x01", "\x7f"):
         with pytest.raises(SandboxUnavailableError, match = "control characters"):
             backend._validated(f"/tmp/session{control}x")
@@ -834,9 +773,6 @@ def test_a_path_with_a_control_byte_is_refused(tmp_path):
 
 
 def test_an_editable_source_inside_the_workdir_is_denied_writes(tmp_path, monkeypatch):
-    """The Linux twin's case. runtime_read_paths drops it so it is not granted by
-    name, but the workdir-wide file-write* then leaves code Studio itself imports
-    writable by a tool call."""
     workdir = tmp_path / "session"
     package = workdir / "mypkg"
     package.mkdir(parents = True)
@@ -846,9 +782,6 @@ def test_an_editable_source_inside_the_workdir_is_denied_writes(tmp_path, monkey
 
 
 def test_a_runtime_is_denied_when_sys_prefix_carries_the_workdir_alias(tmp_path, monkeypatch):
-    """The macOS half of the same miss. A venv invoked through a symlinked path
-    reports the alias in sys.prefix, and pairing the two lexical tests per root
-    rejected it either way round, so no denial was emitted at all."""
     real = tmp_path / "real"
     (real / "venv" / "lib").mkdir(parents = True)
     alias = tmp_path / "alias"
@@ -860,13 +793,6 @@ def test_a_runtime_is_denied_when_sys_prefix_carries_the_workdir_alias(tmp_path,
 
 
 def test_a_path_that_cannot_be_encoded_is_refused_rather_than_carried():
-    """Non-ASCII is kept raw so TinyScheme sees the character rather than a \\u
-    escape it has no rule for. The other half of that: the profile is an argv
-    string, so a path carrying undecodable bytes -- a lone surrogate, after
-    surrogateescape -- would raise at the spawn instead. In `auto` an exception
-    there is caught and the call runs UNISOLATED, which is the silent loss the
-    raw spelling exists to prevent, so it is refused here where the caller can
-    still see it."""
     with pytest.raises(SandboxUnavailableError, match = "encodable as UTF-8"):
         backend._validated("/tmp/session-\udcff")
     # The positive control: an ordinary accented path is NOT refused, or this

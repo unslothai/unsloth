@@ -290,20 +290,7 @@ def _linux_userns_blocked_by_apparmor() -> bool:
 
 @functools.lru_cache(maxsize = 1)
 def editable_source_roots() -> tuple[str, ...]:
-    """Source directories of editable installs, so `import unsloth` still works.
-
-    An editable install leaves the package's code OUTSIDE site-packages, and the
-    interpreter paths the backends bind do not reach it, so a sandboxed tool call
-    could not import a package the same environment imported a moment earlier.
-
-    Read from PEP 610's direct_url.json rather than by parsing .pth files,
-    because that record is written whichever mechanism the installer used: the
-    classic path-in-a-.pth and the PEP 660 finder with its MAPPING both appear
-    here, and only one of them is on sys.path.
-
-    Filesystem root and /usr are refused: an editable install rooted there would
-    hand back most of the host, which is the same guard the runtime paths apply.
-    """
+    """Editable code outside site-packages, from PEP 610 records shared by .pth and PEP 660 installs."""
     roots: list[str] = []
     try:
         from importlib import metadata
@@ -339,26 +326,12 @@ def editable_source_roots() -> tuple[str, ...]:
 
 @functools.lru_cache(maxsize = 1)
 def editable_import_roots() -> tuple[str, ...]:
-    """The directories the entries above sit in, for LISTING only.
-
-    An editable install puts its import root on sys.path, and the interpreter
-    lists that directory to find anything in it. Under bubblewrap the read-only
-    bind of each package creates the parent as an otherwise empty directory, so
-    the listing works and shows nothing else; Seatbelt has no such side effect
-    and needs the directory itself named, as a literal so its contents do not
-    come with it.
-    """
+    """Import roots need listing: bwrap creates empty parents, Seatbelt needs literal grants."""
     return tuple(dict.fromkeys(os.path.dirname(path) for path in editable_source_roots()))
 
 
 def _declared_names(dist) -> frozenset[str]:
-    """Top-level names the distribution itself declares.
-
-    A PEP 420 namespace package has no __init__.py on purpose, so presence of one
-    cannot be the only test or an editable namespace package is importable in
-    Studio and missing inside a tool call. top_level.txt names it; the project
-    name normalised is the fallback for a wheel built without one.
-    """
+    """Declared names also identify PEP 420 namespaces, which have no __init__.py."""
     names: set[str] = set()
     try:
         raw = dist.read_text("top_level.txt") or ""
@@ -383,19 +356,9 @@ def _within_root(path: str, root: str) -> bool:
 def _importable_entries(
     project_root: str, declared: frozenset[str] = frozenset()
 ) -> tuple[str, ...]:
-    """The importable entries under an editable checkout, not the checkout.
+    """Grant package entries, never the checkout's .env, .git or unrelated fixtures.
 
-    direct_url.json names the PROJECT root, and a checkout holds more than its
-    packages: a .env, a credentialed .git/config, a private key someone left in
-    tests/fixtures. Granting the root recursively hands all of it to
-    model-authored code that still has the network, which is the boundary this
-    is supposed to hold.
-
-    The import root is taken from sys.path where the installer put it there (a
-    src layout puts <root>/src, not <root>), and only its top-level packages and
-    modules are returned. Nothing importable found means nothing is granted:
-    the import then fails inside the jail exactly as it did before any of this,
-    which is the honest failure rather than a quiet grant of the whole tree.
+    Use the installer's sys.path root when present; an unconfirmed import gets no grant.
     """
     import_roots = [
         entry
@@ -425,22 +388,9 @@ def _importable_entries(
             entry = os.path.join(import_root, name)
             declared_here = name in declared or name.removesuffix(".py") in declared
             if import_root in guessed and not declared_here:
-                # A root off sys.path is the installer's own answer, so its
-                # listing IS the mapping. A fallback root is only a guess at
-                # one, and taking the listing from a guess hands back the whole
-                # top level of the checkout: the deploy.py with a credential in
-                # it, and the tests/ package whose fixtures the docstring above
-                # is about. Take only what the distribution declares.
+                # A guessed layout may include unrelated deploy.py or tests/ packages.
                 continue
-            # Declared, or carrying an __init__.py. The second alone missed PEP
-            # 420 namespace packages, which have none by design.
-            # A declared name is still only a name. os.path.isdir follows the
-            # link, so a package symlinked at a sibling private tree or at the
-            # home came back as an approved source root, and both backends then
-            # grant the RESOLVED target: Linux binds the alias and its realpath,
-            # macOS emits a recursive rule for the target. Nothing importable
-            # found means nothing granted, which is the honest failure the
-            # docstring above already describes.
+            # Both backends grant resolved targets, so a declared symlink must stay in the checkout.
             if not _within_root(entry, project_root):
                 continue
             package = os.path.isdir(entry) and (
@@ -580,7 +530,7 @@ def _software_only_limitations() -> tuple[str, ...]:
 
 
 def prepare_tool_launch(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
-    """Only ``required`` on a host without a working sandbox can refuse."""
+    """Unavailable hosts fall back in auto; unsafe workdirs and build failures refuse."""
     if plan.requested_mode not in TOOL_EXECUTION_MODES:
         raise SandboxUnavailableError(f"unknown tool execution mode: {plan.requested_mode!r}")
 

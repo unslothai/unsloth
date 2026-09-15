@@ -52,15 +52,7 @@ LIMITATIONS = (
     # Abstract AF_UNIX sockets live in the shared network namespace, so without
     # the Landlock scope (Linux 6.12+) a launch reaches the session bus and X.
     *(() if sandbox_landlock.abstract_scope_supported() else ("host_abstract_sockets_reachable",)),
-    # The same hole, through the filesystem rather than the abstract namespace. A
-    # read-only bind does not stop connect(): the mount flag governs write(), and
-    # a socket is reached with send() (Viro, LKML 2014, on MNT_READONLY; it is why
-    # a read-only docker.sock is still a full Docker API). So a pathname socket
-    # under a bound system root -- a service under /opt is the realistic one -- is
-    # reachable from inside. Named rather than scanned: the read-only roots are
-    # /usr and friends, and walking them on every tool call is not affordable.
-    # Unlike the writable cache, this is not a regression against a host launch,
-    # which could connect to the same socket directly.
+    # Read-only mounts do not block socket connect(); system roots are not scanned per call.
     "host_pathname_sockets_reachable",
     "shared_kernel",
 )
@@ -127,19 +119,9 @@ _NETWORK_FILES = (
 # Bound at the jail's own HOME with HF_HOME pinned to match: a host HF_HOME
 # pointing somewhere unbound would fail on a read-only root.
 _MODEL_CACHE_RELPATH = os.path.join(".cache", "huggingface")
-# Never the cache root: the access token lives at $HF_HOME/token. "modules" is
-# excluded because it holds the generated Python for a trust_remote_code model,
-# so sharing it writably is a path to code a later unsandboxed load imports.
-# "hub" is NOT excluded for the same reason, and that is a decision rather than
-# an oversight: a remote-code model's own modeling_*.py lives in
-# hub/models--*/snapshots/*, so a tool call can rewrite it and a later load that
-# was given trust_remote_code will run it. Read-only would close that, and would
-# also make every download inside a tool call re-fetch gigabytes into a
-# directory that is thrown away, which is how a sandbox gets switched off. It
-# stays writable on the same footing as model_cache_writable in LIMITATIONS:
-# trust_remote_code is opt-in and off by default, and today, with no sandbox at
-# all, a tool call can rewrite that file by absolute path with nothing in
-# its way. Narrower than main, not a new hole. #5603 is what closes it.
+# Exclude $HF_HOME/token and executable modules. Writable hub is a deliberate tradeoff:
+# it preserves downloads across sessions, but tools can poison snapshots/*/modeling_*.py
+# for a later host load using opt-in trust_remote_code. See model_cache_writable and #5603.
 _MODEL_CACHE_SUBDIRS = ("hub", "datasets", "xet", "assets")
 # NixOS keeps glibc here, so a store interpreter cannot link without it.
 _NIX_STORE = "/nix/store"
@@ -229,36 +211,14 @@ def _host_mount_points() -> tuple[str, ...]:
 
 
 def _runtime_paths_under(workdir: str) -> tuple[str, ...]:
-    """Interpreter directories that sit INSIDE the session workdir.
+    """Protect Studio's runtime after the writable workdir bind.
 
-    _runtime_read_paths drops these, correctly: binding them by name would follow
-    a <workdir>/venv/lib symlinked at ~/.ssh straight back in. But dropping alone
-    leaves them under the recursive WRITABLE workdir bind, so when Studio's own
-    virtualenv lives beneath the workdir a tool call can write its site-packages
-    or its interpreter, and the next server subprocess launched with
-    sys.executable runs that code with the server's authority. They are re-bound
-    read-only after the writable bind instead.
-
-    Judged on the RESOLVED path, not the spelling. A venv invoked through a
-    symlinked path keeps that alias in sys.prefix -- measured on CPython 3.12,
-    where <alias>/venv/bin/python reports sys.prefix = <alias>/venv, not the
-    resolved form -- while the caller hands in the canonical workdir. A lexical
-    test against either spelling alone rejects the other, and with an
-    alias-valued sys.prefix that left nothing protected: a tool call overwrote
-    the interpreter's sitecustomize through both spellings, under bubblewrap
-    0.11 in a container.
-
-    One that RESOLVES outside still gets no rule, which is the <workdir>/venv/lib
-    symlinked at ~/.ssh case: nothing is bound at the far end, so inside the jail
-    it dangles.
+    CPython can keep an alias in sys.prefix, so containment uses resolved paths.
+    External targets get no bind: a venv/lib link to ~/.ssh must stay hidden.
     """
     canonical_root = os.path.realpath(workdir)
     inside: list[str] = []
-    # The interpreter FILE leads the list, not just <prefix>/bin: a standalone
-    # build sits directly in its own prefix, so when that prefix is the workdir
-    # none of the names below exist and this returned nothing at all. That one
-    # is not a cosmetic gap -- sandbox_probe runs sys.executable on the HOST for
-    # its positive control, so a replaced one is executed outside the jail.
+    # Standalone Python may have no bin/; the probe executes this file on the host.
     candidates = [sys.executable, *editable_source_roots()]
     for prefix in (sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix):
         candidates.extend(
@@ -269,26 +229,10 @@ def _runtime_paths_under(workdir: str) -> tuple[str, ...]:
         if not os.path.exists(candidate):
             continue
         written, resolved = os.path.abspath(candidate), os.path.realpath(candidate)
-        # Both PROTECTED, because keeping only the resolved one left a symlinked
-        # entry -- an editable package pointing at a sibling in the same checkout
-        # -- under the writable mount: its target was read-only but its NAME was
-        # not, so a tool call could unlink it and put its own package there.
-        #
-        # The RESOLVED form is the containment test, because --ro-bind resolves
-        # its source: binding an alias whose target is outside would mount that
-        # outside directory at the alias path, the opposite of what this is for.
-        # One that resolves out gets no rule and dangles inside the jail, which
-        # is the documented answer. The WRITTEN form only ever adds a rule, never
-        # licenses one, so an alias-spelled prefix -- sys.prefix keeps the alias
-        # when the venv was invoked through one -- still protects its target.
+        # Protect both target and name: otherwise the writable alias can be replaced.
         if _within(written, canonical_root) and not _within(resolved, canonical_root):
             if candidate is sys.executable:
-                # Studio's own interpreter reachable through the tool call's
-                # writable directory, with its content outside it. There is no
-                # rule that both protects the name and keeps the target hidden,
-                # and leaving it writable means the next probe runs whatever was
-                # put there -- _host_positive_controls execs sys.executable on
-                # the HOST, outside any sandbox.
+                # Refuse: protecting this alias would expose its external target.
                 raise WorkdirUnsafeError(
                     f"the session workdir holds a link to the Python that runs Studio: {written}"
                 )
@@ -356,18 +300,8 @@ def _runtime_read_paths(
     # moment earlier. Added as CANDIDATES, so the workdir exclusion, the
     # filesystem-root refusal and the dual-spelling handling below all apply.
     candidates.extend(editable_source_roots())
-    # LAST, and the file itself rather than its parent. Binding the parent read-
-    # bound a whole home directory, .ssh and all, whenever a standalone build sat
-    # directly in one -- /home/alice/python -- into a jail whose one claim is that
-    # the home is not readable. Last, because a venv, conda or uv interpreter is
-    # already inside the <prefix>/bin selected above and is then skipped by the
-    # containment test below: those layouts keep exactly the binds they had, and
-    # only the standalone one gains a bind of the single file it needs.
-    # As WRITTEN, not resolved: Studio started through a user-level symlink keeps
-    # that spelling in sys.executable and the plan's argv[0] IS that spelling, so
-    # binding only the target left argv[0] absent inside the jail. The loop below
-    # takes both spellings of every candidate, and a bind of the FILE creates its
-    # parent as an empty directory rather than granting it.
+    # Keep argv[0]'s spelling; bind the file, since its parent may be the user's home.
+    # Last so an existing prefix/bin bind covers ordinary venv, conda and uv layouts.
     candidates.append(sys.executable)
     try:
         candidates.extend(site.getsitepackages())
@@ -446,15 +380,8 @@ def _path(plan: ToolLaunchPlan, packages: str) -> str:
     return os.pathsep.join(part for part in (inherited, os.path.join(packages, "bin")) if part)
 
 
-# A wedged NFS or FUSE mount blocks in the syscall, not between syscalls, so
-# cache_share_hazard's own deadline never gets to run and neither does isdir.
-# The whole per-component inspection is therefore done on a worker whose WAIT is
-# bounded rather than its work: a thread stuck in scandir cannot be killed, but
-# it can be left behind. Dropping the component is the documented answer to a
-# hazard anyway, so a mount we cannot inspect in time is simply not shared, and
-# the launch proceeds re-downloading exactly as it did before the cache existed.
-# Not a fork: this runs per launch from a threaded server, which is the shape
-# that made the Landlock probe dangerous.
+# Bound the wait: NFS/FUSE can block inside isdir/scandir beyond the scan's deadline.
+# Use a thread because this runs in a threaded server; an uninspected cache is not shared.
 _CACHE_INSPECT_SECONDS = CACHE_SCAN_SECONDS + 2.0
 
 
@@ -468,19 +395,9 @@ def _inspect_cache_component(name: str, path: str) -> "str | None":
     return cache_share_hazard(path)
 
 
-# path -> the worker a previous launch gave up on. A thread stuck in scandir on
-# a wedged mount never returns, so without this every later launch started
-# another one against the same path. Keyed on the THREAD rather than a clock:
-# a timed expiry still let one through per interval, which on a permanently
-# wedged mount is an unbounded leak with extra steps. The entry clears when the
-# original worker finally finishes, so a mount that recovers is picked up again.
+# Retain timed-out workers until they finish, preventing a thread leak on a wedged path.
 _cache_scan_pending: "dict[str, threading.Thread]" = {}
-# Tool calls arrive on request threads, so every read and write of the map above
-# is contended. Two races, both of which defeat the bookkeeping it exists for: a
-# check-then-start that is not atomic lets a burst start one worker each against
-# the same wedged path, and a check-then-delete lets one caller remove an entry
-# the other is still holding, raising KeyError out of a launch -- which `auto`
-# answers by dropping OS isolation and `required` by refusing.
+# Request threads must reserve and remove workers atomically.
 _cache_scan_lock = threading.Lock()
 
 
@@ -500,16 +417,11 @@ def _cache_hazard_within_deadline(name: str, path: str) -> "str | None":
                 return "was still being inspected when a previous launch gave up (a wedged mount?)"
             del _cache_scan_pending[path]
         worker = threading.Thread(target = inspect, name = f"unsloth-cache-scan-{name}", daemon = True)
-        # Reserved and STARTED under the lock, so the entry a concurrent caller
-        # finds is always a thread that is already running: reserving without
-        # starting would leave is_alive() False and let that caller replace it.
+        # Start under the lock, or another caller can replace the not-yet-alive worker.
         _cache_scan_pending[path] = worker
         worker.start()
     worker.join(_CACHE_INSPECT_SECONDS)
     if not answer:
-        # The thread is left behind on purpose -- one blocked in scandir cannot be
-        # killed -- and its entry stays, so no later launch starts a second one
-        # against the same path while this one is still stuck.
         return f"could not be inspected within {_CACHE_INSPECT_SECONDS:.0f}s (a wedged mount?)"
     with _cache_scan_lock:
         # By identity: another caller may already have replaced it.
@@ -542,13 +454,7 @@ def _model_cache_binds(workdir: str) -> dict[str, str]:
         path = os.path.abspath(resolved.get(name) or os.path.join(home, name))
         if _within(path, workdir):
             continue
-        # This bind is WRITABLE, so it is held to the workdir's rule: no IPC nodes
-        # and no hard link to an inode named outside it. A component that fails is
-        # dropped, never refused, so the worst case is the re-download every call
-        # did before the cache was shared. The mount table is re-read for the same
-        # reason _validate_workdir re-reads it: the shared scan's os.path.ismount
-        # compares device numbers and misses a same-filesystem bind mount, which
-        # this recursive WRITABLE bind would otherwise carry in.
+        # Writable caches need the workdir's host-channel checks, including nested bind mounts.
         hazard = _cache_hazard_within_deadline(name, path)
         if hazard is not None:
             logger.warning("Not sharing the %s cache into the sandbox: it %s", name, hazard)

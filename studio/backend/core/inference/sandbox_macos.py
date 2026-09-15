@@ -116,13 +116,7 @@ _OPTIONAL_READ_ROOTS = (
     "/opt/homebrew/opt",
     "/opt/homebrew/Cellar",
 )
-# Every optional root has to RESOLVE inside one of these. Homebrew on Intel
-# chowns /usr/local to the invoking user, so an /usr/local/bin symlinked at the
-# home directory is something a user, or an earlier unisolated tool call, can
-# arrange; _path_filters resolves before it emits, and the recursive subpath
-# would then be over a home subtree in a profile whose claim is the opposite.
-# Ownership is the wrong test here, because that same chown would drop the
-# Homebrew trees this exists to keep working. Containment is the right one.
+# Homebrew prefixes are user-owned; check target containment rather than ownership.
 _OPTIONAL_ROOT_PREFIXES = ("/usr/local", "/opt/homebrew")
 # HAZARD 3, optional literals. Under (deny default) an absent file yields
 # EPERM rather than ENOENT and git aborts, and the existence-filtered path
@@ -248,22 +242,12 @@ def _sbpl_string(value: str) -> str:
 
 def _validated(path: str) -> str:
     if not path or not posixpath.isabs(path) or any(c in path for c in _REJECTED_CONTROLS):
-        # Every C0 control and DEL, not only NUL and the line breaks: json emits
-        # \b, \f and \u00XX for the others, and the TinyScheme grammar above knows
-        # none of those three forms, so the profile either fails to compile or
-        # names a path that is not the one meant -- and `auto` promises those
-        # calls keep working.
+        # TinyScheme cannot interpret JSON's \b, \f or \u00XX control escapes.
         raise SandboxUnavailableError(
             f"Seatbelt paths must be absolute and free of control characters: {path!r}"
         )
     try:
-        # The profile is handed to sandbox-exec as an argv string, so it has to
-        # survive the UTF-8 encode. Now that non-ASCII is kept raw rather than
-        # \u-escaped, a lone surrogate -- what a path carrying undecodable bytes
-        # looks like after surrogateescape -- reaches that encode and raises
-        # there instead of here. Refusing is the whole point: in `auto` an
-        # exception at spawn is caught and the call runs UNISOLATED, which is
-        # the silent loss the escaping change exists to prevent.
+        # Reject surrogateescaped bytes before encoding the profile into argv.
         path.encode("utf-8")
     except UnicodeEncodeError as exc:
         raise SandboxUnavailableError(
@@ -391,12 +375,7 @@ def _developer_paths() -> tuple[str, ...]:
         found: list[str] = []
         if sys.platform == "darwin" and os.path.exists("/usr/bin/xcode-select"):
             try:
-                # DEVELOPER_DIR is stripped, and the answer is then checked
-                # rather than trusted. xcode-select honours that variable, so a
-                # Studio started with it aimed at a toolchain under $HOME would
-                # otherwise return a home directory that this grants recursive
-                # file-read* over, including its enclosing .app -- in a profile
-                # whose whole claim is that $HOME is not readable.
+                # DEVELOPER_DIR could redirect this recursive grant into the user's home.
                 environment = {k: v for k, v in os.environ.items() if k != "DEVELOPER_DIR"}
                 result = subprocess.run(
                     ["/usr/bin/xcode-select", "-p"],
@@ -464,14 +443,8 @@ def runtime_read_paths(workdir: str | None = None) -> tuple[str, ...]:
     # Same as the Linux backend: an editable install's source root is outside
     # site-packages, and a candidate here inherits every guard below.
     candidates.extend(editable_source_roots())
-    # LAST, and the file rather than its parent, exactly as the Linux twin does:
-    # the parent of a standalone build is a user or project directory, and
-    # granting recursive file-read* over it hands back the home this profile
-    # exists to hide. Last, so a venv, conda or uv interpreter is already covered
-    # by the <prefix>/bin above and is skipped by the containment test below.
-    # As WRITTEN: a Studio started through a user-level symlink keeps that
-    # spelling in sys.executable and it is what the launch execs, and
-    # _path_filters emits a literal per spelling rather than the parent.
+    # Keep argv[0]'s spelling without granting its possibly private parent directory.
+    # Last so existing prefix/bin grants cover ordinary venv, conda and uv layouts.
     candidates.append(sys.executable)
     try:
         candidates.extend(site.getsitepackages())
@@ -517,23 +490,9 @@ def _contained_optional_roots() -> tuple[str, ...]:
 
 
 def runtime_paths_under(workdir: str) -> tuple[str, ...]:
-    """Interpreter directories inside the session workdir. The Linux twin of this.
+    """Protect Studio's runtime under every writable spelling of the workdir.
 
-    runtime_read_paths drops them so a <workdir>/venv/lib symlinked at ~/.ssh is
-    not granted by name, but file-write* covers the workdir subpath, so dropping
-    alone leaves Studio's own venv writable when it sits beneath the workdir. A
-    tool call could then rewrite site-packages or the interpreter and the next
-    server subprocess started from sys.executable would run it with the server's
-    authority. Denied after the write allowance instead; Seatbelt is
-    last-match-wins.
-
-    Only when both spellings stay inside the workdir. One that RESOLVES outside is
-    the symlink case, and denying that path would be denying the user's own home.
-
-    Both spellings of the WORKDIR too. build_profile is handed the caller's
-    spelling, and its write allowance covers the resolved form as well, so
-    measuring containment against the alias alone rejected every runtime path
-    when the workdir was a symlink and no denial was emitted at all.
+    Resolved containment handles aliases in sys.prefix. External targets stay ungranted.
     """
     roots: list[str] = []
     for root in (posixpath.abspath(workdir), os.path.realpath(workdir)):
@@ -541,12 +500,7 @@ def runtime_paths_under(workdir: str) -> tuple[str, ...]:
             roots.append(root)
     canonical_root = os.path.realpath(workdir)
     inside: list[str] = []
-    # The interpreter FILE leads the list, like the Linux twin: a standalone
-    # build sits directly in its own prefix, so when that prefix is the workdir
-    # none of the names below exist and nothing was denied at all.
-    # "Python" is the framework build's top-level dyld image, which
-    # runtime_read_paths already names: omitted here it stayed writable under the
-    # workdir allowance, which is the one file a later host subprocess maps.
+    # Include standalone Python and the framework's top-level dyld image.
     candidates = [sys.executable, *editable_source_roots()]
     for prefix in (sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix):
         candidates.extend(
@@ -556,31 +510,18 @@ def runtime_paths_under(workdir: str) -> tuple[str, ...]:
     for candidate in candidates:
         if not os.path.exists(candidate):
             continue
-        # The RESOLVED path decides. Pairing the two lexical tests per root
-        # answered a different question: an alias-prefixed path is not
-        # beneath the canonical root and a canonical one is not beneath the
-        # alias, so every path was rejected either way round -- and a venv
-        # invoked through a symlink keeps that alias in sys.prefix.
         resolved = os.path.realpath(candidate)
         if not _within(resolved, canonical_root):
             if candidate is sys.executable and _within(
                 posixpath.abspath(candidate), canonical_root
             ):
-                # The Linux twin's guard. Studio's own interpreter reachable
-                # through the tool call's writable directory with its content
-                # outside it: no rule both protects the name and keeps the target
-                # hidden, and leaving it writable means the next probe execs
-                # whatever was put there, on the HOST.
+                # A replaceable interpreter alias would let the next host probe execute tool code.
                 raise WorkdirUnsafeError(
                     "the session workdir holds a link to the Python that runs Studio: "
                     f"{posixpath.abspath(candidate)}"
                 )
             continue
-        # Denied under every spelling of the workdir, since Seatbelt judges
-        # the path as written and the allowance covers them all. The candidate's
-        # OWN spelling too, not just the resolved one: keeping only the target
-        # left a symlinked entry inside the checkout writable by name, so a tool
-        # call could unlink it and put its own package there.
+        # Protect the alias name as well as its target, or the tool can replace the alias.
         written = posixpath.abspath(candidate)
         for form in (resolved, written):
             if not _within(form, canonical_root):
@@ -782,11 +723,7 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
     try:
         workdir = _validated(os.path.abspath(plan.workdir))
     except SandboxUnavailableError as exc:
-        # As a WORKDIR problem, not a backend one. The base class is what `auto`
-        # answers by running with software safeguards, so a workdir this backend
-        # refuses to name -- a newline, or bytes surrogateescape cannot encode --
-        # bought itself an unisolated launch: the exact silent loss the refusal
-        # was added to prevent. WorkdirUnsafeError is re-raised by tools.py.
+        # Workdir refusals must not select auto's unisolated fallback.
         raise WorkdirUnsafeError(str(exc)) from exc
     if not os.path.isdir(workdir):
         raise WorkdirUnsafeError(f"the session workdir does not exist: {workdir}")

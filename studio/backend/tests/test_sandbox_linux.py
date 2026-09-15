@@ -917,11 +917,6 @@ def test_the_backend_says_so_when_the_kernel_cannot_scope_them(monkeypatch):
 
 
 def test_a_landlock_probe_child_that_never_answers_does_not_hang_the_server(monkeypatch):
-    """The fork is from a MULTITHREADED server, so a lock another thread held at
-    fork time can leave the child neither writing nor exiting. The read was
-    unbounded, and this runs before any tool call and is cached, so one stuck
-    child hung every later call rather than one probe. No answer is a NO: the
-    scope is unproven and the launch still happens without it."""
     if not sandbox_landlock._abi_reports_scope():
         pytest.skip("no Landlock ABI 6 here, so the fork under test never happens")
 
@@ -949,11 +944,6 @@ def test_the_plan_pre_exec_still_runs_before_the_scope():
 
 
 def test_a_standalone_interpreter_in_the_workdir_is_re_bound_read_only(tmp_path, monkeypatch):
-    """A standalone build sits directly in its own prefix, with no bin/ or lib/,
-    so keying only on <prefix>/<name> protected nothing when that prefix IS the
-    workdir: the interpreter stayed under the recursive WRITABLE bind. It is not
-    only the jail's own copy that matters -- sandbox_probe runs sys.executable
-    on the HOST for its positive control, so a replaced one runs unsandboxed."""
     workdir = tmp_path / "session"
     workdir.mkdir()
     executable = workdir / "python"
@@ -976,11 +966,6 @@ def test_a_standalone_interpreter_in_the_workdir_is_re_bound_read_only(tmp_path,
 
 
 def test_an_interpreter_in_a_home_directory_does_not_bind_the_home(tmp_path, monkeypatch):
-    """The candidate was \`dirname(realpath(sys.executable))\`, so a standalone
-    build sitting directly in a user or project directory read-bound that whole
-    directory into a jail whose one claim is that the home is not readable. Every
-    layout that needs the siblings keeps them: venv, conda and uv all put the
-    interpreter in <prefix>/bin, which the prefix loop binds anyway."""
     home = tmp_path / "alice"
     (home / ".ssh").mkdir(parents = True)
     (home / ".ssh" / "id_rsa").write_text("SECRET", encoding = "utf-8")
@@ -1001,11 +986,6 @@ def _within_for_test(path: str, root: str) -> bool:
 
 
 def test_a_runtime_origin_is_excluded_under_the_workdir_alias_too(tmp_path, monkeypatch):
-    """A venv reached through a symlinked workdir keeps the ALIAS in sys.prefix,
-    which is not lexically beneath the canonical root, so the as-written
-    exclusion missed it and the loop bound whatever it resolved to. With
-    <alias>/venv/lib symlinked at a secret directory that is the secret getting
-    read-bound into the jail, which is the one case the exclusion exists for."""
     real = tmp_path / "real"
     real.mkdir()
     alias = tmp_path / "alias"
@@ -1034,10 +1014,6 @@ def test_a_runtime_origin_is_excluded_under_the_workdir_alias_too(tmp_path, monk
 
 
 def test_an_editable_source_inside_the_workdir_is_re_bound_read_only(tmp_path, monkeypatch):
-    """_runtime_read_paths drops it, correctly, so it is not bound by name. But
-    dropping alone leaves it under the recursive WRITABLE workdir bind, and it is
-    code Studio itself imports, so a tool call could rewrite what a later host
-    process runs. Same rule the interpreter and the prefix subdirectories get."""
     workdir = tmp_path / "session"
     package = workdir / "mypkg"
     package.mkdir(parents = True)
@@ -1049,12 +1025,6 @@ def test_an_editable_source_inside_the_workdir_is_re_bound_read_only(tmp_path, m
 
 
 def test_the_interpreter_spelling_the_launch_execs_is_bound(tmp_path, monkeypatch):
-    """Studio started through a user-level symlink keeps THAT spelling in
-    sys.executable, and the plan's argv[0] is that spelling. Binding only the
-    resolved target left argv[0] absent inside the jail, so bwrap died at exec,
-    the probe called a working backend unavailable, and every auto call fell back
-    without isolation. A bind of the FILE creates its parent as an empty
-    directory, so this does not grant the symlink's directory."""
     target_bin = tmp_path / "opt" / "py" / "bin"
     target_bin.mkdir(parents = True)
     target = target_bin / "python3.13"
@@ -1076,11 +1046,6 @@ def test_the_interpreter_spelling_the_launch_execs_is_bound(tmp_path, monkeypatc
 
 
 def test_a_wedged_cache_mount_drops_the_cache_instead_of_hanging_the_launch(tmp_path, monkeypatch):
-    """A stale NFS or FUSE mount blocks IN the syscall, so cache_share_hazard's
-    own deadline never runs: the walk, and isdir before it, just never return.
-    The tool timeout only starts after Popen, so preparation hung with nothing
-    bounding it. The wait is bounded now; dropping the component is what a hazard
-    already did, so the launch proceeds and re-downloads."""
     cache = tmp_path / "hostcache"
     (cache / "hub").mkdir(parents = True)
     _share_cache_paths(monkeypatch, cache)
@@ -1111,10 +1076,6 @@ def _share_cache_paths(monkeypatch, cache):
 
 
 def test_a_symlinked_runtime_entry_inside_the_workdir_is_protected_by_name(tmp_path, monkeypatch):
-    """Keeping only the resolved target left the symlink's own NAME under the
-    writable workdir mount: the package it pointed at was read-only, but a tool
-    call could unlink the entry and put its own package there for a later host
-    import to run."""
     workdir = tmp_path / "session"
     target = workdir / "real_pkg"
     target.mkdir(parents = True)
@@ -1129,9 +1090,6 @@ def test_a_symlinked_runtime_entry_inside_the_workdir_is_protected_by_name(tmp_p
 
 
 def test_a_wedged_cache_path_is_not_re_scanned_by_every_later_launch(tmp_path, monkeypatch):
-    """A thread blocked in scandir never returns, so without a backoff every
-    later launch started another one against the same path and they accumulated
-    for the life of the process."""
     cache = tmp_path / "hostcache"
     (cache / "hub").mkdir(parents = True)
     _share_cache_paths(monkeypatch, cache)
@@ -1153,11 +1111,6 @@ def test_a_wedged_cache_path_is_not_re_scanned_by_every_later_launch(tmp_path, m
 
 
 def test_a_runtime_entry_whose_target_leaves_the_workdir_gets_no_rule(tmp_path, monkeypatch):
-    """--ro-bind resolves its SOURCE, so binding an alias whose target sits
-    outside mounts that outside directory at the alias path. Protecting the
-    written spelling without requiring the resolved one to stay inside turned the
-    guard into the exposure it exists to prevent: the docstring's own answer is
-    that such a link gets no rule and dangles inside the jail."""
     workdir = tmp_path / "session"
     workdir.mkdir()
     private = tmp_path / "private"
@@ -1174,10 +1127,6 @@ def test_a_runtime_entry_whose_target_leaves_the_workdir_gets_no_rule(tmp_path, 
 
 
 def test_an_interpreter_symlinked_out_of_the_workdir_fails_the_call(tmp_path, monkeypatch):
-    """No rule both protects the alias name and keeps its target hidden, and
-    leaving it writable means the next probe execs whatever a tool call put
-    there: _host_positive_controls runs sys.executable on the HOST. Refused
-    rather than half-protected, which tools.py re-raises."""
     workdir = tmp_path / "session"
     workdir.mkdir()
     outside = tmp_path / "elsewhere"
@@ -1194,11 +1143,6 @@ def test_an_interpreter_symlinked_out_of_the_workdir_fails_the_call(tmp_path, mo
 
 
 def test_concurrent_launches_start_one_cache_worker_and_never_raise(tmp_path, monkeypatch):
-    """Tool calls arrive on request threads, so the pending map is contended.
-    Check-then-start let a burst start one worker each against the same wedged
-    path, which is the leak the bookkeeping exists to stop; check-then-delete let
-    one caller remove an entry another was holding, and that KeyError leaves the
-    launch answering `auto` by dropping OS isolation."""
     cache = tmp_path / "hostcache"
     (cache / "hub").mkdir(parents = True)
     _share_cache_paths(monkeypatch, cache)
@@ -1330,10 +1274,6 @@ def _real_cache(monkeypatch, home):
 
 
 def test_a_cache_component_holding_an_ipc_node_is_not_shared(tmp_path, monkeypatch):
-    """The bind is writable and the network namespace is shared, so a pathname
-    socket under it is connectable from inside: a read-only mount would not even
-    help, since MNT_READONLY governs write() and a socket is reached with send().
-    Measured against the real backend before this check existed."""
     host = tmp_path / "hostcache"
     (host / "hub").mkdir(parents = True)
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -1372,9 +1312,6 @@ def test_a_clean_cache_component_is_still_shared(tmp_path, monkeypatch):
 def test_a_hazardous_cache_drops_the_component_rather_than_failing_the_launch(
     tmp_path, monkeypatch
 ):
-    """Dropping, never refusing. The cache is an optimisation, so the degraded
-    case is the re-download every call did before it was shared; refusing would
-    let anything able to write one socket end every later tool call."""
     host = tmp_path / "hostcache"
     (host / "hub").mkdir(parents = True)
     os.mkfifo(host / "hub" / "pipe")
@@ -1389,10 +1326,6 @@ def test_a_hazardous_cache_drops_the_component_rather_than_failing_the_launch(
 
 
 def test_a_trusted_system_gitconfig_is_bound_and_an_untrusted_one_is_not(tmp_path, monkeypatch):
-    """git reads /etc/gitconfig for a proxy, a CA path or a URL rewrite, and /etc
-    is fresh in the jail. Bound only when root owns it and no one else can write
-    it: a symlink into $HOME, or a user-writable file, would carry whatever it
-    aimed at back into a jail whose claim is that $HOME is unreadable."""
     good = tmp_path / "gitconfig"
     good.write_text("[http]\n")
     link = tmp_path / "linked"
@@ -1404,13 +1337,6 @@ def test_a_trusted_system_gitconfig_is_bound_and_an_untrusted_one_is_not(tmp_pat
 
 
 def test_a_runtime_under_the_workdir_is_re_bound_read_only(tmp_path, monkeypatch):
-    """Studio's own venv living beneath the session workdir must not be writable.
-
-    _runtime_read_paths drops these deliberately, but the recursive workdir bind
-    is WRITABLE, so dropping alone let a tool call rewrite site-packages or the
-    interpreter and the next server subprocess launched with sys.executable ran
-    it with the server's authority. Re-bound read-only AFTER the writable bind.
-    """
     workdir = tmp_path / "session"
     venv = workdir / "venv"
     (venv / "lib").mkdir(parents = True)
@@ -1453,9 +1379,6 @@ def test_a_runtime_symlinked_out_of_the_workdir_is_not_re_bound(tmp_path, monkey
 
 
 def test_a_nested_bind_mount_in_the_cache_is_caught_by_the_mount_table(tmp_path, monkeypatch):
-    """os.path.ismount compares device numbers and misses a same-filesystem bind
-    mount, which is why _validate_workdir re-reads /proc/self/mountinfo. The
-    writable cache bind needs the same check, or it carries the nested mount in."""
     host = tmp_path / "hostcache"
     (host / "hub" / "nested").mkdir(parents = True)
     _real_cache(monkeypatch, host)
@@ -1489,11 +1412,6 @@ def _fake_editable(
 
 
 def test_an_editable_installs_source_root_is_readable(tmp_path, monkeypatch):
-    """Its code lives OUTSIDE site-packages, so without this a sandboxed
-    `import unsloth` fails where the same environment imported it a moment
-    earlier. Read from PEP 610's direct_url.json rather than by parsing .pth
-    files, because that record is written whichever mechanism the installer used:
-    a PEP 660 finder keeps its mapping in a module and puts nothing on sys.path."""
     source = tmp_path / "checkout"
     package = source / "demo"
     package.mkdir(parents = True)
@@ -1516,14 +1434,6 @@ def test_an_editable_installs_source_root_is_readable(tmp_path, monkeypatch):
 
 
 def test_a_guessed_editable_import_root_gives_up_what_it_cannot_confirm(tmp_path, monkeypatch):
-    """A PEP 660 finder puts nothing on sys.path, so the project root is a GUESS
-    at the import root rather than the installer's answer, and the whole top
-    level of a checkout is not the editable mapping. Both halves were granted:
-    every top-level .py, because `os.path.isfile` is true for all of them and it
-    was OR-ed with the declared check, and any directory with an __init__.py,
-    which is the tests/ package holding the fixtures the module docstring is
-    about. The sandbox keeps the network, so a granted file is an exportable one.
-    """
     source = tmp_path / "checkout"
     package = source / "demo"
     package.mkdir(parents = True)
@@ -1544,11 +1454,6 @@ def test_a_guessed_editable_import_root_gives_up_what_it_cannot_confirm(tmp_path
 
 
 def test_a_declared_package_symlinked_out_of_the_checkout_is_refused(tmp_path, monkeypatch):
-    """A declared name is still only a name. os.path.isdir follows the link, so a
-    package symlinked at a sibling private tree came back as an approved source
-    root, and the backends then grant the RESOLVED target: this one binds both
-    the alias and its realpath, the Seatbelt one emits a recursive rule for the
-    target. The network is open, so a granted tree is an exportable one."""
     source = tmp_path / "checkout"
     source.mkdir()
     private = tmp_path / "private"
@@ -1577,16 +1482,6 @@ def test_an_editable_root_at_the_filesystem_root_is_refused(tmp_path, monkeypatc
 def test_a_runtime_under_a_symlinked_workdir_is_read_only_through_both_spellings(
     tmp_path, monkeypatch
 ):
-    """A workdir reached through a symlink is bound TWICE, once per spelling, and
-    the read-only runtime mounts have to come after both.
-
-    Placed between them, the second bind hides them. Placed at a spelling the jail
-    has not bound yet, there is no mount point to land on and bwrap dies with
-    "Can't mkdir parents ... Read-only file system", which in `auto` costs the
-    session its isolation rather than protecting anything. Measured under
-    bubblewrap 0.11 in a container: before this ordering the alias spelling failed
-    to launch at all, and now both refuse the write with EROFS.
-    """
     real = tmp_path / "real"
     venv = real / "venv"
     (venv / "lib").mkdir(parents = True)
@@ -1617,14 +1512,6 @@ def test_a_runtime_under_a_symlinked_workdir_is_read_only_through_both_spellings
 
 
 def test_a_runtime_is_protected_when_sys_prefix_carries_the_workdir_alias(tmp_path, monkeypatch):
-    """The spelling CPython actually reports, which the test above did not use.
-
-    A venv invoked as <alias>/venv/bin/python reports sys.prefix = <alias>/venv,
-    not the resolved form; measured on CPython 3.12. The caller hands in the
-    canonical workdir, so a lexical containment test rejected every runtime path
-    and nothing was re-bound: under bubblewrap 0.11 in a container a tool call
-    then overwrote the interpreter's sitecustomize through both spellings.
-    """
     real = tmp_path / "real"
     (real / "venv" / "lib").mkdir(parents = True)
     (real / "venv" / "bin").mkdir()
@@ -1658,9 +1545,6 @@ def test_a_runtime_is_protected_when_sys_prefix_carries_the_workdir_alias(tmp_pa
 
 
 def test_an_editable_namespace_package_is_granted_without_an_init(tmp_path, monkeypatch):
-    """A PEP 420 namespace package has no __init__.py by design, so presence of
-    one cannot be the only test: the package imports in Studio's environment and
-    would fail only inside a tool call. top_level.txt names it."""
     source = tmp_path / "checkout"
     namespace = source / "acme"
     (namespace / "widget").mkdir(parents = True)
