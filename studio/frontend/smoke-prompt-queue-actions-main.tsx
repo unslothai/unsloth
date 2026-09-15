@@ -42,6 +42,8 @@ function App() {
   const [rejectMoves, setRejectMoves] = useState(false);
   const [steered, setSteered] = useState("");
   const [moveAttempts, setMoveAttempts] = useState(0);
+  const [draft, setDraft] = useState("Unsent composer draft");
+  const [submissions, setSubmissions] = useState(0);
   return (
     <TooltipProvider>
       <div style={{ padding: 16 }}>
@@ -53,6 +55,8 @@ function App() {
             setRejectMoves(false);
             setSteered("");
             setMoveAttempts(0);
+            setDraft("Unsent composer draft");
+            setSubmissions(0);
             useChatPreferencesStore.getState().setFollowUpBehavior("queue");
           }}
         >
@@ -102,7 +106,14 @@ function App() {
         <output aria-label="Follow-up behavior">{followUpBehavior}</output>
         <output aria-label="Move attempts">{moveAttempts}</output>
       </div>
-      <main style={{ maxWidth: 850, margin: "180px auto 0" }}>
+      <form
+        style={{ maxWidth: 850, margin: "180px auto 0" }}
+        onSubmit={(event) => {
+          event.preventDefault();
+          setSubmissions((count) => count + 1);
+          setDraft("");
+        }}
+      >
         <PromptQueueList
           entry={{
             runId: "smoke",
@@ -149,7 +160,13 @@ function App() {
           }}
           onResume={() => setPaused(false)}
         />
-      </main>
+        <textarea
+          aria-label="Composer draft"
+          value={draft}
+          onChange={(event) => setDraft(event.currentTarget.value)}
+        />
+        <output aria-label="Composer submissions">{submissions}</output>
+      </form>
     </TooltipProvider>
   );
 }

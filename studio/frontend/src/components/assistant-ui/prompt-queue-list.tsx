@@ -205,6 +205,7 @@ export function PromptQueueList({
               ) : (
                 <div className="flex min-h-11 items-center gap-1 sm:min-h-12">
                   <TooltipIconButton
+                    type="button"
                     tooltip="Drag to reorder"
                     aria-label={`Reorder queued prompt ${position} of ${items.length}`}
                     aria-describedby={instructionsId}
@@ -248,6 +249,7 @@ export function PromptQueueList({
                     </span>
                   )}
                   <TooltipIconButton
+                    type="button"
                     tooltip="Interrupt the response and send this prompt next"
                     aria-label={`Steer with queued prompt ${position}`}
                     disabled={!item.canEdit || !item.canRemove}
@@ -264,6 +266,7 @@ export function PromptQueueList({
                     <span>Steer</span>
                   </TooltipIconButton>
                   <TooltipIconButton
+                    type="button"
                     tooltip="Remove from queue"
                     aria-label={`Remove queued prompt ${position}`}
                     disabled={!item.canRemove}

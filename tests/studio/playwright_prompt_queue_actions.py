@@ -17,6 +17,33 @@ PAGE = "/smoke-prompt-queue-actions.html"
 ENTRY = "/smoke-prompt-queue-actions-main.tsx"
 
 
+def check_form_actions(page):
+    controls = [
+        ("Reorder queued prompt 1 of 3", False),
+        ("Steer with queued prompt 1", False),
+        ("Remove queued prompt 1", False),
+        ("More options for queued prompt 1", False),
+        ("Steer with queued prompt 1", True),
+    ]
+    for name, reject in controls:
+        for keyboard in (False, True):
+            page.get_by_role("button", name = "Reset fixture", exact = True).click()
+            if reject:
+                page.get_by_role("button", name = "Simulate dispatch race", exact = True).click()
+            button = page.get_by_role("button", name = name, exact = True)
+            if keyboard:
+                button.focus()
+                button.press("Enter")
+            else:
+                button.click()
+            expect(page.get_by_label("Composer submissions", exact = True)).to_have_text("0")
+            expect(page.get_by_role("textbox", name = "Composer draft", exact = True)).to_have_value(
+                "Unsent composer draft"
+            )
+            page.keyboard.press("Escape")
+    print("PASS: queue controls preserve the unsent composer draft without submitting", flush = True)
+
+
 def check_actions(page):
     rows = page.locator("[data-queue-item-id]")
 
@@ -361,6 +388,8 @@ def main():
                 errors = []
                 page.on("pageerror", lambda error: errors.append(str(error)))
                 page.goto(url)
+                check_form_actions(page)
+                page.get_by_role("button", name = "Reset fixture", exact = True).click()
                 check_actions(page)
                 check_motion(page)
                 from _prompt_queue_edge_cases import check_edge_cases
