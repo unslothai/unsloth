@@ -3374,6 +3374,9 @@ _ALLOWLISTED_PYTHON = (
 # Routes that reach an out-of-sandbox path WITHOUT naming it in an operand position. Each of these ran silently
 # before the operand scan learned about them.
 _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
+    # `curl --help all`: `-K, --config <file>` reads a config from a file; the attached spelling was
+    # discarded whole rather than exposing its value.
+    f"curl --config={_OUTSIDE_FILE} https://example.com",
     # `jq --help`: `-L directory` searches modules there, so the filter includes a file from
     # outside the sandbox without ever naming it.
     f"jq -n -L {_OUTSIDE_DIR} 'include \"report\"; rows'",
@@ -3525,6 +3528,9 @@ _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
 )
 
 _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
+    # The call itself creates the escape: a name in the sandbox that writes to the target.
+    f"import os\nos.symlink({_OUTSIDE_DIR!r}, 'local')",
+    f"import os\nos.link({_OUTSIDE_FILE!r}, 'local')",
     # The constructor opens the workbook; the later `parse` never names it again.
     f"import pandas as pd\nbook = pd.ExcelFile({_OUTSIDE_FILE!r})\nprint(book.parse(0))",
     # The predicate family answers existence and type, the same disclosure `test -e` makes.
@@ -3675,6 +3681,7 @@ _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
 
 # The same indirections pointed somewhere ordinary: these must stay silent.
 _INDIRECT_BENIGN_TERMINAL = (
+    "curl --config=./local.conf https://example.com",
     "jq -L ./modules '.a' data.json",
     "jq -r '.items[] | .name' out.json",
     "p=hello; cat notes/${p:0:3}",
@@ -3755,6 +3762,7 @@ _INDIRECT_BENIGN_TERMINAL = (
 )
 
 _INDIRECT_BENIGN_PYTHON = (
+    "import os\nos.symlink('models', 'local')",
     "import pandas as pd\nbook = pd.ExcelFile('book.xlsx')\nprint(book.parse(0))",
     "import os\nprint(os.path.exists('notes.txt'))",
     "import pathlib\nprint(pathlib.Path('build').is_dir())",

@@ -958,6 +958,10 @@ _PATH_FLAG_SPECS = {
     # scheme can read or write local files). Ordinary http(s) URLs are not absolute paths, so they
     # never reach the gate; only the `file:` scheme does.
     "curl": {
+        # `curl --help all`: `-K, --config <file>` reads a config from a file, and the attached
+        # `--config=` spelling was discarded whole rather than exposing its value.
+        "-K": "read",
+        "--config": "read",
         "-o": "write",
         "--output": "write",
         # `--output-dir <dir>` is where `-O` puts what it downloads (`curl --help all`), and `-O`
@@ -1825,6 +1829,12 @@ _PY_PATH_SUBPROCESS_CALLS = frozenset(
 _PY_PATH_MOVE_CALLS = frozenset({"move", "rename", "renames", "replace"})
 
 
+# `os.symlink(target, name)` does not remove its target, but it hands the sandbox a name that WRITES
+# to it, so the target is checked as a write for the same reason the terminal `ln` source is. The
+# call itself creates the escape, which is what separates it from the pre-existing-symlink residual.
+_PY_PATH_LINK_CALLS = frozenset({"link", "symlink"})
+
+
 # Archive members are written UNDER the destination these take, so it is a write of a whole tree.
 _PY_PATH_EXTRACT_CALLS = frozenset({"extract", "extractall"})
 
@@ -2262,6 +2272,15 @@ def _sequence_elements(node, containers) -> "list":
     return [node]
 
 
+def _sqlite_opens_read_only(node) -> bool:
+    """True when a sqlite connection is provably read-only: a `file:...?mode=ro` URI."""
+    first = node.args[0] if node.args else None
+    if not isinstance(first, ast.Constant) or not isinstance(first.value, str):
+        return False
+    lowered = first.value.lower()
+    return lowered.startswith("file:") and ("mode=ro" in lowered or "immutable=1" in lowered)
+
+
 def _call_keywords(node) -> "list":
     """A call's keywords, with a LITERAL `**{...}` splat expanded into the keywords it stands for.
 
@@ -2532,7 +2551,10 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
             # A move REMOVES its source, so that side is a write too: `os.rename('/models/w.gguf',
             # 'stolen.gguf')` takes the file out of a read-silent root with a relative destination.
             # A copy leaves its source alone, which is why this is not the whole table.
-            add(func.value if receiver_is_path else first, name in _PY_PATH_MOVE_CALLS)
+            add(
+                func.value if receiver_is_path else first,
+                name in _PY_PATH_MOVE_CALLS or name in _PY_PATH_LINK_CALLS,
+            )
             add(first if receiver_is_path else second, True)
         elif name in _PY_PATH_SERIALIZE_CALLS and _serializes_to_second_arg(func, module_aliases):
             # torch.save(obj, path) / joblib.dump(obj, path) put the DESTINATION second, the opposite of
@@ -2580,6 +2602,11 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
                 given = next((kw.value for kw in _call_keywords(node) if kw.arg == "files"), None)
             for element in _sequence_elements(given, containers):
                 add(element, False)
+        elif name == "connect" and receiver_name in ("sqlite3", "apsw"):
+            # A connection CREATES the file if it is missing and can write it afterwards, so the
+            # database is a write target unless the URI says otherwise. (The whole call already
+            # prompts through the existing sqlite rule; this makes the operand itself accurate.)
+            add(first, not _sqlite_opens_read_only(node))
         elif name in _PY_PATH_OPENING_CTORS:
             add(first, False)
         elif name in _PY_PATH_READ_CALLS:
