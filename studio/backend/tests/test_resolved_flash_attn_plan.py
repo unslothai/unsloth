@@ -111,10 +111,7 @@ class TestTheResolver:
         Order of authority end to end: environment, then Unsloth's managed flag, then the
         user's own extras. Only the middle term was missing.
         """
-        assert (
-            _planned_flash_attn_state(["-fa", "off"], env = {"LLAMA_ARG_FLASH_ATTN": "0"})
-            is False
-        )
+        assert _planned_flash_attn_state(["-fa", "off"], env = {"LLAMA_ARG_FLASH_ATTN": "0"}) is False
         assert _planned_flash_attn_state(["-fa", "off"], env = {}) is False
 
     def test_the_extras_beat_the_environment(self):
@@ -331,7 +328,9 @@ class TestAutoIsNotAnAnswer:
         assertion and still sizes conservatively.
         """
         assert _planned_flash_attn_state(None, env = {"LLAMA_ARG_FLASH_ATTN": "auto"}) is True
-        assert _planned_flash_attn_state(["-fa", "auto"], env = {"LLAMA_ARG_FLASH_ATTN": "1"}) is False
+        assert (
+            _planned_flash_attn_state(["-fa", "auto"], env = {"LLAMA_ARG_FLASH_ATTN": "1"}) is False
+        )
         # And the extras still beat the environment, in both directions.
         assert (
             _planned_flash_attn_state(["-fa", "on"], env = {"LLAMA_ARG_FLASH_ATTN": "auto"}) is True

@@ -654,18 +654,24 @@ class TestTheEstimateMatchesTheConfiguredLoad:
         (tmp_path / "mmproj-F16.gguf").write_bytes(b"\x00" * 800_000)
 
         offloaded = _call_std_route(
-            monkeypatch, path = gguf, repo_id = str(tmp_path), is_local = True,
+            monkeypatch,
+            path = gguf,
+            repo_id = str(tmp_path),
+            is_local = True,
             no_mmproj_offload = False,
         )
         assert offloaded["projector_bytes"], "a resident projector must still be charged"
 
         pinned = _call_std_route(
-            monkeypatch, path = gguf, repo_id = str(tmp_path), is_local = True,
+            monkeypatch,
+            path = gguf,
+            repo_id = str(tmp_path),
+            is_local = True,
             no_mmproj_offload = True,
         )
-        assert pinned["projector_bytes"] is None, (
-            "a projector pinned to host memory must not be reported as VRAM"
-        )
+        assert (
+            pinned["projector_bytes"] is None
+        ), "a projector pinned to host memory must not be reported as VRAM"
         # Vision is still on, so nothing else about the row collapses: this is the
         # difference between "no projector on the card" and "no vision".
         assert pinned["kv_bytes"] and pinned["kv_bytes"] > 0
