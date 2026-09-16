@@ -1818,19 +1818,24 @@ class VideoBackend:
                 # what a generic ROCm prebuilt does on a card it has no hipBLAS kernels for (#8814, #9278). Collapsing
                 # None into True, which is right for the decision below, hid exactly that case.
                 accelerator_verdict = sd_cpp_accelerator_device_verdict(binary) if binary else False
-                # Whether this host's own build was ASKED. False above stands for "there is
-                # nothing here that could enumerate a device", which is the right reading for
-                # the rungs below -- but it is not a reading of the ROCm build at all, and the
-                # ensure returns None for a download that failed as readily as for an asset
-                # that does not exist. Recorded as proven, one failed fetch would divert a
-                # healthy ROCm host onto Vulkan for good.
-                accelerator_probe_ran = bool(binary)
                 # Under the SAME claim that just validated this binary. Read afterwards, an
                 # install that replaces the managed tree in between is recorded as the class
                 # this load decided on: the re-vet then compares ROCm with ROCm, both builds
                 # can answer the device probe the same way, and the load commits the very
                 # build the fallback existed to avoid.
                 decided_accelerator = _installed_accelerator_of(binary)
+                # Whether THIS ACCELERATOR'S OWN build was asked. Two ways it was not, and
+                # both ended as a permanent diversion: False above stands for "there is
+                # nothing here that could enumerate a device", which is the right reading for
+                # the rungs below but not a reading of the requested build at all, and the
+                # ensure returns None for a download that failed as readily as for an asset
+                # that does not exist; and when the install fails with a usable build of
+                # ANOTHER class already on disk, the ensure keeps that one deliberately -- "a
+                # usable binary of the wrong accelerator is still better than none" -- so a
+                # CPU build's honest CPU-only answer would be recorded against ROCm, under a
+                # bundle tag the other assets of that release share, which no later release
+                # retires.
+                accelerator_probe_ran = bool(binary) and decided_accelerator == accelerator
             # Unchanged from the collapsed reading this replaces, and through the same rule rather than a second
             # copy of it: "could not tell" keeps the GPU, since an unreadable probe is not evidence that the
             # accelerator is missing.

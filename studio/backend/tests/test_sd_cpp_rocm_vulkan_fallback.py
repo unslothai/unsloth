@@ -2118,3 +2118,44 @@ def test_a_failed_fetch_does_not_divert_a_host_whose_rocm_build_works(
     again.run()
     assert _recorded_strikes(fake_settings) == 2
     assert _noted_accelerators(fake_settings) == ["rocm"]
+
+
+@pytest.mark.parametrize("platform", PLATFORMS)
+def test_a_substituted_cpu_build_is_not_evidence_about_rocm(
+    h3_amd_host, fake_settings, monkeypatch, platform
+):
+    """The ensure keeps a usable build of the WRONG class when the install fails.
+
+    That is deliberate -- "a usable binary of the wrong accelerator is still better than none"
+    -- but it means the binary that answers `--list-devices` is not always the one whose class
+    is on trial. A CPU build honestly enumerating no accelerator was recorded as proof that
+    ROCm cannot run here, under a bundle tag the other assets of that release share, so no
+    later release retired it and every future load skipped ROCm.
+    """
+    from core.inference import sd_cpp_backend
+
+    host = h3_amd_host(
+        platform = platform,
+        backend = "rocm",
+        device = "cuda",
+        devices = {
+            "rocm": MISSING,
+            "vulkan": _DEVICES_VULKAN,
+            "cpu": _DEVICES_CPU_ONLY,
+        },
+    )
+    ensure = sd_cpp_backend.ensure_sd_cpp_binary
+
+    def _substituting_ensure(*, allow_install = True, accelerator = "cpu"):
+        if accelerator == "rocm":
+            # The install failed and a CPU build was already on disk.
+            return "/opt/sd/cpu/sd-cli"
+        return ensure(allow_install = allow_install, accelerator = accelerator)
+
+    monkeypatch.setattr(sd_cpp_backend, "ensure_sd_cpp_binary", _substituting_ensure)
+
+    assert host.run()._state.device == "cuda"
+    # A strike, because something did answer and it was not ROCm -- never a proven failure.
+    assert _noted_accelerators(fake_settings) == []
+    assert _recorded_strikes(fake_settings) == 1
+    assert sd_cpp_backend.preferred_accelerator("rocm") == "rocm"
