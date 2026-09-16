@@ -624,6 +624,39 @@ def _windows_creation_time(identity: "Optional[str]") -> "Optional[int]":
         return None
 
 
+def _windows_identity_of_handle(kernel32, handle) -> "Optional[str]":
+    """The creation-time identity of the process an OPEN HANDLE refers to, or None.
+
+    A handle pins the process it was opened on: the kernel keeps the object alive while the
+    handle is held, and the pid can be recycled without the handle ever following it. So a
+    check made through the handle answers about the same process every later call on that
+    handle acts upon, which a check made on the pid does not -- between a pid-based check
+    and the `OpenProcess` that follows it, the process can exit and its number be taken by
+    a stranger, and the handle then refers to the stranger.
+
+    Written in the same ``high:low`` spelling as `_pid_identity`, so the two are directly
+    comparable. None when the times cannot be read, which the caller must treat as "not
+    proven", never as a match.
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32.GetProcessTimes.argtypes = [wintypes.HANDLE] + [
+            ctypes.POINTER(wintypes.FILETIME)
+        ] * 4
+        kernel32.GetProcessTimes.restype = wintypes.BOOL
+        created = wintypes.FILETIME()
+        other = [wintypes.FILETIME() for _ in range(3)]
+        if not kernel32.GetProcessTimes(
+            handle, ctypes.byref(created), *[ctypes.byref(x) for x in other]
+        ):
+            return None
+        return f"{created.dwHighDateTime}:{created.dwLowDateTime}"
+    except Exception:  # noqa: BLE001 -- unreadable is "not proven", handled by the caller
+        return None
+
+
 def _windows_filetime_now() -> "Optional[int]":
     """The wall clock as one 64-bit FILETIME, comparable with a process creation time.
 
@@ -882,6 +915,17 @@ def _windows_collect_descendants_known(pid: int) -> "tuple[list[tuple[int, Optio
         # No floor means no ancestry proof for anything, so this claims nothing at all --
         # and "nothing" here is indeterminate, not empty.
         return [], False
+    # Read BEFORE the snapshot, and used as a floor on the snapshot itself. Anything the
+    # table lists whose creation time is past this moment came into existence while the
+    # table was being read, and there is no way to tell which one it is: a genuine child
+    # started in that window, or a number the snapshot listed for a process that exited
+    # inside the same window and had its number reused. The ceiling below cannot separate
+    # them either, because the replacement is created before it. So the pid is not admitted
+    # -- a forced sweep is not a place to guess about a number that may belong to a stranger
+    # -- and it is not silently dropped either: the walk says it is INCOMPLETE, which is the
+    # signal the caller already has for "there may be more than this", and the late-walk
+    # rounds re-snapshot with a fresh window and pick up a genuine child then.
+    snapshot_floor = _windows_filetime_now()
     table = _child_pid_map()
     # Read AFTER the snapshot, and used as a ceiling. The identity of each candidate is read
     # after the table, and a child that exits in between frees its number immediately: the
@@ -929,6 +973,13 @@ def _windows_collect_descendants_known(pid: int) -> "tuple[list[tuple[int, Optio
             # snapshot was taken. The entry's own process has therefore exited and its
             # number been reused, so nothing of this tree is lost and the walk stays
             # complete -- the subtree under a stranger is the stranger's, not ours.
+            continue
+        if snapshot_floor is not None and created > snapshot_floor:
+            # Created while the table was being read, so it is either a genuine child born
+            # in that window or the replacement for a number the table listed. Unprovable
+            # either way, so it is skipped and the walk reports itself incomplete rather
+            # than handing a possible stranger to `taskkill /T /F`.
+            complete = False
             continue
         found.append((child, identity))
         queue.extend((grandchild, created) for grandchild in table.get(child, ()))
@@ -1583,9 +1634,30 @@ def adopt_pid(pid: Optional[int], identity: "Optional[str]" = None) -> None:
             kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
             kernel32.OpenProcess.restype = wintypes.HANDLE
             PROCESS_SET_QUOTA, PROCESS_TERMINATE = 0x0100, 0x0001
-            handle = kernel32.OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, False, pid)
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            handle = kernel32.OpenProcess(
+                PROCESS_SET_QUOTA | PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION,
+                False,
+                pid,
+            )
             if handle:
-                kernel32.AssignProcessToJobObject(_win_job_handle, handle)
+                # Checked HERE, through the handle that is about to be assigned, not on the
+                # pid earlier. The check above happens before the record write and the
+                # breadcrumb flush, and the process can exit anywhere in that interval; the
+                # number is then free, and this `OpenProcess` can land on whatever took it.
+                # Assigning a stranger to a job whose limit is kill-on-close means closing
+                # Unsloth kills a process that has nothing to do with it. The handle refers
+                # to one process for its whole lifetime, so a creation time read through it
+                # answers about the process `AssignProcessToJobObject` will act on.
+                #
+                # Unreadable is not a match: no identity to compare against, or times that
+                # cannot be read, means the assignment is skipped. It has always been
+                # belt-and-suspenders -- the spawn path puts children in the job directly --
+                # so skipping it costs a second line of defence, while getting it wrong
+                # kills a stranger.
+                opened = _windows_identity_of_handle(kernel32, handle)
+                if identity is not None and opened is not None and opened == identity:
+                    kernel32.AssignProcessToJobObject(_win_job_handle, handle)
                 kernel32.CloseHandle(handle)
         except Exception:
             pass

@@ -1035,6 +1035,119 @@ def test_a_recycled_survivor_is_not_adopted(monkeypatch):
     assert recorded == {4343: "read-now"}
 
 
+class _FakeKernel32:
+    """Enough of kernel32 for the adopt path: every name is a settable stub.
+
+    `_win_signatures` assigns argtypes and restype onto each entry point, so the attributes
+    have to exist and carry assignment, and the three the adopt path actually calls are
+    overridden by the test.
+    """
+
+    def __init__(self, **calls):
+        self._stubs = {}
+        for name, fn in calls.items():
+            self._stubs[name] = fn
+
+    def __getattr__(self, name):
+        if name.startswith("_"):
+            raise AttributeError(name)
+        stub = self._stubs.get(name)
+        if stub is None:
+            def stub(*args, **kwargs):  # noqa: ANN001,ANN202 -- a no-op entry point
+                return 1
+            self._stubs[name] = stub
+        return stub
+
+
+def test_the_handle_identity_is_read_through_the_handle(monkeypatch):
+    """The creation time has to come from the handle, not from the number again.
+
+    A handle pins the process it was opened on, so what it reports is what the later call on
+    that same handle will act upon. Unreadable times are None, which the caller treats as
+    "not proven" rather than as a match.
+    """
+    import ctypes
+
+    def _times(handle, created_ptr, *rest):
+        if handle != 77:
+            return 0
+        created_ptr._obj.dwHighDateTime = 7
+        created_ptr._obj.dwLowDateTime = 4242
+        return 1
+
+    kernel32 = _FakeKernel32(GetProcessTimes = _times)
+    assert pl._windows_identity_of_handle(kernel32, 77) == "7:4242"
+    # A failed read is None, never a fabricated match.
+    assert pl._windows_identity_of_handle(kernel32, 78) is None
+    del ctypes
+
+
+def test_a_pid_recycled_before_the_job_assignment_is_not_assigned(monkeypatch):
+    """The pid check happens before the record write and the breadcrumb flush.
+
+    The process can exit anywhere in that interval, its number be taken by a stranger, and
+    the `OpenProcess` that follows then lands on the stranger. Assigning that handle to a
+    job whose limit is kill-on-close means closing Unsloth kills an unrelated process, so
+    the creation time is re-read THROUGH the handle that is about to be assigned.
+    """
+    import ctypes
+
+    assigned: "list[int]" = []
+    opened_rights: "list[int]" = []
+    closed: "list[int]" = []
+    handle_identity = {"value": "0:4242"}
+
+    def _open(rights, inherit, pid):
+        opened_rights.append(rights)
+        return 77
+
+    def _times(handle, created_ptr, *rest):
+        spelling = handle_identity["value"]
+        if spelling is None:
+            return 0
+        high, low = spelling.split(":")
+        created_ptr._obj.dwHighDateTime = int(high)
+        created_ptr._obj.dwLowDateTime = int(low)
+        return 1
+
+    kernel32 = _FakeKernel32(
+        OpenProcess = _open,
+        GetProcessTimes = _times,
+        AssignProcessToJobObject = lambda job, handle: assigned.append(handle) or 1,
+        CloseHandle = lambda handle: closed.append(handle) or 1,
+    )
+    # ctypes has no WinDLL off Windows, so it is created rather than replaced.
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *a, **k: kernel32, raising = False)
+    monkeypatch.setattr(pl, "_is_windows", lambda: True)
+    monkeypatch.setattr(pl, "_win_job_handle", 4321)
+    monkeypatch.setattr(pl, "_signalable", lambda pid: True)
+    monkeypatch.setattr(pl, "_adopt_fork_reset", lambda: None)
+    monkeypatch.setattr(pl, "_own_process_group", lambda pid: None)
+    monkeypatch.setattr(pl, "_write_breadcrumb", lambda: None)
+    monkeypatch.setattr(pl, "_tracked_pids", {})
+    monkeypatch.setattr(pl, "_pid_identity", lambda pid: "0:4242")
+
+    # The number was taken by something that started later, in the window the pid check
+    # cannot cover.
+    handle_identity["value"] = "9:9999"
+    pl.adopt_pid(4242, "0:4242")
+    assert assigned == [], "a stranger was assigned to the kill-on-close job"
+    assert closed == [77], "the handle was leaked"
+
+    # Unreadable times are not a match either.
+    handle_identity["value"] = None
+    pl.adopt_pid(4242, "0:4242")
+    assert assigned == [], "assigned a handle whose process could not be identified"
+
+    # The process that is still the same one is assigned, which is the whole point of the
+    # belt-and-suspenders pass.
+    handle_identity["value"] = "0:4242"
+    pl.adopt_pid(4242, "0:4242")
+    assert assigned == [77], assigned
+    # And the read right is requested, or GetProcessTimes could never succeed on the handle.
+    assert all(rights & 0x1000 for rights in opened_rights), opened_rights
+
+
 def test_no_windows_kill_path_calls_taskkill_slash_t_any_more():
     """The validated collector is only a filter while every forced kill goes through it.
 
@@ -1451,12 +1564,15 @@ def test_a_walk_that_fails_below_an_intermediate_keeps_the_record(monkeypatch):
     assert (middle, f"{middle}") in survivors, survivors
 
 
-def test_a_child_born_while_the_snapshot_was_taken_is_not_rejected(monkeypatch):
-    """The ceiling has to be later than the snapshot, never earlier.
+def test_a_child_born_while_the_snapshot_was_taken_is_reported_not_signalled(monkeypatch):
+    """A pid created inside the snapshot window is unprovable in both directions.
 
-    Taken first it is earlier, and a genuine child born in the gap is then IN the table with
-    a creation time past it: rejected as a recycled number while the walk still called itself
-    complete, which is the exact leak this function exists to prevent.
+    It is either a genuine child started while the table was being read, or the replacement
+    for a number the table listed for a process that exited in the same window; the ceiling
+    cannot separate them, because the replacement predates it too. Signalling it can hand a
+    stranger to a forced tree kill. Dropping it silently reports a tree as fully enumerated
+    when it may not be, which is the leak this function exists to prevent. So neither: the
+    pid is skipped and the walk says it is incomplete, and the late rounds re-snapshot.
     """
     root, child = 1300, 1301
     monkeypatch.setattr(pl, "_is_windows", lambda: True)
@@ -1480,7 +1596,17 @@ def test_a_child_born_while_the_snapshot_was_taken_is_not_rejected(monkeypatch):
     ))
 
     found, known = pl._windows_collect_descendants_known(root)
-    assert found == [(child, "0:1500")], found
+    assert found == [], found
+    assert known is False
+
+    # And a child that predates the floor is provably one the table listed, so it is
+    # collected and the walk is complete: the bound narrows to the window, not to everything.
+    clock["now"] = 1000
+    monkeypatch.setattr(
+        pl, "_pid_identity", lambda pid: {root: "0:500", child: "0:900"}.get(pid)
+    )
+    found, known = pl._windows_collect_descendants_known(root)
+    assert found == [(child, "0:900")], found
     assert known is True
 
 
