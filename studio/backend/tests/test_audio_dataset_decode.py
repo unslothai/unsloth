@@ -168,9 +168,34 @@ def test_a_missing_index_picks_the_default_track_not_the_first(broken_torchcodec
     if shutil.which("ffmpeg") is None or not hasattr(av.container.streams.StreamContainer, "best"):
         pytest.skip("needs the ffmpeg CLI to set dispositions and PyAV >= 13 for streams.best")
     path = tmp_path / "second_is_default.m4a"
-    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=1:sample_rate=22050",
-                    "-f", "lavfi", "-i", "sine=frequency=880:duration=1:sample_rate=22050", "-map", "0:a", "-map", "1:a",
-                    "-c:a", "aac", "-disposition:a:0", "0", "-disposition:a:1", "default", str(path)], check = True)
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=1:sample_rate=22050",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=880:duration=1:sample_rate=22050",
+            "-map",
+            "0:a",
+            "-map",
+            "1:a",
+            "-c:a",
+            "aac",
+            "-disposition:a:0",
+            "0",
+            "-disposition:a:1",
+            "default",
+            str(path),
+        ],
+        check = True,
+    )
     assert audio_decode.ensure_audio_decoding() is True
     array, rate = audio_decode._read_mono(str(path))
     assert abs(_dominant_hz(array, rate) - 880) < 20
