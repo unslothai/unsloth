@@ -28,6 +28,7 @@ from models.inference import (
     AnthropicResponseToolUseBlock,
 )
 from core.inference.anthropic_compat import (
+    DOCUMENT_IMAGE_OMITTED,
     DOCUMENT_OMITTED,
     anthropic_messages_to_openai,
     anthropic_schema_client_tool_kind,
@@ -1087,6 +1088,24 @@ class TestAnthropicMessagesToOpenAI:
                 "First chunk\nSecond chunk",
             ),
             ({"type": "content", "content": "Whole body."}, "Whole body."),
+            (
+                {
+                    "type": "content",
+                    "content": [
+                        {"type": "text", "text": "Before"},
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": "iVBOR",
+                            },
+                        },
+                        {"type": "text", "text": "After"},
+                    ],
+                },
+                f"Before\n{DOCUMENT_IMAGE_OMITTED}\nAfter",
+            ),
             (
                 {"type": "base64", "media_type": "application/pdf", "data": "JVBERi0="},
                 DOCUMENT_OMITTED,

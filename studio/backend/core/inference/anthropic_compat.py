@@ -42,6 +42,7 @@ def anthropic_tool_use_id(upstream_id = None) -> str:
 
 TOOL_RESULT_IMAGE_OMITTED = "[image omitted: this model cannot view images]"
 DOCUMENT_OMITTED = "[document omitted: only text documents can be read]"
+DOCUMENT_IMAGE_OMITTED = "[image omitted: images inside documents are not read]"
 
 
 def _anthropic_block_texts(content: Any) -> list[str]:
@@ -49,11 +50,15 @@ def _anthropic_block_texts(content: Any) -> list[str]:
         return [content]
     if not isinstance(content, list):
         return []
-    return [
-        b["text"]
-        for b in content
-        if isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text"), str)
-    ]
+    texts = []
+    for b in content:
+        if not isinstance(b, dict):
+            continue
+        if b.get("type") == "text" and isinstance(b.get("text"), str):
+            texts.append(b["text"])
+        elif b.get("type") == "image":
+            texts.append(DOCUMENT_IMAGE_OMITTED)
+    return texts
 
 
 def anthropic_reference_block_text(block: dict) -> str:
