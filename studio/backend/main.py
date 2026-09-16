@@ -634,6 +634,36 @@ def clear_compiled_cache_unless_shared(app: FastAPI) -> None:
     _clear_compiled_cache_unless_shared(getattr(app.state, "live_sibling_backend", None))
 
 
+def bootstrap_banner_lines(
+    username: str,
+    bootstrap_path,
+    password: Optional[str],
+    *,
+    autofill_available: bool,
+) -> "list[str]":
+    """The first-boot banner for a freshly created admin account.
+
+    Naming the file is enough for a normal launch: _inject_bootstrap puts the
+    credentials into the login page itself, so the form arrives filled in and nobody
+    reads the file by hand. Two launches never get that injection, and there the file
+    is the only copy: a public URL suppresses it on purpose rather than hand the
+    default credential to whoever loads the page, and --api-only serves no HTML to
+    inject into. Those are also the launches least likely to have a terminal sitting
+    next to the file, so print the value rather than a path to cat over SSH. Local
+    runs keep printing the path alone, because a credential nothing needed does not
+    belong in logs that get pasted into bug reports.
+    """
+    lines = ["=" * 60, "DEFAULT ADMIN ACCOUNT CREATED", f"    username: {username}"]
+    if autofill_available or not password:
+        lines.append(f"    password saved to: {bootstrap_path}")
+    else:
+        lines.append(f"    password: {password}")
+        lines.append(f"    also saved to: {bootstrap_path}")
+    lines.append("    Open the Unsloth UI to sign in and change it.")
+    lines.append("=" * 60)
+    return lines
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup: detect hardware, seed default admin if needed. Shutdown: clean up compiled cache."""
@@ -782,12 +812,23 @@ async def lifespan(app: FastAPI):
         app.state.bootstrap_password = bootstrap_pw
 
         bootstrap_path = storage.DB_PATH.parent / ".bootstrap_password"
-        print("\n" + "=" * 60)
-        print("DEFAULT ADMIN ACCOUNT CREATED")
-        print(f"    username: {storage.DEFAULT_ADMIN_USERNAME}")
-        print(f"    password saved to: {bootstrap_path}")
-        print("    Open the Unsloth UI to sign in and change it.")
-        print("=" * 60 + "\n")
+        # _suppress_bootstrap: a public URL is about to serve, so the login page is not
+        # given the credential. UNSLOTH_API_ONLY: no login page is served at all.
+        _autofill = not (
+            _suppress_bootstrap or os.environ.get("UNSLOTH_API_ONLY") == "1"
+        )
+        print(
+            "\n"
+            + "\n".join(
+                bootstrap_banner_lines(
+                    storage.DEFAULT_ADMIN_USERNAME,
+                    bootstrap_path,
+                    storage.get_bootstrap_password(),
+                    autofill_available = _autofill,
+                )
+            )
+            + "\n"
+        )
     else:
         app.state.bootstrap_password = (
             None if _suppress_bootstrap else storage.get_bootstrap_password()
