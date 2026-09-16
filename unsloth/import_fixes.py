@@ -2021,16 +2021,34 @@ def _torch_too_old_message(attribute, package, exception):
         str(exception),
         "",
         f"Unsloth: {package}=={package_version} uses torch.{attribute}, and the "
-        f"installed torch=={torch_version} does not have it, so this environment "
-        f"holds a {package} newer than its torch.",
+        f"installed torch=={torch_version} does not have it, so this environment pairs "
+        f"a {package} with a torch that cannot serve it.",
     ]
     if floor is not None:
-        lines.append(f"torch.{attribute} first appears in torch {floor}.")
-    lines += [
-        "",
-        f"Upgrade torch, which leaves {package} where it is:",
-        f"    pip install --upgrade {requirement}{_torch_companion_specs()}",
-    ]
+        # A known floor is evidence of the direction: the attribute was ADDED in that
+        # release, so the torch here is the older half and upgrading it is the remedy.
+        lines += [
+            f"torch.{attribute} first appears in torch {floor}, so this torch is the "
+            f"older half.",
+            "",
+            f"Upgrade torch, which leaves {package} where it is:",
+            f"    pip install --upgrade {requirement}{_torch_companion_specs()}",
+        ]
+    else:
+        # No floor is no evidence of direction. The attribute may be newer than this
+        # torch, and it may equally have been REMOVED by it, which an older dependency
+        # reaching for a retired API hits; prescribing an upgrade there is the opposite
+        # remedy. So state both directions and prescribe neither.
+        lines += [
+            "",
+            f"torch.{attribute} is not in this release's table of added attributes, so "
+            f"it is either newer than this torch or removed by it. Check which release "
+            f"of torch has torch.{attribute} at "
+            f"https://pytorch.org/docs/stable/torch.html and move whichever half is out "
+            f"of step: upgrade torch when the attribute is newer,",
+            f"    pip install --upgrade {requirement}{_torch_companion_specs()}",
+            f"or install a {package} that matches this torch when the attribute is gone.",
+        ]
     accelerator = _torch_accelerator_note(torch_version)
     if accelerator:
         lines.append(accelerator)

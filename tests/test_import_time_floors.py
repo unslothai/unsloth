@@ -99,15 +99,34 @@ def test_a_dependency_reaching_for_a_missing_dtype_gets_the_upgrade(patched_torc
     assert isinstance(raised.value, AttributeError)
 
 
-def test_an_unknown_attribute_still_gets_the_diagnosis_without_a_floor(patched_torch):
-    """The table names the release; it is not the gate. A dtype added after this
-    release must still be diagnosed."""
+def test_an_unknown_attribute_is_diagnosed_without_prescribing_a_direction(patched_torch):
+    """The table names the release; it is not the gate. A dtype added after this release
+    must still be diagnosed, but an absent attribute is not evidence that torch is the
+    older half: an older dependency reaching for a RETIRED torch API lands here too, and
+    telling that user to upgrade torch is the opposite remedy. So the no-floor branch
+    names both directions and prescribes neither."""
     with pytest.raises(import_fixes.UnslothTorchTooOldError) as raised:
         _access_from("transformers.integrations.finegrained_fp8", "unsloth_future_dtype")
 
     message = str(raised.value)
     assert "first appears in torch" not in message
+    assert "so this torch is the older half" not in message
+    assert "either newer than this torch or removed by it" in message
+    # Both remedies are offered, neither as the answer.
     assert 'pip install --upgrade "torch"' in message
+    assert "install a transformers that matches this torch" in message
+
+
+def test_a_known_floor_still_prescribes_the_upgrade(patched_torch):
+    """NEGATIVE CONTROL: a floor IS evidence of the direction, so that branch must keep
+    saying which half is out of step rather than being softened with it."""
+    with pytest.raises(import_fixes.UnslothTorchTooOldError) as raised:
+        _access_from("transformers.integrations.finegrained_fp8", "unsloth_probe_dtype")
+
+    message = str(raised.value)
+    assert "first appears in torch 2.7.0, so this torch is the older half" in message
+    assert "either newer than this torch or removed by it" not in message
+    assert 'pip install --upgrade "torch>=2.7.0"' in message
 
 
 @pytest.mark.parametrize(
