@@ -6885,6 +6885,74 @@ exit 0
     # unsloth==2024.8, so install torch from the explicit index first. --upgrade-package (not
     # --upgrade) so upgrading unsloth cannot re-resolve torch from PyPI and strip the +cuXXX.
     # ── Helper: find no-torch-runtime.txt ──
+    # uv splits -r/-c/--overrides on whitespace with no way to quote, so the path must be
+    # space-free (#6503, #10722, #11012). Requirements only: relocating is safe because
+    # no-torch-runtime.txt has no relative includes, while uv resolves an override's relative
+    # references against its own directory, so New-UnslothTorchOverridesFile keeps its own
+    # handling. Mirrors uv_safe_path in studio/backend/utils/uv_path_safety.py. Returns whether
+    # it made a copy, so the caller never deletes the user's own file.
+    function Get-UvSafeRequirementsPath {
+        param([Parameter(Mandatory = $true)][string]$Path)
+        if (-not $Path.Contains(" ")) { return @{ Path = $Path; Temporary = $false } }
+        $short = $null
+        try { $short = (New-Object -ComObject Scripting.FileSystemObject).GetFile($Path).ShortPath } catch { }
+        if ($short -and -not $short.Contains(" ")) { return @{ Path = $short; Temporary = $false } }
+
+        # No 8.3 name: copy to a space-free directory instead. Several candidates, because %TEMP%
+        # can carry the space itself (the #11012 case) and 8.3 creation is commonly disabled on
+        # non-system volumes. Each is used only once confirmed space-free and writable.
+        # Produced one at a time and guarded. Under this script's ErrorActionPreference = "Stop" a
+        # single throwing element in an array literal is evaluated before the loop starts and
+        # aborts the install outright, and these calls do throw on a relative or malformed TMP:
+        # GetPathRoot returns "" and Join-Path then rejects the empty path.
+        $candidates = @()
+        foreach ($produce in @(
+            { [System.IO.Path]::GetTempPath() },
+            { $env:TEMP },
+            { $env:TMP },
+            { $root = [System.IO.Path]::GetPathRoot([System.IO.Path]::GetTempPath())
+              if ($root) { Join-Path $root "Windows\Temp" } },
+            { [System.IO.Path]::GetDirectoryName($Path) }
+        )) {
+            try { $candidates += & $produce } catch { }
+        }
+        foreach ($candidate in $candidates) {
+            if (-not $candidate) { continue }
+            $dir = $candidate
+            if ($dir.Contains(" ")) {
+                $dirShort = $null
+                try { $dirShort = (New-Object -ComObject Scripting.FileSystemObject).GetFolder($dir).ShortPath } catch { }
+                if (-not $dirShort -or $dirShort.Contains(" ")) { continue }
+                $dir = $dirShort
+            }
+            # Declared before the try so the catch can clean up a Copy-Item that failed partway
+            # and left a partial destination, but built inside it: a candidate naming an unmapped
+            # drive makes Join-Path throw DriveNotFoundException, which under Stop would abort the
+            # install rather than move on to the next candidate.
+            $tmp = $null
+            try {
+                $tmp = Join-Path $dir ("unsloth-reqs-" + [guid]::NewGuid().ToString("N") + ".txt")
+                Copy-Item -LiteralPath $Path -Destination $tmp -Force -ErrorAction Stop
+                if ($tmp.Contains(" ")) {
+                    Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+                    continue
+                }
+                return @{ Path = $tmp; Temporary = $true }
+            } catch {
+                if ($tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+                continue
+            }
+        }
+
+        # Nowhere usable. Say so, because uv's message for a split path names a fragment of the
+        # install root and reads as a missing requirements file (#11012). The original is still
+        # returned, so the install behaves as it does today rather than failing somewhere new.
+        substep "[WARN] the requirements path contains a space and no space-free location was" "Yellow"
+        substep "available; uv splits such a path, so this install may fail. Set TMP and TEMP" "Yellow"
+        substep "to a path without spaces and run the installer again." "Yellow"
+        return @{ Path = $Path; Temporary = $false }
+    }
+
     function Find-NoTorchRuntimeFile {
         if ($StudioLocalInstall -and (Test-Path (Join-Path $RepoRoot "studio\backend\requirements\no-torch-runtime.txt"))) {
             return Join-Path $RepoRoot "studio\backend\requirements\no-torch-runtime.txt"
@@ -6987,7 +7055,12 @@ exit 0
             if ($baseInstallExit -eq 0) {
                 $NoTorchReq = Find-NoTorchRuntimeFile
                 if ($NoTorchReq) {
-                    $baseInstallExit = Invoke-InstallCommandRetry -Label "install no-torch runtime deps" { & $script:UvExe pip install --python $VenvPython --no-deps -r $NoTorchReq }
+                    $NoTorchReqSafe = Get-UvSafeRequirementsPath -Path $NoTorchReq
+                    $NoTorchReqArg = $NoTorchReqSafe.Path
+                    $baseInstallExit = Invoke-InstallCommandRetry -Label "install no-torch runtime deps" { & $script:UvExe pip install --python $VenvPython --no-deps -r $NoTorchReqArg }
+                    if ($NoTorchReqSafe.Temporary) {
+                        Remove-Item -LiteralPath $NoTorchReqArg -Force -ErrorAction SilentlyContinue
+                    }
                 }
             }
         } else {
@@ -7179,7 +7252,12 @@ exit 0
             if ($baseInstallExit -eq 0) {
                 $NoTorchReq = Find-NoTorchRuntimeFile
                 if ($NoTorchReq) {
-                    $baseInstallExit = Invoke-InstallCommandRetry -Label "install no-torch runtime deps" { & $script:UvExe pip install --python $VenvPython --no-deps -r $NoTorchReq }
+                    $NoTorchReqSafe = Get-UvSafeRequirementsPath -Path $NoTorchReq
+                    $NoTorchReqArg = $NoTorchReqSafe.Path
+                    $baseInstallExit = Invoke-InstallCommandRetry -Label "install no-torch runtime deps" { & $script:UvExe pip install --python $VenvPython --no-deps -r $NoTorchReqArg }
+                    if ($NoTorchReqSafe.Temporary) {
+                        Remove-Item -LiteralPath $NoTorchReqArg -Force -ErrorAction SilentlyContinue
+                    }
                 }
             }
         } elseif ($StudioLocalInstall) {
