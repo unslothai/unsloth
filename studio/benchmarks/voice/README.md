@@ -163,6 +163,14 @@ generations run *after* the passes so they cannot pre-warm pass 1). For a
 genuinely cold first pass you therefore need pre-existing fixtures (any earlier
 run leaves them in `audio_fixtures/`) plus `--no-warmup --no-determinism`.
 
+`--model` is checked before any measured work: an explicit id that
+`/api/models/list` reports as a TTS model is refused up front, and because that
+catalogue carries only default and loaded models, a downloaded-but-unlisted one
+is caught instead by the warmup reply being empty (a TTS model answers the chat
+route with speech), which stops the run before fixture synthesis. Under
+`--no-warmup` with such a model neither check can fire, and the first measured
+pass is where it surfaces.
+
 Useful flags: `--think` (let the chat model reason before replying — OFF by
 default, because for voice the chain-of-thought is pure first-audio latency you
 wait through before hearing a word), `--model <id>` (default = server's active

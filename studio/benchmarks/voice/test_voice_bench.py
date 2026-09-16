@@ -214,6 +214,30 @@ class ArgTests(unittest.TestCase):
                 self.assertEqual(cm.exception.code, 2)
 
 
+class ChatModelGuardTests(unittest.TestCase):
+    def test_an_explicit_tts_model_is_refused_against_the_catalogue(self):
+        rows = [
+            {"id": "gemma", "is_audio": False},
+            {"id": "orpheus", "is_audio": True, "audio_type": "snac"},
+        ]
+        self.assertIn("orpheus", vb.explicit_model_is_audio("orpheus", rows))
+        self.assertIn("snac", vb.explicit_model_is_audio("orpheus", rows))
+        self.assertEqual(vb.explicit_model_is_audio("gemma", rows), "")
+        # No --model, or a model the catalogue does not carry: nothing proven here.
+        self.assertEqual(vb.explicit_model_is_audio(None, rows), "")
+        self.assertEqual(vb.explicit_model_is_audio("some/unlisted-GGUF", rows), "")
+
+    def test_a_speechless_warmup_stops_the_run_before_fixtures(self):
+        # The case the catalogue cannot see: an unlisted TTS model answers chat with
+        # speech, so the warmup reply is empty.
+        self.assertIn("no text", vb.warmup_produced_text({"llm_text": ""}))
+        self.assertIn("no text", vb.warmup_produced_text({"llm_text": "   "}))
+        self.assertEqual(vb.warmup_produced_text({"llm_text": "Hi."}), "")
+        # --no-warmup, or a warmup whose LLM call raised: nothing to conclude.
+        self.assertEqual(vb.warmup_produced_text({}), "")
+        self.assertEqual(vb.warmup_produced_text({"llm_text": None}), "")
+
+
 class TokenTests(unittest.TestCase):
     def test_loopback_detection(self):
         for url in (

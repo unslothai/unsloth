@@ -198,6 +198,18 @@ class StudioClient:
         r.raise_for_status()
         return r.json()
 
+    def models(self) -> list[dict]:
+        """Rows from /api/models/list (default + loaded models). Best effort: a model
+        that is neither default nor loaded is simply absent, so a miss proves nothing."""
+        try:
+            r = self.s.get(f"{self.base}/api/models/list", timeout = 30)
+            if r.ok:
+                rows = r.json().get("models")
+                return rows if isinstance(rows, list) else []
+        except requests.RequestException:
+            pass
+        return []
+
     def voice_status(self) -> dict:
         try:
             r = self.s.get(f"{self.base}/api/inference/voice/status", timeout = 30)
@@ -516,7 +528,7 @@ def warmup(client: StudioClient, args) -> dict:
 
     Returns the cold times so the first-call penalty (a real latency the user
     feels) is visible but kept out of the steady-state means."""
-    cold = {"stt_s": None, "llm_s": None, "tts_s": None}
+    cold = {"stt_s": None, "llm_s": None, "tts_s": None, "llm_text": None}
     print("  warmup (cold-start costs, not counted in steady-state)...")
     try:
         # Tiny silence clip so STT loads Whisper + tunes kernels.
@@ -532,6 +544,9 @@ def warmup(client: StudioClient, args) -> dict:
             args.model, [{"role": "user", "content": "Say hi."}], args.seed, 0.0, 16, args.think
         )
         cold["llm_s"] = out["total"]
+        # Kept for warmup_produced_text: an empty reply here means the model answered
+        # with speech, and that has to stop the run before any fixture is synthesized.
+        cold["llm_text"] = out.get("text", "")
     except Exception as e:  # noqa: BLE001
         print(f"    llm warmup failed: {e}")
     try:
@@ -851,6 +866,51 @@ def resolve_tts_route(args, status: dict, voice_status: dict) -> tuple[Optional[
     )
 
 
+def explicit_model_is_audio(model: Optional[str], models: list[dict]) -> str:
+    """Error when an explicitly requested --model is a TTS model, "" otherwise.
+
+    status.is_audio only describes the model that is already resident. With OpenAI
+    auto-switch on, an explicit --model naming a downloaded TTS model makes every
+    chat_stream() request switch the main slot to it and answer with speech, which
+    this client reads as an empty completion -- and Studio is left on the voice model.
+
+    Best effort by construction: /api/models/list carries default and loaded models,
+    so a downloaded-but-unlisted model is not found here and is caught instead by the
+    warmup check below."""
+    if not model:
+        return ""
+    for row in models:
+        if row.get("id") != model:
+            continue
+        if row.get("is_audio"):
+            return (
+                f"--model {model!r} is a TTS model ({row.get('audio_type') or 'audio'}), so "
+                "/v1/chat/completions would answer with speech instead of text and Studio's "
+                "main slot would be switched to it. Name the chat model with --model and route "
+                "TTS through the voice slot or --tts-provider-id."
+            )
+        return ""
+    return ""
+
+
+def warmup_produced_text(cold: dict) -> str:
+    """Error when the warmup LLM call came back with nothing to read, "" otherwise.
+
+    The catch explicit_model_is_audio cannot make: a TTS model that is neither default
+    nor loaded answers the chat route with speech, so the warmup reply is empty. Checked
+    between warmup and fixture preparation, so the run stops before it synthesizes (and
+    possibly pays for) any audio."""
+    if not cold or cold.get("llm_text") is None:
+        return ""
+    if cold["llm_text"].strip():
+        return ""
+    return (
+        "The warmup chat request returned no text. The named model answers "
+        "/v1/chat/completions with speech rather than text, which means it is a TTS model "
+        "and no pass could be measured. Name the chat model with --model."
+    )
+
+
 def positive_int(value: str) -> int:
     """argparse type: a count that must be >= 1 (``--repeats 0`` would measure nothing)."""
     n = int(value)
@@ -1041,6 +1101,12 @@ def main() -> int:
     if route_error:
         print(route_error)
         return 2
+    # st.is_audio only describes the resident model; an explicit --model is checked
+    # against the catalogue, before warmup and before any fixture is synthesized.
+    model_error = explicit_model_is_audio(args.model, client.models())
+    if model_error:
+        print(model_error)
+        return 2
 
     print(f"Studio {args.base_url}  |  chat={args.model}  |  voice={tts_voice}")
 
@@ -1049,6 +1115,10 @@ def main() -> int:
     # passes, and only then the determinism check, whose two extra LLM generations
     # would otherwise pre-warm pass 1 even under --no-warmup.
     cold = warmup(client, args) if not args.no_warmup else {}
+    warmup_error = warmup_produced_text(cold)
+    if warmup_error:
+        print(warmup_error)
+        return 2
     try:
         prepare_fixtures(client, convo)
     except Exception as e:  # noqa: BLE001 - nothing measured yet; refuse to start
