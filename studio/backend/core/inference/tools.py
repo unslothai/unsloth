@@ -1352,6 +1352,49 @@ _BLOCKED_WORD_RE = (
 )
 
 
+def _cmd_ssh_tokens(command: str) -> "tuple[list[str], frozenset[int]]":
+    """Split cmd operators while retaining quoted and caret-escaped data positions."""
+    tokens: list[str] = []
+    literal_indexes: set[int] = set()
+    word: list[str] = []
+    quoted = literal = False
+
+    def flush() -> None:
+        nonlocal literal
+        if word or literal:
+            value = "".join(word)
+            if literal or _looks_like_separator(value):
+                literal_indexes.add(len(tokens))
+            tokens.append(value)
+            word.clear()
+            literal = False
+
+    index = 0
+    while index < len(command):
+        char = command[index]
+        if char == "^" and not quoted and index + 1 < len(command):
+            word.append(command[index + 1])
+            literal = True
+            index += 2
+            continue
+        if char == '"':
+            quoted = not quoted
+            literal = True
+        elif not quoted and char in "&|()\n":
+            flush()
+            if char in "&|" and command[index : index + 2] == char * 2:
+                char *= 2
+                index += 1
+            tokens.append(char)
+        elif not quoted and char.isspace():
+            flush()
+        else:
+            word.append(char)
+        index += 1
+    flush()
+    return tokens, frozenset(literal_indexes)
+
+
 def _find_blocked_commands(
     command: str, *, _ssh_segments: "list[tuple[str, list[str]]] | None" = None
 ) -> set[str]:
@@ -1372,6 +1415,7 @@ def _find_blocked_commands(
     # rm -rf x`. Keyed to the shell that will actually run this, not to the OS: on a Windows host with bash the
     # non-posix lexer never split on `;`, so `if true; then rm -rf x; fi` came back with nothing blocked.
     lexed_posix = _shell_is_posix()
+    cmd_literal_indexes: frozenset[int] = frozenset()
     punctuation = ";&|()`\n" if _ssh_segments is not None else ";&|()`"
     if _ssh_segments is not None and "\\\n" in command:
         states = _shell_quote_states(command)
@@ -1384,7 +1428,9 @@ def _find_blocked_commands(
             char for i, char in enumerate(command) if i not in joined and i - 1 not in joined
         )
     try:
-        if not lexed_posix:
+        if not lexed_posix and _ssh_segments is not None:
+            tokens, cmd_literal_indexes = _cmd_ssh_tokens(command)
+        elif not lexed_posix:
             tokens = shlex.split(command, posix = False)
         else:
             lexer = shlex.shlex(command, posix = True, punctuation_chars = punctuation)
@@ -1395,14 +1441,16 @@ def _find_blocked_commands(
     except ValueError:
         tokens = command.split()
         lexed_posix = False
-    # Which separator tokens the shell only produced because the quoting was stripped. The non-posix (cmd) lexer KEEPS
-    # the quote marks and the split() fallback has no quoting model, so both report nothing and reach the same
-    # verdict.
+    # cmd tracks quoted and escaped data positions; the split fallback has no quoting model.
     quoted_separators = (
-        _quoted_separator_indexes(command, tokens, punctuation) if lexed_posix else frozenset()
+        _quoted_separator_indexes(command, tokens, punctuation)
+        if lexed_posix
+        else cmd_literal_indexes
     )
     quoted_redirects = (
-        _quoted_redirection_indexes(command, tokens, punctuation) if lexed_posix else frozenset()
+        _quoted_redirection_indexes(command, tokens, punctuation)
+        if lexed_posix
+        else cmd_literal_indexes
     )
     exec_flag_indexes, invocation_stops, redirect_indexes = _exec_scan_layout(
         tokens, quoted_separators, quoted_redirects

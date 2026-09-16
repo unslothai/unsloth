@@ -1546,3 +1546,42 @@ def test_local_paths_and_uris_keep_the_authority(command):
     approve_hosts("review", ["approved.example"])
     assert extract_ssh_hosts_from_command(command) == ({"approved.example"}, False)
     assert check_ssh_command_access(command, "review") is None
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "echo ok&ssh -F none evil.example",
+        "echo ok&&ssh -F none evil.example",
+        "echo ok|ssh -F none evil.example",
+        "(echo ok)&ssh -F none evil.example",
+        'echo ok&"ssh.exe" -F none evil.example',
+        "echo ok&scp -F none evil.example:/tmp/file copy",
+        'cmd /c "echo ok&ssh -F none evil.example"',
+    ],
+)
+def test_cmd_adjacent_separators_require_host_approval(monkeypatch, command):
+    from core.inference import tools as tools_mod
+
+    monkeypatch.setattr(tools_mod, "_shell_is_posix", lambda: False)
+    reset_ssh_approvals()
+    assert check_ssh_command_access(command, "review") is not None
+    assert extract_ssh_hosts_from_command(command) == ({"evil.example"}, False)
+    approve_hosts("review", ["evil.example"])
+    assert check_ssh_command_access(command, "review") is None
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'echo "ok&ssh -F none evil.example"',
+        "echo ok^&ssh -F none evil.example",
+        "echo ^& ssh -F none evil.example",
+        "echo ; ssh -F none evil.example",
+    ],
+)
+def test_cmd_quoted_and_escaped_separators_remain_data(monkeypatch, command):
+    from core.inference import tools as tools_mod
+
+    monkeypatch.setattr(tools_mod, "_shell_is_posix", lambda: False)
+    assert extract_ssh_hosts_from_command(command) == (set(), False)
