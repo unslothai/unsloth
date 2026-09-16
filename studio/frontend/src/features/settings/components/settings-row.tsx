@@ -37,6 +37,7 @@ export function SettingsRow({
 }) {
   return (
     <div
+      data-slot="settings-row"
       data-settings-label={label}
       className={cn(
         // Controls are fixed-width and shrink-0, so an unwrapped row starves the label. justify-end

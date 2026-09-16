@@ -237,7 +237,7 @@ def _shared_setup_18(monkeypatch):
     monkeypatch.setattr(
         downloads.download_registry,
         "download_transport_unavailable_reason",
-        lambda _transport: None,
+        lambda _transport, **_kwargs: None,
     )
 
 
