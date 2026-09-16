@@ -1247,9 +1247,16 @@ async def get_scan_folders(
 
 @router.post("/scan-folders", response_model = ScanFolderInfo, status_code = 201)
 async def add_scan_folder_endpoint(
-    body: AddScanFolderRequest, current_subject: str = Depends(get_current_subject)
+    body: AddScanFolderRequest,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    """Register a new directory to scan for local models."""
+    """Register a new directory to scan for local models. Redacted like the GET above.
+
+    The listing routes hide the normalized absolute path, and this one handed it straight
+    back: submitting a relative directory such as ``.`` and reading the answer recovered the
+    server's working directory, which is the boundary both listings enforce.
+    """
     if account_access.managed_account():
         body = body.model_copy(update = {"path": account_access.private_directory(body.path, "")})
     from storage.studio_db import add_scan_folder_with_status
@@ -1265,7 +1272,7 @@ async def add_scan_folder_endpoint(
         from core.inference.local_model_resolver import invalidate_index, warm_index_soon
         await asyncio.to_thread(invalidate_index)
         warm_index_soon()
-    return folder
+    return redact_inventory_host_paths(folder, via_api_key = via_api_key)
 
 
 @router.delete("/scan-folders/{folder_id}")

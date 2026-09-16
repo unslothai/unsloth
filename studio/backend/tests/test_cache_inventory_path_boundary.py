@@ -50,7 +50,12 @@ from routes import models as models_routes
 # ``load_id`` is the one path-valued field an API key still receives, because it is the handle
 # the load and train endpoints take for a copy its bare repo id cannot reach. Named here so every
 # tolerant assertion below says which field it is tolerating, and why, at the call site.
-LOAD_HANDLE = ("load_id",)
+# Nothing is exempt any more. A cache row is named by its repo id, and where it is not --
+# a copy outside the active cache, a `refs/main` on an unusable revision -- `load_id` holds
+# an absolute snapshot path, which is the cache root, the home directory and the account
+# name. It is referenced like any other identity now that every request that consumes one
+# resolves the reference back.
+LOAD_HANDLE: "tuple[str, ...]" = ()
 
 # A root that cannot exist by accident, so finding it in a body is proof and not a coincidence.
 HOST_ROOT = "/home/operator-7f3c/.cache/huggingface/hub"
@@ -222,7 +227,7 @@ def test_an_api_key_enumerates_the_cache_without_its_paths(_cached_inventory, ro
     for row in payload["cached"]:
         assert row["cache_path"] == ""
         assert row["cache_ref"].startswith("ref:")
-        assert HOST_ROOT not in json.dumps({k: v for k, v in row.items() if k != "load_id"})
+        assert HOST_ROOT not in json.dumps(row), row
 
 
 @pytest.mark.parametrize(
@@ -991,3 +996,60 @@ def test_a_cache_reference_can_delete_the_copy_it_names(monkeypatch):
         json = {"repo_id": "unsloth/Llama-3.2-1B", "cache_path": REPO_DIR},
     )
     assert seen["cache_path"] == REPO_DIR
+
+
+def test_a_cache_row_pinned_to_a_snapshot_is_referenced_too(monkeypatch):
+    """The load-handle exception was written for a row named by its repo id.
+
+    A cached copy outside the active cache, or a `refs/main` that points at an unusable
+    revision, pins `load_id` to an absolute snapshot path instead, and the exception then
+    copied that path through into an API-key response: the cache root, the home directory
+    and the account name, from a listing that blanks `cache_path` two fields earlier. The
+    value decides, not the row's source.
+    """
+    pinned = f"{HOST_ROOT}/models--unsloth--Llama-3.2-1B-Instruct/snapshots/deadbeef"
+
+    async def _models_response(hf_token = None):
+        return {"cached": [_cached_row(load_id = pinned)], "scan_confirmed": True}
+
+    monkeypatch.setattr(cache_inventory, "list_cached_models_response", _models_response)
+    payload = _hub(via_api_key = True).get("/api/hub/cached-models").json()
+    row = payload["cached"][0]
+    # Still named by the repo id, which is the thing a caller can act on.
+    assert row["repo_id"] == "unsloth/Llama-3.2-1B-Instruct"
+    assert row["load_id"].startswith("ref:"), row["load_id"]
+    assert HOST_ROOT not in json.dumps(payload), payload
+    assert response_leaks_host_path(payload, [HOST_ROOT]) is None
+    # And the reference reverses, so the row is still loadable.
+    assert host_paths.resolve_host_path_reference(row["load_id"]) == pinned
+
+    ui = _hub(via_api_key = False).get("/api/hub/cached-models").json()
+    assert ui["cached"][0]["load_id"] == pinned
+
+
+def test_the_leak_finder_knows_a_path_valued_identity_is_a_path():
+    """The gate is what stops the next field from arriving unredacted, and it was reading
+    the field name: `load_id` is not a path field, so a snapshot path sitting in one was
+    reported clean unless the test happened to pass the host root as a needle."""
+    assert response_leaks_host_path({"load_id": f"{HOST_ROOT}/snapshots/abc"}) is not None
+    assert response_leaks_host_path({"load_id": "unsloth/Llama-3.2-1B-Instruct"}) is None
+    assert response_leaks_host_path({"load_id": "ref:0123456789abcdef"}) is None
+
+
+def test_the_compat_scan_folder_add_does_not_answer_with_the_path(monkeypatch):
+    """Both listings hide the normalized absolute path; the POST that creates the folder
+    handed it straight back, so submitting a relative directory such as `.` and reading the
+    answer recovered the server's working directory."""
+    created = {"id": 7, "path": f"{HOST_ROOT}/extra", "created_at": "2026-09-01"}
+    monkeypatch.setattr(
+        "storage.studio_db.add_scan_folder_with_status", lambda path: (created, False)
+    )
+
+    payload = _models(via_api_key = True).post("/api/models/scan-folders", json = {"path": "."})
+    assert payload.status_code == 201, payload.text
+    body = payload.json()
+    assert body["id"] == 7, "the folder is still identified"
+    assert response_leaks_host_path(body, [HOST_ROOT]) is None
+
+    ui = _models(via_api_key = False).post("/api/models/scan-folders", json = {"path": "."})
+    assert ui.json()["path"] == f"{HOST_ROOT}/extra"

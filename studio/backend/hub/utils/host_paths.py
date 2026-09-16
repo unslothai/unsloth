@@ -101,14 +101,28 @@ def _conditional_path_is_local(payload: Mapping) -> bool:
 HOST_PATH_IDENTITY_FIELDS = ("id", "load_id")
 HOST_PATH_ENCODED_IDENTITY_FIELD = "inventory_id"
 HOST_PATH_ROW_SOURCE_FIELD = "source"
-# `hf_cache` is deliberately absent: those rows are named by repo id, and where they are not
-# the load handle is the documented exception.
+# `hf_cache` is absent because those rows are named by repo id. Where they are NOT -- a cached
+# copy outside the active cache, or a `refs/main` that points at an unusable revision, both of
+# which put an absolute snapshot path in `load_id` -- the value itself is the test, below.
 HOST_PATH_LOCAL_SOURCES = frozenset({"models_dir", "lmstudio", "ollama", "hermes", "custom"})
 
 
 def _row_identity_is_a_path(payload: Mapping) -> bool:
     """Whether this row is named by a file on this host rather than by a repo id."""
     return payload.get(HOST_PATH_ROW_SOURCE_FIELD) in HOST_PATH_LOCAL_SOURCES
+
+
+def _identity_value_is_a_path(value: Any) -> bool:
+    """Whether THIS identity spells out a host path, whatever its row's source says.
+
+    The source tells you what a row is usually named by, and a cache row is usually named by
+    its repo id. It is not always: a copy outside the active cache, or a `refs/main` that
+    lands on a torn revision, pins the row to an absolute snapshot path instead, and that
+    value carries the cache root, the home directory and the account name. There is nothing
+    ambiguous left to weigh once the value is an absolute path, so this does not wait for
+    `redact_ambiguous_path`: the cache listing is redacted without it.
+    """
+    return isinstance(value, str) and bool(value) and _looks_absolute(value)
 
 
 def _referenced_identity(value: Any) -> Any:
@@ -258,7 +272,9 @@ def _redact(payload: Any, *, redact_ambiguous_path: bool) -> Any:
         base_model_is_local = _conditional_path_is_local(payload)
         identity_is_a_path = redact_ambiguous_path and _row_identity_is_a_path(payload)
         for key, value in payload.items():
-            if identity_is_a_path and key in HOST_PATH_IDENTITY_FIELDS:
+            if key in HOST_PATH_IDENTITY_FIELDS and (
+                identity_is_a_path or _identity_value_is_a_path(value)
+            ):
                 out[key] = _referenced_identity(value)
                 continue
             if identity_is_a_path and key == HOST_PATH_ENCODED_IDENTITY_FIELD:
@@ -322,6 +338,11 @@ def _find_leak(
                 or (base_model_is_local and key == HOST_PATH_CONDITIONAL_FIELD)
             )
             if is_path_field and text and _looks_absolute(text):
+                return f"{key}={text}"
+            # An identity field is named by a repo id most of the time and by a host path the
+            # rest of it, so the value decides rather than the field name. Without this the
+            # gate reported a clean response for a cache row pinned to a snapshot directory.
+            if key in HOST_PATH_IDENTITY_FIELDS and _identity_value_is_a_path(text):
                 return f"{key}={text}"
             if key in HOST_PATH_LIST_FIELDS and isinstance(value, (list, tuple)):
                 for item in value:
