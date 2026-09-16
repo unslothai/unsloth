@@ -20,6 +20,11 @@ import {
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
 import { NonModalDropdownMenu } from "@/components/ui/non-modal-dropdown-menu";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { usePromptQueueReorder } from "./use-prompt-queue-reorder";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { QueueResumeIcon } from "@/components/assistant-ui/queue-resume-icon";
@@ -156,33 +161,35 @@ export function PromptQueueList({
             >
               {isEditing ? (
                 <div className="flex flex-wrap items-center justify-end gap-2 px-1 py-2">
-                  <textarea
-                    ref={inputRef}
-                    value={draft}
-                    rows={2}
-                    onChange={(event) => setDraft(event.currentTarget.value)}
-                    onKeyDown={(event) => {
-                      if (
-                        event.nativeEvent.isComposing ||
-                        event.nativeEvent.keyCode === 229 ||
-                        event.repeat
-                      ) return;
-                      if (
-                        event.key === "Enter" &&
-                        (event.metaKey || event.ctrlKey)
-                      ) {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        saveEditing();
-                      } else if (event.key === "Escape") {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        finishEditing();
-                      }
-                    }}
-                    className="max-h-40 min-h-16 w-full resize-y rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground focus-visible:outline focus-visible:outline-ring"
-                    aria-label={`Edit queued prompt ${position}`}
-                  />
+                  <div className="w-full overflow-hidden rounded-3xl border border-border bg-background p-3 has-[:focus-visible]:outline has-[:focus-visible]:outline-ring">
+                    <textarea
+                      ref={inputRef}
+                      value={draft}
+                      rows={2}
+                      onChange={(event) => setDraft(event.currentTarget.value)}
+                      onKeyDown={(event) => {
+                        if (
+                          event.nativeEvent.isComposing ||
+                          event.nativeEvent.keyCode === 229 ||
+                          event.repeat
+                        ) return;
+                        if (
+                          event.key === "Enter" &&
+                          (event.metaKey || event.ctrlKey)
+                        ) {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          saveEditing();
+                        } else if (event.key === "Escape") {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          finishEditing();
+                        }
+                      }}
+                      className="block max-h-36 min-h-12 w-full resize-y border-0 bg-transparent px-1 text-sm text-foreground outline-none"
+                      aria-label={`Edit queued prompt ${position}`}
+                    />
+                  </div>
                   <Button
                     type="button"
                     variant="ghost"
@@ -328,20 +335,37 @@ export function PromptQueueList({
                       message
                     </DropdownMenuItem>
                     <DropdownMenuSeparator />
-                    <DropdownMenuItem
-                      onSelect={() => {
-                        const behavior = followUpBehavior === "queue" ? "steer" : "queue";
-                        setFollowUpBehavior(behavior);
-                        setAnnouncement(
-                          behavior === "queue"
-                            ? "New follow-ups will queue after the current response."
-                            : "New follow-ups will steer the current response.",
-                        );
-                      }}
-                    >
-                      <ListEndIcon />
-                      {followUpBehavior === "queue" ? "Turn off queueing" : "Turn on queueing"}
-                    </DropdownMenuItem>
+                    <Tooltip delayDuration={300}>
+                      <TooltipTrigger asChild={true} disableClickToggle={true}>
+                        <DropdownMenuItem
+                          onSelect={() => {
+                            const behavior = followUpBehavior === "queue" ? "steer" : "queue";
+                            setFollowUpBehavior(behavior);
+                            setAnnouncement(
+                              behavior === "queue"
+                                ? "New follow-ups will queue after the current response."
+                                : "New follow-ups will steer the current response.",
+                            );
+                          }}
+                        >
+                          <ListEndIcon />
+                          {followUpBehavior === "queue" ? "Turn off queueing" : "Turn on queueing"}
+                        </DropdownMenuItem>
+                      </TooltipTrigger>
+                      <TooltipContent
+                        side="top"
+                        align="end"
+                        sideOffset={8}
+                        collisionPadding={8}
+                        className="max-w-[min(20rem,calc(100vw-1rem))]"
+                      >
+                        {followUpBehavior === "queue"
+                          ? "New messages sent during a response will stop that response and run next."
+                          : "New messages sent during a response will wait in line and run in order."}{" "}
+                        Existing queued prompts are kept; this does not pause or
+                        resume the queue.
+                      </TooltipContent>
+                    </Tooltip>
                     {entry.paused && (
                       <DropdownMenuItem onSelect={onResume}>
                         <QueueResumeIcon className="size-4" /> Resume queue
