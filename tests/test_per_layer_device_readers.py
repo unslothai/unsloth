@@ -3,16 +3,10 @@
 
 """The pipeline-parallel inference readers must survive a layer with no device index.
 
-`unsloth_zoo.patching_utils.verify_and_set_device` records where each decoder
-layer lives. It used to record `device.index` verbatim, and
-`torch.device("cpu").index` is None, so a CPU-offloaded or not-yet-materialised
-layer ended `move_to_device` with "ValueError: Invalid target device: None"
-(#3538). The five readers now resolve the placement through
-`unsloth.models._utils.per_layer_device`, which prefers the `torch.device`
-unsloth_zoo publishes and falls back through the index and then the layer's own
-parameters.
-
-CPU-only; the one CUDA assertion is skipped without a GPU.
+`verify_and_set_device` used to record `device.index` verbatim, and
+`torch.device("cpu").index` is None, so a CPU-offloaded or not-yet-materialised layer ended
+`move_to_device` with "ValueError: Invalid target device: None" (#3538). The five readers
+now go through `unsloth.models._utils.per_layer_device`.
 """
 
 from __future__ import annotations
@@ -28,12 +22,10 @@ from real_accelerator import (
 import torch
 
 
-# Every file that reads the per-layer device, with the reader it lives in and the
-# per-accelerator tuples that same reader subscripts with the buffer index. Keep
-# in step with a grep for `_per_layer_device` across the repository (#3538).
+# Each reader file, with the per-accelerator tuples it subscripts with the buffer index.
+# Keep in step with a grep for `_per_layer_device` across the repository (#3538).
 READERS = {
-    # llama's reader is the nested LlamaModel_fast_forward_inference_custom,
-    # which is why the scope is located from the call site below and not by name.
+    # llama's reader is nested, which is why the scope is located from the call site.
     "unsloth/models/llama.py": ("temp_gates", "temp_ups"),
     "unsloth/models/granite.py": (),
     "unsloth/models/gemma.py": ("out_weights",),
@@ -56,13 +48,9 @@ def _device_or_none(value):
 def default_device_is_usable() -> bool:
     """Can `torch.device(0)`, the historical default, actually hold a tensor here.
 
-    Two different failures hide behind that question and the CPU lanes hit both.
-    torch 2.6 raises "RuntimeError: Cannot access accelerator device when none is
-    available" from the bare `torch.device(0)`; torch 2.11 and later return
-    `cuda:0` from the same call on the same host and raise "RuntimeError: No CUDA
-    GPUs are available" only when something is moved there. `per_layer_device`
-    falls back to the layer's own parameters in both cases, so the expectations
-    below follow a real allocation rather than either torch version's answer.
+    torch 2.6 raises from the bare `torch.device(0)` on an accelerator-less host while
+    torch 2.11 returns `cuda:0` and only fails at the move, so the expectations below
+    follow a real allocation rather than either torch version's answer.
     """
     try:
         torch.zeros(1, device = torch.device(0))
@@ -152,13 +140,9 @@ def test_a_layer_with_no_attributes_keeps_the_historical_default():
 
 
 def test_an_unavailable_accelerator_is_not_a_usable_device():
-    """`torch.device(0)` succeeding is not the same as the device existing.
-
-    torch 2.11 and later build `cuda:0` on a host with no CUDA at all and only
-    fail at the move, which turned the documented "fall back to the layer" branch
-    into "RuntimeError: No CUDA GPUs are available" on every torch newer than the
-    one the fallback was written against.
-    """
+    """`torch.device(0)` succeeding is not the same as the device existing: torch 2.11
+    builds `cuda:0` on a host with no CUDA and only fails at the move, which turned the
+    "fall back to the layer" branch into "RuntimeError: No CUDA GPUs are available"."""
     from unsloth.models import _utils
 
     assert _utils._device_type_is_usable("cpu")
@@ -173,9 +157,7 @@ def test_an_unavailable_accelerator_is_not_a_usable_device():
 
 def test_a_default_pointing_at_a_missing_accelerator_reads_the_layer(monkeypatch):
     """The CPU-only half of #3538: no attributes, no accelerator, still a device.
-
-    Spoofed rather than measured, so the assertion is the same on the GPU legs.
-    """
+    Spoofed rather than measured, so the assertion is the same on the GPU legs."""
     from unsloth.models import _utils
 
     monkeypatch.setattr(_utils, "_device_type_is_usable", lambda device_type: device_type == "cpu")
@@ -237,9 +219,7 @@ def test_move_to_device_accepts_every_resolution(device, index):
     per_device_buffers = tuple(range(8))
     assert per_device_buffers[buffer_index] == buffer_index
 
-    # move_to_device itself only promises int, str and torch.device, and a
-    # torch.device is what it was handed, so the type contract is satisfied. The
-    # move is only performed where it cannot need hardware.
+    # The move is only performed where it cannot need hardware.
     if resolved.type == "cpu":
         moved = move_to_device(resolved, torch.zeros(2))
         assert moved.device == torch.device("cpu")
@@ -331,14 +311,10 @@ def _reader_scopes(source: str, path: str):
 def test_no_reader_reads_a_name_it_never_binds(path):
     """The reader functions must not reference an unbound local.
 
-    gemma, gemma2, cohere and llama all pull a second value out of the pair
-    `per_layer_device` returns and use it to subscript a per-accelerator tuple
-    (`out_weights`, `temp_gates`, `temp_ups`). Binding only the device and
-    discarding the index leaves those subscripts reading a name that no longer
-    exists, which Python only reports at the first decode step, deep inside
-    generation. symtable classifies such a name as an implicit global, so
-    checking it against the module's real attributes catches it statically, star
-    imports and all.
+    Binding only the device and discarding the index leaves the per-accelerator tuple
+    subscripts reading a name that no longer exists, which Python reports only at the first
+    decode step. symtable classifies such a name as an implicit global, so checking it
+    against the module's real attributes catches it statically, star imports and all.
     """
     import builtins
     import importlib
@@ -410,16 +386,10 @@ def test_cuda_layer_path_is_unchanged():
     assert moved.device == next(layer.parameters()).device
 
 
-# ---------------------------------------------------------------------------
-# The reader runs once per decoder layer per generated token, so two costs that
-# do not show up in any correctness assertion are pinned here instead.
-# ---------------------------------------------------------------------------
-
-
 def test_the_backend_probe_is_asked_once_per_device_type():
-    """`torch.cuda.is_available()` costs about 700ns, and the reader reaches it on
-    every layer of every token on any install whose unsloth_zoo publishes only the
-    index. The answer cannot change inside a process, so it is memoised."""
+    """The reader reaches `torch.cuda.is_available()` on every layer of every token
+    wherever unsloth_zoo publishes only the index, and the answer cannot change inside a
+    process, so it is memoised."""
     from unsloth.models import _utils
 
     assert hasattr(
@@ -450,10 +420,9 @@ def test_the_backend_probe_is_asked_once_per_device_type():
 
 
 def test_the_published_attributes_are_read_without_a_failed_getattr():
-    """`nn.Module.__getattr__` costs about 470ns to report a missing attribute,
-    because it searches _parameters, _buffers and _modules and then raises. An
-    unsloth_zoo that publishes only the index leaves `_per_layer_device` missing on
-    every layer, so the reader must not discover that through getattr."""
+    """`nn.Module.__getattr__` searches _parameters, _buffers and _modules and then
+    raises, and an unsloth_zoo publishing only the index leaves `_per_layer_device` missing
+    on every layer, so the reader must not discover that through getattr."""
     from unsloth.models._utils import per_layer_device
 
     class _Counting(_Layer):
@@ -481,9 +450,8 @@ def test_the_published_attributes_are_read_without_a_failed_getattr():
 
 
 def test_a_class_level_attribute_is_still_honoured():
-    """Reading the instance dictionary must not lose a layer that publishes the
-    placement on its class or through a property, which is what the getattr
-    fallback is kept for."""
+    """Reading the instance dictionary must not lose a layer that publishes the placement
+    on its class or through a property, which is what the getattr fallback is for."""
     from unsloth.models._utils import per_layer_device
 
     class _ClassAttribute(_Layer):
@@ -505,13 +473,9 @@ def test_a_class_level_attribute_is_still_honoured():
 
 
 def test_moving_an_activation_to_meta_destroys_it_silently():
-    """The premise for every assertion below, measured rather than asserted from memory.
-
-    `tensor.to("meta")` succeeds and drops the data, and mixing the result with a real
+    """`tensor.to("meta")` succeeds and drops the data, and mixing the result with a real
     tensor propagates meta instead of raising, so a decode that resolved a layer to meta
-    would run to completion and return nothing. That is strictly worse than the
-    ValueError this reader replaces, which is why meta is excluded from every route.
-    """
+    would run to completion and return nothing. That is why meta is excluded everywhere."""
     activation = torch.ones(2, 4)
     moved = activation.to("meta")
     assert moved.device.type == "meta"
@@ -531,8 +495,7 @@ def test_a_meta_layer_never_resolves_to_meta():
 
 
 def test_a_meta_layer_uses_the_accelerate_hook_execution_device():
-    """accelerate's AlignDevicesHook moves the layer's own inputs to
-    `execution_device` in pre_forward, so that field is where the activations belong."""
+    """AlignDevicesHook.pre_forward moves the layer's inputs to `execution_device`."""
     from types import SimpleNamespace
 
     from unsloth.models._utils import per_layer_device
@@ -544,8 +507,7 @@ def test_a_meta_layer_uses_the_accelerate_hook_execution_device():
 
 
 def test_a_hook_that_itself_says_meta_is_not_believed():
-    """accelerate sets execution_device to meta while a model is still being built
-    (it checks for exactly that in init_hook), so it is not an answer either."""
+    """accelerate sets execution_device to meta while a model is still being built."""
     from types import SimpleNamespace
 
     from unsloth.models._utils import per_layer_device
