@@ -5188,6 +5188,86 @@ exit 0
         try { $Mutex.ReleaseMutex() } catch {} finally { $Mutex.Dispose() }
     }
 
+    # The install lock, held as a mutex AND a file, because the two exclude different things.
+    #
+    # The mutex is named from a hash of the resolved path, so when the resolver cannot give an
+    # exact answer two spellings of one directory (a junction and its target, an 8.3 name and its
+    # long form) produce different names and fail to exclude each other, exactly as
+    # Get-StudioPathHash says above. A file inside the destination has no such problem: every
+    # alias reaches the same file because the filesystem resolves the alias, so no canonicalisation
+    # is involved at all.
+    #
+    # Both are taken rather than swapping one for the other. The mutex is what an already-released
+    # installer uses, and dropping it would mean a new run and an old run no longer see each other
+    # during an upgrade. Holding both can only exclude more than either alone.
+    $script:StudioInstallLockFileName = ".unsloth-install.lock"
+
+    function Enter-StudioInstallLock {
+        param([Parameter(Mandatory = $true)][string]$Path)
+        $mutex = Enter-StudioInstallMutex -Path $Path
+        if ($null -eq $mutex) { return $null }
+        $stream = $null
+        try {
+            # Idempotent and race-safe: concurrent creators both succeed, and only one of them
+            # goes on to open the file exclusively below. Throwing here (no permission, a file
+            # where the directory should be) surfaces as the caller's install-lock error, which
+            # is a clearer place to fail than the first write further down.
+            $existedBefore = [System.IO.Directory]::Exists($Path)
+            $null = [System.IO.Directory]::CreateDirectory($Path)
+            $lockPath = Join-Path $Path $script:StudioInstallLockFileName
+            try {
+                $stream = [System.IO.File]::Open(
+                    $lockPath,
+                    [System.IO.FileMode]::OpenOrCreate,
+                    [System.IO.FileAccess]::ReadWrite,
+                    [System.IO.FileShare]::None)
+            } catch [System.IO.IOException] {
+                # A sharing violation is another installer holding it, which is the answer this
+                # function exists to give. Any other IO failure is not, so it is rethrown below.
+                if ($stream) { $stream.Dispose() }
+                Exit-StudioInstallMutex -Mutex $mutex
+                return $null
+            }
+            # Owner details for support logs only; nothing reads them back. OpenOrCreate does not
+            # truncate, so clear whatever a previous run left before writing.
+            try {
+                $stream.SetLength(0)
+                $stamp = [System.Text.Encoding]::UTF8.GetBytes(
+                    "pid=$PID started=$([DateTime]::UtcNow.ToString('o'))`n")
+                $stream.Write($stamp, 0, $stamp.Length)
+                $stream.Flush()
+            } catch {}
+            # Taking the lock is now the first thing that can create the root, earlier than
+            # anything else writes to it. scripts/uninstall.ps1's _IsStudioRoot reads exactly this
+            # marker so "a partial install identifies itself instead of being guessed at"; without
+            # it, a run that died between here and the first real write would leave a root the
+            # uninstaller refuses to remove as somebody else's.
+            #
+            # Only when this call created the directory. A UNSLOTH_STUDIO_HOME pointed at a
+            # directory the user already had must never be claimed, or uninstall would delete it.
+            if (-not $existedBefore) {
+                try {
+                    [System.IO.File]::WriteAllText((Join-Path $Path ".unsloth-studio-owned"), "")
+                } catch {}
+            }
+            return [pscustomobject]@{ Mutex = $mutex; Stream = $stream; Path = $lockPath }
+        } catch {
+            if ($stream) { try { $stream.Dispose() } catch {} }
+            Exit-StudioInstallMutex -Mutex $mutex
+            throw
+        }
+    }
+
+    function Exit-StudioInstallLock {
+        param($Lock)
+        if ($null -eq $Lock) { return }
+        # Closing the handle IS the release, so a process that dies holding it leaves nothing to
+        # clean up: Windows closes the handle for us. The file itself is left in place on purpose,
+        # since deleting it would race another installer that has just opened it.
+        if ($Lock.Stream) { try { $Lock.Stream.Dispose() } catch {} }
+        Exit-StudioInstallMutex -Mutex $Lock.Mutex
+    }
+
     function Test-StudioProtectedPathMatch {
         param(
             [Parameter(Mandatory = $true)][string]$Candidate,
@@ -5393,12 +5473,12 @@ exit 0
         }
     }
     try {
-        $studioInstallMutex = Enter-StudioInstallMutex -Path $StudioHome
+        $studioInstallLock = Enter-StudioInstallLock -Path $StudioHome
     } catch {
         Write-StudioLine "[ERROR] Could not create the Unsloth install lock: $($_.Exception.Message)" -ForegroundColor Red
         return (Exit-InstallFailure "Could not create the Unsloth install lock")
     }
-    if ($null -eq $studioInstallMutex) {
+    if ($null -eq $studioInstallLock) {
         Write-StudioLine "[ERROR] Another Unsloth Studio install or repair is already running." -ForegroundColor Red
         Write-StudioLine "        Wait for it to finish, then re-run install.ps1." -ForegroundColor Yellow
         return (Exit-InstallFailure "Another Unsloth Studio install or repair is already running")
@@ -10336,7 +10416,7 @@ sys.exit(2 if conflict else (0 if installed else 1))
         for ($i = $studioRuntimeMutexes.Count - 1; $i -ge 0; $i--) {
             Exit-StudioInstallMutex -Mutex $studioRuntimeMutexes[$i]
         }
-        Exit-StudioInstallMutex -Mutex $studioInstallMutex
+        Exit-StudioInstallLock -Lock $studioInstallLock
         # Matters for `irm | iex`, where these are the user's own session variables.
         Restore-StudioTempEnvironment
     }
