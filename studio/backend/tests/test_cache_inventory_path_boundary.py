@@ -565,9 +565,9 @@ def test_a_local_adapter_base_model_is_redacted_but_a_repo_id_is_kept():
     via_key = redact_inventory_host_paths(payload, via_api_key = True)["models"]
     assert via_key[0]["base_model"] == "", "a local base-model PATH must not reach an API key"
     assert via_key[0]["base_model_source"] == "local", "the source itself is not a path"
-    assert via_key[1]["base_model"] == "meta-llama/Llama-3.1-8B", (
-        "a Hub repo id is what the caller asked for and must survive redaction"
-    )
+    assert (
+        via_key[1]["base_model"] == "meta-llama/Llama-3.1-8B"
+    ), "a Hub repo id is what the caller asked for and must survive redaction"
 
     # The browser session sees the machine it runs on, as everywhere else in this file.
     session = redact_inventory_host_paths(payload, via_api_key = False)["models"]
@@ -580,8 +580,11 @@ def test_the_leak_finder_knows_a_local_base_model_is_a_path():
 
     leaky = {
         "models": [
-            {"id": "my-lora", "base_model": "/home/op/models/Llama-3.1-8B",
-             "base_model_source": "local"},
+            {
+                "id": "my-lora",
+                "base_model": "/home/op/models/Llama-3.1-8B",
+                "base_model_source": "local",
+            },
         ]
     }
     assert response_leaks_host_path(leaky, ["/home/op"]) is not None
@@ -589,8 +592,11 @@ def test_the_leak_finder_knows_a_local_base_model_is_a_path():
     # A repo id in the same field is not a leak, even though the root string is absent.
     clean = {
         "models": [
-            {"id": "other-lora", "base_model": "meta-llama/Llama-3.1-8B",
-             "base_model_source": "huggingface"},
+            {
+                "id": "other-lora",
+                "base_model": "meta-llama/Llama-3.1-8B",
+                "base_model_source": "huggingface",
+            },
         ]
     }
     assert response_leaks_host_path(clean, ["/home/op"]) is None

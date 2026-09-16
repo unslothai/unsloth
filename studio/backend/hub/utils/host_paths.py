@@ -86,6 +86,7 @@ def _conditional_path_is_local(payload: Mapping) -> bool:
     """Whether this mapping's ``base_model`` is a host path rather than a repo id."""
     return payload.get(HOST_PATH_CONDITIONAL_SOURCE_FIELD) == HOST_PATH_CONDITIONAL_SOURCE_LOCAL
 
+
 # Sibling written beside a redacted scalar, so a client keeps the identity the path gave it.
 CACHE_REFERENCE_FIELD = "cache_ref"
 
