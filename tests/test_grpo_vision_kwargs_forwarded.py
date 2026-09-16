@@ -335,3 +335,106 @@ def test_the_multi_image_zoo_probe_does_not_rest_on_a_local_variable():
     assert "from unsloth_zoo.rl_replacements import grpo_vision_chunks" in gate
     # probe before grep, or the grep still decides on a current zoo
     assert gate.index("grpo_vision_chunks") < gate.index("inspect.getsource")
+
+
+def _gradient_zoo_gate():
+    """The gradient path's zoo gate, as a runnable block taken out of the patched source.
+
+    Extracted by AST rather than by string slicing so the case below RUNS the real check
+    instead of restating it: the block is self contained (it reads `self` and `pixel_values`
+    and imports the zoo itself), so executing it is the behaviour and not a description.
+    """
+    import ast
+    import textwrap
+
+    from unsloth.models.rl_replacements import grpo_trainer_compute_loss
+
+    source = textwrap.dedent(grpo_trainer_compute_loss("compute_loss", ""))
+    tree = ast.parse(source)
+    blocks = [
+        segment
+        for node in ast.walk(tree)
+        if isinstance(node, ast.If)
+        for segment in [ast.get_source_segment(source, node) or ""]
+        if "grpo_vision_chunks" in segment and "_unsloth_grpo_vision_zoo_checked" in segment
+    ]
+    assert blocks, "the gradient path has no zoo gate at all"
+    # The innermost match: every enclosing `if` contains the gate's text too.
+    return textwrap.dedent(min(blocks, key = len))
+
+
+class _Trainer:
+    pass
+
+
+def _run_gate(block, *, pixel_values, zoo_module):
+    import sys
+    import types
+
+    name = "unsloth_zoo.rl_replacements"
+    previous = sys.modules.get(name)
+    sys.modules[name] = zoo_module
+    trainer = _Trainer()
+    try:
+        exec(compile(block, "<gate>", "exec"), {"self": trainer, "pixel_values": pixel_values})
+    finally:
+        if previous is None:
+            del sys.modules[name]
+        else:
+            sys.modules[name] = previous
+    return trainer
+
+
+def test_the_gradient_path_refuses_an_old_zoo_without_the_chunker():
+    """The no-grad gate does not cover the gradient call, and the default run never reaches it.
+
+    With beta = 0 and num_iterations = 1 there are no reference or old logprobs to compute, so
+    `_get_per_token_logps_and_entropies` -- where the other gate lives -- is never called. An
+    older `grpo_accumulated_loss` takes arbitrary kwargs, ignores the ones it does not know and
+    replaces `pixel_values` with None for a model that carries no `image_grid_thw`, so a vision
+    run would have trained on the text alone and said nothing.
+    """
+    import types
+
+    import pytest
+
+    block = _gradient_zoo_gate()
+    old_zoo = types.ModuleType("unsloth_zoo.rl_replacements")
+    with pytest.raises(RuntimeError) as raised:
+        _run_gate(block, pixel_values = object(), zoo_module = old_zoo)
+    assert "upgrade unsloth_zoo" in str(raised.value)
+
+    # A text-only run is untouched: there are no pixels to drop.
+    _run_gate(block, pixel_values = None, zoo_module = old_zoo)
+
+    # And a zoo that exports the chunker passes, once, and remembers it.
+    new_zoo = types.ModuleType("unsloth_zoo.rl_replacements")
+    new_zoo.grpo_vision_chunks = lambda *_a, **_k: None
+    trainer = _run_gate(block, pixel_values = object(), zoo_module = new_zoo)
+    assert trainer._unsloth_grpo_vision_zoo_checked is True
+    # Checked once per trainer: the flag short-circuits a later step even on a broken zoo,
+    # so the probe is not paid on every accumulation step.
+    already = _Trainer()
+    already._unsloth_grpo_vision_zoo_checked = True
+    import sys
+
+    sys.modules["unsloth_zoo.rl_replacements"] = old_zoo
+    try:
+        exec(compile(block, "<gate>", "exec"), {"self": already, "pixel_values": object()})
+    finally:
+        del sys.modules["unsloth_zoo.rl_replacements"]
+
+
+def test_the_gradient_gate_runs_before_every_accumulated_loss_call():
+    """Placement, since the block above proves only what it does once reached."""
+    from unsloth.models.rl_replacements import grpo_trainer_compute_loss
+
+    patched = grpo_trainer_compute_loss("compute_loss", "")
+    gate = patched.index("_unsloth_grpo_vision_zoo_checked")
+    calls = [
+        index
+        for index in range(len(patched))
+        if patched.startswith("grpo_accumulated_loss(", index)
+    ]
+    assert calls, "no accumulated-loss call to gate"
+    assert all(gate < index for index in calls), (gate, calls)

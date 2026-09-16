@@ -2562,6 +2562,33 @@ def grpo_trainer_compute_loss(function_name, function):
                 num_processes = num_processes,
             )
         else:
+            # The gradient path needs the same zoo the no-grad path checks for, and nothing
+            # has checked it here: with beta = 0 and num_iterations = 1 there are no reference
+            # or old logprobs to compute, so _get_per_token_logps_and_entropies -- where that
+            # gate lives -- never runs at all. An older grpo_accumulated_loss accepts
+            # arbitrary kwargs, ignores the keys it does not know (spatial_shapes, num_tiles,
+            # the position ids) and, for a model that carries no image_grid_thw to slice by,
+            # replaces pixel_values with None outright, so training would compute its gradient
+            # logprobs from the text alone and report nothing. Import-probed rather than
+            # signature-probed, and body-local like the one in the no-grad path: this source is
+            # copied out without this module's imports (#6960).
+            if pixel_values is not None and not getattr(
+                self, "_unsloth_grpo_vision_zoo_checked", False
+            ):
+                _grpo_vision_chunks = None
+                try:
+                    from unsloth_zoo.rl_replacements import (
+                        grpo_vision_chunks as _grpo_vision_chunks,
+                    )
+                except Exception:
+                    pass
+                if _grpo_vision_chunks is None:
+                    raise RuntimeError(
+                        "Unsloth: vision GRPO needs an unsloth_zoo build that exports "
+                        "grpo_vision_chunks, the shared multimodal key tuple and chunker "
+                        "used by both GRPO logprob paths. Please upgrade unsloth_zoo."
+                    )
+                self._unsloth_grpo_vision_zoo_checked = True
 
             def _unsloth_requires_multi_image_zoo(value):
                 if value is None:
