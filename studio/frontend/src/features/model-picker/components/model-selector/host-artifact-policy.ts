@@ -3,8 +3,8 @@
 
 import { normalizeDenseQuantSchemes } from "../../../../lib/dense-quant-schemes.ts";
 
-/** Media-picker runtime capability. Dense quant is reported by the backend because the backend
- *  name alone cannot distinguish unsupported accelerators. */
+/** Media-picker runtime capability. The backend reports dense quant, since its name alone cannot
+ *  distinguish unsupported accelerators. */
 export type HostClass = "unknown" | "gguf-only" | "accelerated" | "dense-quant";
 
 /** Backends whose diffusion pipelines the media pages can place. */
@@ -71,9 +71,8 @@ export function curatedArtifactIsOfferable(
 
 const H3_GGUF_ID = "unsloth/minimax-h3-gguf";
 
-/** The speed qualifier for a dense-quant row, naming the precision that will actually run. An empty
- *  list (an older backend) falls back to the bare "Fast" rather than claiming a precision the load
- *  might not honour. Only the first entry is read; the backend reports them best-first. */
+/** The speed qualifier for a dense-quant row, naming the precision that will run. An empty list (an
+ *  older backend) falls back to a bare "Fast". Only the first, best entry is read. */
 /** Dense 8-bit schemes that share the one user-facing label; see ``densePerfSuffix``. */
 const DENSE_EIGHT_BIT = new Set(["int8", "fp8", "mxfp8"]);
 
@@ -82,26 +81,23 @@ export function densePerfSuffix(
 ): string {
   const scheme = normalizeDenseQuantSchemes(denseQuantSchemes)[0];
   if (!scheme) return "Fast";
-  // The row names the fast TIER, not the scheme the load will settle on. int8 and mxfp8 both
-  // render as FP8 because "FP8" is the name users know for the 8-bit fast path, and a row that
-  // flips its label when the ladder is reordered reads as a different model rather than the same
-  // one. What actually loaded is reported by the resolved record on the loaded-models card, which
-  // keeps naming the real scheme. A 4-bit scheme still names itself, since it is a different
-  // quality tier and must not hide behind the 8-bit label.
+  // The row names the fast TIER, not the scheme the load settles on: int8 and mxfp8 render as FP8,
+  // the name users know for the 8-bit fast path, so reordering the ladder does not rename the model.
+  // The loaded-models card's resolved record still names the real scheme. A 4-bit scheme names
+  // itself, being a different quality tier.
   return DENSE_EIGHT_BIT.has(scheme) ? "Fast FP8" : `Fast ${scheme.toUpperCase()}`;
 }
 
 /** Speed qualifier for a GGUF diffusion row. A GGUF runs the native engine, which has no
  *  low-precision tensor-core path and no compiled dense transformer, so it is the slow row wherever
- *  a dense row exists beside it. Null off an accelerator: there the GGUF is the only thing that
- *  runs, and calling the one available row slow compares it to nothing the user can pick. */
+ *  a dense row sits beside it. Null off an accelerator, where it is the only row that runs. */
 export function ggufPerfSuffix(host: HostClass): string | null {
   return hostIsAccelerated(host) ? "Slow" : null;
 }
 
-/** Whether the Precision control should offer the dense low-precision schemes. A Mac or CPU-only
- *  host is refused them at load, so it is not offered them. An "unknown" host keeps the full list:
- *  an older backend that reports no capability must not lose controls it can honour. */
+/** Whether the Precision control should offer the dense low-precision schemes. A Mac or CPU-only host
+ *  is refused them at load. An "unknown" host keeps the full list, since an older backend reporting
+ *  no capability must not lose controls it can honour. */
 export function hostOffersDensePrecision(host: HostClass): boolean {
   return host !== "gguf-only";
 }

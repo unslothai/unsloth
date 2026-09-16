@@ -613,9 +613,8 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
     if _post_warm_retired(generation):
         return
     # Off the polled path on purpose: /api/system must not import torchao itself (see
-    # _dense_quant_supported). Gated on torch being up rather than assuming the warm brought it:
-    # UNSLOTH_STUDIO_DISABLE_TORCH_WARM=1 makes start_background_warm a no-op and the join above
-    # return at once, and that switch exists precisely to keep the ML stack cold.
+    # _dense_quant_supported). Gated on torch being up rather than assumed, since
+    # UNSLOTH_STUDIO_DISABLE_TORCH_WARM=1 exists precisely to keep the ML stack cold.
     if "torch" in sys.modules:
         try:
             _refresh_dense_quant_capability()
@@ -2136,13 +2135,12 @@ def _get_cached_system_gpu_info(
 def _probe_dense_quant_supported() -> bool:
     """Whether an ``auto`` request could engage a dense quant on EVERY visible card.
 
-    The picker cannot see which card a load will land on, so a mixed host answers for the least
-    capable one.
+    The picker cannot see which card a load lands on, so a mixed host answers for the least capable.
 
     IMPORTS the ML stack, so only ``_refresh_dense_quant_capability`` calls it, and only from the
-    post-warm worker or from a request that already has both modules loaded. Never memoised: the
-    answer sharpens, because ``dense_quant_host_capable`` counts an unprobed scheme as usable and a
-    later load can record a kernel failure in ``_SMOKE_CACHE``."""
+    post-warm worker or a request that already has both modules. Never memoised: the answer
+    sharpens, since an unprobed scheme counts as usable and a later load can record a kernel
+    failure in ``_SMOKE_CACHE``."""
     try:
         from core.inference.diffusion_device import (
             diffusion_device_scope,
@@ -2169,10 +2167,9 @@ def _probe_dense_quant_schemes() -> list[str]:
     loader's ``auto_scheme_candidates`` reads; a mixed host answers with the INTERSECTION. IMPORTS
     the ML stack.
 
-    The CACHED variant, because a request that already holds torch reaches this from the polled
-    ``/api/system``: the load-time helper runs ``_scheme_supported``, which spawns the smoke probe
-    or allocates in this process, and the poll must do neither. Like the capability bit, the answer
-    sharpens as loads record verdicts in ``_SMOKE_CACHE``."""
+    The CACHED variant, since a request holding torch reaches this from the polled ``/api/system``:
+    the load-time helper runs ``_scheme_supported``, which spawns the smoke probe or allocates in
+    this process. Like the capability bit, it sharpens as loads record verdicts in ``_SMOKE_CACHE``."""
     try:
         from core.inference.diffusion_device import (
             diffusion_device_scope,
@@ -2197,7 +2194,7 @@ def _probe_dense_quant_schemes() -> list[str]:
         return []
 
 
-# Resolved off the polled path: None until the post-warm worker or a request that already holds the
+# Resolved off the polled path: None until the post-warm worker or a request already holding the
 # ML stack has answered.
 _dense_quant_capability: Optional[bool] = None
 _dense_quant_scheme_ladder: list[str] = []
@@ -2216,21 +2213,19 @@ def _dense_quant_supported() -> bool:
     """The dense-quant bit for ``/api/system``, from already-loaded state only.
 
     This route is polled throughout startup, and ``import torch`` and ``import torchao.quantization``
-    cost ~0.8s each and hold the GIL, which is the stall ``_await_hardware_detection`` already goes
-    out of its way to keep off this path. So: never import here. The post-warm worker resolves it
-    once the coordinated warm has the stack up, and a request that finds both modules already loaded
-    refreshes it, so a kernel verdict a load recorded reaches the picker on the next poll.
-
-    False before that is the honest answer, not a wrong one: the picker renders it as no fast label,
-    the same way it treats an unknown VRAM budget until system info arrives."""
+    cost ~0.8s each and hold the GIL, the stall ``_await_hardware_detection`` already keeps off this
+    path. So never import here. The post-warm worker resolves it once the warm has the stack up, and
+    a request finding both modules loaded refreshes it, so a load's kernel verdict reaches the picker
+    on the next poll. False before that is honest: the picker renders no fast label, as it does for
+    an unknown VRAM budget."""
     if "torch" in sys.modules and "torchao" in sys.modules:
         return _refresh_dense_quant_capability()
     return bool(_dense_quant_capability)
 
 
 def _dense_quant_schemes() -> list[str]:
-    """The scheme ladder for ``/api/system``, a pure read of already-resolved state: the polled
-    route must never import torch, and the entry beside it already refreshed both in one pass."""
+    """The scheme ladder for ``/api/system``, a pure read of already-resolved state: the polled route
+    must never import torch, and the entry beside it refreshed both in one pass."""
     return list(_dense_quant_scheme_ladder)
 
 
@@ -2329,9 +2324,9 @@ def get_system_info(
         **export_capability(),
         # Video capability + reason, same shape. Additive: older clients ignore the extra keys.
         **video_capability(),
-        # Device backend alone cannot distinguish unsupported CUDA cards, and one bit cannot tell an
-        # Ampere host (int8 only) from an Ada one, so the picker gets the scheme list too. The bit
-        # is resolved first and the list is the pure read of that same pass.
+        # One bit cannot tell an Ampere host (int8 only) from an Ada one, nor spot an unsupported
+        # CUDA card, so the picker gets the scheme list too. The bit resolves first; the list is a
+        # pure read of that same pass.
         "dense_quant_supported": _dense_quant_supported(),
         "dense_quant_schemes": _dense_quant_schemes(),
     }

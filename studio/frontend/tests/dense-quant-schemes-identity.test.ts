@@ -2,10 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // The media picker memoises its option list on `denseQuantSchemes` (useImageModels,
-// curatedRowLabelFor), and the GGUF rows carry a host-dependent "(Slow)" suffix. A snapshot that
-// differs only in free host RAM -- which `refresh_memory=true` re-probes behind every footprint
-// estimate -- must therefore NOT hand back a fresh array, or every probe rebuilds the option list
-// and detaches every row it had just drawn.
+// curatedRowLabelFor), and the GGUF rows carry a host-dependent "(Slow)" suffix. So a snapshot
+// differing only in free host RAM (re-probed by `refresh_memory=true`) must NOT hand back a fresh
+// array, or every probe rebuilds the list and detaches every row it had just drawn.
 
 import assert from "node:assert/strict";
 import test from "node:test";

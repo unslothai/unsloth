@@ -16,10 +16,9 @@ import types
 def _cuda_target():
     """A compilable bf16 CUDA target, as ``_resolve_device_target`` returns on a real card.
 
-    The dtype is the real ``torch.bfloat16`` and ``supports_default_torch_compile`` is set, because
-    the precision preflight now asks ``compile_eligible`` whether a quantised pipeline could be
-    compiled at all: a stub missing either reads as a card that cannot compile and refuses loads a
-    real one accepts.
+    The dtype is the real ``torch.bfloat16`` and ``supports_default_torch_compile`` is set, since the
+    precision preflight asks ``compile_eligible`` whether a quantised pipeline could compile at all:
+    a stub missing either reads as a card that cannot, and refuses loads a real one accepts.
     """
     import torch
     return types.SimpleNamespace(
@@ -1398,7 +1397,7 @@ def test_status_passes_through_resolved(client, monkeypatch):
 
 
 def test_status_carries_the_prequant_artifact_through_the_route(client, monkeypatch):
-    # A seeded load records WHICH hosted file the precision came from; dropped at the boundary the
+    # A seeded load records WHICH hosted file the precision came from; dropped at the boundary, the
     # UI cannot tell a hosted checkpoint from a runtime quantise of the same scheme.
     backend = diffusion_module.get_diffusion_backend()
     resolved = {
@@ -1720,7 +1719,7 @@ def test_download_plan_forwards_the_load_time_controls(client, monkeypatch):
     assert seen["memory_mode"] == "low_vram"
     assert seen["cpu_offload"] is True
     # A forced accumulate the hosted checkpoint cannot bake declines the seed: dropped here, the plan
-    # stages the artifact and the load refuses it and pulls the dense shards outside the staging.
+    # stages an artifact the load refuses, then pulls the dense shards outside the staging.
     assert seen["transformer_quant_fast_accum"] is False
     assert len(seen["loras"] or []) == 1
 
@@ -2465,7 +2464,6 @@ def test_download_plan_still_refuses_a_bad_gpu_while_training_holds_the_cards(cl
 
 
 def test_a_pipeline_pick_may_pin_a_precision(monkeypatch):
-    """Pipeline picks may request a supported transformer precision."""
     from core.inference.diffusion import DiffusionBackend
 
     backend = DiffusionBackend.__new__(DiffusionBackend)
@@ -2484,7 +2482,6 @@ def test_a_pipeline_pick_may_pin_a_precision(monkeypatch):
 
 
 def test_a_single_file_pick_still_cannot_pin_a_precision(monkeypatch):
-    """Single-file picks retain their stored precision."""
     from core.inference.diffusion import DiffusionBackend
 
     backend = DiffusionBackend.__new__(DiffusionBackend)
@@ -2506,7 +2503,6 @@ def test_a_single_file_pick_still_cannot_pin_a_precision(monkeypatch):
 
 
 def test_a_pipeline_pick_is_still_refused_on_a_device_that_cannot_quantise(monkeypatch):
-    """Pipeline precision requests still require a capable device."""
     from core.inference.diffusion import DiffusionBackend
 
     backend = DiffusionBackend.__new__(DiffusionBackend)

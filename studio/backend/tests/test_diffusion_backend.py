@@ -2276,10 +2276,9 @@ def test_load_progress_downloading_then_finalizing(monkeypatch):
 
 
 def test_load_progress_counts_only_the_selected_prequant_file_in_its_artifact_repo(monkeypatch):
-    # unsloth/Qwen-Image-FP8 hosts one checkpoint per scheme, so a card that already ran the fp8
-    # artifact and now loads the int8 one has 19 GB of a sibling file sitting in that repo, while
-    # expected_bytes counts only the int8 file. Counting the whole repo reported finalizing with
-    # most of the selected checkpoint still to come.
+    # unsloth/Qwen-Image-FP8 hosts one checkpoint per scheme, so a card that already ran fp8 and now
+    # loads int8 has 19 GB of a sibling file in that repo while expected_bytes counts only int8.
+    # Counting the whole repo reported finalizing with most of the selected checkpoint still to come.
     backend = DiffusionBackend()
     backend._loading = _LoadingState(
         repo_id = "Qwen/Qwen-Image",
@@ -6364,8 +6363,8 @@ def test_diffusion_status_response_carries_requested_precision():
 
 
 def test_diffusion_status_response_carries_the_prequant_artifact():
-    # The loader records which hosted file the engaged precision came from; undeclared here,
-    # pydantic drops it and no API client ever sees the provenance.
+    # The loader records which hosted file the engaged precision came from; undeclared here, pydantic
+    # drops it and no API client sees the provenance.
     from models.inference import DiffusionStatusResponse
 
     rec = {
@@ -6438,9 +6437,9 @@ def test_plan_memory_dense_replan_does_not_double_count_prefetched_transformer(m
 def test_plan_memory_pipeline_replan_prices_the_quantised_transformer(monkeypatch):
     """A pipeline re-plan reads the quant-size overrides instead of the whole-repo cache.
 
-    The pipeline branch sizes the repo as one download, which is the bf16 footprint the re-plan
-    exists to replace; ignoring the overrides there returned the bf16 plan unchanged, so an
-    offloaded pipeline could never reach the fast path.
+    The pipeline branch sizes the repo as one download, the bf16 footprint the re-plan exists to
+    replace; ignoring the overrides returned the bf16 plan unchanged, so an offloaded pipeline
+    could never reach the fast path.
     """
     from core.inference import diffusion as dmod
     from core.inference.diffusion_memory import OFFLOAD_NONE, DeviceMemory
@@ -11156,7 +11155,6 @@ def _stub_pipeline_dense_quant(
 
 
 def test_a_pipeline_pick_quantises_its_transformer_in_place(fake_runtime, tmp_path, monkeypatch):
-    """Official bf16 pipelines quantise their assembled transformer in place."""
     backend = DiffusionBackend()
     calls = _stub_pipeline_dense_quant(backend, monkeypatch)
     status = backend.load_pipeline(
@@ -11172,7 +11170,6 @@ def test_a_pipeline_pick_quantises_its_transformer_in_place(fake_runtime, tmp_pa
 
 
 def test_a_pipeline_pick_keeps_bf16_when_the_scheme_declines(fake_runtime, tmp_path, monkeypatch):
-    """An automatic clean decline keeps the pipeline in bf16."""
     backend = DiffusionBackend()
     _stub_pipeline_dense_quant(backend, monkeypatch, engages = None)
     status = backend.load_pipeline(
@@ -11188,7 +11185,6 @@ def test_a_pipeline_pick_keeps_bf16_when_the_scheme_declines(fake_runtime, tmp_p
 def test_a_pipeline_pick_refuses_an_explicit_scheme_that_did_not_engage(
     fake_runtime, tmp_path, monkeypatch
 ):
-    """A pinned scheme fails closed when pipeline quantisation declines."""
     backend = DiffusionBackend()
     _stub_pipeline_dense_quant(backend, monkeypatch, engages = None)
     with pytest.raises(RuntimeError) as excinfo:
@@ -11224,7 +11220,6 @@ def test_a_pipeline_pick_does_not_quantise_under_offload(fake_runtime, tmp_path,
 def test_an_offloaded_pipeline_replans_against_the_quantised_size(
     fake_runtime, tmp_path, monkeypatch
 ):
-    """An offloaded bf16 plan is dropped once the quantised size fits resident."""
     from core.inference.diffusion_memory import OFFLOAD_NONE
 
     backend = DiffusionBackend()
@@ -11253,7 +11248,6 @@ def test_an_offloaded_pipeline_replans_against_the_quantised_size(
 
 
 def test_a_declined_quant_gives_back_the_bf16_placement(fake_runtime, tmp_path, monkeypatch):
-    """A quant-sized placement is reverted when the conversion does not engage."""
     from core.inference.diffusion_memory import OFFLOAD_NONE
 
     backend = DiffusionBackend()
@@ -11349,8 +11343,8 @@ def test_an_uncompilable_pipeline_refuses_an_explicit_scheme(fake_runtime, tmp_p
 def test_a_compiling_speed_mode_still_quantises(fake_runtime, tmp_path, monkeypatch, speed_mode):
     """The guard must not cost the default path: speed unset is upgraded to a compile.
 
-    "off" is absent on purpose -- it is not uncompilable, it is the bit-exact request that rewrites
-    an auto quant to off well before this guard, which the test below pins.
+    "off" is absent on purpose: not uncompilable, but the bit-exact request that rewrites an auto
+    quant to off well before this guard, which the test below pins.
     """
     backend = DiffusionBackend()
     calls = _stub_pipeline_dense_quant(backend, monkeypatch)
@@ -11421,7 +11415,6 @@ def test_a_pipeline_pick_bakes_its_adapters_before_quantising(fake_runtime, tmp_
 
 
 def test_a_unet_pipeline_is_never_quantised(fake_runtime, tmp_path, monkeypatch):
-    """UNet pipelines never enter transformer quantisation."""
     backend = DiffusionBackend()
     calls = _stub_pipeline_dense_quant(backend, monkeypatch, denoisers = ())
     status = backend.load_pipeline(
@@ -11444,7 +11437,6 @@ def test_a_unet_pipeline_is_never_quantised(fake_runtime, tmp_path, monkeypatch)
 def test_an_already_quantised_pipeline_is_never_requantised(
     fake_runtime, tmp_path, monkeypatch, dtype, expected
 ):
-    """Pre-quantised pipeline weights are not quantised again."""
     backend = DiffusionBackend()
     calls = _stub_pipeline_dense_quant(backend, monkeypatch)
     monkeypatch.setattr(_FakePipe, "__init__", _init_with_denoiser(dtype))
@@ -11458,7 +11450,6 @@ def test_an_already_quantised_pipeline_is_never_requantised(
 
 
 def test_a_blocked_pipeline_still_refuses_an_explicit_scheme(fake_runtime, tmp_path, monkeypatch):
-    """A blocker cannot silently downgrade an explicit scheme."""
     backend = DiffusionBackend()
     _stub_pipeline_dense_quant(backend, monkeypatch, denoisers = ())
     with pytest.raises(RuntimeError) as excinfo:
@@ -11473,7 +11464,6 @@ def test_a_blocked_pipeline_still_refuses_an_explicit_scheme(fake_runtime, tmp_p
 
 
 def test_every_denoiser_is_quantised_or_none_is(fake_runtime, tmp_path, monkeypatch):
-    """Every denoiser in a multi-branch pipeline uses the same precision."""
     backend = DiffusionBackend()
     calls = _stub_pipeline_dense_quant(
         backend, monkeypatch, denoisers = ("transformer", "unconditional_transformer")
@@ -11491,7 +11481,6 @@ def test_every_denoiser_is_quantised_or_none_is(fake_runtime, tmp_path, monkeypa
 
 
 def test_a_partially_converted_transformer_fails_the_load(fake_runtime, tmp_path, monkeypatch):
-    """A partially converted transformer makes the pipeline unusable."""
     from core.inference import diffusion as dmod
 
     backend = DiffusionBackend()
@@ -11505,7 +11494,6 @@ def test_a_partially_converted_transformer_fails_the_load(fake_runtime, tmp_path
 
 
 def test_a_clean_decline_keeps_the_dense_transformer(fake_runtime, tmp_path, monkeypatch):
-    """A decline that changed no weights safely retains the dense transformer."""
     from core.inference import diffusion as dmod
 
     backend = DiffusionBackend()
@@ -11522,10 +11510,9 @@ def test_a_clean_decline_keeps_the_dense_transformer(fake_runtime, tmp_path, mon
 def test_a_raw_fp8_pipeline_is_not_quantised_a_second_time(fake_runtime, tmp_path, monkeypatch):
     """A local fp8 checkpoint is widened to bf16 on load; quantising it again compounds loss.
 
-    Non-GGUF loads are gated to unsloth/* or a LOCAL path, so this is the reachable shape: a user
-    pointing at their own fp8 conversion. The header parse itself is covered against real
-    safetensors in test_diffusion_transformer_quant.py; this is the loader wiring, which stamps
-    every denoiser so the existing blocker refuses.
+    Non-GGUF loads are gated to unsloth/* or a LOCAL path, so the reachable shape is a user pointing
+    at their own fp8 conversion. test_diffusion_transformer_quant.py covers the header parse against
+    real safetensors; this is the loader wiring that stamps every denoiser for the blocker.
     """
     from core.inference import diffusion as dmod
 

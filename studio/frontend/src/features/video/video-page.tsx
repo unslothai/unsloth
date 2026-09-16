@@ -3279,8 +3279,8 @@ function VideoGenerator({
           options={[
             ["auto", "Auto (fastest for GPU)"],
             ["none", "Off (bf16)"],
-            // The explicit low-precision schemes need the dense tensor-core path, which a Mac or a
-            // CPU-only host cannot run: the loader refuses them, so the picker does not list them.
+            // The explicit low-precision schemes need the dense tensor-core path, which a Mac or
+            // CPU-only host cannot run, so the picker does not list what the loader would refuse.
             ...(hostOffersDensePrecision(hostClass)
               ? ([
                   ["fp8", "FP8"],

@@ -37005,8 +37005,8 @@ async def diffusion_download_plan(
                     # anything is measured, and an offloaded transformer skips the dense quant.
                     memory_mode = getattr(request, "memory_mode", None),
                     cpu_offload = bool(getattr(request, "cpu_offload", False)),
-                    # Eager never compiles, and an uncompiled torchao transformer is slower than the
-                    # bf16 it replaces, so the loader keeps a pipeline dense under it.
+                    # An uncompiled torchao transformer is slower than the bf16 it replaces, so the
+                    # loader keeps a pipeline dense under eager.
                     speed_mode = getattr(request, "speed_mode", None),
                     # Judged on the card this pick would load on, as the loader does.
                     gpu_ordinal = gpu_ordinal,
@@ -37033,8 +37033,8 @@ async def diffusion_download_plan(
             memory_mode = request.memory_mode,
             cpu_offload = request.cpu_offload,
             transformer_prequant_path = request.transformer_prequant_path,
-            # A forced accumulate the hosted checkpoint cannot bake declines the seed, so the plan has
-            # to read it or it stages a file the load then refuses and replaces with dense shards.
+            # A forced accumulate the hosted checkpoint cannot bake declines the seed, so without
+            # this the plan stages a file the load refuses and replaces with dense shards.
             transformer_quant_fast_accum = request.transformer_quant_fast_accum,
             loras = request.loras,
             # Only the verdict, not the probe: the panel stages exactly what this reports.

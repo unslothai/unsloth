@@ -22,7 +22,7 @@ const hooks = loadWithStubs<typeof GpuHooks>(
     },
     "./use-system": { getCachedSystemInfo: () => snapshot },
     // Aliased, so the passthrough above cannot resolve it. The real implementation, since a
-    // hand-written normaliser would answer for the source instead of from it.
+    // hand-written normaliser would answer for the source rather than from it.
     "@/lib/dense-quant-schemes": { normalizeDenseQuantSchemes },
   },
   { relativePassthrough: true },

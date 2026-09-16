@@ -842,8 +842,7 @@ def test_status_passthrough(client, monkeypatch):
     )
     body = client.get("/api/inference/video/status").json()
     assert body["loaded"] is True and body["family"] == "ltx-2"
-    # ``artifact`` is additive on the response model: a record that names no hosted checkpoint
-    # serialises it as null.
+    # ``artifact`` is additive on the response model: a record naming no hosted checkpoint is null.
     assert body["resolved"]["transformer_quant"] == {
         **resolved["transformer_quant"],
         "artifact": None,

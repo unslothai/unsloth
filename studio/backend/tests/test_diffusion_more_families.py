@@ -356,9 +356,9 @@ def test_hidream_prequant_wiring():
 
 
 def test_hidream_distilled_variants_have_no_hosted_prequant_to_inherit():
-    # Dev and Fast are distillations of Full, so the hosted Full checkpoint is baked from other weights. Inheriting it
-    # made an official Dev / Fast pick plan the Full artifact, drop its own released shards, download several GB and
-    # only then hit the base_model_id refusal, which restores the dense transformer inline.
+    # Dev and Fast are distillations of Full, so the hosted Full checkpoint is baked from other
+    # weights. Inheriting it made a Dev / Fast pick plan the Full artifact, drop its own shards,
+    # download several GB and only then hit the base_model_id refusal.
     from core.inference.diffusion_families import family_prequant_repo
     for repo_id in ("HiDream-ai/HiDream-I1-Dev", "HiDream-ai/HiDream-I1-Fast"):
         fam = detect_family(repo_id)
@@ -375,9 +375,8 @@ def test_hidream_distilled_variants_have_no_hosted_prequant_to_inherit():
 
 
 def test_qwen_image_2512_routes_to_its_own_hosted_prequant():
-    # 2512 is a different checkpoint with its own baked artifacts. Falling back to the Qwen-Image ones made an
-    # official 2512 pick plan an artifact the loader's base_model_id check refuses, after the plan had already
-    # dropped the 2512 shards.
+    # 2512 is a different checkpoint with its own baked artifacts. Falling back to the Qwen-Image ones
+    # made a 2512 pick plan an artifact base_model_id refuses, after its shards had been dropped.
     from core.inference.diffusion_families import family_prequant_repo
 
     fam = detect_family("Qwen/Qwen-Image-2512")
@@ -400,7 +399,7 @@ def test_qwen_image_2512_routes_to_its_own_hosted_prequant():
 
 
 def test_qwen_image_2512_prequant_filenames_match_its_repo():
-    # The filename is derived from the repo name, so the variant repo must serve <Model>-<SCHEME>.pt for both schemes.
+    # The filename derives from the repo name, so the variant repo must serve <Model>-<SCHEME>.pt.
     from core.inference.diffusion_prequant import resolve_prequant_source
     fam = detect_family("Qwen/Qwen-Image-2512")
     for scheme, filename in (

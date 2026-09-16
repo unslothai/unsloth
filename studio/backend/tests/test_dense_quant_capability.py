@@ -71,7 +71,6 @@ def test_a_single_incapable_gpu_reports_incapable(monkeypatch):
 
 
 def test_every_visible_card_must_be_capable(monkeypatch):
-    """Mixed-capability hosts must not advertise dense quant."""
     result, scoped = _run(monkeypatch, device_count = 2, capable_by_ordinal = {0: True, 1: False})
     assert result is False
     # Probe each ordinal under its own device scope.
@@ -108,9 +107,8 @@ def test_the_wiring_stays_in_place(needle):
 def test_the_capability_is_published_and_never_memoised():
     """`/api/system` carries the bit, and the probe must not be pinned.
 
-    `dense_quant_host_capable` counts an UNPROBED scheme as usable, so an early answer can be yes
-    and a later load can record a kernel failure. Memoising the probe would pin the optimistic
-    answer for the life of the process.
+    `dense_quant_host_capable` counts an UNPROBED scheme as usable, so an early yes can be undone by
+    a later load recording a kernel failure. Memoising would pin the optimistic answer forever.
     """
     src = (_BACKEND / "main.py").read_text(encoding = "utf-8")
     assert '"dense_quant_supported": _dense_quant_supported()' in src
@@ -126,8 +124,7 @@ def test_the_polled_route_never_imports_the_ml_stack():
     """torch and torchao cost ~0.8s each and hold the GIL; /api/system is polled through startup.
 
     The reader answers from `sys.modules` and a value the post-warm worker resolved, so a poll on a
-    cold backend imports nothing. `_await_hardware_detection` avoids the same stall for the same
-    reason.
+    cold backend imports nothing. `_await_hardware_detection` avoids the same stall.
     """
     reader = _src("_dense_quant_supported")
     assert '"torch" in sys.modules' in reader and '"torchao" in sys.modules' in reader
@@ -157,8 +154,8 @@ def test_the_scheme_ladder_is_published_beside_the_bit():
 
 
 def test_the_ladder_is_read_off_the_same_refresh_as_the_bit():
-    """The reader beside the bit is a pure read, so the polled route never probes (or imports
-    torch) a second time and both entries come from one pass."""
+    """The reader beside the bit is a pure read, so the polled route never probes or imports torch a
+    second time, and both entries come from one pass."""
     reader = _src("_dense_quant_schemes")
     assert "_probe_dense_quant_schemes" not in reader
     assert "_refresh_dense_quant_capability" not in reader
@@ -221,7 +218,6 @@ def test_an_ampere_host_publishes_int8(monkeypatch):
 
 
 def test_a_mixed_host_publishes_only_what_every_card_runs(monkeypatch):
-    """A mixed host publishes only the schemes every card runs."""
     result, scoped = _run_schemes(
         monkeypatch,
         device_count = 2,
@@ -246,7 +242,6 @@ def test_a_scheme_probe_failure_publishes_nothing(monkeypatch):
 
 
 def test_an_incapable_host_never_publishes_a_ladder():
-    """The ladder is `[]` whenever the capability bit is False."""
     refresh = _src("_refresh_dense_quant_capability")
     assert "if _dense_quant_capability else []" in refresh
 
@@ -255,8 +250,8 @@ def test_the_warm_refresh_honours_the_torch_kill_switch():
     """UNSLOTH_STUDIO_DISABLE_TORCH_WARM=1 must keep the stack cold.
 
     `start_background_warm` is then a no-op and `join_background_warm` returns at once, so the
-    post-warm worker still reaches this point with torch unimported. Refreshing there would import
-    torch and torchao and defeat the switch, so it is gated on torch already being up.
+    post-warm worker reaches this point with torch unimported. Refreshing there would import torch
+    and torchao and defeat the switch, so it is gated on torch already being up.
     """
     body = _src("_post_warm_background_work")
     refresh = body.index("_refresh_dense_quant_capability()")
@@ -269,9 +264,9 @@ def test_the_warm_refresh_honours_the_torch_kill_switch():
 def test_the_polled_ladder_never_runs_the_allocating_smoke_probe(monkeypatch):
     """The ladder on the polled route reads ``_SMOKE_CACHE`` and nothing else.
 
-    ``_scheme_supported`` spawns the up-to-180s child smoke probe and allocates in this process when
-    the spawn is unavailable, and an allocator failure is deliberately not cached, so reaching it
-    from ``/api/system`` would repeat the work on every poll.
+    ``_scheme_supported`` spawns the up-to-180s child smoke probe, or allocates in this process when
+    it cannot, and an allocator failure is deliberately not cached, so reaching it from
+    ``/api/system`` would repeat the work on every poll.
     """
     from core.inference import diffusion_transformer_quant as tq
 

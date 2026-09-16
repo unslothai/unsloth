@@ -942,10 +942,8 @@ class _LoadingState:
     fetch_repo: Optional[str] = None
     # Third repos this load downloads from; the cache scan and the delete guard both need them.
     asset_repos: tuple[str, ...] = ()
-    # ``(repo, filename, declared size, that repo's bytes on disk when this load claimed it)`` for an
-    # asset repo we fetch ONE named file from. The scan counts what this load adds to such a repo
-    # instead of every byte in it: the artifact repo hosts one checkpoint per scheme, and
-    # ``expected_bytes`` counts only the file this load fetches.
+    # ``(repo, filename, declared size, repo bytes on disk when this load claimed it)`` when we fetch
+    # ONE named file: the scan counts what this load adds, not every byte already in the repo.
     asset_files: tuple[tuple[str, str, int, int], ...] = ()
     account_id: Optional[str] = None
 
@@ -1255,18 +1253,16 @@ def _pipeline_quant_uncompilable_reason(
 ) -> Optional[str]:
     """Why a PIPELINE load must keep its dense weights rather than quantise them, or None.
 
-    A torchao transformer that is never compiled is ~30x slower than the bf16 it replaced, so
-    converting without a compile is a pessimisation. Both callers ask this one question: the route
-    preflight, so the refusal lands before the arbiter evicts anything, and the loader, so an
-    automatic request declines to bf16 instead. GGUF is out of scope -- it substitutes dense base
-    weights and falls back to the packed file, which this PR leaves alone.
+    An uncompiled torchao transformer is ~30x slower than the bf16 it replaced, so converting
+    without a compile is a pessimisation. Both callers ask here: the route preflight, so the refusal
+    lands before the arbiter evicts anything, and the loader, so an automatic request declines to
+    bf16. GGUF is out of scope, substituting dense base weights and falling back to the packed file.
 
     speed=off is absent on purpose: an engaged quant upgrades it to `default`, and an AUTO request
     under it is rewritten to off long before either caller."""
     if model_kind != "pipeline":
         return None
-    # Compared as a string rather than through resolve_speed_mode: this runs on the route, where an
-    # unvalidated value must not raise, and `eager` is the only mode the comparison has to catch.
+    # A string compare, not resolve_speed_mode: this runs on the route, where an unvalidated value must not raise.
     if str(speed_mode or "").strip().lower() == SPEED_EAGER:
         return (
             "Speed is set to 'eager', and a quantised transformer that is not compiled runs far "
@@ -1551,10 +1547,8 @@ class DiffusionBackend:
             if not dense_quant_supported_kind(model_kind):
                 reason = dense_quant_unsupported_kind_reason(model_kind)
             elif getattr(fam, "denoiser_attr", "transformer") != "transformer":
-                # The family table already knows SDXL denoises with a UNet, so this refusal needs no network and no
-                # assembly. Without it the route passes, the arbiter evicts the resident model and the pipeline
-                # downloads in full, and only then does dense_quant_blocker say the same thing -- the same
-                # after-the-eviction refusal the offload branch below exists to prevent.
+                # The family table already answers this, so refuse without network or assembly. Without it
+                # dense_quant_blocker says the same only after the eviction and the full download.
                 reason = (
                     f"'{getattr(fam, 'name', None)}' denoises with a "
                     f"{getattr(fam, 'denoiser_attr', 'unet')}, not a transformer, and the dense torchao schemes "
@@ -1578,8 +1572,7 @@ class DiffusionBackend:
                     target, fam, speed_mode, model_kind = model_kind
                 )
             ) is not None:
-                # Deterministic from the request, so it belongs here for the same reason the offload branch above
-                # does: the loader would otherwise raise the identical refusal after the eviction and the download.
+                # Deterministic from the request: else the loader refuses only after the eviction and download.
                 reason = uncompilable
             elif (
                 select_transformer_quant_scheme(
@@ -1947,12 +1940,9 @@ class DiffusionBackend:
             fetch_base = fetch_base,
             local_files_only = local_files_only,
         )
-        # Only the snapshot the top-up ITSELF vouched for, and only when the staging already vouched for the same one.
-        # ``_prefetch_files`` answers None when the manifest and the restored shards resolved through different cache
-        # roots, and then no local directory holds both: keeping the pre-restore snapshot hands from_pretrained a
-        # terminal tree that still has no transformer. A snapshot the staging did not hand back is incomplete the other
-        # way -- it has the shards but not the companions that landed under the other root. Either way the hub id,
-        # which resolves each file through its own root, is the only complete source.
+        # Accept only the one snapshot BOTH the staging and this top-up vouched for. If they resolved through
+        # different cache roots no local directory holds everything, and the hub id, which resolves each file
+        # through its own root, is then the only complete source.
         if restored is None or base_local_dir is None or Path(restored) != Path(base_local_dir):
             return None
         return base_local_dir
@@ -2260,8 +2250,8 @@ class DiffusionBackend:
             model_kind = resolve_model_kind(gguf_filename, model_kind),
             transformer_quant = transformer_quant,
             text_encoder_quant = text_encoder_quant,
-            # An uncompiled torchao transformer loses to the bf16 it replaces, so the loader keeps a pipeline dense
-            # under 'eager'; refusing an explicit scheme here rather than after the download says so sooner.
+            # An uncompiled torchao transformer loses to the bf16 it replaces, so 'eager' stays dense. Refusing
+            # an explicit scheme here says so before the download.
             speed_mode = speed_mode,
             gpu_ordinal = gpu_ordinal,
         )
@@ -2359,10 +2349,8 @@ class DiffusionBackend:
                 fast_accum = kwargs.get("transformer_quant_fast_accum"),
             )
             if local_files_only and pipeline_planned not in (None, PIPELINE_SEED_DECLINED):
-                # The offline twin of the Hub probe below, the same swap the video loader makes in
-                # ``_denoiser_prequant_verified``: the first load left this repo's released shards out of the
-                # cache, so suppressing the seed here would assemble bf16 from a snapshot that has none. Cache
-                # only, never a request.
+                # Offline twin of the Hub probe below. The first load left the released shards out of the cache,
+                # so suppressing the seed would assemble bf16 from a snapshot that has none. Cache only, never a request.
                 if not denoiser_prequant_cached(
                     fam,
                     pipeline_planned,
@@ -2412,11 +2400,9 @@ class DiffusionBackend:
                 resident_file_sizes_out = resident_sizes,
                 fetch_repos_out = fetch_repos,
             )
-            # An OPERATOR'S OWN checkpoint has no Hub entry, so ``_dit_prequant_plan_source`` answers None for it and
-            # the plan drops no shards: the seed costs no bytes and is scoped by nothing. Suppressing it below would
-            # ignore the file the load was asked to use and quantise the released bf16 shards in memory instead, which
-            # is the load this whole path exists to avoid. Cache only, never a request, the same answer the offline
-            # branch above reads.
+            # An OPERATOR'S OWN checkpoint has no Hub entry, so the plan drops no shards and the seed costs no bytes.
+            # Suppressing it would ignore the file the load was asked to use and quantise the released bf16 shards in
+            # memory instead. Cache only, never a request.
             local_seed = (
                 bool(kwargs.get("transformer_prequant_path"))
                 and pipeline_planned not in (None, PIPELINE_SEED_DECLINED)
@@ -2496,8 +2482,7 @@ class DiffusionBackend:
                     shortfall,
                 )
                 raise RuntimeError(shortfall)
-            # Read outside the lock: this is a disk scan, and nothing of ours has written to the
-            # artifact repo yet.
+            # Outside the lock: a disk scan, and nothing of ours has written to the artifact repo yet.
             asset_baseline = self._cache_bytes(dit_prequant[0]) if skip_transformer_weights else 0
             with self._load_cancel_lock:
                 if self._load_token == token and self._loading is not None:
@@ -2611,9 +2596,8 @@ class DiffusionBackend:
         for repo, filename, size, baseline in loading.asset_files:
             if not repo or repo in (loading.repo_id, companion):
                 continue
-            # The finished file plus whatever this load has added to the repo since it claimed it
-            # (the in-flight ``blobs/*.incomplete``), capped at the one file ``expected_bytes``
-            # counts. A sibling scheme's cached checkpoint sits in the baseline and never counts.
+            # The finished file plus what this load added since it claimed the repo (in-flight
+            # ``blobs/*.incomplete``), capped at the one file. A sibling scheme sits in the baseline.
             downloaded += min(
                 size,
                 self._cache_file_bytes(repo, filename) + max(0, self._cache_bytes(repo) - baseline),
@@ -2630,10 +2614,8 @@ class DiffusionBackend:
     def loading_repo_ids(self) -> tuple[str, ...]:
         """Repo ids an in-flight background load is downloading (empty when idle). The delete-cached
         guard needs this: during a load ``status()["loaded"]`` is still False, but deleting the
-        target repo (or its companion base) would yank blobs and snapshot files from under the
-        download/assembly. Includes the mirror when one was swapped in: that is where the
-        companion bytes land, plus a seeded denoiser's repo, whose released shards this load
-        dropped."""
+        target repo (or its companion base) would yank blobs from under the download. Includes the
+        mirror when one was swapped in, and a seeded denoiser's repo."""
         # _load_cancel_lock alone: _loading lives under it, and this predicate runs inside the GPU
         # arbiter's lock (release_if), so taking _lock here let a multi-minute build stall every
         # other modality's acquire.
@@ -2748,10 +2730,9 @@ class DiffusionBackend:
                 return None
             raw = transformer_quant
             auto = raw is None or str(raw).strip().lower() in ("", "auto")
-            # An AUTO precision under an explicit Speed="off" is rewritten to "off" by load_pipeline, so no seed is
-            # ever wanted. An EXPLICIT scheme is still honored and still upgrades the speed to `default`, so seeding
-            # it here is what keeps that load off the released bf16 shards. Same split `_dit_prequant_plan_source`
-            # applies to a GGUF pick.
+            # load_pipeline rewrites an AUTO precision under Speed="off" to "off", so no seed is wanted. An EXPLICIT
+            # scheme is still honored and upgrades the speed to `default`, so seeding it keeps that load off the
+            # released bf16 shards. Same split `_dit_prequant_plan_source` applies to a GGUF pick.
             if auto and speed_mode is not None and str(speed_mode).strip().lower() == SPEED_OFF:
                 return None
             mode = TQ_AUTO if auto else normalize_transformer_quant(raw)
@@ -2776,10 +2757,9 @@ class DiffusionBackend:
                 )
                 if scheme is None or scheme == TQ_AUTO:
                     return None
-                # Under auto the ladder is walked below the winner: a rung whose hosted artifact exists but whose
-                # artifact-sized plan still offloads (Qwen-Image's int8 file on a 32 GB card) yields to the next rung
-                # that both has an artifact and stays resident, instead of pinning a decline. An explicit scheme is
-                # honored or refused, never swapped.
+                # Under auto, walk the ladder below the winner: a rung whose artifact-sized plan still offloads
+                # (Qwen-Image int8 on a 32 GB card) yields to the next resident rung instead of pinning a decline.
+                # An explicit scheme is honored or refused, never swapped.
                 rungs: list[str] = [scheme]
                 if auto:
                     try:
@@ -2800,9 +2780,8 @@ class DiffusionBackend:
                     )
                     if source is None:
                         continue
-                    # A FORCED fp8 accumulate the hosted artifact does not bake is refused by the loader's
-                    # checkpoint validation, and by then the plan has already dropped the released shards. An
-                    # operator's own checkpoint is not a repo source and is left to that validation.
+                    # The loader's checkpoint validation refuses a FORCED fp8 accumulate the artifact does not bake,
+                    # but only after the plan dropped the released shards. An operator's own file is left to it.
                     if getattr(source, "kind", None) == "repo" and hosted_fast_accum_conflict(
                         rung, fast_accum
                     ):
@@ -2857,15 +2836,12 @@ class DiffusionBackend:
         failures_out: Optional[list] = None,
     ) -> Optional[tuple[str, str, int]]:
         """The hosted PRE-QUANTIZED transformer this pick loads INSTEAD of the base repo's dense
-        shards, as ``(repo, filename, declared_size)``, or None when no such artifact is used.
-        Those shards are already excluded for a GGUF pick, so without this the plan neither
-        counts nor stages the multi-GB denoiser the load really keeps on disk: the footprint
-        reads short and the file is pulled INLINE during the load, outside the manager's
-        progress, cancel and disk preflight. Mirrors the prequant gates in
-        ``_load_dense_quant_pipeline``.
-
-        A ``pipeline`` pick reaches this only once ``_pipeline_planned_denoiser_scheme`` applied every
-        gate; only a checkpoint that resolves on the Hub may drop the released shards."""
+        shards, as ``(repo, filename, declared_size)``, or None. Those shards are already excluded
+        for a GGUF pick, so without this the plan neither counts nor stages the multi-GB denoiser:
+        the footprint reads short and the file is pulled INLINE during the load, outside the
+        manager's progress, cancel and disk preflight. Mirrors the gates in
+        ``_load_dense_quant_pipeline``; a ``pipeline`` pick arrives only once
+        ``_pipeline_planned_denoiser_scheme`` applied them all."""
         if fam is None:
             return None
         planned = kwargs.get("_pipeline_prequant_planned") if kind == "pipeline" else None
@@ -2980,9 +2956,8 @@ class DiffusionBackend:
         for name in (source.filename, source.fallback_filename):
             if name and name in sizes:
                 return (source.location, name, int(sizes[name]))
-        # The repo answered and holds NEITHER name. Not "no prequant is used" -- this pick is
-        # configured to use one and the dense shards are already excluded for it, so the plan names
-        # no transformer source at all and must say it is partial.
+        # The repo answered and holds NEITHER name. Not "no prequant is used": this pick is configured to
+        # use one and its dense shards are already excluded, so the plan has no transformer and is partial.
         if failures_out is not None:
             failures_out.append(
                 RuntimeError(
@@ -3017,36 +2992,29 @@ class DiffusionBackend:
         """Total download size for the progress bar, plus the base-repo files to fetch (the prefetch
         reuses this list, so the base is listed only once).
 
-        ``sizes_out``, when given, is filled with per-repo byte totals so the download plan can size
-        one job per repo off this same single pair of Hub lookups. ``resident_file_sizes_out``
-        receives only the selected pipeline components and default weight variant, which is the set
-        that ``from_pretrained`` materialises in memory. ``revisions_out`` records the commit each
-        lookup described, so a cache probe can ask about the SAME revision the sizes came from.
-        ``fetch_repos_out`` records the repo that supplied pipeline metadata, so staging reads that
-        same pinned file set instead of making a second mirror choice.
+        ``sizes_out`` takes per-repo byte totals, so the download plan can size one job per repo off
+        this same pair of Hub lookups. ``resident_file_sizes_out`` takes only the selected pipeline
+        components and default weight variant, the set ``from_pretrained`` materialises in memory.
+        ``revisions_out`` records the commit each lookup described, so a cache probe can ask about
+        the SAME revision. ``fetch_repos_out`` records the repo that supplied pipeline metadata, so
+        staging reads that pinned file set rather than making a second mirror choice.
 
-        For a ``pipeline`` load the whole repo IS the pipeline, so the transformer/ subfolder is
-        INCLUDED, unlike the GGUF / single-file paths where the transformer is the single file. For
-        a ``single_file_is_pipeline`` family (SDXL) the base repo supplies only config/tokenizer and
-        its weight files are skipped.
+        For a ``pipeline`` load the whole repo IS the pipeline, so transformer/ is INCLUDED, unlike
+        the GGUF / single-file paths. For a ``single_file_is_pipeline`` family (SDXL) the base repo
+        supplies only config/tokenizer and its weight files are skipped.
 
-        ``include_transformer`` may be a CALLABLE ``(companions, transformer_files) -> bool``,
-        called once with this repo's actual listing split either side of ``transformer/``: the
-        widening decision turns on what those two sets say about the cache and about which repo the
-        fetch will resolve to, and that listing exists only here.
+        ``include_transformer`` may be a CALLABLE ``(companions, transformer_files) -> bool``, called
+        once with this repo's listing split either side of ``transformer/``: the widening decision
+        turns on what those sets say about the cache and the fetch repo, and that listing lives here.
 
-        ``skip_te_components`` names the text encoders this pick loads PRE-CAST from a hosted
-        checkpoint, so their dense weight shards are not counted or fetched (staging the dense
-        encoder for a pre-cast load wastes tens of GB and nothing ever opens them). Everything else
-        in the component folder is kept: the pre-cast loader meta-inits the encoder from the base
-        repo's config.
+        ``skip_te_components`` names the text encoders this pick loads PRE-CAST, so their dense
+        shards are not counted or fetched (tens of wasted GB nothing ever opens). The rest of the
+        component folder is kept: the pre-cast loader meta-inits from the base repo's config.
+        ``skip_transformer_weights`` does the same for a seeded pick's DENOISER, keeping
+        ``transformer/config.json`` for the same reason.
 
-        ``skip_transformer_weights`` does the same for the DENOISER of a seeded ``pipeline`` pick,
-        keeping ``transformer/config.json`` because the loader meta-inits from it.
-
-        ``local_files_only`` returns the metadata-unavailable answer, ``(0, [])``, instead of
-        asking. Every byte this counts belongs to a download that is not permitted, and the empty
-        file list is what makes the prefetch stage nothing.
+        ``local_files_only`` returns the metadata-unavailable answer ``(0, [])`` instead of asking:
+        the bytes belong to a download that is not permitted, and the empty list stages nothing.
         """
         if local_files_only:
             return 0, []
@@ -3283,9 +3251,8 @@ class DiffusionBackend:
             if allow_device_probe
             else None
         )
-        # Declared before the prequant lookup, not beside the other plan state: a repo that holds
-        # neither artifact name records the miss HERE, and this pick has already dropped its dense
-        # shards, so the plan must call itself partial rather than name no transformer at all.
+        # Declared before the prequant lookup so a repo holding neither artifact name records the miss
+        # HERE: the dense shards are already dropped, so the plan must call itself partial.
         plan_failures: list = []
         dit_prequant = (
             self._dit_prequant_plan_source(
@@ -3988,8 +3955,7 @@ class DiffusionBackend:
         # The repo the background load staged the companions from; re-derived below for a direct call, which has no
         # prefetch phase.
         _fetch_base: Optional[str] = None,
-        # The scheme the plan settled, or PIPELINE_SEED_DECLINED; None for a direct call, which may not take
-        # a decision the pull was never scoped on.
+        # The scheme the plan settled, or PIPELINE_SEED_DECLINED; None for a direct call, which the pull never scoped.
         _pipeline_prequant_planned: Optional[str] = None,
         _pipeline_prequant_skipped: tuple[str, ...] = (),
     ) -> dict[str, Any]:
@@ -4140,8 +4106,8 @@ class DiffusionBackend:
                         else None
                     )
                     if seeded_plan is None or seeded_plan.offload_policy != OFFLOAD_NONE:
-                        # Offload hooks use Module.to(), which torchao tensors reject, and live free memory
-                        # can undercut the CAPACITY the plan settled this against.
+                        # Offload hooks use Module.to(), which torchao tensors reject, and live free
+                        # memory can undercut the CAPACITY the plan settled this against.
                         logger.info(
                             "diffusion.denoiser_prequant: an artifact-sized plan for %s offloads on "
                             "this card, so the released denoiser is loaded instead",
@@ -4929,10 +4895,9 @@ class DiffusionBackend:
                                         base_local_dir = _base_local_dir,
                                         local_files_only = local_files_only,
                                     )
-                                    # A pipeline plan prices CACHED bytes, and the plan above was taken while the
-                                    # prefetch had transformer/ skipped, so it saw companions only. Re-plan now the
-                                    # dense shards are back, or an under-counted 'none' keeps the bf16 denoiser
-                                    # resident and the quant re-plan below never runs.
+                                    # A pipeline plan prices CACHED bytes, and the plan above saw companions only
+                                    # (transformer/ was skipped). Re-plan now the dense shards are back, else an
+                                    # under-counted 'none' keeps the bf16 denoiser resident.
                                     plan = self._plan_memory(
                                         target,
                                         single_file_path,
@@ -5057,18 +5022,17 @@ class DiffusionBackend:
                                     _base_local_dir or fetch_base, **pipe_kwargs
                                 )
 
-                    # Same question the route preflight asked, from the one helper, so the two cannot disagree about
-                    # which loads are worth quantising.
+                    # The same helper the route preflight asked, so the two cannot disagree.
                     pipeline_quant_uncompilable = _pipeline_quant_uncompilable_reason(
                         target, fam, speed_mode, model_kind = kind
                     )
 
-                    # Quantise dense bf16 pipeline denoisers in place. The blocker excludes UNet and
-                    # pre-quantised pipelines; offloaded plans remain dense because torchao tensors cannot move.
-                    # The pipeline is still on the CPU here, unlike the GGUF path, which quantises after _assemble_pipe
-                    # places it. Both orders are safe and give bit-identical output: apply_memory_plan's resident
-                    # `pipe.to(placement)` is a one-shot device move, which the tensor subclasses do survive (measured on
-                    # sm_89, fp8 and int8, max|diff| 0.0). Only the per-forward offload hooks are the ones they reject.
+                    # Quantise dense bf16 pipeline denoisers in place. The blocker excludes UNet and pre-quantised
+                    # pipelines; offloaded plans stay dense because torchao tensors cannot move. The pipeline is still
+                    # on the CPU here, unlike the GGUF path, which quantises after _assemble_pipe places it. Both
+                    # orders give bit-identical output: apply_memory_plan's one-shot `pipe.to(placement)` is survived
+                    # by the subclasses (measured on sm_89, fp8 and int8, max|diff| 0.0); only the per-forward offload
+                    # hooks are not.
                     if (
                         pipe is not None
                         and kind == "pipeline"
@@ -5076,12 +5040,10 @@ class DiffusionBackend:
                         and normalize_transformer_quant(transformer_quant) is not None
                         and dense_transformer_supported(target)
                     ):
-                        # A raw fp8/int8 checkpoint is widened to bf16 by from_pretrained, which erases the one thing
-                        # the blocker below reads. Ideogram's loader stamps its own; recover it from the shard header
-                        # for every family that reaches the generic path.
-                        # `fetch_base` too: a LOCAL diffusers directory is loaded straight from it and the prefetch
-                        # deliberately stages nothing, so `_base_local_dir` is None exactly where a hand-converted
-                        # fp8 checkpoint is most likely to be. The probe ignores anything that is not a directory.
+                        # from_pretrained widens a raw fp8/int8 checkpoint to bf16, erasing the one thing the blocker
+                        # below reads, so recover it from the shard header (Ideogram's loader stamps its own).
+                        # `fetch_base` too: a LOCAL diffusers directory stages nothing, so `_base_local_dir` is None
+                        # exactly where a hand-converted fp8 checkpoint is likeliest. Non-directories are ignored.
                         source_precision = stored_denoiser_precision(_base_local_dir or fetch_base)
                         if source_precision is not None:
                             for _attr, denoiser in denoiser_modules(pipe):
@@ -5547,8 +5509,7 @@ class DiffusionBackend:
                         }
                     )
                     if transformer_quant_artifact is not None:
-                        # Beside ``source``, never in it: it must stay "auto"/"explicit", the frontend branches
-                        # on it.
+                        # Beside ``source``, never in it: the frontend branches on "auto"/"explicit".
                         resolved["transformer_quant"]["artifact"] = transformer_quant_artifact
 
                     state = _LoadState(
@@ -6105,33 +6066,29 @@ class DiffusionBackend:
         the backend so the cached base repo (companion text-encoder / VAE) feeds the size estimate.
 
         The size estimate is per-kind: diffusers keeps GGUF weights packed (per-matmul transient
-        dequant), so a GGUF loads near its on-disk size; a safetensors single-file loads near its
-        on-disk size, except an fp8 transformer file that gets upcast to bf16 on load (~2x
-        resident); and a full pipeline is one cached download, already compressed.
+        dequant), so a GGUF loads near its on-disk size; so does a safetensors single-file, except an
+        fp8 transformer upcast to bf16 on load (~2x resident); a full pipeline is one cached
+        download, already compressed.
 
-        ``transformer_resident_override_mib`` replaces the file-size transformer estimate when the
-        loader is planning for a DIFFERENT artifact than the file on disk (the dense
-        transformer-quant candidate); ``companion_override_mib`` likewise replaces the cached
-        companion total on that re-plan, so the base repo's PREFETCHED transformer/ shards are not
-        counted as companions on top of it; ``text_encoder_override_mib`` carries that override's
-        TEXT-ENCODER share, which the planner needs to price the streamed-text-encoder group tier.
-        All come from the same family component table. The three apply to EVERY kind: a pipeline
-        re-plans against the same estimate when its loaded bf16 denoisers are about to be quantised
-        in place.
+        The three ``*_override_mib`` arguments re-price a plan against a DIFFERENT artifact than the
+        file on disk (the dense transformer-quant candidate): ``transformer_resident_override_mib``
+        replaces the file-size transformer estimate, ``companion_override_mib`` the cached companion
+        total, so the base repo's prefetched transformer/ shards are not counted twice, and
+        ``text_encoder_override_mib`` carries that override's TEXT-ENCODER share, which prices the
+        streamed-text-encoder group tier. All come from the family component table and apply to
+        every kind.
 
-        ``base_local_dir`` is the snapshot the load will actually read, carried into the size
-        lookups as an extra source alongside the cache roots: it is additive and never a
-        replacement, since under-counting here leaves an auto plan resident and OOMing on weights it
-        never budgeted.
+        ``base_local_dir`` is the snapshot the load will read, added to the size lookups alongside
+        the cache roots. Additive, never a replacement: under-counting leaves an auto plan resident
+        and OOMing on weights it never budgeted.
 
-        ``fetch_base`` is the repo the bytes were staged from, so every cache scan below reads it:
-        sizing an upstream id whose cache is empty folds the VAE/text-encoder to zero and wrongly
-        picks resident placement. ``base`` and ``repo_id`` keep the upstream identity for the
+        ``fetch_base`` is the repo the bytes were staged from, so every cache scan reads it: sizing
+        an upstream id whose cache is empty folds the VAE/text-encoder to zero and wrongly picks
+        resident placement. ``base`` and ``repo_id`` keep the upstream identity for the
         family/variant checks.
 
         ``device_memory_override`` replaces the live reading for a plan taken BEFORE the download,
-        where free memory still describes the OLD model's occupancy; capacity is an upper bound on
-        any later free reading.
+        where free memory still describes the OLD model; capacity bounds any later free reading.
         """
         # Settled (max-over-reads) on cuda: a transient foreign allocation would make an empty card look full
         device_memory = (
@@ -6140,9 +6097,9 @@ class DiffusionBackend:
             else settled_snapshot_device_memory(target)
         )
         if kind == "pipeline" and transformer_resident_override_mib is not None:
-            # Re-planning an assembled pipeline against its dense-quant candidate. The family estimate already splits
-            # transformer from companions, and the cache scan below prices the bf16 transformer this re-plan replaces,
-            # so reading it would size the candidate at the footprint it is meant to shrink.
+            # Re-planning an assembled pipeline against its dense-quant candidate. The family estimate already
+            # splits transformer from companions; the cache scan below would price the bf16 transformer this
+            # re-plan replaces, sizing the candidate at the footprint it is meant to shrink.
             companion_mib = companion_override_mib
             text_encoder_mib = text_encoder_override_mib
             model_dense_mib = transformer_resident_override_mib + (companion_mib or 0)

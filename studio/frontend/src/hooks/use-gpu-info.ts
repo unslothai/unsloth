@@ -49,8 +49,8 @@ export interface GpuInfo {
   backend: string;
   /** Backend-reported dense quant capability. False until system info arrives. */
   denseQuantSupported: boolean;
-  /** The dense quant schemes the backend says this host can run, best first ("fp8", "int8").
-   *  Empty until system info arrives and on a backend too old to report the field. */
+  /** The dense quant schemes the backend says this host can run, best first ("fp8", "int8"). Empty
+   *  until system info arrives, and on a backend too old to report the field. */
   denseQuantSchemes: readonly string[];
   name: string;
   memoryTotalGb: number;
@@ -253,12 +253,10 @@ function toGpuDevices(
 /**
  * Carry the previous `denseQuantSchemes` array forward when its contents are unchanged.
  *
- * A snapshot that differs only in free host RAM is still a NEW snapshot -- `refresh_memory=true`
- * re-probes `memory.available_gb` behind every footprint estimate, so the comparison below sees a
- * difference on nearly every poll -- but this list is a hardware capability that does not move.
- * Consumers memoise the media picker's option list on it (`useImageModels`, `curatedRowLabelFor`),
- * so handing back an equal-but-fresh array rebuilt every row on every probe: the GGUF rows carry a
- * host-dependent `(Slow)` suffix, so each rebuild detached and re-created them.
+ * `refresh_memory=true` re-probes `memory.available_gb`, so nearly every poll yields a new snapshot,
+ * but this list is a hardware capability that does not move. Consumers memoise the media picker's
+ * option list on it (`useImageModels`, `curatedRowLabelFor`), so an equal-but-fresh array detached
+ * and re-created every row on every probe.
  */
 export function withStableSchemes(current: GpuInfo, next: GpuInfo): GpuInfo {
   const held = current.denseQuantSchemes;

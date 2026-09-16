@@ -4,21 +4,19 @@
 """Opt-in low-precision quantisation of the diffusion DiT transformer.
 
 The default GGUF path stores weights 4-bit but DEQUANTISES to bf16 on every matmul, so it runs at
-bf16 tensor-core rate: a memory win that costs speed. This module is the opt-in alternative: load
-the DENSE bf16 transformer and torchao-quantise it with a DYNAMIC-ACTIVATION scheme so the matmul
-runs on low-precision tensor cores. Measured on B200 (Z-Image-Turbo, 1024px/8 steps) vs GGUF+compile
-(0.802s, LPIPS 0.083): fp8 0.585s (1.37x), int8 0.603s (1.33x), both at LOWER LPIPS than GGUF --
-faster and slightly more accurate, at a higher-memory dense load. Strictly opt-in; GGUF stays the
-low-memory default and fallback.
+bf16 tensor-core rate: a memory win that costs speed. The opt-in alternative here loads the DENSE
+bf16 transformer and torchao-quantises it with a DYNAMIC-ACTIVATION scheme, so the matmul runs on
+low-precision tensor cores. Measured on B200 (Z-Image-Turbo, 1024px/8 steps) against GGUF+compile
+(0.802s, LPIPS 0.083): fp8 0.585s (1.37x), int8 0.603s (1.33x), both at LOWER LPIPS, at a
+higher-memory dense load. GGUF stays the low-memory default and fallback.
 
-Scheme by architecture (``auto`` picks the best supported, best first): int8 leads every tier, then
-fp8 on Ada / Hopper / Blackwell (sm_89+) and mxfp8 on Blackwell (sm_100+); Ampere (sm_80+) has int8
-alone. nvfp4 is an explicit opt-in and is not in the auto ladder. ``_AUTO_LADDER`` is the ordering
-that ships, this is its summary.
+Scheme by architecture (``auto`` takes the best supported): int8 leads every tier, then fp8 on
+Ada / Hopper / Blackwell (sm_89+) and mxfp8 on Blackwell (sm_100+); Ampere (sm_80+) has int8 alone.
+nvfp4 is explicit opt-in, outside the auto ladder. ``_AUTO_LADDER`` is what ships.
 
 Every scheme needs ``torch.compile`` for the speedup (dynamic quant is ~30x slower eager); the
 loader compiles the repeated block after this. torch / torchao imported lazily; every probe is
-best-effort: an unsupported scheme yields None and the caller loads GGUF.
+best-effort, yielding None so the caller loads GGUF.
 """
 
 from __future__ import annotations
@@ -206,10 +204,9 @@ def exclude_tokens_for_scheme(scheme: str, family: Optional[str] = None) -> tupl
     return ()
 
 
-# Per-arch preference for ``auto``, best first. int8 leads every tier: it runs full-rate on consumer and workstation
-# cards (which halve fp8 FP32 accumulate) and is within a few percent of fp8 on data-center parts.
-# nvfp4 is an explicit opt-in kept OUT of the ladder: it is both slower and less accurate at DiT shapes, and auto
-# must never silently drop to such a scheme. Uncomment the Blackwell tier below to re-enable it under auto.
+# Per-arch preference for ``auto``, best first. int8 leads every tier: it runs full-rate on consumer and
+# workstation cards (which halve fp8 FP32 accumulate) and is within a few percent of fp8 elsewhere.
+# nvfp4 is explicit opt-in and kept OUT of the ladder, being slower and less accurate at DiT shapes.
 _AUTO_LADDER: tuple[tuple[tuple[int, int], tuple[str, ...]], ...] = (
     ((10, 0), (TQ_INT8, TQ_FP8, TQ_MXFP8)),  # Blackwell sm_100+ (nvfp4 is explicit opt-in only)
     # ((10, 0), (TQ_INT8, TQ_FP8, TQ_NVFP4, TQ_MXFP8)),  # restore to re-enable nvfp4 under auto
@@ -393,10 +390,9 @@ _PROFESSIONAL_GPU_MARKERS = ("RTX PRO 6000", "RTX 6000 ADA")
 
 def _is_consumer_gpu(device: Any = None) -> bool:
     """Whether the active GPU is consumer-class (GDDR), where fp8 FP32 accumulate is halved so fast
-    (FP16) accumulate is a ~2x win. Data-center HBM and professional parts are not nerfed (return
-    False -> precise accumulate). Heuristic on the device name: GeForce / TITAN ->
-    consumer; a data-center token or professional marker -> not; anything else defaults to
-    consumer (fast accumulate is free on data-center, a win on consumer). True on any failure."""
+    (FP16) accumulate is a ~2x win. Data-center HBM and professional parts are not nerfed and return
+    False. Heuristic on the device name, defaulting to consumer, which is free on data-center parts
+    and a win on consumer ones. True on any failure."""
     try:
         import re
 
@@ -427,8 +423,8 @@ def normalize_transformer_quant(value: Optional[str]) -> Optional[str]:
     return normalized
 
 
-# GGUF substitutes dense base weights; pipeline rewrites its loaded weights in place. Single-file
-# artifacts keep their stored precision. Pipeline eligibility is checked later by ``dense_quant_blocker``.
+# GGUF substitutes dense base weights; pipeline rewrites its loaded weights in place; single-file
+# artifacts keep their stored precision. ``dense_quant_blocker`` checks pipeline eligibility later.
 DENSE_QUANT_KINDS: tuple[str, ...] = ("gguf", "pipeline")
 
 
@@ -438,7 +434,6 @@ def dense_quant_supported_kind(model_kind: Optional[str]) -> bool:
 
 
 def dense_quant_unsupported_kind_reason(model_kind: Optional[str]) -> str:
-    """Explain why a load kind cannot use dense transformer quantisation."""
     return (
         f"the dense transformer-quant path applies to GGUF and pipeline picks, and this is a "
         f"'{model_kind}' load, which runs the precision its checkpoint carries"
@@ -492,8 +487,8 @@ def mark_source_precision(module: Any, precision: str) -> Any:
     return module
 
 
-# safetensors header dtype strings for storage narrower than bf16, mapped to the name the refusal
-# uses. Header strings, not torch dtypes: this is read before anything is instantiated.
+# safetensors header dtype strings narrower than bf16, mapped to the name the refusal uses. Header
+# strings, not torch dtypes: this is read before anything is instantiated.
 _NARROW_STORED_DTYPES: dict[str, str] = {
     "F8_E4M3": "fp8",
     "F8_E5M2": "fp8",
@@ -510,16 +505,14 @@ def stored_denoiser_precision(local_dir: Optional[str]) -> Optional[str]:
     """The narrow precision a LOCAL snapshot's denoiser shards are stored at, or None.
 
     ``from_pretrained(torch_dtype = bfloat16)`` widens a raw fp8 checkpoint as it loads, so by the
-    time ``dense_quant_blocker`` walks parameters every tensor reads bf16 and the evidence that this
-    was ever a low-precision checkpoint is gone. Quantising it again compounds a loss that was
-    already taken. Ideogram's dedicated loader records this itself with ``mark_source_precision``;
-    every other family reaches the generic loader, where the shard header is the only place left to
-    look.
+    time ``dense_quant_blocker`` walks parameters every tensor reads bf16 and the evidence is gone.
+    Quantising it again compounds a loss already taken. Ideogram's loader records this itself with
+    ``mark_source_precision``; every other family reaches the generic loader, where the shard header
+    is the only place left to look.
 
     Headers only, and only under a directory we already have: no download, no tensor read, and no
-    verdict at all when there is no local snapshot -- which is the behaviour without this check. A
-    hub id is not a directory and answers None, so the caller can hand over whichever of the staged
-    snapshot or the load's own base it has."""
+    verdict without a local snapshot, which is the behaviour without this check. A hub id is not a
+    directory and answers None, so the caller may pass the staged snapshot or the load's own base."""
     if not local_dir:
         return None
     try:
@@ -532,9 +525,9 @@ def stored_denoiser_precision(local_dir: Optional[str]) -> Optional[str]:
             sub = root / attr
             if not sub.is_dir():
                 continue
-            # EVERY shard. A narrow checkpoint keeps its norms and embeddings wide -- which is why
-            # _DENSE_PARAM_DTYPE_NAMES admits float32 -- and shards are cut by size, so the first
-            # file can be entirely wide while the linears in a later one are fp8.
+            # EVERY shard: a narrow checkpoint keeps its norms and embeddings wide (why
+            # _DENSE_PARAM_DTYPE_NAMES admits float32), and shards are cut by size, so the first
+            # file can be entirely wide while a later one holds the fp8 linears.
             for shard in sorted(sub.glob("*.safetensors")):
                 with safetensors.safe_open(str(shard), "pt") as handle:
                     for key in handle.keys():
@@ -686,30 +679,28 @@ def select_transformer_quant_scheme(
 def dense_quant_host_capable(target: Any) -> bool:
     """Whether an ``auto`` request could engage a dense scheme on this host.
 
-    One question, one bit, because that is all the picker can honestly act on. A load's actual
-    scheme depends on the request (precision, speed, memory), on the family deny list and on the
-    smoke probe, and none of those belong on a row that has not been clicked; ``resolved`` reports
-    what ran once it has.
+    One bit, because that is all the picker can honestly act on. A load's actual scheme depends on
+    the request (precision, speed, memory), the family deny list and the smoke probe, none of which
+    belong on an unclicked row; ``resolved`` reports what ran once there is a load.
 
     Cheap and non-allocating, so a polled status route can ask it: the arch floors come from
-    ``_AUTO_LADDER``, and the probe is only READ from ``_SMOKE_CACHE`` where the load path has
-    already paid for it. An unprobed scheme counts as usable, the same "could not tell" the
-    ``unproven_ok`` path takes; a probed failure does not.
+    ``_AUTO_LADDER`` and the probe is only READ from ``_SMOKE_CACHE``, where the load path already
+    paid for it. An unprobed scheme counts as usable, like the ``unproven_ok`` path; a probed
+    failure does not.
 
-    ``auto``, not "any scheme": the ladder leaves nvfp4 out on purpose, so a host that can only run
-    nvfp4 honours an explicit request and has nothing automatic to offer."""
+    ``auto``, not "any scheme": the ladder leaves nvfp4 out, so a host that can only run nvfp4
+    honours an explicit request and has nothing automatic to offer."""
     if not dense_transformer_supported(target):
         return False
-    # The loader keeps a pipeline dense when nothing can compile the result, so a host that cannot
-    # run inductor at all has no fast path to advertise. Host-level only: the per-family and
-    # per-request halves of that decision belong to the load, not to a row.
+    # The loader keeps a pipeline dense when nothing can compile the result, so a host without
+    # inductor has no fast path to advertise. Host-level only: the per-family and per-request
+    # halves of that decision belong to the load, not to a row.
     from .diffusion_speed import compile_eligible
 
     if not compile_eligible(target, is_gguf = False, family = None):
         return False
-    # Not redundant with the arch floor: `_scheme_supported` imports torchao and rejects every
-    # scheme when that import fails, so a torch/torchao ABI skew would advertise a fast path every
-    # load then falls back from.
+    # Not redundant with the arch floor: `_scheme_supported` rejects every scheme when the torchao
+    # import fails, so an ABI skew would advertise a fast path every load then falls back from.
     if torchao_unavailable_reason() is not None:
         return False
     cap = _capability()
@@ -748,11 +739,10 @@ def auto_scheme_candidates(target: Any, family: Optional[str] = None) -> tuple[s
 def auto_scheme_candidates_cached(target: Any, family: Optional[str] = None) -> tuple[str, ...]:
     """``auto_scheme_candidates`` answered from ``_SMOKE_CACHE`` alone, for a polled status route.
 
-    Same ladder and same deny list, but no probe: ``_scheme_supported`` can spawn the child smoke
-    probe or allocate in this process, and neither belongs on a route the frontend polls every few
-    seconds. An unprobed scheme counts as usable and a probed failure does not, the rule
-    ``dense_quant_host_capable`` already follows, so the published ladder sharpens as loads record
-    verdicts instead of paying for them here."""
+    Same ladder and deny list, but no probe: ``_scheme_supported`` can spawn the child smoke probe
+    or allocate in this process, and neither belongs on a route polled every few seconds. Unprobed
+    counts as usable and a probed failure does not, as in ``dense_quant_host_capable``, so the
+    published ladder sharpens as loads record verdicts instead of paying for them here."""
     if not dense_transformer_supported(target):
         return ()
     cap = _capability()

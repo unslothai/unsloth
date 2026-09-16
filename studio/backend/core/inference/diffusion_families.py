@@ -304,14 +304,14 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         pipeline_class = "QwenImagePipeline",
         transformer_class = "QwenImageTransformer2DModel",
         base_repo = "Qwen/Qwen-Image",
-        # Qwen-Image-FP8.pt was rebuilt with the activation scale floor (LPIPS 0.044 against the bf16 render at
-        # 1024, seed 20260914), so an fp8 host seeds it instead of quantising the bf16 shards in memory.
+        # Qwen-Image-FP8.pt was rebuilt with the activation scale floor (LPIPS 0.044 against the bf16
+        # render at 1024, seed 20260914), so an fp8 host seeds it instead of quantising bf16 in memory.
         prequant_repos = (
             ("int8", "unsloth/Qwen-Image-FP8"),
             ("fp8", "unsloth/Qwen-Image-FP8"),
         ),
-        # 2512 is a different checkpoint with its own baked artifacts; without these rows an official 2512 pick plans
-        # the Qwen-Image artifact, and the load's base_model_id check refuses it once the shards are already dropped.
+        # 2512 is a different checkpoint with its own baked artifacts; without these rows a 2512 pick
+        # plans the Qwen-Image artifact, refused by base_model_id once the shards are already dropped.
         prequant_variant_repos = (
             ("qwen/qwen-image-2512", "int8", "unsloth/Qwen-Image-2512-FP8"),
             ("qwen/qwen-image-2512", "fp8", "unsloth/Qwen-Image-2512-FP8"),
@@ -445,9 +445,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ("int8", "unsloth/HiDream-I1-Full-FP8"),
             ("fp8", "unsloth/HiDream-I1-Full-FP8"),
         ),
-        # Dev and Fast are distillations of Full, so the hosted Full checkpoint is baked from other weights and no
-        # artifact is published for either. Excluded rather than inherited: the load's base_model_id check refuses
-        # the Full artifact only after the plan has dropped their released shards.
+        # Dev and Fast are distillations of Full, so the hosted Full checkpoint is baked from other
+        # weights and neither has its own artifact. Excluded rather than inherited: base_model_id
+        # refuses the Full artifact only after the plan has dropped their released shards.
         prequant_excluded_bases = ("hidream-ai/hidream-i1-dev", "hidream-ai/hidream-i1-fast"),
         # Pre-cast Llama-3.1-8B TE4 (16.1 -> 8.1 GB). The generic TE pass only covers text_encoder.._3, so TE4 engages
         # via hidream_te4_kwargs.

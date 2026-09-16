@@ -1599,7 +1599,6 @@ def test_real_torchao_configs_carry_set_inductor_config_false():
 
 
 def test_the_dense_quant_kinds_are_gguf_and_pipeline():
-    """GGUF and pipeline loads can reach dense quantisation; single files cannot."""
     assert tq.DENSE_QUANT_KINDS == ("gguf", "pipeline")
     assert dense_quant_supported_kind("gguf") is True
     assert dense_quant_supported_kind("pipeline") is True
@@ -1610,7 +1609,6 @@ def test_the_dense_quant_kinds_are_gguf_and_pipeline():
 
 
 def test_the_unsupported_kind_reason_names_the_kind_and_the_two_that_work():
-    """The refusal identifies both the rejected kind and supported alternatives."""
     reason = dense_quant_unsupported_kind_reason("single_file")
     assert "single_file" in reason
     assert "GGUF and pipeline" in reason
@@ -1643,7 +1641,6 @@ def test_a_dense_bf16_pipeline_is_the_one_shape_that_passes():
 
 
 def test_a_unet_pipeline_is_blocked_by_having_no_transformer():
-    """UNet pipelines are blocked because they expose no transformer."""
     blocker = tq.dense_quant_blocker(types.SimpleNamespace(unet = _Denoiser()))
     assert blocker is not None and "UNet" in blocker
 
@@ -1652,7 +1649,6 @@ def test_a_unet_pipeline_is_blocked_by_having_no_transformer():
     "dtype", ["torch.uint8", "torch.float8_e4m3fn", "torch.float16", "torch.int8"]
 )
 def test_a_pre_quantised_pipeline_is_blocked_by_its_parameter_dtypes(dtype):
-    """Non-dense parameter dtypes block repeated quantisation."""
     blocker = tq.dense_quant_blocker(types.SimpleNamespace(transformer = _Denoiser(dtype)))
     assert blocker is not None and dtype.split(".")[-1] in blocker
 
@@ -1667,13 +1663,11 @@ def test_a_pre_quantised_pipeline_is_blocked_by_its_parameter_dtypes(dtype):
     ],
 )
 def test_a_declared_quantisation_blocks_it_too(attrs, expected):
-    """Explicit quantisation markers block repeated quantisation."""
     blocker = tq.dense_quant_blocker(types.SimpleNamespace(transformer = _Denoiser(**attrs)))
     assert blocker is not None and expected in blocker
 
 
 def test_the_second_denoiser_is_enumerated_and_judged():
-    """Every denoiser in a multi-branch pipeline is checked."""
     pipe = types.SimpleNamespace(
         transformer = _Denoiser(), unconditional_transformer = _Denoiser("torch.float8_e4m3fn")
     )
@@ -1686,7 +1680,6 @@ def test_the_second_denoiser_is_enumerated_and_judged():
 
 
 def test_the_denoiser_view_presents_an_arbitrary_attribute_as_the_transformer():
-    """Denoiser views expose alternate branches through ``transformer``."""
     second = _Denoiser()
     pipe = types.SimpleNamespace(transformer = _Denoiser(), unconditional_transformer = second, vae = "v")
     view = tq.DenoiserView(pipe, "unconditional_transformer")
@@ -1695,7 +1688,6 @@ def test_the_denoiser_view_presents_an_arbitrary_attribute_as_the_transformer():
 
 
 def test_a_pipeline_that_cannot_be_walked_is_not_called_quantised():
-    """An inspection failure is not evidence of prior quantisation."""
 
     class _Unwalkable:
         def parameters(self, recurse = True):
@@ -1705,7 +1697,6 @@ def test_a_pipeline_that_cannot_be_walked_is_not_called_quantised():
 
 
 def test_a_dequantised_source_blocks_the_quant_even_though_its_tensors_are_bf16():
-    """A widened quantised source remains ineligible despite its bf16 tensors."""
     widened = _Denoiser()  # bf16 tensors, exactly as the loader leaves them
     assert tq.dense_quant_blocker(types.SimpleNamespace(transformer = widened)) is None
     tq.mark_source_precision(widened, "fp8")
@@ -1715,7 +1706,6 @@ def test_a_dequantised_source_blocks_the_quant_even_though_its_tensors_are_bf16(
 
 
 def test_the_source_marker_is_best_effort_and_returns_the_module():
-    """Source-precision markers are chainable and best effort."""
     module = _Denoiser()
     assert tq.mark_source_precision(module, "fp8") is module
 
@@ -1728,7 +1718,6 @@ def test_the_source_marker_is_best_effort_and_returns_the_module():
 
 
 def test_the_ideogram_fp8_loader_stamps_what_it_widened():
-    """The Ideogram FP8 loader records its widened source precision."""
     import pathlib
 
     import core.inference.diffusion_ideogram4 as ideo
@@ -1748,9 +1737,8 @@ def _capable_host(
 ):
     """A CUDA host past the arch floor, with torchao, the probe cache and the compiler pinned.
 
-    ``compile_eligible`` is stubbed true because these targets are namespaces without the real
-    ``supports_default_torch_compile`` and torch dtype a card carries; the test that cares about
-    the compile term overrides it."""
+    ``compile_eligible`` is stubbed true because these targets are namespaces without a card's real
+    ``supports_default_torch_compile`` and dtype; the test that cares about it overrides this."""
     from core.inference import diffusion_speed
 
     monkeypatch.setattr(diffusion_speed, "compile_eligible", lambda target, **kw: True)
@@ -1770,7 +1758,7 @@ def test_a_host_whose_torchao_cannot_import_advertises_nothing(monkeypatch):
     """An unimportable torchao makes every scheme decline, so the capability must be false.
 
     `dense_transformer_supported` only catches the Windows-ROCm stub and `_capability` reads the
-    card, so without this the picker would call rows fast while every load fell back to bf16.
+    card, so without this the picker calls rows fast while every load falls back to bf16.
     """
     _capable_host(monkeypatch, torchao_reason = "ImportError: cannot import name 'ScalingType'")
     assert tq.dense_quant_host_capable(_target()) is False
@@ -1890,9 +1878,7 @@ def test_a_recovered_source_precision_blocks_the_quant(tmp_path):
 
 def test_a_host_that_cannot_compile_advertises_nothing(monkeypatch):
     """The loader keeps a pipeline dense when nothing can compile it, so there is no path to sell.
-
-    Reachable on a normal Windows CUDA install with no Triton wheel, and under TORCHDYNAMO_DISABLE.
-    """
+    Reachable on a Windows CUDA install with no Triton wheel, and under TORCHDYNAMO_DISABLE."""
     from core.inference import diffusion_speed
 
     _capable_host(monkeypatch)

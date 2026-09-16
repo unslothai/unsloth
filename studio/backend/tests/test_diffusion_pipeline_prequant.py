@@ -184,7 +184,6 @@ def _plan_backend(
 
 
 def test_the_plan_counts_and_stages_the_hosted_checkpoint(monkeypatch, hub):
-    """The plan counts the hosted checkpoint's bytes and stages it as a companion entry."""
     backend = _plan_backend(monkeypatch, planned = "fp8")
     plan = backend.download_plan(Z_IMAGE_REPO, model_kind = "pipeline")
 
@@ -327,13 +326,11 @@ def test_an_unset_precision_defaults_to_the_hosted_checkpoint(monkeypatch):
 
 
 def test_an_ampere_host_defaults_to_the_hosted_int8_checkpoint(monkeypatch):
-    """An Ampere host settles on the hosted int8 checkpoint."""
     assert _settle(_settle_backend(monkeypatch, scheme = "int8")) == "int8"
 
 
 @pytest.mark.parametrize("quant", ["none", "off"])
 def test_precision_off_keeps_the_released_weights(monkeypatch, quant):
-    """An explicit precision of none/off keeps the released weights."""
     assert _settle(_settle_backend(monkeypatch), transformer_quant = quant) is None
 
 
@@ -343,8 +340,8 @@ def test_speed_off_keeps_the_released_weights(monkeypatch):
 
 
 def test_an_explicit_scheme_under_speed_off_still_seeds(monkeypatch):
-    """Speed=off only silences an AUTO precision. An explicit scheme is still quantized by the loader, which then
-    upgrades the speed to `default`, so it must seed the hosted checkpoint instead of downloading the bf16 shards."""
+    """Speed=off only silences an AUTO precision. An explicit scheme is still quantized and upgrades
+    the speed to `default`, so it must seed the hosted checkpoint rather than pull the bf16 shards."""
     backend = _settle_backend(monkeypatch)
     assert _settle(backend, transformer_quant = "fp8", speed_mode = "off") == "fp8"
 
@@ -368,8 +365,9 @@ def test_an_artifact_sized_plan_that_still_offloads_declines(monkeypatch):
 
 
 def _settle_backend_walking(monkeypatch, *, artifacts: tuple, candidates: tuple):
-    """A settle backend whose memory verdict depends on the rung: an int8-sized plan (31 GB) offloads, an fp8-sized
-    one (19 GB) stays resident; ``artifacts`` names the schemes with a hosted file, ``candidates`` the auto ladder."""
+    """A backend whose memory verdict depends on the rung: an int8-sized plan (31 GB) offloads, an
+    fp8-sized one (19 GB) stays resident. ``artifacts`` names the schemes with a hosted file,
+    ``candidates`` the auto ladder."""
     from core.inference import diffusion_transformer_quant as tq
 
     backend = _settle_backend(monkeypatch, scheme = candidates[0])
@@ -407,7 +405,7 @@ def _settle_backend_walking(monkeypatch, *, artifacts: tuple, candidates: tuple)
 
 
 def test_an_artifact_too_large_for_the_card_yields_to_the_next_hosted_rung(monkeypatch):
-    """int8 leads the ladder, but Qwen-Image's int8 file is 12 GB larger than its fp8 file: on a card where the
+    """int8 leads the ladder, but Qwen-Image's int8 file is 12 GB larger than its fp8 one: where the
     int8-sized plan offloads, auto seeds the fp8 artifact instead of pinning a decline."""
     backend = _settle_backend_walking(
         monkeypatch, artifacts = ("int8", "fp8"), candidates = ("int8", "fp8")
@@ -440,8 +438,8 @@ def test_a_base_with_no_hosted_artifact_falls_through(monkeypatch):
 
 
 def test_a_forced_fp8_accumulate_the_artifact_cannot_bake_keeps_the_released_weights(monkeypatch):
-    """The hosted fp8 checkpoints bake fast accumulate, and ``_validate_checkpoint`` refuses a baked value that
-    differs from a FORCED one. Seeding anyway drops the released shards for a checkpoint the load must reject."""
+    """The hosted fp8 checkpoints bake fast accumulate, and ``_validate_checkpoint`` refuses a baked
+    value differing from a FORCED one, so seeding drops the shards for a checkpoint the load rejects."""
     backend = _settle_backend(monkeypatch)
     assert _settle(backend, transformer_quant = "fp8", fast_accum = False) is None
     assert _settle(backend, transformer_quant = "fp8", fast_accum = True) == "fp8"
@@ -554,8 +552,7 @@ def test_an_artifact_that_does_not_resolve_keeps_the_released_shards(monkeypatch
 
 def test_a_local_checkpoint_is_still_seeded_on_an_online_load(monkeypatch, hub):
     """An operator's own checkpoint has no Hub entry, so the plan drops no shards for it; the seed
-    still has to survive the pull, or the load quantises the released bf16 shards in memory and the
-    file it was pointed at goes unused."""
+    must still survive the pull, or the load quantises bf16 in memory and ignores the given file."""
     backend, seen, fetched = _run_load_backend(monkeypatch, planned = "fp8", verified = False)
     monkeypatch.setattr(dmod, "denoiser_prequant_cached", lambda *_a, **_k: True)
     backend._run_load(
@@ -745,7 +742,6 @@ def _load(backend, **overrides):
 
 
 def test_a_seeded_denoiser_engages_the_quant_without_a_second_conversion(fake_runtime, monkeypatch):
-    """A seeded denoiser engages the quant with no second, in-memory conversion."""
     backend, spy = _load_backend(monkeypatch)
     status = _load(backend)
 
@@ -787,8 +783,8 @@ def test_a_seed_that_does_not_land_replans_and_tops_up_the_shards(fake_runtime, 
 
 def test_a_top_up_that_spans_cache_roots_assembles_from_the_hub_id(fake_runtime, monkeypatch):
     """A cache-folder change can leave the manifest in the old root and the restored shards in the
-    live one. No snapshot then holds both, so the assembly must fall back to the hub id instead of
-    the staged directory, which from_pretrained would treat as terminal with no transformer in it."""
+    live one. No snapshot then holds both, so assembly must fall back to the hub id: from_pretrained
+    would treat the staged directory as terminal with no transformer in it."""
     backend, _spy = _load_backend(monkeypatch, seeded = False)
     monkeypatch.setattr(DiffusionBackend, "_prefetch_files", lambda *_a, **_k: None)
     _load(backend, _base_local_dir = "/old/root/snapshots/abc")
@@ -857,8 +853,8 @@ def test_the_artifact_label_names_the_file_that_really_loaded():
 
 def test_a_dropped_seed_replans_once_the_dense_shards_are_back(fake_runtime, monkeypatch):
     """The plan the dense load runs on is taken AFTER the skipped transformer shards are restored."""
-    # A pipeline plan prices CACHED bytes, so the plan taken while transformer/ was skipped saw
-    # companions only: left in place it reads 'none' and the load keeps the bf16 denoiser resident.
+    # A pipeline plan prices CACHED bytes, so one taken while transformer/ was skipped saw companions
+    # only: left in place it reads 'none' and the load keeps the bf16 denoiser resident.
     backend, spy = _load_backend(monkeypatch, offload = "sequential")
     _load(backend)
 
@@ -900,7 +896,6 @@ def test_a_direct_load_with_no_plan_phase_keeps_todays_behaviour(fake_runtime, m
 
 
 def test_an_explicit_scheme_with_a_hosted_artifact_is_seeded_too(monkeypatch):
-    """An explicit scheme with a hosted artifact is seeded too."""
     backend = _settle_backend(monkeypatch)
     assert _settle(backend, transformer_quant = "fp8") == "fp8"
 

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A dense-quant host loads an official image pipeline from the hosted pre-quantised transformer,
-// so the picker must name that precision AND judge fit against the quantised resident size. Both
-// read `dense_quant_schemes`, which older backends do not send; absent is [] and nothing changes.
+// A dense-quant host loads an official image pipeline from the hosted pre-quantised transformer, so
+// the picker must name that precision AND judge fit against the quantised resident size. Both read
+// `dense_quant_schemes`; older backends omit it, and absent is [] with nothing changed.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -227,8 +227,8 @@ test("every diffusion GGUF row is tagged Slow, not only H3's", () => {
 });
 
 test("a host with no accelerator is not told which row is slow", () => {
-  // Off an accelerator the GGUF is the only thing that runs, so there is nothing to be slower
-  // than and the qualifier would only read as a warning about the user's one option.
+  // Off an accelerator the GGUF is the only row that runs, so the qualifier would read as a
+  // warning about the user's one option rather than a comparison.
   for (const host of ["gguf-only", "unknown"] as const) {
     for (const [repoId, catalog] of [
       ["unsloth/Z-Image-Turbo-GGUF", IMAGE_CATALOG],

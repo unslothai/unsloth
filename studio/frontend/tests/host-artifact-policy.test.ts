@@ -148,8 +148,8 @@ test("every dense 8-bit scheme shares the one FP8 label", () => {
   assert.equal(densePerfSuffix(["fp8"]), "Fast FP8");
   assert.equal(densePerfSuffix(["int8"]), "Fast FP8");
   assert.equal(densePerfSuffix(["mxfp8"]), "Fast FP8");
-  // Reordering the ladder must not rename the row: the label is the tier, and the resolved
-  // record is what names the scheme that actually loaded.
+  // Reordering the ladder must not rename the row: the label is the tier, and the resolved record
+  // names the scheme that actually loaded.
   assert.equal(densePerfSuffix(["fp8", "int8"]), "Fast FP8");
   assert.equal(densePerfSuffix(["int8", "fp8"]), "Fast FP8");
   // A 4-bit scheme is a different quality tier and keeps its own name.

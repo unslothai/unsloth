@@ -4,8 +4,8 @@
 """Seed an official image PIPELINE pick with its hosted pre-quantized denoiser.
 
 A ``kind == "pipeline"`` pick assembles every component from one repo, so the only way to run a
-quantised denoiser without materialising the bf16 shards is an already-quantised ``transformer=``
-handed to ``from_pretrained``. Torch-free at import."""
+quantised denoiser without materialising the bf16 shards is handing ``from_pretrained`` an
+already-quantised ``transformer=``. Torch-free at import."""
 
 from __future__ import annotations
 
@@ -14,14 +14,14 @@ from typing import Any, Optional
 from .diffusion_families import IDEOGRAM4_FAMILY_NAME
 from .diffusion_krea2 import KREA2_FAMILY_NAME
 
-# The planner DECIDED against the seed, not the same as never having asked: the pull kept the dense shards, so the
-# loader must not re-take the decision and fetch the artifact inline.
+# The planner DECIDED against the seed, unlike never having asked: the pull kept the dense shards, so
+# the loader must not re-take the decision and fetch the artifact inline.
 PIPELINE_SEED_DECLINED = "__declined__"
 
 DENOISER_COMPONENT = "transformer"
 
-# Families assembled PER COMPONENT, plus ideogram's second denoiser: their assemblers never see ``pipe_kwargs``, so a
-# seed would be dropped after the plan had dropped their dense shards.
+# Families assembled PER COMPONENT, plus ideogram's second denoiser: their assemblers never see
+# ``pipe_kwargs``, so a seed would be dropped after the plan had dropped their dense shards.
 _UNSEEDABLE_PIPELINE_FAMILIES = (KREA2_FAMILY_NAME, IDEOGRAM4_FAMILY_NAME)
 
 
@@ -158,11 +158,9 @@ def denoiser_prequant_pipe_kwargs(
 
 def prequant_artifact_label(source: Any, module: Any = None) -> Optional[str]:
     """``prequant:<repo>/<file>`` for a hosted artifact, ``prequant:<path>`` for a local override;
-    the scheme alone cannot tell one from a runtime quantise.
-
-    ``module`` is the seeded denoiser, which carries the file that really loaded: a repo holding
-    only ``fallback_filename`` serves that one, and ``source.filename`` then names a file nobody
-    fetched."""
+    the scheme alone cannot tell either from a runtime quantise. ``module`` is the seeded denoiser,
+    which carries the file that really loaded: a repo holding only ``fallback_filename`` serves
+    that one, and ``source.filename`` would then name a file nobody fetched."""
     if source is None:
         return None
     kind = getattr(source, "kind", None)
@@ -176,7 +174,6 @@ def prequant_artifact_label(source: Any, module: Any = None) -> Optional[str]:
 
 
 def _loaded_filename(module: Any) -> Optional[str]:
-    """The basename of the checkpoint ``module`` was loaded from, or None."""
     path = getattr(module, "_unsloth_prequant_path", None)
     if not path:
         return None
