@@ -263,10 +263,12 @@ def test_the_kill_does_not_re_expand_a_rejected_stranger(monkeypatch):
     )
     killed = []
     monkeypatch.setattr(pl, "_windows_terminate_pid", lambda pid: killed.append(pid))
+
     # Reaching for /T at all is the regression: the expansion happens inside Windows, so
     # no assertion on the resulting pid set can see it once the call has been made.
     def _no_tree_kill(pid):
         raise AssertionError(f"taskkill /T was used on {pid}; it re-expands rejected pids")
+
     monkeypatch.setattr(pl, "_windows_terminate_tree", _no_tree_kill)
 
     collected = pl.collect_descendants(root)
