@@ -8319,7 +8319,14 @@ async def _unavailable_model_message(requested_model: str) -> str:
     candidates = [requested.casefold()] + (
         [base.strip().casefold()] if sep and base.strip() else []
     )
-    downloaded = await _downloaded_model_ids()
+    # The advertised ids too, not just the catalog's raw model_id: a task row can be advertised
+    # under an alias (_stt_model_objects() lists "tiny" for unsloth/whisper-tiny), and a request
+    # naming what GET /v1/models showed is a request for something that IS on this machine.
+    downloaded = await _downloaded_model_ids() | {
+        obj["id"].casefold()
+        for obj in catalog_objects
+        if isinstance(obj.get("id"), str) and obj["id"]
+    }
     servable = _chat_servable_ids(catalog_objects)
     withheld = next((c for c in candidates if c in downloaded and c not in servable), None)
     if withheld is not None:
@@ -8331,9 +8338,11 @@ async def _unavailable_model_message(requested_model: str) -> str:
         )
         return f"{message} Available models: {available}." if available else message
     if not available:
-        if catalog_objects:
-            # Downloaded, but none of it is a chat model. Saying "nothing is downloaded"
-            # here would contradict GET /v1/models, which lists the task rows.
+        if downloaded:
+            # Something is on this machine, it just is not a chat model the backend loads.
+            # `downloaded`, not `catalog_objects`: a resolver-withheld checkpoint (auto_map,
+            # model_file, encoder-decoder) never enters the catalog at all, so testing the
+            # catalog would claim an empty machine on a full one.
             return (
                 f"The model '{requested_model}' is not downloaded on this server, and none of "
                 "the downloaded models is a chat model. Download one in Unsloth Studio, "

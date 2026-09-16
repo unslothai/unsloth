@@ -10998,3 +10998,34 @@ def test_speech_probe_refuses_remote_code(monkeypatch, audio_type, allowed):
     assert inference_route._target_speech_audio_type("/local/model", False) == (
         audio_type if allowed else None
     )
+
+
+def test_chat_withheld_model_named_by_its_advertised_alias(monkeypatch):
+    # _stt_model_objects advertises "tiny" while the catalog row is unsloth/whisper-tiny, so a
+    # request naming what GET /v1/models showed must read as downloaded, not as absent.
+    _wire_withheld_chat(
+        monkeypatch,
+        objects = [
+            {"id": "org/A-GGUF"},
+            {"id": "tiny", "task": "automatic-speech-recognition"},
+        ],
+        downloaded = ("org/A-GGUF", "unsloth/whisper-tiny"),
+    )
+    status, detail = _chat_error(_chat_request(model = "tiny"))
+    assert status == 404
+    assert "cannot serve it here" in detail
+    assert "not downloaded on this server" not in detail
+
+
+def test_chat_absent_model_with_only_resolver_withheld_checkpoints(monkeypatch):
+    # A checkpoint the resolver withholds never enters the catalog, so testing catalog_objects
+    # would claim an empty machine on a full one.
+    _wire_withheld_chat(
+        monkeypatch,
+        objects = [],
+        downloaded = ("org/has-auto-map",),
+    )
+    status, detail = _chat_error(_chat_request(model = "org/nope-GGUF"))
+    assert status == 404
+    assert "none of the downloaded models is a chat model" in detail
+    assert "no models are downloaded yet" not in detail
