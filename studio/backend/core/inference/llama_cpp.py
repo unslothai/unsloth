@@ -16798,7 +16798,7 @@ class LlamaCppBackend:
         self._effective_context_length = maxtok or self._context_length
         self._max_context_length = self._context_length or maxtok or None
 
-        healthy = self._wait_for_health(timeout = 600.0, cancelled = cancelled)
+        healthy = self._wait_for_health(timeout = self._HEALTH_STALL_TIMEOUT_S, cancelled = cancelled)
         if healthy:
             if not self._publish_healthy():
                 # A teardown between the probe and this commit is already killing
@@ -19075,13 +19075,12 @@ class LlamaCppBackend:
                 "expected; otherwise check the llama-server log for the cause."
             )
 
-        # A live server that never answered 200 on /health is not a bad GGUF:
-        # the load is too large for VRAM/context, or a local proxy/VPN grabbed
-        # the loopback probe (#5740).
+        # A startup stall is not a bad GGUF; memory pressure or a proxy intercepting
+        # the loopback probe can also keep /health from succeeding (#5740).
         if "health check timed out" in lowered:
             return (
-                "llama-server started but never became healthy on its local "
-                "/health endpoint. Try a smaller context length or a more "
+                "llama-server started but stopped making progress before it became "
+                "healthy on its local /health endpoint. Try a smaller context length or a more "
                 "quantized GGUF, and if you use a VPN or HTTP proxy make sure "
                 "localhost bypasses it (NO_PROXY=127.0.0.1,localhost)."
             )
@@ -27056,7 +27055,7 @@ class LlamaCppBackend:
                         # mark_process_shutting_down does not take _spawn_lock, so the
                         # check above is not atomic against it for a helper-owned
                         # backend. Without this recheck a child spawned in that gap sits
-                        # outside the completed sweep for the whole 600s health wait.
+                        # outside the completed sweep for the whole health wait.
                         if self._spawn_is_stale():
                             logger.info(
                                 "shutdown began during the spawn; killing the new llama-server"
@@ -27075,7 +27074,9 @@ class LlamaCppBackend:
                             target = self._drain_stdout, daemon = True, name = "llama-stdout"
                         )
                         self._stdout_thread.start()
-                        if self._wait_for_health(timeout = 600.0, cancelled = _load_cancelled):
+                        if self._wait_for_health(
+                            timeout = self._HEALTH_STALL_TIMEOUT_S, cancelled = _load_cancelled
+                        ):
                             if _did_rocm_retry:
                                 # Proved on this host: every later child skips the
                                 # prepend instead of crashing into it first.
@@ -28481,7 +28482,9 @@ class LlamaCppBackend:
                                 # the old child the teardown is clearing.
                                 _cleanup_cancelled_load("App shut down during the text-only retry")
                                 return False
-                            if self._wait_for_health(timeout = 600.0, cancelled = _load_cancelled):
+                            if self._wait_for_health(
+                                timeout = self._HEALTH_STALL_TIMEOUT_S, cancelled = _load_cancelled
+                            ):
                                 healthy = True
                                 # The child that serves this session never read the
                                 # CPU-pinned projector, so the host-memory advisory the
@@ -31429,14 +31432,85 @@ class LlamaCppBackend:
             stop.set()
         self._mtp_watchdog_thread = None
 
+    # Extend the health deadline while startup work continues.
+    _HEALTH_STALL_TIMEOUT_S = 600.0
+    _STARTUP_PROGRESS_SAMPLE_S = 5.0
+    # Ignore activity from the health probes themselves.
+    _STARTUP_PROGRESS_MIN_BYTES = 1 << 20
+    _STARTUP_PROGRESS_MIN_PAGE_FAULTS = 64
+    _STARTUP_PROGRESS_MIN_CPU_FRACTION = 0.05
+
+    @staticmethod
+    def _page_faults(member, memory) -> int:
+        # mmap loading can progress through page faults while RSS stays flat.
+        for field in ("pfaults", "num_page_faults"):  # macOS, Windows
+            if hasattr(memory, field):
+                return getattr(memory, field)
+        try:
+            with open(f"/proc/{member.pid}/stat", "rb") as f:
+                fields = f.read().rsplit(b")", 1)[1].split()
+            return int(fields[7]) + int(fields[9])  # minflt + majflt
+        except (OSError, IndexError, ValueError):
+            return 0
+
+    @classmethod
+    def _startup_work_sample(cls, process) -> Optional[tuple[float, int, int, int]]:
+        """Return cumulative (CPU, RSS, bytes read, page faults) for the process tree."""
+        pid = getattr(process, "pid", None)
+        if not isinstance(pid, int):
+            return None
+        try:
+            import psutil
+            root = psutil.Process(pid)
+            members = [root, *root.children(recursive = True)]
+        except Exception:
+            return None
+        cpu = 0.0
+        rss = read = faults = 0
+        for member in members:
+            try:
+                with member.oneshot():
+                    times = member.cpu_times()
+                    memory = member.memory_info()
+                    try:
+                        io = member.io_counters()
+                    except (AttributeError, psutil.AccessDenied):
+                        io = None  # macOS has no per-process I/O counters
+                member_faults = cls._page_faults(member, memory)
+            except Exception:
+                if member is root:
+                    return None
+                continue
+            cpu += times.user + times.system
+            rss += memory.rss
+            faults += member_faults
+            if io is not None:
+                read += getattr(io, "read_chars", io.read_bytes)  # Windows has no read_chars
+        return (cpu, rss, read, faults)
+
+    @classmethod
+    def _made_startup_progress(
+        cls, before: tuple[float, int, int, int], after: tuple[float, int, int, int], elapsed: float
+    ) -> bool:
+        # RSS is a high-water mark so evicted pages are not counted twice.
+        return (
+            after[1] - before[1] >= cls._STARTUP_PROGRESS_MIN_BYTES
+            or after[2] - before[2] >= cls._STARTUP_PROGRESS_MIN_BYTES
+            or after[3] - before[3] >= cls._STARTUP_PROGRESS_MIN_PAGE_FAULTS
+            or after[0] - before[0] >= cls._STARTUP_PROGRESS_MIN_CPU_FRACTION * elapsed
+        )
+
     def _wait_for_health(
         self,
         timeout: float = 120.0,
         interval: float = 0.5,
         cancelled: Optional[Callable[[], bool]] = None,
     ) -> bool:
-        """Poll llama-server's /health until 200; also detect early exit/crash."""
+        """Poll /health until success, exit, cancellation, or a startup stall."""
         deadline = time.monotonic() + timeout
+        work_sample = None
+        work_sampled_at = None
+        work_checked_at = None
         url = f"{self.base_url}/health"
         health_probe_event = getattr(self, "_health_probe_event", None)
         if health_probe_event is None:  # Backward-compatible with lightweight test doubles.
@@ -31455,7 +31529,7 @@ class LlamaCppBackend:
         # spawn and this line. _torn_down_process is matched by identity instead.
         process = None  # the child this wait last looked at, read again after the loop
 
-        while time.monotonic() < deadline:
+        while (now := time.monotonic()) < deadline:
             # Durable, unlike the per-process marker below: once teardown begins,
             # every later iteration sees it.
             if getattr(self, "_shutting_down", False):
@@ -31503,6 +31577,18 @@ class LlamaCppBackend:
                     f"Output (tail): {output[-2000:]}{_log_hint}"
                 )
                 return False
+
+            if work_checked_at is None or now - work_checked_at >= self._STARTUP_PROGRESS_SAMPLE_S:
+                work_checked_at = now
+                sample = self._startup_work_sample(process)
+                if sample is not None:
+                    if work_sample is not None and self._made_startup_progress(
+                        work_sample, sample, now - work_sampled_at
+                    ):
+                        deadline = now + timeout
+                    peak = sample[1] if work_sample is None else max(work_sample[1], sample[1])
+                    work_sample = (sample[0], peak, sample[2], sample[3])
+                    work_sampled_at = now
 
             try:
                 # trust_env=False: skip ambient HTTP(S)_PROXY, which if it 503s
@@ -31552,8 +31638,9 @@ class LlamaCppBackend:
         # Leave a marker so _classify_llama_start_failure tells a live but
         # never-healthy load (too large, or a proxy hijacking the loopback
         # probe) apart from a bad GGUF (#5740).
-        self._stdout_lines.append(f"llama-server health check timed out after {timeout}s")
-        logger.error(f"llama-server health check timed out after {timeout}s")
+        marker = f"llama-server health check timed out: no startup progress for {timeout:g}s"
+        self._stdout_lines.append(marker)
+        logger.error(marker)
         return False
 
     @staticmethod
