@@ -39,6 +39,7 @@ from utils.prebuilt.llama_backend import (
     marker_backend_request,
     normalize_backend,
 )
+from utils.update_status import update_checks_disabled
 
 logger = structlog.get_logger(__name__)
 
@@ -372,6 +373,7 @@ def _llama_only_status(
     if _active_install_is_local_link(binary):
         return _local_link_status()
     marker = read_install_marker(binary)
+    checks_disabled = update_checks_disabled()
 
     with _job_lock:
         job_running = _job["state"] == _JOB_RUNNING
@@ -380,6 +382,7 @@ def _llama_only_status(
     if (
         marker is None
         and binary is not None
+        and not checks_disabled
         and (not job_running or allow_source_probe_while_running)
     ):
         src = _source_build_status(binary, force_refresh = force_refresh)
@@ -388,7 +391,7 @@ def _llama_only_status(
 
     repo = (marker or {}).get("published_repo") or DEFAULT_PUBLISHED_REPO
 
-    if force_refresh and repo:
+    if force_refresh and repo and not checks_disabled:
         try:
             latest_published_release(repo, force_refresh = True)
         except Exception as exc:  # pragma: no cover - network defensive
@@ -416,7 +419,7 @@ def _llama_only_status(
     # An automatic install whose detection now resolves elsewhere; nothing else surfaces it. Skipped while a job runs, and when an update is offered: that update re-detects.
     to_backend = (
         None
-        if job_running or update_available
+        if job_running or update_available or checks_disabled
         else _pending_backend_migration(binary, marker, force_refresh = force_refresh)
     )
 
