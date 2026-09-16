@@ -845,7 +845,11 @@ def _windows_collect_descendants_known(pid: int) -> "tuple[list[tuple[int, Optio
 
     Without a readable floor this claims nothing at all, and a candidate whose own identity
     cannot be read is skipped along with its subtree: a forced tree kill is not a place to
-    guess.
+    guess. Skipping it also makes the walk INCOMPLETE, and says so. A live pid the table
+    listed and this could not classify is a candidate, not an absence: reporting the walk as
+    complete without it let the caller terminate the leader, see no survivors and delete the
+    record and the pidfile while that child was still running. Not signalled either way --
+    unknown is not a licence to kill -- but never silently dropped.
     """
     root_floor = _windows_creation_time(_pid_identity(pid))
     if root_floor is None:
@@ -856,6 +860,7 @@ def _windows_collect_descendants_known(pid: int) -> "tuple[list[tuple[int, Optio
     if not table:
         return [], False
     found: "list[tuple[int, Optional[str]]]" = []
+    complete = True
     seen = {pid}
     # (candidate pid, creation time of the parent that listed it)
     queue: "list[tuple[int, int]]" = [(child, root_floor) for child in table.get(pid, ())]
@@ -866,11 +871,21 @@ def _windows_collect_descendants_known(pid: int) -> "tuple[list[tuple[int, Optio
         seen.add(child)
         identity = _pid_identity(child)
         created = _windows_creation_time(identity)
-        if created is None or created < parent_created:
+        if created is None:
+            # Unreadable, not absent. A pid that is plainly still running and cannot be
+            # classified leaves this walk unable to say the tree is fully enumerated; one
+            # that has already gone says nothing about completeness.
+            if _pid_alive(child) and not _pid_is_zombie(child):
+                complete = False
+            continue
+        if created < parent_created:
+            # Provably not a descendant: it predates the process that lists it as its
+            # creator, which is the recycled-number case this floor exists for. Rejecting
+            # it is an ANSWER, so the walk stays complete.
             continue
         found.append((child, identity))
         queue.extend((grandchild, created) for grandchild in table.get(child, ()))
-    return found, True
+    return found, complete
 
 
 def terminate_descendants(
@@ -1002,6 +1017,16 @@ def _windows_terminate_collected(
             if not _signalable(late_pid) or not _pid_alive(late_pid):
                 continue
             if not _provably_the_same(late_pid, late_identity):
+                # The same three outcomes as the outer loop, which this used to collapse
+                # into two. Provably somebody else is dropped; unreadable is a live pid
+                # this sweep cannot account for, so it is reported rather than silently
+                # discarded, and the record that names it outlives the call.
+                if (
+                    _pid_alive(late_pid)
+                    and not _pid_is_zombie(late_pid)
+                    and not _provably_different(late_pid, late_identity)
+                ):
+                    unresolved.append((late_pid, late_identity))
                 continue
             try:
                 _windows_terminate_pid(late_pid)

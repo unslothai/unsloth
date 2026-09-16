@@ -1049,3 +1049,67 @@ def test_no_windows_kill_path_calls_taskkill_slash_t_any_more():
         and node.func.id == "_windows_terminate_tree"
     ]
     assert callers == [], "a kill path still expands the tree through taskkill /T"
+
+
+def test_an_unreadable_child_identity_makes_the_walk_incomplete(monkeypatch):
+    """Toolhelp listed it and this cannot classify it: that is a candidate, not an absence.
+
+    Reported complete, the unload terminated the leader, saw no survivors and deleted the
+    record and the pidfile while the child was still running. It is still never signalled --
+    unknown is not a licence to kill -- only never silently dropped.
+    """
+    root, child = 5000, 5001
+    monkeypatch.setattr(pl, "_is_windows", lambda: True)
+    monkeypatch.setattr(pl, "_child_pid_map", lambda: {root: [child]})
+    monkeypatch.setattr(pl, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(pl, "_pid_is_zombie", lambda pid: False)
+    monkeypatch.setattr(
+        pl,
+        "_pid_identity",
+        lambda pid: "0:100" if pid == root else None,
+    )
+    found, known = pl.collect_descendants_known(root)
+    assert found == []
+    assert known is False, "a live child this walk could not classify was reported as absent"
+
+    # A pid that has GONE says nothing about completeness: there is nothing left to name.
+    monkeypatch.setattr(pl, "_pid_alive", lambda pid: pid == root)
+    found, known = pl.collect_descendants_known(root)
+    assert (found, known) == ([], True)
+
+
+def test_an_unverifiable_late_descendant_is_reported_not_dropped(monkeypatch):
+    """The second walk, under a survivor, had two outcomes where the first has three.
+
+    An identity that becomes unreadable between the late walk and the revalidation is not a
+    recycled pid, and dropping it let `attempted` come back empty while the descendant was
+    still running, so the caller deleted the only records naming it.
+    """
+    survivor, late_pid = 6000, 6001
+    monkeypatch.setattr(pl, "_is_windows", lambda: True)
+    monkeypatch.setattr(pl, "_signalable", lambda pid: True)
+    monkeypatch.setattr(pl, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(pl, "_pid_is_zombie", lambda pid: False)
+    monkeypatch.setattr(pl, "_windows_terminate_pid", lambda pid: None)
+    monkeypatch.setattr(
+        pl,
+        "_windows_collect_descendants_known",
+        lambda pid: ([(late_pid, "0:6001")], True),
+    )
+    # The survivor still reads as itself; the late descendant has become unreadable.
+    monkeypatch.setattr(
+        pl,
+        "_pid_identity",
+        lambda pid: "0:6000" if pid == survivor else None,
+    )
+    reported = pl._windows_terminate_collected([(survivor, "0:6000")])
+    assert late_pid in [pid for pid, _ in reported], reported
+
+    # A late descendant that is PROVABLY somebody else is still ignored.
+    monkeypatch.setattr(
+        pl,
+        "_pid_identity",
+        lambda pid: "0:6000" if pid == survivor else "9:9999",
+    )
+    reported = pl._windows_terminate_collected([(survivor, "0:6000")])
+    assert late_pid not in [pid for pid, _ in reported], reported
