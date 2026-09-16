@@ -106,9 +106,7 @@ def test_the_push_guard_reads_the_resident_tensors_when_no_state_dict_was_built(
     for node in ast.walk(func):
         if not isinstance(node, ast.Assign):
             continue
-        if not any(
-            isinstance(t, ast.Name) and t.id == "_mtp_tensor_names" for t in node.targets
-        ):
+        if not any(isinstance(t, ast.Name) and t.id == "_mtp_tensor_names" for t in node.targets):
             continue
         for sub in ast.walk(node.value):
             if (
