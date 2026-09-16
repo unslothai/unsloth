@@ -401,4 +401,47 @@ assert_contains "setup.sh, stale prepend outside conda: left alone" "$SETUP_RC" 
     "export PATH=\"$SETUP_DIR:\$PATH\""
 unset SETUP_RC_SEED
 
+# ── rc-file permissions ────────────────────────────────────────────────────────────
+# The rewrite renames a staged copy onto the user's profile, so whatever mode that copy
+# has becomes the profile's mode for good. A plain `cp` does not carry the source's bits
+# across: POSIX creates the destination with the source's mode as the mode ARGUMENT, and
+# a mode argument is always modified by the file creation mask, so under `umask 077` a
+# 0644 .bashrc came back 0600 -- or, in the other direction, a private file left more
+# open than the user made it. Both copies of the helper are checked, because they are
+# maintained separately and can drift.
+check_mode_preserved() {
+    _cmp_label="$1"
+    _cmp_fn="$2"
+    _cmp_mode="$3"
+    _cmp_umask="$4"
+    WORK=$(mktemp -d)
+    {
+        echo "# Added by Unsloth installer"
+        echo "OLD LINE"
+    } > "$WORK/.bashrc"
+    chmod "$_cmp_mode" "$WORK/.bashrc"
+    (
+        eval "$_cmp_fn"
+        umask "$_cmp_umask"
+        _unsloth_repoint_rc_line "$WORK/.bashrc" "OLD LINE" "NEW LINE"
+    )
+    assert_eq "$_cmp_label: mode $_cmp_mode survives umask $_cmp_umask" "$_cmp_mode" \
+        "$(ls -l "$WORK/.bashrc" | awk '{print $1}' | \
+            awk '{ m = 0
+                   for (i = 2; i <= 10; i++) {
+                       c = substr($0, i, 1)
+                       if (c != "-") m += (c == "r" ? 4 : (c == "w" ? 2 : 1)) * \
+                           (i <= 4 ? 100 : (i <= 7 ? 10 : 1))
+                   }
+                   printf "%d", m }')"
+    assert_eq "$_cmp_label: the line was rewritten" "1" \
+        "$(grep -cxF "NEW LINE" "$WORK/.bashrc")"
+    rm -rf "$WORK"
+}
+
+check_mode_preserved "install.sh" "$REPOINT_FN" 644 077
+check_mode_preserved "install.sh" "$REPOINT_FN" 600 022
+check_mode_preserved "studio/setup.sh" "$SETUP_REPOINT_FN" 644 077
+check_mode_preserved "studio/setup.sh" "$SETUP_REPOINT_FN" 600 022
+
 summary

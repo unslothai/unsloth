@@ -2233,13 +2233,23 @@ _unsloth_repoint_rc_line() {
     # rename handed it whatever the umask says. The `>` that follows truncates that copy and
     # leaves its mode alone.
     #
+    # `-p`, which is the part that actually preserves them. Without it POSIX creates the
+    # destination with the SOURCE's mode as the mode argument -- and a mode argument is
+    # always modified by the file creation mask, so under `umask 077` a 0644 .bashrc is
+    # staged 0600 and the rename makes that permanent. `-p` is specified to duplicate the
+    # permission bits themselves, and a user ID or group ID it cannot duplicate is not an
+    # error there: it clears S_ISUID/S_ISGID and carries on. The plain `cp` is kept as a
+    # fallback for an implementation that refuses `-p` outright, since a mode that came back
+    # from the umask is still better than not repointing the line at all.
+    #
     # Through the environment, not `-v`. POSIX awk decodes backslash escapes in a `-v`
     # assignment, so a path holding a backslash -- which the writers deliberately escape
     # before building the line -- arrives at awk as something else: the literal `grep -qxF`
     # above matched, awk then matched nothing, and this renamed an unchanged file and
     # reported the stale prepend as moved with conda still in front of it. ENVIRON is the
     # spelling that hands the value over untouched.
-    if cp -- "$_urrl_real" "$_urrl_tmp" 2>/dev/null \
+    if { cp -p -- "$_urrl_real" "$_urrl_tmp" 2>/dev/null \
+        || cp -- "$_urrl_real" "$_urrl_tmp" 2>/dev/null; } \
         && _URRL_OLD="$2" _URRL_NEW="$3" awk '
             $0 == ENVIRON["_URRL_OLD"] && prev ~ /^# Added by Unsloth/ { print ENVIRON["_URRL_NEW"]; prev = $0; next }
             { print; prev = $0 }
