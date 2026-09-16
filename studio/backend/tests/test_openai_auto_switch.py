@@ -5905,8 +5905,7 @@ def _wire_unloaded_chat(
     # cover: unpinned, these tests would answer from whatever the host has downloaded.
     async def _local_catalog():
         return [
-            type("_Row", (), {"model_id": mid, "id": mid, "partial": False})()
-            for mid in downloaded
+            type("_Row", (), {"model_id": mid, "id": mid, "partial": False})() for mid in downloaded
         ]
 
     monkeypatch.setattr(inference_route, "_cached_local_catalog", _local_catalog)
