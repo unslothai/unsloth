@@ -1228,3 +1228,23 @@ def test_helper_clients_require_approval(code):
     assert _check_code_safety(code, session_id = "review") is not None
     approve_hosts("review", ["evil.example"])
     assert _check_code_safety(code, session_id = "review") is None
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "import paramiko\nclass D:\n def deploy(self,client): client.connect(hostname='evil.example')\nD().deploy(paramiko.SSHClient())",
+        "import paramiko\nclass D:\n def deploy(self,client): client.connect(hostname='evil.example')\nd=D(); d.deploy(paramiko.SSHClient())",
+        "import paramiko\nclass D:\n @classmethod\n def deploy(cls,client): client.connect(hostname='evil.example')\nD.deploy(paramiko.SSHClient())",
+        "import paramiko\nclass D:\n @staticmethod\n def deploy(client): client.connect(hostname='evil.example')\nD.deploy(paramiko.SSHClient())",
+        "import paramiko\nclass D:\n @staticmethod\n def deploy(client): client.connect(hostname='evil.example')\nD().deploy(paramiko.SSHClient())",
+        "import paramiko\nclass D:\n def deploy(self,client): client.connect(hostname='evil.example')\nd=D(); D.deploy(d,paramiko.SSHClient())",
+        "import paramiko\nclass D:\n def deploy(self,client): client.connect(hostname='evil.example')\nd=D(); run=d.deploy; run(paramiko.SSHClient())",
+        "import paramiko\ndef deploy(client): client.connect(hostname='evil.example')\nrun=deploy; run(paramiko.SSHClient())",
+        "import paramiko\nclass D:\n def __init__(self,client): client.connect(hostname='evil.example')\nD(paramiko.SSHClient())",
+    ],
+)
+def test_method_clients_require_approval(code):
+    assert _check_code_safety(code, session_id = "review") is not None
+    approve_hosts("review", ["evil.example"])
+    assert _check_code_safety(code, session_id = "review") is None

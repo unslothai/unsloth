@@ -439,14 +439,70 @@ def _assignment_pairs(tree: ast.AST):
         for child in ast.iter_child_nodes(node):
             yield from scoped_nodes(child, scope)
 
+    nodes = list(scoped_nodes(tree))
     functions = {
-        node.name: node.args
-        for node in ast.walk(tree)
+        f"{scope}.{node.name}" if scope else node.name: node
+        for node, scope in nodes
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
-    for node, scope in scoped_nodes(tree):
-        if isinstance(node, ast.Call) and _fq_name(node.func) in functions:
-            parameters = functions[_fq_name(node.func)]
+    classes = {
+        f"{scope}.{node.name}" if scope else node.name
+        for node, scope in nodes
+        if isinstance(node, ast.ClassDef)
+    }
+    instances: dict[str, str] = {}
+    callable_refs: dict[str, ast.AST] = {}
+    for node, scope in nodes:
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+        elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)):
+            targets = [node.target]
+        else:
+            continue
+        value = node.value
+        owner = (
+            _fq_name(value.func)
+            if isinstance(value, ast.Call)
+            else instances.get(_fq_name(value), "")
+        )
+        for target in targets:
+            name = _fq_name(target)
+            if owner in classes:
+                instances[name] = owner
+            if isinstance(value, (ast.Name, ast.Attribute)):
+                callable_refs[name] = value
+
+    for node, scope in nodes:
+        function = None
+        if isinstance(node, ast.Call):
+            callee = node.func
+            seen: set[str] = set()
+            while (name := _fq_name(callee)) in callable_refs and name not in seen:
+                seen.add(name)
+                callee = callable_refs[name]
+            function = functions.get(_fq_name(callee))
+            call_args = list(node.args)
+            if _fq_name(callee) in classes:
+                function = functions.get(f"{_fq_name(callee)}.__init__")
+                call_args.insert(0, ast.Call(func = callee, args = [], keywords = []))
+            if isinstance(callee, ast.Attribute) and _fq_name(callee) not in classes:
+                receiver = callee.value
+                owner = (
+                    _fq_name(receiver.func)
+                    if isinstance(receiver, ast.Call)
+                    else instances.get(_fq_name(receiver), _fq_name(receiver))
+                )
+                function = functions.get(f"{owner}.{callee.attr}")
+                if function is not None:
+                    decorators = {_fq_name(item) for item in function.decorator_list}
+                    if (
+                        "classmethod" in decorators
+                        or "staticmethod" not in decorators
+                        and _fq_name(receiver) not in classes
+                    ):
+                        call_args.insert(0, receiver)
+        if function is not None:
+            parameters = function.args
             positional = parameters.posonlyargs + parameters.args
             defaults = (
                 dict(
@@ -463,7 +519,7 @@ def _assignment_pairs(tree: ast.AST):
                 for arg, value in zip(parameters.kwonlyargs, parameters.kw_defaults)
                 if value is not None
             )
-            defaults.update((arg.arg, value) for arg, value in zip(positional, node.args))
+            defaults.update((arg.arg, value) for arg, value in zip(positional, call_args))
             keywords, _ = _call_keyword_values(node)
             defaults.update(keywords)
             for arg in positional + parameters.kwonlyargs:
