@@ -657,6 +657,7 @@ def _pinned_literal(guard: str, taken: bool, access: str, field: str):
     # single-value path. `msg == 0` is taken by both "" and "0".
     equal = rf"(?:{bound}===({_LITERAL})|({_LITERAL})==={bound})"
     unequal = rf"(?:{bound}!==({_LITERAL})|({_LITERAL})!=={bound})"
+
     # Under `!` a comparison says the opposite of what it reads, so a logical not is refused
     # rather than interpreted.
     # No blanket search for `!` or `||`. Requiring the comparison to match a top-level conjunct
@@ -908,8 +909,14 @@ SELECTOR_CASES = [
         "default: return s.reasoningBudget; } }",
         True,
     ),
-    ('(s) => { switch (s.mode) { case "x": sideEffect(); default: return s.reasoningBudget; } }', True),
-    ('(s) => { switch (s.mode) { default: return s.reasoningBudget; case "x": sideEffect(); } }', False),
+    (
+        '(s) => { switch (s.mode) { case "x": sideEffect(); default: return s.reasoningBudget; } }',
+        True,
+    ),
+    (
+        '(s) => { switch (s.mode) { default: return s.reasoningBudget; case "x": sideEffect(); } }',
+        False,
+    ),
     # An empty LAST label has nothing to fall into, so that value leaves the switch.
     ('(s) => { switch (s.mode) { default: return s.reasoningBudget; case "x": } }', False),
     # Undefaulted: a mode matching nothing falls past the switch and returns undefined.
