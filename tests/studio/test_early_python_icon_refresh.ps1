@@ -107,6 +107,46 @@ try {
     Check "an empty shortcut list is handled" (
         $null -ne (Invoke-StudioPythonShellIconRefresh -Paths @()))
 
+    # The fresh install, which is the case the rung exists for and the one it used to miss.
+    #
+    # Get-StudioEarlyPython latches its answer on first use, and its first use is the install
+    # lock, which runs before Python is installed. On a host that had none, that call caches $null
+    # for the whole run. Shortcuts are written much later, by which point the managed interpreter
+    # exists, and the rung would still decline on the cached miss. Resetting the cache in the
+    # checks above hides this entirely, so it is driven here in the real order instead: probe
+    # first with nothing on the host, install after, then ask for the refresh.
+    $savedFinder = ${function:Get-StudioEarlyPython}
+    function Get-StudioEarlyPython {
+        if ($script:StudioEarlyPythonProbed) { return $script:StudioEarlyPython }
+        $script:StudioEarlyPythonProbed = $true
+        $script:StudioEarlyPython = $script:FakeHostPython
+        return $script:StudioEarlyPython
+    }
+    $script:StudioEarlyPythonProbed = $false
+    $script:StudioEarlyPython = $null
+    $script:FakeHostPython = $null
+    $null = Get-StudioEarlyPython          # the install lock's probe, on a host with no Python
+    $script:FakeHostPython = "C:\Studio\venv\Scripts\python.exe"   # then the install provides one
+
+    Check "control: discovery is still stuck on the cached miss (bites)" (
+        $null -eq (Get-StudioEarlyPython))
+    $script:RunnerCalls = 0
+    $ok = Invoke-StudioPythonShellIconRefresh -Paths $links -Exe $script:FakeHostPython
+    Check "a fresh install refreshes through the interpreter it just installed" (
+        $ok -eq $true -and $script:RunnerCalls -eq 1)
+    ${function:Get-StudioEarlyPython} = $savedFinder
+    $script:StudioEarlyPythonProbed = $false
+    $script:StudioEarlyPython = $null
+
+    # And the shortcut writer hands it over. The check above drives the helper directly, so it
+    # would pass on its own with the call site still relying on discovery.
+    $shortcutFn = @($ast.FindAll({ param($n)
+        $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $n.Name -eq "New-StudioShortcuts"
+    }, $true))[0].Extent.Text
+    Check "New-StudioShortcuts passes its own interpreter to the refresh" (
+        $shortcutFn -match '(?s)Invoke-StudioPythonShellIconRefresh[^\r\n]*[\r\n\s`]*-Paths \$createdShortcutPaths -Exe \$ManagedPythonPath')
+
     $env:OS = "Linux"
     $script:RunnerCalls = 0
     Check "off Windows the rung declines: there is no shell32 there" (

@@ -2992,13 +2992,24 @@ exit 1
     # Cosmetic either way: the worst case is a stale icon on a shortcut that works. Nothing here
     # may fail the install, so every path returns rather than throws.
     function Invoke-StudioPythonShellIconRefresh {
-        param([string[]]$Paths = @())
+        param([string[]]$Paths = @(), [string]$Exe = "")
         if (-not ($env:OS -eq "Windows_NT")) { return $false }
-        # Inside the try, not above it. Discovery can throw, and this function promises it never
-        # does; the caller's own catch happened to cover it, but the promise was still false.
-        try {
-            $exe = Get-StudioEarlyPython
-        } catch { return $false }
+        # The caller's interpreter wins over discovery, and on the fresh-install case it is the
+        # only one that works. Get-StudioEarlyPython latches its answer on first use, and its
+        # first use is the install lock, which runs before Python is installed. On a host that
+        # had none, that call caches $null for the rest of the run, so by the time shortcuts are
+        # written the managed interpreter exists and this would still decline: exactly the
+        # first-install-under-CLM case the rung was added for. New-StudioShortcuts has already
+        # confirmed its own path exists and resolved it, so there is nothing left to check here.
+        $exe = $Exe
+        if ([string]::IsNullOrWhiteSpace($exe)) {
+            # Inside the try, not above it. Discovery can throw, and this function promises it
+            # never does; the caller's own catch happened to cover it, but the promise was still
+            # false.
+            try {
+                $exe = Get-StudioEarlyPython
+            } catch { return $false }
+        }
         if (-not $exe) { return $false }
         # SHCNE_UPDATEITEM 0x00002000 with SHCNF_PATHW 0x0005 per shortcut, then SHCNE_ASSOCCHANGED
         # 0x08000000 as the global broadcast. Same two calls, same order, same constants as the
@@ -5252,7 +5263,10 @@ exit 0
                         # stale until something else invalidated Explorer's cache. Same two
                         # notifications through a child interpreter instead. Still cosmetic, and
                         # still unable to fail the install.
-                        try { $null = Invoke-StudioPythonShellIconRefresh -Paths $createdShortcutPaths } catch {}
+                        try {
+                            $null = Invoke-StudioPythonShellIconRefresh `
+                                -Paths $createdShortcutPaths -Exe $ManagedPythonPath
+                        } catch {}
                     }
                     if ($firstInstall -or $iconChanged) {
                         try { & "$env:SystemRoot\System32\ie4uinit.exe" -ClearIconCache 2>$null } catch {}
