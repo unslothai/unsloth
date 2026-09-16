@@ -2255,6 +2255,7 @@ def _distribution_owning_path(names, path):
         target = Path(path).resolve()
     except Exception:
         return None
+    claimants = []
     for name in names:
         try:
             files = _distribution(name).files or ()
@@ -2263,10 +2264,27 @@ def _distribution_owning_path(names, path):
         for entry in files:
             try:
                 if Path(entry.locate()).resolve() == target:
-                    return name
+                    claimants.append(name)
+                    break
             except Exception:
                 continue
-    return None
+    if len(claimants) == 1:
+        return claimants[0]
+    if not claimants:
+        return None
+    # Coexisting providers can both RECORD the same file, and then the first entry is
+    # nothing but ordering. torch's own backend is the tiebreak that matters, because the
+    # harmful answer is always the one that installs a CUDA build over an accelerator one:
+    # on an XPU or ROCm torch the accelerator provider wins, and otherwise the generic one
+    # does. A claimant list that neither rule picks out is genuinely ambiguous, and no
+    # answer is better than a guess that may name the wrong wheel.
+    local = _torch_local_tag(getattr(sys.modules.get("torch"), "__version__", None)).lower()
+    for family in ("xpu", "rocm"):
+        if family in local:
+            matches = [name for name in claimants if family in name.lower()]
+            return matches[0] if len(matches) == 1 else None
+    generic = [name for name in claimants if name.lower() == "triton"]
+    return generic[0] if len(generic) == 1 else None
 
 
 def _triton_distribution(offending_path = None):

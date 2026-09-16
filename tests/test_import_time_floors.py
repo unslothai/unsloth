@@ -975,6 +975,69 @@ def test_the_provider_that_ships_the_offending_file_is_the_one_named(monkeypatch
         import_fixes._installed_version.cache_clear()
 
 
+@pytest.mark.parametrize(
+    "order",
+    [("triton", "triton-xpu"), ("triton-xpu", "triton")],
+    ids = ["generic-first", "accelerator-first"],
+)
+def test_a_file_claimed_by_two_providers_is_settled_by_torchs_backend(
+    monkeypatch, tmp_path, order
+):
+    """Coexisting providers RECORD the same paths, so both claim the offending file and the
+    first entry is nothing but ordering. The harmful answer is always the one that installs
+    a CUDA build over an accelerator one, so an XPU torch settles it for the XPU provider."""
+    driver = tmp_path / "backends" / "intel" / "driver.c"
+    driver.parent.mkdir(parents = True)
+    driver.write_text("x", encoding = "utf-8")
+
+    import importlib.metadata as metadata
+
+    torch_module = types.ModuleType("torch")
+    torch_module.__version__ = "2.10.0+xpu"
+    monkeypatch.setitem(sys.modules, "torch", torch_module)
+    monkeypatch.setattr(metadata, "packages_distributions", lambda: {"triton": list(order)})
+    monkeypatch.setattr(
+        metadata,
+        "distribution",
+        # Both RECORDs list the same file, which is the coexistence case.
+        _fake_distribution({"triton": [str(driver)], "triton-xpu": [str(driver)]}),
+    )
+    monkeypatch.setattr(import_fixes, "importlib_version", lambda name: "3.7.1")
+    import_fixes._installed_version.cache_clear()
+    try:
+        assert import_fixes._triton_distribution(str(driver))[0] == "triton-xpu"
+    finally:
+        import_fixes._installed_version.cache_clear()
+
+
+def test_two_claimants_a_cuda_torch_cannot_separate_name_the_generic_one(monkeypatch, tmp_path):
+    """NEGATIVE CONTROL: with no accelerator in torch's tag there is no accelerator to
+    preserve, so the generic provider is the answer rather than whichever came first."""
+    driver = tmp_path / "backends" / "nvidia" / "driver.c"
+    driver.parent.mkdir(parents = True)
+    driver.write_text("x", encoding = "utf-8")
+
+    import importlib.metadata as metadata
+
+    torch_module = types.ModuleType("torch")
+    torch_module.__version__ = "2.10.0+cu128"
+    monkeypatch.setitem(sys.modules, "torch", torch_module)
+    monkeypatch.setattr(
+        metadata, "packages_distributions", lambda: {"triton": ["triton-windows", "triton"]}
+    )
+    monkeypatch.setattr(
+        metadata,
+        "distribution",
+        _fake_distribution({"triton": [str(driver)], "triton-windows": [str(driver)]}),
+    )
+    monkeypatch.setattr(import_fixes, "importlib_version", lambda name: "3.7.1")
+    import_fixes._installed_version.cache_clear()
+    try:
+        assert import_fixes._triton_distribution(str(driver))[0] == "triton"
+    finally:
+        import_fixes._installed_version.cache_clear()
+
+
 def test_an_unownable_path_falls_back_to_the_previous_answer(monkeypatch, tmp_path):
     """NEGATIVE CONTROL: metadata that names no owner, or no path at all, must leave the
     ordering-based answer exactly as it was rather than reporting nothing."""
