@@ -2225,10 +2225,27 @@ exit 1
         $condaFront = @()
         if (Test-ActiveCondaEnvironment) {
             $prefixes = Get-ActiveCondaPrefixes
-            foreach ($entry in ($env:Path -split ";")) {
-                if (Test-PathUnderCondaPrefix -Path $entry -Prefixes $prefixes) {
-                    $condaFront += $entry
+            if ($prefixes) {
+                foreach ($entry in ($env:Path -split ";")) {
+                    if (Test-PathUnderCondaPrefix -Path $entry -Prefixes $prefixes) {
+                        $condaFront += $entry
+                    }
                 }
+            } else {
+                # A hook that exports CONDA_DEFAULT_ENV and nothing that names a directory.
+                # Test-ActiveCondaEnvironment accepts that shape deliberately -- the caller
+                # IS inside conda's ordering -- but there is then nothing to test a PATH
+                # entry against, so WHICH entries are conda's cannot be established.
+                #
+                # Guessing from the environment NAME would match any directory that happens
+                # to contain it, which is the same promote-a-stranger defect the boundary
+                # check above exists to prevent. Instead the caller's existing PATH is kept
+                # whole and in front: it already has conda's ordering in it, whatever that
+                # ordering is, and putting the registry values behind it preserves the
+                # session exactly rather than reconstructing it. New entries registered by
+                # this run are still reachable, just not ahead of the environment, which is
+                # the same outcome the prefix branch produces and what appending was for.
+                $condaFront = @($env:Path)
             }
         }
         $sources = @()

@@ -461,6 +461,57 @@ def test_the_refresh_consults_the_conda_helper_at_all():
     assert "Get-ActiveCondaPrefixes" in body
     assert "Test-PathUnderCondaPrefix" in body
     # And the conda entries go in FRONT of the registry values, which is the whole point.
+<<<<<<< Updated upstream
     assert body.index("$sources += $condaFront") < body.index(
         "$sources += @($machine"
     ), "the conda entries are appended after the User PATH, which changes nothing"
+=======
+    assert body.index("$sources += $condaFront") < body.index("$sources += @($machine"), (
+        "the conda entries are appended after the User PATH, which changes nothing"
+    )
+
+
+@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.parametrize("shell", POWERSHELLS)
+def test_a_name_only_activation_keeps_the_session_it_already_had(shell: str):
+    """A hook that exports CONDA_DEFAULT_ENV and nothing that names a directory.
+
+    `Test-ActiveCondaEnvironment` accepts that shape deliberately: the caller IS inside
+    conda's ordering. But there is then nothing to test a PATH entry against, so the prefix
+    branch produced an empty front and the refresh rebuilt PATH as Machine, User, previous
+    -- putting the hook's entries behind the User PATH again, on the exact activation shape
+    the guard above says it recognises.
+
+    Guessing from the environment NAME would match any directory that happens to contain
+    it, which is the promote-a-stranger defect the boundary check exists to prevent. The
+    caller's existing PATH is kept whole and in front instead: it already holds conda's
+    ordering, whatever that is.
+    """
+    previous = f"{CONDA_ROOT}\\envs\\ml\\Scripts;C:\\tools\\bin"
+    script = _stub_registry(_refresh_preamble(previous))
+    out = _run(shell, script, env = {"CONDA_DEFAULT_ENV": "ml"})
+    entries = out[len("PATH="):].split(";")
+    assert entries[: len(previous.split(";"))] == previous.split(";"), entries
+    # The registry values are still there, just behind, so a directory registered by this
+    # run is reachable in the same session without displacing the environment.
+    assert USER_PATH.split(";")[0] in entries, entries
+    assert MACHINE.split(";")[0] in entries, entries
+    assert entries.index(USER_PATH.split(";")[0]) > entries.index("C:\\tools\\bin"), entries
+
+
+@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.parametrize("shell", POWERSHELLS)
+def test_a_prefix_activation_still_takes_the_precise_route(shell: str):
+    """The whole-PATH fallback is for the case where nothing better can be known, so an
+    activation that DOES name its prefix must keep the targeted behaviour: only the conda
+    entries move, and an unrelated directory that happened to be on PATH does not."""
+    previous = f"C:\\tools\\bin;{CONDA_ROOT}\\envs\\ml\\Scripts"
+    script = _stub_registry(_refresh_preamble(previous))
+    out = _run(shell, script, env = {
+        "CONDA_PREFIX": f"{CONDA_ROOT}\\envs\\ml",
+        "CONDA_DEFAULT_ENV": "ml",
+    })
+    entries = out[len("PATH="):].split(";")
+    assert entries[0] == f"{CONDA_ROOT}\\envs\\ml\\Scripts", entries
+    assert entries.index("C:\\tools\\bin") > entries.index(USER_PATH.split(";")[0]), entries
+>>>>>>> Stashed changes
