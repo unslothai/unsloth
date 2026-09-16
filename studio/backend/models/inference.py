@@ -3304,7 +3304,9 @@ _KNOWN_ANTHROPIC_BLOCK_TYPES = frozenset(
 )
 # Thinking blocks are replayed only in assistant turns; the converter drops them
 # from user content, so accepting them there would silently lose a user turn.
-_USER_ANTHROPIC_BLOCK_TYPES = frozenset({"text", "image", "tool_use", "tool_result"})
+_USER_ANTHROPIC_BLOCK_TYPES = frozenset(
+    {"text", "image", "tool_use", "tool_result", "search_result", "document"}
+)
 
 
 class AnthropicUnknownBlock(BaseModel):

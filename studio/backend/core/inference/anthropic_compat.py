@@ -41,6 +41,42 @@ def anthropic_tool_use_id(upstream_id = None) -> str:
 
 
 TOOL_RESULT_IMAGE_OMITTED = "[image omitted: this model cannot view images]"
+DOCUMENT_OMITTED = "[document omitted: only text documents can be read]"
+
+
+def _anthropic_block_texts(content: Any) -> list[str]:
+    if isinstance(content, str):
+        return [content]
+    if not isinstance(content, list):
+        return []
+    return [
+        b["text"]
+        for b in content
+        if isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text"), str)
+    ]
+
+
+def anthropic_reference_block_text(block: dict) -> str:
+    btype = block.get("type")
+    source = block.get("source")
+    if btype == "search_result":
+        labels = {"Title": block.get("title"), "Source": source}
+        body = _anthropic_block_texts(block.get("content"))
+    elif btype == "document":
+        labels = {"Title": block.get("title"), "Context": block.get("context")}
+        stype = source.get("type") if isinstance(source, dict) else None
+        if stype == "text" and isinstance(source.get("data"), str):
+            body = [source["data"]]
+        elif stype == "content":
+            body = _anthropic_block_texts(source.get("content"))
+        else:
+            body = [DOCUMENT_OMITTED]
+    else:
+        return ""
+    header = [
+        f"{label}: {value}" for label, value in labels.items() if isinstance(value, str) and value
+    ]
+    return "\n".join([*header, *body])
 
 
 def _anthropic_image_block_to_openai_part(block: dict) -> Optional[dict]:
@@ -163,6 +199,8 @@ def anthropic_messages_to_openai(
                 btype = b.get("type", "")
                 if btype == "text":
                     user_parts.append({"type": "text", "text": b["text"]})
+                elif reference := anthropic_reference_block_text(b):
+                    user_parts.append({"type": "text", "text": reference})
                 elif btype == "image":
                     part = _anthropic_image_block_to_openai_part(b)
                     if part is not None:
@@ -177,6 +215,8 @@ def anthropic_messages_to_openai(
                                 continue
                             if item.get("type") == "text":
                                 parts.append({"type": "text", "text": item["text"]})
+                            elif reference := anthropic_reference_block_text(item):
+                                parts.append({"type": "text", "text": reference})
                             elif item.get("type") == "image":
                                 if not tool_result_images:
                                     parts.append(
@@ -189,7 +229,7 @@ def anthropic_messages_to_openai(
                         tc = (
                             parts
                             if any(p["type"] == "image_url" for p in parts)
-                            else " ".join(p["text"] for p in parts)
+                            else "\n".join(p["text"] for p in parts)
                         )
                     tool_results.append(
                         {
