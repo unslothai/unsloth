@@ -258,6 +258,19 @@ _nvcc_meets_llama_minimum() {
 # UNSLOTH_LLAMA_CUDA_ARCHS) wins verbatim; else parse+dedupe compute_cap text
 # ($1). Empty means "no arch detected", so the caller builds CPU instead of a
 # PTX-only binary that fails on an old driver (#5854).
+# Every GPU's capability from nvidia_probe.py, one per line; nothing when the probe is off or
+# absent, or when one listed GPU has no readable capability (a partial list would build kernels
+# for part of the machine).
+_probe_compute_caps() {
+    [ -f "$SCRIPT_DIR/nvidia_probe.py" ] && command -v python3 >/dev/null 2>&1 || return 0
+    _setup_run_smi python3 -I "$SCRIPT_DIR/nvidia_probe.py" 2>/dev/null | awk '
+        /^GPU [0-9]+:/ {
+            if (match($0, /\(compute [0-9]+\.[0-9]+\)$/)) caps = caps substr($0, RSTART + 9, RLENGTH - 10) "\n"
+            else bad = 1
+        }
+        END { if (!bad) printf "%s", caps }' || true
+}
+
 _resolve_cuda_archs() {
     local _raw_caps=$1
     local _arch_override=$2
@@ -639,6 +652,9 @@ _setup_cvd_hides_nvidia() {
 # and a mixed host steered to its AMD card keeps the ROCm route.
 # Present, mask or no mask. The usable probe is this plus the CUDA_VISIBLE_DEVICES check.
 _setup_has_physical_nvidia_gpu() {
+    # Reset here rather than in the usable wrapper: this is where the bounded -L call
+    # lives, and both entry points reach the probe through it.
+    _setup_nv_smi_wedged=""
     _setup_nvsmi=""
     if command -v nvidia-smi >/dev/null 2>&1; then
         _setup_nvsmi="nvidia-smi"
@@ -646,7 +662,15 @@ _setup_has_physical_nvidia_gpu() {
         _setup_nvsmi="/usr/bin/nvidia-smi"
     fi
     if [ -n "$_setup_nvsmi" ]; then
-        if _setup_run_smi "$_setup_nvsmi" -L 2>/dev/null \
+        # Captured rather than piped so `timeout`'s own 124 stays visible. A wedged
+        # driver still detects as a GPU through /proc below, and the banner must not
+        # then pay the 10s bound a second time asking a hung nvidia-smi for a name.
+        _setup_nv_l_rc=0
+        _setup_nv_l_out=$(_setup_run_smi "$_setup_nvsmi" -L 2>/dev/null) || _setup_nv_l_rc=$?
+        if [ "$_setup_nv_l_rc" = "124" ]; then
+            _setup_nv_smi_wedged=1
+        fi
+        if printf '%s\n' "$_setup_nv_l_out" \
            | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}'; then
             return 0
         fi
@@ -655,7 +679,127 @@ _setup_has_physical_nvidia_gpu() {
        [ -n "$(ls -A /proc/driver/nvidia/gpus 2>/dev/null)" ]; then
         return 0
     fi
+    # Last: NVML / the CUDA driver API, which ship with the driver and not with nvidia-smi.
+    if [ "${UNSLOTH_NVIDIA_LIBRARY_PROBE:-1}" != "0" ] && [ -f "$SCRIPT_DIR/nvidia_probe.py" ] \
+            && command -v python3 >/dev/null 2>&1; then
+        _setup_run_smi python3 -I "$SCRIPT_DIR/nvidia_probe.py" >/dev/null 2>&1 && return 0
+    fi
     return 1
+}
+
+# Row index of the GPU whose UUID starts with $1, or empty. NVIDIA allows a UUID to
+# be abbreviated to any unique leading portion, hence the prefix match.
+_setup_nv_idx_from_uuid() {
+    # NVIDIA accepts an abbreviation only when it is a UNIQUE leading portion, so a
+    # prefix matching two cards selects NO device. Counting instead of stopping at the
+    # first hit keeps the banner from naming one of them.
+    _setup_run_smi "$_setup_nvsmi" --query-gpu=uuid --format=csv,noheader 2>/dev/null \
+        | awk -v want="$1" '
+            NF { gsub(/^[[:space:]]+|[[:space:]]+$/,""); if (index($0, want) == 1) { hits++; idx = NR-1 } }
+            END { if (hits == 1) print idx }' || true
+}
+
+# Resolves the banner's NVIDIA fields into _setup_nv_name / _setup_nv_sm /
+# _setup_nv_driver, each empty when it could not be read. Mirrors install.sh's
+# _nv_banner_fields. Bounded, and fed the executable _setup_has_usable_nvidia_gpu
+# already resolved into $_setup_nvsmi: a wedged driver blocks nvidia-smi indefinitely,
+# and detection also succeeds via /usr/bin/nvidia-smi off PATH or via
+# /proc/driver/nvidia/gpus with no nvidia-smi at all.
+_setup_nv_banner_fields() {
+    _setup_nv_name=""; _setup_nv_sm=""; _setup_nv_driver=""
+    _setup_nv_row=""; _setup_nv_cc=""; _setup_nv_ambiguous=""
+    [ -n "${_setup_nvsmi:-}" ] || return 0
+    # Detection already waited out the full bound on this binary. Asking again cannot
+    # succeed and would double the stall, so the banner keeps the vendor-only wording.
+    [ -z "${_setup_nv_smi_wedged:-}" ] || return 0
+    # nvidia-smi ignores CUDA_VISIBLE_DEVICES, so its rows are the physical devices and
+    # the mask has to be resolved against them by hand.
+    _setup_nv_idx=0
+    # Set while nothing has IDENTIFIED a device: an ordinal, or a failed identity lookup
+    # that fell back to one. Only an ordinal is order-dependent.
+    _setup_nv_by_ordinal=1
+    _setup_nv_vis="${CUDA_VISIBLE_DEVICES:-}"
+    # Only the FIRST entry selects the device, and only IT decides the form of the mask.
+    # CUDA truncates enumeration at the first invalid index, so the documented `2,-1`
+    # means "device 2, then stop"; classifying the whole string would see the `-1`, call
+    # it non-numeric, and send a plain ordinal down the UUID path.
+    _setup_nv_tok="${_setup_nv_vis%%,*}"
+    case "$_setup_nv_tok" in
+        '') ;;
+        *[!0-9]*)
+            _setup_nv_by_ordinal=""
+            case "$_setup_nv_tok" in
+                MIG-GPU-*)
+                    # Pre-R470 MIG name, MIG-<GPU-UUID>/<gi>/<ci>: the parent UUID is
+                    # embedded, so it still matches a --query-gpu=uuid row.
+                    _setup_nv_tok="${_setup_nv_tok#MIG-}"; _setup_nv_tok="${_setup_nv_tok%%/*}"
+                    _setup_nv_idx=$(_setup_nv_idx_from_uuid "$_setup_nv_tok") ;;
+                MIG-*)
+                    # R470 and later give each MIG instance its OWN opaque UUID, which
+                    # carries nothing of the parent, so --query-gpu=uuid can never match
+                    # it. `nvidia-smi -L` nests the instances under their GPU.
+                    _setup_nv_idx=$(_setup_run_smi "$_setup_nvsmi" -L 2>/dev/null | awk -v want="$_setup_nv_tok" '
+                        /^GPU[[:space:]]+[0-9]+:/ { cur = $2 + 0 }
+                        index($0, want) > 0 { print cur; exit }' || true) ;;
+                *)
+                    _setup_nv_idx=$(_setup_nv_idx_from_uuid "$_setup_nv_tok") ;;
+            esac
+            # An identity mask that does not resolve means CUDA selected NO device: an
+            # abbreviation short enough to match two cards, or a UUID for a card that is
+            # not here. Row 0 is not a fallback for that -- it is a different card.
+            case "$_setup_nv_idx" in ''|*[!0-9]*) _setup_nv_idx=0; _setup_nv_ambiguous=1 ;; esac
+            ;;
+        *) _setup_nv_idx="$_setup_nv_tok" ;;
+    esac
+    # Canonicalise the ordinal before anything compares or subscripts with it.
+    # `[` parses with strtol and ERRORS on a value wider than a long, printing a
+    # shell diagnostic and skipping the range check below, so an absurd ordinal
+    # would have named row 0. Clamped rather than rejected: 9999 is past any real
+    # host, so it stays out of range and declines, which is the right answer.
+    _setup_nv_idx=$(printf '%s' "$_setup_nv_idx" \
+        | awk '{ n = $0 + 0; if (n < 0) n = 0; if (n > 9999) n = 9999; printf "%d", n }')
+    _setup_nv_all=$(_setup_run_smi "$_setup_nvsmi" --query-gpu=name,compute_cap,driver_version --format=csv,noheader 2>/dev/null || true)
+    _setup_nv_row=$(printf '%s\n' "$_setup_nv_all" \
+        | awk -v idx="$_setup_nv_idx" 'NF { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx+0] }')
+    [ -n "$_setup_nv_row" ] || return 0
+    # A numeric entry is a CUDA ordinal, and CUDA's default CUDA_DEVICE_ORDER=FASTEST_FIRST
+    # puts the fastest card at 0 and leaves the rest "unspecified", while nvidia-smi always
+    # lists in PCI order. So an ordinal identifies an nvidia-smi row only when the order is
+    # pinned to PCI_BUS_ID, or when the cards are interchangeable and every row gives the
+    # same answer anyway. Compared on name and compute_cap, not the driver, which is
+    # host-wide and identical on every row.
+    # CUDA stops enumerating at the first invalid index, so an ordinal past the last
+    # row exposes NO device at all. The awk above clamps to row 0 so the driver still
+    # reads, but row 0 is not the selected card -- nothing is.
+    _setup_nv_rowcount=$(printf '%s\n' "$_setup_nv_all" | awk 'NF { n++ } END { print n+0 }')
+    if [ -n "$_setup_nv_by_ordinal" ] && [ "$_setup_nv_idx" -ge "$_setup_nv_rowcount" ]; then
+        _setup_nv_ambiguous=1
+    fi
+    if [ -n "$_setup_nv_by_ordinal" ]; then
+        _setup_nv_order=$(printf '%s' "${CUDA_DEVICE_ORDER:-}" | tr '[:lower:]' '[:upper:]' | tr -d '[:space:]')
+        _setup_nv_models=$(printf '%s\n' "$_setup_nv_all" \
+            | awk -F, 'NF { k=$0; sub(/,[^,]*$/,"",k); if (!(k in s)) { s[k]; n++ } } END { print n+0 }')
+        if [ "$_setup_nv_order" != "PCI_BUS_ID" ] && [ "$_setup_nv_models" -gt 1 ]; then
+            _setup_nv_ambiguous=1
+        fi
+    fi
+    # Split from the right: nvidia-smi does not quote, so a comma in a device name
+    # would otherwise shift every field.
+    _setup_nv_driver=$(printf '%s' "$_setup_nv_row" | awk -F, 'NF>=3 { gsub(/^[[:space:]]+|[[:space:]]+$/,"",$NF); print $NF }')
+    _setup_nv_cc=$(printf '%s' "$_setup_nv_row" | awk -F, 'NF>=3 { gsub(/^[[:space:]]+|[[:space:]]+$/,"",$(NF-1)); print $(NF-1) }')
+    _setup_nv_name=$(printf '%s' "$_setup_nv_row" | awk -F, 'NF>=3 { out=$1; for(i=2;i<=NF-2;i++) out=out","$i; gsub(/^[[:space:]]+|[[:space:]]+$/,"",out); print out }')
+    # Short row: keep field 1 only, or the compute capability lands in the name.
+    [ -n "$_setup_nv_name" ] || _setup_nv_name=$(printf '%s' "$_setup_nv_row" | awk -F, '{ gsub(/^[[:space:]]+|[[:space:]]+$/,"",$1); print $1 }')
+    # An nvidia-smi too old for a field answers with a placeholder rather than failing.
+    case "$_setup_nv_name"   in '[N/A]'|'[Not Supported]'|'[Unknown Error]') _setup_nv_name="" ;; esac
+    case "$_setup_nv_driver" in '[N/A]'|'[Not Supported]'|'[Unknown Error]') _setup_nv_driver="" ;; esac
+    # Keep the driver, drop the identity: the banner falls back to the vendor-only wording
+    # rather than claiming a card that may not be the one CUDA will use.
+    if [ -n "$_setup_nv_ambiguous" ]; then _setup_nv_name=""; _setup_nv_cc=""; fi
+    case "$_setup_nv_cc" in
+        [0-9]*.[0-9]*) _setup_nv_sm="sm_$(printf '%s' "$_setup_nv_cc" | awk -F. '{ print ($1*10)+$2 }')" ;;
+    esac
+    return 0
 }
 
 _setup_has_usable_nvidia_gpu() {
@@ -955,8 +1099,7 @@ STAGE_ROOT="${UNSLOTH_STUDIO_STAGE_ROOT:-}"
 RUNTIME_ROOT="${STAGE_ROOT:-$STUDIO_HOME}"
 VENV_DIR="$RUNTIME_ROOT/unsloth_studio"
 
-# Same uv cache install.sh chose, for the same reasons -- kept byte-identical to the
-# block there, including the write probe and the unwind on failure.
+# Same uv cache install.sh chose, for the same reasons.
 #
 # This script is also the standalone entry point: `unsloth studio update` runs it
 # directly, without install.sh, so an export made only there covers the first install and
@@ -968,23 +1111,311 @@ VENV_DIR="$RUNTIME_ROOT/unsloth_studio"
 #
 # STUDIO_HOME, not RUNTIME_ROOT: the cache has to be the one install.sh created, and the
 # two agree whenever UNSLOTH_STUDIO_STAGE_ROOT is unset, which is every non-staged run.
-if [ -z "${UV_CACHE_DIR:-}" ]; then
-    UV_CACHE_DIR="$STUDIO_HOME/cache/uv"
-    export UV_CACHE_DIR
-    # mktemp, not a $$-derived name: this branch exists for a cache directory another
-    # account can write, and there a predictable path can be pre-created as a symlink,
-    # which `: >` would follow and truncate -- as root, any file on the box. mktemp
-    # creates O_EXCL with an unpredictable suffix, so it cannot follow one, and failing
-    # to create IS the writability answer this probe wanted.
+# The LIVE marker, even under a stage root: the CLI promotes its parked choice on acceptance,
+# so an unactivated stage cannot move the live cache. setup.sh only infers; it never writes.
+_uv_no_cache_requested() {
+    # --no-cache outranks --cache-dir. Same spelling as install.sh's _uv_no_cache_requested.
+    case "$(printf '%s' "${UV_NO_CACHE:-}" | tr '[:upper:]' '[:lower:]')" in
+        1|y|yes|t|true|on) return 0 ;;
+    esac
+    return 1
+}
+
+_uv_is_bucket_name() {
+    # install.sh's _uv_is_bucket_name, verbatim: the two have to call the same directories uv's.
+    case "$1" in
+        *-v[0-9]*) ;;
+        *) return 1 ;;
+    esac
+    case "${1##*-v}" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    case "${1%-v*}" in
+        archive|binaries|builds|built-wheels|environments|flat-index) ;;
+        git|interpreter|osv|python|sdists|simple|wheels) ;;
+        *) return 1 ;;
+    esac
+    return 0
+}
+
+_uv_cache_probe_writable() {
+    # As install.sh's _uv_cache_root_is_writable: a real create, and mktemp (O_EXCL) not $$,
+    # since a predictable name can be pre-created as a symlink.
     _uv_cache_probe=""
-    if ! mkdir -p "$UV_CACHE_DIR" 2>/dev/null \
-       || ! _uv_cache_probe=$(mktemp "$UV_CACHE_DIR/.unsloth-write-probe.XXXXXX" 2>/dev/null); then
-        echo "[WARN] Cannot write to $UV_CACHE_DIR -- using uv's default cache." >&2
-        unset UV_CACHE_DIR
+    if ! mkdir -p "$1" 2>/dev/null \
+       || ! _uv_cache_probe=$(mktemp "$1/.unsloth-write-probe.XXXXXX" 2>/dev/null); then
+        [ -z "$_uv_cache_probe" ] || rm -f "$_uv_cache_probe" 2>/dev/null || true
+        unset _uv_cache_probe
+        return 1
     fi
-    [ -z "$_uv_cache_probe" ] || rm -f "$_uv_cache_probe" 2>/dev/null || true
-    unset _uv_cache_probe
+    # Creating is not enough: an ACL granting create but denying unlink leaves uv's renames to
+    # fail later. GONE is the answer, not rm's exit status, since a scanner holding the handle
+    # makes one delete fail and the next succeed. Retry, then believe the filesystem. Same
+    # bounded loop as install.sh's _uv_cache_root_is_writable.
+    _uv_cache_tries=0
+    while :; do
+        rm -f "$_uv_cache_probe" 2>/dev/null || true
+        [ -e "$_uv_cache_probe" ] || break
+        _uv_cache_tries=$((_uv_cache_tries + 1))
+        if [ "$_uv_cache_tries" -ge 3 ]; then
+            unset _uv_cache_probe _uv_cache_tries
+            return 1
+        fi
+        sleep 1
+    done
+    unset _uv_cache_probe _uv_cache_tries
+    return 0
+}
+
+_uv_cache_folds_case() {  # <dir>
+    # Measured on the cache filesystem, not assumed from the platform, as install.sh does it:
+    # default APFS folds and ext4 does not, and a Mac can have either mounted. A cache we
+    # cannot write answers "no", which is the conservative reading.
+    _uvf_probe="$1/.unsloth-case-probe.$$-A"
+    mkdir "$_uvf_probe" 2>/dev/null || { unset _uvf_probe; return 1; }
+    if [ -d "$1/.unsloth-case-probe.$$-a" ]; then
+        rmdir "$_uvf_probe" 2>/dev/null || true
+        unset _uvf_probe
+        return 0
+    fi
+    rmdir "$_uvf_probe" 2>/dev/null || true
+    unset _uvf_probe
+    return 1
+}
+
+_uv_store_key() {  # <entry name> <folds:1|0>  -> the name uv opens it as, or nonzero
+    # Only the NAME folds; what the entry IS is the caller's business. Both scans go through
+    # here so they cannot disagree about which entries are uv's.
+    if _uv_is_bucket_name "$1"; then
+        printf '%s' "$1"
+        return 0
+    fi
+    [ "$2" = 1 ] || return 1
+    case "$1" in *[[:upper:]]*) ;; *) return 1 ;; esac
+    _uvk_lower=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+    if _uv_is_bucket_name "$_uvk_lower"; then
+        printf '%s' "$_uvk_lower"
+        unset _uvk_lower
+        return 0
+    fi
+    unset _uvk_lower
+    return 1
+}
+
+_uv_cache_usable() {
+    # The stores uv owns: a 0555 archive-* or interpreter-v4 aborts uv. Not every subdirectory,
+    # or an unrelated read-only one disqualifies a usable cache. install.sh's
+    # _uv_cache_is_writable is the same check.
+    _uv_cache_probe_writable "$1" || return 1
+    _uv_cache_folds_case "$1" && _uvu_fold=1 || _uvu_fold=0
+    for _uvu_bucket in "$1"/*; do
+        _uvu_name=$(_uv_store_key "${_uvu_bucket##*/}" "$_uvu_fold") || continue
+        # Only the stores `uv pip install` CREATES, which is the one uv command this file runs
+        # (line 2053). The rule is what uv is measured to write, not what a 0555 directory
+        # happens to survive: a `git+` requirement creates git-v0 and builds-v0, so those stay,
+        # while flat-index-v2 is not created even by `--find-links --no-index`, and binaries,
+        # environments, osv and python belong to uv self-update, uv venv and uv python.
+        #
+        # A store is probed even where one trivial install tolerates it read-only, because that
+        # tolerance is the WORKLOAD, not the cache. On the pinned uv 0.12.1 a 0555 sdists-v9
+        # passes a wheel-only install and aborts the moment a source build needs it, and a 0555
+        # interpreter-v4 passes while its entry is cached and aborts on a new interpreter. An
+        # update installs a large, varying set, so a store it cannot write is a cache that
+        # breaks later rather than one that is fine. Re-measure on a pin bump.
+        case "${_uvu_name%-v*}" in
+            archive|builds|built-wheels|git|interpreter|sdists|simple|wheels) ;;
+            *) continue ;;
+        esac
+        if [ ! -d "$_uvu_bucket" ]; then
+            # A file, or a symlink dangling or not, is an existing path to mkdir(2), so uv
+            # cannot make the store and aborts. Measured on uv 0.10.7: a plain file at any of
+            # archive-v0, interpreter-v4, sdists-v9, simple-v20 or wheels-v6 exits 1 or 2.
+            if [ -e "$_uvu_bucket" ] || [ -L "$_uvu_bucket" ]; then
+                unset _uvu_bucket
+                return 1
+            fi
+            continue
+        fi
+        if ! _uv_cache_probe_writable "$_uvu_bucket"; then
+            unset _uvu_bucket _uvu_name _uvu_fold _uvu_ctl
+            return 1
+        fi
+        # Inside the store, and only inside one uv owns: a `*-v[0-9]*` glob also reaches
+        # `unused-v999/.git`, and a read-only file there condemned a cache real uv uses fine.
+        # sdists-* only: that is the one store measured to abort on a read-only .git, and
+        # rejecting a cache uv accepts costs the warm cache this path exists to find.
+        # One level inside the index stores, and only those. uv REWRITES this metadata on every
+        # resolve, so a shard another account owns aborts it. Measured on BOTH the pinned uv
+        # 0.12.1 and 0.10.7: a 0555 `simple-*/pypi` or `wheels-*/pypi` gives "Failed to write to
+        # the client cache", exit 2. One level is the leaf on both: 0.12.1 lays this out as
+        # `simple-v24/pypi`, not `simple-v24/index/<hash>`, and a 0555 `wheels-v6/pypi/requests`
+        # one level deeper installs fine. Bounded on purpose: the index level holds one entry per
+        # index, while the level below it grows with every package.
+        case "$_uvu_name" in
+            simple-* | wheels-*)
+                for _uvu_shard in "$_uvu_bucket"/* "$_uvu_bucket"/index/*; do
+                    # `index/<hash>`, one per CUSTOM index, is where uv puts metadata when
+                    # --index-url is set, which Studio does for the torch wheels. Measured on
+                    # the pinned uv 0.12.1: a 0555 `simple-v24/index/<hash>` is adopted by a
+                    # one-level probe and then aborts `uv pip install --refresh` with "Failed
+                    # to write to the client cache". The literal `index` level is still bounded:
+                    # one entry per index, where the level below THAT is one per package.
+                    [ "${_uvu_shard#"$_uvu_bucket"/index/}" != "*" ] || continue
+                    if [ ! -d "$_uvu_shard" ]; then
+                        # Same rule as the store level: a file, or a symlink dangling or not, is
+                        # an existing path uv can neither open nor mkdir. Measured on the pinned
+                        # uv 0.12.1, a plain file OR a dangling symlink at simple-v24/pypi or
+                        # wheels-v6/pypi aborts with "Failed to write to the client cache",
+                        # exit 2. A `*/` glob skips both, which called the cache usable.
+                        { [ -e "$_uvu_shard" ] || [ -L "$_uvu_shard" ]; } || continue
+                        unset _uvu_bucket _uvu_name _uvu_fold _uvu_ctl _uvu_shard
+                        return 1
+                    fi
+                    if ! _uv_cache_probe_writable "$_uvu_shard"; then
+                        unset _uvu_bucket _uvu_name _uvu_fold _uvu_ctl _uvu_shard
+                        return 1
+                    fi
+                done
+                unset _uvu_shard
+                ;;
+        esac
+        case "$_uvu_name" in sdists-*) _uvu_ctl=.git ;; *) _uvu_ctl="" ;; esac
+        if [ -n "$_uvu_ctl" ] && ! _uv_control_files_writable "$_uvu_bucket" "$_uvu_ctl"; then
+            unset _uvu_bucket _uvu_name _uvu_fold _uvu_ctl
+            return 1
+        fi
+    done
+    unset _uvu_bucket _uvu_name _uvu_fold _uvu_ctl _uvu_shard
+    _uv_control_files_writable "$1" .lock || return 1
+    return 0
+}
+
+_uv_control_files_writable() {  # <dir> <name>...
+    # Only the names uv is measured to need writable, because rejecting more throws away the
+    # warm cache this whole path exists to find. Every control file at 0444 against uv 0.10.7:
+    # root .lock ABORTS (exit 2) and sdists-v9/.git ABORTS (exit 2); root CACHEDIR.TAG and
+    # .gitignore, and .git/.gitignore/.lock under archive-v0, interpreter-v4, simple-v20 and
+    # wheels-v6, all install fine. uv itself creates only the three root files, so a per-store
+    # .git is someone else's, and one of them is proven to break uv. Re-measure on a pin bump.
+    _uvc_dir=$1
+    shift
+    for _uvc_name in "$@"; do
+        _uvc_path="$_uvc_dir/$_uvc_name"
+        { [ -e "$_uvc_path" ] || [ -L "$_uvc_path" ]; } || continue
+        # Not a regular file, so uv cannot open it at all: measured on uv 0.10.7, a `.lock`
+        # DIRECTORY (or a symlink to one) exits 2 with "Could not acquire lock ... Is a
+        # directory". `-f` alone skipped it and called the cache usable.
+        if [ ! -f "$_uvc_path" ] || [ ! -r "$_uvc_path" ] || [ ! -w "$_uvc_path" ]; then
+            unset _uvc_dir _uvc_name _uvc_path
+            return 1
+        fi
+    done
+    unset _uvc_dir _uvc_name _uvc_path
+    return 0
+}
+
+_uv_cache_warm() {
+    # Package BYTES, not metadata (wheels-* is .msgpack/.http after a bare resolve). Mirrors
+    # install.sh's scan and unsloth_cli's _uv_cache_has_packages.
+    [ -n "${1:-}" ] && [ -d "$1" ] && [ -r "$1" ] || return 1
+    # One pass over the entries, not five lowercase globs: on a folding filesystem `Archive-V0`
+    # IS the store uv opens as `archive-v0`, and a glob does not fold, so a cache holding every
+    # wheel read as cold and the offline update failed. _uv_cache_usable normalises the same way.
+    _uv_cache_folds_case "$1" && _uvw_fold=1 || _uvw_fold=0
+    for _uvw_bucket in "$1"/*; do
+        [ -d "$_uvw_bucket" ] || continue
+        # Stricter than the probe, deliberately, and exactly as install.sh's scan: `archive-*`
+        # also matches `archive-v0.backup`, whose bytes uv cannot reuse. Counting those reads a
+        # cache as warm that then fails an offline update (measured: uv exit 1, not in cache).
+        _uvw_base=$(_uv_store_key "${_uvw_bucket##*/}" "$_uvw_fold") || continue
+        case "${_uvw_base%-v*}" in
+            archive|builds|built-wheels|wheels|sdists) ;;
+            *) continue ;;
+        esac
+        # Unreadable is not empty, but it is also not proof of warmth.
+        [ -r "$_uvw_bucket" ] && [ -x "$_uvw_bucket" ] || continue
+        # -L: a bucket can be a symlink, as Get-ChildItem -Recurse follows. -print -quit, never
+        # `| head -n 1`: under this file's pipefail head's early exit SIGPIPEs find on a bucket
+        # over 64K of names, and the warm cache then reads as cold.
+        _uvw_hit=$(find -L "$_uvw_bucket" -type f \
+            ! -name CACHEDIR.TAG ! -name .git ! -name .gitignore \
+            ! -name '*.lock' ! -name '*.msgpack' ! -name '*.http' ! -name '*.rev' \
+            -print -quit 2>/dev/null) || true
+        # `|| true`: find exits nonzero after an unreadable leaf even once it printed the hit,
+        # and the hit is already assigned.
+        if [ -n "$_uvw_hit" ]; then
+            unset _uvw_bucket _uvw_hit _uvw_base _uvw_fold
+            return 0
+        fi
+    done
+    unset _uvw_bucket _uvw_hit _uvw_base _uvw_fold
+    return 1
+}
+
+_recorded_uv_cache() {
+    # The marker as unsloth_cli writes it: one absolute path, one trailing newline. Tolerates a
+    # BOM (PowerShell 5.1) and a CR, otherwise byte-for-byte. The sentinel keeps the bytes, and
+    # exactly one delimiter is removed, so a pathname ending in a newline round-trips.
+    _ruc_raw=$(cat "$STUDIO_HOME/cache/uv-cache-dir" 2>/dev/null && printf x) || return 1
+    _ruc_raw=${_ruc_raw%x}
+    _ruc_raw=${_ruc_raw%"$_UV_MARKER_LF"}
+    _ruc_raw=${_ruc_raw#"$_UV_MARKER_BOM"}
+    _ruc_raw=${_ruc_raw%"$_UV_MARKER_CR"}
+    case "$_ruc_raw" in
+        # Absolute only, as install.sh records (_absolutize_uv_cache_dir): setup.sh has already
+        # changed directory. No [:print:] filter: in the C locale it rejects every non-ASCII home.
+        "") unset _ruc_raw; return 1 ;;
+        /*) ;;
+        *) unset _ruc_raw; return 1 ;;
+    esac
+    printf '%s' "$_ruc_raw"
+    unset _ruc_raw
+    return 0
+}
+_UV_MARKER_BOM=$(printf '\357\273\277')
+_UV_MARKER_CR=$(printf '\r')
+_UV_MARKER_LF=$(printf '\n.')
+_UV_MARKER_LF=${_UV_MARKER_LF%.}
+
+# Three tiers: a caller value, --no-cache, then the recorded marker or the Studio cache. No
+# "uv's default if warm" tier, unlike install.sh, which decides before anything is recorded:
+# here it would move an update off the installer's cache with nothing recording the change.
+_uv_caller_value=false
+# `*[![:space:]]*`, not `-n`: install.sh's test, so an all-whitespace value is not a caller's
+# choice here and `--cache-dir '   '` there. The two selectors have to answer alike.
+case "${UV_CACHE_DIR-}" in
+    *[![:space:]]*) _uv_caller_value=true ;;
+esac
+if [ "$_uv_caller_value" = true ]; then
+    # A caller value wins outright, here as in install.sh and in the CLI.
+    :
+elif _uv_no_cache_requested; then
+    # Unset, not left alone: uv parses an exported EMPTY value as `--cache-dir ''` and fails.
+    unset UV_CACHE_DIR
+else
+    # Same sentinel as the reader: substitution would strip the newline it preserved.
+    _uv_recorded=$(_recorded_uv_cache && printf x) || _uv_recorded=""
+    _uv_recorded=${_uv_recorded%x}
+    if [ -n "$_uv_recorded" ] && _uv_cache_warm "$_uv_recorded" \
+       && _uv_cache_usable "$_uv_recorded"; then
+        # Only while it holds packages and uv can write to it: an emptied cache would refetch
+        # everything, and uv aborts on a read-only one (a share remounted since the install).
+        UV_CACHE_DIR="$_uv_recorded"
+        export UV_CACHE_DIR
+    else
+        UV_CACHE_DIR="$STUDIO_HOME/cache/uv"
+        export UV_CACHE_DIR
+        # The whole cache, not just its root, and the same check the recorded branch gets: a
+        # Studio cache whose archive-v0 went read-only passes a root probe and then aborts uv
+        # (measured: exit 1, "Permission denied"). Leaving it unset lets uv use its own.
+        if ! _uv_cache_usable "$UV_CACHE_DIR"; then
+            echo "[WARN] Cannot write to $UV_CACHE_DIR -- using uv's default cache." >&2
+            unset UV_CACHE_DIR
+        fi
+    fi
+    unset _uv_recorded
 fi
+unset _uv_caller_value
 VENV_T5_530_DIR="$RUNTIME_ROOT/.venv_t5_530"
 VENV_T5_550_DIR="$RUNTIME_ROOT/.venv_t5_550"
 VENV_T5_510_DIR="$RUNTIME_ROOT/.venv_t5_510"
@@ -1534,6 +1965,7 @@ _setup_http_get_timed() {
 # ── uv from a pinned release ──
 # Same archive and destination as astral's installer, but it fetches a data file with a
 # pinned SHA-256 instead of piping remote script text into a shell. Mirrors install.sh.
+# See tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD)
 # Bumping the version means bumping every hash:
 #   curl -sL https://github.com/astral-sh/uv/releases/download/<ver>/<asset>.sha256
 #
@@ -2475,10 +2907,8 @@ _setup_rocminfo_gpu_records() {
 # side reads the same field in utils/hardware/amd.py get_hip_id_by_gpu_index.
 # Keep in sync with install.sh.
 _setup_amd_smi_hip_order() {
-    # POSIX awk forbids a physical newline in a -v value (gawk --posix makes it fatal),
-    # so the records arrive on stdin ahead of the map, separated by a sentinel. The first
-    # output line reports which index space the records came back in; the caller needs to
-    # know, because a mask cannot be applied to an untranslated list of unlike adapters.
+    # POSIX awk forbids a newline in a -v value (fatal under gawk --posix), so records arrive
+    # on stdin before the map, sentinel-separated. Line 1 names the index space.
     { printf '%s\n' "$1"; echo "@@hip-map@@"; cat; } | awk '
         function value(line,   v) {
             v = line
@@ -2495,9 +2925,7 @@ _setup_amd_smi_hip_order() {
             next
         }
         END {
-            # All or nothing, like get_hip_id_by_gpu_index: an older CLI rejects -e, and
-            # hip_id reads N/A when the library cannot reach a KFD node. A partial or
-            # colliding map is not a 1:1 device mapping, so keep discovery order.
+            # All or nothing, like get_hip_id_by_gpu_index: a partial or colliding map is not 1:1.
             if (r == 0 || n != r) { keep(); exit }
             for (i = 1; i <= n; i++) {
                 if (hip[i] < 0 || hip[i] >= r || (hip[i] in used)) { keep(); exit }
@@ -2526,9 +2954,14 @@ _setup_amd_smi_gpu_records() {
             if (started) print gfx "|" mkt
             gfx = ""; mkt = ""
         }
-        # amd-smi upper-cases every key (amdsmi_logger.py _capitalize_keys): MARKET_NAME,
-        # TARGET_GRAPHICS_VERSION. Matched case-folded so older spellings work too.
-        /^[[:space:]]*GPU:[[:space:]]*[0-9]/ { flush(); started = 1; next }
+        # amd-smi upper-cases every key (amdsmi_logger.py _capitalize_keys), so match
+        # case-folded. Two header shapes: `GPU: 0` opens a keyed block with the arch later,
+        # `GPU[0] : gfx1100` IS the record. Matching only the first answered no arch at all.
+        /^[[:space:]]*GPU[[:space:]]*[:\[][[:space:]]*[0-9]/ {
+            flush(); started = 1
+            if (match($0, /gfx[1-9][0-9a-z][0-9a-z][0-9a-z]?/)) gfx = substr($0, RSTART, RLENGTH)
+            next
+        }
         !started { next }
         tolower($0) ~ /market.?name/ { if (mkt == "") mkt = value($0); next }
         tolower($0) ~ /target.?graphics.?version/ {
@@ -2590,9 +3023,9 @@ _setup_supported_gfx_from_name() {
         *"RX 7800"*|*"RX 7700"*|*"PRO W7700"*|*"PRO V710"*)                                            _sup_gfx_out="gfx1101" ;;  # RDNA 3 (Navi 32)
         *"RX 7900"*|*"PRO W7900"*|*"PRO W7800"*)                                                       _sup_gfx_out="gfx1100" ;;  # RDNA 3 desktop / workstation (Navi 31)
         *"780M"*|*"760M"*|*"740M"*|*"Phoenix"*|*"Hawk Point"*|*"Z1 Extreme"*|*"Z2 Extreme"*)            _sup_gfx_out="gfx1103" ;;  # RDNA 3 iGPU (Phoenix / Hawk Point)
-        *"RX 6900"*|*"RX 6800"*|*"RX 6750"*|*"RX 6700"*|*"PRO W6800"*|*"PRO W6900"*)                    _sup_gfx_out="gfx1030" ;;  # RDNA 2 (Navi 21)
+        *"RX 6950"*|*"RX 6900"*|*"RX 6850"*|*"RX 6800"*|*"RX 6750"*|*"RX 6700"*|*"PRO W6800"*|*"PRO W6900"*) _sup_gfx_out="gfx1030" ;;  # RDNA 2 (Navi 21)
         *"RX 6650"*|*"RX 6600"*|*"PRO W6600"*|*"PRO W6650"*)                                            _sup_gfx_out="gfx1032" ;;  # RDNA 2 (Navi 23)
-        *"RX 6500"*|*"RX 6400"*|*"RX 6300"*|*"PRO W6400"*|*"PRO W6500"*)                                _sup_gfx_out="gfx1034" ;;  # RDNA 2 (Navi 24)
+        *"RX 6550"*|*"RX 6500"*|*"RX 6450"*|*"RX 6400"*|*"RX 6300"*|*"PRO W6400"*|*"PRO W6500"*|*"PRO W6300"*)                    _sup_gfx_out="gfx1034" ;;  # RDNA 2 (Navi 24)
     esac
     [ -n "$_sup_gfx_out" ] || return 1
     printf '%s\n' "$_sup_gfx_out"
@@ -2659,7 +3092,17 @@ if [ "$_setup_nvidia_usable" != true ]; then
 fi
 
 if [ "$_setup_nvidia_usable" = true ]; then
-    step "gpu" "NVIDIA GPU detected"
+    _setup_nv_banner_fields
+    if [ -n "$_setup_nv_name" ] && [ -n "$_setup_nv_sm" ]; then
+        step "gpu" "$_setup_nv_name ($_setup_nv_sm)"
+    elif [ -n "$_setup_nv_name" ]; then
+        step "gpu" "$_setup_nv_name"
+    else
+        step "gpu" "NVIDIA GPU detected"
+    fi
+    # An `if`, not `[ ... ] && substep ...`: the AND-list form leaves a non-zero status
+    # behind on the common path where there is no driver string to print.
+    if [ -n "$_setup_nv_driver" ]; then substep "Driver: $_setup_nv_driver"; fi
 elif [ "$_setup_amd_detected" = true ]; then
     _setup_vis="${HIP_VISIBLE_DEVICES:-${ROCR_VISIBLE_DEVICES:-}}"
     _setup_vis_idx=0
@@ -2670,14 +3113,14 @@ elif [ "$_setup_amd_detected" = true ]; then
     if [ -n "$_setup_amd_records" ]; then
         # Records already preserve device ordinals, including duplicate arches.
         _setup_amd_record=$(printf '%s\n' "$_setup_amd_records" | awk -v idx="$_setup_vis_idx" \
-            'NF { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx] }')
+            'NF { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx+0] }')
         _setup_gfx=${_setup_amd_record%%|*}
         _setup_mkt=${_setup_amd_record#*|}
     fi
     # Only pre-TARGET_GRAPHICS_VERSION amd-smi lands here: names but no arch in the record.
     if [ -z "$_setup_gfx" ]; then
         _setup_gfx=$(printf '%s\n' "$_setup_gfx_all" | awk -v idx="$_setup_vis_idx" \
-            'NF && !seen[$0]++ { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx] }')
+            'NF && !seen[$0]++ { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx+0] }')
     fi
     # UNSLOTH_ROCM_GFX_ARCH env override (mirrors setup.ps1)
     if [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ]; then
@@ -2765,7 +3208,11 @@ $_setup_unsup_pci
 EOF
         return 1
     }
-    if [ -n "$_setup_gfx" ]; then
+    # $_setup_mkt is the marketing name of the SAME record the arch came from, paired
+    # per GPU agent by _rocminfo_gpu_records and ordered by _amd_smi_hip_order.
+    if [ -n "$_setup_gfx" ] && [ -n "$_setup_mkt" ]; then
+        step "gpu" "$_setup_mkt ($_setup_gfx)"
+    elif [ -n "$_setup_gfx" ]; then
         step "gpu" "AMD ROCm ($_setup_gfx)"
     elif _setup_unsup_gfx=$(_setup_unsupported_gfx_any "$_setup_mkt"); then
         step "gpu" "AMD GPU detected ($_setup_unsup_gfx) -- no ROCm PyTorch wheels Unsloth installs"
@@ -2787,6 +3234,11 @@ EOF
         substep "GGUF chat can still use this GPU through Vulkan: export UNSLOTH_LLAMA_CPP_BACKEND=vulkan,"
         substep "then re-run the installer. It picks the llama.cpp bundle at install time, so setting"
         substep "it afterwards has no effect until you install or update again."
+    elif [ -n "$_setup_mkt" ]; then
+        # Name without an arch, as install.sh does. Deliberately BELOW the unsupported
+        # arm above: a card with no ROCm wheels also reaches here with a name, and
+        # naming it quietly would drop the warning that training will not run.
+        step "gpu" "$_setup_mkt"
     else
         step "gpu" "AMD ROCm"
     fi
@@ -2802,7 +3254,6 @@ EOF
         substep "ROCm: runtime detected (no SDK tree at $_setup_rocm_root)"
     fi
     [ -n "$_setup_rocm_ver" ] && substep "hipconfig: $_setup_rocm_ver"
-    [ -n "$_setup_mkt" ] && [ -n "$_setup_gfx" ] && substep "GPU: $_setup_mkt"
 elif [ "$_setup_xpu_ready" = true ]; then
     # Ranks below NVIDIA and AMD, as in setup.ps1: those hosts get their own wheels.
     step "gpu" "Intel GPU detected (XPU runtime)"
@@ -2840,6 +3291,11 @@ _NEED_LLAMA_SOURCE_BUILD=false
 _LLAMA_CPP_DEGRADED=false
 _LLAMA_CPP_NO_SPACE=false
 _LLAMA_KEEP_PREBUILT_ACTIVE=false
+# The installed GPU prebuilt was kept because the source fallback could only build CPU.
+_LLAMA_KEPT_GPU_PREBUILT=""
+_LLAMA_UPDATE_FAIL_REASON=""
+# A GPU host ended on a CPU-only llama.cpp: named in the footer, not just mid-log (#9255).
+_LLAMA_CPU_ONLY_ON_GPU_HOST=false
 _LLAMA_FORCE_COMPILE="${UNSLOTH_LLAMA_FORCE_COMPILE:-0}"
 _REQUESTED_LLAMA_TAG="${UNSLOTH_LLAMA_TAG:-${_DEFAULT_LLAMA_TAG}}"
 _HOST_SYSTEM="$(uname -s 2>/dev/null || true)"
@@ -2928,6 +3384,122 @@ _link_local_llama_quantize_shim() {
 # `make` build or a flat-extracted release) or the CMake build/bin/llama-server.
 _has_local_llama_server() {
     [ -x "$1/llama-server" ] || [ -x "$1/build/bin/llama-server" ]
+}
+
+# The backend the installed prebuilt's marker records (cuda/rocm/vulkan/cpu), or nothing.
+# `backend` arrived with #8520; older markers name it in llama_backend or only in the asset.
+# Whether the install marker's $2 names the pinned ref $3: exact, or ($4 = refs) the installer's
+# own alias and commit-prefix matching (a short commit pin matches the recorded full one). A
+# published release tag is a name, not a ref, so it compares exactly.
+_installed_prebuilt_ref_matches() {
+    [ -f "$1/UNSLOTH_PREBUILT_INFO.json" ] || return 1
+    python - "$SCRIPT_DIR/install_llama_prebuilt.py" "$1/UNSLOTH_PREBUILT_INFO.json" "$2" "$3" "${4:-exact}" <<'PY' 2>/dev/null
+import importlib.util
+import json
+import sys
+
+spec = importlib.util.spec_from_file_location("installer", sys.argv[1])
+installer = importlib.util.module_from_spec(spec)
+sys.modules["installer"] = installer  # the module's dataclasses resolve through sys.modules
+spec.loader.exec_module(installer)
+try:
+    marker = json.load(open(sys.argv[2], encoding="utf-8"))
+except Exception:
+    marker = {}
+values = [marker.get(f) for f in sys.argv[3].split(",")] if isinstance(marker, dict) else []
+values = [v.strip() for v in values if isinstance(v, str) and v.strip()]
+same = any(
+    v == sys.argv[4] or (sys.argv[5] == "refs" and installer.refs_match(v, sys.argv[4])) for v in values
+)
+sys.exit(0 if same else 1)
+PY
+}
+
+_installed_prebuilt_backend() {
+    [ -f "$1/UNSLOTH_PREBUILT_INFO.json" ] || return 0
+    python - "$1/UNSLOTH_PREBUILT_INFO.json" <<'PY' 2>/dev/null || true
+import json
+import sys
+
+KNOWN = ("cuda", "rocm", "vulkan", "cpu")
+try:
+    marker = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    marker = {}
+if not isinstance(marker, dict):
+    marker = {}
+def _field(key):
+    value = marker.get(key)
+    value = value.strip().lower() if isinstance(value, str) else ""
+    return "rocm" if value == "hip" else value
+
+# A recorded backend is final, known to this script or not; llama_backend was the request.
+answer = _field("backend")
+if not answer and _field("llama_backend") in KNOWN:
+    answer = _field("llama_backend")
+if not answer:
+    asset = marker.get("asset")
+    asset = asset.lower() if isinstance(asset, str) else ""
+    for value in KNOWN:
+        if f"-{value}" in asset or (value == "rocm" and "-hip" in asset):
+            answer = value
+            break
+print(answer)
+PY
+}
+
+# The updater's own completeness check, offline: a marker and an executable do not prove the
+# tree loads. Not --validate-install, which downloads a probe model the failed update cannot.
+# Why the prebuilt update failed, in a few words, from the helper's log.
+_llama_update_fail_reason() {
+    if grep -qiE "429|rate limit" "$1" 2>/dev/null; then
+        echo "GitHub rate limit"
+    elif grep -qiE "timed out|timeout|connection|resol|network|unreachable|50[234]" "$1" 2>/dev/null; then
+        echo "network error"
+    else
+        echo "download failed"
+    fi
+}
+
+_installed_prebuilt_runs() {
+    python "$SCRIPT_DIR/install_llama_prebuilt.py" --check-installed "$1" >/dev/null 2>&1
+}
+
+# An Intel GPU by DRM vendor id, the probe the prebuilt router uses for the Vulkan route.
+_setup_has_intel_gpu() {
+    grep -qs -i "^0x8086" /sys/class/drm/card*/device/vendor 2>/dev/null
+}
+
+# A CPU-only source build must not replace a working GPU prebuilt while the GPU is still
+# there (#9255). Prints the backend to keep; false when there is nothing to keep, the GPU
+# the marker names is gone, or the build was asked for by hand. Vulkan fits any vendor.
+_gpu_prebuilt_to_keep_over_cpu_build() {
+    local install_dir=$1 backend
+    [ "$_LLAMA_FORCE_COMPILE" != "1" ] || return 1
+    [ -z "$_LLAMA_PR" ] || return 1
+    # An explicit version pin asked for that version; the old install satisfies it only
+    # when its marker records the same one.
+    if [ -n "${UNSLOTH_LLAMA_RELEASE_TAG:-}" ]; then
+        _installed_prebuilt_ref_matches "$install_dir" release_tag "$UNSLOTH_LLAMA_RELEASE_TAG" || return 1
+    fi
+    case "${UNSLOTH_LLAMA_TAG:-}" in
+        ""|latest|master) ;;
+        # A commit pin is recorded beside the build tag, in the source ref fields.
+        *) _installed_prebuilt_ref_matches "$install_dir" \
+               tag,requested_source_ref,resolved_source_ref,source_commit "$UNSLOTH_LLAMA_TAG" refs || return 1 ;;
+    esac
+    _has_local_llama_server "$install_dir" || return 1
+    backend="$(_installed_prebuilt_backend "$install_dir")"
+    case "$backend" in
+        cuda) [ "$_setup_nvidia_physical" = true ] || return 1 ;;
+        rocm) [ "$_setup_amd_detected" = true ] || return 1 ;;
+        vulkan)
+            [ "$_setup_amd_detected" = true ] || [ "$_setup_nvidia_physical" = true ] \
+                || _setup_has_intel_gpu || return 1 ;;
+        *) return 1 ;;
+    esac
+    _installed_prebuilt_runs "$install_dir" || return 1
+    printf '%s' "$backend"
 }
 
 # UNSLOTH_LLAMA_KEEP_PREBUILT=1: keep an installed GPU prebuilt already matching the requested tag/fork.
@@ -3229,6 +3801,7 @@ else
     elif [ "$_PREBUILT_STATUS" -eq 2 ]; then
         step "llama.cpp" "prebuilt install failed" "$C_WARN"
         print_llama_error_log "$_PREBUILT_LOG"
+        _LLAMA_UPDATE_FAIL_REASON="$(_llama_update_fail_reason "$_PREBUILT_LOG")"
         rm -f "$_PREBUILT_LOG"
         if [ -d "$LLAMA_CPP_DIR" ]; then
             substep "prebuilt update failed; existing install restored"
@@ -3236,8 +3809,13 @@ else
         # Exit 2 means no concrete backend was in play: a request the installer
         # could not honour -- named here or recorded in the install marker, which
         # this script cannot see -- exits 5 above instead.
-        substep "falling back to source build"
-        _NEED_LLAMA_SOURCE_BUILD=true
+        # A working GPU prebuilt beats any source build: keep it and retry next time.
+        if _LLAMA_KEPT_GPU_PREBUILT="$(_gpu_prebuilt_to_keep_over_cpu_build "$LLAMA_CPP_DIR")"; then
+            step "llama.cpp" "update failed ($_LLAMA_UPDATE_FAIL_REASON); keeping the installed $_LLAMA_KEPT_GPU_PREBUILT prebuilt, the next update will retry" "$C_WARN"
+        else
+            substep "falling back to source build"
+            _NEED_LLAMA_SOURCE_BUILD=true
+        fi
     else
         step "llama.cpp" "prebuilt helper failed unexpectedly" "$C_ERR"
         print_llama_error_log "$_PREBUILT_LOG"
@@ -3589,6 +4167,10 @@ else
                             _raw_caps=$(_setup_run_smi "$_smi_bin" --query-gpu=compute_cap --format=csv,noheader 2>/dev/null || true)
                         fi
                         CUDA_ARCHS="$(_resolve_cuda_archs "$_raw_caps" "${UNSLOTH_LLAMA_CUDA_ARCHS:-}")"
+                        # nvidia-smi absent, stale or answering N/A: the driver library lists the capabilities.
+                        if [ -z "$CUDA_ARCHS" ] && [ "${UNSLOTH_NVIDIA_LIBRARY_PROBE:-1}" != "0" ]; then
+                            CUDA_ARCHS="$(_resolve_cuda_archs "$(_probe_compute_caps)" "")"
+                        fi
 
                         if [ -n "$CUDA_ARCHS" ]; then
                             CMAKE_ARGS="$CMAKE_ARGS -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHS}"
@@ -3694,7 +4276,14 @@ else
                 _BUILD_DESC="building (CPU)"
             fi
 
-            substep "$_BUILD_DESC..."
+            # Decided before the compile: a CPU build adds nothing to a kept GPU prebuilt.
+            if [ -z "$GPU_BACKEND" ] && [ "$_IS_MACOS_ARM64" != true ] \
+                    && _LLAMA_KEPT_GPU_PREBUILT="$(_gpu_prebuilt_to_keep_over_cpu_build "$LLAMA_CPP_DIR")"; then
+                step "llama.cpp" "keeping the installed $_LLAMA_KEPT_GPU_PREBUILT prebuilt: the source fallback could only build for the CPU" "$C_WARN"
+                BUILD_OK=false
+            else
+                substep "$_BUILD_DESC..."
+            fi
 
             NCPU=$(_llama_build_jobs)
             verbose_substep "parallel jobs: $NCPU (RAM-capped; UNSLOTH_LLAMA_BUILD_JOBS overrides)"
@@ -3713,7 +4302,7 @@ else
                 fi
             }
 
-            if ! run_quiet_no_exit "cmake llama.cpp" cmake $CMAKE_GENERATOR_ARGS -S "$_BUILD_TMP" -B "$_BUILD_TMP/build" $CMAKE_ARGS; then
+            if [ "$BUILD_OK" = true ] && ! run_quiet_no_exit "cmake llama.cpp" cmake $CMAKE_GENERATOR_ARGS -S "$_BUILD_TMP" -B "$_BUILD_TMP/build" $CMAKE_ARGS; then
                 _FB_LABEL="$(_gpu_fallback_label)"
                 if [ -n "$_FB_LABEL" ]; then
                     _TRY_METAL_CPU_FALLBACK=false
@@ -3798,6 +4387,16 @@ else
             fi
         fi
 
+        # A GPU build that fell back to CPU on the way is caught here, after the fact.
+        if [ "$BUILD_OK" = true ] && [ -z "$GPU_BACKEND" ] && [ "$_TRY_METAL_CPU_FALLBACK" != true ]; then
+            if _LLAMA_KEPT_GPU_PREBUILT="$(_gpu_prebuilt_to_keep_over_cpu_build "$LLAMA_CPP_DIR")"; then
+                step "llama.cpp" "keeping the installed $_LLAMA_KEPT_GPU_PREBUILT prebuilt: the source build fell back to the CPU" "$C_WARN"
+                BUILD_OK=false
+            elif [ "$_setup_nvidia_physical" = true ] || [ "$_setup_amd_detected" = true ] \
+                    || _setup_has_intel_gpu; then
+                _LLAMA_CPU_ONLY_ON_GPU_HOST=true
+            fi
+        fi
         # Swap only after build succeeds -- preserves existing install on failure
         if [ "$BUILD_OK" = true ]; then
             _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
@@ -3835,6 +4434,9 @@ else
         elif [ "$BUILD_OK" = true ]; then
             step "llama.cpp" "binary not found after build" "$C_WARN"
             _LLAMA_CPP_DEGRADED=true
+        elif [ -n "$_LLAMA_KEPT_GPU_PREBUILT" ]; then
+            # Not a failure: the kept prebuilt is a root-level llama-server, not $LLAMA_SERVER_BIN.
+            print_installed_llama_prebuilt_release "$LLAMA_CPP_DIR"
         else
             step "llama.cpp" "build failed" "$C_ERR"
             [ -f "$LLAMA_SERVER_BIN" ] || _LLAMA_CPP_DEGRADED=true
@@ -3867,6 +4469,9 @@ if [ "$_LLAMA_CPP_DEGRADED" = true ] \
     if run_quiet_no_exit "arm64 CPU prebuilt" "${_ARM64_CPU_CMD[@]}"; then
         step "llama.cpp" "arm64 CPU prebuilt installed (GPU build unavailable)" "$C_WARN"
         _LLAMA_CPP_DEGRADED=false
+        if [ "$_setup_nvidia_physical" = true ] || [ "$_setup_amd_detected" = true ]; then
+            _LLAMA_CPU_ONLY_ON_GPU_HOST=true
+        fi
         print_installed_llama_prebuilt_release "$LLAMA_CPP_DIR"
     fi
 fi
@@ -3978,6 +4583,17 @@ PY
     fi
 fi
 
+# Named in the footer: every path to a lost GPU exits 0, and a mid-log line is what #9255's reporters scrolled past.
+_print_llama_gpu_notes() {
+    if [ -n "$_LLAMA_KEPT_GPU_PREBUILT" ]; then
+        printf "  ${C_WARN}%-15s%s${C_RST}\n" "llama.cpp" "update failed (${_LLAMA_UPDATE_FAIL_REASON:-the source fallback could only build for the CPU}); the installed $_LLAMA_KEPT_GPU_PREBUILT prebuilt was kept and the next update will retry"
+    fi
+    if [ "$_LLAMA_CPU_ONLY_ON_GPU_HOST" = true ]; then
+        printf "  ${C_WARN}%-15s%s${C_RST}\n" "warning" "GPU acceleration is unavailable: the prebuilt install failed and the source fallback could only build for the CPU (no GPU toolkit, or the GPU build failed above), so GGUF inference will run on the CPU"
+        printf "  ${C_WARN}%-15s%s${C_RST}\n" "" "fix the cause named above, then re-run this installer to restore the GPU"
+    fi
+}
+
 # ── Footer ──
 if [ "$_LLAMA_ONLY" = "1" ]; then
     echo ""
@@ -3988,6 +4604,7 @@ if [ "$_LLAMA_ONLY" = "1" ]; then
         printf "  ${C_TITLE}%s${C_RST}\n" "llama.cpp update finished"
     fi
     printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
+    _print_llama_gpu_notes
 elif [ "$IS_COLAB" = true ]; then
     echo ""
     printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
@@ -3997,6 +4614,7 @@ elif [ "$IS_COLAB" = true ]; then
         printf "  ${C_TITLE}%s${C_RST}\n" "Unsloth Studio Setup Complete"
     fi
     printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
+    _print_llama_gpu_notes
     substep "from colab import start"
     substep "start()"
 else
@@ -4007,6 +4625,7 @@ else
         printf "  ${C_TITLE}%s${C_RST}\n" "Unsloth Studio Installed"
     fi
     printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
+    _print_llama_gpu_notes
     if [ "$_LLAMA_CPP_DEGRADED" = true ]; then
         printf "  ${C_DIM}%-15s${C_WARN}%s${C_RST}\n" "launch" "unsloth studio -p 8888"
     else

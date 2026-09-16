@@ -53,6 +53,8 @@ export function loadedConfigSignature(
     config.specDraftNMax ?? "",
     config.specDraftCacheDtype ?? "",
     config.nParallel ?? "",
+    config.reasoningBudget ?? "",
+    `${(config.reasoningBudgetMessage ?? "").length}:${hashString(config.reasoningBudgetMessage ?? "")}`,
     config.nBatch ?? "",
     config.nUbatch ?? "",
     config.loadMode ?? "",

@@ -59,6 +59,7 @@ test("recalling a quantized model carries the selected adapters into its load", 
       cpuOffload: false,
       speedMode: "auto",
       transformerQuant: quant,
+      textEncoderQuant: "int8",
       attentionBackend: "auto",
       memoryMode: "auto",
       transformerCache: "auto",
@@ -90,10 +91,15 @@ test("recalling a quantized model carries the selected adapters into its load", 
       filename: model.filename,
     });
     const advanced = loads[0][2] as
-      | { loras?: unknown; transformer_quant?: string }
+      | {
+          loras?: unknown;
+          transformer_quant?: string;
+          text_encoder_quant?: string;
+        }
       | undefined;
     assert.deepEqual(advanced?.loras, [{ id: "org/style", weight: 0.7 }]);
     assert.equal(advanced?.transformer_quant, quant);
+    assert.equal(advanced?.text_encoder_quant, "int8");
     assert.equal(
       callbacks.currentLoadAdvanced("org/different-model").loras,
       undefined,
@@ -140,4 +146,45 @@ test("invalid or incomplete stored targets cannot trigger automatic loading", ()
     storage.setItem("unsloth:images:last-model", value);
     assert.equal(readImageModel(), null);
   }
+});
+
+test("a new model pick cancels recalled generation and retires the staged load", () => {
+  const source = readSrc("features/images/images-page.tsx");
+  const tree = ts.createSourceFile(
+    "images-page.tsx",
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TSX,
+  );
+  let declaration: ts.VariableDeclaration | undefined;
+  function visit(node: ts.Node) {
+    if (ts.isVariableDeclaration(node) && node.name.getText(tree) === "beginPick") {
+      assert.equal(declaration, undefined, "beginPick must have one owner");
+      declaration = node;
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(tree);
+  assert.ok(declaration);
+  const { outputText } = ts.transpileModule(
+    `const ${declaration.getText(tree)}; beginPick();`,
+    { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
+  );
+  const scope = {
+    useCallback: (fn: unknown) => fn,
+    pendingRecalledGeneration: { current: { model: "previous" } },
+    pickSeq: { current: 4 },
+    pendingStagedLoad: { current: { token: 4 } },
+    pendingLoadEntries: { current: ["previous"] },
+    stagedLoadDeferred: { current: true },
+    stagedQuantRevert: { current: { prev: "Q8_0" } },
+  };
+  new Function(...Object.keys(scope), outputText)(...Object.values(scope));
+  assert.equal(scope.pendingRecalledGeneration.current, null);
+  assert.equal(scope.pickSeq.current, 5);
+  assert.equal(scope.pendingStagedLoad.current, null);
+  assert.equal(scope.pendingLoadEntries.current, null);
+  assert.equal(scope.stagedLoadDeferred.current, false);
+  assert.equal(scope.stagedQuantRevert.current, null);
 });
