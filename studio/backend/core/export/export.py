@@ -39,7 +39,7 @@ from utils.paths import (
     resolve_output_dir,
 )
 from core.inference import get_inference_backend
-from utils.paths.path_utils import drop_appledouble_metadata
+from utils.paths.path_utils import any_not_appledouble_metadata, drop_appledouble_metadata
 
 # GPU/PyTorch-only imports, skipped on MLX and --no-torch installs so the module stays importable.
 torch = None
@@ -434,6 +434,39 @@ This model was converted to GGUF format using [Unsloth](https://github.com/unslo
 ## Available model files:
 {files}
 """
+
+
+# export_metadata.json is local bookkeeping whose base model can be a local path; the GGUF push
+# keeps it out of the repo too.
+_HUB_UPLOAD_IGNORE = ["export_metadata.json", "._*"]
+
+_STAGING_PREFIX = "unsloth-hub-upload-"
+
+
+def _staging_dir(export_parent):
+    """Stage a copy of an export where it fits: merge_and_overwrite_lora refuses a save its
+    destination cannot hold, and neither the temporary directory nor the export's own filesystem is
+    reliably the roomier, or even writable — only the export directory itself has to be.
+    """
+    roomiest = []
+    for parent in (Path(tempfile.gettempdir()), Path(export_parent)):
+        try:
+            roomiest.append((shutil.disk_usage(parent).free, parent))
+        except OSError:
+            continue
+    roomiest.sort(key = lambda candidate: -candidate[0])
+    for _, parent in roomiest:
+        try:
+            return tempfile.TemporaryDirectory(prefix = _STAGING_PREFIX, dir = parent)
+        except OSError:
+            continue
+    return tempfile.TemporaryDirectory(prefix = _STAGING_PREFIX)
+
+
+def _holds_checkpoint_weights(directory):
+    return Path(directory).is_dir() and any(
+        entry.suffix in (".safetensors", ".bin") for entry in Path(directory).iterdir()
+    )
 
 
 def _ensure_hub_repo_private(hf_api, repo_id):
@@ -880,9 +913,11 @@ class ExportBackend:
             if save_directory:
                 save_directory = str(resolve_export_write_dir(save_directory))
                 logger.info(f"Saving merged model locally to: {save_directory}")
-                # Leftovers in a reused folder would be uploaded too, so only a fresh one is pushed as is.
+                # Leftovers in a reused folder would be uploaded too, so only a fresh one is
+                # pushed as is. Finder metadata does not count; the upload drops it anyway.
                 save_dir_was_empty = not (
-                    Path(save_directory).is_dir() and any(Path(save_directory).iterdir())
+                    Path(save_directory).is_dir()
+                    and any_not_appledouble_metadata(Path(save_directory).iterdir())
                 )
                 ensure_dir(Path(save_directory))
 
@@ -952,35 +987,22 @@ class ExportBackend:
                                 token = hf_token,
                                 private = private,
                             )
-                elif output_path and Path(output_path).is_dir():
+                # No weights means the save never landed here, so merge straight to the Hub
+                # rather than publish an empty repo.
+                elif output_path and _holds_checkpoint_weights(output_path):
                     # Upload the artifact already built in output_path; push_to_hub_merged(save_method=...) would
                     # redo the expensive merge and quantization.
                     with contextlib.ExitStack() as stack:
                         upload_dir = output_path
                         if not (is_compressed or is_torchao or save_dir_was_empty):
-                            # A reused folder can hold leftovers, so upload a clean second save instead.
-                            upload_dir = stack.enter_context(
-                                tempfile.TemporaryDirectory(
-                                    prefix = ".hub-upload-", dir = Path(output_path).parent
-                                )
-                            )
+                            # A reused folder can hold leftovers, so upload a clean second save
+                            # instead.
+                            upload_dir = stack.enter_context(_staging_dir(Path(output_path).parent))
                             self.current_model.save_pretrained_merged(
                                 upload_dir,
                                 self.current_tokenizer,
                                 save_method = save_method,
                                 **merged_token_kw,
-                            )
-                            self._write_export_metadata(upload_dir)
-                        # A Kaggle merge can be redirected to /tmp without saying where; never push a
-                        # folder with no weights.
-                        if not any(Path(upload_dir).glob("*.safetensors")) and not any(
-                            Path(upload_dir).glob("*.bin")
-                        ):
-                            return (
-                                False,
-                                f"The merged model was not written to {upload_dir}, so nothing was "
-                                "pushed. Check the export log for the directory the save actually used.",
-                                None,
                             )
                         hf_api = HfApi(token = hf_token)
                         repo_url = hf_api.create_repo(repo_id, private = private, exist_ok = True)
@@ -991,6 +1013,7 @@ class ExportBackend:
                             folder_path = upload_dir,
                             repo_id = repo_id,
                             repo_type = "model",
+                            ignore_patterns = _HUB_UPLOAD_IGNORE,
                         )
                     # Last and best-effort like the GGUF card; an existing card is kept, as
                     # push_to_hub_merged does.
