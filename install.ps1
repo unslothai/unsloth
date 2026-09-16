@@ -2733,8 +2733,31 @@ exit 1
         return $null
     }
 
+    # The two launchers below must return the same string for the same child, or a caller is
+    # reading one of two subtly different programs depending on the host's language mode.
+    # They differ in exactly one way: Start-Process's redirection appends a trailing newline the
+    # child did not write. Measured, not assumed. Neither current caller can see it, since each
+    # trims or splits, but that is luck rather than a contract, so both ends are normalised here.
+    function Remove-StudioTrailingNewline {
+        param([string]$Text)
+        if ($null -eq $Text) { return $Text }
+        return ($Text -replace "\r?\n$", "")
+    }
+
     # Run a script in a bounded child and return its stdout, or $null on anything other than a
     # clean exit. The generic half, shared by every early-Python rung.
+    #
+    # Two launchers, because the first does not work on the hosts these rungs exist for.
+    # Constrained Language Mode allows methods only on a small set of core types, and
+    # System.Diagnostics.Process is not among them: both "New-Object ProcessStartInfo" and
+    # [Process]::Start are refused there. Measured, not assumed. Since CLM is one of the two
+    # policies that also block defining a type at runtime, a launcher that only works outside CLM
+    # would miss half the population the ladder is for. Start-Process, Wait-Process and
+    # Get-Content are cmdlets and stay available, so the fallback is built from those.
+    #
+    # The first launcher stays first because it needs no temporary files and no second write of
+    # the script. The fallback is reached by the catch, so a host that merely fails to start the
+    # process once does not silently lose the answer either.
     function Invoke-StudioEarlyPythonScript {
         param(
             [Parameter(Mandatory = $true)][string]$Exe,
@@ -2787,11 +2810,77 @@ exit 1
                 return $null
             }
             if ($proc.ExitCode -ne 0) { return $null }
-            return "$($stdout.Result)"
+            return (Remove-StudioTrailingNewline -Text "$($stdout.Result)")
+        } catch {
+            return (Invoke-StudioEarlyPythonScriptViaCmdlets -Exe $Exe -Script $Script -ScriptArgs $ScriptArgs -TimeoutMs $TimeoutMs)
+        } finally {
+            if ($proc) { try { $proc.Dispose() } catch {} }
+        }
+    }
+
+    # The Constrained Language Mode launcher. Cmdlets only: no .NET method call, no New-Object,
+    # no type literal, because all four are refused there.
+    function Invoke-StudioEarlyPythonScriptViaCmdlets {
+        param(
+            [Parameter(Mandatory = $true)][string]$Exe,
+            [Parameter(Mandatory = $true)][string]$Script,
+            [string[]]$ScriptArgs = @(),
+            [int]$TimeoutMs = 10000
+        )
+        $scriptFile = $null
+        $outFile = $null
+        $errFile = $null
+        $proc = $null
+        try {
+            # The script goes to a file rather than through -c. Start-Process builds one command
+            # line out of -ArgumentList, and a -c body carrying newlines and quotes cannot survive
+            # that intact. A file path is one plain token, so the two launchers run the same
+            # program rather than nearly the same one.
+            $scriptFile = New-TemporaryFile
+            $outFile = New-TemporaryFile
+            $errFile = New-TemporaryFile
+            # UTF-8 both ways. The interpreter writes its answer as UTF-8 bytes, so reading it
+            # back any other way corrupts every non-ASCII path exactly as the console codepage
+            # would, and silently: the string still looks like a path.
+            Set-Content -LiteralPath $scriptFile.FullName -Value $Script -Encoding UTF8 -NoNewline
+            # Quoted here, not handed to -ArgumentList as an array: Start-Process joins that
+            # array with spaces and quotes nothing, so a path containing a space arrives as two
+            # arguments. Same rule as the other launcher's 5.1 branch, and for the same reason:
+            # wrap each argument, and double any run of trailing backslashes, since "C:\dir\"
+            # would otherwise escape its own closing quote.
+            $argv = (@(@("-I", $scriptFile.FullName) + $ScriptArgs | ForEach-Object {
+                '"' + ($_ -replace '(\\+)$', '$1$1') + '"'
+            }) -join ' ')
+            $proc = Start-Process -FilePath $Exe -ArgumentList $argv -NoNewWindow -PassThru `
+                -RedirectStandardOutput $outFile.FullName -RedirectStandardError $errFile.FullName
+            if (-not $proc) { return $null }
+            # Wait-Process takes whole seconds, so round up: a sub-second bound must not become a
+            # zero-second one, which returns immediately and kills a healthy interpreter.
+            #
+            # Arithmetic and a cast, not [math]::Ceiling. System.Math is not among the types
+            # Constrained Language Mode allows method calls on, so Ceiling throws there, and this
+            # is the one function in the file that exists to run under exactly that policy.
+            # Measured: it blocks. This rounds up and never to zero, and being a second generous
+            # on a bound this coarse costs nothing.
+            $seconds = [int](($TimeoutMs + 999) / 1000)
+            if ($seconds -lt 1) { $seconds = 1 }
+            $timedOut = $false
+            Wait-Process -InputObject $proc -Timeout $seconds -ErrorAction SilentlyContinue -ErrorVariable waitError
+            if ($waitError) { $timedOut = $true }
+            if ($timedOut) {
+                Stop-Process -InputObject $proc -Force -ErrorAction SilentlyContinue
+                return $null
+            }
+            if ($proc.ExitCode -ne 0) { return $null }
+            $answer = Get-Content -LiteralPath $outFile.FullName -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+            if ($null -eq $answer) { return "" }
+            return (Remove-StudioTrailingNewline -Text ([string]$answer))
         } catch {
             return $null
         } finally {
-            if ($proc) { try { $proc.Dispose() } catch {} }
+            foreach ($f in @($scriptFile, $outFile, $errFile)) {
+                if ($f) { Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue }
+            }
         }
     }
 

@@ -113,6 +113,8 @@ LOCK_CHAIN = (
     "Get-StudioSubstTarget",
     "Get-StudioEarlyPython",
     "Invoke-StudioEarlyPythonScript",
+    "Invoke-StudioEarlyPythonScriptViaCmdlets",
+    "Remove-StudioTrailingNewline",
     "Invoke-StudioEarlyPython",
     "Get-StudioPythonFinalPath",
     "Get-StudioLexicalPath",

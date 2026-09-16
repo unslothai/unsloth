@@ -33,7 +33,8 @@ $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($installPs1, [ref]$tokens, [ref]$errors)
 if ($errors) { $errors | ForEach-Object { $_.ToString() }; throw "install.ps1 has parse errors" }
 foreach ($name in @(
-    "Invoke-StudioEarlyPythonScript", "Invoke-StudioEarlyPython", "Get-StudioEarlyPython",
+    "Remove-StudioTrailingNewline", "Invoke-StudioEarlyPythonScript",
+    "Invoke-StudioEarlyPythonScriptViaCmdlets", "Invoke-StudioEarlyPython", "Get-StudioEarlyPython",
     "Get-StudioPythonProcessImageTable", "Get-StudioProcessImagePath"
 )) {
     $fn = $ast.FindAll({ param($n)
@@ -98,6 +99,84 @@ Check "non-ASCII output survives the host's console codepage" ($utf8 -eq ([char]
 
 $missing = Invoke-StudioEarlyPythonScript -Exe (Join-Path $root "no-such-interpreter") -Script "pass"
 Check "an interpreter that does not exist yields null, not a throw" ($null -eq $missing)
+
+# --------------------------------------------- the Constrained Language Mode launcher, for real
+#
+# Not a detail. CLM is one of the two policies that stop a type being defined at runtime, which is
+# the reason this whole ladder exists, and CLM also refuses New-Object and every method call on
+# System.Diagnostics.Process. A launcher that only worked outside CLM would be absent from half
+# the population it is for, while looking perfectly healthy everywhere it is not needed.
+
+$echoScript = "import sys;sys.stdout.write('|'.join(sys.argv[1:]))"
+$awkward = @("a b", "c\")
+
+$primaryAnswer = Invoke-StudioEarlyPythonScript -Exe $exe -Script $echoScript -ScriptArgs $awkward
+$cmdletAnswer = Invoke-StudioEarlyPythonScriptViaCmdlets -Exe $exe -Script $echoScript -ScriptArgs $awkward
+Check "the cmdlet launcher answers at all" ($cmdletAnswer -eq "a b|c\")
+# The property that matters. Start-Process redirection appends a trailing newline the child never
+# wrote, so without normalising both ends a caller silently reads one of two different strings
+# depending on the host's language mode.
+Check "both launchers return the same string, byte for byte" ($primaryAnswer -ceq $cmdletAnswer)
+
+$cmdletUtf8 = Invoke-StudioEarlyPythonScriptViaCmdlets -Exe $exe `
+    -Script "import sys;sys.stdout.buffer.write((chr(0xe9)+chr(0x4e2d)).encode('utf-8'))"
+Check "the cmdlet launcher keeps non-ASCII intact" (
+    $cmdletUtf8 -eq ([string][char]0xE9 + [string][char]0x4E2D))
+
+Check "the cmdlet launcher refuses a non-zero exit" (
+    $null -eq (Invoke-StudioEarlyPythonScriptViaCmdlets -Exe $exe -Script "import sys;sys.exit(4)"))
+
+$cmdletStart = Get-Date
+$cmdletHung = Invoke-StudioEarlyPythonScriptViaCmdlets -Exe $exe -Script "import time;time.sleep(90)" -TimeoutMs 2000
+Check "the cmdlet launcher kills a hung child too" (
+    $null -eq $cmdletHung -and ((Get-Date) - $cmdletStart).TotalSeconds -lt 30)
+
+# The handover, driven in a runspace that is genuinely in Constrained Language Mode.
+#
+# Setting $ExecutionContext.SessionState.LanguageMode partway through a script is NOT enough and
+# was tried first: PowerShell fixes a function's language mode when the function is defined, so
+# functions defined before the switch keep running in FullLanguage and the primary launcher
+# succeeds. The check passed while proving nothing. A runspace created with
+# InitialSessionState.LanguageMode set is constrained before anything is defined in it, which is
+# what a locked-down host actually looks like.
+$clmFunctions = (@(
+    "Remove-StudioTrailingNewline", "Invoke-StudioEarlyPythonScript",
+    "Invoke-StudioEarlyPythonScriptViaCmdlets"
+) | ForEach-Object {
+    $name = $_
+    ($ast.FindAll({ param($n)
+        $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name
+    }, $true)[0]).Extent.Text
+}) -join "`n"
+
+$rs = $null
+$ps = $null
+try {
+    $iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault2()
+    $iss.LanguageMode = "ConstrainedLanguage"
+    $rs = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace($iss)
+    $rs.Open()
+    $ps = [System.Management.Automation.PowerShell]::Create()
+    $ps.Runspace = $rs
+    $null = $ps.AddScript($clmFunctions + @"
+
+Write-Output "MODE=`$(`$ExecutionContext.SessionState.LanguageMode)"
+try { `$null = New-Object System.Diagnostics.ProcessStartInfo; Write-Output 'PSI-ALLOWED' }
+catch { Write-Output 'PSI-BLOCKED' }
+Write-Output ("ANSWER=" + (Invoke-StudioEarlyPythonScript -Exe '$exe' -Script "$echoScript" -ScriptArgs @('a b', 'c\')))
+"@)
+    $clmOut = @($ps.Invoke() | ForEach-Object { "$_".Trim() })
+    Check "the runspace really is constrained" ($clmOut -contains "MODE=ConstrainedLanguage")
+    # The premise of the whole fallback, measured rather than assumed.
+    Check "Constrained Language Mode really does refuse ProcessStartInfo" ($clmOut -contains "PSI-BLOCKED")
+    # And therefore the primary launcher cannot answer there, so this can only have come from the
+    # fallback. Removing the fallback call from the catch makes this check fail.
+    Check "under Constrained Language Mode the answer still comes back, through the fallback" (
+        $clmOut -contains "ANSWER=a b|c\")
+} finally {
+    if ($ps) { $ps.Dispose() }
+    if ($rs) { $rs.Dispose() }
+}
 
 # ------------------------------------------------------- the table, through a stubbed runner
 
