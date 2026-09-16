@@ -221,7 +221,10 @@ async def list_cached_models(
     """Local filesystem inventory of cached non-GGUF repos.
 
     Same caller boundary as ``/cached-gguf``: sk-unsloth API keys get an empty
-    list; UI sessions and keyless local CLI callers get the host scan.
+    list with ``scan_confirmed: true``; UI sessions and keyless local CLI callers
+    get the host scan. The legacy ``GET /api/models/cached-models`` route is
+    unchanged (subject-scoped listing for in-app callers) and is not part of this
+    host-inventory boundary.
     """
     if via_sk_key:
         return CachedModelsResponse(cached = [], scan_confirmed = True)

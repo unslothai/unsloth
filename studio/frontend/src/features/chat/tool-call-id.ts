@@ -23,14 +23,11 @@ export interface StreamedToolCallPart {
   _has_stable_id?: boolean;
 }
 
-/**
- * The id for a card drawn from a delta the provider gave no id to: the slot's
- * own `tool_call_<index>` when free, else the lowest `tool_call_<n>` that is.
- * The backend's `_mint_streamed_card_id` walks the same deltas under the same
- * rule, so its `tool_start` reaches this card instead of opening a second one.
- * `reserved` holds ids the provider sent, so one spelled `tool_call_0` keeps
- * it. No colon: a replayed id must satisfy `^[a-zA-Z0-9_-]+$`.
- */
+/** The id for a card drawn from a delta the provider gave no id to: the slot's own
+ *  `tool_call_<index>` when free, else the lowest `tool_call_<n>` that is. The backend's
+ *  `_mint_streamed_card_id` walks the same deltas under the same rule, so its `tool_start`
+ *  reaches this card instead of opening a second one. `reserved` holds ids the provider sent.
+ *  No colon: a replayed id must satisfy `^[a-zA-Z0-9_-]+$`. */
 export function mintStreamedToolCallId(
   parts: StreamedToolCallPart[],
   deltaIndex: number | undefined,
@@ -45,12 +42,9 @@ export function mintStreamedToolCallId(
   return `tool_call_${position}`;
 }
 
-/**
- * Let a card drawn by the deltas answer to its own id. Without it,
- * `resolveToolCallPartId` mints `<backend id>:<uuid>` when the backend first
- * names an id-less call, `tool_start` finds no card and pushes one, and the
- * turn persists two parts per call.
- */
+/** Let a card drawn by the deltas answer to its own id. Without it, `resolveToolCallPartId` mints
+ *  `<backend id>:<uuid>` when the backend first names an id-less call, `tool_start` finds no card
+ *  and pushes one, and the turn persists two parts per call. */
 export function bindStreamedToolCallCard(
   ids: Map<string, string>,
   partId: string,
@@ -58,10 +52,8 @@ export function bindStreamedToolCallCard(
   if (!ids.has(partId)) ids.set(partId, partId);
 }
 
-/**
- * Newest part holding `deltaIndex`, or -1. `unownedOnly` restricts the match to
- * a slot no provider id has claimed yet.
- */
+/** Newest part holding `deltaIndex`, or -1. `unownedOnly` restricts the match to a slot no
+ *  provider id has claimed yet. */
 function findDeltaIndexSlot(
   parts: readonly StreamedToolCallPart[],
   deltaIndex: number | undefined,
@@ -80,17 +72,11 @@ function findDeltaIndexSlot(
   return -1;
 }
 
-/**
- * Index of the tool-call part a `delta.tool_calls[]` fragment continues, or -1
- * when the fragment starts a new call.
- *
- * Providers restart `tool_calls[].index` at 0 for every tool round inside one
- * assistant response, so the index slot alone cannot separate a continuation
- * from the next round's opening fragment. A fragment carrying a stable id
- * therefore matches on that id, and falls back to the index slot only while no
- * other id owns it, which covers servers that stamp the real id on a later
- * fragment. Id-less fragments continue the newest part in their slot.
- */
+/** Index of the tool-call part a `delta.tool_calls[]` fragment continues, or -1 when the fragment
+ *  starts a new call. Providers restart `tool_calls[].index` at 0 for every tool round inside one
+ *  response, so the index slot alone cannot separate a continuation from the next round's
+ *  opening fragment. A fragment carrying a stable id matches on that id, and falls back to the
+ *  index slot only while no other id owns it. Id-less fragments continue the newest part. */
 export function findStreamedToolCallPartIndex(
   parts: readonly StreamedToolCallPart[],
   partId: string | undefined,

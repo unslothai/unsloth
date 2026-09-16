@@ -20,11 +20,10 @@ import {
 export function useChatCreatedModel(
   threadId: string | undefined,
 ): ChatModelSwitchTarget | null {
-  // Keyed by the chat it was read for, not a bare value. Clearing it in the
-  // effect is a frame late: the effect is passive, so the first render for the
-  // incoming chat has already committed with the outgoing chat's model, which
-  // paints the wrong notice and moves the viewport padding under it. Answering
-  // only for a matching key makes that render impossible rather than brief.
+  // Keyed by the chat it was read for, not a bare value. Clearing it in the effect is a frame late:
+  // the effect is passive, so the first render for the incoming chat has already committed with
+  // the outgoing chat's model, painting the wrong notice. Answering only for a matching key makes
+  // that render impossible rather than brief.
   const [read, setRead] = useState<{
     threadId: string;
     model: ChatModelSwitchTarget | null;
@@ -62,13 +61,9 @@ type ChatModelNoticeProps = {
   onSwitch: (target: ChatModelSwitchTarget) => void;
 };
 
-/**
- * Offers to put a chat back on the model it was started on.
- *
- * Deliberately an offer and not an automatic switch: for a local model that
- * would evict whatever is resident and spend a multi-gigabyte load on opening a
- * chat, which is not what clicking a row in the sidebar should cost.
- */
+/** Offers to put a chat back on the model it was started on. Deliberately an offer and not an
+ *  automatic switch: for a local model that would evict whatever is resident and spend a
+ *  multi-gigabyte load on opening a chat. */
 export function ChatModelNotice({
   threadId,
   checkpoint,
@@ -85,16 +80,15 @@ export function ChatModelNotice({
   ) {
     return null;
   }
-  // A model that has since been deleted, or a connection that is gone: the
-  // switch could not be honoured, and saying so on every open is just noise.
+  // A model that has since been deleted, or a connection that is gone: the switch could not be
+  // honoured, and saying so on every open is just noise.
   if (!selectableModelIds.has(createdModel.modelId)) return null;
   const label = compareModelDisplayName(createdModel.modelId);
   return (
-    // Positioned, not in flow. The chat header is `absolute ... z-40` with an
-    // opaque `bg-background`, so an in-flow sibling starts at y=0 UNDER it and
-    // the whole bar is invisible bar the 10px the header's `right-[10px]`
-    // leaves uncovered. Offset by the same header height the drop overlay and
-    // the header fade use, above the fade (z-20) and below the header (z-40).
+    // Positioned, not in flow. The chat header is `absolute ... z-40` with an opaque `bg-background`,
+    // so an in-flow sibling starts at y=0 UNDER it and the bar is invisible bar the 10px the
+    // header's `right-[10px]` leaves uncovered. Offset by the same header height the drop overlay
+    // and the header fade use, above the fade (z-20) and below the header (z-40).
     <div
       data-chat-model-notice=""
       className="absolute left-0 right-[10px] top-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-height,48px))] z-30 flex h-[var(--studio-chat-notice-height,2.25rem)] items-center gap-2 border-b border-border/60 bg-muted px-4 text-ui-12 text-muted-foreground"

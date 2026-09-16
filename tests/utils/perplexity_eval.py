@@ -56,7 +56,6 @@ def print_model_comparison():
         {
             "Model": list(model_comparison_results.keys()),
             "Perplexity": [
-                # Tensors to CPU float if needed.
                 results["ppl"].cpu().item() if torch.is_tensor(results["ppl"]) else results["ppl"]
                 for results in model_comparison_results.values()
             ],

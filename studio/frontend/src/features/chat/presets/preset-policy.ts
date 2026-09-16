@@ -5,6 +5,7 @@ import {
   DEFAULT_INFERENCE_PARAMS,
   type InferenceParams,
 } from "../types/runtime";
+import { effectiveMinPMode } from "../lib/min-p-policy.ts";
 import type { PresetLoadConfig } from "./preset-load-config";
 
 export const defaultInferenceParams = DEFAULT_INFERENCE_PARAMS;
@@ -25,6 +26,7 @@ export type PresetOwnedParams = Pick<
   | "topP"
   | "topK"
   | "minP"
+  | "minPMode"
   | "repetitionPenalty"
   | "presencePenalty"
   | "maxTokens"
@@ -110,6 +112,7 @@ export function getPresetOwnedParams(
     topP: params.topP,
     topK: params.topK,
     minP: params.minP,
+    minPMode: effectiveMinPMode(params),
     repetitionPenalty: params.repetitionPenalty,
     presencePenalty: params.presencePenalty,
     maxTokens: params.maxTokens,
@@ -131,6 +134,7 @@ export function isSamePresetConfig(
     left.topP === right.topP &&
     left.topK === right.topK &&
     left.minP === right.minP &&
+    left.minPMode === right.minPMode &&
     left.repetitionPenalty === right.repetitionPenalty &&
     left.presencePenalty === right.presencePenalty &&
     left.maxTokens === right.maxTokens &&
@@ -158,6 +162,20 @@ export function applyPresetParams(
   return {
     ...current,
     ...getPresetOwnedParams(preset),
+  };
+}
+
+/** Built-in reset delegates on vLLM; other providers keep their dormant choice. */
+export function applyPresetForProvider(
+  current: InferenceParams,
+  preset: Preset,
+  providerType: string | null | undefined,
+): InferenceParams {
+  const applied = applyPresetParams(current, preset.params);
+  if (preset.name !== "Default") return applied;
+  return {
+    ...applied,
+    minPMode: providerType === "vllm" ? "server-default" : effectiveMinPMode(current),
   };
 }
 
@@ -497,12 +515,10 @@ export function unpinnedLoadContext(
   return isGgufLoad || isMlx ? 0 : appDefault;
 }
 
-/**
- * Adjust a resolved max-seq-length for the GPU Memory mode. Under Manual + Auto
- * layers (GGUF, gpuLayers < 0) llama.cpp's --fit owns context sizing, so send 0
- * (the backend omits -c) unless the user pinned a length; every other case keeps
- * the resolved fallback. Shared by every GGUF load path so they can't drift.
- */
+/** Adjust a resolved max-seq-length for the GPU Memory mode. Under Manual with Auto layers (GGUF,
+ *  gpuLayers < 0) llama.cpp's --fit owns context sizing, so send 0 (the backend omits -c) unless
+ *  the user pinned a length; every other case keeps the resolved fallback. Shared by every GGUF
+ *  load path so they cannot drift. */
 export function resolveFitMaxSeqLength(
   isGguf: boolean | null | undefined,
   gpuMemoryMode: "auto" | "manual",
@@ -514,26 +530,14 @@ export function resolveFitMaxSeqLength(
   return customContextLength && customContextLength > 0 ? customContextLength : 0;
 }
 
-/**
- * The context pin a completed load leaves behind: the Context Length the user
- * EXPLICITLY set for it, or null for Auto.
- *
- * Takes the user's setting, never the n_ctx that went on the wire. The wire
- * value cannot answer this: `resolveLoadMaxSeqLength`'s isReloadingCurrentGguf
- * branch sends the resolved context on a same-model reload so the reload does
- * not resize, so under a custom or modified preset an Auto load puts a positive
- * n_ctx on the wire too. Reading a pin back out of that turned Auto into a
- * numeric pin at the current context on any same-model reload, after which a GPU
- * memory change could no longer auto-resize.
- *
- * Takes no GPU Memory mode, deliberately. `resolveLoadMaxSeqLength` honors a pin
- * in every mode, but the predicate this replaces kept one only under Manual +
- * Auto layers: a survival rule narrower than the send rule, so a load on Default
- * sent the user's pin and then dropped it on completion. That was the bug.
- *
- * Callers keep their own isGguf/targetIsGguf guard inline: a non-GGUF load has
- * no n_ctx, and its max_seq_length must not be pinned as one.
- */
+/** The context pin a completed load leaves behind: the Context Length the user EXPLICITLY set, or
+ *  null for Auto. Takes the user's setting, never the n_ctx that went on the wire, which cannot
+ *  answer this: `resolveLoadMaxSeqLength` sends the resolved context on a same-model reload, so
+ *  under a custom preset an Auto load puts a positive n_ctx on the wire too, and reading a pin
+ *  back out of that turned Auto into a numeric pin. Takes no GPU Memory mode deliberately: the
+ *  predicate this replaces kept a pin only under Manual with Auto layers, narrower than the send
+ *  rule, so a load on Default sent the user's pin and then dropped it. Callers keep their own
+ *  isGguf guard inline, since a non-GGUF load has no n_ctx. */
 export function resolveExplicitCtxPin(
   customContextLength: number | null | undefined,
 ): number | null {

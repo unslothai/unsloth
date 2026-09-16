@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
@@ -17,6 +16,8 @@ import {
   SIDEBAR_ORGANIZATION_STORAGE_KEY,
   useSidebarOrganizationStore,
 } from "../src/features/chat/stores/sidebar-organization-store.ts";
+
+import { readSrcAsync } from "./helpers/kit.ts";
 
 const ids = (rows: Array<{ id: string }>) => rows.map((row) => row.id);
 
@@ -148,10 +149,7 @@ test("Pinned sorts independently of the chat lists", () => {
 // Reset-all is the only in-app way back to the shipped sidebar layout, and it
 // only removes the keys it lists, so an unlisted one survives the reload.
 test("Reset all local preferences clears this key", async () => {
-  const source = await readFile(
-    new URL("../src/features/settings/tabs/general-tab.tsx", import.meta.url),
-    "utf8",
-  );
+  const source = await readSrcAsync("features/settings/tabs/general-tab.tsx");
   const keys = source.slice(
     source.indexOf("const PREFS_KEYS"),
     source.indexOf("];", source.indexOf("const PREFS_KEYS")),

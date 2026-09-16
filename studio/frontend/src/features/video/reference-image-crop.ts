@@ -45,10 +45,10 @@ export interface CropRasterCanvas {
 // Keep this aligned with VideoGenerateRequest.reference_images in models/inference.py.
 export const MAX_REFERENCE_IMAGE_DATA_URL_LENGTH = 32 * 1024 * 1024;
 
-// fit_h3_reference_image never keeps more than a 2048px short edge, so a full-resolution
-// export just spends the 32 MiB cap and a blocking encode on pixels it discards: a 12MP
-// photo alone reaches ~52 MiB of PNG base64. The long edge is bounded too, so an extreme
-// aspect cannot stay huge just because its short edge fits.
+// fit_h3_reference_image never keeps more than a 2048px short edge, so a full-resolution export
+// just spends the 32 MiB cap and a blocking encode on pixels it discards: a 12MP photo alone
+// reaches ~52 MiB of PNG base64. The long edge is bounded too, so an extreme aspect cannot stay
+// huge just because its short edge fits.
 export const MAX_REFERENCE_CROP_SHORT_EDGE = 2048;
 export const MAX_REFERENCE_CROP_LONG_EDGE = 4096;
 

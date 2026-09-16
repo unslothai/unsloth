@@ -204,12 +204,12 @@ const ROWS: Row[] = [
     mlxRequest: 32768,
     transformersRequest: 32768,
     note:
-      "The task called v4 the 'future' record. It is not: STORAGE_SCHEMA_VERSION is 5 " +
-      "in this tree and in main, not 3, so v4 is a v4-client record and reads normally.",
+      "The task called v4 the 'future' record. It is not: STORAGE_SCHEMA_VERSION is 6 " +
+      "in this tree, not 3, so v4 is a v4-client record and reads normally.",
   },
   {
-    name: "version 6 (genuinely future)",
-    raw: { version: 6, customContextLength: 32768 },
+    name: "version 7 (genuinely future)",
+    raw: { version: 7, customContextLength: 32768 },
     normalizedPin: null,
     rawPin: 32768,
     isDefault: true,
@@ -342,6 +342,10 @@ test("both pin shapes are stamped version 1, so neither is distinguishable by ve
   );
   assert.equal(
     stage({ version: 6, customContextLength: 32768 }).remembered,
+    true,
+  );
+  assert.equal(
+    stage({ version: 7, customContextLength: 32768 }).remembered,
     false,
   );
 });

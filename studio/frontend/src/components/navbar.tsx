@@ -11,7 +11,7 @@ import { cn } from "@/lib/utils";
 import { useState } from "react";
 
 export function Navbar() {
-  const { isMobile, pinned, togglePinned } = useSidebar();
+  const { isMobile, pinned, peeking, togglePinned } = useSidebar();
   const [usesNativeMacTitlebar] = useState(shouldUseNativeMacWindowTitlebar);
   const [usesCustomTitlebar] = useState(shouldUseCustomWindowTitlebar);
 
@@ -28,7 +28,9 @@ export function Navbar() {
           )}
         </header>
 
-        {usesNativeMacTitlebar && !pinned && (
+        {/* A held-out sidebar brings its own copy of this cluster, in the same
+            place. */}
+        {usesNativeMacTitlebar && !pinned && !peeking && (
           <DesktopTitlebarNavigation
             expanded={false}
             onToggleSidebar={togglePinned}
@@ -54,7 +56,9 @@ export function Navbar() {
           "flex h-full",
           usesCustomTitlebar
             ? "items-center pl-3"
-            : "items-start pt-[11px] pl-2",
+            : usesNativeMacTitlebar
+              ? "items-start pt-[11px] pl-[calc(var(--studio-mac-traffic-light-inset,78px)+6px)]"
+              : "items-start pt-[11px] pl-2",
         )}
       >
         <SidebarTrigger className="pointer-events-auto !size-[34px]" />

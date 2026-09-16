@@ -1,0 +1,41 @@
+Unsloth Docker Studio and JupyterLab image
+==========================================
+
+This directory builds the Unsloth Docker Studio and JupyterLab image. The image
+bundles Unsloth Studio, which is licensed under the GNU Affero General Public
+License v3.0 (see /studio/LICENSE.AGPL-3.0). Unsloth Core is licensed under the
+Apache License 2.0 (see /LICENSE).
+
+
+Additional terms under AGPLv3 Section 7
+---------------------------------------
+
+As permitted by Section 7(b) of the GNU Affero General Public License v3.0, and
+in support of the "Appropriate Legal Notices" requirement for interactive user
+interfaces, the following author attributions and legal notices are designated
+as required Appropriate Legal Notices for this image. If you convey, modify, or
+make the image (or any work based on it) available to users over a network, you
+must keep these notices intact and displayed to those users:
+
+  * The attribution "Built by the Unsloth team".
+  * The copyright line "Copyright 2026-Present the Unsloth team".
+  * The license notice "Licensed under Apache 2.0 and the GNU AGPLv3".
+  * The Unsloth logo and the "Unsloth Dark" theme shown in the JupyterLab top
+    bar and on the loading splash.
+  * The Help > About dialog, including the following links:
+      - Source:  https://github.com/unslothai/unsloth
+      - Website: https://unsloth.ai
+      - License: https://github.com/unslothai/unsloth#license
+      - AGPLv3:  https://www.gnu.org/licenses/agpl-3.0.html
+      - Apache:  https://www.apache.org/licenses/LICENSE-2.0
+
+These notices are displayed on the JupyterLab login page, the Help > About
+dialog, the loading splash and the top bar. They are enforced at build time and
+at runtime by docker/jupyter/unsloth_branding.py (see docker/jupyter/BRANDING.md
+for details). Removing or altering them, whether by editing the build workflow,
+the branding sources or the integrity guard, does not remove this license
+condition.
+
+"Unsloth" and the Unsloth logo are trademarks of the Unsloth team. This NOTICE
+governs copyright attribution under the AGPLv3 and does not grant any trademark
+license.

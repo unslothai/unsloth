@@ -55,9 +55,6 @@ def test_the_producers_were_all_found():
     )
 
 
-# --- every shipped dtype field must resolve ----------------------------------
-
-
 @pytest.mark.parametrize("value", _shipped_values())
 def test_shipped_dtype_fields_resolve(value):
     """A false rejection here breaks loading one of the six model families."""
@@ -120,7 +117,7 @@ def test_an_inherited_value_is_not_trusted(monkeypatch):
     monkeypatch.setenv("UNSLOTH_FORCE_CUSTOM_DTYPE", payload)
     got, trusted = trusted_custom_dtype()
     assert got == payload  # dtype fields still readable
-    assert not trusted  # code fields are not
+    assert not trusted
 
 
 def test_an_inherited_value_that_mimics_ours_is_still_not_trusted(monkeypatch):
