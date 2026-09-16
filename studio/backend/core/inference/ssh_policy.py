@@ -432,7 +432,7 @@ def _assignment_pairs(tree: ast.AST):
                 if item.optional_vars is not None:
                     yield item.optional_vars, item.context_expr
             continue
-        if isinstance(node, ast.AnnAssign):
+        if isinstance(node, (ast.AnnAssign, ast.NamedExpr)):
             targets = [node.target]
         elif isinstance(node, ast.Assign):
             targets = node.targets
@@ -493,6 +493,8 @@ def _ssh_client_bindings(tree: ast.AST, bindings: dict[str, str]) -> dict[str, s
 
 
 def _fq_name(node: Optional[ast.AST]) -> str:
+    if isinstance(node, ast.NamedExpr):
+        return _fq_name(node.target)
     if isinstance(node, ast.Subscript):
         container = _fq_name(node.value)
         try:

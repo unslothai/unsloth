@@ -1038,6 +1038,17 @@ def test_newline_ssh_requires_approval(command):
     assert check_ssh_command_access(command, "review") is None
 
 
+@pytest.mark.parametrize(
+    "code",
+    [
+        "import paramiko; (client:=paramiko.SSHClient()).connect(hostname='evil.example')",
+        "import paramiko; (client:=paramiko.SSHClient()); client.connect(hostname='evil.example')",
+    ],
+)
+def test_named_client_requires_approval(code):
+    assert _check_code_safety(code, session_id = "review") is not None
+    approve_hosts("review", ["evil.example"])
+    assert _check_code_safety(code, session_id = "review") is None
 
 
 def test_ssh_line_continuation_preserves_arguments():
