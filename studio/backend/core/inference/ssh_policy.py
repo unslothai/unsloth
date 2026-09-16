@@ -692,6 +692,12 @@ def _assignment_pairs(tree: ast.AST):
             continue
         while pending:
             target, value = pending.pop()
+            if isinstance(value, ast.IfExp):
+                pending.extend((target, branch) for branch in (value.body, value.orelse))
+                continue
+            if isinstance(value, ast.BoolOp):
+                pending.extend((target, branch) for branch in value.values)
+                continue
             if scope and isinstance(target, ast.Name):
                 pending.append((ast.Attribute(value = ast.Name(id = scope), attr = target.id), value))
             if isinstance(target, (ast.Tuple, ast.List)) and isinstance(
