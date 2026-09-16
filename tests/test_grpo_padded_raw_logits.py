@@ -285,8 +285,6 @@ def _build_namespace(
         (
             data.input_ids[i : i + 1],
             data.attention_mask[i : i + 1],
-            # The per-chunk multimodal forward kwargs the shared chunker returns; the
-            # stub forward ignores them, so only the arity and the splat matter here.
             {"pixel_values": torch.zeros(1, 3)} if is_vlm else {},
         )
         for i in range(_BATCH)

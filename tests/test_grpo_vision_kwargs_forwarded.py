@@ -1,15 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Both GRPO logprob paths forward every multimodal key TRL produced.
-
-Regression cover for unslothai/unsloth#6960. The no-grad old/reference pass lives here,
-in `grpo_trainer__get_per_token_logps_and_entropies`, and the gradient pass lives in
-unsloth_zoo's `grpo_accumulated_loss`. They used to read two hand written lists of four
-keys, so `spatial_shapes` (LFM2-VL), `num_tiles` (LFM2-VL, InternVL) and
-`image_position_ids` (Gemma 4) reached neither, and `pixel_values` reached neither for any
-model that does not emit `image_grid_thw`.
-"""
+"""Both GRPO logprob paths forward every multimodal key TRL produced: two hand written
+four-key lists dropped spatial_shapes, num_tiles, image_position_ids, and pixel_values for
+models without image_grid_thw. unslothai/unsloth#6960."""
 
 import inspect
 import os
@@ -24,13 +18,9 @@ def _read_source() -> str:
 
 
 def test_the_key_tuple_lives_in_one_place():
-    """unsloth must not keep a second copy of the key list."""
     src = _read_source()
     assert "grpo_get_vision_inputs" in src
-    # Every multimodal key is read off the shared mapping, in both the logprob pass and
-    # compute_loss, so the tuple in unsloth_zoo is the only list of names.
     assert src.count("vision_inputs.get(") >= 10
-    # And one collector for both paths, so the fallback names cannot be written twice.
     assert src.count("def _unsloth_grpo_vision_inputs(") == 1
     assert src.count("_unsloth_grpo_vision_inputs(kwargs)") == 1
     assert src.count("_unsloth_grpo_vision_inputs(inputs)") == 1
@@ -50,7 +40,6 @@ def test_no_grad_pass_uses_the_shared_chunker():
     )
     assert "grpo_vision_chunks" in patched
     assert "**vision_chunk" in patched
-    # The per-key chunk lists the old implementation zipped are gone.
     for gone in (
         "pixel_values_chunks",
         "image_grid_thw_chunks",
@@ -67,8 +56,7 @@ def test_compute_loss_hands_the_whole_set_to_the_gradient_pass():
     patched = grpo_trainer_compute_loss("compute_loss", "")
     assert "**_vision_inputs" in patched
     assert patched.count("**_vision_inputs") == 2, "both the modern and the legacy call"
-    # Neither grpo_accumulated_loss call may name the multimodal kwargs by hand any more,
-    # or a key added to the tuple would reach the logprob pass and not the loss.
+    # A hand named kwarg here would reach the logprob pass but not the loss.
     for call in patched.split("grpo_accumulated_loss(")[1:]:
         body = call.split("\n                )")[0]
         for gone in (
@@ -87,7 +75,6 @@ def test_both_paths_call_the_same_helper():
 
     grad_source = inspect.getsource(grpo_accumulated_loss)
     assert "grpo_vision_chunks" in grad_source
-    # One object, so a slicing fix cannot land on one path only.
     from unsloth_zoo import rl_replacements as zoo_rl
 
     assert zoo_rl.RL_REPLACEMENTS["grpo_vision_chunks"] is grpo_vision_chunks
@@ -104,13 +91,11 @@ def test_old_zoo_without_the_helper_fails_loudly_for_vision_runs():
 
 
 def test_lfm2vl_keys_reach_the_forward_kwargs():
-    """End to end on the shared chunker with LFM2-VL shaped inputs."""
     import torch
     from unsloth_zoo.rl_replacements import grpo_get_vision_inputs, grpo_vision_chunks
 
     num_tiles = [2, 3]
     total_tiles = sum(num_tiles)
-    # What TRL's _generate_and_score_completions puts in the inputs dict for LFM2-VL.
     inputs = {
         "advantages": torch.zeros(2),
         "pixel_values": torch.randn(total_tiles, 3, 16, 16),
@@ -126,7 +111,6 @@ def test_lfm2vl_keys_reach_the_forward_kwargs():
 
 
 def test_legacy_fallback_list_matches_the_zoo_tuple():
-    """The old-zoo fallback in compute_loss must name every key the tuple names."""
     import ast
     import re
 
@@ -147,12 +131,7 @@ def test_legacy_fallback_list_matches_the_zoo_tuple():
 
 
 def test_generate_forward_wrapper_keeps_the_real_signature():
-    """transformers' generate validates kwargs against inspect.signature(self.forward).
-
-    A bare (*args, **kwargs) wrapper makes every kwarg a VLM takes only on forward look
-    unused, which is how LFM2-VL GRPO died on "The following `model_kwargs` are not used
-    by the model: ['pixel_values', 'pixel_attention_mask', 'spatial_shapes']".
-    """
+    """generate() validates kwargs against inspect.signature(self.forward)."""
     import inspect as _inspect
 
     import torch
@@ -181,23 +160,9 @@ def test_generate_forward_wrapper_keeps_the_real_signature():
 
 
 def test_the_wrapper_survives_accelerates_fp32_unwrap():
-    """The signature must not be bought by making the wrapper removable.
-
-    accelerate's `extract_model_from_parallel(keep_fp32_wrapper = False)` runs on every
-    GRPO step. Once `prepare_model` has recorded `_original_forward`, which it does for a
-    full finetune and for a prepared reference model, it walks the `__wrapped__` chain
-    looking for that original and rebinds whatever it lands on:
-
-        while hasattr(forward, "__wrapped__"):
-            forward = forward.__wrapped__
-            if forward == original_forward: break
-        model.forward = MethodType(forward, model)
-
-    So `functools.wraps` here, which sets `__wrapped__`, is a route straight through this
-    wrapper to the bare forward: the wrapper is silently gone, and GRPO goes back to
-    materialising vocabulary-wide logits and to the OOM it exists to avoid. Setting
-    `__signature__` alone gives generate the same answer with no link to follow.
-    """
+    """The signature must not be bought by making the wrapper removable: functools.wraps
+    sets __wrapped__, which accelerate's extract_model_from_parallel(keep_fp32_wrapper =
+    False) walks straight past this wrapper on every GRPO step."""
     import inspect as _inspect
 
     import torch
@@ -219,7 +184,6 @@ def test_the_wrapper_survives_accelerates_fp32_unwrap():
             return input_ids
 
     model = _Toy()
-    # What accelerate.prepare_model leaves behind under mixed precision.
     real_forward = model.forward
     model._original_forward = real_forward
     model.forward = convert_outputs_to_fp32(
@@ -228,7 +192,6 @@ def test_the_wrapper_survives_accelerates_fp32_unwrap():
 
     assert _install_grpo_hidden_states_forward_wrapper(model)
     assert getattr(model.forward, "_unsloth_grpo_hidden_states_forward_wrapped", False)
-    # No __wrapped__: that attribute is the entire mechanism accelerate unwraps through.
     assert not hasattr(
         model.forward, "__wrapped__"
     ), "the wrapper carries __wrapped__, so accelerate will unwrap straight past it"
@@ -242,7 +205,6 @@ def test_the_wrapper_survives_accelerates_fp32_unwrap():
         "_unsloth_grpo_hidden_states_forward_wrapped",
         False,
     ), "accelerate removed the hidden-state wrapper"
-    # And generate still sees the vision kwargs after that rebind.
     after = list(_inspect.signature(unwrapped.forward).parameters)
     assert "pixel_values" in after and "spatial_shapes" in after, after
 
@@ -268,20 +230,13 @@ def test_num_tiles_survives_the_output_dict_rewrite():
     num_tiles_at = next(i for i, l in enumerate(lines) if 'output["num_tiles"]' in l)
     except_at = next((i for i, l in enumerate(lines) if l.strip() == "except NameError:"), None)
     assert except_at is not None, "the sampling logprob block was not inserted"
-    # num_tiles must still sit directly under num_images, above the inserted block.
     assert num_images_at < num_tiles_at < except_at
-    # And it must still be nested inside `if images is not None:`, at 12 spaces.
+    # still nested inside `if images is not None:`
     assert lines[num_tiles_at].startswith(" " * 16)
 
 
 def test_the_trl_1_0_spelling_of_the_gemma_4_position_ids_is_forwarded():
-    """TRL 1.0.x emits `pixel_position_ids`; 1.1.0 renamed it `image_position_ids`.
-
-    Both are real keys in released TRLs an installed Unsloth can sit next to, and the
-    model kwarg carries the same name as the inputs key, so each has to leave under the
-    name it arrived with. Reading only one of the two drops the metadata for the other
-    half of the version range, which is the very fault this change exists to close.
-    """
+    """TRL 1.0.x emits `pixel_position_ids`, 1.1.0 `image_position_ids`; both are live."""
     import torch
     from unsloth_zoo.rl_replacements import (
         GRPO_VISION_KEYS,
@@ -302,13 +257,11 @@ def test_the_trl_1_0_spelling_of_the_gemma_4_position_ids_is_forwarded():
         assert [tuple(c) for c in chunks] == [("pixel_values", key)] * 2, chunks
         assert [c["pixel_values"].shape[0] for c in chunks] == [2, 2]
         assert [c[key].shape[0] for c in chunks] == [2, 2]
-        # And the other spelling never appears: a model taking one rejects the other.
         other = "image_position_ids" if key == "pixel_position_ids" else "pixel_position_ids"
         assert all(other not in c for c in chunks)
 
 
 def test_a_multi_image_row_indexes_the_position_ids_by_image():
-    """Two images on one row: both tensors are image indexed, not sample indexed."""
     import torch
     from unsloth_zoo.rl_replacements import grpo_get_vision_inputs, grpo_vision_chunks
 
@@ -323,12 +276,7 @@ def test_a_multi_image_row_indexes_the_position_ids_by_image():
 
 
 def test_an_old_zoo_still_forwards_the_sample_indexed_keys():
-    """Without the shared chunker only the image indexed slicing is unavailable.
-
-    A text run carrying token_type_ids used to be sliced by this path itself, so an
-    unsloth_zoo predating the chunker must not cost it those keys; only the vision case
-    is refused, and loudly.
-    """
+    """An older unsloth_zoo must cost only image indexed slicing, not token_type_ids."""
     from unsloth.models.rl_replacements import grpo_trainer__get_per_token_logps_and_entropies
 
     patched = grpo_trainer__get_per_token_logps_and_entropies(
@@ -341,14 +289,7 @@ def test_an_old_zoo_still_forwards_the_sample_indexed_keys():
 
 
 def test_the_wrapper_keeps_trls_logits_to_keep_probe_answerable():
-    """TRL reads `inspect.signature(model.forward)` once, in GRPOTrainer.__init__, to decide
-    whether the model accepts `logits_to_keep` (SmolVLM and Idefics3 do not).
-
-    A bare (*args, **kwargs) wrapper answered "no" for every model, so no model was ever
-    given the limiter. Restoring the signature restores the per model answer, which also
-    means a text only run starts passing `logits_to_keep` again: same loss to five
-    decimals, not bit for bit.
-    """
+    """GRPOTrainer.__init__ probes the forward signature for `logits_to_keep` once."""
     import inspect as _inspect
 
     import torch
@@ -385,21 +326,12 @@ def test_the_wrapper_keeps_trls_logits_to_keep_probe_answerable():
 
 
 def test_the_multi_image_zoo_probe_does_not_rest_on_a_local_variable():
-    """The "upgrade unsloth_zoo" gate for multi image GRPO.
-
-    It used to answer by grepping `inspect.getsource(grpo_accumulated_loss)` for the
-    string "num_images". Once that function delegates its slicing to the shared chunker
-    the name survives there only as a local nobody reads, so removing it, which is what
-    any linter asks for, silently turned a working multi image run into a false
-    "Please upgrade unsloth_zoo". The gate now probes for the helper that actually does
-    the work.
-    """
+    """Grepping grpo_accumulated_loss for "num_images", now an unread local, faked it."""
     from unsloth.models.rl_replacements import grpo_trainer_compute_loss
 
     patched = grpo_trainer_compute_loss("compute_loss", "")
     gate = patched.split("_unsloth_requires_multi_image_zoo(num_images)")[1]
     gate = gate.split("Please upgrade ")[0]
     assert "from unsloth_zoo.rl_replacements import grpo_vision_chunks" in gate
-    # The import probe has to be consulted before the source grep, or the grep still
-    # decides the answer on a current zoo.
+    # probe before grep, or the grep still decides on a current zoo
     assert gate.index("grpo_vision_chunks") < gate.index("inspect.getsource")

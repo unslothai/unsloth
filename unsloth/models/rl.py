@@ -1529,31 +1529,11 @@ def _install_grpo_hidden_states_forward_wrapper(model):
         _note_grpo_hidden_states_success(target_model)
         return _replace_outputs_logits(outputs, hidden_states)
 
-    # transformers' generate() validates its kwargs against inspect.signature(self.forward), so a
-    # bare (*args, **kwargs) wrapper makes every vision kwarg the model takes only on forward look
-    # unused: LFM2-VL GRPO died on "The following `model_kwargs` are not used by the model:
-    # ['pixel_values', 'pixel_attention_mask', 'spatial_shapes']".
-    #
-    # __signature__ and NOT functools.wraps, which would also set __wrapped__. accelerate's
-    # extract_model_from_parallel(keep_fp32_wrapper = False) runs every GRPO step, and once
-    # prepare_model has recorded _original_forward it walks the __wrapped__ chain looking for it
-    # and rebinds whatever it lands on:
-    #
-    #     while hasattr(forward, "__wrapped__"):
-    #         forward = forward.__wrapped__
-    #         if forward == original_forward: break
-    #     model.forward = MethodType(forward, model)
-    #
-    # so a __wrapped__ link here is a route straight through this wrapper to the bare forward,
-    # and the wrapper is silently gone on any full finetune or prepared reference model, taking
-    # back the vocabulary-wide logits it exists to avoid. Measured on accelerate 1.15.0:
-    #
-    #     bare         survives=True   vision kwargs visible=False
-    #     wraps        survives=False  vision kwargs visible=True
-    #     __signature__ survives=True  vision kwargs visible=True
-    #
-    # inspect.signature reads __signature__ directly, and unwrap() stops at anything carrying one,
-    # so this is what generate() sees both before and after that rebind.
+    # generate() validates its kwargs against inspect.signature(self.forward), so a bare
+    # (*args, **kwargs) wrapper makes every forward-only vision kwarg look unused.
+    # __signature__ and NOT functools.wraps: wraps sets __wrapped__, and accelerate's
+    # extract_model_from_parallel(keep_fp32_wrapper = False) walks that chain every GRPO
+    # step and rebinds past this wrapper, losing it. inspect.unwrap() stops at __signature__.
     wrapped_forward.__signature__ = forward_signature
     for _attribute in ("__name__", "__qualname__", "__doc__", "__module__"):
         try:

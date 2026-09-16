@@ -920,22 +920,9 @@ def _unsloth_grpo_autocast_kwargs(self, device_type = "cuda"):
     return {"enabled": enabled, "dtype": dtype}
 
 
-# TRL wraps whatever the singular `image` column holds in a list of its own, so a cell
-# holding two images arrives at the processor as [[[img, img]]]. Both
-# make_nested_list_of_images and the processor reject that shape with "Invalid input type.
-# Must be a single image, a list of images, or a list of batches of images.". A list cell
-# is simply the plural `images` form, which TRL already supports, so normalise it into
-# that path. See unslothai/unsloth#3605.
 def _unsloth_grpo_vision_inputs(source):
-    """Collect the GRPO multimodal inputs out of a kwargs or inputs mapping.
-
-    unsloth_zoo owns the key tuple, and both GRPO logprob paths and compute_loss read it
-    through here, so a key added there reaches all three at once. The names are repeated
-    once, inside this body, only for an installed unsloth_zoo old enough to predate
-    GRPO_VISION_KEYS: without them an upgrade of unsloth alone would silently stop
-    forwarding token_type_ids and the rest. The zoo's tuple wins whenever it imports, and
-    tests/test_grpo_vision_kwargs_forwarded.py fails if the two ever name different keys.
-    """
+    """unsloth_zoo owns this key tuple; the copy below is the fallback for a zoo predating
+    GRPO_VISION_KEYS, and test_grpo_vision_kwargs_forwarded.py fails if the two diverge."""
     try:
         from unsloth_zoo.rl_replacements import grpo_get_vision_inputs
         return grpo_get_vision_inputs(source)
@@ -955,8 +942,7 @@ def _unsloth_grpo_vision_inputs(source):
             "image_sizes",
             "spatial_shapes",
             "num_tiles",
-            # Both TRL spellings of the Gemma 4 position ids: pixel_position_ids in
-            # TRL 1.0.x, image_position_ids from 1.1.0 on.
+            # both Gemma 4 spellings: image_position_ids is TRL >= 1.1.0
             "image_position_ids",
             "pixel_position_ids",
             "num_images",
@@ -966,6 +952,7 @@ def _unsloth_grpo_vision_inputs(source):
     }
 
 
+# A list cell reaches the processor as [[[img, img]]], which it rejects. unsloth#3605.
 def _unsloth_grpo_image_cell(value):
     if value is None:
         return None
@@ -975,13 +962,8 @@ def _unsloth_grpo_image_cell(value):
 
 
 def _unsloth_reject_grpo_image_list(inputs):
-    """Refuse a multi image singular `image` cell that could not be normalised.
-
-    The normalisation above is a rewrite of TRL's own extraction, so it only lands on the
-    spellings TRL has actually used. When the installed TRL spells it some other way the
-    rewrite does not apply and the batch would die inside the processor with a message
-    that names neither the column nor the fix, so name them here instead.
-    """
+    """Refuse it where the rewrite above missed TRL's spelling: the processor's own error
+    names neither the column nor the fix."""
     try:
         first = inputs[0]
         value = first.get("image", None) if isinstance(first, dict) else None
@@ -1242,7 +1224,6 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             _target_line + _metadata_extraction,
         )
 
-    # This path is for TRL 0.24.0 and later: `images` is a variable exclusive to those.
     _output_extras = """
         if max_left_pad is not None:
             output["max_left_pad"] = torch.tensor(prompt_ids.shape[0] * [max_left_pad]).unsqueeze(-1)
@@ -1252,10 +1233,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         except NameError:
             output["sampling_per_token_logps"] = None"""
 
-    # Longest anchor first. TRL 1.7.0 grew a nested num_tiles line inside this block, and
-    # matching only the first two lines leaves it stranded inside the try/except above, so
-    # num_tiles never reached the inputs dict and the tile indexed slicing had nothing to
-    # index with. See unslothai/unsloth#6960.
+    # Longest first: the short anchor strands TRL 1.7.0's num_tiles line. unsloth#6960.
     _num_images_anchors = (
         """        if images is not None:
             output["num_images"] = num_images
@@ -1370,15 +1348,12 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             "        return output",
         )
 
-    # A singular `image` cell may hold a list of images; route it through TRL's plural
-    # `images` handling instead of letting TRL wrap it once more. unslothai/unsloth#3605.
+    # Anchors for TRL >= 1.0.0, then 0.22.x-0.23.x.
     _image_cell_anchors = (
-        # TRL >= 1.0.0 reads the column directly.
         (
             'images = [[example.get("image")] if example.get("image") is not None else None for example in inputs]',
             'images = [_unsloth_grpo_image_cell(example.get("image")) for example in inputs]',
         ),
-        # TRL 0.22.x - 0.23.x builds the processor kwargs itself.
         (
             'kwargs = {"images": [[img] for img in images]}',
             'kwargs = {"images": [_unsloth_grpo_image_cell(img) for img in images]}',
@@ -1390,8 +1365,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             function = function.replace(_old_cell, _new_cell)
             _image_cell_normalised = True
 
-    # TRL 0.22.x - 0.23.x inserts exactly one image placeholder per example, which no
-    # longer matches once a cell carries several images.
+    # TRL 0.22.x-0.23.x hardcodes one image placeholder per example.
     _placeholder_old = (
         "            for prompt in prompts:\n"
         "                if isinstance(prompt, list):  # i.e., when using conversational data\n"
@@ -1408,7 +1382,6 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         function = function.replace(_placeholder_old, _placeholder_new)
 
     if not _image_cell_normalised:
-        # Nothing to rewrite, so guard at runtime rather than fail inside the processor.
         _signature = re.search(
             r"([ \t]*)def _generate_and_score_completions\((?:[^()]|\([^()]*\))*\)[^\n]*:\n",
             function,
@@ -1564,21 +1537,13 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
 
             compute_aux_loss = kwargs.get("compute_aux_loss", None)
 
-            # One key tuple, owned by unsloth_zoo and shared with the gradient pass in
-            # grpo_accumulated_loss, so neither path can forward a different set of
-            # multimodal inputs than the other. TRL passes everything the processor
-            # produced through **kwargs, including spatial_shapes (LFM2-VL), num_tiles
-            # (LFM2-VL and InternVL) and image_position_ids (Gemma 4). See
-            # unslothai/unsloth#6960. Body-local import: this function's source is copied
-            # into the generated UnslothGRPOTrainer cache without this module's imports.
+            # Body-local: this source is copied out without this module's imports. #6960.
             _grpo_vision_chunks = None
             try:
                 from unsloth_zoo.rl_replacements import grpo_vision_chunks as _grpo_vision_chunks
             except Exception:
                 pass
-            # Collected either way: only the image indexed slicing belongs to the zoo, so an
-            # older one must not cost the sample indexed keys, which this path sliced by
-            # itself before. The vision case is what cannot be served, and it says so.
+            # Collected even without the zoo: an older one must cost only image slicing.
             vision_inputs = _unsloth_grpo_vision_inputs(kwargs)
             if _grpo_vision_chunks is None and vision_inputs.get("pixel_values", None) is not None:
                 raise RuntimeError(
@@ -1654,13 +1619,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 input_ids_chunks.append(input_ids[start:end])
                 attention_mask_chunks.append(attention_mask[start:end])
 
-            # Shared with the gradient pass, so the two cannot slice the same tensors
-            # differently, and so a model whose metadata key is not image_grid_thw still
-            # gets its pixel_values forwarded rather than silently dropped.
+            # One chunker shared with the gradient pass, so the two cannot disagree.
             if _grpo_vision_chunks is None:
-                # No shared chunker. Everything image indexed already raised above, so only
-                # the per sample keys can be here, and they are sliced the way both the old
-                # implementation and the chunker slice them.
+                # Image-indexed keys already raised above, so only per-sample ones are left.
                 vision_chunks = []
                 for _start in range(0, total_samples, batch_size):
                     _end = min(_start + batch_size, total_samples)
@@ -2465,9 +2426,6 @@ def grpo_trainer_compute_loss(function_name, function):
             inputs["completion_ids"],
             inputs["completion_mask"],
         )
-        # Same key tuple the logprob pass reads, through the same helper, so nothing the
-        # processor produced is dropped on the way to the gradient pass. See
-        # unslothai/unsloth#6960.
         _vision_inputs = _unsloth_grpo_vision_inputs(inputs)
         pixel_values = _vision_inputs.get("pixel_values", None)
         image_grid_thw = _vision_inputs.get("image_grid_thw", None)
@@ -2497,8 +2455,7 @@ def grpo_trainer_compute_loss(function_name, function):
                 completion_ids = completion_ids,
             )
             _vision_inputs["mm_token_type_ids"] = mm_token_type_ids
-        # Only the keys the processor actually produced, so an older unsloth_zoo never
-        # sees a kwarg it does not know.
+        # Only the keys the processor produced: an older zoo must not see unknown kwargs.
         _vision_inputs = {k: v for k, v in _vision_inputs.items() if v is not None}
         logits_to_keep = completion_ids.size(
             1
@@ -2622,13 +2579,7 @@ def grpo_trainer_compute_loss(function_name, function):
                     "num_images" in inspect.signature(grpo_accumulated_loss).parameters
                 )
                 if not _supports_num_images:
-                    # The current contract, probed by import rather than by reading
-                    # grpo_accumulated_loss's text: the zoo does its multimodal slicing in
-                    # grpo_vision_chunks, which takes num_images and owns every per image
-                    # index. The source grep below stays for a zoo older than that helper,
-                    # but it can only ever answer for a build that still spells the name in
-                    # that one function, so a local variable removed there would otherwise
-                    # turn multi image GRPO into a false "upgrade unsloth_zoo".
+                    # Probe by import: the grep below cries "upgrade unsloth_zoo" falsely.
                     try:
                         from unsloth_zoo.rl_replacements import grpo_vision_chunks
                         _supports_num_images = grpo_vision_chunks is not None

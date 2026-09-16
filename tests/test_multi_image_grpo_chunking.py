@@ -16,15 +16,10 @@ def _read_source() -> str:
         return fh.read()
 
 
-# Per-chunk slicing, exercised on the shared chunker both GRPO logprob paths call
-
-
 def test_source_reads_the_shared_key_tuple():
-    """Both logprob paths must go through unsloth_zoo's one key tuple."""
     src = _read_source()
     assert "grpo_get_vision_inputs" in src
     assert "grpo_vision_chunks" in src
-    # The old per-key chunk lists are gone, so a new key cannot be added to one path only.
     assert "pixel_values_chunks" not in src
     assert "image_grid_thw_chunks" not in src
 
@@ -43,7 +38,7 @@ def test_grid_model_slices_rows_by_patch_and_grid_by_image():
     }
     chunks = grpo_vision_chunks(vision, total_samples = 4, batch_size = 2)
     assert len(chunks) == 2
-    # Samples 0 and 1 hold images 0 to 2, so patch rows 0 to 11.
+    # samples 0 and 1 hold images 0 to 2, so patch rows 0 to 11
     assert chunks[0]["pixel_values"].shape[0] == 12
     assert chunks[0]["image_grid_thw"].shape[0] == 3
     assert chunks[1]["pixel_values"].shape[0] == 16
@@ -75,11 +70,11 @@ def test_pixel_attention_mask_axis_is_chosen_per_shape():
         "image_grid_thw": torch.tensor([[1, 2, 2]] * 3),
         "num_images": [2, 1],
     }
-    # One mask row per image: sliced on the image axis.
+    # one mask row per image: image axis
     per_image = grpo_vision_chunks({**base, "pixel_attention_mask": torch.zeros(3, 4)}, 2, 1)
     assert per_image[0]["pixel_attention_mask"].shape[0] == 2
     assert per_image[1]["pixel_attention_mask"].shape[0] == 1
-    # One mask row per patch row: sliced on the patch axis.
+    # one mask row per patch row: patch axis
     per_row = grpo_vision_chunks({**base, "pixel_attention_mask": torch.zeros(12, 4)}, 2, 1)
     assert per_row[0]["pixel_attention_mask"].shape[0] == 8
     assert per_row[1]["pixel_attention_mask"].shape[0] == 4
