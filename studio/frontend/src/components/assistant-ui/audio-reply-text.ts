@@ -14,6 +14,17 @@ export interface AudioReplyParts {
   text: string;
 }
 
+// What /audio/generate's `choices[0].message.content` used to be before it carried the
+// spoken text: a diagnostic label cut at 100 characters. Against an older backend it is
+// dropped rather than shown as something the assistant said.
+const LEGACY_STATUS_LABEL_RE = /^\[Generated audio from: ".*"\]$/s;
+
+/** The transcript to render under an audio reply's player, or "" when there is none. */
+export function spokenReplyText(content: string | null | undefined): string {
+  const text = (content ?? "").trim();
+  return LEGACY_STATUS_LABEL_RE.test(text) ? "" : text;
+}
+
 export function splitAudioReply(text: string): AudioReplyParts {
   const match = text.match(AUDIO_PLAYER_RE);
   if (!match) return { audioSrc: null, text };

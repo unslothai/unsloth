@@ -4,7 +4,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { splitAudioReply } from "../src/components/assistant-ui/audio-reply-text.ts";
+import {
+  splitAudioReply,
+  spokenReplyText,
+} from "../src/components/assistant-ui/audio-reply-text.ts";
 import { readSrc } from "./helpers/kit.ts";
 
 const PLAYER = '<audio-player src="data:audio/wav;base64,QUJD" />';
@@ -35,4 +38,10 @@ test("the renderer no longer returns the bare player for a reply that has text",
   assert.doesNotMatch(src, /displayText\.match\(AUDIO_PLAYER_RE\)/);
   assert.match(src, /splitAudioReply\(displayText\)/);
   assert.match(src, /audioSrc !== null && markdownText === ""/);
+});
+
+test("the spoken text is rendered whole, and an older backend's status label is not", () => {
+  assert.equal(spokenReplyText("  Hello there.  "), "Hello there.");
+  assert.equal(spokenReplyText(null), "");
+  assert.equal(spokenReplyText('[Generated audio from: "Hello there. How can I"]'), "");
 });
