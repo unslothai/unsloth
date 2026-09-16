@@ -675,6 +675,7 @@ def _windows_child_pid_map() -> "Optional[dict[int, list[int]]]":
                 # An empty walk is a failed read, not a machine with no processes, and
                 # reporting it as a table would read as "this child has none".
                 return None
+            ERROR_NO_MORE_FILES = 18
             table: "dict[int, list[int]]" = {}
             while True:
                 child = int(entry.th32ProcessID)
@@ -682,6 +683,15 @@ def _windows_child_pid_map() -> "Optional[dict[int, list[int]]]":
                 if child:
                     table.setdefault(parent, []).append(child)
                 if not kernel32.Process32NextW(snapshot, ctypes.byref(entry)):
+                    # FALSE is not "that was the last one". It is also every way the walk
+                    # can fail partway, and only ERROR_NO_MORE_FILES says the list ended.
+                    # Treating a termination error as the end returns a table missing
+                    # whatever came after it, and a table is read as an ANSWER: the unload
+                    # then finds no survivors and deletes the record and the pidfile for
+                    # workers the walk never reached. The Windows scanner in
+                    # studio/src-tauri/src/process.rs already makes this distinction.
+                    if ctypes.get_last_error() != ERROR_NO_MORE_FILES:
+                        return None
                     break
             return table
         finally:
@@ -969,7 +979,21 @@ def _windows_terminate_collected(collected: "list[tuple[int, Optional[str]]]") -
             continue
         # Started after the snapshot, and validated the same way rather than inherited
         # from a parent-pid link. Deepest first, as above.
-        for late_pid, late_identity in reversed(_windows_collect_descendants(pid)):
+        late, late_known = _windows_collect_descendants_known(pid)
+        if not late_known:
+            # This second walk is what covers anything the survivor started AFTER the
+            # snapshot. Failing it and carrying on used to kill the survivor and then
+            # report nothing, so a grandchild only this walk could have named was left
+            # with the record and the pidfile deleted out from under it.
+            #
+            # The survivor itself is still killed: it is collected and identity-verified,
+            # and refusing to kill it because a walk BELOW it failed would leave the very
+            # process this sweep exists for running. What changes is the report: the pid
+            # is carried out as unresolved, which keeps the record, and the next sweep
+            # gets another walk at whatever is under it.
+            unresolved.append(pid)
+            late = []
+        for late_pid, late_identity in reversed(late):
             if not _signalable(late_pid) or not _pid_alive(late_pid):
                 continue
             if not _provably_the_same(late_pid, late_identity):
@@ -989,9 +1013,14 @@ def _windows_terminate_collected(collected: "list[tuple[int, Optional[str]]]") -
         for pid, identity in attempted
         if _pid_alive(pid) and not _pid_is_zombie(pid) and _provably_the_same(pid, identity)
     ]
-    # Deepest first throughout, and without duplicates: a pid cannot be both killed and
-    # skipped, so the two lists are disjoint by construction.
-    return unresolved + survivors
+    # Deepest first throughout, and deduplicated: a pid whose late walk failed is reported
+    # unresolved AND may still be alive after its own kill, so the two lists can name it
+    # twice and the caller adopts each entry.
+    ordered: "list[int]" = []
+    for pid in unresolved + survivors:
+        if pid not in ordered:
+            ordered.append(pid)
+    return ordered
 
 
 def _windows_terminate_validated_tree(pid: int) -> bool:
@@ -1011,9 +1040,11 @@ def _windows_terminate_validated_tree(pid: int) -> bool:
 
     A tree this cannot enumerate collapses to killing the root alone and answering False,
     which is the same answer the ``/T`` fallback gave when taskkill was unavailable, and
-    it fails towards leaking a worker rather than towards killing a stranger.
+    it fails towards leaking a worker rather than towards killing a stranger. False here
+    is what keeps the record, so a later sweep still has a handle on whatever the failed
+    walk did not name.
     """
-    descendants = _windows_collect_descendants(pid)
+    descendants, known = _windows_collect_descendants_known(pid)
     for child, child_identity in reversed(descendants):
         if not _signalable(child) or not _pid_alive(child):
             continue
@@ -1028,6 +1059,12 @@ def _windows_terminate_validated_tree(pid: int) -> bool:
             _windows_terminate_pid(pid)
         except Exception:  # noqa: BLE001 - best effort, like the rest of this
             pass
+    # An unenumerable tree is not an empty one, so the root-only kill above is all that
+    # happened and this cannot answer True. Same rule as the collector it calls: killing
+    # fewer processes and keeping the record beats deleting the only handle on a worker
+    # the walk could not see.
+    if not known:
+        return False
     # Read back, on the root and on every descendant: a taskkill that reported success
     # still has to have taken effect, and "the leader is gone" was never the question.
     if _pid_alive(pid) and not _pid_is_zombie(pid):
