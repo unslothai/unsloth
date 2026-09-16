@@ -31,8 +31,6 @@ from tests.utils.cleanup_utils import safe_remove_directory
 from tests.utils.ocr_eval import OCRModelEvaluator
 
 
-from datasets import load_dataset
-
 dataset = load_dataset("lbourdois/OCR-liboaccn-OPUS-MIT-5M-clean", "en", split = "train")
 train_dataset = dataset.select(range(2000))
 eval_dataset = dataset.select(range(2000, 2200))
@@ -71,12 +69,9 @@ system_message = "You are an expert french ocr system."
 train_dataset = [format_data(sample) for sample in train_dataset]
 eval_dataset = [format_data(sample) for sample in eval_dataset]
 
-import os
-import torch
 from tqdm import tqdm
 import pandas as pd
 from jiwer import wer, cer
-from qwen_vl_utils import process_vision_info
 
 ocr_evaluator = OCRModelEvaluator()
 model_comparison_results = {}

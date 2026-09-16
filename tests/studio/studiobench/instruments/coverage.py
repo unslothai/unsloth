@@ -296,7 +296,6 @@ def ambiguity(snapshot: CoverageSnapshot, name: str) -> int:
 # boundary, enforced by `assert_integers_only`.
 
 import time  # noqa: E402
-from typing import Any  # noqa: E402
 
 from ..analysis import assert_no_bare_zero, measured, merge, unmeasured  # noqa: E402
 from . import register_instrument  # noqa: E402
