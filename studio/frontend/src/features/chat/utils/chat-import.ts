@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * Imports Open WebUI JSON arrays, OpenAI/ShareGPT JSONL, and role/content CSV.
- * JSON records stream individually so large exports never become one JS string.
- */
+/** Imports Open WebUI JSON arrays, OpenAI/ShareGPT JSONL, and role/content CSV. JSON records
+ *  stream individually so large exports never become one JS string. */
 
 import { notifyChatHistoryUpdated } from "../api/chat-api";
 import type { MessageRecord, ParsedConversation, ThreadRecord } from "../types";
@@ -39,12 +37,9 @@ const NATIVE_CHUNK_BYTES = 8 * 1024 * 1024;
 /** Limit concurrent writes for exports that may contain thousands of chats. */
 const WRITE_CONCURRENCY = 6;
 
-/**
- * Report progress at least this often by bytes as well as by conversations. A
- * count-only cadence leaves the toast reading "0 so far (0%)" for the entire
- * read of an export made of a few very large chats, which is the case the
- * progress toast exists for.
- */
+/** Report progress at least this often by bytes as well as by conversations. A count-only
+ *  cadence leaves the toast reading "0 so far (0%)" for the entire read of an export made of
+ *  a few very large chats, which is the case the toast exists for. */
 const PROGRESS_BYTES = 4 * 1024 * 1024;
 
 export interface ImportProgress {
@@ -78,12 +73,12 @@ async function* nativeBytes(handle: {
     const bytes = await readNativeChatImportChunk(
       handle.token,
       offset,
-      // Never past the size the picker recorded: bytes appended to a file that
-      // is still being written are not part of the export that was chosen.
+      // Never past the size the picker recorded: bytes appended to a file still being written are not
+      // part of the export that was chosen.
       Math.min(NATIVE_CHUNK_BYTES, handle.size - offset),
     );
-    // The picker recorded the size, so a short read means the file shrank since
-    // then. Stopping quietly would pass a partial export off as the whole one.
+    // The picker recorded the size, so a short read means the file shrank since then. Stopping
+    // quietly would pass a partial export off as the whole one.
     if (bytes.byteLength === 0) {
       throw new Error(
         `${handle.name} ended after ${offset} of ${handle.size} bytes; it changed after it was picked.`,
@@ -103,16 +98,16 @@ export function nativeImportSource(handle: {
   return {
     name: handle.name,
     size: handle.size,
-    // Decoding is fatal here because the native reader it replaced rejected
-    // invalid UTF-8 outright rather than saving a chat full of U+FFFD.
+    // Decoding is fatal here because the native reader it replaced rejected invalid UTF-8 outright
+    // rather than saving a chat full of U+FFFD.
     chunks: () => decodeTextChunks(nativeBytes(handle), true),
   };
 }
 
 // Record conversion
 
-// role:"tool" results are absorbed into the preceding assistant tool-call
-// part's `result` field rather than becoming separate records.
+// role:"tool" results are absorbed into the preceding assistant tool-call part's `result` field
+// rather than becoming separate records.
 function oaiContentToParts(raw: unknown): unknown[] {
   if (!Array.isArray(raw)) {
     return typeof raw === "string" && raw.trim()
@@ -175,8 +170,8 @@ function oaiMessagesToRecords(
           const name = typeof fn.name === "string" ? fn.name : "unknown";
           const argsStr = typeof fn.arguments === "string" ? fn.arguments : "{}";
           let args: unknown = {};
-          // _raw matches what the stream adapter and the backend keep for
-          // arguments the model did not emit as valid JSON.
+          // _raw matches what the stream adapter and the backend keep for arguments the model did not
+          // emit as valid JSON.
           try { args = JSON.parse(argsStr); } catch { args = { _raw: argsStr }; }
           const result = toolResults.get(tcId);
           parts.push({
@@ -241,8 +236,7 @@ function sharegptToRecords(
 }
 
 function csvToRecords(csvText: string, threadId: string, baseTs: number): MessageRecord[] {
-  // parseCsv handles quoted newlines, so multi-line message content
-  // round-trips from the exporter.
+  // parseCsv handles quoted newlines, so multi-line message content round-trips from the exporter.
   const rows = parseCsv(csvText).slice(1);
   const records: MessageRecord[] = [];
   let prevId: string | null = null;
@@ -280,8 +274,7 @@ export function recordToConversation(
   if (typeof record !== "object" || record === null) return null;
   const obj = record as Record<string, unknown>;
 
-  // Fresh ID: reusing the exported thread_id would clobber an existing
-  // thread on import.
+  // Fresh ID: reusing the exported thread_id would clobber an existing thread on import.
   const threadId = crypto.randomUUID();
   const title = typeof obj.title === "string" ? obj.title : fallbackTitle;
   const baseTs = typeof obj.created_at === "number" ? obj.created_at : Date.now();
@@ -355,8 +348,8 @@ async function writeConversation(
   try {
     await syncStoredChatMessages(threadId, messages, { pruneMissing: false });
   } catch (error) {
-    // The thread row is already in the sidebar. Left behind it is a blank chat
-    // the user has to delete by hand, and a retry adds another one.
+    // The thread row is already in the sidebar. Left behind it is a blank chat the user has to
+    // delete by hand, and a retry adds another one.
     await deleteStoredChatThreads([threadId]).catch(() => {});
     throw error;
   }
@@ -451,8 +444,8 @@ export async function importConversationsFromSource(
   }
 
   await Promise.allSettled(inFlight);
-  // Those chats have to reach the sidebar even when the read failed, or the UI
-  // stays empty until a reload and a retry duplicates every one of them.
+  // Those chats have to reach the sidebar even when the read failed, or the UI stays empty until
+  // a reload and a retry duplicates every one of them.
   if (progress.imported > 0) notifyChatHistoryUpdated();
   report();
 

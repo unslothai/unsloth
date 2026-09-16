@@ -36,6 +36,7 @@ import inspect
 import os
 import tempfile
 import threading
+from utils.account_context import account_thread, current_account_id
 import time
 import types
 from dataclasses import dataclass
@@ -82,6 +83,7 @@ from .diffusion_memory import (
     reclaim_offload_host_memory,
     settled_snapshot_device_memory,
 )
+from .diffusion_torchao_patches import install_torchao_int_mm_patch
 from .diffusion_speed import (
     SPEED_DEFAULT,
     SPEED_EAGER,
@@ -111,6 +113,7 @@ from .diffusion_transformer_quant import (
     select_transformer_quant_scheme,
 )
 from .diffusion import _memory_request_forces_offload
+from .diffusion_batched import is_oom_error
 from .diffusion_precision import (
     effective_te_quant,
     normalize_te_quant,
@@ -169,6 +172,9 @@ from utils.hardware import clear_gpu_cache
 from core.inference.diffusion import hub_cache_dir
 
 logger = get_logger(__name__)
+
+# Asked for here as well as in the image backend, so the video path never depends on that import order.
+install_torchao_int_mm_patch()
 
 # Load kinds (mirror the image backend): gguf (single-file GGUF DiT + base repo), single_file (safetensors DiT),
 # pipeline (full diffusers repo)
@@ -1057,6 +1063,7 @@ class VideoBackend:
         # Which job the flag belongs to. The flag alone cannot tell "my job" from "the job that replaced mine", so
         # finalising is keyed on this. Compared by identity.
         self._generate_job_token: Optional[object] = None
+        self._generate_job_account: Optional[str] = None
         # The OpenAI /v1/videos job id this run was started under, or None for a Studio-page run
         self._gen_video_id: Optional[str] = None
 
@@ -1201,6 +1208,8 @@ class VideoBackend:
                     f"load asked for {h3_task}. Pick the matching checkpoint."
                 )
         else:
+            # assert_pipeline_class_available closes the dynamo window itself, ahead of its own
+            # `import diffusers`, which covers this validation and the training preflight too.
             # Refuse a too-old diffusers here rather than deep in the load.
             from .diffusion_families import assert_pipeline_class_available
             assert_pipeline_class_available(fam.pipeline_class, fam.name)
@@ -1395,7 +1404,7 @@ class VideoBackend:
                 asset_repos = claimed_assets,
             )
 
-        threading.Thread(
+        account_thread(
             target = self._run_load,
             kwargs = dict(
                 repo_id = repo_id,
@@ -1646,6 +1655,12 @@ class VideoBackend:
             if self._load_token != token:
                 return
             logger.error("video.load_failed: %s", exc)
+            if self._state is not None:
+                from .gpu_arbiter import VIDEO, restore_owner_account
+                from hub.services.models.account_access import restore_resident_metadata
+
+                restore_owner_account(VIDEO)
+                restore_resident_metadata(VIDEO)
             # Free the debris of a failed construction: nothing was committed, so nothing else releases the VRAM.
             try:
                 clear_gpu_cache()
@@ -3442,6 +3457,15 @@ class VideoBackend:
             )
             return self.status()
 
+        # Below the H3 native return, which is the one video path that never imports diffusers,
+        # and above every consumer that does. Same window as diffusion.py: `import diffusers`
+        # is itself a torch._dynamo importer, and so is the offload step further down.
+        try:
+            from utils.torch_warmup import close_dynamo_import_window
+            close_dynamo_import_window(logger)
+        except Exception as exc:  # noqa: BLE001 - optimisation only
+            logger.debug("dynamo pre-import skipped: %r", exc)
+
         import diffusers
         import torch
 
@@ -3791,6 +3815,10 @@ class VideoBackend:
         # _SecondDiTView(pipe)); single-DiT resolves to (pipe,).
         views = _views_for(pipe, fam)
 
+        # Before the transformer quant, the first mutator; until the state commit a failure restores them itself.
+        backend_flags = snapshot_backend_flags()
+        self._precommit_globals = (_load_token, backend_flags)
+
         # dense transformer quant (opt-in, pipeline-kind only): torchao-quantise the dense bf16 DiT in place onto the
         # low-precision tensor cores. CUDA + bf16 only, best-effort. Quant must precede compile (eager is ~30x slower).
         transformer_quant_engaged: Optional[str] = None
@@ -3938,10 +3966,6 @@ class VideoBackend:
                 "(quantized transformer must be compiled; eager is ~30x slower)"
             )
             effective_speed = SPEED_DEFAULT
-        backend_flags = snapshot_backend_flags()
-        # Until the state commit hands ownership to _teardown_state_locked, a failure has to restore these process-wide
-        # flags itself. Registered BEFORE the first mutation, as above.
-        self._precommit_globals = (_load_token, backend_flags)
         # Step cache tri-state: unset/"auto" -> FBCACHE_MIN_STEPS policy (re-checked per generation); "off"/"fbcache"
         # pinned. Run per expert.
         cache_request = normalize_transformer_cache(transformer_cache)
@@ -4024,6 +4048,7 @@ class VideoBackend:
                 # crashes)
                 cache_active = cache_engaged is not None or cache_may_toggle,
                 offload_active = plan.offload_policy != "none",
+                cuda_graph_default = False,
             )
             if view is pipe:
                 attention_engaged = engaged
@@ -4768,6 +4793,8 @@ class VideoBackend:
                 types.SimpleNamespace(
                     device = device,
                     dtype = dtype,
+                    # ROCm reports device "cuda"; the graph arm refuses it by backend, so keep the field.
+                    backend = getattr(umem_target, "backend", "cuda"),
                     supports_default_torch_compile = getattr(
                         umem_target, "supports_default_torch_compile", False
                     ),
@@ -4779,6 +4806,7 @@ class VideoBackend:
                 # The conditioner and the VAEs stay in the rotation even when the denoiser is pinned, so the onload
                 # hooks are live and fullgraph has to drop.
                 offload_active = offload_policy != "none",
+                cuda_graph_default = False,
                 logger = logger,
             )
             speed_optims = tuple(k for k, v in applied.items() if v)
@@ -4806,6 +4834,16 @@ class VideoBackend:
                     "cuDNN fused attention on NVIDIA when a speed profile is active",
                 ),
                 "transformer_cache": (None, "off", "not supported by this modular workflow"),
+                "cuda_graph": (
+                    None,
+                    "on" if "cuda_graph" in speed_optims else "off",
+                    "denoiser step captured per input shape, replayed bit-identically"
+                    if "cuda_graph" in speed_optims
+                    else str(
+                        getattr(pipe, "_unsloth_cuda_graph_reason", None)
+                        or "speed tier does not capture"
+                    ),
+                ),
                 "transformer_quant": (
                     transformer_quant_requested,
                     transformer_quant_engaged or "off",
@@ -5070,6 +5108,7 @@ class VideoBackend:
                 )
                 self._generate_job_active = True
                 self._generate_job_token = job_token
+                self._generate_job_account = current_account_id()
                 self._active_generate_cancel = cancel
                 self._gen_video_id = video_id
                 self._gen = {
@@ -5080,7 +5119,7 @@ class VideoBackend:
                     "eta_seconds": None,
                 }
                 break
-        worker = threading.Thread(
+        worker = account_thread(
             # The token and the /v1/videos job id ride on the target rather than in kwargs: those kwargs are also a
             # valid generate() call, and callers replay them as one.
             target = functools.partial(self._run_generate, job_token = job_token, video_id = video_id),
@@ -5132,6 +5171,9 @@ class VideoBackend:
             "fps": fps if fps is not None else getattr(fam, "default_fps", None),
             "model": getattr(state, "repo_id", None),
         }
+
+    def generate_job_account(self) -> Optional[str]:
+        return self._generate_job_account
 
     def _run_generate(
         self,
@@ -5306,6 +5348,14 @@ class VideoBackend:
                     "total": 0,
                     "eta_seconds": None,
                 }
+                logger.info(
+                    "video_generation_progress",
+                    phase = "failed",
+                    percent = 0,
+                    step = 0,
+                    total_steps = 0,
+                    error = error,
+                )
             else:
                 self._gen = {
                     "active": False,
@@ -5315,6 +5365,14 @@ class VideoBackend:
                     "total": total,
                     "eta_seconds": None,
                 }
+                logger.info(
+                    "video_generation_progress",
+                    phase = "completed",
+                    percent = 100,
+                    step = total,
+                    total_steps = total,
+                    video_id = (video or {}).get("id"),
+                )
 
     def generate(
         self,
@@ -5752,6 +5810,18 @@ class VideoBackend:
                 }
             except Exception as exc:
                 self._gen = {"active": False}
+                if is_oom_error(exc):
+                    # Drop the graphs on ANY CUDA OOM, as the image backend does: a live graph pins its
+                    # statics, outputs and slice of the private pool, which empty_cache() cannot reclaim, so
+                    # the user's next smaller request would run a step's worth of activations short. The shape
+                    # that finally renders re-captures on its first step; a non-OOM failure keeps its graphs.
+                    try:
+                        from . import diffusion_cuda_graph
+                        diffusion_cuda_graph.reset_all(
+                            getattr(getattr(state, "pipe", None), "_unsloth_cuda_graphs", ()) or ()
+                        )
+                    except Exception:  # noqa: BLE001 -- cleanup must never mask the real failure
+                        pass
                 _log_failed_generation(request_shape, exc)
                 raise
             finally:
@@ -6146,8 +6216,11 @@ class VideoBackend:
             except OSError:
                 pass
 
-    def generate_progress(self) -> dict[str, Any]:
+    def generate_progress(self, expected_account: Optional[str] = None) -> Optional[dict[str, Any]]:
+        """Progress under one lock; None if ``expected_account`` no longer owns the job."""
         with self._lock:
+            if expected_account is not None and self._generate_job_account != expected_account:
+                return None
             gen = dict(self._gen)
             # generate() swaps in a bare {"active": False} before the worker records the terminal dict; report active
             # across that gap.
@@ -6185,10 +6258,17 @@ class VideoBackend:
             self._gen = {"active": False}
             return True
 
-    def cancel_generate(self, expected_video_id: Optional[str] = None) -> bool:
-        """Signal the in-flight generation to stop at its next step callback."""
+    def cancel_generate(
+        self,
+        expected_video_id: Optional[str] = None,
+        expected_account: Optional[str] = None,
+    ) -> bool:
+        """Stop the in-flight generation; expected_* are rechecked under begin_generate's lock,
+        so a cancel of a finished job cannot hit its successor."""
         with self._lock:
             if expected_video_id is not None and self._gen_video_id != expected_video_id:
+                return False
+            if expected_account is not None and self._generate_job_account != expected_account:
                 return False
             cancel = self._active_generate_cancel
             if cancel is None:
@@ -6208,13 +6288,30 @@ class VideoBackend:
             # A GGUF load may have installed the compiled GGUF dequantizer; restore the stock kernels so a later
             # speed=off load is bit-identical.
             from . import diffusion_gguf_compile
+            from . import diffusion_cuda_graph
 
             diffusion_gguf_compile.uninstall_all()
+            # Before clear_gpu_cache(), or the graph pool stays reserved.
+            diffusion_cuda_graph.uninstall_all(
+                getattr(getattr(state, "pipe", None), "_unsloth_cuda_graphs", ()) or ()
+            )
             del state
             clear_gpu_cache()
 
-    def unload(self) -> dict[str, Any]:
+    def unload(self, *, expected_account: Optional[str] = None) -> dict[str, Any]:
         with self._lock:
+            if expected_account is not None:
+                from .gpu_arbiter import VIDEO, GpuBusyForAnotherAccountError
+                from hub.services.models.account_access import require_resident_control
+
+                if (
+                    self._active_generate_cancel is not None
+                    and self._generate_job_account != expected_account
+                ):
+                    raise GpuBusyForAnotherAccountError(VIDEO, 1)
+                require_resident_control(
+                    VIDEO, self._state.repo_id if self._state is not None else None
+                )
             self._load_token += 1
             self._cancel_event.set()
             self._loading = None
@@ -6344,3 +6441,17 @@ def generation_in_flight() -> bool:
     """Read the background-job marker without constructing or locking the backend."""
     backend = _backend
     return backend is not None and bool(backend._generate_job_active)
+
+
+def retire_load_for_account(account_id: str) -> bool:
+    """Tear down an in-flight video load ``account_id`` started, without constructing the backend."""
+    from hub.services.models.account_access import retire_media_load
+    return retire_media_load("video", account_id, _backend)
+
+
+def generation_account_in_flight() -> Optional[str]:
+    """The account whose video job is running, read without constructing the backend."""
+    backend = _backend
+    if backend is None or not backend._generate_job_active:
+        return None
+    return backend._generate_job_account

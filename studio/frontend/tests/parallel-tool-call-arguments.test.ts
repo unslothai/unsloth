@@ -7,15 +7,14 @@
 // not a change of name: the reported stream calls one tool three times.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
 import ts from "typescript";
 
 import {
   createBoundaryScan,
   splitTopLevelJsonObjects,
+  streamedToolCallArguments,
   toolCallReplayArguments,
 } from "../src/features/chat/tool-call-arguments.ts";
 import {
@@ -24,6 +23,8 @@ import {
   mintStreamedToolCallId,
   resolveToolCallPartId,
 } from "../src/features/chat/tool-call-id.ts";
+
+import { readSrc } from "./helpers/kit.ts";
 
 test("a slot holding one object is left as one object", () => {
   assert.deepEqual(splitTopLevelJsonObjects('{"url":"a"}'), {
@@ -140,12 +141,7 @@ test("arguments that are not one JSON object fall back rather than replay", () =
 // tests/pr9057-video-simulation.test.ts does: a re-implementation passes while
 // the adapter stays broken, which is how this defect survived
 // tool-call-delta-index.test.ts.
-const adapterSource = readFileSync(
-  fileURLToPath(
-    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
-  ),
-  "utf8",
-);
+const adapterSource = readSrc("features/chat/api/chat-adapter.ts");
 
 function liftBetween(what: string, from: string, to: string): string {
   const start = adapterSource.indexOf(from);
@@ -267,6 +263,7 @@ function makeStream(mintPartIds = false): {
   return new Function(
     "splitTopLevelJsonObjects",
     "createBoundaryScan",
+    "streamedToolCallArguments",
     "findStreamedToolCallPartIndex",
     "mintStreamedToolCallId",
     "bindStreamedToolCallCard",
@@ -275,6 +272,7 @@ function makeStream(mintPartIds = false): {
   )(
     splitTopLevelJsonObjects,
     createBoundaryScan,
+    streamedToolCallArguments,
     findStreamedToolCallPartIndex,
     mintStreamedToolCallId,
     bindStreamedToolCallCard,
@@ -723,6 +721,8 @@ test("a name resent or grown after a call closed invents nothing", () => {
 test("an argument fragment that is not a string does not abort the stream", () => {
   // llama-server has shipped `arguments` as a decoded object rather than the
   // string the API specifies, and the chunk is cast rather than validated.
+  // A serialized object is one complete arguments document, so a further fragment
+  // in the same slot is the next parallel call rather than a continuation.
   const parts = run([
     [
       {
@@ -733,10 +733,13 @@ test("an argument fragment that is not a string does not abort the stream", () =
         },
       },
     ],
-    [{ index: 0, function: { arguments: '{"a":1}' } }],
+    [{ index: 0, function: { arguments: '{"b":2}' } }],
   ]);
 
-  assert.deepEqual(shape(parts), [["alpha", '{"a":1}']]);
+  assert.deepEqual(shape(parts), [
+    ["alpha", '{"a":1}'],
+    ["alpha", '{"b":2}'],
+  ]);
 });
 
 test("a fragment that does not open an object does not open a call", () => {
@@ -1570,4 +1573,93 @@ test("a tool that really takes a _raw parameter keeps it either way", () => {
     toolCallReplayArguments(undefined, { _raw: '{"one":1}' }),
     '{"_raw":"{\\"one\\":1}"}',
   );
+});
+
+test("decoded object arguments preserve their JSON payload", () => {
+  assert.equal(
+    streamedToolCallArguments({ query: "雪", nested: [1, { ok: true }] }),
+    '{"query":"雪","nested":[1,{"ok":true}]}',
+  );
+});
+
+test("string fragments pass through byte-exact and junk contributes nothing", () => {
+  assert.equal(streamedToolCallArguments('{"partial'), '{"partial');
+  assert.equal(streamedToolCallArguments(""), "");
+  assert.equal(streamedToolCallArguments(undefined), "");
+  assert.equal(streamedToolCallArguments(null), "");
+  assert.equal(streamedToolCallArguments(7), "");
+});
+
+test("the adapter's delta site reads arguments through the helper", () => {
+  // Pinned so a tidy-up cannot bring the payload-dropping typeof-ternary back.
+  assert.ok(
+    adapterSource.includes(
+      "const deltaArgs = streamedToolCallArguments(",
+    ),
+    "chat-adapter.ts no longer routes delta arguments through streamedToolCallArguments",
+  );
+});
+
+test("a delta whose arguments arrive as a decoded object keeps its payload", () => {
+  const parts = run([
+    [
+      {
+        id: "call-obj",
+        index: 0,
+        function: {
+          name: "web_search",
+          // What llama-server has actually shipped, cast or not.
+          arguments: { query: "value" } as unknown as string,
+        },
+      },
+    ],
+  ]);
+  assert.deepEqual(
+    parts.map((part) => part.argsText),
+    ['{"query":"value"}'],
+  );
+});
+
+test("a decoded object lands exactly where its string spelling would", () => {
+  // The whole contract: serializing puts the object on the path the accumulator
+  // already has for text, so every downstream rule -- the object boundary that
+  // opens the next parallel call, the id that keeps a snapshot on its own -- reads
+  // it the same either way. Pinned as a pair so a later change cannot give the two
+  // dialects different answers, which is the one way this helper can mislead.
+  const asObject = (a: unknown) => a as unknown as string;
+  for (const [label, objectStream, stringStream] of [
+    [
+      "one payload",
+      [[{ id: "c1", index: 0, function: { name: "s", arguments: asObject({ query: "v" }) } }]],
+      [[{ id: "c1", index: 0, function: { name: "s", arguments: '{"query":"v"}' } }]],
+    ],
+    [
+      "an empty opening, then the rest as fragments",
+      [
+        [{ id: "c1", index: 0, function: { name: "s", arguments: asObject({}) } }],
+        [{ index: 0, function: { arguments: '{"query":' } }],
+        [{ index: 0, function: { arguments: '"v"}' } }],
+      ],
+      [
+        [{ id: "c1", index: 0, function: { name: "s", arguments: "{}" } }],
+        [{ index: 0, function: { arguments: '{"query":' } }],
+        [{ index: 0, function: { arguments: '"v"}' } }],
+      ],
+    ],
+    [
+      "two snapshots under one id",
+      [
+        [{ id: "c1", index: 0, function: { name: "s", arguments: asObject({ query: "a" }) } }],
+        [{ id: "c1", index: 0, function: { name: "s", arguments: asObject({ query: "ab" }) } }],
+      ],
+      [
+        [{ id: "c1", index: 0, function: { name: "s", arguments: '{"query":"a"}' } }],
+        [{ id: "c1", index: 0, function: { name: "s", arguments: '{"query":"ab"}' } }],
+      ],
+    ],
+  ] as const) {
+    const shapeOf = (deltas: unknown) =>
+      run(deltas as never).map((part) => [part.toolName, part.argsText]);
+    assert.deepEqual(shapeOf(objectStream), shapeOf(stringStream), label);
+  }
 });

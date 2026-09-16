@@ -2,10 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import { registerBundlerResolver } from "./helpers/kit.ts";
+import { readSrcAsync, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
@@ -63,12 +62,8 @@ test("the composer exception frees the composer and nothing else", () => {
 });
 
 test("the decline chord takes the exception and the approve chord does not", async () => {
-  const controls = await readFile(
-    new URL(
-      "../src/components/assistant-ui/tool-confirmation-controls.tsx",
-      import.meta.url,
-    ),
-    "utf8",
+  const controls = await readSrcAsync(
+    "components/assistant-ui/tool-confirmation-controls.tsx",
   );
   // Escape leaves the text alone. Enter sends, so it stays behind the gate.
   assert.match(
@@ -84,10 +79,7 @@ test("the decline chord takes the exception and the approve chord does not", asy
 });
 
 test("the selector matches the class the composer actually carries", async () => {
-  const thread = await readFile(
-    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
-    "utf8",
-  );
+  const thread = await readSrcAsync("components/assistant-ui/thread.tsx");
   assert.equal(COMPOSER_INPUT_SELECTOR, ".aui-composer-input");
   // A selector naming a class nothing carries would silently gate everything.
   assert.match(thread, /className="aui-composer-input /);

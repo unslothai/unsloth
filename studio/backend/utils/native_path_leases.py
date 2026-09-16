@@ -143,6 +143,19 @@ def run_without_native_path_secret(
         function_name, environment, *args = args
         for key, value in environment.items():
             os.environ[key] = value
+
+    # Before the entrypoint module below, not after: a spawned child inherits no sys.modules, and
+    # every worker here imports transformers (fast-path hooks, version activation) long before it
+    # imports unsloth. A sentinel installed after that import leaves transformers saying
+    # sentencepiece is available while importing it fails, which sends tokenizer loads into the
+    # dummy-class path and its unguarded `import sentencepiece as spm`.
+    try:
+        from utils.sentencepiece_guard import disable_sentencepiece_on_windows
+        disable_sentencepiece_on_windows()
+    except Exception:
+        pass
+
+    if isinstance(target, str):
         target = getattr(importlib.import_module(target), function_name)
     return target(*args, **kwargs)
 

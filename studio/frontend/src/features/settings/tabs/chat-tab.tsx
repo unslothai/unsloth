@@ -30,6 +30,7 @@ import { type TranslationKey, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import {
   Bookmark02Icon,
+  BookOpen01Icon,
   Download01Icon,
   FileDatabaseIcon,
   Folder01Icon,
@@ -47,6 +48,7 @@ import {
   updateCurrentDatePrompt,
 } from "../api/current-date-prompt";
 import { SettingsRow } from "../components/settings-row";
+import { ComposerSettings } from "../components/composer-settings";
 import { SettingsSection } from "../components/settings-section";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
@@ -75,6 +77,17 @@ const PLUS_MENU_SETTINGS: {
     icon: (
       <HugeiconsIcon
         icon={McpServerIcon}
+        strokeWidth={2}
+        className={PLUS_MENU_ICON_CLASS}
+      />
+    ),
+  },
+  {
+    id: "skills",
+    labelKey: "settings.chat.menu.skills",
+    icon: (
+      <HugeiconsIcon
+        icon={BookOpen01Icon}
         strokeWidth={2}
         className={PLUS_MENU_ICON_CLASS}
       />
@@ -340,6 +353,7 @@ export function ChatTab() {
         </p>
       </header>
 
+      <ComposerSettings />
       <SettingsSection title={t("settings.chat.modelSelection.title")}>
         <SettingsRow
           label={t("settings.chat.modelSelection.expandQuantizations")}

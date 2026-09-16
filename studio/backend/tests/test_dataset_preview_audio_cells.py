@@ -13,6 +13,8 @@ before it could POST /api/train/start.
 
 from __future__ import annotations
 
+import pytest
+
 from hub.services.datasets.formatting import _serialize_preview_value
 
 
@@ -43,3 +45,12 @@ def test_an_ordinary_list_column_is_untouched():
 def test_a_missing_rate_does_not_raise():
     out = _serialize_preview_value({"array": [0.0, 0.1], "sampling_rate": None})
     assert out.startswith("<audio, 2 samples")
+
+
+def test_a_numpy_array_cell_is_summarised_too():
+    # The decoder hands back a numpy array, not a list; the raw repr was landing in the table.
+    np = pytest.importorskip("numpy")
+    cell = {"path": "a.m4a", "array": np.zeros(22050, dtype = "float32"), "sampling_rate": 22050}
+    assert _serialize_preview_value({"audio": cell}) == {
+        "audio": "<audio, 22050 samples @ 22050 Hz, 1.0s>"
+    }
