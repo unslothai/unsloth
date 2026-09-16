@@ -1457,9 +1457,9 @@ class TestTheSkipGateAuditsTheArm64FilteredFile:
     def test_the_filter_lives_in_the_shared_helper(self, ips):
         helper = STACK_SRC[STACK_SRC.index("def _effective_requirements(") :]
         helper = helper[: helper.index("\ndef ", 1)]
-        assert "_windows_arm64_skip_packages(req)" in helper, (
-            "the ARM64 skip is applied somewhere the audits do not see"
-        )
+        assert (
+            "_windows_arm64_skip_packages(req)" in helper
+        ), "the ARM64 skip is applied somewhere the audits do not see"
         assert '_wheelhouse_hosts("torchcodec")' in helper
 
     def test_the_skip_list_is_judged_against_the_unfiltered_file(self, ips):
@@ -1471,6 +1471,6 @@ class TestTheSkipGateAuditsTheArm64FilteredFile:
 
     def test_pip_install_and_the_audits_share_it(self, ips):
         """Three call sites: the install, the closure record, and the on-disk skip check."""
-        assert STACK_SRC.count("_effective_requirements(req)") == 3, (
-            "a caller that filters its own way can disagree with the file that installs"
-        )
+        assert (
+            STACK_SRC.count("_effective_requirements(req)") == 3
+        ), "a caller that filters its own way can disagree with the file that installs"
