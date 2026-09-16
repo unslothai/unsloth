@@ -29,6 +29,7 @@ from utils import desktop_shell_env as dse
 # launch is byte-identical to the release before this change.
 # --------------------------------------------------------------------------
 
+
 def test_no_amd_gpu_imports_nothing_and_spawns_no_shell(monkeypatch):
     monkeypatch.setattr(dse, "host_has_amd_gpu", lambda: False)
 
@@ -43,12 +44,16 @@ def test_no_amd_gpu_imports_nothing_and_spawns_no_shell(monkeypatch):
 
 def test_amd_host_imports_the_missing_rocm_vars(monkeypatch):
     monkeypatch.setattr(dse, "host_has_amd_gpu", lambda: True)
-    monkeypatch.setattr(dse, "read_login_shell_env", lambda *_a, **_k: {
-        "HSA_OVERRIDE_GFX_VERSION": "11.0.0",
-        "ROCM_PATH": "/opt/rocm",
-        "USE_CK": "0",
-        "PATH": "/usr/bin",
-    })
+    monkeypatch.setattr(
+        dse,
+        "read_login_shell_env",
+        lambda *_a, **_k: {
+            "HSA_OVERRIDE_GFX_VERSION": "11.0.0",
+            "ROCM_PATH": "/opt/rocm",
+            "USE_CK": "0",
+            "PATH": "/usr/bin",
+        },
+    )
     environ: dict = {"PATH": "/gui/bin"}
     imported = dse.import_rocm_env_from_login_shell(environ = environ)
     assert imported == {
@@ -65,6 +70,7 @@ def test_amd_host_imports_the_missing_rocm_vars(monkeypatch):
 # --------------------------------------------------------------------------
 # Parity, not policy.
 # --------------------------------------------------------------------------
+
 
 def test_a_variable_already_set_is_never_overwritten():
     shell = {"HSA_OVERRIDE_GFX_VERSION": "11.0.0", "ROCM_PATH": "/opt/rocm"}
@@ -99,7 +105,8 @@ def test_the_allowlist_carries_no_other_vendor():
     # those stacks behave differently from the release before it.
     forbidden = ("CUDA", "NVIDIA", "NCCL", "ONEAPI", "SYCL", "LEVEL_ZERO", "MLX", "METAL")
     offenders = [
-        name for name in dse.ROCM_SHELL_ENV_ALLOWLIST
+        name
+        for name in dse.ROCM_SHELL_ENV_ALLOWLIST
         if any(token in name.upper() for token in forbidden)
     ]
     assert offenders == []
@@ -107,8 +114,7 @@ def test_the_allowlist_carries_no_other_vendor():
 
 def test_importing_twice_is_a_no_op_the_second_time(monkeypatch):
     monkeypatch.setattr(dse, "host_has_amd_gpu", lambda: True)
-    monkeypatch.setattr(dse, "read_login_shell_env",
-                        lambda *_a, **_k: {"ROCM_PATH": "/opt/rocm"})
+    monkeypatch.setattr(dse, "read_login_shell_env", lambda *_a, **_k: {"ROCM_PATH": "/opt/rocm"})
     environ: dict = {}
     assert dse.import_rocm_env_from_login_shell(environ = environ) == {"ROCM_PATH": "/opt/rocm"}
     assert dse.import_rocm_env_from_login_shell(environ = environ) == {}
@@ -117,6 +123,7 @@ def test_importing_twice_is_a_no_op_the_second_time(monkeypatch):
 # --------------------------------------------------------------------------
 # Failing open. A slow or broken login shell must not fail a launch.
 # --------------------------------------------------------------------------
+
 
 def test_the_opt_out_short_circuits_before_anything_is_read(monkeypatch):
     def _explode(*_a, **_k):
@@ -159,10 +166,7 @@ def test_a_real_login_shell_round_trips_a_value(tmp_path, monkeypatch):
     # A stand-in for the user's login shell: accepts -ilc and sources an rc file
     # first, which is the behaviour the real `-i` flag provides.
     shim.write_text(
-        '#!/bin/sh\n'
-        f'. "{rc}"\n'
-        'shift 1\n'
-        'exec /bin/sh -c "$1"\n',
+        "#!/bin/sh\n" f'. "{rc}"\n' "shift 1\n" 'exec /bin/sh -c "$1"\n',
         encoding = "utf-8",
     )
     shim.chmod(0o755)
@@ -173,8 +177,9 @@ def test_a_real_login_shell_round_trips_a_value(tmp_path, monkeypatch):
     assert env.get("UNSLOTH_TEST_MULTILINE") == "one\ntwo"
 
 
-@pytest.mark.skipif(not sys.platform.startswith("linux"),
-                    reason = "the KFD topology only exists on Linux")
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"), reason = "the KFD topology only exists on Linux"
+)
 def test_the_amd_probe_answers_from_the_kernel_without_torch():
     # No assertion about the answer: this box may or may not have an AMD GPU.
     # What must hold is that asking is cheap, total, and does not import torch.

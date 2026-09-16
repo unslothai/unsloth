@@ -88,7 +88,7 @@ ROCM_SHELL_ENV_ALLOWLIST: tuple[str, ...] = (
 )
 
 _DELIMITER = "__UNSLOTH_SHELL_ENV__"
-_SHELL_COMMAND = f'printf %s {_DELIMITER}; env -0; printf %s {_DELIMITER}'
+_SHELL_COMMAND = f"printf %s {_DELIMITER}; env -0; printf %s {_DELIMITER}"
 
 
 def host_has_amd_gpu() -> bool:
@@ -173,7 +173,11 @@ def read_login_shell_env(shell: "str | None" = None, timeout: float = 15.0) -> d
     return out
 
 
-def select_missing_vars(environ, shell_env, allowlist = ROCM_SHELL_ENV_ALLOWLIST) -> dict:
+def select_missing_vars(
+    environ,
+    shell_env,
+    allowlist = ROCM_SHELL_ENV_ALLOWLIST,
+) -> dict:
     """The allowlisted names the shell has and this process does not.
 
     ``in environ`` and not truthiness: a variable deliberately exported empty is
@@ -190,7 +194,11 @@ def select_missing_vars(environ, shell_env, allowlist = ROCM_SHELL_ENV_ALLOWLIST
     return out
 
 
-def import_rocm_env_from_login_shell(environ = None, shell = None, timeout: float = 15.0) -> dict:
+def import_rocm_env_from_login_shell(
+    environ = None,
+    shell = None,
+    timeout: float = 15.0,
+) -> dict:
     """Fill in the ROCm variables a desktop launch dropped. Returns what it set.
 
     Safe to call more than once: the second call finds every name already

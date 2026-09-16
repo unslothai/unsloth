@@ -37,7 +37,6 @@ if _backend_dir not in sys.path:
     sys.path.insert(0, _backend_dir)
 try:
     from utils.desktop_shell_env import import_rocm_env_from_login_shell as _import_rocm_env
-
     _import_rocm_env()
 except Exception:
     pass
@@ -671,11 +670,7 @@ def banner_autofill_available(app_state, environ) -> bool:
 
 
 def bootstrap_banner_lines(
-    username: str,
-    bootstrap_path,
-    password: Optional[str],
-    *,
-    autofill_available: bool,
+    username: str, bootstrap_path, password: Optional[str], *, autofill_available: bool
 ) -> "list[str]":
     """The first-boot banner for a freshly created admin account.
 
@@ -838,9 +833,7 @@ async def lifespan(app: FastAPI):
     # to serve with the default credential: never capture the bootstrap password into app.state.
     _suppress_bootstrap = getattr(app.state, "suppress_bootstrap_injection", False)
     _created = storage.ensure_default_admin()
-    app.state.bootstrap_password = (
-        None if _suppress_bootstrap else storage.get_bootstrap_password()
-    )
+    app.state.bootstrap_password = None if _suppress_bootstrap else storage.get_bootstrap_password()
     # A tunnel launch runs the pre-bind gate first and that gate seeds the account, so
     # _created is False there and the whole banner would be skipped on exactly the launch
     # that needs it. requires_password_change: the gate may also have taken a new password
