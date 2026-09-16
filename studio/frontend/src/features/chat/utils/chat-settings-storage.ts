@@ -26,6 +26,8 @@ import { MAX_SAMPLING_SEED } from "../types/runtime";
 import {
   sanitizeCompactionHeadroomRatio,
   sanitizeContextPolicy,
+  sanitizeSelfNoteEnabled,
+  sanitizeSelfNoteReserveTokens,
 } from "./auto-compaction";
 import {
   assignSanitizedMirroredSettings,
@@ -307,6 +309,10 @@ export function sanitizeChatSettings(value: unknown): PersistedChatSettings {
   const compactionHeadroomRatio = sanitizeCompactionHeadroomRatio(
     value.compactionHeadroomRatio,
   );
+  const selfNoteEnabled = sanitizeSelfNoteEnabled(value.selfNoteEnabled);
+  const selfNoteReserveTokens = sanitizeSelfNoteReserveTokens(
+    value.selfNoteReserveTokens,
+  );
   const maxToolCallsPerMessage = sanitizeInt(value.maxToolCallsPerMessage, 1);
   const toolCallTimeout = sanitizeInt(value.toolCallTimeout, 1);
 
@@ -344,6 +350,12 @@ export function sanitizeChatSettings(value: unknown): PersistedChatSettings {
   if (contextPolicy) settings.contextPolicy = contextPolicy;
   if (compactionHeadroomRatio !== undefined) {
     settings.compactionHeadroomRatio = compactionHeadroomRatio;
+  }
+  if (selfNoteEnabled !== undefined) {
+    settings.selfNoteEnabled = selfNoteEnabled;
+  }
+  if (selfNoteReserveTokens !== undefined) {
+    settings.selfNoteReserveTokens = selfNoteReserveTokens;
   }
   if (maxToolCallsPerMessage !== undefined) {
     settings.maxToolCallsPerMessage = maxToolCallsPerMessage;
@@ -412,6 +424,8 @@ export function isEmptyChatSettings(settings: PersistedChatSettings): boolean {
     settings.autoCompactEnabled === undefined &&
     settings.contextPolicy === undefined &&
     settings.compactionHeadroomRatio === undefined &&
+    settings.selfNoteEnabled === undefined &&
+    settings.selfNoteReserveTokens === undefined &&
     settings.maxToolCallsPerMessage === undefined &&
     settings.toolCallTimeout === undefined &&
     hasNoMirroredSettings(settings)

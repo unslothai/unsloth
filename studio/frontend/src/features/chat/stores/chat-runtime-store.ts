@@ -82,6 +82,8 @@ import {
   DEFAULT_AUTO_COMPACT_ENABLED,
   DEFAULT_COMPACTION_HEADROOM_RATIO,
   DEFAULT_CONTEXT_POLICY,
+  DEFAULT_SELF_NOTE_ENABLED,
+  DEFAULT_SELF_NOTE_RESERVE_TOKENS,
   type LocalContextPolicy,
 } from "../utils/auto-compaction";
 import { preserveThinkingDefaultFromLoad } from "../lib/resolve-preserve-thinking-default";
@@ -2313,6 +2315,9 @@ type ChatRuntimeStore = {
   autoCompactEnabled: boolean;
   contextPolicy: LocalContextPolicy;
   compactionHeadroomRatio: number;
+  /** The model's self-note across a compaction. Off by default, like the server. */
+  selfNoteEnabled: boolean;
+  selfNoteReserveTokens: number;
   maxToolCallsPerMessage: number;
   toolCallTimeout: number;
   kvCacheDtype: string | null;
@@ -2602,6 +2607,8 @@ type ChatRuntimeStore = {
   setAutoCompactEnabled: (enabled: boolean) => void;
   setContextPolicy: (policy: LocalContextPolicy) => void;
   setCompactionHeadroomRatio: (ratio: number) => void;
+  setSelfNoteEnabled: (enabled: boolean) => void;
+  setSelfNoteReserveTokens: (tokens: number) => void;
   setMaxToolCallsPerMessage: (value: number) => void;
   setToolCallTimeout: (value: number) => void;
   setGpuMemoryMode: (mode: "auto" | "manual") => void;
@@ -2649,6 +2656,8 @@ type ScalarSettingKey =
   | "autoCompactEnabled"
   | "contextPolicy"
   | "compactionHeadroomRatio"
+  | "selfNoteEnabled"
+  | "selfNoteReserveTokens"
   | "maxToolCallsPerMessage"
   | "toolCallTimeout"
   | "reasoningEnabled"
@@ -2702,6 +2711,8 @@ const SCALAR_SETTING_KEYS = [
   "autoCompactEnabled",
   "contextPolicy",
   "compactionHeadroomRatio",
+  "selfNoteEnabled",
+  "selfNoteReserveTokens",
   "maxToolCallsPerMessage",
   "toolCallTimeout",
   "reasoningEnabled",
@@ -4004,6 +4015,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   autoCompactEnabled: DEFAULT_AUTO_COMPACT_ENABLED,
   contextPolicy: DEFAULT_CONTEXT_POLICY,
   compactionHeadroomRatio: DEFAULT_COMPACTION_HEADROOM_RATIO,
+  selfNoteEnabled: DEFAULT_SELF_NOTE_ENABLED,
+  selfNoteReserveTokens: DEFAULT_SELF_NOTE_RESERVE_TOKENS,
   maxToolCallsPerMessage: 25,
   toolCallTimeout: 5,
   kvCacheDtype: null,
@@ -5564,6 +5577,30 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       );
       return {
         compactionHeadroomRatio,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
+    }),
+  setSelfNoteEnabled: (selfNoteEnabled) =>
+    set((state) => {
+      setScalarSettingVersion(
+        "selfNoteEnabled",
+        selfNoteEnabled,
+        state.selfNoteEnabled,
+      );
+      return {
+        selfNoteEnabled,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
+    }),
+  setSelfNoteReserveTokens: (selfNoteReserveTokens) =>
+    set((state) => {
+      setScalarSettingVersion(
+        "selfNoteReserveTokens",
+        selfNoteReserveTokens,
+        state.selfNoteReserveTokens,
+      );
+      return {
+        selfNoteReserveTokens,
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
     }),

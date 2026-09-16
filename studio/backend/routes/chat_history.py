@@ -523,6 +523,12 @@ class ChatSettingsPayload(BaseModel):
     autoCompactEnabled: Optional[bool] = None
     contextPolicy: Optional[Literal["inherit", "checkpoint", "rolling"]] = None
     compactionHeadroomRatio: Optional[float] = Field(default = None, ge = 0.0, le = 0.9)
+    # The model's self-note across a compaction. Off by default: it changes what lands in
+    # the system turn, so an existing install must opt in rather than inherit it.
+    selfNoteEnabled: Optional[bool] = None
+    # How much of the carried-forward budget the note may take. Floored well above zero
+    # because a note too small to hold a sentence is worse than none.
+    selfNoteReserveTokens: Optional[int] = Field(default = None, ge = 64, le = 4096)
 
     @field_validator("researchModelTimeoutSeconds", mode = "before")
     @classmethod

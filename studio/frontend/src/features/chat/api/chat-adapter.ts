@@ -1186,6 +1186,53 @@ function attachAssistantThoughtSignature(
   }
 }
 
+/** The model's self-authored note, if this assistant message carries one (see the
+ *  `self_note` tool-event branch above, which writes it as a content part so it survives
+ *  a reload the same way any other persisted part does). Newest part wins, mirroring the
+ *  backend's `latest_self_note` "newest wins" contract. */
+function collectAssistantSelfNote(message: RunMessage): string | undefined {
+  if (!Array.isArray(message.content)) return undefined;
+  for (let i = message.content.length - 1; i >= 0; i -= 1) {
+    const part = message.content[i] as { type?: string } & Record<
+      string,
+      unknown
+    >;
+    if (part?.type !== "self_note") continue;
+    const note = part.content;
+    if (typeof note === "string" && note.trim()) return note;
+  }
+  return undefined;
+}
+
+/** Re-sends the note on the outbound request so `latest_self_note` (checkpoint.py) can read
+ *  it back: the note rides the assistant message's `content` array as a `self_note` part,
+ *  the same shape the backend attaches on the way out. `OpenAIMessageContentPart` does not
+ *  list `self_note` (it is Unsloth's own extension, not part of the OpenAI schema the rest
+ *  of that union models), so the array is built loosely here rather than widening the
+ *  shared type for one field. A string/null content is promoted to an array so the part
+ *  is not silently dropped -- `latest_self_note` only looks at list-shaped `content`. */
+function attachAssistantSelfNotePart(
+  messages: SerializedMessage[],
+  note: string | undefined,
+): void {
+  if (!note) return;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (message.role !== "assistant") continue;
+    const existing = message.content;
+    const baseParts: Array<Record<string, unknown>> = Array.isArray(existing)
+      ? (existing as Array<Record<string, unknown>>)
+      : typeof existing === "string" && existing.length > 0
+        ? [{ type: "text", text: existing }]
+        : [];
+    message.content = [
+      ...baseParts,
+      { type: "self_note", content: note },
+    ] as unknown as OpenAIMessageContent;
+    return;
+  }
+}
+
 function serializeAssistantReplayMessages(
   message: RunMessage,
   includeReasoningContent = false,
@@ -1331,6 +1378,7 @@ function serializeAssistantReplayMessages(
     messages,
     collectAssistantTextThoughtSignature(message),
   );
+  attachAssistantSelfNotePart(messages, collectAssistantSelfNote(message));
 
   const finalAssistant = [...messages]
     .reverse()
@@ -5644,6 +5692,12 @@ export function createOpenAIStreamAdapter(
         title: string;
         metadata?: { description: string };
       }> = [];
+      // The model's self-authored note (self_note tool event), spliced into the final content
+      // so it survives compaction; re-sent on the next request by
+      // attachAssistantSelfNotePart / collectAssistantSelfNote (above, near
+      // attachAssistantThoughtSignature). Newest write wins, matching `latest_self_note`'s
+      // own "newest wins" contract on the backend.
+      let selfNotePart: { type: "self_note"; content: string } | undefined;
       // Latched on the `anthropic_refusal` tool event and stamped onto final metadata as
       // `custom.anthropicRefusal` to drive the history prune.
       let anthropicRefusalSeen = false;
@@ -6182,6 +6236,8 @@ export function createOpenAIStreamAdapter(
               autoCompactEnabled: runtime.autoCompactEnabled,
               contextPolicy: runtime.contextPolicy,
               compactionHeadroomRatio: runtime.compactionHeadroomRatio,
+              selfNoteEnabled: runtime.selfNoteEnabled,
+              selfNoteReserveTokens: runtime.selfNoteReserveTokens,
             }),
             temperature: params.temperature,
             top_p: params.topP,
@@ -6721,6 +6777,19 @@ export function createOpenAIStreamAdapter(
                         };
                       }
                     }
+                  }
+                  continue;
+                }
+                if (toolEvent.type === "self_note") {
+                  // State only, like container_ready/context_window_exceeded above: no tool
+                  // card renders, so this is handled (and `continue`s) before the
+                  // unconditional closeReasoningContent() below force-closes an open
+                  // reasoning block for events that open one. Latched rather than yielded
+                  // immediately; it is spliced into the final content alongside
+                  // documentCitationParts so a mid-stream note never renders as visible text.
+                  const note = toolEvent.content;
+                  if (typeof note === "string" && note.trim()) {
+                    selfNotePart = { type: "self_note", content: note };
                   }
                   continue;
                 }
@@ -7852,6 +7921,15 @@ export function createOpenAIStreamAdapter(
             ...buildAssistantContent(mergeContinuation(cumulativeText, { final: true })),
             ...sourceParts,
             ...documentCitationParts,
+            // `self_note` is Unsloth's own extension, not one of assistant-ui's
+            // `ThreadAssistantMessagePart` variants, so the literal widens the yielded
+            // type and fails the run-result assignment. Cast here rather than widening
+            // the union: the part is inert for the renderer -- nothing matches on it --
+            // and only has to survive the round trip back to the backend, where
+            // `latest_self_note` reads it off the re-sent assistant message.
+            ...(selfNotePart
+              ? [selfNotePart as unknown as (typeof sourceParts)[number]]
+              : []),
           ],
           metadata: {
             timing: finalTiming,
