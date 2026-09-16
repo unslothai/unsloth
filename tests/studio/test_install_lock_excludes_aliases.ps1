@@ -369,6 +369,50 @@ try {
     Check "control: an env-mode root holding another file is NOT claimed" (
         -not (Test-Path -LiteralPath (Join-Path $occupiedRoot ".unsloth-studio-owned")))
     if ($occupiedLock) { Exit-StudioInstallLock -Lock $occupiedLock }
+
+    # The owner marker must not follow a link either.
+    #
+    # The lock is now the first thing that can create the root, so on a root whose inherited
+    # permissions let another user write to it, that user can plant a `.unsloth-studio-owned` link
+    # between the directory appearing and the marker being written. A bare WriteAllText follows it
+    # and truncates the target under the installer's rights. Same hazard the lock file itself is
+    # guarded against a few checks above, so it gets the same treatment rather than a second one.
+    $StudioRedirectMode = 'default'
+    $markerVictim = Join-Path $tmp "marker-victim.txt"
+    [System.IO.File]::WriteAllText($markerVictim, "keep me")
+    $markerRoot = Join-Path $tmp "marker-root"
+    New-Item -ItemType Directory -Force -Path $markerRoot | Out-Null
+    $plantedMarker = Join-Path $markerRoot ".unsloth-studio-owned"
+    $madeLink = $false
+    try {
+        New-Item -ItemType SymbolicLink -Path $plantedMarker -Target $markerVictim -ErrorAction Stop | Out-Null
+        $madeLink = $true
+    } catch {}
+    if (-not $madeLink) {
+        # Windows needs Developer Mode or elevation for this. Say so rather than reporting a pass.
+        Write-Host "  SKIP  cannot create a symbolic link on this host" -ForegroundColor Yellow
+    } else {
+        Check "the planted marker link really reaches the victim (bites)" (
+            (Get-Content -Raw -LiteralPath $plantedMarker) -eq "keep me")
+        Write-StudioRootOwnerMarker -Root $markerRoot
+        Check "the planted marker link's target is not truncated" (
+            (Get-Content -Raw -LiteralPath $markerVictim) -eq "keep me")
+        $written = Get-Item -LiteralPath $plantedMarker -Force -ErrorAction SilentlyContinue
+        Check "the marker is a real file, not the planted link" (
+            $null -ne $written -and $written.Length -eq 0 -and $null -eq $written.Target)
+    }
+
+    # And the lock's own fresh-root branch has to go THROUGH that helper. A second copy of the
+    # write inline would pass every check above while carrying the hazard, because the checks
+    # drive the helper directly. Read the branch instead of trusting it.
+    # @() around the call, not just an index: a single-element return unrolls to a bare string,
+    # and [0] on a string is its first CHARACTER, which matches neither pattern and passes the
+    # negative check for free. Observed here before it was fixed.
+    $lockFn = @(Get-HelperSources $installPs1 @("Enter-StudioInstallLock"))[0]
+    Check "the lock claims a fresh root through Write-StudioRootOwnerMarker" (
+        $lockFn -match 'Write-StudioRootOwnerMarker -Root \$Path')
+    Check "and does not write the marker itself" (
+        $lockFn -notmatch 'WriteAllText\([^)]*\.unsloth-studio-owned')
 } finally {
     Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }

@@ -5333,10 +5333,20 @@ exit 0
             #
             # Only when this call created the directory. A UNSLOTH_STUDIO_HOME pointed at a
             # directory the user already had must never be claimed, or uninstall would delete it.
+            #
+            # Through Write-StudioRootOwnerMarker rather than a WriteAllText here. The paragraph
+            # above says File.Open follows a planted link, and a bare WriteAllText follows one
+            # just the same: a root whose inherited permissions let another user write to it can
+            # have a `.unsloth-studio-owned` link planted between the directory being created and
+            # this line, and the write would truncate its target under the installer's rights.
+            # The helper already removes the entry and confirms its absence before writing, with
+            # Get-Item -Force so a dangling link is not mistaken for nothing there. Reusing it is
+            # the point; a second copy of that sequence is a second thing to get wrong.
+            #
+            # Its occupancy test does not refuse this root: it filters the install lock file by
+            # name, and the lock file is the only entry a root created by this call can hold.
             if (-not $existedBefore) {
-                try {
-                    [System.IO.File]::WriteAllText((Join-Path $Path ".unsloth-studio-owned"), "")
-                } catch {}
+                Write-StudioRootOwnerMarker -Root $Path
             }
             return [pscustomobject]@{ Mutex = $mutex; Stream = $stream; Path = $lockPath }
         } catch {
