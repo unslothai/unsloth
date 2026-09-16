@@ -109,7 +109,7 @@ def test_pyarrow_keeps_its_own_pypi_first_path(source):
 # the whole suite green. It is the only source for the pyarrow that gates the native path, so a
 # typo sends every Windows on ARM host back to the emulated x64 stack, and it is fetched over
 # the network, so a wrong host is a wrong download.
-DEFAULT_WHEELHOUSE = "https://huggingface.co/danielhanchen/unsloth-blackwell-docker/resolve/main/windows-arm64-wheels"
+DEFAULT_WHEELHOUSE = "https://github.com/unslothai/unsloth/releases/download/Windows-ARM64"
 
 PWSH = shutil.which("pwsh")
 requires_pwsh = pytest.mark.skipif(PWSH is None, reason = "pwsh not available")
@@ -126,13 +126,28 @@ def test_the_default_wheelhouse_url_is_exactly_this(source):
     assert DEFAULT_WHEELHOUSE in _wheelhouse_assignment(source)
 
 
-def test_the_default_is_an_https_resolve_url_on_hugging_face(source):
-    """`resolve/main` serves the file; a plain repo URL serves an HTML page, which the
-    staging code would happily save as a .whl. The path may continue past `resolve/main`:
-    the wheelhouse is a folder of a repo we own."""
-    assert DEFAULT_WHEELHOUSE.startswith("https://huggingface.co/danielhanchen/")
-    assert "/resolve/main" in DEFAULT_WHEELHOUSE
+def test_the_default_is_a_release_download_url_on_this_repo(source):
+    """`releases/download/<tag>` serves the asset bytes; a `releases/tag/<tag>` URL serves an
+    HTML page, which the staging code would happily save as a .whl. It must point at this
+    repository: the wheels are built, signed and published by a workflow that lives here, so
+    anywhere else is a host whose contents nothing in this tree controls."""
+    assert DEFAULT_WHEELHOUSE.startswith("https://github.com/unslothai/unsloth/releases/download/")
+    assert "/releases/tag/" not in DEFAULT_WHEELHOUSE, "that URL is the HTML page, not the asset"
     assert not DEFAULT_WHEELHOUSE.endswith("/"), "Join-UrlPath adds the slash"
+
+
+def test_the_release_tag_is_the_one_the_workflow_publishes(source):
+    """Two places name the tag and nothing joins them: the workflow that uploads the assets
+    and the installer that downloads them. A rename on one side is a 404 on the other, and
+    the installer reads that as 'no wheelhouse' and falls back to the emulated x64 stack."""
+    workflow = (REPO_ROOT / ".github" / "workflows" / "woa-wheelhouse.yml").read_text(
+        encoding = "utf-8"
+    )
+    match = re.search(r'release_tag:\s*\n\s*description:[^\n]*\n\s*default:\s*"([^"]+)"', workflow)
+    assert match, "woa-wheelhouse.yml no longer declares a default release_tag"
+    assert DEFAULT_WHEELHOUSE.endswith(
+        "/" + match.group(1)
+    ), f"the installer points at {DEFAULT_WHEELHOUSE}, the workflow publishes {match.group(1)}"
 
 
 @requires_pwsh
