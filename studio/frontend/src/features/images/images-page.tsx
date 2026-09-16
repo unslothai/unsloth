@@ -166,7 +166,7 @@ import {
   shouldReportGenerateError,
 } from "./lib/generation-stop";
 import { useNavigate, useSearch } from "@tanstack/react-router";
-import { useStagedDownload } from "@/features/hub/download-manager";
+import { useStagedDownload, type StagedDownloadEntry } from "@/features/hub/download-manager";
 import { DiffusionTrainPanel } from "./train/diffusion-train-panel";
 import {
   TrainBaseSelector,
@@ -682,7 +682,7 @@ function AdvancedSelect({
           {badge}
         </span>
         <Select value={value} onValueChange={onValueChange}>
-          <SelectTrigger className="h-8 w-[160px] text-xs">
+          <SelectTrigger aria-label={label} className="h-8 w-[160px] text-xs">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -1145,6 +1145,7 @@ type LoadAdvanced = Pick<
   | "cpu_offload"
   | "speed_mode"
   | "transformer_quant"
+  | "text_encoder_quant"
   | "attention_backend"
   | "memory_mode"
   | "transformer_cache"
@@ -1265,9 +1266,13 @@ export function ImagesPage({
   );
   // Advanced (load-time) options; "auto"/"off"/"none" map to the backend defaults. Changing one
   // while loaded shows "Reapply".
+  const [modelSelectionAction, setModelSelectionAction] = useState<"load" | "download">("load");
   const [speedMode, setSpeedMode] = useState<"auto" | "off" | "eager" | "default" | "max">("auto");
   const [transformerQuant, setTransformerQuant] = useState<
     "none" | "auto" | "int8" | "fp8" | "nvfp4" | "mxfp8"
+  >("auto");
+  const [textEncoderQuant, setTextEncoderQuant] = useState<
+    "auto" | NonNullable<DiffusionLoadRequest["text_encoder_quant"]>
   >("auto");
   const [attentionBackend, setAttentionBackend] = useState<"auto" | "native" | "cudnn" | "flash3" | "sage">(
     "auto",
@@ -1409,7 +1414,8 @@ export function ImagesPage({
   const claimImageRecipe = imagePresets.claimRecipe;
   const imageFormClaimId = imagePresets.formClaimId;
   const applyImageModelDefaults = useCallback(
-    (repoId: string) => {
+    (repoId: string, forceLoad = false) => {
+      if (modelSelectionAction === "download" && !forceLoad) return;
       const revert = quantRevert.current;
       if (revert && !revert.releaseRecipeClaim) {
         const claim = claimImageRecipe();
@@ -1429,7 +1435,7 @@ export function ImagesPage({
         revert.appliedGuidance = recommended.guidance;
       }
     },
-    [claimImageRecipe, imageFormClaimId],
+    [claimImageRecipe, imageFormClaimId, modelSelectionAction],
   );
 
   const dismissLoadToast = useCallback(() => {
@@ -1459,8 +1465,10 @@ export function ImagesPage({
   // Client-side state that only means anything while a model is resident: the replacement
   // load's tracking and the Reapply target. Shared with the indicator eject.
   const dropResidentState = useCallback(() => {
-    // Cancel, not release: a resolving pick or a staged download would load back what was just
-    // ejected. Here rather than in handleUnload, so the loaded-models card is covered too.
+    // Cancel picks that could reload the ejected model. Download-only work carries no pick token
+    // at all now, so it keeps running without needing an exception here -- the exception it used to
+    // need was inert anyway, since the marker was cleared when the PLAN resolved rather than when
+    // the download finished.
     pickGuard.cancel();
     // Everything in flight is now stale. Clearing the timer stops the NEXT poll tick but not a
     // request awaiting its response, and those still apply terminal state; the counter is what
@@ -2326,6 +2334,13 @@ export function ImagesPage({
       ) ?? null,
     );
     if (quant) setTransformerQuant(quant);
+    const encoder = resolvedSelectValue(record.text_encoder_quant, (v) =>
+      // A declined request runs dense: "off" (or "none", older backend) is the select's Default.
+      (["auto", "fp8", "fp8_dynamic", "int8", "nvfp4"] as const).find(
+        (o) => o === v || (o === "auto" && (v === "none" || v === "off")),
+      ) ?? null,
+    );
+    if (encoder) setTextEncoderQuant(encoder);
     const memory = resolvedSelectValue(record.memory_mode, (v) =>
       (["auto", "fast", "balanced", "low_vram"] as const).find((o) => o === v) ?? null,
     );
@@ -2359,6 +2374,7 @@ export function ImagesPage({
         cpu_offload: cpuOffload,
         speed_mode: speedMode === "auto" ? undefined : speedMode,
         transformer_quant: transformerQuant === "auto" ? undefined : transformerQuant,
+        text_encoder_quant: textEncoderQuant === "auto" ? undefined : textEncoderQuant,
         attention_backend: attentionBackend === "auto" ? undefined : attentionBackend,
         memory_mode: memoryMode === "auto" ? undefined : memoryMode,
         transformer_cache: transformerCache === "auto" ? undefined : transformerCache,
@@ -2376,6 +2392,7 @@ export function ImagesPage({
       cpuOffload,
       speedMode,
       transformerQuant,
+      textEncoderQuant,
       attentionBackend,
       memoryMode,
       transformerCache,
@@ -2446,6 +2463,7 @@ export function ImagesPage({
           // its checkpoint's own precision. The control is hidden there but the state persists across
           // picks, so a stale scheme would reach a load that can only decline it.
           transformer_quant: opts.kind === "gguf" ? advanced.transformer_quant : undefined,
+          text_encoder_quant: advanced.text_encoder_quant,
           attention_backend: advanced.attention_backend,
           memory_mode: advanced.memory_mode,
           transformer_cache: advanced.transformer_cache,
@@ -2529,17 +2547,37 @@ export function ImagesPage({
     },
     [pickGuard, revertPick],
   );
+  // Each download-only selection keeps its complete plan until it finishes or is cancelled.
+  const downloadOnlyPlans = useRef<StagedDownloadEntry[][]>([]);
+  const pendingLoadEntries = useRef<StagedDownloadEntry[] | null>(null);
+  const stagedPlan = useRef<"download" | { token: number } | null>(null);
+
   const { stage } = useStagedDownload({
     scopeId: "diffusion",
     onReady: () => {
-      if (!active) {
-        stagedLoadDeferred.current = true;
+      if (stagedPlan.current === "download") {
+        finishDownloadOnlyPlan();
         return;
       }
-      const pending = pendingStagedLoad.current;
-      if (pending) runStagedLoad(pending);
+      if (pendingStagedLoad.current?.token === stagedPlan.current?.token) {
+        pendingLoadEntries.current = null;
+      }
+      stagedPlan.current = null;
+      if (startQueuedDownload()) return;
+      resumePendingLoad();
     },
     onCancelled: () => {
+      const cancelled = stagedPlan.current;
+      if (cancelled === "download") {
+        finishDownloadOnlyPlan();
+        return;
+      }
+      stagedPlan.current = null;
+      if (pendingStagedLoad.current?.token !== cancelled?.token) {
+        startQueuedDownload();
+        return;
+      }
+      pendingLoadEntries.current = null;
       // The selected model is only an intent until every dependency is ready: a cancelled companion
       // must not leave that intent behind for a late completion to load.
       pendingStagedLoad.current = null;
@@ -2551,8 +2589,53 @@ export function ImagesPage({
         quantRevert.current = null;
       }
       stagedQuantRevert.current = null;
+      startQueuedDownload();
     },
   });
+
+  /** A staged file set, as the identity two picks of the same model share. */
+  function planKey(entries: StagedDownloadEntry[]) {
+    return JSON.stringify(
+      entries.map((e) => [e.repoId, e.ggufFilename ?? "", [...e.files].sort()]).sort(),
+    );
+  }
+
+  /** The file sets already queued, including the one downloading right now (the queue head). */
+  function queuedDownloadKeys() {
+    return new Set(downloadOnlyPlans.current.map(planKey));
+  }
+
+  function startQueuedDownload() {
+    const next = downloadOnlyPlans.current[0];
+    if (!next) return false;
+    stagedPlan.current = "download";
+    stage(next);
+    return true;
+  }
+
+  function finishDownloadOnlyPlan() {
+    stagedPlan.current = null;
+    downloadOnlyPlans.current.shift();
+    if (startQueuedDownload()) return;
+    resumePendingLoad();
+  }
+
+  function resumePendingLoad() {
+    const entries = pendingLoadEntries.current;
+    const pending = pendingStagedLoad.current;
+    if (!pending || !pickGuard.isLatest(pending.token)) {
+      pendingLoadEntries.current = null;
+      return;
+    }
+    if (entries) {
+      stagedPlan.current = { token: pending.token };
+      stage(entries);
+    } else if (!active) {
+      stagedLoadDeferred.current = true;
+    } else {
+      runStagedLoad(pending);
+    }
+  }
 
   useEffect(() => {
     if (!active || !stagedLoadDeferred.current) return;
@@ -2581,6 +2664,7 @@ export function ImagesPage({
         speed_mode: advanced.speed_mode,
         // Non-GGUF loads ignore this control; the plan must describe the same request as handleLoad.
         transformer_quant: opts.kind === "gguf" ? advanced.transformer_quant : undefined,
+        text_encoder_quant: advanced.text_encoder_quant,
         memory_mode: advanced.memory_mode,
         // The backend prefetch decision reads the adapter selection too: a baked LoRA always runs the
         // dense build path, and omitting it staged too little.
@@ -2598,71 +2682,113 @@ export function ImagesPage({
       opts: { kind: "gguf" | "single_file" | "pipeline"; filename?: string },
       source: ModelSelectorChangeMeta["source"] = "hub",
       token?: number,
+      downloadSnapshot?: LoadAdvanced,
     ): Promise<boolean> => {
+      const downloadOnly = downloadSnapshot !== undefined || modelSelectionAction === "download";
       // Staging never sets `busy`, so a second pick passes the guard while this plan is in flight, and
       // plans resolve in response order rather than pick order. Bumped before the non-hub return too, so
-      // a local pick invalidates an in-flight hub plan.
-      const pick = ++pickSeq.current;
+      // a local pick invalidates an in-flight hub plan. Never for a download-only pick: it supersedes
+      // nothing, and retiring the sequence made the load it interrupted fail its own stale check below
+      // and return silently, leaving the selected model neither staged nor loaded.
+      const pick = downloadOnly ? pickSeq.current : ++pickSeq.current;
       // The previous pick's staged intent dies with it: a pick that stages nothing never calls
       // stage(), so the queue keeps the older job and its onReady loads the abandoned model.
-      pendingStagedLoad.current = null;
-      stagedLoadDeferred.current = false;
-      stagedQuantRevert.current = null;
-      const owns = () => token === undefined || pickGuard.holds(token);
-      if (!owns()) return true;
-      if (source !== "hub") return handleLoadRef.current(repoId, opts);
+      // Only load intents have an owner; a download-only pick holds no token and answers true.
+      const owns = () => token === undefined || downloadOnly || pickGuard.holds(token);
+      // Resolved downloads retain their snapshot without replacing a newer load intent. Neither does
+      // a download-only pick: it adds files to fetch, so retiring the staged load here left the model
+      // that load was waiting for fully downloaded and never loaded.
+      if (!downloadSnapshot && !downloadOnly) {
+        pendingStagedLoad.current = null;
+        pendingLoadEntries.current = null;
+        stagedLoadDeferred.current = false;
+        stagedQuantRevert.current = null;
+        if (!owns()) return true;
+      }
+      if (source !== "hub" && !downloadOnly) return handleLoadRef.current(repoId, opts);
       // ONE snapshot for the plan and the load it fires: the download runs for minutes without setting `busy`.
-      const advanced = currentLoadAdvanced(repoId);
+      const advanced = downloadSnapshot ?? currentLoadAdvanced(repoId);
       // Read before the await: a pick made while the plan resolves replaces quantRevert, and this
-      // job must not revert it.
-      const ownRevert = quantRevert.current;
+      // job must not revert it. A download-only pick claims no slot at all: it never relabels the
+      // selector, so there is nothing here it could own, and reverting what it found would restore
+      // the PREVIOUS resident under a staged load that is still coming and then leave that load
+      // nothing to commit.
+      const ownRevert = downloadSnapshot || downloadOnly ? null : quantRevert.current;
       // Read inside the try, acted on outside it: refusing from in there would fall through to the
       // load if the refusal itself threw.
       let incompatible: string | null = null;
       try {
         const plan = await requestDownloadPlan(repoId, opts, advanced);
-        // Superseded. Report started so this pick's `.then` leaves the newer label alone.
-        if (pick !== pickSeq.current || !owns()) return true;
+        // Only load intents are superseded; accepted downloads keep their own plans.
+        if (!downloadOnly && (pick !== pickSeq.current || !owns())) return true;
+        if (downloadOnly && plan.plan_failed) {
+          throw new Error("Required asset metadata is incomplete. Retry when it is available.");
+        }
         incompatible = plan.incompatible_reason ?? null;
         if (!incompatible && plan.entries.length > 0) {
-          pendingStagedLoad.current = {
-            repoId,
-            opts,
-            advanced,
-            token: token ?? pickGuard.claim(),
-          };
-          stagedQuantRevert.current = ownRevert;
-          stage(
-            plan.entries.map((e) => ({
-              repoId: e.repo_id,
-              files: e.files,
-              bytes: e.bytes,
-              ggufFilename: e.gguf_filename,
-              // The entry carrying the picked checkpoint file, so the panel can label it without guessing:
-              // filenames cannot tell the two apart, and repo identity is not enough when a checkpoint shares
-              // its repo with cached companions. The backend's answer wins, since a gated pipeline is staged
-              // from an ungated MIRROR. Nullish coalescing, not `or`: a planner answering false is still an answer.
-              checkpoint:
-                e.checkpoint ??
-                (opts.filename
-                  ? e.files.includes(opts.filename)
-                  : e.repo_id === repoId),
-            })),
-          );
+          if (!downloadOnly) {
+            pendingStagedLoad.current = {
+              repoId,
+              opts,
+              advanced,
+              token: token ?? pickGuard.claim(),
+            };
+            stagedQuantRevert.current = ownRevert;
+          }
+          const entries = plan.entries.map((e) => ({
+            repoId: e.repo_id,
+            files: e.files,
+            bytes: e.bytes,
+            ggufFilename: e.gguf_filename,
+            // Keep the planner's checkpoint marker, including explicit false for companions.
+            checkpoint:
+              e.checkpoint ??
+              (opts.filename
+                ? e.files.includes(opts.filename)
+                : e.repo_id === repoId),
+          }));
+          if (downloadOnly) {
+            // Picking the same model twice plans the same files twice. Queueing both downloaded
+            // every byte twice, and the second start could come back "busy" against the first.
+            if (queuedDownloadKeys().has(planKey(entries))) return true;
+            downloadOnlyPlans.current.push(entries);
+            // A late plan waits for the active file set, including a normal load's download.
+            if (stagedPlan.current === null) {
+              stagedPlan.current = "download";
+              stage(entries);
+            }
+          } else {
+            pendingLoadEntries.current = entries;
+            const pending = pendingStagedLoad.current;
+            if (downloadOnlyPlans.current.length === 0 && pending) {
+              stagedPlan.current = { token: pending.token };
+              stage(entries);
+            }
+          }
           return true;
         }
-      } catch {
+      } catch (error) {
+        if (downloadOnly) {
+          toast.error("Could not plan the download", {
+            description: error instanceof Error ? error.message : "Try selecting the model again.",
+          });
+          return true;
+        }
         // No plan (older backend, metadata hiccup): fall back to the load's own download.
       }
       // Re-checked: a plan that REJECTED after a newer pick would otherwise reach the fallback load.
-      if (pick !== pickSeq.current || !owns()) return true;
+      if (!downloadOnly && (pick !== pickSeq.current || !owns())) return true;
       if (incompatible) {
         toast.error(incompatible);
-        return false;
+        return downloadOnly;
+      }
+      if (downloadOnly) {
+        toast.info("No downloads were planned for this selection");
+        return true;
       }
       return handleLoadRef.current(repoId, opts, advanced);
     },
-    [stage, currentLoadAdvanced, requestDownloadPlan],
+    [stage, currentLoadAdvanced, requestDownloadPlan, modelSelectionAction, pickGuard, revertPick],
   );
 
   const resolveDownloadFootprint = useCallback(
@@ -2684,6 +2810,14 @@ export function ImagesPage({
     [currentLoadAdvanced, requestDownloadPlan, pickGuard, stage],
   );
 
+  const beginPick = useCallback(() => {
+    pickSeq.current += 1;
+    pendingStagedLoad.current = null;
+    pendingLoadEntries.current = null;
+    stagedLoadDeferred.current = false;
+    stagedQuantRevert.current = null;
+  }, []);
+
   // A GGUF pick can arrive with only a repo id. The backend rejects a gguf load with no filename
   // and a pipeline load of a GGUF repo, so name the file from the listing first.
   const loadGgufRepoPick = useCallback(
@@ -2693,9 +2827,15 @@ export function ImagesPage({
       source: ModelSelectorChangeMeta["source"] = "hub",
       localPath?: string | null,
     ): Promise<boolean> => {
-      // Claimed here so every entry point is covered; the next pick's claim makes this one inert.
-      const token = pickGuard.claim();
-      const isCurrent = () => isMounted.current && pickGuard.holds(token);
+      // Normal loads belong to the latest selection. A download-only pick claims nothing and
+      // retires nothing: it fetches files, and a staged load already in flight still owns the page.
+      const downloadOnly = modelSelectionAction === "download";
+      const token = downloadOnly ? 0 : pickGuard.claim();
+      const downloadSnapshot = downloadOnly ? currentLoadAdvanced(repoId) : undefined;
+      const isCurrent = () => isMounted.current &&
+        (downloadOnly || pickGuard.holds(token));
+      // onResolved skips the label for a download-only pick, so this snapshot is never installed
+      // for one; taking the slot over would strand a staged load's own baseline in it.
       const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
       return runGgufRepoPick({
         isCurrent,
@@ -2707,24 +2847,29 @@ export function ImagesPage({
           }),
         // Still ambiguous (several quants, or the listing failed): only the expander can say which.
         onAmbiguous: () =>
-          toast.error("Pick a quantization for this model to load it"),
+          toast.error(downloadOnly
+            ? "Pick a quantization for this model to download it"
+            : "Pick a quantization for this model to load it"),
         // Optimistic label, reverted if the load never starts, like the curated GGUF branch below.
         onResolved: (filename) => {
+          if (downloadOnly) return;
           quantRevert.current = revert;
           setQuant(quantHint ?? filename);
           applyImageModelDefaults(repoId);
         },
         onNotStarted: () => {
-          if (quantRevert.current === revert) {
+          // Nothing was applied for a download-only pick, so there is nothing to hand back, and
+          // what sits in the slot is the staged load's own baseline.
+          if (!downloadOnly && quantRevert.current === revert) {
             revertPick(revert);
             quantRevert.current = null;
           }
         },
         load: (filename) =>
-          loadOrStage(repoId, { kind: "gguf", filename }, source, token),
+          loadOrStage(repoId, { kind: "gguf", filename }, source, token, downloadSnapshot),
       });
     },
-    [applyImageModelDefaults, loadOrStage, pickGuard, quant, revertPick],
+    [applyImageModelDefaults, currentLoadAdvanced, loadOrStage, modelSelectionAction, pickGuard, quant, revertPick],
   );
 
   // A hidden page owns nothing: both stay mounted, so a resolution started here must not load after the user switched.
@@ -2757,8 +2902,11 @@ export function ImagesPage({
     const key = `${wanted}|${routeSearch?.quant ?? ""}|${routeSearch?.ggufQuant ?? ""}`;
     if (handledRouteModel.current === key) return;
     handledRouteModel.current = key;
-    // This arrival owns the page like a direct pick, so a download staged by an earlier one cannot land on top.
-    const token = pickGuard.claim();
+    // This arrival owns the page like a direct pick, so a download staged by an earlier one cannot
+    // land on top -- unless it is a Download only arrival, which owns nothing and must leave a load
+    // already staging with its claim, or resumePendingLoad drops that load once its files arrive.
+    const downloadOnlyPick = modelSelectionAction === "download";
+    const token = downloadOnlyPick ? undefined : pickGuard.claim();
     void navigateSelf({ to: "/images", search: {}, replace: true });
     // A label means a GGUF repo whatever the catalog says, and is not loadable, so resolve it
     // rather than routing it as a filename.
@@ -2781,13 +2929,18 @@ export function ImagesPage({
       return;
     }
     // Match every direct picker branch: the routed intent owns both the visible build label and
-    // the Default recipe, and a load that never becomes resident rolls both back.
-    const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
-    quantRevert.current = revert;
-    setQuant(pick.opts.kind === "pipeline" ? null : (pick.opts.filename ?? null));
-    applyImageModelDefaults(wanted);
+    // the Default recipe, and a load that never becomes resident rolls both back. A Download only
+    // arrival owns neither, and quantRevert is one slot a staged load may already hold.
+    const revert: PickRevert | null = downloadOnlyPick
+      ? null
+      : (quantRevert.current ?? { prev: quant, steps, guidance });
+    if (revert) {
+      quantRevert.current = revert;
+      setQuant(pick.opts.kind === "pipeline" ? null : (pick.opts.filename ?? null));
+      applyImageModelDefaults(wanted);
+    }
     void loadOrStage(pick.repoId, pick.opts, "hub", token).then((started) => {
-      if (!started && pickGuard.holds(token) && quantRevert.current === revert) {
+      if (!started && revert && token !== undefined && pickGuard.holds(token) && quantRevert.current === revert) {
         revertPick(revert);
         quantRevert.current = null;
       }
@@ -2801,6 +2954,7 @@ export function ImagesPage({
     routeSearch?.ggufQuant,
     loadOrStage,
     loadGgufRepoPick,
+    modelSelectionAction,
     navigateSelf,
     pickGuard,
     quant,
@@ -2824,39 +2978,47 @@ export function ImagesPage({
     }
   }, [revertPick]);
 
-  const beginPick = useCallback(() => {
-    pickSeq.current += 1;
-    pendingStagedLoad.current = null;
-    stagedLoadDeferred.current = false;
-    stagedQuantRevert.current = null;
-  }, []);
-
   // The chat picker emits (modelId, quant + filename) for a GGUF, or just (modelId) for a curated safetensors pick.
   const handleModelSelect = useCallback(
     (id: string, meta: ModelSelectorChangeMeta) => {
-      // Ignore picks while a load/generation/unload is in flight: the backend rejects a second load with a 409.
-      if (busy !== null) return;
-      beginPick();
+      // A Download only selection fetches files; it does not take over the page. Retiring the staged
+      // intent and claiming the page for it stranded a load that was already downloading: that model
+      // finished downloading and then never loaded, with no toast and nothing to retry from.
+      const downloadOnlyPick = modelSelectionAction === "download";
+      // Ignore picks while a load/generation/unload is in flight: the backend rejects a second load
+      // with a 409. A download-only pick submits no load, so that cannot happen, and the selector
+      // stays interactive during a generation: refusing it there was a silent dead click.
+      if (busy !== null && !downloadOnlyPick) return;
+      if (!downloadOnlyPick) beginPick();
       // This pick owns the page now, so one still awaiting a listing or a plan drops out. Before any
       // branch, since staging never sets `busy`.
-      const token = pickGuard.claim();
+      const token = downloadOnlyPick ? undefined : pickGuard.claim();
+      // A download-only pick holds no token, and an absent token owns nothing to hand back.
+      const stillOwnsPick = (): boolean => token !== undefined && pickGuard.holds(token);
       // Curated non-GGUF model: load as a full pipeline or single-file safetensors.
       const spec = loadSpecFor(id, IMAGE_CATALOG);
       if (spec && spec.kind !== "gguf") {
       // Carried forward when one is already pending: a superseded staged pick left its optimistic
       // quant and recipe in state, so snapshotting now would record THAT and restore a model that
       // never loaded. Leaving the old entry would also let that download revert this pick.
-        const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
-        quantRevert.current = revert;
-        setQuant(null);
-        applyImageModelDefaults(id);
+        // A Download only pick fetches files and never becomes the resident model, so it
+        // relabels nothing and claims no revert: quantRevert is ONE slot, and a staged load
+        // already in flight owns what is in it and still has to commit it.
+        const revert: PickRevert | null = downloadOnlyPick
+          ? null
+          : (quantRevert.current ?? { prev: quant, steps, guidance });
+        if (revert) {
+          quantRevert.current = revert;
+          setQuant(null);
+          applyImageModelDefaults(id);
+        }
         void loadOrStage(
           id,
           { kind: spec.kind, filename: spec.filename },
           meta.source,
           token,
         ).then((started) => {
-            if (!started && pickGuard.holds(token)) {
+            if (!started && revert && stillOwnsPick()) {
               revertPick(revert);
               quantRevert.current = null;
             }
@@ -2866,10 +3028,17 @@ export function ImagesPage({
       // GGUF quant pick from the variant expander. Optimistic for instant feedback, but reverted if
       // the load fails to START or later in the poll: the old pipeline stays loaded either way.
       if (meta.ggufVariant && meta.ggufFilename) {
-        const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
-        quantRevert.current = revert;
-        setQuant(meta.ggufVariant);
-        applyImageModelDefaults(id);
+        // A Download only pick fetches files and never becomes the resident model, so it
+        // relabels nothing and claims no revert: quantRevert is ONE slot, and a staged load
+        // already in flight owns what is in it and still has to commit it.
+        const revert: PickRevert | null = downloadOnlyPick
+          ? null
+          : (quantRevert.current ?? { prev: quant, steps, guidance });
+        if (revert) {
+          quantRevert.current = revert;
+          setQuant(meta.ggufVariant);
+          applyImageModelDefaults(id);
+        }
         void loadOrStage(
           id,
           { kind: "gguf", filename: meta.ggufFilename },
@@ -2877,7 +3046,7 @@ export function ImagesPage({
           token,
         ).then((started) => {
           // `quantRevert` is one slot, so only the pick that set the label may take it back.
-          if (!started && pickGuard.holds(token)) {
+          if (!started && revert && stillOwnsPick()) {
             revertPick(revert);
             quantRevert.current = null;
           }
@@ -2903,12 +3072,21 @@ export function ImagesPage({
         }
         // A direct pick carries no curated variant label, so surface the filename or the selector
         // keeps advertising the old quant. Optimistic, reverted if the load never starts.
-        const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
-        quantRevert.current = revert;
-        setQuant(filename);
-        applyImageModelDefaults(id);
-        void handleLoad(dir, { kind: "gguf", filename }).then((started) => {
-          if (!started) {
+        // A Download only pick fetches files and never becomes the resident model, so it
+        // relabels nothing and claims no revert: quantRevert is ONE slot, and a staged load
+        // already in flight owns what is in it and still has to commit it.
+        const revert: PickRevert | null = downloadOnlyPick
+          ? null
+          : (quantRevert.current ?? { prev: quant, steps, guidance });
+        if (revert) {
+          quantRevert.current = revert;
+          setQuant(filename);
+          applyImageModelDefaults(id);
+        }
+        void loadOrStage(dir, { kind: "gguf", filename }, meta.source, token).then((started) => {
+          // Guarded like every sibling branch: quantRevert is one slot, so a pick that no longer
+          // owns the page must not hand back a label a newer pick has already set.
+          if (!started && revert && stillOwnsPick()) {
             revertPick(revert);
             quantRevert.current = null;
           }
@@ -2922,12 +3100,19 @@ export function ImagesPage({
         const slash = norm.lastIndexOf("/");
         const filename = slash >= 0 ? norm.slice(slash + 1) : norm;
         const dir = slash >= 0 ? norm.slice(0, slash) : ".";
-        const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
-        quantRevert.current = revert;
-        setQuant(filename);
-        applyImageModelDefaults(id);
-        void handleLoad(dir, { kind: "single_file", filename }).then((started) => {
-          if (!started) {
+        // A Download only pick fetches files and never becomes the resident model, so it
+        // relabels nothing and claims no revert: quantRevert is ONE slot, and a staged load
+        // already in flight owns what is in it and still has to commit it.
+        const revert: PickRevert | null = downloadOnlyPick
+          ? null
+          : (quantRevert.current ?? { prev: quant, steps, guidance });
+        if (revert) {
+          quantRevert.current = revert;
+          setQuant(filename);
+          applyImageModelDefaults(id);
+        }
+        void loadOrStage(dir, { kind: "single_file", filename }, meta.source, token).then((started) => {
+          if (!started && revert && stillOwnsPick()) {
             revertPick(revert);
             quantRevert.current = null;
           }
@@ -2948,17 +3133,26 @@ export function ImagesPage({
       }
       // Otherwise treat it as a full diffusers repo. The backend gates loads to unsloth/* repos or on-device paths.
       if (meta.source !== "local" && !id.toLowerCase().startsWith("unsloth/")) {
+        // A refused Download only pick retires nothing: it never claimed the page, and the rollback
+        // slot it would clear belongs to whatever load is still staging.
         toast.error("Only unsloth or on-device image models can be loaded here");
-        abandonPick();
+        if (!downloadOnlyPick) abandonPick();
         return;
       }
       // Optimistically clear the quant label, revert it if the load never starts.
-      const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
-      quantRevert.current = revert;
-      setQuant(null);
-      applyImageModelDefaults(id);
+      // A Download only pick fetches files and never becomes the resident model, so it
+      // relabels nothing and claims no revert: quantRevert is ONE slot, and a staged load
+      // already in flight owns what is in it and still has to commit it.
+      const revert: PickRevert | null = downloadOnlyPick
+        ? null
+        : (quantRevert.current ?? { prev: quant, steps, guidance });
+      if (revert) {
+        quantRevert.current = revert;
+        setQuant(null);
+        applyImageModelDefaults(id);
+      }
       void loadOrStage(id, { kind: "pipeline" }, meta.source, token).then((started) => {
-        if (!started && pickGuard.holds(token)) {
+        if (!started && revert && stillOwnsPick()) {
           revertPick(revert);
           quantRevert.current = null;
         }
@@ -3001,7 +3195,7 @@ export function ImagesPage({
       const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
       quantRevert.current = revert;
       setQuant(null);
-      applyImageModelDefaults(args.baseRepo);
+      applyImageModelDefaults(args.baseRepo, true);
       void handleLoad(args.baseRepo, { kind: "pipeline" }).then((started) => {
         if (!started) {
           pendingDeploy.current = null;
@@ -3399,6 +3593,16 @@ export function ImagesPage({
   const advancedControls = (
     <>
       <AdvancedSelect
+        label="On model selection"
+        hint="Choose Download only to prepare the selected model and its required assets without loading it. Applies to the next model you select; progress and cancellation appear in Downloads."
+        value={modelSelectionAction}
+        onValueChange={(v) => setModelSelectionAction(v as typeof modelSelectionAction)}
+        options={[
+          ["load", "Download and load"],
+          ["download", "Download only"],
+        ]}
+      />
+      <AdvancedSelect
         label="Speed"
         hint="Auto picks per model: GGUF compiles at load; a dense model keeps the first two images exact and eager, then compiles from the 3rd (~2x from there). eager = fused kernels, no compile. default/max add torch.compile (max also TF32 + fused QKV)."
         badge={<ResolvedBadge status={status} controlKey="speed_mode" />}
@@ -3438,6 +3642,20 @@ export function ImagesPage({
           <span className="text-xs text-muted-foreground/60">GGUF models only</span>
         </div>
       )}
+      <AdvancedSelect
+        label="Text encoder precision"
+        hint="Lower precision reduces text-encoder memory but can change image quality. Supported modes depend on the GPU and model. Default keeps the existing encoder precision; the loaded build below reports what was applied."
+        badge={<ResolvedBadge status={status} controlKey="text_encoder_quant" />}
+        value={textEncoderQuant}
+        onValueChange={(v) => setTextEncoderQuant(v as typeof textEncoderQuant)}
+        options={[
+          ["auto", "Default"],
+          ["fp8", "FP8 (storage)"],
+          ["fp8_dynamic", "FP8 (compute)"],
+          ["int8", "INT8"],
+          ["nvfp4", "NVFP4 (Blackwell)"],
+        ]}
+      />
       <AdvancedSelect
         label="Attention"
         hint="Attention kernel. Auto upgrades to cuDNN fused attention on NVIDIA when a speed profile is active. sage is INT8 attention: fast (10-40%) but can black-frame some families (Qwen, Wan), so it never engages automatically."

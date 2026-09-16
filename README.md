@@ -288,7 +288,7 @@ The developer install builds from the `main` branch, which is the latest (nightl
 ```powershell
 git clone https://github.com/unslothai/unsloth.git
 cd unsloth
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
 .\install.ps1 --local
 unsloth studio -p 8888
 ```

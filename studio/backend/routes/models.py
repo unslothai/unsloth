@@ -2,13 +2,11 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import asyncio
-import hashlib
 import json
 import os
 import shutil
 import sys
 import time
-import uuid
 import weakref
 from pathlib import Path
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request
@@ -746,233 +744,22 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
     return found
 
 
-def _ollama_links_dir(ollama_dir: Path) -> Optional[Path]:
-    """A writable directory for Ollama ``.gguf`` symlinks. Prefers ``<ollama_dir>/.studio_links/`` so
-    links sit next to their blobs; falls back to a per-ollama-dir namespace under Unsloth's cache when
-    the models dir is read-only (common for system installs)."""
-    from utils.paths.storage_roots import cache_root
+def _scan_ollama_dir(
+    ollama_dir: Path,
+    *,
+    limit: Optional[int] = None,
+    materialize_links: bool = True,
+) -> List[LocalModelInfo]:
+    """Ollama rows for the compat inventory, from the one scanner the Hub inventory also uses.
 
-    primary = ollama_dir / ".studio_links"
-    try:
-        primary.mkdir(exist_ok = True)
-        return primary
-    except OSError as e:
-        logger.debug(
-            "Ollama dir %s not writable for .studio_links (%s); falling back to Unsloth cache",
-            ollama_dir,
-            e,
-        )
-
-    # Fallback: namespace by a hash of ollama_dir so two roots don't collide (cache path only).
-    try:
-        digest = hashlib.sha256(str(ollama_dir.resolve()).encode()).hexdigest()[:12]
-    except OSError:
-        digest = "default"
-    fallback = cache_root() / "ollama_links" / digest
-    try:
-        fallback.mkdir(parents = True, exist_ok = True)
-        return fallback
-    except OSError as e:
-        logger.warning(
-            "Could not create Ollama symlink cache at %s: %s",
-            fallback,
-            e,
-        )
-        return None
-
-
-def _scan_ollama_dir(ollama_dir: Path, limit: Optional[int] = None) -> List[LocalModelInfo]:
-    """Scan an Ollama models directory for downloaded models. Ollama uses a content-addressable layout
-    (``manifests/<host>/<namespace>/<model>/<tag>`` + ``blobs/sha256-...``); ``rglob`` finds every
-    layout depth. The ``application/vnd.ollama.image.model`` layer holds the GGUF weights and
-    ``...image.projector`` is the vision adapter. Ollama blobs lack the ``.gguf`` extension the
-    loading pipeline requires, so create ``.gguf``-named links to them, one subdir per model keyed
-    by a short hash of the manifest path so ``detect_mmproj_file`` only sees that model's projector.
-    Symlinks when possible, else hardlinks."""
-    manifests_root = ollama_dir / "manifests"
-    if not manifests_root.is_dir():
-        return []
-
-    found: List[LocalModelInfo] = []
-    blobs_dir = ollama_dir / "blobs"
-    links_root = _ollama_links_dir(ollama_dir)
-    if links_root is None:
-        logger.warning(
-            "Skipping Ollama scan for %s: no writable location for .gguf links",
-            ollama_dir,
-        )
-        return []
-
-    def _make_link(link_dir: Path, link_name: str, target: Path) -> Optional[str]:
-        """Create a .gguf-named link to an Ollama blob. Symlink, then hardlink; skips the model if neither
-        works (a multi-GB copy in a sync request would block the backend). Idempotent."""
-        link_dir.mkdir(parents = True, exist_ok = True)
-        link_path = link_dir / link_name
-        resolved = target.resolve()
-
-        # Skip if the link already points at the same blob; size checks can reuse stale links.
-        try:
-            if link_path.exists() and os.path.samefile(str(link_path), str(resolved)):
-                return str(link_path)
-        except OSError as e:
-            logger.debug("Error checking existing link %s: %s", link_path, e)
-
-        tmp_path = link_dir / f".{link_name}.tmp-{uuid.uuid4().hex[:8]}"
-        try:
-            if tmp_path.is_symlink() or tmp_path.exists():
-                tmp_path.unlink()
-            try:
-                tmp_path.symlink_to(resolved)
-            except OSError:
-                try:
-                    os.link(str(resolved), str(tmp_path))
-                except OSError:
-                    logger.warning(
-                        "Could not create link for Ollama blob %s "
-                        "(symlinks and hardlinks both failed). "
-                        "Skipping model to avoid blocking the API.",
-                        target,
-                    )
-                    return None
-            os.replace(str(tmp_path), str(link_path))
-            return str(link_path)
-        except OSError as e:
-            logger.debug("Could not create Ollama link %s: %s", link_path, e)
-            try:
-                if tmp_path.is_symlink() or tmp_path.exists():
-                    tmp_path.unlink()
-            except OSError as cleanup_err:
-                logger.debug("Could not clean up tmp path %s: %s", tmp_path, cleanup_err)
-            return None
-
-    try:
-        for tag_file in manifests_root.rglob("*"):
-            if not tag_file.is_file():
-                continue
-
-            rel = tag_file.relative_to(manifests_root)
-            parts = rel.parts
-            if len(parts) < 3:
-                continue
-
-            host = parts[0]
-            repo_parts = list(parts[1:-1])
-            tag = parts[-1]
-
-            if host == "registry.ollama.ai" and repo_parts and repo_parts[0] == "library":
-                repo_name = "/".join(repo_parts[1:])
-            elif host == "registry.ollama.ai":
-                repo_name = "/".join(repo_parts)
-            else:
-                repo_name = "/".join([host] + repo_parts)
-
-            if not repo_name:
-                continue
-
-            display = f"{repo_name}:{tag}"
-
-            manifest_key = rel.as_posix()
-            stem_hash = hashlib.sha256(manifest_key.encode()).hexdigest()[:10]
-
-            try:
-                manifest = json.loads(tag_file.read_text(encoding = "utf-8-sig"))
-            except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
-                logger.debug(
-                    "Skipping unreadable/invalid Ollama manifest %s: %s",
-                    tag_file,
-                    e,
-                )
-                continue
-            # rglob("*") hands us every file under manifests/, so a pruned pull, an editor backup, or any stray JSON can
-            # be a list or a string; .get() on one raises AttributeError, which neither this loop's `except OSError`
-            # nor the caller's catches, and one such file would 500 the whole picker.
-            if not isinstance(manifest, dict):
-                logger.debug("Skipping Ollama manifest %s: top level is not an object", tag_file)
-                continue
-
-            config = manifest.get("config")
-            config_digest = config.get("digest", "") if isinstance(config, dict) else ""
-            if not isinstance(config_digest, str):
-                config_digest = ""
-            model_type = ""
-            file_type = ""
-            if config_digest and blobs_dir.is_dir():
-                config_blob = blobs_dir / config_digest.replace(":", "-")
-                if config_blob.is_file():
-                    try:
-                        cfg = json.loads(config_blob.read_text(encoding = "utf-8-sig"))
-                    except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
-                        logger.debug(
-                            "Could not parse Ollama config blob %s: %s",
-                            config_blob,
-                            e,
-                        )
-                        cfg = None
-                    if isinstance(cfg, dict):
-                        model_type = cfg.get("model_type", "")
-                        file_type = cfg.get("file_type", "")
-
-            model_link_dir = links_root / stem_hash
-
-            gguf_link_path: Optional[str] = None
-            quant = f"-{file_type}" if file_type else ""
-            safe_name = repo_name.replace("/", "-")
-            layers = manifest.get("layers") or []
-            if not isinstance(layers, list):
-                logger.debug("Skipping Ollama manifest %s: layers is not a list", tag_file)
-                continue
-            for layer in layers:
-                if not isinstance(layer, dict):
-                    continue
-                media = layer.get("mediaType", "")
-                digest = layer.get("digest", "")
-                if not isinstance(digest, str) or not digest:
-                    continue
-
-                if media == "application/vnd.ollama.image.model":
-                    candidate = blobs_dir / digest.replace(":", "-")
-                    if candidate.is_file():
-                        link_name = f"{safe_name}-{tag}{quant}.gguf"
-                        gguf_link_path = _make_link(model_link_dir, link_name, candidate)
-
-                elif media == "application/vnd.ollama.image.projector":
-                    candidate = blobs_dir / digest.replace(":", "-")
-                    if candidate.is_file():
-                        mmproj_name = f"{safe_name}-{tag}-mmproj.gguf"
-                        _make_link(model_link_dir, mmproj_name, candidate)
-
-            if not gguf_link_path:
-                continue
-
-            suffix = ""
-            if model_type:
-                suffix += f" ({model_type}"
-                if file_type:
-                    suffix += f" {file_type}"
-                suffix += ")"
-
-            try:
-                updated_at = tag_file.stat().st_mtime
-            except OSError:
-                updated_at = None
-
-            found.append(
-                LocalModelInfo(
-                    id = gguf_link_path,
-                    model_id = f"ollama/{repo_name}:{tag}",
-                    display_name = display + suffix,
-                    path = gguf_link_path,
-                    # The frontend groups and labels these rows by this value (local-model-options.ts, pickers.tsx);
-                    # "custom" hid them in the generic folder section (#9986).
-                    source = "ollama",
-                    updated_at = updated_at,
-                ),
-            )
-            if limit is not None and len(found) >= limit:
-                return found
-    except OSError as e:
-        logger.warning("Error scanning Ollama directory %s: %s", ollama_dir, e)
-    return found
+    This inventory's readers treat a row's id and path as filenames, so ``materialize_links``
+    defaults to the ``.gguf`` link; a caller that resolves the model itself passes False.
+    """
+    from hub.services.models.ollama import scan_ollama_dir
+    return [
+        LocalModelInfo.model_validate(row.model_dump())
+        for row in scan_ollama_dir(ollama_dir, limit = limit, materialize_links = materialize_links)
+    ]
 
 
 def _scan_hermes_dir(hermes_dir: Path) -> List[LocalModelInfo]:
@@ -993,10 +780,12 @@ class _CompatLocalInventorySources(NamedTuple):
     lm_dirs: tuple[Path, ...]
     known_hf_caches: tuple[Path, ...]
     hermes_dirs: tuple[Path, ...] = ()
+    ollama_dirs: tuple[Path, ...] = ()
 
 
 def _compat_local_inventory_sources() -> _CompatLocalInventorySources:
     from utils.paths import (
+        ollama_model_dirs,
         hermes_model_dirs,
         hf_default_cache_dir,
         legacy_hf_cache_dir,
@@ -1010,6 +799,7 @@ def _compat_local_inventory_sources() -> _CompatLocalInventorySources:
         tuple(lmstudio_model_dirs()),
         tuple(known_hf_hub_caches()),
         tuple(hermes_model_dirs()),
+        tuple(ollama_model_dirs()),
     )
 
 
@@ -1018,13 +808,15 @@ def collect_local_models(
     *,
     custom_folders: Optional[list[dict]] = None,
     sources: Optional[_CompatLocalInventorySources] = None,
+    materialize_ollama_links: bool = True,
 ) -> List[LocalModelInfo]:
-    """Scan ``models_root``, the HF caches, LM Studio and Hermes dirs, and user scan
+    """Scan ``models_root``, the HF caches, LM Studio, Hermes and Ollama dirs, and user scan
     folders, returning a deduplicated, hidden-filtered list of discovered local models.
 
     Shared by ``GET /models/local`` (the model picker) and the OpenAI-compatible
     catalog (``GET /v1/models``) so the UI and the API never drift. ``models_root``
-    must already be validated/trusted by the caller.
+    must already be validated/trusted by the caller, and ``materialize_ollama_links`` is the one
+    thing the two do not share; see :func:`_scan_ollama_dir`.
     """
     from storage.studio_db import list_scan_folders
     from hub.utils import gguf as gguf_utils
@@ -1099,6 +891,12 @@ def collect_local_models(
         except Exception as e:
             logger.warning("Error scanning Hermes directory %s: %s", hermes_dir, e)
 
+    for ollama_dir in sources.ollama_dirs:
+        try:
+            local_models += _scan_ollama_dir(ollama_dir, materialize_links = materialize_ollama_links)
+        except Exception as e:
+            logger.warning("Error scanning Ollama directory %s: %s", ollama_dir, e)
+
     # Scan user-added custom folders (per-folder cap).
     _MAX_MODELS_PER_FOLDER = 200
     hermes_identities = {_compat_inventory_path_identity(str(d)) for d in sources.hermes_dirs}
@@ -1160,6 +958,7 @@ def collect_local_models(
                 custom_models += _scan_ollama_dir(
                     folder_path,
                     limit = _MAX_MODELS_PER_FOLDER - len(custom_models),
+                    materialize_links = materialize_ollama_links,
                 )
         except OSError as e:
             logger.warning("Skipping unreadable scan folder %s: %s", folder_path, e)
@@ -1343,7 +1142,7 @@ async def list_local_models(
     ),
     current_subject: str = Depends(get_current_subject),
 ):
-    """List local model candidates from the models dir, HF caches, LM Studio and Hermes dirs."""
+    """List local model candidates from the models dir, HF caches, LM Studio, Hermes, Ollama."""
     # Resolve all scan directories up front.
     sources = _compat_local_inventory_sources()
     hf_cache_dir = sources.hf_cache_dir
@@ -4480,6 +4279,10 @@ async def get_gguf_variants(
                     download_size_bytes = int(
                         getattr(v, "download_size_bytes", v.size_bytes) or v.size_bytes
                     ),
+                    pending_drafter_filename = getattr(v, "pending_drafter_filename", None),
+                    pending_drafter_size_bytes = int(
+                        getattr(v, "pending_drafter_size_bytes", 0) or 0
+                    ),
                     downloaded = bool(v.downloaded),
                     update_available = bool(getattr(v, "update_available", False)),
                     partial = bool(getattr(v, "partial", False)),
@@ -4495,6 +4298,7 @@ async def get_gguf_variants(
                 else None
             ),
             resolved_locally = bool(getattr(response, "resolved_locally", False)),
+            dependencies_resolved = bool(getattr(response, "dependencies_resolved", False)),
             loadable_variants = getattr(response, "loadable_variants", None),
             loadable = getattr(response, "loadable", None),
         )
