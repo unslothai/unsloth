@@ -66,10 +66,19 @@ async def list_local_models(
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    return redact_inventory_host_paths(
-        await local_inventory.list_local_models_response(models_dir),
-        via_api_key = via_api_key,
-    )
+    # The call is inside the try for the same reason `get_models_folder` does it: an
+    # exception raised while evaluating an argument never reaches the function it was being
+    # passed to, so a scan or filter failure carrying an absolute cache or database path in
+    # its detail went out to the one caller the redaction exists for.
+    try:
+        payload = await local_inventory.list_local_models_response(models_dir)
+    except HTTPException as error:
+        raise HTTPException(
+            status_code = error.status_code,
+            detail = redact_inventory_error_detail(error.detail, via_api_key = via_api_key),
+            headers = error.headers,
+        ) from error
+    return redact_inventory_host_paths(payload, via_api_key = via_api_key)
 
 
 # Plain def, not async: synchronous SQLite and filesystem work runs in FastAPI's thread pool instead
@@ -79,9 +88,15 @@ def get_scan_folders(
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    return redact_inventory_host_paths(
-        local_inventory.get_scan_folders_response(), via_api_key = via_api_key
-    )
+    try:
+        payload = local_inventory.get_scan_folders_response()
+    except HTTPException as error:
+        raise HTTPException(
+            status_code = error.status_code,
+            detail = redact_inventory_error_detail(error.detail, via_api_key = via_api_key),
+            headers = error.headers,
+        ) from error
+    return redact_inventory_host_paths(payload, via_api_key = via_api_key)
 
 
 @router.post("/scan-folders", response_model = ScanFolderInfo, status_code = 201)

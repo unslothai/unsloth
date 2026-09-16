@@ -87,6 +87,50 @@ def _conditional_path_is_local(payload: Mapping) -> bool:
     return payload.get(HOST_PATH_CONDITIONAL_SOURCE_FIELD) == HOST_PATH_CONDITIONAL_SOURCE_LOCAL
 
 
+# A row whose IDENTITY is a path. `_local_model_info` names a filesystem-backed model by the
+# file it found: `id` and `load_id` are the absolute load path, and `inventory_id` carries the
+# same path URL-encoded as its third component. Blanking `path` on such a row therefore hides
+# nothing, and the load-handle exception recorded above is about CACHED rows, whose handle is
+# a snapshot directory the caller already named by repo id.
+#
+# These rows are not blanked, because a row with no identity cannot be told apart from the
+# next one: each identity becomes its opaque reference, which is stable within the response
+# and across the life of the server and reverses to nothing.
+HOST_PATH_IDENTITY_FIELDS = ("id", "load_id")
+HOST_PATH_ENCODED_IDENTITY_FIELD = "inventory_id"
+HOST_PATH_ROW_SOURCE_FIELD = "source"
+# `hf_cache` is deliberately absent: those rows are named by repo id, and where they are not
+# the load handle is the documented exception.
+HOST_PATH_LOCAL_SOURCES = frozenset({"models_dir", "lmstudio", "ollama", "hermes", "custom"})
+
+
+def _row_identity_is_a_path(payload: Mapping) -> bool:
+    """Whether this row is named by a file on this host rather than by a repo id."""
+    return payload.get(HOST_PATH_ROW_SOURCE_FIELD) in HOST_PATH_LOCAL_SOURCES
+
+
+def _referenced_identity(value: Any) -> Any:
+    """One identity field, as its opaque reference. Non-strings and blanks are left alone."""
+    if not isinstance(value, str) or not value:
+        return value
+    return cache_reference(value) or ""
+
+
+def _referenced_inventory_id(value: Any) -> Any:
+    """`<source>:<format>:<url-encoded identity>[:<variant>]` with the identity referenced.
+
+    The shape is kept because clients split on it; only the component that spells out the
+    host path is replaced.
+    """
+    if not isinstance(value, str) or not value:
+        return value
+    parts = value.split(":")
+    if len(parts) < 3:
+        return _referenced_identity(value)
+    parts[2] = (cache_reference(parts[2]) or "").removeprefix(_REFERENCE_PREFIX)
+    return ":".join(parts)
+
+
 # Sibling written beside a redacted scalar, so a client keeps the identity the path gave it.
 CACHE_REFERENCE_FIELD = "cache_ref"
 
@@ -174,7 +218,14 @@ def _redact(payload: Any, *, redact_ambiguous_path: bool) -> Any:
         reference: Optional[str] = None
         # Read before the walk: the sibling that decides it may come after it in the dump.
         base_model_is_local = _conditional_path_is_local(payload)
+        identity_is_a_path = redact_ambiguous_path and _row_identity_is_a_path(payload)
         for key, value in payload.items():
+            if identity_is_a_path and key in HOST_PATH_IDENTITY_FIELDS:
+                out[key] = _referenced_identity(value)
+                continue
+            if identity_is_a_path and key == HOST_PATH_ENCODED_IDENTITY_FIELD:
+                out[key] = _referenced_inventory_id(value)
+                continue
             if (
                 key in HOST_PATH_SCALAR_FIELDS
                 or (redact_ambiguous_path and key == HOST_PATH_AMBIGUOUS_FIELD)

@@ -798,3 +798,84 @@ def test_every_compat_mirror_of_an_inventory_route_takes_the_caller_class():
         "these compatibility routes answer inventory data without taking the caller class: "
         f"{without}"
     )
+
+
+# --------------------------------------------------------------------------------------
+# A row whose IDENTITY is a path
+# --------------------------------------------------------------------------------------
+
+
+def _local_row():
+    """The shape `_local_model_info` builds for a filesystem-backed model."""
+    from hub.services.models.common import _local_model_info
+
+    load_path = Path(HOST_ROOT) / "my models" / "Llama-3.2-1B"
+    return _local_model_info(
+        scan_path = load_path,
+        load_path = load_path,
+        source = "models_dir",
+        model_format = "safetensors",
+    )
+
+
+def test_a_filesystem_backed_row_is_not_named_by_its_path(monkeypatch):
+    """`id`, `load_id` and `inventory_id` all spell out the load path for a local row.
+
+    Blanking `path` hides nothing while the same string is still the row's identity, and
+    `inventory_id` carries it URL encoded, which reverses. The load-handle exception is
+    about CACHED rows, whose handle is a snapshot of a repo the caller already named.
+    """
+
+    async def _response(models_dir = "./models"):
+        return LocalModelListResponse(
+            models_dir = f"{HOST_ROOT}/models",
+            hf_cache_dir = HOST_ROOT,
+            lmstudio_dirs = [],
+            ollama_dirs = [],
+            hermes_dirs = [],
+            models = [_local_row()],
+        )
+
+    monkeypatch.setattr(local_inventory, "list_local_models_response", _response)
+    payload = _hub(via_api_key = True).get("/api/hub/local").json()
+    row = payload["models"][0]
+    assert row["path"] == ""
+    assert row["id"].startswith("ref:"), row["id"]
+    assert row["load_id"].startswith("ref:"), row["load_id"]
+    # The inventory id keeps its `<source>:<format>:<identity>` shape, which clients split.
+    assert row["inventory_id"].startswith("models_dir:safetensors:"), row["inventory_id"]
+    assert HOST_ROOT not in json.dumps(payload), payload
+    assert "my%20models" not in json.dumps(payload), payload
+    # Nothing is ignored here: the whole row, load handle included, must be free of it.
+    assert response_leaks_host_path(payload, [HOST_ROOT]) is None
+
+    ui = _hub(via_api_key = False).get("/api/hub/local").json()
+    assert ui["models"][0]["load_id"].startswith(HOST_ROOT)
+
+
+def test_a_cached_row_keeps_the_repo_id_it_is_named_by(_cached_inventory):
+    """The other half. A cached row is named by its repo id, and referencing that would
+    take away the only thing a caller can act on."""
+    payload = _hub(via_api_key = True).get("/api/hub/cached-models").json()
+    assert payload["cached"][0]["repo_id"] == "unsloth/Llama-3.2-1B-Instruct"
+    assert not payload["cached"][0]["repo_id"].startswith("ref:")
+
+
+def test_a_local_scan_failure_is_redacted_like_its_payload(monkeypatch):
+    """An exception raised while evaluating the awaited argument never reaches the redactor
+    it was being passed to, and the service turns scan and database failures into an
+    HTTPException whose detail carries the raw string."""
+    from fastapi import HTTPException
+
+    async def _raises(models_dir = "./models"):
+        raise HTTPException(
+            status_code = 500,
+            detail = f"Failed to list local models: unable to open database file {HOST_ROOT}/studio.db",
+        )
+
+    monkeypatch.setattr(local_inventory, "list_local_models_response", _raises)
+    detail = _hub(via_api_key = True).get("/api/hub/local").json()["detail"]
+    assert HOST_ROOT not in str(detail), detail
+    assert "unable to open database file" in str(detail), detail
+    ui = _hub(via_api_key = False).get("/api/hub/local").json()["detail"]
+    assert HOST_ROOT in str(ui), ui
