@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Path utilities for model and dataset handling
-"""
+"""Path utilities for model and dataset handling."""
 
 import os
 import sys
@@ -14,17 +12,12 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
-# Opening a cloud placeholder for data recalls it. These attributes are available through
-# ``stat_result.st_file_attributes`` on Windows without reading file contents.
+# Opening a cloud placeholder for data recalls it; these attributes are available through ``stat_result.st_file_attributes`` on Windows without reading file contents.
 _WINDOWS_CONTENT_RECALL_ATTRIBUTES = 0x00001000 | 0x00040000 | 0x00400000
 
 
 def file_contents_available_locally(path, stat_result = None) -> bool:
-    """Whether opening *path* can read data without recalling a cloud placeholder.
-
-    Non-Windows files have no ``st_file_attributes`` and are treated as local. An
-    inaccessible path is not safe to open during inventory discovery.
-    """
+    """Whether opening *path* can read data without recalling a cloud placeholder. Non-Windows files have no ``st_file_attributes`` and are treated as local; an inaccessible path is not safe to open during inventory discovery."""
     try:
         info = stat_result if stat_result is not None else os.stat(path)
     except OSError:
@@ -33,10 +26,7 @@ def file_contents_available_locally(path, stat_result = None) -> bool:
     return not bool(attributes & _WINDOWS_CONTENT_RECALL_ATTRIBUTES)
 
 
-# A volume without native xattrs makes macOS keep them in a "._" companion that answers every name-shaped question the
-# way the real file does; only the magic bytes settle it.
-# The volumes are exFAT, FAT, most SMB and NFS, and nothing may be refused for the prefix alone: a user's own
-# "._model.gguf" is a real model.
+# A volume without native xattrs makes macOS keep them in a "._" companion that answers every name-shaped question the way the real file does; only the magic bytes settle it. The volumes are exFAT, FAT, most SMB and NFS, and nothing may be refused for the prefix alone: a user's own "._model.gguf" is a real model.
 # ── macOS Finder metadata companions ───────────────────────────
 _MAGIC = b"\x00\x05\x16\x07"
 
@@ -51,8 +41,7 @@ def is_appledouble_name(path: str) -> bool:
 def has_appledouble_magic(path: Path) -> bool:
     """The four bytes ``file(1)`` reads to report "AppleDouble encoded Macintosh file"."""
     try:
-        # Directory scans reach here with whatever the volume holds, and opening a FIFO blocks
-        # until someone writes to it. Only a regular file can carry the magic anyway.
+        # Directory scans reach here with whatever the volume holds, and opening a FIFO blocks until someone writes to it. Only a regular file can carry the magic anyway.
         if not path.is_file():
             return False
         with open(path, "rb") as handle:
@@ -73,10 +62,7 @@ def drop_appledouble_metadata(paths: Iterable[PathLike]) -> list[PathLike]:
 
 
 def any_not_appledouble_metadata(paths: Iterable[PathLike]) -> bool:
-    """Whether *paths* holds anything that is not Finder metadata, stopping at the first.
-
-    Callers hand this a live ``glob``, which materializing would walk in full.
-    """
+    """Whether *paths* holds anything that is not Finder metadata, stopping at the first. Callers hand this a live ``glob``, which materializing would walk in full."""
     return any(not is_appledouble_metadata(Path(p)) for p in paths)
 
 
@@ -86,18 +72,12 @@ def _shadowed_name(path: str) -> str:
 
 
 def drop_shadowed_appledouble_names(
-    # Optional[...] rather than `| None`: this module has no `from __future__ import
-    # annotations`, so its annotations are evaluated at import, and PEP 604 unions are a
-    # TypeError on the declared 3.9 floor. tests/test_python39_compatibility.py gates it.
+    # Optional[...] rather than a PEP 604 union: this module has no `from __future__ import annotations`, so annotations are evaluated at import and PEP 604 is a TypeError on the declared 3.9 floor. tests/test_python39_compatibility.py gates it.
     files: list[str],
     *,
     subject_key: Optional[Callable[[str], object]] = None,
 ) -> list[str]:
-    """*files* without the ``._`` entries whose subject is present in the same listing.
-
-    For remote listings, which carry no bytes to read, so a sole candidate survives whatever it
-    is called. *subject_key* widens what counts as the subject, for files that come in sets.
-    """
+    """*files* without the ``._`` entries whose subject is present in the same listing. For remote listings, which carry no bytes to read, so a sole candidate survives whatever it is called. *subject_key* widens what counts as the subject, for files that come in sets."""
     key = subject_key or (lambda name: name)
     present = {key(f.replace("\\", "/")) for f in files}
     return [f for f in files if not (is_appledouble_name(f) and key(_shadowed_name(f)) in present)]
@@ -106,7 +86,6 @@ def drop_shadowed_appledouble_names(
 # Per-process cache to avoid repeated cache-dir scans for the same identifier.
 _CACHE_CASE_RESOLUTION_MEMO: dict[str, str] = {}
 
-# Instrumentation counters for operational visibility.
 _CACHE_CASE_RESOLUTION_STATS: dict[str, int] = {
     "calls": 0,
     "memo_hits": 0,
@@ -133,15 +112,10 @@ _IS_WSL: bool = _is_wsl()
 
 
 def normalize_path(path: str) -> str:
-    """Normalize filesystem paths for cross-platform use.
-
-    WSL maps drive-letter paths to ``/mnt/<drive>/...``; native Windows keeps
-    the drive and normalizes separators; elsewhere slashes are forward-only.
-    """
+    """Normalize filesystem paths for cross-platform use: WSL maps drive-letter paths to ``/mnt/<drive>/...``, native Windows keeps the drive and normalizes separators, elsewhere slashes are forward-only."""
     if not path:
         return path
 
-    # Handle Windows drive letters (C:\\ or c:\\)
     if len(path) >= 3 and path[1] == ":" and path[2] in ("\\", "/"):
         # Map to /mnt/<drive>/ only under WSL; native Windows keeps the drive letter.
         if _IS_WSL:
@@ -150,16 +124,11 @@ def normalize_path(path: str) -> str:
             return f"/mnt/{drive}/{rest}"
         return path.replace("\\", "/")
 
-    # Already Unix-style or relative
     return path.replace("\\", "/")
 
 
 def wsl_automount_root() -> str:
-    """DrvFs root WSL maps Windows drives under, with a trailing slash.
-
-    Set via ``/etc/wsl.conf`` ``[automount] root``, so hard-coding ``/mnt/``
-    mistranslates drive paths on a host that moved it (``root = /`` puts C: at ``/c/``).
-    """
+    """DrvFs root WSL maps Windows drives under, with a trailing slash. Set via ``/etc/wsl.conf`` ``[automount] root``, so hard-coding ``/mnt/`` mistranslates drive paths on a host that moved it (``root = /`` puts C: at ``/c/``)."""
     default = "/mnt/"
     if not _IS_WSL:
         return default
@@ -189,13 +158,9 @@ def _looks_windows_shaped(path: str) -> bool:
 def host_normalize_path(path: str) -> str:
     """Normalize a path this process is about to open, honouring ``[automount] root``.
 
-    Not :func:`normalize_path`: that hard-codes ``/mnt/`` to predict where the model
-    *loader* will look, while a path read from another tool's config is stat-ed here.
+    Not :func:`normalize_path`: that hard-codes ``/mnt/`` to predict where the model *loader* will look, while a path read from another tool's config is stat-ed here.
 
-    Separators are rewritten only when the path is Windows-shaped, or on Windows itself
-    where a backslash cannot be anything else. Everywhere else, WSL included, a path that
-    names no drive is a POSIX path, and a backslash in it is a legal filename character:
-    rewriting it would silently lose a directory that has one in its name.
+    Separators are rewritten only when the path is Windows-shaped, or on Windows itself where a backslash cannot be anything else. Everywhere else, WSL included, a path that names no drive is a POSIX path and a backslash in it is a legal filename character, so rewriting it would silently lose a directory that has one in its name.
     """
     if not path:
         return path
@@ -214,13 +179,7 @@ def host_normalize_path(path: str) -> str:
 
 
 def is_local_path(path: str) -> bool:
-    """
-    Check if path is a local filesystem path vs HuggingFace model identifier.
-
-    Examples:
-        True: /home/user/model, C:\\models, ./model, ~/model
-        False: unsloth/llama-3.1-8b, microsoft/phi-2
-    """
+    """Whether path is a local filesystem path rather than a HuggingFace model identifier: local for /home/user/model, ./model or ~/model, not local for unsloth/llama-3.1-8b or microsoft/phi-2."""
     if not path:
         return False
 
@@ -231,11 +190,9 @@ def is_local_path(path: str) -> bool:
     except Exception:
         pass
 
-    # Obvious HF patterns
     if path.count("/") == 1 and not path.startswith(("/", ".", "~")):
         return False
 
-    # Filesystem indicators
     return path.startswith(("/", ".", "~")) or ":" in path or "\\" in path or os.path.isabs(path)
 
 
@@ -255,7 +212,6 @@ def is_model_cached(model_name: str) -> bool:
     if not cache_path:
         return False
 
-    # Check for model files
     for suffix in [".safetensors", ".bin", ".json"]:
         if any_not_appledouble_metadata(cache_path.rglob(f"*{suffix}")):
             return True
@@ -270,12 +226,7 @@ def _hf_hub_cache_dir() -> Path:
 
 
 def resolve_cached_repo_id_case(model_name: str, use_memo: bool = True) -> str:
-    """Resolve repo_id to the exact casing already present in local HF cache.
-
-    Policy: prefer the requested/canonical repo_id, but reuse a case-variant's
-    exact cached spelling if one already exists in local HF cache. Avoids
-    duplicate downloads while preserving user intent where possible.
-    """
+    """Resolve repo_id to the exact casing already present in the local HF cache. Prefer the requested/canonical repo_id, but reuse a case-variant's exact cached spelling when one already exists, avoiding duplicate downloads while preserving user intent where possible."""
     _CACHE_CASE_RESOLUTION_STATS["calls"] += 1
 
     if not model_name or "/" not in model_name:
@@ -378,16 +329,9 @@ def _wsl_reveal_in_explorer(path: Path, is_file: bool) -> bool:
 def reveal_in_file_manager(path: Path, expect_dir: bool = False) -> None:
     """Open the OS file manager with *path* selected (best effort per platform).
 
-    Raises ``FileNotFoundError`` when the target is gone: the Linux branch falls
-    back to the parent, which for a sandbox is the root holding every other
-    chat's.
+    Raises ``FileNotFoundError`` when the target is gone: the Linux branch falls back to the parent, which for a sandbox is the root holding every other chat's.
 
-    ``expect_dir`` refuses anything that is not a real directory, symlinks
-    included, since both would take the file branch and name that same parent.
-    One ``lstat`` answers type and link-ness together, leaving no window between
-    the checks (``is_dir()`` follows links; ``follow_symlinks = False`` is 3.13+
-    only, and this runs on 3.10). Off by default: the cached-model reveal points
-    at a file, and a symlinked one, as an HF cache snapshot is a link farm.
+    ``expect_dir`` refuses anything that is not a real directory, symlinks included, since both would take the file branch and name that same parent. One ``lstat`` answers type and link-ness together, leaving no window between the checks (``is_dir()`` follows links; ``follow_symlinks = False`` is 3.13+ only, and this runs on 3.10). Off by default: the cached-model reveal points at a file, and a symlinked one, as an HF cache snapshot is a link farm.
     """
     import stat as stat_module
     import subprocess

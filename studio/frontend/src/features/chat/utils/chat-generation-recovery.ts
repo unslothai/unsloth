@@ -2,7 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { ChatGenerationStatus } from "../api/chat-generation-api";
-import { extractDeltaText } from "./parse-assistant-content";
+import {
+  createThinkTagTracker,
+  extractDeltaText,
+  parseAssistantContent,
+} from "./parse-assistant-content";
 
 export type StoredGenerationStatus = ChatGenerationStatus;
 
@@ -138,6 +142,7 @@ export function recoveredGenerationFinalMetadata(options: {
   timings?: RecoveryTimings;
   firstChunkAt?: number;
   totalChunks: number;
+  toolCalls?: string[];
 }): Record<string, unknown> {
   const { current, run, usage, timings, firstChunkAt, totalChunks } = options;
   const modelId =
@@ -197,7 +202,7 @@ export function recoveredGenerationFinalMetadata(options: {
       finishedAt,
       durationMs: Math.max(0, finishedAt - startedAt),
       cancelId: run.id,
-      toolCalls: [],
+      toolCalls: options.toolCalls ?? [],
     };
   }
   if (next.timing === undefined) {
@@ -209,56 +214,311 @@ export function recoveredGenerationFinalMetadata(options: {
       tokenCount: completionTokens,
       tokensPerSecond,
       totalChunks,
-      toolCallCount: 0,
+      toolCallCount: options.toolCalls?.length ?? 0,
     };
   }
   return next;
 }
 
-/** The reply as one string, with reasoning back inside `<think>` tags. The recovery replays a
- *  run's chunk events, so it keeps the reply as the text those chunks carried rather than as
- *  parts. Inverse of `parseAssistantContent`, so a parts body can be compared to a delta one. */
+// Keep offsets aligned with parseAssistantContent's tags.
+const THINK_OPEN = "<think>";
+const THINK_CLOSE = "</think>";
+
+/** A part the raw projection cannot express, kept with the offset it sat at. */
+export type CarriedPart = { at: number; part: unknown };
+
 export function generationRawContent(content: unknown): {
   raw: string;
   reasoningOpen: boolean;
+  carried: CarriedPart[];
 } {
   if (typeof content === "string") {
-    return { raw: content, reasoningOpen: false };
+    return { raw: content, reasoningOpen: false, carried: [] };
   }
-  if (!Array.isArray(content)) return { raw: "", reasoningOpen: false };
+  if (!Array.isArray(content)) {
+    return { raw: "", reasoningOpen: false, carried: [] };
+  }
   let raw = "";
   let reasoningOpen = false;
+  const carried: CarriedPart[] = [];
   for (const part of content) {
     if (!part || typeof part !== "object") continue;
     const record = part as { type?: string; text?: unknown };
     const text = typeof record.text === "string" ? record.text : "";
     if (record.type === "reasoning") {
       if (reasoningOpen) raw += text;
-      else raw += `<think>${text}`;
+      else raw += `${THINK_OPEN}${text}`;
       reasoningOpen = true;
     } else if (record.type === "text") {
-      if (reasoningOpen) raw += "</think>";
+      if (reasoningOpen) raw += THINK_CLOSE;
       raw += text;
       reasoningOpen = false;
+    } else {
+      carried.push({ at: raw.length, part });
     }
   }
-  return { raw, reasoningOpen };
+  return { raw, reasoningOpen, carried };
 }
 
-/** Which body a recovery publish should show. A recovery replays the run's events from the
- *  last saved cursor, one publish per event, each paying a storage write. When the replayed
- *  run is also the one this tab is streaming, that walk is far behind the live stream and
- *  its body is a PREFIX of what the reader sees, so importing it rewinds the reply twice a
- *  second. Prefix, not length: a body that genuinely disagrees is the server's and wins,
- *  since storage is authoritative. Only a body carrying nothing new is refused. */
+export function restoreCarriedParts<TPart>(
+  parts: readonly TPart[],
+  carried: readonly CarriedPart[],
+): TPart[] {
+  if (carried.length === 0) return [...parts];
+  const pending = [...carried].sort((a, b) => a.at - b.at);
+  const out: TPart[] = [];
+  let next = 0;
+  let offset = 0;
+  let reasoningOpen = false;
+  const flushUpTo = (limit: number) => {
+    while (next < pending.length && pending[next].at <= limit) {
+      out.push(pending[next].part as TPart);
+      next += 1;
+    }
+  };
+  for (const part of parts) {
+    const record = part as { type?: string; text?: unknown };
+    const text = typeof record.text === "string" ? record.text : "";
+    flushUpTo(offset);
+    if (record.type === "reasoning") {
+      if (!reasoningOpen) offset += THINK_OPEN.length;
+      reasoningOpen = true;
+    } else if (record.type === "text") {
+      if (reasoningOpen) offset += THINK_CLOSE.length;
+      reasoningOpen = false;
+    } else {
+      out.push(part);
+      continue;
+    }
+    flushUpTo(offset);
+    let cut = 0;
+    while (next < pending.length && pending[next].at < offset + text.length) {
+      const at = pending[next].at - offset;
+      if (at > cut) out.push({ ...record, text: text.slice(cut, at) } as TPart);
+      out.push(pending[next].part as TPart);
+      cut = at;
+      next += 1;
+    }
+    if (cut === 0) out.push(part);
+    else if (cut < text.length) {
+      out.push({ ...record, text: text.slice(cut) } as TPart);
+    }
+    offset += text.length;
+  }
+  while (next < pending.length) {
+    out.push(pending[next].part as TPart);
+    next += 1;
+  }
+  return out;
+}
+
+/** A card offset is the raw length at a chunk boundary, and a think tag can arrive split
+ *  across two chunks, so an offset can land inside one. Cutting there leaves the tag's halves
+ *  as text AND lets the tracker reopen the block, so the reply projects back with the tag
+ *  twice. A tag is atomic: put the card past it. */
+function pastThinkTag(raw: string, at: number): number {
+  for (const tag of [THINK_OPEN, THINK_CLOSE]) {
+    const start = raw.lastIndexOf(tag, at);
+    if (start !== -1 && at > start && at < start + tag.length) {
+      return start + tag.length;
+    }
+  }
+  return at;
+}
+
+/** Split raw replay before parsing, since parsing can coalesce separate think blocks. */
+export function restoreCarriedPartsFromRaw(
+  raw: string,
+  carried: readonly CarriedPart[],
+): ReturnType<typeof parseAssistantContent> {
+  if (carried.length === 0) return parseAssistantContent(raw);
+  const out: ReturnType<typeof parseAssistantContent> = [];
+  const tracker = createThinkTagTracker();
+  let cursor = 0;
+  const appendUntil = (end: number) => {
+    const text = raw.slice(cursor, end);
+    out.push(
+      ...parseAssistantContent(
+        tracker.endsInsideThink() ? `${THINK_OPEN}${text}` : text,
+      ),
+    );
+    tracker.append(text);
+    cursor = end;
+  };
+  for (const entry of [...carried].sort((a, b) => a.at - b.at)) {
+    appendUntil(
+      Math.max(cursor, pastThinkTag(raw, Math.min(entry.at, raw.length))),
+    );
+    out.push(entry.part as (typeof out)[number]);
+  }
+  appendUntil(raw.length);
+  return out;
+}
+
+function carriedPartKey({ at, part }: CarriedPart): string {
+  const record = part as { type?: string; toolCallId?: string; id?: string };
+  const id = record.toolCallId ?? record.id;
+  return id === undefined
+    ? JSON.stringify([at, part])
+    : JSON.stringify([record.type, id]);
+}
+
+type ToolIdentity = {
+  type?: string;
+  toolCallId?: string;
+  toolName?: string;
+  backendToolCallId?: string;
+  generationToolCallId?: string;
+  toolApprovalId?: string;
+};
+
+function followingCarriedMatches(matches: (number | undefined)[]) {
+  let next: number | undefined;
+  const following = matches.map(() => undefined as number | undefined);
+  for (let i = matches.length - 1; i >= 0; i--) {
+    following[i] = next;
+    next = matches[i] ?? next;
+  }
+  return following;
+}
+
+function carriedPartMatches(view: CarriedPart[], recovered: CarriedPart[]) {
+  // Every occurrence, not the last: sources are not deduplicated, so a repeated url needs a slot each.
+  const byId = new Map<string, number[]>();
+  recovered.forEach((entry, i) => {
+    const key = carriedPartKey(entry);
+    const seen = byId.get(key);
+    if (seen) seen.push(i);
+    else byId.set(key, [i]);
+  });
+  const byGeneration = new Map<string, number>();
+  recovered.forEach(({ part }, i) => {
+    const id = (part as ToolIdentity).generationToolCallId;
+    if (id) byGeneration.set(id, i);
+  });
+  const used = new Set<number>();
+  const matches = view.map((entry) => {
+    const id = (entry.part as ToolIdentity).generationToolCallId;
+    const index =
+      byId.get(carriedPartKey(entry))?.shift() ??
+      (id ? byGeneration.get(id) : undefined);
+    if (index === undefined || used.has(index)) return undefined;
+    used.add(index);
+    return index;
+  });
+  // Legacy cards lack replay ids. Pair occurrences at the same position one to one.
+  const following = followingCarriedMatches(matches);
+  let previous: number | undefined;
+  view.forEach((entry, i) => {
+    const live = entry.part as ToolIdentity;
+    if (matches[i] !== undefined) {
+      previous = matches[i];
+      return;
+    }
+    if (live.type !== "tool-call" || live.generationToolCallId) return;
+    const next = following[i];
+    const index = recovered.findIndex((candidate, j) => {
+      const saved = candidate.part as ToolIdentity;
+      if (
+        used.has(j) ||
+        (previous !== undefined && j <= previous) ||
+        (next !== undefined && j >= next) ||
+        candidate.at !== entry.at ||
+        saved.type !== "tool-call" ||
+        !saved.generationToolCallId ||
+        saved.toolName !== live.toolName
+      )
+        return false;
+      if (
+        saved.toolApprovalId &&
+        (live.toolApprovalId === saved.toolApprovalId ||
+          live.toolCallId === saved.toolApprovalId ||
+          live.toolCallId?.endsWith(`:${saved.toolApprovalId}`))
+      )
+        return true;
+      if (saved.toolApprovalId && live.toolApprovalId) return false;
+      const backendId = saved.backendToolCallId;
+      return (
+        Boolean(backendId) &&
+        (live.backendToolCallId !== undefined
+          ? live.backendToolCallId === backendId
+          : live.toolCallId === backendId ||
+            live.toolCallId?.startsWith(`${backendId}:`))
+      );
+    });
+    if (index < 0) return;
+    matches[i] = index;
+    previous = index;
+    used.add(index);
+  });
+  return matches;
+}
+
+function mergeCarriedParts(
+  view: CarriedPart[],
+  recovered: CarriedPart[],
+  matches: (number | undefined)[],
+): CarriedPart[] {
+  const before = new Map<number, CarriedPart[]>();
+  const after = new Map<number, CarriedPart[]>();
+  let previous: number | undefined;
+  const following = followingCarriedMatches(matches);
+  view.forEach((entry, i) => {
+    const match = matches[i];
+    if (match !== undefined) {
+      previous = match;
+      return;
+    }
+    const buckets = previous === undefined ? before : after;
+    const anchor = previous ?? following[i] ?? 0;
+    const bucket = buckets.get(anchor) ?? [];
+    bucket.push(entry);
+    buckets.set(anchor, bucket);
+  });
+  if (recovered.length === 0) return view;
+  return recovered.flatMap((entry, i) => [
+    ...(before.get(i) ?? []),
+    entry,
+    ...(after.get(i) ?? []),
+  ]);
+}
+
 export function recoveredContentToImport<TContent>(
   viewContent: TContent,
   recoveredContent: TContent,
 ): TContent {
-  const view = generationRawContent(viewContent).raw;
-  const recovered = generationRawContent(recoveredContent).raw;
-  if (recovered.length < view.length && view.startsWith(recovered)) {
+  const view = generationRawContent(viewContent);
+  const recovered = generationRawContent(recoveredContent);
+  if (
+    recovered.raw.length < view.raw.length &&
+    view.raw.startsWith(recovered.raw)
+  ) {
     return viewContent;
+  }
+  if (
+    view.carried.length > 0 &&
+    recovered.raw.startsWith(view.raw) &&
+    Array.isArray(recoveredContent)
+  ) {
+    const matches = carriedPartMatches(view.carried, recovered.carried);
+    if (matches.every((index) => index !== undefined)) {
+      return recoveredContent;
+    }
+    // Only a recovered reply that HAS text disagrees: an empty projection is a prefix of every
+    // reply, and with both text-free an unmatched view card is as likely a call replay has not
+    // reached as a stale one.
+    if (!view.raw && recovered.raw) {
+      return recoveredContent;
+    }
+    const spoken = recoveredContent.filter(
+      (part) =>
+        (part as { type?: string })?.type === "text" ||
+        (part as { type?: string })?.type === "reasoning",
+    );
+    return restoreCarriedParts(
+      spoken,
+      mergeCarriedParts(view.carried, recovered.carried, matches),
+    ) as TContent;
   }
   return recoveredContent;
 }

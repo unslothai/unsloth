@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from loggers import get_logger
 
@@ -55,8 +55,11 @@ def load_krea2_tokenizer(
     repo_id: str,
     hf_token: Optional[str] = None,
     local_files_only: bool = False,
+    check_cancelled: Optional[Callable[[], None]] = None,
 ):
     """The Krea 2 tokenizer, tolerating the repo's transformers-5.x tokenizer config."""
+    if check_cancelled is not None:
+        check_cancelled()
     from transformers import AutoTokenizer
 
     kwargs: dict[str, Any] = {
@@ -69,6 +72,8 @@ def load_krea2_tokenizer(
     try:
         return AutoTokenizer.from_pretrained(repo_id, **kwargs)
     except Exception as exc:  # noqa: BLE001 -- 4.x config-parse failure, retry with override
+        if check_cancelled is not None:
+            check_cancelled()
         logger.info("diffusion.krea2 tokenizer compat fallback: %s", exc)
         return AutoTokenizer.from_pretrained(repo_id, extra_special_tokens = {}, **kwargs)
 
@@ -88,8 +93,11 @@ def load_krea2_text_encoder(
     dtype,
     hf_token: Optional[str] = None,
     local_files_only: bool = False,
+    check_cancelled: Optional[Callable[[], None]] = None,
 ):
     """The Qwen3-VL text encoder, remapping 5.x ``rope_parameters`` for a 4.x runtime."""
+    if check_cancelled is not None:
+        check_cancelled()
     from transformers import AutoConfig, Qwen3VLModel
 
     kwargs: dict[str, Any] = {
@@ -100,6 +108,8 @@ def load_krea2_text_encoder(
     if hf_token:
         kwargs["token"] = hf_token
     config = AutoConfig.from_pretrained(repo_id, **kwargs)
+    if check_cancelled is not None:
+        check_cancelled()
     remap_rope_parameters(getattr(config, "text_config", config))
     return Qwen3VLModel.from_pretrained(repo_id, config = config, dtype = dtype, **kwargs)
 
@@ -157,6 +167,7 @@ def load_krea2_pipeline(
     with_transformer: bool = True,
     text_encoder = None,
     local_files_only: bool = False,
+    check_cancelled: Optional[Callable[[], None]] = None,
 ):
     """A ready ``Krea2Pipeline`` for ``repo_id`` (still on CPU; caller places it).
 
@@ -174,9 +185,10 @@ def load_krea2_pipeline(
     component load below therefore resolves from the cache or raises, which is what the
     caller's ``pipe_kwargs`` already does for every non-Krea family.
     """
+    check_cancelled = check_cancelled or (lambda: None)
+    check_cancelled()
     import diffusers
 
-    # diffusers gained Krea2Pipeline in 0.39; fail here rather than on a bare AttributeError below
     # diffusers gained Krea2Pipeline in 0.39; on an older install the getattr chain below dies with a bare
     # AttributeError, so fail first with the fix.
     if not hasattr(diffusers, "Krea2Pipeline"):
@@ -188,15 +200,26 @@ def load_krea2_pipeline(
 
     token = hf_token or None
     cache_dir = _live_cache_dir()
-    # read the index before the 26 GB transformer: a corrupt one used to surface only after everything was built
     # A few KB, and it configures the components, so it is read before them: read last, a corrupt index only surfaced
     # after the encoder, the VAE and the 26 GB transformer were already built.
     model_index = _load_model_index(repo_id, hf_token = token, local_files_only = local_files_only)
-    tokenizer = load_krea2_tokenizer(repo_id, hf_token = token, local_files_only = local_files_only)
+    check_cancelled()
+    tokenizer = load_krea2_tokenizer(
+        repo_id,
+        hf_token = token,
+        local_files_only = local_files_only,
+        check_cancelled = check_cancelled,
+    )
+    check_cancelled()
     if text_encoder is None:
         text_encoder = load_krea2_text_encoder(
-            repo_id, dtype, hf_token = token, local_files_only = local_files_only
+            repo_id,
+            dtype,
+            hf_token = token,
+            local_files_only = local_files_only,
+            check_cancelled = check_cancelled,
         )
+        check_cancelled()
     scheduler = diffusers.FlowMatchEulerDiscreteScheduler.from_pretrained(
         repo_id,
         subfolder = "scheduler",
@@ -204,6 +227,7 @@ def load_krea2_pipeline(
         local_files_only = local_files_only,
         cache_dir = cache_dir,
     )
+    check_cancelled()
     vae = diffusers.AutoencoderKLQwenImage.from_pretrained(
         repo_id,
         subfolder = "vae",
@@ -212,6 +236,7 @@ def load_krea2_pipeline(
         local_files_only = local_files_only,
         cache_dir = cache_dir,
     )
+    check_cancelled()
     if transformer is None and with_transformer:
         transformer = diffusers.Krea2Transformer2DModel.from_pretrained(
             repo_id,
@@ -221,6 +246,7 @@ def load_krea2_pipeline(
             local_files_only = local_files_only,
             cache_dir = cache_dir,
         )
+        check_cancelled()
     return diffusers.Krea2Pipeline(
         scheduler = scheduler,
         vae = vae,

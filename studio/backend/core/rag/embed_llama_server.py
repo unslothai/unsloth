@@ -3,19 +3,20 @@
 
 """GGUF embedder over the bundled llama.cpp, served via HTTP (no torch).
 
-Opt-in (``RAG_EMBED_BACKEND=llama-server``). Runs a dedicated
-``llama-server --embedding`` subprocess on its own port and calls its OpenAI-style
-``/v1/embeddings`` + ``/tokenize``, fully isolated from the chat backend.
+Opt-in (``RAG_EMBED_BACKEND=llama-server``). Runs a dedicated ``llama-server --embedding``
+subprocess on its own port and calls its OpenAI-style ``/v1/embeddings`` + ``/tokenize``, fully
+isolated from the chat backend.
 
-Device is ``auto`` (GPU when present, else CPU, falling back to CPU if a GPU start
-fails); ``RAG_EMBED_DEVICE`` forces it. We call only llama_cpp's *static* helpers
-(no torch), copying the instance-coupled bits locally, since constructing a
-``LlamaCppBackend`` runs an ``__init__`` reaper that kills any Unsloth llama-server
--- so each request re-spawns ours if it died (self-heal).
+Device is ``auto`` (GPU when present, else CPU, falling back to CPU if a GPU start fails);
+``RAG_EMBED_DEVICE`` forces it. We call only llama_cpp's *static* helpers (no torch), copying the
+instance-coupled bits locally, since constructing a ``LlamaCppBackend`` runs an ``__init__`` reaper
+that kills any Unsloth llama-server, so each request re-spawns ours if it died.
 """
 
 from __future__ import annotations
 
+from core.training.account_jobs import account_path, managed_account
+from utils.account_context import account_thread
 import atexit
 import logging
 import os
@@ -226,17 +227,13 @@ class LlamaServerBackend:
     @staticmethod
     @lru_cache(maxsize = 8)
     def _help_text(binary: str) -> str:
-        """`llama-server --help`, cached. Ignore exit code (some builds exit
-        non-zero on --help).
+        """`llama-server --help`, cached. Ignore exit code (some builds exit non-zero on --help).
 
-        On macOS, runs under the same loader environment as the real launch.
-        Without it, a bundle that needs the search path dies in the loader
-        here, and its error text reads as help output with no ``--embedding``
-        in it, so the caller reports a build that lacks embeddings instead of a
-        load failure. Elsewhere the probe keeps inheriting this process's
-        environment exactly as it always has: the loader hole is macOS-only,
-        and a probe that answers "does this build do embeddings" has no reason
-        to run under a different environment than it did before.
+        On macOS, runs under the same loader environment as the real launch. Without it, a bundle
+        that needs the search path dies in the loader here, and its error text reads as help output
+        with no ``--embedding`` in it, so the caller reports a build that lacks embeddings instead
+        of a load failure. Elsewhere the probe keeps inheriting this process's environment: the
+        loader hole is macOS-only.
         """
         probe_env = None
         if sys.platform == "darwin":
@@ -395,14 +392,13 @@ class LlamaServerBackend:
     def _cached_snapshot_dir(repo_id: str) -> Path | None:
         """The snapshot ``refs/main`` names in the active hub cache, or None.
 
-        Only that revision, because it is the one hf_hub_download serves; the remaining
-        snapshot directories are commit hashes, which order by nothing, so choosing among
-        them could serve a superseded model.
-
-        A hit therefore pins the embedder to the cached revision until the cache itself
-        changes. Deliberate: a stored embedding identity records no revision, so adopting
-        republished weights would leave an index answering one model's queries with another
-        model's documents."""
+        Only that revision, because it is the one hf_hub_download serves; the remaining snapshot
+        directories are commit hashes, which order by nothing, so choosing among them could serve a
+        superseded model. A hit therefore pins the embedder to the cached revision until the cache
+        itself changes -- deliberate, since a stored embedding identity records no revision and
+        adopting republished weights would leave an index answering one model's queries with another
+        model's documents.
+        """
         from utils.hf_cache_settings import active_hf_hub_cache
         from utils.paths import resolve_cached_repo_id_case
 
@@ -464,6 +460,7 @@ class LlamaServerBackend:
 
         ``model_name`` is the model the caller pinned; the live setting would
         resolve B's weights for a job still tagging its vectors as A."""
+        account_path(model_name, reference = True)
         model = model_name or config.effective_embedding_model()
         # Captured once: the path must stay tagged with the repo it was resolved FOR, so a mid-download
         # setting change reads as stale and respawns.
@@ -567,14 +564,14 @@ class LlamaServerBackend:
     def _is_planned_family(model: str, repo_id: str, path: str) -> bool:
         """Whether ``path`` is one of the files the picker planned for ``model``.
 
-        Compared by the path relative to the snapshot, which is the layout the
-        record's repo-relative names already describe. Base names are not enough:
-        a repo that files each quant in its own directory publishes
-        ``Q8_0/model.gguf`` beside ``Q4_K_M/model.gguf``, and matching on the name
-        alone would let a stale quant pass for the planned one.
+        Compared by the path relative to the snapshot, which is the layout the record's
+        repo-relative names already describe. Base names are not enough: a repo that files each
+        quant in its own directory publishes ``Q8_0/model.gguf`` beside ``Q4_K_M/model.gguf``, and
+        matching on the name alone would let a stale quant pass for the planned one.
 
-        False when no family was recorded, which is every resolution written before
-        it was stored, so the caller keeps its conservative answer on those."""
+        False when no family was recorded, which is every resolution written before it was stored,
+        so the caller keeps its conservative answer on those.
+        """
         try:
             from pathlib import PurePosixPath
             from utils.embedding_model_settings import get_stored_gguf_files
@@ -614,7 +611,7 @@ class LlamaServerBackend:
         from core.inference.llama_cpp import _hf_offline_if_unreachable
         from utils.utils import call_with_deadline
 
-        token = os.environ.get("HF_TOKEN") or None
+        token = False if managed_account() else os.environ.get("HF_TOKEN") or None
         repo = desired
         filename: str | None = None
         family: list[str] = []
@@ -705,12 +702,12 @@ class LlamaServerBackend:
     def _arch_gated_gpu_ids(binary: str) -> list[int]:
         """GPU ids to pin the embedding child to, or [] when it needs no mask.
 
-        Knowing a supported device exists is not enough: the child enumerates every
-        ROCm agent, and that HSA enumeration is what dies on an uncovered GPU (#7624),
-        so on a mixed host the gate passes on the dGPU and the server still crashes on
-        the iGPU. Pin the survivors instead. Empty unless the gate is both known and
-        actually narrowing: NVIDIA, CPU, Vulkan and macOS have no mapped_targets
-        marker, and a build covering every card needs no pin."""
+        Knowing a supported device exists is not enough: the child enumerates every ROCm agent, and
+        that HSA enumeration is what dies on an uncovered GPU (#7624), so on a mixed host the gate
+        passes on the dGPU and the server still crashes on the iGPU. Pin the survivors instead.
+        Empty unless the gate is both known and actually narrowing: NVIDIA, CPU, Vulkan and macOS
+        have no mapped_targets marker, and a build covering every card needs no pin.
+        """
         from core.inference.llama_cpp import LlamaCppBackend
         return LlamaCppBackend._arch_gate_survivors(binary)
 
@@ -742,15 +739,28 @@ class LlamaServerBackend:
 
     def _build_env(self, binary: str, *, use_gpu: bool) -> dict[str, str]:
         env = child_env_without_native_path_secret()
+        # Not routed through _llama_server_env_for_binary, so it needs its own strip:
+        # an inherited GGML_CUDA_P2P=0 means OFF to the user and ON to llama.cpp, and
+        # a corrupt embedding degrades retrieval quietly (#10613).
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        LlamaCppBackend._sanitize_p2p_env(env)
         env["LLAMA_SET_ROWS"] = "1"
         if sys.platform == "darwin":
             # _llama_lib_dir, not Path(binary).parent: the managed install puts an entrypoint in front of the
             # real server and the dylibs sit next to the target (#8566).
             env = _with_dyld_path(env, _binary_lib_dir(binary))
         elif use_gpu:
-            # Left as Path(binary).parent: resolving the entrypoint here would move the first LD_LIBRARY_PATH
-            # entry for every existing Linux GPU install whose llama-server is a symlink.
-            self._add_linux_cuda_libs(env, str(Path(binary).parent))
+            if sys.platform == "win32":
+                # Chat's DLL search path: without it a venv-hosted cudart is never found and the CUDA build runs on the CPU.
+                from core.inference.llama_cpp import _llama_lib_dir
+                path_dirs = LlamaCppBackend._build_windows_path_dirs(
+                    str(_llama_lib_dir(binary)), sys.prefix, os.environ.get("CUDA_PATH", "")
+                )
+                env["PATH"] = ";".join(path_dirs) + ";" + env.get("PATH", "")
+            else:
+                # Path(binary).parent, unresolved: resolving would move the first LD_LIBRARY_PATH entry of every symlinked install.
+                self._add_linux_cuda_libs(env, str(Path(binary).parent))
             _pinned = self._arch_gated_gpu_ids(binary)
             if _pinned:
                 from core.inference.llama_cpp import LlamaCppBackend
@@ -787,9 +797,12 @@ class LlamaServerBackend:
             return
         arch = platform.machine()
         lib_dirs = [binary_dir]
+        # glob.escape: a prefix with [brackets] is otherwise read as a pattern.
+        site = os.path.join(glob.escape(sys.prefix), "lib", "python*", "site-packages")
         for pattern in (
-            os.path.join(sys.prefix, "lib", "python*", "site-packages", "nvidia", "cu*", "lib"),
-            os.path.join(sys.prefix, "lib", "python*", "site-packages", "nvidia", "cudnn", "lib"),
+            os.path.join(site, "nvidia", "cu*", "lib"),
+            os.path.join(site, "nvidia", "cudnn", "lib"),
+            os.path.join(site, "torch", "lib"),
         ):
             lib_dirs.extend(d for d in glob.glob(pattern) if os.path.isdir(d))
         for cuda_lib in (
@@ -880,7 +893,7 @@ class LlamaServerBackend:
             self._kill_process()
             raise RuntimeError("Studio is shutting down; not starting the embed server")
         self._port = port
-        self._stdout_thread = threading.Thread(
+        self._stdout_thread = account_thread(
             target = self._drain_stdout,
             args = (proc,),
             daemon = True,
@@ -940,12 +953,10 @@ class LlamaServerBackend:
         )
 
     def _ensure_ready(self, model_name: str | None = None) -> None:
-        """Guarantee a live server on ``model_name``, (re)spawning if needed.
-        Double-checked so the current path takes no lock; self-heals after the
-        chat reaper kills us and re-resolves after a Settings model change.
-
-        One subprocess serves one GGUF, so a request pinned to a model the server
-        is not serving respawns onto it rather than answering from the wrong
+        """Guarantee a live server on ``model_name``, (re)spawning if needed. Double-checked so the
+        current path takes no lock; self-heals after the chat reaper kills us and re-resolves
+        after a Settings model change. One subprocess serves one GGUF, so a request pinned to a
+        model the server is not serving respawns onto it rather than answering from the wrong
         weights."""
         if self._current(model_name):
             return
@@ -1102,14 +1113,14 @@ class LlamaServerBackend:
         return arr
 
     def dim(self, *, model_name = None) -> int:
-        """Embedding width, probed via a 1-text encode and cached per model
-        (_resolve_model_path clears it when the effective repo changes).
+        """Embedding width, probed via a 1-text encode and cached per model (_resolve_model_path clears
+        it when the effective repo changes).
 
-        Under the same lock the request path uses, for the same reason: ``_dim``
-        belongs to the one subprocess, so with two jobs pinned to models of
-        different width, one could ready A, have the other switch to B and cache
-        B's width, and then answer A with it. Reentrant, so the probe's own encode
-        re-enters rather than deadlocking."""
+        Under the same lock the request path uses, for the same reason: ``_dim`` belongs to the one
+        subprocess, so with two jobs pinned to models of different width, one could ready A, have
+        the other switch to B and cache B's width, and then answer A with it. Reentrant, so the
+        probe's own encode re-enters rather than deadlocking.
+        """
         with self._operation(), self._serve_lock:
             self._ensure_ready(model_name)
             cached = self._dim

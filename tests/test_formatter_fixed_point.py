@@ -17,6 +17,7 @@ run reports the drift instead of quietly fixing it.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -120,6 +121,32 @@ def _pinned_ruff_reason() -> str | None:
     return None
 
 
+def guard_verdict(ruff_reason: str | None, in_ci: bool) -> str:
+    """`run`, `skip` or `fail`.
+
+    Skipping is for a contributor who has not installed the pinned ruff; making
+    them install one to run the rest of the suite would be rude. In CI it is the
+    wrong answer: the runner installs the pin in a step of its own, so a missing
+    ruff there means that step moved, was renamed, or a new job started calling
+    `pytest tests/` without it, and the guard would go green having checked
+    nothing. That is the failure this whole file exists to stop, applied to
+    itself, and it costs nothing to notice.
+    """
+    if ruff_reason is None:
+        return "run"
+    return "fail" if in_ci else "skip"
+
+
+def running_in_ci(environ: dict[str, str] | None = None) -> bool:
+    """GitHub Actions sets both; `CI` alone covers the other providers."""
+    env = os.environ if environ is None else environ
+    return bool(env.get("GITHUB_ACTIONS") or env.get("CI"))
+
+
+_RUFF_REASON = _pinned_ruff_reason()
+_VERDICT = guard_verdict(_RUFF_REASON, running_in_ci())
+
+
 class TestTheExcludeComesFromTheConfig:
     """The filter has to track the hook, not a copy of it made once."""
 
@@ -171,9 +198,41 @@ class TestTheExcludeComesFromTheConfig:
         assert "scripts/run_ruff_format.py" in names
 
 
-@pytest.mark.skipif(_pinned_ruff_reason() is not None, reason = _pinned_ruff_reason() or "")
+class TestTheGuardCannotGoGreenHavingCheckedNothing:
+    """A skip is a pass to everything that reads CI, so CI may not be allowed one."""
+
+    def test_a_usable_ruff_runs_the_check(self):
+        assert guard_verdict(None, in_ci = False) == "run"
+        assert guard_verdict(None, in_ci = True) == "run"
+
+    def test_a_contributor_without_the_pin_is_only_skipped(self):
+        assert guard_verdict("ruff is not installed here", in_ci = False) == "skip"
+
+    def test_the_same_gap_in_ci_is_a_failure(self):
+        # Whichever reason it is: no ruff means the guard checked nothing, and a
+        # mismatched ruff means the workflow drifted off the pin it installs.
+        assert guard_verdict("ruff is not installed here", in_ci = True) == "fail"
+        assert guard_verdict("the repo is formatted with ruff 0.6.9", in_ci = True) == "fail"
+
+    def test_ci_is_detected_from_either_variable(self):
+        assert running_in_ci({"GITHUB_ACTIONS": "true"}) is True
+        assert running_in_ci({"CI": "true"}) is True
+        assert running_in_ci({}) is False
+        # Unset-but-present is how some runners spell "not CI".
+        assert running_in_ci({"CI": ""}) is False
+
+
+@pytest.mark.skipif(_VERDICT == "skip", reason = _RUFF_REASON or "")
 def test_every_tracked_python_file_is_already_formatted(tmp_path):
     """Run the hook over copies of the whole tracked set and expect no rewrite."""
+    if _VERDICT == "fail":
+        pytest.fail(
+            f"this guard cannot run in CI: {_RUFF_REASON}.\n"
+            "  The runner installs the pinned ruff in its own step (see the "
+            "'Install the pinned ruff (formatter fixed-point guard)' step in "
+            ".github/workflows/studio-backend-ci.yml).\n"
+            "  Skipping here would report a green formatting guard that checked no files."
+        )
     names = eligible_files(_ROOT)
     assert len(names) > 1000, f"only {len(names)} files matched; the file list has gone vacuous"
 

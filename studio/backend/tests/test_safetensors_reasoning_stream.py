@@ -33,6 +33,7 @@ if _BACKEND_DIR not in sys.path:
 
 from routes.inference import (
     _ResponsesReasoningExtractor,
+    _sf_parse_think_markers,
     _sf_reasoning_prefill_mode,
     _strip_tool_xml_for_display,
 )
@@ -156,6 +157,7 @@ _STRICT_HISTORY_TPL = (
     "{% endif %}<|im_start|>{{ m['role'] }}\n{{ m['content'] }}<|im_end|>\n{% endfor %}"
     "{% if add_generation_prompt %}<|im_start|>assistant\n<think>\n\n</think>\n\n{% endif %}"
 )
+_TINY_PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAAE0lEQVR4nGM8ISfHAANMcBZeDgA0dgEMydTl/QAAAABJRU5ErkJggg=="
 _ETHINK = {"reasoning_style": "enable_thinking", "supports_reasoning": True}
 _ETHINK_EFFORT = {"reasoning_style": "enable_thinking_effort", "supports_reasoning": True}
 
@@ -613,7 +615,15 @@ def test_the_eager_import_under_the_stubs_actually_succeeded():
     assert "core.inference.inference" in sys.modules
 
 
-def _sf_route_message(monkeypatch, template, snapshots, **body):
+def _sf_route_message(
+    monkeypatch,
+    template,
+    snapshots,
+    is_vision = False,
+    is_mlx = False,
+    features = None,
+    **body,
+):
     """POST a non-streaming safetensors chat completion and return the assistant message."""
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
@@ -628,7 +638,13 @@ def _sf_route_message(monkeypatch, template, snapshots, **body):
 
     class _Safetensors:
         active_model_name = "qwen"
-        models = {"qwen": {"chat_template_info": {"template": template}}}
+        models = {
+            "qwen": {
+                "chat_template_info": {"template": template},
+                "is_vision": is_vision,
+                "is_mlx": is_mlx,
+            }
+        }
 
         def generate_chat_response(self, **kwargs):
             yield from snapshots
@@ -636,10 +652,13 @@ def _sf_route_message(monkeypatch, template, snapshots, **body):
         def reset_generation_state(self, *_args):
             return None
 
+        def resize_image(self, image):
+            return image
+
     monkeypatch.setattr(
         inference_route,
         "_detect_safetensors_features",
-        lambda backend, chat_template, tools = None: dict(_ETHINK, supports_tools = False),
+        lambda backend, chat_template, tools = None: dict(features or _ETHINK, supports_tools = False),
     )
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _NoGGUF())
     monkeypatch.setattr(inference_route, "get_inference_backend", lambda: _Safetensors())
@@ -667,3 +686,93 @@ def test_route_returns_the_answer_as_content_when_the_template_closes_its_block(
     message = _sf_route_message(monkeypatch, _TEMPLATE_DEFAULT_OFF_TPL, snapshots)
     assert message["content"] == "The capital of Japan is Tokyo."
     assert not message["reasoning_content"]
+
+
+def test_route_keeps_literal_think_text_when_the_request_turns_thinking_off(monkeypatch):
+    answer = "Use <think>hi</think> in your prompt."
+    message = _sf_route_message(
+        monkeypatch,
+        _TEMPLATE_DEFAULT_OFF_TPL,
+        [answer],
+        enable_thinking = False,
+    )
+    assert message["content"] == answer
+    assert not message["reasoning_content"]
+
+
+def test_route_still_splits_real_thinking_when_the_request_leaves_it_on(monkeypatch):
+    message = _sf_route_message(
+        monkeypatch,
+        _TEMPLATE_DEFAULT_OFF_TPL,
+        ["<think>plan</think>answer"],
+        enable_thinking = True,
+    )
+    assert message["content"] == "answer"
+    assert message["reasoning_content"] == "plan"
+
+
+def test_route_still_splits_a_transformers_image_turn_the_request_asked_to_disable(monkeypatch):
+    """Transformers vision generation ignores both reasoning fields."""
+    message = _sf_route_message(
+        monkeypatch,
+        _TEMPLATE_DEFAULT_OFF_TPL,
+        ["<think>plan</think>answer"],
+        is_vision = True,
+        enable_thinking = False,
+        image_base64 = _TINY_PNG_B64,
+    )
+    assert message["content"] == "answer"
+    assert message["reasoning_content"] == "plan"
+
+
+def test_route_keeps_literal_think_text_on_an_mlx_image_turn(monkeypatch):
+    """Effort alone, so a guard that drops it cannot pass on the boolean."""
+    answer = "Use <think>hi</think> in your prompt."
+    message = _sf_route_message(
+        monkeypatch,
+        _EFFORT_SHAPE_TPL,
+        [answer],
+        features = _ETHINK_EFFORT,
+        is_vision = True,
+        is_mlx = True,
+        reasoning_effort = "none",
+        image_base64 = _TINY_PNG_B64,
+    )
+    assert message["content"] == answer
+    assert not message["reasoning_content"]
+
+
+def test_route_carries_the_effort_field_into_the_gate(monkeypatch):
+    answer = "Use <think>hi</think> in your prompt."
+    message = _sf_route_message(
+        monkeypatch,
+        _EFFORT_SHAPE_TPL,
+        [answer],
+        features = _ETHINK_EFFORT,
+        reasoning_effort = "none",
+    )
+    assert message["content"] == answer
+    assert not message["reasoning_content"]
+
+
+def test_parse_think_markers_gates_on_capability_and_request():
+    assert _sf_parse_think_markers(_ETHINK) is True
+    assert _sf_parse_think_markers(_ETHINK, True) is True
+    assert _sf_parse_think_markers(_ETHINK, False) is False
+    assert _sf_parse_think_markers(dict(_ETHINK, reasoning_always_on = True), False) is True
+    assert _sf_parse_think_markers({"supports_reasoning": False}, True) is False
+
+
+def test_parse_think_markers_reads_only_the_dial_the_template_branches_on():
+    # Plain enable_thinking templates ignore the effort.
+    assert _sf_parse_think_markers(_ETHINK, None, "none") is True
+    # Effort-only ladders ignore the boolean.
+    _EFFORT_ONLY = {"reasoning_style": "reasoning_effort", "supports_reasoning": True}
+    assert _sf_parse_think_markers(_EFFORT_ONLY, False, None) is True
+    assert _sf_parse_think_markers(_EFFORT_ONLY, None, "none") is False
+    assert _sf_parse_think_markers(_EFFORT_ONLY, None, "low") is True
+    # Hybrid templates read enable_thinking first (Kimi-K3).
+    assert _sf_parse_think_markers(_ETHINK_EFFORT, True, "none") is True
+    assert _sf_parse_think_markers(_ETHINK_EFFORT, False, "high") is False
+    assert _sf_parse_think_markers(_ETHINK_EFFORT, None, "none") is False
+    assert _sf_parse_think_markers(_ETHINK_EFFORT, None, "high") is True

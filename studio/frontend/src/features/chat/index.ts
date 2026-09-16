@@ -26,6 +26,7 @@ export {
   notifyChatHistoryUpdated,
   removeScanFolder,
   revealCachedModel,
+  validateModel,
   type BrowseFoldersResponse,
   type CachedGgufRepo,
   type CachedModelRepo,
@@ -77,6 +78,7 @@ export {
   preferFullToolOutput,
   preferSanitizedFullToolOutput,
   toolOutputKey,
+  toolResultText,
   toolThreadScope,
   useToolOutputFor,
   useUnresolvedToolPaneScope,
@@ -133,6 +135,7 @@ export {
 export {
   adoptPreStreamRunReservation,
   cancelPreStreamRunReservations,
+  cancelPreStreamRunForThreadIds,
   findPreStreamRunReservation,
   hasPreStreamRunReservation,
   preStreamRunThreadIdsForAdapter,
@@ -256,6 +259,7 @@ export {
   getStoredChatThread,
   isThreadIncognito,
   listStoredChatMessages,
+  listStoredChatProjects,
   listStoredChatThreads,
   markThreadIncognito,
 } from "./utils/chat-history-storage";
@@ -375,3 +379,22 @@ export {
   generateStudioTtsAudio,
   releaseTtsAudioUrl,
 } from "./adapters/studio-speech-synthesis-adapter";
+export { ChatSkillsDialog } from "./components/chat-skills-dialog";
+export {
+  SKILL_MENTION_PATTERN,
+  listSkills,
+  refreshSkillsCatalog,
+  setSkillEnabled,
+  settleSkillsForText,
+  useSkillsCatalog,
+  type SkillRecord,
+} from "./api/skills-api";
+export {
+  composerSubmitIntent,
+  composerFollowUpBehavior,
+  composerShortcutLabels,
+  steeringInsertionIndex,
+  type ComposerSendShortcut,
+  type ComposerFollowUpBehavior,
+  type ComposerSubmitIntent,
+} from "./utils/composer-preferences";

@@ -1,11 +1,8 @@
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
-#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-#
 #     http://www.apache.org/licenses/LICENSE-2.0
-#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -153,7 +150,6 @@ def PatchRL(FastLanguageModel):
         try:
             from trl.models import unwrap_model_for_generation
         except ImportError:
-            # Local fallback: TRL removed or moved this symbol.
             from contextlib import contextmanager as _cm
 
             @_cm
@@ -224,32 +220,13 @@ def PatchRL(FastLanguageModel):
 
     @torch.no_grad()
     def unsloth_prediction_step(self, model, inputs, prediction_loss_only, ignore_keys):
-        """
-        Perform an evaluation step on `model` using `inputs`.
-        Subclass and override to inject custom behavior.
-        Args:
-            model (`nn.Module`):
-                The model to evaluate.
-            inputs (`Dict[str, Union[torch.Tensor, Any]]`):
-                The inputs and targets of the model.
-                The dictionary will be unpacked before being fed to the model. Most models expect the targets under the
-                argument `labels`. Check your model's documentation for all accepted arguments.
-            prediction_loss_only (`bool`):
-                Whether or not to return the loss only.
-            ignore_keys (`List[str]`, *optional*):
-                A list of keys in the output of your model (if it is a dictionary) that should be ignored when
-                gathering predictions.
-        Return:
-            Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]: A tuple with the loss,
-            logits and labels (each being optional).
-        """
+        """Evaluation step on `model` using `inputs`. Returns (loss, logits, labels), each optional."""
         has_labels = (
             False
             if len(self.label_names) == 0
             else all(inputs.get(k) is not None for k in self.label_names)
         )
-        # For CLIP-like models capable of returning loss values: if return_loss is unset in inputs, check
-        # whether model.forward defaults it to True.
+        # For CLIP-like models capable of returning loss values: if return_loss is unset in inputs, check whether model.forward defaults it to True.
         return_loss = inputs.get("return_loss", None)
         if return_loss is None:
             return_loss = self.can_return_loss
@@ -270,8 +247,7 @@ def PatchRL(FastLanguageModel):
         else:
             labels = None
 
-        # Force logits during eval, but restore the user's prior setting after so an explicit
-        # UNSLOTH_RETURN_LOGITS="1" is not silently turned off.
+        # Force logits during eval, but restore the user's prior setting after so an explicit UNSLOTH_RETURN_LOGITS="1" is not silently turned off.
         _old_return_logits = os.environ.get("UNSLOTH_RETURN_LOGITS", "0")
         os.environ["UNSLOTH_RETURN_LOGITS"] = "1"
         with torch.no_grad():
@@ -561,8 +537,7 @@ pass
 '''
 
 
-# Marks an Unsloth-generated config class. It is renamed to the TRL name it stands in for,
-# so the "already patched" checks cannot go by __name__ alone.
+# Marks an Unsloth-generated config class. It is renamed to the TRL name it stands in for, so the "already patched" checks cannot go by __name__ alone.
 _UNSLOTH_PATCHED_CONFIG_FLAG = "_unsloth_patched_rl_config"
 # Set on the PRISTINE config class, pointing at the Unsloth subclass that has taken over its module attribute.
 _UNSLOTH_CONFIG_PICKLE_TARGET = "_unsloth_config_pickle_target"
@@ -576,15 +551,7 @@ def _is_unsloth_patched_config(config_class):
 
 
 def _reduce_pristine_rl_config(config):
-    """copyreg reducer for instances of a TRL config class Unsloth has replaced.
-
-    Anyone holding the pristine class - code that imported trl before unsloth, or
-    TRL's own `TrainingArguments` -> `<X>Config` conversion - owns instances whose
-    class no longer answers to its own module attribute, so pickle refuses them.
-    Reduce through `copyreg._reconstructor`, which is stdlib, and the Unsloth
-    subclass, which pickles under the pristine module and name, so the resulting
-    file loads as a plain `<X>Config` on a machine without unsloth.
-    """
+    """copyreg reducer for instances of a TRL config class Unsloth has replaced. Anyone holding the pristine class (code that imported trl before unsloth, or TRL's own ``TrainingArguments`` -> ``<X>Config`` conversion) owns instances whose class no longer answers to its own module attribute, so pickle refuses them. Reduce through stdlib ``copyreg._reconstructor`` and the Unsloth subclass, which pickles under the pristine module and name, so the file loads as a plain ``<X>Config`` on a machine without unsloth."""
     target = getattr(type(config), _UNSLOTH_CONFIG_PICKLE_TARGET, None)
     if target is None:
         target = type(config)
@@ -594,22 +561,7 @@ def _reduce_pristine_rl_config(config):
 
 
 def _patch_config_pickle_identity(pristine_config, patched_config):
-    """Keep `torch.save(trainer.args, ...)` working once the config is patched.
-
-    `Trainer._save_checkpoint` ends in `torch.save(self.args, ...)`, and pickle
-    stores a class as `__module__` + `__qualname__`, then refuses unless the
-    object living at that path *is* the class. Patching a trainer rebinds
-    `<X>Config` at the module the pristine class calls home, which breaks that
-    identity for the pristine class, so every checkpoint save raises
-    `PicklingError`. Left alone the patched class is no better: it advertises
-    itself as `Unsloth<X>Trainer.Unsloth<X>Config`, a top level module that only
-    exists next to a compiled cache, so its `training_args.bin` cannot be read
-    back by a plain TRL install either.
-
-    Give the patched class the pristine module and name, so it pickles as
-    `trl.trainer.<x>_config.<X>Config` and reloads anywhere, and reduce pristine
-    instances through it.
-    """
+    """Keep ``torch.save(trainer.args, ...)`` working once the config is patched. Pickle stores a class as ``__module__`` + ``__qualname__`` and refuses unless the object living there IS the class; patching rebinds ``<X>Config`` at the pristine class's module, so ``Trainer._save_checkpoint`` raised PicklingError. The patched class alone is no better: it advertises ``Unsloth<X>Trainer.Unsloth<X>Config``, a top level module that only exists next to a compiled cache. Give the patched class the pristine module and name so it pickles as ``trl.trainer.<x>_config.<X>Config``, and reduce pristine instances through it."""
     if pristine_config is None or patched_config is None:
         return
     if pristine_config is patched_config:
@@ -618,7 +570,6 @@ def _patch_config_pickle_identity(pristine_config, patched_config):
     qualname = getattr(pristine_config, "__qualname__", None) or getattr(
         pristine_config, "__name__", None
     )
-    # A nested or generated class has nothing stable to point pickle at.
     if not home_module_name or not qualname or "." in qualname:
         return
     home_module = sys.modules.get(home_module_name)
@@ -627,12 +578,9 @@ def _patch_config_pickle_identity(pristine_config, patched_config):
             home_module = importlib.import_module(home_module_name)
         except Exception:
             return
-    # The rebinding above follows the trl.trainer.<x>_trainer -> <x>_config convention, but
-    # pickle consults the pristine class's own __module__, which is also right for
-    # trl.experimental wrappers the convention misses.
+    # The rebinding above follows the trl.trainer.<x>_trainer -> <x>_config convention, but pickle consults the pristine class's own __module__, which is also right for trl.experimental wrappers the convention misses.
     current = getattr(home_module, qualname, None)
     if current is not pristine_config and current is not patched_config:
-        # Something else owns the name; renaming the patched class would only move the failure.
         return
     try:
         setattr(home_module, qualname, patched_config)
@@ -647,35 +595,15 @@ def _patch_config_pickle_identity(pristine_config, patched_config):
 
 
 def _config_reduction_is_safe(displaced_config, patched_config):
-    """Can instances of `displaced_config` be rebuilt as `patched_config`?
-
-    The straightforward yes is a subclass: the patched class carries every field
-    the displaced one declares.
-
-    A sibling also qualifies, and TRL produces one. The deprecation shims at
-    `trl.trainer.<x>_config.<X>Config` subclass the real class in
-    `trl.experimental.<x>`, and the wrapper resolution above generates the
-    patched class from that same parent rather than from the shim -- so the two
-    end up siblings, not subclass and base. The shim adds only a `__post_init__`
-    that warns, and every base it has is already in the patched class's MRO, so
-    the patched class still holds everything such an instance can carry.
-
-    Anything else is left alone: rebuilding an unrelated class as this one would
-    silently drop state, which is worse than the PicklingError it would avoid.
-    """
+    """Can instances of ``displaced_config`` be rebuilt as ``patched_config``? Yes for a subclass, and yes for a sibling, which TRL produces: the deprecation shims at ``trl.trainer.<x>_config.<X>Config`` subclass the real class in ``trl.experimental.<x>`` while the patched class is generated from that same parent, and the shim adds only a warning ``__post_init__``. Anything else is left alone, since rebuilding an unrelated class as this one silently drops state."""
     if issubclass(patched_config, displaced_config):
         return True
-    # `object` alone is no relationship at all, so it does not count as shared.
     bases = set(displaced_config.__mro__[1:]) - {object}
     return bool(bases) and bases.issubset(set(patched_config.__mro__))
 
 
 def _register_config_pickle_fallback(displaced_config, patched_config):
-    """Route instances of a config class Unsloth displaced through the patched one.
-
-    Covers the pristine class, and any thin wrapper a TRL release leaves at a
-    module attribute the patching has taken over.
-    """
+    """Route instances of a config class Unsloth displaced through the patched one: the pristine class, and any thin wrapper a TRL release leaves at a module attribute the patching has taken over."""
     if displaced_config is None or displaced_config is patched_config:
         return
     if not isinstance(displaced_config, type):
@@ -732,27 +660,12 @@ _PER_TOKEN = (
 
 
 def _column_names(dataset):
-    """The split's columns, from metadata AND from a row.
-
-    Both, because either alone is wrong. A `torch.utils.data.Dataset`, a list
-    or any custom map-style split carries no `column_names`, and reading that
-    as "raw text, prep will tokenize it" left a pre-tokenized one uncapped on
-    a path where `args.max_length` is already None. And a `with_transform`
-    dataset reports its BACKING columns (`text`) while yielding `input_ids`,
-    so trusting the metadata alone misses it in the other direction.
-
-    Returns the split to actually USE alongside the names. `iter(gen) is gen`
-    for a bare generator or any other single-pass iterator, so reading a row off
-    it consumes that row for good and the split silently evaluates one example
-    short. Those get the probed row chained back on the front instead.
-    """  # noqa: D208
+    """The split's columns, from metadata AND from a row, because either alone is wrong: a ``torch.utils.data.Dataset``, list or custom map-style split carries no ``column_names`` (read as "raw text", which left a pre-tokenized split uncapped), while a ``with_transform`` split reports its BACKING columns (``text``) but yields ``input_ids``. Returns the split to actually USE alongside the names: ``iter(gen) is gen`` for a single-pass iterator, so the probed row is chained back on or the split silently evaluates one example short."""  # noqa: D208
     names = set(getattr(dataset, "column_names", None) or ())
     source = dataset
     try:
         iterator = iter(dataset)
-        # `iterator is dataset` misses an IterableDataset whose __iter__ returns one stored
-        # generator. Two iter() calls giving the same object catches both; a datasets.IterableDataset
-        # restarts, so it answers False and is rewound.
+        # `iterator is dataset` misses an IterableDataset whose __iter__ returns one stored generator. Two iter() calls giving the same object catches both; a datasets.IterableDataset restarts, so it answers False and is rewound.
         single_pass = iterator is dataset or iterator is iter(dataset)
         row = next(iterator, None)
         if single_pass and row is not None:
@@ -762,20 +675,12 @@ def _column_names(dataset):
         row = None
     if isinstance(row, dict):
         names.update(row.keys())
-    # Keep the probed row: on a one-shot stream it is the only row anything may see. Without it
-    # _sliceable_per_token had no widths and cut input_ids alone, leaving labels overlength.
+    # Keep the probed row: on a one-shot stream it is the only row anything may see. Without it _sliceable_per_token had no widths and cut input_ids alone, leaving labels overlength.
     return tuple(names), source, (row if isinstance(row, dict) else None)
 
 
 class _CappedBase:
-    """A read-side cap for a split that cannot be rewritten in place.
-
-    `map`/`filter` belong to `datasets`; a plain `torch.utils.data.Dataset` or
-    a list has neither, and a `with_transform` dataset has them but rebuilds
-    its rows on every read, so mapping it writes the backing table while the
-    reader keeps handing back the untruncated row. Both reach the collator
-    through iteration, and the map-style subclass below adds indexing.
-    """
+    """A read-side cap for a split that cannot be rewritten in place. ``map``/``filter`` belong to ``datasets``; a plain ``torch.utils.data.Dataset`` or list has neither, and a ``with_transform`` split has them but rebuilds rows on every read, so mapping writes the backing table while the reader still hands back the untruncated row."""
 
     def __init__(self, inner, cut, supervision, per_token):
         self._inner = inner
@@ -784,9 +689,7 @@ class _CappedBase:
         self._per_token = tuple(per_token)
 
     def _slice(self, row):
-        # Per value, per row, like the map path: _sliceable_per_token judges from ONE row, and an
-        # optional column that is a list there can be None later, which raised in the dataloader.
-        # Only input_ids is cut unconditionally.
+        # Per value, per row, like the map path: _sliceable_per_token judges from ONE row, and an optional column that is a list there can be None later, which raised in the dataloader. Only input_ids is cut unconditionally.
         if not isinstance(row, dict):
             return row
         try:
@@ -826,9 +729,7 @@ class _CappedBase:
                 yield cut
 
     def __getattr__(self, attribute):
-        # Everything else (column_names, features, ...) is the wrapped split's answer. Never a dunder
-        # nor our own state: a DataLoader worker pickles the split, and __setstate__ before __init__
-        # would recurse on _inner forever.
+        # Everything else (column_names, features, ...) is the wrapped split's answer. Never a dunder nor our own state: a DataLoader worker pickles the split, and __setstate__ before __init__ would recurse on _inner forever.
         inner = self.__dict__.get("_inner")
         if inner is None or attribute.startswith("__"):
             raise AttributeError(attribute)
@@ -836,16 +737,11 @@ class _CappedBase:
 
 
 class _CappedRows(_CappedBase):
-    """The map-style flavour: a split with a length and an index.
-
-    Rows left with no supervised token are dropped, which changes the length,
-    so the surviving indices are resolved once up front.
-    """
+    """The map-style flavour: a split with a length and an index. Rows left with no supervised token are dropped, which changes the length, so the surviving indices are resolved once up front."""
 
     def __init__(self, inner, cut, supervision, per_token):
         super().__init__(inner, cut, supervision, per_token)
-        # With no supervision columns _keep is True for every row, so building the index would
-        # transform every item -- a whole extra tokenization pass for a with_transform split.
+        # With no supervision columns _keep is True for every row, so building the index would transform every item, a whole extra tokenization pass for a with_transform split.
         self._index = (
             None
             if not self._supervision
@@ -870,15 +766,7 @@ except Exception:  # torch's data stack is optional at import time
 
 
 class _CappedStream(_CappedBase, _IterableDatasetBase):
-    """The iterable-style flavour, and it has to BE one.
-
-    Trainer and DataLoader both split map-style from iterable-style with
-    `isinstance(dataset, IterableDataset)`, not by looking for `__iter__`, so
-    wrapping a stream in a plain object got it a `SequentialSampler` asking for
-    the `len()` a stream never had. Declared here rather than built with `type()`
-    inside a function: a DataLoader worker under `spawn` pickles the split by
-    module and qualified name, and a class with neither is unpicklable.
-    """
+    """The iterable-style flavour, and it has to BE one: Trainer and DataLoader split map-style from iterable-style with ``isinstance(dataset, IterableDataset)``, not by looking for ``__iter__``, so a plain wrapper got a ``SequentialSampler`` asking for a ``len()`` a stream never had. Declared here rather than built with ``type()`` inside a function, since a DataLoader worker under spawn pickles the split by module and qualified name."""
 
 
 def _capped_stream(inner, cut, supervision, per_token):
@@ -898,17 +786,12 @@ def _is_stream(dataset):
 
 _SCAN_ROWS = 1024
 
-# Believe a producer's own truncation claim: scanning a with_transform split tokenizes every
-# row in __init__, the eager pass it avoids. Only a cap at or below the enforced one counts.
+# Believe a producer's own truncation claim: scanning a with_transform split tokenizes every row in __init__, the eager pass it avoids. Only a cap at or below the enforced one counts.
 _TRUNCATION_ATTESTATION_ATTR = "_unsloth_truncated_to"
 
 
 def _attested_within_cap(dataset, cap):
-    """The split's own truncation-width claim, or None if it makes none.
-
-    Read from `__dict__`, not `getattr`: `_CappedBase.__getattr__` forwards to the
-    inner split, so a wrapper would inherit a guarantee it does not carry.
-    """
+    """The split's own truncation-width claim, or None if it makes none. Read from ``__dict__``, not ``getattr``: ``_CappedBase.__getattr__`` forwards to the inner split, so a wrapper would inherit a guarantee it does not carry."""
     own = getattr(dataset, "__dict__", None)
     if not isinstance(own, dict):
         return None
@@ -919,20 +802,7 @@ def _attested_within_cap(dataset, cap):
 
 
 def pretokenized_within_cap(dataset, cap):
-    """Whether every pre-tokenized row in `dataset` already fits `cap`.
-
-    The generated `__init__` carries its own copy of this, inlined, because that
-    module is standalone and cannot import from here. This one is for callers
-    that need the same answer when the generated block was never inserted -- see
-    `trainer.py`'s padding-free fallback. The two must agree, and a test pins
-    them to the same verdict on the shapes below.
-
-    Unverifiable reads FALSE, never true. A single-pass stream cannot be scanned
-    without consuming it, an unexhausted one is only proof about its prefix, and
-    a split that raises mid-scan has told us nothing: in every one of those cases
-    the caller is about to decide whether anything downstream enforces the cap,
-    and guessing yes is the silently-uncapped run.
-    """
+    """Whether every pre-tokenized row in ``dataset`` already fits ``cap``. The generated ``__init__`` carries an inlined copy (that module is standalone and cannot import from here); this one serves callers reached when the generated block was never inserted, and a test pins the two to the same verdict. Unverifiable reads FALSE, never true: a single-pass stream cannot be scanned without consuming it, an unexhausted one proves only its prefix, and a split that raises mid-scan has said nothing, and in each case guessing yes is the silently-uncapped run."""
     if dataset is None:
         return True
     attested = _attested_within_cap(dataset, cap)
@@ -971,13 +841,7 @@ _EVAL_CAP_MEMO_MAX = 8
 
 
 def _cap_signature(dataset):
-    """What this split was already capped to, or None if we did not cap it.
-
-    Read through `__dict__` for our own wrappers: `_CappedBase.__getattr__`
-    forwards anything it does not hold to the split inside, so a plain `getattr`
-    on an unmarked wrapper asks the INNER split, and an inner split we happen to
-    have capped earlier would answer for the outer one.
-    """
+    """What this split was already capped to, or None if we did not cap it. Read through ``__dict__`` for our own wrappers: ``_CappedBase.__getattr__`` forwards to the split inside, so a plain ``getattr`` on an unmarked wrapper gets an inner split we happen to have capped earlier answering for the outer one."""
     own = getattr(dataset, "__dict__", None)
     if isinstance(own, dict) and _CAP_SIGNATURE_ATTR in own:
         return own[_CAP_SIGNATURE_ATTR]
@@ -985,13 +849,7 @@ def _cap_signature(dataset):
 
 
 def _mutation_token(dataset):
-    """What moves when this split's ROWS move, or None if nothing does.
-
-    `datasets` splits are content-addressed by `_fingerprint`. A `with_transform`
-    split has one too, but it covers the backing table and not the transform, so
-    a transform closing over mutable state yields different rows under an
-    unchanged fingerprint; those answer None. Anything else has no answer either.
-    """
+    """What moves when this split's ROWS move, or None if nothing does. ``datasets`` splits are content-addressed by ``_fingerprint``; a ``with_transform`` split has one too, but it covers the backing table and not the transform, so a transform closing over mutable state yields different rows under an unchanged fingerprint. Those answer None, as does anything else."""
     try:
         fmt = getattr(dataset, "format", None)
         kind = fmt.get("type") if isinstance(fmt, dict) else None
@@ -1011,19 +869,7 @@ def _mark_capped(dataset, cap, drop_unsupervised):
 
 
 def _cap_still_holds(dataset, cap, drop_unsupervised):
-    """Whether an earlier mark of ours still describes this split.
-
-    Three of the four `_cap` outcomes mark the CALLER'S OWN object and hand it
-    back -- no tokens, packed, already short -- and that object can be mutated
-    between two `evaluate()` calls. A `set_transform` that starts yielding
-    longer `input_ids` is enough, and the mark alone then skipped the rescan and
-    let the new rows through uncapped. Our own wrappers hold a fixed slice and
-    cannot drift, so those are trusted outright; anything else has to still
-    fingerprint the way it did when marked. An unfingerprintable split answers
-    None both times and is simply rescanned, which is the same conclusion the
-    memo reaches for the same reason, and is not destructive: the second pass
-    reads through `_column_names`, which chains its probed row back on.
-    """
+    """Whether an earlier mark of ours still describes this split. Three of the four ``_cap`` outcomes mark the CALLER'S OWN object and hand it back, and that object can be mutated between two ``evaluate()`` calls (a ``set_transform`` yielding longer ``input_ids`` is enough), which let the mark skip the rescan. Our own wrappers hold a fixed slice and are trusted outright; anything else has to still fingerprint the way it did when marked. An unfingerprintable split is simply rescanned, which is safe because ``_column_names`` chains its probed row back on."""
     signature = _cap_signature(dataset)
     if signature is None:
         return False
@@ -1048,13 +894,7 @@ def _first_row_without_consuming(dataset):
 
 
 def _is_token_vector(value, width):
-    """Whether `value` reads as one number per token, for a row of `width`.
-
-    Only used to decide whether a column NOT on the allow-list rides along with
-    the slice, so it is deliberately narrow: a string is as long as its
-    characters, and a list of messages or of strings can match a row length by
-    coincidence. A flat vector of scalars is what a per-token field actually is.
-    """
+    """Whether ``value`` reads as one number per token for a row of ``width``. Deliberately narrow, since it only decides whether a column NOT on the allow-list rides along with the slice: a string is as long as its characters and a list of messages can match a row length by coincidence, while a flat vector of scalars is what a per-token field actually is."""
     if isinstance(value, (str, bytes, dict)):
         return False
     try:
@@ -1062,7 +902,6 @@ def _is_token_vector(value, width):
             return False
     except Exception:
         return False
-    # By what the entries are NOT, so a numpy or torch scalar still counts.
     for item in value:
         return not isinstance(item, (str, bytes, dict, list, tuple, set))
     return False
@@ -1074,37 +913,21 @@ def _sliceable_per_token(
     cap,
     probed = None,
 ):
-    """The token columns whose VALUES can be sliced alongside `input_ids`.
-
-    Presence is not enough. An optional column stored as `token_type_ids = None`
-    makes the late cap's `map` raise, and the broad catch around it hands the
-    caller its uncapped split straight back; a 2-D `position_ids` slices on the
-    wrong axis and comes out misaligned with the truncated `input_ids`. Either
-    defeats the cap through one auxiliary column, so judge by a row rather than
-    by a name, the way the construction-time truncation already does.
-
-    A row that cannot be read without costing it leaves `input_ids` alone: the
-    column the cap exists for, and the one every other is measured against.
-    """
-    # input_ids first, then a fixed order: `names` is a set, and the map path reads the width off
-    # input_ids as it walks this list, so labels first sliced them against nothing.
+    """The token columns whose VALUES can be sliced alongside ``input_ids``. Presence is not enough: an optional column stored as ``token_type_ids = None`` makes the late cap's ``map`` raise (and the broad catch hands back the uncapped split), and a 2-D ``position_ids`` slices on the wrong axis. So judge by a row, as the construction-time truncation does. A row that cannot be read without costing it leaves ``input_ids`` alone."""
+    # input_ids first, then a fixed order: `names` is a set, and the map path reads the width off input_ids as it walks this list, so labels first sliced them against nothing.
     known = [c for c in _PER_TOKEN if c in names]
-    # A custom per-token field (loss_mask, token_weights) is not in the allow-list, so it stayed
-    # full length while input_ids was cut and a custom collator got mismatched lengths. Judge by
-    # alignment, but only a flat vector of scalars, keeping `messages` out of the slice.
+    # A custom per-token field (loss_mask, token_weights) is not in the allow-list, so it stayed full length while input_ids was cut and a custom collator got mismatched lengths. Judge by alignment, but only a flat vector of scalars, keeping `messages` out of the slice.
     custom = sorted(c for c in names if c not in _PER_TOKEN)
     per_token = known + custom
     if len(known) < 2 and not custom:
         return known
-    # `probed` is the row _column_names already read. Preferring it is what lets a one-shot stream align
-    # every per-token column: reading another row would cost the caller that example.
+    # `probed` is the row _column_names already read; preferring it is what lets a one-shot stream align every per-token column, since reading another row would cost the caller that example.
     row = probed if isinstance(probed, dict) else _first_row_without_consuming(dataset)
     if not isinstance(row, dict):
         return ["input_ids"] if "input_ids" in names else []
     try:
         width = len(row.get("input_ids"))
     except Exception:
-        # Nothing to measure against, so a custom column has no evidence behind it; fall back to the named ones only.
         return known
     kept = []
     for name in per_token:
@@ -1112,8 +935,7 @@ def _sliceable_per_token(
         if name in custom and not _is_token_vector(value, width):
             continue
         try:
-            # As long as input_ids, which makes the FIRST axis the token axis: [seq_len, channels] slices
-            # right, and a channel-major position_ids ([3, seq_len] under mrope) fails and is left alone.
+            # As long as input_ids, which makes the FIRST axis the token axis: [seq_len, channels] slices right, and a channel-major position_ids ([3, seq_len] under mrope) fails and is left alone.
             if len(value) != width:
                 continue
         except Exception:
@@ -1123,11 +945,7 @@ def _sliceable_per_token(
 
 
 def _eval_packing_on(args):
-    """TRL's own resolution: `args.packing` unless `eval_packing` overrides it.
-
-    Kept identical to the generated block's `_unsloth_eval_packing`, because the
-    late cap and the construction-time one have to answer this the same way.
-    """
+    """TRL's own resolution: ``args.packing`` unless ``eval_packing`` overrides it. Kept identical to the generated block's ``_unsloth_eval_packing``, since the late cap and the construction-time one must answer this the same way."""
     eval_packing = getattr(args, "eval_packing", None)
     if eval_packing is None:
         return bool(getattr(args, "packing", False))
@@ -1135,20 +953,7 @@ def _eval_packing_on(args):
 
 
 def _trl_prepares_late_evals(trainer_cls):
-    """Does TRL's own `evaluate` prepare a split handed straight to it?
-
-    False up to TRL 1.6, where `evaluate` was the base Trainer's and
-    `_prepare_dataset` ran only from `__init__`. True from 1.7.0, whose
-    `SFTTrainer.evaluate` calls `_prepare_dataset` with
-    `packing = args.packing if args.eval_packing is None else args.eval_packing`,
-    so on those versions the packer owns a late eval split and cutting its rows
-    at the cap first throws away the overflow packing exists to redistribute.
-
-    Read off the class rather than off a version number, so a TRL that moves the
-    behaviour again is answered correctly. The first class in the MRO that
-    defines `evaluate` is the one that runs; anything unreadable answers False,
-    which is what every TRL did before 1.7.
-    """
+    """Does TRL's own ``evaluate`` prepare a split handed straight to it? False up to TRL 1.6, where ``evaluate`` was the base Trainer's; True from 1.7.0, whose ``SFTTrainer.evaluate`` calls ``_prepare_dataset`` with ``packing = args.packing if args.eval_packing is None else args.eval_packing``, so there the packer owns a late eval split and cutting rows at the cap first throws away the overflow packing exists to redistribute. Read off the class rather than a version number, taking the first class in the MRO that defines ``evaluate``; anything unreadable answers False, which is what every TRL did before 1.7."""
     for klass in getattr(trainer_cls, "__mro__", ()):
         method = klass.__dict__.get("evaluate")
         if method is None or getattr(method, "_unsloth_eval_cap_wrapped", False):
@@ -1161,17 +966,7 @@ def _trl_prepares_late_evals(trainer_cls):
 
 
 def _pin_pristine_sft_loss_type(config_cls):
-    """Pin `loss_type` to `nll` on TRL's own `SFTConfig`, not just on ours.
-
-    Patching rebinds `trl.SFTConfig` to the generated subclass, so a caller who
-    ran `from trl import SFTConfig` before importing Unsloth keeps the pristine
-    class and would still get TRL >= 1.7.0's `chunked_nll` (that ordering is
-    supported and covered by the padding-free tests). TRL declares the field as
-    `None` and resolves it in `__post_init__`, so seeding `nll` there is enough;
-    an explicit `loss_type = ` still wins, and `use_liger_kernel = True` already
-    resolved to `nll`. Only the unresolved `None` default is touched, which also
-    makes this a no-op on TRL < 1.7.0 and on a second call.
-    """
+    """Pin ``loss_type`` to ``nll`` on TRL's own ``SFTConfig``, not just on ours: a caller who ran ``from trl import SFTConfig`` before importing Unsloth keeps the pristine class and would still get TRL >= 1.7.0's ``chunked_nll``. TRL declares the field as ``None`` and resolves it in ``__post_init__``, so seeding ``nll`` there is enough and an explicit ``loss_type`` still wins. Only the unresolved ``None`` default is touched, making this a no-op on TRL < 1.7.0 and on a second call."""
     field = getattr(config_cls, "__dataclass_fields__", {}).get("loss_type")
     if field is None or field.default is not None:
         return False
@@ -1204,53 +999,18 @@ def _pin_pristine_sft_loss_type(config_cls):
     else:
         return False
     field.default = "nll"
-    # The class attribute is the other copy of the default: dataclasses seeds it at class creation and a
-    # later subclass reads the field, so leave the two agreeing rather than half-patched.
+    # The class attribute is the other copy of the default: dataclasses seeds it at class creation and a later subclass reads the field, so leave the two agreeing rather than half-patched.
     setattr(config_cls, "loss_type", "nll")
     return True
 
 
 def _wrap_sft_evaluate_cap(trainer_cls):
-    """Cap a pre-tokenized split handed to `evaluate()`/`predict()` later on.
-
-    The padding-free branch caps the init-time splits itself and then clears
-    `args.max_length`, because that is what TRL's guard demands. Only the splits
-    present at construction went through it, so a split supplied afterwards is
-    prepared with `max_length = None`, and Zoo's prep leaves rows that already
-    carry `input_ids` alone: overlength rows reach the collator with nothing
-    enforcing the cap. The cap itself survives on `args.max_seq_length`, so
-    apply it here to exactly the rows nothing else will truncate.
-
-    Both entry points, not just `evaluate`: `predict(test_dataset = ...)` comes
-    from the base Trainer and reaches the same collator by the same route.
-
-    Whether anything TRL owns runs on a late split depends on the TRL. Up to 1.6
-    nothing did: `_prepare_dataset` was called from `__init__` and nowhere else,
-    and SFTTrainer overrode neither `evaluate` nor `predict` nor
-    `get_eval_dataloader`, so a split handed over afterwards was never tokenized,
-    never packed and never truncated. From 1.7.0 `SFTTrainer.evaluate` prepares a
-    split passed straight to it, packing included, so on those versions the packer
-    DOES own a late eval split and `eval_packing` has to be honoured here exactly
-    as it is at construction. `_trl_prepares_late_evals` reads that off the class.
-
-    This has to agree with the construction-time cap on every detail, because it
-    is the same cap arriving late. It honours `truncation_mode`, refuses a packed
-    split, drops rows left with no supervised token, and handles a stream.
-    """
+    """Cap a pre-tokenized split handed to ``evaluate()``/``predict()`` later on. The padding-free branch caps the init-time splits and then clears ``args.max_length`` as TRL's guard demands, so a split supplied afterwards is prepared with ``max_length = None`` and Zoo's prep leaves rows already carrying ``input_ids`` alone: overlength rows reach the collator uncapped. The cap survives on ``args.max_seq_length``, so apply it here. Both entry points, since ``predict(test_dataset = ...)`` reaches the same collator. Up to TRL 1.6 nothing prepares a late split; from 1.7.0 ``SFTTrainer.evaluate`` does, packing included, so ``eval_packing`` must be honoured here exactly as at construction (``_trl_prepares_late_evals``). This has to agree with the construction-time cap on every detail: truncation_mode, refusing a packed split, dropping rows with no supervised token, and handling a stream."""
 
     def _supervision_columns(args, names):
-        """Columns that decide whether a row still has a supervised token.
-
-        `labels` when present, `assistant_masks` on presence alone,
-        `completion_mask` only under `completion_only_loss`. That mode is the
-        trainer's, resolved once from the training sample, so read the collator's
-        effective value rather than guessing from this split's own columns: TRL
-        does the same and the two must agree.
-        """
+        """Columns that decide whether a row still has a supervised token: ``labels`` when present, ``assistant_masks`` on presence alone, ``completion_mask`` only under ``completion_only_loss``. That mode is the trainer's, resolved once from the training sample, so read the collator's effective value rather than guessing from this split's columns."""
         columns = ["labels"] if "labels" in names else []
-        # The TRAINER's resolved value first: the collator uses it, and it is set whenever TRL
-        # resolved it. The split's own schema read False off a pre-tokenized eval split with only
-        # input_ids + completion_mask, so cut-away rows survived as all -100, i.e. a NaN eval loss.
+        # The TRAINER's resolved value first: the collator uses it, and it is set whenever TRL resolved it. The split's own schema read False off a pre-tokenized eval split with only input_ids + completion_mask, so cut-away rows survived as all -100, i.e. a NaN eval loss.
         only = getattr(args, "_unsloth_resolved_completion_only", None)
         if only is None:
             only = getattr(args, "_unsloth_completion_only_loss", None)
@@ -1271,34 +1031,24 @@ def _wrap_sft_evaluate_cap(trainer_cls):
         drop_unsupervised = True,
         packs_late = False,
     ):
-        # evaluate() caps the split and Transformers then calls get_eval_dataloader, which is also
-        # wrapped, so both reach here in one call. Re-capping is destructive over a one-shot stream:
-        # each probe reads a row and _CappedStream re-opens the SAME exhausted source.
+        # evaluate() caps the split and Transformers then calls get_eval_dataloader, which is also wrapped, so both reach here in one call. Re-capping is destructive over a one-shot stream: each probe reads a row and _CappedStream re-opens the SAME exhausted source.
         if _cap_still_holds(dataset, cap, drop_unsupervised):
             return dataset
         names, dataset, probed = _column_names(dataset)
         if "input_ids" not in names:
-            # No tokens here yet, so there is nothing to cut. TRL does not tokenize a late split either
-            # (_prepare_dataset runs only from __init__), but that is its own gap.
+            # No tokens here yet, so there is nothing to cut. TRL does not tokenize a late split either (_prepare_dataset runs only from __init__), but that is its own gap.
             return _mark_capped(dataset, cap, drop_unsupervised)
-        # eval_packing is consulted only where the packer reaches the split, hence packs_late per
-        # entry point. Up to TRL 1.6 nothing packs a late split; from 1.7.0 `evaluate` prepares it
-        # itself and the strategy owns the overflow, so capping rows first throws that away.
+        # eval_packing is consulted only where the packer reaches the split, hence packs_late per entry point. Up to TRL 1.6 nothing packs a late split; from 1.7.0 `evaluate` prepares it itself and the strategy owns the overflow, so capping rows first throws that away.
         if packs_late and _eval_packing_on(args):
-            # Left FOR the packer, so it is not capped and must not be marked as if it were. TRL only
-            # prepares a split PASSED to evaluate, so a stored split or string key arrives here untouched;
-            # where it really packs, it hands back a NEW object.
+            # Left FOR the packer, so it is not capped and must not be marked as if it were. TRL only prepares a split PASSED to evaluate, so a stored split or string key arrives here untouched; where it really packs, it hands back a NEW object.
             return dataset
-        # A packed split carries document lengths, not tokens: slicing input_ids under a seq_lengths that
-        # still describes the longer row builds position ids for tokens the row no longer has.
+        # A packed split carries document lengths, not tokens: slicing input_ids under a seq_lengths that still describes the longer row builds position ids for tokens the row no longer has.
         if "seq_lengths" in names:
             return _mark_capped(dataset, cap, drop_unsupervised)
         try:
-            # TRL slices [-max_length:] for keep_end, and so does the construction-time cap; always keeping the
-            # prefix evaluates the wrong half of every long row.
+            # TRL slices [-max_length:] for keep_end, and so does the construction-time cap; always keeping the prefix evaluates the wrong half of every long row.
             mode = getattr(args, "truncation_mode", "keep_start")
-            # keep_start and keep_end are the only two slices there are, and a third value silently became
-            # keep_start here. Refusing means handing the split back untouched so the caller still has it.
+            # keep_start and keep_end are the only two slices there are, and a third value silently became keep_start here. Refusing means handing the split back untouched so the caller still has it.
             if mode not in ("keep_start", "keep_end"):
                 print(
                     f"Unsloth: `truncation_mode = {mode}` is not one of "
@@ -1307,25 +1057,20 @@ def _wrap_sft_evaluate_cap(trainer_cls):
                 return dataset
             cut = slice(-cap, None) if mode == "keep_end" else slice(None, cap)
             per_token = _sliceable_per_token(dataset, names, cap, probed)
-            # Never on the predict path: dropping rows is right for a loss and wrong for predict, whose contract
-            # is one prediction per row IN ORDER.
+            # Never on the predict path: dropping rows is right for a loss and wrong for predict, whose contract is one prediction per row IN ORDER.
             supervision = _supervision_columns(args, names) if drop_unsupervised else []
-            # A stream has no length, cannot be rewound, and on datasets 4.x dataset[0] reads 0 as a
-            # COLUMN name rather than failing. Use map(), which is lazy over every row it will yield.
+            # A stream has no length, cannot be rewound, and on datasets 4.x dataset[0] reads 0 as a COLUMN name rather than failing. Use map(), which is lazy over every row it will yield.
             overlength = True
             if not _is_stream(dataset):
                 try:
                     overlength = max(len(r) for r in dataset["input_ids"]) > cap
                 except Exception:
-                    # The scan only exists to skip a pointless map; a split with no column access cannot answer it, and
-                    # that is no reason to hand it back uncapped.
+                    # The scan only exists to skip a pointless map; a split with no column access cannot answer it, and that is no reason to hand it back uncapped.
                     pass
-            # A split already under the cap still goes through the supervision filter below: being short is not
-            # the same as being supervised, and a row whose labels are all -100 is a NaN loss either way.
+            # A split already under the cap still goes through the supervision filter below: being short is not the same as being supervised, and a row whose labels are all -100 is a NaN loss either way.
             if not overlength and not supervision:
                 return _mark_capped(dataset, cap, drop_unsupervised)
-            # A split we cannot rewrite is capped on read instead: map belongs to datasets, and a with_transform
-            # split has it but recreates its rows on every read, so mapping writes a table nobody reads.
+            # A split we cannot rewrite is capped on read instead: map belongs to datasets, and a with_transform split has it but recreates its rows on every read, so mapping writes a table nobody reads.
             transform = str((getattr(dataset, "format", None) or {}).get("type", "")).lower()
             if (
                 not hasattr(dataset, "map")
@@ -1345,8 +1090,7 @@ def _wrap_sft_evaluate_cap(trainer_cls):
                 _cut = cut,
                 _cols = tuple(per_token),
             ):
-                # Per value, not per column: _sliceable_per_token judges by ONE row, so an optional column
-                # that is None three rows later raised inside map and the catch returned the UNCAPPED split.
+                # Per value, not per column: _sliceable_per_token judges by ONE row, so an optional column that is None three rows later raised inside map and the catch returned the UNCAPPED split.
                 out = {}
                 width = None
                 for name in _cols:
@@ -1363,9 +1107,7 @@ def _wrap_sft_evaluate_cap(trainer_cls):
                 return out
 
             new = dataset if not overlength else dataset.map(_slice_row)
-            # A truncated row can end all -100, or with an all-zero mask the collator makes all -100, and
-            # such a batch reports a NaN loss. Intersect labels AND every active mask, not one filter
-            # each: masks are applied ONTO the labels, so separate filters still pass an all -100 row.
+            # A truncated row can end all -100, or with an all-zero mask the collator makes all -100, and such a batch reports a NaN loss. Intersect labels AND every active mask, not one filter each: masks are applied ONTO the labels, so separate filters still pass an all -100 row.
             if supervision:
                 kept = new.filter(
                     lambda e, c = tuple(supervision): any(
@@ -1373,8 +1115,7 @@ def _wrap_sft_evaluate_cap(trainer_cls):
                         for v in zip(*[e[n] for n in c])
                     )
                 )
-                # Hand back the caller's own split when the filter dropped nothing: a copy of an unchanged dataset
-                # is a new object for the trainer to cache and reload for no reason.
+                # Hand back the caller's own split when the filter dropped nothing: a copy of an unchanged dataset is a new object for the trainer to cache and reload for no reason.
                 try:
                     new = new if len(kept) == len(new) else kept
                 except Exception:
@@ -1384,23 +1125,7 @@ def _wrap_sft_evaluate_cap(trainer_cls):
             return dataset  # never turn an eval call into a hard error
 
     def _memo_token(dataset):
-        """What makes this split's cap reusable, or None if nothing does.
-
-        Identity alone is not enough: the same list or custom map-style split can
-        be appended to or shortened between two `evaluate()` calls, and the memo
-        would hand back a wrapper whose snapshotted indices no longer describe
-        it -- rows silently missing, or an index that raises during loading.
-        `datasets` splits are content-addressed by `_fingerprint`, which moves
-        whenever the rows do, so those are safe to keep. Anything else is
-        recomputed, which is the cheap case anyway: the scan this memo exists to
-        skip needs a materialised `input_ids` column that these do not have.
-
-        A `with_transform` split is excluded even though it has a fingerprint:
-        that covers the backing table, not the transform, so a transform closing
-        over mutable state yields different rows under an unchanged fingerprint
-        and the memo would replay a filter decided against the old ones. That is
-        the same question the cap mark asks, so it is the same helper.
-        """
+        """What makes this split's cap reusable, or None if nothing does. Identity alone is not enough: the same list or custom map-style split can be appended to or shortened between two ``evaluate()`` calls, leaving a wrapper whose snapshotted indices no longer describe it. ``datasets`` splits are content-addressed by ``_fingerprint``, which moves whenever the rows do, so those are safe to keep; anything else is recomputed, which is the cheap case anyway. A ``with_transform`` split is excluded despite its fingerprint, which covers the backing table and not the transform."""
         return _mutation_token(dataset)
 
     def _cap_cached(
@@ -1410,15 +1135,8 @@ def _wrap_sft_evaluate_cap(trainer_cls):
         drop_unsupervised = True,
         packs_late = False,
     ):
-        """Cap a split once per object.
-
-        `evaluate()` runs at every eval step of a training run, and the scan that
-        decides whether anything needs cutting materialises the whole `input_ids`
-        column each time. Keep the answer, keyed on the split object and holding a
-        reference to it, so a later split cannot inherit its `id()`.
-        """
-        # Carried onto args because _cap only ever sees those. `is not None` rather than truthiness: False
-        # is TRL's answer just as much as True.
+        """Cap a split once per object. ``evaluate()`` runs at every eval step and the scan materialises the whole ``input_ids`` column each time, so keep the answer, keyed on the split object and holding a reference to it so a later split cannot inherit its ``id()``."""
+        # Carried onto args because _cap only ever sees those. `is not None` rather than truthiness: False is TRL's answer just as much as True.
         resolved = getattr(trainer, "completion_only_loss", None)
         if resolved is not None:
             try:
@@ -1435,14 +1153,12 @@ def _wrap_sft_evaluate_cap(trainer_cls):
                 trainer._unsloth_eval_cap_memo = memo
             except Exception:
                 return _cap(dataset, cap, trainer.args, drop_unsupervised, packs_late)
-        # truncation_mode shapes the SLICE, so it belongs in the key: without it, evaluating once with
-        # keep_start and again with keep_end handed back the cached prefixes for both.
+        # truncation_mode shapes the SLICE, so it belongs in the key: without it, evaluating once with keep_start and again with keep_end handed back the cached prefixes for both.
         key = (
             id(dataset),
             drop_unsupervised,
             getattr(trainer.args, "truncation_mode", "keep_start"),
-            # evaluate and get_eval_dataloader share drop_unsupervised and see the same object in one call, but
-            # only the first may skip the cut under eval_packing.
+            # evaluate and get_eval_dataloader share drop_unsupervised and see the same object in one call, but only the first may skip the cut under eval_packing.
             packs_late,
         )
         seen = memo.get(key)
@@ -1451,9 +1167,7 @@ def _wrap_sft_evaluate_cap(trainer_cls):
             return seen[2]
         capped = _cap(dataset, cap, trainer.args, drop_unsupervised, packs_late)
         memo[key] = (dataset, cap, capped, token)
-        # Bounded: every entry pins both the original split and the capped copy for the trainer's
-        # life, so a later split cannot inherit a freed id(). A fresh subset per epoch otherwise
-        # accumulated Arrow tables until the host ran out.
+        # Bounded: every entry pins both the original split and the capped copy for the trainer's life, so a later split cannot inherit a freed id(). A fresh subset per epoch otherwise accumulated Arrow tables until the host ran out.
         while len(memo) > _EVAL_CAP_MEMO_MAX:
             memo.pop(next(iter(memo)))
         return capped
@@ -1465,14 +1179,12 @@ def _wrap_sft_evaluate_cap(trainer_cls):
         drop_unsupervised = True,
         packs_late = False,
     ):
-        # evaluate(eval_dataset = "validation") picks one split out of a stored dict, and capping the
-        # KEY is a no-op, so the split it names reached the collator uncapped.
+        # evaluate(eval_dataset = "validation") picks one split out of a stored dict, and capping the KEY is a no-op, so the split it names reached the collator uncapped.
         if isinstance(given, str):
             stored = getattr(trainer, "eval_dataset", None)
             if isinstance(stored, dict) and given in stored:
                 capped = _cap_cached(trainer, stored[given], cap, drop_unsupervised, packs_late)
-                # Staged for the caller to swap in and OUT: overwriting stored[given] destroyed the uncapped
-                # original, so a later truncation_mode = "keep_end" could only re-cap the saved prefix.
+                # Staged for the caller to swap in and OUT: overwriting stored[given] destroyed the uncapped original, so a later truncation_mode = "keep_end" could only re-cap the saved prefix.
                 if capped is not stored[given]:
                     trainer._unsloth_pending_split_swap = (stored, given, capped)
             return given
@@ -1490,9 +1202,7 @@ def _wrap_sft_evaluate_cap(trainer_cls):
         def wrapped(self, *args, **kwargs):
             cap = getattr(getattr(self, "args", None), "max_seq_length", None)
             retained = getattr(getattr(self, "args", None), "max_length", None)
-            # A retained max_length does not prove the cap is enforced: it is what the construction block
-            # leaves when it turns padding-free OFF, TRL's collator never truncates rows carrying
-            # input_ids, and _prepare_dataset runs only from __init__.
+            # A retained max_length does not prove the cap is enforced: it is what the construction block leaves when it turns padding-free OFF, TRL's collator never truncates rows carrying input_ids, and _prepare_dataset runs only from __init__.
             if retained is not None:
                 cap = retained
             if not cap:
@@ -1508,8 +1218,7 @@ def _wrap_sft_evaluate_cap(trainer_cls):
                 swap = getattr(self, "_unsloth_pending_split_swap", None)
                 if swap is None:
                     return original(self, *args, **kwargs)
-                # A named split: swap the capped copy in for this call only, so the caller keeps the uncapped
-                # original for the next mode.
+                # A named split: swap the capped copy in for this call only, so the caller keeps the uncapped original for the next mode.
                 container, key, replacement = swap
                 self._unsloth_pending_split_swap = None
                 previous = container[key]
@@ -1518,17 +1227,14 @@ def _wrap_sft_evaluate_cap(trainer_cls):
                     return original(self, *args, **kwargs)
                 finally:
                     container[key] = previous
-            # evaluate() with no split falls back to the one stored on the trainer, which a caller can install
-            # after construction, where the constructor's cap can no longer see it. Every eval during
-            # training comes through here too.
+            # evaluate() with no split falls back to the one stored on the trainer, which a caller can install after construction, where the constructor's cap can no longer see it. Every eval during training comes through here too.
             stored = getattr(self, keyword, None) if keyword == "eval_dataset" else None
             if stored is None:
                 return original(self, *args, **kwargs)
             capped = _cap_splits(self, stored, cap, drop_unsupervised, packs_late)
             if capped is stored:
                 return original(self, *args, **kwargs)
-            # Swapped onto the trainer rather than passed down: Trainer.evaluate recurses over a dict of
-            # splits by NAME when nothing was passed, and passing the dict makes that an override.
+            # Swapped onto the trainer rather than passed down: Trainer.evaluate recurses over a dict of splits by NAME when nothing was passed, and passing the dict makes that an override.
             setattr(self, keyword, capped)
             try:
                 return original(self, *args, **kwargs)
@@ -1538,11 +1244,7 @@ def _wrap_sft_evaluate_cap(trainer_cls):
         wrapped._unsloth_eval_cap_wrapped = True
         return wrapped
 
-    # predict keeps every row: one prediction per row, in order. The two dataloader builders are
-    # public API and bypass evaluate/predict, so get_eval_dataloader(late) met the padding-free
-    # collator with max_length already cleared and nothing capping the split.
-    # Only evaluate can hand its split to TRL's own prep, and only from 1.7.0. Read once, before
-    # anything is wrapped, so the probe sees TRL's method rather than ours.
+    # predict keeps every row: one prediction per row, in order. The two dataloader builders are public API and bypass evaluate/predict, so get_eval_dataloader(late) met the padding-free collator with max_length already cleared and nothing capping the split. Only evaluate can hand its split to TRL's own prep, and only from 1.7.0; read once, before anything is wrapped, so the probe sees TRL's method rather than ours.
     prepares_late = _trl_prepares_late_evals(trainer_cls)
     for name, keyword, drop_unsupervised, packs_late in (
         ("evaluate", "eval_dataset", True, prepares_late),
@@ -1559,14 +1261,12 @@ def _wrap_sft_evaluate_cap(trainer_cls):
 _UNSLOTH_RETURN_HIDDEN_STATES_SUPPORT_MARKER = "__UNSLOTH_SUPPORTS_RETURN_HIDDEN_STATES__"
 _UNSLOTH_GRPO_HIDDEN_STATES_WRAPPED_ATTR = "_unsloth_grpo_hidden_states_forward_wrapped"
 _UNSLOTH_GRPO_HIDDEN_STATES_WARNING_ATTR = "_unsloth_grpo_hidden_states_warning_issued"
-# Whether the MOST RECENT forward handed back real logits instead of hidden states: the warning
-# attribute above is warn-once bookkeeping and is never cleared, so it answers "ever degraded".
+# Whether the MOST RECENT forward handed back real logits instead of hidden states: the warning attribute above is warn-once bookkeeping and is never cleared, so it answers "ever degraded".
 _UNSLOTH_GRPO_HIDDEN_STATES_DEGRADED_ATTR = "_unsloth_grpo_hidden_states_degraded"
 
 
 def _module_returns_logits(module):
-    # get_output_embeddings() is None on the decoder bodies and the head module on the *ForCausalLM
-    # wrappers, so it finds the head owner by behaviour rather than by a model-name list.
+    # get_output_embeddings() is None on the decoder bodies and the head module on the *ForCausalLM wrappers, so it finds the head owner by behaviour rather than by a model-name list.
     if module is None:
         return False
     get_output_embeddings = getattr(module, "get_output_embeddings", None)
@@ -1590,9 +1290,7 @@ def _grpo_hidden_states_wrap_target(model):
         child = getattr(model, attr, None)
         if child is None or child is model or not hasattr(child, "forward"):
             continue
-        # Descend only into an adapter that still owns the head: a bare *ForCausalLM (TRL's GRPO
-        # ref_model) also has .model, but that is its decoder body, so wrapping it returns
-        # [B, T, vocab] and the fallback is a silent no-op.
+        # Descend only into an adapter that still owns the head: a bare *ForCausalLM (TRL's GRPO ref_model) also has .model, but that is its decoder body, so wrapping it returns [B, T, vocab] and the fallback is a silent no-op.
         if not _module_returns_logits(child):
             continue
         return child
@@ -1668,9 +1366,7 @@ def _get_num_logits_to_keep(forward_signature, args, kwargs):
 
 
 def _warn_grpo_hidden_states_fallback_once(model, message):
-    # The degradation flag is per call: a forward that splats **kwargs into a sub-module raises
-    # only for the batches that reach it, so a sticky flag would send real hidden states through
-    # the raw-logits helper.
+    # The degradation flag is per call: a forward that splats **kwargs into a sub-module raises only for the batches that reach it, so a sticky flag would send real hidden states through the raw-logits helper.
     setattr(model, _UNSLOTH_GRPO_HIDDEN_STATES_DEGRADED_ATTR, True)
     if getattr(model, _UNSLOTH_GRPO_HIDDEN_STATES_WARNING_ATTR, False):
         return
@@ -1686,26 +1382,9 @@ def _note_grpo_hidden_states_success(model):
 def _minimise_logits_kwarg(forward_signature, args, forward_kwargs):
     """Ask the model for as few logits as it will give us, and say which kwarg did it.
 
-    We are about to overwrite `outputs.logits` with hidden states, so every
-    logit the forward computes is thrown away. transformers spells the limit
-    `logits_to_keep` -- measured on 4.57.6, 5.0.0 and 5.15.0, all three declare
-    that name and none declares `num_logits_to_keep`, so the second name is not
-    for them. It is for us: `unsloth/models/llama.py` and `mistral.py` patch in
-    forwards declaring both, and `unsloth/models/vision.py` probes for the old
-    name FIRST because some VLM stacks still carry only it. Whichever name a
-    forward takes, it reads the value as
-    `slice(-value, None)`, so the DEFAULT of 0 becomes `slice(0, None)` -- the
-    whole sequence. The GRPO trainer does not pass a value at all, so the
-    lm_head projects every prompt and completion position over the full
-    vocabulary and, for the softcapped models, multiplies the result twice more.
+    We are about to overwrite ``outputs.logits`` with hidden states, so every logit the forward computes is thrown away. transformers spells the limit ``logits_to_keep`` (measured on 4.57.6, 5.0.0 and 5.15.0, none of which declares ``num_logits_to_keep``); the second name is for us, since ``unsloth/models/llama.py`` and ``mistral.py`` patch in forwards declaring both and ``vision.py`` probes for the old name FIRST for VLM stacks carrying only it. Either name reads the value as ``slice(-value, None)``, so the DEFAULT of 0 means the whole sequence, and the GRPO trainer passes no value at all: the lm_head projects every position over the full vocabulary. Muse Glimmer 30B on a Kaggle 2xT4 measured 1002 MiB per chunk over a 202048-wide vocabulary, invisible on one card but fatal once accelerate copies it across a layer-split model.
 
-    Muse Glimmer 30B on a Kaggle 2xT4 measured that at a 1002 MiB allocation
-    per chunk, over a 202048-wide vocabulary. On one card it is invisible: the
-    trainer's `del outputs` frees it a line later. On a layer-split model
-    accelerate copies it to the other card first and the run dies there.
-
-    1, not 0: 0 means "all of them", and a model that computes its own loss from
-    `labels` needs real logits, so that case is left alone.
+    1, not 0: 0 means "all of them", and a model that computes its own loss from ``labels`` needs real logits, so that case is left alone.
     """
     if forward_kwargs.get("labels") is not None:
         return None
@@ -1713,8 +1392,7 @@ def _minimise_logits_kwarg(forward_signature, args, forward_kwargs):
         bound = forward_signature.bind_partial(*args, **forward_kwargs)
     except TypeError:
         return None
-    # A forward given labels positionally lands it in bound.arguments and never in forward_kwargs, so
-    # the lookup above cannot see it and the loss the model computes would be one position wide.
+    # A forward given labels positionally lands it in bound.arguments and never in forward_kwargs, so the lookup above cannot see it and the loss the model computes would be one position wide.
     if bound.arguments.get("labels") is not None:
         return None
     accepts_var_keyword = any(
@@ -1725,8 +1403,7 @@ def _minimise_logits_kwarg(forward_signature, args, forward_kwargs):
         declared = name in forward_signature.parameters
         if not declared and not accepts_var_keyword:
             continue
-        # Positionally and by keyword is a TypeError. Give up rather than try the OTHER spelling,
-        # which would fight the caller's width or be swallowed by **kwargs and silently ignored.
+        # Positionally and by keyword is a TypeError. Give up rather than try the OTHER spelling, which would fight the caller's width or be swallowed by **kwargs and silently ignored.
         if name in bound.arguments and name not in forward_kwargs:
             return None
         forward_kwargs[name] = 1
@@ -1735,23 +1412,7 @@ def _minimise_logits_kwarg(forward_signature, args, forward_kwargs):
 
 
 def _drop_spare_hidden_states(outputs):
-    """Detach every hidden-state layer from `outputs`; the caller keeps the last.
-
-    `outputs.hidden_states = None` does NOT do this. `ModelOutput.__setattr__`
-    is
-
-        if name in field_names and value is not None:
-            super().__setitem__(name, value)
-        super().__setattr__(name, value)
-
-    so assigning None sets the attribute and leaves the mapping entry holding
-    the full tuple, and `ModelOutput` blocks `__delitem__`, `pop`, `update` and
-    `setdefault` outright. Every consumer that walks the object as a mapping --
-    accelerate's `send_to_device`, which is the one that matters here -- still
-    sees and copies all of it. Writing through `OrderedDict.__setitem__` is what
-    actually clears it, and leaves the mapping and the attribute agreeing on
-    None, which is the state a forward returns with `output_hidden_states=False`.
-    """
+    """Detach every hidden-state layer from ``outputs``; the caller keeps the last. ``outputs.hidden_states = None`` does NOT do this: ``ModelOutput.__setattr__`` only writes through to the mapping when the value is not None, and ``ModelOutput`` blocks ``__delitem__``, ``pop``, ``update`` and ``setdefault``, so the mapping entry keeps the full tuple and every consumer that walks the object as a mapping (accelerate's ``send_to_device``) still copies all of it. Writing through ``OrderedDict.__setitem__`` clears it and leaves mapping and attribute agreeing on None."""
     try:
         if isinstance(outputs, collections.OrderedDict) and "hidden_states" in outputs:
             collections.OrderedDict.__setitem__(outputs, "hidden_states", None)
@@ -1761,8 +1422,7 @@ def _drop_spare_hidden_states(outputs):
         elif hasattr(outputs, "hidden_states"):
             outputs.hidden_states = None
     except Exception:
-        # A frozen or exotic output object is not worth failing the step over; the caller has already taken
-        # the layer it needs.
+        # A frozen or exotic output object is not worth failing the step over; the caller has already taken the layer it needs.
         logger.debug(
             "Unsloth: could not drop spare GRPO hidden states.",
             exc_info = True,
@@ -1797,18 +1457,14 @@ def _install_grpo_hidden_states_forward_wrapper(model):
     model_name = type(target_model).__name__
 
     def wrapped_forward(*args, **kwargs):
-        # accelerate's extract_model_from_parallel(keep_fp32_wrapper = False), called every GRPO step,
-        # rebinds the forward as MethodType, so the module arrives as a leading positional argument;
-        # original_forward is already bound, so drop it.
+        # accelerate's extract_model_from_parallel(keep_fp32_wrapper = False), called every GRPO step, rebinds the forward as MethodType, so the module arrives as a leading positional argument; original_forward is already bound, so drop it.
         while len(args) != 0 and args[0] is target_model:
             args = args[1:]
         if os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") != "1":
-            # nobody asked for hidden states, so this returns real logits
             setattr(target_model, _UNSLOTH_GRPO_HIDDEN_STATES_DEGRADED_ATTR, True)
             return original_forward(*args, **kwargs)
 
-        # Copy: _drop_forward_kwargs_consumed_positionally returns kwargs unchanged when there is
-        # nothing to drop, so mutating it would poison the caller's dict for the fallback calls.
+        # Copy: _drop_forward_kwargs_consumed_positionally returns kwargs unchanged when there is nothing to drop, so mutating it would poison the caller's dict for the fallback calls.
         forward_kwargs = dict(
             _drop_forward_kwargs_consumed_positionally(forward_signature, args, kwargs)
         )
@@ -1831,9 +1487,7 @@ def _install_grpo_hidden_states_forward_wrapper(model):
             )
             return original_forward(*args, **kwargs)
 
-        # TRL 0.26+: Config may be in a separate *_config.py module
-        # Thin wrapper fallback: walk the Trainer's MRO to find Config in the real implementation module (e.g.,
-        # trl.experimental.bco)
+        # TRL 0.26+: Config may be in a separate *_config.py module, or reachable by walking the Trainer's MRO to the real implementation module (trl.experimental.bco).
         try:
             outputs = original_forward(*args, **forward_kwargs)
         except TypeError as error:
@@ -1842,10 +1496,7 @@ def _install_grpo_hidden_states_forward_wrapper(model):
                 if not rejected_hidden_states(message):
                     raise
                 return forward_without_hidden_states()
-            # The signature advertised the parameter but the forward refuses the value: retry without the
-            # minimisation, through the same fallback, rather than lose hidden states over it: a forward that
-            # splats **kwargs into a sub-module can refuse the logits limiter and the hidden states one after
-            # the other.
+            # The signature advertised the parameter but the forward refuses the value: retry without the minimisation rather than lose hidden states, since a forward that splats **kwargs into a sub-module can refuse the logits limiter and the hidden states one after the other.
             forward_kwargs.pop(logits_kwarg, None)
             logits_kwarg = None
             try:
@@ -1863,9 +1514,7 @@ def _install_grpo_hidden_states_forward_wrapper(model):
             )
             if logits_kwarg is None:
                 return outputs
-            # outputs.logits is the return value now, and one position was asked for only to throw the
-            # logits away; GRPO drops the last and slices the completion window, so restore the caller's
-            # own limit and re-run.
+            # outputs.logits is the return value now, and one position was asked for only to throw the logits away; GRPO drops the last and slices the completion window, so restore the caller's own limit and re-run.
             if logits_kwarg in kwargs:
                 forward_kwargs[logits_kwarg] = kwargs[logits_kwarg]
             else:
@@ -1875,9 +1524,7 @@ def _install_grpo_hidden_states_forward_wrapper(model):
         hidden_states = hidden_states[-1]
         if num_logits_to_keep != 0:
             hidden_states = hidden_states[:, -num_logits_to_keep:, :]
-        # Only the last layer is read, and accelerate's AlignDevicesHook.post_forward copies every
-        # tensor in the returned object to the input device, so keeping the rest costs a cross-device
-        # copy per layer as well as the memory.
+        # Only the last layer is read, and accelerate's AlignDevicesHook.post_forward copies every tensor in the returned object to the input device, so keeping the rest costs a cross-device copy per layer as well as the memory.
         _drop_spare_hidden_states(outputs)
         _note_grpo_hidden_states_success(target_model)
         return _replace_outputs_logits(outputs, hidden_states)
@@ -1906,15 +1553,8 @@ def _wrap_grpo_hidden_states_fallback(trainer_cls):
 def _backport_vision_dataset_gate(RLTrainer_source):
     """Make TRL 0.22.x decide by DATASET, not by model, for SFT vision paths.
 
-    0.22.x keys "skip preparation" and "vision collator" off `_is_vlm` alone, so
-    a VLM fine-tuned on text-only data reaches transformers with no tokenized
-    columns: "No columns in the dataset match the model's forward method
-    signature". Merging the signature columns above is not enough, since skipped
-    preparation never creates those columns. Hit by
-    Magistral_(24B)-Reasoning-Conversational, which pins trl==0.22.2.
-
-    Back-ports TRL 0.24.0's `_is_vision_dataset` keying; no-op once TRL defines
-    the flag itself. Returns the source, patched or unchanged."""
+    0.22.x keys "skip preparation" and "vision collator" off ``_is_vlm`` alone, so a VLM fine-tuned on text-only data reaches transformers with no tokenized columns ("No columns in the dataset match the model's forward method signature"). Merging the signature columns is not enough, since skipped preparation never creates those columns. Hit by Magistral_(24B)-Reasoning-Conversational, which pins trl==0.22.2. Back-ports TRL 0.24.0's ``_is_vision_dataset`` keying; no-op once TRL defines the flag itself. Returns the source, patched or unchanged.
+    """
     if 'self._is_vision_dataset = "image" in dataset_sample' in RLTrainer_source:
         return RLTrainer_source
     anchor = "        dataset_sample = next(iter(train_dataset))\n"
@@ -1928,7 +1568,6 @@ def _backport_vision_dataset_gate(RLTrainer_source):
         '        self._is_vision_dataset = "image" in dataset_sample or "images" in dataset_sample\n',
         1,
     )
-    # Text collator whenever the data is not actually vision data.
     RLTrainer_source = RLTrainer_source.replace(
         "if data_collator is None and not self._is_vlm:",
         "if data_collator is None and not (self._is_vlm and self._is_vision_dataset):",
@@ -1937,7 +1576,6 @@ def _backport_vision_dataset_gate(RLTrainer_source):
         "elif data_collator is None and self._is_vlm:",
         "elif data_collator is None and self._is_vlm and self._is_vision_dataset:",
     )
-    # Tokenize it too: skipping preparation only saves image-processing cost.
     RLTrainer_source = RLTrainer_source.replace(
         'args.dataset_kwargs.get("skip_prepare_dataset", False) or self._is_vlm',
         'args.dataset_kwargs.get("skip_prepare_dataset", False)'
@@ -1947,14 +1585,11 @@ def _backport_vision_dataset_gate(RLTrainer_source):
 
 
 def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
-    # Defensive wrapper matching patch_trl_rl_trainers()'s try/except, so direct callers do not see
-    # exceptions from the impl on TRL versions that rename or move classes.
+    # Defensive wrapper matching patch_trl_rl_trainers()'s try/except, so direct callers do not see exceptions from the impl on TRL versions that rename or move classes.
     try:
         return _patch_trl_rl_trainers_impl(trainer_file)
     except Exception as e:
-        # Warning, not info: the impl RETURNS for the benign case, so reaching here means generation
-        # failed and the run silently falls back to trl's trainer, losing Unsloth's compute_loss,
-        # bf16/fp16 fixup and dataset handling.
+        # Warning, not info: the impl RETURNS for the benign case, so reaching here means generation failed and the run silently falls back to trl's trainer, losing Unsloth's compute_loss, bf16/fp16 fixup and dataset handling.
         logger.warning_once(
             f"Unsloth: Could not build the patched trl.trainer.{trainer_file}, "
             f"so training will use trl's own trainer instead: "
@@ -1995,8 +1630,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         )
         return
     if len(config) != 1:
-        # TRL 0.26+: the Config may be in a separate *_config.py module, or reachable by walking the
-        # Trainer's MRO to the real implementation module (trl.experimental.bco).
+        # TRL 0.26+: the Config may be in a separate *_config.py module, or reachable by walking the Trainer's MRO to the real implementation module (trl.experimental.bco).
         config_module_name = trainer_file.replace("_trainer", "_config")
         try:
             config_mod = eval(f"trl.trainer.{config_module_name}")
@@ -2055,7 +1689,6 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             config_module_name = trainer_file.replace("_trainer", "_config")
             RLConfig = eval(f"trl.trainer.{config_module_name}.{RLConfig_name}")
         except Exception:
-            # Thin wrapper fallback: load Config from parent trainer's module
             _config_loaded = False
             try:
                 _temp_cls = eval(f"trl.trainer.{trainer_file}.{name[0]}")
@@ -2083,8 +1716,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         print(f"Unsloth: {RLConfig.__name__} is already patched.")
         return
 
-    # TRL 0.26+: resolve thin wrappers (trl.trainer shims forwarding to trl.experimental) to their
-    # parent class, and only when that parent really lives in a trl.experimental module.
+    # TRL 0.26+: resolve thin wrappers (trl.trainer shims forwarding to trl.experimental) to their parent class, and only when that parent really lives in a trl.experimental module.
     _trainer_resolved_module = None
     try:
         _trainer_src = inspect.getsource(RLTrainer)
@@ -2097,7 +1729,6 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                 _parent_mod = inspect.getmodule(_parent)
                 if _parent_mod is None:
                     continue
-                # Only resolve to a parent that lives in trl.experimental
                 if "trl.experimental" in _parent_mod.__name__:
                     RLTrainer = _parent
                     _trainer_resolved_module = _parent_mod
@@ -2131,7 +1762,6 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         all_imports = dir(_config_resolved_module)
     else:
         all_imports = dir(trainer)
-    # Fix _deprecate_arguments not getting imported so stop __ but not _
     imports = [x for x in all_imports if not x.startswith("__")]
 
     EMPTY = inspect.Parameter.empty
@@ -2181,7 +1811,6 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "processing_class = tokenizer if tokenizer is not None else processing_class",
         )
 
-    # Edit bf16, fp16 by checking the model's dtype/torch_dtype directly.
     extra_args = ""
     if "args" in call_args and "model" in call_args:
         mixed_precision = (
@@ -2190,19 +1819,15 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "use_fp16 = getattr(args, 'fp16', False)\n"
             "if type(use_fp16) is not bool: use_fp16 = False\n"
             "force_float32 = False\n"
-            # Device-aware bf16 check (CUDA/XPU/HIP), so V100/T4 never pick bf16 while AMD/Intel are unaffected;
-            # fall back on older unsloth_zoo.
+            # Device-aware bf16 check (CUDA/XPU/HIP), so V100/T4 never pick bf16 while AMD/Intel are unaffected; fall back on older unsloth_zoo.
             "try:\n"
             "    from unsloth_zoo.device_type import device_is_bf16_supported as _bf16_supported\n"
             "except Exception:\n"
             "    _bf16_supported = torch.cuda.is_bf16_supported\n"
-            # FORCE_FLOAT32 models (Gemma3, gpt_oss) cannot use float16: without bf16 keep float32, with
-            # bf16 full finetuning may still autocast. Stamped by from_pretrained, since the env is
-            # process wide and a later load would otherwise answer for this trainer.
+            # FORCE_FLOAT32 models (Gemma3, gpt_oss) cannot use float16: without bf16 keep float32, with bf16 full finetuning may still autocast. Stamped by from_pretrained, since the env is process wide and a later load would otherwise answer for this trainer.
             "full_finetuning = getattr(model, '_unsloth_full_finetuning', None)\n"
             "if full_finetuning is None: full_finetuning = os.environ.get('UNSLOTH_ENABLE_FULL_FINETUNING', '0') == '1'\n"
-            # Stamped by from_pretrained: the env is process wide, so a forced family loaded earlier would
-            # answer here for a model that is not forced at all.
+            # Stamped by from_pretrained: the env is process wide, so a forced family loaded earlier would answer here for a model that is not forced at all.
             "model_forced_float32 = getattr(model, '_unsloth_forced_float32', None)\n"
             "if model_forced_float32 is None: model_forced_float32 = os.environ.get('UNSLOTH_FORCE_FLOAT32', '0') == '1'\n"
             "if model_forced_float32 and not (full_finetuning and _bf16_supported()):\n"
@@ -2216,8 +1841,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "float16 = dtype == torch.float16\n"
             "bfloat16 = dtype == torch.bfloat16\n"
             "float32 = dtype == torch.float32\n"
-            # Set only when the caller passed dtype = torch.float32 themselves: a request, not a side effect of
-            # upcasting, and immune to a second load.
+            # Set only when the caller passed dtype = torch.float32 themselves: a request, not a side effect of upcasting, and immune to a second load.
             "user_float32 = bool(getattr(model, '_unsloth_user_float32', False))\n"
             "if full_finetuning:\n"
             "    if bfloat16 and use_fp16: use_fp16 = False\n"
@@ -2232,9 +1856,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "    if hasattr(args, 'mixed_precision'): args.mixed_precision = 'no'\n"
             "    # args.mixed_precision is a new argument which needs to be set now\n"
             "elif (not use_bf16 and not use_fp16) and mixed_precision_dtype == 'float32' and float32 and user_float32 and not _bf16_supported():\n"
-            # Without bf16 the only autocast is float16, whose exponent range overflows float32 to inf
-            # then NaN. Gated on the explicit request: fp16 autocast over fp32 master weights is the
-            # normal V100/T4 recipe (#4082).
+            # Without bf16 the only autocast is float16, whose exponent range overflows float32 to inf then NaN. Gated on the explicit request: fp16 autocast over fp32 master weights is the normal V100/T4 recipe (#4082).
             "    print('Unsloth: Model is in float32 and this GPU has no bfloat16 support, so training stays in float32. Pass fp16 = True to force float16 mixed precision instead.')\n"
             "    args.fp16 = False\n"
             "    args.bf16 = False\n"
@@ -2265,7 +1887,6 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         )
         extra_args += mixed_precision
 
-    # Check if per_device_eval_batch_size (default 8) is bigger than bsz, and use FP16 / BF16 evaluation.
     if "args" in call_args:
         if "eval_dataset" in call_args:
             check_eval_dataset = (
@@ -2309,7 +1930,6 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         )
         extra_args += eval_changes
 
-    # Force logits to be produced if preprocess_logits_for_metrics or compute_metrics is used.
     if "model" in call_args:
         logits_check = (
             "_output_logits = False\n"
@@ -2350,7 +1970,6 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         )
         extra_args += length_check
 
-        # max_seq_length may be set here, but trl is moving to max_length.
         if trainer_file == "sft_trainer":
             max_length_check = (
                 "if 'max_length' not in locals() and not hasattr(args, 'max_length'):\n"
@@ -2374,12 +1993,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                 "            print('Unsloth: We did not find `max_seq_length` or `max_length` in the model or args. We will set it to 1024.')\n"
                 "            args.max_length = 1024\n"
             )
-            # TRL >= 1.0.0 refuses padding-free without packing while max_length is set, and Unsloth
-            # auto-enables padding-free, so nearly every SFT user tripped that guard. Move the resolved
-            # length to where it is enforced: max_seq_length when prep tokenizes, else padding-free off.
-            # Unconditional copy: no TRL from 0.22.2 to 1.9.2 declares max_seq_length on SFTConfig, so a
-            # hasattr() gate would skip every pristine config and the clear below would drop the cap.
-            # Must be None, not 0: TRL's guard reads `args.max_length is not None`.
+            # TRL >= 1.0.0 refuses padding-free without packing while max_length is set, and Unsloth auto-enables padding-free, so move the resolved length to where it is enforced: max_seq_length when prep tokenizes, else padding-free off. Unconditional copy, since no TRL from 0.22.2 to 1.9.2 declares max_seq_length on SFTConfig and a hasattr() gate would skip every pristine config. Must be None, not 0: TRL's guard reads `args.max_length is not None`.
             if "`max_length` is not enforced" in old_RLTrainer_source:
                 max_length_check += (
                     "if getattr(args, 'padding_free', False) is True and not getattr(args, 'packing', False) "
@@ -2393,9 +2007,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     "            _unsloth_skip_prepare = True\n"
                     "    except Exception:\n"
                     "        pass\n"
-                    # Metadata first, a row only as fallback: reading one off a one-shot stream consumes it, and
-                    # `iter(x) is iter(x)` marks those. A with_transform split reports BACKING columns, so one
-                    # yielding input_ids over stored `text` read "raw"; probing its rows is free.
+                    # Metadata first, a row only as fallback: reading one off a one-shot stream consumes it, and `iter(x) is iter(x)` marks those. A with_transform split reports BACKING columns, so one yielding input_ids over stored `text` read "raw"; probing its rows is free.
                     "    def _unsloth_is_transformed(_ds):\n"
                     "        _f = getattr(_ds, 'format', None)\n"
                     "        _f = _f.get('type') if isinstance(_f, dict) else None\n"
@@ -2418,12 +2030,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     "            _unsloth_prep_truncates = False\n"
                     "    except Exception:\n"
                     "        _unsloth_prep_truncates = False\n"
-                    # Already-tokenized rows are not a dead end: TRL's _prepare_dataset truncates them and its LM
-                    # collator passes no max_length, so that truncation is the only thing enforcing the cap. The
-                    # Zoo returns pre-tokenized rows untouched. skip_prepare_dataset is the exception.
-                    # Only a MATERIALISED tokenized dataset, judged per DATASET since splits differ: with_transform
-                    # yields input_ids while column_names still says ["text"], raw conversational rows would be
-                    # sliced into corrupted turns, and a transform's rows are rebuilt on every read.
+                    # Already-tokenized rows are not a dead end: TRL's _prepare_dataset truncates them and its LM collator passes no max_length, so that truncation is the only thing enforcing the cap (skip_prepare_dataset is the exception). Only a MATERIALISED tokenized dataset, judged per DATASET since splits differ: with_transform yields input_ids while column_names still says ["text"], raw conversational rows would be sliced into corrupted turns, and a transform's rows are rebuilt on every read.
                     "    def _unsloth_truncatable(_ds):\n"
                     "        if _ds is None or not hasattr(_ds, 'map'): return False\n"
                     "        try:\n"
@@ -2435,43 +2042,26 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     "            _cols = getattr(_ds, 'column_names', None)\n"
                     "            if isinstance(_cols, dict):\n"
                     "                _cols = [_c for _v in _cols.values() for _c in (_v or [])]\n"
-                    # A packed split is out: TRL skips truncation when packing
-                    # (`if args.max_length is not None and not packing`), and cutting input_ids under a
-                    # seq_lengths that still describes the old row is worse than not cutting.
+                    # A packed split is out: TRL skips truncation when packing (`if args.max_length is not None and not packing`), and cutting input_ids under a seq_lengths that still describes the old row is worse than not cutting.
                     "            if 'seq_lengths' in (_cols or ()): return False\n"
                     "            return bool(_cols) and 'input_ids' in _cols\n"
                     "        except Exception:\n"
                     "            return False\n"
-                    # Read a row BACK: every predicate above is a guess about what the dataset will do, and this is the
-                    # one check that observes it. A split with no input_ids is raw, so prep tokenizes it with
-                    # the cap and it is fine.
+                    # Read a row BACK: every predicate above is a guess about what the dataset will do, and this is the one check that observes it. A split with no input_ids is raw, so prep tokenizes it with the cap and it is fine.
                     "    _unsloth_cap = args.max_length\n"
-                    # TRL slices [-max_length:] for keep_end, which callers use when the completion sits at the tail of
-                    # a long prompt; always keeping the prefix trained on the wrong half of every row.
+                    # TRL slices [-max_length:] for keep_end, which callers use when the completion sits at the tail of a long prompt; always keeping the prefix trained on the wrong half of every row.
                     "    _unsloth_truncation_mode = getattr(args, 'truncation_mode', 'keep_start') or 'keep_start'\n"
-                    # keep_start and keep_end are the only two slices, and TRL's SFT path never reads this
-                    # attribute, so a third value would go uncaught. Refuse the enforcement claim instead.
+                    # keep_start and keep_end are the only two slices, and TRL's SFT path never reads this attribute, so a third value would go uncaught. Refuse the enforcement claim instead.
                     "    _unsloth_keep_end = _unsloth_truncation_mode == 'keep_end'\n"
                     "    _unsloth_known_mode = _unsloth_truncation_mode in ('keep_start', 'keep_end')\n"
                     "    _unsloth_slice = slice(-_unsloth_cap, None) if _unsloth_keep_end else slice(None, _unsloth_cap)\n"
-                    # Resolved outside the truncation block, since the fallback reads it even under
-                    # skip_prepare_dataset. eval_packing is separate from packing:
-                    #     packing = args.packing if args.eval_packing is None else args.eval_packing
-                    # (sft_trainer.py), so packing=False with eval_packing=True reaches this branch, which is
-                    # gated on `not args.packing`. TRL then packs the eval split instead of truncating it, and
-                    # every strategy owns the overflow: `wrapped` concatenates the stream before chunking,
-                    # `bfd_split` splits an overlength example into more chunks. Cutting rows at the cap first
-                    # throws that away.
+                    # Resolved outside the truncation block, since the fallback reads it even under skip_prepare_dataset. eval_packing is separate: `packing = args.packing if args.eval_packing is None else args.eval_packing`, so packing=False with eval_packing=True reaches this branch, which is gated on `not args.packing`. TRL then packs the eval split instead of truncating it and every strategy owns the overflow (`wrapped` concatenates the stream before chunking, `bfd_split` splits an overlength example into more chunks), so cutting rows at the cap first throws that away.
                     "    _unsloth_eval_packing = getattr(args, 'packing', False) if getattr(args, 'eval_packing', None) is None else getattr(args, 'eval_packing')\n"
                     "    _unsloth_completion_only = getattr(args, 'completion_only_loss', None)\n"
-                    # Column names first, a row only if free: on a one-shot stream this probe ate the first
-                    # TRAINING example. A with_transform split answers with its BACKING table, so one yielding
-                    # prompt/completion read False here while TRL read True and applied completion_mask.
+                    # Column names first, a row only if free: on a one-shot stream this probe ate the first TRAINING example. A with_transform split answers with its BACKING table, so one yielding prompt/completion read False here while TRL read True and applied completion_mask.
                     "    if _unsloth_completion_only is None:\n"
                     "        try:\n"
-                    # A set_format(output_all_columns = False) split yields only the named columns while
-                    # column_names still lists the whole backing table, so completion-only resolved True off a
-                    # completion the rows never hand over. The format's own column list is what is yielded.
+                    # A set_format(output_all_columns = False) split yields only the named columns while column_names still lists the whole backing table, so completion-only resolved True off a completion the rows never hand over. The format's own column list is what is yielded.
                     "            _unsloth_fmt = getattr(train_dataset, 'format', None)\n"
                     "            _unsloth_fmt = _unsloth_fmt if isinstance(_unsloth_fmt, dict) else {}\n"
                     "            _unsloth_shown = _unsloth_fmt.get('columns')\n"
@@ -2488,18 +2078,13 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     "        except Exception:\n"
                     "            _unsloth_train_sample = {}\n"
                     "        _unsloth_completion_only = ('prompt' in _unsloth_train_sample and 'completion' in _unsloth_train_sample)\n"
-                    # Parked on args so the late evaluate()/predict() cap reads the SAME value: it resolves from
-                    # the train schema, and disagreeing with the collator leaves an all -100 row in.
+                    # Parked on args so the late evaluate()/predict() cap reads the SAME value: it resolves from the train schema, and disagreeing with the collator leaves an all -100 row in.
                     "    args._unsloth_completion_only_loss = _unsloth_completion_only\n"
-                    # EVERY row, not the first: a short row 0 before a long row 5000 read as within the cap, and
-                    # in the fallback branch nothing downstream truncates it. A map-style split is read in
-                    # full; a stream cannot be rewound, so a bounded prefix is all there is and the check says
-                    # so.
+                    # EVERY row, not the first: a short row 0 before a long row 5000 read as within the cap, and in the fallback branch nothing downstream truncates it. A map-style split is read in full; a stream cannot be rewound, so a bounded prefix is all there is and the check says so.
                     "    _UNSLOTH_SCAN_ROWS = 1024\n"
                     "    def _unsloth_within_cap(_ds):\n"
                     "        if _ds is None: return True\n"
-                    # Believe a producer's own truncation claim: scanning a with_transform split tokenizes every
-                    # row in __init__. Read from __dict__ so a wrapper does not inherit the inner split's claim.
+                    # Believe a producer's own truncation claim: scanning a with_transform split tokenizes every row in __init__. Read from __dict__ so a wrapper does not inherit the inner split's claim.
                     "        _unsloth_own = getattr(_ds, '__dict__', None)\n"
                     "        if isinstance(_unsloth_own, dict):\n"
                     "            _unsloth_claim = _unsloth_own.get('_unsloth_truncated_to')\n"
@@ -2508,34 +2093,26 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     "        try:\n"
                     "            try:    _n = len(_ds)\n"
                     "            except Exception: _n = None\n"
-                    # A single-pass stream cannot be scanned: reading it here IS consuming it, and two iter()
-                    # calls returning the same object say so (a datasets.IterableDataset restarts and does not).
-                    # Unverifiable, so answer as the prefix case: not proven within the cap.
+                    # A single-pass stream cannot be scanned: reading it here IS consuming it, and two iter() calls returning the same object say so (a datasets.IterableDataset restarts and does not). Unverifiable, so answer as the prefix case: not proven within the cap.
                     "            _unsloth_rows = iter(_ds)\n"
                     "            if _unsloth_rows is iter(_ds): return False\n"
                     "            _seen = 0\n"
                     "            for _row in _unsloth_rows:\n"
                     "                if 'input_ids' not in _row: return True\n"
                     "                if len(_row['input_ids']) > _unsloth_cap: return False\n"
-                    # An unexhausted stream is UNVERIFIED, not verified: treating the first 1024 fitting rows as proof
-                    # let a later overlength row through, and nothing truncates a pre-tokenized row here.
+                    # An unexhausted stream is UNVERIFIED, not verified: treating the first 1024 fitting rows as proof let a later overlength row through, and nothing truncates a pre-tokenized row here.
                     "                _seen += 1\n"
                     "                if _n is None and _seen >= _UNSLOTH_SCAN_ROWS: return False\n"
                     "        except Exception:\n"
                     "            return False\n"
                     "        return True\n"
-                    # Each eval split counts: one the truncation cannot rewrite is left alone above, and prep
-                    # never re-tokenizes rows carrying input_ids, so trusting the train split left eval uncapped.
+                    # Each eval split counts: one the truncation cannot rewrite is left alone above, and prep never re-tokenizes rows carrying input_ids, so trusting the train split left eval uncapped.
                     "    def _unsloth_splits_within_cap(_ev):\n"
                     "        _splits = list(_ev.values()) if isinstance(_ev, dict) else [_ev]\n"
                     "        return all(_unsloth_within_cap(_s) for _s in _splits)\n"
-                    # Not train-only: _unsloth_prep_truncates is decided from the train split, so a raw train beside a
-                    # pre-tokenized eval set skipped this whole block and left evaluation uncapped.
+                    # Not train-only: _unsloth_prep_truncates is decided from the train split, so a raw train beside a pre-tokenized eval set skipped this whole block and left evaluation uncapped.
                     "    if not _unsloth_skip_prepare:\n"
-                    # Honour TRL's preparation map_kwargs so a large pre-tokenized dataset is not rewritten
-                    # single-process, through the same helper as every map site: the config layer writes serial as
-                    # dataset_num_proc = 1, and datasets >= 4.1 builds a Pool(1) for it, forking a tokenizer
-                    # worker on the host that asked for none.
+                    # Honour TRL's preparation map_kwargs so a large pre-tokenized dataset is not rewritten single-process, through the same helper as every map site: the config layer writes serial as dataset_num_proc = 1, and datasets >= 4.1 builds a Pool(1) for it, forking a tokenizer worker on the host that asked for none.
                     "        _unsloth_map_kw = {}\n"
                     "        try:\n"
                     "            try:\n"
@@ -2546,9 +2123,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     "        except Exception:\n"
                     "            _unsloth_nproc = None\n"
                     "        if _unsloth_nproc: _unsloth_map_kw['num_proc'] = _unsloth_nproc\n"
-                    # Same rule as TRL's truncate_dataset: slice every per-row list column so input_ids, labels,
-                    # attention_mask and the masks stay aligned. Written out rather than imported, since
-                    # trl.data_utils drags in the processor stack and an ImportError would drop the cap.
+                    # Same rule as TRL's truncate_dataset: slice every per-row list column so input_ids, labels, attention_mask and the masks stay aligned. Written out rather than imported, since trl.data_utils drags in the processor stack and an ImportError would drop the cap.
                     "        def _unsloth_is_sequence_column(_col):\n"
                     "            try:\n"
                     "                if len(_col) == 0: return False\n"
@@ -2556,15 +2131,11 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     "            except Exception:\n"
                     "                return False\n"
                     "            if isinstance(_first, (str, bytes)): return False\n"
-                    # len(), not hasattr('__len__'): under set_format('torch') a scalar column batches to a 1-D
-                    # tensor whose element is 0-dim, so len(_v) threw TypeError and the catch restored the
-                    # overlength dataset.
+                    # len(), not hasattr('__len__'): under set_format('torch') a scalar column batches to a 1-D tensor whose element is 0-dim, so len(_v) threw TypeError and the catch restored the overlength dataset.
                     "            try:    len(_first)\n"
                     "            except Exception: return False\n"
                     "            return True\n"
-                    # Per-token columns only, matched by row length against input_ids: a packed split's
-                    # seq_lengths are document lengths, and slicing them left padding-free building position ids
-                    # for tokens the row no longer has. Per VALUE, since a list row 0 can be None later.
+                    # Per-token columns only, matched by row length against input_ids: a packed split's seq_lengths are document lengths, and slicing them left padding-free building position ids for tokens the row no longer has. Per VALUE, since a list row 0 can be None later.
                     "        def _unsloth_cut_value(_v, _r):\n"
                     "            try:\n"
                     "                if len(_v) != len(_r): return _v\n"
@@ -2581,22 +2152,14 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     "                else:\n"
                     "                    _out[_k] = [_unsloth_cut_value(_v, _r) for _v, _r in zip(_col, _ids)]\n"
                     "            return _out\n"
-                    # A stream has no length, and IterableDataset.map takes no num_proc: passing one raised TypeError
-                    # and the run died on "cannot be enforced" instead of being truncated.
+                    # A stream has no length, and IterableDataset.map takes no num_proc: passing one raised TypeError and the run died on "cannot be enforced" instead of being truncated.
                     "        def _unsloth_is_stream(_ds):\n"
                     "            try:    return not hasattr(_ds, '__len__')\n"
                     "            except Exception: return True\n"
-                    # One split, capped and then checked. A stream's map is lazy and applies to EVERY row it will ever
-                    # yield, a stronger guarantee than the bounded prefix scan.
-                    # Enforcement, not observation: a with_transform split under the cap is not enforced, since it
-                    # rebuilds its rows on every read, so it keeps max_length and turns padding-free off.
-                    # Schema first, a row only when free: next(iter(_ds)) on a single-pass stream is a row the run
-                    # then trains without. An unprobeable stream answers True, holding max_length.
+                    # One split, capped and then checked. A stream's map is lazy and applies to EVERY row it will ever yield, a stronger guarantee than the bounded prefix scan. Enforcement, not observation: a with_transform split under the cap is not enforced, since it rebuilds its rows on every read, so it keeps max_length and turns padding-free off. Schema first, a row only when free: next(iter(_ds)) on a single-pass stream is a row the run then trains without, and an unprobeable stream answers True, holding max_length.
                     "        def _unsloth_pretokenized(_ds):\n"
                     "            try:\n"
-                    # Columns first, EXCEPT for a transform: a with_transform split reports its backing table, so
-                    # one storing `text` and yielding overlength input_ids read "raw" and cleared max_length. Its
-                    # rows are rebuilt on every read, so probing one costs nothing.
+                    # Columns first, EXCEPT for a transform: a with_transform split reports its backing table, so one storing `text` and yielding overlength input_ids read "raw" and cleared max_length. Its rows are rebuilt on every read, so probing one costs nothing.
                     "                _cols = None if _unsloth_is_transformed(_ds) else getattr(_ds, 'column_names', None)\n"
                     "                if isinstance(_cols, dict):\n"
                     "                    _cols = [_c for _v in _cols.values() for _c in (_v or [])]\n"
@@ -2606,9 +2169,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     "                _row = next(_probe, None)\n"
                     "            except Exception: return True\n"
                     "            return isinstance(_row, dict) and 'input_ids' in _row\n"
-                    # Every rank reaches this before TRL's _prepare_dataset, which runs its own maps under
-                    # main_process_first. Without the same window, eight ranks start num_proc workers each against
-                    # one Arrow cache. A single process gets a no-op context manager.
+                    # Every rank reaches this before TRL's _prepare_dataset, which runs its own maps under main_process_first. Without the same window, eight ranks start num_proc workers each against one Arrow cache. A single process gets a no-op context manager.
                     "        def _unsloth_rank_first():\n"
                     "            try:\n"
                     "                from accelerate import PartialState\n"
@@ -2624,47 +2185,29 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     "            if not _unsloth_truncatable(_ds): return _ds, not _unsloth_pretokenized(_ds)\n"
                     "            _kw = {} if _unsloth_is_stream(_ds) else _unsloth_map_kw\n"
                     "            _new = _ds.map(_unsloth_truncate_rows, batched = True, **_kw)\n"
-                    # TRL filters these right after truncating: a row whose prompt fills the cap is all -100 and
-                    # contributes no loss. labels is only one of three supervision signals; completion-only and
-                    # assistant-only rows carry completion_mask / assistant_masks instead.
-                    # A mask is supervision when TRL will apply it, and the two are not symmetric:
-                    # DataCollatorForLanguageModeling gates completion_mask on completion_only_loss but applies
-                    # assistant_masks on presence, so gating on the flag left an all-zero mask and an all -100 row.
-                    # A None completion_only_loss is NOT "on": TRL resolves it from the dataset shape (prompt plus
-                    # completion), and a pre-tokenized split has neither, so treating None as enabled deleted rows
-                    # with valid full-sequence supervision.
+                    # TRL filters these right after truncating: a row whose prompt fills the cap is all -100 and contributes no loss. labels is only one of three supervision signals; completion-only and assistant-only rows carry completion_mask / assistant_masks instead. A mask is supervision when TRL will apply it, and the two are not symmetric: DataCollatorForLanguageModeling gates completion_mask on completion_only_loss but applies assistant_masks on presence, so gating on the flag left an all-zero mask and an all -100 row. A None completion_only_loss is NOT "on": TRL resolves it from the dataset shape (prompt plus completion), which a pre-tokenized split has neither of, so treating None as enabled deleted rows with valid full-sequence supervision.
                     "            _unsloth_cols = getattr(_new, 'column_names', None) or ()\n"
-                    # One mode for every split, from the TRAIN sample, because that is what the collator uses.
-                    # Per-split resolution disagreed with it whenever the schemas differ, so rows whose mask
-                    # truncated to all zeros survived and went all -100 at eval.
+                    # One mode for every split, from the TRAIN sample, because that is what the collator uses. Per-split resolution disagreed with it whenever the schemas differ, so rows whose mask truncated to all zeros survived and went all -100 at eval.
                     "            _unsloth_masks = []\n"
                     "            if _unsloth_completion_only and 'completion_mask' in _unsloth_cols:\n"
                     "                _unsloth_masks.append('completion_mask')\n"
                     "            if 'assistant_masks' in _unsloth_cols:\n"
                     "                _unsloth_masks.append('assistant_masks')\n"
                     "            try:\n"
-                    # labels is unconditional: it IS the supervision. Intersect labels AND every active mask
-                    # rather than filtering each, since masks are applied one after another onto the labels; zip
-                    # stops at the shorter, which is what an intersection means for a ragged pair.
+                    # labels is unconditional: it IS the supervision. Intersect labels AND every active mask rather than filtering each, since masks are applied one after another onto the labels.
                     "                _unsloth_supervision = (['labels'] if 'labels' in _unsloth_cols else []) + _unsloth_masks\n"
-                    # The masks are applied one after another onto the same labels, so what survives is their
-                    # INTERSECTION. Filtering each on its own kept rows whose two masks light up in different
-                    # positions, which TRL then labels all -100 -- the very rows this filter exists to drop. zip
-                    # stops at the shorter, which is what an intersection means for a ragged pair.
+                    # What survives is the INTERSECTION of the masks: filtering each on its own kept rows whose two masks light up in different positions, which TRL then labels all -100, the very rows this filter exists to drop. zip stops at the shorter, which is what an intersection means for a ragged pair.
                     "                if _unsloth_supervision:\n"
                     "                    _new = _new.filter(lambda _e, _c = tuple(_unsloth_supervision): any(all((_x != -100) if _n == 'labels' else _x for _n, _x in zip(_c, _v)) for _v in zip(*[_e[_n] for _n in _c])), **_kw)\n"
                     "            except Exception:\n"
                     "                pass\n"
-                    # Recorded, not raised: the caller wraps these calls in a broad `except Exception` that would turn a
-                    # raise into "could not truncate", so the raise happens past that handler.
+                    # Recorded, not raised: the caller wraps these calls in a broad `except Exception` that would turn a raise into "could not truncate", so the raise happens past that handler.
                     "            try:\n"
                     "                if _unsloth_supervision and len(_new) == 0: _unsloth_emptied.append(1)\n"
                     "            except TypeError:\n"
                     "                pass\n"
                     "            return _new, (True if _unsloth_is_stream(_new) else _unsloth_within_cap(_new))\n"
-                    # Resolved BEFORE the try, since the fallback needs it even when the try never ran.
-                    # eval_packing is separate from packing, so TRL may PACK the eval split instead of truncating
-                    # it: keep max_length and turn padding-free off, which packing requires anyway.
+                    # Resolved BEFORE the try, since the fallback needs it even when the try never ran. eval_packing is separate from packing, so TRL may PACK the eval split instead of truncating it: keep max_length and turn padding-free off, which packing requires anyway.
                     "        _unsloth_emptied = []\n"
                     "        _unsloth_orig_train = train_dataset\n"
                     "        _unsloth_orig_eval = eval_dataset if 'eval_dataset' in locals() else None\n"
@@ -2672,20 +2215,11 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     "            _unsloth_capped = _unsloth_known_mode\n"
                     "            if not _unsloth_known_mode:\n"
                     "                print('Unsloth: `truncation_mode = ' + str(_unsloth_truncation_mode) + '` is not one of keep_start / keep_end, so `max_length` is not being enforced here.')\n"
-                    # A raw train split is tokenized with the cap by prep, so leave it alone. `and`, not a plain
-                    # assignment, which threw away the unknown-mode refusal seeded above and served an unhonoured
-                    # truncation_mode as keep_start.
-                    # _unsloth_known_mode too: clearing _unsloth_capped only drops the ENFORCEMENT claim while the
-                    # slice still ran, so the fallback scanned an already-trimmed split. Leaving the split alone
-                    # lets that scan see the real lengths.
+                    # A raw train split is tokenized with the cap by prep, so leave it alone. `and`, not a plain assignment, which threw away the unknown-mode refusal seeded above and served an unhonoured truncation_mode as keep_start. _unsloth_known_mode too: clearing _unsloth_capped only drops the ENFORCEMENT claim while the slice still ran, so the fallback scanned an already-trimmed split.
                     "            if _unsloth_known_mode and not _unsloth_prep_truncates:\n"
                     "                train_dataset, _unsloth_split_ok = _unsloth_cap_split(train_dataset)\n"
                     "                _unsloth_capped = _unsloth_capped and _unsloth_split_ok\n"
-                    # An eval split TRL will PACK must not be truncated first: the branch is gated on
-                    # `not args.packing` while eval_packing resolves separately, and the wrapped strategy
-                    # concatenates the stream before chunking. Drop the enforcement claim, not the split.
-                    # Each eval split on its own: a raw one stays raw for the tokenizer pass that follows, and only a
-                    # materialised tokenized one is cut.
+                    # An eval split TRL will PACK must not be truncated first: the branch is gated on `not args.packing` while eval_packing resolves separately, and the wrapped strategy concatenates the stream before chunking. Drop the enforcement claim, not the split. Each eval split on its own: a raw one stays raw for the tokenizer pass that follows, and only a materialised tokenized one is cut.
                     "            if _unsloth_eval_packing or not _unsloth_known_mode:\n"
                     "                _unsloth_capped = False\n"
                     "            elif 'eval_dataset' in locals() and eval_dataset is not None:\n"
@@ -2699,27 +2233,20 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     "                    eval_dataset, _unsloth_split_ok = _unsloth_cap_split(eval_dataset)\n"
                     "                    _unsloth_capped = _unsloth_capped and _unsloth_split_ok\n"
                     "            _unsloth_prep_truncates = _unsloth_capped\n"
-                    # Splits that WERE rewritten keep their truncation: it is the cap the caller asked for, as
-                    # TRL's truncate_dataset would apply it. Rolling them back for a sibling that cannot be
-                    # rewritten put an overlength train set back; only the claim of enforcement is dropped.
+                    # Splits that WERE rewritten keep their truncation: it is the cap the caller asked for, as TRL's truncate_dataset would apply it. Rolling them back for a sibling that cannot be rewritten put an overlength train set back; only the claim of enforcement is dropped.
                     "            if not _unsloth_capped:\n"
                     "                print('Unsloth: `max_length` cannot be enforced for every split here, so padding-free batching is being turned off instead.')\n"
                     "        except Exception as _unsloth_truncate_error:\n"
                     "            train_dataset = _unsloth_orig_train\n"
                     "            if 'eval_dataset' in locals(): eval_dataset = _unsloth_orig_eval\n"
-                    # The flag is decided from the train split, so a failure while capping an eval split would otherwise
-                    # leave it reading "cap enforced".
+                    # The flag is decided from the train split, so a failure while capping an eval split would otherwise leave it reading "cap enforced".
                     "            _unsloth_prep_truncates = False\n"
                     # Never silent: a swallowed failure here reads as the cap being enforced.
                     "            print('Unsloth: could not truncate the pre-tokenized dataset to `max_length` (' + str(_unsloth_truncate_error) + ').')\n"
-                    # Outside the handler on purpose: if every row loses its supervised tokens the cap sits below
-                    # where supervision starts, and every TRL 1.x reads next(iter(train_dataset)) in __init__, so
-                    # an empty split surfaces as a bare StopIteration naming nothing.
+                    # Outside the handler on purpose: if every row loses its supervised tokens the cap sits below where supervision starts, and every TRL 1.x reads next(iter(train_dataset)) in __init__, so an empty split surfaces as a bare StopIteration naming nothing.
                     "        if _unsloth_emptied:\n"
                     "            raise ValueError('Unsloth: truncating to `max_length = ' + str(args.max_length) + '` left every row with no supervised token, so there is nothing to train on. The supervised part of your rows starts past that length: raise `max_length`, or set `truncation_mode = \"keep_end\"` if the completion sits at the end of each row.')\n"
-                    # A producer that truncates every row enforces the cap as truncate_dataset would, so keep
-                    # padding-free rather than pay the fallback; Unsloth's online tokenization is this shape. Not
-                    # under eval_packing: that split is overlength on purpose.
+                    # A producer that truncates every row enforces the cap as truncate_dataset would, so keep padding-free rather than pay the fallback; Unsloth's online tokenization is this shape. Not under eval_packing: that split is overlength on purpose.
                     "    if not _unsloth_prep_truncates and not _unsloth_eval_packing:\n"
                     "        def _unsloth_attests(_ds):\n"
                     "            if _ds is None: return True\n"
@@ -2737,13 +2264,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     "        args.max_length = None\n"
                     "        max_length = None\n"
                     "    else:\n"
-                    # Turning padding-free off keeps max_length for TRL's collator, which does not truncate, so
-                    # rows already carrying input_ids are unenforced. TRL's own guard used to make this a hard
-                    # error, so an observed overlength row must stay one rather than run silently uncapped.
-                    # skip_prepare_dataset used to exempt this, the one way to get a silently uncapped run: TRL
-                    # then neither truncates nor gives its collator a truncation length.
-                    # An eval split left for the packer is overlength ON PURPOSE, so scanning it here turned a working
-                    # eval-packing run into a hard error. The train split is still scanned: nothing packs that one.
+                    # Turning padding-free off keeps max_length for TRL's collator, which does not truncate, so rows already carrying input_ids are unenforced; TRL's own guard used to make this a hard error, so an observed overlength row must stay one rather than run silently uncapped. skip_prepare_dataset used to exempt this, the one way to get a silently uncapped run. An eval split left for the packer is overlength ON PURPOSE, so scanning it here turned a working eval-packing run into a hard error; the train split is still scanned, since nothing packs that one.
                     "        _unsloth_scan_eval = None if _unsloth_eval_packing else (eval_dataset if 'eval_dataset' in locals() else None)\n"
                     "        if not (_unsloth_within_cap(train_dataset) and _unsloth_splits_within_cap(_unsloth_scan_eval)):\n"
                     "            raise ValueError('Unsloth: `max_length = ' + str(args.max_length) + '` cannot be enforced. Your dataset already carries `input_ids` and holds rows longer than that, and nothing downstream truncates pre-tokenized rows. Truncate it yourself before passing it in, or drop `max_length`.')\n"
@@ -2752,7 +2273,6 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                 )
             extra_args += max_length_check
 
-    # Enable for training and move padding side of tokenizer to right
     if "model" in call_args:
         training_check = (
             "if model is not None and hasattr(model, 'for_training'):\n"
@@ -2790,8 +2310,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         )
         extra_args += data_collator_check
 
-        # Also swap when .pad is missing on a VLM. LM/Seq2Seq collators only: preference collators
-        # (DPODataCollatorWithPadding etc.) keep their own prompt/chosen/rejected handling.
+        # Also swap when .pad is missing on a VLM. LM/Seq2Seq collators only: preference collators (DPODataCollatorWithPadding etc.) keep their own prompt/chosen/rejected handling.
         pad_check = (
             "if not isinstance(data_collator, UnslothVisionDataCollator):\n"
             "    if not hasattr(__tokenizer, 'pad') and hasattr(__tokenizer, 'tokenizer'):\n"
@@ -2842,8 +2361,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         )
         RLTrainer_post += training_check
 
-    # Sync chat_template from processing_class to vLLM's tokenizer, which fixes base models that have
-    # custom chat templates applied after loading.
+    # Sync chat_template from processing_class to vLLM's tokenizer, which fixes base models that have custom chat templates applied after loading.
     if "model" in call_args:
         vllm_chat_template_sync = (
             "if hasattr(self, 'llm') and self.llm is not None and hasattr(self.llm, 'get_tokenizer'):\n"
@@ -2889,8 +2407,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         "logging_nan_inf_filter": False,
         "per_device_train_batch_size": 4,
         "gradient_accumulation_steps": 2,
-        # LoRA decays A and B toward 0, so W = W_init + (alpha/r) * B @ A is pulled to W_init, not 0
-        # as in full FT; 0.001 keeps a small Frobenius prior without dragging the adapter to base.
+        # LoRA decays A and B toward 0, so W = W_init + (alpha/r) * B @ A is pulled to W_init, not 0 as in full FT; 0.001 keeps a small Frobenius prior without dragging the adapter to base.
         "weight_decay": 0.001,
         "seed": 3407,
         "optim": "adamw_8bit",
@@ -2914,9 +2431,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         "auto_find_batch_size": False,  # Auto /2 batch size - too many people complained so removing
         "dataloader_pin_memory": True,
         "padding_free": None,  # None = user didn't set it, allows auto-enable detection
-        # Might fail, so persistent dataloader workers / prefetch are disabled for now.
     }
-    # warmup_ratio is deprecated in transformers >= 5.0; warmup_steps accepts a float.
     if transformers_version >= Version("5.0.0"):
         replacements["warmup_steps"] = 0.1
     else:
@@ -2936,8 +2451,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "auto_find_batch_size": False,  # Cannot work on GRPO
             # See fengyao.notion.site/off-policy-rl and huggingface/trl#3867.
             "vllm_importance_sampling_correction": False,
-            # TRL >= 1.7.0 enables the MoE router aux loss by default (0.001), but the optimized GRPO forward
-            # does not compute it, so default it off; opt in via router_aux_loss_coef > 0.
+            # TRL >= 1.7.0 enables the MoE router aux loss by default (0.001), but the optimized GRPO forward does not compute it, so default it off; opt in via router_aux_loss_coef > 0.
             "router_aux_loss_coef": 0.0,
         }
         for k, v in replacements.items():
@@ -2946,13 +2460,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             y = f"{k} = {y},\n"
             arguments = re.sub(x, y, arguments)
 
-    # TRL >= 1.7.0 defaults SFT to loss_type="chunked_nll" (trl#5846), which patches the lm_head and
-    # calls the backbone directly, so unsloth_fused_ce_loss never runs (ours chunks too and peaks
-    # 1.7-3.7GB lower on gemma-3-4b at 141-8192 tokens), and it divides by num_items_in_batch ignoring
-    # model_accepts_loss_kwargs, so on models setting that flag False (gemma3, qwen-vl, paligemma,
-    # glm4v) training_step divides by grad-accum again and loss and grads are scaled 1/GA. Explicit
-    # loss_type= still wins. Kept scoped to sft_trainer, since loss_type is an unrelated field in
-    # DPO/KTO/GRPO.
+    # TRL >= 1.7.0 defaults SFT to loss_type="chunked_nll" (trl#5846), which patches the lm_head and calls the backbone directly, so unsloth_fused_ce_loss never runs (ours chunks too and peaks 1.7-3.7GB lower on gemma-3-4b at 141-8192 tokens), and it divides by num_items_in_batch ignoring model_accepts_loss_kwargs, so on models setting that flag False (gemma3, qwen-vl, paligemma, glm4v) training_step divides by grad-accum again and loss and grads are scaled 1/GA. Explicit loss_type= still wins. Kept scoped to sft_trainer, since loss_type is an unrelated field in DPO/KTO/GRPO.
     if trainer_file == "sft_trainer":
         replacements = {"loss_type": "nll"}
         for k, v in replacements.items():
@@ -2978,7 +2486,6 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         )
         extra_args += num_train_epochs_check
 
-    # Check whether max_seq_length is NOT defined; max_length is now the default.
     if "max_seq_length" not in call_args and "max_length" in call_args:
         max_seq_length_pre = """max_seq_length : Optional[int] = field(
         default = None,
@@ -2999,13 +2506,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         )
         extra_args += saving_check
 
-    # The worker-count policy lives in unsloth_zoo.dataset_num_proc: it had drifted into four
-    # inline copies, two wrong (stdlib multiprocessing start method, and `1` as the serial
-    # sentinel when datasets >= 4.1 builds a Pool(1)). In the zoo so generated source never
-    # imports back into its generator.
-    # serial_as_none depends on the reader: unsloth_zoo.sft_prepare_dataset reads a config None as
-    # "auto-size me", so SFT writes serial as 1 and the map() call site turns it back. DPO, KTO,
-    # CPO, ORPO, Reward and PRM pass it straight to Dataset.map, where 1 is a Pool(1).
+    # The worker-count policy lives in unsloth_zoo.dataset_num_proc: it had drifted into four inline copies, two wrong (stdlib multiprocessing start method, and `1` as the serial sentinel when datasets >= 4.1 builds a Pool(1)). In the zoo so generated source never imports back into its generator. serial_as_none depends on the reader: unsloth_zoo.sft_prepare_dataset reads a config None as "auto-size me", so SFT writes serial as 1 and the map() call site turns it back, while DPO, KTO, CPO, ORPO, Reward and PRM pass it straight to Dataset.map, where 1 is a Pool(1).
     if "dataset_num_proc" in call_args:
         _serial_as_none = "False" if trainer_file == "sft_trainer" else "True"
         num_proc_check = (
@@ -3033,11 +2534,8 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         )
         extra_args += pad_to_multiple_of
 
-    # Check for loss_type = dr_grpo and scale_rewards for GRPO; DAPO uses per-token loss, so BNPO loss
-    # is used. See huggingface/trl#3130 (comment 2746947835).
+    # Check for loss_type = dr_grpo and scale_rewards for GRPO; DAPO uses per-token loss, so BNPO loss is used. See huggingface/trl#3130 (comment 2746947835).
     if "loss_type" in call_args and "scale_rewards" in call_args:
-        # See https://github.com/huggingface/trl/issues/3130#issuecomment-2746947835 DAPO uses per token loss so
-        # BNPO loss used
         check_dr_grpo = (
             "if loss_type.lower() == 'dr_grpo':\n"
             "    loss_type = 'dr_grpo'\n"
@@ -3062,14 +2560,12 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         )
         extra_args += check_dr_grpo
 
-    # Check the GRPO num_generations mismatch; if world size is not set by accelerate or torchrun at this point it is 1.
     if (
         "per_device_train_batch_size" in call_args
         and "num_generations" in call_args
         and "steps_per_generation" in call_args
         and "generation_batch_size" in call_args
     ):
-        # if world size is not set by accelerate or torchrun at this point it will be 1
         check_num_generations = (
             "if steps_per_generation is None and generation_batch_size is None:\n"
             "    ga = gradient_accumulation_steps\n"
@@ -3096,7 +2592,6 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         )
         extra_args += check_num_generations
 
-    # Temperature must not be <= 0, and stop if >= 10.
     if "temperature" in call_args:
         check_temperature = (
             "if temperature <= 0:\n"
@@ -3118,8 +2613,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     RLConfig_extra_args = extra_args
     RLConfig_call_args = call_args
 
-    # TRL 0.27.0+ forces use_reentrant=False in gradient_checkpointing_kwargs, but Unsloth gradient
-    # checkpointing requires True, so remove the setting after super().__init__() applies it.
+    # TRL 0.27.0+ forces use_reentrant=False in gradient_checkpointing_kwargs, but Unsloth gradient checkpointing requires True, so remove the setting after super().__init__() applies it.
     RLConfig_post = ""
     if trl_version >= Version("0.27.0"):
         RLConfig_post = (
@@ -3192,8 +2686,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     )
 
     if RLTrainer_name == "GRPOTrainer":
-        # Base torch_compile_options shared by all device types; CUDA adds its own, and XPU / HIP / others
-        # use the base only.
+        # Base torch_compile_options shared by all device types; CUDA adds its own, and XPU / HIP / others use the base only.
         base_options = """torch_compile_options = {
             "epilogue_fusion"   : True,
             "max_autotune"      : False,
@@ -3201,7 +2694,6 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "trace.enabled"     : False,"""
 
         if DEVICE_TYPE == "cuda":
-            # CUDA-specific options (added to base options)
             cuda_options = """
             "triton.enable_persistent_tma_matmul": torch.cuda.get_device_capability()[0] >= 9,"""
             # cutlass options were added in PyTorch 2.8.0.
@@ -3215,7 +2707,6 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         }"""
             new_options = base_options + cuda_options
         else:
-            # XPU, HIP, and other device types use base options only
             new_options = (
                 base_options
                 + """
@@ -3227,9 +2718,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         RLTrainer_source = re.sub(pattern, new_options, RLTrainer_source, flags = re.DOTALL)
 
         if trl_version >= Version("1.4.0"):
-            # The `elif is_peft_model(model) and args.beta != 0.0:` ref-adapter block exists from TRL
-            # 1.4.0 through 1.7.x. Anchored on the final ref_param copy so the following
-            # enable_input_require_grads() block is not swallowed.
+            # The `elif is_peft_model(model) and args.beta != 0.0:` ref-adapter block exists from TRL 1.4.0 through 1.7.x. Anchored on the final ref_param copy so the following enable_input_require_grads() block is not swallowed.
             peft_pattern = (
                 r"\s*elif is_peft_model\(model\) and args\.beta != 0\.0:"
                 r".*?"
@@ -3245,8 +2734,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             )
 
             if trl_version >= Version("1.7.0"):
-                # router_aux_loss_coef / aux_loss_enabled arrived in TRL 1.7.0, and the optimized GRPO forward
-                # cannot compute the MoE router aux loss, so reject an explicit opt-in at init.
+                # router_aux_loss_coef / aux_loss_enabled arrived in TRL 1.7.0, and the optimized GRPO forward cannot compute the MoE router aux loss, so reject an explicit opt-in at init.
                 RLTrainer_source = RLTrainer_source.replace(
                     "self.aux_loss_enabled = is_moe and args.router_aux_loss_coef != 0.0",
                     "self.aux_loss_enabled = is_moe and args.router_aux_loss_coef != 0.0\n"
@@ -3282,13 +2770,11 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                 flags = re.DOTALL,
             )
 
-    # Remove TRL 0.26.0's unconditional bfloat16 cast of trainable params: it ignores the user's
-    # dtype and breaks GradScaler with fp16=True. patch_model_and_tokenizer already handles it.
+    # Remove TRL 0.26.0's unconditional bfloat16 cast of trainable params: it ignores the user's dtype and breaks GradScaler with fp16=True. patch_model_and_tokenizer already handles it.
     RLTrainer_source = RLTrainer_source.replace(
         'if getattr(model, "is_loaded_in_4bit", False) or getattr(model, "is_loaded_in_8bit", False):',
         "if False:",
     )
-    # TRL >= 1.7.0 spells the same QLoRA bf16 cast as `if _is_quantized_model:`.
     RLTrainer_source = RLTrainer_source.replace(
         "if _is_quantized_model:",
         "if False:",
@@ -3303,9 +2789,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         )
         RLTrainer_source = RLTrainer_source.replace(original_text, new_text)
 
-        # Do NOT override _is_vlm: forcing it False errors on vision datasets in TRL 0.27.1+. A bare
-        # tokenizer as processing_class makes TRL set it False even for VLMs, so add an
-        # architecture-based override before the validation check.
+        # Do NOT override _is_vlm: forcing it False errors on vision datasets in TRL 0.27.1+. A bare tokenizer as processing_class makes TRL set it False even for VLMs, so add an architecture-based override before the validation check.
         _vlm_check_original = (
             '        self._is_vision_dataset = "image" in dataset_sample or "images" in dataset_sample\n'
             "        if self._is_vision_dataset and not self._is_vlm:"
@@ -3324,8 +2808,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         if _vlm_check_original in RLTrainer_source:
             RLTrainer_source = RLTrainer_source.replace(_vlm_check_original, _vlm_check_patched)
 
-        # TRL 0.22.x keys off _is_vlm, not _is_vision_dataset (0.24.0+), so the vision-only signature
-        # columns never overlap the tokenized ones. Merge both sets; _remove_unused_columns ignores extras.
+        # TRL 0.22.x keys off _is_vlm, not _is_vision_dataset (0.24.0+), so the vision-only signature columns never overlap the tokenized ones. Merge both sets; _remove_unused_columns ignores extras.
         _sig_vlm_old = 'self._signature_columns = ["messages", "prompt", "completion", "images"]'
         _sig_vlm_new = (
             'self._signature_columns = ["messages", "prompt", "completion", "images",'
@@ -3335,27 +2818,22 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
 
         RLTrainer_source = _backport_vision_dataset_gate(RLTrainer_source)
 
-        # Inject the model reference before _prepare_dataset for dynamic token_type_ids detection in
-        # sft_prepare_dataset.
+        # Inject the model reference before _prepare_dataset for dynamic token_type_ids detection in sft_prepare_dataset.
         _prep_pattern = r"([ \t]*)train_dataset = self\._prepare_dataset\("
         _prep_replacement = (
             r"\1self._unsloth_model_ref = model\n\1train_dataset = self._prepare_dataset("
         )
         RLTrainer_source = re.sub(_prep_pattern, _prep_replacement, RLTrainer_source, count = 1)
 
-    # Silence TRL's noisy batch_size=1 + padding-free warning, handling both the original "anihilate"
-    # typo and the corrected spelling.
+    # Silence TRL's noisy batch_size=1 + padding-free warning, handling both the original "anihilate" typo and the corrected spelling.
     for _typo in ("anihilate", "annihilate"):
         _idx = RLTrainer_source.find(_typo)
         if _idx == -1:
             continue
-        # Walk backwards to find "if args.per_device_train_batch_size"
         _block_start = RLTrainer_source.rfind("if args.per_device_train_batch_size == 1", 0, _idx)
         if _block_start == -1:
             continue
-        # Walk backwards to the newline before the if
         _line_start = RLTrainer_source.rfind("\n", 0, _block_start)
-        # Walk forwards past the closing paren to the end of the block
         _close = RLTrainer_source.find(")", _idx)
         if _close == -1:
             continue
@@ -3365,10 +2843,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         RLTrainer_source = RLTrainer_source[:_line_start] + RLTrainer_source[_block_end:]
         break
 
-    # TRL converts a plain TrainingArguments with `args = <X>Config(**dict_args)`, resolved
-    # through the generated module's globals, so it hands back a PRISTINE config: no unsloth
-    # fields (#3931), and a class the first checkpoint save cannot pickle. Only the construction
-    # is rewritten; the isinstance guard still wants the pristine class.
+    # TRL converts a plain TrainingArguments with `args = <X>Config(**dict_args)`, resolved through the generated module's globals, so it hands back a PRISTINE config: no unsloth fields (#3931), and a class the first checkpoint save cannot pickle. Only the construction is rewritten; the isinstance guard still wants the pristine class.
     RLTrainer_source = RLTrainer_source.replace(
         f"args = {RLConfig_name}(**dict_args)",
         f"args = Unsloth{RLConfig_name}(**dict_args)",
@@ -3426,18 +2901,12 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         globals(),
     )
     _displaced_config = None
-    # TRL 1.0.0+ wraps generation in: with torch.no_grad(), disable_gradient_checkpointing(self.model, ...): The
-    # toggle only suppresses a cosmetic PyTorch warning; under no_grad it has no functional effect. But on exit
-    # it calls gradient_checkpointing_enable(), overwriting Unsloth's custom "unsloth" wrapper -- for Gemma-4
-    # this corrupts forward numerics and blows GRPO KL divergence up to ~10^12 at step 1. Replacing the context
-    # manager with a no-op preserves Unsloth's wrapper. trl < 1.0.0 (no disable_gradient_checkpointing): early
-    # return. trl >= 1.0.0: noop is correct; only loss is the cosmetic warning.
+    # TRL 1.0.0+ wraps generation in `with torch.no_grad(), disable_gradient_checkpointing(self.model, ...)`. Under no_grad the toggle has no functional effect, but on exit it calls gradient_checkpointing_enable(), overwriting Unsloth's "unsloth" wrapper, which for Gemma-4 corrupts forward numerics and blows GRPO KL divergence up to ~10^12 at step 1. Replacing the context manager with a no-op preserves the wrapper; trl < 1.0.0 has no such CM and returns early.
     try:
         config_module_name = trainer_file.replace("_trainer", "_config")
         config_module = importlib.import_module(f"trl.trainer.{config_module_name}")
         if hasattr(config_module, RLConfig_name):
-            # Remember what this attribute held: on the TRL releases that put a thin wrapper here it is a class
-            # of its own, and its instances need the same pickling fallback the pristine class gets.
+            # Remember what this attribute held: on the TRL releases that put a thin wrapper here it is a class of its own, and its instances need the same pickling fallback the pristine class gets.
             _displaced_config = getattr(config_module, RLConfig_name)
             setattr(
                 config_module,
@@ -3502,12 +2971,9 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
         "if False:",
     )
     init = init.replace("model = self._prepare_peft_model(model, peft_config, args)\n", "pass\n")
-    # TRL 0.22.0+ uses prepare_peft_model as a standalone function.
     init = init.replace("model = prepare_peft_model(model, peft_config, args)", "pass")
 
-    # Skip add_adapter("ref"): the BASE model is the wanted reference, and PEFT forbids multiple
-    # adapters under target_parameters (MoE). Without "ref", GRPO/RLOO falls back to
-    # disable_adapter(), which is exactly the base model logits.
+    # Skip add_adapter("ref"): the BASE model is the wanted reference, and PEFT forbids multiple adapters under target_parameters (MoE). Without "ref", GRPO/RLOO falls back to disable_adapter(), which is exactly the base model logits.
     add_adapter_block_pattern = (
         r"([ \t]*)"  # Capture leading indentation
         r"if\s+is_peft_available\(\)\s+and\s+is_peft_model\(model\)\s+and\s+args\.beta\s*!=\s*0\.0\s*:"
@@ -3524,7 +2990,6 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
         commented_lines.append(
             f"{indent}# Unsloth: Commented out - use base model as reference, not SFT/LoRA model"
         )
-        # Comment out each line by inserting # after the leading whitespace, to preserve indentation.
         for line in lines:
             if line.strip():
                 stripped = line.lstrip()
@@ -3556,11 +3021,9 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
             )
 
             if "grpo" in trainer_file and trl_version >= Version("0.18.0"):
-                # If the model has a vllm_engine, use vllm in colocate mode and do not wait for a server.
                 vllm_setter += " " * 12 + "args.vllm_mode='colocate'\n"
                 if trl_version >= Version("0.23.0"):
-                    # Align TRL sleep mode with the engine's actual enable_sleep_mode (the vision standby gate may have
-                    # disabled it); fall back to the standby env var when the engine cannot be introspected.
+                    # Align TRL sleep mode with the engine's actual enable_sleep_mode (the vision standby gate may have disabled it); fall back to the standby env var when the engine cannot be introspected.
                     vllm_setter += (
                         " " * 12
                         + "_unsloth_esm = getattr(getattr(getattr(getattr(model.vllm_engine, 'llm_engine', None), 'vllm_config', None), 'model_config', None), 'enable_sleep_mode', None)\n"
@@ -3599,7 +3062,6 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
                 'GuidedDecodingParams(backend="outlines", regex=args.vllm_guided_decoding_regex) '
                 'if getattr(args, "vllm_guided_decoding_regex", None) is not None else None,',
             )
-            # Replace with our vLLM engine when sharing weights.
             sampling_params = (
                 " " * 12
                 + "if getattr(getattr(model, 'vllm_engine', None), 'shared_weights', False): "
@@ -3616,7 +3078,6 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
                 last_indentation = len(last_line) - len(last_line.lstrip())
 
                 extra = "**getattr(getattr(args, 'vllm_sampling_params', vLLMSamplingParams()), '_set_kwargs', {})"
-                # Backwards replace.
                 to_replace = (
                     ",\n"
                     + " " * last_prev_indentation
@@ -3633,8 +3094,7 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
                 )
 
         if trl_version >= Version("0.18.0"):
-            # Guard LLM init: use the existing vLLM engine when sharing weights, otherwise keep the original
-            # LLM() creation for the sync/reload path.
+            # Guard LLM init: use the existing vLLM engine when sharing weights, otherwise keep the original LLM() creation for the sync/reload path.
             vllm_llm_init_pattern = r"(?P<indent>[ \t]*)self\.llm\s*=\s*LLM\(.*?\)*\)\s*?\n(?!,)"
 
             def guard_llm_init(match):
@@ -3656,7 +3116,6 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
 
         init = init.replace(vllm_part, new_vllm_part)
 
-    # Search for vLLM calls in all child functions.
     functions = dir(RLTrainer)
     RLTrainer_source = inspect.getsource(RLTrainer)
     functions = [x for x in functions if f"def {x}" in RLTrainer_source]
@@ -3716,7 +3175,6 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
             source,
         )
 
-        # Replace self.llm.generate and self.llm.chat with lora_request, only when sharing weights.
         if "CUDA_VISIBLE_DEVICES" in os.environ:
             lora_name = (
                 trainer_file
@@ -3734,14 +3192,11 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
             + r" else None)",
             source,
         )
-        # Fix multiple commas before lora_request, in case the original code ends with ",)" as trl's
-        # grpo_trainer.py#L1388 does.
+        # Fix multiple commas before lora_request, in case the original code ends with ",)" as trl's grpo_trainer.py#L1388 does.
         source = re.sub(r"\,[\s]{1,}\,[\s]{0,}lora_request", ", lora_request", source)
         source = re.sub(r"[\s]{1,}\,[\s]{0,}lora_request", ", lora_request", source)
         source = re.sub(r"[\,]{1,}[\s]{0,}lora_request", ", lora_request", source)
-        # Prefer Unsloth's sampling params and fall back to trl's; to be enabled once both these and
-        # GRPOConfig params are combined.
-        # Fix later versions of SamplingParams via grpo_update_SamplingParams.
+        # Prefer Unsloth's sampling params and fall back to trl's; to be enabled once both these and GRPOConfig params are combined. Fix later versions of SamplingParams via grpo_update_SamplingParams.
         source = source.replace(
             "sampling_params = SamplingParams(**generation_kwargs)",
             "sampling_params = SamplingParams("
@@ -3790,9 +3245,7 @@ def patch_trl_rl_trainers():
 
 
 def patch_trl_disable_gradient_checkpointing():
-    # TRL 1.0.0+ wraps generation in disable_gradient_checkpointing(), which on exit calls
-    # gradient_checkpointing_enable() and overwrites Unsloth's "unsloth" wrapper: Gemma-4 forward
-    # numerics corrupt and GRPO KL hits ~1e12 at step 1. A no-op CM keeps the wrapper.
+    # TRL 1.0.0+ wraps generation in disable_gradient_checkpointing(), which on exit calls gradient_checkpointing_enable() and overwrites Unsloth's "unsloth" wrapper: Gemma-4 forward numerics corrupt and GRPO KL hits ~1e12 at step 1. A no-op CM keeps the wrapper.
     try:
         import trl.models.utils as _tmu
     except ImportError:
@@ -3814,8 +3267,7 @@ def patch_trl_disable_gradient_checkpointing():
 
     _tmu.disable_gradient_checkpointing = _noop_disable_gradient_checkpointing
 
-    # Also rebind any trl.* module that imported the symbol by reference at import time, walking
-    # sys.modules so every `from ...models.utils import disable_gradient_checkpointing` is caught.
+    # Also rebind any trl.* module that imported the symbol by reference at import time, walking sys.modules so every `from ...models.utils import disable_gradient_checkpointing` is caught.
     for _mod_name, _mod in list(sys.modules.items()):
         if _mod is None or not _mod_name.startswith("trl."):
             continue
@@ -3851,8 +3303,7 @@ def patch_trl_openenv():
 
 
 def patch_trl_vllm_generation():
-    # trl moved vllm code to trl/generation/vllm_generation.py; patch it so it does not build a
-    # second vLLM instance when fast_inference has one: wrap the multiline `self.llm = LLM(..)`.
+    # trl moved vllm code to trl/generation/vllm_generation.py; patch it so it does not build a second vLLM instance when fast_inference has one: wrap the multiline `self.llm = LLM(..)`.
     for function in RL_ADDITIONAL_FUNCTIONS["vllm_generation"]:
         logger.info(f"Unsloth: Patching trl VLLMGeneration with function: {function.__name__}")
         function()
@@ -3862,12 +3313,10 @@ def patch_trl_vllm_generation():
 def PatchFastRL(algorithm = None, FastLanguageModel = None):
     if FastLanguageModel is not None:
         PatchRL(FastLanguageModel)
-    # Under UNSLOTH_ALLOW_CPU=1 (CPU-only CI), skip TRL trainer rewriting so downstream
-    # inspect.getsource(trl.SFTTrainer) drift detectors see the pristine upstream class.
+    # Under UNSLOTH_ALLOW_CPU=1 (CPU-only CI), skip TRL trainer rewriting so downstream inspect.getsource(trl.SFTTrainer) drift detectors see the pristine upstream class.
     if os.environ.get("UNSLOTH_ALLOW_CPU", "0") == "1":
         return
-    # Install the disable_gradient_checkpointing noop BEFORE patch_trl_rl_trainers, which imports
-    # more trl.* submodules: anything imported after the sys.modules walk keeps the old binding.
+    # Install the disable_gradient_checkpointing noop BEFORE patch_trl_rl_trainers, which imports more trl.* submodules: anything imported after the sys.modules walk keeps the old binding.
     patch_trl_disable_gradient_checkpointing()
     patch_trl_rl_trainers()
     patch_trl_openenv()

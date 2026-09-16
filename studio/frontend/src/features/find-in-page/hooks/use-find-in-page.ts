@@ -193,15 +193,11 @@ export function useFindInPage(
       const index = indexRef.current;
       // One past the cap: a count equal to the cap cannot say whether it is the total or a floor,
       // and the counter would read "5000+" for a page holding exactly 5000. Only its existence is
-      // kept.
-      //
-      // The anchor decides WHICH matches survive the cap, keeping the ones nearest the reader. It
-      // is a thunk because `viewportOffset` reads layout and an argument is evaluated whether or
-      // not the callee wants it, so inline it ran on every keystroke however few matches there
-      // were.
-      //
-      // Remembered as the thunk resolves it, so the trim below can ask where the reader was
-      // without a second layout read, and without one at all under the cap.
+      // kept. The anchor decides WHICH matches survive the cap, keeping the ones nearest the
+      // reader. It is a thunk because `viewportOffset` reads layout and an argument is evaluated
+      // whether or not the callee wants it, so inline it ran on every keystroke however few matches
+      // there were. Remembered as the thunk resolves it, so the trim below can ask where the reader
+      // was without a second layout read, and without one at all under the cap.
       let anchoredAt: number | null = null;
       const matches = findMatches(
         index,
@@ -266,11 +262,10 @@ export function useFindInPage(
     // A fresh open always starts from the reader, whatever the index says.
     search(false, true);
 
-    // The thread mounts its tail first and widens over the next few frames, so a search against
-    // the document as found would miss everything above the fold. The bar stays usable throughout.
-    //
-    // Only the threads this search can read: asking globally would make an off-route conversation
-    // mount every row it withheld, to be skipped by the very walk that asked for it.
+    // The thread mounts its tail first and widens over the next few frames, so a search against the
+    // document as found would miss everything above the fold. The bar stays usable throughout. Only
+    // the threads this search can read: asking globally would make an off-route conversation mount
+    // every row it withheld, to be skipped by the very walk that asked for it.
     let live = true;
     void completeProgressiveMounts((viewport) =>
       indexReaches(scope, viewport),

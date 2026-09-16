@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from core.training.account_jobs import account_path, managed_account
 import base64
 import binascii
 import json
@@ -24,6 +25,7 @@ from core.data_recipe.jsonable import to_preview_jsonable
 from hub.utils.dataset_cache import refuse_unauthorized_dataset_preview
 from hub.utils.hf_tokens import HfTokenArg, hf_token_arg
 from loggers import get_logger
+from utils.paths.lazy import LazyPath
 from utils.paths import ensure_dir, seed_uploads_root, unstructured_uploads_root
 from utils.utils import log_and_http_error
 from utils.upload_limits import (
@@ -46,9 +48,9 @@ from utils.paths.path_utils import is_appledouble_metadata
 logger = get_logger(__name__)
 router = APIRouter()
 
-# Resolved on first use, not at module scope: the plugin package pulls the data
-# designer engine, pandas and pyarrow, delaying uvicorn binding the port.
-# False means "probed once, not installed", so callers still just see None.
+# Resolved on first use, not at module scope: the plugin package pulls the data designer engine, pandas and
+# pyarrow, delaying uvicorn binding the port. False means "probed once, not installed", so callers still just see
+# None.
 _CHUNKING: Any = None
 
 
@@ -68,8 +70,8 @@ DATA_EXTS = (".parquet", ".jsonl", ".json", ".csv")
 DEFAULT_SPLIT = "train"
 LOCAL_UPLOAD_EXTS = {".csv", ".json", ".jsonl"}
 UNSTRUCTURED_ALLOWED_EXTS = {".pdf", ".docx", ".txt", ".md"}
-SEED_UPLOAD_DIR = seed_uploads_root()
-UNSTRUCTURED_UPLOAD_ROOT = unstructured_uploads_root()
+SEED_UPLOAD_DIR = LazyPath(seed_uploads_root)
+UNSTRUCTURED_UPLOAD_ROOT = LazyPath(unstructured_uploads_root)
 _SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 # Frontend-generated upload namespace (UUID4 hex); legacy node ids (n1, ...) never match,
 # since those directories can be shared by several recipes.
@@ -209,6 +211,7 @@ def _decode_base64_payload(content_base64: str) -> bytes:
 
 
 def _read_preview_rows_from_local_file(path: Path, preview_size: int) -> list[dict[str, Any]]:
+    account_path(path)
     try:
         import pandas as pd
     except ImportError as exc:
@@ -261,6 +264,7 @@ def _read_preview_rows_from_local_file(path: Path, preview_size: int) -> list[di
 def _read_preview_rows_from_unstructured_file(
     *, path: Path, preview_size: int, chunk_size: int | None, chunk_overlap: int | None
 ) -> list[dict[str, Any]]:
+    account_path(path)
     chunking = _chunking()
     if chunking is None:
         raise HTTPException(
@@ -335,7 +339,7 @@ def inspect_seed_dataset(
     # From the caller: a hardcoded False takes the ambient fallback from UI sessions too.
     token = hf_token_arg(
         _normalize_optional_text(payload.hf_token),
-        allow_ambient_token = allow_ambient_token,
+        allow_ambient_token = allow_ambient_token and not managed_account(),
     )
     preview_size = int(payload.preview_size)
     refuse_unauthorized_dataset_preview(token, dataset_name)
@@ -501,17 +505,12 @@ def _require_unstructured_ext(filename: str) -> str:
 
 
 def _read_native_drop(lease: str, budget: int) -> tuple[str, bytes]:
-    """Read a desktop drop; returns (filename, content).
-
-    The webview never names a path directly: Rust signs what the OS handed it,
-    and this re-verifies and re-stats that grant before reading a byte. Same
-    contract as the RAG route's ``_save_native_path_upload``.
-
-    ``budget`` is what is still allowed for this block. The path is a local file
-    of any size, so it is refused on its stat rather than after a multi-gigabyte
-    read, and the read itself stops one byte past the budget in case the file
-    grew between the two.
-    """
+    """Read a desktop drop; returns (filename, content). The webview never names a path directly: Rust
+    signs what the OS handed it, and this re-verifies and re-stats that grant before reading a byte.
+    Same contract as the RAG route's ``_save_native_path_upload``. ``budget`` is what is still
+    allowed for this block. The path is a local file of any size, so it is refused on its stat
+    rather than after a multi-gigabyte read, and the read itself stops one byte past the budget in
+    case the file grew between the two."""
     from utils.native_path_leases import NativePathLeaseError, verify_native_path_lease
 
     try:
@@ -525,6 +524,7 @@ def _read_native_drop(lease: str, budget: int) -> tuple[str, bytes]:
     except NativePathLeaseError as exc:
         raise HTTPException(400, str(exc)) from exc
 
+    account_path(grant.canonical_path)
     _require_unstructured_ext(grant.canonical_path.name)
     try:
         size_bytes = grant.canonical_path.stat().st_size
@@ -554,9 +554,8 @@ async def upload_unstructured_file(
     # an upload that is about to be refused.
     budget = UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_BYTES - _get_block_total_size(block_dir)
 
-    # Desktop drops arrive as a signed path.
-    # Tauri hands the webview a path, never a File (#9036); isinstance, not a truth test, since an unfilled Form param
-    # is still truthy.
+    # Desktop drops arrive as a signed path: Tauri hands the webview a path, never a File (#9036); isinstance,
+    # not a truth test, since an unfilled Form param is still truthy.
     lease = native_path_lease if isinstance(native_path_lease, str) else None
     if lease:
         original_filename, content = _read_native_drop(lease, budget)
@@ -830,5 +829,7 @@ def get_github_env_token_status() -> dict:
     The value is never returned; the UI uses this to tell the user they
     can leave the token field blank.
     """
+    if managed_account():
+        return {"has_token": False}
     has_token = bool(os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN"))
     return {"has_token": has_token}

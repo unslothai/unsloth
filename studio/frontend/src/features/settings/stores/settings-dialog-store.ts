@@ -10,6 +10,7 @@ import { create } from "zustand";
 export const SETTINGS_TABS = [
   "general",
   "profile",
+  "accounts",
   "appearance",
   "resources",
   "chat",
@@ -29,6 +30,7 @@ export type SettingsTab = (typeof SETTINGS_TABS)[number];
 export type SettingsScrollTarget =
   | "about-updates"
   | "appearance-sidebar-nav"
+  | "chat-composer"
   | "chat-canvas-network";
 
 /** Which archive the Data tab should open straight into. */
@@ -43,10 +45,9 @@ interface SettingsDialogState {
   open: boolean;
   activeTab: SettingsTab;
   scrollTarget: SettingsScrollTarget | null;
-  // Element focused when openDialog() ran. Radix's FocusScope normally tracks
-  // this, but the rAF-scheduled focus() in settings-dialog.tsx races its
-  // previous-focus capture, leaving focus on <body> after close. We restore
-  // explicitly via onCloseAutoFocus.
+  // Element focused when openDialog() ran. Radix's FocusScope normally tracks this, but the
+  // rAF-scheduled focus() in settings-dialog.tsx races its previous-focus capture, leaving focus on
+  // <body> after close. We restore explicitly via onCloseAutoFocus.
   opener: HTMLElement | null;
   openerFallback: HTMLElement | null;
   // Set when something asks to jump straight to an archive listing (the archive
@@ -107,6 +108,7 @@ function loadInitialTab(): SettingsTab {
 
 /** The panel that delivers each scroll target, so a navigation elsewhere abandons it. */
 const SCROLL_TARGET_TAB: Record<SettingsScrollTarget, SettingsTab> = {
+  "chat-composer": "chat",
   "about-updates": "about",
   "appearance-sidebar-nav": "appearance",
   "chat-canvas-network": "chat",
