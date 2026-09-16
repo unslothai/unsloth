@@ -2698,15 +2698,6 @@ def per_layer_device(module, default = 0):
             device = _device_of_parameters(module)
         elif isinstance(index, (int, str)) and not isinstance(index, bool):
             device = _as_torch_device(index)
-    if device is not None and device.type == "meta":
-        # meta is where a not-yet-materialised layer parks its weights; it is never
-        # somewhere an activation may go. `tensor.to("meta")` succeeds and silently
-        # discards the data, and `torch.matmul(meta, cuda)` then returns a meta tensor
-        # rather than raising, so the whole decode would run to completion and produce
-        # nothing -- the one failure shape worse than the ValueError this reader
-        # replaces. Ask accelerate where the layer actually executes, and otherwise
-        # fall through to `default` below.
-        device = _accelerate_execution_device(module)
     if device is None:
         # Nothing usable was recorded, so keep the historical default, which is
         # what every reader's `getattr(layer, ..., 0)` resolved to. It falls back
@@ -2719,6 +2710,25 @@ def per_layer_device(module, default = 0):
         )
 
     buffer_index = device.index
+    if buffer_index is None and device.type == "meta":
+        # meta is where a not-yet-materialised layer parks its weights; it is never
+        # somewhere an activation may go. `tensor.to("meta")` succeeds and silently
+        # discards the data, and `torch.matmul(meta, cuda)` then returns a meta tensor
+        # rather than raising, so the whole decode would run to completion and produce
+        # nothing -- the one failure shape worse than the ValueError this reader
+        # replaces. Ask accelerate where the layer actually executes, and fall back to
+        # `default` otherwise.
+        #
+        # Behind `buffer_index is None` deliberately. An indexed accelerator device can
+        # never be meta, and reading `.type` costs about 147 ns, which this reader pays
+        # once per layer per token: checked up front it added 132 ns to every call on
+        # every shape, undoing a third of the reduction commit d6b57d25 measured. Here
+        # only a layer that is already off an indexed device pays it, and `.index` is
+        # read once either way.
+        device = (
+            _accelerate_execution_device(module) or _as_torch_device(default) or torch.device("cpu")
+        )
+        buffer_index = device.index
     if buffer_index is None:
         # Not on an indexed accelerator, so there is no buffer of its own. Keep
         # the historical subscript so the per-device tuples stay in range.
