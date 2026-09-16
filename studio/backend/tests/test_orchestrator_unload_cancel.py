@@ -231,7 +231,7 @@ def test_consume_token_stream_bails_when_subprocess_swapped(monkeypatch):
     o = _bare_orchestrator()
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
     monkeypatch.setattr(
-        o, "_subprocess_crash_message", lambda ctx: "inference subprocess restarted"
+        o, "_subprocess_crash_message", lambda ctx, **kwargs: "inference subprocess restarted"
     )
 
     def read_one(timeout):
