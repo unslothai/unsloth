@@ -955,7 +955,6 @@ export function SharedComposer({
     toast(`Prompt ${nextIndex + 1} / ${queueRef.current.length}`, {
       description: next.length > 80 ? next.slice(0, 80) + "…" : next,
     });
-    audioUpload.cancel();
     setText(next);
     setTimeout(() => { sendRef.current?.(); }, 100);
   }
@@ -2277,7 +2276,6 @@ export function SharedComposer({
           toast(`Prompt 1 / ${filtered.length}`, {
             description: filtered[0].length > 80 ? filtered[0].slice(0, 80) + "…" : filtered[0],
           });
-          audioUpload.cancel();
           setText(filtered[0]);
           setTimeout(() => { sendRef.current?.(); }, 100);
         }}

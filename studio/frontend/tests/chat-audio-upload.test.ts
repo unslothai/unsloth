@@ -285,11 +285,20 @@ test("picker launch snapshots before the native input opens", () => {
   );
 });
 
-test("Compare automatic queue takeovers invalidate the previous draft upload", () => {
-  assert.match(
-    sharedComposerSource,
-    /audioUpload\.cancel\(\);\s*setText\(next\);\s*setTimeout\(\(\) => \{ sendRef\.current\?\.\(\); \}, 100\);/,
+test("Compare queue setup preserves an upload until a queued send is accepted", () => {
+  const advanceQueueStart = sharedComposerSource.indexOf(
+    "function advanceQueue() {",
   );
+  const advanceQueue = sharedComposerSource.slice(
+    advanceQueueStart,
+    sharedComposerSource.indexOf("\n  }", advanceQueueStart) + 4,
+  );
+  assert.match(
+    advanceQueue,
+    /setText\(next\);\s*setTimeout\(\(\) => \{ sendRef\.current\?\.\(\); \}, 100\);/,
+  );
+  assert.doesNotMatch(advanceQueue, /audioUpload\.cancel\(\)/);
+
   const runListStart = sharedComposerSource.indexOf("onRunList={(items) => {");
   const runList = sharedComposerSource.slice(
     runListStart,
@@ -298,10 +307,9 @@ test("Compare automatic queue takeovers invalidate the previous draft upload", (
   const incompleteModelGuard = runList.indexOf(
     "if (hasCompareHandles && !isGeneralizedCompare)",
   );
-  const cancel = runList.indexOf("audioUpload.cancel()");
   const replace = runList.indexOf("setText(filtered[0])");
-  assert.ok(incompleteModelGuard >= 0 && incompleteModelGuard < cancel);
-  assert.ok(cancel >= 0 && cancel < replace);
+  assert.ok(incompleteModelGuard >= 0 && incompleteModelGuard < replace);
+  assert.doesNotMatch(runList, /audioUpload\.cancel\(\)/);
 });
 
 test("Compare cancels uploads only after a send reaches an accepted effect", () => {
