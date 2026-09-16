@@ -346,7 +346,9 @@ def test_release_uploads_never_clobber_or_mutate_the_legacy_channel():
     uploads = _upload_commands(_workflow())
     versioned = [line for line in uploads if "$DESKTOP_RELEASE_TAG" in line]
     channel = [line for line in uploads if "desktop-latest" in line]
-    assert len(versioned) == 2, uploads
+    # The bundles, the signed scripts, and the updater manifest. The count is pinned so a new
+    # upload has to be added here deliberately rather than appearing unnoticed.
+    assert len(versioned) == 3, uploads
     assert channel == [], uploads
 
     for line in versioned:
