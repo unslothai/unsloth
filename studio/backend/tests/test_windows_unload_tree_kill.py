@@ -1449,3 +1449,63 @@ def test_a_walk_that_fails_below_an_intermediate_keeps_the_record(monkeypatch):
     survivors = pl._windows_terminate_collected([(survivor, f"{survivor}")])
     assert middle in killed, killed
     assert (middle, f"{middle}") in survivors, survivors
+
+
+def test_a_child_born_while_the_snapshot_was_taken_is_not_rejected(monkeypatch):
+    """The ceiling has to be later than the snapshot, never earlier.
+
+    Taken first it is earlier, and a genuine child born in the gap is then IN the table with
+    a creation time past it: rejected as a recycled number while the walk still called itself
+    complete, which is the exact leak this function exists to prevent.
+    """
+    root, child = 1300, 1301
+    monkeypatch.setattr(pl, "_is_windows", lambda: True)
+    monkeypatch.setattr(pl, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(pl, "_pid_is_zombie", lambda pid: False)
+    clock = {"now": 1000}
+
+    def _table():
+        # The child is created while the snapshot is being taken, so it is in the table and
+        # its creation time is after the moment the walk started.
+        clock["now"] = 2000
+        return {root: [child]}
+
+    monkeypatch.setattr(pl, "_child_pid_map", _table)
+    monkeypatch.setattr(pl, "_windows_filetime_now", lambda: clock["now"])
+    monkeypatch.setattr(
+        pl, "_pid_identity", lambda pid: {root: "0:500", child: "0:1500"}.get(pid)
+    )
+    monkeypatch.setattr(pl, "_windows_creation_time", lambda identity: (
+        None if identity is None else int(identity.split(":")[1])
+    ))
+
+    found, known = pl._windows_collect_descendants_known(root)
+    assert found == [(child, "0:1500")], found
+    assert known is True
+
+
+def test_a_survivor_whose_identity_cannot_be_read_is_still_reported(monkeypatch):
+    """The final pass is accounting, not a decision to signal.
+
+    A pid that is plainly still running and whose identity cannot be read right now is proof
+    of nothing, and requiring proof there dropped it from the report, so the caller deleted
+    the record and the pidfile that were the only handles on a process the kill had failed to
+    stop.
+    """
+    survivor = 1400
+    monkeypatch.setattr(pl, "_is_windows", lambda: True)
+    monkeypatch.setattr(pl, "_signalable", lambda pid: True)
+    monkeypatch.setattr(pl, "_pid_is_zombie", lambda pid: False)
+    monkeypatch.setattr(pl, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(pl, "_windows_collect_descendants_known", lambda pid: ([], True))
+    monkeypatch.setattr(pl, "_windows_terminate_pid", lambda pid, identity = None: True)
+    reads = {"n": 0}
+
+    def _identity(pid):
+        reads["n"] += 1
+        # Readable for the check before the kill, unreadable at the final accounting.
+        return "1400" if reads["n"] == 1 else None
+
+    monkeypatch.setattr(pl, "_pid_identity", _identity)
+    survivors = pl._windows_terminate_collected([(survivor, "1400")])
+    assert survivors == [(survivor, "1400")], survivors

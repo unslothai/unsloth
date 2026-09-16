@@ -882,15 +882,22 @@ def _windows_collect_descendants_known(pid: int) -> "tuple[list[tuple[int, Optio
         # No floor means no ancestry proof for anything, so this claims nothing at all --
         # and "nothing" here is indeterminate, not empty.
         return [], False
-    # Read BEFORE the snapshot, and used as a ceiling. The identity of each candidate is
-    # read after the table, and a child that exits in between frees its number immediately:
-    # the identity then describes whatever took it, which -- being newer than the parent
-    # floor -- the ancestry test admits, and every later check happily re-verifies that
-    # stranger right up to the forced kill. A process created after this reading cannot be
-    # one the snapshot listed, so that is the test. Strictly later, since the clock is
-    # coarse enough for a genuine child to share the tick.
-    snapshot_ceiling = _windows_filetime_now()
     table = _child_pid_map()
+    # Read AFTER the snapshot, and used as a ceiling. The identity of each candidate is read
+    # after the table, and a child that exits in between frees its number immediately: the
+    # identity then describes whatever took it, which -- being newer than the parent floor --
+    # the ancestry test admits, and every later check happily re-verifies that stranger right
+    # up to the forced kill. A process created after the snapshot cannot be one the snapshot
+    # listed, so that is the test.
+    #
+    # After, not before. A ceiling taken first is earlier than the snapshot, and a genuine
+    # child born in the gap is then IN the table with a creation time past the ceiling: it
+    # would be rejected as a recycled number while the walk still reported itself complete,
+    # which is the leak this whole function exists to prevent. Taken afterwards the ceiling
+    # can only be later than the snapshot, so it never rejects anything the snapshot really
+    # held; it merely admits a replacement that appeared inside that same gap, which is the
+    # old behaviour and not a regression.
+    snapshot_ceiling = _windows_filetime_now()
     if not table:
         return [], False
     found: "list[tuple[int, Optional[str]]]" = []
@@ -1157,10 +1164,17 @@ def _windows_terminate_collected(
         except Exception:  # noqa: BLE001 - best effort, like the rest of this
             pass
         attempted.append((pid, identity))
+    # `not _provably_different`, not `_provably_the_same`. This is the ACCOUNTING step, not a
+    # decision to signal anything: a pid that is plainly still running and whose identity
+    # cannot be read right now -- handle pressure, access denied -- was proof of nothing, and
+    # requiring proof here dropped it from the report entirely, so the caller deleted the
+    # record and the pidfile that were the only handles on a process the kill had failed to
+    # stop. Proof is still required before signalling, above; it is not required to say "this
+    # is still running".
     survivors = [
         (pid, identity)
         for pid, identity in attempted
-        if _pid_alive(pid) and not _pid_is_zombie(pid) and _provably_the_same(pid, identity)
+        if _pid_alive(pid) and not _pid_is_zombie(pid) and not _provably_different(pid, identity)
     ]
     # Deepest first throughout, and deduplicated: a pid whose late walk failed is reported
     # unresolved AND may still be alive after its own kill, so the two lists can name it
