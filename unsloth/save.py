@@ -655,7 +655,7 @@ def _preserve_tokenizer_eos_token(
 
 
 def _config_mtp_holders(config, key):
-    """Every config object that declares the MTP layer count, outermost first. Qwen3.5's multimodal configs keep it in `text_config`; the text-only ones keep it at the top level, so both are checked."""
+    """Every config declaring the MTP layer count: `text_config` on Qwen3.5 multimodal, top level on text-only."""
     holders = []
     for candidate in (config, getattr(config, "text_config", None)):
         if candidate is None:
@@ -666,19 +666,12 @@ def _config_mtp_holders(config, key):
 
 
 def _strip_absent_mtp_declaration(config_dict, tensor_names):
-    """Drop `mtp_num_hidden_layers` from a config *dict* about to be written when the tensors being written carry no MTP weights. Returns whether anything changed. Never raises.
-
-    "Carries an MTP head" is decided by `unsloth_zoo.saving_utils.mtp_head_is_present`, the same rule `reconcile_mtp_config` uses for the folder it repairs, so the two writers behind `save_pretrained_merged` cannot disagree about what a head is. That matters for the DeepSeek-V3 / GLM spelling, which stores the head as extra `layers.N` blocks past `num_hidden_layers` rather than under `mtp.`.
-    """
-    # Unknown is not empty: with no idea what is being written, editing the
-    # declaration is never justified.
+    """Drop `mtp_num_hidden_layers` from a config dict when the tensors carry no MTP weights. Never raises. "Has a head" comes from the zoo's `mtp_head_is_present`, so this and `reconcile_mtp_config` cannot disagree."""
+    # Unknown is not empty: editing a declaration blind is never justified.
     if tensor_names is None:
         return False
     try:
-        # Separately, and quietly: unsloth and unsloth_zoo are installed and
-        # upgraded on their own, and an older zoo without these names is not an
-        # error to report on every save of every model. Without this the message
-        # below reaches people whose config never declared an MTP head at all.
+        # Quiet: the zoo upgrades separately, and an older one is not a per-save error.
         from unsloth_zoo.saving_utils import MTP_CONFIG_KEY, mtp_head_is_present
     except ImportError:
         return False
@@ -715,20 +708,12 @@ def _strip_absent_mtp_declaration(config_dict, tensor_names):
 
 @contextmanager
 def _mtp_config_matching_tensors(model, tensor_names):
-    """Drop `mtp_num_hidden_layers` from the config for the duration of a save when the tensors being written carry no `mtp.*` weights, then put it back.
-
-    transformers has no MTP module for Qwen3.5 and lists `^mtp.*` in `_keys_to_ignore_on_load_unexpected`, so the head is gone from the moment the model is loaded and no export can put it back. Writing a config that still declares it makes every consumer that trusts the config look for weights that are not there: llama.cpp's converter asserts on the missing layer, which is why `convert_to_gguf` already reconciles the same key, and vLLM builds its MTP draft config from it.
-
-    The live config is restored on exit, so an export never changes the model the caller goes on using. Never raises: a metadata repair must not be able to fail a save.
-    """
-    # (holder, key, value) triples to put back, recorded before anything is
-    # removed so a failure part way through still restores what it took.
+    """Drop `mtp_num_hidden_layers` for the duration of a save when the tensors carry no `mtp.*` weights, then put it back. Never raises: a metadata repair must not fail a save."""
+    # Recorded before anything is removed, so a partial failure still restores.
     restore = []
     try:
         if tensor_names is not None:
             try:
-                # Quiet on an older unsloth_zoo, for the reason in
-                # `_strip_absent_mtp_declaration`.
                 from unsloth_zoo.saving_utils import MTP_CONFIG_KEY, mtp_head_is_present
             except ImportError:
                 MTP_CONFIG_KEY = None
@@ -737,11 +722,9 @@ def _mtp_config_matching_tensors(model, tensor_names):
         if tensor_names is not None:
             config = getattr(model, "config", None)
             holders = _config_mtp_holders(config, MTP_CONFIG_KEY)
-            # Materialised once: the rule below is evaluated per holder, and a
-            # caller is free to hand us a generator of names.
+            # Materialised once: the rule runs per holder, and this may be a generator.
             tensor_names = list(tensor_names)
-            # Same shared rule as `_strip_absent_mtp_declaration`, evaluated
-            # against the live config so the extra-`layers.N` spelling is seen.
+            # Against the LIVE config, so the extra-`layers.N` spelling is seen.
             if holders and not any(
                 mtp_head_is_present(tensor_names, config, holder) for holder in holders
             ):
@@ -766,8 +749,7 @@ def _mtp_config_matching_tensors(model, tensor_names):
     try:
         yield
     finally:
-        # No import here on purpose: an exception raised from a finally block
-        # would replace whatever the save itself did or raised.
+        # No import here: an exception from a finally block would mask the save's own.
         for holder, key, value in restore:
             try:
                 setattr(holder, key, value)
@@ -1385,10 +1367,7 @@ def unsloth_save_model(
     new_config = model.config.to_dict()
     if "quantization_config" in new_config:
         del new_config["quantization_config"]
-    # This writer already swaps in a scrubbed config for the save and restores the
-    # original afterwards, so the MTP declaration is dropped here rather than by a
-    # second pass over the folder. The merged state dict is what gets written, so
-    # its keys are the authority on whether an MTP head is present.
+    # The merged state dict is what gets written, so its keys decide MTP presence.
     _strip_absent_mtp_declaration(new_config, state_dict.keys())
     original_model = model
     new_config = type(model.config).from_dict(new_config)
@@ -1397,12 +1376,7 @@ def unsloth_save_model(
         original_model.config = new_config
     model.config = new_config
 
-    # try/finally, so a failed write does not leave the caller holding the scrubbed config.
-    # The swap above is for the duration of the SAVE only; a full disk or a failed upload
-    # used to skip the restore below entirely, and the live model then kept a config with
-    # `quantization_config` and, since this PR strips it here too, `mtp_num_hidden_layers`
-    # permanently removed. A retry or any continued use would then be reading a mutated
-    # model. `_mtp_config_matching_tensors` guards its own swap the same way.
+    # try/finally: a failed write must not leave the caller holding the scrubbed config.
     try:
         if save_pretrained_settings["push_to_hub"] and (username != actual_username):
             print(f"Unsloth: Saving to organization with address {new_save_directory}")
@@ -5685,27 +5659,15 @@ def unsloth_generic_save(
         if state_dict is not None:
             _save_kwargs["state_dict"] = state_dict
 
-        # The exported config's MTP declaration has to agree with the tensors
-        # actually written. A local save is repaired on disk afterwards, which
-        # reads what was really written (tied weights dropped, shards split);
-        # a push has no local folder, so there the config is fixed for the
-        # duration of the write instead.
+        # A push has no local folder to repair afterwards, unlike a save.
         if state_dict is not None:
             _mtp_tensor_names = list(state_dict.keys())
         else:
-            # Not None. Only "16bit" and the Qwen3.5 VLM path build a state_dict above, so
-            # save_method="lora" and "merged_4bit"/"merged_4bit_forced" arrive here with None
-            # and push_to_hub then serialises the RESIDENT state dict anyway. Leaving the
-            # names unknown made the guard a deliberate no-op for exactly those methods, so a
-            # full-finetuned MTP model whose head transformers dropped on load still pushed
-            # the stale declaration this guard exists to remove. Reading the names is the
-            # same call the "16bit" branch already makes, and returns tensor references
-            # rather than copies, so it costs no extra memory.
+            # push_to_hub serialises the resident state dict, so None disarms the guard.
             try:
                 _mtp_tensor_names = list(model.state_dict().keys())
             except Exception:
-                # A model that cannot report its own tensors falls back to the previous
-                # behaviour: the config is left exactly as the caller had it.
+                # Cannot report its tensors: leave the config exactly as the caller had it.
                 _mtp_tensor_names = None
         if push_to_hub:
             print(f"Unsloth: Pushing full fine-tuned model to '{save_directory}' ...")
@@ -5737,10 +5699,7 @@ def unsloth_generic_save(
         else:
             print(f"Unsloth: Saving full fine-tuned model to '{save_directory}' ...")
             model.save_pretrained(save_directory, **_save_kwargs)
-            # Guarded: unsloth and unsloth_zoo are installed and upgraded
-            # separately, so an older zoo without this helper must leave the
-            # save working rather than raise ImportError after the weights
-            # are already on disk.
+            # Guarded: an older zoo must not raise once the weights are already on disk.
             try:
                 from unsloth_zoo.saving_utils import reconcile_mtp_config
                 reconcile_mtp_config(save_directory)
