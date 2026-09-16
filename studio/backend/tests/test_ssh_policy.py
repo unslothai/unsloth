@@ -36,6 +36,38 @@ def _clear_ssh_approvals():
     reset_ssh_approvals()
 
 
+@pytest.fixture
+def ssh_approval_client():
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from routes.inference import approve_ssh_hosts, get_current_subject
+
+    app = FastAPI()
+    app.dependency_overrides[get_current_subject] = lambda: "ssh-review"
+    app.post("/ssh-approve")(approve_ssh_hosts)
+    with TestClient(app) as client:
+        yield client
+
+
+@pytest.mark.parametrize("session", [{}, {"session_id": None}, {"session_id": ""}])
+def test_explicit_ssh_approval_requires_a_session(ssh_approval_client, session):
+    response = ssh_approval_client.post("/ssh-approve", json = {"hosts": ["prod.example"], **session})
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"] == ["body", "session_id"]
+    assert approved_hosts(None) == frozenset()
+
+
+def test_explicit_ssh_approval_allows_only_the_requested_session(ssh_approval_client):
+    response = ssh_approval_client.post(
+        "/ssh-approve", json = {"session_id": "ssh-review", "hosts": ["prod.example"]}
+    )
+    assert response.status_code == 200
+    assert response.json() == {"hosts": ["prod.example"]}
+    command = "ssh -F none prod.example uptime"
+    assert check_ssh_command_access(command, "ssh-review") is None
+    assert check_ssh_command_access(command, "other-session") is not None
+
+
 class TestSshCommandExtraction:
     def test_ssh_user_at_host(self):
         hosts, dynamic = extract_ssh_hosts_from_command(

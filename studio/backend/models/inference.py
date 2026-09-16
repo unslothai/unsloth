@@ -2773,7 +2773,7 @@ class ToolConfirmRequest(BaseModel):
 
 
 class SshApproveRequest(BaseModel):
-    session_id: Optional[str] = None
+    session_id: str = Field(min_length = 1)
     hosts: list[str] = Field(default_factory = list)
 
 
