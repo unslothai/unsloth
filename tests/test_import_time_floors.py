@@ -689,6 +689,7 @@ def test_the_mlx_branch_installs_the_torch_diagnosis():
 
 def _fake_distribution(files_by_name):
     """importlib.metadata.distribution, answering from `{name: [paths]}`."""
+
     class _Entry:
         def __init__(self, path):
             self._path = path
@@ -729,10 +730,12 @@ def test_the_provider_that_ships_the_offending_file_is_the_one_named(monkeypatch
     monkeypatch.setattr(
         metadata,
         "distribution",
-        _fake_distribution({
-            "triton": [str(tmp_path / "backends" / "nvidia" / "driver.c")],
-            "pytorch-triton-xpu": [str(driver)],
-        }),
+        _fake_distribution(
+            {
+                "triton": [str(tmp_path / "backends" / "nvidia" / "driver.c")],
+                "pytorch-triton-xpu": [str(driver)],
+            }
+        ),
     )
     monkeypatch.setattr(import_fixes, "importlib_version", lambda name: "3.3.0")
     import_fixes._installed_version.cache_clear()
