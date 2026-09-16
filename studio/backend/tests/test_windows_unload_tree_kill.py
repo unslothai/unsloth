@@ -184,6 +184,59 @@ def test_the_windows_walk_rejects_a_stranger_that_predates_the_root(monkeypatch)
     assert [pid for pid, _ in pl.collect_descendants(root)] == [real_child]
 
 
+def test_the_windows_walk_rejects_a_stranger_under_a_reused_intermediate_pid(monkeypatch):
+    """The root's own creation time is NOT a sufficient floor.
+
+    The machine this is about, with times as Windows would report them:
+
+      * the Unsloth root starts at t=100;
+      * an unrelated process U starts at t=200, created by some pid P;
+      * that original P exits;
+      * at t=300 Windows hands P's number to a genuine Unsloth child;
+      * U still records P as its creator and nothing ever clears that.
+
+    U is later than the ROOT, so a root-only floor admits it, and the survivor sweep
+    then passes it to `taskkill /PID <U> /T /F`, which takes down U and everything
+    under it: someone's training run, editor or server. Ordering U against its own
+    parent's CURRENT creation time rejects it, because a process cannot predate the
+    process that created it. Nothing real is signalled here: the table, the identities
+    and the kill are all fabricated.
+    """
+    root, reused_parent, stranger, stranger_child, real_grandchild = 500, 600, 700, 701, 601
+    created = {
+        root: 100,
+        reused_parent: 300,        # P after the reuse: a genuine Unsloth child
+        stranger: 200,             # U, created by the OLD holder of P
+        stranger_child: 250,       # U's own work, hanging off a link we do not have
+        real_grandchild: 400,      # a true descendant of the reused pid
+    }
+    monkeypatch.setattr(pl, "_is_windows", lambda: True)
+    monkeypatch.setattr(pl, "_pid_identity", lambda pid: f"0:{created[pid]}")
+    monkeypatch.setattr(pl, "_child_pid_map", lambda: {
+        root: [reused_parent],
+        reused_parent: [stranger, real_grandchild],
+        stranger: [stranger_child],
+    })
+    found = [pid for pid, _ in pl.collect_descendants(root)]
+    assert stranger not in found, "a stranger predating its own parent was claimed"
+    assert stranger_child not in found, "the stranger's subtree was walked"
+    assert sorted(found) == [reused_parent, real_grandchild]
+
+
+def test_the_windows_walk_skips_a_candidate_whose_identity_cannot_be_read(monkeypatch):
+    """An unreadable creation time proves nothing, and the action taken on the result
+    is a forced tree kill, so the candidate and its subtree are dropped."""
+    root, child, grandchild = 500, 600, 700
+    created = {root: 100, child: None, grandchild: 900}
+    monkeypatch.setattr(pl, "_is_windows", lambda: True)
+    monkeypatch.setattr(
+        pl, "_pid_identity",
+        lambda pid: None if created[pid] is None else f"0:{created[pid]}",
+    )
+    monkeypatch.setattr(pl, "_child_pid_map", lambda: {root: [child], child: [grandchild]})
+    assert pl.collect_descendants(root) == []
+
+
 # ── the terminate side ──
 
 
@@ -228,14 +281,42 @@ def test_the_windows_terminate_skips_a_recycled_pid(monkeypatch):
 def test_the_windows_terminate_works_deepest_first(monkeypatch):
     """`taskkill /T` also reaches what a survivor started after the snapshot, and the
     link it walks is gone the moment that survivor exits."""
+    monkeypatch.setattr(pl, "_is_linux", lambda: False)
     monkeypatch.setattr(pl, "_pid_alive", lambda pid: True)
     monkeypatch.setattr(pl, "_pid_is_zombie", lambda pid: False)
-    monkeypatch.setattr(pl, "_pid_identity", lambda pid: None)
+    identities = {10: "0:10", 11: "0:11", 12: "0:12"}
+    monkeypatch.setattr(pl, "_pid_identity", lambda pid: identities[pid])
     order = []
     monkeypatch.setattr(pl, "_windows_terminate_tree", lambda pid: order.append(pid))
     # collect_descendants emits breadth first, so the parent comes before its child.
-    pl._windows_terminate_collected([(10, "a"), (11, "b"), (12, "c")])
+    pl._windows_terminate_collected([(10, "0:10"), (11, "0:11"), (12, "0:12")])
     assert order == [12, 11, 10]
+
+
+def test_the_windows_terminate_leaves_an_unreadable_identity_alone(monkeypatch):
+    """Fail closed, not open.
+
+    `_still_the_same` answers "is this provably somebody else", which is right for a
+    SIGTERM at a pid we still hold a record for. It is wrong here: this runs AFTER the
+    leader's terminate, an unreadable identity is exactly what a recycled pid looks
+    like, and the action is `taskkill /T /F`, which reaches everything the number now
+    owns. So a pid whose identity cannot be read on either side is skipped.
+    """
+    monkeypatch.setattr(pl, "_is_linux", lambda: False)
+    monkeypatch.setattr(pl, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(pl, "_pid_is_zombie", lambda pid: False)
+    asked = []
+    monkeypatch.setattr(pl, "_windows_terminate_tree", lambda pid: asked.append(pid))
+
+    # the identity cannot be read NOW
+    monkeypatch.setattr(pl, "_pid_identity", lambda pid: None)
+    pl._windows_terminate_collected([(4242, "0:1")])
+    assert asked == [], "an unreadable current identity must not be tree killed"
+
+    # the identity was not readable AT COLLECTION either
+    monkeypatch.setattr(pl, "_pid_identity", lambda pid: "0:1")
+    pl._windows_terminate_collected([(4242, None)])
+    assert asked == [], "a survivor collected without an identity must not be tree killed"
 
 
 # ── the real thing, on a real Windows runner ──

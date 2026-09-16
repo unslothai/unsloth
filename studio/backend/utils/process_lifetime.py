@@ -754,31 +754,52 @@ def collect_descendants(pid: "Optional[int]") -> "list[tuple[int, Optional[str]]
     # Windows records the creating pid on a process and never clears it, not even when
     # that parent exits and its number is handed to something else, so the raw table
     # lists strangers created by an earlier holder of this pid as children of it. A real
-    # descendant cannot predate its root, so the root's creation time is the floor for
-    # the whole walk, and without a readable floor this claims nothing at all.
-    floor = None
-    if _is_windows():
-        floor = _windows_creation_time(_pid_identity(pid))
-        if floor is None:
+    # descendant cannot predate the process that created it, so each candidate is
+    # ordered against ITS OWN immediate parent, not only against the root.
+    #
+    # The root floor alone is not enough, and the difference is a real machine:
+    # the root starts at t=100, a stranger U starts at t=200 under some unrelated
+    # pid P, P exits, at t=300 P's number is reused for a genuine Unsloth child, and
+    # U still records P as its creator. U is later than the root, so a root-only floor
+    # admits it and taskkill /T /F reaches U and everything under it. Ordering U
+    # against P's CURRENT creation time (300) rejects it, because a child cannot
+    # predate its parent. Each step of the walk carries the parent's own creation
+    # time down, so the check holds at every depth rather than only at the first.
+    #
+    # Without a readable floor this claims nothing at all, and an unreadable candidate
+    # is skipped rather than assumed to be ours: a tree kill is not a place to guess.
+    per_parent_floor = _is_windows()
+    root_floor = None
+    if per_parent_floor:
+        root_floor = _windows_creation_time(_pid_identity(pid))
+        if root_floor is None:
             return []
     table = _child_pid_map()
     if not table:
         return []
     found: "list[tuple[int, Optional[str]]]" = []
     seen = {pid}
-    queue = list(table.get(pid, ()))
+    # (candidate pid, creation time of the parent that listed it)
+    queue: "list[tuple[int, Optional[int]]]" = [
+        (child, root_floor) for child in table.get(pid, ())
+    ]
     while queue:
-        child = queue.pop(0)
+        child, parent_created = queue.pop(0)
         if child in seen:
             continue
         seen.add(child)
         identity = _pid_identity(child)
-        if floor is not None and (_windows_creation_time(identity) or 0) < floor:
-            # Not provably below this root. Its own children are not walked either:
-            # they hang off a link this process does not have.
+        if per_parent_floor:
+            created = _windows_creation_time(identity)
+            if created is None or parent_created is None or created < parent_created:
+                # Not provably below its own parent. Its children are not walked
+                # either: they hang off a link this process does not have.
+                continue
+            found.append((child, identity))
+            queue.extend((g, created) for g in table.get(child, ()))
             continue
         found.append((child, identity))
-        queue.extend(table.get(child, ()))
+        queue.extend((g, None) for g in table.get(child, ()))
     return found
 
 
@@ -832,7 +853,7 @@ def _windows_terminate_collected(collected: "list[tuple[int, Optional[str]]]") -
     for pid, identity in reversed(collected):
         if not _signalable(pid) or not _pid_alive(pid):
             continue
-        if not _still_the_same(pid, identity):
+        if not _provably_the_same(pid, identity):
             continue
         try:
             _windows_terminate_tree(pid)
@@ -845,6 +866,26 @@ def _still_the_same(pid: int, identity: "Optional[str]") -> bool:
     current = _pid_identity(pid)
     if identity is None or current is None:
         return True
+    return _same_identity(identity, current)
+
+
+def _provably_the_same(pid: int, identity: "Optional[str]") -> bool:
+    """True only when the pid is provably the SAME process it was at collection.
+
+    The fail-closed counterpart of `_still_the_same`. That one answers "is this
+    provably somebody else", which is the right question for a SIGTERM aimed at a
+    pid this process still owns a record for. It is the wrong question for the
+    Windows survivor sweep: there the answer arrives after the leader has already
+    been terminated, an unreadable identity is exactly what a pid that has been
+    recycled looks like, and the action taken is ``taskkill /T /F``, which reaches
+    everything the number now owns. So an identity that cannot be read on either
+    side leaves the process alone.
+    """
+    if identity is None:
+        return False
+    current = _pid_identity(pid)
+    if current is None:
+        return False
     return _same_identity(identity, current)
 
 
