@@ -33,8 +33,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-# The banner the script prints once it has reached a conclusion; run_pwsh treats it as
-# the verdict, so a genuine result is never retried as if it were a startup crash.
+# run_pwsh treats this as the verdict, so a real result is never retried as a startup crash.
 _VERDICT = "All Get-UvSafeRequirementsPath checks passed"
 INSTALL_PS1 = REPO_ROOT / "install.ps1"
 
