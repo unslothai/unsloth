@@ -162,6 +162,7 @@ def test_claude_settings_overlay_pins_local_routing_and_auth():
         assert overlay["env"][name] == ""
     # The attribution-header suppression is preserved alongside it.
     assert overlay["env"]["CLAUDE_CODE_ATTRIBUTION_HEADER"] == "0"
+    assert overlay["env"]["CLAUDE_CODE_TOTAL_TOKENS_REMINDER"] == "off"
     # Subagents fall through to the served model instead of a user's opus/sonnet pin.
     assert overlay["env"]["CLAUDE_CODE_SUBAGENT_MODEL"] == "inherit"
 
@@ -1565,6 +1566,7 @@ def test_connect_claude_no_launch(fake_studio):
     # Attribution header is suppressed for the session via env + --settings, never
     # by writing the user's ~/.claude/settings.json.
     _assert_env_set(result.output, "CLAUDE_CODE_ATTRIBUTION_HEADER", "0")
+    _assert_env_set(result.output, "CLAUDE_CODE_TOTAL_TOKENS_REMINDER", "off")
     # Claude assumes 200k for an unrecognized model id and clamps the auto-compact
     # window into [100k, that], so the real window has to be pinned as well.
     _assert_env_set(result.output, "CLAUDE_CODE_MAX_CONTEXT_TOKENS", str(MODEL["context_length"]))
@@ -1876,6 +1878,7 @@ def test_connect_claude_launch_scrubs_conflicting_auth_env(fake_studio, monkeypa
     assert captured["env"]["ANTHROPIC_BASE_URL"] == BASE
     assert captured["env"]["ANTHROPIC_MODEL"] == MODEL["id"]
     assert captured["env"]["CLAUDE_CODE_ATTRIBUTION_HEADER"] == "0"
+    assert captured["env"]["CLAUDE_CODE_TOTAL_TOKENS_REMINDER"] == "off"
 
 
 @pytest.mark.skipif(
