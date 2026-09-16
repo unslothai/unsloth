@@ -451,3 +451,56 @@ def test_a_pinned_patch_release_is_not_evicted_by_a_later_one() -> None:
         assert "v" + version in module._ALWAYS, (
             f"{version} is in NEWLY_ADMITTED but is not anchored in the matrix"
         )
+
+
+def test_an_import_lane_pins_the_declared_ceiling() -> None:
+    """Something has to import the supported maximum, not just the supported minimum.
+
+    The `latest` lane is unpinned, so the day upstream publishes above the cap it resolves
+    a combination no user can install through the declared window, and the floor lane
+    becomes the only import-time evidence for a supported one. The static symbol suite
+    reads source and cannot see import-time breakage, so nothing else covers it.
+    """
+    import yaml
+
+    workflow = yaml.safe_load(
+        (WORKFLOWS / "version-compat-ci.yml").read_text(encoding = "utf-8")
+    )
+    job = workflow["jobs"]["zoo-imports-under-spoof"]
+    lanes = {lane["slug"]: lane for lane in job["strategy"]["matrix"]["include"]}
+
+    assert "ceiling" in lanes, (
+        "no import lane pins the declared ceiling, so only the floor is exercised"
+    )
+    pins = " ".join(lanes["ceiling"]["pkg_pins"].split())
+    assert f"'transformers=={TESTED_CEILING}'" in pins, (
+        f"the ceiling lane does not pin transformers=={TESTED_CEILING}; it reads {pins}"
+    )
+
+    # The canary is the lane allowed to resolve outside the window, and it is the only one.
+    assert lanes["latest"].get("continue_on_error") is True
+    for slug in ("floor", "ceiling"):
+        assert lanes[slug].get("continue_on_error") is None, (
+            f"the {slug} lane is inside the declared window, so it must stay blocking"
+        )
+
+
+def test_the_ceiling_lane_moves_with_the_declared_window() -> None:
+    """NEGATIVE CONTROL: the pin is a literal in YAML, so it can go stale exactly the way
+    a cap can. A ceiling lane left on an older release is a lane testing a version the
+    window no longer tops out at."""
+    import yaml
+
+    workflow = yaml.safe_load(
+        (WORKFLOWS / "version-compat-ci.yml").read_text(encoding = "utf-8")
+    )
+    lanes = {
+        lane["slug"]: lane
+        for lane in workflow["jobs"]["zoo-imports-under-spoof"]["strategy"]["matrix"]["include"]
+    }
+    pinned = re.search(r"'transformers==([0-9][^']*)'", lanes["ceiling"]["pkg_pins"])
+    assert pinned is not None
+    assert Version(pinned.group(1)) == TESTED_CEILING, (
+        f"the ceiling lane pins {pinned.group(1)} while the declared window tops out at "
+        f"{TESTED_CEILING}"
+    )
