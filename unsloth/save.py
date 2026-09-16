@@ -1397,34 +1397,41 @@ def unsloth_save_model(
         original_model.config = new_config
     model.config = new_config
 
-    if save_pretrained_settings["push_to_hub"] and (username != actual_username):
-        print(f"Unsloth: Saving to organization with address {new_save_directory}")
-        # Pushing to an organization: .save_pretrained does not work, so save locally first and upload manually.
-        save_pretrained_settings["save_directory"] = new_save_directory
-        save_pretrained_settings["push_to_hub"] = False
-        internal_model.save_pretrained(**save_pretrained_settings)
+    # try/finally, so a failed write does not leave the caller holding the scrubbed config.
+    # The swap above is for the duration of the SAVE only; a full disk or a failed upload
+    # used to skip the restore below entirely, and the live model then kept a config with
+    # `quantization_config` and, since this PR strips it here too, `mtp_num_hidden_layers`
+    # permanently removed. A retry or any continued use would then be reading a mutated
+    # model. `_mtp_config_matching_tensors` guards its own swap the same way.
+    try:
+        if save_pretrained_settings["push_to_hub"] and (username != actual_username):
+            print(f"Unsloth: Saving to organization with address {new_save_directory}")
+            # Pushing to an organization: .save_pretrained does not work, so save locally first and upload manually.
+            save_pretrained_settings["save_directory"] = new_save_directory
+            save_pretrained_settings["push_to_hub"] = False
+            internal_model.save_pretrained(**save_pretrained_settings)
 
-        filenames = os.listdir(new_save_directory)
+            filenames = os.listdir(new_save_directory)
 
-        hf_api = HfApi(token = save_pretrained_settings["token"])
+            hf_api = HfApi(token = save_pretrained_settings["token"])
 
-        print("Unsloth: Uploading all files... Please wait...")
-        hf_api.upload_folder(
-            folder_path = new_save_directory,
-            path_in_repo = ".",
-            repo_id = new_save_directory,
-            repo_type = "model",
-            commit_message = "(Trained with Unsloth)",
-            ignore_patterns = "*.md",
-        )
-    else:
-        internal_model.save_pretrained(**save_pretrained_settings)
-
-    original_model = model
-    while hasattr(original_model, "model"):
-        original_model = original_model.model
-        original_model.config = old_config
-    model.config = old_config
+            print("Unsloth: Uploading all files... Please wait...")
+            hf_api.upload_folder(
+                folder_path = new_save_directory,
+                path_in_repo = ".",
+                repo_id = new_save_directory,
+                repo_type = "model",
+                commit_message = "(Trained with Unsloth)",
+                ignore_patterns = "*.md",
+            )
+        else:
+            internal_model.save_pretrained(**save_pretrained_settings)
+    finally:
+        original_model = model
+        while hasattr(original_model, "model"):
+            original_model = original_model.model
+            original_model.config = old_config
+        model.config = old_config
     print("Done.")
 
     if push_to_hub and hasattr(model, "config"):

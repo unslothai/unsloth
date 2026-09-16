@@ -360,3 +360,37 @@ def test_a_real_failure_is_still_reported(save_module, monkeypatch):
 
     assert save_module._strip_absent_mtp_declaration(_Exploding(), BODY) is False
     assert said and "config is not readable" in said[0], said
+
+
+def test_the_manual_merge_restores_the_config_when_the_write_fails(tree):
+    """A failed save must not leave the caller holding the scrubbed config.
+
+    `unsloth_save_model` swaps a scrubbed config onto the live model for the duration of
+    the write and restores it afterwards. This PR adds `_strip_absent_mtp_declaration` to
+    that scrub, so on an MTP model the swapped-in config is also missing
+    `mtp_num_hidden_layers`. With the restore on the success path only, a full disk or a
+    failed `upload_folder` skipped it and the caller's model kept the stripped config
+    permanently, so a retry read a mutated model.
+    """
+    func = _func(tree, "unsloth_save_model")
+    restoring = False
+    for node in ast.walk(func):
+        if not isinstance(node, ast.Try) or not node.finalbody:
+            continue
+        # The write is what has to be guarded, and the restore is what has to be in finally.
+        wrote = "save_pretrained" in _calls(node) or "upload_folder" in _calls(node)
+        restores = any(
+            isinstance(sub, ast.Attribute) and sub.attr == "config"
+            for stmt in node.finalbody
+            for sub in ast.walk(stmt)
+        ) and any(
+            isinstance(sub, ast.Name) and sub.id == "old_config"
+            for stmt in node.finalbody
+            for sub in ast.walk(stmt)
+        )
+        if wrote and restores:
+            restoring = True
+    assert restoring, (
+        "the scrubbed-config write is not in a try/finally that restores old_config, so a "
+        "failed save leaves the caller's model stripped"
+    )
