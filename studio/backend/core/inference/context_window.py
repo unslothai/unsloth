@@ -13,7 +13,7 @@ from typing import Any, Optional
 
 _OMITTED_TOOL_EXCHANGE = "[Earlier tool exchange omitted from the rolling context window.]"
 _UNPRICED_MEDIA_TYPES = frozenset(
-    ("image_url", "input_audio", "audio", "input_image", "input_video")
+    ("image_url", "input_audio", "audio", "input_image", "input_video", "video_url")
 )
 
 # Trim BELOW the budget: trimming to exactly it puts the next turn over again, so the boundary creeps every turn and

@@ -10,6 +10,7 @@ HF-mode hf_variant fallback, and ``extra_args`` None-vs-[] inherit semantics.
 
 from __future__ import annotations
 
+import inspect
 import sys
 import types as _types
 from pathlib import Path
@@ -59,6 +60,12 @@ except ImportError:
     sys.modules.setdefault("httpx", _httpx_stub)
 
 from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend
+from models.inference import (
+    InferenceStatusResponse,
+    LoadRequest,
+    LoadResponse,
+    ValidateModelRequest,
+)
 
 
 class _FakeProcess:
@@ -85,6 +92,8 @@ def _loaded_backend(**overrides):
     backend._hf_variant = "Q4_K_M"
     backend._requested_n_ctx = 8192
     backend._cache_type_kv = None
+    backend._reasoning_budget = -1
+    backend._reasoning_budget_message = ""
     backend._speculative_type = None
     backend._requested_spec_mode = "auto"
     backend._chat_template_override = None
@@ -278,6 +287,104 @@ def test_extra_args_source_default_is_none():
     assert backend.extra_args_source is None
 
 
+def test_reasoning_budget_schema_contract():
+    request = LoadRequest(model_path = "owner/repo")
+    assert request.reasoning_budget == -1
+    assert request.reasoning_budget_message == ""
+    assert LoadRequest(model_path = "owner/repo", reasoning_budget = 0).reasoning_budget == 0
+    with pytest.raises(ValueError):
+        LoadRequest(model_path = "owner/repo", reasoning_budget = -2)
+    with pytest.raises(ValueError, match = "8192-byte"):
+        LoadRequest(model_path = "owner/repo", reasoning_budget_message = "😀" * 2_049)
+    with pytest.raises(ValueError, match = "NUL"):
+        LoadRequest(model_path = "owner/repo", reasoning_budget_message = "bad\0message")
+    padded = LoadRequest(model_path = "owner/repo", reasoning_budget_message = "  PAD  ")
+    assert padded.reasoning_budget_message == "  PAD  "
+
+    load = LoadResponse(status = "loaded", model = "m", display_name = "m", inference = {})
+    status = InferenceStatusResponse()
+    assert (load.reasoning_budget, load.reasoning_budget_message) == (-1, "")
+    assert (status.reasoning_budget, status.reasoning_budget_message) == (-1, "")
+
+
+def test_reasoning_budget_is_part_of_backend_dedupe():
+    backend = _loaded_backend(
+        _reasoning_budget = 64,
+        _reasoning_budget_message = "limit",
+        _requested_reasoning_budget = 64,
+        _requested_reasoning_budget_message = "limit",
+    )
+    common = dict(
+        model_identifier = "owner/repo",
+        hf_variant = "Q4_K_M",
+        n_ctx = 8192,
+        cache_type_kv = None,
+        speculative_type = None,
+        chat_template_override = None,
+        extra_args = None,
+        is_vision = False,
+        reasoning_budget = 64,
+        reasoning_budget_message = "limit",
+    )
+    assert _matches(backend, **common) is True
+    assert _matches(backend, **{**common, "reasoning_budget": 32}) is False
+    flags = ["--reasoning-budget", "64", "--reasoning-budget-message", "limit"]
+    backend = _loaded_backend(
+        _reasoning_budget = 64,
+        _reasoning_budget_message = "limit",
+        _requested_reasoning_budget = 64,
+        _requested_reasoning_budget_message = "limit",
+        _extra_args = flags,
+    )
+    assert (
+        _matches(
+            backend,
+            **{
+                **common,
+                "reasoning_budget": -1,
+                "reasoning_budget_message": "",
+                "extra_args": flags,
+            },
+        )
+        is True
+    )
+
+
+def test_reasoning_budget_state_resets_on_unload():
+    backend = _loaded_backend(_reasoning_budget = 64, _reasoning_budget_message = "limit")
+    backend.unload_model()
+    assert backend.reasoning_budget == -1
+    assert backend.reasoning_budget_message == ""
+
+
+def test_load_wires_reasoning_args_and_respawn_snapshot():
+    source = inspect.getsource(LlamaCppBackend.load_model)
+    assert "_build_reasoning_budget_flags(" in source
+    # The respawn snapshot is the intent itself, so the fields have to come off it.
+    assert "reasoning_budget = intent.reasoning_budget" in source
+    assert "reasoning_budget_message = intent.reasoning_budget_message" in source
+    assert source.index("validate_reasoning_budget_capabilities") < source.index(
+        "self._kill_process()"
+    )
+
+
+def test_route_checks_reasoning_budget_capabilities_before_teardown():
+    route_source = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text(
+        encoding = "utf-8"
+    )
+    preflight = route_source.index("backend.validate_reasoning_budget_capabilities")
+    diffusion_rejection = route_source.index(
+        "Reasoning Budget settings are not supported for DiffusionGemma models."
+    )
+    unknown_rejection = route_source.index(
+        "Reasoning Budget settings cannot be applied until this GGUF is"
+    )
+    teardown = route_source.index("# Point of no return for the GGUF path")
+    assert preflight < teardown
+    assert diffusion_rejection < teardown
+    assert unknown_rejection < teardown
+
+
 class TestRepeatLoadMatchesTheEffectiveCache:
     """A repeat /load of an identical request must reuse the healthy server.
 
@@ -378,3 +485,66 @@ class TestRepeatLoadMatchesTheEffectiveCache:
         load = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
         assert "self._effective_cache_types=_effective_main_cache_types(" in load
         assert "self._requested_cache_types=_planned_cache_pair" in load
+
+
+@pytest.mark.parametrize("model", [LoadRequest, ValidateModelRequest])
+def test_reasoning_budget_rejects_booleans(model):
+    # bool subclasses int and pydantic parses lax, so `true` would launch a one-token budget.
+    with pytest.raises(ValueError, match = "Expected a number, got a boolean"):
+        model(model_path = "unsloth/x", reasoning_budget = True)
+    assert model(model_path = "unsloth/x", reasoning_budget = 1).reasoning_budget == 1
+
+
+def test_the_reuse_check_compares_the_request_not_the_environment():
+    """An inherited LLAMA_ARG_THINK_BUDGET* cannot be sent or cleared by any request, so comparing
+    the live EFFECTIVE value against a resolved request tore down a healthy server on every load."""
+    source = inspect.getsource(LlamaCppBackend._runtime_matches_intent)
+    assert "self._requested_reasoning_budget" in source
+    assert (
+        "resolve_reasoning_budget_with_env" not in source
+    ), "the reuse check must not fold the environment into the request"
+
+    launch = inspect.getsource(LlamaCppBackend.load_model)
+    assert "self._requested_reasoning_budget = reasoning_budget" in launch
+    # A probe that could not be read says nothing about the flag, and the child still applies
+    # the environment, so only a conclusive "unsupported" may drop it.
+    assert "reasoning_budget_probe_inconclusive" in launch
+
+
+def test_requested_reasoning_budget_is_reported_separately():
+    from models.inference import InferenceStatusResponse
+
+    fields = InferenceStatusResponse.model_fields
+    for name in ("requested_reasoning_budget", "requested_reasoning_budget_message"):
+        assert name in fields, name
+    assert fields["requested_reasoning_budget"].default == -1
+    assert fields["requested_reasoning_budget_message"].default == ""
+
+
+def test_an_inherited_env_budget_does_not_force_a_reload():
+    """The live EFFECTIVE value carries LLAMA_ARG_THINK_BUDGET*, which no request can send or
+    clear. Comparing against it tore down a healthy server on every load and never converged."""
+    backend = _loaded_backend(
+        # What the environment gave the child...
+        _reasoning_budget = 512,
+        _reasoning_budget_message = "from env",
+        # ...against a load that asked for nothing.
+        _requested_reasoning_budget = -1,
+        _requested_reasoning_budget_message = "",
+    )
+    assert (
+        _matches(
+            backend,
+            model_identifier = "owner/repo",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = None,
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = False,
+            reasoning_budget = -1,
+            reasoning_budget_message = "",
+        )
+        is True
+    )

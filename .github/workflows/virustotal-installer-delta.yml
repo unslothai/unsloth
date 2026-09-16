@@ -1,0 +1,132 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# What did the hardening actually buy?
+#
+# install.ps1 at commit 1ad44677d is the revision reported in #10805, it hashes to ec29980b..., and
+# VirusTotal holds its verdict. That is a baseline, and until it was found this work had never had a
+# before-and-after number -- six passes of hardening, all argued rather than measured.
+#
+# This lane reports the delta on three axes, separately, because they move independently:
+#
+#   engine verdicts   Which of ~60 engines flagged it, by name. One flags the baseline: Skyhigh
+#                     (Trellix / McAfee Enterprise), BehavesLike.PS.Suspicious.gr. Slowest to move --
+#                     a cloud behavioural verdict is not recomputed because we deleted some code.
+#   Sigma rules       17 on the baseline (1 high, 11 medium, 5 low). Static and deterministic, and
+#                     what drives the alarming scores third-party analysis sites report. This is the
+#                     axis shape work moves, and it moves immediately.
+#   YARA rules        2 crowdsourced hits on the baseline. Also static.
+#
+# Reporting only the engine count makes every shape win look like nothing; reporting only Sigma
+# overclaims. Both, or the number is not worth having.
+#
+# GET only. There is no upload path, deliberately: a freshly uploaded file is a prevalence-zero,
+# first-seen sample, which is exactly what CloudBlockLevel HighPlus and ASR rule 01443614 punish, so
+# uploading a candidate can CREATE the detection it was meant to measure -- under a hash no user will
+# ever have. Released artefacts are uploaded by scripts/virustotal_scan.py at release time; branches
+# are not.
+#
+# The consequence is that an unknown hash is VOID (exit 3), never clean. "0 engines flagged it" for a
+# file nothing has ever scanned would be the most misleading thing this could print.
+#
+# Dispatch only. It spends public-tier quota (4 requests/minute, 500/day) and answers a question that
+# is asked deliberately, not on every push.
+
+name: "VirusTotal: installer delta against the reported baseline"
+
+on:
+  workflow_dispatch:
+    inputs:
+      path:
+        description: "File to hash and look up"
+        required: false
+        default: 'install.ps1'
+      baseline_sha256:
+        description: "Override the baseline hash (default: install.ps1 at 1ad44677d)"
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  delta:
+    name: how does this candidate compare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The baseline is verified against this repository's own history rather than trusted as a
+          # constant, and that needs the commit to be present.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Prove the comparison can still report a regression
+        run: |
+          set -euo pipefail
+          # Before spending any quota. A comparison that silently stopped reporting regressions would
+          # produce a reassuring delta forever, and that is a worse outcome than no lane.
+          python scripts/virustotal_delta.py --self-test
+
+      # Separate from the self-test because it needs git history, and a shallow clone should skip
+      # rather than fail. A baseline hash nobody rechecks is a number that could be pointing at any
+      # file at all while the lane looks perfectly healthy.
+      - name: Confirm the baseline is the file the reporter ran
+        run: |
+          set -euo pipefail
+          if ! git cat-file -e 1ad44677d^{commit} 2>/dev/null; then
+            echo "::warning::1ad44677d is not in this clone, so the baseline could not be reverified"
+            exit 0
+          fi
+          got="$(git show 1ad44677d:install.ps1 | sha256sum | cut -d' ' -f1)"
+          want="$(python -c 'import sys; sys.path.insert(0, "scripts"); import virustotal_delta as v; print(v.BASELINE_SHA256)')"
+          echo "history $got"
+          echo "constant $want"
+          if [ "$got" != "$want" ]; then
+            echo "::error::the recorded baseline hash is not install.ps1 at 1ad44677d. Every delta reported against it was against the wrong file."
+            exit 1
+          fi
+          echo "baseline reverified against history"
+
+      - name: Compare
+        id: compare
+        env:
+          # VT_API_KEY is the ENV VAR the Python reads (scripts/virustotal_scan.py:37); the
+          # repository secret is named VIRUS_TOTAL_API_TOKEN, and release-desktop.yml:2193 maps it
+          # the same way. Naming the secret VT_API_KEY here expanded to empty, and the lane then
+          # exited 3 / VOID on every run -- loudly, which is the right failure, but it measured
+          # nothing.
+          VT_API_KEY: ${{ secrets.VIRUS_TOTAL_API_TOKEN }}
+          TARGET: ${{ inputs.path }}
+          BASELINE: ${{ inputs.baseline_sha256 }}
+        run: |
+          set -euo pipefail
+          args=(--candidate "${TARGET:-install.ps1}" --summary "$RUNNER_TEMP/vt-delta.md")
+          if [ -n "$BASELINE" ]; then args+=(--baseline-sha256 "$BASELINE"); fi
+          set +e
+          python scripts/virustotal_delta.py "${args[@]}"
+          code=$?
+          set -e
+          case "$code" in
+            0) echo "VERDICT: not worse than the baseline." ;;
+            2) echo "::error::VERDICT: worse than the baseline on at least one axis." ;;
+            3) echo "::error::VERDICT: VOID. Nothing was compared." ;;
+            *) echo "::error::VERDICT: the tool itself failed (exit $code)." ;;
+          esac
+          exit "$code"
+
+      - name: Keep the report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: virustotal-delta
+          path: ${{ runner.temp }}/vt-delta.md
+          if-no-files-found: warn
+          # Long, for the same reason the flagged bundles are kept 90 days: clearance is per hash, and
+          # a vendor round trip plus our own reaction routinely outlasts a week.
+          retention-days: 90

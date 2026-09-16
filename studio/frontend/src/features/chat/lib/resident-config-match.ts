@@ -26,6 +26,10 @@ type ResidentRuntime = Pick<
   | "requested_load_mode"
   | "requested_spec_draft_cache_type"
   | "requested_ctx_checkpoints"
+  | "reasoning_budget"
+  | "reasoning_budget_message"
+  | "requested_reasoning_budget"
+  | "requested_reasoning_budget_message"
   | "requested_cache_ram"
   | "tensor_parallel"
   | "disable_vision"
@@ -334,6 +338,22 @@ const SETTING_CHECKS: SettingCheck[] = [
     chatOnly: true,
     pinned: () => true,
     agrees: (c, s) => (c.cacheRam ?? null) === (s.requested_cache_ram ?? null),
+  },
+  {
+    // The status echoes the EFFECTIVE budget, so a default control against a server the
+    // environment shaped reads as a reload: the safe direction, like the rest.
+    chatOnly: true,
+    pinned: () => true,
+    agrees: (c, s) =>
+      (c.reasoningBudget ?? -1) ===
+      (s.requested_reasoning_budget ?? s.reasoning_budget ?? -1),
+  },
+  {
+    chatOnly: true,
+    pinned: () => true,
+    agrees: (c, s) =>
+      (c.reasoningBudgetMessage ?? "") ===
+      (s.requested_reasoning_budget_message ?? s.reasoning_budget_message ?? ""),
   },
   {
     // Not nullable, so it always has an opinion; a status omitting it ran without.
