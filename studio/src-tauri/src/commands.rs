@@ -469,14 +469,23 @@ pub async fn check_health(port: u16) -> Result<bool, String> {
 /// produces the second. Answering `false` there threw away a running backend and whatever it
 /// had in flight.
 ///
-/// An error asking at all stays `false`: no second opinion leaves the original verdict alone.
+/// The probe failing is where the stall actually arrives, so the error is classified rather
+/// than collapsed. `check_health_inner` only ever returns `Ok` with `probe_timed_out: false`:
+/// a request that runs out of budget fails on `.send().await?` and leaves through the `Err`
+/// arm. Reading that arm as "not present" made this command an exact copy of `check_health`
+/// on the one input it was added for, and every test over hand-built `BackendLiveness`
+/// values would still have passed. `liveness_from_probe_error` is the same classifier the
+/// watchdog uses, so both readers of a failed probe agree on what silence meant.
+///
+/// A connection REFUSED is still `false`: that error is not a timeout, so nothing is holding
+/// the port and the relaunch verdict stands.
 #[tauri::command]
 pub async fn check_backend_present(port: u16) -> Result<bool, String> {
     match check_health_inner(port, HEALTH_PROBE_TIMEOUT).await {
         Ok(liveness) => Ok(backend_is_present(&liveness)),
         Err(e) => {
             info!("Backend presence check on port {} failed: {}", port, e);
-            Ok(false)
+            Ok(backend_is_present(&liveness_from_probe_error(&e)))
         }
     }
 }
@@ -1673,6 +1682,45 @@ mod tests {
             super::liveness_from_probe_error(&error).probe_timed_out,
             "a spent probe budget is not being classified as a stall, so a backend that is \
              merely busy gets the three-strike budget"
+        );
+    }
+
+    #[tokio::test]
+    async fn check_backend_present_reports_a_stalled_port_as_present() {
+        // End to end through the command, against a real parked socket, because the bug this
+        // pins lives entirely in the arm the struct-level test cannot reach.
+        // `check_health_inner` never returns `Ok` with `probe_timed_out` set: a request that
+        // runs out of budget fails on `.send().await?` and leaves through `Err`. With that arm
+        // answering a flat `false`, `check_backend_present` was byte-for-byte
+        // `check_health` on the one input it exists for, and every assertion over hand-built
+        // `BackendLiveness` values still passed.
+        //
+        // Costs HEALTH_PROBE_TIMEOUT in wall clock. That is the point: the budget has to
+        // actually be spent for the error to be a timeout.
+        let port = stalling_test_backend().await;
+        assert_eq!(
+            super::check_backend_present(port).await,
+            Ok(true),
+            "a backend holding the port and not answering was reported absent, which is the \
+             relaunch prompt this command was added to prevent"
+        );
+    }
+
+    #[tokio::test]
+    async fn check_backend_present_reports_a_closed_port_as_absent() {
+        // The boundary. Classifying the error must not turn every failed probe into
+        // "present": a refused connection is not a timeout, nothing is holding the port, and
+        // the relaunch verdict is correct there.
+        let port = {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            drop(listener);
+            port
+        };
+        assert_eq!(
+            super::check_backend_present(port).await,
+            Ok(false),
+            "a closed port must still read as an absent backend"
         );
     }
 
