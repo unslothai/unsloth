@@ -432,7 +432,7 @@ def _make_backend():
     b._leading_process_group = lambda *a, **kw: None
     b._collect_descendants = lambda *a, **kw: []
     b._kill_process_group = lambda *a, **kw: None
-    b._terminate_descendants = lambda *a, **kw: None
+    b._terminate_descendants = lambda *a, **kw: []
     return b
 
 
@@ -592,3 +592,169 @@ def test_a_stand_in_with_a_pid_leaves_a_real_bystander_running():
     finally:
         bystander.kill()
         bystander.wait(timeout = 10)
+
+
+# ── the surviving-root fallback, and what it leaves behind ──
+
+
+def test_the_surviving_root_fallback_does_not_re_expand_the_tree(monkeypatch):
+    """`terminate_pid` is where the unload's last resort lands, and it used to mean `/T`.
+
+    The collector refuses to trust the live parent-pid links, and `taskkill /T` finds its
+    children by walking exactly those links, so routing the fallback through it hands the
+    rejected stranger straight back to the kill. Windows does the expansion, so no
+    assertion on the resulting pid set can observe it: the tree call is made to raise
+    instead, which fails this test the moment anything reaches for it.
+    """
+    monkeypatch.setattr(pl, "_is_windows", lambda: True)
+    monkeypatch.setattr(pl, "_is_linux", lambda: False)
+    monkeypatch.setattr(pl, "_pid_alive", lambda pid: pid not in dead)
+    monkeypatch.setattr(pl, "_pid_is_zombie", lambda pid: False)
+    identities = {500: "0:500", 600: "0:600"}
+    monkeypatch.setattr(pl, "_pid_identity", lambda pid: identities.get(pid))
+    monkeypatch.setattr(pl, "_tracked_pids", {500: "0:500"})
+    monkeypatch.setattr(pl, "_tracked_pgids", {})
+    monkeypatch.setattr(pl, "_write_breadcrumb", lambda: None)
+    monkeypatch.setattr(pl, "_group_has_members", lambda pgid: False)
+
+    def _no_tree(pid):
+        raise AssertionError("taskkill /T re-expands through the links the filter rejects")
+
+    monkeypatch.setattr(pl, "_windows_terminate_tree", _no_tree)
+    monkeypatch.setattr(
+        pl, "_windows_collect_descendants", lambda pid: [(600, "0:600")] if pid == 500 else []
+    )
+    dead: "set[int]" = set()
+    killed = []
+
+    def _kill(pid):
+        killed.append(pid)
+        dead.add(pid)
+        return True
+
+    monkeypatch.setattr(pl, "_windows_terminate_pid", _kill)
+
+    pl.terminate_pid(500, timeout = 0.01, owner_verified = True)
+    assert killed == [600, 500], "deepest first, and the validated set only"
+    assert 500 not in pl._tracked_pids, "a tree that went down releases its record"
+
+
+def test_the_surviving_root_fallback_keeps_the_record_when_something_lives(monkeypatch):
+    """The other half of the contract the `/T` call carried: False means the record stays.
+
+    Reading it back from the pids matters more here than it did with `/T`, because the
+    exit status of one `taskkill /F` says nothing about the descendant killed before it.
+    """
+    monkeypatch.setattr(pl, "_is_windows", lambda: True)
+    monkeypatch.setattr(pl, "_is_linux", lambda: False)
+    # The root dies, the descendant does not: exactly the shape a per-pid kill can produce
+    # and a single /T status could never report.
+    monkeypatch.setattr(pl, "_pid_alive", lambda pid: pid == 600)
+    monkeypatch.setattr(pl, "_pid_is_zombie", lambda pid: False)
+    identities = {500: "0:500", 600: "0:600"}
+    monkeypatch.setattr(pl, "_pid_identity", lambda pid: identities.get(pid))
+    monkeypatch.setattr(pl, "_tracked_pids", {500: "0:500"})
+    monkeypatch.setattr(pl, "_tracked_pgids", {})
+    monkeypatch.setattr(pl, "_write_breadcrumb", lambda: None)
+    monkeypatch.setattr(pl, "_group_has_members", lambda pgid: False)
+    monkeypatch.setattr(
+        pl, "_windows_collect_descendants", lambda pid: [(600, "0:600")] if pid == 500 else []
+    )
+    monkeypatch.setattr(pl, "_windows_terminate_pid", lambda pid: True)
+
+    pl.terminate_pid(500, timeout = 0.01, owner_verified = True)
+    assert 500 in pl._tracked_pids, "dropped the only handle on a worker that is still up"
+
+
+def test_a_descendant_that_would_not_die_is_reported(monkeypatch):
+    """`taskkill /F` can fail, and can report success on a process that has not gone.
+
+    Discarding that answer is what lets the unload delete the record and the pidfile with a
+    worker still holding the GPU: nothing else names it after the leader is reaped.
+    """
+    monkeypatch.setattr(pl, "_is_linux", lambda: False)
+    monkeypatch.setattr(pl, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(pl, "_pid_is_zombie", lambda pid: False)
+    monkeypatch.setattr(pl, "_pid_identity", lambda pid: f"0:{pid}")
+    monkeypatch.setattr(pl, "_windows_collect_descendants", lambda pid: [])
+    # Returns True, and the process is still there. The read-back is the only thing that
+    # can tell the difference.
+    monkeypatch.setattr(pl, "_windows_terminate_pid", lambda pid: True)
+    assert pl._windows_terminate_collected([(10, "0:10"), (11, "0:11")]) == [11, 10]
+
+
+def test_a_descendant_that_did_die_is_not_reported(monkeypatch):
+    """The ordinary path reports nothing, or every unload would keep its record forever."""
+    monkeypatch.setattr(pl, "_is_linux", lambda: False)
+    monkeypatch.setattr(pl, "_pid_alive", lambda pid: False)
+    monkeypatch.setattr(pl, "_pid_is_zombie", lambda pid: False)
+    monkeypatch.setattr(pl, "_pid_identity", lambda pid: f"0:{pid}")
+    monkeypatch.setattr(pl, "_windows_collect_descendants", lambda pid: [])
+    monkeypatch.setattr(pl, "_windows_terminate_pid", lambda pid: True)
+    assert pl._windows_terminate_collected([(10, "0:10")]) == []
+
+
+@pytest.mark.skipif(IS_WINDOWS, reason = "the POSIX arm")
+def test_the_posix_sweep_reports_a_child_the_signals_did_not_reach(monkeypatch, tree):
+    """Same contract on POSIX, with the real child and the real liveness probe.
+
+    SIGKILL cannot be caught, but it is not instantaneous either, and a worker asleep in a
+    driver ioctl outlives it. The signals are stubbed out rather than the process being
+    made unkillable, which is the only way to reach that state deterministically.
+    """
+    leader, child_pid = tree
+    collected = pl.collect_descendants(leader.pid)
+    assert child_pid in [pid for pid, _ in collected]
+    monkeypatch.setattr(pl.os, "kill", lambda pid, sig: None)
+    survivors = pl.terminate_descendants(collected, timeout = 0.2)
+    assert child_pid in survivors, "a child that is plainly still running was reported dead"
+    assert _alive(child_pid)
+
+
+def test_an_unload_keeps_the_pidfile_when_a_descendant_survives(monkeypatch):
+    """The leader exited cleanly, so the unload would have dropped the record and the
+    pidfile. Its worker is still up, and after the leader is reaped those are the only
+    things that name anything about this server to the next launch."""
+    b = _make_backend()
+    b._process.pid = 4242
+    b._process.poll.return_value = 0  # the leader itself went down on the terminate
+    b._terminate_descendants = lambda *a, **kw: [777]
+    cleared, killed = _instrument(monkeypatch, gone = True)
+    b._kill_process()
+    assert killed == [], "the leader exited, so there is nothing to tree kill"
+    assert cleared == [], "dropped the pidfile with a worker of this server still running"
+
+
+def test_an_unload_clears_the_pidfile_when_every_descendant_died(monkeypatch):
+    """The common path, unchanged: nothing survived, so nothing is kept."""
+    b = _make_backend()
+    b._process.pid = 4242
+    b._process.poll.return_value = 0
+    b._terminate_descendants = lambda *a, **kw: []
+    cleared, killed = _instrument(monkeypatch, gone = True)
+    b._kill_process()
+    assert cleared == [1]
+
+
+def test_a_surviving_descendant_is_adopted_so_a_later_sweep_can_reach_it(monkeypatch):
+    """The leader's record is keyed on the leader. Once it is gone the survivor needs a
+    record of its own, and on Windows there is no process group to stand in for one."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    adopted = []
+    monkeypatch.setattr(pl, "terminate_descendants", lambda collected, timeout: [777])
+    monkeypatch.setattr(pl, "adopt_pid", adopted.append)
+    assert LlamaCppBackend._terminate_descendants([(777, "0:777")]) == [777]
+    assert adopted == [777]
+
+
+def test_a_sweep_that_raised_names_every_pid_it_had(monkeypatch):
+    """An exception is "unknown", not "none". The pids were collected, so they can still
+    be named, and naming them is the whole point of the return value."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    def _raises(collected, timeout):
+        raise RuntimeError("Toolhelp snapshot unavailable")
+
+    monkeypatch.setattr(pl, "terminate_descendants", _raises)
+    assert LlamaCppBackend._terminate_descendants([(777, "0:777"), (778, None)]) == [777, 778]

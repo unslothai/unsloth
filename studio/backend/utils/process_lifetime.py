@@ -834,18 +834,27 @@ def _windows_collect_descendants(pid: int) -> "list[tuple[int, Optional[str]]]":
 
 def terminate_descendants(
     collected: "list[tuple[int, Optional[str]]]", timeout: float = 5.0
-) -> None:
+) -> "list[int]":
     """SIGTERM then SIGKILL what `collect_descendants` found, still alive.
 
     The POSIX counterpart of the Windows ``taskkill /T``: a child that shares
     this process's group cannot be reached with killpg, so its own children are
     signalled by pid instead.
+
+    Returns the pids still running when it gives up, which is not the same as the
+    empty list. A kill can fail (the process is protected, the handle is denied, the
+    exit is simply slow), and reporting the attempt as the outcome is what lets the
+    caller delete the record and the pidfile out from under a worker that is still
+    holding GPU memory or a port, leaving nothing that names it.
+
+    Reporting only: adopting the survivors here would put a global record write on the
+    POSIX teardown path, where the group reaper already covers them and nothing asked for
+    it. The caller that is about to drop the last handle on them is the one that adopts.
     """
     if not collected:
-        return
+        return []
     if _is_windows():
-        _windows_terminate_collected(collected)
-        return
+        return _windows_terminate_collected(collected)
     live: "list[tuple[int, Optional[str]]]" = []
     for pid, identity in collected:
         if not _signalable(pid) or not _still_the_same(pid, identity):
@@ -868,9 +877,19 @@ def terminate_descendants(
             os.kill(pid, signal.SIGKILL)
         except OSError:
             pass
+    # Re-read rather than trusting the signal: SIGKILL is not instantaneous, and an
+    # uninterruptible sleep in a driver ioctl outlives it entirely, which is the state a
+    # worker holding a GPU is most likely to be in.
+    return [
+        pid
+        for pid, identity in live
+        if _pid_alive(pid) and not _pid_is_zombie(pid) and _still_the_same(pid, identity)
+    ]
 
 
-def _windows_terminate_collected(collected: "list[tuple[int, Optional[str]]]") -> None:
+def _windows_terminate_collected(
+    collected: "list[tuple[int, Optional[str]]]",
+) -> "list[int]":
     """``taskkill /F`` each survivor individually, deepest first. Never ``/T``.
 
     Windows has no process group, so once the leader has been terminated nothing
@@ -892,7 +911,14 @@ def _windows_terminate_collected(collected: "list[tuple[int, Optional[str]]]") -
     killing fewer processes rather than more, which is the right way for a forced tree
     kill to fail: a leaked worker is caught by the next sweep, and someone else's process
     is not recoverable.
+
+    Returns the pids still running at the end. ``taskkill /F`` can fail outright (access
+    denied, a protected process) and can also report success on a process that has not
+    finished dying, so the answer is re-read from the pid rather than taken from the exit
+    status. A survivor reported here is what stops the caller from deleting the record and
+    the pidfile that are the only remaining handles on it.
     """
+    attempted: "list[tuple[int, Optional[str]]]" = []
     for pid, identity in reversed(collected):
         if not _signalable(pid) or not _pid_alive(pid):
             continue
@@ -909,10 +935,63 @@ def _windows_terminate_collected(collected: "list[tuple[int, Optional[str]]]") -
                 _windows_terminate_pid(late_pid)
             except Exception:  # noqa: BLE001 - best effort, like the rest of this
                 pass
+            attempted.append((late_pid, late_identity))
         try:
             _windows_terminate_pid(pid)
         except Exception:  # noqa: BLE001 - best effort, like the rest of this
             pass
+        attempted.append((pid, identity))
+    return [
+        pid
+        for pid, identity in attempted
+        if _pid_alive(pid) and not _pid_is_zombie(pid) and _provably_the_same(pid, identity)
+    ]
+
+
+def _windows_terminate_validated_tree(pid: int) -> bool:
+    """What ``taskkill /T /F`` was for, with the collector's filter kept intact.
+
+    Same contract as `_windows_terminate_tree`: True when nothing of this tree is left
+    running, False when something survived and the record naming it has to outlive the
+    call. The difference is how the tree is enumerated. ``/T`` asks Windows, which walks
+    the live parent-pid links; those links are stale by design (the creating pid is
+    recorded once and never cleared), so a stranger that merely inherited a recycled
+    number is reached and killed. `_windows_collect_descendants` is the filter that exists
+    to reject exactly that, and routing a forced kill through ``/T`` hands the rejected
+    process back to the kill anyway.
+
+    Descendants are enumerated BEFORE the root is signalled: once the root exits its own
+    identity stops being readable, and the collector needs it as the ancestry floor.
+
+    A tree this cannot enumerate collapses to killing the root alone and answering False,
+    which is the same answer the ``/T`` fallback gave when taskkill was unavailable, and
+    it fails towards leaking a worker rather than towards killing a stranger.
+    """
+    descendants = _windows_collect_descendants(pid)
+    for child, child_identity in reversed(descendants):
+        if not _signalable(child) or not _pid_alive(child):
+            continue
+        if not _provably_the_same(child, child_identity):
+            continue
+        try:
+            _windows_terminate_pid(child)
+        except Exception:  # noqa: BLE001 - best effort, like the rest of this
+            pass
+    if _signalable(pid) and _pid_alive(pid):
+        try:
+            _windows_terminate_pid(pid)
+        except Exception:  # noqa: BLE001 - best effort, like the rest of this
+            pass
+    # Read back, on the root and on every descendant: a taskkill that reported success
+    # still has to have taken effect, and "the leader is gone" was never the question.
+    if _pid_alive(pid) and not _pid_is_zombie(pid):
+        return False
+    for child, child_identity in descendants:
+        if not _pid_alive(child) or _pid_is_zombie(child):
+            continue
+        if _provably_the_same(child, child_identity):
+            return False
+    return True
 
 
 def _still_the_same(pid: int, identity: "Optional[str]") -> bool:
@@ -1375,8 +1454,11 @@ def terminate_pid(
     try:
         if _is_windows():
             # False is "only the leader was signalled": nothing else names those
-            # workers, so the record has to outlive this call.
-            tree_stands = not _windows_terminate_tree(pid)
+            # workers, so the record has to outlive this call. Not taskkill /T: it
+            # re-expands through the live parent-pid links, so a stranger holding a
+            # recycled number that `_windows_collect_descendants` rejected is killed
+            # by the very sweep that filter protects.
+            tree_stands = not _windows_terminate_validated_tree(pid)
         else:
             _posix_terminate(pid, timeout)
             # A leader that exited first takes getpgid with it, so _posix_terminate

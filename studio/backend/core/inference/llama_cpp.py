@@ -29371,14 +29371,37 @@ class LlamaCppBackend:
 
     @staticmethod
     def _terminate_descendants(collected):
-        """The diffusion shim's visual server, and anything else it started."""
+        """The diffusion shim's visual server, and anything else it started.
+
+        Returns the pids that were still running when the sweep gave up. A forced kill
+        can simply fail (access denied, a protected process, an uninterruptible driver
+        ioctl), and reading the attempt as the outcome is what lets the caller delete the
+        record and the pidfile out from under a worker that is still holding the GPU.
+        Each survivor is adopted, so it gets a lifetime record of its own rather than
+        depending on the leader's: the leader is usually gone by now, and on Windows
+        there is no process group standing in for it.
+        """
         if not collected:
-            return
+            return []
         try:
-            from utils.process_lifetime import terminate_descendants
-            terminate_descendants(collected, timeout = 5.0)
+            from utils.process_lifetime import adopt_pid, terminate_descendants
+            survivors = terminate_descendants(collected, timeout = 5.0)
         except Exception as e:
             logger.debug(f"Could not terminate server descendants: {e}")
+            # Unknown, not none. The pids were collected, so they can still be named, and
+            # naming them is the whole point of this return value.
+            return [pid for pid, _ in collected]
+        for pid in survivors:
+            try:
+                adopt_pid(pid)
+            except Exception:
+                pass
+        if survivors:
+            logger.warning(
+                f"llama-server descendants still running after the sweep: {survivors}; "
+                "recorded so the next launch can reap them"
+            )
+        return survivors
 
     def _publish_healthy(self) -> bool:
         """Commit _healthy under the spawn lock, or refuse if this load is stale.
@@ -29524,7 +29547,7 @@ class LlamaCppBackend:
             logger.warning(f"Error killing llama-server process: {e}")
         finally:
             self._kill_process_group(_pgid)
-            self._terminate_descendants(_descendants)
+            _surviving_descendants = self._terminate_descendants(_descendants)
             # getattr: teardown must tolerate a partially-built backend (failed
             # __init__ or a __new__-built instance), as with _llama_log_fh below.
             if getattr(self, "_stats_logger", None) is not None:
@@ -29551,6 +29574,13 @@ class LlamaCppBackend:
                 # mapping. taskkill /T /F is the only handle left on it there, and
                 # nothing on this path used to reach for it (#9790).
                 _exited = self._tree_kill_surviving_process(_killed_pid)
+            # A descendant the sweep could not kill keeps the leader's record too. It was
+            # adopted under its own pid above, but the record here is what the pidfile and
+            # the next launch's reap are keyed on, and dropping it while something of this
+            # server is still running is the state that leaves a worker on the GPU with
+            # nothing naming it.
+            if _surviving_descendants:
+                _exited = False
             if _killed_pid is not None and _exited:
                 try:
                     from utils.process_lifetime import forget_pid
