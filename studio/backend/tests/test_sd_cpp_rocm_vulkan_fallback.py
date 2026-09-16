@@ -1931,7 +1931,7 @@ def test_a_cancelled_image_generation_records_nothing(fake_settings, monkeypatch
 
     source = inspect.getsource(sd_cpp_backend.SdCppDiffusionBackend.generate)
     handler = source.index("note_accelerator_failure_from_output(")
-    window = source[max(0, handler - 700):handler]
+    window = source[max(0, handler - 1400):handler]
     assert "cancel.is_set()" in window, window
     assert "DIFFUSION_CANCELLED_MSG not in str(exc)" in window, window
 
@@ -1968,3 +1968,64 @@ def test_the_availability_probe_reads_the_same_record_selection_does(
     # Now selection would refuse that binary as a substitute for the Vulkan build it asked
     # for, so the probe must not answer that native is available either.
     assert router.native_binary_installed() is False
+
+
+def test_a_server_that_dies_mid_render_is_recorded_against_its_own_binary(
+    fake_settings, monkeypatch,
+):
+    """The resident sd-server is the preferred path, and it is not the engine.
+
+    `_resolve_backend` returns no engine in server mode, so reading `self._engine` there
+    passes None and the recorder returns immediately: a ROCm server that starts fine and then
+    dies in hipBLAS recorded nothing, and every reload ran ROCm again rather than taking the
+    Vulkan rung this whole change is for.
+    """
+    import inspect
+
+    from core.inference import sd_cpp_backend
+
+    source = inspect.getsource(sd_cpp_backend.SdCppDiffusionBackend.generate)
+    handler = source.index("note_accelerator_failure_from_output(")
+    window = source[max(0, handler - 1400):handler]
+    assert 'getattr(state, "server", None), "binary"' in window, window
+
+    monkeypatch.setattr(sd_cpp_backend, "_installed_accelerator_of", lambda _b: "rocm")
+    sd_cpp_backend.note_accelerator_failure_from_output(
+        "/opt/sd/rocm/sd-server",
+        "sd-server exited 1. Last output:\nROCm error: CUBLAS_STATUS_INVALID_VALUE at hipblasSetStream",
+        source = "diffusion",
+    )
+    assert _noted_accelerators(fake_settings) == ["rocm"]
+
+
+def test_the_image_pin_follows_the_card_into_the_vulkan_namespace(monkeypatch):
+    """The image path built its pin from the physical ordinal alone.
+
+    `Vulkan0` is not the index the user picked, so the ordinal lookup answered None, no
+    --backend was written, and sd.cpp took its own default device while this load reserved and
+    accounted for the card that WAS selected. On a multi-GPU host that is an overcommit of one
+    card and a reservation against another. The card's own name is what the two namespaces
+    agree on, which is what the video path already matches by.
+    """
+    from core.inference import sd_cpp_backend
+
+    monkeypatch.setattr(
+        sd_cpp_backend,
+        "_sd_cpp_probe_output",
+        lambda *_a: "Vulkan0\tAMD Radeon RX 7600\nVulkan1\tAMD Radeon RX 7900 XTX (RADV NAVI31)\n",
+    )
+    monkeypatch.setattr(
+        sd_cpp_backend, "physical_card_name", lambda ordinal: ("AMD Radeon RX 7900 XTX", 0)
+    )
+    flags = sd_cpp_backend._offload_with_device_pin_impl(["--offload-to-cpu"], "/sd/sd-cli", 1)
+    assert flags == [
+        "--offload-to-cpu",
+        "--backend",
+        "diffusion=Vulkan1,te=Vulkan1,vae=Vulkan1",
+    ]
+
+    # An unresolvable card still pins nothing, which is the behaviour every build had before.
+    monkeypatch.setattr(sd_cpp_backend, "physical_card_name", lambda ordinal: (None, None))
+    assert sd_cpp_backend._offload_with_device_pin_impl(
+        ["--offload-to-cpu"], "/sd/sd-cli", 1
+    ) == ["--offload-to-cpu"]

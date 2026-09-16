@@ -1287,6 +1287,10 @@ def test_offload_device_pin_is_probed_against_the_binary_it_is_given(monkeypatch
         return "CUDA0\tA\nCUDA1\tB\n" if binary == "/new/sd-cli" else "CPU\tRyzen\n"
 
     monkeypatch.setattr(bk, "_sd_cpp_probe_output", _probe)
+    # Pinned, so this case is about the binary and not about whatever card this host has: an
+    # ordinal the build does not enumerate falls through to the card-name match below, and a
+    # host with a readable card would probe a second time for it.
+    monkeypatch.setattr(bk, "physical_card_name", lambda ordinal: (None, None))
     base = ["--offload-to-cpu"]
     # The pre-upgrade CPU-only build enumerates no CUDA device, so nothing is pinned.
     assert bk._offload_with_device_pin_impl(base, "/old/sd-cli", 1) == base

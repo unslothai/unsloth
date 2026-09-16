@@ -441,6 +441,36 @@ def _without_driver_tag(text: str) -> str:
     return _DRIVER_TAG_RE.sub("", text).strip()
 
 
+def physical_card_name(ordinal: Optional[int]) -> "tuple[Optional[str], Optional[int]]":
+    """The card at physical index *ordinal* as the driver names it, and its place among the
+    cards of that same name. ``(None, None)`` when unreadable.
+
+    For the accelerator fallback, where the build's devices are in a namespace the physical
+    index means nothing in. The name is what the two namespaces agree on, so it is what the
+    pin is matched by. `torch.cuda` is the reader on ROCm as well: HIP is exposed through the
+    same API and reports the same marketing name the Vulkan ICD prints.
+
+    The POSITION is what breaks a tie between identical cards, which a name cannot: two
+    7900 XTXs describe themselves identically in both namespaces, so what is carried instead
+    is "this is the second one". See `sd_cpp_device_named` for the assumption that rests on.
+    """
+    if ordinal is None:
+        return None, None
+    try:
+        import torch
+
+        if not torch.cuda.is_available() or ordinal >= torch.cuda.device_count():
+            return None, None
+        names = [torch.cuda.get_device_name(index) for index in range(torch.cuda.device_count())]
+    except Exception:  # noqa: BLE001 -- no reader, no pin; the load runs as it does today
+        return None, None
+    name = (names[ordinal] or "").strip()
+    if not name:
+        return None, None
+    position = sum(1 for index in range(ordinal) if (names[index] or "").strip() == name)
+    return name, position
+
+
 def sd_cpp_device_named(
     binary: Optional[str], card_name: Optional[str], *, position: Optional[int] = None
 ) -> Optional[str]:
@@ -1721,7 +1751,18 @@ def _offload_with_device_pin_impl(
     flags = list(offload)
     if ordinal is None:
         return flags
-    return [*flags, *device_backend_flags(sd_cpp_device_name_for_ordinal(binary, ordinal), flags)]
+    device_name = sd_cpp_device_name_for_ordinal(binary, ordinal)
+    if device_name is None:
+        # The fallback build's devices are in their own namespace. `Vulkan0` is not the
+        # physical index the user picked, so the lookup above answers None, no `--backend` is
+        # written, and sd.cpp takes its own default device -- normally the first card -- while
+        # this load's reservation and accounting name the card that WAS selected. On a
+        # multi-GPU host that is a reservation against hardware nothing is running on, and an
+        # overcommit of whatever Vulkan chose. The card's own name is the one thing the two
+        # namespaces agree on, which is what the video path already pins by.
+        selected_name, selected_position = physical_card_name(ordinal)
+        device_name = sd_cpp_device_named(binary, selected_name, position = selected_position)
+    return [*flags, *device_backend_flags(device_name, flags)]
 
 
 def _resolved_server_physical_gpu_id(
@@ -3100,11 +3141,20 @@ class SdCppDiffusionBackend:
                     # so the Vulkan rung below it was never reached however many times it
                     # failed. A cancellation is not a failure of the build.
                     if not cancel.is_set() and DIFFUSION_CANCELLED_MSG not in str(exc):
-                        # The engine as it stands, never a fresh resolve: resolving here can
-                        # itself raise ("binary is unavailable"), and an exception from inside
-                        # an except block replaces the failure the caller is waiting for.
+                        # The binary that RAN it. On the server path the model is loaded
+                        # inside the resident sd-server and `_resolve_backend` returns no
+                        # engine at all, so reading `self._engine` there passes None and the
+                        # recorder returns immediately -- which is the whole case this is for,
+                        # since a ROCm server that starts and then dies in hipBLAS is exactly
+                        # what the fallback rung exists for. The engine as it stands for the
+                        # one-shot path, never a fresh resolve: resolving here can itself raise
+                        # ("binary is unavailable"), and an exception from inside an except
+                        # block replaces the failure the caller is waiting for.
+                        _failed_binary = getattr(
+                            getattr(state, "server", None), "binary", None
+                        ) or getattr(getattr(self, "_engine", None), "binary", None)
                         note_accelerator_failure_from_output(
-                            getattr(getattr(self, "_engine", None), "binary", None),
+                            _failed_binary,
                             str(exc),
                             source = "diffusion",
                         )
