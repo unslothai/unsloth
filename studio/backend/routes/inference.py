@@ -10642,9 +10642,9 @@ def _gguf_runtime_bytes(
     one, since a smaller ``-c`` in the extras is the context the user gets."""
     try:
         from core.inference.llama_cpp import _batch_ubatch_for_mmproj
+        from core.inference.llama_cpp import effective_ctx_checkpoints_for_caps
         from core.inference.llama_server_args import (
             parse_ctx_override,
-            resolve_ctx_checkpoints,
             resolve_requested_ctx,
         )
 
@@ -10766,24 +10766,23 @@ def _gguf_runtime_bytes(
             llama_extra_args,
             default = managed_kv_unified,
         )
-        _resolved_checkpoints = resolve_ctx_checkpoints(llama_extra_args, ctx_checkpoints)
-        if _resolved_checkpoints:
-            # A build predating both --ctx-checkpoints aliases has the request skipped
-            # by the command builder, which logs and moves on, so charging for the
-            # snapshots reserves memory the process never allocates. Same capability
-            # probe the builder itself asks, and the same default-deny on an
-            # unanswerable one: this figure also guards a running training job, so an
-            # unreadable probe keeps the charge rather than dropping it.
-            try:
-                _cc_caps = LlamaCppBackend.probe_server_capabilities()
-                # ``found`` is what separates "this build lacks the flag" from "no
-                # binary was read": the defaults dict reports every capability False,
-                # so keying on the flag alone would drop the charge whenever the probe
-                # simply could not run.
-                if _cc_caps.get("found") and not _cc_caps.get("ctx_checkpoints_flag"):
-                    _resolved_checkpoints = 0
-            except Exception as _cc_exc:
-                logger.debug("ctx-checkpoints capability probe failed: %s", _cc_exc)
+        # Resolve the same capability-dependent count that load_model emits.
+        _cc_caps: dict = {}
+        try:
+            _cc_caps = LlamaCppBackend.probe_server_capabilities() or {}
+        except Exception as _cc_exc:
+            logger.debug("ctx-checkpoints capability probe failed: %s", _cc_exc)
+        # Older lightweight probes may not provide the new sizing helpers.
+        _per_checkpoint = getattr(probe, "_rollback_state_bytes", lambda _n: 0)(1)
+        _host_mib = getattr(probe, "_host_memory_capacity_mib", lambda: None)()
+        _resolved_checkpoints = effective_ctx_checkpoints_for_caps(
+            _cc_caps,
+            llama_extra_args,
+            ctx_checkpoints,
+            per_checkpoint_bytes = _per_checkpoint,
+            n_parallel = slots,
+            total_host_bytes = (_host_mib * 1024 * 1024) if _host_mib else None,
+        )
         # load_model appends --flash-attn on to every launch whose build has the flag,
         # so the default here is ON, not off. The false arm pads variable-width V
         # tensors to the model-wide maximum (_max_kv_value_width), which on an
@@ -10938,11 +10937,19 @@ def _estimate_gguf_kv_gb(
     is_diffusion: bool = False,
     model_identifier: Optional[str] = None,
     launch_required_ubatch: int = 0,
+    shared_memory_pool: bool = True,
 ) -> float:
     """``_gguf_runtime_bytes`` summed into GB, for the training guard.
 
     An unreadable header is 0 GB, as it always was: a cache the guard cannot size
     must not become a refusal on its own.
+
+    Context checkpoints leave this figure only when ``shared_memory_pool`` is False,
+    i.e. the caller has CONFIRMED the pool it checks against is separate from host
+    RAM. On an iGPU or a unified-memory APU the driver's "free VRAM" IS the host
+    heap, so dropping a host-resident allocation there admits a load beside training
+    that the one pool cannot hold. Defaults to keeping them, like the rest of this
+    guard, which refuses what it cannot size.
     """
     runtime = _gguf_runtime_bytes(
         gguf_path,
@@ -10959,7 +10966,12 @@ def _estimate_gguf_kv_gb(
         model_identifier = model_identifier,
         launch_required_ubatch = launch_required_ubatch,
     )
-    return (runtime.kv_bytes + runtime.compute_bytes) / (1024**3)
+    gpu_kv_bytes = (
+        runtime.kv_bytes
+        if shared_memory_pool
+        else max(0, runtime.kv_bytes - runtime.kv_checkpoint_bytes)
+    )
+    return (gpu_kv_bytes + runtime.compute_bytes) / (1024**3)
 
 
 def _remote_gguf_compute_reserve_gb(
@@ -11059,6 +11071,54 @@ def _remote_gguf_compute_reserve_gb(
     return 0.0
 
 
+def _admission_pool_shares_host_ram(
+    *,
+    is_vulkan_backend: bool,
+    vulkan_gpu_memory: Optional[list] = None,
+    requested_gpu_ids: Optional[list[int]] = None,
+    gpu_ids_are_vulkan_ordinals: bool = False,
+) -> bool:
+    """Whether the pool the training guard checks against is also the host heap.
+
+    Fails CLOSED. An unreadable inventory, a selection this cannot map to devices,
+    or any candidate that turns out to be integrated all answer True, so a figure
+    that must not under-charge keeps its host-resident terms.
+    """
+    try:
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        if is_vulkan_backend:
+            # total 0 means integrated, as _shared_gpu_ids reads it. Narrowed to the pin
+            # only when it is confirmed to be in Vulkan's own index space; a physical id
+            # read as an ordinal would answer for the wrong adapter.
+            rows = list(vulkan_gpu_memory or [])
+            if gpu_ids_are_vulkan_ordinals and requested_gpu_ids:
+                pinned = {int(i) for i in requested_gpu_ids}
+                rows = [row for row in rows if int(row[0]) in pinned]
+            return not rows or any(int(total) <= 0 for _idx, _free, total in rows)
+        import torch
+
+        if LlamaCppBackend._torch_is_rocm(torch):
+            # An empty unified set means "no APU" and "could not read them" alike, since
+            # the classifier skips what it cannot query. Only the first is evidence.
+            if not LlamaCppBackend._rocm_classification_answered():
+                return True
+            unified = LlamaCppBackend._rocm_unified_memory_gpu_ids()
+        else:
+            # Jetson and DGX Spark are CUDA and unified too, but NEVER probe here:
+            # _integrated_cuda_gpu_ids pins ~700 MiB per card for the process, and
+            # training holds them. Cached answers only, else keep the charge.
+            if not LlamaCppBackend._integrated_cuda_probe_is_free():
+                return True
+            unified = LlamaCppBackend._integrated_cuda_gpu_ids()
+        if not unified:
+            return False
+        return not requested_gpu_ids or any(int(i) in unified for i in requested_gpu_ids)
+    except Exception as e:  # noqa: BLE001 -- an unreadable device keeps the charge
+        logger.debug("Could not classify the admission pool: %s", e)
+        return True
+
+
 def _estimate_gguf_required_gb(
     config: ModelConfig,
     hf_token: Optional[str] = None,
@@ -11080,6 +11140,9 @@ def _estimate_gguf_required_gb(
     # every settings change. This skips that listing; the caller marks the total a
     # floor instead, exactly as it already does for a drafter it cannot weigh.
     local_only: bool = False,
+    # Passed straight to _estimate_gguf_kv_gb: only a caller that has confirmed a
+    # discrete pool may drop the host-resident checkpoint share.
+    shared_memory_pool: bool = True,
 ) -> Optional[float]:
     """Approximate GGUF VRAM (GB): quantized weights + companions, plus the KV
     cache for local files (unreadable pre-download for remote). None when nothing
@@ -11382,6 +11445,7 @@ def _estimate_gguf_required_gb(
                 launch_required_ubatch = _launch_required_ubatch_for_config(
                     config, llama_extra_args, disable_vision
                 ),
+                shared_memory_pool = shared_memory_pool,
             )
 
         repo = getattr(config, "gguf_hf_repo", None)
@@ -11484,6 +11548,8 @@ class _GgufMemoryBreakdown(NamedTuple):
     n_parallel: int
     layer_count: Optional[int]
     gpu_layers: Optional[int]
+    # Host-resident checkpoint share of kv_bytes. Keep last for positional callers.
+    kv_checkpoint_bytes: int = 0
 
 
 def _gguf_offloaded_layer_fraction(
@@ -12745,6 +12811,7 @@ def _gguf_memory_breakdown(
         n_parallel = runtime.n_parallel,
         layer_count = layer_count,
         gpu_layers = gpu_layers if gpu_memory_mode == "manual" else None,
+        kv_checkpoint_bytes = runtime.kv_checkpoint_bytes,
     )
 
 
@@ -14088,6 +14155,12 @@ def _guard_chat_load_against_training(
             # getattr for the same reason as the batch flags above: an older caller
             # hands this guard a bare request double that does not carry the field.
             disable_vision = bool(getattr(request, "disable_vision", False)),
+            shared_memory_pool = _admission_pool_shares_host_ram(
+                is_vulkan_backend = is_vulkan_backend,
+                vulkan_gpu_memory = vulkan_gpu_memory,
+                requested_gpu_ids = requested_gpu_ids,
+                gpu_ids_are_vulkan_ordinals = gpu_ids_are_vulkan_ordinals,
+            ),
         )
     # A confirmed-diffusion positive split puts only ngl/n_layers of the weights on the GPU (a
     # split the loader would drop was nulled above). Unknown classification keeps the full

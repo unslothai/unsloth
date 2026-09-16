@@ -315,9 +315,8 @@ def test_the_launch_charges_the_cpu_pinned_drafter_to_the_fit():
     assert compact.index("_cpu_draft_path=_mtp_draft_for_budget") < compact.index(
         "if_draft_on_cpu:_mtp_draft_for_budget=None"
     )
-    # ... and charged to the footprint as a HOST-ONLY term (free VRAM cannot pay for
-    # an allocation the child only ever makes in RAM), abstaining when unpriceable.
-    assert "host_only_bytes=_cpu_draft_fit_bytesor0" in compact
+    # CPU-pinned drafter and checkpoint bytes are host-only.
+    assert "host_only_bytes=(_cpu_draft_fit_bytesor0)+_ckpt_host_bytes," in compact
     assert "or_cpu_draft_fit_bytesisNone" in compact
 
 
@@ -1726,13 +1725,16 @@ def test_context_checkpoint_snapshots_move_the_fit_verdict(monkeypatch):
 
 
 def test_the_fit_prices_the_effective_checkpoint_count():
-    """...and the call site really passes it, while the closure default leaves the
-    placement paths -- which price the snapshots by their own route -- unmoved."""
+    """The load-mode footprint prices checkpoints as host-only bytes."""
     from core.inference.llama_cpp import LlamaCppBackend as B
     import inspect
 
     compact = "".join(inspect.getsource(B.load_model).split())
-    assert "kv_cache_bytes=_kv_bytes(effective_ctx,_effective_ctx_checkpoints)," in compact
+    assert "kv_cache_bytes=_kv_bytes(effective_ctx,0)," in compact
+    assert "_kv_bytes(effective_ctx,_effective_ctx_checkpoints)-_kv_bytes(effective_ctx,0)," in (
+        compact
+    )
+    assert "host_only_bytes=(_cpu_draft_fit_bytesor0)+_ckpt_host_bytes," in compact
     assert "def_kv_bytes(ctx:int,ctx_checkpoints:int=0)->int:" in compact
 
 
