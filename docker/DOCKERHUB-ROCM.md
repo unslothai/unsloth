@@ -38,10 +38,11 @@ Check the GPU is visible before anything else, with `GPU_GROUPS` set as above:
 ```bash
 docker run --rm --device /dev/kfd --device /dev/dri \
   $GPU_GROUPS \
+  -v "$HOME/.cache/huggingface":/workspace/.cache/huggingface \
   unsloth/unsloth-rocm python /workspace/smoke_test_rocm.py
 ```
 
-That runs a real 5-step LoRA on a 1B model and fails loudly if the GPU is not usable.
+That runs a real 5-step LoRA on a 1B model and fails loudly if the GPU is not usable. The cache mount is there so a second attempt reuses the model rather than downloading it again: the container is `--rm`, so without it every run starts from nothing.
 
 ## Tags
 
