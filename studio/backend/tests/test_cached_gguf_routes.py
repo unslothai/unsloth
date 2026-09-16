@@ -2968,6 +2968,57 @@ def test_delete_cached_refuses_repo_a_diffusion_load_is_downloading(monkeypatch)
         assert "An Images model load is using this repo" in e.detail
 
 
+def test_delete_cached_refuses_repo_a_cancelled_diffusion_load_is_releasing(monkeypatch):
+    # An eject drops _loading at once so the load cancels promptly, but that thread keeps reading:
+    # through _prefetch_files it holds no lock and only checks the cancel event either side of the
+    # blocking Hub call. loading_repo_ids() is empty by then, so the drain list has to refuse.
+    from fastapi import HTTPException
+    from hub.services.models import deletion
+    import core.inference.diffusion_engine_router as der
+    import core.inference.video as video_mod
+
+    _clear_chat_delete_guards(monkeypatch)
+    monkeypatch.setattr(
+        der,
+        "get_active_diffusion_engine",
+        lambda: SimpleNamespace(
+            status = lambda: {"loaded": False, "repo_id": None},
+            loaded_repo_ids = lambda: (),
+            loading_repo_ids = lambda: (),
+            draining_repo_ids = lambda: ("unsloth/Qwen-Image-2512-GGUF",),
+        ),
+    )
+    monkeypatch.setattr(video_mod, "get_video_backend", _idle_video_backend)
+
+    try:
+        asyncio.run(deletion.delete_cached_model_response("unsloth/Qwen-Image-2512-GGUF"))
+        assert False, "expected HTTPException refusing the delete while the load unwinds"
+    except HTTPException as e:
+        assert e.status_code == 400
+        assert "still releasing this repo" in e.detail
+
+
+def test_delete_cached_is_unaffected_by_a_backend_without_a_drain(monkeypatch):
+    # sd.cpp and the video backend expose no draining_repo_ids; the guard must not start refusing.
+    from hub.services.models import deletion
+    import core.inference.diffusion_engine_router as der
+    import core.inference.video as video_mod
+
+    _clear_chat_delete_guards(monkeypatch)
+    monkeypatch.setattr(
+        der,
+        "get_active_diffusion_engine",
+        lambda: SimpleNamespace(
+            status = lambda: {"loaded": False, "repo_id": None},
+            loaded_repo_ids = lambda: (),
+            loading_repo_ids = lambda: (),
+        ),
+    )
+    monkeypatch.setattr(video_mod, "get_video_backend", _idle_video_backend)
+
+    assert deletion._diffusion_blocks_delete("unsloth/Qwen-Image-2512-GGUF") is None
+
+
 def test_delete_cached_allows_sibling_of_loaded_diffusion_repo(monkeypatch):
     # A loaded Images repo must not block deleting a different cached repo sharing a name prefix; the guard is `/`-boundary aware.
     from fastapi import HTTPException
