@@ -462,6 +462,7 @@ from core.inference.tool_loop_controller import (
     awaiting_approval_status,
     deferred_nudge_text,
     provisional_tool_provenance,
+    tool_call_limit_nudge,
 )
 from state.tool_approvals import (
     TOOL_REJECTED_MESSAGE,
@@ -35788,6 +35789,7 @@ class LlamaCppBackend:
 
                 # Collapse exact-duplicate calls and cap the count for the TEXTUAL
                 # fallback (mirrors the safetensors loop; see _MAX_TOOL_CALLS_PER_TURN).
+                _over_cap: list = []
                 if tool_calls and not has_structured_tc and len(tool_calls) > 1:
                     _seen_keys: set = set()
                     _last_workspace_key = None
@@ -35813,15 +35815,23 @@ class LlamaCppBackend:
                         elif _key in _seen_keys:
                             continue
                         _seen_keys.add(_key)
-                        _deduped.append(_tc)
-                        if len(_deduped) >= _MAX_TOOL_CALLS_PER_TURN:
-                            break
-                    if len(_deduped) != len(tool_calls):
+                        if len(_deduped) < _MAX_TOOL_CALLS_PER_TURN:
+                            _deduped.append(_tc)
+                        else:
+                            _over_cap.append(_tc)
+                    if len(_deduped) + len(_over_cap) != len(tool_calls):
                         logger.info(
                             "GGUF textual fallback: collapsed %d repeated tool call(s) "
                             "in one turn to %d",
                             len(tool_calls),
-                            len(_deduped),
+                            len(_deduped) + len(_over_cap),
+                        )
+                    if _over_cap:
+                        logger.info(
+                            "GGUF textual fallback: skipped %d tool call(s) over the "
+                            "per-turn limit of %d",
+                            len(_over_cap),
+                            _MAX_TOOL_CALLS_PER_TURN,
                         )
                     tool_calls = _deduped
 
@@ -35830,6 +35840,7 @@ class LlamaCppBackend:
                 # conversation stays consistent and extra calls are never executed.
                 if disable_parallel_tool_use and tool_calls and len(tool_calls) > 1:
                     tool_calls = tool_calls[:1]
+                    _over_cap = []
 
                 assistant_msg: dict = {"role": "assistant", "content": content_text}
                 if reasoning_accum.strip():
@@ -36698,15 +36709,21 @@ class LlamaCppBackend:
                     if _forced_tool_call_pending:
                         _forced_tool_call_pending = False
 
+                if _over_cap:
+                    deferred_noop_msgs.append(
+                        tool_call_limit_nudge(_over_cap, _MAX_TOOL_CALLS_PER_TURN)
+                    )
                 # A mixed execute/no-op batch already has a real tool result, so keeping the
                 # feedback with that result beats appending a newer user turn, which makes
                 # templates hide this turn's structured reasoning. Only when the result is
                 # the SAME tool the feedback is about: templates label the whole block with
                 # the result's own tool name (gemma-4.jinja resolves tool_call_id -> name and
                 # wraps the body), so folding a note about tool A into tool B's result reads
-                # as B's own output. Then the user turn is the lesser loss.
+                # as B's own output. Then the user turn is the lesser loss. A skipped-call
+                # notice is never folded: read as the tail of a result, the calls are not re-issued.
                 _fold_target_matches = (
-                    len(deferred_noop_tools) == 1
+                    not _over_cap
+                    and len(deferred_noop_tools) == 1
                     and bool(conversation)
                     and conversation[-1].get("role") == "tool"
                     and conversation[-1].get("name") in deferred_noop_tools

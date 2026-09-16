@@ -60,6 +60,7 @@ from core.inference.tool_loop_controller import (
     awaiting_approval_status,
     coerce_tool_arguments,
     status_for_tool,
+    tool_call_limit_nudge,
     tool_event_provenance,
 )
 from core.inference.chat_template_helpers import (
@@ -1302,6 +1303,7 @@ def run_safetensors_tool_loop(
             return
 
         # Collapse exact-duplicate calls and cap the count (runaway-turn guard).
+        over_cap: list = []
         if tool_calls:
             seen_keys: set = set()
             last_workspace_key = None
@@ -1326,14 +1328,21 @@ def run_safetensors_tool_loop(
                 elif _key in seen_keys:
                     continue
                 seen_keys.add(_key)
-                deduped.append(_tc)
-                if len(deduped) >= _MAX_TOOL_CALLS_PER_TURN:
-                    break
-            if len(deduped) != len(tool_calls):
+                if len(deduped) < _MAX_TOOL_CALLS_PER_TURN:
+                    deduped.append(_tc)
+                else:
+                    over_cap.append(_tc)
+            if len(deduped) + len(over_cap) != len(tool_calls):
                 logger.info(
                     "Safetensors: collapsed %d repeated tool call(s) in one turn to %d",
                     len(tool_calls),
-                    len(deduped),
+                    len(deduped) + len(over_cap),
+                )
+            if over_cap:
+                logger.info(
+                    "Safetensors: skipped %d tool call(s) over the per-turn limit of %d",
+                    len(over_cap),
+                    _MAX_TOOL_CALLS_PER_TURN,
                 )
             tool_calls = deduped
 
@@ -1592,6 +1601,8 @@ def run_safetensors_tool_loop(
             yield completion.tool_end_event()
             conversation.append(completion.tool_message())
 
+        if over_cap:
+            deferred_noop_msgs.append(tool_call_limit_nudge(over_cap, _MAX_TOOL_CALLS_PER_TURN))
         append_deferred_nudges(conversation, deferred_noop_msgs)
 
         yield {"type": "status", "text": ""}

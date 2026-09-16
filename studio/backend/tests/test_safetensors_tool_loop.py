@@ -10,6 +10,7 @@ calls, tool-result feedback, bad-JSON heal, duplicate-call short-circuit,
 ``__IMAGES__`` sentinel stripping, executor errors, cancel, and the iteration cap.
 """
 
+import copy
 import json
 import threading
 from typing import cast
@@ -4087,17 +4088,34 @@ class TestGuardrails:
             '<tool_call>{"name":"web_search","arguments":{"query":"q%d"}}</tool_call>' % i
             for i in range(n)
         )
-        loop, exec_fn = _make_loop(
-            turns = [[turn], ["final"]],
-            exec_results = ["r"] * n,
+        seen_messages = []
+        turns = iter([turn, "final"])
+
+        def _gen(messages):
+            seen_messages.append(copy.deepcopy(messages))
+            yield next(turns)
+
+        exec_fn = FakeExecuteTool(["r"] * n)
+        loop = run_safetensors_tool_loop(
+            single_turn = _gen,
+            messages = [{"role": "user", "content": "hi"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            execute_tool = exec_fn,
             max_tool_iterations = 2,
         )
-        _collect_events(loop)
+        events = _collect_events(loop)
         assert len(exec_fn.calls) == _MAX_TOOL_CALLS_PER_TURN
         # The first N distinct queries executed, in document order.
         assert [a["query"] for _name, a in exec_fn.calls] == [
             "q%d" % i for i in range(_MAX_TOOL_CALLS_PER_TURN)
         ]
+        assert len([e for e in events if e.get("type") == "tool_start"]) == _MAX_TOOL_CALLS_PER_TURN
+        (notice,) = [m for m in seen_messages[1] if "more tool call(s)" in m.get("content", "")]
+        assert notice["role"] == "user"
+        assert notice["content"].startswith("4 more tool call(s)")
+        for i in range(_MAX_TOOL_CALLS_PER_TURN, n):
+            assert '"q%d"' % i in notice["content"]
+        assert '"q%d"' % (_MAX_TOOL_CALLS_PER_TURN - 1) not in notice["content"]
 
     def test_coerce_string_args_python_uses_code_key(self):
         assert _coerce_arguments("print(1)", heal = True, tool_name = "python") == {"code": "print(1)"}
