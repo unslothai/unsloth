@@ -1229,7 +1229,9 @@ def test_an_unaccounted_late_child_keeps_the_record(monkeypatch):
         lambda pid: ([(child, "0:901")], True) if pid == root else ([], False),
     )
     dead: "set[int]" = set()
-    monkeypatch.setattr(pl, "_windows_terminate_pid", lambda pid, identity = None: dead.add(pid) or True)
+    monkeypatch.setattr(
+        pl, "_windows_terminate_pid", lambda pid, identity = None: dead.add(pid) or True
+    )
     monkeypatch.setattr(pl, "_pid_alive", lambda pid: pid not in dead)
 
     assert pl._windows_terminate_validated_tree(root) is False
@@ -1269,9 +1271,7 @@ def test_the_fallback_signal_revalidates_the_pid(monkeypatch):
     assert signalled == []
 
 
-def test_a_number_recycled_between_the_snapshot_and_the_identity_read_is_rejected(
-    monkeypatch,
-):
+def test_a_number_recycled_between_the_snapshot_and_the_identity_read_is_rejected(monkeypatch):
     """The snapshot lists pids; the identity of each is read after it.
 
     A child that exits in between frees its number at once, and the identity then describes
@@ -1287,12 +1287,12 @@ def test_a_number_recycled_between_the_snapshot_and_the_identity_read_is_rejecte
     # The snapshot was taken at 1000; the number was reused by a process that started at
     # 2000, which is after the reading below and therefore after the snapshot.
     monkeypatch.setattr(pl, "_windows_filetime_now", lambda: 1000)
+    monkeypatch.setattr(pl, "_pid_identity", lambda pid: {root: "0:500", child: "0:2000"}.get(pid))
     monkeypatch.setattr(
-        pl, "_pid_identity", lambda pid: {root: "0:500", child: "0:2000"}.get(pid)
+        pl,
+        "_windows_creation_time",
+        lambda identity: (None if identity is None else int(identity.split(":")[1])),
     )
-    monkeypatch.setattr(pl, "_windows_creation_time", lambda identity: (
-        None if identity is None else int(identity.split(":")[1])
-    ))
 
     found, known = pl._windows_collect_descendants_known(root)
     assert found == [], found
@@ -1300,9 +1300,7 @@ def test_a_number_recycled_between_the_snapshot_and_the_identity_read_is_rejecte
     assert known is True
 
     # A child that predates the snapshot is still collected, which is every real one.
-    monkeypatch.setattr(
-        pl, "_pid_identity", lambda pid: {root: "0:500", child: "0:600"}.get(pid)
-    )
+    monkeypatch.setattr(pl, "_pid_identity", lambda pid: {root: "0:500", child: "0:600"}.get(pid))
     found, known = pl._windows_collect_descendants_known(root)
     assert found == [(child, "0:600")], found
     assert known is True
@@ -1338,7 +1336,8 @@ def test_a_child_of_a_late_child_is_reached_too(monkeypatch):
 
     monkeypatch.setattr(pl, "_windows_collect_descendants_known", _collect)
     monkeypatch.setattr(
-        pl, "_windows_terminate_pid",
+        pl,
+        "_windows_terminate_pid",
         lambda pid, identity = None: (killed.append(pid), dead.add(pid), True)[-1],
     )
     monkeypatch.setattr(pl, "_pid_alive", lambda pid: pid not in dead)
