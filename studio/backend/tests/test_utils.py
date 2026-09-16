@@ -873,6 +873,20 @@ class TestAuthSafeRedirectHandler:
         assert new is not None
         assert new.headers.get("Authorization") is None
 
+    def test_the_strip_lands_on_the_redirected_request_not_the_callers(self):
+        """So a caller that reuses its Request still has a token to send."""
+        import urllib.request
+        from utils.utils import AuthSafeRedirectHandler
+
+        req = urllib.request.Request(
+            "https://hub.example/a", method = "HEAD", headers = {"Authorization": self.TOKEN}
+        )
+        new = AuthSafeRedirectHandler().redirect_request(
+            req, None, 302, "Found", {}, "https://other.example/b"
+        )
+        assert new.headers.get("Authorization") is None
+        assert req.headers.get("Authorization") == self.TOKEN
+
     def test_a_refused_redirect_reaches_the_caller_as_an_http_error(self):
         """The urllib mechanism behind the refusal above, pinned separately.
 
