@@ -944,3 +944,30 @@ def test_an_unenumerable_tree_is_not_a_completed_tree_kill(monkeypatch):
     # And a walk that DID run, with nothing under the root, is still a completed kill.
     monkeypatch.setattr(pl, "_windows_collect_descendants_known", lambda pid: ([], True))
     assert pl._windows_terminate_validated_tree(500) is True
+
+
+def test_a_live_unverifiable_descendant_is_an_incomplete_tree_kill(monkeypatch):
+    """`terminate_pid` forgets the record on True, so this read-back has to fail closed.
+
+    A descendant that is still alive and whose creation time cannot be read right now is
+    not proof of a recycled pid: handle pressure and access denial look exactly the same as
+    a number that has moved on. Ignoring it dropped the last persistent handle on a worker
+    that was neither confirmed dead nor shown to be somebody else.
+    """
+    monkeypatch.setattr(pl, "_is_linux", lambda: False)
+    monkeypatch.setattr(pl, "_pid_is_zombie", lambda pid: False)
+    monkeypatch.setattr(pl, "_windows_terminate_pid", lambda pid: True)
+    monkeypatch.setattr(
+        pl, "_windows_collect_descendants_known",
+        lambda pid: ([(600, "0:600")], True) if pid == 500 else ([], True),
+    )
+    # The root dies, the descendant survives, and its identity is unreadable NOW.
+    monkeypatch.setattr(pl, "_pid_alive", lambda pid: pid == 600)
+    monkeypatch.setattr(pl, "_pid_identity", lambda pid: None)
+    assert pl._windows_terminate_validated_tree(500) is False
+
+    # And a descendant that PROVABLY belongs to someone else is not ours to wait for, so
+    # the kill is still complete: this must not turn every recycled number into a kept
+    # record, which would be the leak in the other direction.
+    monkeypatch.setattr(pl, "_pid_identity", lambda pid: "0:999")
+    assert pl._windows_terminate_validated_tree(500) is True

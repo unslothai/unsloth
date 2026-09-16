@@ -1072,7 +1072,13 @@ def _windows_terminate_validated_tree(pid: int) -> bool:
     for child, child_identity in descendants:
         if not _pid_alive(child) or _pid_is_zombie(child):
             continue
-        if _provably_the_same(child, child_identity):
+        # The same three-way test the survivor sweep uses, and for the same reason. A
+        # descendant that is still alive and whose identity cannot be read right now --
+        # handle pressure, access denied -- is not proof of a recycled pid, and answering
+        # True here makes `terminate_pid` call `forget_pid`, dropping the last persistent
+        # handle to a worker that was neither confirmed dead nor shown to be somebody else.
+        # Only a pid that PROVABLY belongs to a different process now is ignored.
+        if not _provably_different(child, child_identity):
             return False
     return True
 
