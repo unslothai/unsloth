@@ -1275,6 +1275,31 @@ def test_auto_switch_applies_partial_override(monkeypatch):
     assert req.max_seq_length == 0  # untouched default
 
 
+def test_auto_switch_applies_reasoning_budget_override(monkeypatch):
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(
+        settings,
+        "get_model_override",
+        lambda model_id: {
+            "reasoning_budget": 2048,
+            "reasoning_budget_message": "Conclude now",
+        },
+    )
+
+    _run_hook("unsloth/B-GGUF")
+    req = rec.calls[0]
+    assert req.reasoning_budget == 2048
+    assert req.reasoning_budget_message == "Conclude now"
+
+
 def _mock_override_store(monkeypatch):
     """Back the override read + atomic-merge write with an in-memory dict."""
     store = {}
@@ -1342,6 +1367,139 @@ def test_model_override_roundtrip(monkeypatch):
     settings.set_model_override("unsloth/B-GGUF", llama_extra_args = [], max_seq_length = None)
     assert settings.get_model_override("unsloth/B-GGUF") == {}
     assert settings.get_model_overrides() == {}
+
+
+def test_reasoning_budget_override_route_roundtrip(monkeypatch):
+    _mock_override_store(monkeypatch)
+
+    response = _put(
+        "unsloth/B-GGUF",
+        reasoning_budget = 2048,
+        reasoning_budget_message = "Conclude now",
+    )
+
+    assert response.overrides["unsloth/B-GGUF"] == {
+        "reasoning_budget": 2048,
+        "reasoning_budget_message": "Conclude now",
+    }
+    assert settings.model_override_load_kwargs(
+        response.overrides["unsloth/B-GGUF"], is_gguf = True
+    ) == {
+        "reasoning_budget": 2048,
+        "reasoning_budget_message": "Conclude now",
+    }
+
+
+def test_reasoning_resets_strip_only_matching_carried_flags(monkeypatch):
+    _mock_override_store(monkeypatch)
+    extras = [
+        "--reasoning-budget",
+        "2048",
+        "--reasoning-budget-message",
+        "Conclude now",
+        "--top-k",
+        "40",
+    ]
+    for suffix in ("budget", "message", "both", "fill"):
+        _put(f"unsloth/B-GGUF:{suffix}", llama_extra_args = extras)
+
+    budget = _put("unsloth/B-GGUF:budget", reasoning_budget = -1).overrides["unsloth/B-GGUF:budget"]
+    assert budget["llama_extra_args"] == [
+        "--reasoning-budget-message",
+        "Conclude now",
+        "--top-k",
+        "40",
+    ]
+    assert budget["reasoning_budget"] == -1
+
+    message = _put("unsloth/B-GGUF:message", reasoning_budget_message = "").overrides[
+        "unsloth/B-GGUF:message"
+    ]
+    assert message["llama_extra_args"] == ["--reasoning-budget", "2048", "--top-k", "40"]
+    assert message["reasoning_budget_message"] == ""
+
+    both = _put(
+        "unsloth/B-GGUF:both",
+        reasoning_budget = -1,
+        reasoning_budget_message = "",
+    ).overrides["unsloth/B-GGUF:both"]
+    assert both["llama_extra_args"] == ["--top-k", "40"]
+    assert settings.model_override_load_kwargs(both, is_gguf = True) == {
+        "llama_extra_args": ["--top-k", "40"],
+        "reasoning_budget": -1,
+        "reasoning_budget_message": "",
+    }
+
+    filled = _put(
+        "unsloth/B-GGUF:fill",
+        reasoning_budget = -1,
+        reasoning_budget_message = "",
+        fill_absent_fields = True,
+    ).overrides["unsloth/B-GGUF:fill"]
+    assert filled["llama_extra_args"] == extras
+    assert "reasoning_budget" not in filled
+    assert "reasoning_budget_message" not in filled
+
+
+def test_reasoning_reset_tombstone_blocks_bare_and_legacy_fallbacks(monkeypatch):
+    _mock_override_store(monkeypatch)
+
+    _put("unsloth/B-GGUF", llama_extra_args = ["--reasoning-budget", "2048"])
+    qualified = _put("unsloth/B-GGUF:Q4_K_M", reasoning_budget = -1).overrides
+    assert qualified["unsloth/B-GGUF:Q4_K_M"] == {"reasoning_budget": -1}
+    assert qualified["unsloth/B-GGUF"]["llama_extra_args"] == ["--reasoning-budget", "2048"]
+    assert settings.model_override_load_kwargs(
+        settings.get_model_override("unsloth/B-GGUF:Q4_K_M"), is_gguf = True
+    ) == {"reasoning_budget": -1}
+
+    path = "/tmp/model-Q4_K_M.gguf"
+    _put(f"{path}:Q4_K_M", llama_extra_args = ["--reasoning-budget-message", "Stop"])
+    standalone = _put(path, reasoning_budget_message = "").overrides
+    assert standalone[path] == {"reasoning_budget_message": ""}
+    assert settings.model_override_load_kwargs(settings.get_model_override(path), is_gguf = True) == {
+        "reasoning_budget_message": ""
+    }
+
+
+@pytest.mark.parametrize("message", ["😀" * 2_049, "bad\0message"])
+def test_reasoning_budget_override_rejects_unsafe_argv(message):
+    import pydantic
+    import routes.settings as settings_route
+
+    with pytest.raises(pydantic.ValidationError):
+        settings_route.ModelOverridePayload(
+            model_id = "unsloth/B-GGUF", reasoning_budget_message = message
+        )
+    assert settings.normalize_model_override({"reasoning_budget_message": message}) == {}
+
+    from routes.chat_history import ChatPresetLoadConfig
+
+    with pytest.raises(pydantic.ValidationError):
+        ChatPresetLoadConfig(reasoningBudgetMessage = message)
+
+
+@pytest.mark.parametrize("message", ["😀" * 2_049, "bad\0message"])
+def test_unsafe_passthrough_is_rejected_before_backend_lookup(monkeypatch, message):
+    from fastapi import HTTPException
+
+    monkeypatch.setattr(
+        inference_route.api_monitor, "record_lifecycle", lambda **kwargs: "load-event"
+    )
+    monkeypatch.setattr(inference_route.api_monitor, "fail_open", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        inference_route,
+        "get_llama_cpp_backend",
+        lambda: pytest.fail("backend lookup happened before argument rejection"),
+    )
+    request = LoadRequest(
+        model_path = "unsloth/B-GGUF",
+        llama_extra_args = ["--reasoning-budget-message", message],
+    )
+
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(inference_route._load_model_impl(request, object(), "tester"))
+
+    assert excinfo.value.status_code == 400
 
 
 def test_override_route_rejects_managed_flag_and_removes(monkeypatch):
@@ -1942,8 +2100,17 @@ def test_idle_loop_resets_timer_for_same_repo_different_variant(monkeypatch):
         task = asyncio.create_task(kw.idle_unload_loop(poll_seconds = 0.01))
         await asyncio.sleep(0.03)
         assert unloads == []
-        kw._last_active = time.monotonic() - 60  # force idle
-        backend.hf_variant = "Q8_0"  # same id, new quant -> fresh identity
+        # Under the gate the loop itself holds: it reads the identity and decides idleness
+        # inside one _unload_gate, so an unguarded write can land between the two, be judged
+        # against the old identity, and unload on the forced idle -- the reset under test
+        # never happening. Acquired off the loop, never with a plain `with`: the loop awaits
+        # inside that gate, so blocking this thread on the lock it holds deadlocks both.
+        await asyncio.to_thread(kw._lifecycle_lock.acquire)
+        try:
+            kw._last_active = time.monotonic() - 60  # force idle
+            backend.hf_variant = "Q8_0"  # same id, new quant -> fresh identity
+        finally:
+            kw._lifecycle_lock.release()
         await asyncio.sleep(0.03)
         assert unloads == []  # timer reset by the variant change, not unloaded
         task.cancel()
@@ -4116,6 +4283,9 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
             audio_preflight_has_image = (
                 audio_preflight.get("has_image") if audio_preflight is not None else None
             ),
+            audio_preflight_has_video = (
+                audio_preflight.get("has_video") if audio_preflight is not None else None
+            ),
         )
         raise _Reached()
 
@@ -4132,6 +4302,7 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
         "claim_resident": False,
         "require_audio_input": True,
         "audio_preflight_has_image": False,
+        "audio_preflight_has_video": False,
     }
 
     # An image in the same request does need the vision tower.
@@ -4149,7 +4320,18 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
         "claim_resident": False,
         "require_audio_input": True,
         "audio_preflight_has_image": True,
+        "audio_preflight_has_video": False,
     }
+
+    # A clip beside the recording is refused after the load, so the switch must know first.
+    payload = _chat_request(
+        model = "org/B-GGUF", audio_base64 = "AAAA", video_base64 = "AAAAGGZ0eXBtcDQy"
+    )
+    with pytest.raises(_Reached):
+        asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
+    assert captured["modality_label"] == "audio or video"
+    assert captured["audio_preflight_has_image"] is False
+    assert captured["audio_preflight_has_video"] is True
 
     # an image on an earlier turn stays valid: the non-GGUF audio route listens to
     # the current recording and deliberately permits referring back to prior images.
@@ -4384,6 +4566,8 @@ def test_messages_have_image_helper():
 
 
 def test_anthropic_request_has_image_helper():
+    from models.inference import AnthropicImageBlock
+
     f = inference_route._anthropic_request_has_image
     text = SimpleNamespace(messages = [SimpleNamespace(content = "hi")])
     assert f(text) is False
@@ -4393,7 +4577,18 @@ def test_anthropic_request_has_image_helper():
     assert f(text_block) is False
     dict_img = SimpleNamespace(messages = [SimpleNamespace(content = [{"type": "image"}])])
     assert f(dict_img) is True
-    typed_img = SimpleNamespace(messages = [SimpleNamespace(content = [SimpleNamespace(type = "image")])])
+    typed_img = SimpleNamespace(
+        messages = [
+            SimpleNamespace(
+                content = [
+                    AnthropicImageBlock(
+                        type = "image",
+                        source = {"type": "base64", "media_type": "image/png", "data": "AAAA"},
+                    )
+                ]
+            )
+        ]
+    )
     assert f(typed_img) is True
 
 
@@ -4406,12 +4601,13 @@ def test_responses_and_anthropic_wire_require_vision_from_images():
     assert "_responses_has_image = _messages_have_image(" in responses_src
     assert "require_vision = _responses_has_image" in responses_src
     anthropic_src = inspect.getsource(inference_route.anthropic_messages)
-    assert "_anthropic_has_image = _anthropic_request_has_image(" in anthropic_src
-    assert "require_vision = _anthropic_has_image" in anthropic_src
+    guard = "_anthropic_request_has_image(payload, tool_results = False)"
+    assert f"_anthropic_top_level_image = {guard}" in anthropic_src
+    assert "require_vision = _anthropic_top_level_image" in anthropic_src
     # /messages/count_tokens shares the /messages translation, so it needs the same
     # guard: an image count must not evict a vision model for a text-only target.
     count_src = inspect.getsource(inference_route.anthropic_count_tokens)
-    assert "require_vision = _anthropic_request_has_image(" in count_src
+    assert f"require_vision = {guard}" in count_src
 
 
 # ── codex review (round 5): count_tokens tools, tool_choice, process-wide gate ──
@@ -4450,7 +4646,7 @@ def test_count_tokens_forwards_vision_guard_to_switch(monkeypatch):
         captured["gguf_only"] = gguf_only
         raise _Reached()
 
-    monkeypatch.setattr(inference_route, "_anthropic_request_has_image", lambda p: True)
+    monkeypatch.setattr(inference_route, "_anthropic_request_has_image", lambda p, **_: True)
     monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _capture)
     payload = _anthropic_payload_with_tools(None)  # no tools -> tool validation passes
     with pytest.raises(_Reached):
@@ -4753,6 +4949,50 @@ def test_chat_count_tokens_keeps_adjacent_user_turns_on_the_passthrough(monkeypa
     ]
 
 
+def test_chat_count_tokens_folds_a_stopped_studio_tool_thread(monkeypatch):
+    """The counter skips its own coalesce on the passthrough, so only the fold helper keeps a
+    Stop-sentinel thread alternating; without it the bar prices a prompt the completion 400s on.
+    Unlike ``..._keeps_adjacent_user_turns_on_the_passthrough`` above, this thread IS folded.
+    """
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 99)
+    thread = [
+        {"role": "user", "content": "what did we say about seeds?"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "search_conversation", "arguments": '{"query": "s"}'},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "name": "search_conversation",
+            "content": "we said 3407",
+        },
+        {"role": "assistant", "content": ""},
+        {"role": "user", "content": "and now?"},
+    ]
+
+    _counted_body(
+        _count_request(
+            thread,
+            studio_tool_history = True,
+            response_format = {
+                "type": "json_schema",
+                "json_schema": {"name": "answer", "schema": {"type": "object", "properties": {}}},
+            },
+        )
+    )
+    roles = [message.get("role") for message in counted.get("messages") or []]
+    assert "tool" not in roles, roles
+    assert not any(a == "user" and b == "user" for a, b in zip(roles, roles[1:])), roles
+
+
 def test_chat_count_tokens_prices_the_current_date(monkeypatch):
     """The bar has to price what generation sends, and only the passthrough is sent undated."""
     _switched, counted = _count_tokens_backend(monkeypatch, count = 99, supports_tools = True)
@@ -4899,7 +5139,7 @@ def _enabled_mcp_server(
     from storage import mcp_servers_db
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(mcp_servers_db, "_schema_ready", False)
+    monkeypatch.setattr(mcp_servers_db, "_schema_ready", set())
     monkeypatch.setattr(tools_mod, "stdio_mcp_enabled", lambda: True)
     monkeypatch.setattr(mcp_client, "_tool_cache", {})
     monkeypatch.setattr(mcp_client, "_probe_cooloff_until", {})
@@ -7788,7 +8028,6 @@ def test_scan_folder_removal_revokes_additions_only_cache_trust(monkeypatch):
 
 def test_scan_folder_storage_removals_report_if_a_row_changed(monkeypatch):
     from hub.storage import scan_folders
-
     class _Connection:
         def __init__(self, rowcount):
             self.rowcount = rowcount
@@ -7804,7 +8043,6 @@ def test_scan_folder_storage_removals_report_if_a_row_changed(monkeypatch):
         def close(self):
             self.closed = True
 
-    monkeypatch.setattr(scan_folders, "_ensure_schema", lambda _conn: None)
     for storage in (studio_db, scan_folders):
         for rowcount, expected in ((1, True), (0, False)):
             connection = _Connection(rowcount)
@@ -8090,7 +8328,7 @@ def test_map_entry_fill_reads_and_writes_in_one_transaction(tmp_path, monkeypatc
     """The real store, not the in-memory stand-in: the read has to share the write's
     transaction, or a concurrent writer still slips between them."""
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(db, "_schema_ready", False)
+    monkeypatch.setattr(db, "_schema_ready", set())
 
     key = "test_map_entry_create"
     assert db.upsert_app_setting_map_entry(key, "a", {"v": 1}) == {"a": {"v": 1}}
@@ -8130,7 +8368,7 @@ def test_a_fill_never_relabels_a_stored_gpu_pin_with_this_browser_s_index_space(
     then name devices in a space it was never written in.
     """
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(db, "_schema_ready", False)
+    monkeypatch.setattr(db, "_schema_ready", set())
 
     key = "test_map_entry_coupled"
     coupled = (("gpu_ids", "gpu_index_kind"),)
@@ -8959,34 +9197,41 @@ def test_a_video_request_labels_the_switch_refusal_video(monkeypatch):
     }
 
 
-def test_a_video_request_never_switches_to_a_non_gguf_target():
-    """A clip is served through llama.cpp's input_video part alone, so the chat handler
-    rejects one on any other backend. Without this the swap unloads the resident GGUF
-    and the request 400s straight after, which is what the guard exists to prevent."""
-    # need_image False is the combination that used to fall through to the accepting branch.
-    assert (
-        inference_route._target_accepts_request_input(
-            "/srv/models/VL-MLX",
-            False,
-            True,
-            False,
-            None,
-            False,
-            True,
+def test_a_video_request_switches_to_a_non_gguf_target_only_with_a_video_token(
+    tmp_path, monkeypatch
+):
+    """Loaded for video only if the config names a video token; no config is left to the load."""
+    from utils.hardware import hardware as hw
+
+    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.MLX, raising = False)
+    monkeypatch.setattr("core.inference.mlx_inference._mlx_vlm_decodes_video", lambda: True)
+
+    def _target(name, config):
+        target = tmp_path / name
+        target.mkdir()
+        if config is not None:
+            (target / "config.json").write_text(json.dumps(config), encoding = "utf-8")
+        return str(target)
+
+    def _accepts(path):
+        # need_image False is the combination that used to fall through to the accepting branch.
+        return inference_route._target_accepts_request_input(
+            path, False, True, False, None, False, True
         )
-        is False
-    )
-    # an image alongside the clip must not talk it back into the swap either.
+
+    assert _accepts(_target("image-only", {"model_type": "gemma3", "vision_config": {}})) is False
+    assert _accepts(_target("flat", {"model_type": "qwen2_vl", "video_token_id": 151656})) is True
+    assert _accepts(_target("nested", {"text_config": {"video_token_index": 7}})) is True
+    assert _accepts(_target("unset", {"video_token_id": None})) is False
+    assert _accepts(_target("no-config", None)) is True
+    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CUDA, raising = False)
+    assert _accepts(_target("cuda", {"model_type": "qwen2_vl", "video_token_id": 151656})) is False
+
+    # Without the clip decoder the load leaves has_video_input unset, so no load either.
+    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.MLX, raising = False)
+    monkeypatch.setattr("core.inference.mlx_inference._mlx_vlm_decodes_video", lambda: False)
     assert (
-        inference_route._target_accepts_request_input(
-            "/srv/models/VL-MLX",
-            False,
-            True,
-            False,
-            None,
-            True,
-            True,
-        )
+        _accepts(_target("old-mlx-vlm", {"model_type": "qwen2_vl", "video_token_id": 151656}))
         is False
     )
     # the GGUF arm still decides on the companion mmproj, so needs_video does not short it.
@@ -10327,6 +10572,52 @@ def test_mixed_audio_and_image_is_rejected_before_a_non_gguf_switch(monkeypatch)
     assert llama.is_loaded is True
 
 
+def test_audio_beside_a_clip_is_rejected_before_a_non_gguf_switch(monkeypatch):
+    """The clip conflict is the first audio rule served, so the switch orders it first."""
+    llama = _FakeBackend("org/A-GGUF")
+
+    class _FakeOrchestrator:
+        active_model_name = None
+        models: dict = {}
+
+    recorder = _LoadRecorder(llama)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/srv/models/Audio-VLM", None, "org/Audio-VLM"),
+        backend = llama,
+        recorder = recorder,
+    )
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: _FakeOrchestrator())
+    monkeypatch.setattr(inference_route, "_peek_inference_backend", lambda: _FakeOrchestrator())
+    monkeypatch.setattr(resolver, "local_target_is_gguf", lambda *_a, **_kw: False)
+    monkeypatch.setattr(inference_route, "_target_accepts_request_input", lambda *_a: True)
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            inference_route._maybe_auto_switch_model(
+                "org/Audio-VLM",
+                object(),
+                "tester",
+                require_vision = True,
+                require_image = False,
+                require_audio_input = True,
+                require_video = True,
+                audio_preflight = {
+                    "b64": "AAAA",
+                    "continue_final": True,
+                    "has_image": True,
+                    "has_video": True,
+                },
+            )
+        )
+
+    assert exc.value.status_code == 400
+    assert exc.value.detail == inference_route._AUDIO_VIDEO_INPUT_DETAIL
+    assert recorder.calls == []
+    assert llama.is_loaded is True
+
+
 def test_the_gguf_audio_preflight_takes_the_base64_llama_cpp_takes():
     """The preflight must refuse exactly what _prepare_audio_for_llama refuses.
 
@@ -10673,3 +10964,10 @@ def test_speech_probe_refuses_remote_code(monkeypatch, audio_type, allowed):
     assert inference_route._target_speech_audio_type("/local/model", False) == (
         audio_type if allowed else None
     )
+
+
+def test_preset_reasoning_budget_rejects_booleans():
+    from routes.chat_history import ChatPresetLoadConfig
+    with pytest.raises(ValueError, match = "Expected a number, got a boolean"):
+        ChatPresetLoadConfig(reasoningBudget = True)
+    assert ChatPresetLoadConfig(reasoningBudget = 0).reasoningBudget == 0

@@ -26,8 +26,8 @@ from utils.utils import safe_error_detail
 logger = get_logger(__name__)
 router = APIRouter()
 
-# A stdio provider is a command this host would run, so only a UI session may
-# supply one. Annotated, not a Depends default, so a direct call gets False.
+# A stdio provider is a command this host would run, so only a UI session may supply one. Annotated, not a
+# Depends default, so a direct call gets False.
 ViaApiKey = Annotated[bool, Depends(authenticated_via_api_key)]
 
 
