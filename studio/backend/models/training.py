@@ -588,6 +588,12 @@ class TrainingStartRequest(BaseModel):
     resume_from_checkpoint: Optional[str] = Field(
         None, description = "Saved training output directory to resume from"
     )
+    # The history detail hands an API-key caller an opaque handle for the directory it may
+    # resume from, since the path itself is the server's output layout. Resume is that handle
+    # coming back, so it resolves here exactly as `model_name` does above.
+    _resolve_the_resume_handle = field_validator("resume_from_checkpoint")(
+        _resolve_inventory_handle
+    )
 
     gpu_ids: Optional[List[int]] = Field(
         None,
@@ -838,6 +844,10 @@ class DiffusionTrainingStartRequest(BaseModel):
     base_model: str = Field(..., description = "HF repo id or local path to a trainable base")
     data_dir: str = Field(..., description = "Folder of training images (+ captions)")
     output_dir: str = Field(..., description = "Directory to write the LoRA .safetensors into")
+    # A diffusion Resume replays the stored config, whose `output_dir` answers an API-key
+    # caller as a handle for the same reason `resume_from_checkpoint` does: it is the run's
+    # folder on this host. Resolved here so the replay writes back into the run it continues.
+    _resolve_the_output_handle = field_validator("output_dir")(_resolve_inventory_handle)
     model_family: Optional[str] = Field(
         None,
         description = "Explicit trainer family (sdxl / flux.1 / ...); omitted = detect from base_model",
@@ -980,6 +990,11 @@ class DiffusionTrainingStartRequest(BaseModel):
             "configuration and precision. train_steps is then the TARGET TOTAL, so resuming a "
             "checkpoint at step 11 with train_steps=500 trains steps 12..500."
         ),
+    )
+    # Same handle, on the diffusion half: its Resume replays `checkpoint_path` or the run's
+    # output directory, and both answer from the detail route as references.
+    _resolve_the_resume_handle = field_validator("resume_from_checkpoint")(
+        _resolve_inventory_handle
     )
     resumed_from_job_id: Optional[str] = Field(
         None,

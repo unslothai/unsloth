@@ -1599,6 +1599,11 @@ def test_a_training_run_does_not_carry_the_output_layout():
     assert redacted["output_dirs"] == []
     # The identity is still actionable, and a field that is not a path is untouched.
     assert host_paths.resolve_host_path_reference(redacted["model_name"]) == row["model_name"]
+    # So is everything a resume is started from: a run that says it can be resumed has to
+    # answer with something the caller can hand back, or `can_resume` is true beside no
+    # usable identifier at all.
+    for field in ("output_dir", "checkpoint_path", "resume_from_checkpoint"):
+        assert host_paths.resolve_host_path_reference(redacted[field]) == row[field], field
     assert redacted["dataset_name"] == "acme/dataset"
     # And the browser session sees its own machine, exactly as before.
     assert host_paths.redact_host_paths(row, via_api_key = False) == row
@@ -1763,3 +1768,115 @@ def test_the_upgrade_check_answers_with_the_handle_it_was_sent():
 
     source = inspect.getsource(inference_routes)
     assert "model_name = restore_inventory_handles(model_name)," in source
+
+
+def test_the_compat_delete_route_resolves_a_cache_reference_too(monkeypatch):
+    """`/api/models/delete-cached` is the older alias for the hub route above.
+
+    Both are reachable and both take `cache_path`, so a caller that was handed `cache_ref`
+    by the listing and posts it here hit "Invalid cache_path" while the same body succeeded
+    on the hub path. Omitting the field is worse than an error: it falls back to the active
+    cache root, so on a host with more than one root the delete lands on a different copy
+    than the row the caller named.
+    """
+    seen = {}
+
+    async def _delete(repo_id, variant, hf_token, cache_path):
+        seen["cache_path"] = cache_path
+        return {"status": "deleted", "repo_id": repo_id}
+
+    from hub.services.models import account_access, deletion
+
+    monkeypatch.setattr(deletion, "delete_cached_model_response", _delete)
+    monkeypatch.setattr(account_access, "require_installation_owner", lambda: None)
+    reference = host_paths.cache_reference(REPO_DIR)
+    assert reference != REPO_DIR
+    response = _models(via_api_key = True).request(
+        "DELETE",
+        "/api/models/delete-cached",
+        json = {"repo_id": "unsloth/Llama-3.2-1B", "cache_path": reference},
+    )
+    assert response.status_code == 200, response.text
+    assert seen["cache_path"] == REPO_DIR
+
+    # A browser session's literal path is still passed through unchanged.
+    seen.clear()
+    response = _models(via_api_key = False).request(
+        "DELETE",
+        "/api/models/delete-cached",
+        json = {"repo_id": "unsloth/Llama-3.2-1B", "cache_path": REPO_DIR},
+    )
+    assert response.status_code == 200, response.text
+    assert seen["cache_path"] == REPO_DIR
+
+    # And a body with no cache_path still reaches the service as None rather than being
+    # turned into some resolved root by the lookup.
+    seen.clear()
+    response = _models(via_api_key = True).request(
+        "DELETE",
+        "/api/models/delete-cached",
+        json = {"repo_id": "unsloth/Llama-3.2-1B"},
+    )
+    assert response.status_code == 200, response.text
+    assert seen["cache_path"] is None
+
+
+def test_a_resumable_run_can_still_be_resumed_by_an_api_key_caller():
+    """The round trip, end to end: what the detail route answers is what start accepts.
+
+    `can_resume` is computed from the run, not from the caller, so blanking the directory it
+    would be resumed from left the flag true beside nothing to act on. The UI's own Resume
+    replays `checkpoint_path` or the run's `output_dir` as `resume_from_checkpoint`, and the
+    start request takes a real filesystem value, so an API-key caller that could resume a run
+    before the redaction could not afterwards. The handle closes that: opaque on the way out,
+    resolved on the way back in, and never a path in the response.
+    """
+    from models.training import DiffusionTrainingStartRequest, TrainingStartRequest
+
+    output_dir = f"{HOST_ROOT}/outputs/run-1"
+    detail = host_paths.redact_host_paths(
+        {"id": "run-1", "can_resume": True, "output_dir": output_dir, "checkpoint_path": None},
+        via_api_key = True,
+    )
+    assert detail["can_resume"] is True
+    handle = detail["output_dir"]
+    assert handle.startswith("ref:"), detail
+    assert HOST_ROOT not in json.dumps(detail), detail
+
+    started = TrainingStartRequest(
+        model_name = "unsloth/Llama-3.2-1B",
+        training_type = "LoRA/QLoRA",
+        format_type = "chat",
+        resume_from_checkpoint = handle,
+    )
+    assert started.resume_from_checkpoint == output_dir
+
+    # The diffusion Resume replays the stored config, so the run folder it writes back into
+    # arrives as a handle as well.
+    diffusion = DiffusionTrainingStartRequest(
+        base_model = "unsloth/FLUX.1-dev",
+        data_dir = "/data/images",
+        output_dir = handle,
+        resume_from_checkpoint = handle,
+    )
+    assert diffusion.resume_from_checkpoint == output_dir
+    assert diffusion.output_dir == output_dir
+
+    # No resume asked for stays no resume asked for, and a handle this process never issued
+    # is left to fail the way an unknown directory does rather than being invented.
+    assert TrainingStartRequest(
+        model_name = "unsloth/Llama-3.2-1B",
+        training_type = "LoRA/QLoRA",
+        format_type = "chat",
+    ).resume_from_checkpoint is None
+    assert TrainingStartRequest(
+        model_name = "unsloth/Llama-3.2-1B",
+        training_type = "LoRA/QLoRA",
+        format_type = "chat",
+        resume_from_checkpoint = "ref:nope",
+    ).resume_from_checkpoint == "ref:nope"
+
+    # The browser session still sees its own machine.
+    assert host_paths.redact_host_paths(
+        {"output_dir": output_dir}, via_api_key = False
+    ) == {"output_dir": output_dir}

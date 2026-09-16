@@ -60,19 +60,26 @@ HOST_PATH_SCALAR_FIELDS = frozenset(
         # run even with the model identity referenced. `output_dir` is the one on every
         # summary; the rest are the request fields the detail route echoes back, and they are
         # the same four the remote-code scan takes plus the dataset pair.
-        "output_dir",
         "model_local_path",
         "model_snapshot_path",
         "dataset_local_path",
         "dataset_snapshot_path",
         "dataset_path",
-        "checkpoint_path",
-        "resume_from_checkpoint",
         # The persisted request's own spellings, read off TrainingStartRequest rather than
         # guessed: a run created through the UI copies these into config_json verbatim.
         "tensorboard_dir",
     }
 )
+
+# Path fields a caller has to be able to HAND BACK, so they are referenced rather than blanked.
+# Resume is the whole of it: the history detail is where a client learns that a run can be
+# continued, and `/training/start` continues it by being given the directory to resume from --
+# `checkpoint_path` when the run pinned one, the run's `output_dir` otherwise, which is what the
+# UI's own Resume replays. Blanking those left `can_resume` true beside no usable identifier at
+# all, so an API-key caller that could resume a run before this could not afterwards. The
+# reference is opaque, reverses to nothing, and `TrainingStartRequest` resolves it the same way
+# the loader resolves an inventory handle, so the host layout still does not leave the process.
+HOST_PATH_HANDLE_FIELDS = frozenset({"output_dir", "checkpoint_path", "resume_from_checkpoint"})
 
 # Error text, not a path field: the whole string is scrubbed rather than blanked, because the
 # message is the only thing telling the caller WHY a run failed and a filename is usually only
@@ -422,6 +429,14 @@ def _redact(payload: Any, *, redact_ambiguous_path: bool) -> Any:
                 # can hand back.
                 out[key] = _referenced_identity(value)
                 continue
+            if key in HOST_PATH_HANDLE_FIELDS:
+                # Referenced only where the value really is a path on this host. A relative
+                # output directory names no layout, and blanking it would take away an
+                # identifier for nothing.
+                out[key] = (
+                    _referenced_identity(value) if _identity_value_is_a_path(value) else value
+                )
+                continue
             if (
                 key in HOST_PATH_SCALAR_FIELDS
                 or (redact_ambiguous_path and key == HOST_PATH_AMBIGUOUS_FIELD)
@@ -481,6 +496,7 @@ def _find_leak(
             text = _as_text(value)
             is_path_field = (
                 key in HOST_PATH_SCALAR_FIELDS
+                or key in HOST_PATH_HANDLE_FIELDS
                 or (ambiguous_is_path and key == HOST_PATH_AMBIGUOUS_FIELD)
                 or (base_model_is_local and key == HOST_PATH_CONDITIONAL_FIELD)
             )

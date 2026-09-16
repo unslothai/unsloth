@@ -196,6 +196,7 @@ from hub.utils.hf_tokens import (
 from hub.utils.host_paths import (
     redact_host_paths,
     redact_inventory_host_paths,
+    resolve_host_path_reference,
     scrub_paths,
 )
 from utils.utils import anonymous_and_offline
@@ -5184,7 +5185,14 @@ async def delete_cached_model(
     account_access.require_installation_owner()
     from hub.services.models import deletion
 
-    return await deletion.delete_cached_model_response(repo_id, variant, hf_token, cache_path)
+    # Same resolution as the hub route this is the compatibility alias for. The listing
+    # answers an API-key caller with `cache_ref` where a browser session gets `cache_path`,
+    # so the reference is the only identifier such a caller has for one specific copy;
+    # without this, naming the row it was shown returned "Invalid cache_path" and omitting
+    # it acted on the active root, which on a multi-root host is a different copy.
+    return await deletion.delete_cached_model_response(
+        repo_id, variant, hf_token, resolve_host_path_reference(cache_path) or cache_path
+    )
 
 
 def _resolve_cached_model_path(repo_id: str, variant: Optional[str]) -> Path:
