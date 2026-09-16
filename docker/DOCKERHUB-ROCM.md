@@ -11,11 +11,14 @@ AMD GPUs are reached through the kernel driver's device nodes, not through a con
 ```bash
 docker run --rm -it \
   --device /dev/kfd --device /dev/dri \
-  --group-add video --group-add render \
+  --group-add "$(getent group video | cut -d: -f3)" \
+  --group-add "$(getent group render | cut -d: -f3)" \
   --ipc=host \
   -v "$HOME/.cache/huggingface":/workspace/.cache/huggingface \
   unsloth/unsloth-rocm
 ```
+
+`--group-add` needs the numeric group ids: a name is resolved inside the container, where the host's `video` and `render` groups do not exist, so passing the names can add the wrong groups and leave `/dev/kfd` unreadable.
 
 The Hugging Face mount is not optional if you care about your downloads: `HF_HOME` inside the container is `/workspace/.cache/huggingface`, which lives in the container's writable layer, so without it every model is fetched again after `docker rm`.
 
@@ -30,7 +33,8 @@ Check the GPU is visible before anything else:
 
 ```bash
 docker run --rm --device /dev/kfd --device /dev/dri \
-  --group-add video --group-add render \
+  --group-add "$(getent group video | cut -d: -f3)" \
+  --group-add "$(getent group render | cut -d: -f3)" \
   unsloth/unsloth-rocm python /workspace/smoke_test_rocm.py
 ```
 
@@ -49,11 +53,12 @@ Pin a digest for anything reproducible. `latest` moves.
 
 ## Supported hardware
 
-RDNA2 and newer, and CDNA. The image is built against the generic ROCm 7.2 PyTorch index, which covers most cards.
+RDNA2 and newer, and CDNA, except `gfx1033`. The image is built against the generic ROCm 7.2 PyTorch index, which covers most cards.
 
-Two cases need care:
+Three cases need care:
 
 - **Strix Halo / Strix Point APUs (`gfx1150`, `gfx1151`, `gfx1152`) and RDNA4 (`gfx1200`, `gfx1201`)** run on the generic wheels, and the entrypoint says so on start, but AMD's per-architecture wheels carry kernels tuned for them. Build with `ROCM_GFX=gfx1151` (or your arch) if you want those.
+- **Van Gogh (`gfx1033`, Steam Deck)** is refused outright. It is RDNA2, but training diverges to NaN under ROCm while forward passes look valid, so the entrypoint exits rather than train on it, and `HSA_OVERRIDE_GFX_VERSION` does not help because it hides the silicon, not the arithmetic.
 - **Vega 20 (`gfx906`)** lost its kernels after ROCm 6.3. Build with `ROCM_GFX=gfx906` and `ROCM_VERSION=6.3.4`; that variant ships without bitsandbytes, since no prebuilt wheel carries gfx906 kernels.
 
 The container prints what it found and refuses to start rather than silently falling back to the CPU. Set `UNSLOTH_SKIP_GPU_CHECK=1` to bypass the diagnostics.
@@ -95,4 +100,4 @@ The build's own record is in the image: `cat /etc/unsloth-rocm-build` reports th
 - Source and issues: [github.com/unslothai/unsloth](https://github.com/unslothai/unsloth)
 - Docker files: [`docker/`](https://github.com/unslothai/unsloth/tree/main/docker)
 - Documentation: [docs.unsloth.ai](https://docs.unsloth.ai)
-- Licence: [AGPL-3.0](https://github.com/unslothai/unsloth/blob/main/LICENSE)
+- Licences: the image is labelled `Apache-2.0 AND AGPL-3.0-only`. [Apache-2.0](https://github.com/unslothai/unsloth/blob/main/LICENSE) covers the repository, [AGPL-3.0](https://github.com/unslothai/unsloth/blob/main/studio/LICENSE.AGPL-3.0) covers Studio.
