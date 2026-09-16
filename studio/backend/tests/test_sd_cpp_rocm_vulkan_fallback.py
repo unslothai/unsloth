@@ -95,6 +95,21 @@ def _devices_for(backend: str, *, rocm_runs: bool) -> dict:
     return {"cpu": _DEVICES_CPU_ONLY, "vulkan": _DEVICES_VULKAN}
 
 
+def _noted_accelerators(store: dict) -> list:
+    """The accelerators the persisted record currently DIVERTS, in order.
+
+    The stored value is a map of accelerator -> {strikes, proven, fingerprint} rather than a bare
+    list of names, because a name outlives the thing it is a fact about. Tests assert through this
+    so they describe the behaviour ("rocm is diverted") rather than the storage layout.
+    """
+    records = store.get("sd_cpp_accelerator_runtime_failures") or {}
+    return sorted(
+        k
+        for k, v in records.items()
+        if isinstance(v, dict) and (v.get("proven") or v.get("strikes", 0) >= 2)
+    )
+
+
 class _PlanInfo:
     def __init__(self, siblings) -> None:
         self.siblings = siblings
@@ -136,7 +151,16 @@ def _clean_process_state(monkeypatch):
     every one of them erroring in setup, on a tree that does not carry the note at all."""
     from core.inference import sd_cpp_backend
 
-    monkeypatch.setattr(sd_cpp_backend, "_accelerator_runtime_failures", set(), raising = False)
+    monkeypatch.setattr(sd_cpp_backend, "_accelerator_runtime_failures", {}, raising = False)
+    # The host half of the fingerprint is memoised per process. Pin it to one known value so these
+    # tests neither read this machine's real GPUs nor leak a memo into each other; the fingerprint
+    # tests below override it deliberately.
+    monkeypatch.setattr(
+        sd_cpp_backend,
+        "_HOST_FINGERPRINT_MEMO",
+        {"runtime": "6.4.0", "gpus": ["AMD Radeon RX 7900 XTX"]},
+        raising = False,
+    )
     monkeypatch.delenv("UNSLOTH_DIFFUSION_SD_CPP_VULKAN_FALLBACK", raising = False)
 
 
@@ -267,7 +291,7 @@ def test_a_rocm_build_that_cannot_run_falls_back_to_vulkan(
     assert backend_obj._state.device == "cuda"
     assert len(host.downloads) == 4
     # And remembered, so the next load does not pay for the broken ROCm build again.
-    assert fake_settings["sd_cpp_accelerator_runtime_failures"] == ["rocm"]
+    assert _noted_accelerators(fake_settings) == ["rocm"]
 
 
 @pytest.mark.parametrize("platform", PLATFORMS)
@@ -378,7 +402,7 @@ def test_a_generation_that_dies_in_hipblas_records_the_failure(fake_settings, mo
         "/opt/sd/rocm/sd-cli",
         "sd-cli exited 1. Last output:\nROCm error: CUBLAS_STATUS_INVALID_VALUE at hipblasSetStream",
     )
-    assert fake_settings["sd_cpp_accelerator_runtime_failures"] == ["rocm"]
+    assert _noted_accelerators(fake_settings) == ["rocm"]
     assert sd_cpp_backend.preferred_accelerator("rocm") == "vulkan"
 
 
@@ -478,7 +502,7 @@ def test_only_the_amd_corners_with_a_rocm_asset_take_the_new_rung(
     takes_the_rung = backend == "rocm"
     if takes_the_rung:
         assert host.ensured == ["rocm", "vulkan"], host.ensured
-        assert fake_settings["sd_cpp_accelerator_runtime_failures"] == ["rocm"]
+        assert _noted_accelerators(fake_settings) == ["rocm"]
     else:
         assert host.ensured == [_FIRST_ENSURE[backend]], host.ensured
         assert fake_settings == {}
@@ -578,3 +602,352 @@ def test_the_image_path_resolves_the_preferred_accelerator(
         lambda: types.SimpleNamespace(backend = backend, device = "cuda", dtype = None),
     )
     assert sd_cpp_backend.SdCppDiffusionBackend._resolved_accelerator() == expected
+
+
+# ---------------------------------------------------------------------------
+# Release safety: the persistent preference has to be invalidated by the things it is a fact about,
+# must not be set by one transient error, and must have a way back that is not "edit the database".
+# ---------------------------------------------------------------------------
+
+
+def test_a_single_ambiguous_failure_never_diverts_a_working_rocm_host(fake_settings, monkeypatch):
+    """The core of the P2 finding. "hip error", "rocm error" and "unspecified launch failure" all
+    come out of a wedged queue, a driver reset or a card another process is mistreating, none of
+    which proves this BUILD cannot serve this card. One of them must leave a working host alone."""
+    from core.inference import sd_cpp_backend
+    from core.inference import video as video_mod
+
+    monkeypatch.setattr(sd_cpp_backend, "_installed_accelerator_of", lambda _b: "rocm")
+    video_mod._note_sd_cpp_accelerator_failure(
+        "/opt/sd/rocm/sd-cli", "sd-cli exited 1. Last output:\nHIP error: out of memory"
+    )
+    assert sd_cpp_backend.accelerator_runtime_failed("rocm") is False
+    assert sd_cpp_backend.preferred_accelerator("rocm") == "rocm"
+    assert _noted_accelerators(fake_settings) == []
+
+
+def test_a_second_ambiguous_failure_does_divert(fake_settings, monkeypatch):
+    """The other side of it: a host producing these repeatedly under one fingerprint is not having
+    bad luck, and #9278 with offload enabled reports exactly this string."""
+    from core.inference import sd_cpp_backend
+    from core.inference import video as video_mod
+
+    monkeypatch.setattr(sd_cpp_backend, "_installed_accelerator_of", lambda _b: "rocm")
+    for _ in range(2):
+        video_mod._note_sd_cpp_accelerator_failure(
+            "/opt/sd/rocm/sd-cli",
+            "sd-cli exited 1. Last output:\nggml_cuda_mul_mat_q: unspecified launch failure",
+        )
+    assert sd_cpp_backend.accelerator_runtime_failed("rocm") is True
+    assert sd_cpp_backend.preferred_accelerator("rocm") == "vulkan"
+
+
+@pytest.mark.parametrize(
+    "output,decisive",
+    [
+        ("ROCm error: CUBLAS_STATUS_INVALID_VALUE at hipblasSetStream", True),
+        ("hipErrorNoBinaryForGpu: Unable to find code object for all current devices", True),
+        ("no kernel image is available for execution on the device", True),
+        ("invalid device function", True),
+        ("ggml_cuda_mul_mat_q: unspecified launch failure at mmq.cu:145", False),
+        ("HIP error: out of memory", False),
+        ("ROCm error: something went wrong", False),
+    ],
+)
+def test_the_marker_tiers_split_evidence_from_suspicion(output, decisive):
+    """Only a message that names the BUILD having no code for the card is acted on immediately.
+    Every marker is still recognised as accelerator-related; the tier decides what it costs."""
+    from core.inference.sd_cpp_backend import (
+        output_shows_accelerator_failure,
+        output_shows_decisive_accelerator_failure,
+    )
+
+    assert output_shows_accelerator_failure(output) is True
+    assert output_shows_decisive_accelerator_failure(output) is decisive
+
+
+def test_one_decisive_failure_is_enough(fake_settings, monkeypatch):
+    """A decisive message is the defect itself, so it does not wait for a second occurrence."""
+    from core.inference import sd_cpp_backend
+    from core.inference import video as video_mod
+
+    monkeypatch.setattr(sd_cpp_backend, "_installed_accelerator_of", lambda _b: "rocm")
+    video_mod._note_sd_cpp_accelerator_failure(
+        "/opt/sd/rocm/sd-cli",
+        "sd-cli exited 1. Last output:\nROCm error: CUBLAS_STATUS_INVALID_VALUE at hipblasSetStream",
+    )
+    assert sd_cpp_backend.accelerator_runtime_failed("rocm") is True
+    assert _noted_accelerators(fake_settings) == ["rocm"]
+
+
+@pytest.mark.parametrize(
+    "changed,still_applies",
+    [
+        # Nothing moved: the record still describes this host.
+        ({}, True),
+        # A ROCm upgrade is the single most likely way a previously unusable card becomes usable.
+        ({"runtime": "7.0.0"}, False),
+        # A new sd.cpp bundle is a new build, and a new build can carry the missing kernels.
+        ({"bundle": "master-b9999"}, False),
+        # A different card is a different question entirely.
+        ({"gpus": ["AMD Radeon RX 9070 XT"]}, False),
+        # Unknown on either side is NOT a mismatch: these components are best-effort reads, and a
+        # probe that intermittently answers "unknown" must not make the host flip build to build.
+        ({"runtime": None}, True),
+        ({"gpus": None}, True),
+    ],
+)
+def test_a_record_is_retired_by_the_things_it_is_a_fact_about(changed, still_applies):
+    from core.inference.sd_cpp_backend import _fingerprint_still_applies
+
+    stored = {"bundle": "master-b1000", "runtime": "6.4.0", "gpus": ["AMD Radeon RX 7900 XTX"]}
+    current = dict(stored)
+    current.update(changed)
+    assert _fingerprint_still_applies(stored, current) is still_applies
+
+
+def test_a_driver_upgrade_makes_the_host_try_rocm_again(fake_settings, monkeypatch):
+    """End to end on the same point: a diverted host that upgrades ROCm is not stuck on Vulkan."""
+    from core.inference import sd_cpp_backend
+
+    sd_cpp_backend.note_accelerator_runtime_failure("rocm")
+    assert sd_cpp_backend.preferred_accelerator("rocm") == "vulkan"
+
+    monkeypatch.setattr(
+        sd_cpp_backend,
+        "_HOST_FINGERPRINT_MEMO",
+        {"runtime": "7.0.0", "gpus": ["AMD Radeon RX 7900 XTX"]},
+        raising = False,
+    )
+    # The in-process mirror is keyed on the old fingerprint too, so both halves have to retire.
+    assert sd_cpp_backend.accelerator_runtime_failed("rocm") is False
+    assert sd_cpp_backend.preferred_accelerator("rocm") == "rocm"
+
+
+def test_strikes_do_not_accumulate_across_a_fingerprint_change(fake_settings, monkeypatch):
+    """Ambiguous strikes counted against the old driver are not evidence about the new one."""
+    from core.inference import sd_cpp_backend
+
+    sd_cpp_backend.note_accelerator_runtime_failure("rocm", proven = False)
+    monkeypatch.setattr(
+        sd_cpp_backend,
+        "_HOST_FINGERPRINT_MEMO",
+        {"runtime": "7.0.0", "gpus": ["AMD Radeon RX 7900 XTX"]},
+        raising = False,
+    )
+    sd_cpp_backend.note_accelerator_runtime_failure("rocm", proven = False)
+    # One strike under each fingerprint, so neither reaches the threshold.
+    assert sd_cpp_backend.accelerator_runtime_failed("rocm") is False
+
+
+def test_the_settings_route_reports_and_clears_the_record(fake_settings, monkeypatch):
+    """The way back. A preference that outlives the condition that set it needs a reset that is not
+    "edit the application database", and reinstalling does not clear this one: it lives in
+    settings, not in the managed tree."""
+    from core.inference import sd_cpp_backend
+    from routes import settings as settings_routes
+
+    sd_cpp_backend.note_accelerator_runtime_failure("rocm")
+    state = settings_routes._diffusion_accelerator_fallback_response()
+    assert state.diverting is True
+    assert [r.accelerator for r in state.records] == ["rocm"]
+    assert state.records[0].fallback == "vulkan"
+    assert state.records[0].proven is True
+
+    cleared = settings_routes.clear_diffusion_accelerator_fallback(current_subject = "owner")
+    assert cleared.diverting is False
+    assert cleared.records == []
+    # Both halves, or this process would keep diverting after the persisted record is gone.
+    assert sd_cpp_backend.accelerator_runtime_failed("rocm") is False
+    assert sd_cpp_backend.preferred_accelerator("rocm") == "rocm"
+    assert _noted_accelerators(fake_settings) == []
+
+
+def test_a_stale_record_is_reported_as_stale_rather_than_hidden(fake_settings, monkeypatch):
+    """A user looking at the setting should be able to see that the note is already inert."""
+    from core.inference import sd_cpp_backend
+    from routes import settings as settings_routes
+
+    sd_cpp_backend.note_accelerator_runtime_failure("rocm")
+    monkeypatch.setattr(
+        sd_cpp_backend,
+        "_HOST_FINGERPRINT_MEMO",
+        {"runtime": "7.0.0", "gpus": ["AMD Radeon RX 7900 XTX"]},
+        raising = False,
+    )
+    state = settings_routes._diffusion_accelerator_fallback_response()
+    assert state.records[0].stale is True
+    assert state.records[0].diverting is False
+    assert state.diverting is False
+
+
+def test_the_early_list_shape_is_still_read(fake_settings):
+    """An early build of this feature stored a bare list of names. Read it as what it meant rather
+    than discarding it, so a dev-build user is not silently un-diverted."""
+    from core.inference import sd_cpp_backend
+
+    fake_settings["sd_cpp_accelerator_runtime_failures"] = ["rocm"]
+    assert sd_cpp_backend.accelerator_runtime_failed("rocm") is True
+    assert sd_cpp_backend.preferred_accelerator("rocm") == "vulkan"
+
+
+@pytest.mark.parametrize(
+    "stored", [None, "", [], {}, "not json", '["rocm"]', {"rocm": "yes"}, {"": {}}, 17]
+)
+def test_an_unreadable_record_never_breaks_a_load(fake_settings, stored):
+    """The store is best effort in both directions: a value this cannot parse costs the preference
+    and nothing else, and must never raise into a load."""
+    from core.inference import sd_cpp_backend
+
+    fake_settings["sd_cpp_accelerator_runtime_failures"] = stored
+    assert sd_cpp_backend.accelerator_runtime_failed("rocm") in (True, False)
+    assert sd_cpp_backend.preferred_accelerator("rocm") in ("rocm", "vulkan")
+
+
+# ---------------------------------------------------------------------------
+# Finding 2: the swapped-in fallback binary must carry its OWN reading.
+# ---------------------------------------------------------------------------
+
+
+# The ROCm build cannot be asked anything (verdict None, which keeps the GPU), and the Vulkan build
+# that replaces it decisively enumerates the CPU only. Before the fix the CPU-only Vulkan binary
+# inherited listed_accelerator=True from the unreadable ROCm probe.
+_ROCM_UNKNOWN_VULKAN_CPU_ONLY = {
+    "rocm": None,
+    "vulkan": _DEVICES_CPU_ONLY,
+    "cpu": _DEVICES_CPU_ONLY,
+}
+
+
+@pytest.mark.parametrize("platform", PLATFORMS)
+def test_a_cpu_only_fallback_build_does_not_inherit_the_gpu_reading(
+    h3_amd_host, fake_settings, platform
+):
+    """The swapped-in binary has to carry its own verdict.
+
+    Carrying the binary while keeping the reading taken from the build it replaced left
+    native_device on the GPU with a CPU-only binary attached. The claimed re-vet after the component
+    fetch then rejected the mismatch, so the cost was a load that failed minutes in rather than CPU
+    work billed as GPU work, but it is a load that did not need to fail."""
+    host = h3_amd_host(
+        platform = platform,
+        backend = "rocm",
+        device = "cuda",
+        devices = _ROCM_UNKNOWN_VULKAN_CPU_ONLY,
+    )
+    backend_obj = host.run()
+    # The CPU rung is reached, which is the whole point: it commits rather than failing later.
+    assert host.ensured == ["rocm", "vulkan", "cpu"], host.ensured
+    assert backend_obj._state.device == "cpu"
+    # Nothing is recorded: the fallback was not shown to be better, so there is no preference worth
+    # persisting and the next load tries this host's own accelerator again.
+    assert _noted_accelerators(fake_settings) == []
+
+
+@pytest.mark.parametrize("platform", PLATFORMS)
+def test_an_unreadable_fallback_never_raises_the_reading(h3_amd_host, fake_settings, platform):
+    """The guard on the fix. The swap may only LOWER the reading: a fallback probe that says
+    nothing must leave a decisive CPU-only verdict alone rather than promoting it to "has a GPU"."""
+    host = h3_amd_host(
+        platform = platform,
+        backend = "rocm",
+        device = "cuda",
+        devices = {"rocm": _DEVICES_CPU_ONLY, "vulkan": None, "cpu": _DEVICES_CPU_ONLY},
+    )
+    backend_obj = host.run()
+    assert host.ensured == ["rocm", "vulkan", "cpu"], host.ensured
+    assert backend_obj._state.device == "cpu"
+    assert _noted_accelerators(fake_settings) == []
+
+
+# ---------------------------------------------------------------------------
+# Release safety, checklist item 7: exactness of untouched paths, by ENUMERATION rather than by
+# reading the diff. The load path's whole input space is (what the host's own build answers) x
+# (what the fallback build answers), each of them four-valued: MISSING (no such build can be
+# installed), None (installed, cannot be asked), False (answers, CPU only), True (answers, has an
+# accelerator device).
+#
+# `main` in the table is what the unmodified code committed for that corner, derived from its two
+# rules: listed = (verdict is None) or verdict, and the CPU rung is taken when not listed.
+# ---------------------------------------------------------------------------
+
+_T, _F, _N, _X = "accel", "cpu_only", "unreadable", "missing"
+
+_ANSWER = {_T: _DEVICES_VULKAN, _F: _DEVICES_CPU_ONLY, _N: None, _X: MISSING}
+
+# (rocm answer, vulkan answer) -> (ensured, committed device, what main committed, why the change
+# is allowed). "same" means the corner is untouched.
+_ROUTING = {
+    # The host's own build works. The rung is never reached, on any fallback answer.
+    (_T, _T): (["rocm"], "cuda", "cuda", "same"),
+    (_T, _F): (["rocm"], "cuda", "cuda", "same"),
+    (_T, _N): (["rocm"], "cuda", "cuda", "same"),
+    (_T, _X): (["rocm"], "cuda", "cuda", "same"),
+    # The host's own build answers CPU only. main went straight to the CPU rung.
+    (_F, _T): (["rocm", "vulkan"], "cuda", "cpu", "upgraded on positive evidence"),
+    (_F, _F): (["rocm", "vulkan", "cpu"], "cpu", "cpu", "same"),
+    (_F, _N): (["rocm", "vulkan", "cpu"], "cpu", "cpu", "same"),
+    (_F, _X): (["rocm", "vulkan", "cpu"], "cpu", "cpu", "same"),
+    # The host's own build cannot be asked: #8814 and #9278. main kept the GPU on a build that
+    # cannot start, which is the defect.
+    (_N, _T): (["rocm", "vulkan"], "cuda", "cuda", "upgraded on positive evidence"),
+    # The one corner whose committed DEVICE moves down. main committed the GPU with a CPU-only
+    # binary attached and the claimed re-vet then rejected it, so this input previously reached a
+    # terminal failure, which is the only thing a new branch is allowed to capture.
+    (_N, _F): (["rocm", "vulkan", "cpu"], "cpu", "cuda then a failed re-vet", "was a failed load"),
+    (_N, _N): (["rocm", "vulkan"], "cuda", "cuda", "same"),
+    (_N, _X): (["rocm", "vulkan"], "cuda", "cuda", "same"),
+    # No ROCm asset for this host at all.
+    (_X, _T): (["rocm", "vulkan"], "cuda", "cpu", "upgraded on positive evidence"),
+    (_X, _F): (["rocm", "vulkan", "cpu"], "cpu", "cpu", "same"),
+    (_X, _N): (["rocm", "vulkan", "cpu"], "cpu", "cpu", "same"),
+    (_X, _X): (["rocm", "vulkan", "cpu"], "cpu", "cpu", "same"),
+}
+
+
+@pytest.mark.parametrize("corner", sorted(_ROUTING), ids = lambda c: f"rocm_{c[0]}-vulkan_{c[1]}")
+def test_the_whole_load_routing_space_is_enumerated(h3_amd_host, fake_settings, corner):
+    """Every corner of the load path's input space, with its committed device pinned.
+
+    The property this establishes is the one a release-safety claim needs: no input that committed
+    a device on main commits a DIFFERENT device now, except where main's commit was already a
+    failed load, and every upgrade is taken only on the fallback build positively enumerating an
+    accelerator of its own.
+    """
+    rocm_answer, vulkan_answer = corner
+    expected_ensured, expected_device, _main, _why = _ROUTING[corner]
+    host = h3_amd_host(
+        platform = "linux",
+        backend = "rocm",
+        device = "cuda",
+        devices = {
+            "rocm": _ANSWER[rocm_answer],
+            "vulkan": _ANSWER[vulkan_answer],
+            "cpu": _DEVICES_CPU_ONLY,
+        },
+    )
+    backend_obj = host.run()
+    assert host.ensured == expected_ensured, host.ensured
+    assert backend_obj._state.device == expected_device
+    # And the preference is written in exactly the corners that were upgraded, never in one where
+    # the fallback was not shown to be better.
+    assert _noted_accelerators(fake_settings) == (
+        ["rocm"] if _why == "upgraded on positive evidence" else []
+    )
+
+
+def test_no_corner_loses_a_gpu_it_previously_kept():
+    """The enumeration read as a property rather than as a table, so a future edit to _ROUTING
+    cannot quietly encode a regression: a corner may only move off the GPU if what main did there
+    was already a failed load."""
+    for corner, (_ensured, device, main_device, why) in _ROUTING.items():
+        if main_device.startswith("cuda") and device != "cuda":
+            assert why == "was a failed load", corner
+
+
+def test_every_upgrade_required_positive_fallback_evidence():
+    """The other half: a corner is only allowed to gain the GPU when the fallback build answered
+    --list-devices with an accelerator of its own."""
+    for (_rocm, vulkan), (_ensured, _device, _main, why) in _ROUTING.items():
+        if why == "upgraded on positive evidence":
+            assert vulkan == _T, (_rocm, vulkan)

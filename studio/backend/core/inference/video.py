@@ -613,7 +613,14 @@ def _note_sd_cpp_accelerator_failure(binary: Optional[str], output: str) -> None
     output has to name a GPU-backend failure (``output_shows_accelerator_failure``), and the build
     has to be one with a rung below it to fall back to. Anything else is left alone, so an ordinary
     failure never moves a working host off its own accelerator. Never raises: this is a preference,
-    and the caller is on its way to re-raising the real error."""
+    and the caller is on its way to re-raising the real error.
+
+    A third distinction decides whether this ONE failure is allowed to divert the host. A decisive
+    message names the build having no code for this card and is acted on immediately; an ambiguous
+    one names a GPU fault whose cause it does not establish (a wedged queue, a driver reset, a card
+    another process is mistreating all print the same strings) and is only counted. A host has to
+    produce several of those under one fingerprint before it is moved, so a single transient error
+    on a machine whose ROCm works cannot bypass it."""
     if not binary or not output:
         return
     try:
@@ -622,6 +629,7 @@ def _note_sd_cpp_accelerator_failure(binary: Optional[str], output: str) -> None
             fallback_accelerator_for,
             note_accelerator_runtime_failure,
             output_shows_accelerator_failure,
+            output_shows_decisive_accelerator_failure,
         )
 
         if not output_shows_accelerator_failure(output):
@@ -629,13 +637,17 @@ def _note_sd_cpp_accelerator_failure(binary: Optional[str], output: str) -> None
         accelerator = _installed_accelerator_of(binary)
         if not accelerator or not fallback_accelerator_for(accelerator):
             return
+        decisive = output_shows_decisive_accelerator_failure(output)
         logger.warning(
             "video.sd_cpp_accelerator_runtime_failure: the %s stable-diffusion.cpp build failed "
-            "on this host mid-generation; later loads will use the %s build",
+            "on this host mid-generation (%s); the %s build is the fallback",
             accelerator,
+            "the message names the build, acting on it now"
+            if decisive
+            else "the message does not establish the build as the cause, counting it",
             fallback_accelerator_for(accelerator),
         )
-        note_accelerator_runtime_failure(accelerator)
+        note_accelerator_runtime_failure(accelerator, proven = decisive)
     except Exception as exc:  # noqa: BLE001 -- a preference, never a reason to mask the real error
         logger.debug("could not record the sd.cpp accelerator failure: %s", exc)
 
@@ -1854,9 +1866,28 @@ class VideoBackend:
                         listed_accelerator = True
                     elif fallback_binary:
                         # The fallback install can have REPLACED the managed tree, in which case the path resolved
-                        # above is gone. Carry the binary that is actually there; the decision itself is untouched, so
-                        # the CPU rung below and the refusal after it are reached exactly as they were.
+                        # above is gone. Carry the binary that is actually there -- and with it, its OWN reading.
+                        #
+                        # Carrying the binary while keeping the reading taken from the build it replaced is what let
+                        # a decisively CPU-only Vulkan build inherit listed_accelerator=True from an unreadable ROCm
+                        # probe, skip the CPU rung below, and commit native_device to the GPU. The claimed re-vet
+                        # after the component fetch then rejected the mismatch, so the cost was a load that failed
+                        # minutes in for no reason rather than CPU work billed as GPU work, but it is a load that did
+                        # not need to fail at all.
+                        #
+                        # `and`, never a plain assignment: this branch is only reached when the fallback produced no
+                        # positive evidence, so the swap may LOWER the reading and must never raise it. An unreadable
+                        # fallback probe therefore leaves a False untouched (the CPU rung is still taken) instead of
+                        # promoting it to True on no evidence, which a bare re-collapse of the fallback verdict would
+                        # have done.
                         binary = fallback_binary
+                        listed_accelerator = listed_accelerator and accelerator_verdict_keeps_gpu(
+                            fallback_verdict
+                        )
+                        # Keep the name describing the binary it is attached to. Nothing reads it after this today,
+                        # but the variable claims to be the rung that was committed, and leaving it on the build that
+                        # is no longer there is how the bug above started.
+                        accelerator = fallback
         if target.backend not in ("cpu", "mps") and not listed_accelerator:
             # Upstream currently publishes no Linux CUDA archive. Keep the picker functional with the CPU prebuilt when
             # the user has not supplied a locally compiled CUDA binary through the normal sd.cpp discovery path. The

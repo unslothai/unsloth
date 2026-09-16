@@ -1441,6 +1441,71 @@ def update_last_local_model(
     )
 
 
+class DiffusionAcceleratorFallbackRecord(BaseModel):
+    # The accelerator the record is about, and the one it diverts to.
+    accelerator: str
+    fallback: Optional[str] = None
+    # How many qualifying failures have been seen under the current fingerprint, and whether any of
+    # them established the BUILD as the cause rather than merely naming a GPU fault.
+    strikes: int = 0
+    proven: bool = False
+    # Whether this record is moving loads off `accelerator` right now.
+    diverting: bool = False
+    # True when the record was taken under a different driver, bundle or set of cards, so it no
+    # longer applies. Reported rather than hidden: it tells the user the note is already inert.
+    stale: bool = False
+
+
+class DiffusionAcceleratorFallbackResponse(BaseModel):
+    records: list[DiffusionAcceleratorFallbackRecord] = []
+    # False when UNSLOTH_DIFFUSION_SD_CPP_VULKAN_FALLBACK switches the whole mechanism off, in
+    # which case no record can divert anything regardless of what is stored.
+    enabled: bool = True
+    # Whether any record is currently in force, which is the one thing a user wants to know.
+    diverting: bool = False
+
+
+def _diffusion_accelerator_fallback_response() -> DiffusionAcceleratorFallbackResponse:
+    from core.inference.sd_cpp_backend import accelerator_runtime_failure_state
+    return DiffusionAcceleratorFallbackResponse(**accelerator_runtime_failure_state())
+
+
+@_owner_settings_router.get(
+    "/diffusion-accelerator-fallback", response_model = DiffusionAcceleratorFallbackResponse
+)
+def get_diffusion_accelerator_fallback(
+    current_subject: str = Depends(get_current_subject),
+) -> DiffusionAcceleratorFallbackResponse:
+    """Which native diffusion accelerators this host has been recorded as unable to run.
+
+    Studio installs one stable-diffusion.cpp prebuilt per accelerator, and upstream publishes a
+    single generic ROCm build rather than one per gfx arch. A card that build carries no kernels
+    for cannot start it, so the host is moved to the Vulkan build and the outcome is remembered
+    (#9278, #8814). This reports that memory.
+    """
+    return _diffusion_accelerator_fallback_response()
+
+
+@_owner_settings_router.delete(
+    "/diffusion-accelerator-fallback", response_model = DiffusionAcceleratorFallbackResponse
+)
+def clear_diffusion_accelerator_fallback(
+    current_subject: str = Depends(get_current_subject),
+) -> DiffusionAcceleratorFallbackResponse:
+    """Forget the records, so the next load tries this host's own accelerator again.
+
+    This is the way back. The records are fingerprinted against the sd.cpp bundle, the GPU runtime
+    and the cards, so a driver upgrade or a new card retires them on its own, but a user who has
+    fixed something the fingerprint cannot see must not have to edit the application database to
+    say so. Reinstalling would not clear it either, since the record lives in settings and not in
+    the managed tree.
+    """
+    from core.inference.sd_cpp_backend import clear_accelerator_runtime_failures
+
+    clear_accelerator_runtime_failures()
+    return _diffusion_accelerator_fallback_response()
+
+
 @_owner_settings_router.get("/vram-budget", response_model = VramBudgetResponse)
 def get_vram_budget(current_subject: str = Depends(get_current_subject)) -> VramBudgetResponse:
     return _vram_budget_response()
