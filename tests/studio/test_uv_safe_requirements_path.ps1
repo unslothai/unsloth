@@ -94,6 +94,30 @@ try {
     } finally {
         $env:TEMP = $savedTemp; $env:TMP = $savedTmp; $env:TMPDIR = $savedTmpDir
     }
+    # 5. A failed copy must return the original, report it as not temporary, and leave nothing
+    #    behind. Every candidate points at a path that exists as a FILE, so Copy-Item throws.
+    #
+    #    Honest limit: in this scenario Copy-Item fails before creating anything, so these two
+    #    checks pass with or without the cleanup in the catch and do not prove it. They pin the
+    #    reachable contract. The cleanup exists for a copy that fails PARTWAY, a full disk or an
+    #    interrupted write, which leaves a partial destination; that cannot be forced portably
+    #    here, so it is defensive rather than covered.
+    $script:Warnings = @()
+    $blocker = Join-Path $root "blocker"
+    "not a directory" | Set-Content -LiteralPath $blocker
+    $savedTemp = $env:TEMP; $savedTmp = $env:TMP; $savedTmpDir = $env:TMPDIR
+    try {
+        $env:TEMP = $blocker
+        $env:TMP = $blocker
+        $env:TMPDIR = $blocker
+        $before = @(Get-ChildItem -LiteralPath $root -Recurse -File -Filter "unsloth-reqs-*").Count
+        $r4 = Get-UvSafeRequirementsPath -Path $spaced
+        $after = @(Get-ChildItem -LiteralPath $root -Recurse -File -Filter "unsloth-reqs-*").Count
+        Check "a failed copy leaves no stray unsloth-reqs file" ($after -eq $before)
+        Check "a failed copy is never reported as temporary" (-not $r4.Temporary)
+    } finally {
+        $env:TEMP = $savedTemp; $env:TMP = $savedTmp; $env:TMPDIR = $savedTmpDir
+    }
 } finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 }

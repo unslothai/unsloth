@@ -6917,15 +6917,20 @@ exit 0
                 if (-not $dirShort -or $dirShort.Contains(" ")) { continue }
                 $dir = $dirShort
             }
+            # $tmp outside the try so the catch can clean up: a Copy-Item that fails partway
+            # (a full disk, an interrupted write) leaves a partial destination behind.
+            $tmp = Join-Path $dir ("unsloth-reqs-" + [guid]::NewGuid().ToString("N") + ".txt")
             try {
-                $tmp = Join-Path $dir ("unsloth-reqs-" + [guid]::NewGuid().ToString("N") + ".txt")
                 Copy-Item -LiteralPath $Path -Destination $tmp -Force -ErrorAction Stop
                 if ($tmp.Contains(" ")) {
                     Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
                     continue
                 }
                 return @{ Path = $tmp; Temporary = $true }
-            } catch { continue }
+            } catch {
+                Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+                continue
+            }
         }
 
         # Nowhere usable. Say so, because uv's message for a split path names a fragment of the
