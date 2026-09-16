@@ -248,8 +248,7 @@ _STREAM_BANNED = ("set_stream", "set_device", "setDevice")
 
 
 def _banned_stream_calls(source: str) -> list[tuple[int, str]]:
-    """Lines that switch the current device or stream behind the guard's back: ``set_stream``
-    silently sets the current DEVICE as well, and ``set_device`` moves what the guard restores."""
+    """Lines that switch the current device or stream behind the guard's back: ``set_stream`` silently sets the current DEVICE too, and ``set_device`` moves what the guard restores."""
     found: list[tuple[int, str]] = []
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.Attribute) and node.attr in _STREAM_BANNED:
@@ -362,8 +361,7 @@ def _fake_blackwell(monkeypatch):
 
 
 def test_an_allocation_failure_is_answered_but_not_cached(monkeypatch):
-    """AUTO planning probes while the model the arbiter is about to evict still owns the card, so
-    an OOM here says 'not now'. Cached, it would drop nvfp4 for the rest of the process."""
+    """AUTO planning probes while the model about to be evicted still owns the card, so an OOM here says 'not now'. Cached, it would drop nvfp4 for the rest of the process."""
     torch = _fake_blackwell(monkeypatch)
     calls: list = []
 
@@ -383,8 +381,7 @@ def test_an_allocation_failure_is_answered_but_not_cached(monkeypatch):
 
 
 def test_a_host_property_failure_stays_cached(monkeypatch):
-    """A JIT build that cannot run here is not going to start; re-probing it every selection would
-    pay the build over and over."""
+    """A JIT build that cannot run here never will; re-probing every selection pays the build over and over."""
     _fake_blackwell(monkeypatch)
     calls: list = []
 

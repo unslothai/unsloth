@@ -2289,9 +2289,8 @@ def test_a_gated_row_is_inert_without_a_record_and_leads_with_one(monkeypatch, t
 
 
 def test_the_gated_head_stands_on_any_backend_a_passing_record_names(monkeypatch, tmp_path):
-    """Record identity carries the checkpoint digest, not the backend, so one policy can hold an
-    RTN artifact gated on flashinfer and a GPTQ one gated on torchao. Both backends are measured,
-    so neither device may lose nvfp4 to the order the rows sit in."""
+    """Record identity carries the checkpoint digest, not the backend, so one policy can hold artifacts
+    gated on either. Both backends are measured, so neither device may lose nvfp4 to row order."""
     _stub_torch(monkeypatch, cc = (10, 0))
     _allow(monkeypatch, {TQ_NVFP4, TQ_FP8, TQ_MXFP8, TQ_INT8})
     _gate(
@@ -2459,8 +2458,7 @@ def test_the_candidate_head_stays_the_selector_winner_under_the_gate(
 def test_a_gated_row_stands_only_on_the_backend_its_record_was_measured_on(
     monkeypatch, tmp_path, probe, recorded, offered
 ):
-    """The two NVFP4 backends quantise activations differently, so a verdict measured on one does
-    not enable the other."""
+    """The two NVFP4 backends quantise activations differently, so a verdict measured on one does not enable the other."""
     _stub_torch(monkeypatch, cc = (10, 0))
     _allow(monkeypatch, {TQ_NVFP4, TQ_FP8, TQ_MXFP8, TQ_INT8})
     _stub_nvfp4_backend(monkeypatch, probe)

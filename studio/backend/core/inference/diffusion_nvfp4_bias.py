@@ -27,8 +27,7 @@ _TRUE_TOKENS = ("1", "true", "yes", "on")
 _FALSE_TOKENS = ("0", "false", "no", "off")
 
 _BLOCK = 4096
-# Below this the launch (20 to 28 us measured on B200) exceeds what the bandwidth win returns:
-# 1024x10240 runs 0.84x of ``add_``, 4096x3840 (15.7 M) 1.84x, 4096x10240 3.4x.
+# Below this the 20-28 us launch (B200) outweighs the bandwidth win: 1024x10240 is 0.84x of ``add_``, 4096x3840 1.84x, 4096x10240 3.4x.
 _FAST_BIAS_MIN_NUMEL = 12 * 1024 * 1024
 # The kernel indexes with int32 offsets.
 _FAST_BIAS_MAX_NUMEL = 2**31 - 1
@@ -57,8 +56,7 @@ def fast_bias_enabled() -> bool:
 
 
 def _eligible(out: Any, bias: Any) -> bool:
-    """Whether this pair is covered; each clause is a case the flat 1-D indexing gets WRONG or
-    a size where the launch costs more than the pass saves."""
+    """Whether this pair is covered; each clause is a case the flat 1-D indexing gets WRONG or a size where the launch costs more than the pass saves."""
     import torch
     return (
         _HAVE_TRITON
@@ -74,8 +72,7 @@ def _eligible(out: Any, bias: Any) -> bool:
 
 
 def fused_bias_add_(out: Any, bias: Any):
-    """``out += bias`` in place, bit-identical to ``out.add_(bias)``, falling back to ``add_``. The
-    device guard is load-bearing: Triton takes its device from the CURRENT context."""
+    """``out += bias`` in place, bit-identical to ``out.add_(bias)``, falling back to ``add_``. The device guard is load-bearing: Triton takes its device from the CURRENT context."""
     import torch
 
     if torch.compiler.is_compiling() or not fast_bias_enabled() or not _eligible(out, bias):

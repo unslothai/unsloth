@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The checked-in NVFP4 gate record, and the verdict the runtime reads out of it.
-
-The writer that produces a record is build tooling and is tested with the rest of it. What is
-tested here is the half that ships: the record in the tree, and every way it does or does not
-turn into a gate verdict."""
+"""The checked-in NVFP4 gate record, and the verdict the runtime reads out of it. The writer is build
+tooling, tested with the rest of it; what is tested here is the half that ships."""
 
 from __future__ import annotations
 
@@ -118,8 +115,7 @@ def test_a_matching_record_reads_true_and_canonicalises_the_base(tmp_path):
 
 
 def test_the_backend_a_verdict_was_measured_on_is_readable(tmp_path):
-    """The ladder keeps the deny unless this is the backend serving the device: the same bytes
-    quantise activations differently on the other one and no gate rendered that."""
+    """The ladder keeps the deny unless this backend serves the device: the same bytes quantise activations differently on the other one and no gate rendered that."""
     path = _gate_file(tmp_path, _record())
     assert nvfp4_gate_backend("z-image", ZIMAGE_BASE, path = path) == "flashinfer"
     assert nvfp4_gate_backend("Z-Image", ZIMAGE_BASE, path = path) == "flashinfer"
@@ -137,7 +133,7 @@ def test_the_backend_a_verdict_was_measured_on_is_readable(tmp_path):
 
 
 def test_two_artifacts_gated_on_different_backends_both_read_as_covered(tmp_path):
-    # Record identity carries the checkpoint digest and not the backend, so the writer accepts the RTN artifact gated on one backend and the GPTQ one gated on the other. Reducing the rows to the first pass would cover whichever backend happens to come first in the file.
+    # Record identity carries the checkpoint digest, not the backend, so both artifacts are accepted. Reducing the rows to the first pass would cover whichever backend comes first in the file.
     path = _gate_file(
         tmp_path,
         _record(),
@@ -170,7 +166,7 @@ def test_a_failed_run_reads_false(tmp_path):
 
 
 def test_a_recorded_failure_does_not_mask_a_later_checkpoint_that_passed(tmp_path):
-    # The writer permits several artifacts under one (family, base, policy) and records a failed run under --allow-fail, so the pass can legitimately sit behind a failure in file order.
+    # Several artifacts may share one (family, base, policy) and --allow-fail records failures, so a pass can sit behind a failure in file order.
     path = _gate_file(
         tmp_path,
         _record(all_pass = False, checkpoint_sha256 = "b" * 64, backend = "torchao"),

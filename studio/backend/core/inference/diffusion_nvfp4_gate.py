@@ -56,8 +56,7 @@ def _canonical(value: Any) -> str:
 
 
 def load_gate_records(path: Any = None) -> tuple:
-    """Every record in the gate file, or an empty tuple. Never raises: an unreadable file is no
-    evidence rather than a failed load."""
+    """Every record in the gate file, or an empty tuple. Never raises: an unreadable file is no evidence rather than a failed load."""
     target = Path(path) if path is not None else GATE_RECORD_PATH
     try:
         stat = target.stat()
@@ -84,10 +83,9 @@ def nvfp4_gate_records(
     *,
     path: Any = None,
 ) -> tuple:
-    """Every gate record for ``(family, base_repo)`` in file order, optionally pinned to
-    ``policy_id``. Record identity carries the checkpoint digest, so one policy can hold several
-    rows. Without a base there are no records: inheriting a sibling base's verdict is the failure
-    this file exists to prevent."""
+    """Every gate record for ``(family, base_repo)`` in file order, optionally pinned to ``policy_id``.
+    Record identity carries the checkpoint digest, so one policy can hold several rows. Without a base
+    there are no records: inheriting a sibling base's verdict is what this file exists to prevent."""
     fam = str(family or "").strip().lower()
     base = _canonical(base_repo)
     if not fam or not base:
@@ -112,8 +110,7 @@ def nvfp4_gate_record(
     *,
     path: Any = None,
 ) -> Optional[dict]:
-    """The first gate record for ``(family, base_repo)``, optionally pinned to ``policy_id``, or
-    None. Whether nvfp4 is allowed is answered by ``_passing_record``, which reads them all."""
+    """The first gate record for ``(family, base_repo)``, optionally pinned to ``policy_id``, or None. Whether nvfp4 is allowed is answered by ``_passing_record``, which reads them all."""
     matched = nvfp4_gate_records(family, base_repo, policy_id, path = path)
     return matched[0] if matched else None
 
@@ -124,9 +121,8 @@ def _passing_records(
     *,
     path: Any = None,
 ) -> tuple:
-    """Every record that says PASS for this family and base at the policy this commit resolves, in
-    file order. Empty means "nothing measured this model". A failure recorded for one checkpoint
-    must not mask a later checkpoint that passed."""
+    """Every record that says PASS for this family and base at the policy this commit resolves, in file
+    order. Empty means "nothing measured this model"; a recorded failure must not mask a later pass."""
     try:
         from .diffusion_nvfp4_policy import resolve_policy
         policy = resolve_policy(family, base_repo)
@@ -164,8 +160,7 @@ def nvfp4_gate_passed(
     *,
     path: Any = None,
 ) -> bool:
-    """Whether a reviewed record says the NVFP4 gate PASSED for this family and base at the policy
-    this commit resolves."""
+    """Whether a reviewed record says the NVFP4 gate PASSED for this family and base at the policy this commit resolves."""
     return _passing_record(family, base_repo, path = path) is not None
 
 
@@ -175,10 +170,9 @@ def nvfp4_gate_backends(
     *,
     path: Any = None,
 ) -> tuple:
-    """Every NVFP4 backend a passing record was measured on, lowercased, deduplicated, in file
-    order. A verdict covers one numerical path, and one policy can hold an artifact gated on
-    torchao next to one gated on flashinfer; the ladder asks whether this device's backend is
-    among them, never whether it is the first row's."""
+    """Every NVFP4 backend a passing record was measured on, lowercased, deduplicated, in file order. A
+    verdict covers one numerical path and one policy can hold artifacts gated on either backend, so
+    the ladder asks whether this device's backend is among them, not whether it is the first row's."""
     backends: list[str] = []
     for record in _passing_records(family, base_repo, path = path):
         backend = str(record.get("backend") or "").strip().lower()
@@ -193,7 +187,6 @@ def nvfp4_gate_backend(
     *,
     path: Any = None,
 ) -> Optional[str]:
-    """The backend of the first passing record, lowercased, or None. Coverage questions want
-    ``nvfp4_gate_backends``."""
+    """The backend of the first passing record, lowercased, or None. Coverage questions want ``nvfp4_gate_backends``."""
     backends = nvfp4_gate_backends(family, base_repo, path = path)
     return backends[0] if backends else None

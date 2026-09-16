@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for the cached FlashInfer dispatch (``diffusion_nvfp4_dispatch.py``): the version
-allowlist, the all-or-nothing private import, and the per-device bit-identity check."""
+"""Cached FlashInfer dispatch: the version allowlist, the all-or-nothing private import, and the per-device bit-identity check."""
 
 from __future__ import annotations
 

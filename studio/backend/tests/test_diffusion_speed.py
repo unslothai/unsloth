@@ -481,8 +481,7 @@ def test_dit_vae_decode_compile_deny_set_and_force(monkeypatch):
 
 
 def test_video_vae_stays_eager_under_auto_and_compiles_once_per_pipe(monkeypatch):
-    # The video backend runs apply_speed_optims for every video DiT view, so `auto` must not reach an unmeasured
-    # video decode and one shared VAE must not be compiled twice.
+    # apply_speed_optims runs per video DiT view: `auto` must not reach an unmeasured decode, nor compile a shared VAE twice.
     torch = _stub_torch(monkeypatch)
     monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
     pipe = _Pipe(with_compile = True, vae_cls = AutoencoderKLWan)
@@ -524,9 +523,8 @@ def test_unet_vae_decode_compile_ignores_the_env(monkeypatch):
 
 
 def test_video_wan_vae_decode_is_denied_on_measurement(monkeypatch):
-    # Wan is not merely unmeasured: compiling its decode measured SLOWER on a B200 (1280x704x121, 35.76 -> 37.41 s
-    # p50, decode 11.29 -> 11.64 s of GPU time, 193 s cold compile), so it is denied as well as unlisted, and stays
-    # off if a later pass adds it to the allow set.
+    # Wan is not merely unmeasured: its decode compiled SLOWER on a B200 (1280x704x121, 35.76 -> 37.41 s p50), so it
+    # is denied as well as unlisted and stays off even if a later pass adds it to the allow set.
     torch = _stub_torch(monkeypatch)
     monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
     assert "AutoencoderKLWan" in ds_mod._VAE_COMPILE_DENY
@@ -1369,8 +1367,7 @@ def test_compiled_shapes_are_static_reports_the_stream_merging_downgrade(monkeyp
 
 def test_the_loader_keys_the_compile_bundle_on_the_vae_decode_decision():
     """Both compile_cache.begin() call sites feed the VAE decode decision into the cache key."""
-    # The decode compiles lazily, so a bundle that predates it stays a hit, the context stays clean and the VAE
-    # artifacts are never saved: the key has to move with the decision.
+    # The decode compiles lazily, so a bundle predating it stays a hit and never saves the VAE artifacts: the key has to move with the decision.
     from pathlib import Path
 
     src = (Path(__file__).resolve().parents[1] / "core" / "inference" / "diffusion.py").read_text(

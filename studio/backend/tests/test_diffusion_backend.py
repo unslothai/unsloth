@@ -11030,8 +11030,8 @@ def test_generation_in_flight_never_builds_a_backend(fake_runtime, monkeypatch):
 
 
 def test_the_download_plan_resolves_the_same_nvfp4_rung_the_load_does(monkeypatch):
-    # The load-time selector asks with the base and a hosted-checkpoint probe, since a gated auto rung is offered only for the base its record covers, so a planning selector leaving either out answers a different scheme.
-    # _uncached_prequant_repo keeps an auto GGUF pick from fetching a second denoiser inline, past the plan's progress, disk-space and cancellation staging.
+    # A gated auto rung is offered only for the base its record covers, so a planning selector that leaves out the base or the hosted-checkpoint probe answers a different scheme.
+    # _uncached_prequant_repo keeps an auto GGUF pick from fetching a second denoiser inline, past the plan's staging.
     from types import SimpleNamespace
 
     import core.inference.diffusion as dmod
