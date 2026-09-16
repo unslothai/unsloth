@@ -177,11 +177,13 @@ def test_a_hook_derived_answer_is_never_memoised():
     first, _ = per_layer_device(layer)
     assert first == torch.device("cpu")
 
-    layer._hf_hook.execution_device = torch.device("cpu") if not has_real_cuda() else torch.device(0)
-    second, _ = per_layer_device(layer)
-    assert second == layer._hf_hook.execution_device, (
-        "the memo answered with the device accelerate has already moved this layer off"
+    layer._hf_hook.execution_device = (
+        torch.device("cpu") if not has_real_cuda() else torch.device(0)
     )
+    second, _ = per_layer_device(layer)
+    assert (
+        second == layer._hf_hook.execution_device
+    ), "the memo answered with the device accelerate has already moved this layer off"
 
 
 def test_the_memo_is_keyed_on_the_default_as_well_as_the_index():

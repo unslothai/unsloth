@@ -2669,7 +2669,9 @@ def per_layer_device(module, default = 0):
                 # its accelerate hook, which can move without the index changing, so a memo
                 # of those would go stale silently and send activations to a dead device.
                 published[_PER_LAYER_DEVICE_MEMO] = (
-                    index, resolved, "_per_layer_device_index",
+                    index,
+                    resolved,
+                    "_per_layer_device_index",
                 )
             return resolved
 
@@ -2708,7 +2710,9 @@ def per_layer_device(module, default = 0):
         published_device = published.get("_per_layer_device")
         if published_device is not None and published_device is device:
             published[_PER_LAYER_DEVICE_MEMO] = (
-                published_device, (device, buffer_index), "_per_layer_device",
+                published_device,
+                (device, buffer_index),
+                "_per_layer_device",
             )
     return device, buffer_index
 
