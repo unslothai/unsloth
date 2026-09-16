@@ -23,6 +23,7 @@ import {
 } from "@/components/assistant-ui/message-response-details-sheet";
 import { ComposerDraftPreview } from "@/components/assistant-ui/composer-draft-preview";
 import { PromptQueueList } from "@/components/assistant-ui/lazy-prompt-queue-list";
+import { QueueResumeIcon } from "@/components/assistant-ui/queue-resume-icon";
 import { ProgressiveMessages } from "@/components/assistant-ui/progressive-messages";
 import { MessageTiming } from "@/components/assistant-ui/message-timing";
 import { attachThreadFastCopy } from "@/components/assistant-ui/thread-fast-copy";
@@ -6821,7 +6822,7 @@ const ComposerRightControls: FC<{
               className="aui-composer-send ml-1.5 size-9 rounded-full"
               aria-label="Resume queue"
             >
-              <FastForwardIcon className="size-[18px] stroke-2" />
+              <QueueResumeIcon />
             </TooltipIconButton>
           ) : queueEntry?.dispatched && !queueEntry.paused ? (
             <Button

@@ -22,9 +22,11 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from playwright.sync_api import Route, expect, sync_playwright
+from playwright.sync_api import TimeoutError as PWTimeoutError
 
 from playwright_image_model_footprint import (
     BASE_URL,
+    KLEIN_ROW,
     CHECKPOINT_BYTES,
     COMPANION_BYTES,
     FILENAME,
@@ -107,7 +109,37 @@ def _open_quant(page, *, navigate: bool) -> None:
             requestAnimationFrame(frame);
         });
     }""")
-    trigger.click()
+    menu = page.locator(".unsloth-model-selector-menu")
+
+    # The picker dismisses on scroll, and in the download-only pass it is opened with the Advanced
+    # panel expanded and two fields just filled, so a late re-render can close it in the frame
+    # after it opened. Waiting on the row alone then burns the whole timeout against a menu that
+    # is no longer there and reports only "Locator.click: Timeout 30000ms exceeded". Reopen while
+    # that is what happened, and say which of the two it was if neither settles.
+    def _open() -> bool:
+        return bool(menu.count()) and menu.first.is_visible()
+
+    last = ""
+    for attempt in range(5):
+        # Clicking the trigger toggles, so an already-open picker must not be clicked shut.
+        if not _open():
+            trigger.click()
+        try:
+            menu.wait_for(state = "visible", timeout = 5_000)
+            klein_row(page).wait_for(state = "visible", timeout = 15_000)
+            break
+        except PWTimeoutError as error:
+            last = str(error).splitlines()[0]
+            if _open():
+                # Open, but without the row: reopening cannot help, so stop and report it.
+                raise AssertionError(
+                    f"the picker is open and {KLEIN_ROW.pattern} is not in it after {attempt + 1} "
+                    f"attempts: {last}"
+                ) from None
+    else:
+        raise AssertionError(
+            f"the picker did not stay open for {KLEIN_ROW.pattern} across 5 attempts: {last}"
+        )
     klein_row(page).click()
     gguf = page.get_by_text("GGUF", exact = True)
     if gguf.count() == 1:
