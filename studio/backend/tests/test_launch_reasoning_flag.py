@@ -216,6 +216,26 @@ class TestOnlyTheDeprecatedKeyMoves:
             json.dumps(kwargs),
         ]
 
+    @pytest.mark.parametrize(
+        "caps", [MODERN_CAPS, OLD_CAPS, {}], ids = ["modern", "old-build", "nothing-known"]
+    )
+    def test_an_empty_dict_still_goes_out_as_main_sends_it(self, caps):
+        """Nothing moved, so the argument main appends has to be appended.
+
+        `_reasoning_kwargs` returns a non-empty dict today, so this input does not
+        arrive from the launcher. That is exactly why it is worth holding: the
+        untouched path should be byte-identical to main by construction, not
+        because the one input that separates the two spellings is unreachable.
+        """
+        assert _build_launch_reasoning_args(caps, {}) == ["--chat-template-kwargs", "{}"]
+
+    def test_an_empty_remainder_after_the_flag_appends_nothing(self):
+        """The other side of it: that argument did not exist on main either."""
+        assert _build_launch_reasoning_args(MODERN_CAPS, {"enable_thinking": True}) == [
+            "--reasoning",
+            "on",
+        ]
+
 
 # --- the real launch, per host ---------------------------------------------------------------
 

@@ -6137,7 +6137,14 @@ def _build_launch_reasoning_args(
     args: list[str] = []
     if caps.get("supports_reasoning_flag") and isinstance(remaining.get("enable_thinking"), bool):
         args.extend(["--reasoning", "on" if remaining.pop("enable_thinking") else "off"])
-    if remaining:
+    # `remaining or not args`, not `remaining`: with nothing moved, the argv has to be
+    # what main emits BY CONSTRUCTION, not because the one input that separates the two
+    # spellings happens to be unreachable. `_reasoning_kwargs` returns a non-empty dict
+    # today, so `{}` never arrives here, but a caller that passed one would otherwise
+    # lose main's `--chat-template-kwargs {}` on a build the probe answered NO for.
+    # Once the flag has taken the only key, an empty remainder is correctly dropped:
+    # that argument did not exist on main either.
+    if remaining or not args:
         args.extend(["--chat-template-kwargs", json.dumps(remaining)])
     return args
 
