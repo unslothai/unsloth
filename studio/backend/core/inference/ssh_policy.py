@@ -586,6 +586,14 @@ def _shell_exec_aliases(tree: ast.AST) -> dict[str, str]:
             module = node.module
             for alias in node.names:
                 if alias.name == "*":
+                    exported_module = {
+                        "paramiko.proxy": "paramiko",
+                        "asyncio.subprocess": "asyncio",
+                    }.get(module, module)
+                    for function in _SHELL_EXEC_FUNCS:
+                        owner, _, name = function.rpartition(".")
+                        if owner == exported_module:
+                            aliases[name] = function
                     continue
                 aliases[alias.asname or alias.name] = f"{module}.{alias.name}"
     for target, value in _assignment_pairs(tree):

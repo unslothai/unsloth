@@ -776,3 +776,11 @@ def test_proxy_command_literal_local_program_remains_allowed():
         )
         is None
     )
+
+
+@pytest.mark.parametrize("module", ["paramiko", "paramiko.proxy"])
+def test_wildcard_proxy_command_import_requires_approval(module):
+    code = f"from {module} import *; ProxyCommand('ssh -F none approved.example')"
+    assert _check_code_safety(code, session_id = "review") is not None
+    approve_hosts("review", ["approved.example"])
+    assert _check_code_safety(code, session_id = "review") is None
