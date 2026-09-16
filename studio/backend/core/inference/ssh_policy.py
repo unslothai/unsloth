@@ -788,6 +788,22 @@ def _ssh_client_bindings(tree: ast.AST, bindings: dict[str, str]) -> dict[str, s
     """Map variables and attributes assigned from SSH client factories."""
     clients: dict[str, str] = {}
     pairs = list(_assignment_pairs(tree))
+
+    def carries_ssh_client(value: ast.AST) -> bool:
+        for child in ast.walk(value):
+            if isinstance(child, ast.Call) and _module_is_ssh_root(
+                _bound_name(child.func, bindings)
+            ):
+                return True
+            name = _fq_name(child)
+            if name and any(
+                (key == name or key.startswith((name + "[", name + ".")))
+                and (factory == "unresolved" or _module_is_ssh_root(factory))
+                for key, factory in clients.items()
+            ):
+                return True
+        return False
+
     previous_count = -1
     while len(clients) > previous_count:
         previous_count = len(clients)
@@ -808,6 +824,12 @@ def _ssh_client_bindings(tree: ast.AST, bindings: dict[str, str]) -> dict[str, s
                     )
                 ):
                     clients[name] = factory
+                else:
+                    inputs = list(value.args) + [keyword.value for keyword in value.keywords]
+                    if isinstance(value.func, ast.Attribute):
+                        inputs.append(value.func.value)
+                    if any(carries_ssh_client(argument) for argument in inputs):
+                        clients[name] = "unresolved"
             elif _fq_name(value) in clients:
                 clients[name] = clients[_fq_name(value)]
             elif isinstance(value, ast.Subscript):
