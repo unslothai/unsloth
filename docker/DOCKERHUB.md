@@ -7,7 +7,7 @@ Source: [`docker/`](https://github.com/unslothai/unsloth/tree/main/docker). Guid
 ## Quick start
 
 ```bash
-# add  -e UNSLOTH_STUDIO_SECURE=1  for a public Cloudflare HTTPS link instead of the ports below
+# use  -e UNSLOTH_STUDIO_SECURE=1  instead of -p 8000:8000 for a public Cloudflare HTTPS link
 docker run -d --name unsloth --gpus all --ipc=host \
   --ulimit memlock=-1 --ulimit stack=67108864 \
   -p 8000:8000 -p 8888:8888 \

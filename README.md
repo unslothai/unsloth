@@ -155,7 +155,7 @@ Use our [Docker image](https://hub.docker.com/r/unsloth/unsloth) ```unsloth/unsl
 
 **Linux / WSL (Bash):**
 ```bash
-# add  -e UNSLOTH_STUDIO_SECURE=1  for a public Cloudflare HTTPS link instead of the ports below
+# use  -e UNSLOTH_STUDIO_SECURE=1  instead of -p 8000:8000 for a public Cloudflare HTTPS link
 docker run -d --name unsloth --gpus all --ipc=host \
   -p 8000:8000 -p 8888:8888 \
   -v "$PWD":/workspace/host \
