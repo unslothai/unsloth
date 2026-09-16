@@ -50,7 +50,7 @@ gguf==0.18.0; python_version < "3.10"
 # synchronized audio) runs through PyAV, which bundles its own ffmpeg libs. The
 # video load path fails fast with a clear error when this is missing, so keep it
 # in the base studio set rather than an extra.
-av>=12.0.0
+av>=12.3.0
 # RAG (knowledge bases, hybrid retrieval). sentence-transformers lives in
 # extras-no-deps.txt; these add the lexical+dense store and document parsing.
 sqlite-vec==0.1.9

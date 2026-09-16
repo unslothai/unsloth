@@ -1,8 +1,9 @@
 # Unsloth Studio Installer for Windows PowerShell
 #
 # Usage, options and the web one-liner: see "Unsloth Studio (web UI)" in the README
-# (https://github.com/unslothai/unsloth#unsloth-studio-web-ui). Not repeated here, because
-# AMSI scans this file in full before a line of it runs and nothing reads the header from inside.
+# (https://github.com/unslothai/unsloth#unsloth-studio-web-ui). Not repeated here: nothing reads
+# this header from inside the script, and the whole file is scanned before any of it runs.
+# Why several things below are written the long way: tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD)
 #
 # The web entry point cannot forward arguments, so it takes options as environment variables set
 # beforehand (UNSLOTH_NO_TORCH, UNSLOTH_SKIP_AUTOSTART, UNSLOTH_ISOLATE_UV_CACHE,
@@ -835,13 +836,12 @@ function Install-UnslothStudio {
     #
     # Add-Type on Windows PowerShell 5.1 (the interpreter the desktop app spawns) has
     # no in-process compiler: -TypeDefinition and -MemberDefinition alike write C# to
-    # %TEMP% and run csc.exe. Bitdefender blocks the resulting DLL, because a
-    # windowless PowerShell spawned by a GUI binary, running a compiler and writing
-    # executable content to %TEMP%, is a dropper's shape whatever the code says. It
-    # also failed with CS2001 when %TEMP% was unusable (issue #9140). Reflection emit
-    # builds the same interop stubs in memory: no compiler process, no source, no DLL,
-    # empty assembly Location. Available on .NET Framework 4 and .NET 5+, so 5.1 and 7
-    # take the same path.
+    # %TEMP% and run csc.exe, which security software blocks and which failed outright
+    # with CS2001 when %TEMP% was unusable (issue #9140). Reflection emit builds the
+    # same interop stubs in memory: no compiler process, no source, no DLL, empty
+    # assembly Location. Available on .NET Framework 4 and .NET 5+, so 5.1 and 7 take
+    # the same path. Which product blocked what:
+    # tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD)
     #
     # Throws rather than reporting: each caller wants a different answer to "the native
     # side is unavailable", and the two cosmetic ones must not print the resolver's
@@ -2097,45 +2097,33 @@ exit 1
 
     function Enable-StudioVirtualTerminal {
         if ($env:NO_COLOR) { return $false }
-        # A redirected stdout is not a console and GetConsoleMode fails on a non-console handle,
-        # so the block below could only return $false anyway. install.rs spawns us with a pipe,
-        # so that is the path the desktop app is on.
+        # A redirected stdout is not a console, so there is no virtual terminal to speak of.
+        # install.rs spawns us with a pipe, so that is the path the desktop app is on, and it is
+        # decided here before anything else is consulted.
         if ($script:StudioStdoutRedirected) { return $false }
-        # Emitted rather than compiled, for the reason New-StudioEmittedNativeType
-        # gives: -MemberDefinition runs csc.exe just as -TypeDefinition does, and the
-        # guard above only keeps the desktop app off it, so the console path
-        # (including `irm | iex`) reached the compiler here every run.
-        # Same gate as the resolver, since colour is not worth a risk that cannot be
-        # caught; failure is just a plain banner.
-        # The published type first, the gate only if there is nothing published: a
-        # type this session already emitted proves emit works here, and asking a
-        # child instead lets one failed probe throw away a usable console helper.
-        if (-not ("StudioVTNative" -as [type]) -and -not (Test-StudioCanDefineNativeTypes)) {
-            return $false
-        }
-        try {
-            if (-not ("StudioVTNative" -as [type])) {
-                $null = New-StudioEmittedNativeType -TypeName "StudioVTNative" -Imports @(
-                    @{ Name = "GetStdHandle"; Library = "kernel32.dll"; Return = [IntPtr]
-                       Args = @([int])
-                       Ansi = $true },
-                    @{ Name = "GetConsoleMode"; Library = "kernel32.dll"; Return = [bool]
-                       Args = @([IntPtr], [uint32].MakeByRefType())
-                       Ansi = $true
-                       Out = @(2) },
-                    @{ Name = "SetConsoleMode"; Library = "kernel32.dll"; Return = [bool]
-                       Args = @([IntPtr], [uint32])
-                       Ansi = $true }
-                )
-            }
-            $h = [StudioVTNative]::GetStdHandle(-11)
-            [uint32]$mode = 0
-            if (-not [StudioVTNative]::GetConsoleMode($h, [ref]$mode)) { return $false }
-            $mode = $mode -bor 0x0004
-            return [StudioVTNative]::SetConsoleMode($h, $mode)
-        } catch {
-            return $false
-        }
+
+        # Windows PowerShell's console host already does the GetStdHandle / GetConsoleMode /
+        # SetConsoleMode sequence this function used to do by hand, at startup, and reports
+        # the outcome through this property, and it is STRICTER than what this replaced:
+        # ConsoleHostUserInterface.TryTurnOnVirtualTerminal re-reads the mode after setting it, because
+        # older systems accept the call and ignore the flag. The deleted code trusted SetConsoleMode's
+        # return value. So the property cannot read True while VT is actually off.
+        #
+        # Measured on Windows PowerShell 5.1.26100 attached to a real console: the property answers True,
+        # the native call answers True, and the console mode read BEFORE touching it is already 0x7 --
+        # which contains 0x4, ENABLE_VIRTUAL_TERMINAL_PROCESSING. The SetConsoleMode this replaced was
+        # re-setting a bit the host had already set. It was a no-op. The measurement and the lane that
+        # produced it are in PR #10984; the record that travels with this repo is in
+        # tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD).
+        #
+        # This removes three of the script's native imports, and with them the only reason the
+        # console path (including `irm | iex`) ever reached the type emitter at all -- for colour.
+        #
+        # [bool] rather than a bare return: the property is virtual with a base of $false, so a host
+        # that does not override it answers $false already -- but a host with no UI at all yields $null,
+        # and the cast makes that $false too. The try/catch is for Set-StrictMode in a caller's profile,
+        # where reading an absent property raises PropertyNotFoundException rather than returning $null.
+        try { return [bool]$Host.UI.SupportsVirtualTerminal } catch { return $false }
     }
     $script:StudioVtOk = Enable-StudioVirtualTerminal
 
@@ -3321,13 +3309,12 @@ exit 0
             # not suppress a ShouldProcess prompt, and a noninteractive host turns it into
             # an error that skips shortcut setup entirely.
             Unblock-File -LiteralPath $launcherPs1 -Confirm:$false -ErrorAction SilentlyContinue
-            # No .vbs launcher is written. A WScript.Shell .vbs that spawns a hidden
-            # ExecutionPolicy-Bypass PowerShell is exactly the shape VBS-dropper
-            # heuristics score (e.g. Kaspersky HEUR:Trojan.VBS.Agent.gen). The .lnk
-            # shortcuts instead point straight at powershell.exe running
-            # launch-studio.ps1 with a hidden window (selected below).
+            # No .vbs launcher is written: the .lnk shortcuts point straight at
+            # powershell.exe running launch-studio.ps1 with a hidden window (selected
+            # below), with no script engine in between.
+            # tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD)
 
-            # Drop any launch-studio.vbs left by a pre-hardening install (AV-flagged shape).
+            # Drop any launch-studio.vbs left by an install that predates that change.
             $legacyLauncherVbs = Join-Path $appDir "launch-studio.vbs"
             if (Test-Path -LiteralPath $legacyLauncherVbs) {
                 Remove-Item -LiteralPath $legacyLauncherVbs -Force -ErrorAction SilentlyContinue
@@ -3400,20 +3387,20 @@ exit 0
                 return
             }
 
-            # Gates the heavy refresh: clearing caches on a no-op reinstall looks like a dropper.
+            # Gates the heavy refresh below: on a reinstall that changed nothing, purging
+            # caches and killing a shell process is wasted work.
+            # tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD)
             $firstInstall = -not (
                 ($desktopLink -and (Test-Path -LiteralPath $desktopLink)) -or
                 ($startMenuLink -and (Test-Path -LiteralPath $startMenuLink))
             )
 
-            # Launch transport for the shortcuts: powershell.exe runs
-            # launch-studio.ps1 with a hidden window. We deliberately avoid a
-            # .vbs/WScript.Shell wrapper -- that script-engine shape is what AV
-            # VBS-dropper heuristics score (Kaspersky HEUR:Trojan.VBS.Agent.gen).
+            # Launch transport for the shortcuts: powershell.exe runs launch-studio.ps1
+            # with a hidden window, deliberately without a .vbs/WScript.Shell wrapper.
             #
-            # RemoteSigned, not Bypass: a hidden window beside a bypassed policy is the pair
-            # Microsoft's detections key on, and install.rs makes the same call for the app's own
+            # RemoteSigned, not Bypass, and install.rs makes the same call for the app's own
             # launch. This launcher is written locally, so RemoteSigned loads it either way.
+            # tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD)
             $powershellForLnk = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
             $shortcutTarget = $powershellForLnk
             $shortcutArgs = "-NoProfile -WindowStyle Hidden -ExecutionPolicy RemoteSigned -File `"$launcherPs1`""
@@ -4622,8 +4609,9 @@ exit 0
 
     # Fallback for hosts without winget. Same archive, destination and user-PATH
     # prepend as astral's install.ps1, but it fetches a data file with a pinned
-    # SHA-256 instead of script text run in-process, which is what AMSI and cloud
-    # ML scanners score hardest. Bumping the version means bumping all 3 hashes:
+    # SHA-256 instead of running remote script text in-process.
+    # tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD)
+    # Bumping the version means bumping all 3 hashes:
     #   curl -sL https://github.com/astral-sh/uv/releases/download/<ver>/uv-<arch>-pc-windows-msvc.zip.sha256
     $UvPinnedVersion = "0.12.1"
     $UvPinnedAssets = @{
@@ -5398,15 +5386,165 @@ exit 0
     }
 
     # ── A driverless nvidia-smi exits 0 listing no GPU, so require a "GPU <n>:" row. ──
+    # 124 is what Invoke-NvidiaSmiBounded reports when it had to kill the probe. Recorded
+    # so the banner below can skip a second query: detection already waited out the full
+    # bound on this binary, and asking a hung nvidia-smi again only doubles the stall.
+    $script:NvidiaSmiWedged = $false
+
     function Test-NvidiaSmiHasGpu {
         param([Parameter(Mandatory = $true)][string]$Exe)
         $out = Invoke-NvidiaSmiBounded $Exe @('-L')
+        # Assigned, not OR-ed: the fallback loop tries several paths, and what matters is
+        # whether the binary it settled on answered, not whether an earlier one hung.
+        $script:NvidiaSmiWedged = ($LASTEXITCODE -eq 124)
         return ($LASTEXITCODE -eq 0 -and $out -match '(?m)^GPU\s+\d+:')
     }
 
+    # ── BEGIN SHARED WITH studio/setup.ps1 (Get-NvidiaLibraryInventory) ──
+    # nvml.dll sits in System32 with current drivers and under NVSMI with older ones; a bare
+    # name reaches only the former, so name the file, as studio/nvidia_probe.py does.
+    function Get-NvidiaNvmlLibraryPath {
+        $dirs = @()
+        if ($env:SystemRoot) { $dirs += (Join-Path $env:SystemRoot "System32") }
+        if ($env:ProgramFiles) { $dirs += (Join-Path $env:ProgramFiles "NVIDIA Corporation\NVSMI") }
+        foreach ($dir in $dirs) {
+            $candidate = Join-Path $dir "nvml.dll"
+            if (Test-Path -LiteralPath $candidate) { return $candidate }
+        }
+        return "nvml.dll"
+    }
+
+    # The driver's libraries as P/Invoke methods, emitted rather than compiled: the installer must
+    # not spawn csc.exe (New-StudioEmittedNativeType). $null when the type cannot be built. A
+    # missing library throws at the first call, not here.
+    function Get-NvidiaLibraryProbeType {
+        $name = "UnslothNvidiaProbeV2"
+        $existing = $name -as [type]
+        if ($existing) { return $existing }
+        # Dynamic Code Security can kill the process on an emitted load rather than throw: the
+        # same gate every other emitted type checks first, and no inventory when it says no.
+        if (-not (Test-StudioCanDefineNativeTypes)) { return $null }
+        $windows = ($env:OS -eq "Windows_NT")
+        $nvml = if ($windows) { Get-NvidiaNvmlLibraryPath } else { "libnvidia-ml.so.1" }
+        $cuda = if ($windows) { "nvcuda.dll" } else { "libcuda.so.1" }
+        $int = [int]; $uint = [uint32]; $refInt = [int].MakeByRefType()
+        $refUInt = [uint32].MakeByRefType(); $refPtr = [IntPtr].MakeByRefType()
+        try {
+            $null = New-StudioEmittedNativeType -TypeName $name -Imports @(
+                @{ Name = "nvmlInit_v2"; Library = $nvml; Return = $int; Args = @(); Ansi = $true },
+                @{ Name = "nvmlShutdown"; Library = $nvml; Return = $int; Args = @(); Ansi = $true },
+                @{ Name = "nvmlSystemGetCudaDriverVersion_v2"; Library = $nvml; Return = $int; Args = @($refInt); Out = @(1); Ansi = $true },
+                @{ Name = "nvmlDeviceGetCount_v2"; Library = $nvml; Return = $int; Args = @($refUInt); Out = @(1); Ansi = $true },
+                @{ Name = "nvmlDeviceGetHandleByIndex_v2"; Library = $nvml; Return = $int; Args = @($uint, $refPtr); Out = @(2); Ansi = $true },
+                @{ Name = "nvmlDeviceGetCudaComputeCapability"; Library = $nvml; Return = $int; Args = @([IntPtr], $refInt, $refInt); Out = @(2, 3); Ansi = $true },
+                @{ Name = "cuInit"; Library = $cuda; Return = $int; Args = @($uint); Ansi = $true },
+                @{ Name = "cuDriverGetVersion"; Library = $cuda; Return = $int; Args = @($refInt); Out = @(1); Ansi = $true },
+                @{ Name = "cuDeviceGetCount"; Library = $cuda; Return = $int; Args = @($refInt); Out = @(1); Ansi = $true },
+                @{ Name = "cuDeviceGet"; Library = $cuda; Return = $int; Args = @($refInt, $int); Out = @(1); Ansi = $true },
+                @{ Name = "cuDeviceGetAttribute"; Library = $cuda; Return = $int; Args = @($refInt, $int, $int); Out = @(1); Ansi = $true }
+            )
+        } catch { return $null }
+        return ($name -as [type])
+    }
+
+    # "source;cudaMajor;cudaMinor;cap,cap" from NVML, else the CUDA driver API; "" when neither
+    # answers. Versions are major*1000 + minor*10. Read in a runspace of its own under a deadline:
+    # a wedged driver can block inside the library, and the deadline leaves that runspace behind.
+    function Read-NvidiaLibraryRaw {
+        param([int]$TimeoutMs = 10000)
+        $type = Get-NvidiaLibraryProbeType
+        if (-not $type) { return "" }
+        $reader = {
+            param($T)
+            function Read-Nvml {
+                if ($T::nvmlInit_v2() -ne 0) { return "" }
+                try {
+                    [uint32]$count = 0
+                    if ($T::nvmlDeviceGetCount_v2([ref]$count) -ne 0 -or $count -eq 0) { return "" }
+                    [int]$ver = 0
+                    if ($T::nvmlSystemGetCudaDriverVersion_v2([ref]$ver) -ne 0 -or $ver -lt 1000) { return "" }
+                    $caps = @()
+                    for ([uint32]$i = 0; $i -lt $count; $i++) {
+                        [IntPtr]$dev = [IntPtr]::Zero; [int]$major = 0; [int]$minor = 0
+                        # One unreadable GPU voids the source: a partial list misleads the pre-Turing cap.
+                        if ($T::nvmlDeviceGetHandleByIndex_v2($i, [ref]$dev) -ne 0) { return "" }
+                        if ($T::nvmlDeviceGetCudaComputeCapability($dev, [ref]$major, [ref]$minor) -ne 0) { return "" }
+                        $caps += "$major.$minor"
+                    }
+                    return "nvml;$([int][math]::Floor($ver / 1000));$([int][math]::Floor(($ver % 1000) / 10));$($caps -join ',')"
+                } finally { $null = $T::nvmlShutdown() }
+            }
+            function Read-Cuda {
+                # The driver API honours CUDA_VISIBLE_DEVICES; the inventory must be the physical one,
+                # so a hidden pre-Turing card still caps the family. cuInit reads the mask once.
+                $saved = $env:CUDA_VISIBLE_DEVICES
+                Remove-Item Env:CUDA_VISIBLE_DEVICES -ErrorAction SilentlyContinue
+                try { $init = $T::cuInit([uint32]0) } finally { if ($null -ne $saved) { $env:CUDA_VISIBLE_DEVICES = $saved } }
+                if ($init -ne 0) { return "" }
+                [int]$count = 0
+                if ($T::cuDeviceGetCount([ref]$count) -ne 0 -or $count -eq 0) { return "" }
+                [int]$ver = 0
+                if ($T::cuDriverGetVersion([ref]$ver) -ne 0 -or $ver -lt 1000) { return "" }
+                $caps = @()
+                for ($i = 0; $i -lt $count; $i++) {
+                    [int]$dev = 0; [int]$major = 0; [int]$minor = 0
+                    if ($T::cuDeviceGet([ref]$dev, $i) -ne 0) { return "" }
+                    # CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR = 75, _MINOR = 76.
+                    if ($T::cuDeviceGetAttribute([ref]$major, 75, $dev) -ne 0) { return "" }
+                    if ($T::cuDeviceGetAttribute([ref]$minor, 76, $dev) -ne 0) { return "" }
+                    $caps += "$major.$minor"
+                }
+                return "cuda;$([int][math]::Floor($ver / 1000));$([int][math]::Floor(($ver % 1000) / 10));$($caps -join ',')"
+            }
+            $r = ""
+            try { $r = Read-Nvml } catch { $r = "" }
+            if (-not $r) { try { $r = Read-Cuda } catch { $r = "" } }
+            return "$r"
+        }
+        $ps = $null; $handle = $null
+        try {
+            $ps = [powershell]::Create()
+            $null = $ps.AddScript($reader.ToString()).AddArgument($type)
+            $handle = $ps.BeginInvoke()
+            if (-not $handle.AsyncWaitHandle.WaitOne($TimeoutMs)) { return "" }
+            return "$(@($ps.EndInvoke($handle)) | Select-Object -Last 1)"
+        } catch { return "" }
+        finally { if ($ps -and $handle -and $handle.IsCompleted) { $ps.Dispose() } }
+    }
+
+    # NVIDIA inventory from the driver's own libraries (NVML, then the CUDA driver API), for a
+    # host whose nvidia-smi is absent, stale or hangs (#9255). Twin of studio/nvidia_probe.py.
+    # Cached. $null, or @{ Source; CudaMajor; CudaMinor; ComputeCaps ("8.9" strings); Count }.
+    function Get-NvidiaLibraryInventory {
+        param([int]$TimeoutSec = 10)
+        if ($script:NvidiaLibraryInventoryProbed) { return $script:NvidiaLibraryInventory }
+        $script:NvidiaLibraryInventoryProbed = $true
+        $script:NvidiaLibraryInventory = $null
+        if ("$($env:UNSLOTH_NVIDIA_LIBRARY_PROBE)".Trim() -eq "0") { return $null }
+        try { $raw = Read-NvidiaLibraryRaw -TimeoutMs ($TimeoutSec * 1000) } catch { return $null }
+        $parts = "$raw".Split(";")
+        if ($parts.Count -ne 4 -or -not $parts[3] -or [int]$parts[1] -lt 1) { return $null }
+        $caps = @($parts[3].Split(","))
+        if (@($caps | Where-Object { $_ -notmatch '^\d+\.\d+$' }).Count -gt 0) { return $null }
+        $script:NvidiaLibraryInventory = @{
+            Source      = $parts[0]
+            CudaMajor   = [int]$parts[1]
+            CudaMinor   = [int]$parts[2]
+            ComputeCaps = $caps
+            Count       = $caps.Count
+        }
+        return $script:NvidiaLibraryInventory
+    }
+    # ── END SHARED WITH studio/setup.ps1 (Get-NvidiaLibraryInventory) ──
+    # Under `irm | iex` the script scope is the caller's session: probe once per invocation.
+    $script:NvidiaLibraryInventoryProbed = $false
+    $script:NvidiaLibraryInventory = $null
     # ── Detect GPU (robust: PATH + hardcoded fallback paths, mirrors setup.ps1) ──
     $HasNvidiaSmi = $false
     $NvidiaSmiExe = $null
+    $NvidiaGpuName = $null
+    $NvidiaSmArch = $null
+    $NvidiaDriverVersion = $null
     try {
         $nvSmiCmd = Get-Command nvidia-smi -ErrorAction SilentlyContinue
         if ($nvSmiCmd -and (Test-NvidiaSmiHasGpu $nvSmiCmd.Source)) {
@@ -5425,10 +5563,131 @@ exit 0
             }
         }
     }
+    if (-not $HasNvidiaSmi -and (Get-NvidiaLibraryInventory)) {
+        # Same promotion as setup.ps1: the gates below read $HasNvidiaSmi as "NVIDIA GPU present".
+        $HasNvidiaSmi = $true
+        Write-StudioLine "   NVIDIA GPU found through the driver library; nvidia-smi is unavailable" -ForegroundColor Gray
+    }
+    # nvidia-smi was already resolved above and never asked which card it found, so the
+    # banner said "NVIDIA GPU detected" on every NVIDIA host alike. compute_cap is the
+    # counterpart of the gfx arch shown for AMD, and the driver version the counterpart of
+    # the HIP SDK line; one query returns all three. Honour the same visible-device index
+    # the AMD probes do.
+    #
+    # A mask of "" or -1 hides every device, so it selects nothing to name. It is also not
+    # a UUID, and letting it reach the prefix match below would spend a second probe that
+    # can never match and then name row 0 anyway. $HasNvidiaSmi still drives wheel
+    # selection here, as it does on main, so only the naming is skipped: the banner keeps
+    # the vendor-only wording rather than claiming a card CUDA does not expose.
+    $nvMaskHidesAll = $false
+    if ($null -ne $env:CUDA_VISIBLE_DEVICES) {
+        $nvMask = ($env:CUDA_VISIBLE_DEVICES -replace '\s', '')
+        $nvMaskHidesAll = ($nvMask -eq '' -or $nvMask -eq '-1')
+    }
+    if ($HasNvidiaSmi -and $NvidiaSmiExe -and -not $script:NvidiaSmiWedged -and -not $nvMaskHidesAll) {
+        try {
+            # Through the bounded runner, like every other nvidia-smi call here: a
+            # wedged driver blocks nvidia-smi indefinitely, and a bare `&` call has
+            # nothing to time it out. -StdoutOnly because driver warnings on stderr
+            # would corrupt this machine-readable CSV.
+            $nvOut = Invoke-NvidiaSmiBounded $NvidiaSmiExe @('--query-gpu=name,compute_cap,driver_version', '--format=csv,noheader') -StdoutOnly
+            $nvRows = @($nvOut -split '\r?\n' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+            if ($nvRows.Count -gt 0) {
+                # nvidia-smi ignores CUDA_VISIBLE_DEVICES, so the mask is resolved against
+                # its physical rows here. A non-numeric token is a GPU UUID, or a MIG id
+                # (MIG-<GPU-UUID>/<gi>/<ci>) embedding one; NVIDIA allows the UUID to be
+                # abbreviated to any unique leading portion, so it is matched on prefix.
+                $nvIdx = 0
+                $nvTok = if ($env:CUDA_VISIBLE_DEVICES) { ($env:CUDA_VISIBLE_DEVICES -split ',')[0].Trim() } else { '' }
+                # True while nothing has IDENTIFIED a device: a plain ordinal.
+                $nvByOrdinal = $true
+                # Set when an identity mask was given but did not resolve, which means CUDA
+                # selected NO device. Row 0 is not a fallback for that.
+                $nvUnresolved = $false
+                if ($nvTok -match '^\d+$') {
+                    $nvIdx = [int]$nvTok
+                } elseif ($nvTok -like 'MIG-*' -and $nvTok -notlike 'MIG-GPU-*') {
+                    # R470 and later give each MIG instance its OWN opaque UUID, which
+                    # carries nothing of the parent, so --query-gpu=uuid can never match
+                    # it. `nvidia-smi -L` nests the instances under their GPU.
+                    $nvListOut = Invoke-NvidiaSmiBounded $NvidiaSmiExe @('-L') -StdoutOnly
+                    $cur = 0
+                    $nvByOrdinal = $false
+                    $nvFound = $false
+                    foreach ($ln in ($nvListOut -split '\r?\n')) {
+                        if ($ln -match '^GPU\s+(\d+):') { $cur = [int]$Matches[1] }
+                        if ($ln -match [regex]::Escape($nvTok)) { $nvIdx = $cur; $nvFound = $true; break }
+                    }
+                    if (-not $nvFound) { $nvUnresolved = $true }
+                } elseif ($nvTok) {
+                    # Pre-R470 MIG names embed the parent UUID: MIG-<GPU-UUID>/<gi>/<ci>.
+                    if ($nvTok -like 'MIG-GPU-*') { $nvTok = ($nvTok.Substring(4) -split '/')[0] }
+                    $nvUuidOut = Invoke-NvidiaSmiBounded $NvidiaSmiExe @('--query-gpu=uuid', '--format=csv,noheader') -StdoutOnly
+                    $nvUuids = @($nvUuidOut -split '\r?\n' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+                    $nvByOrdinal = $false
+                    $nvFound = $false
+                    # NVIDIA accepts an abbreviation only when it is a UNIQUE leading portion, so
+                    # a prefix matching two cards selects NO device. Collect, do not stop at the
+                    # first hit, or the banner names one of them.
+                    $nvMatches = @()
+                    for ($i = 0; $i -lt $nvUuids.Count; $i++) {
+                        if ($nvUuids[$i].StartsWith($nvTok, [System.StringComparison]::OrdinalIgnoreCase)) { $nvMatches += $i }
+                    }
+                    if ($nvMatches.Count -eq 1) { $nvIdx = $nvMatches[0]; $nvFound = $true }
+                    if (-not $nvFound) { $nvUnresolved = $true }
+                }
+                $nvRow = if ($nvIdx -lt $nvRows.Count) { $nvRows[$nvIdx] } else { $nvRows[0] }
+                # A numeric entry is a CUDA ordinal, and CUDA's default
+                # CUDA_DEVICE_ORDER=FASTEST_FIRST puts the fastest card at 0 and leaves the
+                # rest unspecified, while nvidia-smi always lists in PCI order. So an ordinal
+                # identifies an nvidia-smi row only when the order is pinned to PCI_BUS_ID, or
+                # when the cards are interchangeable and every row gives the same answer
+                # anyway. Compared on name and compute_cap, not the driver, which is host-wide.
+                # CUDA stops enumerating at the first invalid index, so an ordinal past the last
+                # row exposes NO device. The row pick below clamps to 0 so the driver still
+                # reads, but row 0 is not the selected card -- nothing is.
+                if ($nvByOrdinal -and $nvIdx -ge $nvRows.Count) { $nvUnresolved = $true }
+                $nvAmbiguous = $nvUnresolved
+                if ($nvByOrdinal -and -not $nvAmbiguous) {
+                    $nvOrder = (("$env:CUDA_DEVICE_ORDER") -replace '\s', '').ToUpperInvariant()
+                    $nvModels = @($nvRows | ForEach-Object { $_ -replace ',[^,]*$', '' } |
+                                  Sort-Object -Unique).Count
+                    $nvAmbiguous = ($nvOrder -ne 'PCI_BUS_ID' -and $nvModels -gt 1)
+                }
+                # Split from the right: nvidia-smi does not quote, so a comma in a device
+                # name would otherwise shift every field.
+                $nvParts = $nvRow -split ','
+                if ($nvParts.Count -ge 3) {
+                    $NvidiaDriverVersion = $nvParts[-1].Trim()
+                    $nvComputeCap        = $nvParts[-2].Trim()
+                    $NvidiaGpuName       = ($nvParts[0..($nvParts.Count - 3)] -join ',').Trim()
+                    if ($nvComputeCap -match '^(\d+)\.(\d+)$') {
+                        $NvidiaSmArch = "sm_" + (([int]$Matches[1] * 10) + [int]$Matches[2])
+                    }
+                } else {
+                    # Short row: field 1 only. Taking the whole row would print the
+                    # compute capability as part of the name ("RTX 4090, 8.9").
+                    $NvidiaGpuName = $nvParts[0].Trim()
+                }
+                # An nvidia-smi too old for a field answers with a placeholder rather
+                # than failing (the 470 branch has no compute_cap at all).
+                $nvPlaceholders = @('[N/A]', '[Not Supported]', '[Unknown Error]')
+                if ($nvPlaceholders -contains $NvidiaGpuName)       { $NvidiaGpuName = $null }
+                if ($nvPlaceholders -contains $NvidiaDriverVersion) { $NvidiaDriverVersion = $null }
+                # Keep the driver, drop the identity: the banner falls back to the vendor-only
+                # wording rather than claiming a card that may not be the one CUDA will use.
+                if ($nvAmbiguous) { $NvidiaGpuName = $null; $NvidiaSmArch = $null }
+            }
+        } catch {}
+    }
     # ── AMD ROCm detection (Windows) — mirrors setup.ps1 ──
     $HasROCm = $false
     $HipSdkInstalled = $false   # HIP SDK binary found (independent of device accessibility)
     $ROCmGpuLabel = $null
+    # Marketing name on its own ("AMD Radeon RX 9060 XT"), never decorated. Kept apart from
+    # $ROCmGpuLabel because that one doubles as the input to the name -> arch tables below;
+    # this one only ever reaches the banner.
+    $ROCmGpuName = $null
     $ROCmVersion = $null
     $ROCmGfxArch = $null
     # Declared with its neighbours, not inside the block below: the arms that read
@@ -5506,10 +5765,23 @@ exit 0
                     # Once the arch is printed, keep the ROCm wheel path.
                     $HasROCm = $true
                     $_hipAllArches = @([regex]::Matches($hipOut, "(?im)^\s*gcnArchName\s*:\s*(\S+)") | ForEach-Object { ($_.Groups[1].Value -split ':')[0].Trim().ToLower() })
-                    $_hipVisIdx = if ($env:HIP_VISIBLE_DEVICES -match '^\d') { [int]($env:HIP_VISIBLE_DEVICES -split ',')[0] } elseif ($env:ROCR_VISIBLE_DEVICES -match '^\d') { [int]($env:ROCR_VISIBLE_DEVICES -split ',')[0] } else { 0 }
+                    # hipinfo prints "Name:" per device alongside gcnArchName. Anchored so
+                    # gcnArchName cannot match. Only trusted when the two lists line up, so a
+                    # format change can mislabel nothing -- the arch (which picks the wheel)
+                    # never reads this.
+                    $_hipAllNames = @([regex]::Matches($hipOut, "(?im)^\s*Name\s*:\s*(.+?)\s*$") | ForEach-Object { $_.Groups[1].Value.Trim() })
                     if ($_hipAllArches.Count -gt 0) {
-                        $ROCmGfxArch  = if ($_hipVisIdx -lt $_hipAllArches.Count) { $_hipAllArches[$_hipVisIdx] } else { $_hipAllArches[0] }
+                        # Entry 0, NOT the visible-device token, and the same choice
+                        # studio/setup.ps1 already makes: hipinfo is itself a HIP
+                        # application, so HIP/ROCR_VISIBLE_DEVICES has already filtered
+                        # its output and renumbered the survivors from 0. Indexing that
+                        # by the physical token applies the mask twice and lands on the
+                        # wrong card, which the banner now shows by name.
+                        $ROCmGfxArch  = $_hipAllArches[0]
                         $ROCmGpuLabel = "AMD ROCm ($ROCmGfxArch)"
+                        if ($_hipAllNames.Count -eq $_hipAllArches.Count) {
+                            $ROCmGpuName = $_hipAllNames[0]
+                        }
                     } else {
                         $ROCmGpuLabel = "AMD ROCm"
                     }
@@ -5541,19 +5813,31 @@ exit 0
                         $_smiVisIdx = if ($env:HIP_VISIBLE_DEVICES -match '^\d') { [int]($env:HIP_VISIBLE_DEVICES -split ',')[0] } elseif ($env:ROCR_VISIBLE_DEVICES -match '^\d') { [int]($env:ROCR_VISIBLE_DEVICES -split ',')[0] } else { 0 }
                         # Attempt 1: newer amd-smi versions embed the gfx arch in list output.
                         $_smiGfxTokens = @([regex]::Matches($smiOut, "(?i)\b(gfx\d+[a-z]?)\b") | ForEach-Object { $_.Groups[1].Value.ToLower() })
+                        # Market names, when this amd-smi prints them, indexed like the gfx
+                        # tokens above. Banner only; the arch that selects the wheel is never
+                        # taken from here.
+                        $_smiNames = @([regex]::Matches($smiOut, "(?im)Market.?Name\s*[:\|]\s*([^\r\n]+)") | ForEach-Object { $_.Groups[1].Value.Trim() })
                         if ($_smiGfxTokens.Count -gt 0) {
                             $ROCmGfxArch = if ($_smiVisIdx -lt $_smiGfxTokens.Count) { $_smiGfxTokens[$_smiVisIdx] } else { $_smiGfxTokens[0] }
                             $ROCmGpuLabel = "AMD ROCm ($ROCmGfxArch)"
+                            if ($_smiNames.Count -eq $_smiGfxTokens.Count) {
+                                $ROCmGpuName = if ($_smiVisIdx -lt $_smiNames.Count) { $_smiNames[$_smiVisIdx] } else { $_smiNames[0] }
+                            }
                         } else {
                             # Attempt 2: 'static --asic' exposes the GFX target on ROCm 6+.
                             $smiAsicOut = ""
                             try { $smiAsicOut = Invoke-AmdSmiNoElevate $amdSmiExe.Source @('static','--asic') } catch {}
                             $_asicGfxTokens = @([regex]::Matches($smiAsicOut, "(?i)\b(gfx\d+[a-z]?)\b") | ForEach-Object { $_.Groups[1].Value.ToLower() })
+                            $_asicNames = @([regex]::Matches($smiAsicOut, "(?im)Market.?Name\s*[:\|]\s*([^\r\n]+)") | ForEach-Object { $_.Groups[1].Value.Trim() })
                             if ($_asicGfxTokens.Count -gt 0) {
                                 $ROCmGfxArch = if ($_smiVisIdx -lt $_asicGfxTokens.Count) { $_asicGfxTokens[$_smiVisIdx] } else { $_asicGfxTokens[0] }
                                 $ROCmGpuLabel = "AMD ROCm ($ROCmGfxArch)"
-                            } elseif ($smiAsicOut -match "(?im)Market.?Name\s*[:\|]\s*([^\r\n]+)") {
-                                $ROCmGpuLabel = "AMD ROCm ($($Matches[1].Trim()))"
+                                if ($_asicNames.Count -eq $_asicGfxTokens.Count) {
+                                    $ROCmGpuName = if ($_smiVisIdx -lt $_asicNames.Count) { $_asicNames[$_smiVisIdx] } else { $_asicNames[0] }
+                                }
+                            } elseif ($_asicNames.Count -gt 0) {
+                                $ROCmGpuName = if ($_smiVisIdx -lt $_asicNames.Count) { $_asicNames[$_smiVisIdx] } else { $_asicNames[0] }
+                                $ROCmGpuLabel = "AMD ROCm ($ROCmGpuName)"
                             } else {
                                 $ROCmGpuLabel = "AMD ROCm"
                             }
@@ -5583,7 +5867,7 @@ exit 0
                 $healthyAdapters = @($amdAdapters | Where-Object {
                     ($null -eq $_.ConfigManagerErrorCode) -or ($_.ConfigManagerErrorCode -eq 0) })
                 $wmiGpu = @(if ($healthyAdapters.Count -gt 0) { $healthyAdapters } else { $amdAdapters })[0]
-                if ($wmiGpu) { $ROCmGpuLabel = $wmiGpu.Name }
+                if ($wmiGpu) { $ROCmGpuLabel = $wmiGpu.Name; $ROCmGpuName = $wmiGpu.Name }
             } catch {}
         }
         # Peer names for the REPORT ONLY, kept apart from the scan above: that one feeds the
@@ -5951,19 +6235,38 @@ exit 0
         }
     }
 
+    # One banner string for the AMD arms below. The arch alone ("AMD ROCm (gfx1200)") named a
+    # target nobody shopping for a GPU recognises, while every probe above already had the
+    # marketing name in hand and threw it away; the backend then prints it at startup, so the
+    # installer was the only place it went missing.
+    $ROCmGpuDisplay =
+        if ($ROCmGpuName -and $ROCmGfxArch) { "$ROCmGpuName ($ROCmGfxArch)" }
+        elseif ($ROCmGpuName)               { $ROCmGpuName }
+        elseif ($ROCmGfxArch)               { "AMD ROCm ($ROCmGfxArch)" }
+        else                                { $ROCmGpuLabel }
+
+    # Same shape for every vendor: the device on the step line, its compute target in
+    # parentheses, the runtime below. Intel has no counterpart to gfx1200 / sm_89 that any
+    # probe here already resolves, so it gets the name alone rather than an invented one.
+    $NvidiaGpuDisplay =
+        if ($NvidiaGpuName -and $NvidiaSmArch) { "$NvidiaGpuName ($NvidiaSmArch)" }
+        elseif ($NvidiaGpuName)                { $NvidiaGpuName }
+        else                                   { "NVIDIA GPU detected" }
+    $IntelGpuDisplay  = if ($IntelGpuLabel)  { $IntelGpuLabel }  else { "Intel GPU detected" }
+
     if ($HasNvidiaSmi) {
-        step "gpu" "NVIDIA GPU detected"
+        step "gpu" $NvidiaGpuDisplay
+        if ($NvidiaDriverVersion) { substep "Driver: $NvidiaDriverVersion" }
     } elseif ($script:IsIntelXpu) {
         # Ranks above every AMD branch: only true when AMD gets no GPU wheel ($AmdHasGpuWheels
         # gates the scan above), so those branches would all end on CPU.
-        step "gpu" "Intel GPU detected" "Green"
-        substep "$IntelGpuLabel"
+        step "gpu" $IntelGpuDisplay "Green"
         # The reroute below prints the index: only it knows the mirror URL and any pin.
     } elseif ($HasROCm -and -not $ROCmUnsupportedGfxArch) {
         # Guarded like the HIP SDK arm below: amd-smi can report a GPU with no gfx token
         # and only a market name, setting $HasROCm without an arch. Calling that card
         # "AMD ROCm" contradicts the wheel note this run also prints.
-        step "gpu" $ROCmGpuLabel
+        step "gpu" $ROCmGpuDisplay
         $hipSdkPath = if ($env:HIP_PATH) { $env:HIP_PATH } elseif ($env:ROCM_PATH) { $env:ROCM_PATH } else { "on system PATH" }
         substep "HIP SDK: $hipSdkPath"
         if ($ROCmVersionFull) { substep "hipconfig: $ROCmVersionFull" }
@@ -5980,7 +6283,9 @@ exit 0
         substep "       Ensure the ROCm compute driver is installed alongside the display driver:" "Yellow"
         substep "       https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" "Yellow"
     } elseif ($ROCmGfxArch) {
-        step "gpu" "AMD ROCm ($ROCmGfxArch)" "Cyan"
+        # Known arch: Unsloth setup installs AMD's bundled-runtime ROCm PyTorch wheels
+        # (repo.amd.com), which ship their own runtime -- HIP SDK optional.
+        step "gpu" $ROCmGpuDisplay "Cyan"
         substep "Detected: $ROCmGpuLabel" "Cyan"
         substep "GPU PyTorch uses AMD's bundled-runtime ROCm wheels -- HIP SDK not required (optional)." "Cyan"
     } elseif ($ROCmUnsupportedGfxArch) {
@@ -6054,10 +6359,13 @@ exit 0
     # the wheel must support the host. Mirrors _nvidia_cu126_verdict in install.sh.
     function Get-NvidiaCu126Verdict {
         # Floor is per-release, not fixed: only 2.11 dropped sm_70 from cu128.
-        param([string]$SmiExe, [int]$LegacyFloorSm = 75)
-        if (-not $SmiExe) { return '' }
-        $raw = Invoke-NvidiaSmiBounded $SmiExe @('--query-gpu=compute_cap', '--format=csv,noheader,nounits') -StdoutOnly
-        if ($LASTEXITCODE -ne 0 -or -not $raw) { return '' }
+        param([string]$SmiExe, [int]$LegacyFloorSm = 75, [string[]]$ComputeCaps = @())
+        if ($ComputeCaps.Count -gt 0) {
+            $raw = $ComputeCaps -join "`n"
+        } elseif ($SmiExe) {
+            $raw = Invoke-NvidiaSmiBounded $SmiExe @('--query-gpu=compute_cap', '--format=csv,noheader,nounits') -StdoutOnly
+            if ($LASTEXITCODE -ne 0 -or -not $raw) { return '' }
+        } else { return '' }
         $legacy = $false
         $outsideCu126 = $false
         $seen = $false
@@ -6076,11 +6384,11 @@ exit 0
     }
 
     function Get-CudaFamilyCappedForPreTuring {
-        param([string]$Family, [string]$SmiExe)
+        param([string]$Family, [string]$SmiExe, [string[]]$ComputeCaps = @())
         if ($Family -notin @('cu128', 'cu130')) { return $Family }
         # torch 2.11.0+cu128 dropped Volta, so cu128 now strands a pre-Turing host as cu130 does.
         $legacyFloorSm = 75
-        switch (Get-NvidiaCu126Verdict $SmiExe $legacyFloorSm) {
+        switch (Get-NvidiaCu126Verdict $SmiExe $legacyFloorSm $ComputeCaps) {
             'cu126' {
                 substep "pre-Turing NVIDIA GPUs (sm_<75) are present -- selecting cu126, because PyTorch 2.11's $Family wheels start at sm_75" "Yellow"
                 return 'cu126'
@@ -6104,22 +6412,34 @@ exit 0
         if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_FAMILY)) {
             return "$baseUrl/$($env:UNSLOTH_TORCH_INDEX_FAMILY.Trim().Trim('/'))"
         }
-        if (-not $NvidiaSmiExe) { return "$baseUrl/cpu" }
-        try {
-            $output = Invoke-NvidiaSmiBounded $NvidiaSmiExe
-            if ($output -match 'CUDA(?: UMD)? Version:\s+(\d+)\.(\d+)') {
-                $major = [int]$Matches[1]; $minor = [int]$Matches[2]
-                if ($major -ge 13)                        { $family = "cu130" }
-                elseif ($major -eq 12 -and $minor -ge 8)  { $family = "cu128" }
-                elseif ($major -eq 12 -and $minor -ge 6)  { $family = "cu126" }
-                elseif ($major -ge 12) { $family = "cu124" }
-                elseif ($major -ge 11) { $family = "cu118" }
-                else { return "$baseUrl/cpu" }
-                return "$baseUrl/$(Get-CudaFamilyCappedForPreTuring $family $NvidiaSmiExe)"
+        $major = $null; $minor = $null; $caps = @()
+        if ($NvidiaSmiExe) {
+            try {
+                $output = Invoke-NvidiaSmiBounded $NvidiaSmiExe
+                if ($output -match 'CUDA(?: UMD)? Version:\s+(\d+)\.(\d+)') {
+                    $major = [int]$Matches[1]; $minor = [int]$Matches[2]
+                }
+            } catch {}
+        }
+        if ($null -eq $major) {
+            # nvidia-smi absent, stale or hung: the driver library still names the version.
+            $inventory = Get-NvidiaLibraryInventory
+            if ($inventory) {
+                $major = $inventory.CudaMajor; $minor = $inventory.CudaMinor; $caps = $inventory.ComputeCaps
+            } elseif (-not $NvidiaSmiExe) {
+                return "$baseUrl/cpu"
+            } else {
+                substep "could not determine CUDA version from nvidia-smi, defaulting to cu126" "Yellow"
+                return "$baseUrl/cu126"
             }
-        } catch {}
-        substep "could not determine CUDA version from nvidia-smi, defaulting to cu126" "Yellow"
-        return "$baseUrl/cu126"
+        }
+        if ($major -ge 13)                        { $family = "cu130" }
+        elseif ($major -eq 12 -and $minor -ge 8)  { $family = "cu128" }
+        elseif ($major -eq 12 -and $minor -ge 6)  { $family = "cu126" }
+        elseif ($major -ge 12) { $family = "cu124" }
+        elseif ($major -ge 11) { $family = "cu118" }
+        else { return "$baseUrl/cpu" }
+        return "$baseUrl/$(Get-CudaFamilyCappedForPreTuring $family $NvidiaSmiExe $caps)"
     }
 
     function Remove-IndexUrlCredentials {
