@@ -393,7 +393,10 @@ def _switch_always_returns(statement: str) -> bool:
         end = labels[position + 1] if position + 1 < len(labels) else len(body)
         arm = re.sub(r"\b(?:case\b[^:]*|default\s*):\s*$", "", body[start:end]).strip()
         if not arm:
-            # Empty: control falls into the next case, which is the one that has to return.
+            # Empty: control falls into the next label, which is then the one that has to
+            # return. A last label has none to fall into, so it leaves the switch instead.
+            if position + 1 == len(labels):
+                return False
             continue
         if not _block_always_returns(arm):
             return False
@@ -578,6 +581,25 @@ def _top_level_conjuncts(guard: str) -> list:
     return [part.strip() for part in parts if part.strip()]
 
 
+def _literal_value(text: str):
+    """What a literal denotes, so equivalent spellings compare equal.
+
+    `0x10` and `16` are one value, as are `1e3` and `1000`, and `'x'` and `"x"`. Comparing the
+    source instead would fail a selector for rewriting a literal, which is the reformatting this
+    test exists to survive. A token that is not a literal answers itself, so it can only match
+    another copy of the same text.
+    """
+    text = text.strip()
+    if re.fullmatch(_NUMBER, text):
+        try:
+            return float(int(text, 0))
+        except ValueError:
+            return float(text)
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "'\"":
+        return ("string", text[1:-1])
+    return text
+
+
 def _pinned_literal(guard: str, taken: bool, access: str, field: str):
     """The one value `field` can hold on this branch, or None if the branch does not fix it.
 
@@ -667,7 +689,12 @@ def _selector_reads(selector: str, field: str) -> bool:
     # alike, so the supported -1 to 0 change produces no change at all.
     return all(
         read.search(result)
-        or any(_pinned_literal(guard, taken, access, field) == result for guard, taken in guards)
+        or any(
+            _pinned_literal(guard, taken, access, field) is not None
+            and _literal_value(_pinned_literal(guard, taken, access, field))
+            == _literal_value(result)
+            for guard, taken in guards
+        )
         for result, guards in results
     )
 
@@ -727,6 +754,13 @@ SELECTOR_CASES = [
     ("(s) => s.reasoningBudget === 1e3 ? 1 : s.reasoningBudget", False),
     ("(s) => s.reasoningBudget === 1e3 ? 1e3 : s.reasoningBudget", True),
     ("(s) => s.reasoningBudget === 0x10 ? 0x10 : s.reasoningBudget", True),
+    # Pins compare by value: rewriting a literal is a reformatting, not a change of meaning.
+    ("(s) => s.reasoningBudget === 0x10 ? 16 : s.reasoningBudget", True),
+    ("(s) => s.reasoningBudget === 1e3 ? 1000 : s.reasoningBudget", True),
+    ("(s) => s.reasoningBudget === 'x' ? \"x\" : s.reasoningBudget", True),
+    # Distinct values stay distinct, whatever they are spelled with.
+    ("(s) => s.reasoningBudget === null ? undefined : s.reasoningBudget", False),
+    ("(s) => s.reasoningBudget === true ? 1 : s.reasoningBudget", False),
     # A pinned arm has to return the value the field holds there, or it collides: -1 becoming 0
     # returns 0 both before and after.
     ("(s) => s.reasoningBudget === -1 ? 0 : s.reasoningBudget", False),
@@ -803,6 +837,8 @@ SELECTOR_CASES = [
         True,
     ),
     ('(s) => { switch (s.mode) { case "x": default: return s.reasoningBudget; } }', True),
+    # An empty LAST label has nothing to fall into, so that value leaves the switch.
+    ('(s) => { switch (s.mode) { default: return s.reasoningBudget; case "x": } }', False),
     # Undefaulted: a mode matching nothing falls past the switch and returns undefined.
     ('(s) => { switch (s.mode) { case "x": return s.reasoningBudget; } }', False),
     # `break` leaves the switch with no value, which is the fall-through again.
