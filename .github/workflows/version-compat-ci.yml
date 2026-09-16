@@ -1,53 +1,27 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 #
-# Cross-version compat canary for the four upstream packages whose
-# release cadence regularly breaks unsloth + unsloth-zoo:
-#
-#   1. vLLM             (LoRA worker manager, BnB loader, cumem allocator)
-#   2. TRL / GRPO       (trainer source rewriters in unsloth.models.rl*)
-#   3. PEFT             (LoraConfig, get_peft_model, LoraLayer, bnb integration)
-#   4. sentence-transformers (Transformer/Pooling/Normalize, Trainer)
-#   5. bitsandbytes     (Linear4bit, dequantize_4bit)
-#
-# Strategy: GitHub raw-fetch + symbol grep against every tracked
-# version (no pip install, CPU-only). When upstream renames a symbol
-# we depend on, the matching test fails BEFORE a user hits it. The
-# `main` branch entries give us a few-day lead on PyPI releases.
-#
-# Cross-references:
-#   tests/vllm_compat/test_vllm_pinned_symbols.py     (vLLM symbols)
-#   tests/version_compat/test_trl_grpo_pinned_symbols.py
-#   tests/version_compat/test_peft_pinned_symbols.py
-#   tests/version_compat/test_sentence_transformers_pinned_symbols.py
-#   tests/version_compat/test_bitsandbytes_pinned_symbols.py
+# Cross-version compat canary for the upstream packages whose release cadence breaks
+# unsloth: raw-fetch plus symbol grep against every tracked version, no pip install, so a
+# rename fails here before a user hits it. The `main` entries lead PyPI by a few days.
 
 name: Version Compat CI
 
 on:
   pull_request:
-    # Trigger on any unsloth source change, not just the three previously
-    # named files. The symbol-existence tests verify that EVERY pinned
-    # upstream reference in unsloth still resolves; a new
-    # `from peft.foo import Bar` added in unsloth/kernels/whatever.py
-    # is just as much a compat regression risk as one added in
-    # unsloth/models/rl.py.
+    # Any unsloth source change: a new `from peft.foo import Bar` anywhere is as much a
+    # compat risk as one in models/rl.py.
     paths:
       - 'unsloth/**'
       - 'tests/vllm_compat/**'
       - 'tests/version_compat/**'
       - 'pyproject.toml'
-      # The cap-site-consistency job below reads every file that declares the
-      # transformers window, and tests/test_transformers_cap_sites.py finds the
-      # workflow half of that set with a `.github/workflows/*.yml` glob. Trigger on
-      # the same set the job scans, or a PR that moves a cap in notebooks-ci.yml,
-      # studio-backend-ci.yml or studio-export-capability-ci.yml never starts the job
-      # that exists to catch exactly that drift, and it merges green.
+      # Trigger on the same set cap-site-consistency scans, or a PR that moves a cap in
+      # another workflow never starts the job that exists to catch that drift.
       - '.github/workflows/**'
       - 'tests/test_transformers_cap_sites.py'
   schedule:
-    # Daily 06:43 UTC. Catches upstream PyPI releases roughly within
-    # 24 h. Off the :00 / :30 fleet-collision spots.
+    # Off the :00 / :30 fleet-collision spots.
     - cron: '43 6 * * *'
   workflow_dispatch:
 
@@ -63,34 +37,15 @@ permissions:
   contents: read
 
 jobs:
-  # Six jobs, one runner. Each of these suites fetches raw source from
-  # raw.githubusercontent.com and greps for symbols -- see tests/version_compat/_fetch.py,
-  # `has_def` / `first_match`. No pip install of vllm / torch / transformers is involved,
-  # which is the whole point of the canary and is also what makes co-locating them safe:
-  # there is no venv to conflict over, so "transformers 4.57.6" and "transformers main"
-  # can share one interpreter because neither is installed.
+  # Six suites, one runner: nothing is pip-installed, so there is no venv to conflict over
+  # and "transformers 4.51.3" and "transformers main" share one interpreter safely. Queue
+  # admission, not execution, was the cost of six separate jobs.
   #
-  # They were six separate jobs costing six runner slots for 287s of combined work.
-  # Measured over a sampled main commit, each waited 23 to 31 minutes for admission to
-  # execute for 15 to 128 seconds. The queue is the cost, so the slots are the target.
+  # -n 4 and not higher: the work is fetch-bound, and -n 8 measured 2.7x SLOWER than -n 4
+  # (upstream throttling, not core contention). --dist loadfile keeps a suite on one worker.
   #
-  # -n 4, deliberately, and not higher. The work is network-bound rather than CPU-bound,
-  # so more workers looks free and is not: measured locally on the full set,
-  #
-  #     serial   1606 passed, 182 skipped   182.8s
-  #     -n 4     1606 passed, 182 skipped    27.8s
-  #     -n 8     1606 passed, 182 skipped    75.2s
-  #
-  # -n 8 is 2.7x SLOWER than -n 4, which for a fetch-bound suite is upstream throttling
-  # rather than core contention. 4 also matches the hosted runner's core count and the
-  # -n 4 every other pytest job here already uses.
-  #
-  # --dist loadfile keeps each file on one worker, so a suite's tests cannot be split
-  # across workers and interleaved with another's.
-  #
-  # tests/studio/test_version_compat_bundle.py asserts every suite the six jobs named is
-  # still named here. Dropping one would not fail anything: the job would go green having
-  # tested less, which is the only way this change can go wrong.
+  # tests/studio/test_version_compat_bundle.py asserts every suite is still named here;
+  # dropping one would otherwise go green having tested less.
   pinned-symbol-matrix:
     name: pinned-symbol matrix (vLLM, TRL, PEFT, ST, bitsandbytes, transformers)
     runs-on: ubuntu-latest
@@ -128,19 +83,8 @@ jobs:
             tests/version_compat/test_transformers_pinned_symbols.py \
             -n 4 --dist loadfile -v --tb=short
 
-  # The version window is not one line. It is two in pyproject.toml, two more in
-  # unsloth_zoo's, and a pin in studio-backend-ci.yml, notebooks-ci.yml,
-  # studio-export-capability-ci.yml and the two install-bearing jobs below. When the
-  # window moves, a site left behind keeps a lane testing a range users no longer get
-  # and nothing goes red: the lane still runs and still passes. So the agreement
-  # between them is asserted from the files.
-  #
-  # An OS axis, because this is the torch-free half of the check and the only half
-  # that can have one. The suite installs pytest, packaging and pyyaml, reads files
-  # and touches the network not at all, so a Windows and a macOS runner cost minutes
-  # rather than the fetch budget the bundled job above has to live inside. What they
-  # buy is the checker's own portability: pathlib separators and the default text
-  # encoding are exactly where a file-reading gate goes quietly green off Linux.
+  # A cap site left behind when the window moves keeps testing a range users no longer get,
+  # and stays green. OS axis: a file-reading gate is what goes quietly green off Linux.
   cap-site-consistency:
     name: version-window drift (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -161,57 +105,27 @@ jobs:
           python -m pip install --upgrade pip
           pip install 'pytest>=8' packaging pyyaml
       - name: Assert every site declares the same window
-        # PYTHONPATH is not needed (the suite imports nothing from the package), but
-        # the pytest rootdir has to be the repo so the relative paths resolve.
+        # rootdir has to be the repo so the suite's relative paths resolve.
         run: python -m pytest tests/test_transformers_cap_sites.py -v --tb=short
 
-  # Optional second layer: actually `pip install` ONE representative
-  # version of each package and verify unsloth + unsloth-zoo modules
-  # import on it under the existing CUDA spoof. CPU-only, runs on
-  # ubuntu-latest. Catches the small set of breakages that the static
-  # symbol check misses (e.g. import-time side effects).
-  #
-  # Two lanes, not one. One pinned set proved one point of the supported range and
-  # said nothing about either end of it, which is how a package that advertises
-  # transformers 4.51.3 through 5.17.0 and TRL 0.18.2 through 0.24.0 can have a
-  # green matrix and still not import on the floor or the ceiling.
-  #
-  # floor:  the declared minima themselves, not a convenient set near them: a lane
-  #         that pins above the floor leaves the advertised low end untested and
-  #         green. transformers 4.51.3, TRL 0.18.2 and PEFT 0.18.0 are what
-  #         pyproject.toml actually admits at the bottom. transformers 4.51.3 needs
-  #         huggingface_hub < 1.0, which is why this lane can never share a venv
-  #         with a 5.x one. Python 3.10 rather than the 3.9 in requires-python
-  #         because PEFT 0.18.0 declares Requires-Python >= 3.10, so 3.9 cannot
-  #         reach this stack at all and pinning it here would only pin a resolver
-  #         error. torch 2.6.0 is the last minor before the ABI window the other
-  #         jobs here use.
-  #         torchcodec 0.2 is the row this table pairs with torch 2.6 (see
-  #         TORCH_TORCHCODEC in scripts/notebook_validator.py); triton 3.2.0 is the
-  #         one torch 2.6.0 itself pins.
-  # latest: nothing pinned at all, so this lane follows PyPI and is the one that
-  #         notices an upstream release the cap now admits but nobody has run.
-  #         torchcodec >= 0.12 rather than a lockstep row because 0.12 and up are
-  #         ABI-stable against torch >= 2.11.
-  #
-  # torchcodec sits on the torch install line rather than in the package list,
-  # because it carries a compiled extension linked against ONE libtorch build and
-  # torch here comes from the CPU index. Installed from PyPI next to a
-  # `torch==2.14.0+cpu` it loads far enough to be importable and then answers
-  # `from torchcodec.decoders import ...` with `'torchcodec' is not a package`,
-  # which is what datasets 5 does while building any Dataset; measured on the
-  # latest lane. On the index line pip prefers the `+cpu` build that matches. The
-  # floor lane's 0.2 row is not published there at all, so `--extra-index-url`
-  # still serves it from PyPI, where it pairs with torch 2.6.0 correctly.
-  #
-  # hf_transfer is a declared unsloth_zoo dependency, and the zoo is installed
-  # here with --no-deps, so the lane has to supply it. unsloth sets
-  # HF_HUB_ENABLE_HF_TRANSFER=1 around from_pretrained, and huggingface_hub 0.x,
-  # which the floor lane's transformers 4.57.6 pulls, raises rather than falling
-  # back when the package is missing.
-  #
-  # fail-fast is off: which end broke is the whole answer, so one lane failing must
-  # not cancel the other.
+  # Catches what the static symbol check cannot (import-time side effects). Two lanes,
+  # since one pinned set proves one point of the range and nothing about either end.
+  # floor:  the declared minima themselves, not a convenient set near them: a lane that
+  #         pins above the floor leaves the advertised low end untested and green.
+  #         transformers 4.51.3 needs huggingface_hub < 1.0, so this lane can never share
+  #         a venv with a 5.x one. Python 3.10 rather than the 3.9 in requires-python,
+  #         because PEFT 0.18.0 declares Requires-Python >= 3.10, so pinning 3.9 here
+  #         would only pin a resolver error. torchcodec 0.2 is the row paired with torch
+  #         2.6 (TORCH_TORCHCODEC in scripts/notebook_validator.py); torch 2.6.0 pins
+  #         triton 3.2.0.
+  # latest: unpinned; torchcodec >= 0.12 is ABI-stable on torch >= 2.11.
+  # torchcodec goes on the torch index line, not the package list: its extension links one
+  # libtorch, and a PyPI build next to `torch==2.14.0+cpu` imports but then answers
+  # `from torchcodec.decoders import ...` with `'torchcodec' is not a package`, which is
+  # what datasets 5 does to build any Dataset. 0.2 is absent from that index, so the floor
+  # lane still gets it from PyPI via --extra-index-url.
+  # hf_transfer: the zoo is installed --no-deps and huggingface_hub 0.x raises rather than
+  # falls back under HF_HUB_ENABLE_HF_TRANSFER=1.
   zoo-imports-under-spoof:
     name: unsloth_zoo imports under CUDA spoof (${{ matrix.slug }})
     runs-on: ubuntu-latest
@@ -272,15 +186,9 @@ jobs:
         # ./ resolves from GITHUB_WORKSPACE, and this job checks the repo out
         # under `unsloth/`, so the unprefixed path is a directory that does not
         # exist and the step fails with "Can't find 'action.yml'".
-        #
-        # One literal name for both lanes, and that is deliberate rather than an
-        # oversight: the interpreter is already a segment of the key
-        # (`pip-v2-<name>-<os>-<arch>-py<minor>-<hash>`), and these two lanes are
-        # python 3.10 and 3.12, so they cannot overwrite each other's wheels. A
-        # `${{ matrix.slug }}` here would expand to something the action accepts but
-        # tests/studio/test_pip_cache_naming.py reads the workflow text, and the name
-        # has to be a literal there. Two lanes on the SAME python would need the name
-        # split, which means splitting the job.
+        # One literal name for both lanes: the key already carries the interpreter and
+        # tests/studio/test_pip_cache_naming.py reads this as text, so `${{ matrix.slug }}`
+        # is not allowed. Two lanes on the SAME python would need the job split.
         uses: ./unsloth/.github/actions/pip-cache-restore
         with:
           name: version-compat-spoof
@@ -303,11 +211,8 @@ jobs:
           # transformers.processing_utils (-> audio_utils). It is ABI-coupled
           # to torch and declares nothing about it, so the pair is chosen
           # per lane above rather than left to the resolver.
-          #
-          # huggingface_hub is deliberately NOT pinned here: transformers 4.x
-          # requires < 1.0 and 5.x requires >= 1.5.0, so naming one version
-          # would make one of the two lanes unresolvable. Let the pinned
-          # transformers pull the hub major it needs.
+          # huggingface_hub is left unpinned: transformers 4.x wants < 1.0 and 5.x
+          # wants >= 1.5.0, so any one pin makes one lane unresolvable.
           pip install ${{ matrix.pkg_pins }} \
             sentencepiece protobuf safetensors numpy 'pytest>=8' \
             tqdm packaging psutil Pillow
@@ -316,9 +221,8 @@ jobs:
           pip install --no-deps -e "$RUNNER_TEMP/unsloth-zoo"
           pip install --no-deps -e ./unsloth
       - name: Report the resolved set
-        # The lane is only meaningful if it resolved what it asked for, and the
-        # latest lane asks for nothing, so print what it got. A pin that did not
-        # hold is otherwise invisible in a green run.
+        # A pin that did not hold is otherwise invisible in a green run, and the
+        # latest lane pins nothing at all.
         run: |
           python - <<'PY'
           from importlib.metadata import version
@@ -367,13 +271,9 @@ jobs:
   # Catches structural TRL drift the greps miss (e.g. TRL 1.7.0's 2->3-tuple
   # per-token-logps return, restructured PEFT ref-adapter block) by asserting
   # the generated Unsloth trainer still satisfies the transform contracts.
-  # Same two lanes as zoo-imports-under-spoof, and for the same reason. The
-  # source transforms in models/rl.py are matched against TRL's text, so TRL is
-  # the axis that actually decides whether they still apply, and one lane on
-  # latest proved nothing about the 0.22.2 floor the package still advertises.
-  # TRL 0.22.2 is also the only place where the list-dataset guard in
-  # unsloth_zoo.tokenizer_utils is the sole protection, because TRL 1.x rejects
-  # a list first.
+  # models/rl.py matches TRL's source text, so TRL is the deciding axis, and latest alone
+  # proved nothing about the floor. On the floor TRL the list-dataset guard in
+  # unsloth_zoo.tokenizer_utils is the only protection, since TRL 1.x rejects a list first.
   grpo-fake-run:
     name: GRPO fake-run (CPU spoof, TRL ${{ matrix.slug }})
     runs-on: ubuntu-latest
@@ -390,10 +290,8 @@ jobs:
               'transformers==4.51.3' 'peft==0.18.0'
               'accelerate>=1.0' 'datasets>=3.4,<4.4' 'bitsandbytes>=0.45.5'
               'triton==3.2.0' hf_transfer
-            # The declared minimum, like the zoo-imports floor lane above. This lane runs
-            # version-sensitive trainer transforms the import-only lane never reaches, so
-            # pinning above the floor left the advertised low end of that behaviour
-            # untested and green.
+            # The declared minimum, like the zoo-imports floor lane. This lane runs the
+            # version-sensitive trainer transforms the import-only lane never reaches.
             trl_pin: 'trl==0.18.2'
           - slug: latest
             python: '3.12'
@@ -437,10 +335,7 @@ jobs:
         # ./ resolves from GITHUB_WORKSPACE, and this job checks the repo out
         # under `unsloth/`, so the unprefixed path is a directory that does not
         # exist and the step fails with "Can't find 'action.yml'".
-        #
-        # One literal name for both lanes, for the reason given on the spoof job
-        # above: the key already carries the interpreter and these lanes are 3.10 and
-        # 3.12, and the cache-naming lint reads this file as text.
+        # One literal name for both lanes, for the reason given on the spoof job above.
         uses: ./unsloth/.github/actions/pip-cache-restore
         with:
           name: version-compat-grpo
@@ -452,9 +347,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
             ${{ matrix.torch_pins }}
-          # Ecosystem pins unsloth needs; TRL itself is installed last so it can
-          # pull the transformers/peft it requires. huggingface_hub is left
-          # unpinned so the pinned transformers picks its own major.
+          # TRL is installed last so it can pull the transformers/peft it requires, and
+          # huggingface_hub is left unpinned so the pinned transformers picks its major.
           pip install ${{ matrix.pkg_pins }} \
             sentencepiece protobuf safetensors numpy 'pytest>=8' \
             tqdm packaging psutil Pillow
@@ -482,8 +376,7 @@ jobs:
             -v --tb=short
       # `main` is scheduled/dispatch-only so PR jobs stay fast and a bleeding-edge
       # TRL break does not red every PR. github.event_name is valid in a step if.
-      # Only on the latest lane: pulling TRL main into the floor lane replaces the
-      # one thing that lane exists to measure.
+      # latest lane only: TRL main in the floor lane replaces what that lane measures.
       - name: Fake-run vs TRL main (scheduled / dispatch only)
         if: ${{ github.event_name != 'pull_request' && matrix.slug == 'latest' }}
         env:

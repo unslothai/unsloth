@@ -1,23 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-"""The published version window and every CI lane that mirrors it have to agree.
+"""The published transformers window and every CI lane that mirrors it have to agree.
 
-`transformers<=5.5.0` was not one line. It was two lines in pyproject.toml, two more in
-unsloth_zoo's, a `<5.5` in studio-backend-ci.yml, a `<5.6` in notebooks-ci.yml and
-version-compat-ci.yml, and a policy gate in unsloth-zoo's consolidated-tests-ci.yml. When
-the cap moved, any of those left behind would have kept CI testing a range users no longer
-get, and nothing would have gone red: the lane still runs, still passes, and simply proves
-the wrong thing. That is the failure this file exists for.
+The cap is spelled in pyproject.toml, unsloth_zoo's pyproject, and several workflows. A site
+left behind when the cap moves keeps CI green while testing a range users no longer get, so
+the assertions are not "the number is 5.17.0" but "the window admits what was measured,
+still rejects what was rejected, and no lane sits below it without saying why".
 
-5.5.0 mattered because it is exactly where prequantized bnb-4bit checkpoints lose
-`quant_state` on every `Linear4bit` (#9867, #10010, #10017, #10276), and because it puts the
-Gemma 4 E4B LoRA fix one patch release out of reach: that shipped in 5.5.2 (#5355). So the
-assertions are not "the number is 5.17.0" but "the window
-admits what was measured, still rejects what was rejected, and no lane sits below it
-without saying why".
-
-Reads files only: no network, no torch, no transformers install. That is what lets this run
-on Windows and macOS runners as well as Linux.
+Reads files only, which is what lets it run on the Windows and macOS runners too.
 """
 
 from __future__ import annotations
@@ -36,13 +26,11 @@ REPO = Path(__file__).resolve().parents[1]
 PYPROJECT = REPO / "pyproject.toml"
 WORKFLOWS = REPO / ".github" / "workflows"
 
-# The newest transformers the version matrix was run against, and so the ceiling
-# pyproject.toml is allowed to declare. Moving this is a decision: the sweep has to be
-# re-run on the new release first.
+# The newest transformers the version matrix was run against. Moving it means re-running
+# the sweep on the new release first.
 TESTED_CEILING = Version("5.17.0")
 
-# Releases that were tested and rejected. Every one of these has to stay excluded; a
-# rewrite of the specifier that drops one silently re-admits a broken release.
+# Tested and rejected; a specifier rewrite that drops one silently re-admits a broken release.
 REJECTED = (
     "4.52.0",
     "4.52.1",
@@ -59,17 +47,13 @@ REJECTED = (
     "5.1.0",
 )
 
-# Releases inside the newly opened part of the window. Named rather than generated so the
-# test keeps meaning something after the ceiling moves again.
+# Named rather than generated, so the test still means something after the ceiling moves.
 NEWLY_ADMITTED = ("5.6.0", "5.10.1", "5.14.1", "5.15.1", "5.16.1", "5.17.0")
 
-# Workflow lanes whose transformers requirement is deliberately NOT the published cap.
-# Each needs a reason, because "it is lower" is otherwise indistinguishable from "it was
-# forgotten", which is the whole bug this file is about.
-# Keyed on (workflow, the exact requirement string), never on the workflow alone. A
-# filename-level exemption blinds the scan to every OTHER transformers requirement in that
-# same file, including one that goes stale later, and the file it was granted for is the
-# one this gate most needs to read.
+# Lanes deliberately NOT on the published cap. Each needs a reason, or "lower" is
+# indistinguishable from "forgotten", which is the bug this file is about. Keyed on
+# (workflow, exact requirement string), never the workflow alone: a filename-level
+# exemption blinds the scan to every OTHER transformers requirement in that same file.
 PINNED_BY_DESIGN = {
     ("version-compat-ci.yml", "transformers<=5.5.0"): (
         "example only: no lane spells this today. The entry keeps the shape honest and is "
@@ -77,22 +61,15 @@ PINNED_BY_DESIGN = {
     ),
 }
 
-# unsloth_zoo bounds torch, and unsloth's own CPU lanes have to admit what that bound
-# admits or they test a torch users cannot get. 2.14.0 is the newest release the matrix
-# was run against.
+# unsloth's CPU lanes must admit what unsloth_zoo's torch bound admits, or they test a
+# torch users cannot get. 2.14.0 is the newest release the matrix was run against.
 TESTED_TORCH = Version("2.14.0")
 TORCH_MIRROR_WORKFLOW = WORKFLOWS / "studio-export-capability-ci.yml"
 
 
 def _toml() -> dict:
-    """pyproject as a dict.
-
-    tomllib is 3.11+, and requires-python here is >=3.9, so the import is lazy and the
-    older interpreters skip rather than failing to collect. Same shape as
-    _find_config in unsloth-zoo's tests/test_wheel_top_level_packages.py. The
-    cap-site-consistency job in version-compat-ci.yml runs this on 3.12 across three
-    operating systems, so the assertions are not left to a developer box.
-    """
+    """pyproject as a dict; tomllib is 3.11+ and requires-python is >=3.9, so lazy-import
+    and skip rather than failing collection on the older interpreters."""
     if sys.version_info < (3, 11):
         pytest.skip("tomllib needs Python 3.11+")
     import tomllib
@@ -221,8 +198,8 @@ def test_the_torch_mirror_admits_what_unsloth_zoo_admits() -> None:
 
 
 def test_the_checker_rejects_the_window_that_shipped_the_defect() -> None:
-    """Negative control. Every assertion above is a "nothing found" shape, which is also
-    what a checker that has quietly stopped checking reports."""
+    """Negative control: every assertion above is a "nothing found" shape, which is also
+    what a checker that has stopped checking reports."""
     shipped = SpecifierSet("".join(f"!={v}," for v in REJECTED) + ">=4.51.3,<=5.5.0")
     assert "5.5.0" in shipped
     assert "5.17.0" not in shipped, "the old window must not admit the release that fixes it"
@@ -231,21 +208,15 @@ def test_the_checker_rejects_the_window_that_shipped_the_defect() -> None:
 
 
 def test_this_file_is_triggered_by_everything_it_scans() -> None:
-    """A gate that its own workflow's `paths:` filter cannot start is not a gate.
-
-    The two assertions above sweep `.github/workflows/*.yml`, so a PR that moves a cap in
-    notebooks-ci.yml or studio-backend-ci.yml and nothing else has to start this workflow.
-    Before the trigger listed them, `paths:` named only `unsloth/**`,
-    `tests/{vllm_compat,version_compat}/**`, pyproject.toml and version-compat-ci.yml, so
-    exactly the drift this file exists to block merged without the job ever running.
-    """
+    """A gate its own workflow's `paths:` filter cannot start is not a gate: the sweeps
+    above read every `.github/workflows/*.yml`, so a PR that moves a cap in one of them and
+    nothing else has to trigger this workflow."""
     if sys.version_info < (3, 11):
         pytest.skip("yaml parsing here needs the 3.11+ interpreter the job uses")
     import yaml
 
     workflow = yaml.safe_load((WORKFLOWS / "version-compat-ci.yml").read_text(encoding = "utf-8"))
-    # PyYAML resolves a bare `on:` key to the boolean True (the YAML 1.1 "norway
-    # problem"), so read both spellings rather than trusting either.
+    # PyYAML resolves a bare `on:` key to the boolean True (YAML 1.1), so read both.
     triggers = workflow.get("on", workflow.get(True)) or {}
     paths = (triggers.get("pull_request") or {}).get("paths") or []
 
@@ -259,13 +230,9 @@ def test_this_file_is_triggered_by_everything_it_scans() -> None:
 
 
 def test_a_stale_range_cap_is_caught_even_in_an_allowlisted_workflow(tmp_path, monkeypatch) -> None:
-    """NEGATIVE CONTROL for the exemption itself.
-
-    The exemption used to be keyed on the filename, so one intentional pin in
-    version-compat-ci.yml exempted every other transformers requirement in it, and the
-    gate could not see a range cap that went stale in the very workflow it scans. Prove
-    the scan still fires there by writing one and reading the failure.
-    """
+    """NEGATIVE CONTROL for the exemption: keyed on the filename, one intentional pin
+    exempted every other transformers requirement in that file, so a range cap could go
+    stale in the very workflow this gate scans."""
     workflows = tmp_path / "workflows"
     workflows.mkdir()
     (workflows / "version-compat-ci.yml").write_text(
