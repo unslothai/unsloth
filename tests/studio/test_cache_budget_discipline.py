@@ -319,40 +319,6 @@ def _pull_request_reachable(doc: dict) -> bool:
     return False
 
 
-#: Workflows exempted from the save-on-a-pull-request-ref rule because no pull request can
-#: reach them. Named rather than silently skipped, in the style of PIP_CACHE_JOBS above: an
-#: entry is a claim, and the test below re-checks the claim against the workflow's `on:`.
-_NOT_PR_REACHABLE_CACHE_SAVES = {
-    "woa-wheelhouse.yml": (
-        "workflow_dispatch only -- it holds signing credentials and writes a release, so it "
-        "is deliberately unreachable from a pull request (see the header comment there). The "
-        "cached path is C:\\vcpkg\\installed for a 300-minute Arrow C++ build, which a "
-        "maintainer dispatching from a topic branch has to be able to reuse; gating the save "
-        "on refs/heads/main would make every iteration on the wheelhouse pay that build again."
-    ),
-}
-
-
-def test_every_cache_save_exemption_names_a_workflow_no_pull_request_can_reach():
-    """The exemption list above, re-derived from the workflows rather than trusted.
-
-    This is the half that keeps the entry honest: it fails if the file is renamed or
-    deleted, and it fails the moment the workflow gains a trigger a pull request can use,
-    which is exactly when the exemption stops being true.
-    """
-    by_name = {name: doc for name, doc in _workflows()}
-    for name, reason in _NOT_PR_REACHABLE_CACHE_SAVES.items():
-        assert name in by_name, f"{name} is exempted from the cache rule but does not exist"
-        assert reason.strip(), f"{name} is exempted with no reason"
-        assert not _pull_request_reachable(by_name[name]), (
-            f"{name} is exempted from the save-on-a-pull-request-ref rule on the grounds that "
-            f"no pull request can reach it, but its `on:` block now says otherwise: "
-            f"{sorted(_triggers(by_name[name]))}. Gate the save on refs/heads/main "
-            f"(actions/cache/restore plus a github.ref == 'refs/heads/main' save) or drop the "
-            f"trigger."
-        )
-
-
 @pytest.mark.parametrize(
     ("on_block", "reachable"),
     [
@@ -370,12 +336,12 @@ def test_every_cache_save_exemption_names_a_workflow_no_pull_request_can_reach()
         ({"push": {"tags": ["v*"]}}, True),
         # A dispatch-only workflow that also builds every PR is not dispatch-only.
         ({"workflow_dispatch": None, "pull_request": {"paths": ["x"]}}, True),
-        # Unparseable says nothing, so it does not get to claim the exemption.
+        # Unparseable says nothing, so it does not get to be called unreachable.
         ({}, True),
     ],
 )
 def test_the_pull_request_reachability_check_reads_the_trigger_block(on_block, reachable):
-    """The exemption is only as good as this predicate, so the predicate is tested too.
+    """The rule below is only as good as this predicate, so the predicate is tested too.
 
     Mirrors test_the_main_only_expression_check_reads_the_expression above, and for the same
     reason: the guard's failure mode is silence, so the thing that can make it silent is the
@@ -387,8 +353,25 @@ def test_the_pull_request_reachability_check_reads_the_trigger_block(on_block, r
 
 
 def test_no_workflow_saves_a_cache_on_a_pull_request_ref():
+    """A cache save that can land on a pull request's ref, in anything a pull request reaches.
+
+    Scoped by TRIGGER, not by a list of excused filenames. The rule's harm needs a pull
+    request to reach the workflow: a PR-scoped entry is restorable only by re-runs of that
+    same PR while it evicts main's copy, which every PR can read. A workflow no pull request
+    can run writes no PR-scoped entry, and indicting one was this guard reporting a rule it
+    had not checked -- it read each step's `if:` and never read the workflow's `on:`.
+
+    Deliberately NOT an exemption list keyed on filename. Skipping a whole file would blind
+    this to every OTHER step in it, including a `setup-python` implicit save added later, and
+    the excuse would keep applying after the reason for it had gone. Reading `on:` cannot rot
+    that way: the day a workflow gains a `pull_request` or `pull_request_target` trigger,
+    every cache save in it is indicted on that same commit with nobody having to remember.
+
+    Composite actions stay indicted unconditionally, whatever calls them: an action is used
+    BY workflows, so it has no triggers of its own, and one `uses:`d from a pull_request job
+    saves on the PR's ref exactly as an inline step would.
+    """
     offenders = []
-    exempt = set(_NOT_PR_REACHABLE_CACHE_SAVES)
     for name, steps in _composite_actions():
         for step in steps:
             uses = _uses(step)
@@ -396,31 +379,31 @@ def test_no_workflow_saves_a_cache_on_a_pull_request_ref():
                 continue
             if "refs/heads/main" not in str(step.get("if", "")):
                 offenders.append(f"action {name}: {step.get('name') or step.get('uses')}")
-    for name, jid, job in _jobs():
-        # Only a workflow a pull request can reach can write a PR-scoped entry. The
-        # exemption is the named list above, and it is re-derived from `on:` by
-        # test_every_cache_save_exemption_names_a_workflow_no_pull_request_can_reach, so a
-        # workflow that gains a pull_request trigger loses the exemption on that commit.
-        if name in exempt:
+    for name, doc in _workflows():
+        # Read once per workflow, then applied to every job in it.
+        if not _pull_request_reachable(doc):
             continue
-        for step in job.get("steps") or []:
-            uses = _uses(step)
-            # setup-python's `cache:` is a save too, and an invisible one: the action
-            # registers a post-step (`post: dist/cache-save/index.js` in its own
-            # action.yml) that runs after the job on whatever ref it ran on, with no
-            # condition to gate it. A scan that only looked for `actions/cache` steps
-            # read as green while nine jobs wrote PR-scoped entries every run. Nothing
-            # is exempt now that all nine are converted.
-            if "setup-python" in uses and (step.get("with") or {}).get("cache"):
-                offenders.append(f"{name}:{jid}: setup-python implicit post-step save")
+        for jid, job in doc["jobs"].items():
+            if not isinstance(job, dict):
                 continue
-            if "actions/cache" not in uses:
-                continue
-            saves = "/restore@" not in uses  # read-write and /save@ both write
-            if not saves:
-                continue
-            if not _restricted_to_main(str(step.get("if", ""))):
-                offenders.append(f"{name}:{jid}: {step.get('name') or step.get('uses')}")
+            for step in job.get("steps") or []:
+                uses = _uses(step)
+                # setup-python's `cache:` is a save too, and an invisible one: the action
+                # registers a post-step (`post: dist/cache-save/index.js` in its own
+                # action.yml) that runs after the job on whatever ref it ran on, with no
+                # condition to gate it. A scan that only looked for `actions/cache` steps
+                # read as green while nine jobs wrote PR-scoped entries every run. Nothing
+                # is exempt now that all nine are converted.
+                if "setup-python" in uses and (step.get("with") or {}).get("cache"):
+                    offenders.append(f"{name}:{jid}: setup-python implicit post-step save")
+                    continue
+                if "actions/cache" not in uses:
+                    continue
+                saves = "/restore@" not in uses  # read-write and /save@ both write
+                if not saves:
+                    continue
+                if not _restricted_to_main(str(step.get("if", ""))):
+                    offenders.append(f"{name}:{jid}: {step.get('name') or step.get('uses')}")
     assert not offenders, (
         "these steps save a cache on whatever ref they run on, so every PR writes its own "
         "copy and evicts the copy on main that all PRs share:\n  " + "\n  ".join(offenders)
