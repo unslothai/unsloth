@@ -2225,7 +2225,13 @@ exit 1
         # conda environment cannot be demoted by any call site. Announced once per run: the
         # installer makes several of these writes and one note is information, five is noise.
         $resolvedPosition = Resolve-UserPathPosition -Position $Position
-        if ($resolvedPosition -ne $Position) {
+        # A downgraded request has to be able to MOVE an entry, not just decline to add one. After a
+        # previous non-conda run our directory is already at the FRONT of the User PATH, and the
+        # append-idempotent early return below would leave that ordering in place while this very
+        # substep announced that conda keeps priority -- the #5871 demotion, still armed, reported as
+        # fixed. Only a genuine Append request keeps the cheap no-op.
+        $positionDowngraded = ($resolvedPosition -ne $Position)
+        if ($positionDowngraded) {
             if (-not $script:CondaPathPositionNoted) {
                 $script:CondaPathPositionNoted = $true
                 substep "conda environment active ($env:CONDA_PREFIX) -- appending to PATH instead of prepending, so conda keeps priority." "Yellow"
@@ -2254,7 +2260,9 @@ exit 1
                     $kept.Add($entries[$i])
                 }
                 $alreadyPresent = $matchIndices.Count -gt 0
-                if ($alreadyPresent -and $Position -eq 'Append') { # Append: idempotent no-op
+                # Not $positionDowngraded: that request has to reposition an existing front entry.
+                # Already at the back is still a no-op, caught by the $newPath -ceq $rawPath check.
+                if ($alreadyPresent -and $Position -eq 'Append' -and -not $positionDowngraded) {
                     return $false
                 }
                 if ($alreadyPresent -and $Position -eq 'Prepend' -and # Prepend: no-op if already at front

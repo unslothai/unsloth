@@ -268,7 +268,11 @@ function Add-ToUserPath {
     if (Get-Variable -Name StageRoot -ValueOnly -ErrorAction SilentlyContinue) { return $false }
     # Every persistent PATH write goes through Resolve-UserPathPosition, so an active conda
     # environment cannot be demoted by any call site.
+    # A downgraded request has to be able to MOVE an entry that a previous non-conda run left at the
+    # FRONT, not just decline to add one; see the same guard in install.ps1.
+    $requestedPosition = $Position
     $Position = Resolve-UserPathPosition -Position $Position
+    $positionDowngraded = ($Position -ne $requestedPosition)
     try {
         $regKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
         try {
@@ -291,7 +295,8 @@ function Add-ToUserPath {
                 $kept.Add($entries[$i])
             }
             $alreadyPresent = $matchIndices.Count -gt 0
-            if ($alreadyPresent -and $Position -eq 'Append') { # Append: idempotent no-op
+            # Already at the back is still a no-op, caught by the $newPath -ceq $rawPath check below.
+            if ($alreadyPresent -and $Position -eq 'Append' -and -not $positionDowngraded) {
                 return $false
             }
             if ($alreadyPresent -and $Position -eq 'Prepend' -and # Prepend: no-op if already at front

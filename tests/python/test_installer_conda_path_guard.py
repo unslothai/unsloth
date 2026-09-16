@@ -141,6 +141,37 @@ def test_every_persistent_path_write_routes_through_the_guard(path_label: str):
 
 
 @pytest.mark.parametrize("path_label", sorted(_PS_FILES))
+def test_a_downgraded_prepend_still_repositions_an_existing_front_entry(path_label: str):
+    """Declining to ADD is not the same as declining to DEMOTE.
+
+    The machine that matters here has run the installer once already, outside conda, so our
+    directory is at the FRONT of the User PATH. Rerun it from an activated environment and
+    Resolve-UserPathPosition turns the Prepend into an Append -- but an unconditional
+    "already present and appending, nothing to do" early return never rewrites the registry,
+    so the front entry survives and conda keeps resolving binaries and DLLs out of our
+    directory. The run says "conda keeps priority" while #5871 stays armed.
+
+    Structural rather than behavioural because Add-ToUserPath writes through
+    [Microsoft.Win32.Registry], which does not exist off Windows, so the CI leg that could
+    execute this is the one place it cannot be checked by running it.
+    """
+    path, indent = _PS_FILES[path_label]
+    body = _function(path, indent, "Add-ToUserPath")
+    match = re.search(
+        r"\$alreadyPresent -and \$Position -eq 'Append'([^\)]*)\)", body
+    )
+    assert match is not None, f"{path_label}: no append early-return found in Add-ToUserPath"
+    assert "-not $positionDowngraded" in match.group(1), (
+        f"{path_label}: the append early-return must not fire for a prepend that conda "
+        f"downgraded, or an existing front entry is never moved to the back"
+    )
+    # The flag has to be derived from the guard's own answer, not hardcoded.
+    assert re.search(r"\$positionDowngraded\s*=\s*\(", body), (
+        f"{path_label}: $positionDowngraded must be computed from Resolve-UserPathPosition"
+    )
+
+
+@pytest.mark.parametrize("path_label", sorted(_PS_FILES))
 def test_the_two_installers_agree_on_the_guard(path_label: str):
     """Both copies decide the same way. They are separate scripts, not a shared module.
 
