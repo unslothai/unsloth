@@ -2152,7 +2152,39 @@ _TRITON_PROVIDERS = (
 )
 
 
-def _triton_distribution():
+def _distribution_owning_path(names, path):
+    """The distribution among `names` whose installed file list contains `path`, or None.
+
+    Providers can coexist: `studio/install_python_stack.py::_ensure_xpu_triton` documents
+    generic `triton` beside `pytorch-triton-xpu` on the same paths, and
+    `packages_distributions()` then reports both without saying which one last wrote the
+    file. Taking the first entry can name the CUDA provider for an XPU install and hand the
+    user a command that replaces their working Triton, which is the substitution this whole
+    helper exists to avoid. The offending `driver.c` is a concrete path, so ask which
+    distribution actually ships it.
+    """
+    if not path:
+        return None
+    try:
+        from importlib.metadata import distribution as _distribution
+        target = Path(path).resolve()
+    except Exception:
+        return None
+    for name in names:
+        try:
+            files = _distribution(name).files or ()
+        except Exception:
+            continue
+        for entry in files:
+            try:
+                if Path(entry.locate()).resolve() == target:
+                    return name
+            except Exception:
+                continue
+    return None
+
+
+def _triton_distribution(offending_path = None):
     """Which distribution owns the imported ``triton`` package, and its version.
 
     The `triton` PyPI distribution is only one of the providers this repository supports.
@@ -2188,6 +2220,11 @@ def _triton_distribution():
             names = []
     if not names:
         names = [name for name in _TRITON_PROVIDERS if _installed_version(name) != "unknown"]
+    # The distribution that actually ships the offending file wins over ordering, when the
+    # file is known and the metadata answers.
+    owner = _distribution_owning_path(names, offending_path)
+    if owner is not None:
+        names = [owner] + [name for name in names if name != owner]
     # Prefer a provider that can actually report a version; a stale empty dist-info
     # otherwise wins over the real one purely on ordering.
     for name in names:
@@ -2289,7 +2326,7 @@ def check_triton_py_ssize_t_clean():
     if not offenders:
         return
 
-    distribution, triton_version = _triton_distribution()
+    distribution, triton_version = _triton_distribution(offenders[0][1] if offenders else None)
     python_version = ".".join(str(part) for part in sys.version_info[:3])
     reinstall = _triton_reinstall_command(distribution, triton_version)
 

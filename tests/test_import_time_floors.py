@@ -681,3 +681,74 @@ def test_the_mlx_branch_installs_the_torch_diagnosis():
         "DRIFT DETECTED: the MLX branch no longer installs the torch-too-old diagnosis, "
         "so it is installed only on the GPU path."
     )
+
+
+def _fake_distribution(files_by_name):
+    """importlib.metadata.distribution, answering from `{name: [paths]}`."""
+    class _Entry:
+        def __init__(self, path):
+            self._path = path
+
+        def locate(self):
+            return self._path
+
+    class _Dist:
+        def __init__(self, paths):
+            self.files = [_Entry(p) for p in paths]
+
+    def _distribution(name):
+        if name not in files_by_name:
+            from importlib.metadata import PackageNotFoundError
+            raise PackageNotFoundError(name)
+        return _Dist(files_by_name[name])
+
+    return _distribution
+
+
+@pytest.mark.parametrize(
+    "order", [["triton", "pytorch-triton-xpu"], ["pytorch-triton-xpu", "triton"]]
+)
+def test_the_provider_that_ships_the_offending_file_is_the_one_named(monkeypatch, tmp_path, order):
+    """Providers coexist: install_python_stack.py's _ensure_xpu_triton documents generic
+    triton beside pytorch-triton-xpu on the same paths, and packages_distributions reports
+    both without saying which one wrote the file. Taking the first entry can name the CUDA
+    provider for an XPU install and hand the user a command that replaces the Triton that
+    works -- the substitution this helper exists to avoid. The answer must not depend on
+    the order the mapping happens to return."""
+    driver = tmp_path / "backends" / "intel" / "driver.c"
+    driver.parent.mkdir(parents = True)
+    driver.write_text("x", encoding = "utf-8")
+
+    import importlib.metadata as metadata
+
+    monkeypatch.setattr(metadata, "packages_distributions", lambda: {"triton": list(order)})
+    monkeypatch.setattr(
+        metadata,
+        "distribution",
+        _fake_distribution({
+            "triton": [str(tmp_path / "backends" / "nvidia" / "driver.c")],
+            "pytorch-triton-xpu": [str(driver)],
+        }),
+    )
+    monkeypatch.setattr(import_fixes, "importlib_version", lambda name: "3.3.0")
+    import_fixes._installed_version.cache_clear()
+    try:
+        assert import_fixes._triton_distribution(str(driver))[0] == "pytorch-triton-xpu"
+    finally:
+        import_fixes._installed_version.cache_clear()
+
+
+def test_an_unownable_path_falls_back_to_the_previous_answer(monkeypatch, tmp_path):
+    """NEGATIVE CONTROL: metadata that names no owner, or no path at all, must leave the
+    ordering-based answer exactly as it was rather than reporting nothing."""
+    import importlib.metadata as metadata
+
+    monkeypatch.setattr(metadata, "packages_distributions", lambda: {"triton": ["triton-windows"]})
+    monkeypatch.setattr(metadata, "distribution", _fake_distribution({}))
+    monkeypatch.setattr(import_fixes, "importlib_version", lambda name: "3.3.1.post19")
+    import_fixes._installed_version.cache_clear()
+    try:
+        assert import_fixes._triton_distribution(None)[0] == "triton-windows"
+        assert import_fixes._triton_distribution(str(tmp_path / "nope.c"))[0] == "triton-windows"
+    finally:
+        import_fixes._installed_version.cache_clear()
