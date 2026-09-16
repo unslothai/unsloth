@@ -60,8 +60,10 @@ import urllib.request
 
 from core.inference.ssh_policy import (
     _SHELL_EXEC_FUNCS,
+    _CMD_KWARGS,
     _shell_exec_aliases,
     _bound_name,
+    _call_keyword_values,
     check_ssh_command_access,
     check_ssh_python_access,
     filter_ssh_approved_network_blocks,
@@ -13268,9 +13270,6 @@ def _check_signal_escape_patterns(code: str):
             return parts
         return []
 
-    # Kwarg names that carry command content (not control flags like check=True, text=True, capture_output=True).
-    _CMD_KWARGS = frozenset({"args", "command", "executable", "path", "file", "program", "cmd"})
-
     def _check_args_for_blocked(args_nodes):
         """Check if any call arguments contain blocked commands."""
         found = set()
@@ -13378,19 +13377,7 @@ def _check_signal_escape_patterns(code: str):
             shell_func = _bound_name(func, process_aliases)
 
             if shell_func and shell_func in _SHELL_EXEC_FUNCS:
-                # Expand **kwargs dicts to inspect their keys.
-                expanded_kwargs: dict[str, ast.AST] = {}
-                has_opaque_kwargs = False
-                for kw in node.keywords:
-                    if kw.arg is not None:
-                        expanded_kwargs[kw.arg] = kw.value
-                    elif isinstance(kw.value, ast.Dict):
-                        for k, v in zip(kw.value.keys, kw.value.values):
-                            key = _extract_string_from_node(k) if k else None
-                            if key is not None:
-                                expanded_kwargs[key] = v
-                    else:
-                        has_opaque_kwargs = True
+                expanded_kwargs, has_opaque_kwargs = _call_keyword_values(node)
 
                 cmd_kw_values = [v for k, v in expanded_kwargs.items() if k in _CMD_KWARGS]
                 all_call_args = list(node.args) + cmd_kw_values

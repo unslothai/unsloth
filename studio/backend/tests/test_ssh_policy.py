@@ -748,7 +748,7 @@ def test_bound_client_connect_alias_requires_approval(binding):
         "import paramiko; paramiko.ProxyCommand('ssh -F none approved.example')",
         "from paramiko import ProxyCommand as Proxy; Proxy('ssh -F none approved.example')",
         "from paramiko.proxy import ProxyCommand; ProxyCommand('ssh -F none approved.example')",
-        "import paramiko.proxy as proxy; proxy.ProxyCommand(command='ssh -F none approved.example')",
+        "import paramiko.proxy as proxy; proxy.ProxyCommand(command_line='ssh -F none approved.example')",
         "import paramiko; Proxy=paramiko.ProxyCommand; Proxy('ssh -F none approved.example')",
     ],
 )
@@ -870,3 +870,31 @@ def test_multiple_user_separators_do_not_hide_shell_expansion():
 def test_fabric_username_with_at_sign_uses_the_final_host():
     code = "import fabric; fabric.Connection('user@domain@approved.example', config=fabric.Config(lazy=True))"
     assert extract_ssh_hosts_from_python(code) == ({"approved.example"}, False, True)
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "import subprocess; subprocess.run(**{'args':['ssh','-F','none','approved.example']})",
+        "import subprocess; subprocess.run(**{**{'args':['ssh','-F','none','approved.example']}})",
+        "import asyncio; asyncio.run(asyncio.create_subprocess_shell(**{'cmd':'ssh -F none approved.example'}))",
+        "import paramiko; paramiko.ProxyCommand(**{'command_line':'ssh -F none approved.example'})",
+    ],
+)
+def test_keyword_dictionary_commands_require_approval(code):
+    assert _check_code_safety(code, session_id = "review") is not None
+    approve_hosts("review", ["approved.example"])
+    assert _check_code_safety(code, session_id = "review") is None
+
+
+@pytest.mark.parametrize(
+    "arguments", ["{**options}", "{key: ['ssh', '-F', 'none', 'approved.example']}"]
+)
+def test_opaque_command_keyword_dictionaries_fail_closed(arguments):
+    code = f"import subprocess; subprocess.run(**{arguments})"
+    assert _check_code_safety(code, session_id = "review") is not None
+
+
+def test_local_command_keyword_dictionary_remains_allowed():
+    code = "import subprocess; subprocess.run(**{'args':['echo','hello'], 'check':True})"
+    assert _check_code_safety(code, session_id = "review") is None

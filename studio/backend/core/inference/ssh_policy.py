@@ -160,7 +160,9 @@ _SHELL_EXEC_FUNCS = frozenset(
     }
 )
 
-_CMD_KWARGS = frozenset({"args", "command", "executable", "path", "file", "program", "cmd"})
+_CMD_KWARGS = frozenset(
+    {"args", "command", "executable", "path", "file", "program", "cmd", "command_line"}
+)
 
 
 def _extract_host_from_endpoint(token: str) -> Optional[str]:
@@ -632,9 +634,35 @@ def _shell_exec_aliases(tree: ast.AST) -> dict[str, str]:
     return aliases
 
 
+def _call_keyword_values(node: ast.Call) -> tuple[dict[str, ast.AST], bool]:
+    """Expand literal keyword dictionaries and identify opaque keys or mappings."""
+    values: dict[str, ast.AST] = {}
+    opaque = False
+
+    def merge(mapping: ast.AST) -> None:
+        nonlocal opaque
+        if not isinstance(mapping, ast.Dict):
+            opaque = True
+            return
+        for key, value in zip(mapping.keys, mapping.values):
+            if key is None:
+                merge(value)
+            elif isinstance(key, ast.Constant) and isinstance(key.value, str):
+                values[key.value] = value
+            else:
+                opaque = True
+
+    for keyword in node.keywords:
+        if keyword.arg is None:
+            merge(keyword.value)
+        else:
+            values[keyword.arg] = keyword.value
+    return values, opaque
+
+
 def _os_process_argv(node: ast.Call, function: str) -> list[ast.AST]:
     """Use the actual executable, ignoring argv[0] and the spawn mode/environment."""
-    kwargs = {kw.arg: kw.value for kw in node.keywords if kw.arg is not None}
+    kwargs, _opaque = _call_keyword_values(node)
     offset = 1 if function.startswith("os.spawn") else 0
     program = (
         node.args[offset] if len(node.args) > offset else kwargs.get("path", kwargs.get("file"))
@@ -784,7 +812,8 @@ def _scan_ssh_python_usage(
                 and shell_func in _SHELL_EXEC_FUNCS
             ):
                 if shell_func == "asyncio.create_subprocess_exec":
-                    program = next((kw.value for kw in node.keywords if kw.arg == "program"), None)
+                    keyword_values, _opaque = _call_keyword_values(node)
+                    program = keyword_values.get("program")
                     argv_nodes = list(node.args) or ([program] if program is not None else [])
                 else:
                     argv_nodes = _os_process_argv(node, shell_func)
@@ -802,10 +831,7 @@ def _scan_ssh_python_usage(
                 return
 
             if shell_func and shell_func in _SHELL_EXEC_FUNCS:
-                expanded_kwargs: dict[str, ast.AST] = {}
-                for kw in node.keywords or []:
-                    if kw.arg is not None:
-                        expanded_kwargs[kw.arg] = kw.value
+                expanded_kwargs, _opaque = _call_keyword_values(node)
                 cmd_args = list(node.args) + [
                     expanded_kwargs[k] for k in _CMD_KWARGS if k in expanded_kwargs
                 ]
