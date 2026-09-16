@@ -1398,6 +1398,8 @@ def _find_blocked_commands(
             base = stem
         return base
 
+    ssh_xargs_indexes: set[int] = set()
+
     def _exec_child_index(start: int) -> "tuple[int, bool]":
         """The command a `find -exec` actually runs, as ``(index, overflowed)``; the index is -1 when
         the action holds no command word at all.
@@ -1412,6 +1414,7 @@ def _find_blocked_commands(
         `-exec` + 33 `env` + `rm -f victim ;` really deletes.
         """
         i, steps, wrapper = start, 0, ""
+        through_xargs = False
         while i < len(tokens) and steps < _MAX_EXEC_PREFIX_SCAN:
             token = tokens[i]
             if token in _SHELL_SEPARATORS or token in _FIND_EXEC_TERMINATORS:
@@ -1432,8 +1435,11 @@ def _find_blocked_commands(
             base = _token_basename(token)
             if base in _COMMAND_PREFIXES:
                 wrapper = base
+                through_xargs |= base == "xargs"
                 i += 1
                 continue
+            if through_xargs:
+                ssh_xargs_indexes.add(i)
             return i, False
         # Walking off the end means the action really held nothing; stopping on the bound with words still ahead means
         # the child is merely UNREAD.
@@ -1441,6 +1447,9 @@ def _find_blocked_commands(
 
     def _collect_ssh(index: int, name: str) -> None:
         if _ssh_segments is None or name not in _SSH_GATED_COMMANDS:
+            return
+        if index in ssh_xargs_indexes:
+            _ssh_segments.append((name, []))
             return
         args: list[str] = []
         for j in range(index + 1, len(tokens)):
@@ -1513,6 +1522,8 @@ def _find_blocked_commands(
         if prefix_pending and token.lstrip("-").isdigit():
             continue
         base = _token_basename(token)
+        if xargs_index >= 0:
+            ssh_xargs_indexes.add(token_index)
         _collect_ssh(token_index, base)
         if _is_sed_command(base):
             sed_indexes.append(token_index)

