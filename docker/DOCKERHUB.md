@@ -51,14 +51,31 @@ That starts the container and follows its startup, which ends after about a minu
 
 Sign in with those, and change the Studio one when you first sign in. Ctrl-C stops following the log, not the container. Add `-e UNSLOTH_STUDIO_PASSWORD=...` and `-e JUPYTER_PASSWORD=...` to choose your own, and pick a real one: these ports publish on every interface, so on a cloud host use `-p 127.0.0.1:8000:8000 -p 127.0.0.1:8888:8888` and reach it with `ssh -L 8000:localhost:8000 user@your-host`. Studio reports on start whether the port answered from the public internet.
 
-Later: `docker stop unsloth` and `docker start unsloth`, or `docker rm -f unsloth` to delete it. Your models, your files and the `unsloth-studio` volume all survive that.
-
 Or let `run.sh` set these flags, including the `unsloth-studio` volume, for you. It offers to install the NVIDIA Container Toolkit if the daemon has no `nvidia` runtime:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/docker/run.sh -o run.sh
 UNSLOTH_PORTS="-p 8000:8000 -p 8888:8888" bash run.sh
 ```
+
+### Stopping and removing it
+
+```bash
+docker stop unsloth      # shut it down, keep it
+docker start unsloth     # bring it back, same state
+docker rm -f unsloth     # stop and delete the container
+docker ps -a             # find it again, running or not
+```
+
+`docker rm -f` deletes the container, not your work. Models stay in the Hugging Face cache, your files stay in the directory you mounted, and Studio's accounts, chats, outputs and runs stay on the `unsloth-studio` volume, so the next container with the same `-v unsloth-studio:/opt/unsloth-studio` picks up where this one left off, password included. Only what was written inside the container is lost, such as an in-container `unsloth-studio-update`.
+
+To discard the Studio data too, which cannot be undone:
+
+```bash
+docker volume rm unsloth-studio
+```
+
+Without `--name unsloth`, Docker assigns a random name; `docker ps` lists it, and the container id from `docker run -d` works anywhere a name does.
 
 ### Notebooks only (`core`)
 
