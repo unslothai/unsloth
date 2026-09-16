@@ -1173,6 +1173,50 @@ pub(crate) fn owned_backend_snapshot(
     Ok(snapshot)
 }
 
+/// Whether the handle that names *port* still refers to a process that EXISTS.
+///
+/// The snapshot only says the handle names the port, and a handle outlives the process it
+/// names: a child that exited is cleared by whoever notices, and until then another process
+/// can bind the freed port. Presence is then decided about a stranger -- the weak readings
+/// (a reply that is not a healthy Unsloth one, or silence) are only allowed to count because
+/// they can only be OUR process, and that premise is exactly what goes stale here.
+///
+/// `try_wait` is the answer for a child we spawned: it is non-blocking, and `Some(status)`
+/// means the process has already exited, so whatever holds the port now is not it. For an
+/// adopted backend there is no child handle, so the pid is checked instead. Anything this
+/// cannot read leaves the handle trusted, which is the direction that keeps a running
+/// backend from being declared dead.
+pub(crate) fn owned_backend_on_port_is_running(state: &BackendState, port: u16) -> bool {
+    let mut proc = match state.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    let handle = match proc.owned.as_mut() {
+        Some(handle) => handle,
+        None => return false,
+    };
+    if handle.port() != Some(port) {
+        return false;
+    }
+    match handle {
+        OwnedBackendHandle::Spawned { child, .. } => !matches!(child.try_wait(), Ok(Some(_))),
+        OwnedBackendHandle::Adopted { pid, .. } => backend_pid_is_running(*pid),
+    }
+}
+
+/// Whether *pid* is a process that still exists and has not already exited.
+///
+/// For an adopted backend, where there is no child handle to `try_wait` on. Both readings
+/// are the positive-evidence kind: `pid_is_not_dead` is false only when the pid is PROVABLY
+/// gone, so a process owned by another user, or one this app may not query, still counts as
+/// running; and a zombie has exited and is only waiting to be reaped, which `kill(pid, 0)`
+/// alone cannot see. Anything uncertain leaves the backend trusted, which is the direction
+/// that keeps a live backend from being declared dead.
+pub(crate) fn backend_pid_is_running(pid: u32) -> bool {
+    crate::desktop_backend_owner::pid_is_not_dead(pid)
+        && !crate::process_identity::is_zombie(pid)
+}
+
 pub(crate) fn record_owned_backend_port_if_current(
     state: &BackendState,
     generation: u64,
@@ -6057,5 +6101,114 @@ mod exit_status_after_stdout_closed_tests {
                 "child exiting after {delay_ms}ms was read as still alive"
             );
         }
+    }
+}
+
+// The premise the weak liveness readings rest on: "a reply that is not a healthy Unsloth
+// one, or silence, can only be OUR backend". A handle outlives the process it names, so
+// that premise goes stale the moment our child exits and something else binds the port.
+#[cfg(test)]
+mod owned_backend_liveness_tests {
+    use super::*;
+
+    #[cfg(unix)]
+    fn spawn_owned(args: &[&str]) -> Box<dyn ChildWrapper + Send> {
+        let mut cmd = Command::new(args[0]);
+        cmd.args(&args[1..])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut wrap = CommandWrap::from(cmd);
+        wrap.wrap(ProcessGroup::leader());
+        wrap.spawn().expect("spawn test child")
+    }
+
+    #[cfg(windows)]
+    fn spawn_owned(args: &[&str]) -> Box<dyn ChildWrapper + Send> {
+        let mut cmd = Command::new(args[0]);
+        cmd.args(&args[1..])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        CommandWrap::from(cmd).spawn().expect("spawn test child")
+    }
+
+    #[cfg(unix)]
+    const LIVE_CHILD: [&str; 3] = ["/bin/sh", "-c", "exec sleep 30"];
+    #[cfg(unix)]
+    const DEAD_CHILD: [&str; 3] = ["/bin/sh", "-c", "exit 0"];
+    #[cfg(windows)]
+    const LIVE_CHILD: [&str; 3] = ["cmd.exe", "/C", "ping -n 30 127.0.0.1"];
+    #[cfg(windows)]
+    const DEAD_CHILD: [&str; 3] = ["cmd.exe", "/C", "exit 0"];
+
+    fn state_owning(child: Box<dyn ChildWrapper + Send>, port: u16) -> BackendState {
+        let state = new_backend_state();
+        {
+            let mut proc = state.lock().unwrap();
+            let pid = 0;
+            proc.owned = Some(OwnedBackendHandle::spawned(child, None, pid, 1));
+            if let Some(handle) = proc.owned.as_mut() {
+                handle.set_reported_port(port);
+            }
+            proc.port = Some(port);
+        }
+        state
+    }
+
+    #[test]
+    fn a_child_that_is_still_running_is_ours() {
+        let state = state_owning(spawn_owned(&LIVE_CHILD), 8765);
+        assert!(owned_backend_on_port_is_running(&state, 8765));
+        let mut proc = state.lock().unwrap();
+        if let Some(handle) = proc.owned.as_mut() {
+            if let Some(child) = handle.spawned_child_mut() {
+                let _ = child.start_kill();
+            }
+        }
+    }
+
+    #[test]
+    fn a_child_that_has_exited_leaves_the_port_to_strangers() {
+        let mut child = spawn_owned(&DEAD_CHILD);
+        let _ = child.wait();
+        let state = state_owning(child, 8765);
+        assert!(
+            !owned_backend_on_port_is_running(&state, 8765),
+            "an exited child still counted as the managed backend, so a foreign service on \
+             its port would be reported to the user as Unsloth still running"
+        );
+    }
+
+    #[test]
+    fn a_handle_for_another_port_is_not_this_port() {
+        let state = state_owning(spawn_owned(&LIVE_CHILD), 8765);
+        assert!(!owned_backend_on_port_is_running(&state, 8766));
+        let mut proc = state.lock().unwrap();
+        if let Some(handle) = proc.owned.as_mut() {
+            if let Some(child) = handle.spawned_child_mut() {
+                let _ = child.start_kill();
+            }
+        }
+    }
+
+    #[test]
+    fn no_handle_at_all_is_not_a_managed_backend() {
+        let state = new_backend_state();
+        assert!(!owned_backend_on_port_is_running(&state, 8765));
+    }
+
+    // The adopted half, where there is no child handle to wait on.
+    #[test]
+    fn an_adopted_pid_that_is_gone_is_not_running() {
+        assert!(backend_pid_is_running(std::process::id()));
+        // A real process, run to completion, so this is a pid that is PROVABLY gone rather
+        // than a number picked for being unlikely. A pid merely unreadable stays trusted,
+        // which is what `pid_is_not_dead` is written to guarantee.
+        let mut child = spawn_owned(&DEAD_CHILD);
+        let pid = child.id();
+        let _ = child.wait();
+        assert!(
+            !backend_pid_is_running(pid),
+            "an adopted backend that has exited still read as running"
+        );
     }
 }

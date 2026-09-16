@@ -519,11 +519,16 @@ async fn backend_presence(port: u16, we_manage_it: bool) -> Result<bool, String>
 ///
 /// Read from the handle rather than from the probe: the probe is the thing that just failed
 /// to answer, and asking it again cannot decide what its silence meant.
+/// The handle naming the port is not enough on its own. It outlives the process it names --
+/// a child that exited is cleared by whoever notices it, and until then the port is free for
+/// anything else to bind -- and the weak readings below are only allowed to count because
+/// they can only be OUR process. So the owner is checked as well: a spawned child that has
+/// already exited, or an adopted pid that is gone, means the thing answering on that port is
+/// a stranger and presence is decided on its answer alone.
 fn we_manage_a_backend_on(state: &BackendState, port: u16) -> bool {
-    matches!(
-        process::owned_backend_snapshot(state),
-        Ok(Some(snapshot)) if snapshot.port == Some(port)
-    )
+    // Reads the handle for the port AND the state of the process behind it, in one pass
+    // under the same lock, so the two cannot disagree about which backend is being judged.
+    process::owned_backend_on_port_is_running(state, port)
 }
 
 /// The rule `check_backend_present` applies, as a value rather than as an expression inlined
