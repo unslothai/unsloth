@@ -448,9 +448,9 @@ def test_a_stand_in_with_a_pid_leaves_a_real_bystander_running():
         b._clear_server_pid = lambda: None
         b._kill_process()
         time.sleep(1.0)
-        assert bystander.poll() is None, (
-            f"the unload terminated an unrelated process (rc {bystander.poll()})"
-        )
+        assert (
+            bystander.poll() is None
+        ), f"the unload terminated an unrelated process (rc {bystander.poll()})"
     finally:
         bystander.kill()
         bystander.wait(timeout = 10)
