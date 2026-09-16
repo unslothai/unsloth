@@ -930,26 +930,54 @@ class TestTheGuardOnlyDropsHostBytesFromADiscretePool:
             is True
         )
 
-    def test_a_discrete_cuda_host_keeps_the_subtraction(self, monkeypatch):
+    def _rocm(self, monkeypatch, *, answered, unified):
+        monkeypatch.setattr(LlamaCppBackend, "_torch_is_rocm", staticmethod(lambda _t: True))
         monkeypatch.setattr(
-            LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: set())
+            LlamaCppBackend, "_rocm_classification_answered", staticmethod(lambda: answered)
+        )
+        monkeypatch.setattr(
+            LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: unified)
+        )
+
+    def test_a_discrete_cuda_host_keeps_the_subtraction(self, monkeypatch):
+        monkeypatch.setattr(LlamaCppBackend, "_torch_is_rocm", staticmethod(lambda _t: False))
+        monkeypatch.setattr(
+            LlamaCppBackend, "_integrated_cuda_gpu_ids", staticmethod(lambda: set())
         )
         assert self._shares(is_vulkan_backend = False, requested_gpu_ids = [0]) is False
 
-    def test_a_rocm_apu_shares_whether_or_not_it_is_pinned(self, monkeypatch):
+    def test_an_integrated_cuda_part_shares(self, monkeypatch):
+        """Jetson and DGX Spark set cudaDeviceProp::integrated and have one pool."""
+        monkeypatch.setattr(LlamaCppBackend, "_torch_is_rocm", staticmethod(lambda _t: False))
         monkeypatch.setattr(
-            LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {0})
+            LlamaCppBackend, "_integrated_cuda_gpu_ids", staticmethod(lambda: {0})
         )
+        assert self._shares(is_vulkan_backend = False, requested_gpu_ids = [0]) is True
+
+    def test_a_rocm_apu_shares_whether_or_not_it_is_pinned(self, monkeypatch):
+        self._rocm(monkeypatch, answered = True, unified = {0})
         assert self._shares(is_vulkan_backend = False, requested_gpu_ids = [0]) is True
         assert self._shares(is_vulkan_backend = False, requested_gpu_ids = None) is True
         # A discrete sibling that is explicitly pinned is its own pool.
         assert self._shares(is_vulkan_backend = False, requested_gpu_ids = [1]) is False
 
+    def test_a_rocm_host_with_no_apu_is_discrete(self, monkeypatch):
+        self._rocm(monkeypatch, answered = True, unified = set())
+        assert self._shares(is_vulkan_backend = False, requested_gpu_ids = [0]) is False
+
+    def test_an_unanswered_rocm_classification_is_not_evidence_of_a_discrete_pool(
+        self, monkeypatch
+    ):
+        """The classifier skips a device it cannot query, so empty is ambiguous there."""
+        self._rocm(monkeypatch, answered = False, unified = set())
+        assert self._shares(is_vulkan_backend = False, requested_gpu_ids = [0]) is True
+
     def test_an_unreadable_classifier_keeps_the_charge(self, monkeypatch):
         def _boom():
             raise RuntimeError("no driver")
 
-        monkeypatch.setattr(LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(_boom))
+        monkeypatch.setattr(LlamaCppBackend, "_torch_is_rocm", staticmethod(lambda _t: True))
+        monkeypatch.setattr(LlamaCppBackend, "_rocm_classification_answered", staticmethod(_boom))
         assert self._shares(is_vulkan_backend = False, requested_gpu_ids = [0]) is True
 
     def test_the_figure_follows_the_verdict(self, tmp_path, monkeypatch):

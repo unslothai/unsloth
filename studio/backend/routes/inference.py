@@ -11082,9 +11082,20 @@ def _admission_pool_shares_host_ram(
             # than the pin, because the pin may be in either index space here.
             rows = list(vulkan_gpu_memory or [])
             return not rows or any(int(total) <= 0 for _idx, _free, total in rows)
-        unified = LlamaCppBackend._rocm_unified_memory_gpu_ids()
+        import torch
+
+        if LlamaCppBackend._torch_is_rocm(torch):
+            # An empty unified set means "no APU" and "could not read the devices"
+            # alike, because the classifier skips whatever it cannot query. Only the
+            # first is evidence of a separate pool, so ask which one it was.
+            if not LlamaCppBackend._rocm_classification_answered():
+                return True
+            unified = LlamaCppBackend._rocm_unified_memory_gpu_ids()
+        else:
+            # Jetson and DGX Spark class parts are CUDA and unified too.
+            unified = LlamaCppBackend._integrated_cuda_gpu_ids()
         if not unified:
-            return False  # discrete CUDA, or a ROCm host with no APU among its GPUs
+            return False
         return not requested_gpu_ids or any(int(i) in unified for i in requested_gpu_ids)
     except Exception as e:  # noqa: BLE001 -- an unreadable device keeps the charge
         logger.debug("Could not classify the admission pool: %s", e)
