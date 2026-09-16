@@ -243,3 +243,40 @@ def test_the_reload_comparator_asks_what_the_launch_asked(monkeypatch, tmp_path)
     assert backend._requested_extra_args == list(
         extras
     ), f"the launch stored a stripped list: {backend._requested_extra_args}"
+
+
+def test_a_duplicate_device_list_is_not_a_permutation(monkeypatch, tmp_path):
+    """llama.cpp keeps duplicate entries, so CUDA0,CUDA0,CUDA1 is a three-device
+    list a two-entry split would be spread across. Arity and uniqueness, not just
+    membership."""
+    backend, _ = _backend(tmp_path, vulkan = False, memory = _TWO_GPUS)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1")
+    own = backend._gpu_ids_own_placement
+    assert own([0, 1], is_vulkan = False, extra_args = ["--device", "CUDA0,CUDA0,CUDA1"]) is True
+    assert own([0, 1], is_vulkan = False, extra_args = ["--device", "CUDA1,CUDA0"]) is False
+
+
+def test_a_preserved_device_reorder_moves_the_planned_split(monkeypatch, tmp_path):
+    """llama.cpp applies --tensor-split positionally over the SELECTED device list,
+    so preserving a reorder without moving the shares gives the roomier card's share
+    to the smaller one -- the same defect the inherited-mask path repoints for."""
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1")
+    monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = _TWO_GPUS)
+    backend._get_gguf_size_bytes = lambda _path: 14 * 1024**3
+    backend._select_gpus = lambda *args, **kwargs: ([0, 1], False)
+    result = _launch(
+        backend,
+        gguf,
+        n_ctx = 4096,
+        gpu_ids = [0, 1],
+        tensor_parallel = True,
+        extra_args = ["--device", "CUDA1,CUDA0"],
+    )
+    cmd = result["cmd"]
+    assert _device_arg(cmd) == "CUDA1,CUDA0"
+    shares = cmd[cmd.index("--tensor-split") + 1].split(",")
+    # Planned ascending as the bigger card first; the reorder puts it second.
+    assert int(shares[0]) < int(
+        shares[1]
+    ), f"the planned shares did not follow the device reorder: {shares}"
