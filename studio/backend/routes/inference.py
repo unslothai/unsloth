@@ -16625,12 +16625,23 @@ async def validate_model(
             transformers_upgrade = transformers_upgrade,
         ))
 
-    except HTTPException:
-        raise
+    except HTTPException as http_error:
+        # Restored on the way out, not re-raised untouched. This route raises with
+        # `model_log_label` in the detail -- "Invalid model identifier: <path>" for a
+        # reference whose config cannot be resolved, which a local LoRA missing its base
+        # metadata reaches on an ordinary day -- and that label is the RESOLVED path, because
+        # the request validator turned the caller's reference into one. Only the non-HTTP
+        # branches below were restoring, so the caller could read back the path the inventory
+        # redaction exists to hide by validating a row it knows is broken. Through the same
+        # helper the tunnel wrapper uses, which returns the exception untouched when there
+        # was no handle in it.
+        raise _handle_restored_http_exception(http_error) from http_error
     except LlamaServerNotFoundError as e:
         # Missing GGUF runtime: 400 with the install message, not a generic "Invalid model".
         logger.warning("GGUF runtime missing while validating '%s': %s", request.model_path, e)
-        raise HTTPException(status_code = 400, detail = str(e))
+        raise HTTPException(
+            status_code = 400, detail = restore_inventory_handles(str(e))
+        )
     except Exception as e:
         # Restored here rather than at each raise below: every branch that quotes the
         # failure quotes this string, and an error detail naming the path is the same

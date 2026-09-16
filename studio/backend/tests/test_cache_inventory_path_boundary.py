@@ -1144,6 +1144,11 @@ def test_the_load_and_validate_answers_go_through_the_restoration():
     assert "restore_inventory_handles(ValidateModelResponse(" in source
     assert "jsonable_encoder(restore_inventory_handles(payload))" in source
     assert "restore_inventory_handles(redact_native_paths(str(e)))" in source
+    # And the HTTPException branch of the validate route, which used to re-raise untouched:
+    # only the non-HTTP failures were restored, so a refusal naming the resolved path went
+    # out whole for a caller that had only ever seen the reference.
+    assert "raise _handle_restored_http_exception(http_error) from http_error" in source
+    assert "detail = restore_inventory_handles(str(e))" in source
 
 
 def test_a_refusal_names_the_handle_the_caller_sent(monkeypatch):
