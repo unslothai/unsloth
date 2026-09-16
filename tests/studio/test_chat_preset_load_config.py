@@ -241,23 +241,35 @@ def _selector_reads(selector: str, field: str) -> bool:
         return False
     read = re.compile(rf"\b{re.escape(signature.group(1))}\.{field}\b")
     results = _split_ternary(selector[signature.end() :])
-    return bool(results) and all(
+    if not results:
+        return False
+    if all(read.search(result) for result, _ in results):
+        return True
+    # A guard only justifies an arm it can steer away from: if every arm returns the same
+    # expression the condition decides nothing, so `s.budget ? s.other : s.other` subscribes
+    # to `s.other` however prominently it names the budget.
+    if len({re.sub(r"\s+", "", result) for result, _ in results}) < 2:
+        return False
+    return all(
         read.search(result) or any(read.search(guard) for guard in guards)
         for result, guards in results
     )
 
 
-def _memo_dependency_lists(source: str) -> list:
-    """The dependency array of every `useMemo(...)`, as a list of bare identifiers."""
-    out, needle = [], "useMemo("
-    start = source.find(needle)
-    while start != -1:
-        body = _balanced(source, start + len(needle) - 1)
+def _memo_dependency_lists(source: str) -> dict:
+    """Each `const X = useMemo(...)`'s dependency array, keyed by the name it is bound to.
+
+    Keyed rather than counted: the memos that capture the preset config are named ones, and a
+    bare tally cannot tell a field moving out of `currentLoadSummary` and into some unrelated
+    memo from it never moving at all.
+    """
+    out = {}
+    for match in re.finditer(r"const\s+([A-Za-z_$][\w$]*)\s*=\s*useMemo\(", source):
+        body = _balanced(source, match.end() - 1)
         bracket = body.rfind("[")
         if bracket != -1:
             names = _balanced(body, bracket, "[", "]")
-            out.append([name.strip() for name in names.split(",") if name.strip()])
-        start = source.find(needle, start + 1)
+            out[match.group(1)] = [name.strip() for name in names.split(",") if name.strip()]
     return out
 
 
@@ -283,6 +295,10 @@ SELECTOR_CASES = [
     ("(s) => s.mode ? s.on ? s.reasoningBudget : s.q : s.other", False),
     ("(s) => s.mode ? s.on ? s.reasoningBudget : s.reasoningBudget : s.reasoningBudget", True),
     ("(s) => s.enabled ? s.other : s.fallback", False),
+    # A guard that steers nothing: every arm returns the same expression regardless.
+    ("(s) => s.reasoningBudget ? s.other : s.other", False),
+    ("(s) => s.reasoningBudget === 1 ? null : null", False),
+    ("(s) => s.reasoningBudget ? (s.on ? null : null) : null", False),
     ("(s) => s.reasoningBudgetMessage", False),
     ("(s) => s.reasoningBudgets", False),
     ("{ budget: state.reasoningBudget }", False),
@@ -312,19 +328,25 @@ def test_preset_sheet_reacts_to_a_reasoning_budget_change():
     selectors = _store_selectors(sheet)
     assert selectors, "no useChatRuntimeStore() call found; has the sheet been renamed?"
     dependency_lists = _memo_dependency_lists(sheet)
-    assert dependency_lists, "no useMemo() dependency list found in the sheet"
+    # The two memos that call capturePresetLoadConfig(): the dirty state behind the Update
+    # button, and the summary. Named, so the field cannot leave one for an unrelated memo.
+    capturing = ("hasUnsavedPresetChanges", "currentLoadSummary")
+    for memo in capturing:
+        assert memo in dependency_lists, (
+            f"no `const {memo} = useMemo(...)` with a dependency list in the sheet; if it was "
+            "renamed, rename it here too, and check it still captures the preset config"
+        )
 
     for field in ("reasoningBudget", "reasoningBudgetMessage"):
         assert any(_selector_reads(text, field) for text in selectors), (
             f"no useChatRuntimeStore selector returns a value derived from {field}, so a "
             "change to it does not re-render the component whose memos capture it"
         )
-        # Both memos: hasUnsavedPresetChanges (dirty state) and currentLoadSummary.
-        naming = [names for names in dependency_lists if field in names]
-        assert len(naming) == 2, (
-            f"{field} is named by {len(naming)} capturePresetLoadConfig() memo dependency "
-            "lists, expected 2 (hasUnsavedPresetChanges and currentLoadSummary)"
-        )
+        for memo in capturing:
+            assert field in dependency_lists[memo], (
+                f"{memo} captures {field} through capturePresetLoadConfig() but does not list "
+                f"it as a dependency, so it keeps a value computed before {field} changed"
+            )
 
 
 def test_a_preset_records_a_self_sizing_load_s_pin_and_not_its_window():
