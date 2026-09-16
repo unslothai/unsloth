@@ -12,24 +12,31 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { deriveExternalModelCapabilities } from "../src/features/chat/lib/external-model-capabilities.ts";
+import {
+  deriveExternalModelCapabilities,
+  type ExternalModelCapabilityInput,
+} from "../src/features/chat/lib/external-model-capabilities.ts";
 
 import { readSrc } from "./helpers/kit.ts";
 
-const CAPS = {
+// Annotated, not inferred: an unannotated literal widens `reasoningEffortLevels` to `string[]`
+// and `defaultEffort` to `string`, neither of which the real input accepts. The node runner
+// strips types without checking them, so only `npm run typecheck`'s second pass over
+// tsconfig.test.json catches that -- which is how it reached CI the first time.
+const CAPS: ExternalModelCapabilityInput["reasoningCaps"] = {
   supportsReasoning: true,
   reasoningAlwaysOn: false,
-  reasoningStyle: "reasoning_effort" as const,
+  reasoningStyle: "reasoning_effort",
   supportsReasoningOff: true,
   reasoningEffortLevels: ["low", "medium", "high"],
   defaultEffort: null,
 };
 
-const BASE = {
+const BASE: ExternalModelCapabilityInput = {
   providerType: "openrouter",
   reasoningCaps: CAPS,
-  clampedCurrentEffort: "medium" as const,
-  currentReasoningEffort: "medium" as const,
+  clampedCurrentEffort: "medium",
+  currentReasoningEffort: "medium",
   currentReasoningEnabled: true,
   supportsBuiltinWebSearch: false,
   supportsBuiltinCodeExecution: false,
@@ -102,7 +109,10 @@ test("Anthropic takes the top rung offered, OpenAI takes high", () => {
     },
   });
   assert.equal(anthropic.reasoningEffort, "xhigh");
-  const openai = deriveExternalModelCapabilities({ ...BASE, providerType: "openai" });
+  const openai = deriveExternalModelCapabilities({
+    ...BASE,
+    providerType: "openai",
+  });
   assert.equal(openai.reasoningEffort, "high");
 });
 
@@ -162,7 +172,13 @@ test("code follows the placement rule, not the hosted flag alone", () => {
 });
 
 test("preserve-thinking is always cleared for an external model", () => {
-  for (const providerType of ["anthropic", "openai", "kimi", "openrouter", "custom"]) {
+  for (const providerType of [
+    "anthropic",
+    "openai",
+    "kimi",
+    "openrouter",
+    "custom",
+  ]) {
     const caps = deriveExternalModelCapabilities({ ...BASE, providerType });
     assert.equal(caps.supportsPreserveThinking, false, providerType);
   }
@@ -183,7 +199,10 @@ test("an unsupported builtin forces its pill off even when one was stored on", (
 // can be imported here. clampLocalReasoningEffort collapses `max`/`xhigh` onto `low`; the
 // levels-aware clamp is the one both surfaces must feed this function.
 test("both call sites clamp with the levels-aware helper", () => {
-  for (const file of ["features/chat/chat-page.tsx", "features/chat/shared-composer.tsx"]) {
+  for (const file of [
+    "features/chat/chat-page.tsx",
+    "features/chat/shared-composer.tsx",
+  ]) {
     const src = readSrc(file);
     if (!src.includes("deriveExternalModelCapabilities")) continue;
     assert.match(
