@@ -172,9 +172,15 @@ class TestFlashAttention:
 
 class TestTheOtherTwoLayoutKnobs:
     def test_swa_full_collapses_the_two_cache_sizes(self, monkeypatch, ragged):
+        # Net of checkpoints: a blank --ctx-checkpoints now means llama.cpp's default rather
+        # than zero, and --swa-full zeroes the checkpoint share (see the next test), so the
+        # totals can move the other way while the attention cache itself still grows.
         compact = _call_route(monkeypatch, path = ragged)
         full = _call_route(monkeypatch, path = ragged, swa_full = True)
-        assert full["kv_bytes"] > compact["kv_bytes"]
+        # The share is None, not 0, when nothing is reserved.
+        compact_attn = compact["kv_bytes"] - (compact["kv_checkpoint_bytes"] or 0)
+        full_attn = full["kv_bytes"] - (full["kv_checkpoint_bytes"] or 0)
+        assert full_attn > compact_attn
 
     def test_swa_full_drops_the_checkpoint_share(self, monkeypatch, ragged):
         """--swa-full leaves no sliding window to snapshot, so --ctx-checkpoints allocates
