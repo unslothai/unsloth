@@ -80,7 +80,6 @@ def patch_saving_functions(*args, **kwargs):
     call sites below are unchanged.
     """
     from ..save import patch_saving_functions as _impl
-
     return _impl(*args, **kwargs)
 
 

@@ -93,7 +93,9 @@ def test_no_module_under_models_imports_unsloth_save_at_module_scope():
             elif isinstance(node, ast.Import):
                 for alias in node.names:
                     if alias.name == "unsloth.save":
-                        offenders.append(f"{path.relative_to(_ROOT)}:{node.lineno} imports unsloth.save")
+                        offenders.append(
+                            f"{path.relative_to(_ROOT)}:{node.lineno} imports unsloth.save"
+                        )
     assert offenders == [], (
         "a module-scope import of unsloth.save from unsloth/models/ closes the cycle that "
         "breaks a cold `import unsloth.save`; move it into the function that needs it, the "
@@ -123,7 +125,9 @@ def test_every_module_that_calls_a_deferred_name_defines_the_shim_for_it():
                 continue
             shim = module_functions.get(name)
             if shim is None:
-                problems.append(f"{path.relative_to(_ROOT)} calls {name} and defines no shim for it")
+                problems.append(
+                    f"{path.relative_to(_ROOT)} calls {name} and defines no shim for it"
+                )
                 continue
             imports = {
                 alias.name
@@ -145,9 +149,7 @@ def test_the_deferred_names_are_still_exported_by_unsloth_save():
     source = (_ROOT / "unsloth" / "save.py").read_text(encoding = "utf-8")
     tree = ast.parse(source)
     defined = {
-        node.name
-        for node in tree.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        node.name for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
     for name in _DEFERRED_NAMES:
         assert name in defined, f"unsloth.save no longer defines {name}"
@@ -168,10 +170,12 @@ def test_the_deferred_names_are_still_exported_by_unsloth_save():
 # Behavioural: the original ordering, in a child interpreter
 # ---------------------------------------------------------------------------
 
+
 def _has_torch():
     import importlib.util
-
-    return all(importlib.util.find_spec(name) is not None for name in ("torch", "transformers", "peft"))
+    return all(
+        importlib.util.find_spec(name) is not None for name in ("torch", "transformers", "peft")
+    )
 
 
 _needs_torch = pytest.mark.skipif(

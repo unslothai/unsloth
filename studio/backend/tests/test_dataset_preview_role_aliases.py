@@ -79,7 +79,9 @@ def test_the_preview_row_standardiser_maps_every_spelling(spelling, expected):
 def test_the_role_key_is_read_before_the_from_key():
     """Unchanged precedence: `role` wins over `from`, and both normalise."""
     row = {"conversations": [{"role": "GPT", "from": "Human", "value": "x"}]}
-    assert _standardize_sharegpt_row(row, "conversations")["conversations"][0]["role"] == "assistant"
+    assert (
+        _standardize_sharegpt_row(row, "conversations")["conversations"][0]["role"] == "assistant"
+    )
 
 
 def test_the_content_key_is_read_before_the_value_key():
@@ -150,6 +152,7 @@ def test_non_dict_messages_are_skipped():
 # ---------------------------------------------------------------------------
 # End to end, through the real preview route
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def isolated_studio_home(tmp_path, monkeypatch):

@@ -88,7 +88,9 @@ def test_a_known_rocm_answer_is_unchanged():
 
 
 @pytest.mark.parametrize("backend", _OTHER_BACKENDS + ["rocm"])
-@pytest.mark.parametrize("raw, expected", [("0.5", 0.5), ("0.95", 0.95), ("1.0", 1.0), (" 0.25 ", 0.25)])
+@pytest.mark.parametrize(
+    "raw, expected", [("0.5", 0.5), ("0.95", 0.95), ("1.0", 1.0), (" 0.25 ", 0.25)]
+)
 def test_a_usable_override_wins_on_every_backend(backend: str, raw: str, expected: float) -> None:
     assert _gpu_memory_fraction(128 * GIB, False, "linux", backend, raw) == pytest.approx(expected)
 
@@ -154,7 +156,10 @@ def test_a_cuda_host_ignores_the_rocm_only_name():
 
 
 def test_an_empty_string_is_treated_as_unset():
-    assert _mem_fraction_env_value("cuda", {_GPU_MEM_FRACTION_ENV: ""}) == ("", _GPU_MEM_FRACTION_ENV)
+    assert _mem_fraction_env_value("cuda", {_GPU_MEM_FRACTION_ENV: ""}) == (
+        "",
+        _GPU_MEM_FRACTION_ENV,
+    )
     assert _gpu_memory_fraction(0, False, "linux", "cuda", "") == 1.0
 
 
@@ -183,7 +188,12 @@ def _make_logger():
 
 
 class _FakeCuda:
-    def __init__(self, available = True, total = 24 * GIB, name = "NVIDIA GeForce RTX 4090"):
+    def __init__(
+        self,
+        available = True,
+        total = 24 * GIB,
+        name = "NVIDIA GeForce RTX 4090",
+    ):
         self._available = available
         self._total = total
         self._name = name
@@ -199,7 +209,13 @@ class _FakeCuda:
         return SimpleNamespace(total_memory = self._total, name = self._name)
 
 
-def _run_section_1h(*, is_rocm, environ, cuda = None, platform = "linux"):
+def _run_section_1h(
+    *,
+    is_rocm,
+    environ,
+    cuda = None,
+    platform = "linux",
+):
     """Execute the shipped block with fakes standing in for the process globals."""
     import sys as _real_sys
 
@@ -212,12 +228,16 @@ def _run_section_1h(*, is_rocm, environ, cuda = None, platform = "linux"):
     def resolve_env(backend, environ_ = None):
         # The shipped line calls this with one argument, so the fake environment has to
         # arrive here rather than through a patched os module.
-        return worker_module._mem_fraction_env_value(backend, environ if environ_ is None else environ_)
+        return worker_module._mem_fraction_env_value(
+            backend, environ if environ_ is None else environ_
+        )
 
     namespace = {
         "_hw": SimpleNamespace(IS_ROCM = is_rocm),
         "os": SimpleNamespace(environ = environ),
-        "sys": SimpleNamespace(platform = platform, modules = dict(_real_sys.modules, torch = fake_torch)),
+        "sys": SimpleNamespace(
+            platform = platform, modules = dict(_real_sys.modules, torch = fake_torch)
+        ),
         "logger": logger,
         "_mem_fraction_env_value": resolve_env,
         "_parse_mem_fraction_env": worker_module._parse_mem_fraction_env,
@@ -248,7 +268,8 @@ def test_the_block_does_nothing_when_no_variable_is_set():
 def test_the_block_does_nothing_on_a_rocm_host():
     """Section 1g already served it; running both would cap twice and log twice."""
     cuda, log = _run_section_1h(
-        is_rocm = True, environ = {_GPU_MEM_FRACTION_ENV: "0.5"},
+        is_rocm = True,
+        environ = {_GPU_MEM_FRACTION_ENV: "0.5"},
     )
     assert cuda.fraction is None
     assert log.info == []
@@ -317,7 +338,9 @@ def test_the_cap_is_the_same_on_every_platform(platform: str):
     """The neutral cap is a user preference, not a driver workaround, so unlike the
     ROCm reserve it does not vary by platform."""
     cuda, _ = _run_section_1h(
-        is_rocm = False, environ = {_GPU_MEM_FRACTION_ENV: "0.6"}, platform = platform,
+        is_rocm = False,
+        environ = {_GPU_MEM_FRACTION_ENV: "0.6"},
+        platform = platform,
     )
     assert cuda.fraction == pytest.approx(0.6)
 

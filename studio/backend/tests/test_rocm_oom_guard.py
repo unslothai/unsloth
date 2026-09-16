@@ -293,7 +293,7 @@ class TestMemFractionSelection:
         # _gpu_memory_fraction is the one policy entry point for every backend; its
         # "rocm" arm delegates straight to _rocm_memory_fraction, which the rest of this
         # file pins directly.
-        assert '_mem_fraction = _gpu_memory_fraction(' in source
+        assert "_mem_fraction = _gpu_memory_fraction(" in source
         # totalGlobalMem is what the allocator multiplies the fraction by from torch
         # 2.10 on, so the reserve is only the intended size when the guard divides by
         # the same number. Before 2.10 the allocator divides by the driver's total.

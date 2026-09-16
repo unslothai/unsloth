@@ -6993,16 +6993,19 @@ def patch_saving_functions(model, vision = False):
 # answers for a tree that imported `unsloth.models` and never `unsloth.save`, where it is the
 # only thing that can work.
 _DEFERRED_INTO_MODELS = {
-    "unsloth.models.vision"               : ("patch_saving_functions",),
-    "unsloth.models.llama"                : ("patch_saving_functions",),
-    "unsloth.models.sentence_transformer" : ("unsloth_save_pretrained_torchao", "unsloth_save_pretrained_gguf",),
+    "unsloth.models.vision": ("patch_saving_functions",),
+    "unsloth.models.llama": ("patch_saving_functions",),
+    "unsloth.models.sentence_transformer": (
+        "unsloth_save_pretrained_torchao",
+        "unsloth_save_pretrained_gguf",
+    ),
 }
 for _module_name, _deferred_names in _DEFERRED_INTO_MODELS.items():
     _module = sys.modules.get(_module_name)
-    if _module is None: continue
+    if _module is None:
+        continue
     for _deferred_name in _deferred_names:
         # Only ever replace our own shim. A module that never got one, or that someone has
         # already pointed somewhere else, is left exactly as it is.
         if getattr(getattr(_module, _deferred_name, None), "_unsloth_deferred_shim", False):
             setattr(_module, _deferred_name, globals()[_deferred_name])
-pass

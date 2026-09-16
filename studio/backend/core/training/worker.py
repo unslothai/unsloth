@@ -3856,7 +3856,6 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         elif _cap_fraction is not None:
             try:
                 import torch as _torch_cap
-
                 if _torch_cap.cuda.is_available():
                     _cap = _gpu_memory_fraction(0, False, sys.platform, "cuda", _cap_raw)
                     _torch_cap.cuda.set_per_process_memory_fraction(_cap)
