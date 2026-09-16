@@ -11029,3 +11029,21 @@ def test_chat_absent_model_with_only_resolver_withheld_checkpoints(monkeypatch):
     assert status == 404
     assert "none of the downloaded models is a chat model" in detail
     assert "no models are downloaded yet" not in detail
+
+
+def test_chat_withheld_model_does_not_send_the_caller_to_load_it(monkeypatch):
+    # One reason a checkpoint is withheld is a truthy model_file, which the MLX loaders
+    # exec_module and the Studio consent gate does not cover, so the refusal must not point
+    # the caller at a manual load.
+    _wire_withheld_chat(
+        monkeypatch,
+        objects = [
+            {"id": "org/A-GGUF"},
+            {"id": "org/custom-code", "task": "automatic-speech-recognition"},
+        ],
+        downloaded = ("org/A-GGUF", "org/custom-code"),
+    )
+    status, detail = _chat_error(_chat_request(model = "org/custom-code"))
+    assert status == 404
+    assert "cannot serve it here" in detail
+    assert "Unsloth Studio" not in detail

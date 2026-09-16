@@ -8331,10 +8331,14 @@ async def _unavailable_model_message(requested_model: str) -> str:
     withheld = next((c for c in candidates if c in downloaded and c not in servable), None)
     if withheld is not None:
         named = requested if withheld == requested.casefold() else base.strip()
+        # No "load it in Studio to find out": one of the two reasons a checkpoint lands here is a
+        # truthy `model_file`, which _config_is_servable_here refuses because the MLX loaders
+        # exec_module it, and the Studio consent gate does not cover that key (it reads
+        # trust_remote_code and auto_map only, utils/security/consent.py). Sending the caller
+        # down that path would run exactly the code this refusal exists to stop.
         message = (
             f"The model '{named}' is downloaded, but this server cannot serve it here: it is not a "
-            "chat model this backend loads, or it needs custom code an API request cannot approve. "
-            "Loading it in Unsloth Studio will report why."
+            "chat model this backend loads, or it needs custom code an API request cannot approve."
         )
         return f"{message} Available models: {available}." if available else message
     if not available:
