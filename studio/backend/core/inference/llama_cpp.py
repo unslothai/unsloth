@@ -86,8 +86,12 @@ from core.inference.llama_server_args import (
     _effective_tensor_parallel,
     _flag_name,
     _tensor_parallel_matches_loaded,
+    LLAMA_CTX_CHECKPOINTS_DEFAULT,
     apply_load_mode_policy,
     apply_model_memory_policy,
+    ctx_checkpoints_within_host_budget,
+    effective_ctx_checkpoints,
+    parse_ctx_checkpoints_override,
     resolve_ctx_checkpoints,
     extra_args_disable_mmproj,
     extra_args_image_max_tokens,
@@ -4899,6 +4903,41 @@ def _paravirtual_mmproj_pinnable(server_caps: Mapping[str, object]) -> bool:
     return bool(
         server_caps.get("supports_no_mmproj_offload")
         or not _paravirtual_probe_answered(server_caps)
+    )
+
+
+def ctx_checkpoints_allocated(server_caps: Mapping[str, object]) -> bool:
+    """Return false only when a successful help probe confirms no checkpoint flag."""
+    if server_caps.get("ctx_checkpoints_flag"):
+        return True
+    return not bool(server_caps.get("help_probe_ok"))
+
+
+def effective_ctx_checkpoints_for_caps(
+    server_caps: Mapping[str, object],
+    extra_args: Optional[Iterable[str]],
+    requested: Optional[int],
+    *,
+    per_checkpoint_bytes: int = 0,
+    n_parallel: int = 1,
+    total_host_bytes: Optional[int] = None,
+) -> int:
+    """Resolve the count from capabilities, arguments, and host budget.
+
+    A confirmed unsupported build uses zero. If a detected binary has no confirmed alias,
+    Studio cannot emit its field or cap, so only pass-through extras override the default.
+    """
+    if not ctx_checkpoints_allocated(server_caps):
+        return 0
+    emittable = bool(server_caps.get("ctx_checkpoints_flag"))
+    describes_a_child = bool(server_caps.get("found"))
+    return effective_ctx_checkpoints(
+        extra_args,
+        requested if (emittable or not describes_a_child) else None,
+        supports_flag = True,
+        per_checkpoint_bytes = per_checkpoint_bytes,
+        n_parallel = n_parallel,
+        total_host_bytes = total_host_bytes if emittable else None,
     )
 
 
@@ -14457,7 +14496,11 @@ class LlamaCppBackend:
         per-layer KDA layout; Hybrid Mamba uses its architecture-level interval
         and group count in _mamba_recurrent_state_bytes.
         """
-        if not self._n_kv_heads_by_layer or not self._n_layers or not self._kda_head_dim:
+        # Lightweight probes may omit fields used only by other architectures.
+        heads_by_layer = getattr(self, "_n_kv_heads_by_layer", None)
+        n_layers_raw = getattr(self, "_n_layers", None)
+        kda_head_dim = getattr(self, "_kda_head_dim", None)
+        if not heads_by_layer or not n_layers_raw or not kda_head_dim:
             return 0
         n_recurrent = sum(1 for i in range(self._n_layers) if self._kv_heads_for_layer(i, 1) == 0)
         if n_recurrent == 0:
@@ -14469,15 +14512,46 @@ class LlamaCppBackend:
         return int(n_recurrent * (n_embd_r + n_embd_s) * 4 * max(1, n_parallel))
 
     def _rollback_state_bytes(self, n_parallel: int = 1) -> int:
-        """One target-context rollback snapshot, whichever recurrent family this is.
-
-        Both callers price the same thing (llama.cpp's `1 seqs N rs_seq`) and both
-        used to reach for the Mamba helper alone, which answers 0 for a KDA hybrid
-        and silently dropped the reserve. Route every caller through here.
-        """
+        """Size one target-context rollback snapshot for either recurrent family."""
         return self._mamba_recurrent_state_bytes(n_parallel) or self._recurrent_state_bytes(
             n_parallel
         )
+
+    def _bounded_ctx_checkpoints(
+        self,
+        n_parallel: int,
+        server_caps: Mapping[str, object],
+        extra_args: Optional[Iterable[str]] = None,
+    ) -> Optional[int]:
+        """Return an automatic recurrent-checkpoint cap, or None to preserve the argv."""
+        flag = server_caps.get("ctx_checkpoints_flag")
+        if not flag:
+            return None
+        # Extra arguments are appended last and must remain authoritative.
+        if parse_ctx_checkpoints_override(extra_args) is not None:
+            return None
+        per_checkpoint = self._rollback_state_bytes(1)
+        if per_checkpoint <= 0:
+            return None
+        total_ram_mib = self._total_system_memory_mib()
+        bounded = ctx_checkpoints_within_host_budget(
+            per_checkpoint,
+            n_parallel,
+            (total_ram_mib * 1024 * 1024) if total_ram_mib else None,
+        )
+        if bounded >= LLAMA_CTX_CHECKPOINTS_DEFAULT:
+            return None
+        logger.info(
+            "Capping llama-server context checkpoints at %d per slot (llama.cpp default %d): "
+            "each one snapshots this model's whole recurrent state (%.1f MiB), so the default "
+            "would hold %.1f GiB of host RAM across %d slot(s).",
+            bounded,
+            LLAMA_CTX_CHECKPOINTS_DEFAULT,
+            per_checkpoint / (1024**2),
+            LLAMA_CTX_CHECKPOINTS_DEFAULT * per_checkpoint * max(1, n_parallel) / (1024**3),
+            max(1, n_parallel),
+        )
+        return bounded
 
     def _target_kv_excludes_nextn(self) -> bool:
         """Whether this model's TARGET KV cache skips the embedded MTP blocks.
@@ -14610,7 +14684,9 @@ class LlamaCppBackend:
           n_parallel      -- --parallel slots: controls per-slot stream padding.
           kv_unified      -- --kv-unified: one shared stream vs one per slot.
           n_ubatch        -- --ubatch-size: SWA cache's processing headroom.
-          ctx_checkpoints -- --ctx-checkpoints: N SWA snapshots per slot.
+          ctx_checkpoints -- --ctx-checkpoints: N snapshots per slot. An SWA
+                             model snapshots its window; a hybrid recurrent one
+                             snapshots its WHOLE recurrent state (see path 2).
           flash_attn      -- False pads variable-width V tensors to the model max.
 
         Returns 0 if metadata is insufficient.
@@ -14646,6 +14722,12 @@ class LlamaCppBackend:
             int(self._DEFAULT_N_UBATCH if n_ubatch is None else n_ubatch),
         )
 
+        # Hybrid checkpoints contain the full recurrent state per slot, not a context-scaled
+        # window. This covers both Mamba and KDA paths and remains host-resident.
+        recurrent_checkpoints = (
+            slots * max(0, ctx_checkpoints) * self._rollback_state_bytes(1)
+        )
+
         # Path 1: MLA (DeepSeek-V2/V3, GLM-4.7, GLM-5, Kimi-K2.5)
         # One compressed KV latent per token/layer (shared across heads); V is
         # reconstructed from it, no separate V cache. key_length = kv_lora_rank
@@ -14667,9 +14749,11 @@ class LlamaCppBackend:
                     1 for i in range(n_layers_kv) if self._kv_heads_for_layer(i, n_kv_mla) > 0
                 )
                 n_mla_layers = max(1, attn)
-            return int(
-                n_mla_layers * total_cells * n_kv_mla * key_len * bpe_k
-            ) + self._recurrent_state_bytes(n_parallel)
+            return (
+                int(n_mla_layers * total_cells * n_kv_mla * key_len * bpe_k)
+                + self._recurrent_state_bytes(n_parallel)
+                + recurrent_checkpoints
+            )
 
         key_len = self._kv_key_length
         val_len = self._kv_value_length
@@ -14685,9 +14769,14 @@ class LlamaCppBackend:
                 return (
                     int(n_attn * total_cells * (n_kv * key_len * bpe_k + v_width * bpe_v))
                     + recurrent
+                    + recurrent_checkpoints
                 )
             head_dim = self._legacy_head_dim()
-            return int(n_attn * total_cells * n_kv * 2 * head_dim * bpe_k) + recurrent
+            return (
+                int(n_attn * total_cells * n_kv * 2 * head_dim * bpe_k)
+                + recurrent
+                + recurrent_checkpoints
+            )
 
         # Path 3: Sliding window (Gemma 2/3/3n/4, gpt-oss, Cohere2 ...). Pattern
         # from the resolver; if absent, falls through to the legacy 1/4-global
@@ -21735,18 +21824,32 @@ class LlamaCppBackend:
                     )
 
                 _effective_ubatch = _ubatch_for_slots(n_parallel)
-                # What the SWA checkpoint reserve is priced against. Extras beat the
-                # field, as at launch: the control emits its flag before them, so a
-                # typed --ctx-checkpoints is what the child allocates. Only an
-                # explicit request counts at all: the estimator has always charged 0,
-                # and adopting llama.cpp's default of 32 would move the fit for every
-                # model. Gated on the capability the argv builder emits the flag on:
-                # a build with neither alias allocates nothing, so pricing it costs
-                # slots and context for bytes no child holds.
-                _effective_ctx_checkpoints = (
+                # Decide the cap once so planning and command emission use the same count.
+                _auto_ctx_checkpoints = (
+                    self._bounded_ctx_checkpoints(n_parallel, server_caps, extra_args)
+                    if ctx_checkpoints is None
+                    else None
+                )
+                # Price the child count, including upstream's default for a blank field.
+                _effective_ctx_checkpoints = effective_ctx_checkpoints_for_caps(
+                    server_caps,
+                    extra_args,
+                    ctx_checkpoints,
+                    per_checkpoint_bytes = self._rollback_state_bytes(1),
+                    n_parallel = n_parallel,
+                    total_host_bytes = (
+                        (self._total_system_memory_mib() or 0) * 1024 * 1024
+                    ) or None,
+                )
+                # Preserve the existing SWA fit policy, which charges only explicit counts.
+                _requested_ctx_checkpoints = (
                     resolve_ctx_checkpoints(extra_args, ctx_checkpoints)
                     if server_caps.get("ctx_checkpoints_flag")
                     else 0
+                )
+                # Recurrent snapshots are host-only. Keep SWA's existing VRAM fit policy.
+                _fit_ctx_checkpoints = (
+                    0 if self._rollback_state_bytes(1) > 0 else _requested_ctx_checkpoints
                 )
                 # --embedding forces n_batch = n_ubatch, which aborts a load below the slots.
                 if (
@@ -23116,7 +23219,6 @@ class LlamaCppBackend:
                                         n_parallel = n_parallel,
                                         kv_unified = planned_kv_unified,
                                         n_ubatch = _effective_ubatch,
-                                        ctx_checkpoints = _effective_ctx_checkpoints,
                                         flash_attn = planned_flash_attn,
                                         mtp_engaged = False,
                                         mtp_overhead_fn = None,
@@ -23124,6 +23226,7 @@ class LlamaCppBackend:
                                         budget_frac = 1.0,
                                         pooled = True,
                                         total_mib = None,
+                                        ctx_checkpoints = _fit_ctx_checkpoints,
                                     )
                                 )
                                 if _ctx_wo <= 0:
@@ -23197,7 +23300,6 @@ class LlamaCppBackend:
                                         n_parallel = n_parallel,
                                         kv_unified = planned_kv_unified,
                                         n_ubatch = _effective_ubatch,
-                                        ctx_checkpoints = _effective_ctx_checkpoints,
                                         flash_attn = planned_flash_attn,
                                         mtp_engaged = True,
                                         mtp_overhead_fn = mtp_overhead_fn,
@@ -23205,6 +23307,7 @@ class LlamaCppBackend:
                                         budget_frac = 1.0,
                                         pooled = True,
                                         total_mib = None,
+                                        ctx_checkpoints = _fit_ctx_checkpoints,
                                     )
                                 )
                                 if (
@@ -23453,7 +23556,6 @@ class LlamaCppBackend:
                                     n_parallel = n_parallel,
                                     kv_unified = planned_kv_unified,
                                     n_ubatch = _effective_ubatch,
-                                    ctx_checkpoints = _effective_ctx_checkpoints,
                                     flash_attn = planned_flash_attn,
                                     mtp_engaged = _mtp_reserves_gpu,
                                     mtp_overhead_fn = mtp_overhead_fn,
@@ -23461,6 +23563,7 @@ class LlamaCppBackend:
                                     budget_frac = 1.0,
                                     pooled = True,
                                     total_mib = None,
+                                    ctx_checkpoints = _fit_ctx_checkpoints,
                                 )
                                 kv = _kv_bytes(capped)
                                 footprint_mib = (
@@ -23547,7 +23650,6 @@ class LlamaCppBackend:
                                     n_parallel = n_parallel,
                                     kv_unified = planned_kv_unified,
                                     n_ubatch = _effective_ubatch,
-                                    ctx_checkpoints = _effective_ctx_checkpoints,
                                     flash_attn = planned_flash_attn,
                                     mtp_engaged = _mtp_reserves_gpu,
                                     mtp_overhead_fn = mtp_overhead_fn,
@@ -23555,6 +23657,7 @@ class LlamaCppBackend:
                                     budget_frac = 1.0,
                                     pooled = True,
                                     total_mib = None,
+                                    ctx_checkpoints = _fit_ctx_checkpoints,
                                 )
                                 kv = _kv_bytes(capped)
                                 footprint_mib = (
@@ -23706,7 +23809,6 @@ class LlamaCppBackend:
                                 n_parallel = n_parallel,
                                 kv_unified = planned_kv_unified,
                                 n_ubatch = _effective_ubatch,
-                                ctx_checkpoints = _effective_ctx_checkpoints,
                                 flash_attn = planned_flash_attn,
                                 mtp_engaged = _mtp_reserves_gpu,
                                 mtp_overhead_fn = mtp_overhead_fn,
@@ -23714,6 +23816,7 @@ class LlamaCppBackend:
                                 budget_frac = 1.0,
                                 pooled = True,
                                 total_mib = None,
+                                ctx_checkpoints = _fit_ctx_checkpoints,
                             )
 
                         def _apple_footprint_mib(ctx: int) -> float:
@@ -23916,7 +24019,7 @@ class LlamaCppBackend:
                             split_extra_bytes = _cc_split_extra(_reduce_ctx),
                             ubatch_for_slots = _ubatch_for_slots,
                             mtp_bytes_for_slots = lambda s, ub: _mtp_bytes(_reduce_ctx, s, ub),
-                            ctx_checkpoints = _effective_ctx_checkpoints,
+                            ctx_checkpoints = _fit_ctx_checkpoints,
                         )
                         if not _uf_slots:
                             _slots_asked = n_parallel
@@ -23949,9 +24052,9 @@ class LlamaCppBackend:
                                     split_extra_bytes = _cc_split_extra(ctx),
                                     ubatch_for_slots = _ubatch_for_slots,
                                     mtp_bytes_for_slots = (lambda s, ub, c = ctx: _mtp_bytes(c, s, ub)),
-                                    ctx_checkpoints = _effective_ctx_checkpoints,
                                     include_requested = True,
                                     exact = True,  # only n_parallel is accepted below
+                                    ctx_checkpoints = _fit_ctx_checkpoints,
                                 )
                                 return _gi if not _uf and _got == n_parallel else None
 
@@ -24313,14 +24416,18 @@ class LlamaCppBackend:
                         else _fit_env_mmproj_bytes
                         + self._inherited_mmproj_soft_overhead(_fit_env_mmproj_bytes, on_host = False)
                     )
+                    # Derive the host-only share from the same estimator as the total.
+                    _ckpt_host_bytes = max(
+                        0,
+                        _kv_bytes(effective_ctx, _effective_ctx_checkpoints)
+                        - _kv_bytes(effective_ctx, 0),
+                    )
                     _fit_load_mode = self._fit_derived_load_mode(
                         model_size = _fit_model_size,
                         mmproj_pinned_bytes = _mmproj_pinned_bytes
                         + (_fit_env_mmproj_bytes if _fit_env_mmproj_on_host else 0),
-                        # Re-read WITH the SWA snapshots --ctx-checkpoints allocates;
-                        # the closure leaves them at 0 for the placement paths, which
-                        # price them by their own route.
-                        kv_cache_bytes = _kv_bytes(effective_ctx, _effective_ctx_checkpoints),
+                        # Checkpoints are split into host_only_bytes below.
+                        kv_cache_bytes = _kv_bytes(effective_ctx, 0),
                         kv_sized = self._can_estimate_kv(),
                         mtp_bytes = _mtp_bytes(effective_ctx),
                         # _flat_mtp_engages whole: its other arm, _mtp_kv_unsized,
@@ -24332,9 +24439,8 @@ class LlamaCppBackend:
                             or _cpu_draft_fit_bytes is None
                             or _draft_split_across_host
                         ),
-                        # Host-only, not pooled: -ngld 0 puts the drafter in RAM, which
-                        # free VRAM cannot pay for.
-                        host_only_bytes = _cpu_draft_fit_bytes or 0,
+                        # Neither a CPU drafter nor checkpoints can be covered by free VRAM.
+                        host_only_bytes = (_cpu_draft_fit_bytes or 0) + _ckpt_host_bytes,
                         # One lump on the layer path, where the graph buffer is
                         # allocated once. A tensor split replicates it on every selected
                         # device, so pricing one LAYER-mode buffer there understates a
@@ -24698,6 +24804,7 @@ class LlamaCppBackend:
                             "llama-server has no --ctx-checkpoints; skipping the requested %s.",
                             ctx_checkpoints,
                         )
+                # Emit the automatic cap after Windows tuning, which may set the count to zero.
                 if cache_ram is not None:
                     if server_caps.get("supports_cache_ram"):
                         cmd.extend(["--cache-ram", str(int(cache_ram))])
@@ -25461,6 +25568,15 @@ class LlamaCppBackend:
                             "Skipping unsupported Windows cache flags for llama-server: %s",
                             ", ".join(unsupported_cache_flags),
                         )
+
+                # Do not override the Windows full-offload zero.
+                if _auto_ctx_checkpoints is not None and not any(
+                    _flag_name(str(token)) in _CTX_CHECKPOINTS_FLAGS
+                    for token in _cache_flags_emitted
+                ):
+                    cmd.extend(
+                        [str(server_caps["ctx_checkpoints_flag"]), str(_auto_ctx_checkpoints)]
+                    )
 
                 # Record the pin actually applied (fit-narrowed gpu_indices, else the raw
                 # request) for the keep-warm loop, dedupe, and /status, so an explicit

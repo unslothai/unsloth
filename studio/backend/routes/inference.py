@@ -10632,9 +10632,9 @@ def _gguf_runtime_bytes(
     one, since a smaller ``-c`` in the extras is the context the user gets."""
     try:
         from core.inference.llama_cpp import _batch_ubatch_for_mmproj
+        from core.inference.llama_cpp import effective_ctx_checkpoints_for_caps
         from core.inference.llama_server_args import (
             parse_ctx_override,
-            resolve_ctx_checkpoints,
             resolve_requested_ctx,
         )
 
@@ -10756,24 +10756,23 @@ def _gguf_runtime_bytes(
             llama_extra_args,
             default = managed_kv_unified,
         )
-        _resolved_checkpoints = resolve_ctx_checkpoints(llama_extra_args, ctx_checkpoints)
-        if _resolved_checkpoints:
-            # A build predating both --ctx-checkpoints aliases has the request skipped
-            # by the command builder, which logs and moves on, so charging for the
-            # snapshots reserves memory the process never allocates. Same capability
-            # probe the builder itself asks, and the same default-deny on an
-            # unanswerable one: this figure also guards a running training job, so an
-            # unreadable probe keeps the charge rather than dropping it.
-            try:
-                _cc_caps = LlamaCppBackend.probe_server_capabilities()
-                # ``found`` is what separates "this build lacks the flag" from "no
-                # binary was read": the defaults dict reports every capability False,
-                # so keying on the flag alone would drop the charge whenever the probe
-                # simply could not run.
-                if _cc_caps.get("found") and not _cc_caps.get("ctx_checkpoints_flag"):
-                    _resolved_checkpoints = 0
-            except Exception as _cc_exc:
-                logger.debug("ctx-checkpoints capability probe failed: %s", _cc_exc)
+        # Resolve the same capability-dependent count that load_model emits.
+        _cc_caps: dict = {}
+        try:
+            _cc_caps = LlamaCppBackend.probe_server_capabilities() or {}
+        except Exception as _cc_exc:
+            logger.debug("ctx-checkpoints capability probe failed: %s", _cc_exc)
+        # Older lightweight probes may not provide the new sizing helpers.
+        _per_checkpoint = getattr(probe, "_rollback_state_bytes", lambda _n: 0)(1)
+        _host_mib = getattr(probe, "_total_system_memory_mib", lambda: None)()
+        _resolved_checkpoints = effective_ctx_checkpoints_for_caps(
+            _cc_caps,
+            llama_extra_args,
+            ctx_checkpoints,
+            per_checkpoint_bytes = _per_checkpoint,
+            n_parallel = slots,
+            total_host_bytes = (_host_mib * 1024 * 1024) if _host_mib else None,
+        )
         # load_model appends --flash-attn on to every launch whose build has the flag,
         # so the default here is ON, not off. The false arm pads variable-width V
         # tensors to the model-wide maximum (_max_kv_value_width), which on an
@@ -10933,6 +10932,9 @@ def _estimate_gguf_kv_gb(
 
     An unreadable header is 0 GB, as it always was: a cache the guard cannot size
     must not become a refusal on its own.
+
+    Context checkpoints are removed because this is a VRAM admission figure and the
+    snapshots live in host memory.
     """
     runtime = _gguf_runtime_bytes(
         gguf_path,
@@ -10949,7 +10951,8 @@ def _estimate_gguf_kv_gb(
         model_identifier = model_identifier,
         launch_required_ubatch = launch_required_ubatch,
     )
-    return (runtime.kv_bytes + runtime.compute_bytes) / (1024**3)
+    gpu_kv_bytes = max(0, runtime.kv_bytes - runtime.kv_checkpoint_bytes)
+    return (gpu_kv_bytes + runtime.compute_bytes) / (1024**3)
 
 
 def _remote_gguf_compute_reserve_gb(
@@ -11474,6 +11477,8 @@ class _GgufMemoryBreakdown(NamedTuple):
     n_parallel: int
     layer_count: Optional[int]
     gpu_layers: Optional[int]
+    # Host-resident checkpoint share of kv_bytes. Keep last for positional callers.
+    kv_checkpoint_bytes: int = 0
 
 
 def _gguf_offloaded_layer_fraction(
@@ -12735,6 +12740,7 @@ def _gguf_memory_breakdown(
         n_parallel = runtime.n_parallel,
         layer_count = layer_count,
         gpu_layers = gpu_layers if gpu_memory_mode == "manual" else None,
+        kv_checkpoint_bytes = runtime.kv_checkpoint_bytes,
     )
 
 
