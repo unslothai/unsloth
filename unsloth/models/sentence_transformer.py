@@ -45,9 +45,7 @@ from huggingface_hub import HfApi, get_token
 from ..save import (
     unsloth_save_pretrained_torchao,
     unsloth_save_pretrained_gguf,
-    # One definition of what save_method = "lora" means, shared with save.py, so this
-    # module cannot start disagreeing with the router about which spellings are adapter
-    # saves.
+    # One definition of what save_method = "lora" means, shared with save.py.
     _is_adapter_save_method,
 )
 import contextlib
@@ -61,8 +59,7 @@ def _normalize_save_method(save_method):
     """Fold "MERGED_16BIT" and "merged 16bit" onto "merged_16bit". unsloth_save_model (save.py) normalizes case and spaces before validating, so the same spelling has to mean the same thing here, else a keyword call that worked before starts raising."""
     if isinstance(save_method, str):
         # Stripped BEFORE the spaces are folded, or " lora " becomes "_lora_" and the
-        # adapter guard below no longer recognises the value `_is_adapter_save_method`
-        # explicitly treats as LoRA, so the request falls through to the merge path.
+        # adapter guard below sends the request to the merge path instead.
         return save_method.strip().lower().replace(" ", "_")
     return save_method
 
@@ -1831,7 +1828,14 @@ class FastSentenceTransformer(FastModel):
                     f"produce 'merged_16bit'."
                 )
             if _is_adapter_save_method(save_method):
-                # Refused for the same reason the branch above refuses it, and for the same reason the other definition of this method refuses everything but a merge: nothing here writes base weights. self.save_pretrained writes the sentence-transformers scaffolding and, for a PEFT auto_model, an adapter; the two lines below then delete that adapter and hand the transformer module over to save_pretrained_merged, which for this method writes the adapter back and nothing else. The result is a directory with modules.json and an adapter but no config.json and no model weights, which SentenceTransformer cannot load and _push_to_hub_merged would upload as it stands. Until unsloth#11067 "lora" reached merge_and_overwrite_lora, matched no branch there and fell through to a plain 16-bit merge, so this path happened to write something loadable; that accident is what 11067 removes, and an error is the honest replacement. Save the adapter itself with self[0].auto_model.save_pretrained(...).
+                # Refused because nothing here writes base weights: self.save_pretrained writes the
+                # sentence-transformers scaffolding and, for a PEFT auto_model, an adapter, and the
+                # lines below then delete that adapter and hand the transformer module to
+                # save_pretrained_merged, leaving modules.json and an adapter with no config.json
+                # and no weights, which SentenceTransformer cannot load. Before unsloth#11067
+                # "lora" matched no branch in merge_and_overwrite_lora and fell through to a 16bit
+                # merge, which happened to write something loadable; an error is the honest
+                # replacement. Save the adapter with self[0].auto_model.save_pretrained(...).
                 raise NotImplementedError(
                     f"Unsloth: save_method = {save_method!r} is not supported for a "
                     f"SentenceTransformer: `save_pretrained_merged` writes a loadable "

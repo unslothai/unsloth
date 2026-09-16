@@ -235,14 +235,10 @@ TORCHAO_EXPORT_SCHEMES = {
 def _normalize_safe_serialization(safe_serialization):
     """`None` means the safetensors default, and never a pickle.
 
-    Unsloth's own message and the troubleshooting docs tell a caller to pass
-    `safe_serialization = None` to FORCE safetensors, but `None` is falsy to peft and to
-    transformers, so forwarding it verbatim writes `adapter_model.bin` or
-    `pytorch_model.bin`, the exact file the advice exists to avoid (unsloth#1792). Every
-    Unsloth save entry point normalises it here instead, so the old advice is harmless
-    and the newer default (`True`) is what actually happens. `True` and `False` are
-    returned unchanged, so an explicit `safe_serialization = False` still writes a
-    pickle for anyone who wants one.
+    Unsloth's message and docs say to pass `safe_serialization = None` to FORCE
+    safetensors, but `None` is falsy to peft and transformers, so forwarding it writes the
+    `.bin` that advice exists to avoid (unsloth#1792). `True` and `False` pass through, so
+    an explicit `False` still writes a pickle.
     """
     return True if safe_serialization is None else safe_serialization
 
@@ -250,17 +246,14 @@ def _normalize_safe_serialization(safe_serialization):
 def _filter_push_to_hub_kwargs(push_fn, kwargs):
     """Keep only the keywords `push_fn` actually accepts.
 
-    transformers 5 rewrote `PushToHubMixin.push_to_hub` and dropped `use_temp_dir` and
-    `safe_serialization` from it: it always stages the upload in a temporary directory and
-    always writes safetensors. Passing them raises
-    `TypeError: push_to_hub() got an unexpected keyword argument 'use_temp_dir'`, which is
-    what an adapter push hits on transformers 5. Probed from the signature rather than
-    gated on a version, and a signature with `**kwargs` keeps everything.
+    transformers 5 dropped `use_temp_dir` and `safe_serialization` from
+    `PushToHubMixin.push_to_hub`, which always stages in a temp dir and always writes
+    safetensors, so passing them raises `TypeError: push_to_hub() got an unexpected
+    keyword argument 'use_temp_dir'`. Probed from the signature, not a version; `**kwargs`
+    keeps everything.
 
-    A dropped keyword is reported only when honouring it would have changed the upload.
-    `use_temp_dir` and a truthy `safe_serialization` are what the installed transformers
-    does anyway, so losing them is silent; an explicit `safe_serialization = False` is not,
-    since that one asked for a pickle and will not get one.
+    A dropped keyword is reported only when honouring it would have changed the upload, so
+    only an explicit `safe_serialization = False`, which asked for a pickle it will not get.
     """
     import inspect
 
@@ -288,9 +281,8 @@ def _filter_push_to_hub_kwargs(push_fn, kwargs):
 def _is_adapter_save_method(save_method):
     """Is `save_method` the adapter-only save, i.e. "do not merge anything"?
 
-    Spelled the same way every other `save_method` reader here spells it, so
-    `"LoRA"` and `"lora "` mean what `"lora"` means. A non-string (Studio passes `None`
-    for whisper) is not an adapter save.
+    Spelled the way every other reader here spells it, so `"LoRA"` and `"lora "` mean
+    `"lora"`. A non-string (Studio passes `None` for whisper) is not an adapter save.
     """
     if not isinstance(save_method, str):
         return False
@@ -846,11 +838,9 @@ def unsloth_save_model(
     if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
         tokenizer = patch_saving_functions(tokenizer)
 
-    # `None` is the documented way to FORCE safetensors, but it is falsy to peft and to
-    # transformers, so forwarding it writes the `.bin` the advice exists to avoid
-    # (unsloth#1792). Normalised before `save_pretrained_settings` is captured so every
-    # writer below receives the real value; `_force_safe_serialization` remembers that the
-    # caller asked for the override, which the low-CPU downgrade further down still honours.
+    # Normalised before `save_pretrained_settings` is captured, so every writer below gets
+    # the real value. `_force_safe_serialization` remembers the caller asked for the
+    # override, which the low-CPU downgrade further down honours.
     _force_safe_serialization = safe_serialization is None
     safe_serialization = _normalize_safe_serialization(safe_serialization)
 
@@ -2427,11 +2417,10 @@ def unsloth_save_pretrained_merged(
         16bit merge at `save_directory` and writes the quantized checkpoint to
         `save_directory + "-<fmt>"`.
 
-    `safe_serialization` defaults to safetensors. `None` is stronger than the default
-    `True`: on a host with at most two physical CPUs the default is downgraded to a pickle
-    save, because safetensors is roughly 10x slower there, while `None` pins safetensors
-    through that fallback. So the older "set it to None to force safetensors" advice is
-    the way to keep safetensors everywhere, and `False` is the way to ask for a pickle.
+    `safe_serialization` defaults to safetensors. `None` is stronger than the default `True`: on a host
+    with at most two physical CPUs the default downgrades to a pickle, since safetensors is
+    roughly 10x slower there, while `None` pins safetensors through that fallback. `False`
+    asks for a pickle.
     """
     if tokenizer is None:
         logger.warning_once(
@@ -2561,11 +2550,10 @@ def unsloth_push_to_hub_merged(
         methods do. Useful for HF inference.
     4.  FP8 / FP4 compressed export for vLLM: `fp8`, `mxfp4`, `nvfp4`, `mxfp8`.
 
-    `safe_serialization` defaults to safetensors. `None` is stronger than the default
-    `True`: on a host with at most two physical CPUs the default is downgraded to a pickle
-    save, because safetensors is roughly 10x slower there, while `None` pins safetensors
-    through that fallback. So the older "set it to None to force safetensors" advice is
-    the way to keep safetensors everywhere, and `False` is the way to ask for a pickle.
+    `safe_serialization` defaults to safetensors. `None` is stronger than the default `True`: on a host
+    with at most two physical CPUs the default downgrades to a pickle, since safetensors is
+    roughly 10x slower there, while `None` pins safetensors through that fallback. `False`
+    asks for a pickle.
     """
     if tokenizer is None:
         logger.warning_once(
@@ -5602,9 +5590,8 @@ def unsloth_generic_save(
             "If you are certain, change `save_method` to `merged_4bit_forced`."
         )
 
-    # `None` is falsy to peft and transformers, so forwarding it writes the `.bin` the
-    # "set it to None" advice exists to avoid (unsloth#1792). Rebound rather than kept in a
-    # new local because the `locals()` below is forwarded as this function's own keywords.
+    # Rebound rather than kept in a new local, because the `locals()` below is forwarded as
+    # this function's own keywords.
     safe_serialization = _normalize_safe_serialization(safe_serialization)
 
     if push_to_hub and (create_pr or revision is not None):
@@ -5683,15 +5670,11 @@ def unsloth_generic_save(
         print(f"Unsloth: Model saved successfully to '{save_directory}'")
     elif _is_adapter_save_method(save_method):
         # "lora" means "do not merge", so it must not go to the merge. It used to:
-        # `merge_and_overwrite_lora` has no `"lora"` branch, so the value matched nothing
-        # and fell through to a plain 16bit merge, and a caller asking for an adapter
-        # received a full-size checkpoint with no adapter_config.json (measured at 2.47 GB
-        # for a 1B base, and without a config.json either). `patch_saving_functions` binds
-        # these generic entry points on EVERY model, which is what made
-        # `unsloth_save_model`'s adapter branch unreachable from `save_pretrained_merged`
-        # and `push_to_hub_merged`. Route back to it: it is the same adapter save that
-        # `save_lora_to_custom_dir` and the MLX `save_pretrained_merged` already perform for
-        # this value, so all three now agree on what `save_method = "lora"` writes.
+        # `merge_and_overwrite_lora` has no `"lora"` branch, so the value fell through to a
+        # 16bit merge and a caller asking for an adapter got a full-size checkpoint with no
+        # adapter_config.json (2.47 GB for a 1B base, no config.json either). Routed back to
+        # `unsloth_save_model`, the same adapter save `save_lora_to_custom_dir` and the MLX
+        # `save_pretrained_merged` already perform for this value.
         unsloth_save_model(
             model,
             tokenizer,
@@ -5790,11 +5773,10 @@ def unsloth_generic_save_pretrained_merged(
         `save_directory`, then a quantized checkpoint is written to `save_directory + "-<fmt>"`.
         `nvfp4` needs calibration data (defaults to ultrachat; override with `calibration_dataset`).
 
-    `safe_serialization` defaults to safetensors. `None` is stronger than the default
-    `True`: on a host with at most two physical CPUs the default is downgraded to a pickle
-    save, because safetensors is roughly 10x slower there, while `None` pins safetensors
-    through that fallback. So the older "set it to None to force safetensors" advice is
-    the way to keep safetensors everywhere, and `False` is the way to ask for a pickle.
+    `safe_serialization` defaults to safetensors. `None` is stronger than the default `True`: on a host
+    with at most two physical CPUs the default downgrades to a pickle, since safetensors is
+    roughly 10x slower there, while `None` pins safetensors through that fallback. `False`
+    asks for a pickle.
     """
     if tokenizer is None:
         logger.warning_once(
@@ -5922,11 +5904,10 @@ def unsloth_generic_push_to_hub_merged(
         methods do. Useful for HF inference.
     4.  FP8 / FP4 compressed export for vLLM: `fp8`, `mxfp4`, `nvfp4`, `mxfp8`.
 
-    `safe_serialization` defaults to safetensors. `None` is stronger than the default
-    `True`: on a host with at most two physical CPUs the default is downgraded to a pickle
-    save, because safetensors is roughly 10x slower there, while `None` pins safetensors
-    through that fallback. So the older "set it to None to force safetensors" advice is
-    the way to keep safetensors everywhere, and `False` is the way to ask for a pickle.
+    `safe_serialization` defaults to safetensors. `None` is stronger than the default `True`: on a host
+    with at most two physical CPUs the default downgrades to a pickle, since safetensors is
+    roughly 10x slower there, while `None` pins safetensors through that fallback. `False`
+    asks for a pickle.
     """
     if tokenizer is None:
         logger.warning_once(
