@@ -504,3 +504,26 @@ def test_the_ceiling_lane_moves_with_the_declared_window() -> None:
         f"the ceiling lane pins {pinned.group(1)} while the declared window tops out at "
         f"{TESTED_CEILING}"
     )
+
+
+def test_no_two_import_lanes_mint_the_same_pip_cache_key() -> None:
+    """Lanes in this job share a cache name and key-files, so the interpreter is all that
+    separates their keys.
+
+    The key is `pip-v2-<name>-<os>-<arch>-py<minor>-<hash>`. Two lanes on one interpreter
+    resolve to one key while installing different dependency sets, so whichever saves
+    first wins and the other lane re-downloads its wheels every run. The restore step
+    cannot take `${{ matrix.slug }}`, since tests/studio/test_pip_cache_naming.py requires
+    a literal lowercase name, so distinct interpreters are what keeps the lanes apart.
+    """
+    import yaml
+
+    workflow = yaml.safe_load(
+        (WORKFLOWS / "version-compat-ci.yml").read_text(encoding = "utf-8")
+    )
+    lanes = workflow["jobs"]["zoo-imports-under-spoof"]["strategy"]["matrix"]["include"]
+    interpreters = [lane["python"] for lane in lanes]
+    assert len(interpreters) == len(set(interpreters)), (
+        f"two import lanes share an interpreter and so share one pip cache key: "
+        f"{[(lane['slug'], lane['python']) for lane in lanes]}"
+    )
