@@ -1601,8 +1601,16 @@ def run_safetensors_tool_loop(
             yield completion.tool_end_event()
             conversation.append(completion.tool_message())
 
+        # The turn that ends the loop offers no tools again, so do not ask for a retry there.
+        over_cap_final = bool(over_cap) and (
+            tool_controller.force_final_answer
+            or (not unrestricted_tools and not tool_controller.active_tools())
+            or (_turn_executed_real_tool and _executed_tool_iters + 1 >= max_tool_iterations)
+        )
         if over_cap:
-            deferred_noop_msgs.append(tool_call_limit_nudge(over_cap, _MAX_TOOL_CALLS_PER_TURN))
+            deferred_noop_msgs.append(
+                tool_call_limit_nudge(over_cap, _MAX_TOOL_CALLS_PER_TURN, final = over_cap_final)
+            )
         append_deferred_nudges(conversation, deferred_noop_msgs)
 
         yield {"type": "status", "text": ""}
@@ -1619,6 +1627,12 @@ def run_safetensors_tool_loop(
             _executed_tool_iters += 1
         if _executed_tool_iters >= max_tool_iterations and not final_attempt_done:
             final_attempt_done = True
-            conversation.append({"role": "user", "content": BUDGET_EXHAUSTED_NUDGE})
+            if over_cap:
+                conversation[-1] = {
+                    **conversation[-1],
+                    "content": f"{conversation[-1]['content']}\n\n{BUDGET_EXHAUSTED_NUDGE}",
+                }
+            else:
+                conversation.append({"role": "user", "content": BUDGET_EXHAUSTED_NUDGE})
 
     yield {"type": "status", "text": ""}

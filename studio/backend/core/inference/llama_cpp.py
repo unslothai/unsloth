@@ -36709,6 +36709,16 @@ class LlamaCppBackend:
                     if _forced_tool_call_pending:
                         _forced_tool_call_pending = False
 
+                # On the turn that ends the loop no tools are offered again, so the notice
+                # must not ask for a retry and rides the tool result like the budget nudge.
+                _over_cap_final = bool(_over_cap) and (
+                    tool_controller.force_final_answer
+                    or not tool_controller.active_tools()
+                    or (_turn_executed_real_tool and _tool_iters_done + 1 >= max_tool_iterations)
+                )
+                _final_over_cap = _over_cap if _over_cap_final else []
+                if _over_cap_final:
+                    _over_cap = []
                 if _over_cap:
                     deferred_noop_msgs.append(
                         tool_call_limit_nudge(_over_cap, _MAX_TOOL_CALLS_PER_TURN)
@@ -36719,8 +36729,8 @@ class LlamaCppBackend:
                 # the SAME tool the feedback is about: templates label the whole block with
                 # the result's own tool name (gemma-4.jinja resolves tool_call_id -> name and
                 # wraps the body), so folding a note about tool A into tool B's result reads
-                # as B's own output. Then the user turn is the lesser loss. A skipped-call
-                # notice is never folded: read as the tail of a result, the calls are not re-issued.
+                # as B's own output. Then the user turn is the lesser loss. A retry notice for
+                # skipped calls is never folded: read as the tail of a result, the calls are not re-issued.
                 _fold_target_matches = (
                     not _over_cap
                     and len(deferred_noop_tools) == 1
@@ -36764,6 +36774,18 @@ class LlamaCppBackend:
                         )
                         assistant_appended = True
                     append_deferred_nudges(conversation, deferred_noop_msgs)
+                if _final_over_cap:
+                    _limit_text = tool_call_limit_nudge(
+                        _final_over_cap, _MAX_TOOL_CALLS_PER_TURN, final = True
+                    )["content"]
+                    if not _attach_internal_feedback_to_tool_result(_limit_text):
+                        if deferred_noop_msgs and conversation[-1].get("role") == "user":
+                            conversation[-1] = {
+                                **conversation[-1],
+                                "content": f"{conversation[-1]['content']}\n\n{_limit_text}",
+                            }
+                        else:
+                            conversation.append({"role": "user", "content": _limit_text})
 
                 # Close provisional cards not resolved by execution/no-op handling.
                 for _pid, _pname in provisional_started_tool_calls.items():
