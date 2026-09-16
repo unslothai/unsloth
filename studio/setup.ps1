@@ -4887,10 +4887,50 @@ function Read-WoaUvTomlIndexKeys {
     return @{ NoIndex = $noIndex; DefaultIndex = $defaultIndex; ExtraIndexes = @($extras | Where-Object { $_ }) }
 }
 
+# uv's own boolish set, for every UV_* switch this script reads out of the caller's
+# environment. Verified against uv 0.10.7, crates/uv-static/src/lib.rs
+# parse_boolish_environment_variable, which restates clap's str_to_bool: true is
+# y, yes, t, true, on, 1; false is n, no, f, false, off, 0; case-insensitive, and
+# anything else aborts uv rather than being guessed at.
+#
+# `-notin @("", "0", "false")`, which each of these sites used to spell inline, read
+# off, no, n and f as TRUE, the exact opposite of uv's answer for them.
+#
+# Trimmed where uv is not: uv aborts on a padded value, so the resolve fails whatever
+# this returns, and trimming keeps the answer identical to setup.sh's
+# _uv_offline_requested and install_python_stack.py's _uv_env_flag, which is the
+# property worth having. ToLowerInvariant, not ToLower: a Turkish-locale host
+# lowercases "I" to a dotless i and would stop matching.
+#
+# install.ps1 carries the same function: the two scripts cannot dot-source each other
+# (install.ps1 is run straight off the wire by `irm | iex`, with no file and no sibling
+# on disk), so the parity is pinned by test instead.
+function Test-UvEnvFlag {
+    param([string]$Name)
+    $value = [string](Get-Item "Env:$Name" -ErrorAction SilentlyContinue).Value
+    return (@("1", "t", "true", "y", "yes", "on") -contains $value.Trim().ToLowerInvariant())
+}
+
+# pip's rule, kept separate on purpose: PIP_NO_INDEX is pip's variable and uv never
+# reads it, so uv's parser has no authority over it. pip routes it through
+# ConfigOptionParser._update_defaults -> strtobool (pip/_internal/utils/misc.py): true
+# is y, yes, t, true, on, 1; false is n, no, f, false, off, 0; case-insensitive and
+# untrimmed, with anything else exiting pip on "is not a valid value". An empty value
+# never reaches strtobool, because _get_ordered_configuration_items drops falsy values
+# first, so PIP_NO_INDEX="" is simply not set.
+#
+# The literals coincide with uv's today. They are restated rather than shared anyway,
+# so that the day either project changes its mind this is a one-function edit instead
+# of a silent behaviour change in the other resolver.
+function Test-PipEnvFlag {
+    param([string]$Name)
+    $value = [string](Get-Item "Env:$Name" -ErrorAction SilentlyContinue).Value
+    return (@("1", "t", "true", "y", "yes", "on") -contains $value.Trim().ToLowerInvariant())
+}
+
 function Get-WoaUvConfigIndexPolicy {
     $result = @{ NoIndex = $false; DefaultIndex = $null; Unreadable = $false; UnreadablePath = $null; ExtraIndexes = @() }
-    $noCfg = [string](Get-Item Env:UV_NO_CONFIG -ErrorAction SilentlyContinue).Value
-    if ($noCfg -and ($noCfg.Trim().ToLowerInvariant() -notin @("", "0", "false"))) { return $result }
+    if (Test-UvEnvFlag "UV_NO_CONFIG") { return $result }
     $files = @()
     $cfgFile = [string](Get-Item Env:UV_CONFIG_FILE -ErrorAction SilentlyContinue).Value
     if ($cfgFile) {
@@ -4942,9 +4982,11 @@ function Get-WoaDependencyIndexArgs {
     $noIndexNames = if ($pip) { @("PIP_NO_INDEX") } else { @("UV_NO_INDEX") }
     $defaultNames = if ($pip) { @("PIP_INDEX_URL") } else { @("UV_DEFAULT_INDEX", "UV_INDEX_URL") }
     $extraNames = if ($pip) { @("PIP_EXTRA_INDEX_URL") } else { @("UV_INDEX", "UV_EXTRA_INDEX_URL") }
+    # Each resolver's own parser: this branch is the one place the two rules could be
+    # confused for each other, since $noIndexNames already picked the variable.
     foreach ($name in $noIndexNames) {
-        $flag = [string](Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
-        if ($flag -and ($flag.Trim().ToLowerInvariant() -notin @("", "0", "false"))) { return @() }
+        $noIndex = if ($pip) { Test-PipEnvFlag $name } else { Test-UvEnvFlag $name }
+        if ($noIndex) { return @() }
     }
     $default = $null
     foreach ($name in $defaultNames) {
@@ -6176,9 +6218,10 @@ sys.exit(0 if install_manifest.verify_install(**deep)['ok'] else 1)
 
 # UV_OFFLINE is uv's own "no network" switch, and every install here goes through uv.
 function Test-UvOfflineRequested {
-    # uv's boolish parser (uv 0.10.7): y, yes, t, true, on, 1. Mirrors _uv_offline_requested.
-    $value = "$($env:UV_OFFLINE)".Trim()
-    return @('1', 't', 'true', 'y', 'yes', 'on') -contains $value.ToLowerInvariant()
+    # uv's boolish parser (uv 0.10.7). One reading of the set for the whole script, so a
+    # correction lands on every UV_* switch at once rather than on whichever site was
+    # remembered. Mirrors _uv_offline_requested in setup.sh.
+    return (Test-UvEnvFlag "UV_OFFLINE")
 }
 
 function Invoke-FastPathEscapes {
@@ -6983,7 +7026,7 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
             }
             # --no-index ignores every registry index, the CUDA one included, and Fast-Install leaves UV_NO_INDEX alone. It yields for this one command: the trio from the CUDA index, dependencies from the wheelhouse.
             $_woaNoIndexValue = [string](Get-Item "Env:UV_NO_INDEX" -ErrorAction SilentlyContinue).Value
-            if ($_woaNoIndexValue -and ($_woaNoIndexValue.Trim().ToLowerInvariant() -notin @("", "0", "false"))) {
+            if (Test-UvEnvFlag "UV_NO_INDEX") {
                 $_woaCutoffSaved["UV_NO_INDEX"] = $_woaNoIndexValue
                 Remove-Item "Env:UV_NO_INDEX" -ErrorAction SilentlyContinue
                 substep "windows on arm: UV_NO_INDEX yields for the CUDA trio, which only the selected index carries; its dependencies still come from the wheelhouse."

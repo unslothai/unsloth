@@ -6946,7 +6946,7 @@ def _uv_config_files() -> "list[tuple[Path, str]]":
     instead of discovering; UV_NO_CONFIG discovers nothing. `table` is the prefix the index
     keys sit under: "" for uv.toml, "tool.uv" for pyproject.toml.
     """
-    if os.environ.get("UV_NO_CONFIG", "").strip().lower() not in ("", "0", "false"):
+    if _uv_env_flag("UV_NO_CONFIG"):
         return []
     explicit = os.environ.get("UV_CONFIG_FILE", "").strip()
     if explicit:
@@ -7086,12 +7086,43 @@ def _public_pypi_is_reachable() -> bool:
     return _pip_reaches_public_pypi()
 
 
-def _env_flag(name: str) -> bool:
-    return os.environ.get(name, "").strip().lower() not in ("", "0", "false")
+def _uv_env_flag(name: str) -> bool:
+    """uv's own boolish set, for every UV_* switch read out of the caller's environment.
+
+    Verified against uv 0.10.7, crates/uv-static/src/lib.rs
+    parse_boolish_environment_variable, which restates clap's str_to_bool: true is
+    y, yes, t, true, on, 1; false is n, no, f, false, off, 0; case-insensitive, and
+    anything else aborts uv rather than being guessed at.
+
+    `not in ("", "0", "false")`, which this used to be, read off, no, n and f as TRUE,
+    the exact opposite of uv's answer for them.
+
+    Stripped where uv is not: uv aborts on a padded value, so the resolve fails whatever
+    this returns, and stripping keeps the answer identical to setup.sh's
+    _uv_offline_requested and the two PowerShell Test-UvEnvFlag copies.
+    """
+    return os.environ.get(name, "").strip().lower() in ("1", "t", "true", "y", "yes", "on")
+
+
+def _pip_env_flag(name: str) -> bool:
+    """pip's rule, kept separate on purpose.
+
+    PIP_* are pip's variables and uv never reads them, so uv's parser has no authority
+    over them. pip routes them through ConfigOptionParser._update_defaults -> strtobool
+    (pip/_internal/utils/misc.py): true is y, yes, t, true, on, 1; false is n, no, f,
+    false, off, 0; case-insensitive and unstripped, with anything else exiting pip on
+    "is not a valid value". An empty value never reaches strtobool, because
+    _get_ordered_configuration_items drops falsy values first.
+
+    The literals coincide with uv's today. They are restated rather than shared anyway,
+    so that the day either project changes its mind this is a one-function edit instead
+    of a silent behaviour change in the other resolver.
+    """
+    return os.environ.get(name, "").strip().lower() in ("1", "t", "true", "y", "yes", "on")
 
 
 def _uv_reaches_public_pypi() -> bool:
-    if _uv_is_offline() or _env_flag("UV_NO_INDEX"):
+    if _uv_is_offline() or _uv_env_flag("UV_NO_INDEX"):
         return False
     extra_is_pypi = any(
         _url_is_public_pypi(u)
@@ -7122,7 +7153,7 @@ def _pip_reaches_public_pypi() -> bool:
     install. A `no-index` or an exclusive `index-url` set there replaces PyPI just as the
     environment does. Doubt (a `pip config` that cannot be read) keeps the skip.
     """
-    if _env_flag("PIP_NO_INDEX"):
+    if _pip_env_flag("PIP_NO_INDEX"):
         return False
     extra_is_pypi = any(
         _url_is_public_pypi(u) for u in os.environ.get("PIP_EXTRA_INDEX_URL", "").split()
@@ -8521,7 +8552,7 @@ def _uv_is_offline() -> bool:
     uv's own boolish set, as both setup scripts read it. `not in (0, false)` also read `off`
     and `no` as offline, declining repairs with a message saying the opposite.
     """
-    return os.environ.get("UV_OFFLINE", "").strip().lower() in ("1", "t", "true", "y", "yes", "on")
+    return _uv_env_flag("UV_OFFLINE")
 
 
 def _uv_staging_plan(name: str) -> "tuple[str, dict[str, str]] | None":

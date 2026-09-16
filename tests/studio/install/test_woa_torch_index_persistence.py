@@ -2410,7 +2410,13 @@ class TestThePipFallbackKeepsTheIndexArguments:
             clear_env(UV_INDEX_ENV),
             "$env:UV_NO_CONFIG = '1'",
             UV_SAFE_PATH,
-            functions(SETUP_SRC, "Get-WoaUvConfigIndexPolicy", "Get-WoaDependencyIndexArgs"),
+            functions(
+                SETUP_SRC,
+                "Test-UvEnvFlag",
+                "Test-PipEnvFlag",
+                "Get-WoaUvConfigIndexPolicy",
+                "Get-WoaDependencyIndexArgs",
+            ),
             f"$StudioHome = '{tmp_path}'",
             "$WinArm64Venv = $true",
             f"$UseUv = ${str(use_uv).lower()}",
@@ -3895,6 +3901,7 @@ class TestThePyPIProbeHonoursUvConfiguration:
             # Read-WoaUvTomlIndexKeys scans for quotes, so its two scanners come with it.
             functions(
                 INSTALL_SRC,
+                "Test-UvEnvFlag",
                 "Test-WoaUrlIsPublicPyPI",
                 "Remove-WoaTomlComment",
                 "Split-WoaTomlKey",
@@ -5111,6 +5118,8 @@ class TestTheDependencyIndexFollowsTheResolverPolicy:
             "\n".join(f"$env:{k} = '{v}'" for k, v in env.items()),
             functions(
                 src,
+                "Test-UvEnvFlag",
+                "Test-PipEnvFlag",
                 "Remove-WoaTomlComment",
                 "Split-WoaTomlKey",
                 "Read-WoaUvTomlIndexKeys",
@@ -5266,6 +5275,8 @@ class TestTheDependencyIndexFollowsTheResolverPolicy:
     @pytest.mark.parametrize(
         "name",
         [
+            "Test-UvEnvFlag",
+            "Test-PipEnvFlag",
             "Remove-WoaTomlComment",
             "Split-WoaTomlKey",
             "Read-WoaUvInlineIndexArray",
@@ -5408,6 +5419,8 @@ class TestANoIndexNativeTrioStillSeesItsSources:
             SUBSTEP_NOOP,
             functions(
                 INSTALL_SRC,
+                "Test-UvEnvFlag",
+                "Test-PipEnvFlag",
                 "Get-UvSafePath",
                 "Get-WoaUvConfigIndexPolicy",
                 "Get-WoaDependencyIndexArgs",
@@ -5478,7 +5491,13 @@ class TestANoIndexNativeTrioStillSeesItsSourcesInSetup:
             "$env:UV_NO_CONFIG = '1'",
             "\n".join(f"$env:{k} = '{v}'" for k, v in env.items()),
             UV_SAFE_PATH,
-            functions(SETUP_SRC, "Get-WoaUvConfigIndexPolicy", "Get-WoaDependencyIndexArgs"),
+            functions(
+                SETUP_SRC,
+                "Test-UvEnvFlag",
+                "Test-PipEnvFlag",
+                "Get-WoaUvConfigIndexPolicy",
+                "Get-WoaDependencyIndexArgs",
+            ),
             f"$StudioHome = '{tmp_path}'",
             "$WinArm64Venv = $true",
             "$UseUv = $true",
