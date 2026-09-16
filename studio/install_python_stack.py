@@ -8375,6 +8375,38 @@ _MLX_VLM_SPEC = "mlx-vlm>=0.4.4,<=0.7.1"
 _MLX_NAMES: tuple[str, ...] = tuple(spec.partition("==")[0] for spec in _MLX_PINS) + ("mlx-vlm",)
 
 
+def _mlx_vlm_spec_for_installed_zoo() -> str:
+    """_MLX_VLM_SPEC, intersected with the range the INSTALLED unsloth-zoo declares.
+
+    This step runs before the core phase, and on a fresh install (SKIP_STUDIO_BASE=1) the core
+    phase is skipped entirely, so the zoo install.sh already put down is the one that stays.
+    mlx-vlm 0.7.1 passes `cache` to gated_delta_update and a zoo predating that keyword does not
+    accept it, so admitting 0.7.1 beside such a zoo raises TypeError at the first Qwen3.5 VLM
+    training step, after mlx_stack_available() has cleared the chat-only gate. Reading what the
+    installed zoo itself declares keeps the two in step without naming a zoo version here, and it
+    widens on its own once a zoo declaring 0.7.1 is installed. Mirrors utils/mlx_repair.py's
+    _install_packages, which does the same for the unattended self-heal.
+    """
+    try:
+        from importlib.metadata import requires
+        from packaging.requirements import Requirement
+        from packaging.utils import canonicalize_name
+    except ImportError:
+        return _MLX_VLM_SPEC
+    try:
+        declared = requires("unsloth_zoo") or ()
+    except Exception:  # noqa: BLE001 - not installed, or unreadable metadata
+        return _MLX_VLM_SPEC
+    for raw in declared:
+        try:
+            requirement = Requirement(raw)
+        except Exception:  # noqa: BLE001 - a requirement string packaging cannot parse
+            continue
+        if canonicalize_name(requirement.name) == "mlx-vlm" and str(requirement.specifier):
+            return f"{_MLX_VLM_SPEC},{requirement.specifier}"
+    return _MLX_VLM_SPEC
+
+
 def _mlx_stack_is_current() -> bool:
     """Whether the three exact pins and mlx-vlm's range are all already satisfied.
 
@@ -9655,7 +9687,7 @@ def install_python_stack() -> int:
                     # transitive dependency; _build_pip_cmd translates back for pip.
                     *[arg for name in _MLX_NAMES for arg in ("--upgrade-package", name)],
                     *_MLX_PINS,
-                    _MLX_VLM_SPEC,
+                    _mlx_vlm_spec_for_installed_zoo(),
                 )
         else:
             _progress("MLX stack (skipped, no wheel for this macOS or Python)")

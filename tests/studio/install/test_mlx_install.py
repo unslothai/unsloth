@@ -108,6 +108,11 @@ def _repair_specs():
 def test_mlx_install_respects_platform_mode_and_pins(
     monkeypatch, platform, skip_base, no_torch, shared_base
 ):
+    # What the repository declares, not what the host's installed zoo narrows it to; the
+    # narrowing has its own tests below.
+    monkeypatch.setattr(
+        stack, "_mlx_vlm_spec_for_installed_zoo", lambda: stack._MLX_VLM_SPEC
+    )
     calls = _run_to_extras(
         monkeypatch,
         platform = platform,
@@ -286,3 +291,32 @@ def test_supported_and_unsupported_hosts_share_one_progress_budget(monkeypatch):
         mlx_installable = False,
     )
     assert stack._TOTAL == supported
+
+
+def test_mlx_vlm_spec_is_intersected_with_the_installed_zoo(monkeypatch):
+    """The MLX step runs before the core phase, and SKIP_STUDIO_BASE=1 skips that phase
+    altogether, so a zoo predating the gated_delta_update fix would be left beside mlx-vlm
+    0.7.1 and Qwen3.5 VLM training would raise TypeError at its first step."""
+    import importlib.metadata
+
+    monkeypatch.setattr(
+        importlib.metadata,
+        "requires",
+        lambda _name: [
+            'mlx==0.32.1; sys_platform == "darwin" and platform_machine == "arm64"',
+            'mlx-vlm<0.7.0,>=0.4.4; sys_platform == "darwin" and platform_machine == "arm64"',
+        ],
+    )
+    spec = stack._mlx_vlm_spec_for_installed_zoo()
+    assert spec.startswith(stack._MLX_VLM_SPEC)
+    assert "<0.7.0" in spec
+
+
+def test_mlx_vlm_spec_is_unchanged_without_an_installed_zoo(monkeypatch):
+    import importlib.metadata
+
+    def _raise(_name):
+        raise importlib.metadata.PackageNotFoundError("unsloth_zoo")
+
+    monkeypatch.setattr(importlib.metadata, "requires", _raise)
+    assert stack._mlx_vlm_spec_for_installed_zoo() == stack._MLX_VLM_SPEC
