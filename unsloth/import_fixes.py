@@ -906,6 +906,19 @@ def _rope_scaling_property_owner():
     return None
 
 
+def _rope_probe_inherits(owner):
+    """Does the config class the probe measures still descend from the LIVE owner?
+
+    False only after a reload has replaced the owner underneath a cached config module,
+    which is exactly when the probe's verdict describes a class nobody will use again.
+    """
+    try:
+        from transformers import LlamaConfig
+    except Exception:
+        return False
+    return isinstance(owner, type) and issubclass(LlamaConfig, owner)
+
+
 def _rope_scaling_setter_is_patched(owner = None):
     """Is the LIVE ``rope_scaling`` setter ours, right now?
 
@@ -1122,13 +1135,23 @@ def fix_transformers_rope_scaling_drops_theta():
     do not need to be: neither repo makes one, and a caller writing that field is
     writing the field transformers reads.
     """
-    if not _transformers_rope_scaling_assignment_drops_theta():
-        return
     owner = _rope_scaling_property_owner()
+    if owner is not None and _rope_scaling_setter_is_patched(owner):
+        return
+    # The probe answers through `transformers.LlamaConfig`, which is cached in
+    # `sys.modules` and keeps its old bases. After
+    # `importlib.reload(transformers.configuration_utils)` the live owner is a NEW,
+    # unpatched class while LlamaConfig still inherits the patched one, so the probe
+    # reports the base survives and this would return with the new base class left
+    # unpatched, ready to lose `rope_theta` for any config module imported next. A probe
+    # that cannot see the live owner is no evidence, so it does not get to veto: install
+    # on the owner instead. Safe to do on a healthy build, because the wrapper only puts
+    # the base back where it would otherwise be gone and is a no-op where it would not.
+    probe_can_see_owner = owner is None or _rope_probe_inherits(owner)
+    if probe_can_see_owner and not _transformers_rope_scaling_assignment_drops_theta():
+        return
     if owner is None:
         logger.info("Unsloth: Skipping the rope_scaling base-frequency fix (no alias property)")
-        return
-    if _rope_scaling_setter_is_patched(owner):
         return
 
     prop = owner.__dict__["rope_scaling"]

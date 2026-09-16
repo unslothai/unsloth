@@ -1227,3 +1227,42 @@ def test_rope_scaling_patch_wired_into_gpu_init():
         "DRIFT DETECTED: fix_transformers_rope_scaling_drops_theta is left bound on the "
         "unsloth namespace; _gpu_init.py deletes every fix it calls."
     )
+
+
+def test_a_reloaded_configuration_module_gets_the_new_base_class_patched():
+    """A reload replaces the owner underneath the cached config the probe measures.
+
+    `importlib.reload(transformers.configuration_utils)` re-runs the class body and
+    produces a NEW, unpatched base class, while `transformers.LlamaConfig` stays in
+    `sys.modules` with its old bases -- including the class we patched. The probe therefore
+    reported the base frequency survives, the fix returned early, and the new base class
+    stayed unpatched for every config module imported afterwards.
+    """
+    pytest.importorskip("transformers")
+    from unsloth.import_fixes import (
+        _rope_probe_inherits,
+        _rope_scaling_property_owner,
+    )
+
+    owner = _rope_scaling_property_owner()
+    if owner is None:
+        pytest.skip("this transformers has no rope_scaling alias property to own")
+
+    # On an ordinary build the probe measures a descendant of the live owner, so nothing
+    # about the normal path changes.
+    assert _rope_probe_inherits(owner) is True
+
+    # A stand-in for the post-reload owner: a class the cached LlamaConfig does not
+    # descend from. The probe's verdict cannot speak for it, so it must not veto.
+    replacement = type("_ReloadedConfigBase", (object,), {})
+    assert _rope_probe_inherits(replacement) is False
+
+
+def test_the_reload_check_rejects_a_non_class_owner():
+    """NEGATIVE CONTROL: the helper answers about classes, and anything else is 'no
+    evidence' rather than an exception out of `issubclass`."""
+    pytest.importorskip("transformers")
+    from unsloth.import_fixes import _rope_probe_inherits
+
+    for not_a_class in (None, object(), "PreTrainedConfig", 7):
+        assert _rope_probe_inherits(not_a_class) is False
