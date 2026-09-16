@@ -261,11 +261,17 @@ jobs:
         # under `unsloth/`, so the unprefixed path is a directory that does not
         # exist and the step fails with "Can't find 'action.yml'".
         #
-        # Per lane. The two lanes hold mutually exclusive huggingface_hub majors, so
-        # one shared cache name would have them overwrite each other's wheels every run.
+        # One literal name for both lanes, and that is deliberate rather than an
+        # oversight: the interpreter is already a segment of the key
+        # (`pip-v2-<name>-<os>-<arch>-py<minor>-<hash>`), and these two lanes are
+        # python 3.10 and 3.12, so they cannot overwrite each other's wheels. A
+        # `${{ matrix.slug }}` here would expand to something the action accepts but
+        # tests/studio/test_pip_cache_naming.py reads the workflow text, and the name
+        # has to be a literal there. Two lanes on the SAME python would need the name
+        # split, which means splitting the job.
         uses: ./unsloth/.github/actions/pip-cache-restore
         with:
-          name: version-compat-spoof-${{ matrix.slug }}
+          name: version-compat-spoof
           key-files: |
             unsloth/.github/workflows/version-compat-ci.yml
 
@@ -416,11 +422,12 @@ jobs:
         # under `unsloth/`, so the unprefixed path is a directory that does not
         # exist and the step fails with "Can't find 'action.yml'".
         #
-        # Per lane, for the same reason as the spoof job: the lanes hold mutually
-        # exclusive huggingface_hub majors.
+        # One literal name for both lanes, for the reason given on the spoof job
+        # above: the key already carries the interpreter and these lanes are 3.10 and
+        # 3.12, and the cache-naming lint reads this file as text.
         uses: ./unsloth/.github/actions/pip-cache-restore
         with:
-          name: version-compat-grpo-${{ matrix.slug }}
+          name: version-compat-grpo
           key-files: |
             unsloth/.github/workflows/version-compat-ci.yml
 
