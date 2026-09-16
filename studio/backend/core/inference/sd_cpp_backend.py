@@ -693,6 +693,44 @@ def _runtime_fingerprint() -> dict:
     return fp
 
 
+def _card_identity(device: dict) -> Optional[str]:
+    """How one enumerated card is named in the fingerprint, falling back when the OS gives no name.
+
+    The marketing name is preferred because it is the most legible and the most specific. But it
+    is frequently absent on exactly the hosts this feature is about: measured on the gfx1151 Linux
+    runner, `get_physical_gpu_inventory` answers from `sysfs-drm` with
+    ``{'vendor': 'amd', 'index': 0, 'name': None, 'memory_total_gb': 64.0,
+    'gfx_candidates': ['gfx11', 'gfx1151']}``. Filtering on ``name`` dropped that device, the list
+    came out empty, and the cards component was None on a machine with a card in it -- so a record
+    written there could never be retired by a card change, which is the one component that answers
+    a driver-side fix (``torch.version.hip`` is baked into the wheel and does not move).
+
+    The gfx target is the right second choice, and arguably the more honest identity for this
+    record: the claim being stored is "this sd.cpp build has no code objects for this card", which
+    is a statement about the gfx target rather than about the retail name. Vendor, index and pool
+    size are the last resort so a card that answers with none of the above still contributes
+    something that changes when the hardware does.
+
+    Returns None only for a device that reports nothing at all, which stays filtered out.
+    """
+    name = device.get("name")
+    if name:
+        return str(name)
+    gfx = device.get("gfx_candidates") or device.get("gfx") or device.get("arch")
+    if isinstance(gfx, (list, tuple)):
+        # Most specific last in the inventory's own ordering (['gfx11', 'gfx1151']), and all of it
+        # is kept: a shorter family string alone would make gfx1100 and gfx1151 the same card.
+        gfx = "/".join(str(g) for g in gfx if g)
+    if gfx:
+        return str(gfx)
+    parts = [
+        str(device.get(key))
+        for key in ("vendor", "index", "memory_total_gb")
+        if device.get(key) is not None
+    ]
+    return ":".join(parts) or None
+
+
 def _host_fingerprint() -> dict:
     """``{"runtime": ..., "gpus": ...}``. Never raises.
 
@@ -720,9 +758,13 @@ def _host_fingerprint() -> dict:
         inventory = get_physical_gpu_inventory(block = False)
         if not (inventory or {}).get("unknown"):
             names = sorted(
-                str(d.get("name"))
-                for d in ((inventory or {}).get("devices") or [])
-                if isinstance(d, dict) and d.get("name")
+                identity
+                for identity in (
+                    _card_identity(d)
+                    for d in ((inventory or {}).get("devices") or [])
+                    if isinstance(d, dict)
+                )
+                if identity
             )
             fp["gpus"] = names or None
     except Exception:  # noqa: BLE001
@@ -977,6 +1019,49 @@ _ACCELERATOR_AMBIGUOUS_FAILURE_MARKERS: tuple[str, ...] = (
     "memory access fault by gpu node",
 )
 
+# The failure that prints NOTHING, and the reason a text-only reading is not enough on Windows.
+# Measured on a Strix Halo (gfx1151) Windows 11 runner: the generic Windows ROCm sd.cpp asset
+# (`sd-master-...-bin-win-rocm-7.14.0-x64.zip`) ships `stable-diffusion.dll` and no hipBLAS, and a
+# box with only the driver's `amdhip64_6.dll` -- no HIP SDK -- cannot resolve `hipblas.dll` or
+# `rocblas.dll`. Every invocation, `--list-devices` included, then exits 0xC0000135
+# (STATUS_DLL_NOT_FOUND) in 0.02s having written zero bytes to stdout and stderr, so not one marker
+# above can fire however the tiers are arranged. The Vulkan asset on the same card ships its 17
+# DLLs, loads, and renders.
+#
+# The runner surfaces that exit status as `sd-cli exited <code>` (sd_cpp_engine's generate), which
+# is the only evidence there is. It is DECISIVE rather than ambiguous because an image that never
+# starts is a fact about the BUILD on this host and can never be a fact about the request: a
+# prompt, a resolution or a busy card cannot make the loader fail to find a DLL. Capacity is still
+# checked first, as it is for every other marker.
+_WINDOWS_IMAGE_LOAD_FAILURE_STATUSES: tuple[int, ...] = (
+    0xC0000135,  # STATUS_DLL_NOT_FOUND: a DLL the image imports is missing
+    0xC0000139,  # STATUS_ENTRYPOINT_NOT_FOUND: it is present but the wrong build
+    0xC0000142,  # STATUS_DLL_INIT_FAILED: it loaded and its DllMain refused
+)
+
+_EXIT_STATUS_RE = re.compile(r"sd-cli exited (-?\d+)")
+
+
+def output_shows_image_load_failure(text: Optional[str]) -> bool:
+    """True when the message reports an exit status meaning the executable never started.
+
+    Windows reports these as unsigned NTSTATUS values; a signed interpretation is accepted too,
+    since the same number reaches python differently depending on who read it.
+    """
+    if not text:
+        return False
+    for raw in _EXIT_STATUS_RE.findall(str(text)):
+        try:
+            code = int(raw)
+        except ValueError:  # pragma: no cover -- the pattern only matches digits
+            continue
+        if code < 0:
+            code += 1 << 32
+        if code in _WINDOWS_IMAGE_LOAD_FAILURE_STATUSES:
+            return True
+    return False
+
+
 # Deliberately in neither list: sd.cpp's "Cannot set backend to CK" warning, which is printed by
 # builds that then go on to render perfectly well.
 _ACCELERATOR_RUNTIME_FAILURE_MARKERS: tuple[str, ...] = (
@@ -1022,6 +1107,8 @@ def output_shows_accelerator_failure(text: Optional[str]) -> bool:
         return False
     if output_shows_capacity_failure(text):
         return False
+    if output_shows_image_load_failure(text):
+        return True
     lowered = str(text).lower()
     return any(marker in lowered for marker in _ACCELERATOR_RUNTIME_FAILURE_MARKERS)
 
@@ -1033,6 +1120,8 @@ def output_shows_decisive_accelerator_failure(text: Optional[str]) -> bool:
         return False
     if output_shows_capacity_failure(text):
         return False
+    if output_shows_image_load_failure(text):
+        return True
     lowered = str(text).lower()
     return any(marker in lowered for marker in _ACCELERATOR_DECISIVE_FAILURE_MARKERS)
 

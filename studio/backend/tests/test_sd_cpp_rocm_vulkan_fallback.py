@@ -1220,3 +1220,165 @@ def test_the_runtime_half_is_still_read_once(unpinned_fingerprint, monkeypatch):
     monkeypatch.setattr(torch.version, "hip", "7.0.0", raising = False)
     cards[0] = _inventory("second")
     assert unpinned_fingerprint._host_fingerprint() == {"runtime": "6.4.0", "gpus": ["second"]}
+
+
+# ---------------------------------------------------------------------------
+# What the runners measured, as tests. Both of these are shapes taken off a real
+# Strix Halo (gfx1151) box rather than off an issue report, one per OS.
+# ---------------------------------------------------------------------------
+
+
+# The exact device the Linux gfx1151 runner's inventory answered with: no name, because the
+# reading came from sysfs-drm rather than amd-smi.
+_UNNAMED_GFX1151 = {
+    "vendor": "amd",
+    "index": 0,
+    "name": None,
+    "memory_total_gb": 64.0,
+    "source": "sysfs-drm",
+    "gfx_candidates": ["gfx11", "gfx1151"],
+}
+
+
+def _raw_inventory(*devices):
+    return {
+        "available": bool(devices),
+        "devices": list(devices),
+        "sources": ["test"],
+        "unknown": False,
+    }
+
+
+def test_a_card_the_os_cannot_name_still_reaches_the_fingerprint(unpinned_fingerprint, monkeypatch):
+    """Measured on the gfx1151 Linux CI runner: the inventory answers from sysfs-drm with
+    ``name = None`` and the gfx target in ``gfx_candidates``. Keying the component on ``name``
+    alone dropped the only device, so the cards half was ``None`` on a machine with a card in it,
+    and a record written there could not be retired by a card change at all -- on precisely the
+    AMD hosts this feature exists for."""
+    from utils.hardware import hardware
+
+    monkeypatch.setattr(
+        hardware,
+        "get_physical_gpu_inventory",
+        lambda *, block = True: _raw_inventory(dict(_UNNAMED_GFX1151)),
+    )
+    assert unpinned_fingerprint._host_fingerprint() == {
+        "runtime": "6.4.0",
+        "gpus": ["gfx11/gfx1151"],
+    }
+
+
+def test_a_named_card_still_answers_with_its_name(unpinned_fingerprint, monkeypatch):
+    """The fallback must not change what a host that CAN name its cards records, or every existing
+    record would go stale on upgrade. The Windows gfx1151 runner names its card, so this is the
+    other half of the same measurement."""
+    from utils.hardware import hardware
+
+    named = dict(_UNNAMED_GFX1151, name = "AMD Radeon(TM) 8060S Graphics")
+    monkeypatch.setattr(
+        hardware, "get_physical_gpu_inventory", lambda *, block = True: _raw_inventory(named)
+    )
+    assert unpinned_fingerprint._host_fingerprint() == {
+        "runtime": "6.4.0",
+        "gpus": ["AMD Radeon(TM) 8060S Graphics"],
+    }
+
+
+def test_two_unnamed_cards_of_different_targets_are_not_one_card(unpinned_fingerprint, monkeypatch):
+    """The identity has to distinguish gfx targets, or swapping a 7900 XTX for a 9070 XT on a host
+    that names neither would leave the record standing."""
+    from utils.hardware import hardware
+
+    first = dict(_UNNAMED_GFX1151, gfx_candidates = ["gfx11", "gfx1100"])
+    second = dict(_UNNAMED_GFX1151, gfx_candidates = ["gfx12", "gfx1201"])
+    cards = [_raw_inventory(first)]
+    monkeypatch.setattr(hardware, "get_physical_gpu_inventory", lambda *, block = True: cards[0])
+
+    unpinned_fingerprint.note_accelerator_runtime_failure("rocm")
+    assert unpinned_fingerprint.preferred_accelerator("rocm") == "vulkan"
+    cards[0] = _raw_inventory(second)
+    assert unpinned_fingerprint.accelerator_runtime_failed("rocm") is False
+
+
+def test_a_device_reporting_nothing_but_a_vendor_still_contributes(
+    unpinned_fingerprint, monkeypatch
+):
+    from utils.hardware import hardware
+    monkeypatch.setattr(
+        hardware,
+        "get_physical_gpu_inventory",
+        lambda *, block = True: _raw_inventory({"vendor": "amd", "index": 1}),
+    )
+    assert unpinned_fingerprint._host_fingerprint()["gpus"] == ["amd:1"]
+
+
+def test_an_empty_device_list_is_still_no_cards(unpinned_fingerprint, monkeypatch):
+    """A record written against no cards at all must stay "cannot tell", not "these cards"."""
+    from utils.hardware import hardware
+
+    monkeypatch.setattr(hardware, "get_physical_gpu_inventory", lambda *, block = True: {})
+    assert unpinned_fingerprint._host_fingerprint()["gpus"] is None
+
+
+# ── The failure that prints nothing ──────────────────────────────────────────
+
+
+# Measured on the gfx1151 Windows 11 runner: the Windows ROCm asset ships stable-diffusion.dll and
+# no hipBLAS, the box has only the driver's amdhip64_6.dll, and every invocation exits 0xC0000135
+# in 0.02s having printed zero bytes. This is how sd_cpp_engine surfaces that.
+_WINDOWS_DLL_FAILURE = "sd-cli exited 3221225781. Last output:\n"
+
+
+def test_a_build_that_never_started_is_a_decisive_build_failure():
+    from core.inference.sd_cpp_backend import (
+        output_shows_accelerator_failure,
+        output_shows_decisive_accelerator_failure,
+    )
+    assert output_shows_accelerator_failure(_WINDOWS_DLL_FAILURE) is True
+    assert output_shows_decisive_accelerator_failure(_WINDOWS_DLL_FAILURE) is True
+
+
+@pytest.mark.parametrize(
+    "status",
+    [3221225781, 3221225785, 3221225794, -1073741515, -1073741511, -1073741502],
+)
+def test_every_image_load_status_is_recognised_signed_or_unsigned(status):
+    """Windows reports these as unsigned NTSTATUS; a signed reading of the same number is what a
+    POSIX-minded caller would print. Both have to match or the recognition depends on who read
+    the exit code."""
+    from core.inference.sd_cpp_backend import output_shows_image_load_failure
+    assert output_shows_image_load_failure(f"sd-cli exited {status}. Last output:\n") is True
+
+
+@pytest.mark.parametrize("status", [1, 2, 134, 139, -9, -11, 3221225477])
+def test_an_ordinary_non_zero_exit_is_not_a_build_failure(status):
+    """A crash, a signal or a bad argument says nothing about the build carrying kernels for this
+    card, and reading them as decisive would divert a working host on one bad render."""
+    from core.inference.sd_cpp_backend import (
+        output_shows_decisive_accelerator_failure,
+        output_shows_image_load_failure,
+    )
+
+    text = f"sd-cli exited {status}. Last output:\nsomething went wrong\n"
+    assert output_shows_image_load_failure(text) is False
+    assert output_shows_decisive_accelerator_failure(text) is False
+
+
+def test_an_out_of_memory_alongside_an_image_load_status_is_still_capacity():
+    """Capacity is checked first everywhere else; it must stay first here too, or a message that
+    happens to carry both numbers would divert a host whose card was merely full."""
+    from core.inference.sd_cpp_backend import (
+        output_shows_accelerator_failure,
+        output_shows_decisive_accelerator_failure,
+    )
+
+    text = "sd-cli exited 3221225781. Last output:\nROCm error: out of memory\n"
+    assert output_shows_accelerator_failure(text) is False
+    assert output_shows_decisive_accelerator_failure(text) is False
+
+
+def test_the_number_alone_is_not_enough():
+    """The status is only evidence when it is an EXIT status. A prompt or a log line that happens
+    to contain the digits must not divert anything."""
+    from core.inference.sd_cpp_backend import output_shows_image_load_failure
+    assert output_shows_image_load_failure("seed 3221225781 produced a nice image") is False
