@@ -409,9 +409,7 @@ def test_a_foreign_credential_is_refused_through_every_unaskable_shape(
     assert cache_reads_authorized(FOREIGN_TOKEN, repo_id = ON_DISK) is False
 
 
-def test_a_credential_less_caller_is_refused_on_a_host_that_holds_a_token(
-    monkeypatch, tmp_path
-):
+def test_a_credential_less_caller_is_refused_on_a_host_that_holds_a_token(monkeypatch, tmp_path):
     """The anonymous half of the same hole. On a host whose operator HAS an HF token, the
     cache can hold repos that token fetched, so a caller with no credential at all cannot be
     told "it is on the disk, therefore you may read it"."""
@@ -574,7 +572,9 @@ def test_tier_detection_reads_a_cached_config_offline(monkeypatch, tmp_path):
     _counting_probe(monkeypatch, True, offline = True)
     transformers_version._config_json_cache.clear()
 
-    assert transformers_version._load_config_json(ON_DISK, OPERATOR_TOKEN) == {"model_type": "llama"}
+    assert transformers_version._load_config_json(ON_DISK, OPERATOR_TOKEN) == {
+        "model_type": "llama"
+    }
 
 
 def test_the_capability_probes_cache_only_gate_allows_a_repo_on_disk(monkeypatch, tmp_path):
@@ -590,7 +590,8 @@ def test_the_capability_probes_cache_only_gate_allows_a_repo_on_disk(monkeypatch
         is False
     )
     assert (
-        model_config_module._offline_cache_read_refused(OPERATOR_TOKEN, ABSENT, ABSENT, True) is True
+        model_config_module._offline_cache_read_refused(OPERATOR_TOKEN, ABSENT, ABSENT, True)
+        is True
     )
 
 
@@ -733,9 +734,7 @@ def test_the_route_entry_guard_still_refuses_a_repo_that_is_not_on_disk(monkeypa
     assert _offline_route_guard(monkeypatch, tmp_path, ABSENT, on_disk = False) is True
 
 
-def test_the_route_entry_guard_keeps_refusing_on_a_host_that_holds_a_token(
-    monkeypatch, tmp_path
-):
+def test_the_route_entry_guard_keeps_refusing_on_a_host_that_holds_a_token(monkeypatch, tmp_path):
     """The caller-isolation half at the route entry. On a host whose operator HAS an HF
     token the cache can hold private repos, so a credential-less caller is refused even
     though the repo is right there on the disk."""

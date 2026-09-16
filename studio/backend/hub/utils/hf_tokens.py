@@ -384,6 +384,7 @@ def _ambient_hf_token() -> Optional[str]:
     except Exception:
         pass
     import os
+
     for key in _HF_TOKEN_ENV_KEYS:
         if key == "HF_OIDC_RESOURCE":
             # Names a token rather than holding one, so it cannot be compared to a caller's.
@@ -425,6 +426,7 @@ def _caller_populated_the_cache(token: Optional[str]) -> bool:
     if not isinstance(token, str) or not token or ambient is None:
         return False
     import hmac
+
     return hmac.compare_digest(token, ambient)
 
 
