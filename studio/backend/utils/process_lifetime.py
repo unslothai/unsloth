@@ -875,14 +875,17 @@ def _windows_collect_descendants_known(pid: int) -> "tuple[list[tuple[int, Optio
 
 def terminate_descendants(
     collected: "list[tuple[int, Optional[str]]]", timeout: float = 5.0
-) -> "list[int]":
+) -> "list[tuple[int, Optional[str]]]":
     """SIGTERM then SIGKILL what `collect_descendants` found, still alive.
 
     The POSIX counterpart of the Windows ``taskkill /T``: a child that shares
     this process's group cannot be reached with killpg, so its own children are
     signalled by pid instead.
 
-    Returns the pids still running when it gives up, which is not the same as the
+    Returns the survivors as ``(pid, identity)``, with the identity this sweep COLLECTED
+    rather than whatever the number reads as afterwards. The pair is what the caller needs:
+    a pid it is about to record can have exited and been recycled since, and a bare number
+    would then name a stranger. Still running when it gives up is not the same as the
     empty list. A kill can fail (the process is protected, the handle is denied, the
     exit is simply slow), and reporting the attempt as the outcome is what lets the
     caller delete the record and the pidfile out from under a worker that is still
@@ -922,13 +925,15 @@ def terminate_descendants(
     # uninterruptible sleep in a driver ioctl outlives it entirely, which is the state a
     # worker holding a GPU is most likely to be in.
     return [
-        pid
+        (pid, identity)
         for pid, identity in live
         if _pid_alive(pid) and not _pid_is_zombie(pid) and _still_the_same(pid, identity)
     ]
 
 
-def _windows_terminate_collected(collected: "list[tuple[int, Optional[str]]]") -> "list[int]":
+def _windows_terminate_collected(
+    collected: "list[tuple[int, Optional[str]]]",
+) -> "list[tuple[int, Optional[str]]]":
     """``taskkill /F`` each survivor individually, deepest first. Never ``/T``.
 
     Windows has no process group, so once the leader has been terminated nothing
@@ -958,7 +963,7 @@ def _windows_terminate_collected(collected: "list[tuple[int, Optional[str]]]") -
     the pidfile that are the only remaining handles on it.
     """
     attempted: "list[tuple[int, Optional[str]]]" = []
-    unresolved: "list[int]" = []
+    unresolved: "list[tuple[int, Optional[str]]]" = []
     for pid, identity in reversed(collected):
         if not _signalable(pid) or not _pid_alive(pid):
             continue
@@ -975,7 +980,7 @@ def _windows_terminate_collected(collected: "list[tuple[int, Optional[str]]]") -
                 and not _pid_is_zombie(pid)
                 and not _provably_different(pid, identity)
             ):
-                unresolved.append(pid)
+                unresolved.append((pid, identity))
             continue
         # Started after the snapshot, and validated the same way rather than inherited
         # from a parent-pid link. Deepest first, as above.
@@ -991,7 +996,7 @@ def _windows_terminate_collected(collected: "list[tuple[int, Optional[str]]]") -
             # process this sweep exists for running. What changes is the report: the pid
             # is carried out as unresolved, which keeps the record, and the next sweep
             # gets another walk at whatever is under it.
-            unresolved.append(pid)
+            unresolved.append((pid, identity))
             late = []
         for late_pid, late_identity in reversed(late):
             if not _signalable(late_pid) or not _pid_alive(late_pid):
@@ -1009,17 +1014,20 @@ def _windows_terminate_collected(collected: "list[tuple[int, Optional[str]]]") -
             pass
         attempted.append((pid, identity))
     survivors = [
-        pid
+        (pid, identity)
         for pid, identity in attempted
         if _pid_alive(pid) and not _pid_is_zombie(pid) and _provably_the_same(pid, identity)
     ]
     # Deepest first throughout, and deduplicated: a pid whose late walk failed is reported
     # unresolved AND may still be alive after its own kill, so the two lists can name it
     # twice and the caller adopts each entry.
-    ordered: "list[int]" = []
-    for pid in unresolved + survivors:
-        if pid not in ordered:
-            ordered.append(pid)
+    ordered: "list[tuple[int, Optional[str]]]" = []
+    seen: "set[int]" = set()
+    for pid, identity in unresolved + survivors:
+        if pid in seen:
+            continue
+        seen.add(pid)
+        ordered.append((pid, identity))
     return ordered
 
 
@@ -1376,19 +1384,33 @@ def _identity_for_record(pid: int, attempts: int = 3) -> Optional[str]:
     return None
 
 
-def adopt_pid(pid: Optional[int]) -> None:
+def adopt_pid(pid: Optional[int], identity: "Optional[str]" = None) -> None:
     """Track a child (e.g. a multiprocessing worker started after the parent job
     was set up) and, on Windows, assign it to the job as belt-and-suspenders.
-    Tolerates a None or already-exited pid."""
+    Tolerates a None or already-exited pid.
+
+    *identity* is the creation-time identity the CALLER already established for this pid.
+    Pass it whenever the pid came from an earlier snapshot: a survivor reported by a sweep
+    can exit between the sweep's last liveness check and this call, and the number is then
+    free for anything. Without the check, that replacement is recorded as this process's
+    child and, where a job object is active, assigned to a job that kills its members when
+    the app closes. Given one, this adopts only a pid that is PROVABLY still the same
+    process, and records the identity that was verified rather than re-reading it.
+    """
     # `not pid` already rejected None and 0. pid 1 is init, and recording it is
     # what turns the sweep into a kill of everything the user owns.
     if not _signalable(pid):
+        return
+    if identity is not None and not _provably_the_same(pid, identity):
+        # Unknown adopts nobody: a pid whose identity cannot be confirmed may already be a
+        # stranger, and adopting one is not recoverable.
         return
     # Here as well as in the Linux spawn path: this is the first thing that
     # writes a record, and without the handler a fork child keeps this
     # process's children and later claims them as its own.
     _adopt_fork_reset()
-    identity = _identity_for_record(pid)
+    if identity is None:
+        identity = _identity_for_record(pid)
     pgid = _own_process_group(pid)
     with _record_lock:
         _tracked_pids[pid] = identity
@@ -1494,8 +1516,10 @@ def terminate_all(timeout: float = 5.0) -> "list[int]":
         try:
             if _is_windows():
                 # The tree: a leader killed alone strands its workers, and the
-                # record naming them is cleared right after.
-                tree_stands = not _windows_terminate_tree(pid)
+                # record naming them is cleared right after. Through the validated
+                # collector, never taskkill /T: the same rejected-stranger problem
+                # applies here as on the single-pid path.
+                tree_stands = not _windows_terminate_validated_tree(pid)
             else:
                 _posix_terminate(pid, timeout)
         except Exception:
@@ -1677,8 +1701,14 @@ def _reap_one_record(path, timeout: float) -> "tuple[list[int], bool]":
         if _is_windows():
             # The tree, not the leader: this fallback runs when the Job Object
             # is unavailable, and killing a leader alone strands its workers
-            # while the record that named them is deleted.
-            tree_stands = not _windows_terminate_tree(pid)
+            # while the record that named them is deleted. Through the validated
+            # collector rather than taskkill /T, for the same reason the live path
+            # uses it: /T re-walks the raw parent-pid links, which are stale by
+            # design, so a stranger holding a recycled number that
+            # `_windows_collect_descendants` rejected would be killed by the very
+            # sweep that filter exists to protect. A record deferred to the next
+            # application start must not be the way back in.
+            tree_stands = not _windows_terminate_validated_tree(pid)
         else:
             _posix_terminate(pid, timeout = timeout)
         killed.append(pid)

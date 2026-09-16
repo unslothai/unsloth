@@ -29381,13 +29381,17 @@ class LlamaCppBackend:
     def _terminate_descendants(collected):
         """The diffusion shim's visual server, and anything else it started.
 
-        Returns the pids that were still running when the sweep gave up. A forced kill
-        can simply fail (access denied, a protected process, an uninterruptible driver
-        ioctl), and reading the attempt as the outcome is what lets the caller delete the
-        record and the pidfile out from under a worker that is still holding the GPU.
-        Each survivor is adopted, so it gets a lifetime record of its own rather than
-        depending on the leader's: the leader is usually gone by now, and on Windows
-        there is no process group standing in for it.
+        Returns the survivors as `(pid, identity)`: the ones still running when the sweep
+        gave up, each with the creation-time identity the sweep verified. A forced kill can
+        simply fail (access denied, a protected process, an uninterruptible driver ioctl),
+        and reading the attempt as the outcome is what lets the caller delete the record
+        and the pidfile out from under a worker that is still holding the GPU.
+        Each survivor is adopted WITH that identity, so it gets a lifetime record of its
+        own rather than depending on the leader's: the leader is usually gone by now, and
+        on Windows there is no process group standing in for it. The identity travels
+        because a survivor can exit between the sweep's last liveness check and the adopt,
+        and adopting the bare number would then record a stranger and, where a job object
+        is active, put it in a job that kills its members when the app closes.
         """
         if not collected:
             return []
@@ -29398,15 +29402,16 @@ class LlamaCppBackend:
             logger.debug(f"Could not terminate server descendants: {e}")
             # Unknown, not none. The pids were collected, so they can still be named, and
             # naming them is the whole point of this return value.
-            return [pid for pid, _ in collected]
-        for pid in survivors:
+            return list(collected)
+        for pid, identity in survivors:
             try:
-                adopt_pid(pid)
+                adopt_pid(pid, identity)
             except Exception:
                 pass
         if survivors:
             logger.warning(
-                f"llama-server descendants still running after the sweep: {survivors}; "
+                f"llama-server descendants still running after the sweep: "
+                f"{[pid for pid, _ in survivors]}; "
                 "recorded so the next launch can reap them"
             )
         return survivors

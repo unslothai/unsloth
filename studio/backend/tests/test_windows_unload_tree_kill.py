@@ -686,7 +686,10 @@ def test_a_descendant_that_would_not_die_is_reported(monkeypatch):
     # Returns True, and the process is still there. The read-back is the only thing that
     # can tell the difference.
     monkeypatch.setattr(pl, "_windows_terminate_pid", lambda pid: True)
-    assert pl._windows_terminate_collected([(10, "0:10"), (11, "0:11")]) == [11, 10]
+    assert pl._windows_terminate_collected([(10, "0:10"), (11, "0:11")]) == [
+        (11, "0:11"),
+        (10, "0:10"),
+    ]
 
 
 def test_a_descendant_that_did_die_is_not_reported(monkeypatch):
@@ -713,7 +716,9 @@ def test_the_posix_sweep_reports_a_child_the_signals_did_not_reach(monkeypatch, 
     assert child_pid in [pid for pid, _ in collected]
     monkeypatch.setattr(pl.os, "kill", lambda pid, sig: None)
     survivors = pl.terminate_descendants(collected, timeout = 0.2)
-    assert child_pid in survivors, "a child that is plainly still running was reported dead"
+    assert child_pid in [
+        pid for pid, _ in survivors
+    ], "a child that is plainly still running was reported dead"
     assert _alive(child_pid)
 
 
@@ -724,7 +729,7 @@ def test_an_unload_keeps_the_pidfile_when_a_descendant_survives(monkeypatch):
     b = _make_backend()
     b._process.pid = 4242
     b._process.poll.return_value = 0  # the leader itself went down on the terminate
-    b._terminate_descendants = lambda *a, **kw: [777]
+    b._terminate_descendants = lambda *a, **kw: [(777, "0:777")]
     cleared, killed = _instrument(monkeypatch, gone = True)
     b._kill_process()
     assert killed == [], "the leader exited, so there is nothing to tree kill"
@@ -748,10 +753,20 @@ def test_a_surviving_descendant_is_adopted_so_a_later_sweep_can_reach_it(monkeyp
     from core.inference.llama_cpp import LlamaCppBackend
 
     adopted = []
-    monkeypatch.setattr(pl, "terminate_descendants", lambda collected, timeout: [777])
-    monkeypatch.setattr(pl, "adopt_pid", adopted.append)
-    assert LlamaCppBackend._terminate_descendants([(777, "0:777")]) == [777]
-    assert adopted == [777]
+    monkeypatch.setattr(
+        pl,
+        "terminate_descendants",
+        lambda collected, timeout: [(777, "0:777")],
+    )
+    monkeypatch.setattr(
+        pl,
+        "adopt_pid",
+        lambda pid, identity = None: adopted.append((pid, identity)),
+    )
+    assert LlamaCppBackend._terminate_descendants([(777, "0:777")]) == [(777, "0:777")]
+    # The identity the sweep verified travels with the pid, so the adopt cannot record a
+    # process that took the number over in between.
+    assert adopted == [(777, "0:777")]
 
 
 def test_a_sweep_that_raised_names_every_pid_it_had(monkeypatch):
@@ -763,7 +778,10 @@ def test_a_sweep_that_raised_names_every_pid_it_had(monkeypatch):
         raise RuntimeError("Toolhelp snapshot unavailable")
 
     monkeypatch.setattr(pl, "terminate_descendants", _raises)
-    assert LlamaCppBackend._terminate_descendants([(777, "0:777"), (778, None)]) == [777, 778]
+    assert LlamaCppBackend._terminate_descendants([(777, "0:777"), (778, None)]) == [
+        (777, "0:777"),
+        (778, None),
+    ]
 
 
 # ── an answer that could not be obtained is not an answer of "none" ──
@@ -829,7 +847,7 @@ def test_a_live_but_unverifiable_descendant_is_reported_not_signalled(monkeypatc
     monkeypatch.setattr(pl, "_windows_collect_descendants_known", lambda pid: ([], True))
     killed = []
     monkeypatch.setattr(pl, "_windows_terminate_pid", lambda pid: killed.append(pid))
-    assert pl._windows_terminate_collected([(11, "0:11")]) == [11]
+    assert pl._windows_terminate_collected([(11, "0:11")]) == [(11, "0:11")]
     assert killed == [], "an unverifiable pid must never be signalled"
 
 
@@ -915,7 +933,7 @@ def test_a_failed_late_walk_kills_the_survivor_and_reports_it(monkeypatch):
         return True
 
     monkeypatch.setattr(pl, "_windows_terminate_pid", _kill)
-    assert pl._windows_terminate_collected([(11, "0:11")]) == [11]
+    assert pl._windows_terminate_collected([(11, "0:11")]) == [(11, "0:11")]
     assert killed == [11], "the collected, verified survivor must still be killed"
 
 
@@ -974,3 +992,60 @@ def test_a_live_unverifiable_descendant_is_an_incomplete_tree_kill(monkeypatch):
     # record, which would be the leak in the other direction.
     monkeypatch.setattr(pl, "_pid_identity", lambda pid: "0:999")
     assert pl._windows_terminate_validated_tree(500) is True
+
+
+def test_a_recycled_survivor_is_not_adopted(monkeypatch):
+    """A survivor can exit between the sweep's last liveness check and the adopt.
+
+    The number is then free, and adopting it records a stranger as this process's child --
+    and where a job object is active, puts it in a job that kills its members when the app
+    closes. The identity the sweep verified travels with the pid so the adopt can tell.
+    """
+    recorded = {}
+    monkeypatch.setattr(pl, "_signalable", lambda pid: True)
+    monkeypatch.setattr(pl, "_adopt_fork_reset", lambda: None)
+    monkeypatch.setattr(pl, "_own_process_group", lambda pid: None)
+    monkeypatch.setattr(pl, "_write_breadcrumb", lambda: None)
+    monkeypatch.setattr(pl, "_tracked_pids", recorded)
+    # The number now belongs to something that started later.
+    monkeypatch.setattr(pl, "_pid_identity", lambda pid: "9:9999")
+
+    pl.adopt_pid(4242, "0:4242")
+    assert recorded == {}, "adopted a pid that is provably somebody else"
+
+    # Unknown adopts nobody either: an identity that cannot be read is not a match.
+    monkeypatch.setattr(pl, "_pid_identity", lambda pid: None)
+    pl.adopt_pid(4242, "0:4242")
+    assert recorded == {}, "adopted a pid whose identity could not be confirmed"
+
+    # And the pid that IS still the same is adopted, with the identity that was verified.
+    monkeypatch.setattr(pl, "_pid_identity", lambda pid: "0:4242")
+    pl.adopt_pid(4242, "0:4242")
+    assert recorded == {4242: "0:4242"}
+
+    # A caller with no identity to offer is unchanged: this is the spawn path.
+    recorded.clear()
+    monkeypatch.setattr(pl, "_identity_for_record", lambda pid: "read-now")
+    pl.adopt_pid(4343)
+    assert recorded == {4343: "read-now"}
+
+
+def test_no_windows_kill_path_calls_taskkill_slash_t_any_more():
+    """The validated collector is only a filter while every forced kill goes through it.
+
+    `taskkill /T` re-walks the live parent-pid links, so any call site that keeps it hands
+    the rejected stranger back to the kill -- including the deferred one, where a record is
+    reaped at the next application start.
+    """
+    import ast
+    from pathlib import Path
+
+    tree = ast.parse(Path(pl.__file__).read_text(encoding = "utf-8"))
+    callers = [
+        node.func.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_windows_terminate_tree"
+    ]
+    assert callers == [], "a kill path still expands the tree through taskkill /T"
