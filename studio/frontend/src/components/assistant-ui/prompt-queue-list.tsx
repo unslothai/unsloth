@@ -341,7 +341,7 @@ export function PromptQueueList({
                       message
                     </DropdownMenuItem>
                     <DropdownMenuSeparator />
-                    <Tooltip delayDuration={300}>
+                    <Tooltip delayDuration={300} disableHoverableContent={true}>
                       <TooltipTrigger asChild={true} disableClickToggle={true}>
                         <DropdownMenuItem
                           onSelect={() => {
@@ -363,7 +363,7 @@ export function PromptQueueList({
                         align="end"
                         sideOffset={8}
                         collisionPadding={8}
-                        className="max-w-[min(20rem,calc(100vw-1rem))]"
+                        className="prompt-queue-option-tooltip pointer-events-none max-w-[min(20rem,calc(100vw-1rem))]"
                       >
                         {followUpBehavior === "queue"
                           ? "New messages sent during a response will stop that response and run next."
