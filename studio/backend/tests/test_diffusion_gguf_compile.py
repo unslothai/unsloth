@@ -84,7 +84,6 @@ class TestGgufTrimmedDimsAreRestored:
     @staticmethod
     def _model():
         import torch
-
         class _M(torch.nn.Module):
             def __init__(self):
                 super().__init__()
