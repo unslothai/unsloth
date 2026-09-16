@@ -216,6 +216,11 @@ def _single_used_local_model_selection(
     return next(iter(selections))
 
 
+def _local_chat_serves_gguf() -> bool:
+    from routes.inference import get_llama_cpp_backend
+    return bool(get_llama_cpp_backend().is_loaded)
+
+
 def _loaded_local_model_identity() -> tuple[bool, str, str]:
     from routes.inference import get_llama_cpp_backend
     from core.inference import get_inference_backend
@@ -429,9 +434,10 @@ def _inject_local_providers(
             extra_body["chat_template_kwargs"] = tpl_kwargs
             params["extra_body"] = extra_body
 
-    # Forward each llm-structured column's output_format as a response_format so
-    # llama-server uses grammar-constrained sampling instead of broken JSON.
-    _inject_local_structured_response_format(recipe, local_names)
+    # Only llama.cpp carries a grammar engine; /v1 refuses response_format on every other local
+    # backend, so those fall back to the prompt-level JSON llm-judge columns already rely on.
+    if _local_chat_serves_gguf():
+        _inject_local_structured_response_format(recipe, local_names)
 
     return internal_key_id
 
