@@ -9,16 +9,20 @@ This is the AMD counterpart to [`unsloth/unsloth`](https://hub.docker.com/r/unsl
 AMD GPUs are reached through the kernel driver's device nodes, not through a container toolkit, so the run command differs from the NVIDIA one:
 
 ```bash
+GPU_GROUPS=$(for g in video render; do
+  gid=$(getent group "$g" | cut -d: -f3)
+  [ -n "$gid" ] && printf -- '--group-add %s ' "$gid"
+done)
+
 docker run --rm -it \
   --device /dev/kfd --device /dev/dri \
-  --group-add "$(getent group video | cut -d: -f3)" \
-  --group-add "$(getent group render | cut -d: -f3)" \
+  $GPU_GROUPS \
   --ipc=host \
   -v "$HOME/.cache/huggingface":/workspace/.cache/huggingface \
   unsloth/unsloth-rocm
 ```
 
-`--group-add` needs the numeric group ids: a name is resolved inside the container, where the host's `video` and `render` groups do not exist, so passing the names can add the wrong groups and leave `/dev/kfd` unreadable.
+That loop is there for two reasons. `--group-add` needs the numeric group ids, because a name is resolved inside the container, where the host's `video` and `render` groups do not exist, so passing the names can add the wrong groups and leave `/dev/kfd` unreadable. And a minimal host may have no `render` group at all, in which case a plain `--group-add "$(getent group render | cut -d: -f3)"` expands to an empty argument that Docker rejects before the container starts.
 
 The Hugging Face mount is not optional if you care about your downloads: `HF_HOME` inside the container is `/workspace/.cache/huggingface`, which lives in the container's writable layer, so without it every model is fetched again after `docker rm`.
 
@@ -29,12 +33,11 @@ curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/docker/run.s
 bash run.sh --rocm
 ```
 
-Check the GPU is visible before anything else:
+Check the GPU is visible before anything else, with `GPU_GROUPS` set as above:
 
 ```bash
 docker run --rm --device /dev/kfd --device /dev/dri \
-  --group-add "$(getent group video | cut -d: -f3)" \
-  --group-add "$(getent group render | cut -d: -f3)" \
+  $GPU_GROUPS \
   unsloth/unsloth-rocm python /workspace/smoke_test_rocm.py
 ```
 
