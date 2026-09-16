@@ -68,8 +68,17 @@ HOST_PATH_SCALAR_FIELDS = frozenset(
         "dataset_path",
         "checkpoint_path",
         "resume_from_checkpoint",
+        # The persisted request's own spellings, read off TrainingStartRequest rather than
+        # guessed: a run created through the UI copies these into config_json verbatim.
+        "tensorboard_dir",
     }
 )
+
+# Error text, not a path field: the whole string is scrubbed rather than blanked, because the
+# message is the only thing telling the caller WHY a run failed and a filename is usually only
+# part of it. A trainer records `str(e)` here, and filesystem and model-loading errors quote
+# the file they failed on.
+HOST_PATH_TEXT_FIELDS = frozenset({"error_message", "error", "detail", "message"})
 
 # List-of-path fields. Emptied rather than referenced: they name scan ROOTS, which carry the
 # host's layout and nothing a caller can act on.
@@ -84,6 +93,8 @@ HOST_PATH_LIST_FIELDS = frozenset(
         # directories is the host's layout however many entries it has.
         "output_dirs",
         "dataset_paths",
+        "local_datasets",
+        "local_eval_datasets",
     }
 )
 
@@ -390,6 +401,11 @@ def _redact(payload: Any, *, redact_ambiguous_path: bool) -> Any:
                 continue
             if key in HOST_PATH_LIST_FIELDS:
                 out[key] = []
+                continue
+            if key in HOST_PATH_TEXT_FIELDS and isinstance(value, str):
+                # Scrubbed, not blanked: a persisted failure message is the only account of why
+                # a run ended, and the path inside it is usually one clause of it.
+                out[key] = redact_paths_in_text(value)
                 continue
             out[key] = _redact(value, redact_ambiguous_path = redact_ambiguous_path)
         # After the walk, not during it: the field is declared on the response models, so a

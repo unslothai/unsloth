@@ -1597,3 +1597,46 @@ def test_the_deferred_five_hundred_restores_the_handle_too():
         assert reference in restored, restored
     finally:
         host_paths._request_handles.reset(token)
+
+
+def test_the_persisted_training_request_keys_are_the_ones_redacted():
+    """Field names guessed from the concept are not the field names on the schema.
+
+    A run created through the UI copies its request into config_json verbatim, and that
+    schema spells them `local_datasets`, `local_eval_datasets` and `tensorboard_dir`.
+    """
+    from models.training import TrainingStartRequest
+
+    declared = set(TrainingStartRequest.model_fields)
+    covered = host_paths.HOST_PATH_SCALAR_FIELDS | host_paths.HOST_PATH_LIST_FIELDS
+    for field in ("local_datasets", "local_eval_datasets", "model_local_path"):
+        assert field in declared, field
+        assert field in covered, field
+
+    config = {
+        "local_datasets": [f"{HOST_ROOT}/data/train.jsonl"],
+        "local_eval_datasets": [f"{HOST_ROOT}/data/eval.jsonl"],
+        "tensorboard_dir": f"{HOST_ROOT}/outputs/run-1/runs",
+        "learning_rate": 0.0002,
+    }
+    redacted = host_paths.redact_host_paths({"config": config}, via_api_key = True)
+    assert HOST_ROOT not in json.dumps(redacted), redacted
+    # A setting that is not a path is untouched, or the config stops being readable.
+    assert redacted["config"]["learning_rate"] == 0.0002
+
+
+def test_a_persisted_failure_message_keeps_its_reason_and_loses_the_path():
+    """The trainer records str(e), and filesystem and model-loading errors quote the file they
+    failed on. Blanking the field would take away the only account of why a run ended, so the
+    text is scrubbed instead."""
+    message = f"FileNotFoundError: no such file: {HOST_ROOT}/data/train.jsonl"
+    redacted = host_paths.redact_host_paths(
+        {"error_message": message, "status": "error"}, via_api_key = True
+    )
+    assert HOST_ROOT not in redacted["error_message"], redacted
+    assert "FileNotFoundError" in redacted["error_message"], redacted
+    assert redacted["status"] == "error"
+    # And the browser session still reads its own filesystem.
+    assert host_paths.redact_host_paths(
+        {"error_message": message}, via_api_key = False
+    )["error_message"] == message
