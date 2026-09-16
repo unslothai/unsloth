@@ -305,11 +305,26 @@ jobs:
               sys.exit(f'Release {tag} is a prerelease; GitHub cannot mark it latest.')
 
           prefix = 'Unsloth-Desktop-'
+          # The signed scripts are uploaded after the bundles and without --clobber, so a name
+          # that already exists would fail that step with the bundles and manifest already
+          # public. They belong in the same pre-flight guard as the bundles, not in a later
+          # check that can only report a release which is already half replaced.
+          script_assets = {
+              'install.ps1',
+              'setup.ps1',
+              'uninstall.ps1',
+              'install.sh',
+              'setup.sh',
+              'uninstall.sh',
+              'setup.bat',
+              'SHA256SUMS.txt',
+          }
           clashing = sorted(
               asset['name']
               for asset in release.get('assets', [])
               if str(asset.get('name', '')).startswith(prefix)
               or asset.get('name') == 'latest.json'
+              or asset.get('name') in script_assets
           )
 
           if clashing:
@@ -1948,11 +1963,26 @@ jobs:
               sys.exit(f'Release {tag} is a prerelease; GitHub cannot mark it latest.')
 
           prefix = 'Unsloth-Desktop-'
+          # The signed scripts are uploaded after the bundles and without --clobber, so a name
+          # that already exists would fail that step with the bundles and manifest already
+          # public. They belong in the same pre-flight guard as the bundles, not in a later
+          # check that can only report a release which is already half replaced.
+          script_assets = {
+              'install.ps1',
+              'setup.ps1',
+              'uninstall.ps1',
+              'install.sh',
+              'setup.sh',
+              'uninstall.sh',
+              'setup.bat',
+              'SHA256SUMS.txt',
+          }
           clashing = sorted(
               asset['name']
               for asset in release.get('assets', [])
               if str(asset.get('name', '')).startswith(prefix)
               or asset.get('name') == 'latest.json'
+              or asset.get('name') in script_assets
           )
 
           if clashing:
