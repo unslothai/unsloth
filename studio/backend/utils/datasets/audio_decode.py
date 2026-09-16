@@ -173,9 +173,13 @@ def _encode_with_soundfile(self, value) -> dict:
 
         array = np.asarray(value["array"])
         if array.dtype == object:
-            array = np.asarray(array.tolist(), dtype = "float32")  # a nested list back from Arrow arrives as an object array
+            array = np.asarray(
+                array.tolist(), dtype = "float32"
+            )  # a nested list back from Arrow arrives as an object array
         if array.ndim == 2 and array.shape[0] < array.shape[1]:
-            array = array.T  # torchcodec hands out (channels, samples); libsndfile writes (frames, channels)
+            array = (
+                array.T
+            )  # torchcodec hands out (channels, samples); libsndfile writes (frames, channels)
         buf = io.BytesIO()
         sf.write(buf, array, value["sampling_rate"], format = "WAV")
         return {"bytes": buf.getvalue(), "path": value.get("path")}
