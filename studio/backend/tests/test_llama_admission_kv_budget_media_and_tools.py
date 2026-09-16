@@ -289,6 +289,9 @@ class TestMediaIsCharged:
 
     def test_two_large_studio_image_chats_can_be_admitted_together(self):
         """A large base64 transport must not turn each vision request into a full-cache lease."""
+        import asyncio
+
+        from core.inference.llama_admission import LlamaAdmissionConfig, LlamaAdmissionQueue
 
         async def scenario():
             queue = LlamaAdmissionQueue("media")
@@ -329,6 +332,9 @@ class TestMediaIsCharged:
 
     def test_two_image_chats_are_not_both_admitted(self):
         """The live failure, with images instead of text."""
+        import asyncio
+
+        from core.inference.llama_admission import LlamaAdmissionConfig, LlamaAdmissionQueue
 
         async def scenario():
             queue = LlamaAdmissionQueue("media")
@@ -756,20 +762,26 @@ class TestTheBudgetIsTheWholeCacheNotOneSlot:
     """
 
     def test_the_partitioned_total_wins_over_one_slot(self):
+        from routes.inference import _openai_llama_admission_budget
         backend = _Payload(context_length = 4096, _kv_cache_context_total = 16384)
         assert _openai_llama_admission_budget(backend) == 16384
 
     def test_a_unified_cache_is_unchanged(self):
+        from routes.inference import _openai_llama_admission_budget
+
         # slots == 1 under --kv-unified, so the total IS the per-request window.
         backend = _Payload(context_length = 8192, _kv_cache_context_total = 8192)
         assert _openai_llama_admission_budget(backend) == 8192
 
     def test_an_unread_backend_falls_back_to_context_length(self):
+        from routes.inference import _openai_llama_admission_budget
+
         # Nothing read back yet: the two agree, so the fallback is not a guess.
         backend = _Payload(context_length = 8192, _kv_cache_context_total = None)
         assert _openai_llama_admission_budget(backend) == 8192
 
     def test_a_backend_that_cannot_say_keeps_slot_only_admission(self):
+        from routes.inference import _openai_llama_admission_budget
         assert _openai_llama_admission_budget(_Payload()) is None
 
 
@@ -798,8 +810,17 @@ class TestARoundIsCostedTheSameWayTheReservationWas:
         def lease_nowait(self):
             return self._lease
 
-    def _round_zero(self, payload, *, output_tokens):
-        """Open a tool lease from ``payload``, then re-cost it before it has grown."""
+    def _round_zero(
+        self,
+        payload,
+        *,
+        output_tokens,
+        conversation = None,
+    ):
+        """Open and re-cost an unchanged conversation, using translated messages when provided."""
+        import asyncio
+
+        from core.inference.llama_admission import LlamaAdmissionConfig, LlamaAdmissionQueue
         from routes.inference import (
             _openai_llama_admission_recost,
             _openai_llama_admission_tokens,
@@ -808,7 +829,11 @@ class TestARoundIsCostedTheSameWayTheReservationWas:
         async def _run():
             queue = LlamaAdmissionQueue("test")
             opened = _openai_llama_admission_tokens(
-                payload, budget = 4096, capacity = 4, tool_loop = True
+                payload,
+                budget = 4096,
+                capacity = 4,
+                tool_loop = True,
+                conversation = conversation,
             )
             reservation = queue.reserve(
                 capacity = 4,
@@ -820,7 +845,7 @@ class TestARoundIsCostedTheSameWayTheReservationWas:
             assert lease is not None
             _openai_llama_admission_recost(
                 self._Reservation(lease),
-                payload.messages,
+                payload.messages if conversation is None else conversation,
                 request = None,
                 llama_backend = self._Backend(),
                 payload = payload,
@@ -887,15 +912,18 @@ class TestARoundIsCostedTheSameWayTheReservationWas:
         ), f"round zero shrank an uncapped loop from {opened} to {committed}"
 
     def test_round_zero_keeps_a_top_level_system_prompt(self):
-        """Anthropic keeps `system` and `tools` out of `messages` entirely, so for that
-        route this is most of the prompt."""
+        """Count Anthropic system content once in both admission and re-cost."""
+        system = "You are a careful assistant that cites its sources. " * 200
         payload = _Payload(
             messages = [{"role": "user", "content": "hi"}],
-            system = "You are a careful assistant that cites its sources. " * 200,
+            system = system,
             enable_tools = True,
             max_tokens = 128,
         )
-        opened, committed, _ = self._round_zero(payload, output_tokens = 128)
+        conversation = [{"role": "system", "content": system}, *payload.messages]
+        opened, committed, _ = self._round_zero(
+            payload, output_tokens = 128, conversation = conversation
+        )
         assert opened > 1024, f"the system text should push this past the share: {opened}"
         assert committed == opened, (
             f"round zero shrank the lease from {opened} to {committed}, dropping the "
@@ -998,3 +1026,31 @@ class TestARoundStopsPayingForAnEvictedClip:
             [{"role": "user", "content": "text only"}],
         )
         assert evicted == no_video_at_all
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_finalized_video_admission_prices_only_surviving_clips(legacy):
+    clip = "A" * 4000
+    payload = _Payload(
+        messages = [{"role": "user", "content": "Describe the clip"}],
+        video_base64 = clip if legacy else None,
+        max_tokens = 64,
+    )
+    conversation = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Describe the clip"},
+                {"type": "input_video", "input_video": {"data": clip}},
+            ],
+        }
+    ]
+    text_only = [{"role": "user", "content": [{"type": "text", "text": "Describe the clip"}]}]
+    kwargs = dict(budget = 16384, capacity = 4, context_window = 16384)
+    kept = _openai_llama_admission_tokens(payload, conversation = conversation, **kwargs)
+    evicted = _openai_llama_admission_tokens(payload, conversation = text_only, **kwargs)
+    without_legacy = _Payload(messages = payload.messages, max_tokens = 64)
+    assert evicted == _openai_llama_admission_tokens(
+        without_legacy, conversation = text_only, **kwargs
+    )
+    assert kept - evicted == len(clip) // 4

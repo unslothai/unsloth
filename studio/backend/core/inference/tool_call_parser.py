@@ -335,6 +335,19 @@ def reasoning_cap_spent_message(max_tokens: Optional[int] = None) -> str:
     )
 
 
+def admission_room_refused_message() -> str:
+    """Explain that the next request cannot fit in the shared KV cache."""
+    return (
+        "There was no room left in the shared model cache for the next step of this "
+        "reply, so it stopped here rather than send a request the server could not "
+        "serve.\n\n"
+        "To get past this:\n"
+        "- Press Continue once another chat has finished\n"
+        "- Or run fewer chats at the same time\n"
+        "- Or raise the context length, so more chats fit at once"
+    )
+
+
 def continue_after_length_message() -> str:
     """The user message appended when a turn ended inside its own reasoning. The instruction is to
     ACT, not to think more carefully: the previous turn ended with nothing to show because

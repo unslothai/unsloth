@@ -185,7 +185,11 @@ class TestNothingChangesWhenTheBudgetIsUnknown:
 
 
 # In the order they were added, so older positional callers keep their meaning.
-_TOOL_LOOP_HOOKS = ("on_conversation_grew", "on_decode_slot")
+_TOOL_LOOP_HOOKS = (
+    "on_conversation_grew",
+    "on_decode_slot",
+    "admission_output_allowance",
+)
 
 
 class TestOldCallers:
@@ -227,10 +231,9 @@ class TestOldCallers:
         for name in _TOOL_LOOP_HOOKS:
             assert signature.parameters[name].default is None, f"{name} must be optional"
 
-    def test_the_hook_was_appended_rather_than_inserted(self):
-        """No bare ``*`` in this signature, so every parameter is positional-or-keyword and
-        inserting one silently rebinds the arguments after it for positional callers, with
-        no exception to report it."""
+    def test_admission_parameters_were_appended_rather_than_inserted(self):
+        """No bare ``*`` in these signatures, so inserting a parameter silently rebinds
+        the arguments after it for positional callers. New ones go at the end."""
         import inspect
 
         from core.inference.llama_cpp import LlamaCppBackend
@@ -240,6 +243,11 @@ class TestOldCallers:
         )
         tail = names[-len(_TOOL_LOOP_HOOKS) :]
         assert tail == list(_TOOL_LOOP_HOOKS), f"the hooks must stay at the tail, got {tail}"
+        plain = list(inspect.signature(LlamaCppBackend.generate_chat_completion).parameters)
+        assert plain[-2:] == [
+            "admission_output_allowance",
+            "on_prompt_fitted",
+        ], f"a parameter was inserted rather than appended; signature ends {plain[-4:]}"
 
     def test_the_wait_timeout_has_a_sane_default(self):
         import inspect
