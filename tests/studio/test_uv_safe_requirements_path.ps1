@@ -139,6 +139,26 @@ try {
     } finally {
         $env:TEMP = $savedTemp; $env:TMP = $savedTmp; $env:TMPDIR = $savedTmpDir
     }
+    # 7. A temp path on an unmapped drive must not abort the install either. Join-Path resolves
+    #    the drive qualifier, so it throws DriveNotFoundException for a stale or disconnected
+    #    drive, and under ErrorActionPreference = "Stop" that would terminate the run before the
+    #    loop could reach a candidate that works.
+    $script:Warnings = @()
+    $savedTemp = $env:TEMP; $savedTmp = $env:TMP; $savedTmpDir = $env:TMPDIR
+    try {
+        $ErrorActionPreference = "Stop"
+        $env:TEMP = "Z:\stale"
+        $env:TMP = "Z:\stale"
+        $env:TMPDIR = "Z:\stale"
+        $threw = $false
+        try { $r6 = Get-UvSafeRequirementsPath -Path $spaced } catch { $threw = $true }
+        Check "an unmapped temp drive does not abort the helper" (-not $threw)
+        if (-not $threw) {
+            Check "an unmapped temp drive still yields a result" ($null -ne $r6.Path)
+        }
+    } finally {
+        $env:TEMP = $savedTemp; $env:TMP = $savedTmp; $env:TMPDIR = $savedTmpDir
+    }
 } finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 }

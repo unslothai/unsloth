@@ -6925,10 +6925,13 @@ exit 0
                 if (-not $dirShort -or $dirShort.Contains(" ")) { continue }
                 $dir = $dirShort
             }
-            # $tmp outside the try so the catch can clean up: a Copy-Item that fails partway
-            # (a full disk, an interrupted write) leaves a partial destination behind.
-            $tmp = Join-Path $dir ("unsloth-reqs-" + [guid]::NewGuid().ToString("N") + ".txt")
+            # Declared before the try so the catch can clean up a Copy-Item that failed partway
+            # and left a partial destination, but built inside it: a candidate naming an unmapped
+            # drive makes Join-Path throw DriveNotFoundException, which under Stop would abort the
+            # install rather than move on to the next candidate.
+            $tmp = $null
             try {
+                $tmp = Join-Path $dir ("unsloth-reqs-" + [guid]::NewGuid().ToString("N") + ".txt")
                 Copy-Item -LiteralPath $Path -Destination $tmp -Force -ErrorAction Stop
                 if ($tmp.Contains(" ")) {
                     Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
@@ -6936,7 +6939,7 @@ exit 0
                 }
                 return @{ Path = $tmp; Temporary = $true }
             } catch {
-                Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+                if ($tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
                 continue
             }
         }
