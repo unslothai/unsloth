@@ -1582,6 +1582,5 @@ def test_cmd_adjacent_separators_require_host_approval(monkeypatch, command):
 )
 def test_cmd_quoted_and_escaped_separators_remain_data(monkeypatch, command):
     from core.inference import tools as tools_mod
-
     monkeypatch.setattr(tools_mod, "_shell_is_posix", lambda: False)
     assert extract_ssh_hosts_from_command(command) == (set(), False)
