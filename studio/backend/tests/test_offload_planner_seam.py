@@ -1836,6 +1836,13 @@ def test_oversubscribed_decode_threads_decline_spill_planning(monkeypatch):
     monkeypatch.setattr(
         llama_mod.os, "sched_getaffinity", lambda _pid: set(range(16)), raising = False
     )
+    # The affinity above has to read as UNRESTRICTED, which means it must match the
+    # host's logical count, and _spilled_decode_threads takes that from psutil. Left
+    # real it is whatever the CI box has: on anything wider than 16 threads the 16-CPU
+    # affinity looks like a taskset, the pricing declines for that reason instead, and
+    # the oversubscription this test is about is never reached. _SmtHost is the 16/8
+    # host the surrounding affinity tests already pin for the same reason.
+    monkeypatch.setitem(sys.modules, "psutil", _SmtHost)
     assert _plan(_Stub(), free_mib = 14 * 1024, extra_args = ["--threads", "16"]) is None
     plan = _plan(
         _Stub(),
