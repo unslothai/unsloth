@@ -1101,7 +1101,12 @@ class InferenceOrchestrator:
     def _ensure_subprocess_alive(self) -> bool:
         return self._proc is not None and self._proc.is_alive()
 
-    def _subprocess_crash_message(self, context: str, *, with_worker_output: bool = False) -> str:
+    def _subprocess_crash_message(
+        self,
+        context: str,
+        *,
+        with_worker_output: bool = False,
+    ) -> str:
         """Return a user-facing crash message with the worker exit status.
 
         ``with_worker_output`` defaults to FALSE, and every caller passes an ownership test

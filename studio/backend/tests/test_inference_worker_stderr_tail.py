@@ -193,8 +193,8 @@ def test_nothing_captured_leaves_the_message_exactly_as_it_was(tmp_path):
     empty = WorkerStderrCapture(directory = str(tmp_path), prefix = "unsloth-test-")
     for capture in (None, empty):
         message = _orchestrator_with(1, capture)._subprocess_crash_message(
-        "generation", with_worker_output = True
-    )
+            "generation", with_worker_output = True
+        )
         assert message == (
             "The inference worker stopped unexpectedly while generating a response. "
             "Details: pid=6145, exitcode=1."
@@ -270,9 +270,7 @@ def test_a_worker_that_exits_one_after_writing_to_stderr_keeps_its_traceback(tmp
     assert process.exitcode == 1
 
     orchestrator = _orchestrator_with(process.exitcode, capture, pid = process.pid)
-    message = orchestrator._subprocess_crash_message(
-        "generation", with_worker_output = True
-    )
+    message = orchestrator._subprocess_crash_message("generation", with_worker_output = True)
 
     assert "RuntimeError: CUDA out of memory. Tried to allocate 2.00 GiB" in message
     assert "Traceback (most recent call last)" in message
@@ -1118,14 +1116,13 @@ def test_a_request_queued_behind_the_crash_is_not_given_its_last_words(monkeypat
     orchestrator = _orchestrator_with(-9, capture)
     logged: "list[str]" = []
     monkeypatch.setattr(
-        type(orchestrator), "_log_worker_stderr_once",
+        type(orchestrator),
+        "_log_worker_stderr_once",
         lambda self, pid, exitcode: logged.append(str(pid)),
         raising = False,
     )
 
-    executing = orchestrator._subprocess_crash_message(
-        "generation", with_worker_output = True
-    )
+    executing = orchestrator._subprocess_crash_message("generation", with_worker_output = True)
     assert "Worker error output:" in executing
     assert "RuntimeError: another account" in executing
 
