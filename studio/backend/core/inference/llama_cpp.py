@@ -22590,6 +22590,22 @@ class LlamaCppBackend:
                     # inherited env on top of it, exactly as the line below does.
                     tensor_parallel = tensor_parallel,
                 )
+
+                def _replanned_flash_attn(_current_tp: bool) -> bool:
+                    """Re-resolve the planned attention after a tensor-mode downgrade.
+
+                    llama.cpp requires flash attention under SPLIT_MODE_TENSOR, so AUTO
+                    plans it ON whenever the split resolves to tensor. Every downgrade
+                    below takes that requirement away again, and the KV and compute
+                    estimates priced after one would otherwise keep budgeting for an
+                    unpadded V that a layer split with AUTO attention off does not get.
+                    """
+                    return _planned_flash_attn_state(
+                        extra_args,
+                        planned_cache_types = _planned_cache_pair,
+                        supports_flash_attn = bool(server_caps.get("supports_flash_attn", True)),
+                        tensor_parallel = _current_tp,
+                    )
                 # A user --split-mode in extras last-wins-overrides the toggle, and
                 # an inherited tensor LLAMA_ARG_SPLIT_MODE flips it on (the child
                 # would run tensor unbudgeted otherwise). The duplicate-load matchers
@@ -23036,6 +23052,8 @@ class LlamaCppBackend:
                         # otherwise reach llama-server. Strip it like the TP
                         # downgrade does.
                         extra_args = strip_split_mode_only(extra_args)
+                        # The split is layer now, so re-price the attention with it.
+                        planned_flash_attn = _replanned_flash_attn(tensor_parallel)
                     elif gpu_memory_mode == "manual":
                         # Manual offload (--gpu-layers + --fit off): no automatic
                         # device masking (a gpu_ids pick still pins below) or
@@ -23056,6 +23074,8 @@ class LlamaCppBackend:
                         # those.
                         if tensor_parallel or split_mode_override == "tensor":
                             extra_args = strip_split_mode_only(extra_args)
+                            # The split is layer now, so re-price the attention with it.
+                            planned_flash_attn = _replanned_flash_attn(tensor_parallel)
 
                     # Will MTP engage? If so, auto-fit reserves draft-model VRAM.
                     # Mirrors _build_speculative_flags: forced mtp/mtp+ngram always
@@ -23486,6 +23506,8 @@ class LlamaCppBackend:
                         # than let the layer planner settle on the first card it fits.
                         _layer_min_gpus = max(_layer_min_gpus, len(gpus))
                         extra_args = strip_split_mode_only(extra_args)
+                        # The split is layer now, so re-price the attention with it.
+                        planned_flash_attn = _replanned_flash_attn(tensor_parallel)
                     if tensor_parallel and self._tensor_split_aborts(
                         binary, model_identifier, _planned_cache_pair
                     ):
@@ -23502,6 +23524,8 @@ class LlamaCppBackend:
                         _layer_min_gpus = max(_layer_min_gpus, len(gpus))
                         # An extras --split-mode tensor would re-engage tensor mode.
                         extra_args = strip_split_mode_only(extra_args)
+                        # The split is layer now, so re-price the attention with it.
+                        planned_flash_attn = _replanned_flash_attn(tensor_parallel)
 
                     # Tensor mode replicates a compute buffer on every GPU, so drop
                     # GPUs below that reserve from the set up front (gpu_indices
@@ -23551,6 +23575,8 @@ class LlamaCppBackend:
                         if len(gpus) >= 2:
                             _layer_min_gpus = max(_layer_min_gpus, len(gpus))
                         extra_args = strip_split_mode_only(extra_args)
+                        # The split is layer now, so re-price the attention with it.
+                        planned_flash_attn = _replanned_flash_attn(tensor_parallel)
 
                     # Normalize the speculative reserve BEFORE anything prices it.
                     # _mtp_bytes reads mtp_overhead_fn at call time, so leaving this
@@ -24125,6 +24151,8 @@ class LlamaCppBackend:
                             if len(tp_gpus) >= 2:
                                 _layer_min_gpus = max(_layer_min_gpus, len(tp_gpus))
                             extra_args = strip_split_mode_only(extra_args)
+                            # The split is layer now, so re-price the attention with it.
+                            planned_flash_attn = _replanned_flash_attn(tensor_parallel)
                             # Layer split now, so the withheld verdict applies -- but not
                             # when a GPU drafter is still in play. The drafter-drop probe
                             # is gated off under tensor parallelism, so it has not run;

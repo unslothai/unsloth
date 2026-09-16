@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -323,3 +324,73 @@ class TestAutoIsNotAnAnswer:
     def test_the_managed_launch_is_unaffected(self):
         assert _planned_flash_attn_state(None) is True
         assert _planned_flash_attn_state([]) is True
+
+
+class TestTheDowngradesRePlanTheAttention:
+    """The plan is made once, near the top of the load; the split is decided later.
+
+    Tensor mode is dropped at six points after that (a quantized KV cache this build
+    refuses under tensor, a model that aborted on tensor earlier this session, fewer
+    than two usable GPUs, a pooled budget that cannot hold the weights, and the two
+    manual branches). Each one takes away the reason AUTO was planned ON, and the KV
+    and compute estimates priced afterwards read the plan, so a stale True budgets an
+    unpadded V the layer split will not get.
+    """
+
+    def _load_model_body(self):
+        import ast
+        import inspect
+
+        from core.inference import llama_cpp as module
+
+        source = inspect.getsource(module.LlamaCppBackend.load_model)
+        return ast.parse(textwrap.dedent(source)).body[0]
+
+    def test_every_split_mode_strip_re_plans_the_attention(self):
+        import ast
+
+        func = self._load_model_body()
+        strips = 0
+        for node in ast.walk(func):
+            for attr in ("body", "orelse", "finalbody"):
+                block = getattr(node, attr, None)
+                if not isinstance(block, list):
+                    continue
+                for index, statement in enumerate(block):
+                    if not isinstance(statement, ast.Assign):
+                        continue
+                    call = statement.value
+                    if not (
+                        isinstance(call, ast.Call)
+                        and getattr(call.func, "id", None) == "strip_split_mode_only"
+                    ):
+                        continue
+                    strips += 1
+                    following = block[index + 1] if index + 1 < len(block) else None
+                    assert isinstance(following, ast.Assign), ast.dump(statement)
+                    assert (
+                        getattr(following.targets[0], "id", None) == "planned_flash_attn"
+                    ), ast.dump(following)
+        # Every one of them, and there is more than one.
+        assert strips >= 6, strips
+
+    def test_the_re_plan_reads_the_current_split(self):
+        import ast
+
+        func = self._load_model_body()
+        helper = next(
+            node
+            for node in ast.walk(func)
+            if isinstance(node, ast.FunctionDef) and node.name == "_replanned_flash_attn"
+        )
+        call = next(
+            node
+            for node in ast.walk(helper)
+            if isinstance(node, ast.Call)
+            and getattr(node.func, "id", None) == "_planned_flash_attn_state"
+        )
+        passed = {kw.arg: kw.value for kw in call.keywords}
+        # The downgraded boolean, not the request toggle the first plan was made from.
+        assert getattr(passed["tensor_parallel"], "id", None) == "_current_tp"
+        # And the stripped extras, read at call time rather than captured.
+        assert getattr(call.args[0], "id", None) == "extra_args"
