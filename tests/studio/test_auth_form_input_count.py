@@ -314,12 +314,19 @@ def test_auth_flow_routes_do_not_mount_global_settings():
 def test_auth_redirect_targets_are_idempotent_and_concurrent(tmp_path: Path):
     if shutil.which("node") is None:
         pytest.skip("node not available")
-    probe = subprocess.run(
-        ["node", "--experimental-strip-types", "--version"],
-        capture_output = True,
-        text = True,
-        timeout = 5,
-    )
+    # Generous, and a timeout is a SKIP rather than an error. The first `node` of a job on a
+    # Windows runner pays for image scanning and a cold file cache, and five seconds was not
+    # enough for a `--version` there: the probe raised TimeoutExpired and failed a leg over
+    # the availability question it exists to answer quietly.
+    try:
+        probe = subprocess.run(
+            ["node", "--experimental-strip-types", "--version"],
+            capture_output = True,
+            text = True,
+            timeout = 120,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.skip("node did not answer --version in time on this runner")
     if probe.returncode != 0:
         pytest.skip("node --experimental-strip-types not available")
 
@@ -411,6 +418,8 @@ def test_auth_redirect_targets_are_idempotent_and_concurrent(tmp_path: Path):
         cwd = tmp_path,
         capture_output = True,
         text = True,
-        timeout = 30,
+        # The same cold-start allowance as the probe above: this one runs the module, so a
+        # slow runner pays the startup cost again on top of the work.
+        timeout = 180,
     )
     assert result.returncode == 0, f"stderr: {result.stderr}\nstdout: {result.stdout}"

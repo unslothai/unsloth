@@ -1132,7 +1132,12 @@ def test_a_request_queued_behind_the_crash_is_not_given_its_last_words(monkeypat
     assert "another account" not in queued, queued
     # Still a real report: the context and the exit status are what it always had.
     assert "generating a response" in queued
-    assert "SIGKILL" in queued
+    # The exit status, in whichever spelling this platform gives it: `signal.Signals(9)`
+    # raises on Windows, so the message says SIG9 there and SIGKILL everywhere else. The
+    # assertion is about the status still being reported, not about the wording, and naming
+    # only the POSIX one is how this file has already failed a Windows leg once.
+    assert "signal=SIGKILL" in queued or "signal=SIG9" in queued, queued
+    assert "exitcode=-9" in queued, queued
     # And the operator's copy is written either way -- the narrowing is about the wire.
     assert logged, "the server log lost the tail for the queued request's path"
 
