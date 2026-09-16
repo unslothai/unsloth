@@ -227,6 +227,58 @@ def test_the_windows_walk_rejects_a_stranger_under_a_reused_intermediate_pid(mon
     assert sorted(found) == [reused_parent, real_grandchild]
 
 
+def test_the_kill_does_not_re_expand_a_rejected_stranger(monkeypatch):
+    """The collector's filter must survive the kill that acts on it.
+
+    `taskkill /T` terminates the named process AND its child processes, and it finds
+    them by walking the live parent-pid links -- exactly the links the collector above
+    refuses to trust. So U is correctly kept OUT of the collected list, but U still
+    records the reused number P as its creator, and a `/T` on P, which IS collected and
+    IS identity-verified, rediscovers U through Windows' own walk. The filter is defeated
+    by the kill it protects, and someone's training run dies anyway.
+
+    Same fixture as the collector test above, driven one step further.
+    """
+    root, reused_parent, stranger, stranger_child, real_grandchild = 500, 600, 700, 701, 601
+    created = {
+        root: 100,
+        reused_parent: 300,
+        stranger: 200,
+        stranger_child: 250,
+        real_grandchild: 400,
+    }
+    monkeypatch.setattr(pl, "_is_windows", lambda: True)
+    monkeypatch.setattr(pl, "_is_linux", lambda: False)
+    monkeypatch.setattr(pl, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(pl, "_pid_is_zombie", lambda pid: False)
+    monkeypatch.setattr(pl, "_pid_identity", lambda pid: f"0:{created[pid]}")
+    monkeypatch.setattr(
+        pl,
+        "_child_pid_map",
+        lambda: {
+            root: [reused_parent],
+            reused_parent: [stranger, real_grandchild],
+            stranger: [stranger_child],
+        },
+    )
+    killed = []
+    monkeypatch.setattr(pl, "_windows_terminate_pid", lambda pid: killed.append(pid))
+    # Reaching for /T at all is the regression: the expansion happens inside Windows, so
+    # no assertion on the resulting pid set can see it once the call has been made.
+    def _no_tree_kill(pid):
+        raise AssertionError(f"taskkill /T was used on {pid}; it re-expands rejected pids")
+    monkeypatch.setattr(pl, "_windows_terminate_tree", _no_tree_kill)
+
+    collected = pl.collect_descendants(root)
+    pl._windows_terminate_collected(collected)
+
+    assert stranger not in killed, "the rejected stranger was killed by tree expansion"
+    assert stranger_child not in killed, "the stranger's own work was killed with it"
+    # Everything the collector DID claim still dies, deepest first.
+    assert set(killed) == {reused_parent, real_grandchild}
+    assert killed.index(real_grandchild) < killed.index(reused_parent)
+
+
 def test_the_windows_walk_skips_a_candidate_whose_identity_cannot_be_read(monkeypatch):
     """An unreadable creation time proves nothing, and the action taken on the result
     is a forced tree kill, so the candidate and its subtree are dropped."""
@@ -258,7 +310,7 @@ def test_the_windows_terminate_reaps_every_survivor(monkeypatch, tree):
         _hard_kill(pid)
         return True
 
-    monkeypatch.setattr(pl, "_windows_terminate_tree", fake_taskkill)
+    monkeypatch.setattr(pl, "_windows_terminate_pid", fake_taskkill)
     collected = [(child_pid, pl._pid_identity(child_pid))]
     leader.terminate()
     leader.wait(timeout = 10)
@@ -278,21 +330,21 @@ def test_the_windows_terminate_skips_a_recycled_pid(monkeypatch):
     monkeypatch.setattr(pl, "_pid_is_zombie", lambda pid: False)
     monkeypatch.setattr(pl, "_pid_identity", lambda pid: "0:999")
     asked = []
-    monkeypatch.setattr(pl, "_windows_terminate_tree", lambda pid: asked.append(pid))
+    monkeypatch.setattr(pl, "_windows_terminate_pid", lambda pid: asked.append(pid))
     pl._windows_terminate_collected([(4242, "0:1")])
     assert asked == []
 
 
 def test_the_windows_terminate_works_deepest_first(monkeypatch):
-    """`taskkill /T` also reaches what a survivor started after the snapshot, and the
-    link it walks is gone the moment that survivor exits."""
+    """A child has to go before the parent whose link named it, or the link is gone."""
     monkeypatch.setattr(pl, "_is_linux", lambda: False)
     monkeypatch.setattr(pl, "_pid_alive", lambda pid: True)
     monkeypatch.setattr(pl, "_pid_is_zombie", lambda pid: False)
     identities = {10: "0:10", 11: "0:11", 12: "0:12"}
     monkeypatch.setattr(pl, "_pid_identity", lambda pid: identities[pid])
     order = []
-    monkeypatch.setattr(pl, "_windows_terminate_tree", lambda pid: order.append(pid))
+    monkeypatch.setattr(pl, "_windows_terminate_pid", lambda pid: order.append(pid))
+    monkeypatch.setattr(pl, "_windows_collect_descendants", lambda pid: [])
     # collect_descendants emits breadth first, so the parent comes before its child.
     pl._windows_terminate_collected([(10, "0:10"), (11, "0:11"), (12, "0:12")])
     assert order == [12, 11, 10]

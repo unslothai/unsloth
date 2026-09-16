@@ -871,21 +871,46 @@ def terminate_descendants(
 
 
 def _windows_terminate_collected(collected: "list[tuple[int, Optional[str]]]") -> None:
-    """``taskkill /T /F`` each survivor, deepest first.
+    """``taskkill /F`` each survivor individually, deepest first. Never ``/T``.
 
     Windows has no process group, so once the leader has been terminated nothing
-    names its workers but this list. Deepest first because /T also reaches whatever
-    a survivor started after the snapshot was taken, and the link it walks is gone
-    the moment that survivor exits. Identity is re-read per pid: the leader's
+    names its workers but this list. Identity is re-read per pid: the leader's
     terminate ran in between, so a number here may already belong to someone else.
+
+    ``/T`` is deliberately NOT used, and that is the whole point of this function.
+    ``taskkill /T`` terminates the named process AND its child processes, and it finds
+    those children by walking the live parent-pid links -- the very links
+    ``_windows_collect_descendants`` refuses to trust. In the reused-pid case that
+    collector exists for, the stranger U is correctly kept OUT of `collected`, but U
+    still records the reused number P as its creator, so ``/T`` on P, which IS in the
+    list and IS identity-verified, rediscovers U through Windows' own walk and kills it.
+    The filter would be defeated by the kill it protects.
+
+    Reach is kept without it: each survivor is re-collected at kill time through the
+    SAME creation-time validation, so anything it started after the snapshot is killed
+    too, and anything merely linked to a recycled number is not. Losing the table means
+    killing fewer processes rather than more, which is the right way for a forced tree
+    kill to fail: a leaked worker is caught by the next sweep, and someone else's process
+    is not recoverable.
     """
     for pid, identity in reversed(collected):
         if not _signalable(pid) or not _pid_alive(pid):
             continue
         if not _provably_the_same(pid, identity):
             continue
+        # Started after the snapshot, and validated the same way rather than inherited
+        # from a parent-pid link. Deepest first, as above.
+        for late_pid, late_identity in reversed(_windows_collect_descendants(pid)):
+            if not _signalable(late_pid) or not _pid_alive(late_pid):
+                continue
+            if not _provably_the_same(late_pid, late_identity):
+                continue
+            try:
+                _windows_terminate_pid(late_pid)
+            except Exception:  # noqa: BLE001 - best effort, like the rest of this
+                pass
         try:
-            _windows_terminate_tree(pid)
+            _windows_terminate_pid(pid)
         except Exception:  # noqa: BLE001 - best effort, like the rest of this
             pass
 
@@ -1560,6 +1585,34 @@ def _reap_orphaned_group(pgid: object, pid: int, timeout: float) -> bool:
         return False
     except Exception:
         return True
+
+
+def _windows_terminate_pid(pid: int) -> bool:
+    """``taskkill /F`` for ONE pid. No ``/T``, so no tree expansion.
+
+    The counterpart of `_windows_terminate_tree` for a caller that has already
+    established which pids it is entitled to kill and must not have Windows add to that
+    set from the live parent-pid links. Caller has verified the identity.
+    """
+    import subprocess
+
+    try:
+        completed = subprocess.run(
+            ["taskkill", "/PID", str(pid), "/F"],
+            capture_output = True,
+            timeout = 15,
+            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        # 128 is "already gone", as in the tree call below.
+        if completed.returncode in (0, 128):
+            return True
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        pass
+    return False
 
 
 def _windows_terminate_tree(pid: int) -> bool:
