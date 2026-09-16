@@ -102,7 +102,13 @@ def test_the_control_from_the_same_report_stays_servable(tmp_path):
 
 @pytest.mark.parametrize(
     "marker",
-    ["image_token_id", "video_token_id", "vision_start_token_id", "vision_end_token_id"],
+    [
+        "image_token_id",
+        "video_token_id",
+        "video_token_index",
+        "vision_start_token_id",
+        "vision_end_token_id",
+    ],
 )
 def test_one_visual_token_id_is_enough_on_its_own(tmp_path, marker):
     """A conversion keeps whichever ids its template still emits, so no id may be mandatory."""
@@ -260,7 +266,14 @@ def test_a_visual_marker_that_is_not_a_token_id_does_not_admit_anything(tmp_path
     [("T5ForConditionalGeneration", "t5"), ("BartForConditionalGeneration", "bart")],
 )
 @pytest.mark.parametrize(
-    "marker", ["image_token_id", "video_token_id", "vision_start_token_id", "vision_end_token_id"]
+    "marker",
+    [
+        "image_token_id",
+        "video_token_id",
+        "video_token_index",
+        "vision_start_token_id",
+        "vision_end_token_id",
+    ],
 )
 def test_a_seq2seq_carrying_a_null_visual_marker_is_still_refused(
     tmp_path, architecture, model_type, marker

@@ -377,9 +377,17 @@ _MULTIMODAL_CONFIG_KEYS = (
 _VISUAL_TOKEN_ID_KEYS = (
     "image_token_id",
     "video_token_id",
+    "video_token_index",
     "vision_start_token_id",
     "vision_end_token_id",
 )
+# video_token_index is the transformers 4 spelling and sits here rather than beside image_token_index in the presence
+# tuple above: it is a vocabulary index like the rest of this tuple, so a serialised null must not admit the config.
+# VideoLlavaConfig and InstructBlipVideoConfig declare it, and a stripped conversion of one keeps it after losing both
+# vision_config and image_token_index, which is the #10951 shape with the video half of the pair. The rest of the
+# backend already reads the spelling -- routes/inference.py::_target_accepts_request_input and
+# mlx_inference.py::_vlm_media_token_ids both pair it with video_token_id -- so withholding it here advertised nothing
+# for a checkpoint the video router would then accept.
 # text_config is deliberately NOT in the tuple above, and audio_token_id is deliberately not either.
 #
 # text_config: transformers 5 nests one in text-only configs too, so on its own it is not evidence of a second
