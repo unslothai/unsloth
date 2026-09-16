@@ -21886,7 +21886,8 @@ class LlamaCppBackend:
                     ctx_checkpoints,
                     per_checkpoint_bytes = self._rollback_state_bytes(1),
                     n_parallel = n_parallel,
-                    total_host_bytes = ((self._host_memory_capacity_mib() or 0) * 1024 * 1024) or None,
+                    total_host_bytes = ((self._host_memory_capacity_mib() or 0) * 1024 * 1024)
+                    or None,
                 )
                 _requested_ctx_checkpoints = (
                     resolve_ctx_checkpoints(extra_args, ctx_checkpoints)

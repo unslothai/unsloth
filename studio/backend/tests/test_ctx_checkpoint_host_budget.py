@@ -496,16 +496,12 @@ class TestTheBudgetIsWhatThisProcessMayCharge:
         assert LlamaCppBackend._host_memory_capacity_mib() == 94 * 1024
 
     def test_an_unreadable_host_falls_back_to_the_limit(self, monkeypatch):
-        monkeypatch.setattr(
-            LlamaCppBackend, "_total_system_memory_mib", staticmethod(lambda: None)
-        )
+        monkeypatch.setattr(LlamaCppBackend, "_total_system_memory_mib", staticmethod(lambda: None))
         monkeypatch.setattr(
             LlamaCppBackend, "_cgroup_memory_limit_mib", staticmethod(lambda: 8 * 1024)
         )
         assert LlamaCppBackend._host_memory_capacity_mib() == 8 * 1024
-        monkeypatch.setattr(
-            LlamaCppBackend, "_cgroup_memory_limit_mib", staticmethod(lambda: None)
-        )
+        monkeypatch.setattr(LlamaCppBackend, "_cgroup_memory_limit_mib", staticmethod(lambda: None))
         assert LlamaCppBackend._host_memory_capacity_mib() is None
 
     def test_the_cap_fits_the_container_not_the_host(self, monkeypatch):
