@@ -125,7 +125,7 @@ export function PromptQueueList({
   return (
     <div
       ref={listRef}
-      className="relative z-0 mx-3 mb-[-8px] max-h-[28dvh] overflow-y-auto rounded-t-[20px] border border-border/60 bg-background px-1.5 pt-1 pb-3 text-muted-foreground sm:mx-5 sm:px-2 dark:bg-card [&_button]:border-0 [&_button]:shadow-none [&_.aui-button-icon:focus-visible]:bg-accent"
+      className="relative z-0 mx-3 mb-[-8px] max-h-[28dvh] overflow-y-auto rounded-t-[20px] border border-border/60 bg-background px-1.5 pt-1 pb-3 text-muted-foreground sm:mx-5 sm:px-2 dark:bg-[color-mix(in_srgb,var(--card)_50%,var(--background))] [&_button]:border-0 [&_button]:shadow-none [&_.aui-button-icon:focus-visible]:bg-accent"
       aria-label={`Prompt queue, ${entry.current} of ${entry.total}`}
     >
       <p id={instructionsId} className="sr-only">
@@ -161,7 +161,7 @@ export function PromptQueueList({
             >
               {isEditing ? (
                 <div className="flex flex-wrap items-center justify-end gap-2 px-1 py-2">
-                  <div className="w-full overflow-hidden rounded-3xl border border-border bg-background p-3 has-[:focus-visible]:outline has-[:focus-visible]:outline-ring">
+                  <div className="w-full overflow-hidden rounded-3xl border-0 bg-muted/40 p-3 has-[:focus-visible]:bg-muted dark:bg-card dark:has-[:focus-visible]:bg-accent">
                     <textarea
                       ref={inputRef}
                       value={draft}
