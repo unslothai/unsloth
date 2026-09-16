@@ -1616,12 +1616,11 @@ def test_a_build_recorded_as_unrunnable_is_not_accepted_back_from_the_ensure(mon
     With installing switched off, offline, or after a failed download it returns whatever
     usable build is already in the managed tree, which on a host that recorded a ROCm crash
     and cannot fetch the Vulkan rung is the ROCm build. That build still answers
-    `--list-devices`, so the verdict reads as a working accelerator and the load commits the
-    very build the record exists to avoid -- and the failure the record describes is a crash
-    minutes into the render, after a multi-tens-of-GB download.
+    `--list-devices`, so every runnability probe passes and the load commits the very build
+    the record exists to avoid -- and the failure the record describes is a crash minutes
+    into the render, after a multi-tens-of-GB download.
     """
     from core.inference import sd_cpp_backend
-    from core.inference import video as video_mod
 
     monkeypatch.setattr(
         sd_cpp_backend, "_installed_accelerator_of", lambda binary: "rocm", raising = False
@@ -1631,19 +1630,52 @@ def test_a_build_recorded_as_unrunnable_is_not_accepted_back_from_the_ensure(mon
         lambda accelerator: accelerator == "rocm",
         raising = False,
     )
-    assert video_mod._not_a_recorded_failure("/opt/sd/rocm/sd-cli") is None
+    # Asked for Vulkan, handed back the condemned ROCm build: refused.
+    assert sd_cpp_backend.usable_or_recorded_failure("/opt/sd/rocm/sd-cli", "vulkan") is None
+    assert sd_cpp_backend.usable_or_recorded_failure("/opt/sd/rocm/sd-cli", "cpu") is None
 
-    # A build with no record against it is handed straight back, and so is a user-supplied one
-    # whose class is unrecorded: unknown is not a failure.
+    # Asked for ROCm and handed back ROCm: kept. With
+    # UNSLOTH_DIFFUSION_SD_CPP_VULKAN_FALLBACK=0 preferred_accelerator deliberately asks for
+    # ROCm again despite the record, and that opt-out means run it anyway; refusing here
+    # would send the load to the CPU rung instead, which is the opposite of the promise.
+    assert (
+        sd_cpp_backend.usable_or_recorded_failure("/opt/sd/rocm/sd-cli", "rocm")
+        == "/opt/sd/rocm/sd-cli"
+    )
+
+    # A build with no record against it is handed straight back, and so is a user-supplied
+    # one whose class is unrecorded: unknown is not a failure.
     monkeypatch.setattr(
         sd_cpp_backend, "_installed_accelerator_of", lambda binary: "vulkan", raising = False
     )
-    assert video_mod._not_a_recorded_failure("/opt/sd/vulkan/sd-cli") == "/opt/sd/vulkan/sd-cli"
+    assert (
+        sd_cpp_backend.usable_or_recorded_failure("/opt/sd/vulkan/sd-cli", "rocm")
+        == "/opt/sd/vulkan/sd-cli"
+    )
     monkeypatch.setattr(
         sd_cpp_backend, "_installed_accelerator_of", lambda binary: None, raising = False
     )
-    assert video_mod._not_a_recorded_failure("/usr/local/bin/sd") == "/usr/local/bin/sd"
-    assert video_mod._not_a_recorded_failure(None) is None
+    assert (
+        sd_cpp_backend.usable_or_recorded_failure("/usr/local/bin/sd", "rocm")
+        == "/usr/local/bin/sd"
+    )
+    assert sd_cpp_backend.usable_or_recorded_failure(None, "rocm") is None
+
+
+def test_the_image_router_checks_its_ensures_against_the_record_too():
+    """The video ladder was not the boundary.
+
+    The image router runs its own two ensures and then probes them for runnability, which a
+    ROCm build that only dies mid-render passes: without the same check the router selects
+    native and the backend runs the condemned build.
+    """
+    import inspect
+    from core.inference import diffusion_engine_router as router
+
+    body = inspect.getsource(router.select_and_activate_engine)
+    ensures = body.count("ensure_sd_server_binary(") + body.count("ensure_sd_cpp_binary(")
+    assert ensures == 2, ensures
+    assert body.count("usable_or_recorded_failure(") == ensures, body[:400]
 
 
 def test_every_ensure_in_the_h3_load_is_checked_against_the_record():
@@ -1655,6 +1687,6 @@ def test_every_ensure_in_the_h3_load_is_checked_against_the_record():
     source = inspect.getsource(video_mod)
     load = source[source.index("allow_install = _install_allowed()"):]
     ensures = load.count("ensure_h3_sd_cpp_binary(")
-    guarded = load.count("_not_a_recorded_failure(")
+    guarded = load.count("usable_or_recorded_failure(")
     assert ensures >= 3, ensures
     assert guarded == ensures, (guarded, ensures)

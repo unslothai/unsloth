@@ -1066,6 +1066,49 @@ def accelerator_runtime_failed(accelerator: Optional[str]) -> bool:
     return _record_diverts(_stored_accelerator_runtime_failures().get(klass), fingerprint)
 
 
+def usable_or_recorded_failure(binary, requested):
+    """``binary``, unless it is a build this host has already recorded as unrunnable AND it is
+    not the one that was asked for.
+
+    An ensure does not promise the accelerator it was given: with installing switched off, on
+    an offline host, or after a failed download it returns whatever usable build is already in
+    the managed tree. On a host that recorded a ROCm crash and cannot fetch the Vulkan rung
+    that is the ROCm build, which still answers ``--list-devices``, so the runnability probes
+    pass and the load commits the very build the record exists to avoid -- and the failure the
+    record describes is a crash MID-RENDER, minutes and a full download later.
+
+    The comparison is against what was REQUESTED, not against the record alone. When the
+    fallback is switched off (``UNSLOTH_DIFFUSION_SD_CPP_VULKAN_FALLBACK=0``)
+    ``preferred_accelerator`` deliberately asks for ROCm again despite the record, and that
+    opt-out means "run it anyway": rejecting the build that was asked for would send the load
+    to the CPU rung instead of retrying ROCm, which is the opposite of what the switch
+    promises. So only a SUBSTITUTE that is recorded bad is refused.
+
+    A user-supplied binary has no recorded class and is never refused here: unrecorded is
+    unknown, and the identity and capability tests already cover it.
+    """
+    if not binary:
+        return binary
+    try:
+        klass = _installed_accelerator_of(binary)
+        if not klass:
+            return binary
+        if requested is not None and _accelerator_class_of(requested) == klass:
+            return binary
+        if accelerator_runtime_failed(klass):
+            logger.warning(
+                "sd_cpp.recorded_failure_returned: the ensure handed back the %s build in "
+                "place of %s, and this host has already recorded it as unrunnable; not "
+                "using it",
+                klass,
+                requested,
+            )
+            return None
+    except Exception as exc:  # noqa: BLE001 -- cannot tell -> unchanged behaviour
+        logger.debug("could not check the sd.cpp accelerator record: %s", exc)
+    return binary
+
+
 def accelerator_runtime_failure_state() -> dict:
     """What the settings route reports: every record, whether it is currently diverting the host,
     and the fingerprint it was taken under. Read-only and never raises."""

@@ -37,6 +37,7 @@ from core.inference.sd_cpp_backend import (
     ensure_sd_cpp_binary,
     ensure_sd_server_binary,
     preferred_accelerator,
+    usable_or_recorded_failure,
 )
 from core.inference.sd_cpp_engine import (
     ENGINE_DIFFUSERS,
@@ -232,9 +233,20 @@ def select_and_activate_engine(
         # Probe the resident sd-server FIRST (the backend prefers it): a server-only install must still route to
         # native and should not pay an sd-cli download. Install the accelerator-matched build so a forced-native GPU
         # load gets the GPU server.
-        server_binary = ensure_sd_server_binary(
-            allow_install = _install_allowed(),
-            accelerator = install_accelerator,
+        # Checked against the record, because the ensure does not promise the accelerator it
+        # was given: offline, with installs disabled, or after a failed download it returns
+        # whatever usable build is already in the managed tree, which on a host that recorded
+        # a ROCm crash and cannot fetch Vulkan is the ROCm build. It answers the runnability
+        # probes below perfectly well and only dies mid-render, so without this the router
+        # selects native and the backend then runs the very build the record condemned. Only
+        # a SUBSTITUTE is refused: with the Vulkan fallback switched off the requested
+        # accelerator is ROCm again on purpose, and that opt-out means run it anyway.
+        server_binary = usable_or_recorded_failure(
+            ensure_sd_server_binary(
+                allow_install = _install_allowed(),
+                accelerator = install_accelerator,
+            ),
+            install_accelerator,
         )
         if server_binary and not _server_binary_runnable(server_binary):
             logger.warning(
@@ -244,9 +256,12 @@ def select_and_activate_engine(
         # sd-cli is the one-shot fallback: always LOCATE an existing binary, but auto-INSTALL only when there is no
         # usable server. Probe runnability first, else a present but non-runnable binary passes as available and fails
         # inside the background load.
-        binary = ensure_sd_cpp_binary(
-            allow_install = _install_allowed() and server_binary is None,
-            accelerator = install_accelerator,
+        binary = usable_or_recorded_failure(
+            ensure_sd_cpp_binary(
+                allow_install = _install_allowed() and server_binary is None,
+                accelerator = install_accelerator,
+            ),
+            install_accelerator,
         )
         if binary and SdCppEngine(binary = binary).version() is None:
             logger.warning("sd-cli at %s is present but not runnable; not using it", binary)
