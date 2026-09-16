@@ -630,6 +630,47 @@ def _top_level_conjuncts(guard: str) -> list:
     return [part.strip() for part in parts if part.strip()]
 
 
+_STRING_ESCAPES = {
+    "n": "\n", "r": "\r", "t": "\t", "b": "\b", "f": "\f", "v": "\v", "0": "\0",
+}
+
+
+def _decoded(text: str) -> str:
+    """A string literal's body as the runtime string it denotes.
+
+    `"\\x61"` and `"a"` are one value, so comparing the source would refuse a selector for
+    spelling a character differently. An unrecognised escape stands for the character itself,
+    which is what JavaScript does.
+    """
+    out, index = [], 0
+    while index < len(text):
+        char = text[index]
+        if char != "\\" or index + 1 >= len(text):
+            out.append(char)
+            index += 1
+            continue
+        marker = text[index + 1]
+        if marker == "x" and re.fullmatch(r"[0-9a-fA-F]{2}", text[index + 2 : index + 4]):
+            out.append(chr(int(text[index + 2 : index + 4], 16)))
+            index += 4
+        elif marker == "u" and text[index + 2 : index + 3] == "{":
+            close = text.find("}", index + 3)
+            digits = text[index + 3 : close] if close != -1 else ""
+            if close != -1 and re.fullmatch(r"[0-9a-fA-F]+", digits):
+                out.append(chr(int(digits, 16)))
+                index = close + 1
+            else:
+                out.append(marker)
+                index += 2
+        elif marker == "u" and re.fullmatch(r"[0-9a-fA-F]{4}", text[index + 2 : index + 6]):
+            out.append(chr(int(text[index + 2 : index + 6], 16)))
+            index += 6
+        else:
+            out.append(_STRING_ESCAPES.get(marker, marker))
+            index += 2
+    return "".join(out)
+
+
 def _literal_value(text: str):
     """What a literal denotes, so equivalent spellings compare equal.
 
@@ -645,7 +686,7 @@ def _literal_value(text: str):
         except ValueError:
             return float(text)
     if len(text) >= 2 and text[0] == text[-1] and text[0] in "'\"":
-        return ("string", text[1:-1])
+        return ("string", _decoded(text[1:-1]))
     return text
 
 
@@ -690,7 +731,9 @@ def _pinned_literal(guard: str, taken: bool, access: str, field: str):
         # The comparison has to BE a conjunct, not merely occur inside one: an inner equality can
         # be fed to another operator, and `(budget === -1) === false` is taken for every value
         # except -1.
-        for conjunct in _top_level_conjuncts(guard):
+        # Unwrapped first: a conjunction wrapped whole keeps its `&&` above depth zero, so the
+        # guard would never be split and the pin inside it never seen.
+        for conjunct in _top_level_conjuncts(_unwrapped(guard)):
             match = re.fullmatch(equal, _unwrapped(conjunct))
             if match is not None:
                 found = match.group(1) or match.group(2)
@@ -829,6 +872,10 @@ SELECTOR_CASES = [
     # A `:` or a `?` inside a message is a character, not a ternary operator.
     ('(s) => s.reasoningBudget === "a:b" ? "a:b" : s.reasoningBudget', True),
     ('(s) => s.reasoningBudget === "a?b" ? "a?b" : s.reasoningBudget', True),
+    # An escape spells a character; `"\\x61"` and `"a"` are one value.
+    ('(s) => s.reasoningBudget === "\\x61" ? "a" : s.reasoningBudget', True),
+    ('(s) => s.reasoningBudget === "\\u0061" ? "a" : s.reasoningBudget', True),
+    ('(s) => s.reasoningBudget === "\\x61" ? "b" : s.reasoningBudget', False),
     # An escaped quote is a character in the message, not the end of the literal.
     ('(s) => s.reasoningBudget === "a\\"b" ? "a\\"b" : s.reasoningBudget', True),
     ('(s) => s.reasoningBudget === "a\\"b" ? "ab" : s.reasoningBudget', False),
@@ -871,6 +918,9 @@ SELECTOR_CASES = [
     ('(s) => s.reasoningBudget === "a!b" ? "a!b" : s.reasoningBudget', True),
     ('(s) => s.reasoningBudget === "a||b" ? "a||b" : s.reasoningBudget', True),
     ('(s) => s.reasoningBudget === "a&&b" ? "x" : s.reasoningBudget', False),
+    # Wrapping the whole conjunction keeps its `&&` above depth zero until the guard is unwrapped.
+    ("(s) => (s.reasoningBudget === -1 && s.enabled) ? -1 : s.reasoningBudget", True),
+    ("(s) => (s.reasoningBudget === -1 || s.enabled) ? -1 : s.reasoningBudget", False),
     # Parenthesising a comparison, or the value it pins to, is a reformatting and nothing more.
     ("(s) => (s.reasoningBudget === -1) ? -1 : s.reasoningBudget", True),
     ("(s) => s.reasoningBudget === -1 ? (-1) : s.reasoningBudget", True),
