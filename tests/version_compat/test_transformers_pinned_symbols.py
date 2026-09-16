@@ -11,7 +11,9 @@ CPU-only, no install. Anchors: transformers 4.57.6 (floor), 5.17.0 (ceiling) and
 from __future__ import annotations
 
 import json
+import os
 import re
+import tempfile
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -81,6 +83,59 @@ _TAGS_FALLBACK = (
 )
 
 
+# Where the resolved matrix is shared between processes. pytest-xdist requires every worker
+# to collect the SAME parameters, and each worker imports this module and resolves the matrix
+# itself during collection, so four independent PyPI reads are four chances to disagree: one
+# timing out while the others succeed gives that worker the fallback list, the parameter sets
+# diverge and xdist aborts the run instead of executing the fallback matrix it intended
+# (https://pytest-xdist.readthedocs.io/en/stable/known-limitations.html). With this set, the
+# first process to resolve writes the answer and the rest read it, so all four agree.
+_MATRIX_CACHE_ENV = "UNSLOTH_TRANSFORMERS_MATRIX"
+
+
+def _cached_matrix() -> list[str] | None:
+    """The shared matrix, or None when there is no cache or it is unreadable."""
+    path = os.environ.get(_MATRIX_CACHE_ENV)
+    if not path:
+        return None
+    try:
+        tags = json.loads(Path(path).read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return None
+    return [str(tag) for tag in tags] if isinstance(tags, list) and tags else None
+
+
+def _write_cached_matrix(tags: list[str]) -> None:
+    """Publish `tags` for the other workers. Atomic, so no worker reads a partial file."""
+    path = os.environ.get(_MATRIX_CACHE_ENV)
+    if not path:
+        return
+    target = Path(path)
+    try:
+        target.parent.mkdir(parents = True, exist_ok = True)
+        handle, temporary = tempfile.mkstemp(dir = str(target.parent), suffix = ".json")
+        with os.fdopen(handle, "w", encoding = "utf-8") as stream:
+            json.dump(tags, stream)
+        os.replace(temporary, target)
+    except OSError:
+        pass
+
+
+def _resolved_tags() -> list[str]:
+    """`_release_tags()`, resolved once per run and shared across xdist workers."""
+    cached = _cached_matrix()
+    if cached is not None:
+        return cached
+    tags = _release_tags()
+    # Re-read before publishing: another worker may have resolved it while this one was
+    # waiting on PyPI, and its answer is the one already in use.
+    cached = _cached_matrix()
+    if cached is not None:
+        return cached
+    _write_cached_matrix(tags)
+    return tags
+
+
 def _release_tags() -> list[str]:
     """Every transformers minor at or above the floor, latest patch of each, oldest first.
 
@@ -140,7 +195,7 @@ def _sort_key(tag: str) -> tuple[int, ...]:
 
 
 # `main` catches drift before it ships to PyPI.
-TRANSFORMERS_TAGS = _release_tags() + ["main"]
+TRANSFORMERS_TAGS = _resolved_tags() + ["main"]
 
 # Every check runs once per tag; one that cannot skips from inside so the tag stays in the report.
 pytestmark = pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)

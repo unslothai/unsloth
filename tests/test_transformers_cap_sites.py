@@ -355,3 +355,61 @@ def test_the_declared_ceiling_stays_in_the_matrix_after_a_patch_release() -> Non
     assert "v5.17.0" in module.TRANSFORMERS_TAGS, (
         "a patch release evicted the declared ceiling from the matrix"
     )
+
+
+def test_the_matrix_is_shared_between_xdist_workers(tmp_path, monkeypatch) -> None:
+    """Every xdist worker must collect the same parameters.
+
+    Each worker imports the matrix module and resolves the matrix itself during collection,
+    so four PyPI reads are four chances to disagree: one timing out while the others succeed
+    gives that worker the fallback list, the parameter sets diverge and xdist aborts the run
+    instead of executing the fallback matrix. With the cache path set, the first process to
+    resolve publishes the answer and the rest read it.
+    """
+    import io
+    import json as _json
+    import urllib.error
+
+    cache = tmp_path / "matrix.json"
+    monkeypatch.setenv("UNSLOTH_TRANSFORMERS_MATRIX", str(cache))
+
+    class _Response(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self.close()
+            return False
+
+    def succeeds(*args, **kwargs):
+        return _Response(
+            _json.dumps({"releases": {"5.17.0": [{"yanked": False}]}}).encode("utf-8")
+        )
+
+    def refuses(*args, **kwargs):
+        raise urllib.error.URLError("this worker's read timed out")
+
+    first = _matrix_module(succeeds)
+    assert cache.is_file(), "the resolved matrix was not published for the other workers"
+
+    # The worker whose own read fails must still collect what the first one published,
+    # rather than the fallback list.
+    second = _matrix_module(refuses)
+    assert second.TRANSFORMERS_TAGS == first.TRANSFORMERS_TAGS, (
+        "a failed read gave one worker a different matrix, which aborts an xdist run"
+    )
+    assert "v5.17.0" in second.TRANSFORMERS_TAGS
+
+
+def test_without_the_cache_a_failed_read_still_falls_back(tmp_path, monkeypatch) -> None:
+    """NEGATIVE CONTROL: the cache is a sharing mechanism, not a new dependency. With no
+    path set, a failed read still yields the frozen matrix rather than nothing."""
+    import urllib.error
+
+    monkeypatch.delenv("UNSLOTH_TRANSFORMERS_MATRIX", raising = False)
+
+    def refuses(*args, **kwargs):
+        raise urllib.error.URLError("pypi is unreachable")
+
+    module = _matrix_module(refuses)
+    assert set(module._TAGS_FALLBACK).issubset(module.TRANSFORMERS_TAGS)

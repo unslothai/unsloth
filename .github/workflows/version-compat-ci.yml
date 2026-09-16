@@ -64,6 +64,19 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install 'pytest>=8' 'pytest-xdist>=3' packaging
+      - name: Resolve the transformers matrix once
+        # xdist requires every worker to collect the same parameters, and each worker
+        # resolves the matrix itself during collection. Resolving it here, before pytest,
+        # means the four workers read one answer instead of making four PyPI reads that a
+        # single timeout can make disagree.
+        env:
+          UNSLOTH_TRANSFORMERS_MATRIX: ${{ runner.temp }}/transformers-matrix.json
+        run: |
+          PYTHONPATH=. python -c "
+          import tests.version_compat.test_transformers_pinned_symbols as matrix
+          print('tags:', len(matrix.TRANSFORMERS_TAGS))
+          "
+          echo "UNSLOTH_TRANSFORMERS_MATRIX=${{ runner.temp }}/transformers-matrix.json" >> "$GITHUB_ENV"
       - name: Run every pinned-symbol suite
         env:
           # Authenticated raw fetches get 5000/h; unauthenticated is 60/h and trips on the
