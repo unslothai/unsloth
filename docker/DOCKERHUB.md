@@ -16,9 +16,9 @@ docker run -d --name unsloth --gpus all --ipc=host \
   unsloth/unsloth && docker logs -f unsloth
 ```
 
-That starts the container and follows its startup, which ends after about a minute with your links and a password for Studio and for JupyterLab, generated for this container. Sign in with those, and change the Studio one on first sign-in or Studio stops after an hour. Ctrl-C stops following the log, not the container.
+That starts the container and follows its startup, which ends after about a minute with your links and a generated JupyterLab password. On the first run against a new `unsloth-studio` volume it generates a Studio password too; change that one on first sign-in or Studio stops after an hour. Reusing an existing volume keeps the Studio password already stored on it, and `docker exec unsloth unsloth studio reset-password` replaces it. Ctrl-C stops following the log, not the container.
 
-Set `-e UNSLOTH_STUDIO_PASSWORD=...` and `-e JUPYTER_PASSWORD=...` to choose your own, and pick a real one: these ports publish on every interface. On a cloud host use `-p 127.0.0.1:8000:8000 -p 127.0.0.1:8888:8888` and reach it with `ssh -L 8000:localhost:8000 user@your-host`. Studio reports on start whether the port answered from the public internet.
+Set `-e UNSLOTH_STUDIO_PASSWORD=...` and `-e JUPYTER_PASSWORD=...` to choose your own, and pick a real one: these ports publish on every interface. On a cloud host use `-p 127.0.0.1:8000:8000 -p 127.0.0.1:8888:8888` and reach both with `ssh -L 8000:localhost:8000 -L 8888:localhost:8888 user@your-host`. Studio reports on start whether the port answered from the public internet.
 
 ### Before that, on a new machine
 
