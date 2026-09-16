@@ -245,8 +245,54 @@ def test_a_build_without_the_flag_allocates_none():
 class TestAnInconclusiveProbeIsNotProofOfAbsence:
     """An unanswered help probe is not proof that checkpoints are absent."""
 
+    # A real successful parse always yields a catalogue, so every "the help ran" case
+    # here carries one; an empty catalogue is silence, covered separately below.
+    _PARSED = {"--flash-attn": "...", "--cache-ram": "..."}
+
     def test_a_help_that_ran_and_named_neither_alias_is_zero(self):
-        assert ctx_checkpoints_allocated({"found": True, "help_probe_ok": True}) is False
+        assert (
+            ctx_checkpoints_allocated({"found": True, "help_probe_ok": True, "flags": self._PARSED})
+            is False
+        )
+
+    def test_an_exit_zero_probe_that_parsed_nothing_is_not_absence(self):
+        """A wrapper that prints no help would otherwise zero the whole snapshot pool."""
+        empty = {"found": True, "help_probe_ok": True, "flags": {}}
+        assert ctx_checkpoints_allocated(empty) is True
+        assert ctx_checkpoints_allocated({"found": True, "help_probe_ok": True}) is True
+        assert (
+            effective_ctx_checkpoints_for_caps(
+                empty,
+                None,
+                None,
+                per_checkpoint_bytes = int(149.625 * MIB),
+                n_parallel = 4,
+                total_host_bytes = 94 * GIB,
+            )
+            == LLAMA_CTX_CHECKPOINTS_DEFAULT
+        )
+
+    def test_a_real_empty_help_probe_prices_the_default(self, tmp_path):
+        """End to end: a binary that exits 0 and says nothing must not read as absence."""
+        fake = tmp_path / "llama-server"
+        fake.write_text("#!/bin/sh\nexit 0\n")
+        fake.chmod(0o755)
+        caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+        assert caps["found"] is True and caps["help_probe_ok"] is True
+        assert not caps["flags"] and caps["ctx_checkpoints_flag"] is None
+        assert ctx_checkpoints_allocated(caps) is True
+        backend = _backend()
+        assert (
+            effective_ctx_checkpoints_for_caps(
+                caps,
+                None,
+                None,
+                per_checkpoint_bytes = backend._rollback_state_bytes(1),
+                n_parallel = 4,
+                total_host_bytes = 94 * GIB,
+            )
+            == LLAMA_CTX_CHECKPOINTS_DEFAULT
+        )
 
     def test_a_named_flag_is_priced(self):
         assert (

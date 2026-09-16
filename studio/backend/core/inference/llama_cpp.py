@@ -4907,10 +4907,18 @@ def _paravirtual_mmproj_pinnable(server_caps: Mapping[str, object]) -> bool:
 
 
 def ctx_checkpoints_allocated(server_caps: Mapping[str, object]) -> bool:
-    """Return false only when a successful help probe confirms no checkpoint flag."""
+    """Return false only when a PARSED help listing confirms no checkpoint flag.
+
+    A wrapper that exits 0 and prints nothing leaves help_probe_ok True over an empty
+    catalogue, which is silence, not absence -- the same rule the parser applies to its
+    own fail-open flags. Reading it as absence priced a recurrent model's whole snapshot
+    pool at zero while the child kept llama.cpp's default.
+    """
     if server_caps.get("ctx_checkpoints_flag"):
         return True
-    return not bool(server_caps.get("help_probe_ok"))
+    if not server_caps.get("help_probe_ok"):
+        return True
+    return not bool(server_caps.get("flags"))
 
 
 def ctx_checkpoints_default_for_caps(server_caps: Mapping[str, object]) -> int:
