@@ -29,7 +29,7 @@ _AVAILABLE: Optional[tuple] = None
 _VERIFIED: dict[int, tuple] = {}
 _QUANT_FN: dict[int, tuple] = {}
 _GEMM_PLAN: dict = {}
-# id(weight) -> (weakref to the weight, (data_ptr, shape), the kept transposed view).
+# id(weight) -> (weakref to the weight, (data_ptr, shape), transposed view).
 _TRANSPOSED: dict = {}
 
 
@@ -155,7 +155,7 @@ def _run_verify(device: Any) -> tuple:
             torch.cuda.synchronize(device)
             if not torch.equal(want, got):
                 return False, "the cached GEMM is not bit-identical to mm_fp4"
-    except Exception as exc:  # noqa: BLE001 - a verify that raises is a verify that failed
+    except Exception as exc:  # noqa: BLE001 - a raise is a failed verify
         return False, f"{type(exc).__name__}: {str(exc)[:160]}"
     return True, "verified bit-identical against the public API"
 
@@ -168,7 +168,7 @@ def quant_fn(device: Any, *, force: bool = False):
     """The bound pybind quantiser and its ``enable_pdl`` flag for ``device``, or None."""
     from .diffusion_nvfp4_ops import _device_index
 
-    # Gate before the cache read: verify() builds this entry with force BEFORE it knows the quantiser is bit-identical.
+    # Gate before the cache read: verify() forces this entry BEFORE it knows it is bit-identical.
     if not (force or enabled(device)):
         return None
     index = _device_index(device)
@@ -177,7 +177,7 @@ def quant_fn(device: Any, *, force: bool = False):
         return got
     try:
         return _build_quant_fn(device, index)
-    except Exception:  # noqa: BLE001 - a quantiser that will not bind means the public API
+    except Exception:  # noqa: BLE001 - no quantiser means the public API
         return None
 
 
@@ -210,7 +210,7 @@ def _fast_quantize(
     if got is None:
         return None, None
     fn, pdl = got
-    # Exactly the arguments nvfp4_quantize(do_shuffle = False, sfLayout = 128x4) passes through.
+    # Exactly what nvfp4_quantize(do_shuffle = False, sfLayout = 128x4) passes through.
     xq, sf = fn(x, global_sf, 16, False, True, False, pdl)
     return xq, sf.reshape((-1, x.shape[-1] // 16))
 
@@ -269,7 +269,7 @@ def gemm_plan(
         return None
     try:
         return _build_plan(key, device, [xq, wq_t, x_sf, w_sf_t, alpha, out])
-    except Exception:  # noqa: BLE001 - a plan that will not build means the public API
+    except Exception:  # noqa: BLE001 - no plan means the public API
         return None
 
 

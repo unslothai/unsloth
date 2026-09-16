@@ -4286,7 +4286,7 @@ class DiffusionBackend:
                                 f"the quantised transformer build failed ({exc})"
                             )
                             _clear_exception_frames(exc)
-                            # The NVFP4 transposed-weight cache holds VIEWS of the failed transformer, which clear_gpu_cache() cannot free.
+                            # The NVFP4 caches hold VIEWS of the failed transformer, which clear_gpu_cache() cannot free.
                             try:
                                 from .diffusion_nvfp4_linear import reset_nvfp4_state
                                 reset_nvfp4_state()
@@ -4888,7 +4888,7 @@ class DiffusionBackend:
                         compile_cache.restore(compile_ctx)
                         gguf_compile.uninstall_all()  # idempotent
                         cuda_graph.uninstall_all(getattr(pipe, "_unsloth_cuda_graphs", ()) or ())
-                        # After the graphs, as in _unload_locked: the NVFP4 caches hold views that would pin the aborted transformer.
+                        # After the graphs: the NVFP4 caches hold views that would pin the aborted transformer.
                         try:
                             from .diffusion_nvfp4_linear import reset_nvfp4_state
                             reset_nvfp4_state()

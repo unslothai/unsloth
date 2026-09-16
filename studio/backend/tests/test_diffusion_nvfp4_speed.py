@@ -623,7 +623,7 @@ def test_the_kernel_declines_while_tracing(monkeypatch):
     monkeypatch.setattr(fb, "_eligible", lambda *a: calls.append("eligible") or True)
     out = torch.zeros(4, 8)
     fb.fused_bias_add_(out, torch.ones(8))
-    assert calls == []  # short-circuited before eligibility was even asked
+    assert calls == []  # short-circuited before eligibility was asked
     assert float(out[0, 0]) == 1.0
 
 

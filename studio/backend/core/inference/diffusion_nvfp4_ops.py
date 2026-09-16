@@ -40,7 +40,7 @@ _PREFLIGHT_LOCK = threading.Lock()
 _PREFLIGHT: dict[int, dict] = {}
 _WARNED: set = set()
 
-# The PDL ordering barrier (see ``_fire_barrier``), one bf16 element per device index.
+# The PDL ordering barrier (``_fire_barrier``), one bf16 element per device index.
 _BARRIER_LOCK = threading.Lock()
 _BARRIERS: dict[int, Any] = {}
 
@@ -80,7 +80,7 @@ def _is_capturing() -> bool:
     try:
         import torch
         return bool(torch.cuda.is_current_stream_capturing())
-    except Exception:  # noqa: BLE001 - a torch without the query is a torch without capture here
+    except Exception:  # noqa: BLE001 - a torch without the query cannot be capturing
         return False
 
 
@@ -162,7 +162,7 @@ def _mm_impl(xq: Any, wq: Any, x_sf: Any, w_sf: Any, alpha: Any, n: int, backend
         else:
             out = torch.empty(m, n, device = xq.device, dtype = torch.bfloat16)
             _fire_barrier(xq.device)
-        # Same tactic the AutoTuner would choose, minus the per-call runner rebuild; unverified returns None.
+        # Same tactic the AutoTuner would choose, minus the per-call runner rebuild.
         if dispatch.enabled(xq.device):
             wq_t, w_sf_t = dispatch.transposed(wq), dispatch.transposed(w_sf)
             plan = dispatch.gemm_plan(xq, wq_t, x_sf, w_sf_t, alpha, out, n, backend)

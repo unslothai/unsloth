@@ -1856,7 +1856,7 @@ class VideoBackend:
                 restore_owner_account(VIDEO)
                 restore_resident_metadata(VIDEO)
             # Free the debris of a failed construction: nothing was committed, so nothing else releases the VRAM.
-            # NVFP4 first: its transposed-weight cache holds VIEWS of the denoiser, which clear_gpu_cache() cannot free.
+            # NVFP4 first: its caches hold VIEWS of the denoiser, which clear_gpu_cache() cannot free.
             try:
                 from .diffusion_nvfp4_linear import reset_nvfp4_state
                 reset_nvfp4_state()

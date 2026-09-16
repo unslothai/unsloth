@@ -18,7 +18,7 @@ try:
     import triton
     import triton.language as tl
     _HAVE_TRITON = True
-except Exception:  # noqa: BLE001 - any triton import failure means the torch add, not a crash
+except Exception:  # noqa: BLE001 - no triton means the torch add, not a crash
     _HAVE_TRITON = False
 
 NVFP4_FAST_BIAS_ENV = "UNSLOTH_NVFP4_FAST_BIAS"
@@ -27,8 +27,7 @@ _TRUE_TOKENS = ("1", "true", "yes", "on")
 _FALSE_TOKENS = ("0", "false", "no", "off")
 
 _BLOCK = 4096
-# Below this the launch (20 to 28 us measured on B200) exceeds what the bandwidth win returns:
-# 1024x10240 runs 0.84x of ``add_``, 4096x3840 (15.7 M) 1.84x, 4096x10240 3.4x.
+# Below this the 20 to 28 us launch outruns the bandwidth win (B200: 1024x10240 0.84x, 4096x10240 3.4x).
 _FAST_BIAS_MIN_NUMEL = 12 * 1024 * 1024
 # The kernel indexes with int32 offsets.
 _FAST_BIAS_MAX_NUMEL = 2**31 - 1
@@ -44,7 +43,7 @@ if _HAVE_TRITON:
         mask = offsets < n_elements
         x = tl.load(ptr + offsets, mask = mask)
         b = tl.load(bias_ptr + (offsets % n_cols), mask = mask)
-        # fp32 accumulate then a single round on store, matching torch's bf16 add exactly.
+        # fp32 accumulate, one round on store: matches torch's bf16 add exactly.
         tl.store(ptr + offsets, (x.to(tl.float32) + b.to(tl.float32)).to(x.dtype), mask = mask)
 
 

@@ -46,9 +46,9 @@ def reset_nvfp4_state() -> None:
 
     reset_tuned_shapes()
     _ops.reset_barriers()
-    # Also holds transposed VIEWS of the weight buffers, so keeping it would pin a freed model.
+    # Holds transposed VIEWS of the weights, so keeping it would pin a freed model.
     _dispatch.reset()
-    # verify() runs only inside the preflight; a memoised preflight would leave the next load with _VERIFIED empty.
+    # verify() runs only in the preflight, so a memoised one would leave _VERIFIED empty next load.
     _ops.reset_preflight_cache()
 
 
@@ -121,7 +121,7 @@ def nvfp4_linear_class():
                 )
                 out = F.linear(flat, weight)
             else:
-                # Survives torch.compile (zero graph breaks); without it a flashinfer launch can reach the wrong card.
+                # Zero graph breaks under compile; without it a flashinfer launch can hit the wrong card.
                 with _device_guard(flat):
                     xq, x_sf = torch.ops.unsloth_nvfp4.quantize(flat, self.a_gsf)
                     out = torch.ops.unsloth_nvfp4.mm(
