@@ -292,10 +292,14 @@ def test_a_working_rocm_build_is_left_alone(h3_amd_host, fake_settings, platform
         # It answered, and what it answered was "no accelerator of my own". That, with the
         # fallback listing one, is the evidence the record is for.
         ("rocm_cpu_only", _ROCM_CPU_ONLY, True),
-        # No ROCm build exists for this host, which the probe does not have to run to know.
-        # The bundle tag is part of the fingerprint, so a release that ships the asset retires
-        # this record on its own.
-        ("no_rocm_asset", _VULKAN_ONLY, True),
+        # Nothing was obtained, which is NOT the same as "no such build exists": the ensure
+        # returns None for a download that failed as readily as for an asset this host has no
+        # build of, and nothing about the ROCm build was observed either way. Proven, one bad
+        # fetch would divert a healthy host for good, and it would not even age out: with no
+        # binary there is no owning root, so the fingerprint carries no bundle tag and a
+        # release that ships the asset cannot retire the record. A strike, like the
+        # unreadable probe above.
+        ("no_rocm_asset", _VULKAN_ONLY, False),
     ],
 )
 def test_a_rocm_build_that_cannot_run_falls_back_to_vulkan(
@@ -1109,9 +1113,11 @@ def test_the_whole_load_routing_space_is_enumerated(h3_amd_host, fake_settings, 
     # ...and only where the host's own build ANSWERED. A probe that could not be read is not
     # evidence about the build: the fallback enumerating a device of its own says nothing about
     # why the first one was unreadable, and persisting that as proven skipped an otherwise
-    # healthy, faster ROCm build on every later load.
+    # healthy, faster ROCm build on every later load. A build that was never obtained is the
+    # same non-answer: the ensure returns None for a download that failed exactly as it does
+    # for an asset that does not exist, so one bad fetch would divert the host for good.
     assert _noted_accelerators(fake_settings) == (
-        ["rocm"] if (upgraded and rocm_answer != _N) else []
+        ["rocm"] if (upgraded and rocm_answer not in (_N, _X)) else []
     )
     # The unreadable one still leaves a strike, which is what eventually diverts a host where
     # this keeps happening. (_X is not a probe at all: no build of that accelerator exists here,
@@ -1783,7 +1789,10 @@ def test_the_load_path_reads_the_fingerprint_before_it_installs_the_fallback():
     assert read < install < note, (read, install, note)
     assert "fingerprint = failed_fingerprint" in source[note:note + 400]
     # And the note is only PROVEN where the host's own build answered.
-    assert "proven = accelerator_verdict is not None" in source[note:note + 400]
+    assert (
+        "proven = accelerator_probe_ran and accelerator_verdict is not None"
+        in source[note:note + 400]
+    )
 
 
 def test_a_singleton_match_does_not_answer_for_a_position_it_cannot_hold(monkeypatch):
@@ -2068,3 +2077,44 @@ def test_the_image_pin_tells_two_identical_cards_apart(monkeypatch):
         sd_cpp_backend, "physical_card_name", lambda _ordinal: ("AMD Radeon RX 7900 XTX", 2)
     )
     assert sd_cpp_backend._offload_with_device_pin_impl([], "/sd/sd-cli", 2) == []
+
+
+@pytest.mark.parametrize("platform", PLATFORMS)
+def test_a_failed_fetch_does_not_divert_a_host_whose_rocm_build_works(
+    h3_amd_host, fake_settings, platform
+):
+    """The recoverable half of "no binary was obtained".
+
+    The ensure answers None for a download that failed exactly as it does for an asset this
+    host has no build of, so a transient fetch failure used to be recorded as PROOF that the
+    ROCm build cannot run here -- permanently, since with no binary there is no owning root
+    and the fingerprint carries no bundle tag for a later release to retire. This drives the
+    load twice: once while the fetch produces nothing, then again on the same host with the
+    asset available, and the second load must still try ROCm and commit it.
+    """
+    from core.inference import sd_cpp_backend
+
+    failed_fetch = h3_amd_host(
+        platform = platform, backend = "rocm", device = "cuda", devices = _VULKAN_ONLY
+    )
+    assert failed_fetch.run()._state.device == "cuda"
+    assert failed_fetch.ensured == ["rocm", "vulkan"], failed_fetch.ensured
+    # A strike, not a diversion.
+    assert _recorded_strikes(fake_settings) == 1
+    assert _noted_accelerators(fake_settings) == []
+    assert sd_cpp_backend.preferred_accelerator("rocm") == "rocm"
+
+    recovered = h3_amd_host(
+        platform = platform, backend = "rocm", device = "cuda", devices = _ROCM_WORKS
+    )
+    assert recovered.run()._state.device == "cuda"
+    assert recovered.ensured == ["rocm"], recovered.ensured
+
+    # And a host where it keeps happening is still diverted, by the second strike: the
+    # ambiguity is what makes one of them insufficient, not a reason to ignore them.
+    again = h3_amd_host(
+        platform = platform, backend = "rocm", device = "cuda", devices = _VULKAN_ONLY
+    )
+    again.run()
+    assert _recorded_strikes(fake_settings) == 2
+    assert _noted_accelerators(fake_settings) == ["rocm"]

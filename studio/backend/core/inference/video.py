@@ -1818,6 +1818,13 @@ class VideoBackend:
                 # what a generic ROCm prebuilt does on a card it has no hipBLAS kernels for (#8814, #9278). Collapsing
                 # None into True, which is right for the decision below, hid exactly that case.
                 accelerator_verdict = sd_cpp_accelerator_device_verdict(binary) if binary else False
+                # Whether this host's own build was ASKED. False above stands for "there is
+                # nothing here that could enumerate a device", which is the right reading for
+                # the rungs below -- but it is not a reading of the ROCm build at all, and the
+                # ensure returns None for a download that failed as readily as for an asset
+                # that does not exist. Recorded as proven, one failed fetch would divert a
+                # healthy ROCm host onto Vulkan for good.
+                accelerator_probe_ran = bool(binary)
                 # Under the SAME claim that just validated this binary. Read afterwards, an
                 # install that replaces the managed tree in between is recorded as the class
                 # this load decided on: the re-vet then compares ROCm with ROCm, both builds
@@ -1875,12 +1882,15 @@ class VideoBackend:
                         # probe that timed out, exited nonzero or raised: the fallback enumerating
                         # says nothing about why the first build could not be read, and persisting
                         # that as proven diverted the host off a healthy, faster ROCm build
-                        # indefinitely after one transient reading. Unproven it is an ambiguous
+                        # indefinitely after one transient reading. A build that was never
+                        # obtained is the same class of non-answer for the same reason: the
+                        # ensure returns None for a failed download, and nothing about this
+                        # host's ROCm build was observed. Unproven it is an ambiguous
                         # strike, so it takes `_AMBIGUOUS_FAILURE_STRIKES` of them under one
                         # fingerprint to divert anything.
                         note_accelerator_runtime_failure(
                             accelerator,
-                            proven = accelerator_verdict is not None,
+                            proven = accelerator_probe_ran and accelerator_verdict is not None,
                             fingerprint = failed_fingerprint,
                         )
                         binary = fallback_binary
