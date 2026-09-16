@@ -8247,7 +8247,13 @@ def _raw_body_model(body) -> Optional[str]:
 
 
 def _catalog_object_ids(objects: list[dict]) -> list[str]:
-    return sorted(mid for mid in (m.get("id") for m in objects) if isinstance(mid, str) and mid)
+    """Ids to offer a chat caller. Task-carrying rows are dropped for the reason
+    _chat_servable_ids drops them, or the error names the model it just refused."""
+    return sorted(
+        mid
+        for mid in (m.get("id") for m in objects if m.get("task") is None)
+        if isinstance(mid, str) and mid
+    )
 
 
 def _chat_servable_ids(objects: list[dict]) -> set[str]:

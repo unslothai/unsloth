@@ -5895,11 +5895,21 @@ def _wire_unloaded_chat(
     *,
     enabled,
     catalog = ("org/A-GGUF", "org/B-GGUF"),
+    downloaded = (),
 ):
     # Nothing loaded, so a chat request hits "no model loaded". Pin the catalog for determinism.
     async def _catalog():
         return [{"id": mid} for mid in catalog]
 
+    # _downloaded_model_ids reads the LOCAL catalog, which _openai_catalog_objects does not
+    # cover: unpinned, these tests would answer from whatever the host has downloaded.
+    async def _local_catalog():
+        return [
+            type("_Row", (), {"model_id": mid, "id": mid, "partial": False})()
+            for mid in downloaded
+        ]
+
+    monkeypatch.setattr(inference_route, "_cached_local_catalog", _local_catalog)
     monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: enabled)
     monkeypatch.setattr(resolver, "resolve_local_gguf", lambda _m, **_kw: None)
     monkeypatch.setattr(
@@ -5975,6 +5985,45 @@ def test_chat_wrong_quant_lists_the_local_quants(monkeypatch):
     assert status == 404
     assert "'org/A-GGUF' is downloaded, but the quant 'UD-Q5_K_XL' is not" in detail
     assert "Q4_K_M, Q8_0" in detail
+
+
+def _wire_withheld_chat(monkeypatch, *, objects, downloaded):
+    async def _catalog():
+        return list(objects)
+
+    _wire_unloaded_chat(monkeypatch, enabled = True, downloaded = downloaded)
+    monkeypatch.setattr(inference_route, "_openai_catalog_objects", _catalog)
+
+
+def test_chat_withheld_model_is_not_offered_back_as_available(monkeypatch):
+    # A downloaded Whisper row is withheld from chat, so listing it as an alternative would
+    # name the model the same sentence just refused.
+    _wire_withheld_chat(
+        monkeypatch,
+        objects = [
+            {"id": "org/A-GGUF"},
+            {"id": "openai/whisper-large-v3", "task": "automatic-speech-recognition"},
+        ],
+        downloaded = ("org/A-GGUF", "openai/whisper-large-v3"),
+    )
+    status, detail = _chat_error(_chat_request(model = "openai/whisper-large-v3"))
+    assert status == 404
+    assert "cannot serve it here" in detail
+    assert "Available models: org/A-GGUF." in detail
+    assert detail.count("openai/whisper-large-v3") == 1
+
+
+def test_chat_withheld_model_with_no_chat_rows_offers_nothing(monkeypatch):
+    # Every row is task-specific, so there is no chat model to offer at all.
+    _wire_withheld_chat(
+        monkeypatch,
+        objects = [{"id": "openai/whisper-large-v3", "task": "automatic-speech-recognition"}],
+        downloaded = ("openai/whisper-large-v3",),
+    )
+    status, detail = _chat_error(_chat_request(model = "openai/whisper-large-v3"))
+    assert status == 404
+    assert "cannot serve it here" in detail
+    assert "Available models" not in detail
 
 
 def test_chat_error_unchanged_when_auto_switch_off(monkeypatch):
