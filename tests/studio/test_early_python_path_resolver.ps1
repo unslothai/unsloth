@@ -27,23 +27,56 @@ function Check($name, $cond) {
 $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($installPs1, [ref]$tokens, [ref]$errors)
 if ($errors) { $errors | ForEach-Object { $_.ToString() }; throw "install.ps1 has parse errors" }
-foreach ($name in @(
-    "Get-StudioEarlyPython", "Invoke-StudioEarlyPython", "Get-StudioPythonFinalPath",
+$wanted = @(
+    "Get-StudioEarlyPython", "Invoke-StudioEarlyPython", "Invoke-StudioEarlyPythonScript",
+    "Remove-StudioTrailingNewline",
+    "Invoke-StudioEarlyPythonScriptViaCmdlets", "Get-StudioPythonFinalPath",
     "Resolve-StudioLinkTarget", "Get-StudioSubstTarget", "Get-StudioLexicalPath",
     "Resolve-StudioFinalPathInfo"
-)) {
+)
+$extracted = @{}
+foreach ($name in $wanted) {
     $fn = $ast.FindAll({ param($n)
         $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name
     }, $true)
     if ($fn.Count -lt 1) { throw "expected $name in install.ps1, found none" }
+    $extracted[$name] = $fn[0]
     Invoke-Expression $fn[0].Extent.Text
 }
+
 
 # The native rung, forced off. This is the state the new rung exists to improve: on a host where
 # it works nothing below this file's premise ever runs.
 function Initialize-StudioFinalPathNativeType { return $false }
 function Get-StudioNativeFinalPath { param([string]$Path) return $null }
 function Write-StudioLine { param([string]$Line, [string]$ForegroundColor = "") }
+
+# The list above is hand-written, and install.ps1 moves under it: splitting a body out into a
+# new helper leaves the helper unlisted, and the only symptom is "The term X is not recognized"
+# raised from inside whichever check happens to call it first. Close the list over what the
+# extracted bodies actually call. Asked of the session rather than of the list, so the stubs
+# just above count as answers: what matters is that the name resolves when a check calls it.
+$defined = @{}
+foreach ($fn in $ast.FindAll({ param($n)
+    $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) {
+    $defined[$fn.Name] = $true
+}
+$missing = @()
+foreach ($entry in $extracted.GetEnumerator()) {
+    foreach ($call in $entry.Value.Body.FindAll({ param($n)
+        $n -is [System.Management.Automation.Language.CommandAst] }, $true)) {
+        $called = $call.GetCommandName()
+        if ($called -and $defined.ContainsKey($called) -and
+            -not (Get-Command -Name $called -ErrorAction SilentlyContinue)) {
+            $missing += "$called (called by $($entry.Key))"
+        }
+    }
+}
+if ($missing.Count -gt 0) {
+    throw ("install.ps1 functions these checks can reach but nothing here defines: " +
+        (($missing | Sort-Object -Unique) -join ", ") +
+        ". Extract them above, or stub them here.")
+}
 
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("earlypy-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $tmp | Out-Null
