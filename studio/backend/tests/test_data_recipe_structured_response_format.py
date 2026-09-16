@@ -1,11 +1,18 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import copy
 import sys
 from types import SimpleNamespace
 
+import pytest
+from fastapi import HTTPException
+
 from auth import storage
+from models.inference import ChatCompletionRequest, ChatMessage
 from routes.data_recipe import jobs as route
+
+from .test_sf_client_tools_passthrough import _call, _fixed, _ScriptedBackend
 
 MODEL = "unsloth/Qwen3-0.6B"
 SCHEMA = {
@@ -25,7 +32,7 @@ def structured_recipe():
                 "column_type": "llm-structured",
                 "name": "rating",
                 "model_alias": "local_model",
-                "output_format": SCHEMA,
+                "output_format": copy.deepcopy(SCHEMA),
             },
         ],
     }
@@ -76,8 +83,29 @@ def test_gguf_model_gets_grammar_response_format(monkeypatch):
 def test_non_gguf_model_keeps_prompt_level_json(monkeypatch):
     recipe = inject_with_loaded_model(monkeypatch, gguf = False)
 
-    assert column_aliases(recipe) == {"blurb": "local_model", "rating": "local_model"}
+    # Whole columns, not just aliases: output_format feeds the fallback's prompt-level schema.
+    assert recipe["columns"] == structured_recipe()["columns"]
     assert response_formats(recipe) == {}
     assert [mc["alias"] for mc in recipe["model_configs"]] == ["local_model"]
     extra_body = recipe["model_configs"][0]["inference_parameters"]["extra_body"]
     assert extra_body == {"chat_template_kwargs": {"enable_thinking": False}}
+
+
+def test_the_injected_response_format_is_what_a_non_gguf_backend_refuses(monkeypatch):
+    """The gate's premise: without llama.cpp, /v1 refuses the payload the GGUF path injects.
+    Teaching the safetensors/MLX backend guided decoding must break this, not go unnoticed."""
+    # Its own context so the fake backend modules unwind before the route is called for real.
+    with pytest.MonkeyPatch.context() as injection:
+        recipe = inject_with_loaded_model(injection, gguf = True)
+    extra_body = recipe["model_configs"][-1]["inference_parameters"]["extra_body"]
+    payload = ChatCompletionRequest(
+        model = "default",
+        messages = [ChatMessage(role = "user", content = "rate it")],
+        **extra_body,
+    )
+
+    with pytest.raises(HTTPException) as caught:
+        _call(payload, monkeypatch, _ScriptedBackend(_fixed('{"name": "Riverside", "score": 8}')))
+
+    assert caught.value.status_code == 400
+    assert caught.value.detail["error"]["param"] == "response_format"

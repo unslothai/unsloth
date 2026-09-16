@@ -216,7 +216,12 @@ def _single_used_local_model_selection(
     return next(iter(selections))
 
 
-def _loaded_local_model_identity() -> tuple[bool, str, str, bool]:
+def _local_chat_serves_gguf() -> bool:
+    from routes.inference import get_llama_cpp_backend
+    return bool(get_llama_cpp_backend().is_loaded)
+
+
+def _loaded_local_model_identity() -> tuple[bool, str, str]:
     from routes.inference import get_llama_cpp_backend
     from core.inference import get_inference_backend
 
@@ -224,25 +229,25 @@ def _loaded_local_model_identity() -> tuple[bool, str, str, bool]:
     if llama.is_loaded:
         model = str(getattr(llama, "model_identifier", "") or "").strip()
         variant = str(getattr(llama, "hf_variant", "") or "").strip()
-        return True, model, variant, True
+        return True, model, variant
 
     backend = get_inference_backend()
     active_model = str(getattr(backend, "active_model_name", "") or "").strip()
     if active_model:
-        return True, active_model, "", False
-    return False, "", "", False
+        return True, active_model, ""
+    return False, "", ""
 
 
 def _ensure_selected_local_model_loaded(
     recipe: dict[str, Any], local_provider_names: set[str]
-) -> bool:
-    model_loaded, active_model, active_variant, served_by_llama_cpp = _loaded_local_model_identity()
+) -> None:
+    model_loaded, active_model, active_variant = _loaded_local_model_identity()
     if not model_loaded:
         raise ValueError("No model loaded in Chat. Load a model first, then run the recipe.")
 
     selection = _single_used_local_model_selection(recipe, local_provider_names)
     if selection is None:
-        return served_by_llama_cpp
+        return
 
     target, gguf_variant = selection
     variant_matches = not gguf_variant or active_variant == gguf_variant
@@ -254,7 +259,6 @@ def _ensure_selected_local_model_loaded(
             f"Selected {selected}; active {active or 'none'}. "
             "Load the selected model again, then run the recipe."
         )
-    return served_by_llama_cpp
 
 
 def _inject_local_structured_response_format(
@@ -375,11 +379,10 @@ def _inject_local_providers(
 
     token = ""
     internal_key_id: Optional[int] = None
-    served_by_llama_cpp = False
     if local_names & referenced_providers:
         # Verify the selected local model is loaded before minting a key. Still a point-in-time check (TOCTOU); the
         # /v1 endpoint returns a clear 400 if the model is unloaded or swapped before the subprocess calls it.
-        served_by_llama_cpp = _ensure_selected_local_model_loaded(recipe, local_names)
+        _ensure_selected_local_model_loaded(recipe, local_names)
 
         from auth import storage
 
@@ -431,9 +434,9 @@ def _inject_local_providers(
             extra_body["chat_template_kwargs"] = tpl_kwargs
             params["extra_body"] = extra_body
 
-    # Forward each llm-structured column's output_format as a response_format so
-    # llama-server uses grammar-constrained sampling instead of broken JSON.
-    if served_by_llama_cpp:
+    # Only llama.cpp carries a grammar engine; /v1 refuses response_format on every other local
+    # backend, so those fall back to the prompt-level JSON llm-judge columns already rely on.
+    if _local_chat_serves_gguf():
         _inject_local_structured_response_format(recipe, local_names)
 
     return internal_key_id
