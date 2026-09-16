@@ -36,6 +36,7 @@ from core.inference.sd_cpp_backend import (
     _server_binary_runnable,
     ensure_sd_cpp_binary,
     ensure_sd_server_binary,
+    note_unlaunchable_accelerator_build,
     preferred_accelerator,
     usable_or_recorded_failure,
 )
@@ -252,6 +253,11 @@ def select_and_activate_engine(
             logger.warning(
                 "sd-server at %s is present but not runnable; not using it", server_binary
             )
+            # Counted before it is discarded: this router runs BEFORE the backend's load, so
+            # the two recorders inside `_run_load` never see a build the selection already
+            # rejected -- every forced-native request reinstalled the same ROCm build, failed
+            # the same probe, and the Vulkan rung below it was never reached.
+            note_unlaunchable_accelerator_build(server_binary)
             server_binary = None
         # sd-cli is the one-shot fallback: always LOCATE an existing binary, but auto-INSTALL only when there is no
         # usable server. Probe runnability first, else a present but non-runnable binary passes as available and fails
@@ -265,6 +271,7 @@ def select_and_activate_engine(
         )
         if binary and SdCppEngine(binary = binary).version() is None:
             logger.warning("sd-cli at %s is present but not runnable; not using it", binary)
+            note_unlaunchable_accelerator_build(binary)
             binary = None
 
     native_available = bool(binary or server_binary) and policy_eligible and fam_ok

@@ -2242,3 +2242,44 @@ def test_both_unlaunchable_load_paths_record_before_they_raise():
     ):
         arm = source[: source.index(raised)]
         assert "note_unlaunchable_accelerator_build(" in arm[-400:], raised
+
+
+def test_the_router_counts_a_binary_it_rejects_for_not_launching(fake_settings, monkeypatch):
+    """Selection runs BEFORE the load, so the load's own recorders never see this build.
+
+    A freshly installed ROCm binary that cannot launch -- the server exiting 126/127 on a
+    missing shared library, or `sd-cli --version` exiting nonzero -- was cleared here and
+    diffusers was selected, with nothing persisted. Every later forced-native request then
+    reinstalled the same build, rejected it the same way, and the Vulkan rung below it was
+    never reached.
+    """
+    from core.inference import diffusion_engine_router as router
+    from core.inference import sd_cpp_backend
+
+    monkeypatch.setattr(router, "_install_allowed", lambda: True)
+    monkeypatch.setattr(
+        router, "ensure_sd_server_binary", lambda **_k: "/opt/sd/rocm/sd-server"
+    )
+    monkeypatch.setattr(router, "ensure_sd_cpp_binary", lambda **_k: "/opt/sd/rocm/sd-cli")
+    monkeypatch.setattr(router, "_server_binary_runnable", lambda _b: False)
+    monkeypatch.setattr(
+        router, "SdCppEngine", lambda binary: types.SimpleNamespace(version = lambda: None)
+    )
+    monkeypatch.setattr(
+        router,
+        "resolve_diffusion_device_target",
+        lambda: types.SimpleNamespace(backend = "rocm", device = "cuda", dtype = None),
+    )
+    monkeypatch.setattr(router, "family_sd_cpp_supported", lambda _fam: True)
+    monkeypatch.setattr(router, "_activate", lambda name, reason = None: name)
+    monkeypatch.setattr(sd_cpp_backend, "_installed_accelerator_of", lambda _b: "rocm")
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ENGINE", "sd_cpp")
+
+    chosen = router.select_and_activate_engine(
+        _detect_load_family(H3_REPO, None, "minimax-h3")
+    )
+    assert chosen == "diffusers", chosen
+    # Both probes rejected a build, so both are counted -- and a strike is all either is: a
+    # missing execute bit fails identically and says nothing about the accelerator.
+    assert _recorded_strikes(fake_settings) == 2
+    assert _noted_accelerators(fake_settings) == ["rocm"]
