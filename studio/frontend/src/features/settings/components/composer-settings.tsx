@@ -20,7 +20,7 @@ import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
 
-export function ComposerSettings() {
+export function ComposerSettings({ embedded = false }: { embedded?: boolean }) {
   const t = useT();
   const prefs = useChatPreferencesStore();
   const ref = useRef<HTMLDivElement>(null);
@@ -37,25 +37,17 @@ export function ComposerSettings() {
 
   return (
     <div ref={ref}>
-      <SettingsSection title={t("composerSettings.title")}>
-        <div className="mt-2 divide-y divide-border/60 rounded-2xl border border-border/60 bg-muted/20 px-4">
-          <SettingsRow
-            label={t("composerSettings.plainText")}
-            description={t("composerSettings.plainTextDescription")}
-          >
-            <Switch
-              aria-label={t("composerSettings.plainText")}
-              checked={prefs.plainTextComposer}
-              onCheckedChange={prefs.setPlainTextComposer}
-            />
-          </SettingsRow>
-          <SettingsRow label={t("composerSettings.showContext")}>
-            <Switch
-              aria-label={t("composerSettings.showContext")}
-              checked={prefs.showContextWindowUsage}
-              onCheckedChange={prefs.setShowContextWindowUsage}
-            />
-          </SettingsRow>
+      <SettingsSection
+        title={t("composerSettings.title")}
+        hideHeading={embedded}
+      >
+        <div
+          className={
+            embedded
+              ? ""
+              : "mt-2 divide-y divide-border/60 rounded-2xl border border-border/60 bg-muted/20 px-4"
+          }
+        >
           <SettingsRow
             label={t("composerSettings.sendShortcut")}
             description={t("composerSettings.sendDescription")}
@@ -110,6 +102,23 @@ export function ComposerSettings() {
                 </button>
               ))}
             </div>
+          </SettingsRow>
+          <SettingsRow
+            label={t("composerSettings.plainText")}
+            description={t("composerSettings.plainTextDescription")}
+          >
+            <Switch
+              aria-label={t("composerSettings.plainText")}
+              checked={prefs.plainTextComposer}
+              onCheckedChange={prefs.setPlainTextComposer}
+            />
+          </SettingsRow>
+          <SettingsRow label={t("composerSettings.showContext")}>
+            <Switch
+              aria-label={t("composerSettings.showContext")}
+              checked={prefs.showContextWindowUsage}
+              onCheckedChange={prefs.setShowContextWindowUsage}
+            />
           </SettingsRow>
         </div>
       </SettingsSection>

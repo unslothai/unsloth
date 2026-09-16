@@ -1483,6 +1483,30 @@ export const de = {
       },
     },
     chat: {
+      groups: {
+        conversations: { title: "Gespräche" },
+        files: { title: "Dateien und Einfügen" },
+        display: { title: "Anzeige" },
+        composer: { title: "Nachrichtenfeld" },
+        menu: { title: "Chatmenü" },
+        advanced: { title: "Erweitert" },
+        contextTitle: "Kontext",
+      },
+      projectAttachmentsHint:
+        "Diese Einstellung lässt sich im Anhangmenü jedes Chats einzeln ändern.",
+      rememberParamsPerModelHint:
+        "Wenn deaktiviert, verwenden alle Modelle dieselben Einstellungen.",
+      autoCompactHint:
+        "Verwendet die eingestellte Kontextlänge, nicht den verfügbaren VRAM.",
+      pastedTextShortDescription:
+        "Eingefügter Text ab {count} Zeichen wird als .txt-Datei angehängt. Kürzerer Text bleibt im Nachrichtenfeld.",
+      pastedTextOffDescription:
+        "Eingefügter Text bleibt unabhängig von seiner Länge im Nachrichtenfeld.",
+      compactionDescriptionInherit: "Folgt der Kontextrichtlinie des Servers.",
+      compactionDescriptionCheckpoint:
+        "Behält den letzten Austausch und die dauerhaft geltenden Anweisungen bei.",
+      compactionDescriptionRolling:
+        "Entfernt die ältesten Gesprächsrunden und behält neuere Inhalte mit dem gewählten zusätzlichen Freiraum.",
       projectsSection: "Projektbereich anzeigen",
       projectsSectionDescription:
         "Gruppiert Projekt-Chats unter einer Überschrift für Projekte. Deaktiviere dies, um sie stattdessen unter den zuletzt verwendeten Chats aufzulisten.",
@@ -1512,7 +1536,8 @@ export const de = {
         exportChat: "Chat exportieren",
       },
       pastedTextThreshold: "Lange Einfügungen verdichten",
-      pastedTextThresholdDescription: "Eingefügter Text, der länger ist, wird zu einem .txt-Anhang, statt das Nachrichtenfeld zu füllen. Mit {shortcut} wird trotzdem in das Nachrichtenfeld eingefügt.",
+      pastedTextThresholdDescription:
+        "Mit {shortcut} direkt in das Nachrichtenfeld einfügen.",
       pastedTextThresholdOff: "Aus",
       showResponseModel: "Antwortmodell anzeigen",
       showResponseModelDescription:
@@ -1522,13 +1547,13 @@ export const de = {
         "Zeigt „LLMs können Fehler machen“ unter dem Chatfeld an.",
       projectAttachments: "Dateien projektweit teilen",
       projectAttachmentsDescription:
-        "Standard für Dateien, die in einem Chat innerhalb eines Projekts angehängt werden: für das gesamte Projekt indizieren, damit jeder Chat darin sie nutzen kann. Jeder Chat kann dies im Anhangsmenü überschreiben.",
+        "Stellt neue Chat-Anhänge allen Chats im Projekt zur Verfügung.",
       rememberParamsPerModel: "Einstellungen pro Modell merken",
       rememberParamsPerModelDescription:
-        "Beim Modellwechsel werden Temperatur, Prompt und die weiteren Einstellungen wiederhergestellt, die Sie zuletzt mit diesem Modell verwendet haben. Aus: ein Satz Einstellungen für alle Modelle.",
+        "Stellt den zuletzt verwendeten Prompt, die Temperatur und weitere Einstellungen pro Modell wieder her.",
       autoCompact: "Lange Chats automatisch komprimieren",
       autoCompactDescription:
-        "Wenn ein lokaler GGUF-Chat die festgelegte Kontextlänge erreicht, werden ältere Gesprächsrunden verworfen, statt einen Fehler zurückzugeben. Dies richtet sich nicht nach freiem VRAM.",
+        "Entfernt ältere Gesprächsrunden, wenn ein lokaler GGUF-Chat sein Kontextlimit erreicht.",
       compactionStyle: "Wenn der Kontext voll ist",
       compactionStyleDescription:
         "Die Servervorgabe behält UNSLOTH_CONTEXT_POLICY bei. Gespräch zurücksetzen behält die letzte Runde und dauerhafte Anweisungen. Ein gleitendes Fenster verwirft die ältesten Runden und kann mehr aktuellen Verlauf behalten.",
@@ -1565,7 +1590,7 @@ export const de = {
         title: "Websuche",
         images: "Bilder aus der Websuche anzeigen",
         imagesDescription:
-          "Lässt die Websuche Bilder liefern und holt eines für jeden Punkt, den eine Antwort auflistet. Vorschaubilder lädt und verkleinert Unsloth, der Browser kontaktiert keine Bildhosts.",
+          "Bilder in Suchergebnisse aufnehmen.",
       },
       artifacts: {
         title: "Canvas",

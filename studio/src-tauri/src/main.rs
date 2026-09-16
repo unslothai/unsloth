@@ -988,13 +988,12 @@ fn confirm_quit_during_training(app: &tauri::AppHandle) -> bool {
         .blocking_show()
 }
 
-/// Renderer-only activity, mirrored here for the same reason: Hub downloads, which the
-/// backend runs but only the frontend tracks, and the Tauri shell self-update, which
-/// `update::is_update_running` stops covering once `downloadAndInstall` takes over.
+/// renderer-owned downloads, shell updates and unsaved transcripts must also protect native quit.
 #[derive(Default)]
 pub struct RendererActivity {
     pub downloads: bool,
     pub shell_update: bool,
+    pub unsaved_transcript: bool,
 }
 
 pub type RendererActivityState = std::sync::Arc<std::sync::Mutex<RendererActivity>>;
@@ -1009,6 +1008,7 @@ fn apply_renderer_activity(state: &RendererActivityState, kind: &str, active: bo
         match kind {
             "downloads" => activity.downloads = active,
             "shell_update" => activity.shell_update = active,
+            "unsaved_transcript" => activity.unsaved_transcript = active,
             // An unknown kind is a renderer/Rust mismatch, never a reason to flip a flag.
             _ => {}
         }
@@ -1029,8 +1029,26 @@ fn current_renderer_activity(app: &tauri::AppHandle) -> RendererActivity {
         .map(|activity| RendererActivity {
             downloads: activity.downloads,
             shell_update: activity.shell_update,
+            unsaved_transcript: activity.unsaved_transcript,
         })
         .unwrap_or_default()
+}
+
+fn confirm_quit_with_unsaved_transcript(app: &tauri::AppHandle) -> bool {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+
+    if !current_renderer_activity(app).unsaved_transcript {
+        return true;
+    }
+    app.dialog()
+        .message("A transcript could not be saved. Download a copy before quitting to keep it.")
+        .kind(MessageDialogKind::Warning)
+        .title("Unsaved transcript")
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Quit anyway".to_string(),
+            "Keep open".to_string(),
+        ))
+        .blocking_show()
 }
 
 /// Ask before quitting mid shell update (true to proceed). request_quit only, as below.
@@ -1147,6 +1165,7 @@ fn quit_requires_confirmation(app: &tauri::AppHandle) -> bool {
     install_is_active(app)
         || update_active
         || renderer.shell_update
+        || renderer.unsaved_transcript
         || training_is_active(app)
         || renderer.downloads
 }
@@ -1514,6 +1533,7 @@ where
                             && confirm_quit_during_update(&app)
                             && confirm_quit_during_shell_update(&app)
                             && confirm_quit_during_training(&app)
+                            && confirm_quit_with_unsaved_transcript(&app)
                             && confirm_quit_during_downloads(&app)
                     },
                     || {
@@ -3104,27 +3124,38 @@ media-src 'self' https:"
         assert!(hardened.ends_with("\nTryExec=/plain/app"));
     }
 
-    fn renderer_activity(state: &RendererActivityState) -> (bool, bool) {
+    // One element per field of RendererActivity: a narrower tuple is how a kind ships
+    // untested while a test named "each kind" still passes.
+    fn renderer_activity(state: &RendererActivityState) -> (bool, bool, bool) {
         let activity = state
             .lock()
             .expect("the activity mutex must not be poisoned");
-        (activity.downloads, activity.shell_update)
+        (
+            activity.downloads,
+            activity.shell_update,
+            activity.unsaved_transcript,
+        )
     }
 
     #[test]
     fn renderer_activity_starts_clear_and_round_trips_each_kind() {
         let state = new_renderer_activity_state();
-        assert_eq!(renderer_activity(&state), (false, false));
+        assert_eq!(renderer_activity(&state), (false, false, false));
 
         apply_renderer_activity(&state, "downloads", true);
-        assert_eq!(renderer_activity(&state), (true, false));
+        assert_eq!(renderer_activity(&state), (true, false, false));
         apply_renderer_activity(&state, "downloads", false);
-        assert_eq!(renderer_activity(&state), (false, false));
+        assert_eq!(renderer_activity(&state), (false, false, false));
 
         apply_renderer_activity(&state, "shell_update", true);
-        assert_eq!(renderer_activity(&state), (false, true));
+        assert_eq!(renderer_activity(&state), (false, true, false));
         apply_renderer_activity(&state, "shell_update", false);
-        assert_eq!(renderer_activity(&state), (false, false));
+        assert_eq!(renderer_activity(&state), (false, false, false));
+
+        apply_renderer_activity(&state, "unsaved_transcript", true);
+        assert_eq!(renderer_activity(&state), (false, false, true));
+        apply_renderer_activity(&state, "unsaved_transcript", false);
+        assert_eq!(renderer_activity(&state), (false, false, false));
     }
 
     #[test]
@@ -3133,11 +3164,16 @@ media-src 'self' https:"
 
         apply_renderer_activity(&state, "downloads", true);
         apply_renderer_activity(&state, "shell_update", true);
-        assert_eq!(renderer_activity(&state), (true, true));
+        apply_renderer_activity(&state, "unsaved_transcript", true);
+        assert_eq!(renderer_activity(&state), (true, true, true));
 
         // Downloads finishing must not clear an update that is still installing.
         apply_renderer_activity(&state, "downloads", false);
-        assert_eq!(renderer_activity(&state), (false, true));
+        assert_eq!(renderer_activity(&state), (false, true, true));
+
+        // Nor must a saved transcript clear either of the other two.
+        apply_renderer_activity(&state, "unsaved_transcript", false);
+        assert_eq!(renderer_activity(&state), (false, true, false));
     }
 
     #[test]
@@ -3149,7 +3185,8 @@ media-src 'self' https:"
         apply_renderer_activity(&state, "training", true);
         apply_renderer_activity(&state, "", false);
         apply_renderer_activity(&state, "Downloads", true);
-        assert_eq!(renderer_activity(&state), (false, true));
+        apply_renderer_activity(&state, "unsaved-transcript", true);
+        assert_eq!(renderer_activity(&state), (false, true, false));
     }
 
     /// The three states the tray-toggle-server listener in use-tauri-backend.ts acts

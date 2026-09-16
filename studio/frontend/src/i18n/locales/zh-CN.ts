@@ -1415,6 +1415,26 @@ export const zhCN = {
       },
     },
     chat: {
+      groups: {
+        conversations: { title: "对话" },
+        files: { title: "文件与粘贴" },
+        display: { title: "显示" },
+        composer: { title: "消息输入框" },
+        menu: { title: "聊天菜单" },
+        advanced: { title: "高级" },
+        contextTitle: "上下文",
+      },
+      projectAttachmentsHint: "可在各聊天的附件菜单中单独调整此设置。",
+      rememberParamsPerModelHint: "关闭后，所有模型使用同一套设置。",
+      autoCompactHint: "依据你设置的上下文长度，而不是可用显存。",
+      pastedTextShortDescription:
+        "粘贴的文本达到 {count} 个字符时会转为 .txt 附件，较短的文本则保留在消息输入框中。",
+      pastedTextOffDescription:
+        "无论长度如何，粘贴的文本都会保留在消息输入框中。",
+      compactionDescriptionInherit: "遵循服务器的上下文策略。",
+      compactionDescriptionCheckpoint: "保留最新一轮对话和持续生效的指令。",
+      compactionDescriptionRolling:
+        "移除最早的对话轮次，保留近期记录并预留所选的额外空间。",
       projectsSection: "显示项目分区",
       projectsSectionDescription:
         "将项目对话归到「项目」标题下。关闭后改为显示在「最近」中。",
@@ -1444,7 +1464,8 @@ export const zhCN = {
         exportChat: "导出聊天",
       },
       pastedTextThreshold: "压缩长粘贴内容",
-      pastedTextThresholdDescription: "超过此长度的粘贴文本将变为 .txt 附件，而不会填满消息输入框。 按 {shortcut} 仍可粘贴到消息输入框。",
+      pastedTextThresholdDescription:
+        "按 {shortcut} 直接粘贴到消息输入框。",
       pastedTextThresholdOff: "关闭",
       showResponseModel: "显示回复模型",
       showResponseModelDescription: "在助手回复中显示模型元数据。",
@@ -1453,13 +1474,13 @@ export const zhCN = {
         "在聊天框下方显示“LLM 可能会出错”。",
       projectAttachments: "在项目内共享文件",
       projectAttachmentsDescription:
-        "属于某个项目的聊天中所附文件的默认行为：为整个项目建立索引，使该项目中的每个聊天都能使用。每个聊天都可以在附件菜单中单独更改。",
+        "让项目内的所有聊天都能使用新添加的聊天附件。",
       rememberParamsPerModel: "按模型记住设置",
       rememberParamsPerModelDescription:
-        "切换模型时会恢复你上次在该模型上使用的温度、提示词等设置。关闭后，所有模型共用一套设置。",
+        "恢复每个模型上次使用的提示词、温度等设置。",
       autoCompact: "自动压缩长聊天",
       autoCompactDescription:
-        "当本地 GGUF 聊天达到你设置的上下文长度时，丢弃较早的轮次而不是返回错误。此设置与可用显存无关。",
+        "本地 GGUF 聊天达到上下文上限时，移除较早的轮次。",
       compactionStyle: "上下文已满时",
       compactionStyleDescription:
         "使用服务器默认值会保留 UNSLOTH_CONTEXT_POLICY。重置对话会保留最新轮次和持续指令。滑动窗口会丢弃最早的轮次，并可保留更多近期历史。",
@@ -1492,7 +1513,7 @@ export const zhCN = {
         title: "网页搜索",
         images: "显示网页搜索图片",
         imagesDescription:
-          "让网页搜索返回图片，并为回答中列出的每一项各获取一张。缩略图由 Unsloth 获取并缩放，浏览器不会直接访问图片来源。",
+          "在搜索结果中包含图片。",
       },
       artifacts: {
         title: "Canvas",

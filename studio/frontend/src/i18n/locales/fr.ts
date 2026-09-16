@@ -1480,6 +1480,30 @@ export const fr = {
       },
     },
     chat: {
+      groups: {
+        conversations: { title: "Conversations" },
+        files: { title: "Fichiers et collage" },
+        display: { title: "Affichage" },
+        composer: { title: "Zone de message" },
+        menu: { title: "Menu du chat" },
+        advanced: { title: "Avancé" },
+        contextTitle: "Contexte",
+      },
+      projectAttachmentsHint:
+        "Modifiez ce réglage pour chaque chat dans son menu de pièces jointes.",
+      rememberParamsPerModelHint:
+        "Lorsque cette option est désactivée, tous les modèles utilisent les mêmes réglages.",
+      autoCompactHint:
+        "Utilise la longueur de contexte définie, pas la VRAM disponible.",
+      pastedTextShortDescription:
+        "Le texte collé de {count} caractères ou plus devient une pièce jointe .txt. Le texte plus court reste dans le champ de message.",
+      pastedTextOffDescription:
+        "Tout le texte collé reste dans le champ de message, quelle que soit sa longueur.",
+      compactionDescriptionInherit: "Suit la politique de contexte du serveur.",
+      compactionDescriptionCheckpoint:
+        "Conserve le dernier échange et les instructions permanentes.",
+      compactionDescriptionRolling:
+        "Supprime les échanges les plus anciens pour conserver les plus récents et la marge choisie.",
       projectsSection: "Afficher la section Projets",
       projectsSectionDescription:
         "Regroupe les discussions de projet sous un titre Projets. Désactivez cette option pour les lister dans Récents.",
@@ -1509,7 +1533,8 @@ export const fr = {
         exportChat: "Exporter le chat",
       },
       pastedTextThreshold: "Condenser les collages longs",
-      pastedTextThresholdDescription: "Le texte collé plus long que cette valeur devient une pièce jointe .txt au lieu de remplir le champ de message. Appuyez sur {shortcut} pour coller quand même dans le champ de message.",
+      pastedTextThresholdDescription:
+        "Appuyez sur {shortcut} pour coller directement dans le champ de message.",
       pastedTextThresholdOff: "Désactivé",
       showResponseModel: "Afficher le modèle de réponse",
       showResponseModelDescription:
@@ -1519,13 +1544,13 @@ export const fr = {
         'Afficher "Les LLM peuvent faire des erreurs" sous la zone de discussion.',
       projectAttachments: "Partager les fichiers dans tout le projet",
       projectAttachmentsDescription:
-        "Valeur par defaut pour les fichiers joints dans une discussion appartenant a un projet : les indexer pour tout le projet afin que chaque discussion puisse les utiliser. Chaque discussion peut le modifier depuis le menu des pieces jointes.",
+        "Rend les nouvelles pièces jointes accessibles à toutes les discussions du projet.",
       rememberParamsPerModel: "Mémoriser les réglages par modèle",
       rememberParamsPerModelDescription:
-        "Changer de modèle restaure la température, le prompt et les autres réglages utilisés en dernier avec ce modèle. Désactivé, un seul jeu de réglages s'applique à tous les modèles.",
+        "Restaure le dernier prompt, la température et les autres réglages utilisés pour chaque modèle.",
       autoCompact: "Compacter automatiquement les longues discussions",
       autoCompactDescription:
-        "Lorsqu’une discussion GGUF locale atteint la longueur de contexte définie, supprimez les anciens tours au lieu de renvoyer une erreur. Ce réglage ne dépend pas de la VRAM libre.",
+        "Supprime les anciens échanges lorsqu’une discussion GGUF locale atteint sa limite de contexte.",
       compactionStyle: "Lorsque le contexte est plein",
       compactionStyleDescription:
         "La valeur par défaut du serveur conserve UNSLOTH_CONTEXT_POLICY. Réinitialiser la discussion garde le dernier tour et les instructions permanentes. Une fenêtre glissante supprime les tours les plus anciens et peut conserver davantage d’historique récent.",
@@ -1562,7 +1587,7 @@ export const fr = {
         title: "Recherche web",
         images: "Afficher les images de la recherche web",
         imagesDescription:
-          "Permet à la recherche web de renvoyer des images et en récupère une pour chaque élément listé dans une réponse. Unsloth télécharge et redimensionne les vignettes : le navigateur ne contacte jamais les hébergeurs d'images.",
+          "Inclut des images dans les résultats de recherche.",
       },
       artifacts: {
         title: "Canvas",

@@ -1138,7 +1138,7 @@ def test_a_second_account_cannot_start_the_same_dataset_download(monkeypatch):
     monkeypatch.setattr(downloads, "_deleting", set(), raising = False)
     monkeypatch.setattr(downloads, "resolve_cached_repo_id_case", lambda repo_id, **_k: repo_id)
     monkeypatch.setattr(
-        downloads.download_registry, "download_transport_unavailable_reason", lambda _t: None
+        downloads.download_registry, "download_transport_unavailable_reason", lambda _t, **_kw: None
     )
     monkeypatch.setattr(downloads.download_manifest, "clear_cancel_marker", lambda *a, **k: None)
     monkeypatch.setattr(downloads.account_access, "authorize_download", lambda *a, **k: None)
@@ -1167,7 +1167,7 @@ def test_dataset_download_request_authorizes_before_reporting_a_foreign_job(monk
     monkeypatch.setattr(downloads, "_deleting", set(), raising = False)
     monkeypatch.setattr(downloads, "resolve_cached_repo_id_case", lambda repo_id, **_k: repo_id)
     monkeypatch.setattr(
-        downloads.download_registry, "download_transport_unavailable_reason", lambda _t: None
+        downloads.download_registry, "download_transport_unavailable_reason", lambda _t, **_kw: None
     )
     monkeypatch.setattr(downloads.download_manifest, "clear_cancel_marker", lambda *a, **k: None)
     monkeypatch.setattr(

@@ -446,6 +446,13 @@ class TestRuntimePatterns:
             )
             assert name in runtime_patterns_for_choice(choice)
 
+    def test_fit_params_kept_on_macos(self):
+        for kind in ("macos-arm64", "macos-x64"):
+            choice = AssetChoice(
+                repo = "", tag = "", name = "", url = "", source_label = "", install_kind = kind
+            )
+            assert "llama-fit-params" in runtime_patterns_for_choice(choice)
+
 
 # TEST: install_llama_prebuilt.py -- HostInfo.has_rocm field
 

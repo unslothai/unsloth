@@ -2533,28 +2533,26 @@ export function SharedComposer({
               {pinnedPlusItems.map((id) => (
                 <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
               ))}
-              {overflowPlusItems.length > 0 ? (
-                <DropdownMenuSub>
-                  <DropdownMenuSubTrigger>
-                    <MoreHorizontalIcon className="size-4" />
-                    More
-                  </DropdownMenuSubTrigger>
-                  <DropdownMenuSubContent className="unsloth-plus-menu w-[248px]">
-                    {overflowPlusItems.map((id) => (
-                      <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
-                    ))}
-                  </DropdownMenuSubContent>
-                </DropdownMenuSub>
-              ) : null}
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                onSelect={() => useSettingsDialogStore.getState().openDialog("chat", {
-                  scrollTarget: "chat-composer",
-                })}
-              >
-                <SlidersHorizontalIcon className="size-4" />
-                {t("composerSettings.settings")}
-              </DropdownMenuItem>
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>
+                  <MoreHorizontalIcon className="size-4" />
+                  More
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent className="unsloth-plus-menu w-[248px]">
+                  {overflowPlusItems.map((id) => (
+                    <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
+                  ))}
+                  {overflowPlusItems.length > 0 && <DropdownMenuSeparator />}
+                  <DropdownMenuItem
+                    onSelect={() => useSettingsDialogStore.getState().openDialog("chat", {
+                      scrollTarget: "chat-composer",
+                    })}
+                  >
+                    <SlidersHorizontalIcon className="size-4" />
+                    {t("composerSettings.settings")}
+                  </DropdownMenuItem>
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
             </DropdownMenuContent>
           </DropdownMenu>
           {/* Active in compare mode; sits first. Click to exit back to single chat. */}

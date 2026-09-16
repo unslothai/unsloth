@@ -46,6 +46,14 @@ sys.path.insert(0, str(CI_DIR))
 
 import launch  # noqa: E402
 
+# One worker for this file. The tests below start a real launcher and signal it, then give it
+# _DEATH_BUDGET_SEC to die; under `-n 4` with xdist's default scheduling four of them land on four
+# workers of a four-core runner, and the budget stops measuring "did the handler run" and starts
+# measuring "was the child ever scheduled". That is how CI produced a 120s timeout whose own
+# faulthandler stack showed the child still parked on the stall line, having never reached its
+# handler. Needs `--dist loadgroup`, which the jobs running this file pass.
+pytestmark = pytest.mark.xdist_group(name = "kaggle_launch_signals")
+
 
 class _StubKaggleApi:
     """A client that can say WHICH account it is, because the real one can.
