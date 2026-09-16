@@ -61,9 +61,9 @@ def test_uv_cmd_targets_this_interpreter_with_mlx_packages(monkeypatch):
     # mlx-vlm keeps a floor so the resolver cannot backtrack to an old one that
     # imports but breaks VLM Train/Export, and a ceiling so this unattended
     # install cannot cross a major line on its own.
-    assert "mlx-vlm>=0.4.4,<0.7.0" in cmd
+    assert "mlx-vlm>=0.4.4,<=0.7.1" in cmd
     # Pinned, not floored: see _MLX_INSTALL_SPECS.
-    assert "mlx==0.32.1" in cmd
+    assert "mlx==0.32.2" in cmd
     assert "mlx-lm==0.31.3" in cmd
     # Look the requirement up by name rather than by prefix. Asserting on
     # startswith("mlx==") could only ever be checked on a spec that already
@@ -221,7 +221,7 @@ def test_repair_rejects_inadequate_stack(monkeypatch):
 def test_inadequate_stack_warning_names_the_floors_not_the_install_pins(monkeypatch):
     # The gate this message reports on is mlx_stack_available(), which tests the
     # floors. Quoting the install pins instead would tell an operator running a
-    # perfectly usable mlx 0.33 that they need exactly 0.32.1.
+    # perfectly usable mlx 0.33 that they need exactly 0.32.2.
     warnings = []
     # Pin both, or this test measures the host. attempt_mlx_repair returns early
     # when _uv_executable() finds nothing, long before the message under test, so

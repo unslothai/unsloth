@@ -30,11 +30,11 @@ _UNRESOLVED_PYTHON_MARKER = "No virtual environment or system Python installatio
 _MLX_MIN_VERSIONS = {"mlx": "0.22.0", "mlx-lm": "0.31.2", "mlx-vlm": "0.4.4"}
 _MLX_PACKAGE_NAMES = tuple(_MLX_MIN_VERSIONS)
 _MLX_RUNTIME_IMPORTS = ("mlx.core", "mlx_lm", "mlx_lm.sample_utils", "mlx_vlm")
-# What the self-heal INSTALLS, as opposed to the floors above, which judge a stack that is already there. Pinned rather than floored because this install is unattended and default-on and mlx ships breaking changes in patch releases: 0.32.1 broke model loading here (unslothai/unsloth#9466). Keep in sync with unsloth-zoo's pyproject darwin deps; mlx-vlm stays a range so the resolver can pick 0.6.15, where the installer overrides mlx-vlm's transformers requirement, and 0.6.4 under the plain cap. 0.32.1 is chosen with its known defect: it segfaults at interpreter finalization when a fused Metal custom kernel is the last work a process did, worked around in tests/_run_then_exit_hard.py, while staying on 0.32.0 would give back mlx#3833, where two fast.metal_kernel instances sharing a name but not a source run the first kernel's code for the second.
+# What the self-heal INSTALLS, as opposed to the floors above, which judge a stack that is already there. Pinned rather than floored because this install is unattended and default-on and mlx ships breaking changes in patch releases: 0.32.1 broke model loading here (unslothai/unsloth#9466). Keep in sync with unsloth-zoo's pyproject darwin deps; mlx-vlm stays a range so the resolver can pick 0.7.1, where the installer overrides mlx-vlm's transformers requirement, and 0.6.4 under the plain cap. mlx moves to 0.32.2 because mlx-vlm 0.7.x floors it there; that release also retires the interpreter-finalization segfault 0.32.1 hit when a fused Metal custom kernel was the last work a process did, and still carries the fix for mlx#3833, where two fast.metal_kernel instances sharing a name but not a source ran the first kernel's code for the second.
 _MLX_INSTALL_SPECS = {
-    "mlx": "==0.32.1",
+    "mlx": "==0.32.2",
     "mlx-lm": "==0.31.3",
-    "mlx-vlm": ">=0.4.4,<0.7.0",
+    "mlx-vlm": ">=0.4.4,<=0.7.1",
 }
 MLX_PACKAGES = tuple(f"{name}{spec}" for name, spec in _MLX_INSTALL_SPECS.items())
 _MLX_REINSTALL_ARGS = tuple(
@@ -346,7 +346,7 @@ def attempt_mlx_repair(*, timeout: int = _REPAIR_TIMEOUT_S) -> bool:
         logger.warning(
             "MLX self-heal produced an incomplete or too-old MLX stack "
             "(need %s); staying chat-only.",
-            # The floors, not MLX_PACKAGES: the gate above tests the floors, so quoting the install pins would tell someone on a usable mlx 0.33 that they need exactly 0.32.1.
+            # The floors, not MLX_PACKAGES: the gate above tests the floors, so quoting the install pins would tell someone on a usable mlx 0.33 that they need exactly 0.32.2.
             ", ".join(f"{name}>={ver}" for name, ver in _MLX_MIN_VERSIONS.items()),
         )
         return False

@@ -202,7 +202,7 @@ def test_mlx_command_preserves_pins_and_interpreter_on_fallback(monkeypatch, ret
     if len(commands) > 1:
         assert "--upgrade" in commands[1]
         assert "--upgrade-package" not in commands[1]
-        # ...and no project twice: pip refuses "mlx==0.32.1 mlx" with "Double requirement given".
+        # ...and no project twice: pip refuses "mlx==0.32.2 mlx" with "Double requirement given".
         projects = [
             arg.split(";")[0].split("[")[0].split("=")[0].split("<")[0].split(">")[0].strip()
             for arg in commands[1]
@@ -227,7 +227,7 @@ def test_mlx_command_preserves_pins_and_interpreter_on_fallback(monkeypatch, ret
 def test_mlx_pin_floor_matches_the_published_wheels(
     monkeypatch, python_version, macos_major, installable
 ):
-    """0.32.1 ships macosx_14_0_arm64 wheels, no sdist, and the pinned set starts at cp310."""
+    """0.32.2 ships macosx_14_0_arm64 wheels, no sdist, and the pinned set starts at cp310."""
     monkeypatch.setattr(stack.sys, "version_info", python_version)
     monkeypatch.setattr(stack, "_macos_release_major", Mock(return_value = macos_major))
     assert stack._mlx_pins_are_installable() is installable
@@ -236,9 +236,9 @@ def test_mlx_pin_floor_matches_the_published_wheels(
 def test_pin_floor_is_revisited_whenever_the_pins_move():
     """A pin bumped without its floor silently starts failing installs, so tie them here."""
     assert _repair_specs() == {
-        "mlx": "==0.32.1",
+        "mlx": "==0.32.2",
         "mlx-lm": "==0.31.3",
-        "mlx-vlm": ">=0.4.4,<0.7.0",
+        "mlx-vlm": ">=0.4.4,<=0.7.1",
     }
     assert (stack._MLX_MIN_PYTHON, stack._MLX_MIN_MACOS_MAJOR) == ((3, 10), 14)
 
