@@ -44,6 +44,15 @@ def _resolver_script(installed: list[tuple[str, str]], can_download: bool) -> st
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     finder = _extract(r"    function Find-CompatiblePython \{.*?\n    \}\n", source)
     installer = _extract(r"    function Install-X64Python \{.*?\n    \}\n", source)
+    # The selection consults the ARM64 opt-out, so the real reader comes with it rather than
+    # a stub: a stub is a second copy of the thing under test, and without it the extracted
+    # function calls a command this scope does not have and the whole run aborts.
+    opt_out = _extract(r"    function Test-Arm64PythonOptOut \{.*?\n    \}\n", source)
+    # `Install-X64Python` asks this before anything else, and without it the extracted
+    # function aborts on an unknown command -- which is a pwsh error, not a resolver answer,
+    # so every case that reaches the x64 bootstrap failed for a reason that had nothing to
+    # do with what it was testing. Extracted too, for the same reason as the rest.
+    conda_active = _extract(r"    function Test-ActiveCondaEnvironment \{.*?\n    \}\n", source)
 
     names = [f"Py{minor.replace('.', '')}{arch}.exe" for minor, arch in installed]
     table = ", ".join(
@@ -102,6 +111,8 @@ function Get-PythonPlatformTag {{
 }}
 function Refresh-SessionPath {{ }}
 function Install-PythonFromPythonOrg {{ param([string]$Arch = "") return {downloaded} }}
+{opt_out}
+{conda_active}
 {finder}
 {installer}
 # The caller's ARM64 swap, condensed to what decides the interpreter.
@@ -114,6 +125,23 @@ if ($found) {{ Write-Output "$($found.Version)|$($found.Arch)" }} else {{ Write-
 """
 
 
+def _environment_without_the_arm64_opt_out() -> dict:
+    """These cases are the DEFAULT ARM64 host, which is the one that must prefer x64.
+
+    UNSLOTH_ALLOW_ARM64_PYTHON now reaches the selection rather than only the swap after it,
+    so a developer who happens to have it exported would flip every expectation below and
+    read as a regression in the resolver.
+    """
+    environment = os.environ.copy()
+    environment.pop("UNSLOTH_ALLOW_ARM64_PYTHON", None)
+    # And these cases are not inside a conda environment either: `Install-X64Python` takes a
+    # different branch there, and a developer running the suite from one would read as a
+    # resolver regression.
+    environment.pop("CONDA_PREFIX", None)
+    environment.pop("CONDA_DEFAULT_ENV", None)
+    return environment
+
+
 def _pwsh(script: str) -> str:
     # Every ARM64 case below is decided by the one "version|arch" line this run prints, and check = True means a pwsh
     # that aborts at startup would surface as the resolver block itself throwing.
@@ -122,7 +150,7 @@ def _pwsh(script: str) -> str:
         check = True,
         capture_output = True,
         text = True,
-        env = os.environ.copy(),
+        env = _environment_without_the_arm64_opt_out(),
     )
     return result.stdout.strip()
 

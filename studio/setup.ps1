@@ -274,7 +274,22 @@ function Test-ActiveCondaEnvironment {
 # environments it was activated on top of, and the base installation. Mirrors install.ps1.
 function Get-ActiveCondaPrefixes {
     $prefixes = New-Object System.Collections.Generic.List[string]
-    foreach ($value in @($env:CONDA_PREFIX, $env:CONDA_PREFIX_1, $env:CONDA_PREFIX_2, $env:CONDA_PREFIX_3)) {
+    if (-not [string]::IsNullOrWhiteSpace($env:CONDA_PREFIX)) { $prefixes.Add($env:CONDA_PREFIX) }
+    # Enumerated, not a fixed list. `conda activate --stack` records the outer
+    # environments as CONDA_PREFIX_1, _2, _3, _4 ... with CONDA_SHLVL counting them, and
+    # a hard-coded tail of three silently dropped everything past the fourth
+    # environment: their PATH entries then sorted after Machine and User, which inverts
+    # the ordering the stack established. CONDA_SHLVL is the count conda itself keeps,
+    # and the loop carries on past a gap in case a shell has been left with one, with a
+    # ceiling so a bad value cannot spin.
+    $levels = 0
+    if (-not [string]::IsNullOrWhiteSpace($env:CONDA_SHLVL)) {
+        [void][int]::TryParse($env:CONDA_SHLVL, [ref]$levels)
+    }
+    if ($levels -lt 1) { $levels = 1 }
+    if ($levels -gt 64) { $levels = 64 }
+    for ($level = 1; $level -le $levels; $level++) {
+        $value = [Environment]::GetEnvironmentVariable("CONDA_PREFIX_$level")
         if (-not [string]::IsNullOrWhiteSpace($value)) { $prefixes.Add($value) }
     }
     if (-not [string]::IsNullOrWhiteSpace($env:_CONDA_ROOT)) { $prefixes.Add($env:_CONDA_ROOT) }

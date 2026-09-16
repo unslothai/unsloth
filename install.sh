@@ -6332,13 +6332,43 @@ _path_has_dir() {
 _unsloth_repoint_rc_line() {
     [ -f "$1" ] || return 1
     grep -qxF "$2" "$1" 2>/dev/null || return 1
-    _urrl_tmp="$1.unsloth-tmp.$$"
-    if awk -v old="$2" -v new="$3" '$0 == old { print new; next } { print }' "$1" > "$_urrl_tmp" 2>/dev/null \
-        && cat "$_urrl_tmp" > "$1" 2>/dev/null; then
-        rm -f "$_urrl_tmp" 2>/dev/null
+    # Stage beside the real file, then rename onto it. `cat tmp > file` truncated the user's
+    # profile first and wrote it back afterwards: an interrupt or an I/O error anywhere in
+    # between left a half-written rc file, the failure branch then deleted the only complete
+    # copy, and the next login sourced the wreckage. A rename is atomic, so the file is
+    # either the old one or the new one and never neither.
+    #
+    # Onto the real file, not the name: a dotfile managed by chezmoi, stow or a dotfiles
+    # repo is a symlink, and renaming over the LINK replaces it with a regular file, which
+    # detaches the profile from whatever manages it. Resolving the chain instead means the
+    # link keeps pointing where it did. Walked by hand because `readlink -f` is a GNU
+    # extension and this runs on macOS too; the hop cap breaks cycles, and a link that
+    # cannot be read leaves the name as it was and fails the test below rather than guessing.
+    _urrl_real="$1"
+    _urrl_hops=0
+    while [ -L "$_urrl_real" ] && [ "$_urrl_hops" -lt 40 ]; do
+        _urrl_hops=$((_urrl_hops + 1))
+        _urrl_target="$(readlink -- "$_urrl_real" 2>/dev/null)" || break
+        [ -n "$_urrl_target" ] || break
+        case "$_urrl_target" in
+            /*) _urrl_real="$_urrl_target" ;;
+            *) _urrl_real="$(dirname -- "$_urrl_real")/$_urrl_target" ;;
+        esac
+    done
+    [ -f "$_urrl_real" ] || return 1
+    _urrl_tmp="$_urrl_real.unsloth-tmp.$$"
+    # Created as a COPY, so the staged file carries the original's permission bits before a
+    # single line of it is rewritten: a 0600 rc file must not come back 0644 because the
+    # rename handed it whatever the umask says. The `>` that follows truncates that copy and
+    # leaves its mode alone.
+    if cp -- "$_urrl_real" "$_urrl_tmp" 2>/dev/null \
+        && awk -v old="$2" -v new="$3" '$0 == old { print new; next } { print }' "$_urrl_real" > "$_urrl_tmp" 2>/dev/null \
+        && mv -f -- "$_urrl_tmp" "$_urrl_real" 2>/dev/null; then
         return 0
     fi
-    rm -f "$_urrl_tmp" 2>/dev/null
+    # Nothing was written to the original on any of those failures, so the only thing to
+    # clean up is the staged copy.
+    rm -f -- "$_urrl_tmp" 2>/dev/null
     return 1
 }
 

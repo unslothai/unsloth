@@ -24,6 +24,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import stat
 import subprocess
 from pathlib import Path
 
@@ -754,3 +755,80 @@ _persist_login_path_dir "/opt/unsloth/bin" "/opt/unsloth/bin" "/opt/unsloth/bin"
     # And only the ordinary mode adds a line where there was none.
     added = "/opt/unsloth/bin" in empty.read_text(encoding = "utf-8")
     assert added is (mode != "repoint"), empty.read_text(encoding = "utf-8")
+
+
+@pytest.mark.parametrize(
+    "path",
+    [INSTALL_SH, SETUP_SH_POSIX],
+    ids = ["install.sh", "studio/setup.sh"],
+)
+def test_the_rc_repointer_never_exposes_a_truncated_rc_file(path: Path, tmp_path: Path):
+    """`cat staged > rc` truncates the user's profile before it writes a byte back.
+
+    An interrupt or an I/O error in between leaves a half-written rc file, and the failure
+    branch then deleted the staged copy, which was the only complete one left. The next
+    login sources the wreckage. A rename is atomic: the file is the old one or the new one
+    and never neither, which is asserted here by making the rename itself fail.
+    """
+    rc = tmp_path / "rc"
+    original = 'export PATH="$HOME/.local/bin:$PATH"\n# keep me\n'
+    rc.write_text(original, encoding = "utf-8")
+    script = (
+        # `mv` is what commits the rewrite, so a shell function that shadows it and fails is
+        # exactly "the commit did not complete".
+        "mv() { return 1; }\n"
+        + _shell_function(path, "_unsloth_repoint_rc_line")
+        + f'_unsloth_repoint_rc_line "{rc}"'
+        + " 'export PATH=\"$HOME/.local/bin:$PATH\"'"
+        + " 'export PATH=\"$PATH:$HOME/.local/bin\"'\n"
+        + 'echo "status=$?"\n'
+    )
+    out = subprocess.run(["sh", "-c", script], capture_output = True, text = True, timeout = 60)
+    assert "status=1" in out.stdout, (out.stdout, out.stderr)
+    # The whole point: the user's profile is intact, not empty and not half of itself.
+    assert rc.read_text(encoding = "utf-8") == original
+    assert [p.name for p in tmp_path.iterdir()] == ["rc"], "a staging file was left behind"
+
+
+def test_the_rc_repointer_keeps_the_permission_bits_it_found(tmp_path: Path):
+    """A 0600 rc file must not come back 0644 because the rename handed it the umask.
+
+    The staged file is created as a COPY for that reason, so it carries the original's bits
+    before a line of it is rewritten.
+    """
+    rc = tmp_path / "rc"
+    rc.write_text('export PATH="$HOME/.local/bin:$PATH"\n', encoding = "utf-8")
+    rc.chmod(0o600)
+    script = (
+        _shell_function(INSTALL_SH, "_unsloth_repoint_rc_line")
+        + f'_unsloth_repoint_rc_line "{rc}"'
+        + " 'export PATH=\"$HOME/.local/bin:$PATH\"'"
+        + " 'export PATH=\"$PATH:$HOME/.local/bin\"'\n"
+    )
+    subprocess.run(["sh", "-c", script], capture_output = True, text = True, timeout = 60)
+    assert rc.read_text(encoding = "utf-8") == 'export PATH="$PATH:$HOME/.local/bin"\n'
+    assert stat.S_IMODE(rc.stat().st_mode) == 0o600, oct(rc.stat().st_mode)
+
+
+@pytest.mark.parametrize(
+    "path,indent",
+    [(INSTALL_PS1, "    "), (SETUP_PS1, "")],
+    ids = ["install.ps1", "studio/setup.ps1"],
+)
+def test_every_stacked_conda_prefix_is_enumerated(path: Path, indent: str):
+    """`conda activate --stack` records the outer environments as CONDA_PREFIX_1, _2, _3,
+    _4 and on, and CONDA_SHLVL counts them.
+
+    A fixed list ending at _3 dropped everything past the fourth environment, so
+    `Refresh-SessionPath` left those prefixes out of the conda front and their entries
+    sorted after Machine and User -- the inverse of the ordering the stack established.
+    """
+    body = _function(path, indent, "Get-ActiveCondaPrefixes")
+    assert "CONDA_SHLVL" in body, body
+    assert 'GetEnvironmentVariable("CONDA_PREFIX_$level")' in body, body
+    # And no hard-coded tail is left to go stale again.
+    for stale in ("CONDA_PREFIX_1", "CONDA_PREFIX_2", "CONDA_PREFIX_3"):
+        assert f"$env:{stale}" not in body, (stale, body)
+    # A bad or absent CONDA_SHLVL must not spin or skip the active environment.
+    assert "$levels -gt 64" in body, body
+    assert "$env:CONDA_PREFIX)" in body, body
