@@ -387,10 +387,14 @@ jobs:
             torch_pins: >-
               'torch==2.6.0' 'torchvision==0.21.0' 'torchcodec>=0.2,<0.3'
             pkg_pins: >-
-              'transformers==4.57.6' 'peft==0.18.0'
+              'transformers==4.51.3' 'peft==0.18.0'
               'accelerate>=1.0' 'datasets>=3.4,<4.4' 'bitsandbytes>=0.45.5'
               'triton==3.2.0' hf_transfer
-            trl_pin: 'trl==0.22.2'
+            # The declared minimum, like the zoo-imports floor lane above. This lane runs
+            # version-sensitive trainer transforms the import-only lane never reaches, so
+            # pinning above the floor left the advertised low end of that behaviour
+            # untested and green.
+            trl_pin: 'trl==0.18.2'
           - slug: latest
             python: '3.12'
             torch_pins: >-
