@@ -243,11 +243,26 @@ WIN_ARM64_FLOORS = [
 )
 def test_the_win_arm64_floor_is_the_first_release_that_has_a_wheel(relpath, dist, floor):
     text = (REQ_ROOT / relpath).read_text(encoding = "utf-8")
-    wanted = f'{dist}>={floor}; sys_platform == "win32" and platform_machine == "ARM64"'
-    assert wanted in text, f"{relpath} no longer floors {dist} at {floor}"
+    marker = 'sys_platform == "win32" and platform_machine == "ARM64"'
+    # Either operator satisfies what this test is for. The floor exists so the resolver is not
+    # pushed above the first release carrying a win_arm64 wheel; an exact pin at that same
+    # version is that floor with the ceiling closed too. It is not interchangeable in the other
+    # direction: scan_packages_baseline.json keys its reviewed-benign findings by a hash of the
+    # scanned file's contents, so a dist recorded there has to be pinned exactly or the security
+    # audit reds on whatever unrelated PR is open the day upstream publishes.
+    wanted = {
+        f"{dist}>={floor}; {marker}",
+        f"{dist}=={floor}; {marker}",
+    }
+    assert wanted & set(
+        line.strip() for line in text.splitlines()
+    ), f"{relpath} no longer floors {dist} at {floor}"
     # And nothing else floors the same dist higher on that marker.
     for line in text.splitlines():
         line = line.strip()
-        if not line.startswith(f"{dist}>=") or 'platform_machine == "ARM64"' not in line:
+        if (
+            not line.startswith((f"{dist}>=", f"{dist}=="))
+            or 'platform_machine == "ARM64"' not in line
+        ):
             continue
-        assert line == wanted, f"{relpath}: a second ARM64 floor for {dist}: {line}"
+        assert line in wanted, f"{relpath}: a second ARM64 floor for {dist}: {line}"
