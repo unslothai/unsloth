@@ -115,6 +115,7 @@ def _call_route(
     kv_unified: bool | None = None,
     swa_full: bool | None = None,
     no_mmproj_offload: bool | None = None,
+    tensor_parallel: bool = False,
 ):
     """Drive the real handler with the quant already resolved to *path*."""
     monkeypatch.setattr(
@@ -144,7 +145,7 @@ def _call_route(
             disable_vision = disable_vision,
             n_batch = None,
             n_ubatch = None,
-            tensor_parallel = False,
+            tensor_parallel = tensor_parallel,
             # The four launch knobs the route resolves itself when omitted. Passed
             # explicitly, and as real None rather than left out, because a direct call
             # leaves an omitted parameter holding its fastapi Query sentinel; the route
@@ -720,6 +721,38 @@ class TestTheEstimateMatchesTheConfiguredLoad:
             monkeypatch, path = gguf, repo_id = str(tmp_path), is_local = True
         )
         assert plain["projector_bytes"], "an unasked, uninherited projector is on the card"
+
+    def test_flash_attention_off_cannot_take_a_tensor_split(self):
+        """llama.cpp refuses the pair.
+
+        "SPLIT_MODE_TENSOR requires flash_attn to be enabled" returns nullptr, so a request
+        for tensor mode with flash attention off cannot launch tensor at all and the loader
+        falls back to a layer split. Pricing the tensor placement for it multiplies the
+        per-device compute buffers by a card count the launch never uses, and describes a
+        process that cannot run.
+        """
+        from routes.models import _tensor_split_can_launch
+
+        assert _tensor_split_can_launch(True, False) is False
+        assert _tensor_split_can_launch(True, True) is True
+        # Not resolved is not evidence that the child runs without it, and an estimate is not
+        # the place to invent one.
+        assert _tensor_split_can_launch(True, None) is True
+        # And a layer split was never a tensor split to begin with.
+        assert _tensor_split_can_launch(False, True) is False
+        assert _tensor_split_can_launch(False, False) is False
+
+    def test_the_estimate_prices_the_split_the_launch_can_take(self):
+        """The helper is only worth anything if the device count goes through it."""
+        import inspect
+
+        from routes import models as models_module
+
+        body = inspect.getsource(models_module.get_kv_cache_estimate)
+        decide = body.index("_tensor_split_can_launch(")
+        devices = body.index("_planner_devices = max(")
+        assert decide < devices, (decide, devices)
+        assert "_effective_tp = False" in body[decide:devices]
 
     def test_a_model_with_no_projector_reports_none(self, monkeypatch, tmp_path):
         gguf = _write_gguf(tmp_path / "text-Q4_K_M.gguf", _MLA_NO_HEAD)

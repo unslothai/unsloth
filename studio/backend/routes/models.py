@@ -2177,6 +2177,23 @@ async def _require_model_access_or_caller_token(
         await asyncio.to_thread(account_access.authorize_download, model_name, "model", hf_token)
 
 
+def _tensor_split_can_launch(tensor_parallel, flash_attn) -> bool:
+    """Whether a load asking for a tensor split can actually take one.
+
+    llama.cpp refuses the pair: "SPLIT_MODE_TENSOR requires flash_attn to be enabled" returns
+    nullptr, so a request for tensor mode with flash attention off cannot launch tensor at all
+    and the loader falls back to a layer split. Pricing the tensor placement for it multiplies
+    the per-device compute buffers by a card count the launch never uses, and describes a
+    process that cannot run.
+
+    Only a RESOLVED False refuses. None is "not resolved", which is not evidence that the
+    child will run without it, and an estimate is not the place to invent one.
+    """
+    if not tensor_parallel:
+        return False
+    return flash_attn is not False
+
+
 @router.get("/config/{model_name:path}")
 async def get_model_config(
     model_name: str,
@@ -4245,6 +4262,14 @@ async def get_kv_cache_estimate(
                     _effective_tp = _effective_tensor_parallel(None, bool(tensor_parallel))
                 except Exception as e:
                     logger.debug(f"tensor mode resolution failed for '{repo_id}': {e}")
+                if _effective_tp and not _tensor_split_can_launch(
+                    _effective_tp, _plan_kwargs.get("flash_attn")
+                ):
+                    logger.debug(
+                        f"'{repo_id}': flash attention is off, so the launch cannot take a tensor "
+                        "split; pricing the layer split it would fall back to"
+                    )
+                    _effective_tp = False
                 _planner_devices = 1
                 if _effective_tp:
                     from routes.inference import (
