@@ -597,8 +597,10 @@ class _EveryLineCarriesThePrefix(logging.Formatter):
         first, newline, rest = text.partition("\n")
         if not newline:
             return text
-        return first + "\n" + "\n".join(
-            LOG_RECORD_CONTINUATION_PREFIX + line for line in rest.split("\n")
+        return (
+            first
+            + "\n"
+            + "\n".join(LOG_RECORD_CONTINUATION_PREFIX + line for line in rest.split("\n"))
         )
 
     def __getattr__(self, name: str):

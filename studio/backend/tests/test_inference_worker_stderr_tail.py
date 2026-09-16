@@ -980,9 +980,13 @@ def test_the_worker_marks_every_continuation_line_of_a_record():
     assert mark_log_record_continuations(logger_object) == 0
 
     record = logger_object.makeRecord(
-        "unsloth-test-marking", logging.ERROR, __file__, 1,
+        "unsloth-test-marking",
+        logging.ERROR,
+        __file__,
+        1,
         "generated text: line one\nRuntimeError: not really\nTraceback (most recent call last):",
-        (), None,
+        (),
+        None,
     )
     formatted = handler.formatter.format(record)
     lines = formatted.split("\n")
@@ -990,7 +994,13 @@ def test_the_worker_marks_every_continuation_line_of_a_record():
     assert all(line.startswith(MARK) for line in lines[1:]), lines
 
     single = logger_object.makeRecord(
-        "unsloth-test-marking", logging.ERROR, __file__, 1, "one line", (), None,
+        "unsloth-test-marking",
+        logging.ERROR,
+        __file__,
+        1,
+        "one line",
+        (),
+        None,
     )
     assert "\n" not in handler.formatter.format(single)
 
@@ -1003,9 +1013,12 @@ def test_a_logged_traceback_is_not_returned_when_the_worker_dies_silently():
     frames to whoever asked second."""
     logged = (
         "2026-09-16 10:00:03 worker: Generation error: another account's prompt was rejected\n"
-        + MARK + "Traceback (most recent call last):\n"
-        + MARK + '  File "/home/alice/.unsloth/studio/worker.py", line 9, in handle\n'
-        + MARK + "ValueError: another account's prompt was rejected\n"
+        + MARK
+        + "Traceback (most recent call last):\n"
+        + MARK
+        + '  File "/home/alice/.unsloth/studio/worker.py", line 9, in handle\n'
+        + MARK
+        + "ValueError: another account's prompt was rejected\n"
     )
     public = _orchestrator_with_capture(logged)._public_worker_stderr_tail()
     assert public == "", public
@@ -1017,9 +1030,12 @@ def test_a_marked_continuation_that_reads_like_a_diagnostic_is_still_content():
     a continuation by what it says is what let that content out."""
     content = (
         "2026-09-16 10:00:01 audio_codecs.decode_bicodec: generated text:\n"
-        + MARK + "RuntimeError: another account's private prompt\n"
-        + MARK + "Fatal Python error: also theirs\n"
-        + MARK + "Killed\n"
+        + MARK
+        + "RuntimeError: another account's private prompt\n"
+        + MARK
+        + "Fatal Python error: also theirs\n"
+        + MARK
+        + "Killed\n"
     )
     public = _orchestrator_with_capture(content)._public_worker_stderr_tail()
     assert public == "", public
@@ -1033,7 +1049,8 @@ def test_a_crash_after_a_marked_record_is_still_the_crash():
     after a log line, which is most of them."""
     text = (
         "2026-09-16 10:00:01 audio_codecs.decode_bicodec: generated text:\n"
-        + MARK + "another account's private prompt\n"
+        + MARK
+        + "another account's private prompt\n"
         + TRACEBACK
     )
     public = _orchestrator_with_capture(text)._public_worker_stderr_tail()
@@ -1061,7 +1078,8 @@ def test_a_marked_record_under_a_diagnostic_is_not_adopted_by_it():
     marker says what the indentation only suggests."""
     text = (
         "terminate called after throwing an instance of 'c10::Error'\n"
-        + MARK + "another account's private prompt\n"
+        + MARK
+        + "another account's private prompt\n"
         "  what():  CUDA error: device-side assert triggered\n"
     )
     public = _orchestrator_with_capture(text)._public_worker_stderr_tail()
