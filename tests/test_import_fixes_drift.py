@@ -1343,20 +1343,26 @@ def test_rope_theta_snapshot_still_reads_a_flat_base():
 
     from unsloth.import_fixes import _rope_theta_snapshot
 
-    assert _rope_theta_snapshot(
-        SimpleNamespace(rope_parameters = {"rope_type": "linear", "rope_theta": 500000.0})
-    ) == 500000.0
+    assert (
+        _rope_theta_snapshot(
+            SimpleNamespace(rope_parameters = {"rope_type": "linear", "rope_theta": 500000.0})
+        )
+        == 500000.0
+    )
     assert _rope_theta_snapshot(SimpleNamespace(rope_parameters = {"rope_type": "linear"})) is None
     assert _rope_theta_snapshot(SimpleNamespace(rope_parameters = object())) is None
     assert _rope_theta_snapshot(SimpleNamespace()) is None
     # Per-layer with no bases anywhere is None, not an empty dict, so the global
     # attribute path below it still runs.
-    assert _rope_theta_snapshot(
-        SimpleNamespace(
-            rope_parameters = {"full_attention": {"rope_type": "linear"}},
-            layer_types = ["full_attention"],
+    assert (
+        _rope_theta_snapshot(
+            SimpleNamespace(
+                rope_parameters = {"full_attention": {"rope_type": "linear"}},
+                layer_types = ["full_attention"],
+            )
         )
-    ) is None
+        is None
+    )
 
 
 def test_a_per_layer_snapshot_never_becomes_a_scalar_rope_theta():
