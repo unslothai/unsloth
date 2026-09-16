@@ -694,3 +694,44 @@ def test_the_lora_docstring_does_not_promise_an_adapter_only_directory():
     assert promises, "the save_method list no longer names adapter_model.safetensors"
     for promise in promises:
         assert "no base-model weights" in promise, promise
+
+
+@pytest.mark.parametrize(
+    "spelling", ["lora", "LoRA", " lora ", "  LORA", "lora\t", " Lora "]
+)
+def test_the_sentence_transformer_normaliser_keeps_whitespace_aliases_recognisable(spelling):
+    """`_normalize_save_method` runs BEFORE the adapter guard, so it must not turn a
+    spelling `_is_adapter_save_method` accepts into one it does not.
+
+    It folded spaces to underscores without stripping first, so `" lora "` became
+    `"_lora_"`, the guard returned False, and the modules-based SentenceTransformer path
+    forwarded the value to `auto_model.save_pretrained_merged` instead of raising the
+    NotImplementedError the two sibling branches raise. That is the merge fallthrough this
+    PR exists to remove, reached through a spelling the router itself calls LoRA.
+    """
+    from unsloth.models.sentence_transformer import _normalize_save_method
+    from unsloth.save import _is_adapter_save_method
+
+    assert _is_adapter_save_method(spelling), "the router already calls this spelling LoRA"
+    assert _is_adapter_save_method(_normalize_save_method(spelling)), (
+        f"_normalize_save_method({spelling!r}) produced "
+        f"{_normalize_save_method(spelling)!r}, which the adapter guard no longer accepts"
+    )
+
+
+@pytest.mark.parametrize(
+    "spelling, expected",
+    [
+        ("merged_16bit", "merged_16bit"),
+        (" MERGED 16BIT ", "merged_16bit"),
+        ("merged 16bit", "merged_16bit"),
+        # NEGATIVE CONTROL: a non-string is handed back untouched (Studio passes None
+        # for whisper), and an unrelated method is not rewritten into a known one.
+        (None, None),
+        ("fp8", "fp8"),
+    ],
+)
+def test_the_sentence_transformer_normaliser_is_otherwise_unchanged(spelling, expected):
+    from unsloth.models.sentence_transformer import _normalize_save_method
+
+    assert _normalize_save_method(spelling) == expected

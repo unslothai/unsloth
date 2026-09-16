@@ -2419,9 +2419,10 @@ def unsloth_save_pretrained_merged(
     1. `16bit`: Merge LoRA into float16 weights. Useful for GGUF / llama.cpp.
     2.  `4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
     3.  `lora`: Save the LoRA adapter itself, with no merging: `adapter_config.json`
-        plus `adapter_model.safetensors`, and no base-model weights at all. Passing
-        `tokenizer` also writes that tokenizer's files, exactly as the merge methods do.
-        Useful for HF inference.
+        plus `adapter_model.safetensors`, and no base-model weights at all (the adapter
+        is written as `adapter_model.bin` instead when `safe_serialization = False`).
+        Passing `tokenizer` also writes that tokenizer's files, exactly as the merge
+        methods do. Useful for HF inference.
     4.  FP8 / FP4 compressed export for vLLM (`fp8`, `mxfp4`, `nvfp4`, `mxfp8`): keeps the
         16bit merge at `save_directory` and writes the quantized checkpoint to
         `save_directory + "-<fmt>"`.
@@ -2552,9 +2553,10 @@ def unsloth_push_to_hub_merged(
     1. `16bit`: Merge LoRA into float16 weights. Useful for GGUF / llama.cpp.
     2.  `4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
     3.  `lora`: Save the LoRA adapter itself, with no merging: `adapter_config.json`
-        plus `adapter_model.safetensors`, and no base-model weights at all. Passing
-        `tokenizer` also writes that tokenizer's files, exactly as the merge methods do.
-        Useful for HF inference.
+        plus `adapter_model.safetensors`, and no base-model weights at all (the adapter
+        is written as `adapter_model.bin` instead when `safe_serialization = False`).
+        Passing `tokenizer` also writes that tokenizer's files, exactly as the merge
+        methods do. Useful for HF inference.
     4.  FP8 / FP4 compressed export for vLLM: `fp8`, `mxfp4`, `nvfp4`, `mxfp8`.
 
     `safe_serialization` defaults to safetensors. `None` is accepted and means the same
@@ -5775,9 +5777,10 @@ def unsloth_generic_save_pretrained_merged(
     1. `16bit`: Merge LoRA into float16 weights. Useful for GGUF / llama.cpp.
     2.  `4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
     3.  `lora`: Save the LoRA adapter itself, with no merging: `adapter_config.json`
-        plus `adapter_model.safetensors`, and no base-model weights at all. Passing
-        `tokenizer` also writes that tokenizer's files, exactly as the merge methods do.
-        Useful for HF inference.
+        plus `adapter_model.safetensors`, and no base-model weights at all (the adapter
+        is written as `adapter_model.bin` instead when `safe_serialization = False`).
+        Passing `tokenizer` also writes that tokenizer's files, exactly as the merge
+        methods do. Useful for HF inference.
     4.  FP8 / FP4 compressed export for vLLM via llm-compressor:
         `fp8` (dynamic W8A8), `mxfp4`, `nvfp4` (W4A4), `mxfp8`. The LoRA is merged to 16bit at
         `save_directory`, then a quantized checkpoint is written to `save_directory + "-<fmt>"`.
@@ -5907,9 +5910,10 @@ def unsloth_generic_push_to_hub_merged(
     1. `16bit`: Merge LoRA into float16 weights. Useful for GGUF / llama.cpp.
     2.  `4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
     3.  `lora`: Save the LoRA adapter itself, with no merging: `adapter_config.json`
-        plus `adapter_model.safetensors`, and no base-model weights at all. Passing
-        `tokenizer` also writes that tokenizer's files, exactly as the merge methods do.
-        Useful for HF inference.
+        plus `adapter_model.safetensors`, and no base-model weights at all (the adapter
+        is written as `adapter_model.bin` instead when `safe_serialization = False`).
+        Passing `tokenizer` also writes that tokenizer's files, exactly as the merge
+        methods do. Useful for HF inference.
     4.  FP8 / FP4 compressed export for vLLM: `fp8`, `mxfp4`, `nvfp4`, `mxfp8`.
 
     `safe_serialization` defaults to safetensors. `None` is accepted and means the same

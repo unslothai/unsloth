@@ -60,7 +60,10 @@ _CREATE_TRANSFORMER_MODULE_LOCK = threading.RLock()
 def _normalize_save_method(save_method):
     """Fold "MERGED_16BIT" and "merged 16bit" onto "merged_16bit". unsloth_save_model (save.py) normalizes case and spaces before validating, so the same spelling has to mean the same thing here, else a keyword call that worked before starts raising."""
     if isinstance(save_method, str):
-        return save_method.lower().replace(" ", "_")
+        # Stripped BEFORE the spaces are folded, or " lora " becomes "_lora_" and the
+        # adapter guard below no longer recognises the value `_is_adapter_save_method`
+        # explicitly treats as LoRA, so the request falls through to the merge path.
+        return save_method.strip().lower().replace(" ", "_")
     return save_method
 
 
