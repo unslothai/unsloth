@@ -590,7 +590,10 @@ _VAE_FALSE_TOKENS = ("0", "false", "no", "off")
 # 0.871 -> 0.422 s p50 (2.07x, same 4.93 GB peak, max-abs 0.0161 and mean-abs 6.2e-04 against a reference whose own
 # std is 1.18). But 0.45 s is 1.4 percent of a ~32 s H3 render, and dynamic=False means one compile per distinct
 # (resolution, frame count): 1427 s cold, 80 s against a warm inductor cache. A video user changes the frame count
-# far more often than 1.4 percent of a render is worth.
+# far more often than 1.4 percent of a render is worth. And the compile does not survive a bigger canvas at all:
+# 960x544x121 (eager 2.172 s) spends 35 minutes in inductor and then dies with RecursionError, because the decode is
+# a Python loop over spatial tiles x latent frames and more tiles means a deeper graph. Raising the recursion limit
+# far enough to pass 640x384 is already 20000; raising it per canvas trades an InductorError for a C-stack crash.
 _VAE_COMPILE_DENY: frozenset[str] = frozenset(
     {"AutoencoderKLQwenImage", "AutoencoderKLWan", "AutoencoderKLMiniMaxH3"}
 )
