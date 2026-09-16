@@ -306,6 +306,83 @@ def test_the_installed_triton_is_not_flagged():
     ), f"the installed triton would fail at the first kernel launch: {offenders}"
 
 
+@pytest.mark.parametrize(
+    "prefix,suffix,named",
+    [
+        ("#define PY_SSIZE_T_CLEAN\n", "", False),
+        ("#  define   PY_SSIZE_T_CLEAN 1\n", "", False),
+        ("/* PY_SSIZE_T_CLEAN is not needed here */\n", "", True),
+        ("#define PY_SSIZE_T_CLEAN\n#undef PY_SSIZE_T_CLEAN\n", "", True),
+        ("", "#define PY_SSIZE_T_CLEAN\n", True),
+        ('const char *why = "PY_SSIZE_T_CLEAN";\n', "", True),
+    ],
+)
+def test_the_macro_only_counts_when_it_is_in_effect(monkeypatch, tmp_path, prefix, suffix, named):
+    """CPython requires the define BEFORE Python.h. A comment, an `#undef`, a string
+    literal and a define placed after the include all leave the '#' formats unsafe, so
+    the substring test that accepted them suppressed the warning on a shim that still
+    dies at the first kernel launch."""
+    spec, driver = _fake_triton(tmp_path, prefix + _UNGUARDED_SHIM + suffix)
+    monkeypatch.setattr(sys, "version_info", (3, 12, 3))
+    monkeypatch.setattr(import_fixes.importlib.util, "find_spec", lambda name: spec)
+
+    offenders = import_fixes._triton_driver_shims_missing_py_ssize_t_clean()
+    assert offenders == ([("nvidia", str(driver))] if named else [])
+
+
+def test_the_reinstall_command_names_the_distribution_that_owns_triton(monkeypatch, tmp_path):
+    """triton-windows, pytorch-triton-rocm and pytorch-triton-xpu all provide the
+    `triton` import name, so `importlib.metadata.version("triton")` raises on them (the
+    "unknown" version) and `pip install --force-reinstall triton` installs a CUDA build
+    over a platform one instead of repairing it."""
+    spec, _driver = _fake_triton(tmp_path, _UNGUARDED_SHIM)
+    monkeypatch.setattr(sys, "version_info", (3, 12, 3))
+    monkeypatch.setattr(import_fixes.importlib.util, "find_spec", lambda name: spec)
+
+    import importlib.metadata as metadata
+
+    monkeypatch.setattr(metadata, "packages_distributions", lambda: {"triton": ["triton-windows"]})
+    monkeypatch.setattr(
+        import_fixes,
+        "importlib_version",
+        lambda name: "3.3.1.post19" if name == "triton-windows" else _raise_missing(name),
+    )
+
+    logger = _CollectingLogger()
+    monkeypatch.setattr(import_fixes, "logger", logger)
+    import_fixes.check_triton_py_ssize_t_clean()
+
+    assert len(logger.warnings) == 1, logger.warnings
+    message = logger.warnings[0]
+    assert "triton-windows==3.3.1.post19" in message
+    assert "--force-reinstall --no-cache-dir triton-windows" in message
+    assert "unknown" not in message
+
+
+def _raise_missing(name):
+    from importlib.metadata import PackageNotFoundError
+    raise PackageNotFoundError(name)
+
+
+def test_the_plain_triton_distribution_is_still_named(monkeypatch, tmp_path):
+    """The control: on an ordinary CUDA install nothing about the message changes."""
+    spec, _driver = _fake_triton(tmp_path, _UNGUARDED_SHIM)
+    monkeypatch.setattr(sys, "version_info", (3, 12, 3))
+    monkeypatch.setattr(import_fixes.importlib.util, "find_spec", lambda name: spec)
+
+    import importlib.metadata as metadata
+
+    monkeypatch.setattr(metadata, "packages_distributions", lambda: {"triton": ["triton"]})
+    monkeypatch.setattr(import_fixes, "importlib_version", lambda name: "3.3.0")
+
+    logger = _CollectingLogger()
+    monkeypatch.setattr(import_fixes, "logger", logger)
+    import_fixes.check_triton_py_ssize_t_clean()
+
+    assert "triton==3.3.0" in logger.warnings[0]
+    assert "--force-reinstall --no-cache-dir triton\n" in logger.warnings[0]
+
+
 def test_the_triton_probe_is_wired_into_gpu_init():
     source = (_UNSLOTH / "_gpu_init.py").read_text(encoding = "utf-8")
     assert "check_triton_py_ssize_t_clean()" in source, (

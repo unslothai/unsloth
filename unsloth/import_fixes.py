@@ -2017,6 +2017,75 @@ def patch_torch_missing_attribute_error():
 # CPython stopped requiring it in 3.13.
 _PY_SSIZE_T_CLEAN = "PY_SSIZE_T_CLEAN"
 
+# `#define` / `#undef PY_SSIZE_T_CLEAN` as their own directives, anchored to the start of
+# a line so a mention inside a comment or a string literal is neither.
+_PY_SSIZE_T_CLEAN_DIRECTIVE = re.compile(
+    r"^[ \t]*#[ \t]*(define|undef)[ \t]+" + _PY_SSIZE_T_CLEAN + r"\b",
+    re.M,
+)
+_PYTHON_H_INCLUDE = re.compile(r"^[ \t]*#[ \t]*include[ \t]*[<\"][^>\"]*Python\.h[>\"]", re.M)
+
+
+def _defines_py_ssize_t_clean_before_python_h(source: str) -> bool:
+    """Is the macro in effect where CPython needs it: defined, and still defined, at the
+    point Python.h is included.
+
+    The requirement is positional, not textual. CPython documents
+    `#define PY_SSIZE_T_CLEAN` immediately before `#include <Python.h>`; a definition
+    that lands after the include, one that is undefined again before it, and a bare
+    mention in a comment or a string literal all leave the '#' formats unsafe exactly as
+    if the macro were absent. The `token in source` test this replaces called all four of
+    those fixed, so the warning stayed silent on a shim that still dies at the first
+    kernel launch.
+
+    The LAST directive before the include is the one that decides, which is what makes
+    the `#define` / `#undef` pair read correctly rather than just the presence of either.
+    """
+    include = _PYTHON_H_INCLUDE.search(source)
+    if include is None:
+        return False
+    state = False
+    for directive in _PY_SSIZE_T_CLEAN_DIRECTIVE.finditer(source):
+        if directive.start() >= include.start():
+            break
+        state = directive.group(1) == "define"
+    return state
+
+
+def _triton_distribution():
+    """Which distribution owns the imported ``triton`` package, and its version.
+
+    The `triton` PyPI distribution is only one of the providers this repository supports.
+    Windows installs `triton-windows`, ROCm installs `pytorch-triton-rocm`, Intel XPU
+    installs `pytorch-triton-xpu`, and all of them land on the same `triton` import name.
+    Asking `importlib.metadata.version("triton")` on any of those raises
+    PackageNotFoundError, which is how the version used to be reported as "unknown", and
+    telling that user to `pip install --force-reinstall triton` either finds no wheel for
+    their platform or overwrites their platform build with a CUDA one.
+
+    `packages_distributions()` maps top-level import name to the distributions providing
+    it, which is the only mapping that answers this without guessing from the platform.
+    Falls back to the import name so the message still reads sensibly if the metadata is
+    missing entirely (an unpacked or vendored tree).
+    """
+    names = []
+    try:
+        from importlib.metadata import packages_distributions
+        names = list(packages_distributions().get("triton") or [])
+    except Exception:
+        names = []
+    # Prefer a provider that can actually report a version; a stale empty dist-info
+    # otherwise wins over the real one purely on ordering.
+    for name in names:
+        try:
+            return name, importlib_version(name)
+        except Exception:
+            continue
+    try:
+        return "triton", importlib_version("triton")
+    except Exception:
+        return (names[0] if names else "triton"), "unknown"
+
 
 def _triton_driver_shims_missing_py_ssize_t_clean():
     """Installed triton backend driver shims that cannot parse their own
@@ -2048,7 +2117,7 @@ def _triton_driver_shims_missing_py_ssize_t_clean():
                 continue
             if "Python.h" not in source:
                 continue
-            if _PY_SSIZE_T_CLEAN in source:
+            if _defines_py_ssize_t_clean_before_python_h(source):
                 continue
             # Only a '#' in a PyArg_Parse format needs the macro.
             if not re.search(r"PyArg_Parse\w*\([^;]*?\"[^\"]*#", source, re.S):
@@ -2084,22 +2153,19 @@ def check_triton_py_ssize_t_clean():
     if not offenders:
         return
 
-    try:
-        triton_version = importlib_version("triton")
-    except Exception:
-        triton_version = "unknown"
+    distribution, triton_version = _triton_distribution()
     python_version = ".".join(str(part) for part in sys.version_info[:3])
 
     logger.warning(
-        f"Unsloth: triton=={triton_version} ships a "
+        f"Unsloth: {distribution}=={triton_version} ships a "
         f"{', '.join(backend for backend, _ in offenders)} driver shim that includes "
         f"Python.h without defining {_PY_SSIZE_T_CLEAN}, and Python {python_version} "
         f"requires that macro for the '#' argument formats the shim uses. The first "
         f"Triton kernel launch in this process will fail with\n"
         f"    SystemError: {_PY_SSIZE_T_CLEAN} macro must be defined for '#' formats\n"
-        f"Every triton on PyPI defines it, so this is a rebuilt or repackaged triton. "
-        f"Reinstall the triton your torch pins:\n"
-        f"    pip install --force-reinstall --no-cache-dir triton\n"
+        f"Every published Triton build defines it, so this is a rebuilt or repackaged one. "
+        f"Reinstall the Triton your torch pins:\n"
+        f"    pip install --force-reinstall --no-cache-dir {distribution}\n"
         f"Python 3.13 and later do not need the macro, so moving to a newer Python "
         f"also clears it. Affected file(s): "
         f"{', '.join(path for _, path in offenders)}. Set "
