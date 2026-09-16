@@ -1669,6 +1669,8 @@ def _find_blocked_commands(
             laundered.setdefault(printf_v.group(1), None)
         for literal in _ASSIGN_BLOCKED_LITERAL_RE.finditer(command):
             name, value = literal.group(1), literal.group(2).strip("\"'")
+            if quote_states[literal.start(1)] == "" and _shell_expansions(literal.group(2)):
+                laundered.setdefault(name, None)
             first = value.split()[0] if value.split() else ""
             base = os.path.basename(first)
             stem, ext = os.path.splitext(base)
