@@ -8421,11 +8421,13 @@ def _mlx_stack_is_current() -> bool:
         return False
     try:
         from packaging.requirements import Requirement
+
         # The narrowed spec, not the static one: with an older zoo beside an already-installed
         # 0.7.1 the static range reads as satisfied and the step skips the very install that
         # would put mlx-vlm back where the zoo can drive it.
         if not Requirement(_mlx_vlm_spec_for_installed_zoo()).specifier.contains(
-            installed, prereleases = True,
+            installed,
+            prereleases = True,
         ):
             return False
     except Exception:  # noqa: BLE001 - no packaging, or a version it cannot parse
