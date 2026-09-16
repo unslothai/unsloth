@@ -485,7 +485,7 @@ def test_a_name_only_activation_keeps_the_session_it_already_had(shell: str):
     previous = f"{CONDA_ROOT}\\envs\\ml\\Scripts;C:\\tools\\bin"
     script = _stub_registry(_refresh_preamble(previous))
     out = _run(shell, script, env = {"CONDA_DEFAULT_ENV": "ml"})
-    entries = out[len("PATH="):].split(";")
+    entries = out[len("PATH=") :].split(";")
     assert entries[: len(previous.split(";"))] == previous.split(";"), entries
     # The registry values are still there, just behind, so a directory registered by this
     # run is reachable in the same session without displacing the environment.
@@ -502,11 +502,15 @@ def test_a_prefix_activation_still_takes_the_precise_route(shell: str):
     entries move, and an unrelated directory that happened to be on PATH does not."""
     previous = f"C:\\tools\\bin;{CONDA_ROOT}\\envs\\ml\\Scripts"
     script = _stub_registry(_refresh_preamble(previous))
-    out = _run(shell, script, env = {
-        "CONDA_PREFIX": f"{CONDA_ROOT}\\envs\\ml",
-        "CONDA_DEFAULT_ENV": "ml",
-    })
-    entries = out[len("PATH="):].split(";")
+    out = _run(
+        shell,
+        script,
+        env = {
+            "CONDA_PREFIX": f"{CONDA_ROOT}\\envs\\ml",
+            "CONDA_DEFAULT_ENV": "ml",
+        },
+    )
+    entries = out[len("PATH=") :].split(";")
     assert entries[0] == f"{CONDA_ROOT}\\envs\\ml\\Scripts", entries
     assert entries.index("C:\\tools\\bin") > entries.index(USER_PATH.split(";")[0]), entries
 
