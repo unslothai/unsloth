@@ -687,6 +687,15 @@ class TransformersUpgradeCheckRequest(BaseModel):
         "installing would strand that checkpoint's exact 4-bit resume.",
     )
 
+    # A preflight is where the reference arrives first: the picker was shown an opaque handle
+    # for a filesystem-backed row and this check runs before the load it precedes. Unresolved,
+    # the lookup fails and this route SWALLOWS the failure and answers "no upgrade needed", so
+    # training starts on a newly supported architecture and dies at model load in the worker.
+    # The cache pin fields are resolved too, for the same reason the scan route resolves them.
+    _resolve_the_handle = field_validator(
+        "model_name", "model_local_path", "model_snapshot_path", "model_snapshot_repo_id"
+    )(resolve_inventory_handle)
+
 
 class TransformersUpgradeCheckResponse(BaseModel):
     """Upgrade + quantization preflight for a load that does not run /validate.
@@ -887,6 +896,10 @@ class EstimateMemoryRequest(BaseModel):
     _no_booleans = field_validator(
         "n_batch", "n_ubatch", "ctx_checkpoints", "n_ctx", mode = "before"
     )(LoadRequest._no_booleans.__func__)
+    # Every field here mirrors the load request it previews, and the load resolves the handle,
+    # so this has to as well: an unresolved reference is read as a Hub id and the panel is
+    # told the estimate is unavailable for a row it was invited to pick.
+    _resolve_the_handle = field_validator("model_path")(resolve_inventory_handle)
 
 
 class EstimateMemoryResponse(BaseModel):

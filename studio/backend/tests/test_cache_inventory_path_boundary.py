@@ -1467,3 +1467,69 @@ def test_the_metadata_route_resolves_and_answers_with_the_handle(monkeypatch):
         assert resolve_inventory_handle("unsloth/Llama-3.2-1B") == "unsloth/Llama-3.2-1B"
     finally:
         host_paths._request_handles.reset(token)
+
+
+def test_a_directory_name_with_punctuation_is_removed_whole():
+    """The component pattern was an ALLOWLIST, and a real directory name falls outside it.
+
+    `client(acme)`, `o'connor`, `Models (private)`: the run stopped at the punctuation and
+    only the fragments around it were replaced, so `/srv/client(acme)/models` came back as
+    `<path>(acme)<path>` with the customer name still in a line this exists to clean. The
+    models-folder error handler puts exactly that detail on the wire.
+    """
+    from hub.utils.host_paths import redact_paths_in_text
+
+    for message, expected in (
+        ("Failed /srv/client(acme)/models", "Failed <path>"),
+        ("cannot read /home/o'connor/models", "cannot read <path>"),
+        (r"C:\cache\Models (private)", "<path>"),
+        # Trailing prose goes with it: a directory name may contain spaces, so the run only
+        # ends at a separator or a terminator. Over-removing is the safe direction here, and
+        # it is the behaviour the previous pattern had too.
+        ("open /mnt/data[1]/models denied", "open <path>"),
+    ):
+        cleaned = redact_paths_in_text(message)
+        assert cleaned == expected, (message, cleaned)
+        for fragment in ("acme", "connor", "private", "data"):
+            assert fragment not in cleaned, (message, cleaned)
+
+    # The terminators still terminate, or a message loses its reason along with its path.
+    assert redact_paths_in_text("Skipping /a/b: Permission denied") == (
+        "Skipping <path>: Permission denied"
+    )
+    assert redact_paths_in_text('opened "/a/b" already') == 'opened "<path>" already'
+    assert redact_paths_in_text("tried /a/b, /c/d") == "tried <path>, <path>"
+    # And prose that merely looks like a root is still left alone.
+    for kept in ("3/4 of the shards", "and/or the projector", "no paths here"):
+        assert redact_paths_in_text(kept) == kept, kept
+
+
+def test_every_preflight_schema_resolves_an_inventory_handle():
+    """A preflight is where the reference arrives FIRST.
+
+    /estimate-memory read it as a Hub id and answered "unavailable" for a row the caller was
+    invited to pick, and /transformers-upgrade-check swallows a failed lookup and answers "no
+    upgrade needed", so training would start on a newly supported architecture and die at
+    model load inside the worker.
+    """
+    from models.inference import EstimateMemoryRequest, TransformersUpgradeCheckRequest
+
+    path = f"{HOST_ROOT}/my models/Local-Model"
+    reference = host_paths.cache_reference(path)
+
+    assert EstimateMemoryRequest(model_path = reference).model_path == path
+    checked = TransformersUpgradeCheckRequest(
+        model_name = reference,
+        model_local_path = reference,
+        model_snapshot_path = reference,
+        model_snapshot_repo_id = reference,
+    )
+    assert checked.model_name == path
+    assert checked.model_local_path == path
+    assert checked.model_snapshot_path == path
+    assert checked.model_snapshot_repo_id == path
+    # A plain identifier is untouched, and so is a reference this process never issued.
+    assert EstimateMemoryRequest(model_path = "unsloth/Llama-3.2-1B").model_path == (
+        "unsloth/Llama-3.2-1B"
+    )
+    assert EstimateMemoryRequest(model_path = "ref:nope").model_path == "ref:nope"

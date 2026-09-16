@@ -465,6 +465,11 @@ def short_path_for_log(value: Any) -> str:
 # An absolute POSIX path or a Windows drive path. Deliberately conservative about what may sit
 # inside one: quotes, whitespace and the punctuation that ends a sentence all terminate the run,
 # so a message that merely mentions a ratio or a URL is left alone.
+# One path component: no separator, no quote, no colon, none of the marks that end a clause,
+# and no leading or trailing whitespace. Spaces INSIDE are allowed, because directory names
+# have them.
+_PATH_COMPONENT = r"[^\s\\/\n\":;,](?:[^\\/\n\":;,]*[^\s\\/\n\":;,])?"
+
 _ABSOLUTE_PATH_RE = re.compile(
     # Not preceded by a word character, a colon or a slash, so a URL's "//host/path" and a
     # ratio like "3/4" are left as they were written.
@@ -474,7 +479,17 @@ _ABSOLUTE_PATH_RE = re.compile(
     # (`/tmp`, `/cache`, `C:\\cache`) is just as absolute as a deep one, and requiring a
     # second separator left exactly those unredacted. A configured cache root is very often
     # spelled that way, and it is the value the models-folder error puts in its detail.
-    r"(?<![\w:/])(?:\\\\[^\\/\s]+[\\/]|[A-Za-z]:[\\/]|/)(?:[\w.\-+@ ]+[\\/])*[\w.\-+@]+"
+    # A component is anything that is not a separator, a quote, a colon or one of the marks
+    # that end a clause, and it may not begin or end with whitespace. An ALLOWLIST was the
+    # bug: a directory called `client(acme)`, `o'connor` or `Models (private)` fell outside
+    # it, so the run stopped at the punctuation and only the fragments around it were
+    # replaced -- `/srv/client(acme)/models` came back as `<path>(acme)<path>`, with the
+    # customer name still in the line this exists to clean. Turned around, the excluded set
+    # is the short one and it is the terminators: a colon so `Skipping /x: denied` keeps its
+    # reason, a quote so a quoted path ends at the quote, and a comma or semicolon so a list
+    # of paths is still a list.
+    r"(?<![\w:/])(?:\\\\[^\\/\s]+[\\/]|[A-Za-z]:[\\/]|/)"
+    r"(?:" + _PATH_COMPONENT + r"[\\/])*" + _PATH_COMPONENT
 )
 
 
