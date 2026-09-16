@@ -1600,7 +1600,12 @@ def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
 _UNIFIED_OS_RESERVE_BYTES = 16 * 1024**3
 _UNIFIED_MAX_RESERVE_FRACTION = 0.20
 _DISCRETE_MEM_FRACTION = 0.90
+# The ROCm-only name this guard shipped with. Kept, and still the one that wins on a ROCm
+# host, because it is what existing setups export.
 _MEM_FRACTION_ENV = "UNSLOTH_ROCM_MEM_FRACTION"
+# Backend neutral, so NVIDIA has a cap too (unsloth#8178). `set_per_process_memory_fraction`
+# lives on `torch.cuda` for both vendors, so one variable covers both training workers.
+_GPU_MEM_FRACTION_ENV = "UNSLOTH_GPU_MEM_FRACTION"
 
 
 def _parse_mem_fraction_env(env_value: str | None) -> float | None:
@@ -1689,6 +1694,65 @@ def _rocm_memory_fraction(
     # Past ~160 GiB the byte reserve is under 10% of the pool, which would hand a unified host a looser cap than a
     # discrete card and invert the ordering the guard is built on.
     return min(fraction, _DISCRETE_MEM_FRACTION)
+
+
+def _mem_fraction_env_names(backend: str) -> tuple[str, ...]:
+    """The override variables to read, most specific first.
+
+    A ROCm host reads ``UNSLOTH_ROCM_MEM_FRACTION`` before the neutral name, so a machine
+    that already exports the ROCm variable keeps exactly the cap it had. Every other
+    backend only ever had the neutral name.
+    """
+    if backend == "rocm":
+        return (_MEM_FRACTION_ENV, _GPU_MEM_FRACTION_ENV)
+    return (_GPU_MEM_FRACTION_ENV,)
+
+
+def _mem_fraction_env_value(backend: str, environ: Any = None) -> tuple[str | None, str | None]:
+    """Resolve the override to ``(raw value, variable name)``.
+
+    The first variable that parses wins. If none parses, the first one that is *set* is
+    returned anyway, so the caller can name it in the "ignoring ..." warning rather than
+    reporting a variable the user never touched. ``(None, None)`` when nothing is set.
+    """
+    if environ is None:
+        environ = os.environ
+    first_set: tuple[str | None, str | None] = (None, None)
+    for name in _mem_fraction_env_names(backend):
+        raw = environ.get(name)
+        if raw is None:
+            continue
+        if _parse_mem_fraction_env(raw) is not None:
+            return raw, name
+        if first_set == (None, None):
+            first_set = (raw, name)
+    return first_set
+
+
+def _gpu_memory_fraction(
+    total_bytes: int,
+    is_unified: bool,
+    platform: str,
+    backend: str,
+    env_value: str | None = None,
+    denominator_bytes: int | None = None,
+) -> float:
+    """The one memory-cap policy, for every backend.
+
+    An override in ``(0.0, 1.0]`` always wins. With no override, ROCm keeps the policy in
+    ``_rocm_memory_fraction`` unchanged, and every other backend answers ``1.0``, which is
+    what torch does with no cap at all. So this is additive: a host that sets nothing runs
+    exactly as it did, on either vendor.
+
+    The ROCm arm is delegated rather than inlined so the reserve policy, its floors and its
+    denominator handling stay in one place with their own tests.
+    """
+    override = _parse_mem_fraction_env(env_value)
+    if override is not None:
+        return override
+    if backend != "rocm":
+        return 1.0
+    return _rocm_memory_fraction(total_bytes, is_unified, platform, None, denominator_bytes)
 
 
 # ── Fast-path hooks ──
@@ -3692,17 +3756,20 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                         _driver_total = int(_torch_mem.cuda.mem_get_info(0)[1])
                     except Exception:
                         _driver_total = 0
-                _env_raw = os.environ.get(_MEM_FRACTION_ENV)
+                # UNSLOTH_ROCM_MEM_FRACTION first, then the backend-neutral
+                # UNSLOTH_GPU_MEM_FRACTION, so a host that already exports the ROCm name keeps
+                # the cap it had and a host that sets only the neutral one is still honoured.
+                _env_raw, _env_name = _mem_fraction_env_value("rocm")
                 _env_fraction = _parse_mem_fraction_env(_env_raw)
                 if _env_raw and _env_fraction is None:
                     logger.warning(
                         "ROCm OOM guard: ignoring %s=%r (needs a float in (0.0, 1.0]); "
                         "using the computed cap instead",
-                        _MEM_FRACTION_ENV,
+                        _env_name,
                         _env_raw,
                     )
-                _mem_fraction = _rocm_memory_fraction(
-                    _total_bytes, _is_unified, sys.platform, _env_raw, _driver_total or None
+                _mem_fraction = _gpu_memory_fraction(
+                    _total_bytes, _is_unified, sys.platform, "rocm", _env_raw, _driver_total or None
                 )
                 # A wheel that reports no total still gets a cap; say so rather than printing "0.0 of 0.0 GiB allowed"
                 # on the one host whose props are suspect.
@@ -3721,9 +3788,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     _dev_name,
                     _gcn_arch or "unknown arch",
                     _allowed,
-                    f"from {_MEM_FRACTION_ENV}"
+                    f"from {_env_name}"
                     if _env_fraction is not None
-                    else f"computed; override with {_MEM_FRACTION_ENV}",
+                    else f"computed; override with {_MEM_FRACTION_ENV} or {_GPU_MEM_FRACTION_ENV}",
                 )
                 # When the totals differ the cap was solved against the driver's, so the budget printed above is not
                 # the one enforced. Give both, and the headroom that results, which the floor can leave under the
@@ -3769,6 +3836,48 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                         pass
         except Exception as _oom_guard_err:
             logger.debug("Could not set GPU memory fraction: %s", _oom_guard_err)
+
+    # Explicit GPU memory cap on the backends that never had one (unsloth#8178). The ROCm arm
+    # above is a policy the driver forces on us; this is a user asking to leave room for a
+    # game, a browser or a second model. Unset means 1.0, which is what torch does with no cap
+    # at all, so a host that sets nothing is byte for byte unchanged and nothing is logged.
+    # torch.cuda is the NVIDIA half here, ROCm having been served above; XPU and MPS are not
+    # wired yet, and neither is a Settings control.
+    # ── 1h. Explicit GPU memory cap ──
+    if not _hw.IS_ROCM:
+        _cap_raw, _cap_name = _mem_fraction_env_value("cuda")
+        _cap_fraction = _parse_mem_fraction_env(_cap_raw)
+        if _cap_raw and _cap_fraction is None:
+            logger.warning(
+                "Ignoring %s=%r (needs a float in (0.0, 1.0]); leaving GPU memory uncapped",
+                _cap_name,
+                _cap_raw,
+            )
+        elif _cap_fraction is not None:
+            try:
+                import torch as _torch_cap
+
+                if _torch_cap.cuda.is_available():
+                    _cap = _gpu_memory_fraction(0, False, sys.platform, "cuda", _cap_raw)
+                    _torch_cap.cuda.set_per_process_memory_fraction(_cap)
+                    _cap_props = _torch_cap.cuda.get_device_properties(0)
+                    _cap_total = int(getattr(_cap_props, "total_memory", 0) or 0)
+                    logger.info(
+                        "GPU memory cap: set_per_process_memory_fraction(%.4f) from %s — %s, %s",
+                        _cap,
+                        _cap_name,
+                        getattr(_cap_props, "name", "unknown device"),
+                        f"{_cap_total * _cap / 1024**3:.1f} of {_cap_total / 1024**3:.1f} GiB allowed"
+                        if _cap_total > 0
+                        else "device total unreported by this wheel",
+                    )
+                else:
+                    logger.debug(
+                        "%s is set but no torch CUDA device is available; nothing to cap",
+                        _cap_name,
+                    )
+            except Exception as _cap_err:
+                logger.debug("Could not set GPU memory fraction: %s", _cap_err)
 
     # ── 2. Now import ML libraries (fresh in this clean process) ──
     try:
