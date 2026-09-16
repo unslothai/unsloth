@@ -130,6 +130,47 @@ try {
     $found = @(Get-NvidiaSmiCandidatePaths)
     Check "the DriverStore scan is bounded and filtered to NVIDIA's own packages" (
         $found.Count -le 8 -and -not ($found -match "unrelated"))
+
+    # The bound applies to directories that actually HOLD the binary, not to the nv* name matches.
+    # NVIDIA ships several packages whose names start nv and contain no nvidia-smi at all: the HD
+    # audio driver, the virtual audio device, the network service. A machine that installed any of
+    # those after its display driver has them newer by write time, so a bound applied to the name
+    # match spends the whole allowance on directories with nothing in them and reports the host as
+    # having no nvidia-smi. Plant the real one FIRST so it is the oldest, then bury it.
+    Reset-FakeMachine
+    $repo = "Windows/System32/DriverStore/FileRepository"
+    $planted = Add-FakeSmi "$repo/nvmii.inf_amd64_0001/"
+    for ($i = 0; $i -lt 12; $i++) {
+        $dir = Join-Path $tmp "$repo/nvhda.inf_amd64_10$i"
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+        [System.IO.File]::WriteAllText((Join-Path $dir "nvhda.sys"), "")
+    }
+    $found = @(Get-NvidiaSmiCandidatePaths)
+    Check "a display driver buried under newer nv* packages that ship no nvidia-smi is still found" (
+        $found.Count -eq 1 -and $found[0] -eq $planted)
+
+    # The 32-bit process. $env:ProgramFiles is the x86 tree there, so a stale copy left by an old
+    # 32-bit CUDA toolkit sits in the FIRST Program Files rung unless the 64-bit locations are
+    # searched ahead of it. That copy is a real binary: it lists the GPU and reports its own older
+    # CUDA version, so the two-pass CUDA preference does not rescue this. Only the order does.
+    Reset-FakeMachine
+    $env:ProgramFiles = Join-Path $tmp "Program Files (x86)"
+    $env:ProgramW6432 = Join-Path $tmp "Program Files"
+    $stale = Add-FakeSmi "Program Files (x86)/NVIDIA Corporation/NVSMI"
+    $current = Add-FakeSmi "Windows/SysNative"
+    $found = @(Get-NvidiaSmiCandidatePaths)
+    Check "in a 32-bit process SysNative is probed before the stale x86 toolkit copy" (
+        $found.Count -eq 2 -and $found[0] -eq $current -and $found[1] -eq $stale)
+
+    # Same host, driver in the 64-bit Program Files rather than SysNative.
+    Reset-FakeMachine
+    $env:ProgramFiles = Join-Path $tmp "Program Files (x86)"
+    $env:ProgramW6432 = Join-Path $tmp "Program Files"
+    $stale = Add-FakeSmi "Program Files (x86)/NVIDIA Corporation/NVSMI"
+    $current = Add-FakeSmi "Program Files/NVIDIA Corporation/NVSMI"
+    $found = @(Get-NvidiaSmiCandidatePaths)
+    Check "in a 32-bit process the 64-bit NVSMI copy is probed before the x86 one" (
+        $found.Count -eq 2 -and $found[0] -eq $current -and $found[1] -eq $stale)
 } finally {
     $env:SystemRoot = $saved.SystemRoot
     $env:ProgramFiles = $saved.ProgramFiles

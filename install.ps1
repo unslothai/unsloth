@@ -1098,20 +1098,34 @@ function Install-UnslothStudio {
     # which of two working binaries answers.
     function Get-NvidiaSmiCandidatePaths {
         $dirs = @()
+        # Current driver locations first, in BOTH process bitnesses, before any legacy one.
+        # System32 is the current driver in a 64-bit process. In a 32-bit process that name is
+        # redirected to SysWOW64, which has no nvidia-smi, and SysNative is the alias that reaches
+        # the real System32; ProgramW6432 is likewise the 64-bit Program Files whatever the
+        # bitness. Both have to come before $env:ProgramFiles, because in a 32-bit process that is
+        # the x86 tree, where a stale toolkit copy can sit and answer first.
         if ($env:SystemRoot) { $dirs += (Join-Path $env:SystemRoot "System32") }
-        if ($env:ProgramFiles) { $dirs += (Join-Path $env:ProgramFiles "NVIDIA Corporation\NVSMI") }
         if ($env:SystemRoot) { $dirs += (Join-Path $env:SystemRoot "SysNative") }
         if ($env:ProgramW6432) { $dirs += (Join-Path $env:ProgramW6432 "NVIDIA Corporation\NVSMI") }
+        if ($env:ProgramFiles) { $dirs += (Join-Path $env:ProgramFiles "NVIDIA Corporation\NVSMI") }
         $pfx86 = ${env:ProgramFiles(x86)}
         if ($pfx86) { $dirs += (Join-Path $pfx86 "NVIDIA Corporation\NVSMI") }
-        # Bounded on purpose. FileRepository holds every driver package the machine has ever had, so
-        # it is filtered to NVIDIA's own prefix and the newest few by write time, never walked whole.
+        # Bounded on purpose. FileRepository holds every driver package the machine has ever had.
+        #
+        # The bound is applied to directories that ACTUALLY HOLD the binary, not to the nv* matches.
+        # NVIDIA ships several packages whose names start nv (HD audio, the virtual audio device,
+        # the network service), so a host with eight of those newer than the display driver would
+        # otherwise spend the whole allowance on directories with no nvidia-smi in them and report
+        # the machine as having none. Test-Path is a file existence check, not a process spawn; the
+        # bound that matters is on the candidates handed back, since each of those costs a probe.
         try {
             if ($env:SystemRoot) {
                 $repo = Join-Path $env:SystemRoot "System32\DriverStore\FileRepository"
                 if (Test-Path -LiteralPath $repo -PathType Container) {
                     foreach ($dir in @(Get-ChildItem -LiteralPath $repo -Directory -Filter "nv*" -ErrorAction SilentlyContinue |
-                        Sort-Object LastWriteTime -Descending | Select-Object -First 8)) {
+                        Sort-Object LastWriteTime -Descending |
+                        Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName "nvidia-smi.exe") -PathType Leaf } |
+                        Select-Object -First 8)) {
                         $dirs += $dir.FullName
                     }
                 }
