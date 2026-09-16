@@ -771,6 +771,8 @@ def _client() -> httpx.AsyncClient:
 # Cap per-image fetch well below Gemini's ~20 MB total request budget.
 _GEMINI_REMOTE_IMAGE_MAX_BYTES = 10 * 1024 * 1024
 _GEMINI_REMOTE_IMAGE_TIMEOUT_S = 15.0
+# The socket timeout bounds one operation; a server dripping bytes needs a whole-fetch bound.
+_REMOTE_IMAGE_FETCH_DEADLINE_S = 30.0
 
 
 def safe_fetch_remote_image_sync(
@@ -778,12 +780,15 @@ def safe_fetch_remote_image_sync(
     fallback_mime: str,
     max_bytes: int = _GEMINI_REMOTE_IMAGE_MAX_BYTES,
     label: str = "Remote image fetch",
+    deadline: Optional[float] = None,
 ) -> Optional[tuple[str, str]]:
     """Fetch an HTTPS image through a validated, pinned public IP.
 
-    Redirects are revalidated and the response is capped by ``max_bytes``. All failures return
-    ``None`` so callers do not expose details about the host network.
+    Redirects are revalidated and the response is capped by ``max_bytes``. ``deadline`` is a
+    ``time.monotonic`` cutoff for the whole fetch. All failures return ``None`` so callers do
+    not expose details about the host network.
     """
+    import http.client
     import urllib.error
     import urllib.request
     from urllib.parse import urljoin, urlunparse
@@ -795,11 +800,17 @@ def safe_fetch_remote_image_sync(
     # Reuse tools.py's pinned-IP hardening: validate-once-then-pin.
     from .tools import (
         _explicit_proxy_applies,
+        _fetch_budget_exceeded,
+        _fetch_hop_timeout,
         _NoRedirect,
         _pinned_netloc,
+        _read_capped_body,
+        _resolve_with_budget,
         _SNIHTTPSHandler,
-        _validate_and_resolve_host,
     )
+
+    if deadline is None:
+        deadline = time.monotonic() + _REMOTE_IMAGE_FETCH_DEADLINE_S
 
     def _safe_parse_https(raw_url: str) -> Optional[tuple[Any, str, int]]:
         """Return a parsed HTTPS URL, hostname and port, or ``None``."""
@@ -830,7 +841,7 @@ def safe_fetch_remote_image_sync(
         return None
     parsed, current_host, current_port = parsed_info
     current_url = url
-    ok, reason, pinned_ips = _validate_and_resolve_host(current_host, current_port)
+    ok, reason, pinned_ips = _resolve_with_budget(current_host, current_port, deadline, None)
     if not ok:
         logger.warning(
             f"{label}: refusing host=%s reason=%s",
@@ -840,6 +851,10 @@ def safe_fetch_remote_image_sync(
         return None
 
     for _hop in range(4):
+        budget_error = _fetch_budget_exceeded(deadline, None)
+        if budget_error is not None:
+            logger.info(f"{label}: {budget_error} host=%s", current_host)
+            return None
         # Pin to validated IP; SNI + cert still use the hostname via _SNIHTTPSHandler.
         cp_info = _safe_parse_https(current_url)
         if cp_info is None:
@@ -849,19 +864,22 @@ def safe_fetch_remote_image_sync(
 
         # Route on the hostname, as _fetch_url_raw does: no NO_PROXY entry matches the
         # pinned URL's IP. A proxied request reaches the origin through the proxy.
-        proxied = _explicit_proxy_applies("https", _pinned_netloc(current_host, cp.port))
+        authority = _pinned_netloc(current_host, cp.port)
+        proxied = _explicit_proxy_applies("https", authority)
         handlers = [_NoRedirect, _SNIHTTPSHandler(current_host, () if proxied else pinned_ips)]
         if not proxied:
             handlers.append(urllib.request.ProxyHandler({}))
         opener = urllib.request.build_opener(*handlers)
         req = urllib.request.Request(
             pinned_url,
-            headers = {"Host": current_host},
+            headers = {"Host": authority},
             method = "GET",
         )
 
         try:
-            resp = opener.open(req, timeout = _GEMINI_REMOTE_IMAGE_TIMEOUT_S)
+            resp = opener.open(
+                req, timeout = _fetch_hop_timeout(_GEMINI_REMOTE_IMAGE_TIMEOUT_S, deadline)
+            )
         except urllib.error.HTTPError as e:
             if e.code not in (301, 302, 303, 307, 308):
                 logger.info(
@@ -885,7 +903,9 @@ def safe_fetch_remote_image_sync(
             if rp_info is None:
                 return None
             _rp, current_host, current_port = rp_info
-            ok2, reason2, pinned_ips = _validate_and_resolve_host(current_host, current_port)
+            ok2, reason2, pinned_ips = _resolve_with_budget(
+                current_host, current_port, deadline, None
+            )
             if not ok2:
                 logger.warning(
                     f"{label}: refusing redirect host=%s reason=%s",
@@ -933,7 +953,20 @@ def safe_fetch_remote_image_sync(
                 )
                 return None
             # Read cap+1 to detect oversize without buffering unbounded data.
-            raw = resp.read(_byte_limit + 1)
+            try:
+                body_error, raw = _read_capped_body(
+                    resp, _byte_limit + 1, _GEMINI_REMOTE_IMAGE_TIMEOUT_S, deadline, None
+                )
+            except (OSError, http.client.HTTPException, ValueError) as _err:
+                logger.warning(
+                    f"{label} failed host=%s err=%s",
+                    current_host,
+                    type(_err).__name__,
+                )
+                return None
+            if body_error is not None:
+                logger.info(f"{label}: {body_error} host=%s", current_host)
+                return None
             if len(raw) > _byte_limit:
                 logger.info(
                     f"{label}: streamed bytes exceed cap=%s host=%s",

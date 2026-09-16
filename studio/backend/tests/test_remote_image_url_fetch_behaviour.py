@@ -7,7 +7,10 @@ from __future__ import annotations
 
 import base64
 import copy
+import socket
 import threading
+import time
+import urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
 from types import SimpleNamespace
@@ -344,6 +347,139 @@ class TestBudget:
         assert "Too many remote image URLs" in r.text
         assert len(calls) == inference_route._REMOTE_IMAGE_MAX_COUNT, calls
         assert backend.dispatched == []
+
+    def test_every_fetch_in_a_request_shares_one_deadline(self, monkeypatch):
+        deadlines = []
+
+        def _fetch(
+            url,
+            *_a,
+            deadline = None,
+            **_k,
+        ):
+            deadlines.append(deadline)
+            return "image/webp", _webp_b64()
+
+        monkeypatch.setattr(external_provider, "safe_fetch_remote_image_sync", _fetch)
+        backend = _VisionGguf()
+        r = _client(monkeypatch, backend).post(
+            "/v1/chat/completions",
+            json = _chat_body("https://images.example/a.webp", "https://images.example/b.webp"),
+        )
+
+        assert r.status_code == 200, r.text
+        assert len(deadlines) == 2 and deadlines[0] is not None, deadlines
+        assert deadlines[0] == deadlines[1]
+
+
+def _resolve_publicly(monkeypatch):
+    real = socket.getaddrinfo
+
+    def _fake(host, *args, **kwargs):
+        if host == "images.example":
+            return [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("93.184.216.34", 0))]
+        if host == "2606:4700::1111":
+            return [(socket.AF_INET6, socket.SOCK_STREAM, 0, "", (host, 0, 0, 0))]
+        return real(host, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", _fake)
+
+
+class TestFetcher:
+    def test_a_server_dripping_bytes_is_cut_off_at_the_deadline(self, monkeypatch):
+        _resolve_publicly(monkeypatch)
+
+        class _DripResponse:
+            status = 200
+            headers = {"content-type": "image/png"}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_a):
+                return False
+
+            def close(self):
+                pass
+
+            def read(self, _n = -1):
+                time.sleep(0.02)
+                return b"x"
+
+        class _Opener:
+            def open(
+                self,
+                _req,
+                timeout = None,
+            ):
+                return _DripResponse()
+
+        monkeypatch.setattr("urllib.request.build_opener", lambda *_a, **_k: _Opener())
+        started = time.monotonic()
+        result = external_provider.safe_fetch_remote_image_sync(
+            "https://images.example/slow.png",
+            "image/png",
+            deadline = started + 0.3,
+        )
+
+        assert result is None
+        assert time.monotonic() - started < 5
+
+    def test_a_body_read_timeout_is_a_refusal_not_an_error(self, monkeypatch):
+        _resolve_publicly(monkeypatch)
+
+        class _StalledResponse:
+            status = 200
+            headers = {"content-type": "image/png"}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_a):
+                return False
+
+            def read(self, _n = -1):
+                raise TimeoutError("timed out")
+
+        class _Opener:
+            def open(
+                self,
+                _req,
+                timeout = None,
+            ):
+                return _StalledResponse()
+
+        monkeypatch.setattr("urllib.request.build_opener", lambda *_a, **_k: _Opener())
+        assert (
+            external_provider.safe_fetch_remote_image_sync(
+                "https://images.example/stalled.png", "image/png"
+            )
+            is None
+        )
+
+    @pytest.mark.parametrize(
+        "url,authority",
+        [
+            ("https://images.example:8443/a.png", "images.example:8443"),
+            ("https://[2606:4700::1111]/a.png", "[2606:4700::1111]"),
+        ],
+    )
+    def test_the_host_header_keeps_the_url_authority(self, monkeypatch, url, authority):
+        _resolve_publicly(monkeypatch)
+        sent = []
+
+        class _Opener:
+            def open(
+                self,
+                req,
+                timeout = None,
+            ):
+                sent.append(req.get_header("Host"))
+                raise urllib.error.URLError("stop after the request is built")
+
+        monkeypatch.setattr("urllib.request.build_opener", lambda *_a, **_k: _Opener())
+        assert external_provider.safe_fetch_remote_image_sync(url, "image/png") is None
+        assert sent == [authority]
 
 
 class TestCountingIsNotAFetchSurface:

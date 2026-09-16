@@ -31750,6 +31750,8 @@ _REMOTE_IMAGE_MAX_BYTES = 10 * 1024 * 1024
 _REMOTE_IMAGE_REQUEST_BUDGET_BYTES = 32 * 1024 * 1024
 # Bound DNS, connection and redirect work independently of response size.
 _REMOTE_IMAGE_MAX_COUNT = 8
+# Wall-clock budget shared by every remote image fetch in one request.
+_REMOTE_IMAGE_REQUEST_DEADLINE_S = 60.0
 
 # Do not reveal why a caller-selected host could not be fetched.
 _REMOTE_IMAGE_FETCH_REFUSAL = (
@@ -31801,7 +31803,9 @@ def _placeholder_remote_images_for_count(openai_messages: list[dict]) -> None:
             image_url["url"] = _COUNT_IMAGE_PLACEHOLDER
 
 
-def _inline_remote_image_url(url: str, scheme: str, budget_bytes: int) -> tuple[str, int]:
+def _inline_remote_image_url(
+    url: str, scheme: str, budget_bytes: int, deadline: float
+) -> tuple[str, int]:
     """Fetch an image safely and return its data URL and decoded size."""
     from core.inference.external_provider import safe_fetch_remote_image_sync
 
@@ -31814,6 +31818,7 @@ def _inline_remote_image_url(url: str, scheme: str, budget_bytes: int) -> tuple[
         "image/png",
         max_bytes = min(_REMOTE_IMAGE_MAX_BYTES, budget_bytes),
         label = "llama-server image fetch",
+        deadline = deadline,
     )
     if fetched is None:
         raise HTTPException(status_code = 400, detail = _REMOTE_IMAGE_FETCH_REFUSAL)
@@ -31835,6 +31840,7 @@ def _normalize_openai_image_parts_to_png(openai_messages: list[dict], on_image =
     has_image = False
     remaining_bytes = _REMOTE_IMAGE_REQUEST_BUDGET_BYTES
     remaining_fetches = _REMOTE_IMAGE_MAX_COUNT
+    fetch_deadline = None
     for msg in openai_messages:
         content = msg.get("content")
         if not isinstance(content, list):
@@ -31866,7 +31872,9 @@ def _normalize_openai_image_parts_to_png(openai_messages: list[dict], on_image =
                         ),
                     )
                 remaining_fetches -= 1
-                url, _spent = _inline_remote_image_url(url, scheme, remaining_bytes)
+                if fetch_deadline is None:
+                    fetch_deadline = time.monotonic() + _REMOTE_IMAGE_REQUEST_DEADLINE_S
+                url, _spent = _inline_remote_image_url(url, scheme, remaining_bytes, fetch_deadline)
                 remaining_bytes -= _spent
                 image_url["url"] = url
 
