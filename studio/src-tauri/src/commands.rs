@@ -1560,32 +1560,37 @@ mod tests {
         // still be declared dead at three strikes.
         let client = crate::loopback_http::client(Duration::from_secs(5)).unwrap();
 
-        // Binding port 0 and dropping the listener frees the port, it does not reserve it. The
-        // tests in this binary run concurrently and several of them bind ephemeral ports, so the
-        // OS can hand this one straight to one of those before the probe runs, and the request
-        // is answered instead of refused. Getting a genuinely closed port is setup, not the
-        // property under test, so re-draw rather than fail on a port somebody else took.
-        let mut error = None;
-        for _ in 0..16 {
-            let port = {
-                let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
-                let port = listener.local_addr().unwrap().port();
-                drop(listener);
-                port
-            };
-            match client
-                .get(format!("http://127.0.0.1:{port}/api/liveness"))
-                .send()
-                .await
-            {
-                Err(refused) => {
-                    error = Some(refused);
+        // Binding port 0 and dropping the listener frees the port, it does not reserve it, and
+        // every other test in this binary binds port 0 too. The allocator can hand this one
+        // straight to one of them between the drop and the probe, and the request is answered
+        // rather than refused.
+        //
+        // So draw from below the ephemeral range instead of retrying: 32768 on Linux, 49152 on
+        // macOS and Windows, all above this. A sibling cannot be given a port from here, which
+        // is the difference that matters. Retrying a port that answered would be actively
+        // harmful, because answering means the probe just consumed someone's connection, and
+        // the one-shot fixture in loopback_http accepts exactly once before its own test sends
+        // the request it cares about. That does not fix the flake, it relocates it.
+        //
+        // A port here being occupied is a real listener on the machine, not a race, so walk a
+        // small window and let the probe assert on the one that was free.
+        let port = {
+            let mut free = None;
+            for candidate in 20_000..20_064u16 {
+                if let Ok(listener) = TcpListener::bind(("127.0.0.1", candidate)).await {
+                    drop(listener);
+                    free = Some(candidate);
                     break;
                 }
-                Ok(_) => continue,
             }
-        }
-        let error = error.expect("every port drawn here had a listener on it within 16 tries");
+            free.expect("every port in the probe window was already bound")
+        };
+
+        let error = client
+            .get(format!("http://127.0.0.1:{port}/api/liveness"))
+            .send()
+            .await
+            .expect_err("nothing is listening on this port");
 
         let liveness = super::liveness_from_probe_error(&error);
         assert!(!liveness.probe_timed_out, "a refused port read as a stall");
