@@ -369,26 +369,31 @@ def test_grpo_trains_on_cpu_through_the_patched_batch_sampler(tmp_path):
     # hand-written list of names silently falls behind the next one it touches. monkeypatch
     # has that same problem, since it also needs the names up front.
     trainer_attributes_before = dict(Trainer.__dict__)
-
-    patch_gradient_accumulation_fix(Trainer)
-    assert Trainer.get_batch_samples.__name__ == "_unsloth_get_batch_samples", (
-        "the batch sampler under test was never installed; this canary would pass against "
-        "any zoo at all"
-    )
-
     seen = {"calls": 0, "list_batches": 0}
-    patched = Trainer.get_batch_samples
 
-    def counting(self, epoch_iterator, num_batches, *args, **kwargs):
-        seen["calls"] += 1
-        result = patched(self, epoch_iterator, num_batches, *args, **kwargs)
-        batch_samples = result[0] if isinstance(result, tuple) else result
-        if batch_samples and isinstance(batch_samples[0], list):
-            seen["list_batches"] += 1
-        return result
-
-    Trainer.get_batch_samples = counting
+    # The patch call itself is inside the try: a transformers change that makes
+    # patch_gradient_accumulation_fix raise AFTER it has replaced one method would
+    # otherwise leave the base Trainer partially patched for every later file in this
+    # pytest invocation, which is the leak this whole block exists to prevent.
     try:
+        patch_gradient_accumulation_fix(Trainer)
+        assert Trainer.get_batch_samples.__name__ == "_unsloth_get_batch_samples", (
+            "the batch sampler under test was never installed; this canary would pass "
+            "against any zoo at all"
+        )
+
+        patched = Trainer.get_batch_samples
+
+        def counting(self, epoch_iterator, num_batches, *args, **kwargs):
+            seen["calls"] += 1
+            result = patched(self, epoch_iterator, num_batches, *args, **kwargs)
+            batch_samples = result[0] if isinstance(result, tuple) else result
+            if batch_samples and isinstance(batch_samples[0], list):
+                seen["list_batches"] += 1
+            return result
+
+        Trainer.get_batch_samples = counting
+
         model, tok = _load_plain()
         _guard_finite_logits(model)
         ds = Dataset.from_list([{"prompt": "hi there"}] * 4)
