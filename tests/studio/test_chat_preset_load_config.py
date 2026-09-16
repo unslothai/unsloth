@@ -198,16 +198,19 @@ def _split_ternary(expression: str, guards: tuple = ()) -> list:
     while expression.startswith("(") and _balanced(expression, 0) == expression[1:-1]:
         expression = expression[1:-1].strip()
 
+    # Scanned on a copy with literal contents blanked: a `?` or a `:` inside a message is a
+    # character, not an operator, and `_outside_literals` keeps the offsets aligned.
+    scan = _outside_literals(expression)
     depth, question = 0, -1
     index = 0
     while index < len(expression):
-        char = expression[index]
+        char = scan[index]
         if char in "([{":
             depth += 1
         elif char in ")]}":
             depth -= 1
         elif depth == 0 and char == "?":
-            following = expression[index + 1 : index + 2]
+            following = scan[index + 1 : index + 2]
             if following in ("?", "."):
                 index += 2
                 continue
@@ -224,13 +227,13 @@ def _split_ternary(expression: str, guards: tuple = ()) -> list:
     depth, nested = 0, 0
     index = question + 1
     while index < len(expression):
-        char = expression[index]
+        char = scan[index]
         if char in "([{":
             depth += 1
         elif char in ")]}":
             depth -= 1
         elif depth == 0 and char == "?":
-            if expression[index + 1 : index + 2] in ("?", "."):
+            if scan[index + 1 : index + 2] in ("?", "."):
                 index += 2
                 continue
             nested += 1
@@ -403,9 +406,13 @@ def _switch_always_returns(statement: str) -> bool:
     if not body:
         return False
     body = _balanced(body, 0, "{", "}")
-    if not re.search(r"\bdefault\s*:", _outside_literals(body)):
-        return False
     labels = _labels_at_top_level(body)
+    scan = _outside_literals(body)
+    # The `default:` has to be one of THIS switch's labels. A nested switch can carry one of its
+    # own, and reading that as exhaustiveness lets a value matching no outer case fall straight
+    # past the closing brace.
+    if not any(re.search(r"\bdefault\s*:\s*$", scan[:end]) for end in labels):
+        return False
     if not labels:
         return False
     for position, start in enumerate(labels):
@@ -425,18 +432,22 @@ def _switch_always_returns(statement: str) -> bool:
 
 
 def _breaks_out(arm: str) -> bool:
-    """A `break` belonging to this arm, rather than to a loop or switch nested in it."""
+    """A `break` belonging to this arm, rather than to a loop or switch nested in it.
+
+    Bracket depth is the wrong test. `if (stop) { break; }` sits inside braces and still leaves
+    the switch, so only the statements that can absorb a `break` of their own are skipped: a
+    loop, a nested switch, and a function body.
+    """
     scan = _outside_literals(arm)
-    depth = 0
-    for match in re.finditer(r"[(\[{}\])]|\bbreak\b", scan):
-        token = match.group(0)
-        if token in "([{":
-            depth += 1
-        elif token in ")]}":
-            depth -= 1
-        elif depth == 0:
-            return True
-    return False
+    absorbing = [
+        (match.start(), _consume_statement(scan, match.start())[1])
+        for match in re.finditer(r"\b(?:for|while|do|switch)\b", scan)
+    ]
+    absorbing += _nested_function_spans(scan)
+    return any(
+        not any(begin <= match.start() < end for begin, end in absorbing)
+        for match in re.finditer(r"\bbreak\b", scan)
+    )
 
 
 def _block_always_returns(block: str) -> bool:
@@ -815,6 +826,9 @@ SELECTOR_CASES = [
     # `===` cannot separate -0 from 0, but zustand's Object.is can, so zero pins nothing.
     ("(s) => s.reasoningBudget === -0 ? 0 : s.reasoningBudget", False),
     ("(s) => s.reasoningBudget === 0 ? 0 : s.reasoningBudget", False),
+    # A `:` or a `?` inside a message is a character, not a ternary operator.
+    ('(s) => s.reasoningBudget === "a:b" ? "a:b" : s.reasoningBudget', True),
+    ('(s) => s.reasoningBudget === "a?b" ? "a?b" : s.reasoningBudget', True),
     # An escaped quote is a character in the message, not the end of the literal.
     ('(s) => s.reasoningBudget === "a\\"b" ? "a\\"b" : s.reasoningBudget', True),
     ('(s) => s.reasoningBudget === "a\\"b" ? "ab" : s.reasoningBudget', False),
@@ -916,6 +930,23 @@ SELECTOR_CASES = [
     (
         '(s) => { switch (s.mode) { default: return s.reasoningBudget; case "x": sideEffect(); } }',
         False,
+    ),
+    # A nested switch's `default:` is not the outer switch's: a mode matching no outer case
+    # still falls past the closing brace.
+    (
+        '(s) => { switch (s.mode) { case "x": switch (s.sub) { default: return s.reasoningBudget; } } }',
+        False,
+    ),
+    # A `break` in a plain block still leaves the switch; one inside a loop belongs to the loop.
+    (
+        '(s) => { switch (s.mode) { case "x": if (s.stop) { break; } return s.reasoningBudget; '
+        "default: return s.reasoningBudget; } }",
+        False,
+    ),
+    (
+        '(s) => { switch (s.mode) { case "x": for (;;) { break; } return s.reasoningBudget; '
+        "default: return s.reasoningBudget; } }",
+        True,
     ),
     # An empty LAST label has nothing to fall into, so that value leaves the switch.
     ('(s) => { switch (s.mode) { default: return s.reasoningBudget; case "x": } }', False),
