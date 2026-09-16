@@ -650,7 +650,6 @@ def test_a_second_ambiguous_failure_does_divert(fake_settings, monkeypatch):
         ("no kernel image is available for execution on the device", True),
         ("invalid device function", True),
         ("ggml_cuda_mul_mat_q: unspecified launch failure at mmq.cu:145", False),
-        ("HIP error: out of memory", False),
         ("ROCm error: something went wrong", False),
         # The same defect class as the decisive list, printed by a layer that does not name the
         # build: rocBLAS finding no Tensile kernels for this gfx target, and the HSA runtime abort
@@ -707,6 +706,59 @@ def test_the_rocm_failures_that_name_no_build_are_counted_not_ignored(
     video_mod._note_sd_cpp_accelerator_failure("/opt/sd/rocm/sd-cli", output)
     assert sd_cpp_backend.accelerator_runtime_failed("rocm") is True
     assert sd_cpp_backend.preferred_accelerator("rocm") == "vulkan"
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        # The exact shape that made this necessary: ROCm reports an exhausted card through the
+        # same prefix "rocm error" the ambiguous tier matches on.
+        "ROCm error: out of memory",
+        "HIP error: out of memory",
+        "hipErrorOutOfMemory",
+        "ggml_backend_cuda_buffer_type_alloc_buffer: failed to allocate 4096 MiB",
+        "sd-cli exited 1. Last output:\nnot enough memory to allocate the compute buffer",
+        # An allocation failure whose tail also carries a build-shaped string must not divert the
+        # host on one occurrence either.
+        "hipErrorNoBinaryForGpu reported while out of memory",
+    ],
+)
+def test_an_exhausted_card_is_never_read_as_an_unusable_build(output):
+    """An OOM is a statement about the REQUEST, not about the build.
+
+    "ROCm error: out of memory" contains "rocm error", so it counted as an ambiguous strike, and
+    two of them under one fingerprint moved the host to Vulkan permanently. Nothing about the host
+    changed, so the fingerprint can never retire that note, yet the same build renders the same
+    model perfectly at a smaller size. `output_shows_accelerator_failure` already promised this in
+    its own docstring: "an out-of-memory never persists a preference away from the host's own
+    accelerator".
+    """
+    from core.inference.sd_cpp_backend import (
+        output_shows_accelerator_failure,
+        output_shows_capacity_failure,
+        output_shows_decisive_accelerator_failure,
+    )
+
+    assert output_shows_capacity_failure(output) is True
+    assert output_shows_accelerator_failure(output) is False
+    assert output_shows_decisive_accelerator_failure(output) is False
+
+
+def test_repeated_out_of_memory_never_diverts_the_host(fake_settings, monkeypatch):
+    """Past the strike count, because one occurrence was never the thing that was wrong."""
+    from core.inference import sd_cpp_backend
+    from core.inference import video as video_mod
+
+    monkeypatch.setattr(sd_cpp_backend, "_installed_accelerator_of", lambda _b: "rocm")
+    for _ in range(sd_cpp_backend._AMBIGUOUS_FAILURE_STRIKES + 2):
+        video_mod._note_sd_cpp_accelerator_failure(
+            "/opt/sd/rocm/sd-cli",
+            "sd-cli exited 1. Last output:\nROCm error: out of memory",
+        )
+
+    assert sd_cpp_backend.accelerator_runtime_failed("rocm") is False
+    assert sd_cpp_backend.preferred_accelerator("rocm") == "rocm"
+    assert _noted_accelerators(fake_settings) == []
 
 
 def test_one_decisive_failure_is_enough(fake_settings, monkeypatch):

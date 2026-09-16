@@ -969,6 +969,35 @@ _ACCELERATOR_RUNTIME_FAILURE_MARKERS: tuple[str, ...] = (
     _ACCELERATOR_DECISIVE_FAILURE_MARKERS + _ACCELERATOR_AMBIGUOUS_FAILURE_MARKERS
 )
 
+# CAPACITY, and the reason the markers above cannot be read on their own. ROCm reports an
+# exhausted card as "ROCm error: out of memory", which contains "rocm error" and so counted as an
+# ambiguous strike; two of those under one fingerprint moved the host to Vulkan permanently. That
+# is the opposite of the right answer, because an OOM is a statement about the REQUEST and not
+# about the build: the same build renders the same model at a smaller size, and the fingerprint
+# cannot expire the note because nothing about the host changed.
+#
+# Checked BEFORE either predicate, decisive included, so an allocation failure whose tail also
+# carries a build-shaped string cannot divert the host on one occurrence either. That is the
+# conservative direction this whole path is written in: withholding a diversion leaves the user
+# with the real error, while a wrong diversion is silent and, once persisted, sticky.
+_ACCELERATOR_CAPACITY_FAILURE_MARKERS: tuple[str, ...] = (
+    "out of memory",
+    "outofmemory",
+    "hiperroroutofmemory",
+    "cudaerrormemoryallocation",
+    "failed to allocate",
+    "insufficient memory",
+    "not enough memory",
+)
+
+
+def output_shows_capacity_failure(text: Optional[str]) -> bool:
+    """True when sd-cli output names an exhausted card rather than an unusable build."""
+    if not text:
+        return False
+    lowered = str(text).lower()
+    return any(marker in lowered for marker in _ACCELERATOR_CAPACITY_FAILURE_MARKERS)
+
 
 def output_shows_accelerator_failure(text: Optional[str]) -> bool:
     """True when sd-cli output names a failure of the GPU BUILD rather than of the request.
@@ -976,6 +1005,8 @@ def output_shows_accelerator_failure(text: Optional[str]) -> bool:
     Conservative: an unrecognised failure returns False, so a transient error, a bad argument or an
     out-of-memory never persists a preference away from the host's own accelerator."""
     if not text:
+        return False
+    if output_shows_capacity_failure(text):
         return False
     lowered = str(text).lower()
     return any(marker in lowered for marker in _ACCELERATOR_RUNTIME_FAILURE_MARKERS)
@@ -985,6 +1016,8 @@ def output_shows_decisive_accelerator_failure(text: Optional[str]) -> bool:
     """True when the output names the BUILD having no code for this card, as opposed to naming a
     GPU fault whose cause it does not establish. Only these divert a host on one occurrence."""
     if not text:
+        return False
+    if output_shows_capacity_failure(text):
         return False
     lowered = str(text).lower()
     return any(marker in lowered for marker in _ACCELERATOR_DECISIVE_FAILURE_MARKERS)
