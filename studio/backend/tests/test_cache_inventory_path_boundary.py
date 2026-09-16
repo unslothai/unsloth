@@ -1883,3 +1883,43 @@ def test_a_resumable_run_can_still_be_resumed_by_an_api_key_caller():
     assert host_paths.redact_host_paths({"output_dir": output_dir}, via_api_key = False) == {
         "output_dir": output_dir
     }
+
+
+def test_a_local_diffusion_base_is_still_trainable_by_an_api_key_caller():
+    """`base_model` carries the same identity the picker was shown, so it resolves too.
+
+    A filesystem-backed diffusion base answers an API-key caller as a handle. Left
+    unresolved, family detection and `_assert_trusted_base_model` read `ref:...` as a Hub id,
+    and a local base that trained fine before the redaction could not be started at all.
+    """
+    from models.training import DiffusionTrainingStartRequest
+
+    base = f"{HOST_ROOT}/my models/SDXL-Local"
+    handle = host_paths.cache_reference(base)
+    assert handle.startswith("ref:") and HOST_ROOT not in handle
+
+    started = DiffusionTrainingStartRequest(
+        base_model = handle,
+        data_dir = "/data/images",
+        output_dir = f"{HOST_ROOT}/outputs/run-2",
+    )
+    assert started.base_model == base
+
+    # A Hub id is not a handle and is left exactly as it arrived, as is a reference this
+    # process never issued, which then fails the way an unknown base does.
+    assert (
+        DiffusionTrainingStartRequest(
+            base_model = "unsloth/FLUX.1-dev",
+            data_dir = "/data/images",
+            output_dir = "/out",
+        ).base_model
+        == "unsloth/FLUX.1-dev"
+    )
+    assert (
+        DiffusionTrainingStartRequest(
+            base_model = "ref:nope",
+            data_dir = "/data/images",
+            output_dir = "/out",
+        ).base_model
+        == "ref:nope"
+    )

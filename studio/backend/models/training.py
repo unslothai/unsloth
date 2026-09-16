@@ -842,6 +842,12 @@ class DiffusionTrainingStartRequest(BaseModel):
     model_config = ConfigDict(protected_namespaces = ())
 
     base_model: str = Field(..., description = "HF repo id or local path to a trainable base")
+    # A filesystem-backed base is advertised to an API-key caller under an opaque handle, and
+    # this field carries exactly the identity the picker was shown. Unresolved, family
+    # detection and `_assert_trusted_base_model` read `ref:...` as a Hub id, so a local
+    # diffusion base could not be trained through the API at all. The text half resolves
+    # `model_name` for the same reason.
+    _resolve_the_base_handle = field_validator("base_model")(_resolve_inventory_handle)
     data_dir: str = Field(..., description = "Folder of training images (+ captions)")
     output_dir: str = Field(..., description = "Directory to write the LoRA .safetensors into")
     # A diffusion Resume replays the stored config, whose `output_dir` answers an API-key
