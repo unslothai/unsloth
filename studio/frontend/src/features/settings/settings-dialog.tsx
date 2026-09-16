@@ -56,6 +56,11 @@ import {
   type SettingsTab,
   useSettingsDialogStore,
 } from "./stores/settings-dialog-store";
+
+interface SettingsPanelProps {
+  searchEntry?: string;
+}
+
 // Statically imported, every panel ran before first paint even though the dialog
 // starts closed. Load each on first view instead; this map also drives the prefetch.
 const TAB_LOADERS = {
@@ -91,12 +96,14 @@ const TAB_LOADERS = {
     import("./tabs/debugging-tab").then((m) => ({ default: m.DebuggingTab })),
   about: () =>
     import("./tabs/about-tab").then((m) => ({ default: m.AboutTab })),
-} satisfies Record<SettingsTab, () => Promise<{ default: FC }>>;
+} satisfies Record<SettingsTab, () => Promise<{ default: FC<SettingsPanelProps> }>>;
 
-function lazyTabs<T extends Record<string, () => Promise<{ default: FC }>>>(
+function lazyTabs<
+  T extends Record<string, () => Promise<{ default: FC<SettingsPanelProps> }>>,
+>(
   loaders: T,
-): Record<keyof T, ComponentType> {
-  const out = {} as Record<keyof T, ComponentType>;
+): Record<keyof T, ComponentType<SettingsPanelProps>> {
+  const out = {} as Record<keyof T, ComponentType<SettingsPanelProps>>;
   for (const id of Object.keys(loaders) as (keyof T)[]) {
     out[id] = lazy(loaders[id]);
   }
@@ -250,11 +257,6 @@ const SETTINGS_SEARCH_INDEX = createSettingsSearchIndex({
       clientPlatform.includes("linux")),
 });
 
-function renderTab(tab: SettingsTab) {
-  const Tab = LAZY_TABS[tab];
-  return <Tab />;
-}
-
 export function SettingsDialog() {
   const t = useT();
   const isOwner = useIsAccountOwner();
@@ -271,6 +273,7 @@ export function SettingsDialog() {
   // the highlight lag the click. Render the panel from a deferred value so the nav updates first.
   const deferredTab = useDeferredValue(activeTab);
   const panelTab = resolveSettingsTab(deferredTab, isOwner);
+  const Tab = LAZY_TABS[panelTab];
   const [query, setQuery] = useState("");
 
   // Once opened, pull the other panels in on idle so a tab click never waits on the
@@ -617,7 +620,7 @@ export function SettingsDialog() {
               <button
                 type="button"
                 onClick={closeDialog}
-                className="absolute top-3 right-3 z-10 flex size-[30px] items-center justify-center rounded-[10px] text-[#383835] dark:text-[#c7c7c4] transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                className="absolute top-3 end-3 z-10 flex size-[30px] items-center justify-center rounded-[10px] text-[#383835] dark:text-[#c7c7c4] transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 aria-label={t("settings.dialog.closeAriaLabel")}
               >
                 <HugeiconsIcon icon={Cancel01Icon} className="size-4" />
@@ -640,7 +643,13 @@ export function SettingsDialog() {
                       </div>
                     }
                   >
-                    {renderTab(panelTab)}
+                    <Tab
+                      searchEntry={
+                        pendingScroll?.tab === panelTab
+                          ? pendingScroll.entry
+                          : undefined
+                      }
+                    />
                   </Suspense>
                 </SettingsPanelBoundary>
               </div>

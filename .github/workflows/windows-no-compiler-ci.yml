@@ -40,6 +40,11 @@ on:
       - 'install.ps1'
       - 'studio/setup.ps1'
       - 'scripts/uninstall.ps1'
+      # install.sh generates PowerShell into a here-string and runs it on the Windows
+      # side for the WSL shortcut, so it can put a compiler on a user's Windows machine
+      # without touching a .ps1. It did: the Add-Type that #10540 removed from
+      # install.ps1 stayed live here, outside this list and outside the text guard.
+      - 'install.sh'
       - 'studio/src-tauri/src/install.rs'
       - 'studio/src-tauri/src/process.rs'
       - 'tests/studio/test_installer_av_shapes.py'
