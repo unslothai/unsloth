@@ -1445,6 +1445,19 @@ def test_two_identical_cards_are_not_pinned_on_a_guess(monkeypatch):
     assert sd_cpp_backend.sd_cpp_device_named(
         "/opt/sd/vulkan/sd-cli", "AMD Radeon RX 7900 XTX"
     ) is None
+    # Unless the selection's place in the run of identical cards is known: the second card of
+    # that name physically is the second Vulkan entry of that name, because both namespaces
+    # walk one vendor's GPUs in the order the driver reports them.
+    assert sd_cpp_backend.sd_cpp_device_named(
+        "/opt/sd/vulkan/sd-cli", "AMD Radeon RX 7900 XTX", position = 1
+    ) == "Vulkan1"
+    assert sd_cpp_backend.sd_cpp_device_named(
+        "/opt/sd/vulkan/sd-cli", "AMD Radeon RX 7900 XTX", position = 0
+    ) == "Vulkan0"
+    # And a position the device list cannot honour pins nothing rather than guessing.
+    assert sd_cpp_backend.sd_cpp_device_named(
+        "/opt/sd/vulkan/sd-cli", "AMD Radeon RX 7900 XTX", position = 5
+    ) is None
     # An unreadable probe and a card nothing answers to are the same answer.
     assert sd_cpp_backend.sd_cpp_device_named("/opt/sd/vulkan/sd-cli", "NVIDIA RTX 4090") is None
     assert sd_cpp_backend.sd_cpp_device_named("/opt/sd/vulkan/sd-cli", None) is None
@@ -1462,3 +1475,90 @@ def test_the_h3_load_resolves_the_pin_by_name_when_the_index_says_nothing():
     # Second, not instead: a build whose devices ARE in the physical namespace is unchanged.
     assert ordinal_call < named_call
     assert "_physical_card_name(native_ordinal)" in source
+    assert "position = selected_position" in source
+
+
+def test_the_position_among_identical_cards_is_what_is_carried(monkeypatch):
+    """A name cannot separate two 7900 XTXs; "this is the second one" can."""
+    from core.inference import video as video_mod
+
+    class _FakeCuda:
+        @staticmethod
+        def is_available():
+            return True
+
+        @staticmethod
+        def device_count():
+            return 3
+
+        @staticmethod
+        def get_device_name(index):
+            return ["AMD Radeon RX 7600", "AMD Radeon RX 7900 XTX", "AMD Radeon RX 7900 XTX"][index]
+
+    monkeypatch.setitem(
+        __import__("sys").modules, "torch", type("torch", (), {"cuda": _FakeCuda})
+    )
+    assert video_mod._physical_card_name(0) == ("AMD Radeon RX 7600", 0)
+    assert video_mod._physical_card_name(1) == ("AMD Radeon RX 7900 XTX", 0)
+    assert video_mod._physical_card_name(2) == ("AMD Radeon RX 7900 XTX", 1)
+    # An index the host does not have, and no selection at all, are both "cannot tell".
+    assert video_mod._physical_card_name(9) == (None, None)
+    assert video_mod._physical_card_name(None) == (None, None)
+
+
+def test_a_strike_never_forgets_what_the_last_one_knew(monkeypatch):
+    """A component that cannot be read right now is recorded as None, and an unknown reads as
+    compatible.
+
+    So overwriting a known GPU or bundle value with None loses the only thing that could ever
+    invalidate the record: once it is diverting the host, a later card or bundle change is
+    compared against an unknown and skipped, and the note becomes permanent.
+    """
+    from core.inference import sd_cpp_backend
+
+    previous = {"bundle": "b1", "runtime": "rocm6.2", "gpus": "gfx1100"}
+    current = {"bundle": None, "runtime": "rocm6.2", "gpus": None}
+    merged = sd_cpp_backend._fingerprint_with_known_fields_kept(previous, current)
+    assert merged == {"bundle": "b1", "runtime": "rocm6.2", "gpus": "gfx1100"}
+
+    # A component the new reading DOES have wins: that is a real change, and it is what
+    # retires a stale note.
+    changed = {"bundle": "b2", "runtime": "rocm6.2", "gpus": "gfx1201"}
+    assert sd_cpp_backend._fingerprint_with_known_fields_kept(previous, changed) == changed
+    # Nothing to merge from is not an error.
+    assert sd_cpp_backend._fingerprint_with_known_fields_kept(None, current) == current
+
+
+def test_a_second_strike_taken_blind_still_expires_when_the_cards_change(
+    fake_settings, monkeypatch
+):
+    """The consequence, end to end. Two ambiguous strikes divert the host; if the second was
+    taken while the GPU list was unreadable, the record used to carry no cards at all and no
+    later change could retire it."""
+    from core.inference import sd_cpp_backend
+    from core.inference import video as video_mod
+
+    monkeypatch.setattr(sd_cpp_backend, "_installed_accelerator_of", lambda _b: "rocm")
+    monkeypatch.setattr(
+        sd_cpp_backend, "_accelerator_fingerprint",
+        lambda: {"bundle": "b1", "runtime": "rocm6.2", "gpus": "gfx1100"},
+    )
+    video_mod._note_sd_cpp_accelerator_failure(
+        "/opt/sd/rocm/sd-cli", "sd-cli exited 1. Last output:\nROCm error: no kernel image"
+    )
+    # The second strike is taken while the cards cannot be read.
+    monkeypatch.setattr(
+        sd_cpp_backend, "_accelerator_fingerprint",
+        lambda: {"bundle": None, "runtime": "rocm6.2", "gpus": None},
+    )
+    video_mod._note_sd_cpp_accelerator_failure(
+        "/opt/sd/rocm/sd-cli", "sd-cli exited 1. Last output:\nROCm error: no kernel image"
+    )
+    assert sd_cpp_backend.accelerator_runtime_failed("rocm") is True
+
+    # A new card. The record has to expire, which it cannot do against a fingerprint of Nones.
+    monkeypatch.setattr(
+        sd_cpp_backend, "_accelerator_fingerprint",
+        lambda: {"bundle": "b1", "runtime": "rocm6.2", "gpus": "gfx1201"},
+    )
+    assert sd_cpp_backend.accelerator_runtime_failed("rocm") is False

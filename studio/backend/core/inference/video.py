@@ -590,25 +590,34 @@ class _VideoLoadingState:
     asset_repos: tuple[str, ...] = ()
 
 
-def _physical_card_name(ordinal: Optional[int]) -> Optional[str]:
-    """The card at physical index *ordinal*, as the driver names it. None when unreadable.
+def _physical_card_name(ordinal: Optional[int]) -> "tuple[Optional[str], Optional[int]]":
+    """The card at physical index *ordinal* as the driver names it, and its place among the
+    cards of that same name. ``(None, None)`` when unreadable.
 
     For the accelerator fallback, where the build's devices are in a namespace the physical
     index means nothing in. The name is what the two namespaces agree on, so it is what the
     pin is matched by. `torch.cuda` is the reader on ROCm as well: HIP is exposed through the
     same API and reports the same marketing name the Vulkan ICD prints.
+
+    The POSITION is what breaks a tie between identical cards, which a name cannot: two
+    7900 XTXs describe themselves identically in both namespaces, so what is carried instead
+    is "this is the second one". See `sd_cpp_device_named` for the assumption that rests on.
     """
     if ordinal is None:
-        return None
+        return None, None
     try:
         import torch
 
         if not torch.cuda.is_available() or ordinal >= torch.cuda.device_count():
-            return None
-        name = torch.cuda.get_device_name(ordinal)
+            return None, None
+        names = [torch.cuda.get_device_name(index) for index in range(torch.cuda.device_count())]
     except Exception:  # noqa: BLE001 -- no reader, no pin; the load runs as it does today
-        return None
-    return name.strip() or None
+        return None, None
+    name = (names[ordinal] or "").strip()
+    if not name:
+        return None, None
+    position = sum(1 for index in range(ordinal) if (names[index] or "").strip() == name)
+    return name, position
 
 
 def _sd_cli_identity(binary: Optional[str]) -> Optional[tuple[int, int]]:
@@ -2089,8 +2098,9 @@ class VideoBackend:
                 # that WAS selected. On a multi-GPU host that is a reservation against
                 # hardware nothing is running on, and an overcommit of whatever Vulkan chose.
                 # The card's own name is the one thing the two namespaces agree on.
+                selected_name, selected_position = _physical_card_name(native_ordinal)
                 native_device_name = sd_cpp_device_named(
-                    binary, _physical_card_name(native_ordinal)
+                    binary, selected_name, position = selected_position
                 )
         requested_mode = normalize_memory_mode(memory_mode) or "auto"
         policy = {

@@ -428,7 +428,9 @@ def _normalized_card_name(text: str) -> str:
     return "".join(character for character in text.lower() if character.isalnum())
 
 
-def sd_cpp_device_named(binary: Optional[str], card_name: Optional[str]) -> Optional[str]:
+def sd_cpp_device_named(
+    binary: Optional[str], card_name: Optional[str], *, position: Optional[int] = None
+) -> Optional[str]:
     """The ggml device that IS *card_name*, when exactly one of them is.
 
     For the accelerator fallback. The Vulkan build's devices are in their own namespace, so
@@ -437,8 +439,18 @@ def sd_cpp_device_named(binary: Optional[str], card_name: Optional[str]) -> Opti
     reserved the card that was selected. On a mixed box the card's own name is the one thing
     both namespaces agree on, so that is what this matches.
 
-    None unless the match is UNIQUE. Two identical cards produce two identical descriptions,
-    and picking either would be a guess dressed as a pin -- exactly what this exists to stop.
+    Two identical cards produce two identical descriptions, and the name alone cannot tell
+    them apart. ``position`` is how many cards of that same name come BEFORE the selected one
+    in the physical enumeration, and the match at that position is taken. Both namespaces
+    enumerate the GPUs of one vendor in the order the driver reports them -- PCI bus order for
+    amdgpu, which is what RADV's `vkEnumeratePhysicalDevices` and HIP's device list both walk
+    -- so the n-th of a run of identical cards is the same card in either. That is an
+    assumption about the driver, not a fact this can read, which is why it is only used to
+    break a tie between devices already agreed to be the right MODEL, and why the counts have
+    to agree: a ``position`` outside the matches pins nothing.
+
+    None unless the match is unambiguous. No name, no position and several candidates means a
+    guess dressed as a pin, which is what this exists to stop.
     """
     if not binary or not card_name:
         return None
@@ -462,16 +474,22 @@ def sd_cpp_device_named(binary: Optional[str], card_name: Optional[str]) -> Opti
             continue
         if wanted in described or described in wanted:
             matches.append(name)
-    if len(matches) != 1:
-        if matches:
-            logger.warning(
-                "sd_cpp.device_pin_ambiguous: %s devices answer to %r, so none is pinned and "
-                "the graph runs on this build's own default device",
-                len(matches),
-                card_name,
-            )
-        return None
-    return matches[0]
+    if len(matches) == 1:
+        return matches[0]
+    if matches and position is not None and 0 <= position < len(matches):
+        # A run of identical cards, and the selection's place in that run. Same vendor, same
+        # driver, same enumeration order on both sides; see the note above for why that is
+        # the assumption and not a reading.
+        return matches[position]
+    if matches:
+        logger.warning(
+            "sd_cpp.device_pin_ambiguous: %s devices answer to %r and the selection's place "
+            "among them is not known, so none is pinned and the graph runs on this build's "
+            "own default device",
+            len(matches),
+            card_name,
+        )
+    return None
 
 
 def _h3_replacement_hint(binary: str) -> str:
@@ -949,6 +967,15 @@ def note_accelerator_runtime_failure(accelerator: Optional[str], *, proven: bool
         previous.get("fingerprint"), fingerprint
     ):
         previous = None
+    if previous is not None:
+        # Keep what the earlier strike KNEW. A component that cannot be read right now is
+        # recorded as None, and `_fingerprint_still_applies` reads an unknown as compatible,
+        # so overwriting a known GPU or bundle value with None loses the only thing that could
+        # ever invalidate this record: once the record is diverting the host, a later card or
+        # bundle change is compared against an unknown and skipped, and the note becomes
+        # permanent. Merging is safe in the other direction too -- the check above has already
+        # established that nothing known about this host contradicts the stored fingerprint.
+        fingerprint = _fingerprint_with_known_fields_kept(previous.get("fingerprint"), fingerprint)
     strikes = (previous or {}).get("strikes", 0) + 1
     record = {
         "strikes": strikes,
@@ -960,6 +987,23 @@ def note_accelerator_runtime_failure(accelerator: Optional[str], *, proven: bool
     records[klass] = record
     _accelerator_runtime_failures[klass] = record
     _persist_accelerator_runtime_failures(records)
+
+
+def _fingerprint_with_known_fields_kept(
+    previous: Optional[dict], current: Optional[dict]
+) -> Optional[dict]:
+    """*current*, with any component it could not read taken from *previous* instead.
+
+    Only called once the two have been shown not to contradict each other, so the carried
+    value is a fact about this same host that this reading merely failed to re-take.
+    """
+    if not isinstance(previous, dict) or not isinstance(current, dict):
+        return current
+    merged = dict(current)
+    for key, value in previous.items():
+        if value is not None and merged.get(key) is None:
+            merged[key] = value
+    return merged
 
 
 def _record_diverts(record: Optional[dict], fingerprint: Optional[dict] = None) -> bool:
