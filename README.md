@@ -165,7 +165,7 @@ docker run -d --gpus all --ipc=host \
 ```
 Follow startup with `docker logs -f <container>`, where `<container>` is the ID printed by `docker run -d` or a name from `docker ps`. Studio is at `http://localhost:8000` (user `unsloth`), JupyterLab at `http://localhost:8888`. The two mounts keep different things across `docker rm`: the Hugging Face cache holds models you download (mounting your host cache also reuses what you already have), and the `unsloth-studio` volume holds your accounts, chats and trained models; each image brings its own Studio code, and a volume from an older image is migrated on the first start (its old code is kept under `.unsloth-studio-legacy/`). Tags (`unsloth/unsloth:core` for notebooks only), GPU support and options: [Docker Hub](https://hub.docker.com/r/unsloth/unsloth).
 
-On AMD, use [`unsloth/unsloth-rocm`](https://hub.docker.com/r/unsloth/unsloth-rocm) or `docker/run.sh --rocm`.
+On AMD, use [`unsloth/unsloth-rocm`](https://hub.docker.com/r/unsloth/unsloth-rocm) or `docker/run.sh --rocm`, on native Linux: WSL exposes `/dev/dxg` rather than the `/dev/kfd` that ROCm needs.
 
 #### Remote HTTPS & LAN Access
 Server-side tools are on by default - so **be careful**! Keep your password safe, or use `--disable-tools` when exposing Unsloth.
