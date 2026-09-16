@@ -4013,7 +4013,9 @@ def get_moe_target_parameters(
     if target_set & _MOE_BROAD_MLP_TARGETS:
         if moe_module_targets is None:
             moe_module_targets = get_moe_target_modules(model, target_modules)
-        if not moe_module_targets and not _moe_experts_reachable_by_module_name(model, target_set):
+        if not moe_module_targets and not _moe_experts_reachable_by_module_name(
+            model, target_set, target_modules,
+        ):
             logger.warning(
                 f"Unsloth: MoE model with {num_experts = } resolved no expert parameters for "
                 f"{target_modules = }. The expert weights will NOT be trained."
@@ -4037,21 +4039,41 @@ def _moe_parameter_exists(
     return False
 
 
-def _moe_experts_reachable_by_module_name(model, target_set) -> bool:
-    """True if an ordinary target_modules suffix match already reaches the experts.
+def _moe_experts_reachable_by_module_name(model, target_set, target_modules = None) -> bool:
+    """True if an ordinary target_modules match already reaches the experts.
 
     transformers 4.x builds Qwen3-MoE and Mixtral experts as per-expert submodules
     (``mlp.experts.<i>.gate_proj``), so PEFT attaches LoRA to them by leaf name with no
     help from us, while transformers 5.x fuses the same weights into 3D Parameters. The
     unresolved-experts warning must stay quiet in the first case or it fires on a model
-    whose experts are being trained perfectly well."""
-    if not target_set or not hasattr(model, "named_modules"):
+    whose experts are being trained perfectly well.
+
+    PEFT's own two matching rules are mirrored, because the leaf name alone answers only
+    one of them. A str ``target_modules`` is a regex PEFT applies with ``re.fullmatch``
+    against the WHOLE module path (``peft.utils.other.match_target_against_key``), so
+    ``.*mlp.*down_proj`` reaches no expert on a ``mixer.experts.0.down_proj`` layout even
+    though the derived leaf set contains ``down_proj``; answering from the leaf there
+    would silence the warning on exactly the untrained-experts case it exists for. A list
+    is matched by whole key or dotted suffix, which is what the leaf test already does."""
+    if not hasattr(model, "named_modules"):
+        return False
+    pattern = None
+    if isinstance(target_modules, str):
+        try:
+            pattern = re.compile(target_modules)
+        except re.error:
+            # PEFT would raise on this pattern anyway; do not claim reachability for it.
+            return False
+    elif not target_set:
         return False
     try:
         for name, _ in model.named_modules():
             if "experts" not in name:
                 continue
-            if name.rpartition(".")[2] in target_set:
+            if pattern is not None:
+                if pattern.fullmatch(name):
+                    return True
+            elif name.rpartition(".")[2] in target_set:
                 return True
     except Exception:
         return False

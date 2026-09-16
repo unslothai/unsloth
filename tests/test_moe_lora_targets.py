@@ -577,3 +577,51 @@ def test_supplied_module_targets_suppress_the_warning():
     )
     assert result is None
     assert records == []
+
+
+def _non_mlp_submodule_moe_model(num_experts = 2):
+    """NemotronH-style per-expert submodules under ``mixer``, so a regex anchored on an
+    ``mlp`` path segment reaches none of them."""
+    experts = torch.nn.ModuleList()
+    for _ in range(num_experts):
+        expert = torch.nn.Module()
+        for leaf in ALL_MLP_LEAVES:
+            expert.add_module(leaf, torch.nn.Linear(8, 8, bias = False))
+        experts.append(expert)
+    mixer = torch.nn.Module()
+    mixer.add_module("experts", experts)
+    model = torch.nn.Module()
+    model.config = SimpleNamespace(num_experts = num_experts, model_type = "nemotron_h")
+    model.add_module("mixer", mixer)
+    return model
+
+
+def test_a_regex_that_peft_cannot_match_still_warns():
+    """A str target_modules is a regex PEFT full-matches against the whole module path, so
+    a leaf-only reachability answer suppressed the warning on the very case it exists for:
+    ``.*mlp.*down_proj`` derives {"down_proj"} but matches no ``mixer.experts.N.down_proj``."""
+    result, records = _warnings_from(_non_mlp_submodule_moe_model(), ".*mlp.*down_proj")
+    assert result is None
+    assert len(records) == 1, records
+    assert "will NOT be trained" in records[0]
+
+
+def test_a_regex_that_peft_does_match_stays_quiet():
+    """The control: the same layout with a regex that really reaches the experts."""
+    result, records = _warnings_from(_non_mlp_submodule_moe_model(), ".*experts.*down_proj")
+    assert result is None
+    assert records == []
+
+
+def test_an_uncompilable_regex_does_not_claim_reachability():
+    result, records = _warnings_from(_non_mlp_submodule_moe_model(), ".*mlp.*(down_proj")
+    assert result is None
+    assert len(records) == 1, records
+
+
+def test_a_list_target_modules_still_matches_by_suffix():
+    """PEFT matches a list by whole key or dotted suffix, which is the leaf test; the regex
+    arm must not change that."""
+    result, records = _warnings_from(_non_mlp_submodule_moe_model(), ALL_MLP_LEAVES)
+    assert result is None
+    assert records == []
