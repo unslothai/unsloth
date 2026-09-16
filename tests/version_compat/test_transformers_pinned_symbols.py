@@ -30,7 +30,14 @@ _FLOOR = (4, 57, 6)
 # 4.57.6 is the floor, 5.5.0 is the old ceiling and still the Apple Silicon cap, and 5.16.0
 # first required tokenizers>=0.23.1, which broke the Apple Silicon install when an unbounded
 # override let it in (tests/studio/install/test_transformers_tokenizers_pair.py).
-_ALWAYS = ("v4.57.6", "v5.5.0", "v5.16.0")
+_ALWAYS = ("v4.57.6", "v5.5.0", "v5.16.0", "v5.10.1", "v5.15.1")
+
+# The two extra entries are exact pins real users run, not just versions the window admits:
+# several notebooks pin 5.10.1 and 5.15.x (notebooks-ci.yml says so, and both are in this
+# repo's own NEWLY_ADMITTED list). One tag per minor would replace 5.10.1 with 5.10.4, so a
+# symbol this repo needs that only arrived in a later 5.10 patch would leave those pinned
+# notebooks broken while the matrix stayed green. 5.15.1 is the newest 5.15 today and so is
+# covered anyway; anchored because the next 5.15 patch would evict it exactly like 5.10.1.
 
 # pyproject's own transformers cap, read rather than repeated. The matrix keeps one tag per
 # minor, so the day upstream ships 5.17.1 the (5, 17) slot becomes 5.17.1 and 5.17.0, the

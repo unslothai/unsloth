@@ -413,3 +413,41 @@ def test_without_the_cache_a_failed_read_still_falls_back(tmp_path, monkeypatch)
 
     module = _matrix_module(refuses)
     assert set(module._TAGS_FALLBACK).issubset(module.TRANSFORMERS_TAGS)
+
+
+def test_a_pinned_patch_release_is_not_evicted_by_a_later_one() -> None:
+    """One tag per minor keeps the matrix bounded, but not at the cost of a pin users run.
+
+    Several notebooks pin 5.10.1, which this repo's own NEWLY_ADMITTED list names and
+    notebooks-ci.yml calls out. With 5.10.4 published, the (5, 10) slot becomes 5.10.4 and
+    5.10.1 stops being checked, so a symbol Unsloth needs that only arrived in a later 5.10
+    patch would leave those notebooks broken while this matrix stayed green.
+    """
+    import io
+    import json as _json
+
+    class _Response(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self.close()
+            return False
+
+    def releases(*args, **kwargs):
+        published = {version: [{"yanked": False}] for version in ("5.10.1", "5.10.4", "5.15.1")}
+        return _Response(_json.dumps({"releases": published}).encode("utf-8"))
+
+    module = _matrix_module(releases)
+
+    assert "v5.10.3" in module.TRANSFORMERS_TAGS, (
+        "the newest 5.10 patch is still measured (PyPI 5.10.4 is tagged v5.10.3 upstream)"
+    )
+    assert "v5.10.1" in module.TRANSFORMERS_TAGS, "a later patch evicted the pinned 5.10.1"
+    assert "v5.15.1" in module.TRANSFORMERS_TAGS
+
+    # The pins this repo names as newly admitted are the ones that must survive eviction.
+    for version in ("5.10.1", "5.15.1"):
+        assert "v" + version in module._ALWAYS, (
+            f"{version} is in NEWLY_ADMITTED but is not anchored in the matrix"
+        )
