@@ -132,7 +132,9 @@ def test_user_and_torch_frames_are_left_exactly_as_torch_wrote_them(patched_torc
         ("2.6.0+cu124", "CUDA"),
     ],
 )
-def test_the_upgrade_names_the_accelerator_it_found(patched_torch, monkeypatch, torch_version, family):
+def test_the_upgrade_names_the_accelerator_it_found(
+    patched_torch, monkeypatch, torch_version, family
+):
     """pip's --index-url defaults to pypi.org, which ships one build per release: the
     default CUDA one. So an unqualified upgrade silently moves a ROCm or XPU user off
     their accelerator, and the message has to say so. It must NOT paste the installed
@@ -147,7 +149,9 @@ def test_the_upgrade_names_the_accelerator_it_found(patched_torch, monkeypatch, 
     message = str(raised.value)
     assert 'pip install --upgrade "torch>=2.7.0"' in message
     assert "--index-url" in message
-    assert f"--index-url https://download.pytorch.org/whl/{torch_version.split('+')[1]}" not in message
+    assert (
+        f"--index-url https://download.pytorch.org/whl/{torch_version.split('+')[1]}" not in message
+    )
     assert f"This torch is a {torch_version.split('+')[1]} build" in message
     assert f"pick the {family} index" in message
     assert "https://pytorch.org/get-started/locally/" in message
@@ -172,6 +176,7 @@ def test_an_unattributable_access_keeps_torchs_own_error(patched_torch, monkeypa
     """sys._getframe is CPython-only and raises an audit event, so a hardened
     interpreter can refuse it. hasattr() swallows only AttributeError, so rethrowing
     the frame-lookup failure would break an ordinary feature probe."""
+
     def _refuse(_depth):
         raise RuntimeError("frame inspection is not allowed here")
 
@@ -451,7 +456,12 @@ def test_the_plain_triton_distribution_is_still_named(monkeypatch, tmp_path):
     "distribution, triton_version, torch_version, expected",
     [
         # The ordinary CUDA install: PyPI carries this wheel, so only the pin is added.
-        ("triton", "3.2.0", "2.6.0+cu124", 'pip install --force-reinstall --no-cache-dir "triton==3.2.0"'),
+        (
+            "triton",
+            "3.2.0",
+            "2.6.0+cu124",
+            'pip install --force-reinstall --no-cache-dir "triton==3.2.0"',
+        ),
         # Windows builds also come from PyPI, and are not a pytorch-triton-* provider.
         (
             "triton-windows",
