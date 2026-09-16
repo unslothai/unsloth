@@ -38,6 +38,31 @@ _SSH_PY_CONNECT_FQ = (
     "fabric.connection.Connection",
 )
 
+_PYTHON_API_SYMBOLS = {
+    name: name
+    for name in (
+        *_SSH_PY_CONNECT_FQ,
+        "paramiko.SSHClient",
+        "asyncssh.SSHClient",
+        "fabric.Config",
+        "paramiko.ProxyCommand",
+    )
+}
+_PYTHON_API_SYMBOLS.update(
+    {
+        "asyncio.subprocess.create_subprocess_exec": "asyncio.create_subprocess_exec",
+        "asyncio.subprocess.create_subprocess_shell": "asyncio.create_subprocess_shell",
+        "asyncssh.connection.connect": "asyncssh.connect",
+        "asyncssh.connection.create_connection": "asyncssh.create_connection",
+        "asyncssh.connection.get_server_host_key": "asyncssh.get_server_host_key",
+        "asyncssh.connection.get_server_auth_methods": "asyncssh.get_server_auth_methods",
+        "paramiko.proxy.ProxyCommand": "paramiko.ProxyCommand",
+        "paramiko.transport.Transport": "paramiko.Transport",
+        "paramiko.client.SSHClient": "paramiko.SSHClient",
+        "fabric.config.Config": "fabric.Config",
+    }
+)
+
 # OpenSSH boolean flags (do not consume the next token).
 _SSH_NO_ARG_FLAGS = frozenset(
     {
@@ -350,13 +375,10 @@ def _ssh_import_bindings(tree: ast.AST) -> dict[str, str]:
             module = node.module or ""
             for alias in node.names:
                 if alias.name == "*":
-                    exports = {
-                        "paramiko": ("SSHClient", "Transport"),
-                        "asyncssh": ("SSHClient", "connect"),
-                        "fabric": ("Connection", "Config"),
-                    }
-                    for name in exports.get(module, ()):
-                        bindings[name] = f"{module}.{name}"
+                    for symbol, canonical in _PYTHON_API_SYMBOLS.items():
+                        owner, _, name = symbol.rpartition(".")
+                        if owner == module:
+                            bindings[name] = canonical
                     continue
                 local = alias.asname or alias.name
                 bindings[local] = f"{module}.{alias.name}"
@@ -432,17 +454,7 @@ def _bound_name(node: Optional[ast.AST], bindings: dict[str, str]) -> str:
     name = _fq_name(node)
     root, sep, rest = name.partition(".")
     name = bindings.get(name, bindings.get(root, root) + (sep + rest if sep else ""))
-    return {
-        "asyncio.subprocess.create_subprocess_exec": "asyncio.create_subprocess_exec",
-        "asyncio.subprocess.create_subprocess_shell": "asyncio.create_subprocess_shell",
-        "asyncssh.connection.connect": "asyncssh.connect",
-        "asyncssh.connection.create_connection": "asyncssh.create_connection",
-        "asyncssh.connection.get_server_host_key": "asyncssh.get_server_host_key",
-        "asyncssh.connection.get_server_auth_methods": "asyncssh.get_server_auth_methods",
-        "paramiko.proxy.ProxyCommand": "paramiko.ProxyCommand",
-        "paramiko.transport.Transport": "paramiko.Transport",
-        "paramiko.client.SSHClient": "paramiko.SSHClient",
-    }.get(name, name)
+    return _PYTHON_API_SYMBOLS.get(name, name)
 
 
 def _ssh_factory_helpers(tree: ast.AST, bindings: dict[str, str]) -> None:

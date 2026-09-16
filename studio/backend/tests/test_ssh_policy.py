@@ -823,3 +823,18 @@ def test_asyncssh_client_factory_is_not_the_destination(factory):
         f"import asyncssh; asyncssh.create_connection({factory}, 'approved.example', config=None)"
     )
     assert extract_ssh_hosts_from_python(code) == ({"approved.example"}, False, True)
+
+
+@pytest.mark.parametrize("module", ["asyncssh", "asyncssh.connection"])
+@pytest.mark.parametrize(
+    "call",
+    [
+        "create_connection(factory, 'approved.example', config=None)",
+        "get_server_host_key('approved.example', config=None)",
+    ],
+)
+def test_wildcard_asyncssh_helpers_require_approval(module, call):
+    code = f"from {module} import *; {call}"
+    assert _check_code_safety(code, session_id = "review") is not None
+    approve_hosts("review", ["approved.example"])
+    assert _check_code_safety(code, session_id = "review") is None
