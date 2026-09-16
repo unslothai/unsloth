@@ -13,6 +13,7 @@
 """`datasets` Audio columns keep decoding after a broken torchcodec is disabled (#8642):
 soundfile for what libsndfile reads, PyAV's bundled FFmpeg for the rest, no system FFmpeg.
 GPU-free; the decoder is installed straight from import_fixes."""
+
 from __future__ import annotations
 
 import ast
@@ -25,7 +26,9 @@ import pytest
 np = pytest.importorskip("numpy")
 sf = pytest.importorskip("soundfile")
 datasets = pytest.importorskip("datasets")
-pytest.importorskip("torch")  # importing unsloth needs torch; Studio's no-torch venvs skip this file
+pytest.importorskip(
+    "torch"
+)  # importing unsloth needs torch; Studio's no-torch venvs skip this file
 
 from unsloth import import_fixes  # noqa: E402
 
@@ -110,7 +113,9 @@ def test_resampling_works_without_a_usable_librosa(broken_torchcodec, monkeypatc
         monkeypatch.setitem(sys.modules, "librosa", None)  # `import librosa` now raises ImportError
     else:
         # An old librosa beside numpy 2 raises AttributeError at import; that must reach PyAV too.
-        (tmp_path / "librosa.py").write_text("raise AttributeError('np.complex was removed')\n", encoding = "utf-8")
+        (tmp_path / "librosa.py").write_text(
+            "raise AttributeError('np.complex was removed')\n", encoding = "utf-8"
+        )
         monkeypatch.delitem(sys.modules, "librosa", raising = False)
         monkeypatch.syspath_prepend(str(tmp_path))
     out = import_fixes._audio_resample(np.zeros(1600, dtype = np.float32), 16000, 24000)
@@ -132,8 +137,14 @@ def test_a_working_torchcodec_is_left_alone(monkeypatch):
 def test_the_disabler_installs_the_decoder():
     # Read the source: importing a real torchcodec would decide this by the host, not the code.
     src = ast.parse((_REPO / "unsloth" / "import_fixes.py").read_text(encoding = "utf-8"))
-    fn = next(n for n in ast.walk(src) if isinstance(n, ast.FunctionDef) and n.name == "disable_torchcodec_if_broken")
-    calls = [n.func.id for n in ast.walk(fn) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)]
+    fn = next(
+        n
+        for n in ast.walk(src)
+        if isinstance(n, ast.FunctionDef) and n.name == "disable_torchcodec_if_broken"
+    )
+    calls = [
+        n.func.id for n in ast.walk(fn) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+    ]
     assert "patch_datasets_audio_decoding_without_torchcodec" in calls
 
 
@@ -182,7 +193,9 @@ def test_the_stream_index_selects_the_track(broken_torchcodec):
         import_fixes._audio_read_mono(io.BytesIO(raw), stream_index = 5)
 
 
-def test_a_wheel_that_raises_anything_at_import_is_disabled(broken_torchcodec, monkeypatch, tmp_path):
+def test_a_wheel_that_raises_anything_at_import_is_disabled(
+    broken_torchcodec, monkeypatch, tmp_path
+):
     # A damaged torchcodec need not raise ImportError or RuntimeError; the installer already calls
     # every failure "broken", so the library must disable it and seat the fallback the same way.
     import sys
@@ -232,12 +245,19 @@ def test_the_load_failure_is_classified_for_the_warning(monkeypatch):
         except cls as exc:
             return exc
 
-    ffmpeg_gone = raised("Could not load libtorchcodec. Likely causes: 1. FFmpeg is not properly installed")
+    ffmpeg_gone = raised(
+        "Could not load libtorchcodec. Likely causes: 1. FFmpeg is not properly installed"
+    )
     monkeypatch.setattr(import_fixes, "_ffmpeg_on_loader_path", lambda: False)
     assert import_fixes._torchcodec_load_failure(ffmpeg_gone) == "ffmpeg"
     monkeypatch.setattr(import_fixes, "_ffmpeg_on_loader_path", lambda: True)
     assert import_fixes._torchcodec_load_failure(ffmpeg_gone) == "native"
-    assert import_fixes._torchcodec_load_failure(raised("DLL load failed while importing _core", ImportError)) == "broken"
+    assert (
+        import_fixes._torchcodec_load_failure(
+            raised("DLL load failed while importing _core", ImportError)
+        )
+        == "broken"
+    )
     assert set(import_fixes._TORCHCODEC_FALLBACK_NOTES) == {"ffmpeg", "native", "broken"}
 
 
@@ -248,7 +268,9 @@ def _normalized(path: Path, name: str, rename: dict) -> str:
     fn.returns = None  # Studio annotates, the library does not; the bodies are what must match
     for arg in fn.args.args:
         arg.annotation = None
-    fn.body = [b for b in fn.body if not (isinstance(b, ast.Expr) and isinstance(b.value, ast.Constant))]
+    fn.body = [
+        b for b in fn.body if not (isinstance(b, ast.Expr) and isinstance(b.value, ast.Constant))
+    ]
     for n in ast.walk(fn):
         if isinstance(n, ast.Name) and n.id in rename:
             n.id = rename[n.id]
@@ -256,11 +278,14 @@ def _normalized(path: Path, name: str, rename: dict) -> str:
 
 
 @pytest.mark.parametrize(
-    ("library", "studio"), [("_audio_decode_with_av", "_decode_with_av"), ("_audio_read_mono", "_read_mono")]
+    ("library", "studio"),
+    [("_audio_decode_with_av", "_decode_with_av"), ("_audio_read_mono", "_read_mono")],
 )
 def test_the_library_and_studio_decoders_do_not_drift(library, studio):
     # Studio's API process never imports unsloth, so it carries its own copy of the decoder.
     if not _STUDIO_SHIM.exists():
         pytest.skip("no studio checkout")
     rename = {"_audio_decode_with_av": "_decode_with_av"}
-    assert _normalized(_REPO / "unsloth" / "import_fixes.py", library, rename) == _normalized(_STUDIO_SHIM, studio, {})
+    assert _normalized(_REPO / "unsloth" / "import_fixes.py", library, rename) == _normalized(
+        _STUDIO_SHIM, studio, {}
+    )

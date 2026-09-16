@@ -2673,14 +2673,23 @@ def _ffmpeg_on_loader_path():
 
     dirs = [d for d in os.environ.get("PATH", "").split(os.pathsep) if d]
     # A prefix on LD_LIBRARY_PATH may ship only versioned files (libavcodec.so.61), which the loader resolves but find_library never sees: it reads the ld cache and linker names.
-    libdirs = [d for v in ("LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH") for d in os.environ.get(v, "").split(os.pathsep) if d]
+    libdirs = [
+        d
+        for v in ("LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH")
+        for d in os.environ.get(v, "").split(os.pathsep)
+        if d
+    ]
     for name in ("avutil", "avcodec", "avformat", "avdevice", "avfilter", "swscale", "swresample"):
         if ctypes.util.find_library(name):
             continue
         # find_library does not glob, so walk PATH for Windows names like avutil-59.dll. Windows only: WSL puts the Windows PATH on the Linux one, and those DLLs cannot load here.
         if os.name == "nt" and any(glob.glob(os.path.join(d, name + "-*.dll")) for d in dirs):
             continue
-        if os.name != "nt" and any(glob.glob(os.path.join(d, "lib" + name + ".so*")) or glob.glob(os.path.join(d, "lib" + name + ".*dylib")) for d in libdirs):
+        if os.name != "nt" and any(
+            glob.glob(os.path.join(d, "lib" + name + ".so*"))
+            or glob.glob(os.path.join(d, "lib" + name + ".*dylib"))
+            for d in libdirs
+        ):
             continue
         return False
     return True
@@ -2691,7 +2700,9 @@ def _torchcodec_load_failure(exc):
     import traceback
 
     # One libtorchcodec message covers a missing FFmpeg, a torch mismatch and other runtime deps, so the text cannot pick between them. Ask the system: FFmpeg missing from the loader path is the one cause establishable here.
-    if "libtorchcodec" not in "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)):
+    if "libtorchcodec" not in "".join(
+        traceback.format_exception(type(exc), exc, exc.__traceback__)
+    ):
         return "broken"
     return "native" if _ffmpeg_on_loader_path() else "ffmpeg"
 
@@ -2780,9 +2791,13 @@ def disable_torchcodec_if_broken():
         decodes = patch_datasets_audio_decoding_without_torchcodec()
         try:
             import warnings
+
             note = _TORCHCODEC_FALLBACK_NOTES[_torchcodec_load_failure(load_error)]
-            tail = ("audio datasets decode through soundfile and PyAV instead (wav/flac/mp3/ogg, m4a/aac/webm)" if decodes
-                    else "audio datasets will not decode until soundfile and PyAV are installed (pip install soundfile av)")
+            tail = (
+                "audio datasets decode through soundfile and PyAV instead (wav/flac/mp3/ogg, m4a/aac/webm)"
+                if decodes
+                else "audio datasets will not decode until soundfile and PyAV are installed (pip install soundfile av)"
+            )
             warnings.warn(f"Unsloth: torchcodec is installed but {note}; {tail}.", stacklevel = 2)
         except Exception:
             pass  # a report must never abort the disable fallback above
@@ -2801,9 +2816,15 @@ def _audio_decode_with_av(source, stream_index = None):
             raise ValueError("audio container has no audio stream")
         # datasets.Audio(stream_index=...) is the container's absolute stream index, as torchcodec reads it; None is the first audio stream.
         try:
-            stream = container.streams.audio[0] if stream_index is None else container.streams[stream_index]
+            stream = (
+                container.streams.audio[0]
+                if stream_index is None
+                else container.streams[stream_index]
+            )
         except IndexError:
-            raise ValueError(f"stream {stream_index} is not in the container, which has {len(container.streams)} streams") from None
+            raise ValueError(
+                f"stream {stream_index} is not in the container, which has {len(container.streams)} streams"
+            ) from None
         if stream.type != "audio":
             raise ValueError(f"stream {stream_index} is not an audio stream")
         for frame in container.decode(stream):
@@ -2862,7 +2883,9 @@ def _audio_resample(array, rate, target):
     import av
     import numpy as np
 
-    frame = av.AudioFrame.from_ndarray(np.ascontiguousarray(array, dtype = np.float32)[np.newaxis, :], format = "flt", layout = "mono")
+    frame = av.AudioFrame.from_ndarray(
+        np.ascontiguousarray(array, dtype = np.float32)[np.newaxis, :], format = "flt", layout = "mono"
+    )
     frame.sample_rate = rate
     resampler = av.AudioResampler(format = "flt", layout = "mono", rate = target)
     chunks = [out.to_ndarray().reshape(-1) for out in resampler.resample(frame)]
@@ -2904,7 +2927,11 @@ def patch_datasets_audio_decoding_without_torchcodec():
             from datasets.utils.py_utils import string_to_dict
 
             source_url = path.split("::")[-1]
-            pattern = config.HUB_DATASETS_URL if source_url.startswith(config.HF_ENDPOINT) else config.HUB_DATASETS_HFFS_URL
+            pattern = (
+                config.HUB_DATASETS_URL
+                if source_url.startswith(config.HF_ENDPOINT)
+                else config.HUB_DATASETS_HFFS_URL
+            )
             fields = string_to_dict(source_url, pattern)
         except Exception:  # noqa: BLE001
             fields = None
@@ -2913,23 +2940,35 @@ def patch_datasets_audio_decoding_without_torchcodec():
             return values[0] if len(values) == 1 else None
         return token_per_repo_id.get(fields["repo_id"])
 
-    def decode_example(self, value, token_per_repo_id = None):
+    def decode_example(
+        self,
+        value,
+        token_per_repo_id = None,
+    ):
         import io
 
         from datasets.download.download_config import DownloadConfig
         from datasets.utils.file_utils import is_local_path, xopen
 
         if not self.decode:
-            raise RuntimeError("Decoding is disabled for this feature. Please use Audio(decode=True) instead.")
+            raise RuntimeError(
+                "Decoding is disabled for this feature. Please use Audio(decode=True) instead."
+            )
         path, raw = value["path"], value["bytes"]
         if path is None and raw is None:
-            raise ValueError(f"An audio sample should have one of 'path' or 'bytes' but both are None in {value}.")
+            raise ValueError(
+                f"An audio sample should have one of 'path' or 'bytes' but both are None in {value}."
+            )
         if raw is not None:
             source = io.BytesIO(raw)
         elif is_local_path(path):
             source = path
         else:
-            source = xopen(path, "rb", download_config = DownloadConfig(token = _token_for_url(path, token_per_repo_id)))
+            source = xopen(
+                path,
+                "rb",
+                download_config = DownloadConfig(token = _token_for_url(path, token_per_repo_id)),
+            )
         array, sampling_rate = _audio_read_mono(source, getattr(self, "stream_index", None))
         target = self.sampling_rate
         if target and sampling_rate != target:

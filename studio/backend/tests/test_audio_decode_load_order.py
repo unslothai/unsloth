@@ -120,7 +120,12 @@ def test_a_torchcodec_that_raises_anything_at_import_is_marked_unusable():
             raise AttributeError("module 'torchcodec' has no attribute '_core'")
 
     class _Finder(importlib.abc.MetaPathFinder):
-        def find_spec(self, name, path, target = None):
+        def find_spec(
+            self,
+            name,
+            path,
+            target = None,
+        ):
             if name == "datasets.features._torchcodec":
                 return importlib.machinery.ModuleSpec(name, _Raising())
             return None
@@ -133,7 +138,12 @@ def test_a_torchcodec_that_raises_anything_at_import_is_marked_unusable():
     fake_features = types.ModuleType("datasets.features")
     fake_features.__path__ = []
 
-    keys = ("datasets", "datasets.features", "datasets.features.audio", "datasets.features._torchcodec")
+    keys = (
+        "datasets",
+        "datasets.features",
+        "datasets.features.audio",
+        "datasets.features._torchcodec",
+    )
     saved = {k: sys.modules.get(k) for k in keys}
     sys.modules["datasets"] = fake_datasets
     sys.modules["datasets.features"] = fake_features
@@ -144,7 +154,9 @@ def test_a_torchcodec_that_raises_anything_at_import_is_marked_unusable():
     installed_before = audio_decode._installed
     try:
         audio_decode.ensure_audio_decoding()
-        assert fake_config.TORCHCODEC_AVAILABLE is False, "an AttributeError at import left torchcodec marked usable"
+        assert (
+            fake_config.TORCHCODEC_AVAILABLE is False
+        ), "an AttributeError at import left torchcodec marked usable"
     finally:
         sys.meta_path.remove(finder)
         audio_decode._installed = installed_before

@@ -130,7 +130,9 @@ def _serialize_binary_value(data):
 
 def _is_sample_sequence(samples) -> bool:
     # A list from the JSON path or a numpy array straight from the decoder; never text, bytes or a nested cell.
-    return hasattr(samples, "__len__") and not isinstance(samples, (str, bytes, bytearray, memoryview, dict))
+    return hasattr(samples, "__len__") and not isinstance(
+        samples, (str, bytes, bytearray, memoryview, dict)
+    )
 
 
 def _serialize_decoded_audio(value):

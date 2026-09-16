@@ -57,9 +57,15 @@ def _decode_with_av(source: Any, stream_index: Optional[int] = None) -> "tuple[A
             raise ValueError("audio container has no audio stream")
         # datasets.Audio(stream_index=...) is the container's absolute stream index, as torchcodec reads it; None is the first audio stream.
         try:
-            stream = container.streams.audio[0] if stream_index is None else container.streams[stream_index]
+            stream = (
+                container.streams.audio[0]
+                if stream_index is None
+                else container.streams[stream_index]
+            )
         except IndexError:
-            raise ValueError(f"stream {stream_index} is not in the container, which has {len(container.streams)} streams") from None
+            raise ValueError(
+                f"stream {stream_index} is not in the container, which has {len(container.streams)} streams"
+            ) from None
         if stream.type != "audio":
             raise ValueError(f"stream {stream_index} is not an audio stream")
         for frame in container.decode(stream):
