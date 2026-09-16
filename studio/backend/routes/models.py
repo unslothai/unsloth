@@ -4270,6 +4270,11 @@ async def get_kv_cache_estimate(
                         "split; pricing the layer split it would fall back to"
                     )
                     _effective_tp = False
+                    # Spelled into the extras as well, not only into the boolean. The breakdown
+                    # re-resolves the split through the same helper the launch uses, and that
+                    # helper reads an inherited LLAMA_ARG_SPLIT_MODE=tensor, so a False alone
+                    # would be turned straight back into tensor mode inside it.
+                    _planner_extras = list(_planner_extras or []) + ["--split-mode", "layer"]
                 _planner_devices = 1
                 if _effective_tp:
                     from routes.inference import (
@@ -4301,7 +4306,12 @@ async def get_kv_cache_estimate(
                         spec_draft_cache_type = spec_draft_cache_type,
                         n_batch = n_batch,
                         n_ubatch = n_ubatch,
-                        tensor_parallel = tensor_parallel,
+                        # The RESOLVED split, not the request boolean. _gguf_memory_breakdown
+                        # re-resolves this through _effective_tensor_parallel, so handing it the
+                        # raw toggle turned tensor mode straight back on for the very request the
+                        # launch cannot run it for, and gpu_bytes and compute_bytes then used the
+                        # tensor formula while the device count beside them said one card.
+                        tensor_parallel = _effective_tp,
                         n_devices = _planner_devices,
                         llama_extra_args = _planner_extras,
                     )
@@ -4330,7 +4340,9 @@ async def get_kv_cache_estimate(
                             spec_draft_cache_type = spec_draft_cache_type,
                             n_batch = n_batch,
                             n_ubatch = n_ubatch,
-                            tensor_parallel = tensor_parallel,
+                            # The same resolved split as the breakdown above: a floor priced
+                            # for a placement the launch cannot take is not a floor.
+                            tensor_parallel = _effective_tp,
                             n_devices = _planner_devices,
                             llama_extra_args = _planner_extras,
                         )

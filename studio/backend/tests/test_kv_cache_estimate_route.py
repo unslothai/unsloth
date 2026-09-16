@@ -742,6 +742,28 @@ class TestTheEstimateMatchesTheConfiguredLoad:
         assert _tensor_split_can_launch(False, True) is False
         assert _tensor_split_can_launch(False, False) is False
 
+    def test_the_downgrade_reaches_the_breakdown_and_the_floor(self):
+        """The boolean alone does not reach them.
+
+        `_gguf_memory_breakdown` re-resolves the split through the same helper the launch
+        uses, so handing it the raw request toggle turned tensor mode straight back on for
+        the very request the launch cannot run it for -- and that helper also reads an
+        inherited LLAMA_ARG_SPLIT_MODE=tensor, so the downgrade has to be spelled into the
+        extras as well as into the flag.
+        """
+        import inspect
+
+        from routes import models as models_module
+
+        body = inspect.getsource(models_module.get_kv_cache_estimate)
+        decide = body.index("_tensor_split_can_launch(")
+        assert '"--split-mode", "layer"' in body[decide:decide + 1200], body[decide:decide + 600]
+        # And both priced calls take the resolved split, not the request boolean.
+        assert body.count("tensor_parallel = _effective_tp,") == 2, body.count(
+            "tensor_parallel = _effective_tp,"
+        )
+        assert "tensor_parallel = tensor_parallel,\n" not in body[decide:]
+
     def test_the_estimate_prices_the_split_the_launch_can_take(self):
         """The helper is only worth anything if the device count goes through it."""
         import inspect
