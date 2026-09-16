@@ -10528,9 +10528,7 @@ class TestPassthroughImageNormalization:
         monkeypatch.setattr(ep, "safe_fetch_remote_image_sync", _never)
 
         with pytest.raises(HTTPException) as exc:
-            _openai_messages_for_passthrough(
-                self._req("http://169.254.169.254/latest/meta-data/")
-            )
+            _openai_messages_for_passthrough(self._req("http://169.254.169.254/latest/meta-data/"))
         assert exc.value.status_code == 400
 
     def test_local_template_caller_leaves_a_payloadless_data_url_alone(self):

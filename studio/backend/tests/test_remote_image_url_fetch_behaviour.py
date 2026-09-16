@@ -198,9 +198,7 @@ class TestRemoteUrlNeverReachesLlamaServer:
 
         monkeypatch.setattr(external_provider, "safe_fetch_remote_image_sync", _never)
         backend = _VisionGguf()
-        r = _client(monkeypatch, backend).post(
-            "/v1/chat/completions", json = _chat_body(_webp_b64())
-        )
+        r = _client(monkeypatch, backend).post("/v1/chat/completions", json = _chat_body(_webp_b64()))
 
         assert r.status_code == 200, r.text
         assert _image_urls(backend.dispatched[-1]["messages"]) == [_webp_b64()]
@@ -211,9 +209,7 @@ class TestRemoteUrlNeverReachesLlamaServer:
 
         monkeypatch.setattr(external_provider, "safe_fetch_remote_image_sync", _never)
         backend = _VisionGguf()
-        r = _client(monkeypatch, backend).post(
-            "/v1/chat/completions", json = _chat_body(_data_url())
-        )
+        r = _client(monkeypatch, backend).post("/v1/chat/completions", json = _chat_body(_data_url()))
 
         assert r.status_code == 200, r.text
         assert _image_urls(backend.dispatched[-1]["messages"])[0].startswith("data:image/png")
@@ -240,9 +236,7 @@ class TestRefusalsAreRealRefusals:
 
     def test_the_metadata_endpoint_is_refused(self, monkeypatch):
         backend = _VisionGguf()
-        r = _client(monkeypatch, backend).post(
-            "/v1/chat/completions", json = _chat_body(_METADATA)
-        )
+        r = _client(monkeypatch, backend).post("/v1/chat/completions", json = _chat_body(_METADATA))
 
         assert r.status_code == 400, r.text
         assert backend.dispatched == []
@@ -308,12 +302,15 @@ class TestBudget:
     def test_the_per_request_byte_budget_bounds_a_long_thread(self, monkeypatch):
         b64 = _webp_b64()
         each = (len(b64) * 3) // 4
-        monkeypatch.setattr(
-            inference_route, "_REMOTE_IMAGE_REQUEST_BUDGET_BYTES", 2 * each + 1
-        )
+        monkeypatch.setattr(inference_route, "_REMOTE_IMAGE_REQUEST_BUDGET_BYTES", 2 * each + 1)
         calls = []
 
-        def _fetch(url, _mime, max_bytes = 0, **_k):
+        def _fetch(
+            url,
+            _mime,
+            max_bytes = 0,
+            **_k,
+        ):
             calls.append((url, max_bytes))
             return ("image/webp", b64) if each <= max_bytes else None
 
