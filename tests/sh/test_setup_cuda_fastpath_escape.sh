@@ -31,13 +31,19 @@ exit "$PROBE_RC"
 STUB
 chmod +x "$VENV_DIR/bin/python"
 
+# The real offline predicate, extracted the way the other setup.sh harnesses do.
+sed -n '/^_uv_offline_requested()/,/^}/p' "$SETUP_SH" > "$WORK/offline.sh"
+
 run_escape() {
     (
         PROBE_RC="$1"
         _SKIP_PYTHON_DEPS="${2:-true}"
+        _OFFLINE_FAST_PATH="${_OFFLINE_FAST_PATH:-false}"
         export PROBE_RC PROBE_LOG
         SCRIPT_DIR="$WORK"
-        substep() { :; }
+        substep() { printf '%s\n' "$1" >> "$SUBSTEP_LOG"; }
+        # shellcheck disable=SC1090
+        . "$WORK/offline.sh"
         # shellcheck disable=SC1090
         . "$WORK/escape.sh"
         echo "$_SKIP_PYTHON_DEPS"
@@ -45,8 +51,10 @@ run_escape() {
 }
 
 PROBE_LOG="$WORK/calls.txt"
+SUBSTEP_LOG="$WORK/substeps.txt"
 : > "$PROBE_LOG"
-export PROBE_LOG
+: > "$SUBSTEP_LOG"
+export PROBE_LOG SUBSTEP_LOG
 
 echo "=== only a conclusive answer forces the pass ==="
 assert_eq "exit 0 forces the dependency pass" "false" "$(run_escape 0)"
@@ -84,6 +92,18 @@ mv "$VENV_DIR/bin/python" "$WORK/python.away"
 assert_eq "no venv python keeps the fast path" "true" "$(run_escape 0)"
 assert_eq "and spawns nothing" "0" "$(wc -l < "$PROBE_LOG" | tr -d ' ')"
 mv "$WORK/python.away" "$VENV_DIR/bin/python"
+
+echo "=== offline, where the forced pass could only fail ==="
+: > "$SUBSTEP_LOG"
+assert_eq "UV_OFFLINE keeps the fast path" "true" "$(UV_OFFLINE=1 run_escape 0)"
+assert_eq "and says why" "1" \
+    "$(grep -c "UV_OFFLINE is set -- left for the next online update" "$SUBSTEP_LOG")"
+assert_eq "an offline fast path keeps it too" "true" \
+    "$(_OFFLINE_FAST_PATH=true run_escape 0)"
+: > "$SUBSTEP_LOG"
+assert_eq "and online still forces the pass" "false" "$(UV_OFFLINE=0 run_escape 0)"
+assert_eq "with the repair line, not the deferral" "1" \
+    "$(grep -c "forcing dependency pass to repair" "$SUBSTEP_LOG")"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

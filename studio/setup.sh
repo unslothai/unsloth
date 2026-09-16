@@ -2605,9 +2605,14 @@ if [ "$_SKIP_PYTHON_DEPS" = true ] && [ -x "$VENV_DIR/bin/python" ]; then
         _setup_cuda_torch_stale=true
     fi
     if [ "$_setup_cuda_torch_stale" = true ]; then
-        substep "installed PyTorch cannot use this NVIDIA GPU -- forcing dependency pass to repair..."
-        substep "   (set UNSLOTH_TORCH_BACKEND=cpu to keep a deliberate CPU install)"
-        _SKIP_PYTHON_DEPS=false
+        # Offline the pass can only fail, and failing it loses the verified install.
+        if [ "${_OFFLINE_FAST_PATH:-false}" = true ] || _uv_offline_requested; then
+            substep "installed PyTorch cannot use this NVIDIA GPU but UV_OFFLINE is set -- left for the next online update"
+        else
+            substep "installed PyTorch cannot use this NVIDIA GPU -- forcing dependency pass to repair..."
+            substep "   (set UNSLOTH_TORCH_BACKEND=cpu to keep a deliberate CPU install)"
+            _SKIP_PYTHON_DEPS=false
+        fi
     fi
 fi
 
