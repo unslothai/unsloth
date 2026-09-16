@@ -2380,7 +2380,12 @@ def update_req_line(raw_line: str, safe_ver: str, old_ver: str | None) -> str:
 
 def update_req_file(filepath: str, updates: dict[int, str]) -> None:
     """Apply line-level updates ({1-indexed line_num: new_line_text}) to a requirements file. Writes atomically (sibling tmp file, fsync, os.replace) so a crash mid-write never leaves a half-written file that re-introduces a malicious pin."""
-    with open(filepath) as f:
+    # encoding is explicit on both halves: open() without it takes the locale codec, so the same
+    # requirements file round-trips differently on a runner with LANG=C than on one with a UTF-8
+    # locale, and a non-ASCII comment is mangled or raises. studio/backend has a guard for exactly
+    # this (tests/test_text_io_encoding.py) but it scans BACKEND_ROOT only, so scripts/ was never
+    # covered by it.
+    with open(filepath, encoding = "utf-8") as f:
         lines = f.readlines()
 
     for line_num, new_text in updates.items():
@@ -2395,7 +2400,12 @@ def update_req_file(filepath: str, updates: dict[int, str]) -> None:
         dir = dirpath,
     )
     try:
-        with os.fdopen(fd, "w") as f:
+        # newline = "\n" so the line endings the loop above went to the trouble of preserving
+        # survive the write. readlines() above is universal-newline, so a CRLF file arrives as LF
+        # in memory, and the default newline then translates it back to os.linesep -- which on
+        # Windows rewrites every line of a tracked requirements file and makes the "preserve line
+        # ending" above a no-op.
+        with os.fdopen(fd, "w", encoding = "utf-8", newline = "\n") as f:
             f.writelines(lines)
             f.flush()
             os.fsync(f.fileno())
