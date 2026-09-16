@@ -8761,10 +8761,8 @@ class LlamaCppBackend:
                     ctx_checkpoints_flag = _alias
                     break
             supports_ctx_checkpoints = ctx_checkpoints_flag is not None
-            # The count this build keeps when Studio emits nothing. It was 3 when the
-            # flag shipped as --swa-checkpoints (ggml-org/llama.cpp#15293) and is 32
-            # today, so a hardcoded 32 would RAISE the count on an older build instead
-            # of capping it, and price a cache the child never allocates.
+            # The default shipped at 3 (ggml-org/llama.cpp#15293) and is 32 today, so a
+            # hardcoded 32 would RAISE an older build's count instead of capping it.
             if ctx_checkpoints_flag:
                 ctx_checkpoints_default = cls._advertised_int_default(
                     blocks.get(ctx_checkpoints_flag)
@@ -14602,8 +14600,7 @@ class LlamaCppBackend:
         flag = server_caps.get("ctx_checkpoints_flag")
         if not flag:
             return None
-        # Extra arguments are appended last and must remain authoritative, and an
-        # inherited LLAMA_ARG_CTX_CHECKPOINTS is as explicit -- emitting would overrule it.
+        # Extras and LLAMA_ARG_CTX_CHECKPOINTS are the operator's; emitting overrules them.
         if parse_ctx_checkpoints_override(extra_args) is not None:
             return None
         if _env_ctx_checkpoints_override(env) is not None:
@@ -14612,8 +14609,7 @@ class LlamaCppBackend:
         if per_checkpoint <= 0:
             return None
         total_ram_mib = self._host_memory_capacity_mib()
-        # This build's own default, not the constant: the flag shipped at 3 and only
-        # later became 32, so capping against 32 would RAISE an older build's count.
+        # This build's own default: capping against 32 would raise a build that keeps 3.
         upstream_default = ctx_checkpoints_default_for_caps(server_caps)
         bounded = ctx_checkpoints_within_host_budget(
             per_checkpoint,
@@ -21904,10 +21900,8 @@ class LlamaCppBackend:
 
                 _effective_ubatch = _ubatch_for_slots(n_parallel)
 
-                # The checkpoint budget is per slot, and the fit can still cut n_parallel
-                # below the request, so both counts are taken AFTER the slot count settles
-                # (the reason _effective_ubatch is re-derived there too). The budget reads
-                # the live n_parallel through this one helper, so plan and argv agree.
+                # The budget is per slot and the fit can still cut n_parallel, so both
+                # counts are taken after it settles, as _effective_ubatch is below.
                 def _ctx_checkpoints_for_final_slots() -> int:
                     return effective_ctx_checkpoints_for_caps(
                         server_caps,
@@ -25589,9 +25583,8 @@ class LlamaCppBackend:
                 # The exact tokens the tuning appended, so the arch-crash respawn can
                 # take them back off when it lands on a different device class.
                 _cache_flags_emitted: list[str] = []
-                # An inherited LLAMA_ARG_CTX_CHECKPOINTS is as explicit as the field, and
-                # llama.cpp reads it before argv, so a 0 appended below would overrule the
-                # operator while every estimate still priced the value they set.
+                # llama.cpp reads the variable before argv, so a 0 appended below would
+                # overrule the operator while every estimate still priced their value.
                 _ctx_checkpoints_owned = (
                     ctx_checkpoints
                     if ctx_checkpoints is not None
@@ -28087,9 +28080,8 @@ class LlamaCppBackend:
                         # Read by admission control; left as-is Studio over-admits.
                         n_parallel = 1  # allow-slot-clamp: llama-server refused more
                         kv_cache_unified = False
-                        # The cap in argv was sized for the slots this retry no longer
-                        # runs, and one slot affords more snapshots than four did. Same
-                        # re-decide as the arch-crash respawn, on the tokens we emitted.
+                        # The cap in argv was sized for slots this retry no longer runs;
+                        # same re-decide as the arch-crash respawn.
                         if _auto_ckpt_emitted:
                             cmd = self._without_flag_pairs(cmd, _auto_ckpt_emitted)
                             _auto_ckpt_emitted = []

@@ -11077,26 +11077,22 @@ def _admission_pool_shares_host_ram(
         from core.inference.llama_cpp import LlamaCppBackend
 
         if is_vulkan_backend:
-            # Vulkan reports total 0 only for an integrated GPU, the same rule the
-            # launcher's _shared_gpu_ids uses. Judged over every visible row rather
-            # than the pin, because the pin may be in either index space here.
+            # total 0 means integrated, as _shared_gpu_ids reads it. Over every row,
+            # not the pin, which may be a Vulkan ordinal or a physical id here.
             rows = list(vulkan_gpu_memory or [])
             return not rows or any(int(total) <= 0 for _idx, _free, total in rows)
         import torch
 
         if LlamaCppBackend._torch_is_rocm(torch):
-            # An empty unified set means "no APU" and "could not read the devices"
-            # alike, because the classifier skips whatever it cannot query. Only the
-            # first is evidence of a separate pool, so ask which one it was.
+            # An empty unified set means "no APU" and "could not read them" alike, since
+            # the classifier skips what it cannot query. Only the first is evidence.
             if not LlamaCppBackend._rocm_classification_answered():
                 return True
             unified = LlamaCppBackend._rocm_unified_memory_gpu_ids()
         else:
-            # Jetson and DGX Spark class parts are CUDA and unified too, but NEVER probe
-            # for them here: _integrated_cuda_gpu_ids pins a ~700 MiB primary context per
-            # visible card for the life of the process, and this runs while training
-            # holds those cards. Read a classification only if one is already cached,
-            # else keep the charge, which is this guard's own default-deny.
+            # Jetson and DGX Spark are CUDA and unified too, but NEVER probe here:
+            # _integrated_cuda_gpu_ids pins ~700 MiB per card for the process, and
+            # training holds them. Cached answers only, else keep the charge.
             if not LlamaCppBackend._integrated_cuda_probe_is_free():
                 return True
             unified = LlamaCppBackend._integrated_cuda_gpu_ids()
@@ -14090,8 +14086,6 @@ def _guard_chat_load_against_training(
             # getattr for the same reason as the batch flags above: an older caller
             # hands this guard a bare request double that does not carry the field.
             disable_vision = bool(getattr(request, "disable_vision", False)),
-            # Host-resident checkpoints come out of this VRAM figure only when the
-            # pool really is separate from host RAM.
             shared_memory_pool = _admission_pool_shares_host_ram(
                 is_vulkan_backend = is_vulkan_backend,
                 vulkan_gpu_memory = vulkan_gpu_memory,
