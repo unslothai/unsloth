@@ -27759,6 +27759,45 @@ class LlamaCppBackend:
                 # fallback). A per-call flag left those successes unrecorded.
                 _did_rocm_retry = False
 
+                def _enable_managed_fit_for_no_flash(fa_cmd: list) -> list:
+                    """Unsloth's own ``--fit off`` back to ``on`` for a --flash-attn off respawn.
+
+                    The reserve is sized for the attention the FIRST process runs with, and
+                    what makes that safe is that the no-flash respawn is re-placed: turning
+                    flash attention off pads V model-wide and floors it at f16, and on an MLA
+                    model takes K down with it, so the child needs a placement the fit priced
+                    for a bigger cache. An ordinary auto placement that fits appends a managed
+                    ``--fit off``, the respawn inherits it, and `_fit_off_retry_eligible`
+                    refuses to enable fitting for any command that names the flag at all -- so
+                    without this the retry lands on the placement chosen for the smaller cache
+                    and OOMs at startup, repeatedly, which is the case the reserve exists for.
+
+                    Unsloth's own token, which is added before the extras, exactly as the
+                    fit-off crash retry above rewrites it. Skipped entirely when the user
+                    named the flag themselves: their later value wins by last-arg either way,
+                    so the rewrite would change nothing except in the one case where Unsloth
+                    added no token at all and the first ``--fit`` in the argv is theirs. A
+                    user-disabled fitter is the case `_reserved_flash_attn_state` holds the
+                    reserve down for instead, so nothing here needs to reach it.
+                    """
+                    if "--fit" not in fa_cmd:
+                        return fa_cmd
+                    if any(
+                        _flag_name(str(token)) in {"-fit", "--fit"} for token in (extra_args or ())
+                    ):
+                        return fa_cmd
+                    index = fa_cmd.index("--fit")
+                    if index + 1 >= len(fa_cmd) or str(fa_cmd[index + 1]).strip().lower() == "on":
+                        return fa_cmd
+                    flipped = list(fa_cmd)
+                    flipped[index + 1] = "on"
+                    logger.info(
+                        "Re-enabling the fitter for the --flash-attn off retry: the padded "
+                        "V cache the retry runs with is bigger than the placement the fit "
+                        "priced with flash attention on."
+                    )
+                    return flipped
+
                 def _drop_fit_load_mode_for_no_flash(fa_cmd: list) -> list:
                     """The fit's ``--load-mode none`` off a --flash-attn off respawn.
 
@@ -28971,6 +29010,7 @@ class LlamaCppBackend:
                                 "--flash-attn off retry."
                             )
                         _fa_cmd = _drop_fit_load_mode_for_no_flash(_fa_cmd)
+                        _fa_cmd = _enable_managed_fit_for_no_flash(_fa_cmd)
                         _flash_attn_known_off = True
                         cmd = _fa_cmd
                         healthy = _spawn_and_wait(_fa_cmd, label = "-noflash")
@@ -29045,6 +29085,7 @@ class LlamaCppBackend:
                                 "--flash-attn off retry."
                             )
                         _fa_cmd = _drop_fit_load_mode_for_no_flash(_fa_cmd)
+                        _fa_cmd = _enable_managed_fit_for_no_flash(_fa_cmd)
                         _flash_attn_known_off = True
                         cmd = _fa_cmd
                         healthy = (

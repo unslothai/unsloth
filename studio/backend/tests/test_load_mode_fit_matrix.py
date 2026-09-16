@@ -2288,3 +2288,77 @@ def test_the_replayed_cpu_fallback_recomputes_the_memory_record():
     arm = src[src.index("allow_manual_cpu=True") :]
     arm = arm[: arm.index("_apply_cpu_fallback_state")]
     assert "self._record_memory_state(cmd,env)" in arm
+
+
+def _no_flash_fit_rewriter(extra_args):
+    """The nested `_enable_managed_fit_for_no_flash` as a callable, bound to `extra_args`.
+
+    It closes over load_model's locals, so it cannot be imported; compiling its own source
+    with just that one name supplied runs the REAL rewrite rather than a restatement of it,
+    which is what makes the cases below observe behaviour instead of text.
+    """
+    from core.inference.llama_cpp import LlamaCppBackend as B
+    from core.inference.llama_cpp import logger, _flag_name
+    import inspect, textwrap
+
+    src = inspect.getsource(B.load_model)
+    start = src.index("                def _enable_managed_fit_for_no_flash(")
+    end = src.index("                def ", start + 1)
+    namespace = {"logger": logger, "_flag_name": _flag_name, "extra_args": extra_args}
+    exec(textwrap.dedent(src[start:end]), namespace)
+    return namespace["_enable_managed_fit_for_no_flash"]
+
+
+def test_the_no_flash_retry_re_enables_unsloths_own_fitter():
+    """A managed `--fit off` is flipped back on for the respawn.
+
+    The reserve is sized for the attention the FIRST process runs with, and that is only
+    safe because the no-flash respawn is re-placed: FA off pads V and floors it at f16, so
+    the child needs the placement the fit would have chosen for the bigger cache. An auto
+    placement that fits appends `--fit off`, the respawn inherits it, and
+    `_fit_off_retry_eligible` refuses to turn fitting on for any argv naming the flag, so
+    without the flip the retry re-lands on the smaller-cache placement and OOMs.
+    """
+    rewrite = _no_flash_fit_rewriter(None)
+    out = rewrite(["llama-server", "--fit", "off", "--flash-attn", "off"])
+    assert out[out.index("--fit") + 1] == "on"
+    # An already-on fitter, and an argv that never named the flag, are both untouched.
+    on = ["llama-server", "--fit", "on"]
+    assert rewrite(on) == on
+    bare = ["llama-server", "--flash-attn", "off"]
+    assert rewrite(bare) == bare
+
+
+def test_the_no_flash_fit_flip_leaves_a_user_fit_alone():
+    """The user's own `--fit off` survives the respawn, in both spellings.
+
+    Theirs is appended after Unsloth's and wins by last-arg either way, so the flip would
+    be a no-op -- except where Unsloth added no token at all and the only `--fit` present
+    is theirs, which is exactly the argv this refuses to touch. A user-disabled fitter is
+    the case `_reserved_flash_attn_state` holds the reserve down for instead.
+    """
+    for user_tokens in (["--fit", "off"], ["--fit=off"], ["-fit", "off"]):
+        rewrite = _no_flash_fit_rewriter(user_tokens)
+        # Unsloth's token present as well: the last value is still the user's "off".
+        both = rewrite(["llama-server", "--fit", "off", *user_tokens])
+        assert both == ["llama-server", "--fit", "off", *user_tokens]
+        # And the argv where the only --fit is the user's is not rewritten into "on".
+        theirs = rewrite(["llama-server", *user_tokens])
+        assert theirs == ["llama-server", *user_tokens]
+
+
+def test_the_no_flash_retry_re_places_at_both_respawns():
+    """Both --flash-attn off arms re-enable the fitter, each before its own spawn.
+
+    Checked at the source, like the load-mode strip above, because these arms only run
+    behind a real crash.
+    """
+    from core.inference.llama_cpp import LlamaCppBackend as B
+    import inspect
+
+    src = inspect.getsource(B.load_model)
+    for label in ('label = "-noflash"', 'label = "-noflash-mtp"'):
+        arm = src[: src.index(label)]
+        arm = arm[arm.rindex("self._with_flash_attn_off(") :]
+        assert "_enable_managed_fit_for_no_flash(_fa_cmd)" in arm
+    assert src.count("_enable_managed_fit_for_no_flash(_fa_cmd)") == 2
