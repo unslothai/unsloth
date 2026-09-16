@@ -1162,6 +1162,38 @@ def test_an_image_turn_penalizes_repeats_in_the_generated_tokens_only():
     assert scores.tolist() == [[1.0, 1.0, 0.5, 1.0]]
 
 
+def test_an_image_turn_still_penalizes_on_a_transformers_without_prompt_ignore_length(monkeypatch):
+    """``prompt_ignore_length`` arrived in transformers 4.52; pyproject still allows
+    4.51.3, whose processor takes ``penalty`` alone and raised TypeError here."""
+    torch = pytest.importorskip("torch")
+    import transformers
+
+    live = sys.modules["transformers"]
+    real = live.RepetitionPenaltyLogitsProcessor
+
+    class Floor(real):
+        def __init__(self, penalty: float):
+            super().__init__(penalty)
+
+    monkeypatch.setattr(live, "RepetitionPenaltyLogitsProcessor", Floor, raising = False)
+    monkeypatch.setattr(transformers, "RepetitionPenaltyLogitsProcessor", Floor, raising = False)
+
+    backend, _ = _vision_probe()
+    calls = []
+    backend.models["vision-tools"]["model"].generate = lambda **kwargs: calls.append(kwargs)
+    _drain(
+        backend,
+        messages = [{"role": "user", "content": "what is in this picture"}],
+        repetition_penalty = 2.0,
+    )
+
+    (penalty,) = [p for p in calls[0]["logits_processor"] if isinstance(p, Floor)]
+    # Same slice the 4.52+ processor does internally: the one prompt id is skipped,
+    # so id 9 never indexes past this 4-wide vocabulary and only id 2 is penalized.
+    scores = penalty(torch.tensor([[9, 2]]), torch.ones((1, 4)))
+    assert scores.tolist() == [[1.0, 1.0, 0.5, 1.0]]
+
+
 @pytest.mark.parametrize(
     "content, structured, expected",
     [

@@ -1709,14 +1709,19 @@ class InferenceBackend:
                 from transformers import LogitsProcessorList, RepetitionPenaltyLogitsProcessor
 
                 # Prompt ids skipped: mllama's <|image|> id lies past the LM head.
-                _pp = LogitsProcessorList(
-                    [
-                        RepetitionPenaltyLogitsProcessor(
-                            repetition_penalty, prompt_ignore_length = prompt_len
-                        ),
-                        *(_pp or []),
-                    ]
-                )
+                try:
+                    _rp = RepetitionPenaltyLogitsProcessor(
+                        repetition_penalty, prompt_ignore_length = prompt_len
+                    )
+                except TypeError:
+                    # prompt_ignore_length landed in transformers 4.52; the declared
+                    # floor is 4.51.3, where the same slice belongs here instead.
+                    class _PromptSkippingRepetitionPenalty(RepetitionPenaltyLogitsProcessor):
+                        def __call__(self, input_ids, scores):
+                            return super().__call__(input_ids[:, prompt_len:], scores)
+
+                    _rp = _PromptSkippingRepetitionPenalty(repetition_penalty)
+                _pp = LogitsProcessorList([_rp, *(_pp or [])])
             timer = GenerationTimer()
             generation_kwargs["logits_processor"] = with_prefill_boundary_processor(_pp, timer)
             stop_streamer = _StopSequenceStreamer(streamer, stop)
