@@ -199,6 +199,19 @@ def test_text_config_is_not_recorded_as_a_modality_key():
     assert not set(resolver._VISUAL_TOKEN_ID_KEYS) & set(resolver._MULTIMODAL_CONFIG_KEYS)
 
 
+def _safe_dir_name(text: str) -> str:
+    """A fixture directory name Windows will accept.
+
+    The parametrised value goes into the directory name, and `{"id": 1}` spells out as
+    `bad-marker-dict-{'id': 1}`, which Windows rejects outright: the windows-latest staging
+    leg failed on NotADirectoryError [WinError 267] while Linux built it happily. Anything
+    outside the portable set becomes an underscore.
+    """
+    import re
+
+    return re.sub(r"[^A-Za-z0-9._-]", "_", text)[:60]
+
+
 # ------------------------------------------------------------------ the marker has to MEAN something
 #
 # The four new keys are scalars, not sub-configs, and a key survives its value: a serialiser that
@@ -234,7 +247,7 @@ def test_a_visual_marker_that_is_not_a_token_id_does_not_admit_anything(tmp_path
         "model_type": "qwen3_5_moe",
         "image_token_id": value,
     }
-    info = _checkpoint(tmp_path, f"bad-marker-{type(value).__name__}-{value!r}"[:60], config)
+    info = _checkpoint(tmp_path, _safe_dir_name(f"bad-marker-{type(value).__name__}-{value!r}"), config)
 
     assert "image_token_id" in config, "the case is only interesting while the KEY is present"
     assert resolver._is_generative_chat_config(config) is False
@@ -275,7 +288,7 @@ def test_a_real_visual_marker_still_admits_the_reported_conversion(tmp_path, val
         "model_type": "qwen3_5_moe",
         "image_token_id": value,
     }
-    info = _checkpoint(tmp_path, f"good-marker-{value!r}"[:60], config)
+    info = _checkpoint(tmp_path, _safe_dir_name(f"good-marker-{value!r}"), config)
 
     assert resolver._is_generative_chat_config(config) is True
     assert resolver.local_servable_model(info) == (False, ())
