@@ -130,6 +130,7 @@ _SSH_REDIRECT_OPTIONS = frozenset({"hostname", "proxyjump"})
 
 _SHELL_EXEC_FUNCS = frozenset(
     {
+        "pty.spawn",
         "os.system",
         "os.popen",
         "os.popen2",
@@ -167,7 +168,7 @@ _SHELL_EXEC_FUNCS = frozenset(
 )
 
 _CMD_KWARGS = frozenset(
-    {"args", "command", "executable", "path", "file", "program", "cmd", "command_line"}
+    {"args", "argv", "command", "executable", "path", "file", "program", "cmd", "command_line"}
 )
 
 
@@ -679,6 +680,7 @@ def _shell_exec_aliases(tree: ast.AST) -> dict[str, str]:
         if isinstance(node, ast.Import):
             for alias in node.names:
                 if alias.name in {
+                    "pty",
                     "os",
                     "subprocess",
                     "asyncio",
@@ -689,6 +691,7 @@ def _shell_exec_aliases(tree: ast.AST) -> dict[str, str]:
                     local = alias.asname or alias.name.split(".")[0]
                     aliases[local] = alias.name if alias.asname else local
         elif isinstance(node, ast.ImportFrom) and node.module in {
+            "pty",
             "os",
             "subprocess",
             "asyncio",
@@ -714,7 +717,15 @@ def _shell_exec_aliases(tree: ast.AST) -> dict[str, str]:
         symbol = _bound_name(value, aliases)
         if name and (
             symbol
-            in {"os", "subprocess", "asyncio", "asyncio.subprocess", "paramiko", "paramiko.proxy"}
+            in {
+                "pty",
+                "os",
+                "subprocess",
+                "asyncio",
+                "asyncio.subprocess",
+                "paramiko",
+                "paramiko.proxy",
+            }
             or symbol in _SHELL_EXEC_FUNCS
         ):
             aliases[name] = symbol

