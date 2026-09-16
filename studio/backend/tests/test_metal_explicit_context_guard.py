@@ -1473,3 +1473,55 @@ class TestTheMetalMemoryProbe:
         backend = LlamaCppBackend()
         assert backend._metal_measured_model_mib(str(tmp_path / "llama-server"), str(model)) is None
         assert backend._metal_measured_model_mib(None, str(model)) is None
+
+
+def test_every_forced_full_offload_arm_owes_the_fit_on_retry():
+    """A forced "-ngl -1 --fit off" must also claim the full offload.
+
+    The `--fit on` retry after a startup crash is gated on `fully_gpu_offloaded`,
+    and the tensor-spill recovery ahead of it is a no-op without a spill plan, so
+    an arm that pins the placement without setting the flag drops straight to the
+    terminal fallbacks when its estimate turns out optimistic. Checked at the
+    source, like the other invariants over this launch path, because the retry only
+    runs behind a real child crash.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(LlamaCppBackend.load_model)))
+
+    def pins_full_offload(stmt):
+        """The emission as a DIRECT statement of the arm, so an enclosing `if` does
+        not also count as one."""
+        if not isinstance(stmt, ast.Expr) or not isinstance(stmt.value, ast.Call):
+            return False
+        call = stmt.value
+        if not isinstance(call.func, ast.Attribute) or call.func.attr != "extend":
+            return False
+        if not call.args or not isinstance(call.args[0], ast.List):
+            return False
+        values = [e.value for e in call.args[0].elts if isinstance(e, ast.Constant)]
+        return values == ["-ngl", "-1", "--fit", "off"]
+
+    def claims_full_offload(body):
+        for stmt in body:
+            if not isinstance(stmt, ast.Assign) or not isinstance(stmt.value, ast.Constant):
+                continue
+            if stmt.value.value is not True:
+                continue
+            if any(isinstance(t, ast.Name) and t.id == "fully_gpu_offloaded" for t in stmt.targets):
+                return True
+        return False
+
+    arms = [
+        branch
+        for node in ast.walk(tree)
+        if isinstance(node, ast.If)
+        for branch in (node.body, node.orelse)
+        if branch and any(pins_full_offload(stmt) for stmt in branch)
+    ]
+    assert len(arms) == 2, f"expected the two forced full-offload arms, found {len(arms)}"
+    assert all(claims_full_offload(arm) for arm in arms)

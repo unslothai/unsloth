@@ -24860,6 +24860,14 @@ class LlamaCppBackend:
                 elif use_fit and _metal_full_offload_pinned:
                     # Keep the launch on the full-offload mapping the discount measured.
                     cmd.extend(["-ngl", "-1", "--fit", "off"])
+                    # Same claim as the pinned-GPU arm below, so it owes the same
+                    # recovery: the --fit on retry after a startup crash is gated on
+                    # this flag, and without it an optimistic discount would skip
+                    # straight to the terminal fallbacks. -1 is llama.cpp's own
+                    # default (llama_model_default_params), so the retry's fitter
+                    # does not hit its "n_gpu_layers already set by user" abort
+                    # (common/fit.cpp:462) and can still move layers off Metal.
+                    fully_gpu_offloaded = True
                 elif use_fit:
                     # Unsloth could not prove a fit, so llama.cpp's fitter takes the
                     # placement. Its dense path fills "back to front with dense
