@@ -2,20 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
-const source = readFileSync(
-  new URL("../src/features/audio/audio-page.tsx", import.meta.url),
-  "utf8",
-);
-const mirrorSource = readFileSync(
-  new URL(
-    "../src/features/settings/lib/stt-download-mirror.ts",
-    import.meta.url,
-  ),
-  "utf8",
-);
+import { readSrc } from "./helpers/kit.ts";
+
+const source = readSrc("features/audio/audio-page.tsx");
+const mirrorSource = readSrc("features/settings/lib/stt-download-mirror.ts");
 
 test("STT download polling uses the available engine fallback", () => {
   assert.match(

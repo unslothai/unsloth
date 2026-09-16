@@ -193,7 +193,7 @@ def test_train_uses_the_loader_the_barrier_filled():
 
 def test_the_workers_are_gone_once_training_is_over():
     """Persistent workers survive train() by design, so something has to end
-    them; otherwise Studio merges, quantizes and exports alongside them."""
+    them; otherwise Unsloth merges, quantizes and exports alongside them."""
     before = len(multiprocessing.active_children())
     trainer = _FakeTrainer(_view())
     _prewarm(trainer, PREWARM)

@@ -167,17 +167,23 @@ test("streaming reparses only the active Markdown tail", () => {
     jsxAttribute(streamdown, "parseMarkdownIntoBlocksFn")?.initializer?.getText(
       source,
     ),
-    "{incrementalRender?.parseMarkdownIntoBlocks}",
+    "{\n" +
+      "              incrementalRender?.parseMarkdownIntoBlocks ??\n" +
+      "              parseMarkdownIntoRenderableBlocks\n" +
+      "            }",
   );
 });
 
-test("dropping retained blocks moves Streamdown's render identity", () => {
-  // Streamdown compares only the Markdown string, so an edit that clears the
-  // retained blocks while leaving the live tail alone has to remount instead.
+test("retained block and sandbox changes move Streamdown's render identity", () => {
+  // Streamdown also ignores rehypePlugins changes when memoizing.
   const streamdown = findChatStreamdown();
   assert.ok(streamdown, "chat <Streamdown> is missing");
   assert.equal(
     jsxAttribute(streamdown, "key")?.initializer?.getText(source),
-    "{`${messageId}:${incrementalCache.renderGeneration}`}",
+    "{`${messageId}:${incrementalCache.renderGeneration}:${renderKey}:${sandboxScopeKey}`}",
+  );
+  assert.match(
+    source.getText(),
+    /const sandboxScopeKey = JSON.stringify\(\[threadId, projectId\]\)/,
   );
 });

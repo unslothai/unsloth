@@ -709,7 +709,7 @@ def test_reset_password_removes_desktop_secret_files(tmp_path, monkeypatch):
         "get_or_create_credential_encryption_key",
         auth_storage.get_or_create_credential_encryption_key,
     )
-    credential_secrets._schema_ready = False
+    credential_secrets._schema_ready = set()
 
     secret = studio_cli._create_desktop_secret_in_cli()
     studio_cli._write_auth_secret(auth_dir / studio_cli.DESKTOP_SECRET_FILE, secret)
@@ -745,7 +745,7 @@ def test_reset_password_removes_desktop_secret_files(tmp_path, monkeypatch):
     assert credential_key is not None
     auth_storage._credential_encryption_key_cache = None
     assert credential_secrets.get_hf_token() == "hf_survives_reset"
-    credential_secrets._schema_ready = False
+    credential_secrets._schema_ready = set()
     auth_storage._credential_encryption_key_cache = None
 
 
@@ -804,6 +804,10 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     settings_module.router = APIRouter()
     llama_module = ModuleType("routes.llama")
     llama_module.router = APIRouter()
+    llama_compat_module = ModuleType("routes.llama_compat")
+    llama_compat_module.router = APIRouter()
+    # main.py imports this name alongside the router and calls it from serve_frontend.
+    llama_compat_module.is_engine_probe_path = lambda full_path: False
     prompts_module = ModuleType("routes.prompts")
     prompts_module.router = APIRouter()
     preview_module = ModuleType("routes.preview")
@@ -812,6 +816,8 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     whisper_module.router = APIRouter()
     profile_stats_module = ModuleType("routes.profile_stats")
     profile_stats_module.router = APIRouter()
+    accounts_module = ModuleType("routes.accounts")
+    accounts_module.router = APIRouter()
 
     # Derived from main.py's import block, not hand-listed: the old hardcoded dict went stale
     # twice (#8511's openai_codex_auth_router, #8648's youtube_router), each time killing every
@@ -829,10 +835,12 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     monkeypatch.setitem(sys.modules, "routes", routes_module)
     monkeypatch.setitem(sys.modules, "routes.settings", settings_module)
     monkeypatch.setitem(sys.modules, "routes.llama", llama_module)
+    monkeypatch.setitem(sys.modules, "routes.llama_compat", llama_compat_module)
     monkeypatch.setitem(sys.modules, "routes.prompts", prompts_module)
     monkeypatch.setitem(sys.modules, "routes.preview", preview_module)
     monkeypatch.setitem(sys.modules, "routes.whisper", whisper_module)
     monkeypatch.setitem(sys.modules, "routes.profile_stats", profile_stats_module)
+    monkeypatch.setitem(sys.modules, "routes.accounts", accounts_module)
 
     import studio.backend.main as backend_main
 

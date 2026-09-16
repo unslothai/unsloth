@@ -19,9 +19,24 @@ export const TRANSPORT_MODES = [
   TRANSPORT.XET,
 ] as const;
 export type TransportMode = (typeof TRANSPORT_MODES)[number];
-// Auto by default: the backend picks per machine (RAM, hf_xet build, recent Xet failures), and
-// effectiveTransportMode() resolves that to a concrete transport before any download starts.
+// Auto until someone picks otherwise: the backend chooses per machine (RAM, hf_xet build,
+// recent Xet failures) and effectiveTransportMode() resolves it before any download starts.
+// Only a floor, since the install's setting arrives from /api/settings/download-transport.
 export const DEFAULT_TRANSPORT_MODE: TransportMode = TRANSPORT.AUTO;
+
+/** The preference in force: this browser's own choice, else the install's setting, else Auto. */
+export function pickTransportMode(
+  stored: unknown,
+  installed: unknown,
+): TransportMode {
+  if (isTransportMode(stored)) {
+    return stored;
+  }
+  if (isTransportMode(installed)) {
+    return installed;
+  }
+  return DEFAULT_TRANSPORT_MODE;
+}
 
 export function isTransportMode(value: unknown): value is TransportMode {
   return (
@@ -98,6 +113,31 @@ export function isResolvedTransport(
     typeof value === "string" &&
     (RESOLVED_TRANSPORTS as readonly string[]).includes(value)
   );
+}
+
+export type MismatchStartAction = ResolvedTransport | "conflict";
+
+/** When a partial on disk was written by a different transport than this start
+ * resolved to, pick whether to continue or ask the user.
+ *
+ * Xet cannot byte-resume. Auto and HTTP follow the stall watchdog's HTTP
+ * fallback instead of parking the start on a Hub dialog Chat/Video cannot
+ * resolve. Only an explicit Xet preference versus a resumable HTTP partial is
+ * a real choice (keep resumable bytes, or restart on Xet). */
+export function mismatchStartAction(
+  preferred: TransportMode,
+  resolved: ResolvedTransport,
+  lastTransport: ResolvedTransport,
+  resumable = true,
+): MismatchStartAction {
+  if (lastTransport === resolved) return resolved;
+  if (lastTransport === TRANSPORT.HTTP) {
+    if (preferred === TRANSPORT.XET && resolved === TRANSPORT.XET) {
+      return resumable ? "conflict" : resolved;
+    }
+    return TRANSPORT.HTTP;
+  }
+  return TRANSPORT.HTTP;
 }
 
 export const DOWNLOAD_KIND = {

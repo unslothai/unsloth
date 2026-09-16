@@ -468,7 +468,7 @@ def client(monkeypatch):
     return c
 
 
-# Studio-relative paths: the route resolves/contains them before spawn.
+# Unsloth-relative paths: the route resolves/contains them before spawn.
 _BODY = {
     "base_model": "stabilityai/sdxl-turbo",
     "data_dir": "uploads/my-images",
@@ -482,7 +482,7 @@ def test_route_start_ok(client):
     assert r.status_code == 200, r.text
     assert r.json() == {"job_id": "job-123", "status": "running"}
     assert client._fake.started_with["base_model"] == "stabilityai/sdxl-turbo"
-    # Paths were resolved to absolute Studio-contained locations before spawn.
+    # Paths were resolved to absolute Unsloth-contained locations before spawn.
     from pathlib import Path
 
     assert Path(client._fake.started_with["data_dir"]).is_absolute()
@@ -1048,7 +1048,7 @@ def test_route_start_rejects_nonpositive_snr_gamma(client):
 
 
 def test_route_start_rejects_uncontained_paths(client):
-    # An absolute path outside the Studio dataset roots is a 400, not silently accepted.
+    # An absolute path outside the Unsloth dataset roots is a 400, not silently accepted.
     r = client.post("/api/train/diffusion/start", json = {**_BODY, "data_dir": "/etc"})
     assert r.status_code == 400
 

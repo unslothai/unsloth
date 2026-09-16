@@ -22,7 +22,44 @@ export type ContextUsageBarInput = {
   cacheWrites?: number;
   promptTokens?: number;
   completionTokens?: number;
+  // MLX keeps generating past the window instead of stopping there, so it needs the
+  // opposite advice from llama.cpp once a conversation outgrows the limit.
+  isMlx?: boolean;
+  /** context_length_enforced as the load reported it; null where it does not answer. */
+  contextEnforced?: boolean | null;
 };
+
+/**
+ * Which limit warning the tooltip carries, if any.
+ *
+ * llama.cpp stops generating at the window, so its advice is to raise the limit before
+ * hitting it. MLX generates straight past instead, so the same wording would promise a
+ * stop that never comes -- and once a conversation is over the window there is something
+ * different to say about it. Read from the unclamped ratio: the reported percent caps at
+ * 100%, which is exactly the state being reported on.
+ */
+export type ContextLimitAdvice =
+  | "none"
+  | "stops-at-limit"
+  | "mlx-near-limit"
+  | "mlx-past-limit"
+  | "unenforced-limit";
+
+function contextLimitAdvice(
+  used: number,
+  total: number,
+  isMlx: boolean | undefined,
+  enforced: boolean | null | undefined,
+): ContextLimitAdvice {
+  if ((used / total) * 100 <= 85) return "none";
+  // A window the backend confirmed does not bound the cache is not a limit at all:
+  // nothing rotates and nothing stops, so neither of the other two is true of it. An
+  // unjudged MLX window says the same thing operationally: the probe could not build a
+  // cache, so none was bounded and it grows exactly as a confirmed false one does.
+  if (enforced === false || (isMlx && enforced == null)) return "unenforced-limit";
+  if (!isMlx) return "stops-at-limit";
+  return used > total ? "mlx-past-limit" : "mlx-near-limit";
+}
 
 export type ContextUsageBarState = {
   face: string;
@@ -33,6 +70,7 @@ export type ContextUsageBarState = {
   percent: number | null;
   // whether any per-turn row renders, so the tooltip rule never floats above nothing
   hasUsageDetails: boolean;
+  advice: ContextLimitAdvice;
 };
 
 // a counted zero and an uncounted chat differ: an unmeasured prompt must not read as 0% of the window
@@ -43,6 +81,8 @@ export function deriveContextUsageBar({
   cacheWrites,
   promptTokens,
   completionTokens,
+  isMlx,
+  contextEnforced,
 }: ContextUsageBarInput): ContextUsageBarState | null {
   const limit = typeof total === "number" && total > 0 ? total : null;
   const usedTokens =
@@ -64,6 +104,7 @@ export function deriveContextUsageBar({
       totalRowValue: formatTokenCountFull(usedTokens),
       percent: null,
       hasUsageDetails,
+      advice: "none",
     };
   }
 
@@ -75,6 +116,7 @@ export function deriveContextUsageBar({
       totalRowValue: formatTokenCountFull(limit),
       percent: null,
       hasUsageDetails,
+      advice: "none",
     };
   }
 
@@ -85,5 +127,6 @@ export function deriveContextUsageBar({
     totalRowValue: `${formatTokenCountFull(usedTokens)} / ${formatTokenCountFull(limit)}`,
     percent: Math.min((usedTokens / limit) * 100, 100),
     hasUsageDetails,
+    advice: contextLimitAdvice(usedTokens, limit, isMlx, contextEnforced),
   };
 }

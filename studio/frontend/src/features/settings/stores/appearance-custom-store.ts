@@ -37,6 +37,7 @@ const guardedLocalStorage: StateStorage = {
 };
 
 export type ReduceMotionSetting = "system" | "on" | "off";
+export type ChatWidthSetting = "standard" | "wide" | "full";
 
 export type CustomModeColors = {
   accent: string | null;
@@ -195,6 +196,7 @@ export type AppearanceCustomization = {
   uiFont: string | null;
   headingFont: string | null;
   chatFont: string | null;
+  chatWidth: ChatWidthSetting;
   codeFont: string | null;
   importedFonts: ImportedFont[];
   /** UI font size in px. null = app default (15). */
@@ -224,6 +226,7 @@ export const DEFAULT_CUSTOMIZATION: AppearanceCustomization = {
   uiFont: null,
   headingFont: null,
   chatFont: null,
+  chatWidth: "standard",
   codeFont: null,
   importedFonts: [],
   uiFontSize: null,
@@ -356,8 +359,7 @@ function sanitizeSidebarMenu(value: unknown): SidebarMenuItemPref[] {
     seen.add(source.id);
     items.push({ id: source.id, visible: source.visible !== false });
   }
-  // Ids added after the payload was written land at the end with their
-  // default visibility.
+  // Ids added after the payload was written land at the end with their default visibility.
   for (const id of SIDEBAR_MENU_ITEM_IDS) {
     if (!seen.has(id))
       items.push({ id, visible: SIDEBAR_MENU_DEFAULT_VISIBLE[id] });
@@ -386,6 +388,10 @@ export function sanitizeCustomization(value: unknown): AppearanceCustomization {
     uiFont: sanitizeFont(source.uiFont),
     headingFont: sanitizeFont(source.headingFont),
     chatFont: sanitizeFont(source.chatFont),
+    chatWidth:
+      source.chatWidth === "wide" || source.chatWidth === "full"
+        ? source.chatWidth
+        : "standard",
     codeFont: sanitizeFont(source.codeFont),
     importedFonts: sanitizeImportedFonts(source.importedFonts),
     uiFontSize: sanitizeSize(source.uiFontSize, UI_FONT_SIZE_RANGE),
@@ -703,9 +709,8 @@ function syncImportedFonts(fonts: ImportedFont[]): void {
   const wanted = new Map(
     (Array.isArray(fonts) ? fonts : []).map((f) => [f.name, f.dataUrl]),
   );
-  // Drop faces whose name is gone OR whose bytes changed: document.fonts is a
-  // set of FontFace objects, not keyed by family, so a stale face must be
-  // deleted before the new bytes are added.
+  // Drop faces whose name is gone OR whose bytes changed: document.fonts is a set of FontFace
+  // objects, not keyed by family, so a stale face must be deleted before the new bytes are added.
   for (const [name, entry] of registeredFontFaces) {
     if (wanted.get(name) !== entry.dataUrl) {
       document.fonts.delete(entry.face);
@@ -783,6 +788,25 @@ export function applyCustomizationToDocument(
   }
   setVar("--background", colors.background);
   setVar("--foreground", colors.foreground);
+  // keep the full-width inset from making narrow panes smaller than wide.
+  setVar(
+    "--custom-chat-max-width",
+    c.chatWidth === "full"
+      ? "max(72rem, calc(100% - 6rem))"
+      : c.chatWidth === "wide"
+        ? "72rem"
+        : null,
+  );
+  // The composer shell fills whatever its parent was capped to, so the cap is
+  // never applied twice. Same result as before at every width.
+  setVar(
+    "--custom-chat-shell-max-width",
+    c.chatWidth === "standard" ? null : "100%",
+  );
+  setVar(
+    "--custom-chat-welcome-padding",
+    c.chatWidth === "standard" ? null : "0px",
+  );
 
   syncImportedFonts(c.importedFonts);
 
@@ -823,10 +847,9 @@ export function applyCustomizationToDocument(
     setVar("--custom-chat-font", null);
   }
 
-  // The UI font size drives a typography scale factor, never the root font
-  // size: rem-based layout geometry must not move with the preference. The
-  // scale reaches text through the --text-* / --text-ui-* / --leading-*
-  // tokens in index.css.
+  // The UI font size drives a typography scale factor, never the root font size: rem-based layout
+  // geometry must not move with the preference. The scale reaches text through the --text-* /
+  // --text-ui-* / --leading-* tokens in index.css.
   const effectiveUiFontSize = c.uiFontSize ?? UI_FONT_SIZE_RANGE.default;
   if (effectiveUiFontSize !== UI_FONT_SIZE_RANGE.default) {
     setVar(

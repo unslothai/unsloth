@@ -17,8 +17,11 @@ import {
 import { RAG_UPLOAD_ACCEPT, isLinkedFolderManaged } from "../types/rag";
 import { DocumentStatusChip } from "./document-status-chip";
 import { LinkedFoldersManager } from "./linked-folders-manager";
-import { fileItems, useRagDocuments } from "./use-rag-documents";
-import type { RagUploadItem } from "./use-rag-documents";
+import {
+  type RagUploadItem,
+  fileItems,
+  useRagDocuments,
+} from "./use-rag-documents";
 
 /** Project "Sources" tab: documents indexed for retrieval in every chat that
  * belongs to the project. */
@@ -79,10 +82,9 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
     void refresh({ quiet: true });
   }, [projectId, refresh]);
 
-  // External mutators (sidebar/thread saves, deletes elsewhere) announce when
-  // they are done; refresh the mounted list so a source saved from a chat shows
-  // up here without a remount. The list only polls while a row it already knows
-  // is indexing, so nothing else would ever fetch it.
+  // External mutators (sidebar/thread saves, deletes elsewhere) announce when they are done;
+  // refresh the mounted list so a source saved from a chat shows up here without a remount. The
+  // list only polls while a row it already knows is indexing, so nothing else would ever fetch it.
   useEffect(
     () =>
       subscribeProjectSourcesUpdated(projectId, () => {
@@ -95,7 +97,11 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
 
   // Tauri suppresses webview drop events, so the plain `onDrop` this panel
   // carried never fired on desktop: no border, file ignored (#9036).
-  const { ref: dropRef, dragging, dragHandlers } = useNativeFileDrop({
+  const {
+    ref: dropRef,
+    dragging,
+    dragHandlers,
+  } = useNativeFileDrop({
     onFiles: handleFiles,
     onNativeIntents: handleNativeIntents,
     accept: RAG_UPLOAD_ACCEPT,
@@ -114,7 +120,7 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
         onChange={(e) => {
           const files = Array.from(e.target.files ?? []);
           e.target.value = "";
-          void handleFiles(files);
+          void handleItems(fileItems(files));
         }}
       />
       <div className="mb-4 rounded-[22px] bg-muted/30 px-5 py-4">
@@ -189,6 +195,7 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
                 filename={doc.filename}
                 status={doc.status}
                 progress={doc.progress}
+                stage={doc.stage}
                 error={doc.error}
                 onRemove={
                   doc.id.startsWith("pending_") || isLinkedFolderManaged(doc)

@@ -30,6 +30,8 @@ from core.inference.tool_call_parser import (
     strip_tool_markup,
 )
 
+from growth import assert_linear  # tests/_shared, on sys.path via tests/conftest.py
+
 
 # GLM string-vs-JSON-encoded value coercion (finding B in plan)
 
@@ -223,45 +225,36 @@ def test_kimi_bare_counter_id_is_dropped():
 
 
 def test_deepseek_v3_1_huge_truncated_body_is_linear():
-    """Adversarial input: DeepSeek envelope with no JSON brace and a
-    50k-char body. A regex-based ``[^\\n<]+?`` name capture is O(N^2)
-    here; the parser uses ``str.find`` on the sep marker so it stays
-    linear. Budget 1s to flag any future regression."""
-    import time as _time
-
-    text = "<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>fn<｜tool▁sep｜>" + "x" * 50_000
-    start = _time.time()
-    calls = parse_tool_calls_from_text(text)
-    elapsed = _time.time() - start
-    assert elapsed < 1.0, f"V3 path is non-linear: {elapsed:.2f}s"
-    assert calls == []
+    """Adversarial input: DeepSeek envelope with no JSON brace and a long
+    body. A regex-based ``[^\\n<]+?`` name capture is O(N^2) here; the
+    parser uses ``str.find`` on the sep marker so it stays linear."""
+    build = lambda n: "<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>fn<｜tool▁sep｜>" + "x" * n
+    assert assert_linear(parse_tool_calls_from_text, build, "V3", 50_000) == []
 
 
 def test_deepseek_r1_huge_fenceless_body_is_linear():
     """R1 detection used a greedy ``([^\\n]+)\\n```json`` regex that is O(N^2) on a
     fence-less body of repeated ``function<sep>`` tokens. The parser now scans with
-    ``str.find``; budget 1s to flag any regression."""
-    import time as _time
+    ``str.find``."""
+    build = lambda n: "<｜tool▁calls▁begin｜>" + "function<｜tool▁sep｜>a" * n
+    assert assert_linear(parse_tool_calls_from_text, build, "R1", 10_000) == []
 
-    text = "<｜tool▁calls▁begin｜>" + "function<｜tool▁sep｜>a" * 40_000
-    start = _time.time()
-    calls = parse_tool_calls_from_text(text)
-    elapsed = _time.time() - start
-    assert elapsed < 1.0, f"R1 path is non-linear: {elapsed:.2f}s"
-    assert calls == []
+
+def test_deepseek_r1_fenceless_body_with_one_distant_object_is_linear():
+    """The same body with a single ``{`` after it, which is the shape that survived the
+    first fix for #10507: seeking the next object per marker found one every time and
+    rescanned the tail to reach it, so the sweep stayed quadratic while the fence-less
+    case above had gone linear."""
+    build = lambda n: "<｜tool▁calls▁begin｜>" + "function<｜tool▁sep｜>a" * n + '{"a": 1}'
+    assert_linear(parse_tool_calls_from_text, build, "R1 distant-object", 10_000)
 
 
 def test_glm_unclosed_body_many_arg_keys_is_linear():
     """An unclosed GLM ``<tool_call>`` body runs to EOF; a lazy-group ``finditer``
     over many bare ``<arg_key>`` tokens was O(N^2). The parser now walks pairs with
-    ``str.find``; budget 1s."""
-    import time as _time
-
-    text = "<tool_call>foo\n" + "<arg_key>k" * 40_000
-    start = _time.time()
-    parse_tool_calls_from_text(text)
-    elapsed = _time.time() - start
-    assert elapsed < 1.0, f"GLM path is non-linear: {elapsed:.2f}s"
+    ``str.find``."""
+    build = lambda n: "<tool_call>foo\n" + "<arg_key>k" * n
+    assert_linear(parse_tool_calls_from_text, build, "GLM", 10_000)
 
 
 def test_deepseek_r1_fenced_json_parses():
@@ -305,49 +298,42 @@ def test_deepseek_v3_1_truncated_after_end_marker_still_yields_call():
 # Routes-layer strip across the three new families
 
 
-def test_routes_layer_strip_removes_deepseek_envelope():
+@pytest.mark.parametrize(
+    "text",
+    [
+        pytest.param(
+            "before "
+            "<｜tool▁calls▁begin｜>"
+            "<｜tool▁call▁begin｜>get_time"
+            '<｜tool▁sep｜>{"city":"Tokyo"}'
+            "<｜tool▁call▁end｜>"
+            "<｜tool▁calls▁end｜>"
+            " after",
+            id = "routes_layer_strip_removes_deepseek_envelope",
+        ),
+        pytest.param(
+            "before "
+            "<|tool_calls_section_begin|>"
+            "<|tool_call_begin|>functions.web_search:0"
+            '<|tool_call_argument_begin|>{"q":"x"}'
+            "<|tool_call_end|>"
+            "<|tool_calls_section_end|>"
+            " after",
+            id = "routes_layer_strip_removes_kimi_section",
+        ),
+        # ``<tool_call>.*?</tool_call>`` covers GLM via the Qwen pattern.
+        pytest.param(
+            "before "
+            "<tool_call>web_search\n"
+            "<arg_key>q</arg_key>\n<arg_value>x</arg_value>\n"
+            "</tool_call>"
+            " after",
+            id = "routes_layer_strip_removes_glm_block",
+        ),
+    ],
+)
+def test_routes_layer_strip_removes_tool_envelopes(text):
     from routes.inference import _strip_tool_xml as _routes_strip
-
-    text = (
-        "before "
-        "<｜tool▁calls▁begin｜>"
-        "<｜tool▁call▁begin｜>get_time"
-        '<｜tool▁sep｜>{"city":"Tokyo"}'
-        "<｜tool▁call▁end｜>"
-        "<｜tool▁calls▁end｜>"
-        " after"
-    )
-    stripped = _routes_strip(text)
-    assert stripped == "before  after"
-
-
-def test_routes_layer_strip_removes_kimi_section():
-    from routes.inference import _strip_tool_xml as _routes_strip
-
-    text = (
-        "before "
-        "<|tool_calls_section_begin|>"
-        "<|tool_call_begin|>functions.web_search:0"
-        '<|tool_call_argument_begin|>{"q":"x"}'
-        "<|tool_call_end|>"
-        "<|tool_calls_section_end|>"
-        " after"
-    )
-    stripped = _routes_strip(text)
-    assert stripped == "before  after"
-
-
-def test_routes_layer_strip_removes_glm_block():
-    """``<tool_call>.*?</tool_call>`` covers GLM via the Qwen pattern."""
-    from routes.inference import _strip_tool_xml as _routes_strip
-
-    text = (
-        "before "
-        "<tool_call>web_search\n"
-        "<arg_key>q</arg_key>\n<arg_value>x</arg_value>\n"
-        "</tool_call>"
-        " after"
-    )
     stripped = _routes_strip(text)
     assert stripped == "before  after"
 
@@ -815,25 +801,25 @@ def test_chained_bare_json_owns_kimi_marker_in_later_call():
 def test_nested_gemma_values_keep_commas_and_parens():
     # Nested wrapper-less Gemma mappings/arrays use the top-level delimiter rules, so nested arguments are not split.
     calls = parse_tool_calls_from_text(
-        "call:python{opts:{code:print(1,2),lang:py}}", enabled_tool_names = {"python"}
+        "call:web_search{opts:{code:print(1,2),lang:py}}", enabled_tool_names = {"web_search"}
     )
-    assert [c["function"]["name"] for c in calls] == ["python"], calls
+    assert [c["function"]["name"] for c in calls] == ["web_search"], calls
     assert json.loads(calls[0]["function"]["arguments"]) == {
         "opts": {"code": "print(1,2)", "lang": "py"}
     }
 
     arr = parse_tool_calls_from_text(
-        "call:python{opts:[1,2,{a:f(1,2)}]}", enabled_tool_names = {"python"}
+        "call:web_search{opts:[1,2,{a:f(1,2)}]}", enabled_tool_names = {"web_search"}
     )
     assert json.loads(arr[0]["function"]["arguments"]) == {"opts": [1, 2, {"a": "f(1,2)"}]}
 
     prose_comma = parse_tool_calls_from_text(
-        "call:python{opts:{note:hello, world}}", enabled_tool_names = {"python"}
+        "call:web_search{opts:{note:hello, world}}", enabled_tool_names = {"web_search"}
     )
     assert json.loads(prose_comma[0]["function"]["arguments"]) == {"opts": {"note": "hello, world"}}
 
     quoted = parse_tool_calls_from_text(
-        'call:python{opts:{q:say "a, b" now,n:3}}', enabled_tool_names = {"python"}
+        'call:web_search{opts:{q:say "a, b" now,n:3}}', enabled_tool_names = {"web_search"}
     )
     assert json.loads(quoted[0]["function"]["arguments"]) == {
         "opts": {"q": 'say "a, b" now', "n": 3}
@@ -842,15 +828,15 @@ def test_nested_gemma_values_keep_commas_and_parens():
     # Controls: nested quoted values and multi-key mappings are unchanged, and
     # a truncated nested value still falls back to the raw string.
     nested_q = parse_tool_calls_from_text(
-        'call:python{loc:{city:"New York"}}', enabled_tool_names = {"python"}
+        'call:web_search{loc:{city:"New York"}}', enabled_tool_names = {"web_search"}
     )
     assert json.loads(nested_q[0]["function"]["arguments"]) == {"loc": {"city": "New York"}}
     multi = parse_tool_calls_from_text(
-        "call:python{opts:{a:1,b:2},n:3}", enabled_tool_names = {"python"}
+        "call:web_search{opts:{a:1,b:2},n:3}", enabled_tool_names = {"web_search"}
     )
     assert json.loads(multi[0]["function"]["arguments"]) == {"opts": {"a": 1, "b": 2}, "n": 3}
     trunc = parse_tool_calls_from_text(
-        "call:python{opts:{code:print(1,2}}", enabled_tool_names = {"python"}
+        "call:web_search{opts:{code:print(1,2}}", enabled_tool_names = {"web_search"}
     )
     assert json.loads(trunc[0]["function"]["arguments"]) == {"opts": "{code:print(1,2}"}
 
