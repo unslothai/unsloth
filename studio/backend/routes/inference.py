@@ -29625,6 +29625,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                 )
                 resp = None
                 bytes_iter = None
+                items_iter = None
                 disconnect_watcher = None
                 # This proxy relays straight from llama-server, so the swap gate has to see it: without an
                 # entry a non-forced /unload counts zero generations and tears the server down mid-response.
