@@ -509,3 +509,89 @@ def test_a_prefix_activation_still_takes_the_precise_route(shell: str):
     entries = out[len("PATH="):].split(";")
     assert entries[0] == f"{CONDA_ROOT}\\envs\\ml\\Scripts", entries
     assert entries.index("C:\\tools\\bin") > entries.index(USER_PATH.split(";")[0]), entries
+
+
+# ── setup.ps1 refreshes the session too ──
+# install.ps1 hands off to studio/setup.ps1, which calls Refresh-Environment after it
+# registers CMake or Python. Direct execution shares the caller's PowerShell process, so a
+# rebuild as machine + user + previous demotes the active conda environment for the rest of
+# the setup AND after it returns, which is the same defect in the second half of the install.
+
+
+def _setup_refresh_preamble(current_path: str) -> str:
+    """Refresh-Environment with the registry reads stubbed and $env:Path seeded."""
+    body = (
+        _function(SETUP_PS1, "", "Test-ActiveCondaEnvironment")
+        + _function(SETUP_PS1, "", "Get-ActiveCondaPrefixes")
+        + _function(SETUP_PS1, "", "Test-PathUnderCondaPrefix")
+        + _function(SETUP_PS1, "", "Refresh-Environment")
+    )
+    return f"""
+$ErrorActionPreference = "Stop"
+{body}
+$env:VIRTUAL_ENV = ""
+$env:Path = "{current_path}"
+Refresh-Environment
+Write-Host ("PATH=" + $env:Path)
+"""
+
+
+def _stub_setup_registry(script: str) -> str:
+    return script.replace(
+        "$machinePath = [System.Environment]::GetEnvironmentVariable('Path', 'Machine')",
+        f'$machinePath = "{MACHINE}"',
+    ).replace(
+        "$userPath = [System.Environment]::GetEnvironmentVariable('Path', 'User')",
+        f'$userPath = "{USER_PATH}"',
+    )
+
+
+@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.parametrize("shell", POWERSHELLS)
+def test_the_setup_refresh_keeps_an_active_conda_ahead_of_the_user_path(shell: str):
+    script = _stub_setup_registry(_setup_refresh_preamble(f"{_CONDA_ENTRIES};{MACHINE}"))
+    assert "GetEnvironmentVariable('Path'" not in script, "the registry stub stopped matching"
+    out = _run(
+        shell,
+        script,
+        env = {
+            "CONDA_PREFIX": f"{CONDA_ROOT}\\envs\\ml",
+            "CONDA_DEFAULT_ENV": "ml",
+            "CONDA_EXE": f"{CONDA_ROOT}\\Scripts\\conda.exe",
+        },
+    )
+    assert out.startswith("PATH="), out
+    entries = out[len("PATH=") :].split(";")
+    lowered = [entry.rstrip("\\").lower() for entry in entries]
+    conda_positions = [
+        index for index, entry in enumerate(lowered) if entry.startswith(CONDA_ROOT.lower())
+    ]
+    assert conda_positions, f"the conda entries were dropped entirely: {entries}"
+    user_first = min(
+        index for index, entry in enumerate(lowered) if entry.startswith("c:\\users\\me")
+    )
+    assert (
+        max(conda_positions) < user_first
+    ), f"setup.ps1 left an activated conda environment behind the User PATH: {entries}"
+    assert len(lowered) == len(set(lowered)), entries
+
+
+@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.parametrize("shell", POWERSHELLS)
+def test_the_setup_refresh_is_unchanged_outside_conda(shell: str):
+    """Refresh-Environment runs on the hot path of the whole setup and must keep doing
+    exactly what it did when no conda environment is active."""
+    previous = "C:\\tools\\bin"
+    script = _stub_setup_registry(_setup_refresh_preamble(previous))
+    out = _run(shell, script, env = _NO_CONDA)
+    entries = out[len("PATH=") :].split(";")
+    assert entries == MACHINE.split(";") + USER_PATH.split(";") + [previous], entries
+
+
+def test_the_setup_refresh_consults_the_conda_helper_at_all():
+    """A static pair for the pwsh cases above, so a Windows-only regression is still caught
+    on a runner without PowerShell."""
+    body = _function(SETUP_PS1, "", "Refresh-Environment")
+    assert "Test-ActiveCondaEnvironment" in body, body
+    assert "Get-ActiveCondaPrefixes" in body, body
+    assert "Test-PathUnderCondaPrefix" in body, body
