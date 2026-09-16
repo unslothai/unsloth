@@ -49,23 +49,6 @@ export function ComposerSettings({ embedded = false }: { embedded?: boolean }) {
           }
         >
           <SettingsRow
-            label={t("composerSettings.plainText")}
-            description={t("composerSettings.plainTextDescription")}
-          >
-            <Switch
-              aria-label={t("composerSettings.plainText")}
-              checked={prefs.plainTextComposer}
-              onCheckedChange={prefs.setPlainTextComposer}
-            />
-          </SettingsRow>
-          <SettingsRow label={t("composerSettings.showContext")}>
-            <Switch
-              aria-label={t("composerSettings.showContext")}
-              checked={prefs.showContextWindowUsage}
-              onCheckedChange={prefs.setShowContextWindowUsage}
-            />
-          </SettingsRow>
-          <SettingsRow
             label={t("composerSettings.sendShortcut")}
             description={t("composerSettings.sendDescription")}
           >
@@ -119,6 +102,23 @@ export function ComposerSettings({ embedded = false }: { embedded?: boolean }) {
                 </button>
               ))}
             </div>
+          </SettingsRow>
+          <SettingsRow
+            label={t("composerSettings.plainText")}
+            description={t("composerSettings.plainTextDescription")}
+          >
+            <Switch
+              aria-label={t("composerSettings.plainText")}
+              checked={prefs.plainTextComposer}
+              onCheckedChange={prefs.setPlainTextComposer}
+            />
+          </SettingsRow>
+          <SettingsRow label={t("composerSettings.showContext")}>
+            <Switch
+              aria-label={t("composerSettings.showContext")}
+              checked={prefs.showContextWindowUsage}
+              onCheckedChange={prefs.setShowContextWindowUsage}
+            />
           </SettingsRow>
         </div>
       </SettingsSection>

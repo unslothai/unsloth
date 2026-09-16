@@ -1473,7 +1473,9 @@ export const fr = {
       autoCompactHint:
         "Utilise la longueur de contexte définie, pas la VRAM disponible.",
       pastedTextShortDescription:
-        "Convertit les textes collés dépassant cette limite en pièces jointes .txt.",
+        "Le texte collé de {count} caractères ou plus devient une pièce jointe .txt. Le texte plus court reste dans le champ de message.",
+      pastedTextOffDescription:
+        "Tout le texte collé reste dans le champ de message, quelle que soit sa longueur.",
       compactionDescriptionInherit: "Suit la politique de contexte du serveur.",
       compactionDescriptionCheckpoint:
         "Conserve le dernier échange et les instructions permanentes.",
@@ -1562,7 +1564,7 @@ export const fr = {
         title: "Recherche web",
         images: "Afficher les images de la recherche web",
         imagesDescription:
-          "Permet à la recherche web de renvoyer des images et en récupère une pour chaque élément listé dans une réponse. Unsloth télécharge et redimensionne les vignettes : le navigateur ne contacte jamais les hébergeurs d'images.",
+          "Inclut des images dans les résultats de recherche.",
       },
       artifacts: {
         title: "Canvas",

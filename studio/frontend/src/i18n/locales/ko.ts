@@ -1435,7 +1435,9 @@ export const ko = {
       rememberParamsPerModelHint: "끄면 모든 모델에 같은 설정을 사용합니다.",
       autoCompactHint: "남은 VRAM이 아닌 설정한 컨텍스트 길이를 기준으로 합니다.",
       pastedTextShortDescription:
-        "이 길이를 넘는 붙여넣기 텍스트를 .txt 첨부 파일로 바꿉니다.",
+        "붙여넣은 텍스트가 {count}자 이상이면 .txt 첨부 파일이 됩니다. 더 짧은 텍스트는 입력창에 남습니다.",
+      pastedTextOffDescription:
+        "길이와 관계없이 붙여넣은 모든 텍스트가 입력창에 남습니다.",
       compactionDescriptionInherit: "서버의 컨텍스트 정책을 따릅니다.",
       compactionDescriptionCheckpoint:
         "최신 대화 턴과 계속 적용되는 지침을 유지합니다.",
@@ -1520,7 +1522,7 @@ export const ko = {
         title: "웹 검색",
         images: "웹 검색 이미지 표시",
         imagesDescription:
-          "웹 검색이 이미지를 반환하고, 답변에 나열된 항목마다 하나씩 가져옵니다. 썸네일은 Studio가 가져와 축소하므로 브라우저가 이미지 호스트에 접속하지 않습니다.",
+          "검색 결과에 이미지를 포함합니다.",
       },
       artifacts: {
         title: "Canvas",

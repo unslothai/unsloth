@@ -1440,7 +1440,9 @@ export const it = {
       autoCompactHint:
         "Usa la lunghezza del contesto impostata, non la VRAM disponibile.",
       pastedTextShortDescription:
-        "Converte il testo incollato oltre questo limite in allegati .txt.",
+        "Il testo incollato di almeno {count} caratteri diventa un allegato .txt. Il testo più breve resta nel campo del messaggio.",
+      pastedTextOffDescription:
+        "Tutto il testo incollato resta nel campo del messaggio, indipendentemente dalla lunghezza.",
       compactionDescriptionInherit: "Segue la politica del contesto del server.",
       compactionDescriptionCheckpoint:
         "Mantiene l’ultimo scambio e le istruzioni permanenti.",
@@ -1530,7 +1532,7 @@ export const it = {
         title: "Ricerca web",
         images: "Mostra immagini dalla ricerca web",
         imagesDescription:
-          "Consente alla ricerca web di restituire immagini e ne recupera una per ogni elemento elencato in una risposta. Le miniature vengono scaricate e ridimensionate da Unsloth, quindi il browser non contatta mai gli host delle immagini.",
+          "Include immagini nei risultati di ricerca.",
       },
       artifacts: {
         title: "Canvas",
