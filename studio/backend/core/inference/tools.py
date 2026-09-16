@@ -1420,6 +1420,7 @@ def _find_blocked_commands(
         return base
 
     ssh_xargs_indexes: set[int] = set()
+    ssh_forwarding = ""
 
     def _exec_child_index(start: int) -> "tuple[int, bool]":
         """The command a `find -exec` actually runs, as ``(index, overflowed)``; the index is -1 when
@@ -1516,7 +1517,20 @@ def _find_blocked_commands(
             prefix_pending = False
             prefix_command = ""
             xargs_index = -1
+            ssh_forwarding = ""
             continue
+        if ssh_forwarding:
+            if ssh_forwarding == "watch":
+                if token in {"-n", "--interval", "-q", "--equexit"}:
+                    skip_operand = True
+                    continue
+                if token.startswith("-"):
+                    continue
+                if _token_basename(token) not in _COMMAND_PREFIXES:
+                    ssh_forwarding = ""
+            _collect_ssh(token_index, _token_basename(token))
+            if any(char.isspace() for char in token):
+                _find_blocked_commands(token, _ssh_segments = _ssh_segments)
         if token.startswith("-"):
             # A wrapper option whose value is a SEPARATE token precedes that value, not the wrapped command. Without
             # consuming it the value is read as the command word and the real command behind it is never reached (`env
@@ -1540,12 +1554,20 @@ def _find_blocked_commands(
         if _ASSIGNMENT_RE.match(token):
             continue
         # Numeric wrapper arg: `timeout 1 cmd` / `nice -n 5 cmd`.
-        if prefix_pending and token.lstrip("-").isdigit():
+        if prefix_pending and (
+            token.lstrip("-").isdigit()
+            or prefix_command == "timeout"
+            and re.fullmatch(r"(?:\d+(?:\.\d*)?|\.\d+)[smhd]?", token)
+        ):
             continue
         base = _token_basename(token)
         if xargs_index >= 0:
             ssh_xargs_indexes.add(token_index)
         _collect_ssh(token_index, base)
+        if _ssh_segments is not None and base in (
+            _HIGH_RISK_FORWARDING_COMMANDS - _EXEC_FLAG_FORWARDING_COMMANDS
+        ):
+            ssh_forwarding = base
         if _is_sed_command(base):
             sed_indexes.append(token_index)
             if xargs_index >= 0:
