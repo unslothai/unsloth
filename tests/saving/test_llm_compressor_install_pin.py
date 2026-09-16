@@ -92,9 +92,18 @@ def test_install_command_uses_pinned_spec_not_bare_name() -> None:
 
 
 def test_optout_env_gate_precedes_subprocess_install() -> None:
+    helper = _get_function("_llm_compressor_autoinstall_disabled")
+    env_line = _first_lineno(helper, lambda n: isinstance(n, ast.Constant) and n.value == _ENV_FLAG)
+    assert env_line is not None, f"{_ENV_FLAG} opt-out must be checked before auto-install"
+
     fn = _get_function("install_llm_compressor")
-    env_line = _first_lineno(fn, lambda n: isinstance(n, ast.Constant) and n.value == _ENV_FLAG)
-    assert env_line is not None, f"{_ENV_FLAG} opt-out must be checked in install_llm_compressor"
+    helper_call_line = _first_lineno(
+        fn,
+        lambda n: isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name)
+        and n.func.id == "_llm_compressor_autoinstall_disabled",
+    )
+    assert helper_call_line is not None, "install_llm_compressor must consult the opt-out helper"
 
     def _is_check_call(n: ast.AST) -> bool:
         return (
@@ -108,5 +117,5 @@ def test_optout_env_gate_precedes_subprocess_install() -> None:
     install_line = _first_lineno(fn, _is_check_call)
     assert install_line is not None, "expected a subprocess.check_call install in the function"
     assert (
-        env_line < install_line
+        helper_call_line < install_line
     ), "the auto-install opt-out must be evaluated before any package install runs"
