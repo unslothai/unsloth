@@ -27,7 +27,6 @@ from fastapi.testclient import TestClient
 from auth.authentication import authenticated_via_api_key, get_current_subject
 from hub.routes import inventory as inventory_routes
 from hub.schemas.inventory import (
-    HiddenModelsResponse,
     OrphanCompanionInfo,
     LocalModelListResponse,
     ModelsFolderResponse,
