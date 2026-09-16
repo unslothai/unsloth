@@ -593,7 +593,9 @@ def test_the_documented_advice_no_longer_tells_anyone_to_pass_none_for_a_pickle(
 def _sentence_transformer_source():
     path = (
         Path(__file__).resolve().parent.parent.parent
-        / "unsloth" / "models" / "sentence_transformer.py"
+        / "unsloth"
+        / "models"
+        / "sentence_transformer.py"
     )
     return path.read_text(encoding = "utf-8"), ast.parse(path.read_text(encoding = "utf-8"))
 
@@ -606,12 +608,14 @@ def _modules_branch_save_pretrained_merged(tree):
     that inherits whatever `"lora"` now means.
     """
     found = [
-        node for node in ast.walk(tree)
+        node
+        for node in ast.walk(tree)
         if isinstance(node, ast.FunctionDef) and node.name == "_save_pretrained_merged"
     ]
     assert len(found) == 2, f"expected two definitions, found {len(found)}"
     keeps_save_method = [
-        node for node in found
+        node
+        for node in found
         if any(
             isinstance(call, ast.Call)
             and getattr(getattr(call.func, "attr", None), "__str__", lambda: "")() == "setdefault"
@@ -640,7 +644,8 @@ def test_sentence_transformer_merge_refuses_the_adapter_save_method():
     _, tree = _sentence_transformer_source()
     node = _modules_branch_save_pretrained_merged(tree)
     guards = [
-        call for call in ast.walk(node)
+        call
+        for call in ast.walk(node)
         if isinstance(call, ast.Call)
         and isinstance(call.func, ast.Name)
         and call.func.id == "_is_adapter_save_method"
@@ -651,7 +656,8 @@ def test_sentence_transformer_merge_refuses_the_adapter_save_method():
         "directory it is building"
     )
     raises = [
-        stmt for stmt in ast.walk(node)
+        stmt
+        for stmt in ast.walk(node)
         if isinstance(stmt, ast.Raise)
         and isinstance(stmt.exc, ast.Call)
         and getattr(stmt.exc.func, "id", "") == "NotImplementedError"
