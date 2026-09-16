@@ -208,7 +208,6 @@ def _safe_dir_name(text: str) -> str:
     outside the portable set becomes an underscore.
     """
     import re
-
     return re.sub(r"[^A-Za-z0-9._-]", "_", text)[:60]
 
 
@@ -247,7 +246,9 @@ def test_a_visual_marker_that_is_not_a_token_id_does_not_admit_anything(tmp_path
         "model_type": "qwen3_5_moe",
         "image_token_id": value,
     }
-    info = _checkpoint(tmp_path, _safe_dir_name(f"bad-marker-{type(value).__name__}-{value!r}"), config)
+    info = _checkpoint(
+        tmp_path, _safe_dir_name(f"bad-marker-{type(value).__name__}-{value!r}"), config
+    )
 
     assert "image_token_id" in config, "the case is only interesting while the KEY is present"
     assert resolver._is_generative_chat_config(config) is False
