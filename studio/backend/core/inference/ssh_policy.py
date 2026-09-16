@@ -606,7 +606,15 @@ def _assignment_pairs(tree: ast.AST):
     instances: dict[str, str] = {}
     callable_refs: dict[str, ast.AST] = {}
     assigned_values: dict[str, list[ast.AST]] = {}
+    builtin_aliases: dict[str, str] = {}
     for node, scope in nodes:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "builtins":
+                    builtin_aliases[alias.asname or alias.name] = "builtins"
+        elif isinstance(node, ast.ImportFrom) and node.module == "builtins":
+            for alias in node.names:
+                builtin_aliases[alias.asname or alias.name] = f"builtins.{alias.name}"
         if isinstance(node, ast.Assign):
             targets = node.targets
         elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)):
@@ -628,13 +636,31 @@ def _assignment_pairs(tree: ast.AST):
             if isinstance(value, (ast.Name, ast.Attribute)):
                 callable_refs[name] = value
 
+    def iterator_builtin(node: ast.AST) -> str:
+        name = _fq_name(node)
+        seen: set[str] = set()
+        while name in callable_refs and name not in seen:
+            seen.add(name)
+            name = _fq_name(callable_refs[name])
+        if name in functions:
+            return ""
+        root, separator, attribute = name.partition(".")
+        name = builtin_aliases.get(name, builtin_aliases.get(root, root) + separator + attribute)
+        return name.removeprefix("builtins.")
+
     def iterated_values(value: ast.AST, seen: frozenset[str] = frozenset()):
         name = _fq_name(value)
-        if name in assigned_values and name not in seen:
+        if not isinstance(value, ast.Call) and name in assigned_values and name not in seen:
             for assigned in assigned_values[name]:
                 yield from iterated_values(assigned, seen | {name})
         elif isinstance(value, (ast.List, ast.Tuple, ast.Set)):
             yield from value.elts
+        elif (
+            isinstance(value, ast.Call)
+            and iterator_builtin(value.func) in {"iter", "reversed"}
+            and value.args
+        ):
+            yield from iterated_values(value.args[0], seen)
         else:
             yield ast.Subscript(value = value, slice = ast.Constant("*"))
 
@@ -709,6 +735,14 @@ def _assignment_pairs(tree: ast.AST):
             continue
         while pending:
             target, value = pending.pop()
+            if (
+                isinstance(value, ast.Call)
+                and iterator_builtin(value.func) == "next"
+                and value.args
+            ):
+                pending.extend((target, item) for item in iterated_values(value.args[0]))
+                pending.extend((target, item) for item in value.args[1:])
+                continue
             if isinstance(value, ast.IfExp):
                 pending.extend((target, branch) for branch in (value.body, value.orelse))
                 continue
