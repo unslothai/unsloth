@@ -1127,7 +1127,15 @@ def test_the_extracted_helpers_can_call_everything_they_call(helpers):
     provided = set(re.findall(r"^    function ([\w-]+) \{", extracted, flags = re.M))
     assert provided, "the helper extraction produced nothing"
 
-    called = set(re.findall(r"(?<![\w-])([A-Z][\w]*-[\w-]+)", extracted))
+    # Comments first: a function named in prose is not a call, and treating it as one forces the
+    # extraction list to grow to satisfy a mention rather than a dependency. Same reason
+    # tests/python/test_uv_requirements_path_space.py drops comment lines before asserting.
+    # Whole-line comments only, since a trailing # inside a string literal is not a comment and
+    # cutting there would hide real calls.
+    code = "\n".join(
+        line for line in extracted.splitlines() if not line.lstrip().startswith("#")
+    )
+    called = set(re.findall(r"(?<![\w-])([A-Z][\w]*-[\w-]+)", code))
     missing = sorted((called & installer_functions) - provided)
     assert not missing, (
         f"{helpers.__name__} extracts functions that call {missing}, which the "
