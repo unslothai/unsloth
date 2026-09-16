@@ -29,11 +29,13 @@ import { usePromptQueueReorder } from "./use-prompt-queue-reorder";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { QueueResumeIcon } from "@/components/assistant-ui/queue-resume-icon";
 import {
+  composerSubmitIntent,
   type PromptQueueUIEntry,
   type PromptQueueUIItem,
   useChatPreferencesStore,
 } from "@/features/chat";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 
 type PromptQueueListProps = {
@@ -56,8 +58,10 @@ export function PromptQueueList({
   onSteer,
   onResume,
 }: PromptQueueListProps) {
+  const t = useT();
   const followUpBehavior = useChatPreferencesStore((s) => s.followUpBehavior);
   const setFollowUpBehavior = useChatPreferencesStore((s) => s.setFollowUpBehavior);
+  const sendShortcut = useChatPreferencesStore((s) => s.sendShortcut);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [announcement, setAnnouncement] = useState("");
@@ -113,12 +117,10 @@ export function PromptQueueList({
   function saveEditing() {
     if (!editingItem || !draft.trim()) return;
     if (onEdit(editingItem.id, draft)) {
-      setAnnouncement("Queued prompt updated.");
+      setAnnouncement(t("promptQueue.announceUpdated"));
       finishEditing();
     } else {
-      setAnnouncement(
-        "This prompt can no longer be edited because the queue changed.",
-      );
+      setAnnouncement(t("promptQueue.announceEditFailed"));
     }
   }
 
@@ -126,16 +128,18 @@ export function PromptQueueList({
     <div
       ref={listRef}
       className="relative z-0 mx-3 mb-[-8px] max-h-[28dvh] overflow-y-auto rounded-t-[20px] border border-border/60 bg-background px-1.5 pt-1 pb-3 text-muted-foreground sm:mx-5 sm:px-2 dark:bg-[color-mix(in_srgb,var(--card)_50%,var(--background))] [&_button]:border-0 [&_button]:shadow-none [&_.aui-button-icon:focus-visible]:bg-accent"
-      aria-label={`Prompt queue, ${entry.current} of ${entry.total}`}
+      aria-label={t("promptQueue.regionLabel", {
+        current: entry.current,
+        total: entry.total,
+      })}
     >
       <p id={instructionsId} className="sr-only">
-        Drag the handle to reorder. With the handle focused, use Up or Down to
-        move one position, or Home or End to move to the front or end.
+        {t("promptQueue.reorderInstructions")}
       </p>
       <div role="status" aria-live="polite" className="sr-only">
         {announcement}
       </div>
-      <div role="list" aria-label="Queued prompts">
+      <div role="list" aria-label={t("promptQueue.listLabel")}>
         {items.map((item, index) => {
           const isEditing = editingItem?.id === item.id;
           const position = index + 1;
@@ -152,7 +156,11 @@ export function PromptQueueList({
               role="listitem"
               data-queue-item-id={item.id}
               data-queue-dragging={draggingId === item.id || undefined}
-              aria-label={`Queued prompt ${position} of ${items.length}: ${item.prompt}`}
+              aria-label={t("promptQueue.itemLabel", {
+                position,
+                total: items.length,
+                prompt: item.prompt,
+              })}
               className={cn(
                 "group relative rounded-lg transition-colors",
                 draggingId && "will-change-transform",
@@ -168,33 +176,43 @@ export function PromptQueueList({
                       rows={2}
                       onChange={(event) => setDraft(event.currentTarget.value)}
                       onKeyDown={(event) => {
+                        if (event.key === "Escape") {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          finishEditing();
+                          return;
+                        }
+                        // Same chord as the composer send. The helper owns the
+                        // IME, repeat and Shift+Enter guards.
                         if (
-                          event.nativeEvent.isComposing ||
-                          event.nativeEvent.keyCode === 229 ||
-                          event.repeat
-                        ) return;
-                        if (
-                          event.key === "Enter" &&
-                          (event.metaKey || event.ctrlKey)
+                          composerSubmitIntent(
+                            {
+                              key: event.key,
+                              metaKey: event.metaKey,
+                              ctrlKey: event.ctrlKey,
+                              shiftKey: event.shiftKey,
+                              altKey: event.altKey,
+                              repeat: event.repeat,
+                              isComposing: event.nativeEvent.isComposing,
+                              keyCode: event.nativeEvent.keyCode,
+                            },
+                            sendShortcut,
+                          )
                         ) {
                           event.preventDefault();
                           event.stopPropagation();
                           saveEditing();
-                        } else if (event.key === "Escape") {
-                          event.preventDefault();
-                          event.stopPropagation();
-                          finishEditing();
                         }
                       }}
                       className="block max-h-36 min-h-12 w-full resize-y border-0 bg-transparent px-1 text-sm text-foreground outline-none"
-                      aria-label={`Edit queued prompt ${position}`}
+                      aria-label={t("promptQueue.editLabel", { position })}
                     />
                   </div>
                   <span
                     aria-hidden="true"
                     className="invisible mr-auto text-xs font-medium text-foreground group-has-[textarea:focus-visible]/queue-editor:visible"
                   >
-                    Editing message
+                    {t("promptQueue.editingHint")}
                   </span>
                   <Button
                     type="button"
@@ -203,7 +221,7 @@ export function PromptQueueList({
                     className="focus-visible:bg-accent"
                     onClick={finishEditing}
                   >
-                    Cancel
+                    {t("promptQueue.cancel")}
                   </Button>
                   <Button
                     type="button"
@@ -212,15 +230,18 @@ export function PromptQueueList({
                     disabled={!draft.trim()}
                     onClick={saveEditing}
                   >
-                    Save
+                    {t("promptQueue.save")}
                   </Button>
                 </div>
               ) : (
                 <div className="flex min-h-11 items-center gap-1 sm:min-h-12">
                   <TooltipIconButton
                     type="button"
-                    tooltip="Drag to reorder"
-                    aria-label={`Reorder queued prompt ${position} of ${items.length}`}
+                    tooltip={t("promptQueue.dragTooltip")}
+                    aria-label={t("promptQueue.reorderLabel", {
+                      position,
+                      total: items.length,
+                    })}
                     aria-describedby={instructionsId}
                     className="h-8 w-4 shrink-0 touch-none cursor-grab text-muted-foreground/50 hover:bg-transparent hover:text-muted-foreground/50 active:cursor-grabbing pointer-coarse:h-11 pointer-coarse:w-8 dark:hover:bg-transparent"
                     disabled={!canMove}
@@ -258,35 +279,37 @@ export function PromptQueueList({
                   </span>
                   {index === 0 && entry.paused && (
                     <span className="hidden shrink-0 px-1 text-xs text-muted-foreground sm:inline">
-                      Paused
+                      {t("promptQueue.paused")}
                     </span>
                   )}
                   <TooltipIconButton
                     type="button"
-                    tooltip="Interrupt the response and send this prompt next"
-                    aria-label={`Steer with queued prompt ${position}`}
+                    tooltip={t("promptQueue.steerTooltip")}
+                    aria-label={t("promptQueue.steerLabel", { position })}
                     disabled={!item.canEdit || !item.canRemove}
                     className="h-8 w-auto shrink-0 gap-1.5 px-2 font-normal text-muted-foreground hover:text-foreground pointer-coarse:h-11"
                     onClick={() => {
                       setAnnouncement(
-                        onSteer(item.id)
-                          ? "This prompt will steer the response next."
-                          : "This prompt could not steer the response. Check the queue and try again.",
+                        t(
+                          onSteer(item.id)
+                            ? "promptQueue.announceSteered"
+                            : "promptQueue.announceSteerFailed",
+                        ),
                       );
                     }}
                   >
                     <CornerDownRightIcon className="size-4" />
-                    <span>Steer</span>
+                    <span>{t("promptQueue.steer")}</span>
                   </TooltipIconButton>
                   <TooltipIconButton
                     type="button"
-                    tooltip="Remove from queue"
-                    aria-label={`Remove queued prompt ${position}`}
+                    tooltip={t("promptQueue.removeTooltip")}
+                    aria-label={t("promptQueue.removeLabel", { position })}
                     disabled={!item.canRemove}
                     className="size-8 shrink-0 text-muted-foreground hover:text-destructive pointer-coarse:size-11"
                     onClick={() => {
                       if (onRemove(item.id))
-                        setAnnouncement("Prompt removed from queue.");
+                        setAnnouncement(t("promptQueue.announceRemoved"));
                     }}
                   >
                     <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.8} />
@@ -295,9 +318,9 @@ export function PromptQueueList({
                     trigger={(triggerRef) => (
                       <TooltipIconButton
                         ref={triggerRef}
-                        tooltip="More options"
+                        tooltip={t("promptQueue.moreTooltip")}
                         data-queue-menu
-                        aria-label={`More options for queued prompt ${position}`}
+                        aria-label={t("promptQueue.moreLabel", { position })}
                         className="size-8 shrink-0 text-muted-foreground hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground pointer-coarse:size-11"
                       >
                         <MoreHorizontalIcon className="size-4" />
@@ -323,22 +346,24 @@ export function PromptQueueList({
                         startEditing(item);
                       }}
                     >
-                      <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.8} /> Edit
-                      message
+                      <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.8} />
+                      {t("promptQueue.editItem")}
                     </DropdownMenuItem>
                     <DropdownMenuItem
                       onSelect={() => {
                         void copyToClipboard(item.prompt).then((copied) =>
                           setAnnouncement(
-                            copied
-                              ? "Prompt copied."
-                              : "Could not copy this prompt. Try again.",
+                            t(
+                              copied
+                                ? "promptQueue.announceCopied"
+                                : "promptQueue.announceCopyFailed",
+                            ),
                           ),
                         );
                       }}
                     >
-                      <HugeiconsIcon icon={Copy01Icon} strokeWidth={1.8} /> Copy
-                      message
+                      <HugeiconsIcon icon={Copy01Icon} strokeWidth={1.8} />
+                      {t("promptQueue.copyItem")}
                     </DropdownMenuItem>
                     <DropdownMenuSeparator />
                     <Tooltip delayDuration={300} disableHoverableContent={true}>
@@ -348,14 +373,20 @@ export function PromptQueueList({
                             const behavior = followUpBehavior === "queue" ? "steer" : "queue";
                             setFollowUpBehavior(behavior);
                             setAnnouncement(
-                              behavior === "queue"
-                                ? "New follow-ups will queue after the current response."
-                                : "New follow-ups will steer the current response.",
+                              t(
+                                behavior === "queue"
+                                  ? "promptQueue.announceQueueingOn"
+                                  : "promptQueue.announceQueueingOff",
+                              ),
                             );
                           }}
                         >
                           <ListEndIcon />
-                          {followUpBehavior === "queue" ? "Turn off queueing" : "Turn on queueing"}
+                          {t(
+                            followUpBehavior === "queue"
+                              ? "promptQueue.turnOffQueueing"
+                              : "promptQueue.turnOnQueueing",
+                          )}
                         </DropdownMenuItem>
                       </TooltipTrigger>
                       <TooltipContent
@@ -365,16 +396,18 @@ export function PromptQueueList({
                         collisionPadding={8}
                         className="prompt-queue-option-tooltip pointer-events-none max-w-[min(20rem,calc(100vw-1rem))]"
                       >
-                        {followUpBehavior === "queue"
-                          ? "New messages sent during a response will stop that response and run next."
-                          : "New messages sent during a response will wait in line and run in order."}{" "}
-                        Existing queued prompts are kept; this does not pause or
-                        resume the queue.
+                        {t(
+                          followUpBehavior === "queue"
+                            ? "promptQueue.queueingOffHint"
+                            : "promptQueue.queueingOnHint",
+                        )}{" "}
+                        {t("promptQueue.queueingHintShared")}
                       </TooltipContent>
                     </Tooltip>
                     {entry.paused && (
                       <DropdownMenuItem onSelect={onResume}>
-                        <QueueResumeIcon className="size-4" /> Resume queue
+                        <QueueResumeIcon className="size-4" />{" "}
+                        {t("promptQueue.resume")}
                       </DropdownMenuItem>
                     )}
                   </NonModalDropdownMenu>

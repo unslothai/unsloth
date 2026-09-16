@@ -2901,7 +2901,10 @@ export function SharedComposer({
             </Button>
           ) : (
             <TooltipIconButton
-              tooltip={sendUnavailableReason ?? `Send message (${shortcutLabels.send})`}
+              tooltip={
+                sendUnavailableReason ??
+                t("promptQueue.sendTooltip", { shortcut: shortcutLabels.send })
+              }
               side="bottom"
               variant="default"
               size="icon"
