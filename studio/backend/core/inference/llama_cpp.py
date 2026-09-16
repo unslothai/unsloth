@@ -6121,10 +6121,29 @@ def _build_launch_reasoning_args(
     exits with "error: invalid argument: --reasoning" rather than starting without
     it. Such a build gets the argv it gets on main today, byte for byte.
 
-    The substitution is exact rather than merely equivalent: both channels write
-    the same ``default_template_kwargs["enable_thinking"]`` entry upstream, so the
-    launch value stays a default a request's own chat_template_kwargs overrides
-    per key. Measured on a real llama-server of both vintages; see the PR.
+    The substitution is equivalent in what a request ends up with, not identical
+    in what it sets, and the difference is worth stating because it is the thing
+    that would break if llama.cpp moved either half. Reading common/arg.cpp, the
+    --reasoning handler writes the same
+    ``default_template_kwargs["enable_thinking"]`` entry --chat-template-kwargs
+    writes, AND sets ``params.enable_reasoning`` to 1 or 0, which the kwargs
+    channel leaves at its -1 default. That second field has exactly one consumer,
+    tools/server/server-context.cpp, where it becomes
+
+        enable_thinking = params_base.enable_reasoning != 0 && template_supports_thinking
+
+    the per-server default carried into a request as ``opt.enable_thinking``. So
+    --reasoning off lowers that default where the kwargs spelling left it at
+    ``template_supports_thinking``. It makes no difference to the outcome, because
+    tools/server/server-common.cpp assigns ``inputs.enable_thinking =
+    opt.enable_thinking`` and then immediately re-reads the merged
+    ``chat_template_kwargs["enable_thinking"]`` and overrides from it, and both
+    spellings put the same value in that entry. A request that sets the key itself
+    still wins under either spelling, for the same reason and in the same line.
+    Measured on a real llama-server of both vintages; see the PR. If llama.cpp ever
+    stops writing the kwarg from --reasoning, or stops letting the kwarg override
+    ``opt.enable_thinking``, this stops being a substitution and becomes a
+    behaviour change.
 
     An exported LLAMA_ARG_REASONING, which ``unsloth start`` writes, is left where
     it already was: the command line beats the environment either way, so a launch
