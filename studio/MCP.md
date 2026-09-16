@@ -38,16 +38,20 @@ or launching Studio does not download anything.
 ## Large tool catalogs
 
 A server can expose dozens of tools with long descriptions and deeply nested
-parameter schemas, which would cost tens of thousands of tokens on every request.
-A tool whose description and schema together exceed about 1,500 characters is
-listed in a compact form: its first sentence plus its top-level parameters with
-their types, required flags and short enums. Smaller tools are listed in full.
+parameter schemas: Notion's catalog alone is about 65,000 tokens. Every tool is
+listed in full whenever the catalog fits the loaded local model's context window,
+so a model that can hold the full listing always gets it.
 
-When any tool is listed compactly the model also gets `mcp_tool_schema`, which
-returns a tool's full description and JSON Schema on demand, in pages when it is
-longer than the room left for a tool result. A compact tool called without one of
-its required arguments answers with that schema instead of reaching the server.
-Arguments to a compact tool are still typed against its full schema.
+When the full listing would take more than three quarters of the window, which
+would otherwise get even a short prompt refused, each tool whose description and
+schema together exceed about 1,500 characters is listed in a compact form: its
+first sentence plus its top-level parameters with their types, required flags and
+short enums. The model then also gets `mcp_tool_schema`, which returns a tool's
+full description and JSON Schema on demand, in pages when it is longer than the
+room left for a tool result. A compact tool called without one of its required
+arguments, or whose call the server rejects, answers with that schema so the model
+can correct the call. Arguments to a compact tool are still typed against its full
+schema. External providers always get the full listing.
 
 ## Studio's own MCP server
 

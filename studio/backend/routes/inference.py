@@ -24175,6 +24175,9 @@ async def produce_openai_chat_completions(
             use_tools = True
 
         if use_tools:
+            from core.inference.tools import set_mcp_listing_context_tokens
+
+            set_mcp_listing_context_tokens(getattr(llama_backend, "context_length", None))
             tools_to_use = await _select_request_tools(
                 payload,
                 tools_on = _tools_on,
@@ -26066,6 +26069,9 @@ async def produce_openai_chat_completions(
     )
 
     if _sf_use_tools:
+        from core.inference.tools import set_mcp_listing_context_tokens
+
+        set_mcp_listing_context_tokens(_monitor_context_length())
         _sf_tools_to_use = await _select_request_tools(
             payload, tools_on = _sf_tools_on, mcp_allowed = _sf_mcp_allowed
         )
@@ -31959,7 +31965,9 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
         _mcp_tools: list[dict] = []
         if _mcp_on:
             from core.inference.mcp_client import mcp_server_snapshot_guard
-            from core.inference.tools import cached_mcp_tools
+            from core.inference.tools import cached_mcp_tools, set_mcp_listing_context_tokens
+
+            set_mcp_listing_context_tokens(_monitor_context_length())
 
             # A database read, so off the loop. Guarded as the GGUF count guards it, or
             # an interleaving edit pairs a new row with the schema cached before it.
@@ -32279,7 +32287,9 @@ async def chat_count_tokens(
     _mcp_allowed = False
     _mcp_tools: list[dict] = []
     if _mcp_on and not _takes_passthrough and llama_backend.supports_tools:
-        from core.inference.tools import cached_mcp_tools
+        from core.inference.tools import cached_mcp_tools, set_mcp_listing_context_tokens
+
+        set_mcp_listing_context_tokens(getattr(llama_backend, "context_length", None))
         from core.inference.mcp_client import mcp_server_snapshot_guard
 
         # Keep the SQLite read off-loop while coordinating the row/cache snapshot with edits.
