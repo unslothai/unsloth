@@ -56,6 +56,12 @@ class FakeLlama(FakeLlamaCppBackend):
     reasoning_style = "enable_thinking"
     reasoning_effort_levels: list = []
     reasoning_always_on = False
+    # #7701's four budget fields are non-Optional on the response, so __getattr__'s None fails
+    # validation; these are the real backend's defaults.
+    reasoning_budget = -1
+    reasoning_budget_message = ""
+    requested_reasoning_budget = -1
+    requested_reasoning_budget_message = ""
     supports_preserve_thinking = False
     tensor_parallel = False
     disable_vision = False
