@@ -52,13 +52,19 @@ FISH_FN=$(extract_function _persist_fish_path_dir)
 # The predicate both writers ask. Extracted rather than restated, so a change to WHICH
 # environment variables count as an active conda reaches these cases.
 CONDA_FN=$(extract_function _unsloth_conda_env_active)
+# The migration helper both writers call when a previous run left the prepend spelling
+# behind. Without it in the harness every repoint call is a `command not found` inside a
+# conditional, so the migration path would be exercised by nothing and the cases below
+# would still report a pass.
+REPOINT_FN=$(extract_function _unsloth_repoint_rc_line)
 
-for _chunk_label in _PATH_LINE_RE _persist_login_path_dir _persist_fish_path_dir _unsloth_conda_env_active; do
+for _chunk_label in _PATH_LINE_RE _persist_login_path_dir _persist_fish_path_dir _unsloth_conda_env_active _unsloth_repoint_rc_line; do
     case "$_chunk_label" in
-        _PATH_LINE_RE)             _chunk="$PATH_LINE_RE_SRC" ;;
-        _persist_login_path_dir)   _chunk="$LOGIN_FN" ;;
-        _unsloth_conda_env_active) _chunk="$CONDA_FN" ;;
-        *)                         _chunk="$FISH_FN" ;;
+        _PATH_LINE_RE)              _chunk="$PATH_LINE_RE_SRC" ;;
+        _persist_login_path_dir)    _chunk="$LOGIN_FN" ;;
+        _unsloth_conda_env_active)  _chunk="$CONDA_FN" ;;
+        _unsloth_repoint_rc_line)   _chunk="$REPOINT_FN" ;;
+        *)                          _chunk="$FISH_FN" ;;
     esac
     if [ -z "$_chunk" ]; then
         echo "  FAIL: could not extract $_chunk_label from install.sh"
@@ -85,6 +91,7 @@ run_login() {
         eval "$HARNESS"
         eval "$PATH_LINE_RE_SRC"
         eval "$CONDA_FN"
+        eval "$REPOINT_FN"
         eval "$LOGIN_FN"
         HOME="$WORK"
         SHELL="${4:-/bin/bash}"
@@ -116,6 +123,21 @@ assert_eq "append already there: exactly one PATH line" "1" "$(printf '%s\n' "$R
 
 run_login 'export PATH="$HOME/.local/bin:$PATH"' "/opt/anaconda3"
 assert_eq "prepend already there: exactly one PATH line" "1" "$(printf '%s\n' "$RC_CONTENTS" | grep -c 'local/bin')"
+# And that one line is the APPEND. Counting lines alone passes whether the stale prepend
+# was repointed or simply accepted as present, which is the defect #5871 reports: the
+# migration is the whole reason the conda arm does not stop at the presence check.
+assert_contains "stale prepend inside conda: rewritten as the append" "$RC_CONTENTS" \
+    'export PATH="$PATH:$HOME/.local/bin"'
+assert_not_contains "stale prepend inside conda: the prepend is gone" "$RC_CONTENTS" \
+    'export PATH="$HOME/.local/bin:$PATH"'
+
+# The same stale prepend OUTSIDE conda is left exactly as it is: repointing there would
+# reorder a line for a user who never had a conda ordering problem.
+run_login 'export PATH="$HOME/.local/bin:$PATH"' ""
+assert_contains "stale prepend outside conda: left alone" "$RC_CONTENTS" \
+    'export PATH="$HOME/.local/bin:$PATH"'
+assert_eq "stale prepend outside conda: still one PATH line" "1" \
+    "$(printf '%s\n' "$RC_CONTENTS" | grep -c 'local/bin')"
 
 # 4. An unwritable rc file: the advice has to be the conda-safe line, not the prepend.
 #    Chmod, not a directory: the failure path under test is the append redirect failing.
@@ -126,6 +148,7 @@ ADVICE=$(
     eval "$HARNESS"
     eval "$PATH_LINE_RE_SRC"
     eval "$CONDA_FN"
+    eval "$REPOINT_FN"
     eval "$LOGIN_FN"
     HOME="$WORK"
     SHELL=/bin/bash
@@ -167,6 +190,7 @@ run_fish() {
     (
         eval "$HARNESS"
         eval "$CONDA_FN"
+        eval "$REPOINT_FN"
         eval "$FISH_FN"
         HOME="$WORK"
         unset CONDA_PREFIX CONDA_DEFAULT_ENV
@@ -199,6 +223,35 @@ run_fish "" "/opt/anaconda3"
 assert_eq "fish, active conda: no bare -a line" "0" \
     "$(printf '%s\n' "$FISH_CONTENTS" | grep -cxF "fish_add_path -a '$FISH_DIR'")"
 
+# Both stale spellings, met from inside conda, are rewritten to the -a -P line rather than
+# accepted by the presence check below them. Written here rather than through run_fish
+# because the seeded line has to name the throwaway HOME the function is about to be given.
+for _stale in "fish_add_path '%s/.local/bin'" "fish_add_path -a '%s/.local/bin'"; do
+    WORK=$(mktemp -d)
+    mkdir -p "$WORK/.config/fish/conf.d"
+    # shellcheck disable=SC2059
+    printf "$_stale\n" "$WORK" > "$WORK/.config/fish/conf.d/unsloth.fish"
+    _stale_line=$(printf "$_stale" "$WORK")
+    (
+        eval "$HARNESS"
+        eval "$CONDA_FN"
+        eval "$REPOINT_FN"
+        eval "$FISH_FN"
+        HOME="$WORK"
+        CONDA_PREFIX="/opt/anaconda3"; export CONDA_PREFIX
+        unset CONDA_DEFAULT_ENV
+        _persist_fish_path_dir "$WORK/.local/bin" "~/.local/bin"
+    ) >/dev/null
+    _after=$(cat "$WORK/.config/fish/conf.d/unsloth.fish")
+    assert_contains "fish: stale [$_stale_line] rewritten to -a -P" "$_after" \
+        "fish_add_path -a -P '$WORK/.local/bin'"
+    assert_eq "fish: stale [$_stale_line] is gone" "0" \
+        "$(printf '%s\n' "$_after" | grep -cxF "$_stale_line")"
+    assert_eq "fish: stale [$_stale_line] leaves one line" "1" \
+        "$(printf '%s\n' "$_after" | grep -c 'fish_add_path')"
+    rm -rf "$WORK"
+done
+
 # Idempotence across both spellings, the same way as the POSIX arm.
 WORK=$(mktemp -d)
 mkdir -p "$WORK/.config/fish/conf.d"
@@ -206,6 +259,7 @@ printf "fish_add_path -a '%s/.local/bin'\n" "$WORK" > "$WORK/.config/fish/conf.d
 (
     eval "$HARNESS"
     eval "$CONDA_FN"
+    eval "$REPOINT_FN"
     eval "$FISH_FN"
     HOME="$WORK"
     unset CONDA_PREFIX CONDA_DEFAULT_ENV
@@ -230,19 +284,32 @@ extract_setup_function() {
 SETUP_FN=$(extract_setup_function _setup_persist_uv_path)
 SETUP_HAS_DIR_FN=$(extract_setup_function _setup_path_has_dir)
 SETUP_CONDA_FN=$(extract_setup_function _unsloth_conda_env_active)
-if [ -z "$SETUP_FN" ] || [ -z "$SETUP_HAS_DIR_FN" ] || [ -z "$SETUP_CONDA_FN" ]; then
+# setup.sh carries its own copy of the migration helper, so it is extracted from setup.sh
+# rather than reused from install.sh: the two copies have to be able to drift apart and
+# still be checked.
+SETUP_REPOINT_FN=$(extract_setup_function _unsloth_repoint_rc_line)
+if [ -z "$SETUP_FN" ] || [ -z "$SETUP_HAS_DIR_FN" ] || [ -z "$SETUP_CONDA_FN" ] \
+    || [ -z "$SETUP_REPOINT_FN" ]; then
     echo "  FAIL: could not extract the PATH persistence functions from studio/setup.sh"
     exit 1
 fi
 
 # $1 CONDA_PREFIX ("" for none). Reads back ~/.bashrc, which the function writes to
 # because it exists; ~/.profile is created either way and is not what is asserted here.
+# $SETUP_RC_SEED, when set, is a printf format given the throwaway HOME: that is how a
+# stale line written by an earlier run can name a directory the caller does not know yet.
 run_setup() {
     WORK=$(mktemp -d)
-    : > "$WORK/.bashrc"
+    if [ -n "${SETUP_RC_SEED:-}" ]; then
+        # shellcheck disable=SC2059
+        printf "$SETUP_RC_SEED\n" "$WORK" > "$WORK/.bashrc"
+    else
+        : > "$WORK/.bashrc"
+    fi
     (
         eval "$HARNESS"
         eval "$SETUP_CONDA_FN"
+        eval "$SETUP_REPOINT_FN"
         eval "$SETUP_HAS_DIR_FN"
         eval "$SETUP_FN"
         HOME="$WORK"
@@ -271,5 +338,40 @@ assert_contains "setup.sh, active conda: fish appends to PATH itself" "$SETUP_FI
     "fish_add_path -a -P '$SETUP_DIR'"
 assert_eq "setup.sh, active conda: no bare -a line" "0" \
     "$(printf '%s\n' "$SETUP_FISH" | grep -cxF "fish_add_path -a '$SETUP_DIR'")"
+
+# setup.sh's own migration pass. A prepend an earlier run left behind satisfies its
+# presence check, so without the repoint the directory stays ahead of the active conda
+# environment for ever. Both spellings it can have written are covered: the literal path
+# and the $HOME-relative one.
+# Set and unset around each call rather than as a command prefix: bash keeps an assignment
+# that prefixes a FUNCTION call in the environment afterwards, which would seed every later
+# case too.
+SETUP_RC_SEED='export PATH="%s/.local/bin:$PATH"'
+run_setup "/opt/anaconda3"
+assert_contains "setup.sh, stale literal prepend inside conda: rewritten as the append" \
+    "$SETUP_RC" "export PATH=\"\$PATH:$SETUP_DIR\""
+assert_not_contains "setup.sh, stale literal prepend inside conda: the prepend is gone" \
+    "$SETUP_RC" "export PATH=\"$SETUP_DIR:\$PATH\""
+assert_eq "setup.sh, stale literal prepend inside conda: still one PATH line" "1" \
+    "$(printf '%s\n' "$SETUP_RC" | grep -c 'local/bin')"
+
+SETUP_RC_SEED='export PATH="$HOME/.local/bin:$PATH"'
+run_setup "/opt/anaconda3"
+assert_contains "setup.sh, stale home-relative prepend inside conda: rewritten as the append" \
+    "$SETUP_RC" "export PATH=\"\$PATH:$SETUP_DIR\""
+assert_not_contains "setup.sh, stale home-relative prepend inside conda: the prepend is gone" \
+    "$SETUP_RC" 'export PATH="$HOME/.local/bin:$PATH"'
+# The presence check reads the EXPANDED directory, so it cannot see the $HOME spelling.
+# Gating the rewrite on it left the prepend alone and appended a second line under it.
+assert_eq "setup.sh, stale home-relative prepend inside conda: still one PATH line" "1" \
+    "$(printf '%s\n' "$SETUP_RC" | grep -c 'local/bin')"
+
+# Outside conda the same stale prepend is the line this installer would write, so it is
+# left exactly where it is.
+SETUP_RC_SEED='export PATH="%s/.local/bin:$PATH"'
+run_setup ""
+assert_contains "setup.sh, stale prepend outside conda: left alone" "$SETUP_RC" \
+    "export PATH=\"$SETUP_DIR:\$PATH\""
+unset SETUP_RC_SEED
 
 summary

@@ -2351,22 +2351,25 @@ _setup_persist_uv_path() {
     for _supp_profile in "$HOME/.profile" "$HOME/.bashrc" "$HOME/.bash_profile" \
                          "$HOME/.bash_login" "${ZDOTDIR:-$HOME}/.zshrc" "${ZDOTDIR:-$HOME}/.zshenv"; do
         if [ "$_supp_profile" != "$HOME/.profile" ] && [ ! -f "$_supp_profile" ]; then continue; fi
+        # Repointing comes BEFORE the presence check, not inside it. The check below matches
+        # the EXPANDED directory, so it cannot see the $HOME-relative prepend install.sh
+        # writes: gating the rewrite on it left that spelling in place and appended a second
+        # line underneath it, which is both a duplicate entry and the original ordering bug,
+        # since the surviving prepend still resolves ahead of the active conda environment.
+        # Rewriting first also makes the check find the append it just produced.
+        if _unsloth_conda_env_active; then
+            _unsloth_repoint_rc_line "$_supp_profile" "$_supp_export_prepend" \
+                "$_supp_export_line" || true
+            if [ -n "$_supp_export_home_prepend" ]; then
+                _unsloth_repoint_rc_line "$_supp_profile" "$_supp_export_home_prepend" \
+                    "$_supp_export_line" || true
+            fi
+        fi
         # Only lines that actually set PATH count: `UV_CACHE=/opt/uv` and `PYTHONPATH=/opt/uv`
         # are not PATH entries, and taking one for an entry leaves the next shell without uv.
         if grep -v '^[[:space:]]*#' "$_supp_profile" 2>/dev/null \
             | grep -E "$_supp_path_line" \
             | grep -qE "(^|[^[:alnum:]_.~/-])$_supp_grep([^[:alnum:]_.~/-]|\$)"; then
-            # Present, so nothing is appended. Inside conda that is only right if the line
-            # that is present is the append: a prepend a previous run wrote would otherwise
-            # keep this directory ahead of the environment in every later shell.
-            if _unsloth_conda_env_active; then
-                _unsloth_repoint_rc_line "$_supp_profile" "$_supp_export_prepend" \
-                    "$_supp_export_line" || true
-                if [ -n "$_supp_export_home_prepend" ]; then
-                    _unsloth_repoint_rc_line "$_supp_profile" "$_supp_export_home_prepend" \
-                        "$_supp_export_line" || true
-                fi
-            fi
             continue
         fi
         echo '' >> "$_supp_profile"
