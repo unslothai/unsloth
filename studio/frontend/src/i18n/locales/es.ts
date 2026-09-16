@@ -1455,9 +1455,10 @@ export const es = {
         conversations: { title: "Conversaciones" },
         files: { title: "Archivos y pegado" },
         display: { title: "Visualización" },
-        composer: { title: "Valores predeterminados del chat" },
+        composer: { title: "Cuadro de mensaje" },
         menu: { title: "Menú del chat" },
         advanced: { title: "Avanzado" },
+        contextTitle: "Contexto",
       },
       projectAttachmentsHint:
         "Cambia este ajuste para cada chat desde su menú de archivos adjuntos.",
@@ -1466,8 +1467,7 @@ export const es = {
       autoCompactHint:
         "Usa la longitud de contexto configurada, no la VRAM disponible.",
       pastedTextShortDescription:
-        "El texto pegado de {count} caracteres o más se convierte en un archivo adjunto .txt.",
-      pastedTextOffDescription: "El texto pegado permanece en el cuadro de mensaje.",
+        "Convierte el texto pegado que supere este límite en archivos adjuntos .txt.",
       compactionDescriptionInherit: "Sigue la política de contexto del servidor.",
       compactionDescriptionCheckpoint:
         "Conserva el último intercambio y las instrucciones permanentes.",

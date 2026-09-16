@@ -1434,9 +1434,10 @@ export const hi = {
         conversations: { title: "बातचीत" },
         files: { title: "फ़ाइलें और पेस्ट" },
         display: { title: "दिखावट" },
-        composer: { title: "चैट की डिफ़ॉल्ट सेटिंग्स" },
+        composer: { title: "संदेश बॉक्स" },
         menu: { title: "चैट मेन्यू" },
         advanced: { title: "उन्नत" },
+        contextTitle: "संदर्भ",
       },
       projectAttachmentsHint:
         "हर चैट के अटैचमेंट मेन्यू से इस सेटिंग को अलग से बदलें।",
@@ -1445,8 +1446,7 @@ export const hi = {
       autoCompactHint:
         "उपलब्ध VRAM के बजाय आपके तय किए गए संदर्भ की लंबाई का उपयोग करता है।",
       pastedTextShortDescription:
-        "{count} या अधिक अक्षरों वाला पेस्ट किया गया टेक्स्ट .txt अटैचमेंट बन जाता है।",
-      pastedTextOffDescription: "पेस्ट किया गया टेक्स्ट संदेश बॉक्स में रहता है।",
+        "इस सीमा से लंबे पेस्ट किए गए टेक्स्ट को .txt अटैचमेंट में बदलें।",
       compactionDescriptionInherit:
         "सर्वर की संदर्भ नीति का पालन करें।",
       compactionDescriptionCheckpoint:

@@ -1440,9 +1440,10 @@ export const ru = {
         conversations: { title: "Беседы" },
         files: { title: "Файлы и вставка" },
         display: { title: "Отображение" },
-        composer: { title: "Настройки чата по умолчанию" },
+        composer: { title: "Поле сообщения" },
         menu: { title: "Меню чата" },
         advanced: { title: "Дополнительно" },
+        contextTitle: "Контекст",
       },
       projectAttachmentsHint:
         "Для отдельного чата настройку можно изменить в его меню вложений.",
@@ -1450,8 +1451,7 @@ export const ru = {
         "Если выключено, для всех моделей используются одинаковые настройки.",
       autoCompactHint: "Учитывает заданную длину контекста, а не доступную VRAM.",
       pastedTextShortDescription:
-        "Вставленный текст длиной от {count} символов становится вложением .txt.",
-      pastedTextOffDescription: "Вставленный текст остаётся в поле сообщения.",
+        "Преобразует вставленный текст длиннее этого лимита во вложения .txt.",
       compactionDescriptionInherit: "Использует политику контекста сервера.",
       compactionDescriptionCheckpoint:
         "Сохраняет последний обмен сообщениями и постоянные инструкции.",

@@ -1421,9 +1421,10 @@ export const en = {
         conversations: { title: "Conversations" },
         files: { title: "Files & pasting" },
         display: { title: "Display" },
-        composer: { title: "Chat defaults" },
+        composer: { title: "Message box" },
         menu: { title: "Chat menu" },
         advanced: { title: "Advanced" },
+        contextTitle: "Context",
       },
       projectAttachmentsHint:
         "Override this setting from each chat's attachment menu.",
@@ -1431,8 +1432,7 @@ export const en = {
         "When off, use the same settings for every model.",
       autoCompactHint: "Uses the context length you set, not available VRAM.",
       pastedTextShortDescription:
-        "Pastes of {count} characters or more become .txt attachments.",
-      pastedTextOffDescription: "Pasted text stays in the message box.",
+        "Turn pastes over this limit into .txt attachments.",
       compactionDescriptionInherit: "Follow the server's context policy.",
       compactionDescriptionCheckpoint:
         "Keep the latest turn and standing instructions.",

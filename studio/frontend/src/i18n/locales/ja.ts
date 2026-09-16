@@ -1416,17 +1416,17 @@ export const ja = {
         conversations: { title: "会話" },
         files: { title: "ファイルと貼り付け" },
         display: { title: "表示" },
-        composer: { title: "チャットのデフォルト設定" },
+        composer: { title: "メッセージ入力欄" },
         menu: { title: "チャットメニュー" },
         advanced: { title: "詳細設定" },
+        contextTitle: "コンテキスト",
       },
       projectAttachmentsHint: "各チャットの添付メニューで個別に変更できます。",
       rememberParamsPerModelHint:
         "オフの場合、すべてのモデルで同じ設定を使います。",
       autoCompactHint: "空きVRAMではなく、設定したコンテキスト長を基準にします。",
       pastedTextShortDescription:
-        "{count}文字以上の貼り付けテキストは .txt 添付ファイルになります。",
-      pastedTextOffDescription: "貼り付けたテキストは入力欄にそのまま表示されます。",
+        "この長さを超える貼り付けテキストを .txt 添付ファイルにします。",
       compactionDescriptionInherit: "サーバーのコンテキストポリシーに従います。",
       compactionDescriptionCheckpoint: "最新のやり取りと継続的な指示を保持します。",
       compactionDescriptionRolling:

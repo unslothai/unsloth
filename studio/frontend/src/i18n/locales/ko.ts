@@ -1425,17 +1425,17 @@ export const ko = {
         conversations: { title: "대화" },
         files: { title: "파일 및 붙여넣기" },
         display: { title: "표시" },
-        composer: { title: "채팅 기본 설정" },
+        composer: { title: "메시지 입력창" },
         menu: { title: "채팅 메뉴" },
         advanced: { title: "고급" },
+        contextTitle: "컨텍스트",
       },
       projectAttachmentsHint:
         "각 채팅의 첨부 메뉴에서 이 설정을 개별적으로 변경할 수 있습니다.",
       rememberParamsPerModelHint: "끄면 모든 모델에 같은 설정을 사용합니다.",
       autoCompactHint: "남은 VRAM이 아닌 설정한 컨텍스트 길이를 기준으로 합니다.",
       pastedTextShortDescription:
-        "붙여넣은 텍스트가 {count}자 이상이면 .txt 첨부 파일로 바뀝니다.",
-      pastedTextOffDescription: "붙여넣은 텍스트가 입력창에 그대로 표시됩니다.",
+        "이 길이를 넘는 붙여넣기 텍스트를 .txt 첨부 파일로 바꿉니다.",
       compactionDescriptionInherit: "서버의 컨텍스트 정책을 따릅니다.",
       compactionDescriptionCheckpoint:
         "최신 대화 턴과 계속 적용되는 지침을 유지합니다.",

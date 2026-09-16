@@ -1461,9 +1461,10 @@ export const fr = {
         conversations: { title: "Conversations" },
         files: { title: "Fichiers et collage" },
         display: { title: "Affichage" },
-        composer: { title: "Réglages par défaut du chat" },
+        composer: { title: "Zone de message" },
         menu: { title: "Menu du chat" },
         advanced: { title: "Avancé" },
+        contextTitle: "Contexte",
       },
       projectAttachmentsHint:
         "Modifiez ce réglage pour chaque chat dans son menu de pièces jointes.",
@@ -1472,8 +1473,7 @@ export const fr = {
       autoCompactHint:
         "Utilise la longueur de contexte définie, pas la VRAM disponible.",
       pastedTextShortDescription:
-        "Les textes collés de {count} caractères ou plus deviennent des pièces jointes .txt.",
-      pastedTextOffDescription: "Le texte collé reste dans le champ de message.",
+        "Convertit les textes collés dépassant cette limite en pièces jointes .txt.",
       compactionDescriptionInherit: "Suit la politique de contexte du serveur.",
       compactionDescriptionCheckpoint:
         "Conserve le dernier échange et les instructions permanentes.",

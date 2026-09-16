@@ -1428,9 +1428,10 @@ export const ar = {
         conversations: { title: "المحادثات" },
         files: { title: "الملفات واللصق" },
         display: { title: "العرض" },
-        composer: { title: "الإعدادات الافتراضية للدردشة" },
+        composer: { title: "مربع الرسالة" },
         menu: { title: "قائمة الدردشة" },
         advanced: { title: "إعدادات متقدمة" },
+        contextTitle: "السياق",
       },
       projectAttachmentsHint:
         "يمكن تغيير هذا الإعداد لكل دردشة من قائمة المرفقات الخاصة بها.",
@@ -1439,8 +1440,7 @@ export const ar = {
       autoCompactHint:
         "يعتمد على طول السياق الذي حددته، لا على ذاكرة VRAM المتاحة.",
       pastedTextShortDescription:
-        "تتحول النصوص الملصقة التي يبلغ طولها {count} حرفًا أو أكثر إلى مرفقات .txt.",
-      pastedTextOffDescription: "يبقى النص الملصق في مربع الرسالة.",
+        "يحوّل النصوص الملصقة التي تتجاوز هذا الحد إلى مرفقات .txt.",
       compactionDescriptionInherit: "يتبع سياسة السياق المحددة على الخادم.",
       compactionDescriptionCheckpoint:
         "يحتفظ بآخر تبادل للرسائل والتعليمات الدائمة.",

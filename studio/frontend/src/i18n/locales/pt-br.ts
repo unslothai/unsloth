@@ -1443,9 +1443,10 @@ export const ptBR = {
         conversations: { title: "Conversas" },
         files: { title: "Arquivos e colagem" },
         display: { title: "Exibição" },
-        composer: { title: "Configurações padrão do chat" },
+        composer: { title: "Caixa de mensagem" },
         menu: { title: "Menu do chat" },
         advanced: { title: "Avançado" },
+        contextTitle: "Contexto",
       },
       projectAttachmentsHint:
         "Altere esta configuração para cada chat pelo menu de anexos.",
@@ -1453,8 +1454,7 @@ export const ptBR = {
         "Quando desativado, todos os modelos usam as mesmas configurações.",
       autoCompactHint: "Usa o tamanho de contexto definido, não a VRAM disponível.",
       pastedTextShortDescription:
-        "Textos colados com {count} caracteres ou mais viram anexos .txt.",
-      pastedTextOffDescription: "O texto colado permanece na caixa de mensagem.",
+        "Converte textos colados acima deste limite em anexos .txt.",
       compactionDescriptionInherit: "Segue a política de contexto do servidor.",
       compactionDescriptionCheckpoint:
         "Mantém a última troca de mensagens e as instruções permanentes.",

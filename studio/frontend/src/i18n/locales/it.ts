@@ -1428,9 +1428,10 @@ export const it = {
         conversations: { title: "Conversazioni" },
         files: { title: "File e incolla" },
         display: { title: "Visualizzazione" },
-        composer: { title: "Impostazioni predefinite della chat" },
+        composer: { title: "Casella del messaggio" },
         menu: { title: "Menu della chat" },
         advanced: { title: "Avanzate" },
+        contextTitle: "Contesto",
       },
       projectAttachmentsHint:
         "Modifica questa impostazione per ogni chat dal relativo menu degli allegati.",
@@ -1439,8 +1440,7 @@ export const it = {
       autoCompactHint:
         "Usa la lunghezza del contesto impostata, non la VRAM disponibile.",
       pastedTextShortDescription:
-        "Il testo incollato di almeno {count} caratteri diventa un allegato .txt.",
-      pastedTextOffDescription: "Il testo incollato rimane nel campo del messaggio.",
+        "Converte il testo incollato oltre questo limite in allegati .txt.",
       compactionDescriptionInherit: "Segue la politica del contesto del server.",
       compactionDescriptionCheckpoint:
         "Mantiene l’ultimo scambio e le istruzioni permanenti.",

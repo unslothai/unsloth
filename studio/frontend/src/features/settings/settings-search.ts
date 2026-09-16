@@ -101,6 +101,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.chat.groups.composer.title",
     "settings.chat.groups.menu.title",
     "settings.chat.groups.advanced.title",
+    "settings.chat.groups.contextTitle",
     "settings.chat.currentDate.label",
     "settings.general.autoTitleNewChats",
     "settings.chat.projectAttachments",

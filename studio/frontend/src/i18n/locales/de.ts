@@ -1464,9 +1464,10 @@ export const de = {
         conversations: { title: "Gespräche" },
         files: { title: "Dateien und Einfügen" },
         display: { title: "Anzeige" },
-        composer: { title: "Chat-Standardeinstellungen" },
+        composer: { title: "Nachrichtenfeld" },
         menu: { title: "Chatmenü" },
         advanced: { title: "Erweitert" },
+        contextTitle: "Kontext",
       },
       projectAttachmentsHint:
         "Diese Einstellung lässt sich im Anhangmenü jedes Chats einzeln ändern.",
@@ -1475,8 +1476,7 @@ export const de = {
       autoCompactHint:
         "Verwendet die eingestellte Kontextlänge, nicht den verfügbaren VRAM.",
       pastedTextShortDescription:
-        "Eingefügter Text ab {count} Zeichen wird als .txt-Datei angehängt.",
-      pastedTextOffDescription: "Eingefügter Text bleibt im Nachrichtenfeld.",
+        "Wandelt eingefügten Text oberhalb dieses Limits in .txt-Anhänge um.",
       compactionDescriptionInherit: "Folgt der Kontextrichtlinie des Servers.",
       compactionDescriptionCheckpoint:
         "Behält den letzten Austausch und die dauerhaft geltenden Anweisungen bei.",
