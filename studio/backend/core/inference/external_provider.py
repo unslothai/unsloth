@@ -2361,7 +2361,7 @@ class ExternalProviderClient:
         effort = reasoning_effort if reasoning_effort in allowed_efforts else None
         # Claude 4.6 takes top-tier adaptive effort as "max" only ("xhigh" is 4.7-only), so map "xhigh" -> "max" for
         # 4.6 outbound requests.
-        if effort == "xhigh" and model.startswith(("claude-opus-4-6", "claude-sonnet-4-6")):
+        if effort == "xhigh" and model.strip().lower().startswith(("claude-opus-4-6", "claude-sonnet-4-6")):
             effort = "max"
         if effort is None:
             if enable_thinking is False:

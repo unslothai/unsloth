@@ -295,6 +295,14 @@ def test_a_capitalized_claude_id_keeps_its_thinking_spec():
     assert body["thinking"] == {"type": "enabled", "budget_tokens": 1024}
 
 
+@pytest.mark.parametrize("model", ["claude-opus-4-6", "Claude-Opus-4-6", "CLAUDE-SONNET-4-6"])
+def test_the_4_6_xhigh_remap_reads_the_id_the_same_way_the_spec_lookup_does(model):
+    """4.6 spells the top adaptive tier `max`; the spec lookup lowercases, so a capitalized id was
+    allowed `xhigh` and then missed the remap that turns it into `max`."""
+    body = _body("anthropic", model, reasoning_effort = "xhigh", max_tokens = 8192)
+    assert body["output_config"] == {"effort": "max"}
+
+
 def test_a_non_reasoning_mistral_model_is_left_alone_by_an_effort_of_none():
     """The catch-all Mistral tail writes reasoning_effort for any model; Mistral documents the
     parameter for mistral-small-latest and mistral-medium-3-5 only."""
