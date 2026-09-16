@@ -160,8 +160,11 @@ import {
   parseExternalModelId,
   providerModelSupportsVision,
 
+  getExternalProviderApiKey,
+  isCustomProviderType,
   providerModelSupportsStudioTools,
 } from "./external-providers";
+import { deriveExternalModelCapabilities } from "./lib/external-model-capabilities";
 import { compareModelDisplayName } from "./lib/external-model-label";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import { useComposerPillFit } from "@/hooks/use-composer-pill-fit";
@@ -185,9 +188,17 @@ import {
   resolveSpeculativeSettingsForLoad,
   saveSpeculativeType,
   useChatRuntimeStore,
+  CHAT_TOOLS_ENABLED_KEY,
+  CHAT_CODE_TOOLS_ENABLED_KEY,
+  CHAT_IMAGE_TOOLS_ENABLED_KEY,
+  CHAT_WEB_FETCH_TOOLS_ENABLED_KEY,
+  loadOptionalBool,
 } from "./stores/chat-runtime-store";
 import {
   clampReasoningEffortToLevels,
+  isGeminiCustomOpenAICompatBase,
+  providerHostsCodeExecution,
+  providerSupportsBuiltinWebSearch,
   getExternalReasoningCapabilities,
   providerSupportsBuiltinCodeExecution,
   providerSupportsBuiltinImageGeneration,
@@ -1306,6 +1317,114 @@ export function SharedComposer({
       async function ensureModelLoaded(
         sel: CompareModelSelection,
       ): Promise<string> {
+        // A hosted model has nothing to load: there is no llama-server to start and no weights
+        // to fetch, so the pane only has to become the active selection and publish what that
+        // connection can do. Same policy the single-model path applies, from one module, because
+        // the copy this replaces had already drifted away from it.
+        const external = parseExternalModelId(sel.id);
+        if (external) {
+          const externalStore = useExternalProvidersStore.getState();
+          if (!externalStore.connectionsEnabled) {
+            throw new Error(
+              "Connections are disabled. Turn on Enable connections in Settings -> Connections to use hosted models.",
+            );
+          }
+          const provider = externalStore.providers.find(
+            (p) => p.id === external.providerId,
+          );
+          if (!provider) {
+            throw new Error(
+              "Connection not found. Open Settings -> Connections and add it again.",
+            );
+          }
+          // A custom base URL carries its own auth, so only a first-party connection needs a key.
+          const apiKey = getExternalProviderApiKey(provider.id).trim();
+          const providerIsCustom = isCustomProviderType(provider.providerType);
+          const providerIsGeminiCustomBase =
+            provider.providerType === "gemini" &&
+            isGeminiCustomOpenAICompatBase(provider.baseUrl);
+          if (!apiKey && !providerIsCustom && !providerIsGeminiCustomBase) {
+            throw new Error(
+              "Missing API key for selected connection. Open Settings -> Connections and set the API key again.",
+            );
+          }
+          const externalState = useChatRuntimeStore.getState();
+          const reasoningCaps = getExternalReasoningCapabilities(
+            provider.providerType,
+            external.modelId,
+            {
+              isReasoningProvider: provider.isReasoningModel === true,
+              baseUrl: provider.baseUrl ?? null,
+            },
+          );
+          externalState.setCheckpoint(sel.id, null);
+          useChatRuntimeStore.setState({
+            // The panes share one runtime, so a hosted pick has to clear the local runtime's
+            // window and provenance rather than leave the previous model's on screen.
+            ...loadedContextFields(null),
+            activeGgufVariant: null,
+            activeNativePathToken: null,
+            loadedIsDiffusion: false,
+            // Model-aware, as every other external-vision read in the app is: a text-only
+            // model on a vision-capable provider is not multimodal.
+            loadedIsMultimodal:
+              providerModelSupportsVision(
+                provider.providerType,
+                external.modelId,
+              ) === true,
+            ...deriveExternalModelCapabilities({
+              providerType: provider.providerType,
+              reasoningCaps,
+              clampedCurrentEffort: clampReasoningEffortToLevels(
+                externalState.reasoningEffort,
+                reasoningCaps.reasoningEffortLevels,
+              ),
+              currentReasoningEffort: externalState.reasoningEffort,
+              currentReasoningEnabled: externalState.reasoningEnabled,
+              supportsBuiltinWebSearch: providerSupportsBuiltinWebSearch(
+                provider.providerType,
+                external.modelId,
+                provider.baseUrl,
+              ),
+              supportsBuiltinCodeExecution: providerSupportsBuiltinCodeExecution(
+                provider.providerType,
+                external.modelId,
+                provider.baseUrl,
+              ),
+              supportsBuiltinImageGeneration:
+                providerSupportsBuiltinImageGeneration(
+                  provider.providerType,
+                  external.modelId,
+                  provider.baseUrl,
+                ),
+              supportsBuiltinWebFetch: providerSupportsBuiltinWebFetch(
+                provider.providerType,
+              ),
+              supportsStudioTools:
+                providerModelSupportsStudioTools(
+                  provider.providerType,
+                  external.modelId,
+                ) === true,
+              providerHostsCodeExecution: providerHostsCodeExecution(
+                provider.providerType,
+              ),
+              // The compare panes have no thread-scoped pill overrides; the globals are the
+              // only stored preference here.
+              storedToolsEnabled: loadOptionalBool(CHAT_TOOLS_ENABLED_KEY),
+              storedCodeToolsEnabled: loadOptionalBool(
+                CHAT_CODE_TOOLS_ENABLED_KEY,
+              ),
+              storedImageToolsEnabled: loadOptionalBool(
+                CHAT_IMAGE_TOOLS_ENABLED_KEY,
+              ),
+              storedWebFetchToolsEnabled: loadOptionalBool(
+                CHAT_WEB_FETCH_TOOLS_ENABLED_KEY,
+              ),
+            }),
+          });
+          return "external";
+        }
+
         const currentStore = useChatRuntimeStore.getState();
         const config = sel.config ?? null;
         // This pane's effective config: an explicit selection config, else the remembered store config
