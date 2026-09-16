@@ -12324,8 +12324,15 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
             logger.debug("Skipping app-only MCP tool '%s' on '%s'.", raw_name, display)
             continue
         name = names_by_raw.get(raw_name)
-        # Duplicate tool names would also 400 OpenAI; drop dupes.
-        if name is None or name in seen_names:
+        if name is None:
+            logger.warning(
+                "Skipping MCP tool '%s' on '%s': no free OpenAI function.name for it.",
+                raw_name,
+                display,
+            )
+            continue
+        # Duplicate names would 400 OpenAI; drop dupes.
+        if name in seen_names:
             logger.warning("Skipping duplicate MCP tool '%s' on '%s'.", raw_name, display)
             continue
         seen_names.add(name)
@@ -12609,13 +12616,13 @@ def execute_tool(
         if _mcp_arguments_reference_studio_credential(arguments):
             return _STUDIO_CREDENTIAL_BLOCKED
         try:
-            _, server_id, tool_name = name.split("__", 2)
+            _, server_id, _ = name.split("__", 2)
         except ValueError:
             return f"Error: malformed MCP tool name '{name}'"
+        tool_name = _mcp_raw_tool_name(name)
         server = mcp_servers_db.get_server_for_tool(server_id)
         if not server:
             return f"Error: MCP server for tool '{tool_name}' not found"
-        tool_name = _mcp_raw_tool_name(name)
         server_id = server["id"]
         display = server.get("display_name") or server_id
         if not server.get("is_enabled"):

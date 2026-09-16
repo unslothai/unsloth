@@ -662,6 +662,11 @@ def test_execute_tool_dispatches_an_alias_to_the_raw_mcp_name(tmp_path, monkeypa
     assert len(set(names)) == 5
     assert [tools_mod.execute_tool(name, {}) for name in names] == ["ok"] * 5
     assert calls == raw_names
+    # A deleted server must not put the alias spelling in front of the user either.
+    mcp_servers_db.delete_server(server["id"])
+    assert tools_mod.execute_tool(names[1], {}) == (
+        "Error: MCP server for tool 'catalog.get-catalog-entity' not found"
+    )
 
 
 def test_mcp_approval_classifies_an_alias_by_its_raw_name(tmp_path, monkeypatch):
