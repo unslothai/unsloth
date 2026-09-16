@@ -20,6 +20,8 @@ import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 
 import { ImageDropzone } from "@/components/image-dropzone";
+import { GuidedTour, useGuidedTourController } from "@/features/tour";
+import { buildImagesTourSteps } from "./tour";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -1249,6 +1251,15 @@ export function ImagesPage({
   // Page mode: "create" is the generation workspace, "train" the LoRA training workspace.
   const pageMode = useImageWorkflowStore((s) => s.pageMode);
   const setPageMode = useImageWorkflowStore((s) => s.setPageMode);
+  const tourSteps = useMemo(
+    () => buildImagesTourSteps({ pageMode }),
+    [pageMode],
+  );
+  const tour = useGuidedTourController({
+    id: "images",
+    steps: tourSteps,
+    enabled: active,
+  });
   // Train family + base live here so the top bar can pick them, replacing the generation model selector on Train.
   const [trainFamilies, setTrainFamilies] = useState<TrainFamilyOption[]>([]);
   const [trainFamilyName, setTrainFamilyName] = useState("flux.1");
@@ -3837,6 +3848,8 @@ export function ImagesPage({
     // The chat-style layout gives this page no outer top inset, so clear the custom titlebar here as chat does.
     // 34px on win/linux, 0 under macOS's native one.
     <div className="diffusion-surface @container flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]">
+      {/* Portals to body, and this page stays mounted off-route, so gate it like the composer. */}
+      {active && <GuidedTour {...tour.tourProps} />}
       {/* Keep the tabs centered over the preview at every width: the model rail holds at 408px when
           space permits and shrinks only to preserve the controls. */}
       <div className="pointer-events-none relative z-40 grid h-[48px] shrink-0 grid-cols-[minmax(0,408px)_minmax(13rem,1fr)]">
@@ -3863,6 +3876,7 @@ export function ImagesPage({
               />
             ) : (
               <ModelSelector
+                triggerDataTour="images-model"
                 models={imageModels}
                 value={status?.loaded ? status.repo_id ?? undefined : undefined}
                 activeGgufVariant={quant}
@@ -3901,6 +3915,7 @@ export function ImagesPage({
         <div className="grid h-full min-w-0 grid-cols-[1fr_auto_auto] gap-2 @[50rem]:grid-cols-[1fr_auto_1fr] @[50rem]:gap-0">
           <div className="pointer-events-auto col-start-2 justify-self-center pt-[var(--studio-chat-header-padding-top,11px)]">
             <PillTabs
+              dataTour="images-mode"
               ariaLabel="Page mode"
               value={pageMode}
               onValueChange={(v) => setPageMode(v as "create" | "train")}
@@ -3947,7 +3962,10 @@ export function ImagesPage({
       /* Settings column + preview canvas. Structural borders stay edge-to-edge; spacing belongs inside each pane.
          The same 50rem page-container breakpoint drives this body and the header above. */
       <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden @[50rem]:flex-row @[50rem]:overflow-hidden">
-        <div className="flex w-full shrink-0 flex-col border-b border-border/60 @[50rem]:w-[408px] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0">
+        <div
+          data-tour="images-settings"
+          className="flex w-full shrink-0 flex-col border-b border-border/60 @[50rem]:w-[408px] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0"
+        >
           {/* pl-0.5 keeps focus rings off the scroll container's edge. */}
           <div
             ref={attachSettingsScroll}
@@ -4541,7 +4559,10 @@ export function ImagesPage({
           </div>
         </div>
 
-        <div className="relative flex min-h-[60dvh] min-w-0 flex-1 flex-col overflow-hidden @[50rem]:min-h-0">
+        <div
+          data-tour="images-preview"
+          className="relative flex min-h-[60dvh] min-w-0 flex-1 flex-col overflow-hidden @[50rem]:min-h-0"
+        >
           <div className="hover-scrollbar relative flex flex-1 items-center justify-center overflow-auto p-6 px-10 @[50rem]:pt-[60px]">
             {selected && selectedSrc ? (
               <>

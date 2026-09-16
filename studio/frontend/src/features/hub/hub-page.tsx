@@ -23,6 +23,7 @@ import {
   requestModelConfigHandoff,
 } from "@/features/model-picker";
 import { loadOpenAIAutoSwitchSettings } from "@/features/settings";
+import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useGpuInfo, useInferenceGpuInfo } from "@/hooks/use-gpu-info";
 import { useVramBudgetFraction } from "@/hooks/use-vram-budget-fraction";
@@ -44,6 +45,7 @@ import { FreeUpSpaceDialog } from "./catalog/free-up-space-dialog";
 import { HubDetailView } from "./catalog/hub-detail-view";
 import { HubFeed } from "./catalog/hub-feed";
 import { HubTopBar } from "./catalog/hub-top-bar";
+import { buildHubTourSteps } from "./tour";
 import {
   ModelsCatalog,
   type ModelsCatalogHandlers,
@@ -1771,8 +1773,14 @@ export function ModelsPage() {
   // Unreachable under the full-page detail overlay.
   const catalogCovered = detailOpen && !splitMode;
 
+  const tour = useGuidedTourController({
+    id: "hub",
+    steps: useMemo(() => buildHubTourSteps({ catalogCovered }), [catalogCovered]),
+  });
+
   return (
     <div className="hub-page flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden bg-background">
+      <GuidedTour {...tour.tourProps} />
       <HubTopBar>
         <ModelsHeader
           cachedCount={visibleCachedCount}
@@ -1816,6 +1824,7 @@ export function ModelsPage() {
         )}
       >
         <div
+          data-tour="hub-catalog"
           className={cn(
             "flex min-h-0 flex-col",
             // Split mode keeps the catalog as a master pane that grows off a 460px floor; otherwise it
@@ -1868,6 +1877,7 @@ export function ModelsPage() {
         ) : (
           detailOpen && (
             <div
+              data-tour="hub-detail"
               className="hub-canvas absolute inset-0 z-20 flex min-h-0 flex-col"
             >
               <HubDetailView
