@@ -5460,6 +5460,10 @@ class TestANoIndexNativeTrioStillSeesItsSources:
     def test_no_index_yields_for_the_command_and_is_put_back(self, value, yields):
         script = _script(
             substep_collector(),
+            # The yield is gated on Test-UvEnvFlag, and PowerShell does not hoist: without
+            # the lift the call is a non-terminating command-not-found, the `if` sees $null
+            # and the block quietly never runs, which pwsh still exits 0 on.
+            functions(INSTALL_SRC, "Test-UvEnvFlag"),
             "$script:WoaNativeCudaTorch = $true",
             "$VenvPlatform = 'win-arm64'",
             f"$env:UV_NO_INDEX = '{value}'",
@@ -5545,6 +5549,8 @@ class TestANoIndexNativeTrioStillSeesItsSourcesInSetup:
     def test_no_index_yields_for_the_command_and_is_put_back(self, value, yields):
         script = _script(
             substep_collector(),
+            # As above: the UV_NO_INDEX yield calls Test-UvEnvFlag, so it comes with it.
+            functions(SETUP_SRC, "Test-UvEnvFlag"),
             "$WinArm64Venv = $true",
             f"$env:UV_NO_INDEX = '{value}'",
             "$env:UV_EXCLUDE_NEWER = '2026-01-01'",
@@ -5570,6 +5576,10 @@ class TestANoIndexNativeTrioStillSeesItsSourcesInSetup:
     def test_off_arm64_nothing_is_touched(self):
         script = _script(
             SUBSTEP_NOOP,
+            # The arm64 guard means the yield never runs here, so the reader is never
+            # called. Lifted anyway: a command-not-found inside a lifted block is
+            # non-terminating, so without it this test could only ever pass.
+            functions(SETUP_SRC, "Test-UvEnvFlag"),
             "$WinArm64Venv = $false",
             "$env:UV_NO_INDEX = '1'",
             "$_woaCutoffSaved = @{}",
