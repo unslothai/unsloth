@@ -11232,16 +11232,10 @@ class LlamaCppBackend:
     def _gpu_ids_own_placement(self, gpu_ids) -> bool:
         """Whether a ``gpu_ids`` pick overrules a user ``--device`` / ``--main-gpu``.
 
-        An explicit pick always does. This asks nothing about the device VALUE on
-        purpose: letting a pass-through survive when the pick covered the whole
-        visible set was tried and withdrawn, because the ordering it bought is
-        already supplied by the inherited-mask reorder above, while every consumer
-        of the strip then had to agree about a value that planning can invalidate
-        after the answer is taken.
-
-        One predicate rather than eleven copies of ``gpu_ids is not None``: the
-        launch, the fit classifier, the cache tuning and the reload comparator
-        disagreeing is how the argv and the already-loaded check drift apart.
+        One predicate, not eleven copies: launch, fit classifier, cache tuning and
+        reload comparator disagreeing is how the argv and the already-loaded check
+        drift apart. Letting a full-set pick relinquish to a pass-through was tried
+        and withdrawn; the inherited-mask reorder already supplies that ordering.
         """
         return gpu_ids is not None
 
