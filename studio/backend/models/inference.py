@@ -2778,18 +2778,6 @@ class ToolConfirmRequest(BaseModel):
     decision: Literal["allow", "deny"] = "deny"
 
 
-class SshApproveRequest(BaseModel):
-    session_id: str = Field(min_length = 1)
-    hosts: list[str] = Field(default_factory = list)
-
-
-class SshApprovedHostsResponse(BaseModel):
-    hosts: list[str] = Field(default_factory = list)
-
-
-# ── OpenAI shell-tool container management ─────────────────────
-
-
 class OpenAIContainerRequest(BaseModel):
     """Shared body for the OpenAI container endpoints (list / create / delete).
 

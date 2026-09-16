@@ -58,16 +58,6 @@ import time
 import urllib.parse
 import urllib.request
 
-from core.inference.ssh_policy import (
-    _SHELL_EXEC_FUNCS,
-    _CMD_KWARGS,
-    _shell_exec_aliases,
-    _bound_name,
-    _call_keyword_values,
-    check_ssh_command_access,
-    check_ssh_python_access,
-    filter_ssh_approved_network_blocks,
-)
 from core.inference.mcp_client import (
     MCP_TOOL_PREFIX,
     TOOL_CACHE_INVALIDATING_FIELDS,
@@ -179,8 +169,10 @@ _BLOCKED_COMMANDS_COMMON = frozenset(
         "ncat",
         "netcat",
         "socat",
-        # ssh/slogin/scp/sftp are gated by ssh_policy (approved-server allowlist)
-        # instead of this unconditional blocklist so users can deploy after approval.
+        "ssh",
+        "slogin",
+        "scp",
+        "sftp",
         "rsync",
         "eval",
         "source",
@@ -205,17 +197,11 @@ _BLOCKED_COMMANDS = (
     else _BLOCKED_COMMANDS_COMMON
 )
 
-# ssh/slogin/scp/sftp are gated by ssh_policy (approved-server allowlist) instead
-# of the unconditional blocklist, but still scanned at command position.
-_SSH_GATED_COMMANDS = frozenset({"ssh", "slogin", "scp", "sftp", "git"})
-
 
 _SHELL_SEPARATORS = frozenset({";", "&&", "||", "|", "&", "\n", "(", ")", "`", "{", "}"})
 # Bash keywords starting a new command position. `if`/`while`/`until` are followed by a CONDITION the shell executes,
 # so a command right after them is at command position.
-_SHELL_KEYWORDS_AS_SEP = frozenset(
-    {"then", "do", "else", "elif", "if", "while", "until", "coproc", "!"}
-)
+_SHELL_KEYWORDS_AS_SEP = frozenset({"then", "do", "else", "elif", "if", "while", "until", "!"})
 # Wrappers whose next non-flag argument is the command Bash will exec.
 _COMMAND_PREFIXES = frozenset(
     {
@@ -424,7 +410,7 @@ _EXPANSION_CHARS = frozenset("$`")
 _QUOTED_EXPANSION_MARK = "\x04"
 # The characters punctuation_chars glues into one token. A run like `|&` matches no _SHELL_SEPARATORS entry, so the
 # sed screen read past the end of the command. `{`/`}` are absent so find's `{}` stays an ordinary word.
-_OPERATOR_TOKEN_CHARS = frozenset(";&|()`\n")
+_OPERATOR_TOKEN_CHARS = frozenset(";&|()`")
 # One shell redirection as the lexer hands it over. The target may be glued on (`2>/dev/null`) or be the next token;
 # `&` splits off under punctuation_chars, so `2>&1` arrives as three.
 _REDIRECTION_RE = re.compile(r"^(?:\d+|&)?(?:<<<|<<-|<<|<>|>>|>\||<&|>&|<|>)")
@@ -495,9 +481,7 @@ def _blocked_matching_glob(base: str) -> "set[str]":
     """Blocked command names a command-position glob can expand to."""
     if not _is_unresolved_command_glob(base):
         return set()
-    return {
-        name for name in _BLOCKED_COMMANDS | _SSH_GATED_COMMANDS if fnmatch.fnmatchcase(name, base)
-    }
+    return {name for name in _BLOCKED_COMMANDS if fnmatch.fnmatchcase(name, base)}
 
 
 def _is_sed_command(base: str) -> bool:
@@ -1017,8 +1001,6 @@ def _quoted_separator_indexes(text: str, tokens: "list[str]", punctuation: str) 
         return frozenset()  # every separator character was bare
     try:
         lexer = shlex.shlex(masked, posix = True, punctuation_chars = punctuation)
-        if "\n" in punctuation:
-            lexer.whitespace = lexer.whitespace.replace("\n", "")
         lexer.whitespace_split = True
         marked = list(lexer)
     except ValueError:
@@ -1047,8 +1029,6 @@ def _masked_tokens(
     )
     try:
         lexer = shlex.shlex(masked, posix = True, punctuation_chars = punctuation)
-        if "\n" in punctuation:
-            lexer.whitespace = lexer.whitespace.replace("\n", "")
         lexer.whitespace_split = True
         marked = list(lexer)
     except ValueError:
@@ -1092,8 +1072,6 @@ def _unquoted_expansion_indexes(
     )
     try:
         lexer = shlex.shlex(masked, posix = True, punctuation_chars = punctuation)
-        if "\n" in punctuation:
-            lexer.whitespace = lexer.whitespace.replace("\n", "")
         lexer.whitespace_split = True
         marked = list(lexer)
     except ValueError:
@@ -1122,8 +1100,6 @@ def _unquoted_glob_indexes(text: str, tokens: "list[str]", punctuation: str) -> 
     )
     try:
         lexer = shlex.shlex(masked, posix = True, punctuation_chars = punctuation)
-        if "\n" in punctuation:
-            lexer.whitespace = lexer.whitespace.replace("\n", "")
         lexer.whitespace_split = True
         marked = list(lexer)
     except ValueError:
@@ -1332,13 +1308,6 @@ def _is_start_title(token: str) -> bool:
     )
 
 
-def _find_ssh_command_segments(command: str) -> "list[tuple[str, list[str]]]":
-    """Collect SSH invocations from the blocklist's command-position walk."""
-    segments: list[tuple[str, list[str]]] = []
-    _find_blocked_commands(command, _ssh_segments = segments)
-    return segments
-
-
 # `_BLOCKED_COMMANDS` is a never-mutated frozenset, so this alternation is a constant. Rebuilding it
 # per call cost an `re.escape` per blocked name: over a 2637 command corpus that was 567k calls and
 # 0.60s of 3.9s. None only if the set is empty.
@@ -1354,68 +1323,7 @@ _BLOCKED_WORD_RE = (
 )
 
 
-def _cmd_ssh_tokens(command: str) -> "tuple[list[str], frozenset[int]]":
-    """Split cmd operators while retaining quoted and caret-escaped data positions."""
-    tokens: list[str] = []
-    literal_indexes: set[int] = set()
-    word: list[str] = []
-    quoted = literal = False
-    literal_redirect = False
-    last_char_literal = False
-
-    def flush() -> None:
-        nonlocal literal, literal_redirect
-        if word or literal:
-            value = "".join(word)
-            if (
-                literal and (literal_redirect or not _REDIRECTION_RE.match(value))
-            ) or _looks_like_separator(value):
-                literal_indexes.add(len(tokens))
-            tokens.append(value)
-            word.clear()
-            literal = False
-            literal_redirect = False
-
-    index = 0
-    while index < len(command):
-        char = command[index]
-        if char == "^" and not quoted and index + 1 < len(command):
-            word.append(command[index + 1])
-            literal = True
-            literal_redirect |= command[index + 1] in "<>"
-            last_char_literal = True
-            index += 2
-            continue
-        if char == '"':
-            quoted = not quoted
-            literal = True
-        elif not quoted and char in "&|()\n":
-            flush()
-            if char in "&|" and command[index : index + 2] == char * 2:
-                char *= 2
-                index += 1
-            tokens.append(char)
-        elif not quoted and char.isspace():
-            flush()
-        elif not quoted and char in "<>" and word and word[-1] not in "<>":
-            descriptor = word.pop() if word[-1] in "0123456789" and not last_char_literal else ""
-            flush()
-            if descriptor:
-                word.append(descriptor)
-            word.append(char)
-            last_char_literal = False
-        else:
-            word.append(char)
-            literal_redirect |= quoted and char in "<>"
-            last_char_literal = quoted
-        index += 1
-    flush()
-    return tokens, frozenset(literal_indexes)
-
-
-def _find_blocked_commands(
-    command: str, *, _ssh_segments: "list[tuple[str, list[str]]] | None" = None
-) -> set[str]:
+def _find_blocked_commands(command: str) -> set[str]:
     """Detect blocked commands at shell command position only.
 
     A token is at command position if it is the first token, or follows a shell separator /
@@ -1433,58 +1341,24 @@ def _find_blocked_commands(
     # rm -rf x`. Keyed to the shell that will actually run this, not to the OS: on a Windows host with bash the
     # non-posix lexer never split on `;`, so `if true; then rm -rf x; fi` came back with nothing blocked.
     lexed_posix = _shell_is_posix()
-    cmd_literal_indexes: frozenset[int] = frozenset()
-    punctuation = ";&|()`\n" if _ssh_segments is not None else ";&|()`"
-    if _ssh_segments is not None and "\\\n" in command:
-        states = _shell_quote_states(command)
-        joined = {
-            i
-            for i in range(len(command) - 1)
-            if command[i : i + 2] == "\\\n" and states[i + 1] == _ESCAPED_CHAR_STATE
-        }
-        command = "".join(
-            char for i, char in enumerate(command) if i not in joined and i - 1 not in joined
-        )
-    if lexed_posix and _ssh_segments is not None and any(c in command for c in "<>"):
-        states = _shell_quote_states(command)
-        parts: list[str] = []
-        word_start = 0
-        for i, char in enumerate(command):
-            if not states[i]:
-                if char.isspace() or char in ";&|()`":
-                    word_start = i + 1
-                elif char in "<>":
-                    prefix = command[word_start:i]
-                    # retain numeric file descriptors while separating command arguments from redirects.
-                    if prefix and not prefix.isdecimal():
-                        parts.append(" ")
-                    word_start = i + 1
-            parts.append(char)
-        command = "".join(parts)
     try:
-        if not lexed_posix and _ssh_segments is not None:
-            tokens, cmd_literal_indexes = _cmd_ssh_tokens(command)
-        elif not lexed_posix:
+        if not lexed_posix:
             tokens = shlex.split(command, posix = False)
         else:
-            lexer = shlex.shlex(command, posix = True, punctuation_chars = punctuation)
-            if _ssh_segments is not None:
-                lexer.whitespace = lexer.whitespace.replace("\n", "")
+            lexer = shlex.shlex(command, posix = True, punctuation_chars = ";&|()`")
             lexer.whitespace_split = True
             tokens = list(lexer)
     except ValueError:
         tokens = command.split()
         lexed_posix = False
-    # cmd tracks quoted and escaped data positions; the split fallback has no quoting model.
+    # Which separator tokens the shell only produced because the quoting was stripped. The non-posix (cmd) lexer KEEPS
+    # the quote marks and the split() fallback has no quoting model, so both report nothing and reach the same
+    # verdict.
     quoted_separators = (
-        _quoted_separator_indexes(command, tokens, punctuation)
-        if lexed_posix
-        else cmd_literal_indexes
+        _quoted_separator_indexes(command, tokens, ";&|()`") if lexed_posix else frozenset()
     )
     quoted_redirects = (
-        _quoted_redirection_indexes(command, tokens, punctuation)
-        if lexed_posix
-        else cmd_literal_indexes
+        _quoted_redirection_indexes(command, tokens, ";&|()`") if lexed_posix else frozenset()
     )
     exec_flag_indexes, invocation_stops, redirect_indexes = _exec_scan_layout(
         tokens, quoted_separators, quoted_redirects
@@ -1501,11 +1375,6 @@ def _find_blocked_commands(
             base = stem
         return base
 
-    ssh_xargs_indexes: set[int] = set()
-    sftp_indexes: set[int] = set()
-    ssh_segment_start = len(_ssh_segments) if _ssh_segments is not None else 0
-    ssh_forwarding = ""
-
     def _exec_child_index(start: int) -> "tuple[int, bool]":
         """The command a `find -exec` actually runs, as ``(index, overflowed)``; the index is -1 when
         the action holds no command word at all.
@@ -1520,7 +1389,6 @@ def _find_blocked_commands(
         `-exec` + 33 `env` + `rm -f victim ;` really deletes.
         """
         i, steps, wrapper = start, 0, ""
-        through_xargs = False
         while i < len(tokens) and steps < _MAX_EXEC_PREFIX_SCAN:
             token = tokens[i]
             if token in _SHELL_SEPARATORS or token in _FIND_EXEC_TERMINATORS:
@@ -1541,34 +1409,12 @@ def _find_blocked_commands(
             base = _token_basename(token)
             if base in _COMMAND_PREFIXES:
                 wrapper = base
-                through_xargs |= base == "xargs"
                 i += 1
                 continue
-            if through_xargs:
-                ssh_xargs_indexes.add(i)
             return i, False
         # Walking off the end means the action really held nothing; stopping on the bound with words still ahead means
         # the child is merely UNREAD.
         return -1, steps >= _MAX_EXEC_PREFIX_SCAN and i < len(tokens)
-
-    def _collect_ssh(index: int, name: str) -> None:
-        if _ssh_segments is None or name not in _SSH_GATED_COMMANDS:
-            return
-        if name == "sftp":
-            sftp_indexes.add(index)
-        if index in ssh_xargs_indexes:
-            _ssh_segments.append((name, ["$dynamic"] if name == "git" else []))
-            return
-        args: list[str] = []
-        for j in range(index + 1, len(tokens)):
-            if j in redirect_indexes:
-                continue
-            if j not in quoted_separators and _looks_like_separator(tokens[j]):
-                break
-            if tokens[j] in _FIND_EXEC_TERMINATORS:
-                break
-            args.append(tokens[j])
-        _ssh_segments.append((name, args))
 
     expect_command = True  # start of string is a command position
     prefix_pending = False  # last cmd-position token was a wrapper (env/time/xargs/...)
@@ -1603,20 +1449,7 @@ def _find_blocked_commands(
             prefix_pending = False
             prefix_command = ""
             xargs_index = -1
-            ssh_forwarding = ""
             continue
-        if ssh_forwarding:
-            if ssh_forwarding == "watch":
-                if token in {"-n", "--interval", "-q", "--equexit"}:
-                    skip_operand = True
-                    continue
-                if token.startswith("-"):
-                    continue
-                if _token_basename(token) not in _COMMAND_PREFIXES:
-                    ssh_forwarding = ""
-            _collect_ssh(token_index, _token_basename(token))
-            if any(char.isspace() for char in token):
-                _find_blocked_commands(token, _ssh_segments = _ssh_segments)
         if token.startswith("-"):
             # A wrapper option whose value is a SEPARATE token precedes that value, not the wrapped command. Without
             # consuming it the value is read as the command word and the real command behind it is never reached (`env
@@ -1640,20 +1473,9 @@ def _find_blocked_commands(
         if _ASSIGNMENT_RE.match(token):
             continue
         # Numeric wrapper arg: `timeout 1 cmd` / `nice -n 5 cmd`.
-        if prefix_pending and (
-            token.lstrip("-").isdigit()
-            or prefix_command == "timeout"
-            and re.fullmatch(r"(?:\d+(?:\.\d*)?|\.\d+)[smhd]?", token)
-        ):
+        if prefix_pending and token.lstrip("-").isdigit():
             continue
         base = _token_basename(token)
-        if xargs_index >= 0:
-            ssh_xargs_indexes.add(token_index)
-        _collect_ssh(token_index, base)
-        if _ssh_segments is not None and base in (
-            _HIGH_RISK_FORWARDING_COMMANDS - _EXEC_FLAG_FORWARDING_COMMANDS
-        ):
-            ssh_forwarding = base
         if _is_sed_command(base):
             sed_indexes.append(token_index)
             if xargs_index >= 0:
@@ -1685,7 +1507,7 @@ def _find_blocked_commands(
                 break
             _name, _sep, _value = nxt.partition("=")
             if _sep and _value:
-                blocked |= _find_blocked_commands(_value, _ssh_segments = _ssh_segments)
+                blocked |= _find_blocked_commands(_value)
 
     # find's `-exec`/`-execdir` and fd's `-x` / `-X` / `--exec` / `--exec-batch` all invoke CMD directly. Reading only
     # find's own flags left every fd form unscanned, so `fd -x rm -rf x` reached the hard blocklist as nothing at all.
@@ -1701,7 +1523,6 @@ def _find_blocked_commands(
             attached = tok.split("=", 1)[1].strip("\"'")
         if attached:
             attached_base = _token_basename(attached.split()[0])
-            _collect_ssh(i, attached_base)
             if _is_sed_command(attached_base):
                 # The words after the flag are that sed's arguments, so its program is screened from the FLAG. fd 9
                 # actually takes them as search paths and runs nothing, so this only blocks a command that could not
@@ -1724,7 +1545,6 @@ def _find_blocked_commands(
             exec_words = [i + 1] if child in (-1, i + 1) else [i + 1, child]
             for word in exec_words:
                 base = _token_basename(tokens[word])
-                _collect_ssh(word, base)
                 if _is_sed_command(base):
                     # find runs its -exec child directly, but the walk above only reaches `find`, so a sed there never
                     # got its program screened.
@@ -1777,14 +1597,12 @@ def _find_blocked_commands(
             laundered.setdefault(printf_v.group(1), None)
         for literal in _ASSIGN_BLOCKED_LITERAL_RE.finditer(command):
             name, value = literal.group(1), literal.group(2).strip("\"'")
-            if quote_states[literal.start(1)] == "" and _shell_expansions(literal.group(2)):
-                laundered.setdefault(name, None)
             first = value.split()[0] if value.split() else ""
             base = os.path.basename(first)
             stem, ext = os.path.splitext(base)
             if ext.lower() in {".exe", ".com", ".bat", ".cmd"}:
                 base = stem
-            if base.lower() in _BLOCKED_COMMANDS | _SSH_GATED_COMMANDS:
+            if base.lower() in _BLOCKED_COMMANDS:
                 laundered.setdefault(name, base.lower())
         laundered_refs = "|".join(sorted({re.escape(n) for n in laundered}, key = len, reverse = True))
         laundered_in_body_pattern = (
@@ -1881,14 +1699,14 @@ def _find_blocked_commands(
                 continue  # skip Windows switches like /s, /q, /v:on
             prev_base = os.path.basename(prev).lower()
             if is_unix_c and prev_base in _SHELLS:
-                blocked |= _find_blocked_commands(tokens[i + 1], _ssh_segments = _ssh_segments)
+                blocked |= _find_blocked_commands(tokens[i + 1])
             elif is_win_c and prev_base in _SHELLS_WIN:
                 # The cmd lexer keeps the marks, so `cmd /c "powershell ls"` would recurse on a first word of
                 # `"powershell` and match nothing.
                 payload = tokens[i + 1]
                 if len(payload) > 1 and payload[0] == '"' and payload[-1] == '"':
                     payload = payload[1:-1]
-                blocked |= _find_blocked_commands(payload, _ssh_segments = _ssh_segments)
+                blocked |= _find_blocked_commands(payload)
             break  # stop at first non-flag token
 
     # `cmd /c start "" prog` puts prog in a command position the scan above sees only as an argument, so screen what
@@ -1905,14 +1723,14 @@ def _find_blocked_commands(
         # runnable; deciding whether `start` itself is executed is deliberately not attempted, since every local
         # approximation under-approximated.
         if j < len(tokens):
-            blocked |= _find_blocked_commands(tokens[j], _ssh_segments = _ssh_segments)
+            blocked |= _find_blocked_commands(tokens[j])
         if j + 1 < len(tokens) and _is_start_title(tokens[j]):
             k = j + 1
             # `start "my window" /min prog` puts switches after the title too.
             while k < len(tokens) and _win_switch(tokens[k].lower()) in _START_SWITCHES:
                 k += 2 if _win_switch(tokens[k].lower()) in _START_SWITCHES_WITH_VALUE else 1
             if k < len(tokens):
-                blocked |= _find_blocked_commands(tokens[k], _ssh_segments = _ssh_segments)
+                blocked |= _find_blocked_commands(tokens[k])
 
     # sed's `e COMMAND` hands COMMAND to the shell, a real command position the scan above sees only as a text
     # argument, so screen it like `bash -c`. The pattern-space forms yield an empty payload; the auto gate prompts on
@@ -1960,56 +1778,7 @@ def _find_blocked_commands(
             for variant in _sed_program_variants(alternative, sed_vars or {}):
                 for payload in _sed_exec_payloads(variant):
                     if payload:
-                        blocked |= _find_blocked_commands(payload, _ssh_segments = _ssh_segments)
-
-    if (
-        _ssh_segments is not None
-        and any(name == "sftp" for name, _args in _ssh_segments)
-        and any(
-            index not in quoted_separators
-            and token.strip("\n") in {"|", "|&"}
-            or index in redirect_indexes
-            and re.match(r"^(?:0)?<", token)
-            for index, token in enumerate(tokens)
-        )
-    ):
-        # compound shells can pass stdin through groups or nested invocations.
-        nested_sftp = sum(
-            name == "sftp" for name, _args in _ssh_segments[ssh_segment_start:]
-        ) > len(sftp_indexes)
-        compound = (
-            nested_sftp
-            or not sftp_indexes
-            or bool(exec_flag_indexes)
-            or any(
-                index not in quoted_separators
-                and (
-                    any(char in token for char in "(){}`")
-                    or token
-                    in _SHELL_KEYWORDS_AS_SEP | {"for", "case", "select", "function", "exec"}
-                )
-                for index, token in enumerate(tokens)
-            )
-        )
-        stdin_commands: set[int] = set()
-        sftp_commands: set[int] = set()
-        command_index = 0
-        awaiting_pipeline_command = False
-        for index, token in enumerate(tokens):
-            if awaiting_pipeline_command and not token.strip("\n"):
-                continue
-            awaiting_pipeline_command = False
-            if index in invocation_stops:
-                command_index += 1
-                if token.strip("\n") in {"|", "|&"}:
-                    stdin_commands.add(command_index)
-                    awaiting_pipeline_command = True
-            elif index in redirect_indexes and re.match(r"^(?:0)?<", token):
-                stdin_commands.add(command_index)
-            if index in sftp_indexes:
-                sftp_commands.add(command_index)
-        if compound or stdin_commands & sftp_commands:
-            _ssh_segments.append(("sftp", []))
+                        blocked |= _find_blocked_commands(payload)
 
     return blocked
 
@@ -7710,9 +7479,7 @@ def _is_wrapper_flag_operand(command: str, start: int) -> bool:
 def _blocked_body_words(body: str) -> "set[str]":
     """Every blocked name the substitution body ``body`` (already lowercased) mentions."""
     found: "set[str]" = set()
-    for groups in _blocked_body_word_pattern_for(_BLOCKED_COMMANDS | _SSH_GATED_COMMANDS).findall(
-        body
-    ):
+    for groups in _blocked_body_word_pattern_for(frozenset(_BLOCKED_COMMANDS)).findall(body):
         if isinstance(groups, str):
             groups = (groups,)
         found.update(g for g in groups if g)
@@ -11409,9 +11176,6 @@ def sandbox_removal_deferred(session_id: str) -> bool:
 
 
 def _remove_session_sandbox_locked(session_id: str, delete_files: bool) -> bool:
-    from state.ssh_approvals import clear_session
-
-    clear_session(session_id)
     root = os.path.realpath(sandbox_root())
     claimed = _claimed_by_this_run(session_id, root)
     entry = os.path.join(root, _sandbox_name(session_id))
@@ -15875,6 +15639,42 @@ def _check_signal_escape_patterns(code: str):
             return full_name in names
         return False
 
+    # Dangerous os/subprocess functions that can execute shell commands.
+    _SHELL_EXEC_FUNCS = frozenset(
+        {
+            "os.system",
+            "os.popen",
+            "os.popen2",
+            "os.popen3",
+            "os.popen4",
+            "os.execl",
+            "os.execle",
+            "os.execlp",
+            "os.execlpe",
+            "os.execv",
+            "os.execve",
+            "os.execvp",
+            "os.execvpe",
+            "os.spawnl",
+            "os.spawnle",
+            "os.spawnlp",
+            "os.spawnlpe",
+            "os.spawnv",
+            "os.spawnve",
+            "os.spawnvp",
+            "os.spawnvpe",
+            "os.posix_spawn",
+            "os.posix_spawnp",
+            "subprocess.run",
+            "subprocess.call",
+            "subprocess.check_call",
+            "subprocess.check_output",
+            "subprocess.Popen",
+            "subprocess.getoutput",
+            "subprocess.getstatusoutput",
+        }
+    )
+
     def _extract_string_from_node(node):
         """Extract a plain string value from an AST node, if it is a constant."""
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
@@ -15892,6 +15692,9 @@ def _check_signal_escape_patterns(code: str):
             return parts
         return []
 
+    # Kwarg names that carry command content (not control flags like check=True, text=True, capture_output=True).
+    _CMD_KWARGS = frozenset({"args", "command", "executable", "path", "file"})
+
     def _check_args_for_blocked(args_nodes):
         """Check if any call arguments contain blocked commands."""
         found = set()
@@ -15904,12 +15707,14 @@ def _check_signal_escape_patterns(code: str):
                 found |= _find_blocked_commands(s)
         return found
 
-    process_aliases = _shell_exec_aliases(tree)
-
     class SignalEscapeVisitor(ast.NodeVisitor):
         def __init__(self):
             self.imports_signal = False
             self.signal_aliases = {"signal"}
+            self.os_aliases = {"os"}
+            self.subprocess_aliases = {"subprocess"}
+            # Bare name -> fully-qualified form for from-import tracking (e.g. "system" -> "os.system").
+            self.shell_exec_aliases: dict[str, str] = {}
             self.loop_depth = 0
 
         def visit_Import(self, node):
@@ -15918,6 +15723,10 @@ def _check_signal_escape_patterns(code: str):
                     self.imports_signal = True
                     if alias.asname:
                         self.signal_aliases.add(alias.asname)
+                elif alias.name == "os":
+                    self.os_aliases.add(alias.asname or "os")
+                elif alias.name == "subprocess":
+                    self.subprocess_aliases.add(alias.asname or "subprocess")
             self.generic_visit(node)
 
         def visit_ImportFrom(self, node):
@@ -15935,6 +15744,16 @@ def _check_signal_escape_patterns(code: str):
                         "alarm",
                     ):
                         self.signal_aliases.add(alias.asname or alias.name)
+            elif node.module in ("os", "subprocess"):
+                if node.module == "os":
+                    self.os_aliases.add("os")
+                else:
+                    self.subprocess_aliases.add("subprocess")
+                # Track from-imports of dangerous functions.
+                for alias in node.names:
+                    fq = f"{node.module}.{alias.name}"
+                    if fq in _SHELL_EXEC_FUNCS:
+                        self.shell_exec_aliases[alias.asname or alias.name] = fq
             self.generic_visit(node)
 
         def visit_While(self, node):
@@ -15996,10 +15815,32 @@ def _check_signal_escape_patterns(code: str):
                         }
                     )
 
-            shell_func = _bound_name(func, process_aliases)
+            # Shell escape detection: resolve the FQ function name for os.*/subprocess.*
+            shell_func = None
+            if isinstance(func, ast.Attribute):
+                if isinstance(func.value, ast.Name):
+                    if func.value.id in self.os_aliases:
+                        shell_func = f"os.{func.attr}"
+                    elif func.value.id in self.subprocess_aliases:
+                        shell_func = f"subprocess.{func.attr}"
+            elif isinstance(func, ast.Name):
+                # from-import aliases: from os import system; system(...)
+                shell_func = self.shell_exec_aliases.get(func.id)
 
             if shell_func and shell_func in _SHELL_EXEC_FUNCS:
-                expanded_kwargs, has_opaque_kwargs = _call_keyword_values(node)
+                # Expand **kwargs dicts to inspect their keys.
+                expanded_kwargs: dict[str, ast.AST] = {}
+                has_opaque_kwargs = False
+                for kw in node.keywords:
+                    if kw.arg is not None:
+                        expanded_kwargs[kw.arg] = kw.value
+                    elif isinstance(kw.value, ast.Dict):
+                        for k, v in zip(kw.value.keys, kw.value.values):
+                            key = _extract_string_from_node(k) if k else None
+                            if key is not None:
+                                expanded_kwargs[key] = v
+                    else:
+                        has_opaque_kwargs = True
 
                 cmd_kw_values = [v for k, v in expanded_kwargs.items() if k in _CMD_KWARGS]
                 all_call_args = list(node.args) + cmd_kw_values
@@ -16635,7 +16476,6 @@ def _check_signal_escape_patterns(code: str):
                             {
                                 "type": "untrusted_host_blocked",
                                 "line": getattr(node, "lineno", -1),
-                                "col_offset": getattr(node, "col_offset", -1),
                                 "description": (
                                     "Blocked: host not in sandbox allowlist; "
                                     "use an allowed informational source"
@@ -16684,7 +16524,6 @@ def _check_signal_escape_patterns(code: str):
                             {
                                 "type": "untrusted_host_blocked",
                                 "line": getattr(node, "lineno", -1),
-                                "col_offset": getattr(node, "col_offset", -1),
                                 "description": (
                                     "Blocked: host not in sandbox allowlist; "
                                     "use an allowed informational source"
@@ -16740,25 +16579,10 @@ def _check_signal_escape_patterns(code: str):
     }
 
 
-def _check_code_safety(code: str, session_id: str | None = None) -> str | None:
+def _check_code_safety(code: str) -> str | None:
     """Validate code safety via static analysis. Returns an error message string if the code is
     unsafe, or None if OK."""
-    ssh_error = check_ssh_python_access(code, session_id)
-    if ssh_error:
-        return (
-            f"Error: unsafe code detected ({ssh_error}). "
-            "Please remove unsafe patterns from your code."
-        )
-
     safe, info = _check_signal_escape_patterns(code)
-    info = filter_ssh_approved_network_blocks(code, session_id, info)
-    safe = (
-        len(info.get("signal_tampering", [])) == 0
-        and len(info.get("exception_catching", [])) == 0
-        and len(info.get("shell_escapes", [])) == 0
-        and len(info.get("network_calls", [])) == 0
-        and len(info.get("sensitive_file_reads", [])) == 0
-    )
     if not safe:
         # Let SyntaxError from ast.parse through so the subprocess produces a normal Python traceback instead of a
         # misleading "unsafe code" message.
@@ -18404,7 +18228,7 @@ def _python_exec(
 
     # Validate imports and code safety (skipped when the sandbox is disabled)
     if not disable_sandbox:
-        error = _check_code_safety(code, session_id = session_id)
+        error = _check_code_safety(code)
         if error:
             # Capped like any other result: the analyzer names every occurrence it found, so code that repeats a
             # forbidden construct enough times reports back something larger than the room that is left, which is the
@@ -18623,9 +18447,6 @@ def _bash_exec(
             # Capped for the same reason the Python analyzer's error is: it lists what it found in the command it was
             # handed.
             return _truncate(f"Blocked command(s) for safety: {', '.join(sorted(blocked))}")
-        ssh_error = check_ssh_command_access(command, session_id)
-        if ssh_error:
-            return _truncate(ssh_error)
         # Stripping the child env is not enough: a same-UID child can read /proc/<getppid()>/environ to recover the
         # unfiltered secrets, so close that read here too, not only in bypass mode. Best-effort: the child env is
         # already scrubbed, so a system where prctl is denied still runs.
