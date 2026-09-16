@@ -135,7 +135,6 @@ export function StartTrainingCta() {
   return (
     <div className="flex flex-col gap-2">
       <Button
-        data-tour="studio-start"
         size="lg"
         className={cn(
           "h-11 w-full justify-center rounded-xl text-ui-13p5 font-semibold tracking-tight",

@@ -1,0 +1,214 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+#
+# Collect the Kaggle kernels the GPU workflows dispatched and left running.
+#
+# WHY THIS EXISTS
+#
+# The GPU workflows used to hold a runner for the whole Kaggle session: 41.5
+# and 18.7 minutes, measured on runs 33479481067 and 33486360729, almost all of
+# it polling, against a queue measured 400-670 deep.
+#
+# So those jobs now PUSH AND EXIT (`launch.py --dispatch`), and two independent
+# routes collect: the next GPU run on the same account collects before it
+# dispatches, and THIS workflow covers a quiet repository on a schedule. The
+# schedule is not a nicety; a kernel here has been measured ignoring Kaggle's
+# own `-t` timeout for over two hours, billing the whole time.
+#
+# WHAT IT PUBLISHES
+#
+# A commit status per collected kernel, `kaggle-t4-notebook` or
+# `kaggle-studio-gpu`, against the sha in the kernel's slug. THAT is the check
+# meaning "the GPU tests passed"; the dispatching job proves only that Kaggle
+# accepted a push. Neither context can be a REQUIRED check while the GPU
+# workflows sample and path-filter: a commit the gate skips gets no status, and
+# a required context that never arrives blocks the merge.
+#
+# ACCOUNTS
+#
+# A static two-element matrix, one job per account, unlike the gate's
+# quota-weighted draw: the gate chooses where to SPEND a session, this spends
+# none and must look at both every pass. One token per job, never both in one
+# step, as in the GPU workflows.
+name: Kaggle collect
+
+on:
+  schedule:
+    # Every 10 minutes, offset off the hour: a few passes per 20-40 minute
+    # kernel, without the workflow becoming a queue item itself.
+    - cron: '3,13,23,33,43,53 * * * *'
+  workflow_dispatch:
+    inputs:
+      max_age_hours:
+        description: 'Delete a still-running kernel older than this many hours'
+        type: string
+        default: '3'
+      no_delete:
+        description: 'Collect and report without deleting (inspection only; a kernel left up keeps billing)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Never two scheduled passes at once. This does NOT serialise against the GPU
+# jobs, which collect under their own groups, so two collectors CAN see one
+# terminal kernel. Safe by construction in collect.py rather than by a lock: a
+# vanished kernel is `gone` and posts nothing, an incomplete download keeps the
+# kernel, and a status comes only from complete evidence, so the worst case is
+# the same verdict twice. Not cancel-in-progress: a pass midway through a
+# download must finish, or the next starts from nothing.
+concurrency:
+  group: kaggle-collect
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    name: Collect
+    runs-on: ubuntu-latest
+    # collect.py's BUDGET_SEC (900s) plus RELEASE_BUDGET_SEC (600s) plus setup
+    # and posting, so the script's budgets stop a long pass rather than the job
+    # being killed mid-download.
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      # The point of the workflow: without it the verdict reaches nobody.
+      statuses: write
+    strategy:
+      # One unreachable account must not stop the other, and either failing is
+      # still a failure.
+      fail-fast: false
+      matrix:
+        include:
+          - account_id: '1'
+            secret_name: KAGGLE_API_TOKEN
+          - account_id: '2'
+            secret_name: KAGGLE_API_TOKEN_2
+    steps:
+      - name: Harden runner (audit)
+        uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # The collector holds the Kaggle token; only the posting step gets
+          # GH_TOKEN, and checkout persists the job token into .git by default.
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+
+      - name: Install the Kaggle client
+        # As in the GPU workflows: 1.7.4.5's authenticate() cannot read
+        # KAGGLE_API_TOKEN, the only credential this job has, so every pass on
+        # it collected nothing.
+        run: python -m pip install --quiet 'kaggle==2.2.4'
+
+      - name: Collect this account's kernels
+        id: collect
+        env:
+          # Exactly one account, indexed by name. A ternary would hand over the
+          # other account's token whenever this secret is empty, and the
+          # collector would delete kernels it is not reporting for.
+          KAGGLE_API_TOKEN: ${{ secrets[matrix.secret_name] }}
+        # --require-auth: this job holds the repository's own secrets, so an
+        # auth failure is a broken token and must be red, not the quiet green a
+        # fork gets. An EMPTY token is different: the matrix is static, so a
+        # repository with one Kaggle account leaves the second secret unset and
+        # that leg warns and passes. --no-delete always; the last step releases
+        # the kernels once their statuses posted. The report count comes from
+        # each kernel's own evidence, so a five-payload kernel that lost four is
+        # judged against five rather than a flat guess.
+        run: |
+          python .github/scripts/kaggle_t4_ci/collect.py \
+            --outdir kaggle_collected \
+            --require-auth \
+            --no-delete \
+            --max-age-hours '${{ inputs.max_age_hours || '3' }}' \
+            --target-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+
+      # Post FIRST, delete SECOND: a verdict that does not reach GitHub leaves
+      # its kernel up for the next pass, and deleting first would make one API
+      # failure the permanent loss of a verdict. A script rather than a shell
+      # loop so each field reaches `gh` as its own argument.
+      - name: Post the commit statuses
+        id: post
+        if: always() && hashFiles('kaggle_collected/collect_result.json') != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python .github/scripts/kaggle_t4_ci/post_statuses.py \
+            --result kaggle_collected/collect_result.json \
+            --out kaggle_collected/posted.json
+
+      - name: Release the kernels whose verdicts were delivered
+        if: always() && !inputs.no_delete && hashFiles('kaggle_collected/collect_result.json') != ''
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets[matrix.secret_name] }}
+        run: |
+          python .github/scripts/kaggle_t4_ci/collect.py \
+            --outdir kaggle_collected \
+            --delete-collected kaggle_collected/collect_result.json \
+            --posted kaggle_collected/posted.json
+
+      # The Studio payload smuggles its screenshots and logs home in its own
+      # cell output, and this pass collects most Studio kernels, so it has to
+      # put them back. One kernel per call: the bundle is reassembled from
+      # numbered chunks and one walk over two would splice them together.
+      - name: Unpack the Playwright evidence
+        if: always() && hashFiles('kaggle_collected/**/*_output.ipynb') != ''
+        continue-on-error: true
+        run: |
+          for dir in kaggle_collected/*/; do
+            [ -d "$dir" ] || continue
+            python .github/scripts/kaggle_studio_ci/collect_evidence.py \
+              --evidence "$dir" \
+              --outdir "studio_evidence/$(basename "$dir")"
+          done
+
+      # The posted verdict is one line; the notebooks and screenshots are what a
+      # red one is read from. continue-on-error because the statuses are already
+      # delivered and an artifact outage is not a collection failure.
+      - name: Upload evidence
+        if: always() && hashFiles('kaggle_collected/**') != ''
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: kaggle-collect-evidence-account-${{ matrix.account_id }}
+          path: |
+            kaggle_collected/**
+            studio_evidence/**
+          retention-days: 14
+          if-no-files-found: ignore
+
+      - name: Summarise
+        if: always() && hashFiles('kaggle_collected/collect_result.json') != ''
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, pathlib
+          data = json.loads(pathlib.Path("kaggle_collected/collect_result.json").read_text())
+          # Collection runs --no-delete, so `deleted` there is always false; the
+          # release step wrote the real outcome beside it.
+          release = pathlib.Path("kaggle_collected/delete_result.json")
+          released = set(json.loads(release.read_text()).get("deleted") or []) if release.exists() else set()
+          print(f"### Kaggle collect: account {data.get('owner') or '?'}\n")
+          rows = data.get("kernels") or []
+          for k in rows:
+              k["deleted"] = bool(k.get("deleted")) or k.get("slug") in released
+          if not rows:
+              print("Nothing of ours was in flight on this account.\n")
+          else:
+              print("| kernel | commit | kind | state | verdict | deleted |")
+              print("| --- | --- | --- | --- | --- | --- |")
+              for k in rows:
+                  print("| `{}` | `{}` | {} | {} | **{}** | {} |".format(
+                      k["slug"].rsplit("/", 1)[-1], k.get("sha") or "-",
+                      k.get("kind") or "-", k.get("state") or "-",
+                      k.get("verdict") or "-", "yes" if k.get("deleted") else "no"))
+              print()
+              for k in rows:
+                  if k.get("reason"):
+                      print(f"- `{k['slug'].rsplit('/', 1)[-1]}`: {k['reason']}")
+          PY

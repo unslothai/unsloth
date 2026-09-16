@@ -37,6 +37,7 @@ export function TrainSubNav({
   return (
     <TabsList
       unstyled={true}
+      data-tour="studio-subnav"
       className="flex min-w-0 flex-1 flex-wrap items-center justify-start gap-3 pb-px text-ui-13 tracking-nav sm:gap-6"
     >
       {items.map((item) => {

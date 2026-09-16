@@ -1,13 +1,10 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-#
 # One lane of the Windows Chat UI Tests job, start to finish: boot an Unsloth on
 # this lane's own port and own UNSLOTH_STUDIO_HOME, rotate the bootstrap
 # password, drive its Playwright suites, stop the server.
-#
 # Usage:  run-studio-ui-lane.sh chat|extra
-#
 # Why this exists. The job ran five Playwright suites one after another for
 # ~788s of a 20.6 minute job, 88% of it in steps over 60s, and it was the last
 # finisher on every commit where no macOS job ran. The suites are disjoint --
@@ -15,7 +12,6 @@
 # ALREADY distinct (18895/18896/18897/18899). The only thing forcing sequence
 # was shared state, exactly as #9158 found for the three Linux indicator
 # engines.
-#
 # Two lanes rather than five. windows-latest is 4 vCPU / 16 GB and these lanes
 # load a real GGUF through llama-server, whose turn latency already needed a
 # 540s budget on this image. Five concurrent servers would contend for the same
@@ -23,17 +19,13 @@
 # work near evenly -- 375s against 413s -- so the lane wall is ~413s, and the
 # theoretical floor with the 287s indicator suite in it is 287s. Three lanes buy
 # ~126s for a third model-loading server; not worth it here.
-#
 #   chat  : chat UI (18896)  -> loaded-models indicator, Edge (18899)
 #   extra : Compare/Recipes/Export/Settings + update banner (18897)
 #           -> Edge permission controls (18895)
-#
 # Within a lane the order and the environment of every suite is unchanged from
 # when they were steps, including `extra` reusing one server for both of its
 # Playwright runs and passing the same STUDIO_OLD_PW / STUDIO_NEW_PW to each.
-#
 # THE STATE SPLIT. Per lane:
-#
 #   port                 -- one each, so both servers coexist. Already true.
 #   UNSLOTH_STUDIO_HOME  -- one each. boot-studio-api-only.sh wipes
 #       $home/auth so the boot mints a fresh .bootstrap_password, then this
@@ -43,14 +35,12 @@
 #   health probe tmp     -- one each; the helper defaults to a single path.
 #   artifact + log paths -- one each, so a failure in one lane is still
 #       readable after the other has written its own.
-#
 # UNSLOTH_STUDIO_HOME is the CLI's INSTALL root, not just a data root, so a bare
 # empty directory is not usable: unsloth_cli/commands/studio.py resolves
 # $UNSLOTH_STUDIO_HOME/unsloth_studio/Scripts/python.exe and exits "Unsloth
 # Unsloth not set up. Run install.sh first." before binding a port. Each lane
 # home therefore links the one venv install.ps1 already built and owns only the
 # mutable state beside it.
-#
 # And one thing the Linux precedent did not have to handle. Setting the variable
 # makes the root CUSTOM, and _ensure_studio_env_exported() then points
 # UNSLOTH_LLAMA_CPP_PATH at $UNSLOTH_STUDIO_HOME/llama.cpp rather than the

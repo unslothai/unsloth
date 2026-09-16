@@ -2,9 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // The chat settings that describe one conversation rather than the installation: the composer
-// pills, the permission level, the retrieval controls and the sampling params. Editing one with
-// a chat open writes this snapshot onto the thread, and reopening that thread applies it back.
+// pills, the permission level, the retrieval controls and the sampling params. Editing one with a
+// chat open writes this snapshot onto the thread, and reopening that thread applies it back.
 
+import { normalizeSavedMinP } from "../lib/min-p-policy.ts";
 import type {
   PermissionMode,
   RagAutoInject,
@@ -12,7 +13,7 @@ import type {
   RagSource,
   ReasoningEffort,
 } from "../stores/chat-runtime-store";
-import { MAX_SAMPLING_SEED } from "../types/runtime.ts";
+import { MAX_SAMPLING_SEED, type MinPMode } from "../types/runtime.ts";
 import {
   isRecord,
   sanitizeBoundedNumber,
@@ -43,6 +44,7 @@ export interface ThreadScopedSettings {
   topP?: number;
   topK?: number;
   minP?: number;
+  minPMode?: MinPMode;
   repetitionPenalty?: number;
   presencePenalty?: number;
   /** null is the cleared pin, and is the only thread-scoped value that is not undefined. */
@@ -57,6 +59,7 @@ export const THREAD_SCOPED_PARAM_KEYS = [
   "topP",
   "topK",
   "minP",
+  "minPMode",
   "repetitionPenalty",
   "presencePenalty",
   "seed",
@@ -89,6 +92,7 @@ const THREAD_SCOPED_BOOLEAN_KEYS = [
 ] as const satisfies readonly (keyof ThreadScopedSettings)[];
 
 const THREAD_SCOPED_ENUM_VALUES = {
+  minPMode: ["server-default", "custom"],
   reasoningEffort: ["none", "minimal", "low", "medium", "high", "max", "xhigh"],
   permissionMode: ["ask", "auto", "off"],
   ragMode: ["hybrid", "lexical", "dense"],
@@ -148,7 +152,7 @@ export function isThreadScopedSettingKey(
   return THREAD_SCOPED_SETTING_KEY_SET.has(key);
 }
 
-// derived on apply, so unstored, but loadPermissionMode falls back to the confirm toggle: writing
+// Derived on apply, so unstored, but loadPermissionMode falls back to the confirm toggle: writing
 // it globally would turn one chat's permission level into every other browser's default.
 const THREAD_DERIVED_SETTING_KEYS: ReadonlySet<string> = new Set([
   "confirmToolCalls",
@@ -201,4 +205,11 @@ export function hasThreadScopedSettings(
 ): boolean {
   if (!settings) return false;
   return THREAD_SCOPED_SETTING_KEYS.some((key) => settings[key] !== undefined);
+}
+
+/** Normalize original saved snapshots before inheriting current defaults. */
+export function normalizeSavedThreadScopedSettings(
+  value: unknown,
+): ThreadScopedSettings {
+  return normalizeSavedMinP(sanitizeThreadScopedSettings(value));
 }

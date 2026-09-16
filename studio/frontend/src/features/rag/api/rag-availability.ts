@@ -5,19 +5,16 @@ import { create } from "zustand";
 
 import { formatFastApiDetail } from "@/lib/format-fastapi-error";
 
-// Whether RAG can run on this host at all, as reported by the backend.
-//
-// A machine where sqlite-vec imports but its native library will not load has a working
-// server and a dead RAG engine. The router says so rather than raising: GET
-// /api/rag/knowledge-bases answers 200 with an availability marker beside the (empty)
-// list, and every other RAG endpoint answers 503 with the same reason. Without this
-// store both readings are dropped on the floor and the Knowledge bases dialog looks
-// like an empty store, offering a Create button that can only 503.
-//
-// Read it the way the platform store in config/env.ts is read: `isUnavailable()`, never
-// `available` on its own. Everything here is optimistic until the backend has actually
-// answered, because graying a feature out on a guess is indistinguishable from a
-// measured "unsupported", and a backend that predates the marker never answers at all.
+// Whether RAG can run on this host at all, as reported by the backend. A machine where sqlite-vec
+// imports but its native library will not load has a working server and a dead RAG engine. The
+// router says so rather than raising: GET /api/rag/knowledge-bases answers 200 with an availability
+// marker beside the (empty) list, and every other RAG endpoint answers 503 with the same reason.
+// Without this store both readings are dropped on the floor and the Knowledge bases dialog looks
+// like an empty store, offering a Create button that can only 503. Read it the way the platform
+// store in config/env.ts is read: `isUnavailable()`, never `available` on its own. Everything here
+// is optimistic until the backend has actually answered, because graying a feature out on a guess
+// is indistinguishable from a measured "unsupported", and a backend that predates the marker never
+// answers at all.
 
 /** The shape the KB list carries; older backends send neither field. */
 interface RagAvailabilityMarker {
@@ -29,16 +26,14 @@ interface RagAvailabilityMarker {
 const DEFAULT_UNAVAILABLE_REASON =
   "RAG is unavailable on this machine: the sqlite-vec extension could not be loaded.";
 
-// What routes/rag.py sends with its 503 ("RAG is unavailable: the sqlite-vec extension
-// could not be loaded."). Matched on the extension name rather than the whole sentence,
-// so a reworded detail still reads as the backend's verdict while a proxy's "Service
-// Temporarily Unavailable" does not.
-//
-// Deliberately NOT "rag is unavailable" as well. That phrase is the loose half of the
-// pair: anything RAG-aware in front of the backend could emit it without meaning the
-// extension, and matching either fragment would then persist a capability verdict from a
-// transient outage. "sqlite-vec" is a package name, so nothing upstream says it by
-// accident, and the whole capability being gated here is exactly that extension.
+// What routes/rag.py sends with its 503 ("RAG is unavailable: the sqlite-vec extension could not be
+// loaded."). Matched on the extension name rather than the whole sentence, so a reworded detail
+// still reads as the backend's verdict while a proxy's "Service Temporarily Unavailable" does not.
+// Deliberately NOT "rag is unavailable" as well. That phrase is the loose half of the pair:
+// anything RAG-aware in front of the backend could emit it without meaning the extension, and
+// matching either fragment would then persist a capability verdict from a transient outage.
+// "sqlite-vec" is a package name, so nothing upstream says it by accident, and the whole capability
+// being gated here is exactly that extension.
 const RAG_UNAVAILABLE_MARKERS = ["sqlite-vec"];
 
 /** True only for a 503 body the RAG router itself produced. */

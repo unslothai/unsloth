@@ -226,7 +226,6 @@ def test_a_tree_the_user_pointed_at_is_never_called_a_cache_we_own() -> None:
     """Preserve user-supplied wording when an override names the managed path."""
     body = _function_source(INSTALL_PS1, "Invoke-ManagedLlamaCppPreflight")
     assert "-UserSupplied:$userSupplied" in body
-    # Cover both the flag and its environment equivalent.
     assert (
         "$suppliedDir = if ($WithLlamaCppDir) { $WithLlamaCppDir }"
         " else { $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR }" in body
@@ -257,10 +256,8 @@ def test_the_managed_path_rule_is_not_duplicated_in_the_installer() -> None:
     # The resolver uses the single default-versus-custom predicate.
     assert "if (-not (Test-StudioHomeIsCustom)) {" in resolver
     assert "$legacyStudio" not in resolver
-    # Canonicalize both sides before comparing.
     predicate = _function_source(INSTALL_PS1, "Test-StudioHomeIsCustom")
     assert predicate.count("Get-CanonicalDir -Path") == 2
-    # Keep canonicalization in one helper.
     canonicalizer = _function_source(INSTALL_PS1, "Get-CanonicalDir")
     assert "Resolve-Path -LiteralPath $trimmedPath" in canonicalizer
     # A denied path cannot resolve, so compare lexical full paths instead.

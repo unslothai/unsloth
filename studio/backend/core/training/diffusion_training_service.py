@@ -17,6 +17,18 @@ runs a scripted target on a thread.
 
 from __future__ import annotations
 
+from core.training.account_jobs import (
+    account_is_retired,
+    init_job_owner,
+    job_busy,
+    job_control,
+    job_pump,
+    job_read,
+    owned_job,
+    validate_job_paths,
+    worker_alive,
+)
+from utils.account_context import account_thread
 import contextlib
 import json
 import math
@@ -74,8 +86,37 @@ def _run_diffusion_child(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 
 def _default_target(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
     # First thing in the child (before torch): self-bind to parent death and scrub the native path
-    # secret, like the other workers.
+    # secret, like the other workers. Token policy first of all, ahead of the account branch
+    # below, which returns: both children need it applied.
+    if not config.get("allow_ambient", True):
+        # Before any huggingface_hub import, as the LLM worker does: a child env is seeded from
+        # the parent's, so not setting a token is not denying one.
+        import os
+
+        from hub.utils.hf_tokens import apply_token_to_child_env, hf_token_arg, is_anonymous
+
+        hf_token = hf_token_arg(config.get("hf_token"), allow_ambient_token = False)
+        apply_token_to_child_env(os.environ, hf_token)
+        if is_anonymous(hf_token):
+            os.environ["HF_TOKEN_PATH"] = os.devnull
+
+    account = config.pop("_job_account", None)
+    if account is not None:
+        from core.training.account_jobs import run_account_child
+        from utils.native_path_leases import run_without_native_path_secret
+
+        run_without_native_path_secret(
+            run_account_child,
+            account = account,
+            job_module = "core.training.diffusion_training_service",
+            job_target = "_run_diffusion_child",
+            event_queue = event_queue,
+            stop_queue = stop_queue,
+            config = config,
+        )
+        return
     from utils.native_path_leases import run_without_native_path_secret
+
     run_without_native_path_secret(
         _run_diffusion_child, event_queue = event_queue, stop_queue = stop_queue, config = config
     )
@@ -105,11 +146,10 @@ def _llm_training_active() -> bool:
 
 
 # One JSON file per terminal run, not the LLM sqlite, so diffusion runs stay off the LLM Runs page.
-# ── persisted run history ──────────────────────────────────────────────────────
 def _runs_dir() -> Path:
-    from utils.paths.storage_roots import studio_root
+    from utils.paths.storage_roots import tensorboard_root
 
-    d = studio_root() / "runs" / "diffusion"
+    d = tensorboard_root() / "diffusion"
     d.mkdir(parents = True, exist_ok = True)
     return d
 
@@ -125,17 +165,16 @@ def _resume_fields(
     source_checkpoint: Optional[str] = None,
     source_created_at: Optional[float] = None,
 ) -> dict[str, Any]:
-    """``can_resume`` / ``checkpoint_step`` / ``resume_blocked_reason`` for a run, read from
-    the checkpoints that are actually on disk.
+    """``can_resume`` / ``checkpoint_step`` / ``resume_blocked_reason`` for a run, read from the
+    checkpoints that are actually on disk.
 
-    Derived, not trusted: a persisted record is a snapshot of the moment the run ended, but
-    the user can delete the output folder afterwards. ``started_at`` fences off bundles an
-    EARLIER run of the same adapter name left in the same folder, and ``ended_at`` fences off
-    the ones a LATER run put there after this one finished -- without the upper bound a
-    finished run offers, and resumes, its successor's training state. ``write_error`` is the run's
-    own report that a checkpoint write failed; that is sticky and blocks resume (mirroring the
-    MLX trainer's ``resume_blocked``), because whatever older state is on disk predates the
-    adapter that was published, so continuing from it would silently lose steps. Never raises."""
+    Derived, not trusted: a persisted record is a snapshot of the moment the run ended, but the user
+    can delete the output folder afterwards. ``started_at`` fences off bundles an EARLIER run of the
+    same adapter name left in the same folder, and ``ended_at`` fences off the ones a LATER run put
+    there after this one finished. ``write_error`` is the run's own report that a checkpoint write
+    failed; that is sticky and blocks resume (mirroring the MLX trainer's ``resume_blocked``),
+    because whatever older state is on disk predates the adapter that was published. Never raises.
+    """
     try:
         from core.training.diffusion_checkpoint import describe_resume_state
         state = describe_resume_state(
@@ -389,7 +428,7 @@ def _append_metric(
     steps.append(istep)
     for key in _METRIC_SERIES:
         # setdefault, not [key]: a run resumed from a record written before a series existed carries a state
-        # dict without it.
+        # dict without it, and a short tail on the new series beats a KeyError that drops the whole update.
         state.setdefault(key, []).append(values[key])
 
 
@@ -419,6 +458,12 @@ class DiffusionTrainingService:
         ctx: Any = None,
         target: Optional[Callable[..., None]] = None,
     ) -> None:
+        init_job_owner(
+            self,
+            lambda: worker_alive(self, pump = "_pump") or self.is_active(),
+            lambda: self.stop(save = False),
+            self._clear_account_result,
+        )
         self._ctx = ctx if ctx is not None else _CTX
         self._target = target if target is not None else _default_target
         self._lock = threading.Lock()
@@ -453,24 +498,28 @@ class DiffusionTrainingService:
         self._config: dict[str, Any] = {}
 
     # ── lifecycle ────────────────────────────────────────────────────────────
+    def _clear_account_result(self):
+        self._state = _idle_state()
+        self._config = {}
+
     def is_active(self) -> bool:
         with self._lock:
             if self._reserved:
                 return True
             return self._proc is not None and self._proc.is_alive()
 
+    @owned_job()
     def reserve(self) -> None:
-        """Mark a diffusion-training start as in flight so the image/video load guards (which
-        read is_active) refuse a concurrent load BEFORE the route frees resident GPU models.
-        Without this the training becomes active only at start(), after the free, so an
-        overlapping load passes its guard, acquires the GPU, and both workloads allocate VRAM.
+        """Mark a diffusion-training start as in flight so the image/video load guards (which read
+        is_active) refuse a concurrent load BEFORE the route frees resident GPU models. Without this
+        the training becomes active only at start(), after the free, so an overlapping load passes
+        its guard, acquires the GPU, and both workloads allocate VRAM.
 
         Compare-and-set: raise if a start is already reserved or a job is already running, so a
-        second overlapping /diffusion/start is rejected (409) BEFORE it frees GPU residents,
-        instead of both requests tearing down residents and racing to start() (whichever finishes
-        first wins, so a double-click or a retry with different parameters could start the wrong
-        config). Paired with unreserve() in a finally by the reserving caller, so a failed start
-        never leaves training 'active'."""
+        second overlapping /diffusion/start is rejected (409) BEFORE it frees GPU residents, instead
+        of both requests tearing down residents and racing to start(). Paired with unreserve() in a
+        finally by the reserving caller, so a failed start never leaves training active.
+        """
         with self._lock:
             if self._reserved or (self._proc is not None and self._proc.is_alive()):
                 raise RuntimeError("A diffusion training job is already running.")
@@ -496,6 +545,7 @@ class DiffusionTrainingService:
                 )
             self._reserved = True
 
+    @job_control
     def unreserve(self) -> None:
         """Clear the reservation set by reserve(). Only touches the reservation flag, never
         _proc, so a live job stays active on success and a failed start is fully rolled back."""
@@ -532,16 +582,16 @@ class DiffusionTrainingService:
         """Hold the GPU-admission interlock across a load's guard -> arbiter -> registration.
 
         The load guards read ``is_active()`` and only THEN acquire the arbiter and register the
-        load, so a start reserving inside that gap freed residents the load had not registered
-        yet and the trainer came up beside a brand-new pipeline. Registering the admission under
-        the same lock ``reserve()`` uses closes it from both sides, exactly like
-        ``dataset_mutation``: this raises once a start is reserved or running, and ``reserve()``
-        raises while an admission is open, so neither waits on the other.
+        load, so a start reserving inside that gap freed residents the load had not registered yet
+        and the trainer came up beside a brand-new pipeline. Registering the admission under the
+        same lock ``reserve()`` uses closes it from both sides, exactly like ``dataset_mutation``:
+        this raises once a start is reserved or running, and ``reserve()`` raises while an admission
+        is open, so neither waits on the other.
 
-        The span is deliberately short. ``begin_load`` returns as soon as the load is registered
-        (the download and build run on a daemon thread), and from that point
-        ``_free_gpu_for_diffusion_training`` preempts the in-flight load, so holding this for the
-        whole load would block starts for minutes to no purpose."""
+        The span is deliberately short: ``begin_load`` returns as soon as the load is registered,
+        and from that point ``_free_gpu_for_diffusion_training`` preempts the in-flight load, so
+        holding this for the whole load would block starts for minutes to no purpose.
+        """
         with self._lock:
             if self._reserved or (self._proc is not None and self._proc.is_alive()):
                 raise TrainingActiveError(
@@ -555,11 +605,13 @@ class DiffusionTrainingService:
             with self._lock:
                 self._gpu_admissions = max(0, self._gpu_admissions - 1)
 
+    @owned_job()
     def start(self, config: dict) -> str:
         """Validate ``config``, spawn the trainer, and start pumping its events.
 
         Raises ValueError for an unusable config (before any spawn) and RuntimeError if a
         job is already running. Returns the new job id."""
+        validate_job_paths(config)
         # Validate before spawning, and keep the normalised config: it carries the resolved family the
         # recipe overrides are keyed on, which the raw request dict need not name.
         from .diffusion_lora_trainer import _config_from_dict
@@ -588,6 +640,8 @@ class DiffusionTrainingService:
             self._stop_signalled = False
             event_queue = self._ctx.Queue()
             self._stop_queue = self._ctx.Queue()
+            if self.job_account is not None:
+                config = {**config, "_job_account": self.job_account}
             self._proc = self._ctx.Process(
                 target = self._target,
                 kwargs = {
@@ -625,14 +679,17 @@ class DiffusionTrainingService:
             # Record the config with the fields this family's loop REPLACES set to what it will actually run:
             # the trainer applies the same table in the child, so without this Previous runs described a
             # recipe no step ever used.
-            self._config = {k: v for k, v in dict(config).items() if k != "hf_token"}
+            self._config = {
+                k: v for k, v in dict(config).items() if k not in {"hf_token", "_job_account"}
+            }
             self._config.update(train_recipe_overrides(normalized_cfg))
-            self._pump = threading.Thread(
+            self._pump = account_thread(
                 target = self._pump_loop, args = (event_queue, self._proc), daemon = True
             )
             self._pump.start()
             return job_id
 
+    @job_control
     def stop(self, save: bool = True) -> bool:
         """Request a clean stop: the trainer finishes the current step, then either saves
         a partial adapter (``save=True``, the default) or discards the run (``save=False``,
@@ -664,6 +721,37 @@ class DiffusionTrainingService:
             self._state["updated_at"] = time.time()
             return True
 
+    def stop_for_shutdown(self, timeout: float) -> bool:
+        from utils.account_context import run_as
+
+        with self._lock:
+            proc = self._proc
+            pump = self._pump
+            account = self._result_account
+
+        def settled():
+            # The pump writes the run record after the child exits, so wait for it too.
+            return (proc is None or not proc.is_alive()) and (pump is None or not pump.is_alive())
+
+        if settled():
+            return True
+        if proc is not None and proc.is_alive():
+            # The signal path runs as the owner, which job_control refuses for a managed account's run.
+            run_as(account, self.stop, save = True)
+        deadline = time.monotonic() + max(0.0, timeout)
+        while time.monotonic() < deadline:
+            if settled():
+                return True
+            time.sleep(0.25)
+        return False
+
+    @job_read(
+        lambda self: {
+            **_idle_state(),
+            "status": "busy" if job_busy(self) else "idle",
+            "message": "Busy" if job_busy(self) else "",
+        }
+    )
     def status(self) -> dict[str, Any]:
         with self._lock:
             snap = dict(self._state)
@@ -672,13 +760,13 @@ class DiffusionTrainingService:
             return snap
 
     # ── event pump ───────────────────────────────────────────────────────────
+    @job_pump
     def _pump_loop(self, event_queue: Any, proc: Any) -> None:
         while True:
             try:
                 ev = event_queue.get(timeout = 1.0)
             except Exception:  # noqa: BLE001 -- Empty (timeout) or a closed queue
                 if not proc.is_alive():
-                    # Drain anything buffered, then decide if it exited cleanly.
                     drained = False
                     while True:
                         try:
@@ -734,16 +822,18 @@ class DiffusionTrainingService:
     def _apply_discard_intent(self, *, delete: bool = True) -> None:
         """Carry out a stop-without-saving the child could not report itself.
 
-        The trainer does this on its own completion path; a child that OOMs, is killed, or dies
-        on the current step never gets there. Blocking the resume is the visible half -- the
-        bundles are the other one, and they hold optimizer and scheduler state, are sizeable,
-        and have no delete path in the UI once the run is marked discarded.
+        The trainer does this on its own completion path; a child that OOMs, is killed, or dies on
+        the current step never gets there. Blocking the resume is the visible half; the bundles are
+        the other one, and they hold optimizer and scheduler state, are sizeable, and have no delete
+        path in the UI once the run is marked discarded.
 
-        ``delete`` False is the case where the child DID get there. Its cleanup restores any
-        bundle this run wrote over, so the paths remembered here no longer name this run's
-        bundles -- deleting them then destroys the predecessor that was just handed back, which
-        is another run's resume point. The state half still applies either way.
+        ``delete`` False is the case where the child DID get there. Its cleanup restores any bundle
+        this run wrote over, so the paths remembered here no longer name this run's bundles, and
+        deleting them then destroys the predecessor that was just handed back. The state half still
+        applies either way.
         """
+        if account_is_retired():
+            delete = False
         with self._lock:
             own = list(self._own_checkpoints) if delete else []
             self._state["resume_blocked_reason"] = (
@@ -770,6 +860,8 @@ class DiffusionTrainingService:
         used to write the JSON that Previous runs and its Resume action are built from. The
         status recorded is the one that is true if nothing else ever happens -- the run was
         interrupted -- and the terminal write replaces it in place."""
+        if account_is_retired():
+            return
         try:
             with self._lock:
                 s = dict(self._state)

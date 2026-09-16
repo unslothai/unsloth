@@ -4,20 +4,29 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import {
+  type ComposerSendShortcut,
+  type ComposerFollowUpBehavior,
+  normalizeComposerPreferences,
+} from "../utils/composer-preferences.ts";
+import {
   PASTED_TEXT_DEFAULT_MIN_CHARS,
   PASTED_TEXT_THRESHOLD_CHOICES,
 } from "../utils/pasted-text.ts";
 
-// Client-side chat UI prefs kept in localStorage, not the chat DB.
-// confirmDeleteChats: when off, deleting a chat skips the confirm dialog.
-// alwaysDeleteChatFiles: when on, deleting a chat also removes its sandbox
-// folder, without having to ask for it each time.
-// showModelDisclaimer: when off, hide the "LLMs can make mistakes" footer note.
-// showResponseModel: when on, assistant responses show the producing model.
-// collapseThinkingByDefault: when on, thinking stays collapsed instead of
-// streaming open.
-// pastedTextMinChars: paste length that becomes a .txt attachment. 0 is off.
+// Client-side chat UI prefs kept in localStorage, not the chat DB. confirmDeleteChats: off skips
+// the delete confirm dialog. alwaysDeleteChatFiles: on also removes the sandbox folder.
+// showModelDisclaimer: off hides the "LLMs can make mistakes" footer. showResponseModel: on shows
+// the producing model on responses. collapseThinkingByDefault: on keeps thinking collapsed.
+// pastedTextMinChars: paste length that becomes a .txt attachment; 0 is off.
 export interface ChatPreferencesState {
+  plainTextComposer: boolean;
+  setPlainTextComposer: (value: boolean) => void;
+  showContextWindowUsage: boolean;
+  setShowContextWindowUsage: (value: boolean) => void;
+  sendShortcut: ComposerSendShortcut;
+  setSendShortcut: (value: ComposerSendShortcut) => void;
+  followUpBehavior: ComposerFollowUpBehavior;
+  setFollowUpBehavior: (value: ComposerFollowUpBehavior) => void;
   confirmDeleteChats: boolean;
   setConfirmDeleteChats: (value: boolean) => void;
   alwaysDeleteChatFiles: boolean;
@@ -46,6 +55,12 @@ function normalisePastedTextMinChars(value: unknown): number {
 export const useChatPreferencesStore = create<ChatPreferencesState>()(
   persist(
     (set) => ({
+      ...normalizeComposerPreferences(null),
+      setPlainTextComposer: (plainTextComposer) => set({ plainTextComposer }),
+      setShowContextWindowUsage: (showContextWindowUsage) =>
+        set({ showContextWindowUsage }),
+      setSendShortcut: (sendShortcut) => set({ sendShortcut }),
+      setFollowUpBehavior: (followUpBehavior) => set({ followUpBehavior }),
       confirmDeleteChats: true,
       setConfirmDeleteChats: (confirmDeleteChats) =>
         set({ confirmDeleteChats }),
@@ -74,6 +89,7 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
         const saved = persisted as Partial<ChatPreferencesState> | undefined;
         return {
           ...current,
+          ...normalizeComposerPreferences(saved),
           confirmDeleteChats: saved?.confirmDeleteChats ?? true,
           alwaysDeleteChatFiles: saved?.alwaysDeleteChatFiles ?? false,
           showModelDisclaimer: saved?.showModelDisclaimer ?? false,

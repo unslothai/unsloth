@@ -220,9 +220,9 @@ def _drive_krea(
     with_transformer = True,
 ):
     """Assemble a Krea pipeline against fakes, recording what each component was asked for."""
-    from core.inference.diffusion_krea2 import load_krea2_pipeline
-
     import huggingface_hub
+
+    from core.inference.diffusion_krea2 import load_krea2_pipeline
 
     index = tmp_path / "model_index.json"
     index.write_text(json.dumps({"patch_size": 2}), encoding = "utf-8")
@@ -473,8 +473,6 @@ def test_the_krea_assembler_pins_every_component_to_the_live_cache(
 
 def test_the_krea_tokenizer_and_encoder_helpers_pin_internally(monkeypatch, live_cache_root):
     """Both build their own kwargs dict, so the pin has to be inside each one."""
-    transformers = pytest.importorskip("transformers")
-
     from core.inference import diffusion_krea2
 
     seen: dict = {}
@@ -487,9 +485,15 @@ def test_the_krea_tokenizer_and_encoder_helpers_pin_internally(monkeypatch, live
             seen[self.tag] = kwargs
             return SimpleNamespace(tag = self.tag, text_config = SimpleNamespace())
 
-    monkeypatch.setattr(transformers, "AutoTokenizer", _Component("tokenizer"), raising = False)
-    monkeypatch.setattr(transformers, "AutoConfig", _Component("config"), raising = False)
-    monkeypatch.setattr(transformers, "Qwen3VLModel", _Component("text_encoder"), raising = False)
+    monkeypatch.setitem(
+        sys.modules,
+        "transformers",
+        SimpleNamespace(
+            AutoTokenizer = _Component("tokenizer"),
+            AutoConfig = _Component("config"),
+            Qwen3VLModel = _Component("text_encoder"),
+        ),
+    )
 
     diffusion_krea2.load_krea2_tokenizer("krea/Krea-2-Turbo", local_files_only = True)
     diffusion_krea2.load_krea2_text_encoder("krea/Krea-2-Turbo", "bf16", local_files_only = True)

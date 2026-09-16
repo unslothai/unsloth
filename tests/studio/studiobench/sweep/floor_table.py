@@ -780,9 +780,9 @@ def render(
         # null survived. Censoring removes the slow ones and `spread_pct` is `max - min` over the
         # survivors, so it can only narrow: on a real null at 100K plus 500K,
         # `reasoning_toggle.close_ms` gave an applied floor of 17.1% from four surviving pairs while
-        # the censored repetitions of that same null paired as far apart as 1.50 on identical builds,
-        # and a real result of -24.8% printed `faster` against it.
-        # They ran 1429-2149 ms against the survivors' 498-681 ms.
+        # the censored repetitions of that same null ran 1429-2149 ms against those survivors'
+        # 498-681 ms and paired as far apart as 1.50 on identical builds. A real result of -24.8%
+        # printed `faster` against that 17.1%.
         floor_stat = None if floors is None else floors.get(metric)
         floor_partial = floor_stat is not None and floor_stat.get("poolable") is False
         # MARKED APART FROM `[*]`, because the two say different things: `[*]` means this row's own

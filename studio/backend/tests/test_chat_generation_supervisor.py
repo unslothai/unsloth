@@ -197,6 +197,58 @@ async def test_background_producer_persists_chunks_and_completes(durable_run, mo
     ] == chunks
 
 
+@pytest.mark.asyncio
+async def test_a_prefill_reporting_only_progress_renews_the_lease(durable_run, monkeypatch):
+    """A 250K prefill outruns the 1200s lease before its first token, and the
+    write is what renews it, so dropping content-less progress chunks would reap a
+    healthy prefill. Sampled mid-run: afterwards every chunk has landed."""
+    released = asyncio.Event()
+    sampled: dict = {}
+
+    def _progress(processed):
+        # What llama-server sends under return_progress: a content-less delta.
+        return {
+            "choices": [{"delta": {"role": "assistant", "content": None}, "finish_reason": None}],
+            "prompt_progress": {
+                "total": 250000,
+                "cache": 0,
+                "processed": processed,
+                "time_ms": processed,
+            },
+        }
+
+    async def body():
+        for processed in (1024, 8192, 65536):
+            yield f"data: {json.dumps(_progress(processed))}\n\n"
+        # Polled, not slept: the idle flush is on a 0.1s timer
+        # (_EVENT_BATCH_SECONDS) and a sleep sized against it flakes under load.
+        _deadline = time.monotonic() + 10.0
+        while time.monotonic() < _deadline:
+            sampled["events"] = [
+                e["payload"] for e in runs_db.list_events("run-1") if e["type"] == "chunk"
+            ]
+            if len(sampled["events"]) >= 3:
+                break
+            await asyncio.sleep(0.01)
+        sampled["progress"] = runs_db.get_progress("run-1")
+        released.set()
+        yield f"data: {json.dumps({'choices': [{'delta': {'content': 'Hi'}, 'finish_reason': 'stop'}]})}\n\n"
+        yield "data: [DONE]\n\n"
+
+    async def fake(_payload, _request, _subject, *, cancel_on_disconnect):
+        return SimpleNamespace(status_code = 200, body_iterator = body())
+
+    monkeypatch.setattr(inference, "produce_openai_chat_completions", fake)
+    supervisor = ChatGenerationSupervisor(SimpleNamespace(state = SimpleNamespace()))
+    await supervisor._produce("run-1")
+    assert released.is_set()
+    assert len(sampled["events"]) == 3, sampled["events"]
+    assert all("prompt_progress" in e for e in sampled["events"])
+    # The lease counts writes, so it renewed three times before the first token.
+    assert sampled["progress"][1] == 3, sampled["progress"]
+    assert runs_db.get_run("run-1", "alice")["status"] == "completed"
+
+
 async def _subscriber_sequences(after = 0):
     response = await run_routes.chat_generation_events(
         "run-1",
