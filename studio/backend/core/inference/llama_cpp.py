@@ -6357,6 +6357,25 @@ def _backfill_usage_from_timings(usage, timings):
     return out
 
 
+def _llama_chunk_has_generated_output(data: dict) -> bool:
+    if data.get("type") == "diffusion_frame":
+        return True
+    choices = data.get("choices")
+    if not isinstance(choices, list):
+        return False
+    for choice in choices:
+        if not isinstance(choice, dict):
+            continue
+        delta = choice.get("delta")
+        if isinstance(delta, dict) and any(
+            value not in (None, "", []) for key, value in delta.items() if key != "role"
+        ):
+            return True
+        if choice.get("text") not in (None, ""):
+            return True
+    return False
+
+
 def _report_live_llama_timings(callback, chunk) -> None:
     """Report request-scoped llama.cpp progress without altering the public stream."""
     if callback is None or not isinstance(chunk, dict):
@@ -6367,6 +6386,7 @@ def _report_live_llama_timings(callback, chunk) -> None:
     sample.pop("prompt_ms", None)
     progress = chunk.get("prompt_progress")
     if isinstance(progress, dict):
+        sample["prompt_progress"] = dict(progress)
         try:
             processed = max(0.0, float(progress.get("processed", 0)))
             cached = max(0.0, float(progress.get("cache", 0)))
@@ -6379,6 +6399,8 @@ def _report_live_llama_timings(callback, chunk) -> None:
                 )
         except (TypeError, ValueError, OverflowError):
             pass
+    if _llama_chunk_has_generated_output(chunk):
+        sample["running_phase"] = "token_generation"
     if not sample:
         return
     try:
@@ -32793,22 +32815,7 @@ class LlamaCppBackend:
         data = LlamaCppBackend._sse_event_payload(event)
         if data is None:
             return False
-        if data.get("type") == "diffusion_frame":
-            return True
-        choices = data.get("choices")
-        if not isinstance(choices, list):
-            return False
-        for choice in choices:
-            if not isinstance(choice, dict):
-                continue
-            delta = choice.get("delta")
-            if isinstance(delta, dict) and any(
-                value not in (None, "", []) for key, value in delta.items() if key != "role"
-            ):
-                return True
-            if choice.get("text") not in (None, ""):
-                return True
-        return False
+        return _llama_chunk_has_generated_output(data)
 
     @staticmethod
     def _iter_text_cancellable(

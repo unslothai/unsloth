@@ -6257,6 +6257,8 @@ class TestApiMonitorProviderAndCompletionStreams:
             chunks = chunks,
             body = "".join(chunks),
             monitor = monitor,
+            monitor_id = monitor_id,
+            response_headers = dict(response.headers),
             upstream_bodies = upstream_bodies,
         )
 
@@ -7095,6 +7097,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             response = await openai_completions(Request(), current_subject = "test")
             body = b"".join([chunk async for chunk in response.body_iterator])
 
+            assert upstream_bodies[0]["return_progress"] is True
             assert upstream_bodies[0]["stream_options"]["include_usage"] is True
             assert b'"usage"' not in body
             [entry] = monitor.snapshot()
@@ -8463,6 +8466,28 @@ class TestApiMonitorProviderAndCompletionStreams:
 
         asyncio.run(_run())
 
+    def test_passthrough_prompt_progress_reaches_monitor_and_response_header(self, monkeypatch):
+        async def _run():
+            result = await self._run_passthrough_stream(
+                monkeypatch,
+                [
+                    'data: {"prompt_progress":{"total":2000,"processed":1200,"cache":0,"time_ms":15000},"choices":[{"index":0,"delta":{"role":"assistant","content":null},"finish_reason":null}]}',
+                    'data: {"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}',
+                    "data: [DONE]",
+                ],
+            )
+
+            assert result.upstream_bodies[0]["return_progress"] is True
+            assert (
+                result.response_headers.get("x-unsloth-monitor-id") == result.monitor_id
+            ), result.response_headers
+            [entry] = result.monitor.snapshot()
+            assert entry["running_phase"] == "token_generation"
+            assert entry["prompt_progress"]["processed"] == 1200
+            assert entry["prompt_progress"]["percent"] == 60.0
+
+        asyncio.run(_run())
+
     def test_passthrough_stream_queued_request_sends_keepalive_before_upstream(self, monkeypatch):
         import routes.inference as inf_mod
         async def _run():
@@ -8501,6 +8526,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                 "chatcmpl-test",
                 monitor_id = monitor_id,
             )
+            assert response.headers["x-unsloth-monitor-id"] == monitor_id
             iterator = response.body_iterator
             try:
                 chunk = await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)

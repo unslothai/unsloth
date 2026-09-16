@@ -336,6 +336,7 @@ def test_run_server_exports_secure_env_for_cors():
     assert "set_studio_tunnel_runtime_callback(set_remote_connector_active)" in src
     main_src = (_BACKEND / "main.py").read_text(encoding = "utf-8")
     assert "RemoteAccessCORSMiddleware,\n    remote_access_state = app.state" in main_src
+    assert '"X-Unsloth-Monitor-ID"' in main_src
 
 
 def test_run_server_emit_tauri_port_defaults_on():

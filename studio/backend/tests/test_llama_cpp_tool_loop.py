@@ -275,6 +275,8 @@ def test_plain_stream_reports_request_scoped_live_prompt_and_generation_timings(
     assert payloads[0]["timings_per_token"] is True
     assert samples[0]["prompt_n"] == 900
     assert samples[0]["prompt_per_second"] == 9000
+    assert samples[0]["prompt_progress"]["total"] == 1000
+    assert samples[1]["running_phase"] == "token_generation"
     assert all("prompt_ms" not in sample for sample in samples)
     assert samples[-1]["predicted_per_second"] == 200
 

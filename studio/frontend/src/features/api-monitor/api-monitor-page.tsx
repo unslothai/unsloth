@@ -380,6 +380,20 @@ function PayloadBlock({
   );
 }
 
+function requestStatusLabel(entry: ApiMonitorEntry): string {
+  if (entry.status !== "running") return entry.status;
+  if (entry.running_phase === "token_generation") return "Token generation";
+  if (entry.running_phase !== "prompt_processing") return "Running";
+  const progress = entry.prompt_progress;
+  if (progress?.percent != null) {
+    return `Prompt processing · ${Math.round(progress.percent)}%`;
+  }
+  if (progress?.processed != null) {
+    return `Prompt processing · ${formatCount(progress.processed)} tokens`;
+  }
+  return "Prompt processing";
+}
+
 function RequestDetail({
   entry,
   detail,
@@ -418,7 +432,7 @@ function RequestDetail({
               statusTextClass(entry.status),
             )}
           >
-            {entry.status}
+            {requestStatusLabel(entry)}
           </span>
           <span className="ml-auto shrink-0 font-mono text-ui-10 text-muted-foreground">
             {entry.id}
