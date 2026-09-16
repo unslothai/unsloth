@@ -35,6 +35,24 @@ Downloads are staged and verified before activation; failures leave the server
 disabled and can be retried with **Enable Blender MCP**. Merely opening the dialog
 or launching Studio does not download anything.
 
+## Large tool catalogs
+
+A server can expose dozens of tools with long descriptions and deeply nested
+parameter schemas: Notion's catalog alone is about 65,000 tokens. Every tool is
+listed in full whenever the catalog fits the loaded local model's context window,
+so a model that can hold the full listing always gets it.
+
+When the full listing would take more than three quarters of the window, which
+would otherwise get even a short prompt refused, each tool whose description and
+schema together exceed about 1,500 characters is listed in a compact form: its
+first sentence plus its top-level parameters with their types, required flags and
+short enums. The model then also gets `mcp_tool_schema`, which returns a tool's
+full description and JSON Schema on demand, in pages when it is longer than the
+room left for a tool result. A compact tool called without one of its required
+arguments, or whose call the server rejects, answers with that schema so the model
+can correct the call. Arguments to a compact tool are still typed against its full
+schema. External providers always get the full listing.
+
 ## Studio's own MCP server
 
 Unsloth can expose a local MCP server so an MCP client can inspect models and
