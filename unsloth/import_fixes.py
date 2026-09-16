@@ -1556,6 +1556,22 @@ def _has_no_matching_public_wheel(torch_version_raw):
     return not _TORCH_BACKEND_INDEX.fullmatch(local)
 
 
+def _torch_wheel_index(torch_version_raw):
+    """The ` --index-url ...` fragment that keeps an install on torch's own accelerator family.
+
+    pip's `--index-url` defaults to https://pypi.org/simple, which carries exactly one build
+    per release: the default CUDA one. A ROCm or XPU or CPU torch records its family in the
+    local version tag (2.9.0+rocm6.4, 2.9.0+xpu, 2.9.0+cpu) and every one of those builds is
+    published only under https://download.pytorch.org/whl/<tag>, so an unqualified command
+    handed to such a user swaps their working torch for an incompatible default build. An
+    absent or non-family tag means PyPI, where the unqualified command is already right.
+    """
+    local = _torch_local_tag(torch_version_raw)
+    if local and _TORCH_BACKEND_INDEX.fullmatch(local):
+        return f" --index-url https://download.pytorch.org/whl/{local.lower()}"
+    return ""
+
+
 def _torchvision_repair_advice(required = None, torch_version_raw = None):
     """The one sentence telling the user how to repair a broken torchvision."""
     if _has_no_matching_public_wheel(torch_version_raw):
@@ -1586,10 +1602,7 @@ def _torchvision_repair_command(required = None, torch_version_raw = None):
         spec = f"torchvision=={required[0]}.{required[1]}.{required[2]}"
     else:
         spec = f"torchvision=={required[0]}.{required[1]}.*"
-    local = _torch_local_tag(torch_version_raw)
-    index = ""
-    if local and _TORCH_BACKEND_INDEX.fullmatch(local):
-        index = f" --index-url https://download.pytorch.org/whl/{local.lower()}"
+    index = _torch_wheel_index(torch_version_raw)
     return f'pip install --force-reinstall --no-deps --no-cache-dir{index} "{spec}"'
 
 
@@ -1938,7 +1951,7 @@ def _torch_too_old_message(attribute, package, exception):
     lines += [
         "",
         f"Upgrade torch, which leaves {package} where it is:",
-        f"    pip install --upgrade {requirement}",
+        f"    pip install --upgrade{_torch_wheel_index(torch_version)} {requirement}",
         "",
         f"Installing a {package} that matches this torch works too. Pip allowed the "
         f"pair because {package} declares a lower torch floor than its own modules "
@@ -1999,7 +2012,13 @@ def patch_torch_missing_attribute_error():
                 # transformers happened to call.
                 requester = sys._getframe(1).f_globals.get("__name__") or ""
             except Exception:
-                raise
+                # sys._getframe is CPython-only and raises an audit event, so a
+                # hardened interpreter can refuse it. A bare `raise` here would
+                # rethrow THAT exception instead of torch's AttributeError, and
+                # `hasattr(torch, name)` only swallows AttributeError, so an
+                # ordinary feature probe would start propagating a RuntimeError.
+                # Unattributable is not fatal: leave it to torch's own error.
+                requester = ""
             package = requester.split(".", 1)[0]
             if package not in _TORCH_ATTRIBUTE_DEPENDENTS:
                 raise
@@ -2087,6 +2106,28 @@ def _triton_distribution():
         return (names[0] if names else "triton"), "unknown"
 
 
+def _triton_reinstall_command(distribution, triton_version):
+    """The pip command that repairs a broken Triton shim without changing which Triton is installed.
+
+    Pinned to the installed version, because torch pins Triton exactly (torch 2.6.0 requires
+    `triton==3.2.0`) and pip's `--force-reinstall` is documented only as "Reinstall all packages
+    even if they are already up-to-date" -- it still resolves the newest release, so the bare
+    command trades a broken-but-matching Triton for a working one torch cannot load. The
+    pytorch-triton-* providers are published only on download.pytorch.org, so those also need
+    torch's own accelerator index. An "unknown" version (vendored or stripped metadata) has no
+    pin to give, and an invented one would resolve to nothing at all, so that case stays bare.
+    """
+    index = ""
+    if distribution.startswith("pytorch-triton"):
+        torch_version_raw = getattr(sys.modules.get("torch"), "__version__", None)
+        index = _torch_wheel_index(torch_version_raw)
+    if not triton_version or triton_version == "unknown":
+        spec = distribution
+    else:
+        spec = f'"{distribution}=={triton_version}"'
+    return f"pip install --force-reinstall --no-cache-dir{index} {spec}"
+
+
 def _triton_driver_shims_missing_py_ssize_t_clean():
     """Installed triton backend driver shims that cannot parse their own
     arguments on this interpreter, as [(backend, path), ...].
@@ -2155,6 +2196,7 @@ def check_triton_py_ssize_t_clean():
 
     distribution, triton_version = _triton_distribution()
     python_version = ".".join(str(part) for part in sys.version_info[:3])
+    reinstall = _triton_reinstall_command(distribution, triton_version)
 
     logger.warning(
         f"Unsloth: {distribution}=={triton_version} ships a "
@@ -2165,7 +2207,7 @@ def check_triton_py_ssize_t_clean():
         f"    SystemError: {_PY_SSIZE_T_CLEAN} macro must be defined for '#' formats\n"
         f"Every published Triton build defines it, so this is a rebuilt or repackaged one. "
         f"Reinstall the Triton your torch pins:\n"
-        f"    pip install --force-reinstall --no-cache-dir {distribution}\n"
+        f"    {reinstall}\n"
         f"Python 3.13 and later do not need the macro, so moving to a newer Python "
         f"also clears it. Affected file(s): "
         f"{', '.join(path for _, path in offenders)}. Set "

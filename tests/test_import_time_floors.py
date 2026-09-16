@@ -94,7 +94,8 @@ def test_a_dependency_reaching_for_a_missing_dtype_gets_the_upgrade(patched_torc
     assert "transformers==" in message
     assert patched_torch.__version__ in message
     assert "first appears in torch 2.7.0" in message
-    assert 'pip install --upgrade "torch>=2.7.0"' in message
+    index = import_fixes._torch_wheel_index(patched_torch.__version__)
+    assert f'pip install --upgrade{index} "torch>=2.7.0"' in message
     # Still an AttributeError, so no caller's except clause changes meaning.
     assert isinstance(raised.value, AttributeError)
 
@@ -107,7 +108,8 @@ def test_an_unknown_attribute_still_gets_the_diagnosis_without_a_floor(patched_t
 
     message = str(raised.value)
     assert "first appears in torch" not in message
-    assert 'pip install --upgrade "torch"' in message
+    index = import_fixes._torch_wheel_index(patched_torch.__version__)
+    assert f'pip install --upgrade{index} "torch"' in message
 
 
 @pytest.mark.parametrize(
@@ -121,6 +123,48 @@ def test_user_and_torch_frames_are_left_exactly_as_torch_wrote_them(patched_torc
 
     assert not isinstance(raised.value, import_fixes.UnslothTorchTooOldError)
     assert str(raised.value) == "module 'torch' has no attribute 'unsloth_probe_dtype'"
+
+
+@pytest.mark.parametrize(
+    "torch_version, index",
+    [
+        ("2.7.0+rocm6.3", " --index-url https://download.pytorch.org/whl/rocm6.3"),
+        ("2.7.0+xpu", " --index-url https://download.pytorch.org/whl/xpu"),
+        ("2.7.0+cpu", " --index-url https://download.pytorch.org/whl/cpu"),
+        # NEGATIVE CONTROL: PyPI already serves this one, so no index is added.
+        ("2.7.0+cu126", " --index-url https://download.pytorch.org/whl/cu126"),
+        ("2.7.0", ""),
+        ("2.9.0.dev20250101", ""),
+    ],
+)
+def test_the_upgrade_keeps_the_accelerator_it_found(patched_torch, monkeypatch, torch_version, index):
+    """pip's --index-url defaults to pypi.org, which ships one build per release: the
+    default CUDA one. ROCm and XPU torch live only on download.pytorch.org, so an
+    unqualified upgrade replaces a working torch+rocm with an incompatible build."""
+    monkeypatch.setattr(patched_torch, "__version__", torch_version)
+
+    with pytest.raises(import_fixes.UnslothTorchTooOldError) as raised:
+        _access_from("transformers.integrations.finegrained_fp8", "unsloth_probe_dtype")
+
+    assert f'pip install --upgrade{index} "torch>=2.7.0"' in str(raised.value)
+
+
+def test_an_unattributable_access_keeps_torchs_own_error(patched_torch, monkeypatch):
+    """sys._getframe is CPython-only and raises an audit event, so a hardened
+    interpreter can refuse it. hasattr() swallows only AttributeError, so rethrowing
+    the frame-lookup failure would break an ordinary feature probe."""
+    def _refuse(_depth):
+        raise RuntimeError("frame inspection is not allowed here")
+
+    monkeypatch.setattr(sys, "_getframe", _refuse)
+
+    with pytest.raises(AttributeError) as raised:
+        _access_from("transformers.integrations.finegrained_fp8", "unsloth_probe_dtype")
+
+    assert not isinstance(raised.value, import_fixes.UnslothTorchTooOldError)
+    assert str(raised.value) == "module 'torch' has no attribute 'unsloth_probe_dtype'"
+    assert hasattr(patched_torch, "__version__")
+    assert getattr(patched_torch, "unsloth_probe_dtype", "fallback") == "fallback"
 
 
 def test_hasattr_and_getattr_default_are_unaffected(patched_torch):
@@ -356,7 +400,7 @@ def test_the_reinstall_command_names_the_distribution_that_owns_triton(monkeypat
     assert len(logger.warnings) == 1, logger.warnings
     message = logger.warnings[0]
     assert "triton-windows==3.3.1.post19" in message
-    assert "--force-reinstall --no-cache-dir triton-windows" in message
+    assert '--force-reinstall --no-cache-dir "triton-windows==3.3.1.post19"' in message
     assert "unknown" not in message
 
 
@@ -381,7 +425,52 @@ def test_the_plain_triton_distribution_is_still_named(monkeypatch, tmp_path):
     import_fixes.check_triton_py_ssize_t_clean()
 
     assert "triton==3.3.0" in logger.warnings[0]
-    assert "--force-reinstall --no-cache-dir triton\n" in logger.warnings[0]
+    assert '--force-reinstall --no-cache-dir "triton==3.3.0"\n' in logger.warnings[0]
+
+
+@pytest.mark.parametrize(
+    "distribution, triton_version, torch_version, expected",
+    [
+        # The ordinary CUDA install: PyPI carries this wheel, so only the pin is added.
+        ("triton", "3.2.0", "2.6.0+cu124", 'pip install --force-reinstall --no-cache-dir "triton==3.2.0"'),
+        # Windows builds also come from PyPI, and are not a pytorch-triton-* provider.
+        (
+            "triton-windows",
+            "3.3.1.post19",
+            "2.7.1+cu126",
+            'pip install --force-reinstall --no-cache-dir "triton-windows==3.3.1.post19"',
+        ),
+        # ROCm and XPU Triton exist only on download.pytorch.org, under torch's own tag.
+        (
+            "pytorch-triton-rocm",
+            "3.3.0",
+            "2.7.0+rocm6.3",
+            "pip install --force-reinstall --no-cache-dir"
+            ' --index-url https://download.pytorch.org/whl/rocm6.3 "pytorch-triton-rocm==3.3.0"',
+        ),
+        (
+            "pytorch-triton-xpu",
+            "3.3.0",
+            "2.7.0+xpu",
+            "pip install --force-reinstall --no-cache-dir"
+            ' --index-url https://download.pytorch.org/whl/xpu "pytorch-triton-xpu==3.3.0"',
+        ),
+        # NEGATIVE CONTROL: no version to pin, so the command stays bare rather than
+        # inventing a pin that would resolve to no wheel at all.
+        ("triton", "unknown", "2.6.0+cu124", "pip install --force-reinstall --no-cache-dir triton"),
+    ],
+)
+def test_the_reinstall_command_pins_the_installed_triton(
+    monkeypatch, distribution, triton_version, torch_version, expected
+):
+    """An unpinned --force-reinstall resolves the NEWEST provider release, but torch pins
+    Triton exactly (torch 2.6.0 requires triton==3.2.0), so the bare command can replace a
+    broken shim with a working-but-ABI-incompatible Triton."""
+    torch_module = types.ModuleType("torch")
+    torch_module.__version__ = torch_version
+    monkeypatch.setitem(sys.modules, "torch", torch_module)
+
+    assert import_fixes._triton_reinstall_command(distribution, triton_version) == expected
 
 
 def test_the_triton_probe_is_wired_into_gpu_init():
