@@ -1422,3 +1422,48 @@ def test_a_prepared_dataset_cache_still_counts_when_the_hub_copy_is_unusable():
                 sys.modules.pop(name, None)
             else:
                 sys.modules[name] = module
+
+
+def test_every_route_that_consumes_an_inventory_identity_resolves_the_handle():
+    """A redacted row is only actionable if the routes the caller can reach accept the handle.
+
+    The load, validate and train SCHEMAS resolve it, but the metadata and security routes
+    take a plain string: they read `ref:...` as a Hugging Face id, so an API or CLI client
+    could not inspect a local row at all, and a local model needing remote-code review could
+    never produce the pinning fingerprint its load is checked against.
+    """
+    import inspect
+
+    from routes import models as model_routes
+
+    for name in ("get_model_config", "scan_model_remote_code"):
+        body = inspect.getsource(getattr(model_routes, name))
+        assert "resolve_inventory_handle(" in body, name
+        # And the answer goes back through the handle table, or the path the reference stood
+        # for is readable straight out of the response.
+        assert "restore_inventory_handles(" in body, name
+
+
+def test_the_metadata_route_resolves_and_answers_with_the_handle(monkeypatch):
+    """End to end on the helper pair, without standing a route up: the handle resolves to the
+    path for the lookup, and the path comes back as the handle in the answer."""
+    path = f"{HOST_ROOT}/my models/Local-Model"
+    reference = host_paths.cache_reference(path)
+
+    from models.inference import resolve_inventory_handle
+
+    token = host_paths._request_handles.set(None)
+    try:
+        assert resolve_inventory_handle(reference) == path
+        # The lookup would have been performed on the path, and whatever it answers with,
+        # including the path embedded in a label or an error, comes back referenced.
+        answered = {"model": path, "detail": f"could not read {path}/config.json"}
+        restored = host_paths.restore_inventory_handles(answered)
+        assert restored["model"] == reference
+        assert HOST_ROOT not in json.dumps(restored), restored
+        # A reference this process never issued is left exactly as it arrived, so it fails
+        # the way an unknown model would rather than being turned into something else.
+        assert resolve_inventory_handle("ref:not-one-of-ours") == "ref:not-one-of-ours"
+        assert resolve_inventory_handle("unsloth/Llama-3.2-1B") == "unsloth/Llama-3.2-1B"
+    finally:
+        host_paths._request_handles.reset(token)

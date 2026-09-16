@@ -2232,6 +2232,17 @@ async def get_model_config(
     current_subject: str = Depends(get_current_subject),
 ):
     """Get configuration for a specific model (wraps load_model_defaults)."""
+    # An inventory listing shows a filesystem-backed row to an API-key caller under an opaque
+    # `ref:` handle, and that caller hands the handle straight back here. Without this the
+    # handle is read as a Hugging Face id and the row cannot be inspected at all, which makes
+    # a row that was advertised as actionable not actionable. Resolved through the same helper
+    # the load, validate and train schemas use, so nothing about authorization moves: the
+    # resolved path goes through every check below that a path named directly goes through.
+    from models.inference import resolve_inventory_handle
+
+    model_name = resolve_inventory_handle(model_name)
+    if local_path:
+        local_path = resolve_inventory_handle(local_path)
     if local_path:
         if account_access.managed_account():
             await asyncio.to_thread(account_access.require_model_access, local_path)
@@ -2362,7 +2373,12 @@ async def get_model_config(
 
     try:
         # Off the loop: the guard blocks on DNS + HEAD + TCP, stalling every other request.
-        return await asyncio.to_thread(_resolve, model_name)
+        # The answer carries the handle back rather than the path it stood for: the details
+        # are built out of what was asked for, so a caller who may not see host paths would
+        # otherwise read the path out of the very lookup it performed with the reference.
+        from hub.utils.host_paths import restore_inventory_handles
+
+        return restore_inventory_handles(await asyncio.to_thread(_resolve, model_name))
 
     except HTTPException:
         raise
@@ -2409,6 +2425,20 @@ async def scan_model_remote_code(
     POST (not GET) so the ``hf_token`` for gated repos travels in the body and
     never lands in a URL, browser history, or access log.
     """
+    # Same handle resolution as the config route, and for a sharper reason: a local model that
+    # needs remote-code review cannot be approved at all if the scan cannot see it, so the
+    # pinning fingerprint the load checks is never produced. Before the access checks, so they
+    # run on the path rather than on the reference.
+    from models.inference import resolve_inventory_handle
+
+    model_name = resolve_inventory_handle(model_name)
+    model_local_path = resolve_inventory_handle(model_local_path) if model_local_path else None
+    model_snapshot_path = (
+        resolve_inventory_handle(model_snapshot_path) if model_snapshot_path else None
+    )
+    model_snapshot_repo_id = (
+        resolve_inventory_handle(model_snapshot_repo_id) if model_snapshot_repo_id else None
+    )
     if account_access.managed_account():
         for ref in (model_name, model_local_path, model_snapshot_path, model_snapshot_repo_id):
             if isinstance(ref, str) and ref:
@@ -2663,7 +2693,11 @@ async def scan_model_remote_code(
             payload["approvable"] = False
             payload["requires_trust_remote_code"] = True
             payload["error_kind"] = "malware_blocked"
-        return payload
+        # The findings quote paths inside the model directory, so the answer goes back through
+        # the request's handle table for the same reason the config route does.
+        from hub.utils.host_paths import restore_inventory_handles
+
+        return restore_inventory_handles(payload)
     except HTTPException:
         raise
     except Exception as e:
