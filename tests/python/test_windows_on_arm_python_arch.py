@@ -428,6 +428,11 @@ def _x64_bootstrap_preamble(
             return "$null"
         return f'@{{ Version = "3.13"; Path = "{path}"; Arch = "{arch}" }}'
 
+    # Bound before the template rather than called inside it: a backslash inside an
+    # f-string expression is a 3.12 syntax addition, and this repo's ruff target is 3.11.
+    winget_installed = _result(winget_arch, "C:\\winget\\python.exe")
+    python_org_installed = _result(python_org_arch, "C:\\pyorg\\python.exe")
+
     return f"""
 $ErrorActionPreference = "Stop"
 function Write-StudioLine {{
@@ -439,13 +444,13 @@ function Test-ActiveCondaEnvironment {{ return ${str(conda_active).lower()} }}
 $PythonVersion = "3.13"
 $script:WingetAvailable = ${str(winget_available).lower()}
 $script:WingetExe = "winget.exe"
-$script:WingetInstalled = {_result(winget_arch, "C:\\winget\\python.exe")}
+$script:WingetInstalled = {winget_installed}
 $script:PythonOrgCalls = 0
 function Install-PythonFromPythonOrg {{
     param([string]$Arch = "")
     $script:PythonOrgCalls++
     Write-Host "PYTHON-ORG-CALLED arch=$Arch"
-    return {_result(python_org_arch, "C:\\pyorg\\python.exe")}
+    return {python_org_installed}
 }}
 function Refresh-SessionPath {{ }}
 function Find-CompatiblePython {{
