@@ -836,6 +836,13 @@ def safe_fetch_remote_image_sync(
         if not host_value:
             logger.info(f"{label}: refusing url with no hostname")
             return None
+        if not host_value.isascii():
+            # http.client writes Host as ASCII, so an internationalized name travels as its A-label.
+            try:
+                host_value = host_value.encode("idna").decode("ascii")
+            except UnicodeError:
+                logger.info(f"{label}: refusing unencodable hostname")
+                return None
         return parsed_url, host_value, port_value
 
     parsed_info = _safe_parse_https(url)

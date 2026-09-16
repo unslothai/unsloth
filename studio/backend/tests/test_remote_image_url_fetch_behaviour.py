@@ -195,6 +195,36 @@ class TestRemoteUrlNeverReachesLlamaServer:
         assert r.status_code == 400, r.text
         assert backend.dispatched == []
 
+    def test_the_tool_passthrough_fetches_before_taking_an_admission_lease(self, monkeypatch):
+        from fastapi.responses import JSONResponse
+
+        monkeypatch.setattr(
+            external_provider,
+            "safe_fetch_remote_image_sync",
+            lambda *_a, **_k: ("image/webp", _webp_b64()),
+        )
+        monkeypatch.setattr(inference_route, "_takes_tool_passthrough", lambda *_a, **_k: True)
+        admitted_urls = []
+
+        async def _admitted(_backend, payload, *_a, **_k):
+            admitted_urls.extend(
+                part.image_url.url
+                for message in payload.messages
+                if isinstance(message.content, list)
+                for part in message.content
+                if getattr(part, "type", None) == "image_url"
+            )
+            return JSONResponse({"ok": True})
+
+        monkeypatch.setattr(inference_route, "_openai_passthrough_non_streaming", _admitted)
+        r = _client(monkeypatch, _VisionGguf()).post(
+            "/v1/chat/completions", json = _chat_body("https://images.example/cat.webp")
+        )
+
+        assert r.status_code == 200, r.text
+        assert len(admitted_urls) == 1
+        assert admitted_urls[0].startswith("data:image/webp;base64,")
+
     def test_bare_base64_is_payload_and_still_passes_through(self, monkeypatch):
         def _never(*_a, **_k):
             raise AssertionError("payload must not be treated as a URL")
@@ -376,7 +406,7 @@ def _resolve_publicly(monkeypatch):
     real = socket.getaddrinfo
 
     def _fake(host, *args, **kwargs):
-        if host == "images.example":
+        if host in ("images.example", "xn--bcher-kva.example"):
             return [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("93.184.216.34", 0))]
         if host == "2606:4700::1111":
             return [(socket.AF_INET6, socket.SOCK_STREAM, 0, "", (host, 0, 0, 0))]
@@ -504,6 +534,7 @@ class TestFetcher:
         [
             ("https://images.example:8443/a.png", "images.example:8443"),
             ("https://[2606:4700::1111]/a.png", "[2606:4700::1111]"),
+            ("https://b\u00fccher.example/a.png", "xn--bcher-kva.example"),
         ],
     )
     def test_the_host_header_keeps_the_url_authority(self, monkeypatch, url, authority):

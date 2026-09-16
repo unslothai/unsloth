@@ -24001,6 +24001,14 @@ async def produce_openai_chat_completions(
                 "Image provided but current GGUF model does not support vision.",
             )
 
+        # Fetch before the passthrough takes an admission lease, so a slow image host holds
+        # no inference slot.
+        if _messages_have_remote_image(payload.messages):
+            try:
+                await asyncio.to_thread(_inline_request_remote_images, payload)
+            except HTTPException as exc:
+                raise _reject(exc.status_code, exc.detail)
+
         cancel_event = _chat_cancel_event(request)
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         # `stream` defaults to False on ChatCompletionRequest (OpenAI spec
@@ -31827,6 +31835,48 @@ def _inline_remote_image_url(
     return f"data:{mime};base64,{b64}", (len(b64) * 3) // 4
 
 
+class _RemoteImageFetches:
+    """One request's remote image budget: bytes, URL count and a shared deadline."""
+
+    def __init__(self):
+        self.remaining_bytes = _REMOTE_IMAGE_REQUEST_BUDGET_BYTES
+        self.remaining_fetches = _REMOTE_IMAGE_MAX_COUNT
+        self.deadline: Optional[float] = None
+
+    def inline(self, url: str) -> str:
+        """Return a remote image as a data URL; llama-server's bare base64 form is returned as is."""
+        scheme = _image_url_scheme(url)
+        if not scheme:
+            return url
+        # A zero max_bytes value means no limit to some fetch callers.
+        if self.remaining_bytes <= 0 or self.remaining_fetches <= 0:
+            raise HTTPException(
+                status_code = 400,
+                detail = (
+                    f"Too many remote image URLs in one request (max {_REMOTE_IMAGE_MAX_COUNT})."
+                    if self.remaining_fetches <= 0
+                    else _REMOTE_IMAGE_FETCH_REFUSAL
+                ),
+            )
+        self.remaining_fetches -= 1
+        if self.deadline is None:
+            self.deadline = time.monotonic() + _REMOTE_IMAGE_REQUEST_DEADLINE_S
+        data_url, spent = _inline_remote_image_url(url, scheme, self.remaining_bytes, self.deadline)
+        self.remaining_bytes -= spent
+        return data_url
+
+
+def _inline_request_remote_images(payload) -> None:
+    """Replace a chat request's remote image URLs with fetched data URLs, in place."""
+    fetches = _RemoteImageFetches()
+    for message in payload.messages:
+        if not isinstance(message.content, list):
+            continue
+        for part in message.content:
+            if isinstance(part, ImageContentPart) and not part.image_url.url.startswith("data:"):
+                part.image_url.url = fetches.inline(part.image_url.url)
+
+
 def _normalize_openai_image_parts_to_png(openai_messages: list[dict], on_image = None) -> bool:
     """Re-encode every base64-data-URL ``image_url`` part to PNG, in place.
 
@@ -31838,9 +31888,7 @@ def _normalize_openai_image_parts_to_png(openai_messages: list[dict], on_image =
     HTTPException(400) when an image cannot be decoded or fetched.
     """
     has_image = False
-    remaining_bytes = _REMOTE_IMAGE_REQUEST_BUDGET_BYTES
-    remaining_fetches = _REMOTE_IMAGE_MAX_COUNT
-    fetch_deadline = None
+    fetches = _RemoteImageFetches()
     for msg in openai_messages:
         content = msg.get("content")
         if not isinstance(content, list):
@@ -31856,26 +31904,10 @@ def _normalize_openai_image_parts_to_png(openai_messages: list[dict], on_image =
             image_url = part.get("image_url") or {}
             url = image_url.get("url", "")
             if not url.startswith("data:"):
-                scheme = _image_url_scheme(url)
-                if not scheme:
+                url = fetches.inline(url)
+                if not url.startswith("data:"):
                     # llama-server also accepts bare base64 payloads.
                     continue
-                # A zero max_bytes value means no limit to some fetch callers.
-                if remaining_bytes <= 0 or remaining_fetches <= 0:
-                    raise HTTPException(
-                        status_code = 400,
-                        detail = (
-                            f"Too many remote image URLs in one request "
-                            f"(max {_REMOTE_IMAGE_MAX_COUNT})."
-                            if remaining_fetches <= 0
-                            else _REMOTE_IMAGE_FETCH_REFUSAL
-                        ),
-                    )
-                remaining_fetches -= 1
-                if fetch_deadline is None:
-                    fetch_deadline = time.monotonic() + _REMOTE_IMAGE_REQUEST_DEADLINE_S
-                url, _spent = _inline_remote_image_url(url, scheme, remaining_bytes, fetch_deadline)
-                remaining_bytes -= _spent
                 image_url["url"] = url
 
             try:
