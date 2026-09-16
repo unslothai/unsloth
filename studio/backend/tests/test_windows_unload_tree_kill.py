@@ -205,18 +205,22 @@ def test_the_windows_walk_rejects_a_stranger_under_a_reused_intermediate_pid(mon
     root, reused_parent, stranger, stranger_child, real_grandchild = 500, 600, 700, 701, 601
     created = {
         root: 100,
-        reused_parent: 300,        # P after the reuse: a genuine Unsloth child
-        stranger: 200,             # U, created by the OLD holder of P
-        stranger_child: 250,       # U's own work, hanging off a link we do not have
-        real_grandchild: 400,      # a true descendant of the reused pid
+        reused_parent: 300,  # P after the reuse: a genuine Unsloth child
+        stranger: 200,  # U, created by the OLD holder of P
+        stranger_child: 250,  # U's own work, hanging off a link we do not have
+        real_grandchild: 400,  # a true descendant of the reused pid
     }
     monkeypatch.setattr(pl, "_is_windows", lambda: True)
     monkeypatch.setattr(pl, "_pid_identity", lambda pid: f"0:{created[pid]}")
-    monkeypatch.setattr(pl, "_child_pid_map", lambda: {
-        root: [reused_parent],
-        reused_parent: [stranger, real_grandchild],
-        stranger: [stranger_child],
-    })
+    monkeypatch.setattr(
+        pl,
+        "_child_pid_map",
+        lambda: {
+            root: [reused_parent],
+            reused_parent: [stranger, real_grandchild],
+            stranger: [stranger_child],
+        },
+    )
     found = [pid for pid, _ in pl.collect_descendants(root)]
     assert stranger not in found, "a stranger predating its own parent was claimed"
     assert stranger_child not in found, "the stranger's subtree was walked"
@@ -230,7 +234,8 @@ def test_the_windows_walk_skips_a_candidate_whose_identity_cannot_be_read(monkey
     created = {root: 100, child: None, grandchild: 900}
     monkeypatch.setattr(pl, "_is_windows", lambda: True)
     monkeypatch.setattr(
-        pl, "_pid_identity",
+        pl,
+        "_pid_identity",
         lambda pid: None if created[pid] is None else f"0:{created[pid]}",
     )
     monkeypatch.setattr(pl, "_child_pid_map", lambda: {root: [child], child: [grandchild]})

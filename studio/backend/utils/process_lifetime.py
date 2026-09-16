@@ -780,9 +780,7 @@ def collect_descendants(pid: "Optional[int]") -> "list[tuple[int, Optional[str]]
     found: "list[tuple[int, Optional[str]]]" = []
     seen = {pid}
     # (candidate pid, creation time of the parent that listed it)
-    queue: "list[tuple[int, Optional[int]]]" = [
-        (child, root_floor) for child in table.get(pid, ())
-    ]
+    queue: "list[tuple[int, Optional[int]]]" = [(child, root_floor) for child in table.get(pid, ())]
     while queue:
         child, parent_created = queue.pop(0)
         if child in seen:
