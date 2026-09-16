@@ -913,7 +913,6 @@ class TestTheGuardOnlyDropsHostBytesFromADiscretePool:
 
     def _shares(self, **kwargs):
         from routes import inference as inference_routes
-
         return inference_routes._admission_pool_shares_host_ram(**kwargs)
 
     def test_an_integrated_vulkan_device_shares(self):
@@ -921,16 +920,15 @@ class TestTheGuardOnlyDropsHostBytesFromADiscretePool:
         assert self._shares(is_vulkan_backend = True, vulkan_gpu_memory = [(0, 8192, 0)]) is True
 
     def test_a_discrete_vulkan_device_does_not(self):
-        assert self._shares(
-            is_vulkan_backend = True, vulkan_gpu_memory = [(0, 8192, 24576)]
-        ) is False
+        assert self._shares(is_vulkan_backend = True, vulkan_gpu_memory = [(0, 8192, 24576)]) is False
 
     def test_a_mixed_or_unreadable_vulkan_inventory_fails_closed(self):
         assert self._shares(is_vulkan_backend = True, vulkan_gpu_memory = []) is True
         assert self._shares(is_vulkan_backend = True, vulkan_gpu_memory = None) is True
-        assert self._shares(
-            is_vulkan_backend = True, vulkan_gpu_memory = [(0, 8192, 24576), (1, 4096, 0)]
-        ) is True
+        assert (
+            self._shares(is_vulkan_backend = True, vulkan_gpu_memory = [(0, 8192, 24576), (1, 4096, 0)])
+            is True
+        )
 
     def test_a_discrete_cuda_host_keeps_the_subtraction(self, monkeypatch):
         monkeypatch.setattr(
@@ -951,9 +949,7 @@ class TestTheGuardOnlyDropsHostBytesFromADiscretePool:
         def _boom():
             raise RuntimeError("no driver")
 
-        monkeypatch.setattr(
-            LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(_boom)
-        )
+        monkeypatch.setattr(LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(_boom))
         assert self._shares(is_vulkan_backend = False, requested_gpu_ids = [0]) is True
 
     def test_the_figure_follows_the_verdict(self, tmp_path, monkeypatch):
@@ -965,12 +961,8 @@ class TestTheGuardOnlyDropsHostBytesFromADiscretePool:
             kv_checkpoint_bytes = 4 * GIB
             compute_bytes = 1 * GIB
 
-        monkeypatch.setattr(
-            inference_routes, "_gguf_runtime_bytes", lambda *a, **k: _Runtime()
-        )
+        monkeypatch.setattr(inference_routes, "_gguf_runtime_bytes", lambda *a, **k: _Runtime())
         shared = inference_routes._estimate_gguf_kv_gb("x.gguf", 4096)
-        discrete = inference_routes._estimate_gguf_kv_gb(
-            "x.gguf", 4096, shared_memory_pool = False
-        )
+        discrete = inference_routes._estimate_gguf_kv_gb("x.gguf", 4096, shared_memory_pool = False)
         assert shared == 11.0 and discrete == 7.0
         assert shared > discrete, "the shared pool must not be credited the host share"
