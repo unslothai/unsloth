@@ -39,6 +39,7 @@ import re
 import secrets
 import threading
 from collections import OrderedDict
+from contextvars import ContextVar
 from hashlib import sha256
 from typing import Any, Iterable, Mapping, Optional
 
@@ -200,6 +201,72 @@ def cache_reference(value: Any) -> Optional[str]:
         while len(_reference_paths) > _REFERENCE_LIMIT:
             _reference_paths.popitem(last = False)
     return reference
+
+
+# The handles resolved while serving THIS request, resolved path -> the reference the caller
+# actually sent. Per-request rather than global: a context variable is copied into each
+# request's task, so one caller's substitutions cannot reach another's response.
+#
+# Resolving a reference is what makes a redacted row loadable, and the resolved path then
+# comes back out in the answer -- `ValidateModelResponse.identifier`, `LoadResponse.model`
+# and the label beside it, and any error detail that quotes what was asked for. A caller who
+# may not see host paths could therefore enumerate a redacted listing and read the path
+# straight back out of the load it performed with the reference. What goes out is the string
+# that came in.
+_request_handles: "ContextVar[Optional[dict[str, str]]]" = ContextVar(
+    "unsloth_request_inventory_handles", default = None
+)
+
+
+def note_resolved_handle(handle: str, path: str) -> None:
+    """Record that *handle* stood for *path* while serving this request."""
+    if not isinstance(handle, str) or not isinstance(path, str) or not handle or not path:
+        return
+    if handle == path:
+        return
+    known = _request_handles.get()
+    if known is None:
+        known = {}
+        _request_handles.set(known)
+    known[path] = handle
+
+
+def restore_inventory_handles(payload: Any) -> Any:
+    """Put every handle back where its resolved path ended up in *payload*.
+
+    A substring swap rather than a field list, because the path does not only appear as the
+    identity: it is the display label when there is nothing better to call the model, it is
+    embedded in the inference identifier, and it is quoted in the detail of anything that
+    goes wrong. A field list would cover the first of those and be wrong about the rest.
+    """
+    known = _request_handles.get()
+    if not known:
+        return payload
+    return _restore(payload, known)
+
+
+def _restore(payload: Any, known: "dict[str, str]") -> Any:
+    dumped = _dump_model(payload)
+    if dumped is not None:
+        return _restore(dumped, known)
+    if isinstance(payload, Mapping):
+        return {key: _restore(value, known) for key, value in payload.items()}
+    if isinstance(payload, (list, tuple)):
+        restored = [_restore(item, known) for item in payload]
+        if not isinstance(payload, tuple):
+            return restored
+        try:
+            return type(payload)(*restored)
+        except Exception:  # noqa: BLE001 -- a plain tuple, not a NamedTuple
+            return tuple(restored)
+    if isinstance(payload, str):
+        text = payload
+        # Longest first, so a path that is a prefix of another does not claim its text.
+        for path in sorted(known, key = len, reverse = True):
+            if path in text:
+                text = text.replace(path, known[path])
+        return text
+    return payload
 
 
 def resolve_host_path_reference(value: Any) -> Optional[str]:

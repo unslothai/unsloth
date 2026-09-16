@@ -49,10 +49,19 @@ def resolve_inventory_handle(value: str) -> str:
     if not isinstance(value, str) or not value.startswith("ref:"):
         return value
     try:
-        from hub.utils.host_paths import resolve_host_path_reference
+        from hub.utils.host_paths import note_resolved_handle, resolve_host_path_reference
     except Exception:  # noqa: BLE001 -- a resolver that cannot import must not fail loads
         return value
-    return resolve_host_path_reference(value) or value
+    resolved = resolve_host_path_reference(value)
+    if not resolved:
+        return value
+    # Remembered for the length of this request so the ANSWER carries the handle rather than
+    # the path it stood for. `ValidateModelResponse.identifier`, `LoadResponse.model` and the
+    # label beside it are all built from what was asked for, so without this a caller who may
+    # not see host paths enumerates a redacted row and reads its path back out of the load it
+    # just performed with the reference.
+    note_resolved_handle(value, resolved)
+    return resolved
 
 
 class LoadRequest(BaseModel):

@@ -2757,6 +2757,8 @@ async def _tunnel_safe_json(coro, *, label: str):
     A client disconnect does not cancel the work: the model stays resident, as
     it does today.
     """
+    from hub.utils.host_paths import restore_inventory_handles
+
     task = asyncio.ensure_future(coro)
     # A client that disconnects mid-pad leaves nobody to await the task, and an
     # unretrieved exception logs "Task exception was never retrieved". Retrieving
@@ -2764,7 +2766,10 @@ async def _tunnel_safe_json(coro, *, label: str):
     task.add_done_callback(lambda t: t.cancelled() or t.exception())
     done, _ = await asyncio.wait({task}, timeout = _TUNNEL_KEEPALIVE_AFTER_S)
     if done:
-        return task.result()  # re-raises exactly as an un-wrapped await would
+        # `.result()` re-raises exactly as an un-wrapped await would; the restoration only
+        # sees a value. Here rather than at each `return LoadResponse(...)` because this is
+        # the one funnel every tunnelled answer passes through, padded body included.
+        return restore_inventory_handles(task.result())
 
     logger.info(
         f"{label} exceeded {_TUNNEL_KEEPALIVE_AFTER_S:.0f}s; "
@@ -2786,7 +2791,9 @@ async def _tunnel_safe_json(coro, *, label: str):
                 logger.exception(f"{label} failed after the response was committed")
                 yield _deferred_error_body(500, f"{type(exc).__name__}: {exc}")
             else:
-                yield json.dumps(jsonable_encoder(payload)).encode()
+                yield json.dumps(
+                    jsonable_encoder(restore_inventory_handles(payload))
+                ).encode()
             return
 
     return _SameTaskStreamingResponse(
@@ -16219,6 +16226,10 @@ async def validate_model(
     Checks that ModelConfig.from_identifier() can resolve model_path, but does
     NOT load model weights into GPU memory.
     """
+    # What goes out is the string that came in: a caller who handed in an inventory
+    # reference gets that reference back, not the path this request resolved it to.
+    from hub.utils.host_paths import restore_inventory_handles
+
     if account_access.managed_account():
         request = request.model_copy(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
@@ -16549,7 +16560,7 @@ async def validate_model(
             except Exception as e:
                 logger.debug("Header probe failed for %s: %s", model_log_label, e)
 
-        return ValidateModelResponse(
+        return restore_inventory_handles(ValidateModelResponse(
             valid = True,
             message = "Model identifier is valid.",
             identifier = model_log_label if native_grant_backed else config.identifier,
@@ -16578,7 +16589,7 @@ async def validate_model(
             chat_template = chat_template,
             requires_transformers_upgrade = transformers_upgrade is not None,
             transformers_upgrade = transformers_upgrade,
-        )
+        ))
 
     except HTTPException:
         raise
@@ -16587,7 +16598,10 @@ async def validate_model(
         logger.warning("GGUF runtime missing while validating '%s': %s", request.model_path, e)
         raise HTTPException(status_code = 400, detail = str(e))
     except Exception as e:
-        redacted_msg = redact_native_paths(str(e))
+        # Restored here rather than at each raise below: every branch that quotes the
+        # failure quotes this string, and an error detail naming the path is the same
+        # disclosure as an answer naming it.
+        redacted_msg = restore_inventory_handles(redact_native_paths(str(e)))
         if is_hf_authentication_error(e):
             raise HTTPException(
                 status_code = 400,

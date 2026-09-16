@@ -1053,3 +1053,57 @@ def test_the_compat_scan_folder_add_does_not_answer_with_the_path(monkeypatch):
 
     ui = _models(via_api_key = False).post("/api/models/scan-folders", json = {"path": "."})
     assert ui.json()["path"] == f"{HOST_ROOT}/extra"
+
+
+def test_the_handle_a_caller_sent_is_the_handle_it_gets_back():
+    """Resolving the reference is what makes a redacted row loadable, and it is also what
+    put the path in the ANSWER.
+
+    `ValidateModelResponse.identifier`, `LoadResponse.model` and the label beside it are all
+    built from what was asked for, and an error detail quotes it too, so a caller could
+    enumerate a redacted listing and read the path straight back out of the load it had just
+    performed with the reference. What comes back is the string that went in.
+    """
+    from models.inference import LoadRequest
+
+    path = f"{HOST_ROOT}/my models/Llama-3.2-1B"
+    reference = host_paths.cache_reference(path)
+    assert LoadRequest(model_path = reference).model_path == path
+
+    # Everywhere it landed, not only the identity field: the display label, the inference
+    # identifier built around it, a list, and the detail of something that went wrong.
+    answer = {
+        "status": "loaded",
+        "model": path,
+        "display_name": path,
+        "inference": {"identifier": f"{path}/snapshots/abc"},
+        "warnings": [f"could not read {path}/config.json"],
+        "unrelated": "unsloth/Llama-3.2-1B",
+    }
+    restored = host_paths.restore_inventory_handles(answer)
+    assert HOST_ROOT not in json.dumps(restored), restored
+    assert restored["model"] == reference
+    assert restored["display_name"] == reference
+    assert restored["inference"]["identifier"] == f"{reference}/snapshots/abc"
+    assert restored["warnings"] == [f"could not read {reference}/config.json"]
+    assert restored["unrelated"] == "unsloth/Llama-3.2-1B"
+
+
+def test_a_request_that_named_a_path_directly_is_answered_with_that_path():
+    """A browser session names paths and expects them back. Only a handle this request
+    resolved is put back, so nothing else in the answer is rewritten."""
+    answer = {"model": f"{HOST_ROOT}/models/Llama-3.2-1B"}
+    assert host_paths.restore_inventory_handles(answer) == answer
+
+
+def test_the_load_and_validate_answers_go_through_the_restoration():
+    """A route that builds the response and returns it unwrapped would leave every
+    assertion above passing and the path still going out."""
+    import inspect
+    from routes import inference as inference_routes
+
+    source = inspect.getsource(inference_routes)
+    assert "restore_inventory_handles(task.result())" in source
+    assert "restore_inventory_handles(ValidateModelResponse(" in source
+    assert "jsonable_encoder(restore_inventory_handles(payload))" in source
+    assert "restore_inventory_handles(redact_native_paths(str(e)))" in source
