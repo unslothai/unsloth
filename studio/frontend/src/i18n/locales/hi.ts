@@ -1446,7 +1446,9 @@ export const hi = {
       autoCompactHint:
         "उपलब्ध VRAM के बजाय आपके तय किए गए संदर्भ की लंबाई का उपयोग करता है।",
       pastedTextShortDescription:
-        "इस सीमा से लंबे पेस्ट किए गए टेक्स्ट को .txt अटैचमेंट में बदलें।",
+        "{count} या अधिक अक्षरों वाला पेस्ट किया गया टेक्स्ट .txt अटैचमेंट बन जाता है। छोटा टेक्स्ट संदेश बॉक्स में रहता है।",
+      pastedTextOffDescription:
+        "पेस्ट किया गया सारा टेक्स्ट संदेश बॉक्स में रहता है, चाहे उसकी लंबाई कितनी भी हो।",
       compactionDescriptionInherit:
         "सर्वर की संदर्भ नीति का पालन करें।",
       compactionDescriptionCheckpoint:

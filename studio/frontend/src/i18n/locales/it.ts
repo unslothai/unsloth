@@ -1440,7 +1440,9 @@ export const it = {
       autoCompactHint:
         "Usa la lunghezza del contesto impostata, non la VRAM disponibile.",
       pastedTextShortDescription:
-        "Converte il testo incollato oltre questo limite in allegati .txt.",
+        "Il testo incollato di almeno {count} caratteri diventa un allegato .txt. Il testo più breve resta nel campo del messaggio.",
+      pastedTextOffDescription:
+        "Tutto il testo incollato resta nel campo del messaggio, indipendentemente dalla lunghezza.",
       compactionDescriptionInherit: "Segue la politica del contesto del server.",
       compactionDescriptionCheckpoint:
         "Mantiene l’ultimo scambio e le istruzioni permanenti.",

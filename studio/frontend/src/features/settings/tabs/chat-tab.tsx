@@ -352,7 +352,13 @@ export function ChatTab() {
         <ComposerSettings embedded={true} />
         <SettingsRow
           label={t("settings.chat.pastedTextThreshold")}
-          description={t("settings.chat.pastedTextShortDescription")}
+          description={
+            pastedTextMinChars > 0
+              ? t("settings.chat.pastedTextShortDescription", {
+                  count: pastedTextMinChars.toLocaleString(),
+                })
+              : t("settings.chat.pastedTextOffDescription")
+          }
           hint={t("settings.chat.pastedTextThresholdDescription", {
             shortcut: plainPasteLabel,
           })}

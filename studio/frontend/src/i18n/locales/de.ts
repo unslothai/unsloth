@@ -1476,7 +1476,9 @@ export const de = {
       autoCompactHint:
         "Verwendet die eingestellte Kontextlänge, nicht den verfügbaren VRAM.",
       pastedTextShortDescription:
-        "Wandelt eingefügten Text oberhalb dieses Limits in .txt-Anhänge um.",
+        "Eingefügter Text ab {count} Zeichen wird als .txt-Datei angehängt. Kürzerer Text bleibt im Nachrichtenfeld.",
+      pastedTextOffDescription:
+        "Eingefügter Text bleibt unabhängig von seiner Länge im Nachrichtenfeld.",
       compactionDescriptionInherit: "Folgt der Kontextrichtlinie des Servers.",
       compactionDescriptionCheckpoint:
         "Behält den letzten Austausch und die dauerhaft geltenden Anweisungen bei.",

@@ -1440,7 +1440,9 @@ export const ar = {
       autoCompactHint:
         "يعتمد على طول السياق الذي حددته، لا على ذاكرة VRAM المتاحة.",
       pastedTextShortDescription:
-        "يحوّل النصوص الملصقة التي تتجاوز هذا الحد إلى مرفقات .txt.",
+        "يصبح النص الملصق الذي يبلغ {count} حرفًا أو أكثر مرفقًا بصيغة .txt. يبقى النص الأقصر في مربع الرسالة.",
+      pastedTextOffDescription:
+        "يبقى كل النص الملصق في مربع الرسالة، مهما كان طوله.",
       compactionDescriptionInherit: "يتبع سياسة السياق المحددة على الخادم.",
       compactionDescriptionCheckpoint:
         "يحتفظ بآخر تبادل للرسائل والتعليمات الدائمة.",
