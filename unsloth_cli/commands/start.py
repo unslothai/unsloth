@@ -4075,6 +4075,16 @@ def _connect(
             # That server was started FROM these knobs, so inferring a target here would reload what was just loaded.
             infer_resident = server is None,
         )
+        status = _inference_status(base, key) if model else {}
+        # A GGUF can be active while the resolved entry is another resident model.
+        if status.get("memory_warning") and any(
+            _model_id_matches(
+                (entry or {}).get("id"), status_id, allow_casefold = is_loopback_url(base)
+            )
+            for status_id in (status.get("active_model"), status.get("model_identifier"))
+            if status_id
+        ):
+            typer.echo(f"Warning: {status['memory_warning']}", err = True)
     except BaseException:
         _shutdown_auto_served()
         raise

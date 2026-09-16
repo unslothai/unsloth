@@ -48,6 +48,7 @@ import {
   updateCurrentDatePrompt,
 } from "../api/current-date-prompt";
 import { SettingsRow } from "../components/settings-row";
+import { ComposerSettings } from "../components/composer-settings";
 import { SettingsSection } from "../components/settings-section";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
@@ -154,6 +155,23 @@ const PLUS_MENU_SETTINGS: {
   },
 ];
 
+function ChatSettingsGroup({
+  title,
+  children,
+}: {
+  title: string;
+  children: ReactNode;
+}) {
+  return (
+    <section data-settings-label={title} className="mt-6 first-of-type:mt-0">
+      <h2 className="mb-2 text-base font-semibold font-heading text-foreground">
+        {title}
+      </h2>
+      <div className="flex flex-col gap-0 pb-2">{children}</div>
+    </section>
+  );
+}
+
 export function ChatTab() {
   const t = useT();
   const plusPins = usePlusMenuPrefsStore((state) => state.pins);
@@ -211,9 +229,7 @@ export function ChatTab() {
     (state) => state.setAllowArtifactNetworkAccess,
   );
   const searchImages = useChatRuntimeStore((state) => state.searchImages);
-  const setSearchImages = useChatRuntimeStore(
-    (state) => state.setSearchImages,
-  );
+  const setSearchImages = useChatRuntimeStore((state) => state.setSearchImages);
   const networkAccessRowRef = useRef<HTMLDivElement | null>(null);
   const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
   const consumeScrollTarget = useSettingsDialogStore(
@@ -342,71 +358,35 @@ export function ChatTab() {
   };
 
   return (
-    <div className="flex flex-col gap-6">
-      <header className="flex flex-col gap-1">
+    <div className="flex flex-col gap-0 [&_[data-slot=settings-row]]:py-2">
+      <header className="mb-2 flex flex-col gap-1">
         <h1 className="text-xl font-semibold font-heading">
           {t("settings.chat.title")}
         </h1>
-        <p className="text-xs text-muted-foreground">
-          {t("settings.chat.description")}
-        </p>
       </header>
 
-      <SettingsSection title={t("settings.chat.modelSelection.title")}>
+      <ChatSettingsGroup title={t("settings.chat.groups.conversations.title")}>
         <SettingsRow
-          label={t("settings.chat.modelSelection.expandQuantizations")}
-          description={t(
-            "settings.chat.modelSelection.expandQuantizationsDescription",
-          )}
+          label={t("settings.general.autoTitleNewChats")}
+          description={t("settings.general.autoTitleNewChatsDescription")}
         >
           <Switch
-            checked={expandQuantizations}
-            onCheckedChange={setExpandQuantizations}
+            aria-label={t("settings.general.autoTitleNewChats")}
+            checked={autoTitle}
+            onCheckedChange={setAutoTitle}
           />
         </SettingsRow>
         <SettingsRow
-          label={t("settings.chat.modelSelection.showAllQuantizations")}
-          description={t(
-            "settings.chat.modelSelection.showAllQuantizationsDescription",
-          )}
+          label={t("settings.chat.rememberParamsPerModel")}
+          description={t("settings.chat.rememberParamsPerModelDescription")}
+          hint={t("settings.chat.rememberParamsPerModelHint")}
         >
           <Switch
-            checked={showAllQuantizations}
-            onCheckedChange={setShowAllQuantizations}
+            aria-label={t("settings.chat.rememberParamsPerModel")}
+            checked={rememberParamsPerModel}
+            onCheckedChange={setRememberParamsPerModel}
           />
         </SettingsRow>
-        <SettingsRow
-          label={t("settings.chat.modelSelection.showMemoryBar")}
-          description={t(
-            "settings.chat.modelSelection.showMemoryBarDescription",
-          )}
-        >
-          <Switch checked={showMemoryBar} onCheckedChange={setShowMemoryBar} />
-        </SettingsRow>
-      </SettingsSection>
-
-      <SettingsSection
-        title={t("settings.chat.menu.title")}
-        description={t("settings.chat.menu.description")}
-      >
-        {PLUS_MENU_SETTINGS.map((item) => (
-          <SettingsRow key={item.id} label={t(item.labelKey)} icon={item.icon}>
-            {/* Canvas toggles menu visibility; the rest toggle pin placement. */}
-            <Switch
-              checked={
-                item.id === "canvas" ? showCanvasMenuItem : plusPins[item.id]
-              }
-              onCheckedChange={
-                item.id === "canvas"
-                  ? setShowCanvasMenuItem
-                  : () => togglePlusPin(item.id)
-              }
-            />
-          </SettingsRow>
-        ))}
-      </SettingsSection>
-
-      <SettingsSection title={t("settings.general.chatDefaults")}>
         <SettingsRow
           label={t("settings.chat.currentDate.label")}
           description={t("settings.chat.currentDate.description")}
@@ -428,70 +408,16 @@ export function ChatTab() {
             ) : null}
           </div>
         </SettingsRow>
-        <SettingsRow
-          label={t("settings.chat.projectsSection")}
-          description={t("settings.chat.projectsSectionDescription")}
-        >
-          <Switch
-            checked={organizeBy === "project"}
-            onCheckedChange={(checked) =>
-              setOrganizeBy(checked ? "project" : "list")
-            }
-          />
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.chat.thinking.collapseByDefault")}
-          description={t("settings.chat.thinking.collapseByDefaultDescription")}
-        >
-          <Switch
-            checked={collapseThinkingByDefault}
-            onCheckedChange={setCollapseThinkingByDefault}
-          />
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.chat.tools.collapseByDefault")}
-          description={t(
-            "settings.chat.tools.collapseByDefaultDescription",
-          )}
-        >
-          <Switch
-            checked={collapseToolActivityByDefault}
-            onCheckedChange={setCollapseToolActivityByDefault}
-          />
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.chat.modelDisclaimer")}
-          description={t("settings.chat.modelDisclaimerDescription")}
-        >
-          <Switch
-            checked={showModelDisclaimer}
-            onCheckedChange={(checked) => {
-              return saveModelDisclaimerPreference(checked).catch(() => {
-                toast.error("Could not save the model disclaimer setting.");
-              });
-            }}
-          />
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.chat.showResponseModel")}
-          description={t("settings.chat.showResponseModelDescription")}
-        >
-          <Switch
-            checked={showResponseModel}
-            onCheckedChange={setShowResponseModel}
-          />
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.general.autoTitleNewChats")}
-          description={t("settings.general.autoTitleNewChatsDescription")}
-        >
-          <Switch checked={autoTitle} onCheckedChange={setAutoTitle} />
-        </SettingsRow>
+      </ChatSettingsGroup>
+
+      <ChatSettingsGroup title={t("settings.chat.groups.files.title")}>
         <SettingsRow
           label={t("settings.chat.projectAttachments")}
           description={t("settings.chat.projectAttachmentsDescription")}
+          hint={t("settings.chat.projectAttachmentsHint")}
         >
           <Switch
+            aria-label={t("settings.chat.projectAttachments")}
             checked={projectAttachmentTarget === "project"}
             onCheckedChange={(checked) =>
               setProjectAttachmentTarget(checked ? "project" : "thread")
@@ -499,67 +425,9 @@ export function ChatTab() {
           />
         </SettingsRow>
         <SettingsRow
-          label={t("settings.chat.rememberParamsPerModel")}
-          description={t("settings.chat.rememberParamsPerModelDescription")}
-        >
-          <Switch
-            checked={rememberParamsPerModel}
-            onCheckedChange={setRememberParamsPerModel}
-          />
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.chat.autoCompact")}
-          description={t("settings.chat.autoCompactDescription")}
-        >
-          <Switch
-            checked={autoCompactEnabled}
-            onCheckedChange={setAutoCompactEnabled}
-          />
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.chat.compactionStyle")}
-          description={t("settings.chat.compactionStyleDescription")}
-        >
-          <Select
-            value={compactionStyleValue(contextPolicy, compactionHeadroomRatio)}
-            onValueChange={(value) => {
-              const next = parseCompactionStyle(value);
-              setContextPolicy(next.contextPolicy);
-              setCompactionHeadroomRatio(next.compactionHeadroomRatio);
-            }}
-            disabled={!autoCompactEnabled}
-          >
-            <SelectTrigger
-              className="w-64"
-              aria-label={t("settings.chat.compactionStyle")}
-            >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="inherit">
-                {t("settings.chat.compactionStyleInherit")}
-              </SelectItem>
-              <SelectItem value="checkpoint">
-                {t("settings.chat.compactionStyleCheckpoint")}
-              </SelectItem>
-              <SelectItem value="rolling:0.25">
-                {t("settings.chat.compactionStyleRollingDefault")}
-              </SelectItem>
-              <SelectItem value="rolling:0.1">
-                {t("settings.chat.compactionStyleRolling10")}
-              </SelectItem>
-              <SelectItem value="rolling:0.05">
-                {t("settings.chat.compactionStyleRolling5")}
-              </SelectItem>
-              <SelectItem value="rolling:0">
-                {t("settings.chat.compactionStyleRollingNone")}
-              </SelectItem>
-            </SelectContent>
-          </Select>
-        </SettingsRow>
-        <SettingsRow
           label={t("settings.chat.pastedTextThreshold")}
-          description={t("settings.chat.pastedTextThresholdDescription", {
+          description={t("settings.chat.pastedTextShortDescription")}
+          hint={t("settings.chat.pastedTextThresholdDescription", {
             shortcut: plainPasteLabel,
           })}
         >
@@ -584,53 +452,234 @@ export function ChatTab() {
             </SelectContent>
           </Select>
         </SettingsRow>
+      </ChatSettingsGroup>
+
+      <ChatSettingsGroup title={t("settings.chat.groups.display.title")}>
+        <SettingsRow
+          label={t("settings.chat.projectsSection")}
+          description={t("settings.chat.projectsSectionDescription")}
+        >
+          <Switch
+            aria-label={t("settings.chat.projectsSection")}
+            checked={organizeBy === "project"}
+            onCheckedChange={(checked) =>
+              setOrganizeBy(checked ? "project" : "list")
+            }
+          />
+        </SettingsRow>
         <SettingsRow
           label={t("settings.profile.greetingSloth")}
           description={t("settings.profile.greetingSlothDescription")}
         >
           <Switch
+            aria-label={t("settings.profile.greetingSloth")}
             id="profile-greeting-sloth"
             checked={showGreetingSloth}
             onCheckedChange={setShowGreetingSloth}
           />
         </SettingsRow>
-      </SettingsSection>
-
-      <SettingsSection title={t("settings.chat.artifacts.title")}>
         <SettingsRow
-          label={t("settings.chat.artifacts.collapseHtmlBlocks")}
-          description={t(
-            "settings.chat.artifacts.collapseHtmlBlocksDescription",
-          )}
+          label={t("settings.chat.showResponseModel")}
+          description={t("settings.chat.showResponseModelDescription")}
         >
           <Switch
-            checked={collapseHtmlArtifacts}
-            onCheckedChange={setCollapseHtmlArtifacts}
+            aria-label={t("settings.chat.showResponseModel")}
+            checked={showResponseModel}
+            onCheckedChange={setShowResponseModel}
           />
         </SettingsRow>
-        <div ref={networkAccessRowRef}>
+        <SettingsRow
+          label={t("settings.chat.modelDisclaimer")}
+          description={t("settings.chat.modelDisclaimerDescription")}
+        >
+          <Switch
+            aria-label={t("settings.chat.modelDisclaimer")}
+            checked={showModelDisclaimer}
+            onCheckedChange={(checked) => {
+              return saveModelDisclaimerPreference(checked).catch(() => {
+                toast.error("Could not save the model disclaimer setting.");
+              });
+            }}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.thinking.collapseByDefault")}
+          description={t("settings.chat.thinking.collapseByDefaultDescription")}
+        >
+          <Switch
+            aria-label={t("settings.chat.thinking.collapseByDefault")}
+            checked={collapseThinkingByDefault}
+            onCheckedChange={setCollapseThinkingByDefault}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.tools.collapseByDefault")}
+          description={t("settings.chat.tools.collapseByDefaultDescription")}
+        >
+          <Switch
+            aria-label={t("settings.chat.tools.collapseByDefault")}
+            checked={collapseToolActivityByDefault}
+            onCheckedChange={setCollapseToolActivityByDefault}
+          />
+        </SettingsRow>
+        <SettingsSection title={t("settings.chat.webSearch.title")}>
           <SettingsRow
-            label={t("settings.chat.artifacts.allowNetworkAccess")}
+            label={t("settings.chat.webSearch.images")}
+            description={t("settings.chat.webSearch.imagesDescription")}
+          >
+            <Switch checked={searchImages} onCheckedChange={setSearchImages} />
+          </SettingsRow>
+        </SettingsSection>
+      </ChatSettingsGroup>
+
+      <ChatSettingsGroup title={t("settings.chat.groups.composer.title")}>
+        <ComposerSettings embedded={true} />
+      </ChatSettingsGroup>
+
+      <ChatSettingsGroup title={t("settings.chat.groups.menu.title")}>
+        {PLUS_MENU_SETTINGS.map((item) => (
+          <SettingsRow key={item.id} label={t(item.labelKey)} icon={item.icon}>
+            {/* Canvas toggles menu visibility; the rest toggle pin placement. */}
+            <Switch
+              checked={
+                item.id === "canvas" ? showCanvasMenuItem : plusPins[item.id]
+              }
+              onCheckedChange={
+                item.id === "canvas"
+                  ? setShowCanvasMenuItem
+                  : () => togglePlusPin(item.id)
+              }
+            />
+          </SettingsRow>
+        ))}
+      </ChatSettingsGroup>
+
+      <ChatSettingsGroup title={t("settings.chat.groups.advanced.title")}>
+        <SettingsSection title={t("settings.chat.groups.contextTitle")}>
+          <SettingsRow
+            label={t("settings.chat.autoCompact")}
+            description={t("settings.chat.autoCompactDescription")}
+            hint={t("settings.chat.autoCompactHint")}
+          >
+            <Switch
+              aria-label={t("settings.chat.autoCompact")}
+              checked={autoCompactEnabled}
+              onCheckedChange={setAutoCompactEnabled}
+            />
+          </SettingsRow>
+          <SettingsRow
+            label={t("settings.chat.compactionStyle")}
             description={t(
-              "settings.chat.artifacts.allowNetworkAccessDescription",
+              contextPolicy === "inherit"
+                ? "settings.chat.compactionDescriptionInherit"
+                : contextPolicy === "checkpoint"
+                  ? "settings.chat.compactionDescriptionCheckpoint"
+                  : "settings.chat.compactionDescriptionRolling",
+            )}
+          >
+            <Select
+              value={compactionStyleValue(
+                contextPolicy,
+                compactionHeadroomRatio,
+              )}
+              onValueChange={(value) => {
+                const next = parseCompactionStyle(value);
+                setContextPolicy(next.contextPolicy);
+                setCompactionHeadroomRatio(next.compactionHeadroomRatio);
+              }}
+              disabled={!autoCompactEnabled}
+            >
+              <SelectTrigger
+                className="w-64"
+                aria-label={t("settings.chat.compactionStyle")}
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="inherit">
+                  {t("settings.chat.compactionStyleInherit")}
+                </SelectItem>
+                <SelectItem value="checkpoint">
+                  {t("settings.chat.compactionStyleCheckpoint")}
+                </SelectItem>
+                <SelectItem value="rolling:0.25">
+                  {t("settings.chat.compactionStyleRollingDefault")}
+                </SelectItem>
+                <SelectItem value="rolling:0.1">
+                  {t("settings.chat.compactionStyleRolling10")}
+                </SelectItem>
+                <SelectItem value="rolling:0.05">
+                  {t("settings.chat.compactionStyleRolling5")}
+                </SelectItem>
+                <SelectItem value="rolling:0">
+                  {t("settings.chat.compactionStyleRollingNone")}
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          </SettingsRow>
+        </SettingsSection>
+        <SettingsSection title={t("settings.chat.modelSelection.title")}>
+          <SettingsRow
+            label={t("settings.chat.modelSelection.expandQuantizations")}
+            description={t(
+              "settings.chat.modelSelection.expandQuantizationsDescription",
             )}
           >
             <Switch
-              checked={allowArtifactNetworkAccess}
-              onCheckedChange={setAllowArtifactNetworkAccess}
+              checked={expandQuantizations}
+              onCheckedChange={setExpandQuantizations}
             />
           </SettingsRow>
-        </div>
-      </SettingsSection>
-
-      <SettingsSection title={t("settings.chat.webSearch.title")}>
-        <SettingsRow
-          label={t("settings.chat.webSearch.images")}
-          description={t("settings.chat.webSearch.imagesDescription")}
-        >
-          <Switch checked={searchImages} onCheckedChange={setSearchImages} />
-        </SettingsRow>
-      </SettingsSection>
+          <SettingsRow
+            label={t("settings.chat.modelSelection.showAllQuantizations")}
+            description={t(
+              "settings.chat.modelSelection.showAllQuantizationsDescription",
+            )}
+          >
+            <Switch
+              checked={showAllQuantizations}
+              onCheckedChange={setShowAllQuantizations}
+            />
+          </SettingsRow>
+          <SettingsRow
+            label={t("settings.chat.modelSelection.showMemoryBar")}
+            description={t(
+              "settings.chat.modelSelection.showMemoryBarDescription",
+            )}
+          >
+            <Switch
+              checked={showMemoryBar}
+              onCheckedChange={setShowMemoryBar}
+            />
+          </SettingsRow>
+        </SettingsSection>
+        <SettingsSection title={t("settings.chat.artifacts.title")}>
+          <SettingsRow
+            label={t("settings.chat.artifacts.collapseHtmlBlocks")}
+            description={t(
+              "settings.chat.artifacts.collapseHtmlBlocksDescription",
+            )}
+          >
+            <Switch
+              checked={collapseHtmlArtifacts}
+              onCheckedChange={setCollapseHtmlArtifacts}
+            />
+          </SettingsRow>
+          <div ref={networkAccessRowRef}>
+            <SettingsRow
+              label={t("settings.chat.artifacts.allowNetworkAccess")}
+              description={t(
+                "settings.chat.artifacts.allowNetworkAccessDescription",
+              )}
+            >
+              <Switch
+                checked={allowArtifactNetworkAccess}
+                onCheckedChange={setAllowArtifactNetworkAccess}
+              />
+            </SettingsRow>
+          </div>
+        </SettingsSection>
+      </ChatSettingsGroup>
     </div>
   );
 }

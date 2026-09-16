@@ -68,10 +68,11 @@ docker run --rm --gpus all --ipc=host -v "$PWD":/workspace/host \
 
 ### CPU-only hosts
 
-Without a GPU the container refuses to start unless you opt in. Studio chat with GGUF models, JupyterLab and the GGUF tooling work; training does not.
+`latest` starts without a GPU on its own. Studio chat with GGUF models, JupyterLab and the GGUF tooling work; training does not. `core` refuses to start without a GPU unless you opt in:
 
 ```bash
-docker run -d -e UNSLOTH_ALLOW_CPU=1 -p 8000:8000 -p 8888:8888 unsloth/unsloth
+docker run -d -p 8000:8000 -p 8888:8888 unsloth/unsloth
+docker run --rm -e UNSLOTH_ALLOW_CPU=1 unsloth/unsloth:core python -c "import unsloth"
 ```
 
 ## Supported GPUs
@@ -84,7 +85,7 @@ Driver requirements:
 - 580 or newer for B300, GB300 and GB10.
 - On `linux/arm64` the bundled llama.cpp is a CUDA 13 build because upstream ships no CUDA 12 build for that architecture. Training works from driver 570, but GGUF export and Studio chat need 580 or newer.
 
-Turing has no bfloat16; Unsloth falls back to float16 there. AMD GPUs are not supported by these images.
+Turing has no bfloat16; Unsloth falls back to float16 there. These images are CUDA only; for AMD use [`unsloth/unsloth-rocm`](https://hub.docker.com/r/unsloth/unsloth-rocm), which carries a ROCm build of the training stack.
 
 ## Ports
 

@@ -469,6 +469,22 @@ jobs:
             UNSLOTH_STUDIO_ZOO_REF=${{ needs.prepare.outputs.zoo_ref }}
             LLAMA_PREBUILT_TAG=${{ needs.prepare.outputs.llama_tag }}
 
+      # A GPU-free check on the artifact the registry serves, not on the Dockerfile
+      # text: an image-wide UNSLOTH_ALLOW_CPU reaches every process and turns off
+      # Unsloth's TRL trainer patches on GPU hosts (#10825), and the smoke-test job
+      # below needs a GPU runner this repo does not have. The image opts in to CPU
+      # hosts through UNSLOTH_IMAGE_ALLOW_CPU=1 instead; entrypoint.sh translates it.
+      - name: Assert the Studio image env cannot disable training
+        run: |
+          REF='${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}'
+          ENV_JSON="$(docker buildx imagetools inspect "$REF" --format '{{json .Image}}' \
+                      | jq -c '[.. | objects | select(has("config")) | .config.Env // []] | add')"
+          echo "$ENV_JSON" | jq -r '.[] | select(startswith("UNSLOTH_"))'
+          echo "$ENV_JSON" | jq -e 'index("UNSLOTH_IMAGE_ALLOW_CPU=1") != null' >/dev/null \
+            || { echo "::error::Studio image env lacks UNSLOTH_IMAGE_ALLOW_CPU=1"; exit 1; }
+          echo "$ENV_JSON" | jq -e 'map(select(startswith("UNSLOTH_ALLOW_CPU="))) | length == 0' >/dev/null \
+            || { echo "::error::Studio image env carries UNSLOTH_ALLOW_CPU, which disables Unsloth's TRL patches on GPU hosts"; exit 1; }
+
       - name: Export digest
         run: |
           mkdir -p /tmp/digests
