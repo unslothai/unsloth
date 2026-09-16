@@ -22,6 +22,7 @@ import itertools
 import textwrap
 
 import pytest
+import torch
 import unsloth  # noqa: F401
 
 from unsloth.models import llama as llama_module
@@ -99,6 +100,10 @@ def test_the_summary_call_carries_the_reason():
 
 
 @pytest.mark.gpu
+@pytest.mark.skipif(
+    not torch.cuda.is_available(),
+    reason = "loads a real checkpoint through FastLanguageModel; needs an accelerator",
+)
 def test_summary_reason_is_logged_for_a_real_model():
     """unsloth#2076 end to end: the reason has to reach the user's console."""
     import logging

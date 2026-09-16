@@ -231,6 +231,10 @@ def _plain_model_dtype() -> "torch.dtype":
 
 
 @pytest.mark.gpu
+@pytest.mark.skipif(
+    not torch.cuda.is_available(),
+    reason = "loads a real checkpoint through FastLanguageModel; needs an accelerator",
+)
 def test_apply_qkv_fallback_end_to_end():
     """unsloth#1713 as reported: load with unsloth, then build a plain transformers model of
     the same architecture in the same process and run it. Needs a real accelerator because
