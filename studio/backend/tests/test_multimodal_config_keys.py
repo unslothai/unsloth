@@ -211,8 +211,20 @@ def test_text_config_is_not_recorded_as_a_modality_key():
 @pytest.mark.parametrize(
     "value",
     [None, False, True, -1, "151655", "", [], (), {}, {"id": 1}, [1, None], [1, "2"]],
-    ids = ["null", "false", "true", "negative", "string", "empty-string", "empty-list",
-           "empty-tuple", "empty-dict", "dict", "list-with-null", "list-with-string"],
+    ids = [
+        "null",
+        "false",
+        "true",
+        "negative",
+        "string",
+        "empty-string",
+        "empty-list",
+        "empty-tuple",
+        "empty-dict",
+        "dict",
+        "list-with-null",
+        "list-with-string",
+    ],
 )
 def test_a_visual_marker_that_is_not_a_token_id_does_not_admit_anything(tmp_path, value):
     """The key is there; the value is not a vocabulary index. `true` is called out on its own
@@ -233,8 +245,9 @@ def test_a_visual_marker_that_is_not_a_token_id_does_not_admit_anything(tmp_path
     ("architecture", "model_type"),
     [("T5ForConditionalGeneration", "t5"), ("BartForConditionalGeneration", "bart")],
 )
-@pytest.mark.parametrize("marker", ["image_token_id", "video_token_id",
-                                    "vision_start_token_id", "vision_end_token_id"])
+@pytest.mark.parametrize(
+    "marker", ["image_token_id", "video_token_id", "vision_start_token_id", "vision_end_token_id"]
+)
 def test_a_seq2seq_carrying_a_null_visual_marker_is_still_refused(
     tmp_path, architecture, model_type, marker
 ):
@@ -283,9 +296,9 @@ def test_a_visual_marker_does_not_get_an_audio_family_past_its_own_gate(tmp_path
     info = _checkpoint(tmp_path, "csm-with-a-visual-marker", config)
 
     monkeypatch.setattr(resolver, "_host_serves_mlx", lambda: True)
-    assert resolver._is_generative_chat_config(config) is False, (
-        "a visual marker carried an audio family past the MLX refusal"
-    )
+    assert (
+        resolver._is_generative_chat_config(config) is False
+    ), "a visual marker carried an audio family past the MLX refusal"
     assert resolver.local_servable_model(info) is None
 
     resolver.invalidate_index()
