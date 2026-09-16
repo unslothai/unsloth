@@ -1613,3 +1613,11 @@ try:
     del _fix_dill
 except Exception:
     pass
+
+# Re-export Muon optimizer config at module scope so `unsloth.MuonConfig`
+# works. Guarded: the MLX branch above installs a trainer shim without
+# MuonConfig, and this must not break `import unsloth` on Apple Silicon.
+try:
+    from .trainer import MuonConfig, _MuonAdamWChained
+except Exception:
+    pass
