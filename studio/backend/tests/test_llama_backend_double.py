@@ -30,15 +30,14 @@ from .llama_backend_double import FakeLlamaCppBackend
 def test_status_runtime_fields_survive_a_double_that_answers_none():
     """A runtime field that rejects None needs a real value on the shared double.
 
-    The chat-completions canary above does not reach this: /status is the route that mirrors
-    every `_InferenceRuntimeFields` name off the backend, so a field added there and nowhere
-    else is served as None and rejected by its own response model. That arrived as three red
-    multi-account tests asserting `{"detail":"Failed to get status"}`, which names neither the
-    field nor the double. This fails here instead, with the field in the message.
+    The chat-completions canary does not reach /status, the one route that mirrors every
+    `_InferenceRuntimeFields` name off the backend, so a field added to that model and nowhere
+    else is served as None and rejected by its own response. That arrived as three red
+    multi-account tests asserting `{"detail":"Failed to get status"}`, naming neither the field
+    nor the double. This fails here instead, with the field in the message.
     """
     fields = inference_route._llama_runtime_fields(FakeLlamaCppBackend())
-    # The route supplies this one itself; the drift check in _llama_runtime_fields excuses it
-    # for the same reason, and it is not an attribute of the real backend.
+    # Supplied by the route, not the backend; _llama_runtime_fields excuses it for that reason.
     fields["requires_trust_remote_code"] = False
 
     try:
