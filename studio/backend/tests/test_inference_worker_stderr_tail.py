@@ -330,6 +330,108 @@ def test_a_server_that_exits_leaves_no_sink_behind(tmp_path):
     assert not os.path.exists(path), "the sink outlived the process that opened it"
 
 
+def test_a_severed_multibyte_character_does_not_mojibake_the_whole_tail():
+    """The byte window the parent reads opens at an arbitrary offset.
+
+    ``tail`` reads the last ``TAIL_READ_BYTES`` of the sink, and the pump compacts the sink
+    to its last ``cap_bytes``; neither can land on a character boundary on purpose. cp1252
+    has a meaning for almost every byte, so a single severed character used to make strict
+    UTF-8 fail for the entire window and hand the whole tail to cp1252: "modellädt nicht —"
+    came back as "modellÃ¤dt nicht â€”". The severed character is dropped instead.
+    """
+    from utils.worker_stderr import TAIL_READ_BYTES
+
+    line = "RuntimeError: modellädt nicht — CUDA out of memory\n".encode("utf-8")
+    body = line * 30
+    # Exactly one continuation byte at the front, so the window opens mid-character.
+    window = b"\xa9" + b"." * (TAIL_READ_BYTES - 1 - len(body)) + body
+    assert len(window) == TAIL_READ_BYTES
+    with pytest.raises(UnicodeDecodeError):
+        window.decode("utf-8")
+
+    tail = stderr_tail_from_bytes(window)
+    assert "modellädt nicht — CUDA out of memory" in tail, tail
+    assert "Ã¤" not in tail and "â€”" not in tail, tail
+
+
+def test_a_severed_character_at_the_end_of_the_window_is_dropped_too():
+    """Compaction cuts the far end as well, so the same trim applies there."""
+    raw = "RuntimeError: café blew up — ".encode("utf-8") + "é".encode("utf-8")[:1]
+    text = decode_worker_stderr(raw)
+    assert "café blew up —" in text, text
+    assert "Ã©" not in text, text
+
+
+def test_a_real_worker_whose_output_outgrows_the_read_window_still_reads_cleanly(tmp_path):
+    """End to end, through a spawned worker, not through the decoder alone."""
+    capture = WorkerStderrCapture(directory = str(tmp_path), prefix = "unsloth-test-")
+    process = _spawn("write_non_ascii_far_past_the_read_window", capture.path, timeout = 60)
+    assert process.exitcode == 1
+    tail = capture.tail(max_lines = 5)
+    assert "modellädt nicht — CUDA out of memory" in tail, tail
+    assert "Ã¤" not in tail, tail
+    capture.close()
+
+
+def test_a_missing_sink_is_never_re_created_by_the_child(tmp_path):
+    """The only way the child finds the sink gone is that the parent retired it.
+
+    Re-creating it would create in a shared temporary directory with ``0666 & ~umask``,
+    measured at 0664 under the default umask, so another account on the machine could read a
+    worker's stderr. No sink is the old behaviour and is the right answer here.
+    """
+    from utils.worker_stderr import install_worker_stderr_mirror
+
+    missing = tmp_path / "already-retired.stderr"
+    assert install_worker_stderr_mirror(str(missing)) is False
+    assert not missing.exists(), "the child created a sink the parent had retired"
+
+
+@pytest.mark.skipif(
+    not hasattr(os, "O_NOFOLLOW"), reason = "O_NOFOLLOW is POSIX only"
+)
+def test_a_symlink_at_the_sink_path_is_not_followed(tmp_path):
+    """The sink path is a name in a world-writable directory once the parent unlinks it.
+
+    Following a symlink there would open, and with the old "wb" fallback truncate, any file
+    the Studio user can write, and then fill it with the worker's stderr.
+    """
+    from utils.worker_stderr import install_worker_stderr_mirror
+
+    victim = tmp_path / "victim.txt"
+    victim.write_text("ORIGINAL\n", encoding = "utf-8")
+    link = tmp_path / "sink.stderr"
+    link.symlink_to(victim)
+
+    assert install_worker_stderr_mirror(str(link)) is False
+    assert victim.read_text(encoding = "utf-8") == "ORIGINAL\n"
+
+
+def test_a_worker_holding_a_second_handle_on_stderr_still_exits_promptly(tmp_path):
+    """A logging handler or a native library that dup'd fd 2 keeps the mirror's pipe open.
+
+    The teardown then cannot see EOF, so it must not close the inherited descriptor while
+    the pump thread may still be writing to it: the number would be free for the next
+    ``open()`` in any thread and the worker's stderr would land in an unrelated file.
+    """
+    capture = WorkerStderrCapture(directory = str(tmp_path), prefix = "unsloth-test-")
+    process = _spawn("hold_a_second_handle_on_stderr_then_exit", capture.path, timeout = 60)
+    assert process.exitcode == 1
+    assert "held a second handle on stderr" in capture.tail(), capture.tail()
+    capture.close()
+
+    # The race itself cannot be asserted from the outside: it is a descriptor number being
+    # reused between two threads, and a run that happens not to hit it proves nothing. So the
+    # guard is read out of the source, the same way the sweep guard below is.
+    source = (Path(_BACKEND_DIR) / "utils/worker_stderr.py").read_text(encoding = "utf-8")
+    teardown = source.split("def _stop_mirror(", 1)[1].split("\ndef ", 1)[0]
+    close_at = teardown.index("os.close(inherited_fd)")
+    assert "if pump.is_alive():" in teardown[:close_at], (
+        "the teardown closes the inherited stderr without first checking that the pump "
+        "thread has finished with it"
+    )
+
+
 def test_the_sink_directory_is_never_swept_by_pattern():
     """Another Studio's live sink is not ours to delete. Several installs share one temporary
     directory (a second UNSLOTH_STUDIO_HOME, a second account), so cleanup must name the exact
@@ -342,6 +444,7 @@ def test_the_sink_directory_is_never_swept_by_pattern():
         "iterdir(",
         "listdir(",
         "scandir(",
+        "walk(",
         "st_mtime",
         "rmtree(",
     ):

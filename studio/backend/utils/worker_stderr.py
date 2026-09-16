@@ -61,6 +61,35 @@ TAIL_READ_BYTES = 64 * 1024
 _PUMP_JOIN_TIMEOUT_S = 2.0
 
 
+def _without_partial_utf8_edges(data: bytes) -> bytes:
+    """Drop a UTF-8 sequence that a byte window cut in half at either end.
+
+    Both byte windows in this module open at an arbitrary offset: the parent reads the last
+    ``TAIL_READ_BYTES`` of the sink, and the pump compacts the sink down to its last
+    ``cap_bytes``. Neither can land on a character boundary on purpose. Without this, one
+    severed multi-byte character made strict UTF-8 fail for the WHOLE window, the probe fell
+    through to cp1252, and every non-ASCII character in the traceback came back as the two
+    or three cp1252 characters its UTF-8 bytes spell. Trimming at most three bytes off each
+    end costs nothing and keeps the rest readable.
+    """
+    start = 0
+    # A window that opens mid-character starts with continuation bytes (0b10xxxxxx).
+    while start < len(data) and start < 3 and 0x80 <= data[start] < 0xC0:
+        start += 1
+    end = len(data)
+    # A window that closes mid-character ends with a lead byte and too few continuations.
+    for back in range(1, min(4, end - start) + 1):
+        byte = data[end - back]
+        if byte < 0x80:
+            break
+        if byte >= 0xC0:
+            width = 2 if byte < 0xE0 else 3 if byte < 0xF0 else 4
+            if back < width:
+                end -= back
+            break
+    return data[start:end]
+
+
 def decode_worker_stderr(data: bytes) -> str:
     """Decode worker stderr bytes and normalise their line endings.
 
@@ -68,22 +97,28 @@ def decode_worker_stderr(data: bytes) -> str:
     Windows ``sys.stderr`` uses the ANSI code page unless UTF-8 mode is on, and native
     libraries write whatever the console page is; cp1252 is the common case there. UTF-8 is
     tried first because it is the stricter of the two, so text that is valid UTF-8 is never
-    mis-read as cp1252. Anything that is neither is decoded with replacement rather than
-    discarded: a mangled traceback still names the exception.
+    mis-read as cp1252. That claim only holds once a character severed by the byte window is
+    trimmed first, which is what ``_without_partial_utf8_edges`` is for; cp1252 has a meaning
+    for almost every byte, so without the trim a single severed character silently converted
+    the entire tail to mojibake. Anything that is neither encoding is decoded with
+    replacement rather than discarded: a mangled traceback still names the exception.
 
     CRLF and lone CR both become LF, so a Windows traceback does not arrive with a trailing
     carriage return on every line, and a progress bar that redraws itself with CR becomes
     separate lines that the tail can then drop.
     """
     text: str | None = None
-    for encoding in ("utf-8", "cp1252"):
+    for candidate in (data, _without_partial_utf8_edges(data)):
         try:
-            text = data.decode(encoding)
-        except (UnicodeDecodeError, LookupError):
+            text = candidate.decode("utf-8")
+        except UnicodeDecodeError:
             continue
         break
     if text is None:
-        text = data.decode("utf-8", errors = "replace")
+        try:
+            text = data.decode("cp1252")
+        except (UnicodeDecodeError, LookupError):
+            text = data.decode("utf-8", errors = "replace")
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
@@ -172,7 +207,11 @@ class WorkerStderrCapture:
     ) -> str:
         """The end of what the worker wrote, or an empty string when there is nothing."""
         try:
-            with open(self._path, "rb") as handle:
+            # O_NOFOLLOW for the same reason the child uses it: between this process
+            # unlinking a sink and reading one, the path is a name in a shared temporary
+            # directory, and a tail is never worth following a symlink for.
+            fd = os.open(self._path, os.O_RDONLY | _O_NOFOLLOW | _O_BINARY)
+            with os.fdopen(fd, "rb") as handle:
                 handle.seek(0, os.SEEK_END)
                 size = handle.tell()
                 handle.seek(max(0, size - TAIL_READ_BYTES))
@@ -187,6 +226,38 @@ class WorkerStderrCapture:
         the caller taking a PermissionError during shutdown."""
         _OPEN_SINKS.discard(self._path)
         _unlink_quietly(self._path)
+
+
+# O_NOFOLLOW is POSIX only and O_BINARY is Windows only; both are absent-means-zero here.
+_O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+_O_BINARY = getattr(os, "O_BINARY", 0)
+
+
+def _open_existing_sink(path: str):
+    """Open the sink the parent already created, and never create one here.
+
+    Deliberately not ``open(path, "wb")``. The sink lives in the system temporary directory,
+    which on a shared machine is world writable, and the only way the child finds the file
+    missing is that the parent retired it. Creating it back would do two things this must not
+    do: it would create with ``0666 & ~umask``, so another account on the machine could read
+    a worker's stderr (measured at 0664 under the default umask), and it would follow a
+    symlink planted at that path and truncate whatever the Studio user can write. The sink is
+    a diagnostic, so there is nothing to gain by re-creating it: no sink is the old behaviour.
+    """
+    # Read-write, because the pump compacts the file in place once it passes the cap.
+    flags = os.O_RDWR | _O_NOFOLLOW | _O_BINARY
+    try:
+        handle = os.open(path, flags)
+    except OSError:
+        return None
+    try:
+        return os.fdopen(handle, "r+b", buffering = 0)
+    except OSError:
+        try:
+            os.close(handle)
+        except OSError:
+            pass
+        return None
 
 
 def _compact_sink(sink, cap_bytes: int) -> int:
@@ -253,6 +324,15 @@ def _stop_mirror(inherited_fd: int, pump: threading.Thread) -> None:
     except OSError:
         pass
     pump.join(timeout = _PUMP_JOIN_TIMEOUT_S)
+    if pump.is_alive():
+        # The join timed out, which means something else in this process still holds a
+        # descriptor onto the pipe (a logging handler or a native library that dup'd fd 2),
+        # so the pump has not seen EOF and may be inside os.write(inherited_fd, ...) right
+        # now. Closing the descriptor here would free its number for the next open() in any
+        # thread, and the pump would then write a worker's stderr into an unrelated file.
+        # The interpreter is on its way out, so leaking one descriptor is free; corrupting
+        # somebody else's file is not.
+        return
     try:
         os.close(inherited_fd)
     except OSError:
@@ -270,14 +350,9 @@ def install_worker_stderr_mirror(
     """
     if not path:
         return False
-    sink = None
-    try:
-        sink = open(path, "r+b", buffering = 0)
-    except OSError:
-        try:
-            sink = open(path, "wb", buffering = 0)
-        except OSError:
-            return False
+    sink = _open_existing_sink(path)
+    if sink is None:
+        return False
     try:
         inherited = os.dup(2)
     except OSError:
