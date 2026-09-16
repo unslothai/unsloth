@@ -2427,9 +2427,11 @@ def unsloth_save_pretrained_merged(
         16bit merge at `save_directory` and writes the quantized checkpoint to
         `save_directory + "-<fmt>"`.
 
-    `safe_serialization` defaults to safetensors. `None` is accepted and means the same
-    thing, so the older "set it to None to force safetensors" advice stays valid; only an
-    explicit `False` writes a pickle.
+    `safe_serialization` defaults to safetensors. `None` is stronger than the default
+    `True`: on a host with at most two physical CPUs the default is downgraded to a pickle
+    save, because safetensors is roughly 10x slower there, while `None` pins safetensors
+    through that fallback. So the older "set it to None to force safetensors" advice is
+    the way to keep safetensors everywhere, and `False` is the way to ask for a pickle.
     """
     if tokenizer is None:
         logger.warning_once(
@@ -2559,9 +2561,11 @@ def unsloth_push_to_hub_merged(
         methods do. Useful for HF inference.
     4.  FP8 / FP4 compressed export for vLLM: `fp8`, `mxfp4`, `nvfp4`, `mxfp8`.
 
-    `safe_serialization` defaults to safetensors. `None` is accepted and means the same
-    thing, so the older "set it to None to force safetensors" advice stays valid; only an
-    explicit `False` writes a pickle.
+    `safe_serialization` defaults to safetensors. `None` is stronger than the default
+    `True`: on a host with at most two physical CPUs the default is downgraded to a pickle
+    save, because safetensors is roughly 10x slower there, while `None` pins safetensors
+    through that fallback. So the older "set it to None to force safetensors" advice is
+    the way to keep safetensors everywhere, and `False` is the way to ask for a pickle.
     """
     if tokenizer is None:
         logger.warning_once(
@@ -5786,9 +5790,11 @@ def unsloth_generic_save_pretrained_merged(
         `save_directory`, then a quantized checkpoint is written to `save_directory + "-<fmt>"`.
         `nvfp4` needs calibration data (defaults to ultrachat; override with `calibration_dataset`).
 
-    `safe_serialization` defaults to safetensors. `None` is accepted and means the same
-    thing, so the older "set it to None to force safetensors" advice stays valid; only an
-    explicit `False` writes a pickle.
+    `safe_serialization` defaults to safetensors. `None` is stronger than the default
+    `True`: on a host with at most two physical CPUs the default is downgraded to a pickle
+    save, because safetensors is roughly 10x slower there, while `None` pins safetensors
+    through that fallback. So the older "set it to None to force safetensors" advice is
+    the way to keep safetensors everywhere, and `False` is the way to ask for a pickle.
     """
     if tokenizer is None:
         logger.warning_once(
@@ -5916,9 +5922,11 @@ def unsloth_generic_push_to_hub_merged(
         methods do. Useful for HF inference.
     4.  FP8 / FP4 compressed export for vLLM: `fp8`, `mxfp4`, `nvfp4`, `mxfp8`.
 
-    `safe_serialization` defaults to safetensors. `None` is accepted and means the same
-    thing, so the older "set it to None to force safetensors" advice stays valid; only an
-    explicit `False` writes a pickle.
+    `safe_serialization` defaults to safetensors. `None` is stronger than the default
+    `True`: on a host with at most two physical CPUs the default is downgraded to a pickle
+    save, because safetensors is roughly 10x slower there, while `None` pins safetensors
+    through that fallback. So the older "set it to None to force safetensors" advice is
+    the way to keep safetensors everywhere, and `False` is the way to ask for a pickle.
     """
     if tokenizer is None:
         logger.warning_once(

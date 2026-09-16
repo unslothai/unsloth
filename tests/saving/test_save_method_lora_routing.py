@@ -735,3 +735,29 @@ def test_the_sentence_transformer_normaliser_is_otherwise_unchanged(spelling, ex
     from unsloth.models.sentence_transformer import _normalize_save_method
 
     assert _normalize_save_method(spelling) == expected
+
+
+def test_the_docstrings_describe_none_as_the_stronger_safetensors_request():
+    """`None` is not a synonym for the default `True`.
+
+    On a host with at most two physical CPUs `unsloth_save_model` downgrades a default
+    `safe_serialization = True` to `fast_save_pickle`, warning that safetensors is 10x
+    slower there. `None` sets `_force_safe_serialization`, which is what makes the
+    branch above that downgrade fire instead. So a default merged_16bit save on a small
+    box can write a pickle, and a docstring saying only an explicit `False` does would
+    send that user looking for a file that is not there.
+    """
+    from pathlib import Path
+
+    save_py = Path(__file__).resolve().parents[2] / "unsloth" / "save.py"
+    source = save_py.read_text(encoding = "utf-8")
+
+    assert "`None` is accepted and means the same thing" not in source, (
+        "a docstring still equates None with the default True"
+    )
+    assert source.count("`None` is stronger than the default") == 4, (
+        "all four save_method docstrings have to describe None the same way"
+    )
+    # The behaviour the prose describes, read from the code rather than trusted.
+    assert "elif safe_serialization and (n_cpus <= 2):" in source
+    assert "if _force_safe_serialization:" in source
