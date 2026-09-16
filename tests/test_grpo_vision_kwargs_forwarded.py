@@ -177,6 +177,66 @@ def test_generate_forward_wrapper_keeps_the_real_signature():
     assert "pixel_values" in after and "spatial_shapes" in after
 
 
+def test_the_wrapper_survives_accelerates_fp32_unwrap():
+    """The signature must not be bought by making the wrapper removable.
+
+    accelerate's `extract_model_from_parallel(keep_fp32_wrapper = False)` runs on every
+    GRPO step. Once `prepare_model` has recorded `_original_forward`, which it does for a
+    full finetune and for a prepared reference model, it walks the `__wrapped__` chain
+    looking for that original and rebinds whatever it lands on:
+
+        while hasattr(forward, "__wrapped__"):
+            forward = forward.__wrapped__
+            if forward == original_forward: break
+        model.forward = MethodType(forward, model)
+
+    So `functools.wraps` here, which sets `__wrapped__`, is a route straight through this
+    wrapper to the bare forward: the wrapper is silently gone, and GRPO goes back to
+    materialising vocabulary-wide logits and to the OOM it exists to avoid. Setting
+    `__signature__` alone gives generate the same answer with no link to follow.
+    """
+    import inspect as _inspect
+
+    import torch
+    from accelerate.utils.operations import convert_outputs_to_fp32
+    from accelerate.utils.other import extract_model_from_parallel
+
+    from unsloth.models.rl import _install_grpo_hidden_states_forward_wrapper
+
+    class _Toy(torch.nn.Module):
+        config = type("cfg", (), {"is_encoder_decoder": False})()
+
+        def forward(self, input_ids = None, pixel_values = None, spatial_shapes = None, **kwargs):
+            return input_ids
+
+    model = _Toy()
+    # What accelerate.prepare_model leaves behind under mixed precision.
+    real_forward = model.forward
+    model._original_forward = real_forward
+    model.forward = convert_outputs_to_fp32(
+        torch.autocast(device_type = "cuda", dtype = torch.bfloat16)(real_forward)
+    )
+
+    assert _install_grpo_hidden_states_forward_wrapper(model)
+    assert getattr(model.forward, "_unsloth_grpo_hidden_states_forward_wrapped", False)
+    # No __wrapped__: that attribute is the entire mechanism accelerate unwraps through.
+    assert not hasattr(model.forward, "__wrapped__"), (
+        "the wrapper carries __wrapped__, so accelerate will unwrap straight past it"
+    )
+
+    unwrapped = extract_model_from_parallel(model, keep_fp32_wrapper = False)
+
+    assert getattr(unwrapped.forward, "_unsloth_grpo_hidden_states_forward_wrapped", False) or \
+        getattr(
+            getattr(unwrapped.forward, "__func__", None),
+            "_unsloth_grpo_hidden_states_forward_wrapped",
+            False,
+        ), "accelerate removed the hidden-state wrapper"
+    # And generate still sees the vision kwargs after that rebind.
+    after = list(_inspect.signature(unwrapped.forward).parameters)
+    assert "pixel_values" in after and "spatial_shapes" in after, after
+
+
 def test_num_tiles_survives_the_output_dict_rewrite():
     """TRL 1.7.0 nested num_tiles inside the num_images block; the insert must go after it."""
     from unsloth.models.rl_replacements import grpo_trainer__generate_and_score_completions

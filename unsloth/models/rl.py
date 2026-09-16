@@ -1456,16 +1456,6 @@ def _install_grpo_hidden_states_forward_wrapper(model):
     forward_signature = inspect.signature(original_forward)
     model_name = type(target_model).__name__
 
-    # Body-local: this function's source is extracted and exec'd without this module's
-    # imports by the GRPO hidden-state test harnesses.
-    import functools
-
-    # functools.wraps, so inspect.signature follows __wrapped__ back to the real forward.
-    # transformers' generate() validates its kwargs against inspect.signature(self.forward),
-    # so a bare (*args, **kwargs) wrapper makes every vision kwarg that the model takes
-    # only on forward look unused: LFM2-VL GRPO died on "The following `model_kwargs` are
-    # not used by the model: ['pixel_values', 'pixel_attention_mask', 'spatial_shapes']".
-    @functools.wraps(original_forward)
     def wrapped_forward(*args, **kwargs):
         # accelerate's extract_model_from_parallel(keep_fp32_wrapper = False), called every GRPO step, rebinds the forward as MethodType, so the module arrives as a leading positional argument; original_forward is already bound, so drop it.
         while len(args) != 0 and args[0] is target_model:
@@ -1539,6 +1529,37 @@ def _install_grpo_hidden_states_forward_wrapper(model):
         _note_grpo_hidden_states_success(target_model)
         return _replace_outputs_logits(outputs, hidden_states)
 
+    # transformers' generate() validates its kwargs against inspect.signature(self.forward), so a
+    # bare (*args, **kwargs) wrapper makes every vision kwarg the model takes only on forward look
+    # unused: LFM2-VL GRPO died on "The following `model_kwargs` are not used by the model:
+    # ['pixel_values', 'pixel_attention_mask', 'spatial_shapes']".
+    #
+    # __signature__ and NOT functools.wraps, which would also set __wrapped__. accelerate's
+    # extract_model_from_parallel(keep_fp32_wrapper = False) runs every GRPO step, and once
+    # prepare_model has recorded _original_forward it walks the __wrapped__ chain looking for it
+    # and rebinds whatever it lands on:
+    #
+    #     while hasattr(forward, "__wrapped__"):
+    #         forward = forward.__wrapped__
+    #         if forward == original_forward: break
+    #     model.forward = MethodType(forward, model)
+    #
+    # so a __wrapped__ link here is a route straight through this wrapper to the bare forward,
+    # and the wrapper is silently gone on any full finetune or prepared reference model, taking
+    # back the vocabulary-wide logits it exists to avoid. Measured on accelerate 1.15.0:
+    #
+    #     bare         survives=True   vision kwargs visible=False
+    #     wraps        survives=False  vision kwargs visible=True
+    #     __signature__ survives=True  vision kwargs visible=True
+    #
+    # inspect.signature reads __signature__ directly, and unwrap() stops at anything carrying one,
+    # so this is what generate() sees both before and after that rebind.
+    wrapped_forward.__signature__ = forward_signature
+    for _attribute in ("__name__", "__qualname__", "__doc__", "__module__"):
+        try:
+            setattr(wrapped_forward, _attribute, getattr(original_forward, _attribute))
+        except Exception:
+            pass
     wrapped_forward._unsloth_grpo_hidden_states_forward_wrapped = True
     target_model.forward = wrapped_forward
     setattr(target_model, _UNSLOTH_GRPO_HIDDEN_STATES_WRAPPED_ATTR, True)
