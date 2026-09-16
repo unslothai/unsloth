@@ -768,36 +768,67 @@ def collect_descendants(pid: "Optional[int]") -> "list[tuple[int, Optional[str]]
     #
     # Without a readable floor this claims nothing at all, and an unreadable candidate
     # is skipped rather than assumed to be ours: a tree kill is not a place to guess.
-    per_parent_floor = _is_windows()
-    root_floor = None
-    if per_parent_floor:
-        root_floor = _windows_creation_time(_pid_identity(pid))
-        if root_floor is None:
-            return []
+    if _is_windows():
+        return _windows_collect_descendants(pid)
+    # The POSIX walk, unchanged: /proc and the BSD table record a parent link the kernel
+    # rewrites on reparent, so there is no stale creator to order against and no floor to
+    # carry. Kept as its own loop rather than a flag inside the Windows one so this path
+    # allocates exactly what it allocated before; a queue of tuples measured 57 us -> 112 us
+    # per unload on a 200 process table for a check POSIX does not use.
+    table = _child_pid_map()
+    if not table:
+        return []
+    found: "list[tuple[int, Optional[str]]]" = []
+    seen = {pid}
+    queue = list(table.get(pid, ()))
+    while queue:
+        child = queue.pop(0)
+        if child in seen:
+            continue
+        seen.add(child)
+        found.append((child, _pid_identity(child)))
+        queue.extend(table.get(child, ()))
+    return found
+
+
+def _windows_collect_descendants(pid: int) -> "list[tuple[int, Optional[str]]]":
+    """`collect_descendants` for the Toolhelp table, which needs an ancestry proof.
+
+    Each candidate is ordered against ITS OWN immediate parent's creation time, carried
+    down the walk, not only against the root's. The root floor alone is not enough and the
+    difference is a real machine: the root starts at t=100, a stranger U starts at t=200
+    under some unrelated pid P, P exits, at t=300 P's number is reused for a genuine
+    Unsloth child, and U still records P as its creator because Windows never clears that
+    field. U is later than the root, so a root-only floor admits it, and the survivor sweep
+    then hands it to ``taskkill /PID <U> /T /F``, which takes down U and everything under
+    it. Ordering U against P's CURRENT creation time rejects it: a process cannot predate
+    the process that created it.
+
+    Without a readable floor this claims nothing at all, and a candidate whose own identity
+    cannot be read is skipped along with its subtree: a forced tree kill is not a place to
+    guess.
+    """
+    root_floor = _windows_creation_time(_pid_identity(pid))
+    if root_floor is None:
+        return []
     table = _child_pid_map()
     if not table:
         return []
     found: "list[tuple[int, Optional[str]]]" = []
     seen = {pid}
     # (candidate pid, creation time of the parent that listed it)
-    queue: "list[tuple[int, Optional[int]]]" = [(child, root_floor) for child in table.get(pid, ())]
+    queue: "list[tuple[int, int]]" = [(child, root_floor) for child in table.get(pid, ())]
     while queue:
         child, parent_created = queue.pop(0)
         if child in seen:
             continue
         seen.add(child)
         identity = _pid_identity(child)
-        if per_parent_floor:
-            created = _windows_creation_time(identity)
-            if created is None or parent_created is None or created < parent_created:
-                # Not provably below its own parent. Its children are not walked
-                # either: they hang off a link this process does not have.
-                continue
-            found.append((child, identity))
-            queue.extend((g, created) for g in table.get(child, ()))
+        created = _windows_creation_time(identity)
+        if created is None or created < parent_created:
             continue
         found.append((child, identity))
-        queue.extend((g, None) for g in table.get(child, ()))
+        queue.extend((grandchild, created) for grandchild in table.get(child, ()))
     return found
 
 
