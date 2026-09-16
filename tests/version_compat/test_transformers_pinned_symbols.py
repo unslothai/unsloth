@@ -57,7 +57,11 @@ def _declared_ceiling_tag() -> tuple[str, ...]:
     if not found:
         return ()
     # The highest, so a lower marker-gated half of a split cap cannot lower the anchor.
-    return ("v" + max(found, key = lambda v: tuple(int(p) for p in v.split("."))),)
+    ceiling = max(found, key = lambda v: tuple(int(p) for p in v.split(".")))
+    # Through the override table, for the reason that table exists: upstream does not always
+    # tag a release under its own name, so "v" + version can name a tag that was never
+    # pushed and every check against it would fail on the fetch rather than on the symbol.
+    return (_TAG_OVERRIDES.get(ceiling, "v" + ceiling),)
 
 # PyPI version -> the tag that actually carries it, where upstream disagrees with itself.
 # Upstream tagged PyPI 5.10.4 as v5.10.3 (that tag's __init__ says 5.10.4); there is no
@@ -129,16 +133,25 @@ def _write_cached_matrix(tags: list[str]) -> None:
 
 
 def _resolved_tags() -> list[str]:
-    """`_release_tags()`, resolved once per run and shared across xdist workers."""
+    """`_release_tags()`, resolved once per run and shared across xdist workers.
+
+    Every return here goes through `_with_always` as well, the published one included.
+    Sharing is a way to agree on the PyPI half of the answer, not a second source of truth
+    for the anchors: a file written by a different revision, left over from an earlier run,
+    or pointed at by hand carries whatever it carries, and returning it verbatim dropped
+    the floor, the old ceiling, the notebook pins and the declared ceiling while reporting
+    green. Re-merging is also what keeps the workers identical, since `_with_always` is a
+    pure function of the checkout they all share.
+    """
     cached = _cached_matrix()
     if cached is not None:
-        return cached
+        return _with_always(cached)
     tags = _release_tags()
     # Re-read before publishing: another worker may have resolved it while this one was
     # waiting on PyPI, and its answer is the one already in use.
     cached = _cached_matrix()
     if cached is not None:
-        return cached
+        return _with_always(cached)
     _write_cached_matrix(tags)
     return tags
 

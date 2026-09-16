@@ -12,6 +12,7 @@ Reads files only, which is what lets it run on the Windows and macOS runners too
 
 from __future__ import annotations
 
+import inspect
 import re
 import sys
 from pathlib import Path
@@ -527,3 +528,53 @@ def test_no_two_import_lanes_mint_the_same_pip_cache_key() -> None:
         f"two import lanes share an interpreter and so share one pip cache key: "
         f"{[(lane['slug'], lane['python']) for lane in lanes]}"
     )
+
+
+def test_a_published_matrix_still_carries_the_anchors(tmp_path, monkeypatch) -> None:
+    """Sharing the matrix between workers must not become a second source of truth.
+
+    The published file is how the workers agree on the PyPI half of the answer. It can
+    still be written by a different revision, left over from an earlier run, or pointed at
+    by hand, and returning it verbatim dropped the floor, the old ceiling, the notebook
+    pins and the declared ceiling while the suite reported green. That is the failure the
+    fallback merge exists to prevent, arriving through the cache instead.
+    """
+    import json as _json
+    import urllib.error
+
+    cache = tmp_path / "published.json"
+    # What a stale or foreign writer can leave behind: a list with none of the anchors.
+    cache.write_text(_json.dumps(["v5.17.0"]), encoding = "utf-8")
+    monkeypatch.setenv("UNSLOTH_TRANSFORMERS_MATRIX", str(cache))
+
+    def refuses(*args, **kwargs):
+        raise urllib.error.URLError("this worker reads the published file, not PyPI")
+
+    module = _matrix_module(refuses)
+
+    assert set(module._ALWAYS).issubset(module.TRANSFORMERS_TAGS), (
+        "the published matrix was returned without its anchors"
+    )
+    assert module._declared_ceiling_tag()[0] in module.TRANSFORMERS_TAGS
+    # What the file did carry is still honoured, so sharing still does its job.
+    assert "v5.17.0" in module.TRANSFORMERS_TAGS
+
+
+def test_the_declared_ceiling_anchor_uses_the_tag_upstream_pushed() -> None:
+    """NEGATIVE CONTROL for the derivation: upstream does not always tag a release under
+    its own name, which is why _TAG_OVERRIDES exists. A ceiling landing on such a release
+    must resolve to the tag that was pushed, or every check fails on the fetch rather than
+    on the symbol it meant to test."""
+    import importlib.util
+
+    path = Path(__file__).resolve().parent / "version_compat" / "test_transformers_pinned_symbols.py"
+    spec = importlib.util.spec_from_file_location("_ceiling_under_test", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    for release, tag in module._TAG_OVERRIDES.items():
+        assert module._TAG_OVERRIDES.get(release) == tag
+        # The derivation has to consult the same table the matrix does.
+        assert "_TAG_OVERRIDES" in inspect.getsource(module._declared_ceiling_tag), (
+            "the ceiling anchor is built as 'v' + version and ignores the override table"
+        )
