@@ -435,7 +435,8 @@ class TestCheckpointsNeverReachAVramFigure:
         import inspect
 
         source = inspect.getsource(LlamaCppBackend.load_model)
-        assert source.count("_auto_ctx_checkpoints = (") == 1
+        # One rule, re-asked wherever the slot count changes, never a second spelling.
+        assert source.count("def _decide_auto_ctx_checkpoints(") == 1
         assert "self._bounded_ctx_checkpoints(n_parallel, server_caps, extra_args)" in source
         assert source.count("self._bounded_ctx_checkpoints(") == 1
         assert "str(_auto_ctx_checkpoints)" in source
@@ -622,13 +623,28 @@ class TestTheCapSurvivesAWindowsDeviceRetry:
         import inspect
 
         source = inspect.getsource(LlamaCppBackend.load_model)
-        # One emission rule for the launch and the respawn, not two spellings of it.
+        # One emission rule for the launch and every respawn, not a spelling each.
         assert source.count("def _emit_auto_ctx_checkpoints(") == 1
-        assert source.count("_emit_auto_ctx_checkpoints(cmd)") == 2
-        strip = source.index("self._without_flag_pairs(cmd, _auto_ckpt_emitted)")
+        # The launch, the arch-crash respawn, and the single-sequence retry.
+        assert source.count("_emit_auto_ctx_checkpoints(cmd)") == 3
+        # Every respawn that re-emits first takes back the pair it is replacing.
+        assert source.count("self._without_flag_pairs(cmd, _auto_ckpt_emitted)") == 2
         tuning = source.index("_retry_cache_tuning_flags(")
-        re_emit = source.rindex("_emit_auto_ctx_checkpoints(cmd)")
+        strip = source.index("self._without_flag_pairs(cmd, _auto_ckpt_emitted)")
+        re_emit = source.index("_emit_auto_ctx_checkpoints(cmd)", tuning)
         assert strip < tuning < re_emit, "strip, re-decide the tuning, then re-apply the cap"
+
+    def test_the_single_sequence_retry_re_decides_the_cap_for_one_slot(self):
+        """llama-server refusing a unified cache drops to one slot, which affords more."""
+        import inspect
+
+        source = inspect.getsource(LlamaCppBackend.load_model)
+        clamp = source.index('n_parallel = 1  # allow-slot-clamp: llama-server refused more')
+        strip = source.index("self._without_flag_pairs(cmd, _auto_ckpt_emitted)", clamp)
+        decide = source.index("_auto_ctx_checkpoints = _decide_auto_ctx_checkpoints()", clamp)
+        emit = source.index("_emit_auto_ctx_checkpoints(cmd)", clamp)
+        spawn = source.index('_spawn_and_wait(cmd, label = "-single-seq")')
+        assert clamp < strip < decide < emit < spawn, "re-decide for one slot before spawning"
 
 
 # --------------------------------------------------------------- what THIS build defaults to
@@ -883,5 +899,5 @@ class TestTheCapFollowsTheSlotCountTheChildGets:
             and isinstance(node.func, ast.Name)
             and node.func.id == "_ctx_checkpoints_for_final_slots"
         ]
-        assert len(decisions) == 2, decisions
+        assert len(decisions) >= 2, decisions
         assert min(decisions) > max(fit_rebinds), (decisions, fit_rebinds)

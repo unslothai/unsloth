@@ -25646,11 +25646,15 @@ class LlamaCppBackend:
                             ", ".join(unsupported_cache_flags),
                         )
 
-                _auto_ctx_checkpoints = (
-                    self._bounded_ctx_checkpoints(n_parallel, server_caps, extra_args)
-                    if ctx_checkpoints is None
-                    else None
-                )
+                def _decide_auto_ctx_checkpoints() -> Optional[int]:
+                    """The cap for the slots n_parallel currently names, or None to stand down."""
+                    return (
+                        self._bounded_ctx_checkpoints(n_parallel, server_caps, extra_args)
+                        if ctx_checkpoints is None
+                        else None
+                    )
+
+                _auto_ctx_checkpoints = _decide_auto_ctx_checkpoints()
                 # Tracked apart from _cache_flags_emitted, which means "the Windows tuning
                 # ran", so the arch-crash respawn can re-decide each one on its own.
                 _auto_ckpt_emitted: list[str] = []
@@ -28075,7 +28079,15 @@ class LlamaCppBackend:
                         # Read by admission control; left as-is Studio over-admits.
                         n_parallel = 1  # allow-slot-clamp: llama-server refused more
                         kv_cache_unified = False
-                        healthy = _spawn_and_wait(_kvu_cmd, label = "-single-seq")
+                        # The cap in argv was sized for the slots this retry no longer
+                        # runs, and one slot affords more snapshots than four did. Same
+                        # re-decide as the arch-crash respawn, on the tokens we emitted.
+                        if _auto_ckpt_emitted:
+                            cmd = self._without_flag_pairs(cmd, _auto_ckpt_emitted)
+                            _auto_ckpt_emitted = []
+                        _auto_ctx_checkpoints = _decide_auto_ctx_checkpoints()
+                        _auto_ckpt_emitted = _emit_auto_ctx_checkpoints(cmd)
+                        healthy = _spawn_and_wait(cmd, label = "-single-seq")
 
                 # Flash-attention kernels hard-crash at startup on some ROCm/GPU
                 # builds (frequently inside the vision tower). Disabling FA keeps
