@@ -1412,6 +1412,25 @@ export const ja = {
       },
     },
     chat: {
+      groups: {
+        conversations: { title: "会話" },
+        files: { title: "ファイルと貼り付け" },
+        display: { title: "表示" },
+        composer: { title: "メッセージ入力欄" },
+        menu: { title: "チャットメニュー" },
+        advanced: { title: "詳細設定" },
+        contextTitle: "コンテキスト",
+      },
+      projectAttachmentsHint: "各チャットの添付メニューで個別に変更できます。",
+      rememberParamsPerModelHint:
+        "オフの場合、すべてのモデルで同じ設定を使います。",
+      autoCompactHint: "空きVRAMではなく、設定したコンテキスト長を基準にします。",
+      pastedTextShortDescription:
+        "この長さを超える貼り付けテキストを .txt 添付ファイルにします。",
+      compactionDescriptionInherit: "サーバーのコンテキストポリシーに従います。",
+      compactionDescriptionCheckpoint: "最新のやり取りと継続的な指示を保持します。",
+      compactionDescriptionRolling:
+        "古いターンを削除し、最近の履歴と選択した余裕分の空きを確保します。",
       projectsSection: "プロジェクトセクションを表示",
       projectsSectionDescription:
         "プロジェクトのチャットを「プロジェクト」の見出しにまとめます。オフにすると「最近」に表示されます。",

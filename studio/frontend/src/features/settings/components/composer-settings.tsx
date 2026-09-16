@@ -20,7 +20,7 @@ import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
 
-export function ComposerSettings() {
+export function ComposerSettings({ embedded = false }: { embedded?: boolean }) {
   const t = useT();
   const prefs = useChatPreferencesStore();
   const ref = useRef<HTMLDivElement>(null);
@@ -37,8 +37,17 @@ export function ComposerSettings() {
 
   return (
     <div ref={ref}>
-      <SettingsSection title={t("composerSettings.title")}>
-        <div className="mt-2 divide-y divide-border/60 rounded-2xl border border-border/60 bg-muted/20 px-4">
+      <SettingsSection
+        title={t("composerSettings.title")}
+        hideHeading={embedded}
+      >
+        <div
+          className={
+            embedded
+              ? ""
+              : "mt-2 divide-y divide-border/60 rounded-2xl border border-border/60 bg-muted/20 px-4"
+          }
+        >
           <SettingsRow
             label={t("composerSettings.plainText")}
             description={t("composerSettings.plainTextDescription")}

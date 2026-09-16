@@ -1451,6 +1451,28 @@ export const es = {
       },
     },
     chat: {
+      groups: {
+        conversations: { title: "Conversaciones" },
+        files: { title: "Archivos y pegado" },
+        display: { title: "Visualización" },
+        composer: { title: "Cuadro de mensaje" },
+        menu: { title: "Menú del chat" },
+        advanced: { title: "Avanzado" },
+        contextTitle: "Contexto",
+      },
+      projectAttachmentsHint:
+        "Cambia este ajuste para cada chat desde su menú de archivos adjuntos.",
+      rememberParamsPerModelHint:
+        "Al desactivarlo, todos los modelos usan los mismos ajustes.",
+      autoCompactHint:
+        "Usa la longitud de contexto configurada, no la VRAM disponible.",
+      pastedTextShortDescription:
+        "Convierte el texto pegado que supere este límite en archivos adjuntos .txt.",
+      compactionDescriptionInherit: "Sigue la política de contexto del servidor.",
+      compactionDescriptionCheckpoint:
+        "Conserva el último intercambio y las instrucciones permanentes.",
+      compactionDescriptionRolling:
+        "Elimina los turnos más antiguos para conservar el historial reciente y el espacio adicional seleccionado.",
       projectsSection: "Mostrar la sección Proyectos",
       projectsSectionDescription:
         "Agrupa los chats de proyecto bajo un encabezado Proyectos. Desactívalo para listarlos en Recientes.",

@@ -1457,6 +1457,28 @@ export const fr = {
       },
     },
     chat: {
+      groups: {
+        conversations: { title: "Conversations" },
+        files: { title: "Fichiers et collage" },
+        display: { title: "Affichage" },
+        composer: { title: "Zone de message" },
+        menu: { title: "Menu du chat" },
+        advanced: { title: "Avancé" },
+        contextTitle: "Contexte",
+      },
+      projectAttachmentsHint:
+        "Modifiez ce réglage pour chaque chat dans son menu de pièces jointes.",
+      rememberParamsPerModelHint:
+        "Lorsque cette option est désactivée, tous les modèles utilisent les mêmes réglages.",
+      autoCompactHint:
+        "Utilise la longueur de contexte définie, pas la VRAM disponible.",
+      pastedTextShortDescription:
+        "Convertit les textes collés dépassant cette limite en pièces jointes .txt.",
+      compactionDescriptionInherit: "Suit la politique de contexte du serveur.",
+      compactionDescriptionCheckpoint:
+        "Conserve le dernier échange et les instructions permanentes.",
+      compactionDescriptionRolling:
+        "Supprime les échanges les plus anciens pour conserver les plus récents et la marge choisie.",
       projectsSection: "Afficher la section Projets",
       projectsSectionDescription:
         "Regroupe les discussions de projet sous un titre Projets. Désactivez cette option pour les lister dans Récents.",

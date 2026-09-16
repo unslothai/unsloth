@@ -1430,6 +1430,25 @@ export const hi = {
       },
     },
     chat: {
+      groups: {
+        conversations: { title: "बतचत" },
+        files: { title: "फइल और पस" },
+        display: { title: "दखवट" },
+        composer: { title: "सदश बक" },
+        menu: { title: "चट मन" },
+        advanced: { title: "उनत" },
+        contextTitle: "सदर",
+      },
+      projectAttachmentsHint: "हर चट क अटचमट मन स इस सटग क अलग स बदल।",
+      rememberParamsPerModelHint: "बद हन पर सभ मडल एक ह सटग इसमल करत ह।",
+      autoCompactHint:
+        "उपलब VRAM क बजय आपक तय कए गए सदर क लबई क उपयग करत ह।",
+      pastedTextShortDescription:
+        "इस सम स लब पस कए गए टक क .txt अटचमट म बदल।",
+      compactionDescriptionInherit: "सरर क सदर नत क पलन कर।",
+      compactionDescriptionCheckpoint: "सबस हल क सवद और सय नरश बनए रख।",
+      compactionDescriptionRolling:
+        "परन सवद हटकर हल क इतहस और चन गई अतरक खल जगह बनए रख।",
       projectsSection: "प्रोजेक्ट अनुभाग दिखाएँ",
       projectsSectionDescription:
         "प्रोजेक्ट चैट को प्रोजेक्ट शीर्षक के नीचे समूहित करता है। बंद करने पर वे हाल ही के अंतर्गत दिखती हैं।",

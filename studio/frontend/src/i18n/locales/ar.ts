@@ -1424,6 +1424,28 @@ export const ar = {
       },
     },
     chat: {
+      groups: {
+        conversations: { title: "المحادثات" },
+        files: { title: "الملفات واللصق" },
+        display: { title: "العرض" },
+        composer: { title: "مربع الرسالة" },
+        menu: { title: "قائمة الدردشة" },
+        advanced: { title: "إعدادات متقدمة" },
+        contextTitle: "السياق",
+      },
+      projectAttachmentsHint:
+        "يمكن تغيير هذا الإعداد لكل دردشة من قائمة المرفقات الخاصة بها.",
+      rememberParamsPerModelHint:
+        "عند إيقافه، تستخدم جميع النماذج الإعدادات نفسها.",
+      autoCompactHint:
+        "يعتمد على طول السياق الذي حددته، لا على ذاكرة VRAM المتاحة.",
+      pastedTextShortDescription:
+        "يحول النصوص الملصقة التي تتجاوز هذا الحد إلى مرفقات .txt.",
+      compactionDescriptionInherit: "يتبع سياسة السياق المحددة على الخادم.",
+      compactionDescriptionCheckpoint:
+        "يحتفظ بآخر تبادل للرسائل والتعليمات الدائمة.",
+      compactionDescriptionRolling:
+        "يحذف أقدم التبادلات للاحتفاظ بالسجل الحديث والمساحة الإضافية المحددة.",
       projectsSection: "إظهار قسم المشاريع",
       projectsSectionDescription:
         "يجمع محادثات المشروع تحت عنوان المشاريع. أوقف هذا الخيار لعرضها ضمن الأخيرة بدلاً من ذلك.",

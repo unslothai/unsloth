@@ -1393,6 +1393,23 @@ export const zhCN = {
       },
     },
     chat: {
+      groups: {
+        conversations: { title: "对话" },
+        files: { title: "文件与粘贴" },
+        display: { title: "显示" },
+        composer: { title: "消息输入框" },
+        menu: { title: "聊天菜单" },
+        advanced: { title: "高级" },
+        contextTitle: "上下文",
+      },
+      projectAttachmentsHint: "可在各聊天的附件菜单中单独调整此设置。",
+      rememberParamsPerModelHint: "关闭后，所有模型使用同一套设置。",
+      autoCompactHint: "依据你设置的上下文长度，而不是可用显存。",
+      pastedTextShortDescription: "将超过此长度的粘贴内容转为 .txt 附件。",
+      compactionDescriptionInherit: "遵循服务器的上下文策略。",
+      compactionDescriptionCheckpoint: "保留最新一轮对话和持续生效的指令。",
+      compactionDescriptionRolling:
+        "移除最早的对话轮次，保留近期记录并预留所选的额外空间。",
       projectsSection: "显示项目分区",
       projectsSectionDescription:
         "将项目对话归到「项目」标题下。关闭后改为显示在「最近」中。",

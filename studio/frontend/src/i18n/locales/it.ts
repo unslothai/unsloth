@@ -1424,6 +1424,28 @@ export const it = {
       },
     },
     chat: {
+      groups: {
+        conversations: { title: "Conversazioni" },
+        files: { title: "File e incolla" },
+        display: { title: "Visualizzazione" },
+        composer: { title: "Casella del messaggio" },
+        menu: { title: "Menu della chat" },
+        advanced: { title: "Avanzate" },
+        contextTitle: "Contesto",
+      },
+      projectAttachmentsHint:
+        "Modifica questa impostazione per ogni chat dal relativo menu degli allegati.",
+      rememberParamsPerModelHint:
+        "Quando è disattivata, tutti i modelli usano le stesse impostazioni.",
+      autoCompactHint:
+        "Usa la lunghezza del contesto impostata, non la VRAM disponibile.",
+      pastedTextShortDescription:
+        "Converte il testo incollato oltre questo limite in allegati .txt.",
+      compactionDescriptionInherit: "Segue la politica del contesto del server.",
+      compactionDescriptionCheckpoint:
+        "Mantiene l’ultimo scambio e le istruzioni permanenti.",
+      compactionDescriptionRolling:
+        "Rimuove i turni più vecchi per conservare la cronologia recente e lo spazio aggiuntivo selezionato.",
       projectsSection: "Mostra la sezione Progetti",
       projectsSectionDescription:
         "Raggruppa le chat di progetto sotto un titolo Progetti. Disattivalo per elencarle in Recenti.",

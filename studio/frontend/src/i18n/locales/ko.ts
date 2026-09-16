@@ -1421,6 +1421,26 @@ export const ko = {
       },
     },
     chat: {
+      groups: {
+        conversations: { title: "대화" },
+        files: { title: "파일 및 붙여넣기" },
+        display: { title: "표시" },
+        composer: { title: "메시지 입력창" },
+        menu: { title: "채팅 메뉴" },
+        advanced: { title: "고급" },
+        contextTitle: "컨텍스트",
+      },
+      projectAttachmentsHint:
+        "각 채팅의 첨부 메뉴에서 이 설정을 개별적으로 변경할 수 있습니다.",
+      rememberParamsPerModelHint: "끄면 모든 모델에 같은 설정을 사용합니다.",
+      autoCompactHint: "남은 VRAM이 아닌 설정한 컨텍스트 길이를 기준으로 합니다.",
+      pastedTextShortDescription:
+        "이 길이를 넘는 붙여넣기 텍스트를 .txt 첨부 파일로 바꿉니다.",
+      compactionDescriptionInherit: "서버의 컨텍스트 정책을 따릅니다.",
+      compactionDescriptionCheckpoint:
+        "최신 대화 턴과 계속 적용되는 지침을 유지합니다.",
+      compactionDescriptionRolling:
+        "가장 오래된 턴을 삭제해 최근 기록을 유지하고 선택한 만큼의 여유 공간을 확보합니다.",
       projectsSection: "프로젝트 섹션 표시",
       projectsSectionDescription:
         "프로젝트 채팅을 프로젝트 제목 아래에 모읍니다. 끄면 최근 항목에 표시됩니다.",

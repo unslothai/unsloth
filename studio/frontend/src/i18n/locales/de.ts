@@ -1460,6 +1460,28 @@ export const de = {
       },
     },
     chat: {
+      groups: {
+        conversations: { title: "Gespräche" },
+        files: { title: "Dateien und Einfügen" },
+        display: { title: "Anzeige" },
+        composer: { title: "Nachrichtenfeld" },
+        menu: { title: "Chatmenü" },
+        advanced: { title: "Erweitert" },
+        contextTitle: "Kontext",
+      },
+      projectAttachmentsHint:
+        "Diese Einstellung lässt sich im Anhangmenü jedes Chats einzeln ändern.",
+      rememberParamsPerModelHint:
+        "Wenn deaktiviert, verwenden alle Modelle dieselben Einstellungen.",
+      autoCompactHint:
+        "Verwendet die eingestellte Kontextlänge, nicht den verfügbaren VRAM.",
+      pastedTextShortDescription:
+        "Wandelt eingefügten Text oberhalb dieses Limits in .txt-Anhänge um.",
+      compactionDescriptionInherit: "Folgt der Kontextrichtlinie des Servers.",
+      compactionDescriptionCheckpoint:
+        "Behält den letzten Austausch und die dauerhaft geltenden Anweisungen bei.",
+      compactionDescriptionRolling:
+        "Entfernt die ältesten Gesprächsrunden und behält neuere Inhalte mit dem gewählten zusätzlichen Freiraum.",
       projectsSection: "Projektbereich anzeigen",
       projectsSectionDescription:
         "Gruppiert Projekt-Chats unter einer Überschrift für Projekte. Deaktiviere dies, um sie stattdessen unter den zuletzt verwendeten Chats aufzulisten.",

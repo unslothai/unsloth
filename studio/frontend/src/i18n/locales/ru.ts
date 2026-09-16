@@ -1436,6 +1436,27 @@ export const ru = {
       },
     },
     chat: {
+      groups: {
+        conversations: { title: "Беседы" },
+        files: { title: "Файлы и вставка" },
+        display: { title: "Отображение" },
+        composer: { title: "Поле сообщения" },
+        menu: { title: "Меню чата" },
+        advanced: { title: "Дополнительно" },
+        contextTitle: "Контекст",
+      },
+      projectAttachmentsHint:
+        "Для отдельного чата настройку можно изменить в его меню вложений.",
+      rememberParamsPerModelHint:
+        "Если выключено, для всех моделей используются одинаковые настройки.",
+      autoCompactHint: "Учитывает заданную длину контекста, а не доступную VRAM.",
+      pastedTextShortDescription:
+        "Преобразует вставленный текст длиннее этого лимита во вложения .txt.",
+      compactionDescriptionInherit: "Использует политику контекста сервера.",
+      compactionDescriptionCheckpoint:
+        "Сохраняет последний обмен сообщениями и постоянные инструкции.",
+      compactionDescriptionRolling:
+        "Удаляет самые старые реплики, сохраняя недавнюю историю и выбранный запас свободного места.",
       projectsSection: "Показывать раздел «Проекты»",
       projectsSectionDescription:
         "Группирует чаты проектов под заголовком «Проекты». Отключите, чтобы они отображались в «Недавних».",

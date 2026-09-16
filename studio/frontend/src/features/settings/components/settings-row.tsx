@@ -37,6 +37,7 @@ export function SettingsRow({
 }) {
   return (
     <div
+      data-slot="settings-row"
       data-settings-label={label}
       className={cn(
         // Controls are fixed-width and shrink-0, so an unwrapped row starves the label. justify-end
@@ -63,6 +64,7 @@ export function SettingsRow({
           {/* Flex only when hinted, so every other row's label renders exactly
               as before. */}
           <span
+            data-slot="settings-row-label"
             className={cn(
               "text-sm font-medium text-foreground",
               hint && "flex items-center gap-1.5",
@@ -92,7 +94,10 @@ export function SettingsRow({
             ) : null}
           </span>
           {description ? (
-            <span className="text-xs text-muted-foreground leading-snug">
+            <span
+              data-slot="settings-row-description"
+              className="text-xs text-muted-foreground leading-snug"
+            >
               {description}
             </span>
           ) : null}
