@@ -559,11 +559,117 @@ export function useTtsPlayer(
     [],
   );
 
+  // Speak with the browser's own voice. Reached either because no backend TTS is
+  // available, or because backend synthesis produced nothing for this reply --
+  // in that second case it is the difference between a spoken answer and silence.
+  const speakWithBrowser = useCallback(
+    (sentences: string[], reqId: number) => {
+      if (typeof window === "undefined" || !("speechSynthesis" in window)) {
+        onPlaybackEndRef.current?.();
+        return;
+      }
+      // Queue one utterance per sentence: gives the same chunked cadence and
+      // sidesteps Chrome's long-utterance cutoff bug. Completion fires on the
+      // last sentence; any error ends the loop.
+      setIsSpeaking(true);
+      let remaining = sentences.length;
+      const finish = () => {
+        // Tied to this speak() call, not merely to "some utterance is recorded".
+        // A cancelled utterance still fires onend/onerror, and after a quick
+        // stop-then-restart that stale event arrives with the NEW utterance
+        // recorded -- clearing its state and resuming the voice loop while the
+        // new speech was still queued.
+        if (requestIdRef.current !== reqId) return;
+        if (utteranceRef.current === null) return;
+        utteranceRef.current = null;
+        setIsSpeaking(false);
+        setIsPlaying(false);
+        onPlaybackEndRef.current?.();
+      };
+      const utterances = sentences.map((sentence) => {
+        const utterance = new SpeechSynthesisUtterance(sentence);
+        utterance.onstart = () => setIsPlaying(true);
+        // Both handlers can fire for a cancelled utterance long after stop():
+        // speechSynthesis.cancel() reports the old utterance's end/error
+        // asynchronously, by which time the replacement reply may already be
+        // queued. Only the current request may touch playback state or the global
+        // queue, or that stale event kills the new reply too; finish() re-checks
+        // the same id for the same reason.
+        utterance.onend = () => {
+          if (requestIdRef.current !== reqId) return;
+          setIsPlaying(false);
+          remaining -= 1;
+          if (remaining <= 0) finish();
+        };
+        utterance.onerror = () => {
+          if (requestIdRef.current !== reqId) return;
+          window.speechSynthesis.cancel();
+          finish();
+        };
+        return utterance;
+      });
+      // Sentinel so stop()/stopSynth() knows synth playback is active.
+      utteranceRef.current = utterances[utterances.length - 1] ?? null;
+      for (const utterance of utterances) window.speechSynthesis.speak(utterance);
+    },
+    // Empty on purpose: everything closed over is a ref or a setState, all stable
+    // for the life of the hook. A dependency here would give speak() a new identity
+    // every render and restart the loop's effects mid-conversation.
+    [],
+  );
+
+  // Say ONE sentence with the browser voice, mid-reply, because the backend failed
+  // to synthesize it (a transient 5xx, a codec error, a dropped connection). The
+  // sentences around it played from the voice slot, so no whole-reply fallback
+  // would fire and the loop would otherwise advance as if this one had been
+  // spoken. Resolves when the utterance ends, at once when there is nothing to
+  // say or no speech synthesis, and through onend/onerror when a barge-in's
+  // stop() -> stopSynth() cancels it. It does not end the turn: the loop that
+  // called it does, once the rest of the reply has played.
+  const speakSentenceWithBrowser = useCallback(
+    (sentence: string, reqId: number): Promise<void> =>
+      new Promise<void>((resolve) => {
+        if (
+          !sentence ||
+          requestIdRef.current !== reqId ||
+          typeof window === "undefined" ||
+          !("speechSynthesis" in window)
+        ) {
+          resolve();
+          return;
+        }
+        const utterance = new SpeechSynthesisUtterance(sentence);
+        let settled = false;
+        const settle = () => {
+          if (settled) return;
+          settled = true;
+          if (utteranceRef.current === utterance) utteranceRef.current = null;
+          if (requestIdRef.current === reqId) setIsPlaying(false);
+          resolve();
+        };
+        utterance.onstart = () => {
+          if (requestIdRef.current === reqId) setIsPlaying(true);
+        };
+        utterance.onend = settle;
+        utterance.onerror = settle;
+        // Recorded so stopSynth() cancels it on barge-in.
+        utteranceRef.current = utterance;
+        window.speechSynthesis.speak(utterance);
+      }),
+    [],
+  );
+
   const speak = useCallback(
     async (text: string) => {
       stop();
       text = stripForSpeech(text);
-      if (!text) return;
+      if (!text) {
+        // Emoji-only or pure markup: nothing to say, but the turn still has to end
+        // like any other, or the loop never resumes listening (beginStream has
+        // already stopped dictation by the time endStream reaches here).
+        onPlaybackEndRef.current?.();
+        return;
+      }
       // stop() above bumped the counter; this is now our request's id.
       const reqId = requestIdRef.current;
       const sentences = splitIntoSentences(text);
@@ -596,6 +702,7 @@ export function useTtsPlayer(
                 const blob = await requestSpeechBlob(sentence);
                 if (requestIdRef.current !== reqId) return;
                 if (blob) await playBlob(blob, reqId);
+                else await speakSentenceWithBrowser(sentence, reqId);
               },
             );
             gate = job;
@@ -635,8 +742,8 @@ export function useTtsPlayer(
             if (requestIdRef.current !== reqId) return;
             // Refill the window so N stay in flight ahead of playback.
             launchUpTo(i + 1 + N);
-            if (!blob) continue;  // skip a sentence that failed to synthesize
-            await playBlob(blob, reqId);
+            if (blob) await playBlob(blob, reqId);
+            else await speakSentenceWithBrowser(sentences[i] ?? "", reqId);
           }
         }
 
@@ -644,39 +751,7 @@ export function useTtsPlayer(
         setIsSpeaking(false);
         onPlaybackEndRef.current?.();
       } else {
-        if (typeof window === "undefined" || !("speechSynthesis" in window)) {
-          onPlaybackEndRef.current?.();
-          return;
-        }
-        // Queue one utterance per sentence: gives the same chunked cadence and
-        // sidesteps Chrome's long-utterance cutoff bug. Completion fires on the
-        // last sentence; any error ends the loop.
-        setIsSpeaking(true);
-        let remaining = sentences.length;
-        const finish = () => {
-          if (utteranceRef.current === null) return;
-          utteranceRef.current = null;
-          setIsSpeaking(false);
-          setIsPlaying(false);
-          onPlaybackEndRef.current?.();
-        };
-        const utterances = sentences.map((sentence) => {
-          const utterance = new SpeechSynthesisUtterance(sentence);
-          utterance.onstart = () => setIsPlaying(true);
-          utterance.onend = () => {
-            setIsPlaying(false);
-            remaining -= 1;
-            if (remaining <= 0) finish();
-          };
-          utterance.onerror = () => {
-            window.speechSynthesis.cancel();
-            finish();
-          };
-          return utterance;
-        });
-        // Sentinel so stop()/stopSynth() knows synth playback is active.
-        utteranceRef.current = utterances[utterances.length - 1] ?? null;
-        for (const utterance of utterances) window.speechSynthesis.speak(utterance);
+        speakWithBrowser(sentences, reqId);
       }
     },
     [
@@ -687,6 +762,8 @@ export function useTtsPlayer(
       playSentenceStream,
       requestSpeechBlob,
       drainStream,
+      speakWithBrowser,
+      speakSentenceWithBrowser,
     ],
   );
 
@@ -768,6 +845,7 @@ export function useTtsPlayer(
                   const blob = await synthOne(sentence);
                   if (requestIdRef.current !== reqId) return;
                   if (blob) await playBlob(blob, reqId);
+                  else await speakSentenceWithBrowser(sentence, reqId);
                 },
               );
               gate = job;
@@ -780,11 +858,13 @@ export function useTtsPlayer(
             }
           } else {
             pumpSynth(); // ensure the current sentence (and window) is launched
+            const sentence = stripForSpeech(st.sentences[st.playIndex] ?? "");
             const blob = await st.jobs[st.playIndex];
             if (requestIdRef.current !== reqId) return;
             st.playIndex++;
             pumpSynth(); // playback advanced -> refill the lookahead window
             if (blob) await playBlob(blob, reqId);
+            else await speakSentenceWithBrowser(sentence, reqId);
           }
         } else if (st.final) {
           break;
@@ -810,6 +890,7 @@ export function useTtsPlayer(
     playSentenceStream,
     synthOne,
     drainStream,
+    speakSentenceWithBrowser,
   ]);
 
   // Feed the growing assistant text; records newly-complete sentences and lets the

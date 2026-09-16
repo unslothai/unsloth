@@ -2467,12 +2467,23 @@ export function ChatPage({
   );
   const [cachedGgufs, setCachedGgufs] = useState<LoraModelOption[]>([]);
   const cachedGgufsFetchedRef = useRef(false);
+  // Voice-load fence. The picker stays interactive while a voice loads, so the
+  // user can pick A and then B while A is still downloading or loading. Every
+  // pick takes a new attempt number, and a completion (success, failure, download
+  // rollback) that no longer holds the current number must not touch the slot or
+  // the store: a late A failure would clear B, and a late A success would leave
+  // the backend serving A under a store that says B. Loads are also serialised on
+  // the in-flight request so the last pick is the last one llama-server sees.
+  const voiceLoadAttemptRef = useRef(0);
+  const voiceLoadInflightRef = useRef<Promise<unknown> | null>(null);
 
   const handleVoiceModelChange = useCallback(
     async (id: string | null) => {
       // Captured before we optimistically switch the selection so a cancelled
       // download can roll back to whatever voice was active.
       const previousId = useChatRuntimeStore.getState().selectedVoiceModelId;
+      const attempt = ++voiceLoadAttemptRef.current;
+      const current = () => voiceLoadAttemptRef.current === attempt;
       setSelectedVoiceModelId(id);
       if (!id) {
         // Browser voice — just unload any loaded TTS voice slot. Selecting a
@@ -2569,6 +2580,8 @@ export function ChatPage({
               }
             });
         });
+        // A newer pick owns the selection now; its own load settles the store.
+        if (!current()) return;
         if (!ok) {
           // Roll back to the prior voice; any loaded slot stays intact and the
           // selector keeps matching what /api/inference/audio/speech will use.
@@ -2577,9 +2590,15 @@ export function ChatPage({
         }
       }
 
+      // Let an earlier pick's request finish first, so llama-server loads picks
+      // in the order they were made; then re-check that this is still the pick.
+      if (voiceLoadInflightRef.current) {
+        await voiceLoadInflightRef.current.catch(() => {});
+      }
+      if (!current()) return;
       setVoiceSlotLoading(true);
       try {
-        const res = await authFetch("/api/inference/voice/load", {
+        const load = authFetch("/api/inference/voice/load", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -2588,6 +2607,9 @@ export function ChatPage({
             gguf_variant: useChatRuntimeStore.getState().selectedVoiceVariant,
           }),
         });
+        voiceLoadInflightRef.current = load;
+        const res = await load;
+        if (!current()) return;
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));
           toast.error("Voice model failed to load", {
@@ -2598,10 +2620,13 @@ export function ChatPage({
         // On success we just leave the model loaded and selected; entering the
         // ball is the separate "Start voice mode" action in the popover.
       } catch {
+        if (!current()) return;
         toast.error("Voice model failed to load");
         setSelectedVoiceModelId(null);
       } finally {
-        setVoiceSlotLoading(false);
+        // Only the pick that owns the flag clears it; a superseded one would
+        // otherwise blank the newer pick's spinner mid-load.
+        if (current()) setVoiceSlotLoading(false);
       }
     },
     [setSelectedVoiceModelId, setVoiceSlotLoading],
