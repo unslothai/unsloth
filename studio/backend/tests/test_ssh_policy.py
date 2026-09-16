@@ -1145,6 +1145,41 @@ def test_sftp_command_input_fails_closed(command):
     assert check_ssh_command_access(command, "review") is not None
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "sftp -F none approved.example:/file | tee transcript",
+        "sftp -F none approved.example:/file |& tee transcript",
+        "printf ready | cat; sftp -F none approved.example:/file",
+        "cat < input.txt && sftp -F none approved.example:/file",
+        "sftp -F none approved.example:/file; cat < input.txt",
+    ],
+)
+def test_sftp_output_and_unrelated_input_remain_allowed(command):
+    approve_hosts("review", ["approved.example"])
+    assert check_ssh_command_access(command, "review") is None
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "printf commands | env sftp -F none approved.example",
+        "< commands.txt sftp -F none approved.example",
+        "printf commands | { echo ready; sftp -F none approved.example; }",
+        "{ sftp -F none approved.example; } < commands.txt",
+        "printf commands | bash -c 'sftp -F none approved.example'",
+        "sftp -F none approved.example:/file; printf commands | bash -c 'sftp -F none approved.example'",
+        "exec < commands.txt; sftp -F none approved.example",
+        "printf commands | \nsftp -F none approved.example",
+        "printf commands |\nsftp -F none approved.example",
+        "printf commands | find . -maxdepth 0 -exec true \\; -exec sftp -F none approved.example \\;",
+    ],
+)
+def test_sftp_inherited_command_input_stays_blocked(command):
+    approve_hosts("review", ["approved.example"])
+    assert check_ssh_command_access(command, "review") is not None
+
+
 def test_python_sftp_input_fails_closed():
     approve_hosts("review", ["approved.example"])
     code = "import subprocess; subprocess.run(['sftp','-F','none','approved.example'],input='!ssh -F none evil.example',text=True)"

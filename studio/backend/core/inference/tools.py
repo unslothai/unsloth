@@ -1500,6 +1500,8 @@ def _find_blocked_commands(
         return base
 
     ssh_xargs_indexes: set[int] = set()
+    sftp_indexes: set[int] = set()
+    ssh_segment_start = len(_ssh_segments) if _ssh_segments is not None else 0
     ssh_forwarding = ""
 
     def _exec_child_index(start: int) -> "tuple[int, bool]":
@@ -1550,6 +1552,8 @@ def _find_blocked_commands(
     def _collect_ssh(index: int, name: str) -> None:
         if _ssh_segments is None or name not in _SSH_GATED_COMMANDS:
             return
+        if name == "sftp":
+            sftp_indexes.add(index)
         if index in ssh_xargs_indexes:
             _ssh_segments.append((name, ["$dynamic"] if name == "git" else []))
             return
@@ -1961,13 +1965,49 @@ def _find_blocked_commands(
         and any(name == "sftp" for name, _args in _ssh_segments)
         and any(
             index not in quoted_separators
-            and token in {"|", "|&"}
+            and token.strip("\n") in {"|", "|&"}
             or index in redirect_indexes
             and re.match(r"^(?:0)?<", token)
             for index, token in enumerate(tokens)
         )
     ):
-        _ssh_segments.append(("sftp", []))
+        # compound shells can pass stdin through groups or nested invocations.
+        nested_sftp = sum(
+            name == "sftp" for name, _args in _ssh_segments[ssh_segment_start:]
+        ) > len(sftp_indexes)
+        compound = (
+            nested_sftp
+            or not sftp_indexes
+            or bool(exec_flag_indexes)
+            or any(
+                index not in quoted_separators
+                and (
+                    any(char in token for char in "(){}`")
+                    or token
+                    in _SHELL_KEYWORDS_AS_SEP | {"for", "case", "select", "function", "exec"}
+                )
+                for index, token in enumerate(tokens)
+            )
+        )
+        stdin_commands: set[int] = set()
+        sftp_commands: set[int] = set()
+        command_index = 0
+        awaiting_pipeline_command = False
+        for index, token in enumerate(tokens):
+            if awaiting_pipeline_command and not token.strip("\n"):
+                continue
+            awaiting_pipeline_command = False
+            if index in invocation_stops:
+                command_index += 1
+                if token.strip("\n") in {"|", "|&"}:
+                    stdin_commands.add(command_index)
+                    awaiting_pipeline_command = True
+            elif index in redirect_indexes and re.match(r"^(?:0)?<", token):
+                stdin_commands.add(command_index)
+            if index in sftp_indexes:
+                sftp_commands.add(command_index)
+        if compound or stdin_commands & sftp_commands:
+            _ssh_segments.append(("sftp", []))
 
     return blocked
 
