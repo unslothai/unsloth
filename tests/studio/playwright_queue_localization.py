@@ -103,6 +103,31 @@ def check_editor_shortcut(page, base):
     print("PASS: the queued-prompt editor follows the send-shortcut preference", flush = True)
 
 
+def check_escape_during_ime(page, base):
+    # An IME consumes Escape to close its candidate window and reports the key
+    # as composing, so the editor must keep the draft rather than cancel.
+    seed(page, base)
+    editor = open_editor(page, "More options for queued prompt 1", "Edit message")
+    editor.fill("draft-survives-ime-escape")
+    for init in ('{isComposing: true}', '{keyCode: 229}'):
+        page.evaluate(
+            f"""() => {{
+                const ta = document.querySelector('textarea[aria-label^="Edit queued prompt"]');
+                ta.dispatchEvent(new KeyboardEvent('keydown', Object.assign(
+                    {{key: 'Escape', bubbles: true, cancelable: true}}, {init})));
+            }}"""
+        )
+        expect(editor).to_be_visible()
+        expect(editor).to_have_value("draft-survives-ime-escape")
+    # Escape with no composition still cancels.
+    editor.press("Escape")
+    expect(editor).to_have_count(0)
+    expect(page.locator("[data-queue-item-id]").first).to_have_attribute(
+        "aria-label", "Queued prompt 1 of 3: First prompt"
+    )
+    print("PASS: Escape keeps the draft while an IME is composing", flush = True)
+
+
 def main():
     server = None
     try:
@@ -129,6 +154,7 @@ def main():
                 page.on("pageerror", lambda error: errors.append(str(error)))
                 check_localized(page, base)
                 check_editor_shortcut(page, base)
+                check_escape_during_ime(page, base)
                 assert not errors, errors
             finally:
                 browser.close()

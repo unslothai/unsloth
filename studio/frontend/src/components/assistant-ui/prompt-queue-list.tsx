@@ -176,7 +176,13 @@ export function PromptQueueList({
                       rows={2}
                       onChange={(event) => setDraft(event.currentTarget.value)}
                       onKeyDown={(event) => {
+                        // An IME consumes Escape to close its candidate window,
+                        // so cancelling here would discard the draft instead.
+                        const composing =
+                          event.nativeEvent.isComposing ||
+                          event.nativeEvent.keyCode === 229;
                         if (event.key === "Escape") {
+                          if (composing) return;
                           event.preventDefault();
                           event.stopPropagation();
                           finishEditing();
