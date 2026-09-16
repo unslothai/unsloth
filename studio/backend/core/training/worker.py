@@ -3759,7 +3759,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     # same bytes either way.
                     _total_bytes = int(getattr(_props, "total_memory", 0) or 0)
                     _driver_total = 0
-                    if not _allocator_divides_by_props_total(getattr(_torch_mem, "__version__", "")):
+                    if not _allocator_divides_by_props_total(
+                        getattr(_torch_mem, "__version__", "")
+                    ):
                         try:
                             _driver_total = int(_torch_mem.cuda.mem_get_info(_mem_index)[1])
                         except Exception:
@@ -3777,7 +3779,12 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                             _env_raw,
                         )
                     _mem_fraction = _gpu_memory_fraction(
-                        _total_bytes, _is_unified, sys.platform, "rocm", _env_raw, _driver_total or None
+                        _total_bytes,
+                        _is_unified,
+                        sys.platform,
+                        "rocm",
+                        _env_raw,
+                        _driver_total or None,
                     )
                     # A wheel that reports no total still gets a cap; say so rather than printing "0.0 of 0.0 GiB allowed"
                     # on the one host whose props are suspect.

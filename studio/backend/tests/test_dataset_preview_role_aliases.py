@@ -216,7 +216,6 @@ def test_the_training_standardiser_normalises_the_same_way():
     `standardize_chat_format`. That matched the raw role, so a "Human"/"GPT" dataset
     previewed as user/assistant and then handed the raw roles to the tokenizer."""
     from utils.datasets.format_conversion import _normalize_role_alias as training_normalize
-
     for spelling, expected in _SPELLINGS:
         assert _ROLE_MAP[training_normalize(spelling)] == expected
 

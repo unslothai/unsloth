@@ -445,7 +445,13 @@ class _FakeRocmCuda(_FakeCuda):
     """_FakeCuda plus the two things only the ROCm arm asks for: the driver's own
     total, and the arch string the unified/discrete classification reads."""
 
-    def __init__(self, *, driver_total = None, gcn_arch = "gfx1100", **kwargs):
+    def __init__(
+        self,
+        *,
+        driver_total = None,
+        gcn_arch = "gfx1100",
+        **kwargs,
+    ):
         kwargs.setdefault("name", "AMD Radeon PRO W7900")
         super().__init__(**kwargs)
         self._driver_total = self._total if driver_total is None else driver_total
@@ -462,7 +468,12 @@ class _FakeRocmCuda(_FakeCuda):
         )
 
 
-def _run_section_1g(*, environ, cuda = None, platform = "linux"):
+def _run_section_1g(
+    *,
+    environ,
+    cuda = None,
+    platform = "linux",
+):
     import sys as _real_sys
 
     from core.training import worker as worker_module
