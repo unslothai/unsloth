@@ -444,6 +444,21 @@ def _assignment_pairs(tree: ast.AST):
                     pending.extend(zip(target.elts, value.elts))
             else:
                 yield target, value
+                if isinstance(value, (ast.List, ast.Tuple)):
+                    for index, item in enumerate(value.elts):
+                        pending.append(
+                            (ast.Subscript(value = target, slice = ast.Constant(index)), item)
+                        )
+                        yield (
+                            ast.Subscript(
+                                value = target, slice = ast.Constant(index - len(value.elts))
+                            ),
+                            item,
+                        )
+                elif isinstance(value, ast.Dict):
+                    for key, item in zip(value.keys, value.values):
+                        if key is not None:
+                            pending.append((ast.Subscript(value = target, slice = key), item))
 
 
 def _ssh_client_bindings(tree: ast.AST, bindings: dict[str, str]) -> dict[str, str]:
@@ -468,10 +483,20 @@ def _ssh_client_bindings(tree: ast.AST, bindings: dict[str, str]) -> dict[str, s
                 clients[name] = factory
         elif _fq_name(value) in clients:
             clients[name] = clients[_fq_name(value)]
+        elif isinstance(value, ast.Subscript):
+            clients[name] = "unresolved"
     return clients
 
 
 def _fq_name(node: Optional[ast.AST]) -> str:
+    if isinstance(node, ast.Subscript):
+        container = _fq_name(node.value)
+        try:
+            key = ast.literal_eval(node.slice)
+        except (ValueError, TypeError, SyntaxError):
+            key = None
+        suffix = repr(key) if isinstance(key, (str, int)) else "*"
+        return f"{container}[{suffix}]" if container else ""
     parts: list[str] = []
     cur = node
     while isinstance(cur, ast.Attribute):
@@ -871,6 +896,18 @@ def _scan_ssh_python_usage(
                     dynamic = True
                 self.generic_visit(node)
                 return
+
+            if (
+                bindings
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in _SSH_PY_CONNECT_ATTRS
+                and (
+                    isinstance(node.func.value, ast.Subscript)
+                    and _fq_name(node.func.value) not in clients
+                    or clients.get(_fq_name(node.func.value)) == "unresolved"
+                )
+            ):
+                uses_ssh = dynamic = True
 
             shell_func = _bound_name(node.func, shell_aliases)
 
