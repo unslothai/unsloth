@@ -4,6 +4,7 @@
 import type { TourStep } from "@/features/tour";
 
 export function buildChatTourSteps({
+  canShowNav,
   canCompare,
   openModelSelector,
   closeModelSelector,
@@ -12,6 +13,7 @@ export function buildChatTourSteps({
   enterCompare,
   exitCompare,
 }: {
+  canShowNav: boolean;
   canCompare: boolean;
   openModelSelector: () => void;
   closeModelSelector: () => void;
@@ -21,18 +23,6 @@ export function buildChatTourSteps({
   exitCompare: () => void;
 }): TourStep[] {
   const steps: TourStep[] = [
-    {
-      id: "nav",
-      target: "navbar",
-      title: "Where everything lives",
-      body: (
-        <>
-          Chat runs models. Train fine-tunes them, Recipes turns documents into
-          datasets, and Export packages the result. Images, Video and Audio are
-          their own workspaces, and Model hub manages what is on this device.
-        </>
-      ),
-    },
     {
       id: "model",
       target: "chat-model-selector",
@@ -85,6 +75,22 @@ export function buildChatTourSteps({
       onExit: closeSettings,
     },
   ];
+
+  if (canShowNav) {
+    // The mobile sidebar is a closed sheet, so there is nothing to spotlight there.
+    steps.unshift({
+      id: "nav",
+      target: "navbar",
+      title: "Where everything lives",
+      body: (
+        <>
+          Chat runs models. Train fine-tunes them, Recipes turns documents into
+          datasets, and Export packages the result. Images, Video and Audio are
+          their own workspaces, and Model hub manages what is on this device.
+        </>
+      ),
+    });
+  }
 
   if (canCompare) {
     // Compare lives in the + menu, with no sidebar button to anchor to; this step enters compare on
