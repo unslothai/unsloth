@@ -771,6 +771,11 @@ test("the chord carries a bulk paste past the threshold, inline", () => {
   );
 });
 
+const THRESHOLD_DESCRIPTION_KEY = "pastedTextThresholdDescription:";
+// The value that follows the key, as a double-quoted literal that may carry escapes. Anchored so
+// it matches the description's own string and not a later one.
+const LEADING_STRING_LITERAL = /^\s*("(?:[^"\\]|\\.)*")/;
+
 test("every locale keeps the shortcut in the threshold description", async () => {
   const { readdir, readFile } = await import("node:fs/promises");
   const dir = new URL("../src/i18n/locales/", import.meta.url);
@@ -778,12 +783,19 @@ test("every locale keeps the shortcut in the threshold description", async () =>
   assert.ok(files.length >= 12, "every shipped locale is read");
   for (const name of files) {
     const source = await readFile(new URL(name, dir), "utf8");
-    const at = source.indexOf("pastedTextThresholdDescription:");
+    const at = source.indexOf(THRESHOLD_DESCRIPTION_KEY);
     assert.notEqual(at, -1, `${name} carries the description`);
-    const line = source.slice(at, source.indexOf("\n", at));
+    // Read the literal itself rather than the remainder of the key's line. The formatter wraps a
+    // long translation onto the next line, which left a first-line window empty and reported the
+    // placeholder missing from 11 of the 12 locales that in fact carry it -- only en.ts is short
+    // enough to stay on one line, so the check passed there and failed everywhere else.
+    const value = LEADING_STRING_LITERAL.exec(
+      source.slice(at + THRESHOLD_DESCRIPTION_KEY.length),
+    );
+    assert.ok(value, `${name} gives the description a string literal`);
     // The chord reads ⇧⌘V or Ctrl+Shift+V, so the tab supplies it and a
     // translation that drops the placeholder loses the escape hatch.
-    assert.ok(line.includes("{shortcut}"), `${name} keeps {shortcut}`);
+    assert.ok(value[1].includes("{shortcut}"), `${name} keeps {shortcut}`);
   }
 });
 
