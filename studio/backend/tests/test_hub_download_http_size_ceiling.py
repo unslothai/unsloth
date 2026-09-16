@@ -690,3 +690,93 @@ def test_a_finalized_shard_still_reopens_http_on_a_failed_refresh(monkeypatch, t
     assert _run_worker(registry, key, _LandsTheBigShard(1, b"xet failed on the second shard"))
 
     assert rungs == [download_registry.TRANSPORT_HTTP]
+
+
+# --------------------------------------------------------------------------------------------
+# Whose credential the probe measures with
+# --------------------------------------------------------------------------------------------
+
+
+def _record_probe_tokens(monkeypatch) -> list:
+    """Capture the token every ``repo_info`` call is made under."""
+    import huggingface_hub
+
+    seen: list = []
+    dl._REPO_SIBLINGS.clear()
+
+    class _Recorder:
+        def __init__(self, token = None):
+            self.token = token
+
+        def repo_info(self, *_args, **_kwargs):
+            seen.append(self.token)
+            return _types.SimpleNamespace(siblings = _flash_next_siblings())
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", _Recorder)
+    return seen
+
+
+def test_a_caller_denied_the_ambient_login_measures_anonymously(monkeypatch):
+    """``token=None`` would borrow the backend's saved login; ``False`` is the anonymous sentinel."""
+    seen = _record_probe_tokens(monkeypatch)
+
+    dl.largest_download_file_bytes(
+        "model", "unsloth/M-GGUF", variant = "ud-q5_k_xl", allow_ambient_token = False
+    )
+
+    assert seen == [False]
+
+
+def test_a_ui_session_still_measures_under_the_ambient_login(monkeypatch):
+    seen = _record_probe_tokens(monkeypatch)
+
+    dl.largest_download_file_bytes(
+        "model", "unsloth/M-GGUF", variant = "ud-q5_k_xl", allow_ambient_token = True
+    )
+
+    assert seen == [None]
+
+
+def test_an_anonymous_probe_does_not_read_an_ambient_cache_entry(monkeypatch):
+    """The two boundaries take separate cache identities, so neither serves the other."""
+    seen = _record_probe_tokens(monkeypatch)
+
+    dl.largest_download_file_bytes("model", "unsloth/M-GGUF", allow_ambient_token = True)
+    dl.largest_download_file_bytes("model", "unsloth/M-GGUF", allow_ambient_token = False)
+
+    assert seen == [None, False]
+    assert len(dl._REPO_SIBLINGS) == 2
+
+
+def test_the_watcher_probes_under_the_jobs_own_boundary(monkeypatch, tmp_path):
+    """Every rung of the ladder measures with the token policy the job started under."""
+    seen = _record_probe_tokens(monkeypatch)
+    blobs = tmp_path / "models--unsloth--M-GGUF" / "blobs"
+    blobs.mkdir(parents = True)
+    monkeypatch.setattr(
+        download_registry,
+        "iter_active_repo_cache_dirs",
+        lambda *a, **k: iter([blobs.parent]),
+    )
+    _ladder_setup(monkeypatch, tmp_path, largest_file_bytes = None, probe = False)
+    monkeypatch.setattr(dl, "_xet_attempt_budget", lambda: 1)
+    monkeypatch.setattr(dl, "_try_transport_retry", lambda *a, **kw: None)
+    key, registry = _claimed_registry()
+
+    assert dl.register_worker(
+        registry,
+        key,
+        _Proc(1, b"xet transport failed"),
+        hf_token = None,
+        label = "unsloth/M-GGUF",
+        log_prefix = "Download",
+        logger = dl.logger,
+        repo_type = "model",
+        repo_id = "unsloth/M-GGUF",
+        transport = download_registry.TRANSPORT_XET,
+        watch_name = "model-watch",
+        allow_ambient_token = False,
+    )
+
+    assert seen, "the watcher never measured"
+    assert set(seen) == {False}, "a watcher probe borrowed the backend's own login"

@@ -241,6 +241,7 @@ async def download_dataset_response(
         "dataset",
         repo_id,
         hf_token = hf_token,
+        allow_ambient_token = allow_ambient_token,
     )
     use_xet, transport_reason = await asyncio.to_thread(
         download_lifecycle.resolve_requested_use_xet,

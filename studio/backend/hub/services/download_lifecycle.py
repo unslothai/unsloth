@@ -23,6 +23,7 @@ from hub.utils import download_manifest
 from hub.utils import download_registry
 from hub.utils import inventory_scan as hf_cache_scan
 from hub.utils.hf_cache_state import EXIT_CANCELLED
+from hub.utils.hf_tokens import HfTokenArg, hf_token_arg
 from hub.utils.state_dir import RepoType
 
 logger = logging.getLogger(__name__)
@@ -75,7 +76,7 @@ _repo_siblings_lock = threading.Lock()
 _REPO_SIBLINGS: "dict[tuple[str, str, str], tuple[tuple, float]]" = {}
 
 
-def _repo_siblings(repo_type: str, repo_id: str, hf_token: Optional[str]) -> tuple:
+def _repo_siblings(repo_type: str, repo_id: str, hf_token: HfTokenArg) -> tuple:
     """Return a briefly cached file listing with sizes, or an empty tuple when none was ever read.
 
     A failed refresh serves the last listing instead: sizes at a revision do not change, and
@@ -125,14 +126,21 @@ def largest_download_file_bytes(
     variant: Optional[str] = None,
     files: Optional[Sequence[str]] = None,
     hf_token: Optional[str] = None,
+    allow_ambient_token: bool = True,
     hub_cache: Optional[str] = None,
 ) -> Optional[int]:
     """Return the largest selected, uncached file, or None when it cannot be measured.
 
     Selection matches the worker: explicit files, a GGUF variant plan, filtered model snapshots, or
     every dataset file. Finalized blobs are excluded because ``snapshot_download`` skips them.
+
+    ``allow_ambient_token`` is the caller's boundary, applied exactly as ``spawn_worker`` applies
+    it: a caller denied the backend's own login measures anonymously, so this probe can never read
+    a repository the download it is deciding for could not.
     """
-    siblings = _repo_siblings(repo_type, repo_id, hf_token)
+    siblings = _repo_siblings(
+        repo_type, repo_id, hf_token_arg(hf_token, allow_ambient_token = allow_ambient_token)
+    )
     if not siblings:
         return None
     from hub.utils.gguf_plan import (
@@ -178,6 +186,7 @@ def _largest_file_bytes_for_job(
     metadata = None,
     *,
     hf_token: Optional[str] = None,
+    allow_ambient_token: bool = True,
 ) -> Optional[int]:
     """Measure a registered job, including its scoped file list, without failing the watcher."""
     try:
@@ -187,6 +196,7 @@ def _largest_file_bytes_for_job(
             variant = getattr(metadata, "variant", None),
             files = getattr(metadata, "scoped_files", None) or None,
             hf_token = hf_token,
+            allow_ambient_token = allow_ambient_token,
             hub_cache = getattr(metadata, "hub_cache", None),
         )
     except Exception as exc:  # noqa: BLE001 - unknown size, same as it was before the probe existed
@@ -200,12 +210,17 @@ def http_rung_reason(
     metadata = None,
     *,
     hf_token: Optional[str] = None,
+    allow_ambient_token: bool = True,
 ) -> Optional[str]:
     """Return why this job cannot use the recovery ladder's HTTP rung, if applicable."""
     return download_registry.download_transport_unavailable_reason(
         download_registry.TRANSPORT_HTTP,
         largest_file_bytes = _largest_file_bytes_for_job(
-            repo_type, repo_id, metadata, hf_token = hf_token
+            repo_type,
+            repo_id,
+            metadata,
+            hf_token = hf_token,
+            allow_ambient_token = allow_ambient_token,
         ),
     )
 
@@ -868,7 +883,13 @@ def _try_transport_retry(
         registry.update_job_transport(key, original_metadata.transport)
         # A failed Xet respawn may fall back only when HTTP can fetch the remaining files.
         rung_reason = (
-            http_rung_reason(repo_type, repo_id, original_metadata, hf_token = hf_token)
+            http_rung_reason(
+                repo_type,
+                repo_id,
+                original_metadata,
+                hf_token = hf_token,
+                allow_ambient_token = allow_ambient_token,
+            )
             if retry_over_xet
             else None
         )
@@ -1132,7 +1153,11 @@ def register_worker(
             started_on_xet = transport == download_registry.TRANSPORT_XET
             # Keep the pre-run size for error reporting. Retry eligibility is measured after exit.
             largest_file_bytes = _largest_file_bytes_for_job(
-                repo_type, repo_id, _metadata, hf_token = worker_token
+                repo_type,
+                repo_id,
+                _metadata,
+                hf_token = worker_token,
+                allow_ambient_token = allow_ambient_token,
             )
             # Watch every Xet attempt so even a final hung worker becomes terminal.
             if started_on_xet:
@@ -1169,7 +1194,13 @@ def register_worker(
                 watchdog_stop.set()
             # Recheck after exit because this worker may have finalized the oversized shard.
             rung_reason = (
-                http_rung_reason(repo_type, repo_id, _metadata, hf_token = worker_token)
+                http_rung_reason(
+                    repo_type,
+                    repo_id,
+                    _metadata,
+                    hf_token = worker_token,
+                    allow_ambient_token = allow_ambient_token,
+                )
                 if started_on_xet
                 else None
             )

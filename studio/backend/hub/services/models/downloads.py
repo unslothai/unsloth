@@ -222,6 +222,7 @@ async def download_model_response(
         variant = variant,
         files = scoped_files or None,
         hf_token = hf_token,
+        allow_ambient_token = allow_ambient_token,
     )
     use_xet, transport_reason = await asyncio.to_thread(
         download_lifecycle.resolve_requested_use_xet,
