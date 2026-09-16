@@ -275,9 +275,7 @@ def test_a_rejected_scan_folder_does_not_disclose_where_it_resolved(monkeypatch)
 
     monkeypatch.setattr(local_inventory, "add_scan_folder_response", _raises)
 
-    response = _hub(via_api_key = True).post(
-        "/api/hub/scan-folders", json = {"path": "./models"}
-    )
+    response = _hub(via_api_key = True).post("/api/hub/scan-folders", json = {"path": "./models"})
     assert response.status_code == 400
     detail = response.json()["detail"]
     assert HOST_ROOT not in detail, detail
@@ -1181,9 +1179,7 @@ def test_the_reference_that_loaded_a_model_can_unload_it():
     path = f"{HOST_ROOT}/my models/Llama-3.2-1B"
     reference = host_paths.cache_reference(path)
     assert UnloadRequest(model_path = reference).model_path == path
-    assert UnloadRequest(model_path = "unsloth/Llama-3.2-1B").model_path == (
-        "unsloth/Llama-3.2-1B"
-    )
+    assert UnloadRequest(model_path = "unsloth/Llama-3.2-1B").model_path == ("unsloth/Llama-3.2-1B")
 
 
 def test_a_path_that_outlives_its_request_is_still_referenced():
@@ -1243,7 +1239,7 @@ def test_the_long_lived_routes_redact_what_they_persisted():
     for module, needle in (
         (inference_routes, "redact_host_paths(DiffusionStatusResponse("),
         (video_routes, "redact_host_paths(VideoStatusResponse("),
-        (training_routes, "TrainingRunListResponse(runs = runs, total = result[\"total\"]),"),
+        (training_routes, 'TrainingRunListResponse(runs = runs, total = result["total"]),'),
     ):
         source = inspect.getsource(module)
         assert needle in source, (module.__name__, needle)
@@ -1309,7 +1305,6 @@ def test_a_second_load_does_not_hand_back_the_resident_path():
 
 def jsonable(payload):
     from fastapi.encoders import jsonable_encoder
-
     return jsonable_encoder(payload)
 
 
@@ -1445,6 +1440,7 @@ def test_a_prepared_dataset_cache_still_counts_when_the_hub_copy_is_unusable():
         # And a dataset with neither is absent too: this widens nothing else.
         dataset_cache.latest_processed_dataset_cache_path = lambda repo_id: None
         assert hf_tokens._repo_present_on_disk("owner/ds", "dataset") is False
+
         # An unreadable hub tree says nothing about the prepared one either.
         def _raise(repo_type, repo_id):
             raise OSError("unreadable cache root")
@@ -1623,7 +1619,7 @@ def test_the_deferred_five_hundred_restores_the_handle_too():
     generic = body.index("failed after the response was committed")
     # Up to the success branch, so the restoration that belongs to THAT one cannot satisfy
     # this assertion: the window is the generic-exception branch and nothing else.
-    tail = body[generic:body.index("else:", generic)]
+    tail = body[generic : body.index("else:", generic)]
     assert "_deferred_error_body(" in tail, tail
     assert "restore_inventory_handles(" in tail, tail
 
@@ -1679,9 +1675,10 @@ def test_a_persisted_failure_message_keeps_its_reason_and_loses_the_path():
     assert "FileNotFoundError" in redacted["error_message"], redacted
     assert redacted["status"] == "error"
     # And the browser session still reads its own filesystem.
-    assert host_paths.redact_host_paths(
-        {"error_message": message}, via_api_key = False
-    )["error_message"] == message
+    assert (
+        host_paths.redact_host_paths({"error_message": message}, via_api_key = False)["error_message"]
+        == message
+    )
 
 
 def test_the_chat_status_does_not_hand_back_the_path_the_load_resolved(monkeypatch):
@@ -1717,9 +1714,7 @@ def test_the_chat_status_does_not_hand_back_the_path_the_load_resolved(monkeypat
     assert REPO_DIR not in body, body
 
     # And the browser session still sees its own machine, as everywhere else in this file.
-    ui = asyncio.run(
-        inference_routes.inference_status(current_subject = "alice", via_api_key = False)
-    )
+    ui = asyncio.run(inference_routes.inference_status(current_subject = "alice", via_api_key = False))
     assert ui.model_identifier == REPO_DIR
 
 
@@ -1740,9 +1735,12 @@ def test_a_lora_base_model_path_is_referenced_not_returned():
     # is what the caller can hand back.
     assert redacted["base_model"] == host_paths.cache_reference(base)
     # A repo id is not a path and is never touched.
-    assert host_paths.redact_host_paths(
-        {"base_model": "unsloth/Llama-3.2-1B"}, via_api_key = True
-    )["base_model"] == "unsloth/Llama-3.2-1B"
+    assert (
+        host_paths.redact_host_paths({"base_model": "unsloth/Llama-3.2-1B"}, via_api_key = True)[
+            "base_model"
+        ]
+        == "unsloth/Llama-3.2-1B"
+    )
     # The browser session still sees its own machine.
     assert host_paths.redact_host_paths(details, via_api_key = False)["base_model"] == base
 
@@ -1863,19 +1861,25 @@ def test_a_resumable_run_can_still_be_resumed_by_an_api_key_caller():
 
     # No resume asked for stays no resume asked for, and a handle this process never issued
     # is left to fail the way an unknown directory does rather than being invented.
-    assert TrainingStartRequest(
-        model_name = "unsloth/Llama-3.2-1B",
-        training_type = "LoRA/QLoRA",
-        format_type = "chat",
-    ).resume_from_checkpoint is None
-    assert TrainingStartRequest(
-        model_name = "unsloth/Llama-3.2-1B",
-        training_type = "LoRA/QLoRA",
-        format_type = "chat",
-        resume_from_checkpoint = "ref:nope",
-    ).resume_from_checkpoint == "ref:nope"
+    assert (
+        TrainingStartRequest(
+            model_name = "unsloth/Llama-3.2-1B",
+            training_type = "LoRA/QLoRA",
+            format_type = "chat",
+        ).resume_from_checkpoint
+        is None
+    )
+    assert (
+        TrainingStartRequest(
+            model_name = "unsloth/Llama-3.2-1B",
+            training_type = "LoRA/QLoRA",
+            format_type = "chat",
+            resume_from_checkpoint = "ref:nope",
+        ).resume_from_checkpoint
+        == "ref:nope"
+    )
 
     # The browser session still sees its own machine.
-    assert host_paths.redact_host_paths(
-        {"output_dir": output_dir}, via_api_key = False
-    ) == {"output_dir": output_dir}
+    assert host_paths.redact_host_paths({"output_dir": output_dir}, via_api_key = False) == {
+        "output_dir": output_dir
+    }

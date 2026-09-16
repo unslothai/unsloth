@@ -2384,7 +2384,6 @@ async def get_model_config(
         # verbatim, so the ordinary config lookup handed back host layout the caller only had
         # one reference for.
         from hub.utils.host_paths import redact_host_paths, restore_inventory_handles
-
         return redact_host_paths(
             restore_inventory_handles(await asyncio.to_thread(_resolve, model_name)),
             via_api_key = via_api_key,

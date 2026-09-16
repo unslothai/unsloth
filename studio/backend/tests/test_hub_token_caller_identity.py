@@ -2649,9 +2649,7 @@ def test_a_slow_denial_is_still_a_denial(monkeypatch):
     monkeypatch.setattr(hf_tokens, "_REPO_ACCESS_PROBE_TIMEOUT_S", 0.05)
     calls = _counting_probe(monkeypatch, False, offline = False, delay = 0.2)
 
-    assert (
-        hf_tokens._explicit_token_reaches_repo("org/private", "hf_revoked", "model") is False
-    )
+    assert hf_tokens._explicit_token_reaches_repo("org/private", "hf_revoked", "model") is False
     assert calls["n"] == 1
     # Memoized as the denial it was, under the denial TTL rather than the short unreachable
     # one, and remembered, which is what survives a later unaskable Hub.
@@ -2663,6 +2661,4 @@ def test_a_slow_denial_is_still_a_denial(monkeypatch):
     # disclosure went through: with nothing remembered, local presence decided it.
     hf_tokens._repo_access_cache.clear()
     _counting_probe(monkeypatch, None, offline = False)
-    assert (
-        hf_tokens._explicit_token_reaches_repo("org/private", "hf_revoked", "model") is False
-    )
+    assert hf_tokens._explicit_token_reaches_repo("org/private", "hf_revoked", "model") is False

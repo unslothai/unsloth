@@ -2756,9 +2756,7 @@ def _handle_restored_http_exception(exc: HTTPException) -> HTTPException:
     detail = restore_inventory_handles(exc.detail)
     if detail == exc.detail:
         return exc
-    return HTTPException(
-        status_code = exc.status_code, detail = detail, headers = exc.headers
-    )
+    return HTTPException(status_code = exc.status_code, detail = detail, headers = exc.headers)
 
 
 async def _tunnel_safe_json(coro, *, label: str):
@@ -2807,9 +2805,7 @@ async def _tunnel_safe_json(coro, *, label: str):
                 payload = task.result()
             except HTTPException as exc:
                 logger.info(f"{label} failed with {exc.status_code} after the response committed")
-                yield _deferred_error_body(
-                    exc.status_code, restore_inventory_handles(exc.detail)
-                )
+                yield _deferred_error_body(exc.status_code, restore_inventory_handles(exc.detail))
             except Exception as exc:
                 logger.exception(f"{label} failed after the response was committed")
                 # Through the same restoration as the HTTPException above. A filesystem
@@ -2821,9 +2817,7 @@ async def _tunnel_safe_json(coro, *, label: str):
                     500, restore_inventory_handles(f"{type(exc).__name__}: {exc}")
                 )
             else:
-                yield json.dumps(
-                    jsonable_encoder(restore_inventory_handles(payload))
-                ).encode()
+                yield json.dumps(jsonable_encoder(restore_inventory_handles(payload))).encode()
             return
 
     return _SameTaskStreamingResponse(
@@ -16594,36 +16588,38 @@ async def validate_model(
             except Exception as e:
                 logger.debug("Header probe failed for %s: %s", model_log_label, e)
 
-        return restore_inventory_handles(ValidateModelResponse(
-            valid = True,
-            message = "Model identifier is valid.",
-            identifier = model_log_label if native_grant_backed else config.identifier,
-            resident = await asyncio.to_thread(
-                _validated_target_is_resident,
-                request,
-                model_identifier = model_identifier,
-                config = config,
+        return restore_inventory_handles(
+            ValidateModelResponse(
+                valid = True,
+                message = "Model identifier is valid.",
+                identifier = model_log_label if native_grant_backed else config.identifier,
+                resident = await asyncio.to_thread(
+                    _validated_target_is_resident,
+                    request,
+                    model_identifier = model_identifier,
+                    config = config,
+                    is_gguf = is_gguf,
+                    native_grant_backed = native_grant_backed,
+                ),
+                display_name = model_log_label
+                if native_grant_backed
+                else getattr(config, "display_name", config.identifier),
                 is_gguf = is_gguf,
-                native_grant_backed = native_grant_backed,
-            ),
-            display_name = model_log_label
-            if native_grant_backed
-            else getattr(config, "display_name", config.identifier),
-            is_gguf = is_gguf,
-            is_diffusion = is_gguf and placement.diffusion_kind is True,
-            # An unavailable header is inconclusive, not proof of an ordinary GGUF.
-            diffusion_unknown = is_gguf and placement.diffusion_kind is None,
-            is_lora = getattr(config, "is_lora", False),
-            is_vision = getattr(config, "is_vision", False),
-            requires_trust_remote_code = requires_trust_remote_code,
-            requires_security_review = requires_security_review,
-            context_length = context_length,
-            layer_count = layer_count,
-            moe_layer_count = moe_layer_count,
-            chat_template = chat_template,
-            requires_transformers_upgrade = transformers_upgrade is not None,
-            transformers_upgrade = transformers_upgrade,
-        ))
+                is_diffusion = is_gguf and placement.diffusion_kind is True,
+                # An unavailable header is inconclusive, not proof of an ordinary GGUF.
+                diffusion_unknown = is_gguf and placement.diffusion_kind is None,
+                is_lora = getattr(config, "is_lora", False),
+                is_vision = getattr(config, "is_vision", False),
+                requires_trust_remote_code = requires_trust_remote_code,
+                requires_security_review = requires_security_review,
+                context_length = context_length,
+                layer_count = layer_count,
+                moe_layer_count = moe_layer_count,
+                chat_template = chat_template,
+                requires_transformers_upgrade = transformers_upgrade is not None,
+                transformers_upgrade = transformers_upgrade,
+            )
+        )
 
     except HTTPException as http_error:
         # Restored on the way out, not re-raised untouched. This route raises with
@@ -16639,9 +16635,7 @@ async def validate_model(
     except LlamaServerNotFoundError as e:
         # Missing GGUF runtime: 400 with the install message, not a generic "Invalid model".
         logger.warning("GGUF runtime missing while validating '%s': %s", request.model_path, e)
-        raise HTTPException(
-            status_code = 400, detail = restore_inventory_handles(str(e))
-        )
+        raise HTTPException(status_code = 400, detail = restore_inventory_handles(str(e)))
     except Exception as e:
         # Restored here rather than at each raise below: every branch that quotes the
         # failure quotes this string, and an error detail naming the path is the same
@@ -18104,7 +18098,6 @@ async def inference_status(
     redaction exists to hide by loading the row and then polling status.
     """
     from hub.utils.host_paths import redact_host_paths
-
     return redact_host_paths(
         await get_status(current_subject = current_subject),
         via_api_key = via_api_key,
@@ -36804,7 +36797,6 @@ async def load_diffusion_model(
     # reference `GET /images/status` gives. Done in the route rather than in the gated body
     # below, because the internal callers of that body are not serving an API-key request.
     from hub.utils.host_paths import redact_host_paths, restore_inventory_handles
-
     return redact_host_paths(
         restore_inventory_handles(
             await load_diffusion_model_gated(request, current_subject, user_initiated = True)

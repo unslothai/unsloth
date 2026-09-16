@@ -244,7 +244,6 @@ async def load_video_model(
     # reference `GET /video/status` gives. Done in the route rather than in the gated body
     # below, because the internal callers of that body are not serving an API-key request.
     from hub.utils.host_paths import redact_host_paths, restore_inventory_handles
-
     return redact_host_paths(
         restore_inventory_handles(
             await load_video_model_gated(request, current_subject, user_initiated = True)
