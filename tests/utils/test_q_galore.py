@@ -120,8 +120,9 @@ def test_optimizer_constructs_against_the_installed_bitsandbytes():
 @pytest.mark.skipif(not _adamw_mod._HAS_BNB, reason = "bitsandbytes is required")
 @pytest.mark.parametrize("projected", [True, False])
 @pytest.mark.parametrize("initial_value", [0.0, 1.0])
-def test_default_optimizer_updates_match_adamw(projected, initial_value):
-    pytest.importorskip("bitsandbytes")
+@pytest.mark.parametrize("weight_decay", [0.0, 0.1])
+def test_default_optimizer_updates_match_adamw(projected, initial_value, weight_decay):
+    bnb = pytest.importorskip("bitsandbytes")
     device = "cuda" if torch.cuda.is_available() else "cpu"
     requires_bnb_optimizer(device)
     param = nn.Parameter(torch.full((2, 2), initial_value, device = device))
@@ -129,8 +130,10 @@ def test_default_optimizer_updates_match_adamw(projected, initial_value):
     group = {"params": [param]}
     if projected:
         group.update(rank = 2, scale = 1.0, quant = False)
-    optimizer = _adamw_mod.QGaLoreAdamW8bit([group], lr = 0.1, weight_decay = 0.0)
-    reference_optimizer = torch.optim.AdamW([reference], lr = 0.1, weight_decay = 0.0)
+    optimizer = _adamw_mod.QGaLoreAdamW8bit([group], lr = 0.1, weight_decay = weight_decay)
+    # Unprojected steps delegate to bitsandbytes, whose CUDA kernel decays AFTER the update.
+    reference_cls = torch.optim.AdamW if projected else bnb.optim.AdamW8bit
+    reference_optimizer = reference_cls([reference], lr = 0.1, weight_decay = weight_decay)
     # A diagonal gradient keeps full-rank projection aligned with the AdamW reference.
     gradient = torch.diag(torch.tensor([2.0, 1.0], device = device))
     for weight, opt in [(param, optimizer), (reference, reference_optimizer)]:
@@ -572,30 +575,6 @@ class TestQGaLoreIntegration:
         param_names = list(sig.parameters.keys())
         assert "betas" in param_names, "betas not in QGaLoreAdamW8bit.__init__ params"
         assert "eps" in param_names, "eps not in QGaLoreAdamW8bit.__init__ params"
-
-    def test_weight_decay_uses_saved_data(self):
-        """Weight decay should apply standard decoupled AdamW decay on current weights."""
-        _adamw_mod_local = sys.modules["unsloth.optimizers.q_galore_adamw"]
-
-        p = torch.nn.Parameter(torch.ones(4, 4))
-        p._saved_data = torch.ones(4, 4) * 2.0  # Pre-update weights
-        # Simulate project-back: p.data = p._saved_data + projected update.
-        p.data = p._saved_data.add_(torch.ones(4, 4) * 1.0)  # p.data is now 3.0
-
-        group = {"weight_decay": 0.1, "lr": 1.0, "_wd_saved": 0.1}
-
-        # Decoupled weight decay must use p.data, not p._saved_data.
-        p.data.add_(
-            p.data,
-            alpha = -group["lr"] * group["_wd_saved"],
-        )
-
-        del p._saved_data  # Clean up after all uses, matching fixed code
-
-        # 3.0 - (1.0 * 0.1 * 3.0) = 2.7
-        assert torch.allclose(
-            p.data, torch.tensor(2.7)
-        ), "Weight decay didn't use p.data for decoupled decay!"
 
     def test_params_float_after_weight_quant_step(self):
         """After a step with weight_quant=True, parameters must remain floating point."""

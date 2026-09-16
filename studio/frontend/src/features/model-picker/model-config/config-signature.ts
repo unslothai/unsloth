@@ -15,7 +15,9 @@ export function gpuFieldsSignature(config: PerModelConfig): string {
     config.selectedGpuIds == null
       ? "automatic"
       : [
-          [...config.selectedGpuIds].sort((a, b) => a - b).join(","),
+          // Order-preserving: the list order is the device order, so sorting here
+          // made a reorder read as no change and left Apply disabled on it.
+          config.selectedGpuIds.join(","),
           config.selectedGpuIndexKind === undefined
             ? "physical"
             : (config.selectedGpuIndexKind ?? "deferred"),

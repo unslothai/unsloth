@@ -15,6 +15,7 @@ import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
 import {
   formatMcpToolName,
   mcpServerFromProvenance,
+  mcpToolFromProvenance,
 } from "@/features/chat/utils/mcp-tool-name";
 import { stripAnsi, stringifyToolResult } from "@/lib/strip-ansi";
 import { cn } from "@/lib/utils";
@@ -154,6 +155,7 @@ const statusIconMap: Record<ToolStatus, ElementType> = {
 function ToolFallbackTrigger({
   toolName,
   mcpServer,
+  mcpTool,
   status,
   icon: ToolIcon,
   className,
@@ -164,6 +166,7 @@ function ToolFallbackTrigger({
   // lands HERE, where formatMcpToolName calls `.startsWith` on it.
   toolName: unknown;
   mcpServer?: string;
+  mcpTool?: string;
   status?: ToolCallMessagePartStatus;
   icon?: ElementType;
 }) {
@@ -174,7 +177,7 @@ function ToolFallbackTrigger({
   const StatusIcon = statusIconMap[statusType];
   const label = toolFallbackLabel(status);
   const name = toolArgText(toolName);
-  const displayName = formatMcpToolName(name, mcpServer) ?? name;
+  const displayName = formatMcpToolName(name, mcpServer, mcpTool) ?? name;
 
   return (
     <CollapsibleTrigger
@@ -423,16 +426,15 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
   // Allow/Deny confirmation controls are rendered uniformly for every tool
   // card (built-in and fallback) by the `withToolConfirmation` wrapper in
   // thread.tsx, so this renderer stays purely presentational.
-  const mcpServer = mcpServerFromProvenance(
-    (rest as { provenance?: unknown }).provenance,
-  );
+  const provenance = (rest as { provenance?: unknown }).provenance;
   const isCancelled = isToolCallCancelled(status);
 
   return (
     <ToolFallbackRoot className={cn(isCancelled && "bg-muted/30")}>
       <ToolFallbackTrigger
         toolName={toolName}
-        mcpServer={mcpServer}
+        mcpServer={mcpServerFromProvenance(provenance)}
+        mcpTool={mcpToolFromProvenance(provenance)}
         status={status}
       />
       <ToolFallbackContent>

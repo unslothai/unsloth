@@ -419,6 +419,42 @@ def test_sandbox_home_under_a_granted_root_hides_other_accounts(tmp_path, monkey
 
 
 @pytest.mark.skipif(not LANDLOCK, reason = "Landlock not available on this kernel")
+def test_a_rule_path_removed_before_the_child_opens_it_does_not_kill_the_call(tmp_path):
+    """A grant whose directory went between the walk and the child is dropped, not fatal.
+
+    `_landlock_rules` walks a granted ancestor child by child, and the child opens each path
+    afterwards. Anything that removes one in between -- a cache purge, a model delete, an
+    account delete, another test sharing the interpreter prefix -- used to raise out of
+    preexec_fn, so the tool call died as "Exception occurred in preexec_fn" and named neither
+    the path nor the reason. Landlock denies by default, so a dropped grant only narrows the
+    child.
+    """
+    gone = tmp_path / "granted-then-removed"
+    gone.mkdir()
+    rules = [
+        (str(tmp_path), tool_confinement._FS_READ_DIR),
+        (str(gone), tool_confinement._FS_READ_DIR),
+    ]
+    handled = tool_confinement._handled_mask(tool_confinement.landlock_abi())
+    gone.rmdir()
+
+    # Forked, because _landlock_preexec restricts the process it runs in and pytest is not a
+    # process to restrict.
+    pid = os.fork()
+    if pid == 0:
+        try:
+            tool_confinement._landlock_preexec(handled, rules)
+        except BaseException:
+            os._exit(1)
+        os._exit(0)
+    _, status = os.waitpid(pid, 0)
+    assert os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0, (
+        "a rule path that disappeared before the child opened it took the whole launch down; "
+        "landlock denies by default, so the grant should be dropped instead"
+    )
+
+
+@pytest.mark.skipif(not LANDLOCK, reason = "Landlock not available on this kernel")
 def test_projects_home_under_a_granted_root_hides_other_accounts(tmp_path, monkeypatch):
     from utils.paths.storage_roots import project_workspaces_root
 

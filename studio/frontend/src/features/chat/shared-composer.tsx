@@ -2490,28 +2490,26 @@ export function SharedComposer({
               {pinnedPlusItems.map((id) => (
                 <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
               ))}
-              {overflowPlusItems.length > 0 ? (
-                <DropdownMenuSub>
-                  <DropdownMenuSubTrigger>
-                    <MoreHorizontalIcon className="size-4" />
-                    More
-                  </DropdownMenuSubTrigger>
-                  <DropdownMenuSubContent className="unsloth-plus-menu w-[248px]">
-                    {overflowPlusItems.map((id) => (
-                      <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
-                    ))}
-                  </DropdownMenuSubContent>
-                </DropdownMenuSub>
-              ) : null}
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                onSelect={() => useSettingsDialogStore.getState().openDialog("chat", {
-                  scrollTarget: "chat-composer",
-                })}
-              >
-                <SlidersHorizontalIcon className="size-4" />
-                {t("composerSettings.settings")}
-              </DropdownMenuItem>
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>
+                  <MoreHorizontalIcon className="size-4" />
+                  More
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent className="unsloth-plus-menu w-[248px]">
+                  {overflowPlusItems.map((id) => (
+                    <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
+                  ))}
+                  {overflowPlusItems.length > 0 && <DropdownMenuSeparator />}
+                  <DropdownMenuItem
+                    onSelect={() => useSettingsDialogStore.getState().openDialog("chat", {
+                      scrollTarget: "chat-composer",
+                    })}
+                  >
+                    <SlidersHorizontalIcon className="size-4" />
+                    {t("composerSettings.settings")}
+                  </DropdownMenuItem>
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
             </DropdownMenuContent>
           </DropdownMenu>
           {/* Active in compare mode; sits first. Click to exit back to single chat. */}
@@ -2903,14 +2901,17 @@ export function SharedComposer({
             </Button>
           ) : (
             <TooltipIconButton
-              tooltip={sendUnavailableReason ?? `Send message (${shortcutLabels.send})`}
+              tooltip={
+                sendUnavailableReason ??
+                t("promptQueue.sendTooltip", { shortcut: shortcutLabels.send })
+              }
               side="bottom"
               variant="default"
               size="icon"
               className="ml-1.5 size-9 rounded-full"
               onClick={send}
               disabled={!canSend}
-              aria-label="Send message"
+              aria-label={t("promptQueue.sendLabel")}
             >
               <ArrowUpIcon className="unsloth-send-icon size-[22px] stroke-2" />
             </TooltipIconButton>

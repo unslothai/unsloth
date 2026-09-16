@@ -23,6 +23,7 @@ import {
 } from "@/components/assistant-ui/message-response-details-sheet";
 import { ComposerDraftPreview } from "@/components/assistant-ui/composer-draft-preview";
 import { PromptQueueList } from "@/components/assistant-ui/lazy-prompt-queue-list";
+import { QueueResumeIcon } from "@/components/assistant-ui/queue-resume-icon";
 import { ProgressiveMessages } from "@/components/assistant-ui/progressive-messages";
 import { MessageTiming } from "@/components/assistant-ui/message-timing";
 import { attachThreadFastCopy } from "@/components/assistant-ui/thread-fast-copy";
@@ -322,7 +323,6 @@ import {
   ChevronRightIcon,
   Columns2Icon,
   SlidersHorizontalIcon,
-  CornerUpRightIcon,
   FastForwardIcon,
   GitBranchIcon,
   GlobeIcon,
@@ -4568,6 +4568,9 @@ const Composer: FC<{
         return;
       }
       clearStoredDraft();
+      // Stays synchronous: deferring lets the run state above go stale, and the
+      // send is then refused after the wait toast is already gone.
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- see above
       sendReservedComposer();
     }
   }, [
@@ -6614,28 +6617,26 @@ const ComposerToolsMenu: FC<{
         {pinnedPlusItems.map((id) => (
           <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
         ))}
-        {overflowPlusItems.length > 0 ? (
-          <DropdownMenuSub>
-            <DropdownMenuSubTrigger>
-              <MoreHorizontalIcon className="size-4" />
-              More
-            </DropdownMenuSubTrigger>
-            <DropdownMenuSubContent className="unsloth-plus-menu w-[248px]">
-              {overflowPlusItems.map((id) => (
-                <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
-              ))}
-            </DropdownMenuSubContent>
-          </DropdownMenuSub>
-        ) : null}
-        <DropdownMenuSeparator />
-        <DropdownMenuItem
-          onSelect={() => useSettingsDialogStore.getState().openDialog("chat", {
-            scrollTarget: "chat-composer",
-          })}
-        >
-          <SlidersHorizontalIcon className="size-4" />
-          {t("composerSettings.settings")}
-        </DropdownMenuItem>
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger>
+            <MoreHorizontalIcon className="size-4" />
+            More
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent className="unsloth-plus-menu w-[248px]">
+            {overflowPlusItems.map((id) => (
+              <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
+            ))}
+            {overflowPlusItems.length > 0 && <DropdownMenuSeparator />}
+            <DropdownMenuItem
+              onSelect={() => useSettingsDialogStore.getState().openDialog("chat", {
+                scrollTarget: "chat-composer",
+              })}
+            >
+              <SlidersHorizontalIcon className="size-4" />
+              {t("composerSettings.settings")}
+            </DropdownMenuItem>
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
       </DropdownMenuContent>
     </DropdownMenu>
       <NewProjectDialog
@@ -6696,11 +6697,20 @@ const ComposerRightControls: FC<{
   menuSide,
   queueThreadIds,
 }) => {
+  const t = useT();
   const followUpBehavior = useChatPreferencesStore((s) => s.followUpBehavior);
   const sendShortcut = useChatPreferencesStore((s) => s.sendShortcut);
   const shortcutLabels = composerShortcutLabels(sendShortcut, isMacPlatform());
-  const followUpLabel = followUpBehavior === "queue" ? "Queue message" : "Steer response";
-  const followUpTooltip = `${followUpLabel} (${shortcutLabels.send}) · ${shortcutLabels.opposite} for the opposite`;
+  const followUpLabel = t(
+    followUpBehavior === "queue"
+      ? "promptQueue.queueButton"
+      : "promptQueue.steerButton",
+  );
+  const followUpTooltip = t("promptQueue.followUpTooltip", {
+    action: followUpLabel,
+    send: shortcutLabels.send,
+    opposite: shortcutLabels.opposite,
+  });
   const queueEntry = usePromptQueueUI((s) =>
     findPromptQueueEntry(s, queueThreadIds),
   );
@@ -6789,7 +6799,9 @@ const ComposerRightControls: FC<{
         <ComposerPrimitive.Send asChild={true}>
           <TooltipIconButton
             tooltip={
-              pendingSend ? "Waiting for documents…" : `Send message (${shortcutLabels.send})`
+              pendingSend
+                ? "Waiting for documents…"
+                : t("promptQueue.sendTooltip", { shortcut: shortcutLabels.send })
             }
             side="bottom"
             type="submit"
@@ -6800,7 +6812,7 @@ const ComposerRightControls: FC<{
             disabled={disabled || pendingSend}
             onClick={(event) => onSendClick?.(event)}
             className="aui-composer-send ml-1.5 size-9 rounded-full"
-            aria-label="Send message"
+            aria-label={t("promptQueue.sendLabel")}
           >
             {pendingSend ? (
               <Spinner className="size-[18px]" />
@@ -6823,7 +6835,7 @@ const ComposerRightControls: FC<{
               className="aui-composer-send ml-1.5 size-9 rounded-full"
               aria-label="Resume queue"
             >
-              <FastForwardIcon className="size-[18px] stroke-2" />
+              <QueueResumeIcon />
             </TooltipIconButton>
           ) : queueEntry?.dispatched && !queueEntry.paused ? (
             <Button
@@ -6848,11 +6860,7 @@ const ComposerRightControls: FC<{
               className="aui-composer-send ml-1.5 size-9 rounded-full"
               aria-label={followUpLabel}
             >
-              {followUpBehavior === "steer" ? (
-                <CornerUpRightIcon className="size-[21px] stroke-2" />
-              ) : (
-                <ArrowUpIcon className="unsloth-send-icon aui-composer-send-icon size-[21px] stroke-2" />
-              )}
+              <ArrowUpIcon className="unsloth-send-icon aui-composer-send-icon size-[21px] stroke-2" />
             </TooltipIconButton>
           )}
         </AuiIf>
@@ -6903,11 +6911,7 @@ const ComposerRightControls: FC<{
               className="aui-composer-send size-9 rounded-full"
               aria-label={followUpLabel}
             >
-              {followUpBehavior === "steer" ? (
-                <CornerUpRightIcon className="size-[21px] stroke-2" />
-              ) : (
-                <ArrowUpIcon className="unsloth-send-icon aui-composer-send-icon size-[21px] stroke-2" />
-              )}
+              <ArrowUpIcon className="unsloth-send-icon aui-composer-send-icon size-[21px] stroke-2" />
             </TooltipIconButton>
             )}
           </div>
