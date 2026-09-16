@@ -13,6 +13,8 @@ INSTALL_KIND_BACKENDS: dict[str, str] = {
     "linux-cuda": "cuda",
     "linux-arm64-cuda": "cuda",
     "windows-cuda": "cuda",
+    # Distinct from windows-cuda: the arm64 bundle ships its own ARM64 cudart/cublas.
+    "windows-arm64-cuda": "cuda",
     "linux-rocm": "rocm",
     "windows-hip": "rocm",
     "windows-rocm": "rocm",

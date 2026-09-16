@@ -32,24 +32,14 @@ const DIST = resolve(HERE, "..", "dist");
  * machine.
  */
 export const BUDGET = {
-  // Measured 1,496.2 KB transfer / 5,207.2 KB raw at 17363f8a2. Raised for the audio placement control: same
-  // build both sides, merge base 1,560.9 KB transfer against branch 1,562.6 KB, so it crossed the old 1,562.5 KB
-  // ceiling by a tenth of a kilobyte.
-  //
-  // Raised again after a second squeeze. main measures 1,585.6 KB transfer and passed
-  // 1,645,000 by 20.9 KB, which is 1.3% and about six days at the 3.7 KB/day this file
-  // has drifted since 17363f8a2. That is the same margin the previous raise left, and it
-  // lasted six days before main went red again on a commit whose only frontend change was
-  // one English sentence rewritten shorter.
-  //
-  // Nothing became eager that should not be: across the whole window the eager chunk set
-  // gained no member, so there is nothing here to lazy-load. What runs out is headroom.
-  // 1,690,000 leaves 64.8 KB (4.1%), the proportion #8964 shipped with, which absorbed 17
-  // days. rawBytes stays put at 64.7 KB spare so both halves come up for one re-measure
-  // together instead of each dragging main red on its own.
-  transferBytes: 1_690_000,
-  // same-toolchain merge comparison: 5381.0 to 5384.0 kib raw, with 84 eager chunks.
-  rawBytes: 5_520_000,
+  // Measured, one machine and one build per side, so the pair is comparable to itself rather
+  // than to a runner's: 5,384.0 KB raw / 1,610.2 KB transfer at the merge base, leaving
+  // 211.7 KB and 64.6 KB spare. Both halves are re-measured TOGETHER, or each drags main red
+  // on its own; the previous four raises each bought a few kilobytes and were spent within
+  // days, charging the next PR for drift it did not cause. The eager set has not gained a
+  // member across any of it, so what runs out is headroom, not laziness.
+  transferBytes: 1_715_000,
+  rawBytes: 5_730_000,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

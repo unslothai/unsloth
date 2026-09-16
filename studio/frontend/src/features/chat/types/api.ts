@@ -222,6 +222,7 @@ export interface LoadModelResponse {
    *  dedicated to it than the weights need. Unknown-shaped on purpose so an older or
    *  proxied backend cannot render "undefined GB"; narrowed by parseCarveoutAdvice. */
   carveout_advice?: unknown;
+  memory_warning?: string | null;
   is_diffusion?: boolean;
   /** GPU-layer count the diffusion runner was ASKED for, when it differs from what it applied: a shim
    *  without --ngl runs Auto, so gpu_layers reports -1 while this carries the request. */
@@ -335,6 +336,7 @@ export interface InferenceStatusResponse {
    *  without --ngl runs Auto, so gpu_layers reports -1 while this carries the request. */
   diffusion_requested_ngl?: number | null;
   gguf_variant?: string | null;
+  memory_warning?: string | null;
   is_audio?: boolean;
   audio_type?: string | null;
   has_audio_input?: boolean;
