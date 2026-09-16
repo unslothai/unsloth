@@ -461,14 +461,9 @@ def test_the_refresh_consults_the_conda_helper_at_all():
     assert "Get-ActiveCondaPrefixes" in body
     assert "Test-PathUnderCondaPrefix" in body
     # And the conda entries go in FRONT of the registry values, which is the whole point.
-<<<<<<< Updated upstream
     assert body.index("$sources += $condaFront") < body.index(
         "$sources += @($machine"
     ), "the conda entries are appended after the User PATH, which changes nothing"
-=======
-    assert body.index("$sources += $condaFront") < body.index("$sources += @($machine"), (
-        "the conda entries are appended after the User PATH, which changes nothing"
-    )
 
 
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
@@ -514,4 +509,3 @@ def test_a_prefix_activation_still_takes_the_precise_route(shell: str):
     entries = out[len("PATH="):].split(";")
     assert entries[0] == f"{CONDA_ROOT}\\envs\\ml\\Scripts", entries
     assert entries.index("C:\\tools\\bin") > entries.index(USER_PATH.split(";")[0]), entries
->>>>>>> Stashed changes
