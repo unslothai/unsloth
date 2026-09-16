@@ -244,6 +244,42 @@ def _split_ternary(expression: str, guards: tuple = ()) -> list:
     return [(expression[question + 1 :].strip(), inner)]
 
 
+def _normalised(expression: str) -> str:
+    """Whitespace out and `s["x"]` written as `s.x`, so one access has one spelling.
+
+    Two arms are only interchangeable if they are the same expression, and the comparison is
+    textual: without this, `s.other` and `s["other"]` read as a choice the guard steers, when
+    the selector returns the same store value either way.
+    """
+    # The trailing comma of the useChatRuntimeStore() argument rides along on the last arm, and
+    # an arm that differs from its twin only by that comma is the same expression.
+    collapsed = re.sub(r"\s+", "", expression).rstrip(",;")
+    return re.sub(r"\[['\"]([A-Za-z_$][\w$]*)['\"]\]", r".\1", collapsed)
+
+
+def _selector_signature(selector: str, field: str):
+    """Where the selector's body starts, and the pattern that finds `field` being read in it.
+
+    A destructured parameter is the other way to write the same subscription, so
+    `({ reasoningBudget }) => reasoningBudget` and `({ reasoningBudget: budget }) => budget`
+    are read through their local name. Returns (0, None) when the parameter is neither shape,
+    or when a destructuring does not take the field at all.
+    """
+    plain = re.match(r"\s*\(?\s*([A-Za-z_$][\w$]*)\s*\)?\s*(?::[^=]*)?=>", selector)
+    if plain is not None:
+        return plain.end(), re.compile(rf"\b{re.escape(plain.group(1))}\.{field}\b")
+
+    destructured = re.match(r"\s*\(?\s*\{([^}]*)\}\s*\)?\s*(?::[^=]*)?=>", selector)
+    if destructured is None:
+        return 0, None
+    for entry in destructured.group(1).split(","):
+        name, _, alias = entry.partition(":")
+        if name.strip() == field:
+            local = alias.strip() or field
+            return destructured.end(), re.compile(rf"\b{re.escape(local)}\b")
+    return 0, None
+
+
 def _selector_reads(selector: str, field: str) -> bool:
     """Does every value this selector can return depend on `field`?
 
@@ -254,11 +290,10 @@ def _selector_reads(selector: str, field: str) -> bool:
     rather than being assumed to be `s`.
     """
 
-    signature = re.match(r"\s*\(?\s*([A-Za-z_$][\w$]*)\s*\)?\s*(?::[^=]*)?=>", selector)
-    if signature is None:
+    signature, read = _selector_signature(selector, field)
+    if read is None:
         return False
-    read = re.compile(rf"\b{re.escape(signature.group(1))}\.{field}\b")
-    body = selector[signature.end() :].strip()
+    body = selector[signature :].strip()
     if body.startswith("{"):
         # A block body returns what it returns; a statement that reads the field and drops it
         # hands zustand the same value every time. Nothing to return is nothing to compare, so
@@ -274,12 +309,16 @@ def _selector_reads(selector: str, field: str) -> bool:
         results = _split_ternary(body)
     if not results:
         return False
+    results = [
+        (_normalised(result), tuple(_normalised(guard) for guard in guards))
+        for result, guards in results
+    ]
     if all(read.search(result) for result, _ in results):
         return True
     # A guard only justifies an arm it can steer away from: if every arm returns the same
     # expression the condition decides nothing, so `s.budget ? s.other : s.other` subscribes
     # to `s.other` however prominently it names the budget.
-    if len({re.sub(r"\s+", "", result) for result, _ in results}) < 2:
+    if len({result for result, _ in results}) < 2:
         return False
     return all(
         read.search(result) or any(read.search(guard) for guard in guards)
@@ -338,6 +377,15 @@ SELECTOR_CASES = [
     ("(s) => s.reasoningBudgetMessage", False),
     ("(s) => s.reasoningBudgets", False),
     ("{ budget: state.reasoningBudget }", False),
+    # A destructured parameter subscribes to exactly the same field.
+    ("({ reasoningBudget }) => reasoningBudget", True),
+    ("({ reasoningBudget: budget }) => budget", True),
+    ("({ reasoningBudget, loaded }) => (loaded ? reasoningBudget : reasoningBudget)", True),
+    ("({ loadedReasoningBudget }) => loadedReasoningBudget", False),
+    ("({ reasoningBudget, other }) => other", False),
+    # One access, two spellings: the guard steers nothing if both arms mean the same read.
+    ('(s) => s.reasoningBudget ? s.other : s["other"]', False),
+    ('(s) => s["reasoningBudget"]', True),
 ]
 
 
