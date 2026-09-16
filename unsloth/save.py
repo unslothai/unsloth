@@ -2423,7 +2423,7 @@ def unsloth_save_pretrained_merged(
     4.  FP8 / FP4 compressed export for vLLM (`fp8`, `mxfp4`, `nvfp4`, `mxfp8`): keeps the
         16bit merge at `save_directory` and writes the quantized checkpoint to
         `save_directory + "-<fmt>"`.
-   
+
     `safe_serialization` defaults to safetensors. `None` is accepted and means the same
     thing, so the older "set it to None to force safetensors" advice stays valid; only an
     explicit `False` writes a pickle.
@@ -2552,7 +2552,7 @@ def unsloth_push_to_hub_merged(
     3.  `lora`: Save the LoRA adapter itself, with no merging: `adapter_config.json`
         plus `adapter_model.safetensors`, and nothing else. Useful for HF inference.
     4.  FP8 / FP4 compressed export for vLLM: `fp8`, `mxfp4`, `nvfp4`, `mxfp8`.
-   
+
     `safe_serialization` defaults to safetensors. `None` is accepted and means the same
     thing, so the older "set it to None to force safetensors" advice stays valid; only an
     explicit `False` writes a pickle.
@@ -5776,7 +5776,7 @@ def unsloth_generic_save_pretrained_merged(
         `fp8` (dynamic W8A8), `mxfp4`, `nvfp4` (W4A4), `mxfp8`. The LoRA is merged to 16bit at
         `save_directory`, then a quantized checkpoint is written to `save_directory + "-<fmt>"`.
         `nvfp4` needs calibration data (defaults to ultrachat; override with `calibration_dataset`).
-   
+
     `safe_serialization` defaults to safetensors. `None` is accepted and means the same
     thing, so the older "set it to None to force safetensors" advice stays valid; only an
     explicit `False` writes a pickle.

@@ -109,15 +109,28 @@ def test_push_keywords_this_transformers_cannot_take_are_dropped():
     )
 
     def transformers_5_push(
-        repo_id, *, commit_message = None, commit_description = None, private = None,
-        token = None, revision = None, create_pr = False, max_shard_size = "50GB", tags = None,
+        repo_id,
+        *,
+        commit_message = None,
+        commit_description = None,
+        private = None,
+        token = None,
+        revision = None,
+        create_pr = False,
+        max_shard_size = "50GB",
+        tags = None,
     ):
         raise AssertionError("not called")
 
     kept = namespace["_filter_push_to_hub_kwargs"](
         transformers_5_push,
-        dict(repo_id = "owner/model", use_temp_dir = None, safe_serialization = True,
-             max_shard_size = "5GB", tags = ["unsloth"]),
+        dict(
+            repo_id = "owner/model",
+            use_temp_dir = None,
+            safe_serialization = True,
+            max_shard_size = "5GB",
+            tags = ["unsloth"],
+        ),
     )
     assert kept == dict(repo_id = "owner/model", max_shard_size = "5GB", tags = ["unsloth"])
     # Neither loss changes the upload on this transformers, so neither is reported.
@@ -136,7 +149,8 @@ def test_a_dropped_pickle_request_is_reported():
         raise AssertionError("not called")
 
     kept = namespace["_filter_push_to_hub_kwargs"](
-        transformers_5_push, dict(repo_id = "owner/model", safe_serialization = False),
+        transformers_5_push,
+        dict(repo_id = "owner/model", safe_serialization = False),
     )
     assert kept == dict(repo_id = "owner/model")
     assert len(warnings_seen) == 1 and "safe_serialization" in warnings_seen[0]
@@ -144,7 +158,9 @@ def test_a_dropped_pickle_request_is_reported():
 
 def test_a_var_keyword_signature_keeps_everything():
     """peft's own wrappers take **kwargs, so nothing may be filtered out of them."""
-    namespace = _load("_filter_push_to_hub_kwargs", logger = types.SimpleNamespace(warning_once = lambda m: None))
+    namespace = _load(
+        "_filter_push_to_hub_kwargs", logger = types.SimpleNamespace(warning_once = lambda m: None)
+    )
 
     def anything(repo_id, **kwargs):
         raise AssertionError("not called")
@@ -155,7 +171,9 @@ def test_a_var_keyword_signature_keeps_everything():
 
 def test_an_unreadable_callable_is_left_alone():
     """An object with no readable signature forwards unchanged, which is what main did."""
-    namespace = _load("_filter_push_to_hub_kwargs", logger = types.SimpleNamespace(warning_once = lambda m: None))
+    namespace = _load(
+        "_filter_push_to_hub_kwargs", logger = types.SimpleNamespace(warning_once = lambda m: None)
+    )
     arguments = dict(repo_id = "owner/model", use_temp_dir = True)
     assert namespace["_filter_push_to_hub_kwargs"](object(), arguments) == arguments
 
@@ -288,9 +306,9 @@ def test_the_adapter_save_method_the_router_forwards_is_one_unsloth_save_model_a
     }
     assert "lora" in accepted, "unsloth_save_model no longer names 'lora' as a save_method"
     for value in forwarded:
-        assert value.lower().replace(" ", "_") in accepted, (
-            f"unsloth_save_model would reject the forwarded save_method {value!r}"
-        )
+        assert (
+            value.lower().replace(" ", "_") in accepted
+        ), f"unsloth_save_model would reject the forwarded save_method {value!r}"
 
 
 @pytest.mark.parametrize("save_method", ["merged_16bit", "mxfp4", "fp8", "merged_4bit_forced"])
@@ -317,14 +335,20 @@ def test_none_is_normalised_before_the_merge_is_reached(monkeypatch, tmp_path):
     """Whatever the writer, `None` must have become `True` by the time it is forwarded."""
     model = _PeftModel()
     generic_save, calls = _routing_environment(monkeypatch, model)
-    generic_save(model, None, save_directory = str(tmp_path), save_method = "lora",
-                 safe_serialization = None)
+    generic_save(
+        model, None, save_directory = str(tmp_path), save_method = "lora", safe_serialization = None
+    )
     assert calls["adapter"][0]["safe_serialization"] is True
 
     model = _FullModel()
     generic_save, calls = _routing_environment(monkeypatch, model)
-    generic_save(model, None, save_directory = str(tmp_path), save_method = "merged_16bit",
-                 safe_serialization = None)
+    generic_save(
+        model,
+        None,
+        save_directory = str(tmp_path),
+        save_method = "merged_16bit",
+        safe_serialization = None,
+    )
     assert model.saved[0][1]["safe_serialization"] is True
 
 
@@ -387,7 +411,10 @@ def test_the_adapter_save_forwards_a_real_safe_serialization(monkeypatch, tmp_pa
     namespace, _ = _adapter_save_environment(monkeypatch)
     model = _AdapterModel(lambda sink: (lambda **kwargs: sink.append(kwargs)))
     namespace["unsloth_save_model"](
-        model, None, save_directory = str(tmp_path), save_method = "lora",
+        model,
+        None,
+        save_directory = str(tmp_path),
+        save_method = "lora",
         safe_serialization = None,
     )
     assert len(model.saved) == 1
@@ -409,21 +436,40 @@ def test_an_adapter_push_survives_a_transformers_that_dropped_the_keywords(monke
 
     def transformers_5_signature(sink):
         def push_to_hub(
-            repo_id, *, commit_message = None, commit_description = None, private = None,
-            token = None, revision = None, create_pr = False, max_shard_size = "50GB",
+            repo_id,
+            *,
+            commit_message = None,
+            commit_description = None,
+            private = None,
+            token = None,
+            revision = None,
+            create_pr = False,
+            max_shard_size = "50GB",
             tags = None,
         ):
-            sink.append(dict(
-                repo_id = repo_id, commit_message = commit_message, private = private,
-                token = token, revision = revision, create_pr = create_pr,
-                max_shard_size = max_shard_size, tags = tags,
-            ))
+            sink.append(
+                dict(
+                    repo_id = repo_id,
+                    commit_message = commit_message,
+                    private = private,
+                    token = token,
+                    revision = revision,
+                    create_pr = create_pr,
+                    max_shard_size = max_shard_size,
+                    tags = tags,
+                )
+            )
+
         return push_to_hub
 
     model = _AdapterModel(transformers_5_signature)
     namespace["unsloth_save_model"](
-        model, None, save_directory = "owner/model", save_method = "lora",
-        push_to_hub = True, token = "fixture-token",
+        model,
+        None,
+        save_directory = "owner/model",
+        save_method = "lora",
+        push_to_hub = True,
+        token = "fixture-token",
     )
     assert len(model.pushed) == 1
     assert model.pushed[0]["repo_id"] == "owner/model"
@@ -439,25 +485,41 @@ def test_an_adapter_push_still_passes_every_keyword_a_transformers_4_accepts(mon
 
     def transformers_4_signature(sink):
         def push_to_hub(
-            repo_id, use_temp_dir = None, commit_message = None, private = None, token = None,
-            max_shard_size = "5GB", create_pr = False, safe_serialization = True,
-            revision = None, commit_description = None, tags = None,
+            repo_id,
+            use_temp_dir = None,
+            commit_message = None,
+            private = None,
+            token = None,
+            max_shard_size = "5GB",
+            create_pr = False,
+            safe_serialization = True,
+            revision = None,
+            commit_description = None,
+            tags = None,
         ):
-            sink.append(dict(
-                use_temp_dir = use_temp_dir, safe_serialization = safe_serialization,
-                revision = revision,
-            ))
+            sink.append(
+                dict(
+                    use_temp_dir = use_temp_dir,
+                    safe_serialization = safe_serialization,
+                    revision = revision,
+                )
+            )
+
         return push_to_hub
 
     model = _AdapterModel(transformers_4_signature)
     namespace["unsloth_save_model"](
-        model, None, save_directory = "owner/model", save_method = "lora",
-        push_to_hub = True, token = "fixture-token", safe_serialization = None,
-        use_temp_dir = True, revision = "candidate",
+        model,
+        None,
+        save_directory = "owner/model",
+        save_method = "lora",
+        push_to_hub = True,
+        token = "fixture-token",
+        safe_serialization = None,
+        use_temp_dir = True,
+        revision = "candidate",
     )
-    assert model.pushed == [
-        dict(use_temp_dir = True, safe_serialization = True, revision = "candidate")
-    ]
+    assert model.pushed == [dict(use_temp_dir = True, safe_serialization = True, revision = "candidate")]
 
 
 # ------------------------------------------------------- the model's own save_pretrained
