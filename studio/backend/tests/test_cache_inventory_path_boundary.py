@@ -286,6 +286,38 @@ def test_the_models_folder_error_is_not_disclosed_either(monkeypatch):
     assert HOST_ROOT in session.json()["detail"]
 
 
+@pytest.mark.parametrize("root", ["/tmp", "/cache", "C:\\cache"])
+def test_a_root_with_one_component_is_redacted_too(monkeypatch, root):
+    """`/tmp` is as absolute as `/home/alice/.unsloth/studio/hub`.
+
+    The pattern required a second separator after the root, so exactly the shape a
+    configured cache root is usually spelled in was left in the response. This is the value
+    the models-folder error puts in its detail, so the incomplete pattern meant the fix did
+    not cover the case that prompted it.
+    """
+    from fastapi import HTTPException
+
+    def _raises():
+        raise HTTPException(
+            status_code = 500,
+            detail = f"Models folder path is not a directory: {root}",
+        )
+
+    monkeypatch.setattr(local_inventory, "get_models_folder_response", _raises)
+    detail = _hub(via_api_key = True).get("/api/hub/models-folder").json()["detail"]
+    assert root not in detail, detail
+    assert "not a directory" in detail, detail
+
+
+def test_ordinary_prose_is_not_read_as_a_path(monkeypatch):
+    """Widening the pattern must not start eating text. A ratio and a slashed conjunction
+    are the two shapes that look like a root and are not."""
+    from hub.utils.host_paths import redact_paths_in_text
+
+    for kept in ("3/4 of the shards", "and/or the projector", "no paths here"):
+        assert redact_paths_in_text(kept) == kept, kept
+
+
 def test_a_structured_error_detail_is_walked_too(monkeypatch):
     """Nothing stops a route from raising a dict, and a scrubber that only handles strings
     would hand the path straight back."""

@@ -564,6 +564,68 @@ def test_an_unreadable_credential_store_authorizes_nobody(monkeypatch, tmp_path)
     assert public_cache_read_authorized(repo_id = ON_DISK) is False
 
 
+def test_an_unreadable_saved_credential_is_unknown_rather_than_absent(monkeypatch):
+    """`get_secret` answers None for an absent row AND for a row it could not decrypt.
+
+    A lost or rotated encryption key, corrupted ciphertext, or a format a newer build wrote
+    all arrive as None, and reading that as "this host holds no credential" is a fail-open:
+    the credential-less branch would then hand an API-key caller a cache that may hold
+    whatever that unreadable token downloaded. The row existing is what separates the two,
+    and it is readable without decrypting anything.
+    """
+    from storage import credential_secrets
+
+    read = _REAL_SAVED_STUDIO_HF_TOKEN
+    monkeypatch.setattr(credential_secrets, "get_hf_token", lambda: None)
+
+    monkeypatch.setattr(credential_secrets, "hf_token_row_exists", lambda: True)
+    assert read() == (False, None), "an unreadable saved credential must not read as absent"
+
+    monkeypatch.setattr(credential_secrets, "hf_token_row_exists", lambda: False)
+    assert read() == (True, None), "a host with nothing saved is still a real answer"
+
+    # The row check failing is itself unanswered, not an answer.
+    def _raises():
+        raise RuntimeError("credential database is locked")
+
+    monkeypatch.setattr(credential_secrets, "hf_token_row_exists", _raises)
+    assert read() == (False, None)
+
+
+def test_an_unreadable_saved_credential_refuses_the_anonymous_caller(monkeypatch, tmp_path):
+    """End to end through the gate, which is where it matters: an API-key caller with no
+    HF credential must not be authorized for the cache on a host whose saved token cannot
+    be opened."""
+    root = _cache_root(monkeypatch, tmp_path)
+    _materialize_repo(root, ON_DISK)
+    _no_host_credential(monkeypatch)
+    monkeypatch.setattr(hf_tokens, "_saved_studio_hf_token", lambda: (False, None))
+    _counting_probe(monkeypatch, True, offline = True)
+
+    assert public_cache_read_authorized(repo_id = ON_DISK) is False
+    assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is False
+
+
+def test_the_row_check_does_not_need_to_decrypt(monkeypatch):
+    """`has_secret` is `get_secret(...) is not None`, so it cannot answer this question.
+    The new reader has to query the table rather than route through the decrypting one."""
+    from pathlib import Path as _Path
+
+    from storage import credential_secrets
+
+    source = _Path(credential_secrets.__file__).read_text(encoding = "utf-8")
+    body = source.split("def secret_row_exists(", 1)[1].split("\ndef ", 1)[0]
+    # Comments out: the docstring explains why it does NOT call the decrypting reader, and
+    # a check that read them as code would fail on the sentence describing the fix.
+    code = "\n".join(
+        line for line in body.splitlines()
+        if not line.lstrip().startswith("#")
+    )
+    code = code.split('"""')[0] + "".join(code.split('"""')[2:])
+    assert "get_secret" not in code, "the row check goes back through the decrypting reader"
+    assert "SELECT 1" in code
+
+
 def test_the_saved_token_reader_reads_the_studio_credential_store(monkeypatch):
     """The reader itself, against the real store function.
 

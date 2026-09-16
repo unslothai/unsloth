@@ -444,6 +444,18 @@ def _saved_studio_hf_token() -> "tuple[bool, Optional[str]]":
         return (False, None)
     if isinstance(token, str) and token.strip():
         return (True, token.strip())
+    # None has two meanings here and only one of them is an answer. `get_secret` returns it
+    # both for an absent row and for a row it could not decrypt -- a lost or rotated
+    # encryption key, corrupted ciphertext, a format a newer build wrote -- and reading the
+    # second as "this host holds no credential" is a fail-open: the credential-less branch
+    # of `_caller_populated_the_cache` would then hand an API-key caller a cache that may
+    # hold whatever that unreadable token downloaded.
+    try:
+        stored = credential_secrets.hf_token_row_exists()
+    except Exception:
+        return (False, None)
+    if stored:
+        return (False, None)
     return (True, None)
 
 

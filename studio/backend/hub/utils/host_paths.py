@@ -281,7 +281,11 @@ _ABSOLUTE_PATH_RE = re.compile(
     # ratio like "3/4" are left as they were written.
     # A UNC share is the third spelling of absolute on Windows, and a scan folder on a network
     # share is written that way, so the whole server and share name used to stay in the line.
-    r"(?<![\w:/])(?:\\\\[^\\/\s]+[\\/]|[A-Za-z]:[\\/]|/)(?:[\w.\-+@ ]+[\\/])+[\w.\-+@]*"
+    # The trailing group is `*` rather than `+`: a root with a SINGLE component under it
+    # (`/tmp`, `/cache`, `C:\\cache`) is just as absolute as a deep one, and requiring a
+    # second separator left exactly those unredacted. A configured cache root is very often
+    # spelled that way, and it is the value the models-folder error puts in its detail.
+    r"(?<![\w:/])(?:\\\\[^\\/\s]+[\\/]|[A-Za-z]:[\\/]|/)(?:[\w.\-+@ ]+[\\/])*[\w.\-+@]+"
 )
 
 
