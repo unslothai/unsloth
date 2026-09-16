@@ -242,6 +242,41 @@ def test_only_resident_requests_use_the_pre_switch_budget(monkeypatch, named):
     assert str(error.value) == "reached the switch" if named else error.value.status_code == 400
 
 
+@pytest.mark.parametrize("named", [False, True])
+def test_a_loaded_voice_slot_serves_only_the_resident_model_form(monkeypatch, named):
+    """The voice slot owns speech when the caller names no model, which is what the
+    conversation loop sends. A caller that names one keeps main's switch path exactly,
+    voice slot or not: the switch is that request, so it must be reached."""
+
+    async def _switch(_model, *_a, **kw):
+        assert kw["require_speech"] is True
+        raise RuntimeError("reached the switch")
+
+    def _picked_voice(_backend):
+        raise RuntimeError("reached the voice slot")
+
+    voice_backend = SimpleNamespace(is_loaded = True, _is_audio = True, _audio_type = "snac")
+    monkeypatch.setattr(routes_module, "get_voice_llama_backend", lambda: voice_backend)
+    monkeypatch.setattr(routes_module, "_maybe_auto_switch_model", _switch)
+    monkeypatch.setattr(routes_module, "_llama_public_model_id", _picked_voice)
+    monkeypatch.setattr(routes_module, "_monitor_context_length", lambda: 2048)
+    monkeypatch.setattr(routes_module, "_prompt_token_estimate", lambda _t: 8)
+    payload = SimpleNamespace(audio_instructions = None, audio_language = None)
+    request = SimpleNamespace(state = SimpleNamespace(skip_api_monitor = True))
+    model = "org/B-GGUF" if named else routes_module._RELOAD_ONLY_MODEL
+    with pytest.raises(RuntimeError) as error:
+        asyncio.run(
+            routes_module._generate_tts_wav(
+                "hi",
+                payload,
+                request,
+                "tester",
+                requested_model = model,
+            )
+        )
+    assert str(error.value) == ("reached the switch" if named else "reached the voice slot")
+
+
 def test_the_shared_core_guards_before_generating():
     """Wired in _generate_tts_wav so /audio/generate inherits it, not only /audio/speech."""
     import inspect
