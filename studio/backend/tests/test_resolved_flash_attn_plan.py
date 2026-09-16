@@ -3,29 +3,19 @@
 
 """The estimate and the launch price the same flash-attention state.
 
-``load_model`` used to pin ``planned_flash_attn = False`` unconditionally, as a cushion for
-the crash recovery that may relaunch a plan with flash attention off, and then emit
-``--flash-attn on`` on every launch whose build has the flag. So every placement figure
-described a load that was not going to happen.
+``load_model`` used to pin ``planned_flash_attn = False`` unconditionally as a cushion for the
+crash recovery, and then emit ``--flash-attn on`` on every launch whose build has the flag, so
+every placement figure described a load that was not going to happen. With flash attention off
+the estimator floors the V axis at f16 and pads variable-width V tensors to the model-wide
+maximum, which is 1.44x the KV cache at q8_0 and 2.28x at q4_0. In tensor mode ``--fit`` is a
+no-op, so that inflated cache is a hard cap and becomes the published ``max_context_length``
+(#9697), and it is also what the context warning compares against while the memory panel
+prices the optimistic one (#10489).
 
-The estimator is not indifferent to that. With flash attention off it floors the V axis at
-f16 and pads variable-width V tensors to the model-wide maximum, which on Qwen3's shape at
-262,144 is
-
-    q8_0   15,971,909,632 on   vs   23,018,340,352 off   (1.44x)
-    q4_0    8,455,716,864 on   vs   19,260,243,968 off   (2.28x)
-
-In tensor mode ``--fit`` is a no-op, so that inflated cache is a hard cap and becomes the
-published ``max_context_length``: the report behind #9697 is a 5090 + 3070 pair where q8_0
-was selectable but the context came out sized as though the cache were fp16. The same
-pessimistic ceiling is what the context warning compares against while the memory panel
-prices the optimistic one, which is #10489.
-
-The cushion is not lost. Tensor mode cannot take the FA-off recovery at all -- llama.cpp
-requires flash attention for ``SPLIT_MODE_TENSOR``, which
-``test_tensor_quant_kv_platform_matrix.py`` already pins -- and elsewhere the no-flash
-respawn re-enters ``_spawn_and_wait``, whose own rung hands placement back to llama.cpp
-with ``--fit on`` when a forced ``--fit off`` crashes at startup.
+The cushion is not lost. Tensor mode cannot take the FA-off recovery at all (llama.cpp
+requires flash attention for ``SPLIT_MODE_TENSOR``, pinned by
+``test_tensor_quant_kv_platform_matrix.py``), and elsewhere the no-flash respawn re-enters
+``_spawn_and_wait``, whose own rung hands placement back to llama.cpp with ``--fit on``.
 """
 
 from __future__ import annotations
@@ -94,23 +84,16 @@ class TestTheResolver:
     def test_the_environment_loses_to_the_managed_flag(self):
         """The environment is read, and then Unsloth's own ``--flash-attn on`` overrides it.
 
-        This asserted ``False`` and was wrong about the load it describes. ``load_model``
-        appends a managed ``--flash-attn on`` to the command on every launch whose build has
-        the flag, and llama.cpp reads ``LLAMA_ARG_FLASH_ATTN`` before it parses argv
-        (arg.cpp set_env), so with no user ``-fa`` the child runs WITH flash attention no
-        matter what the environment said. Sizing it off meant pricing the padded, f16-floored
-        cache for a run that never happens, and that inflated cache becomes the published
-        context ceiling: #9697 and #10489 reappearing through the environment rather than
-        through the argv they were fixed in.
+        ``load_model`` appends a managed ``--flash-attn on`` on every launch whose build has
+        the flag, and llama.cpp reads ``LLAMA_ARG_FLASH_ATTN`` before it parses argv (arg.cpp
+        set_env), so with no user ``-fa`` the child runs WITH flash attention whatever the
+        environment said. Sizing it off is #9697 and #10489 through the environment.
         """
         assert _planned_flash_attn_state(env = {"LLAMA_ARG_FLASH_ATTN": "0"}) is True
 
     def test_a_user_off_still_beats_the_managed_flag(self):
-        """The other side of it: extras are appended AFTER the managed flag, so they win.
-
-        Order of authority end to end: environment, then Unsloth's managed flag, then the
-        user's own extras. Only the middle term was missing.
-        """
+        """Extras are appended AFTER the managed flag, so they win. Order of authority:
+        environment, then Unsloth's managed flag, then the user's extras."""
         assert _planned_flash_attn_state(["-fa", "off"], env = {"LLAMA_ARG_FLASH_ATTN": "0"}) is False
         assert _planned_flash_attn_state(["-fa", "off"], env = {}) is False
 
@@ -138,9 +121,8 @@ class TestTheResolver:
         )
 
     def test_a_quantized_v_cannot_force_a_build_that_has_no_flag(self):
-        """The one case the route's own two-step version got wrong. With no --flash-attn
-        to emit, the launch rewrites the V cache to f16 instead (_reset_quantized_v_cache),
-        so the padded price is the honest one and forcing "on" would under-reserve."""
+        """With no --flash-attn to emit, the launch rewrites the V cache to f16 instead
+        (_reset_quantized_v_cache), so forcing "on" here would under-reserve."""
         assert (
             _planned_flash_attn_state(
                 planned_cache_types = ("q8_0", "q8_0"), supports_flash_attn = False
@@ -198,9 +180,8 @@ class TestTheTensorPlanPricesTheLaunch:
         assert _flash_attn_in(cmd), "the launch emits flash attention"
         planned = _ctx_of(cmd)
 
-        # What the same pool prices with the V axis at f16, i.e. the plan main used to
-        # publish for this launch. The gap is the defect, so assert the plan is on the
-        # right side of it rather than on a magic number.
+        # What the same pool prices with the V axis at f16, the plan main used to publish.
+        # The gap is the defect, so assert the side of it rather than a magic number.
         pessimistic = backend._plan_tensor_parallel(
             [(0, 12000), (1, 12000)],
             4 * GB,
@@ -234,12 +215,10 @@ class TestTheTensorPlanPricesTheLaunch:
         assert backend.max_context_length == _ctx_of(captured["cmd"])
 
     def test_an_unquantized_cache_is_unaffected(self, tmp_path):
-        """The V axis only moves for a quantized cache on this shape, so resolving the
-        state cannot have changed what an f16 load plans. Asserted on the arithmetic at
-        the context this load actually chose, rather than against a second hand-built
-        plan: the loader charges overheads (the CUDA context reserve, the flat MTP
-        cushion, the compute buffers, the VRAM fraction) that a bare planner call does
-        not, and comparing the two would fail on those instead."""
+        """The V axis only moves for a quantized cache on this shape, so resolving the state
+        cannot change what an f16 load plans. Asserted on the arithmetic at the context this
+        load chose rather than against a second hand-built plan, because the loader charges
+        overheads a bare planner call does not and the comparison would fail on those."""
         backend, gguf = _tensor_backend(tmp_path, free_mib = 12000)
         captured = _placement._launch(
             backend, gguf, n_ctx = NATIVE, cache_type_kv = "f16", tensor_parallel = True
@@ -303,12 +282,10 @@ def test_the_state_is_still_named_planned_flash_attn():
 class TestAutoIsNotAnAnswer:
     """``auto`` is llama.cpp saying it will decide at load time.
 
-    It decides against flash attention whenever the backend, the model or the cache pair
-    cannot take it (ROCm on several quantized caches, Metal on a mixed quantized pair, Vulkan),
-    silently: no error, no log line. Sizing that reads auto as "on" therefore prices a cache
-    that can turn out 1.44x at q8_0 and 2.28x at q4_0 larger than planned, on exactly the hosts
-    least able to absorb it. Studio's own launch emits ``on``, never ``auto``, so this is only
-    reached from a user's extra arguments or an inherited LLAMA_ARG_FLASH_ATTN.
+    It decides against flash attention, silently, whenever the backend, model or cache pair
+    cannot take it, so sizing that reads auto as "on" prices a cache that can turn out over
+    twice as large on exactly the hosts least able to absorb it. Studio's own launch emits
+    ``on``, never ``auto``, so this is only reached from the user's extras or the environment.
     """
 
     def test_an_explicit_auto_prices_the_padded_cache(self):
@@ -319,14 +296,10 @@ class TestAutoIsNotAnAnswer:
         assert _planned_flash_attn_state(["-fa", "-1"]) is False
 
     def test_an_inherited_auto_is_overridden_by_the_managed_flag(self):
-        """``auto`` in the environment is not left undecided, because the launch decides it.
-
-        Asserted ``False`` before, on the reasoning that nobody had chosen yet. But the
-        managed ``--flash-attn on`` is appended after the environment is read, so the child
-        is launched with an explicit ``on`` and ``auto`` never reaches it. Only an ``auto``
-        the USER puts in the extras survives, because those come last; that case is the next
-        assertion and still sizes conservatively.
-        """
+        """``auto`` in the environment is not left undecided, because the launch decides it:
+        the managed ``--flash-attn on`` is appended after the environment is read, so the
+        child gets an explicit ``on``. Only an ``auto`` the USER puts in the extras survives,
+        because those come last."""
         assert _planned_flash_attn_state(None, env = {"LLAMA_ARG_FLASH_ATTN": "auto"}) is True
         assert (
             _planned_flash_attn_state(["-fa", "auto"], env = {"LLAMA_ARG_FLASH_ATTN": "1"}) is False

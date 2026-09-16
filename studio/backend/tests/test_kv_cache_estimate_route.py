@@ -3,26 +3,15 @@
 
 """Route-level tests for ``GET /kv-cache-estimate``.
 
-The estimate is only worth showing if it describes the load llama-server will
-actually perform, so these drive the real handler and the real drafter resolver
-rather than a replayed copy of their logic.
+These drive the real handler and the real drafter resolver, not a replayed copy, for two
+classes of defect:
 
-Two classes of defect are covered:
-
-* The MTP reserve must follow the loader's own ``is_mtp_model`` precondition. A
-  model with no embedded head, no MTP name and no separate drafter cannot run
-  MTP, so the loader emits ``--spec-default`` and reserves nothing. Because
-  ``_estimate_mtp_overhead_bytes`` defaults ``mtp_keeps_target_ctx=True`` (so an
-  unsure caller over-reserves), skipping that precondition billed every MLA
-  model a second full f16 copy of its own KV.
-
-* Drafter discovery must resolve the same file ``_download_mtp`` opens, on every
-  platform. The estimate runs on hosts whose filesystems disagree about case and
-  whose ``Path`` ordering differs, and it is reached for both HF snapshots and
-  plain local folders.
-
-No GPU, no network. Cross-platform: the layout cases below construct real
-directories under ``tmp_path`` and assert against the loader's own picker.
+* The MTP reserve must follow the loader's own ``is_mtp_model`` precondition, because
+  ``_estimate_mtp_overhead_bytes`` defaults ``mtp_keeps_target_ctx=True`` so an unsure
+  caller over-reserves, and skipping the precondition billed every MLA model a second full
+  f16 copy of its own KV.
+* Drafter discovery must resolve the same file ``_download_mtp`` opens, on hosts whose
+  filesystems disagree about case and whose ``Path`` ordering differs.
 """
 
 from __future__ import annotations
@@ -268,10 +257,9 @@ class TestDrafterDiscoveryMatchesTheLoader:
         assert got != str(main)
 
     def test_nested_mtp_subdir_copy_is_used_when_no_root_mirror(self, tmp_path):
-        """A repo publishing heads only under MTP/, as Qwen3.8-Flash-Next and
-        Qwen3.8-27B do, still gets a drafter. _cached_repo_mtp_drafter already
-        reuses such a copy offline, so skipping it here gave a cached user
-        speculation and a fresh one none."""
+        """A repo publishing heads only under MTP/ still gets a drafter:
+        _cached_repo_mtp_drafter already reuses such a copy offline, so skipping it here gave
+        a cached user speculation and a fresh one none."""
         snap = self._snapshot(tmp_path)
         main = _write_gguf(snap / "model-Q4_K_M.gguf", _MLA_NO_HEAD, arch = "qwen4exp")
         nested = _write_gguf(snap / "MTP" / "mtp-model-Q8_0.gguf", _MLA_NO_HEAD)
@@ -300,9 +288,8 @@ class TestDrafterDiscoveryMatchesTheLoader:
         assert got == str(full)
 
     def test_precision_outranks_the_shared_preference(self, tmp_path):
-        """Q8_0 first is the stronger rule: a shared bf16 head is both larger than
-        a full Q8_0 one and slower, since a draft step is dominated by the LM head
-        and that head is cheaper to execute at 8 bits."""
+        """Q8_0 first is the stronger rule: a shared bf16 head is larger than a full Q8_0 one
+        and slower, since a draft step is dominated by the LM head."""
         snap = self._snapshot(tmp_path)
         main = _write_gguf(snap / "model-Q4_K_M.gguf", _MLA_NO_HEAD, arch = "qwen4exp")
         q8 = _write_gguf(snap / "MTP" / "mtp-model-Q8_0.gguf", _MLA_NO_HEAD)
@@ -312,9 +299,8 @@ class TestDrafterDiscoveryMatchesTheLoader:
         assert got == str(q8)
 
     def test_nested_fallback_is_skipped_for_other_architectures(self, tmp_path):
-        """The fallback is qwen4exp only. Qwen3.8-27B bakes the head into 20 of
-        its 24 quants, and llama.cpp prefers a -md drafter over an embedded one, so
-        pricing the sidecar would reserve for a file the load will not open."""
+        """The fallback is qwen4exp only: llama.cpp prefers a -md drafter over an embedded
+        one, so pricing the sidecar reserves for a file the load will not open."""
         snap = self._snapshot(tmp_path)
         main = _write_gguf(snap / "model-Q4_K_M.gguf", _MLA_NO_HEAD, arch = "qwen35")
         _write_gguf(snap / "MTP" / "mtp-model-Q8_0.gguf", _MLA_NO_HEAD)
@@ -323,9 +309,8 @@ class TestDrafterDiscoveryMatchesTheLoader:
         assert got is None, f"billed a sidecar the load will not fetch: {got} ({size} bytes)"
 
     def test_nested_fallback_is_skipped_for_a_qwen4exp_with_its_own_head(self, tmp_path):
-        """Architecture is not the whole gate: a qwen4exp GGUF converted with the
-        block kept needs no sidecar either. Nothing published does this, so this
-        pins the intent."""
+        """Architecture is not the whole gate: a qwen4exp GGUF converted with the block kept
+        needs no sidecar either. Nothing published does this, so this pins the intent."""
         snap = self._snapshot(tmp_path)
         main = _write_gguf(
             snap / "model-Q4_K_M.gguf",
@@ -373,9 +358,9 @@ class TestDrafterDiscoveryMatchesTheLoader:
         assert got == str(companion)
 
     def test_a_non_drafter_parked_under_mtp_is_not_launched(self, tmp_path):
-        """Everything under MTP/ classifies as a drafter, which keeps companions
-        out of variant menus and is too broad for choosing what to launch: an
-        mmproj or an imatrix would be handed to --model-draft."""
+        """Everything under MTP/ classifies as a drafter, which keeps companions out of
+        variant menus but is too broad for choosing what to launch: an mmproj or an imatrix
+        would be handed to --model-draft."""
         snap = self._snapshot(tmp_path)
         main = _write_gguf(snap / "model-Q4_K_M.gguf", _MLA_NO_HEAD, arch = "qwen4exp")
         _write_gguf(snap / "MTP" / "mmproj-BF16.gguf", _MLA_NO_HEAD)
@@ -396,10 +381,9 @@ class TestDrafterDiscoveryMatchesTheLoader:
         assert got == str(old)
 
     def test_an_incomplete_nested_split_does_not_shadow_a_complete_head(self, tmp_path):
-        """llama.cpp resolves sibling shards from the first one's directory, so
-        half a set is unusable and _download_companion_gguf answers None to it.
-        Ranked first and rejected after, it would disable speculation with a usable
-        lower-ranked head present."""
+        """llama.cpp resolves sibling shards from the first one's directory, so half a set is
+        unusable and _download_companion_gguf answers None. Ranked first and rejected after,
+        it would disable speculation with a usable lower-ranked head present."""
         snap = self._snapshot(tmp_path)
         main = _write_gguf(snap / "model-Q4_K_M.gguf", _MLA_NO_HEAD, arch = "qwen4exp")
         _write_gguf(snap / "MTP" / "mtp-model-Q8_0-00001-of-00002.gguf", _MLA_NO_HEAD)
@@ -502,11 +486,9 @@ if __name__ == "__main__":
 
 
 class TestTheEstimateMatchesTheConfiguredLoad:
-    """Settings a user can save must reach the estimator that prices them.
-
-    Each of these is a term the load planner forwards and this route did not, so
-    the bar reported a comfortable fit for a launch that reserves more.
-    """
+    """Settings a user can save must reach the estimator that prices them: each of these is
+    a term the load planner forwards and this route did not, so the bar reported a
+    comfortable fit for a launch that reserves more."""
 
     def test_saved_context_checkpoints_are_priced(self, monkeypatch, tmp_path):
         """Each checkpoint is an SWA snapshot per slot, so this is not small."""
@@ -569,11 +551,9 @@ class TestTheEstimateMatchesTheConfiguredLoad:
         assert (
             deep["spec_bytes"] > zero["spec_bytes"] * 10
         ), "spec_draft_n_max did not reach the MTP estimator"
-        # A blank field is NOT zero: _build_speculative_flags emits its own
-        # default (2 with a GPU, 3 without) and the rollback state is multiplied
-        # by it, so pricing an unset field as zero dropped the dominant
-        # allocation on this exact model shape. An explicit zero still means
-        # zero, which is what separates the two calls below.
+        # A blank field is NOT zero: _build_speculative_flags emits its own default and the
+        # rollback state is multiplied by it, so pricing an unset field as zero dropped the
+        # dominant allocation. An explicit zero still means zero.
         assert (
             none["spec_bytes"] > zero["spec_bytes"]
         ), "an unset draft depth was priced as zero, dropping every rollback copy"
@@ -640,16 +620,10 @@ class TestTheEstimateMatchesTheConfiguredLoad:
         assert off["projector_bytes"] is None, "vision off must free the projector"
 
     def test_a_host_pinned_projector_is_not_charged_to_the_card(self, monkeypatch, tmp_path):
-        """There is a third case beside "vision off" and "mmproj resident".
-
-        ``--no-mmproj-offload`` keeps vision ON and puts the projector in HOST memory. That
-        flag reached the planner through ``_plan_extra_args``, but this route still itemised
-        the projector, and the frontend adds ``projectorBytes`` straight onto its GPU weights
-        segment, which is also the VRAM total whenever ``_cached_estimate_config`` has no
-        planner result to use instead. So a projector the user explicitly pinned off the card
-        was charged against the VRAM bar anyway, at ``_MMPROJ_VRAM_SAFETY`` rather than even
-        at its file size.
-        """
+        """A third case beside "vision off" and "mmproj resident": ``--no-mmproj-offload``
+        keeps vision ON and puts the projector in HOST memory. The frontend adds
+        ``projectorBytes`` straight onto its GPU weights segment, so a projector explicitly
+        pinned off the card was charged against the VRAM bar anyway."""
         gguf = _write_gguf(tmp_path / "vision-Q4_K_M.gguf", _MLA_NO_HEAD)
         (tmp_path / "mmproj-F16.gguf").write_bytes(b"\x00" * 800_000)
 
@@ -683,10 +657,9 @@ class TestTheEstimateMatchesTheConfiguredLoad:
 
 
 class TestHostMemoryIsNotChargedToTheCard:
-    """Context checkpoints live in host heap, so a VRAM bar must be able to
-    exclude them. The load planner's own GPU figure is
-    ``kv_bytes - kv_checkpoint_bytes``; without the second term reported the bar
-    warns OOM over memory that never reaches the GPU."""
+    """Context checkpoints live in host heap, so a VRAM bar must be able to exclude them.
+    The planner's own GPU figure is ``kv_bytes - kv_checkpoint_bytes``; without the second
+    term the bar warns OOM over memory that never reaches the GPU."""
 
     def test_checkpoints_are_reported_as_their_own_share(self, monkeypatch, tmp_path):
         gguf = _write_gguf(tmp_path / "swa-model-Q4_K_M.gguf", _SWA_MODEL)
@@ -707,9 +680,7 @@ class TestHostMemoryIsNotChargedToTheCard:
         # By difference against the same call with none, which is how the load
         # planner derives it -- asking one function twice cannot drift from it.
         assert share == with_checkpoints["kv_bytes"] - without["kv_bytes"]
-        # And it is a SHARE of kv_bytes, not a figure beside it: the field
-        # shipped meaning the whole cache and an existing caller still reads it
-        # that way.
+        # A SHARE of kv_bytes, not a figure beside it: an existing caller reads it that way.
         assert share < with_checkpoints["kv_bytes"]
 
     def test_no_checkpoints_means_no_host_share(self, monkeypatch, tmp_path):
@@ -719,22 +690,17 @@ class TestHostMemoryIsNotChargedToTheCard:
 
 
 class TestAutoAbstainsOverASidecar:
-    """Auto promotes to DSpark or DFlash when the model ships one, so the route
-    must say the reserve is unpriced rather than chart a total without it.
-
-    These assert the OUTCOME, not that the block runs: the first version of this
-    guard referenced two helpers that were only in another function's scope, and
-    the resulting NameError was swallowed by the surrounding except, leaving
-    spec_unpriced false with nothing in the response to show it had failed.
-    """
+    """Auto promotes to DSpark or DFlash when the model ships one, so the route must say the
+    reserve is unpriced rather than chart a total without it. These assert the OUTCOME, not
+    that the block runs: an earlier guard raised NameError into the surrounding except,
+    leaving spec_unpriced false with nothing in the response to show it had failed."""
 
     def _call(self, monkeypatch, tmp_path, *, sidecar: str | None, supports: bool):
         model_dir = tmp_path / "local-model"
         gguf = _write_gguf(model_dir / "model-Q4_K_M.gguf", _MLA_NO_HEAD)
         if sidecar:
-            # A DFlash sidecar is identified by its header, not its name:
-            # detect_dflash_file confirms general.architecture = dflash, which
-            # settles the adversarial case of a real model merely CALLED DFlash.
+            # By header, not by name: detect_dflash_file confirms
+            # general.architecture = dflash, settling the model merely CALLED DFlash.
             _write_gguf(
                 model_dir / sidecar,
                 _MLA_NO_HEAD,
@@ -792,24 +758,17 @@ class TestAutoAbstainsOverASidecar:
         assert out["spec_unpriced"] is False
 
     def test_a_binary_that_cannot_run_one_still_prices_normally(self, monkeypatch, tmp_path):
-        # The planner gates sidecar selection on the binary's own capability, so
-        # abstaining where the launch would never open one blanks the bar for
-        # nothing.
+        # The planner gates sidecar selection on the binary's own capability, so abstaining
+        # where the launch would never open one blanks the bar for nothing.
         out = self._call(monkeypatch, tmp_path, sidecar = "dspark-model-Q8_0.gguf", supports = False)
         assert out["spec_unpriced"] is False
 
 
 class TestThePlannerFiguresArrive:
-    """The route delegates to the load planner for the terms it cannot derive
-    itself, inside a try/except so a planner that cannot size a model still
-    leaves the KV bar drawn.
-
-    That except is the hazard: every earlier version of this delegation failed
-    into it silently and returned nulls that looked like "not sizeable" rather
-    than "the call is broken". These assert the figures are actually present for
-    a model the planner can size, so a signature drift or an unresolved
-    parameter fails the suite instead of quietly blanking the bar.
-    """
+    """The route delegates to the load planner inside a try/except, so a planner that cannot
+    size a model still leaves the KV bar drawn. That except is the hazard: earlier versions
+    failed into it silently and returned nulls that read as "not sizeable" rather than "the
+    call is broken", so these assert the figures are present for a model it can size."""
 
     def test_the_planner_terms_are_populated(self, monkeypatch, tmp_path):
         model_dir = tmp_path / "planner-model"
@@ -886,9 +845,9 @@ class TestTheInheritedEnvironmentIsPriced:
     not what the request said."""
 
     def test_an_inherited_context_beats_the_native_length(self, monkeypatch, tmp_path):
-        # load_model drops an inherited context only when it is zero, so a
-        # positive one is the legitimate way to set the window. Falling through
-        # to native priced a 4k load at the header's length.
+        # load_model drops an inherited context only when it is zero, so a positive one is
+        # the legitimate way to set the window; falling through to native priced a 4k load
+        # at the header's length.
         gguf = _write_gguf(tmp_path / "model-Q4_K_M.gguf", _PLAIN_GQA)
         monkeypatch.setenv("LLAMA_ARG_CTX_SIZE", "4096")
         out = _call_std_route(monkeypatch, path = gguf, n_ctx = None)
@@ -905,9 +864,8 @@ class TestTheInheritedEnvironmentIsPriced:
         assert out["n_ctx"] == _PLAIN_GQA["context_length"]
 
     def test_an_inherited_cache_type_sizes_the_cache(self, monkeypatch, tmp_path):
-        # A q8_0 cache is roughly half an f16 one. Pricing f16 while the child
-        # opens q8_0 makes the KV segment and the per-token readout contradict
-        # the planner total drawn beside them.
+        # Pricing f16 while the child opens q8_0 makes the KV segment and the per-token
+        # readout contradict the planner total drawn beside them.
         gguf = _write_gguf(tmp_path / "model-Q4_K_M.gguf", _PLAIN_GQA)
         monkeypatch.delenv("LLAMA_ARG_CACHE_TYPE_K", raising = False)
         monkeypatch.delenv("LLAMA_ARG_CACHE_TYPE_V", raising = False)
@@ -921,10 +879,9 @@ class TestTheInheritedEnvironmentIsPriced:
         )
 
     def test_an_inherited_context_is_reported_as_pinned(self, monkeypatch, tmp_path):
-        # The loader keeps a positive inherited context rather than fitting it,
-        # so a caller must not soften its verdict for that launch. Saying
-        # "auto-fitted" there suppressed the overage AND drew only the
-        # irreducible floor, which is a comfortable fit for a load that OOMs.
+        # The loader keeps a positive inherited context rather than fitting it, so saying
+        # "auto-fitted" suppressed the overage AND drew only the irreducible floor, which is
+        # a comfortable fit for a load that OOMs.
         gguf = _write_gguf(tmp_path / "model-Q4_K_M.gguf", _PLAIN_GQA)
         monkeypatch.setenv("LLAMA_ARG_CTX_SIZE", "4096")
         assert _call_std_route(monkeypatch, path = gguf, n_ctx = None)["context_is_pinned"] is True
@@ -940,19 +897,17 @@ class TestTheInheritedEnvironmentIsPriced:
         assert _call_std_route(monkeypatch, path = gguf, n_ctx = 8192)["context_is_pinned"] is True
 
     def test_an_inherited_device_pin_is_reported(self, monkeypatch, tmp_path):
-        # The child is confined to the cards LLAMA_ARG_DEVICE names and an
-        # automatic launch preserves the pin, so an aggregate VRAM budget
-        # describes a pool the launch will not open. The caller cannot see the
-        # environment, so the route has to say.
+        # The child is confined to the cards LLAMA_ARG_DEVICE names, so an aggregate VRAM
+        # budget describes a pool the launch will not open, and the caller cannot see the
+        # environment.
         gguf = _write_gguf(tmp_path / "model-Q4_K_M.gguf", _PLAIN_GQA)
         monkeypatch.setenv("LLAMA_ARG_DEVICE", "CUDA0")
         assert _call_std_route(monkeypatch, path = gguf)["inherited_device_pin"] is True
 
     @pytest.mark.parametrize("value", ["", "none", "NONE"])
     def test_no_usable_pin_is_not_reported_as_one(self, monkeypatch, tmp_path, value):
-        # "none" is a CPU-only launch, which the planner already answers with
-        # zero GPU bytes and which draws no bar on its own; reporting it as a pin
-        # would blank the row for a second, unrelated reason.
+        # "none" is a CPU-only launch, already answered with zero GPU bytes; reporting it
+        # as a pin would blank the row for a second, unrelated reason.
         gguf = _write_gguf(tmp_path / "model-Q4_K_M.gguf", _PLAIN_GQA)
         monkeypatch.setenv("LLAMA_ARG_DEVICE", value)
         assert _call_std_route(monkeypatch, path = gguf)["inherited_device_pin"] is False

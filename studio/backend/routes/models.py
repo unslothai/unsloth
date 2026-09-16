@@ -3920,26 +3920,20 @@ async def get_kv_cache_estimate(
             except Exception as e:
                 logger.debug(f"cache type resolution failed for '{repo_id}': {e}")
 
-            # The attention plan, resolved exactly once for this answer. Every figure
-            # below depends on it and this route used to take the estimator's own defaults
-            # for all of it: flash attention on, no --swa-full, a unified cache. The
-            # loader resolved the same knobs differently, so the panel and the loader's
-            # log reported two KV caches for one model and cache type (#10489, 2.37 GiB
-            # against 9.4 GB), and the context warning was drawn against a third number.
+            # The attention plan, resolved exactly once for this answer. Taking the
+            # estimator's defaults here while the loader resolved the same knobs differently
+            # is why the panel and the loader's log reported two KV caches for one model and
+            # cache type (#10489).
             #
-            # An explicitly asked-for value is expressed as the extra argument a load
-            # would carry and then resolved by the same helpers the launch uses, rather
-            # than taken verbatim. That keeps one rule for both callers and one vocabulary
-            # for the planner below, and it is what stops the route answering for a load
-            # that cannot happen: a quantized V cache turns flash attention on inside
-            # llama.cpp whatever the request said, and a build without the flag cannot
-            # turn it on at all.
+            # An asked-for value is expressed as the extra argument a load would carry and
+            # then resolved by the same helpers the launch uses, never taken verbatim: that
+            # keeps one rule for both callers and stops the route answering for a load that
+            # cannot happen, since a quantized V cache turns flash attention on inside
+            # llama.cpp whatever the request said, and a build without the flag cannot.
             #
-            # bool or nothing: this coroutine is also called directly, in process and from
-            # the tests, where an omitted argument arrives as the ``Query`` default object
-            # rather than the None FastAPI would have resolved. Left unnormalised that
-            # sentinel reads as True, which silently collapsed an SWA model's two cache
-            # sizes and dropped the checkpoint share.
+            # bool or nothing: called directly, in process and from the tests, an omitted
+            # argument arrives as the ``Query`` default object rather than None, and that
+            # sentinel reads as True.
             _asked_flash_attn = flash_attn if isinstance(flash_attn, bool) else None
             _asked_kv_unified = kv_unified if isinstance(kv_unified, bool) else None
             _asked_swa_full = swa_full if isinstance(swa_full, bool) else None
@@ -3950,8 +3944,8 @@ async def get_kv_cache_estimate(
             if _asked_kv_unified is not None:
                 _plan_extra_args += ["--kv-unified" if _asked_kv_unified else "--no-kv-unified"]
             if _asked_swa_full:
-                # Enable-only, like the flag: llama.cpp has no --no-swa-full, so an
-                # explicit false leaves the environment to answer, as a launch would.
+                # Enable-only, like the flag: llama.cpp has no --no-swa-full, so an explicit
+                # false leaves the environment to answer, as a launch would.
                 _plan_extra_args += ["--swa-full"]
             if _asked_no_mmproj is not None:
                 _plan_extra_args += [
@@ -3977,8 +3971,7 @@ async def get_kv_cache_estimate(
                     "flash_attn": _planned_flash_attn_state(
                         _planner_extras,
                         planned_cache_types = _plan_cache_types(cache_type_kv, _planner_extras),
-                        # The probe answers for the binary that will serve this load. An
-                        # unreadable probe keeps the managed default, which is what the
+                        # An unreadable probe keeps the managed default, which is what the
                         # launch emits whenever the flag is there to emit.
                         supports_flash_attn = bool(_plan_caps.get("supports_flash_attn", True)),
                     ),
@@ -4094,18 +4087,12 @@ async def get_kv_cache_estimate(
                 except Exception as e:
                     logger.debug(f"mmproj estimate failed for '{repo_id}' {quant}: {e}")
             if _asked_no_mmproj:
-                # There is a third case beside "vision off" and "mmproj resident":
+                # A third case beside "vision off" and "mmproj resident":
                 # --no-mmproj-offload keeps vision on and puts the projector in HOST memory.
-                # Until now that flag only reached the planner through _plan_extra_args while
-                # this route still itemised the projector, and the frontend adds
-                # projectorBytes straight onto its GPU weights segment ("the projector is
-                # resident alongside the weights"), which is also the VRAM total whenever
-                # _cached_estimate_config has no planner result to use instead. So a
-                # projector the user explicitly pinned off the card was still charged
-                # against the VRAM bar, and at _MMPROJ_VRAM_SAFETY rather than at its file
-                # size. Exactly the kv_checkpoint_bytes case one field along, which is
-                # subtracted for the same reason: host heap must not warn OOM over memory
-                # that never reaches the card.
+                # The frontend adds projectorBytes straight onto its GPU weights segment, so
+                # a projector explicitly pinned off the card was still charged against the
+                # VRAM bar. Same reason kv_checkpoint_bytes is subtracted one field along:
+                # host heap must not warn OOM over memory that never reaches the card.
                 projector = None
 
             # Only the MTP modes reserve memory; ngram is free. "auto" may or may not resolve to MTP, and the estimator
@@ -4198,9 +4185,8 @@ async def get_kv_cache_estimate(
                             # 16. Blank is not zero: _build_speculative_flags emits its own default when the field is unset (2 with a
                             # GPU, 3 without) and the rollback state is multiplied by it. An explicit 0 is still honoured.
                             spec_draft_n_max = _effective_draft_n_max,
-                            # The draft cache is priced by the same estimator, so it takes
-                            # the same resolved plan; leaving it on the defaults reported a
-                            # reserve for a launch the target half had already contradicted.
+                            # Same estimator, so the same resolved plan: on the defaults it
+                            # reported a reserve the target half had already contradicted.
                             **_plan_kwargs,
                         )
                 except Exception as e:
@@ -4251,11 +4237,10 @@ async def get_kv_cache_estimate(
                         ),
                     )
                 # The planner resolves the attention plan from the extra arguments a load
-                # would carry, which is why the asked-for plan above was built in that
-                # vocabulary: handing it over here is what stops gpu_bytes and kv_bytes in
-                # ONE response describing two different loads. With nothing asked for this
-                # is None and the planner's own resolution stands, which is already the
-                # launch's.
+                # would carry, which is why the asked-for plan was built in that vocabulary:
+                # handing it over is what stops gpu_bytes and kv_bytes in ONE response
+                # describing two different loads. None here leaves the planner's own
+                # resolution, which is already the launch's.
                 _cfg = _cached_estimate_config(repo_id, quant, None, False)
                 if _cfg is not None and _cfg is not _ESTIMATE_NOT_ON_DISK:
                     _cfg = _localized_estimate_config(_cfg, path)

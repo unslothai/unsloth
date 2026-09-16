@@ -4,21 +4,14 @@
 """/api/models/kv-cache-estimate answers for a named attention plan, not for the defaults.
 
 The route took the estimator's signature defaults for the three knobs that decide the cache
-layout: flash attention on, no ``--swa-full``, a unified cache. It had no way to be told
-otherwise, so it could not answer for the load the user was about to start, and the loader
-resolved the same knobs differently. One model, one cache type, three numbers on screen:
-the memory panel's, the loader's own log line, and the context warning's ceiling (#10489,
-2.37 GiB against 9.4 GB at q8_0 / 262,144).
+layout, and the loader resolved them differently, so one model at one cache type put three
+numbers on screen: the memory panel's, the loader's log line, and the context warning's
+ceiling (#10489). The plan is now an input, resolved the way the launch resolves it when the
+caller says nothing, and every figure in one response is priced against it.
 
-So the plan is now an input, resolved the way the launch resolves it when the caller says
-nothing, and each figure in one response is priced against the same plan -- including the
-planner's aggregate, which is handed the plan in the vocabulary it already understands (the
-extra arguments a load would carry).
-
-The estimator is the same function the loader calls; the arithmetic itself is covered by
-tests/test_kv_cache_estimation.py. What is asserted here is that the route can be told, that
-it resolves rather than defaults, and that it cannot be told something the launch would
-overrule.
+The arithmetic is covered by tests/test_kv_cache_estimation.py. Asserted here: that the route
+can be told, that it resolves rather than defaults, and that it cannot be told something the
+launch would overrule.
 """
 
 from __future__ import annotations
@@ -36,10 +29,9 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# The real loggers package FIRST. The GGUF builder below installs a process-wide `loggers`
+# The real loggers package FIRST: the GGUF builder below installs a process-wide `loggers`
 # stub that is a module rather than a package, and routes.models reaches
-# loggers.media_progress through it, so the import order decides whether this file can be
-# collected on its own rather than only beside a sibling that got there first.
+# loggers.media_progress through it, so this file would only collect beside a sibling.
 try:
     import loggers.media_progress  # noqa: F401,E402
 except Exception:  # pragma: no cover - a stub already won, as in a shared shard
@@ -106,9 +98,8 @@ def _call_route(
 ):
     """Drive the real handler with the quant already resolved to *path*.
 
-    Every parameter is passed explicitly, including the new ones: called in process the
-    omitted ones arrive as their ``Query`` objects rather than as the None FastAPI would
-    have resolved, and this route's own tests are the first consumer of that.
+    Every parameter is passed explicitly: called in process, an omitted one arrives as its
+    ``Query`` object rather than the None FastAPI would have resolved.
     """
     monkeypatch.setattr(
         models_routes,
@@ -248,9 +239,8 @@ class TestTheContract:
         assert set(_call_route(monkeypatch, path = gqa)) == set(_KV_CACHE_ESTIMATE_KEYS)
 
     def test_an_omitted_plan_does_not_move_the_answer_for_a_plain_model(self, monkeypatch, gqa):
-        """The regression guard for every caller that exists today: on a model with no
-        ragged V and no sliding window, resolving the plan is arithmetically identical to
-        the defaults the route used to take."""
+        """On a model with no ragged V and no sliding window, resolving the plan is
+        arithmetically identical to the defaults the route used to take."""
         answer = _call_route(monkeypatch, path = gqa)
         assert (
             answer["kv_bytes"]

@@ -3,27 +3,17 @@
 
 """A context nobody could measure is not a ceiling, and must not overrule a request.
 
-Two arms fall back to a short context when the GGUF carries no attention dimensions and
-``_can_estimate_kv()`` is False: ``_plan_tensor_parallel`` (``_TP_UNMEASURED_CTX``) and the
-Metal unified-memory arm (``_metal_floor_ctx``). Both used to apply that fallback to an
-explicit request as well, and to publish it as ``max_context_length``.
+Two arms fall back to a short context when the GGUF carries no attention dimensions:
+``_plan_tensor_parallel`` (``_TP_UNMEASURED_CTX``) and the Metal unified-memory arm
+(``_metal_floor_ctx``). Both used to apply that fallback to an explicit request too, and to
+publish it as ``max_context_length``, so 256k selected came back as ``"context_length": 4096,
+"max_context_length": 4096, "native_context_length": 262144`` with the slider reporting that
+nothing longer fits (#9653).
 
-What that looked like from the outside (#9653, macOS 26.6 / M3, Qwen3.6-35B-A3B-MTP-GGUF
-UD-Q4_K_XL): 256k selected in the model settings, and ``/v1/models`` answering
-
-    "context_length": 4096, "max_context_length": 4096, "native_context_length": 262144
-
-with the context slider then reporting that nothing longer fits, on a model the reporter
-loads at a useful context by driving llama.cpp directly.
-
-The fallback is a guess, which cuts both ways and is already written down in
-``_metal_context_overcommit_message``: it will not refuse against that number because
-refusing on a guess blocks loads that work today. Equally, it may not silently overrule a
-context the user typed, and it may not be published as "the largest that fits" once the
-load has run above it. Auto keeps the conservative fallback, since Auto asked for nothing
-in particular.
-
-What the user is still owed is the reason, so both arms record
+The fallback is a guess, which cuts both ways, as ``_metal_context_overcommit_message``
+already says: it will not refuse against that number, and equally it may not overrule a typed
+context or be published as "the largest that fits" once the load has run above it. Auto keeps
+the conservative fallback. The reason is still owed, so both arms record
 ``_unmeasured_context_notice`` on ``last_load_warning``.
 """
 
@@ -112,9 +102,9 @@ class TestTheTensorParallelFallback:
         assert ceiling == _TP_UNMEASURED_CTX
 
     def test_a_measured_cap_still_binds_an_explicit_request(self):
-        """The flag must not become a way around the real cap. With a KV estimate the
-        planner has measured the budget, ``--fit`` is a no-op in tensor mode, and the cap
-        is the only thing standing between the request and a startup OOM."""
+        """The flag must not become a way around the real cap: with a KV estimate the budget
+        is measured, ``--fit`` is a no-op in tensor mode, and the cap is all that stands
+        between the request and a startup OOM."""
         tight = [(0, 6 * 1024), (1, 6 * 1024)]
         capped, _ceiling, *_ = _measurable()._plan_tensor_parallel(
             tight, 8 * GB, NATIVE, max_target_ctx = NATIVE, explicit_ctx = True
@@ -183,9 +173,8 @@ class TestTheNotice:
 
 
 class TestTheMetalArm:
-    """Simulation notice: Metal here is a non-zero ``_apple_metal_memory_budget_bytes``
-    with an empty GPU probe, the seam the Metal suites already use. No Metal device is
-    exercised; this is the branch coverage one Linux host can give."""
+    """Simulation notice: Metal here is a non-zero ``_apple_metal_memory_budget_bytes`` with
+    an empty GPU probe, the seam the Metal suites already use. No Metal device is exercised."""
 
     def _launch_unmeasurable(self, tmp_path, monkeypatch, **kwargs):
         return _metal_launch(
