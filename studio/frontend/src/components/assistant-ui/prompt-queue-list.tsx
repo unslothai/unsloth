@@ -7,7 +7,6 @@ import {
   GripVerticalIcon,
   ListEndIcon,
   MoreHorizontalIcon,
-  PlayIcon,
 } from "lucide-react";
 import {
   Copy01Icon,
@@ -23,6 +22,7 @@ import {
 import { NonModalDropdownMenu } from "@/components/ui/non-modal-dropdown-menu";
 import { usePromptQueueReorder } from "./use-prompt-queue-reorder";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
+import { QueueResumeIcon } from "@/components/assistant-ui/queue-resume-icon";
 import {
   type PromptQueueUIEntry,
   type PromptQueueUIItem,
@@ -344,7 +344,7 @@ export function PromptQueueList({
                     </DropdownMenuItem>
                     {entry.paused && (
                       <DropdownMenuItem onSelect={onResume}>
-                        <PlayIcon /> Resume queue
+                        <QueueResumeIcon className="size-4" /> Resume queue
                       </DropdownMenuItem>
                     )}
                   </NonModalDropdownMenu>
