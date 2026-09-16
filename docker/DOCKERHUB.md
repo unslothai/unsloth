@@ -17,11 +17,11 @@ docker run -d --name unsloth --gpus all --ipc=host \
   unsloth/unsloth && docker logs -f unsloth
 ```
 
-That starts the container and follows its startup, which ends after about a minute with your links and a generated JupyterLab password. On the first run against a new `unsloth-studio` volume it generates a Studio password too; change that one on first sign-in or Studio stops after an hour. Reusing an existing volume keeps the Studio password already stored on it, and `docker exec unsloth unsloth studio reset-password` replaces it. Ctrl-C stops following the log, not the container.
+That starts the container and follows its startup, which ends after about a minute with your links and a generated JupyterLab password. On the first run against a new `unsloth-studio` volume it generates a Studio password too; change that one on first sign-in or Studio stops after an hour. Reusing an existing volume keeps the Studio password already stored on it; `docker exec unsloth unsloth studio reset-password` mints a new one and prints it, revoking sessions and API keys, with no restart needed. Ctrl-C stops following the log, not the container.
 
 Those ports publish on every interface, which is fine on a laptop and not on a cloud host. Three ways to close that, in order of least work:
 
-- `-e UNSLOTH_STUDIO_SECURE=1` and drop `-p 8000:8000`: Studio is served only over a Cloudflare HTTPS link, printed in the log, and binds to loopback inside the container so no raw port exists. It fails closed, so no tunnel means no link rather than serving in the clear. `UNSLOTH_STUDIO_CLOUDFLARE=1` keeps the local port as well.
+- `-e UNSLOTH_STUDIO_SECURE=1` and drop `-p 8000:8000`: Studio is served only over a Cloudflare HTTPS link, printed in the log, and binds to loopback inside the container so no raw port exists. It fails closed, so no tunnel means no link rather than serving in the clear. On a new volume the public page will not hand out the generated first-boot password, so set one with `docker exec unsloth unsloth studio reset-password` before using the link. `UNSLOTH_STUDIO_CLOUDFLARE=1` keeps the local port as well.
 - Publish to `127.0.0.1` and tunnel: `-p 127.0.0.1:8000:8000 -p 127.0.0.1:8888:8888`, then `ssh -L 8000:localhost:8000 -L 8888:localhost:8888 user@your-host`.
 - Keep the ports and set real passwords with `-e UNSLOTH_STUDIO_PASSWORD=...` and `-e JUPYTER_PASSWORD=...`.
 
