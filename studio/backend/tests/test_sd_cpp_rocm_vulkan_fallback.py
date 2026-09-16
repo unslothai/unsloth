@@ -1562,3 +1562,99 @@ def test_a_second_strike_taken_blind_still_expires_when_the_cards_change(
         lambda: {"bundle": "b1", "runtime": "rocm6.2", "gpus": "gfx1201"},
     )
     assert sd_cpp_backend.accelerator_runtime_failed("rocm") is False
+
+
+def test_a_related_model_name_is_not_tie_broken_by_position(monkeypatch):
+    """Containment matches two different cards, and the position does not count them.
+
+    `AMD Radeon RX 7600` is contained in `AMD Radeon RX 7600 XT`, so on a mixed host both
+    devices land in the candidate list. The position handed in counts only the cards of the
+    SELECTED name in the physical enumeration, so it never included the XT: applying it here
+    pins whichever of the two Vulkan enumeration happened to put first, and the load then runs
+    on, and accounts for, a different GPU.
+    """
+    from core.inference import sd_cpp_backend
+
+    listing = (
+        "Vulkan0\tAMD Radeon RX 7600 XT (RADV NAVI33)\n"
+        "Vulkan1\tAMD Radeon RX 7600 (RADV NAVI33)\n"
+    )
+    monkeypatch.setattr(
+        sd_cpp_backend, "_sd_cpp_probe_output",
+        lambda binary, *args: listing if args == ("--list-devices",) else None,
+    )
+    # The driver tag is dropped and the rest compared for equality, so each card is found as
+    # itself rather than as a substring of the other.
+    assert sd_cpp_backend.sd_cpp_device_named(
+        "/opt/sd/vulkan/sd-cli", "AMD Radeon RX 7600", position = 0
+    ) == "Vulkan1"
+    assert sd_cpp_backend.sd_cpp_device_named(
+        "/opt/sd/vulkan/sd-cli", "AMD Radeon RX 7600 XT", position = 0
+    ) == "Vulkan0"
+
+    # And where only containment can match, a candidate list that mixes models is an
+    # ambiguity rather than a tie: nothing is pinned, whatever position says.
+    mixed = (
+        "Vulkan0\tAMD Radeon RX 7600 XT Special Edition\n"
+        "Vulkan1\tAMD Radeon RX 7600 Special Edition\n"
+    )
+    monkeypatch.setattr(
+        sd_cpp_backend, "_sd_cpp_probe_output",
+        lambda binary, *args: mixed if args == ("--list-devices",) else None,
+    )
+    assert sd_cpp_backend.sd_cpp_device_named(
+        "/opt/sd/vulkan/sd-cli", "AMD Radeon RX 7600", position = 0
+    ) is None
+    assert sd_cpp_backend.sd_cpp_device_named(
+        "/opt/sd/vulkan/sd-cli", "AMD Radeon RX 7600", position = 1
+    ) is None
+
+
+def test_a_build_recorded_as_unrunnable_is_not_accepted_back_from_the_ensure(monkeypatch):
+    """An ensure does not promise the accelerator that was asked for.
+
+    With installing switched off, offline, or after a failed download it returns whatever
+    usable build is already in the managed tree, which on a host that recorded a ROCm crash
+    and cannot fetch the Vulkan rung is the ROCm build. That build still answers
+    `--list-devices`, so the verdict reads as a working accelerator and the load commits the
+    very build the record exists to avoid -- and the failure the record describes is a crash
+    minutes into the render, after a multi-tens-of-GB download.
+    """
+    from core.inference import sd_cpp_backend
+    from core.inference import video as video_mod
+
+    monkeypatch.setattr(
+        sd_cpp_backend, "_installed_accelerator_of", lambda binary: "rocm", raising = False
+    )
+    monkeypatch.setattr(
+        sd_cpp_backend, "accelerator_runtime_failed",
+        lambda accelerator: accelerator == "rocm",
+        raising = False,
+    )
+    assert video_mod._not_a_recorded_failure("/opt/sd/rocm/sd-cli") is None
+
+    # A build with no record against it is handed straight back, and so is a user-supplied one
+    # whose class is unrecorded: unknown is not a failure.
+    monkeypatch.setattr(
+        sd_cpp_backend, "_installed_accelerator_of", lambda binary: "vulkan", raising = False
+    )
+    assert video_mod._not_a_recorded_failure("/opt/sd/vulkan/sd-cli") == "/opt/sd/vulkan/sd-cli"
+    monkeypatch.setattr(
+        sd_cpp_backend, "_installed_accelerator_of", lambda binary: None, raising = False
+    )
+    assert video_mod._not_a_recorded_failure("/usr/local/bin/sd") == "/usr/local/bin/sd"
+    assert video_mod._not_a_recorded_failure(None) is None
+
+
+def test_every_ensure_in_the_h3_load_is_checked_against_the_record():
+    """One guarded ensure is not the boundary: the fallback ensure and the CPU ensure hand
+    back the same wrong-accelerator build under the same conditions."""
+    import inspect
+    from core.inference import video as video_mod
+
+    source = inspect.getsource(video_mod)
+    load = source[source.index("allow_install = _install_allowed()"):]
+    ensures = load.count("ensure_h3_sd_cpp_binary(")
+    guarded = load.count("_not_a_recorded_failure(")
+    assert ensures >= 3, ensures
+    assert guarded == ensures, (guarded, ensures)

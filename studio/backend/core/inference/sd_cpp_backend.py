@@ -428,6 +428,19 @@ def _normalized_card_name(text: str) -> str:
     return "".join(character for character in text.lower() if character.isalnum())
 
 
+_DRIVER_TAG_RE = re.compile(r"\s*\([^()]*\)\s*$")
+
+
+def _without_driver_tag(text: str) -> str:
+    """A card description with the trailing parenthesised driver tag removed.
+
+    A Vulkan ICD appends its own: `AMD Radeon RX 7600 (RADV NAVI33)`. Dropping it is what
+    lets the rest be compared for EQUALITY, which containment cannot do -- `AMD Radeon RX
+    7600` is contained in `AMD Radeon RX 7600 XT`, and those are two different cards.
+    """
+    return _DRIVER_TAG_RE.sub("", text).strip()
+
+
 def sd_cpp_device_named(
     binary: Optional[str], card_name: Optional[str], *, position: Optional[int] = None
 ) -> Optional[str]:
@@ -460,7 +473,12 @@ def sd_cpp_device_named(
     text = _sd_cpp_probe_output(binary, "--list-devices")
     if text is None:
         return None
-    matches: list[str] = []
+    # Two readings of every line, because containment alone cannot tell two models apart:
+    # `AMD Radeon RX 7600` is contained in `AMD Radeon RX 7600 XT`. The exact one drops the
+    # driver tag and compares the rest for equality, which is the model; the loose one is the
+    # containment that recognises a tagged spelling of the same card.
+    exact: list[str] = []
+    loose: "list[tuple[str, str]]" = []
     for line in text.splitlines():
         parts = line.split("\t", 1)
         if len(parts) != 2:
@@ -472,22 +490,38 @@ def sd_cpp_device_named(
         described = _normalized_card_name(parts[1])
         if not described:
             continue
+        if _normalized_card_name(_without_driver_tag(parts[1])) == wanted:
+            exact.append(name)
         if wanted in described or described in wanted:
-            matches.append(name)
+            loose.append((name, described))
+    if exact:
+        # Every candidate is the selected MODEL, so a run of them is a run of identical cards
+        # and the position means what it says.
+        matches, same_model = exact, True
+    else:
+        matches = [name for name, _described in loose]
+        # Only when the candidates describe one model. `position` counts the cards of the
+        # selected name in the PHYSICAL enumeration, so applying it to a list that mixes a
+        # 7600 with a 7600 XT pins by a count that never included the other model: position 0
+        # can land on the XT when the non-XT was selected, and the load then runs on, and
+        # accounts for, a different GPU. Mixed models are an ambiguity, not a tie.
+        same_model = len({described for _name, described in loose}) == 1
     if len(matches) == 1:
         return matches[0]
-    if matches and position is not None and 0 <= position < len(matches):
+    if matches and same_model and position is not None and 0 <= position < len(matches):
         # A run of identical cards, and the selection's place in that run. Same vendor, same
         # driver, same enumeration order on both sides; see the note above for why that is
         # the assumption and not a reading.
         return matches[position]
     if matches:
         logger.warning(
-            "sd_cpp.device_pin_ambiguous: %s devices answer to %r and the selection's place "
-            "among them is not known, so none is pinned and the graph runs on this build's "
-            "own default device",
+            "sd_cpp.device_pin_ambiguous: %s devices answer to %r and %s, so none is pinned "
+            "and the graph runs on this build's own default device",
             len(matches),
             card_name,
+            "they do not all describe the same model"
+            if not same_model
+            else "the selection's place among them is not known",
         )
     return None
 

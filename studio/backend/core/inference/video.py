@@ -682,6 +682,43 @@ def _note_sd_cpp_accelerator_failure(binary: Optional[str], output: str) -> None
         logger.debug("could not record the sd.cpp accelerator failure: %s", exc)
 
 
+def _not_a_recorded_failure(binary: Optional[str]) -> Optional[str]:
+    """``binary``, unless the build it belongs to is one this host has already recorded as
+    unrunnable.
+
+    An ensure does not promise the accelerator that was ASKED for: when installing is switched
+    off, when the host is offline, or when the download fails, it returns whatever usable build
+    is already in the managed tree, which on a host that recorded a ROCm crash and cannot fetch
+    the Vulkan rung is the ROCm build. That build can still answer ``--list-devices``, so the
+    verdict taken from it reads as a working accelerator and the load commits the very build the
+    record exists to avoid -- and the failure the record describes is a crash MID-RENDER, minutes
+    and a full download later.
+
+    So the returned build is checked against the record rather than trusted, and a build that is
+    recorded bad is treated as no build at all. That is what leaves the ladder to go on to the
+    Vulkan rung, to the CPU rung, or to the refusal that hands the load back to diffusers.
+
+    A user-supplied binary has no recorded class and is never rejected here: unrecorded is
+    unknown, and the identity and capability tests already cover it.
+    """
+    if not binary:
+        return binary
+    try:
+        from .sd_cpp_backend import _installed_accelerator_of, accelerator_runtime_failed
+
+        klass = _installed_accelerator_of(binary)
+        if klass and accelerator_runtime_failed(klass):
+            logger.warning(
+                "video.sd_cpp_recorded_failure_returned: the ensure handed back the %s build, "
+                "which this host has already recorded as unrunnable; not using it",
+                klass,
+            )
+            return None
+    except Exception as exc:  # noqa: BLE001 -- cannot tell -> unchanged behaviour
+        logger.debug("could not check the sd.cpp accelerator record: %s", exc)
+    return binary
+
+
 def _h3_te_canonical(repo_id: Optional[str]) -> str:
     """A repo id normalised for an EXACT identity compare: mirrors folded onto the id they copy,
     then trimmed and lowercased. Deliberately no tail-segment tolerance -- ``someone/MiniMax-H3``
@@ -1835,9 +1872,11 @@ class VideoBackend:
         # showed that build cannot be run here (see preferred_accelerator). Kept as a variable because the rung that is
         # finally committed is what the fallback below reports and what the failure note is keyed on.
         accelerator = preferred_accelerator(_install_accelerator_for(target.backend))
-        binary = ensure_h3_sd_cpp_binary(
-            allow_install = allow_install,
-            accelerator = accelerator,
+        binary = _not_a_recorded_failure(
+            ensure_h3_sd_cpp_binary(
+                allow_install = allow_install,
+                accelerator = accelerator,
+            )
         )
         native_device = target.device
         # What the accelerator decision below was made on, or None when it was never asked (a CPU or MPS target never
@@ -1871,8 +1910,10 @@ class VideoBackend:
                 # for Windows, so it is tried before the GPU is given up on.
                 fallback = fallback_accelerator_for(accelerator)
                 if fallback:
-                    fallback_binary = ensure_h3_sd_cpp_binary(
-                        allow_install = allow_install, accelerator = fallback
+                    fallback_binary = _not_a_recorded_failure(
+                        ensure_h3_sd_cpp_binary(
+                            allow_install = allow_install, accelerator = fallback
+                        )
                     )
                     fallback_verdict: Optional[bool] = None
                     if fallback_binary:
@@ -1927,7 +1968,9 @@ class VideoBackend:
             # therefore skipped the fallback from the second load on, left native_device on the GPU, and applied GPU
             # offload policy and held the VIDEO claim while sd-cli ran wholly on the CPU -- so the next chat/image
             # acquire evicted a model to make room for one that was never there.
-            binary = ensure_h3_sd_cpp_binary(allow_install = allow_install, accelerator = "cpu")
+            binary = _not_a_recorded_failure(
+                ensure_h3_sd_cpp_binary(allow_install = allow_install, accelerator = "cpu")
+            )
             native_device = "cpu"
             # The baseline this branch is compared against is the DECISION, not a fresh probe of what came back. An
             # install can replace the returned CPU binary with a GPU build between that ensure and this line, and
