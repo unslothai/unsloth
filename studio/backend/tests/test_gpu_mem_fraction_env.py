@@ -188,25 +188,51 @@ def _make_logger():
 
 
 class _FakeCuda:
+    """torch.cuda, with the allocator's real per-device fraction bookkeeping.
+
+    `set_per_process_memory_fraction` stores the fraction against ONE device --
+    `device` when given, `current_device()` otherwise -- so a fake that kept a single
+    scalar could not tell a cap on every visible GPU from a cap on cuda:0. `fractions`
+    is the per-device record; `fraction` stays as the last value written so the
+    single-GPU assertions above read unchanged.
+    """
+
     def __init__(
         self,
         available = True,
         total = 24 * GIB,
         name = "NVIDIA GeForce RTX 4090",
+        count = 1,
+        current = 0,
     ):
         self._available = available
         self._total = total
         self._name = name
+        self._count = count
+        self._current = current
         self.fraction = None
+        self.fractions = {}
 
     def is_available(self):
         return self._available
 
-    def set_per_process_memory_fraction(self, fraction):
+    def device_count(self):
+        return self._count if self._available else 0
+
+    def current_device(self):
+        return self._current
+
+    def set_per_process_memory_fraction(
+        self,
+        fraction,
+        device = None,
+    ):
+        index = self._current if device is None else device
+        self.fractions[index] = fraction
         self.fraction = fraction
 
     def get_device_properties(self, index):
-        return SimpleNamespace(total_memory = self._total, name = self._name)
+        return SimpleNamespace(total_memory = self._total, name = f"{self._name} #{index}")
 
 
 def _run_section_1h(
@@ -358,3 +384,48 @@ def test_no_settings_route_reads_the_new_variable():
         if _GPU_MEM_FRACTION_ENV in path.read_text(encoding = "utf-8"):
             offenders.append(str(path.relative_to(backend_root)))
     assert offenders == [], offenders
+
+
+def test_every_visible_gpu_is_capped_not_just_the_current_one():
+    """unsloth#8178's cap is advertised as process-wide, and Studio shards a run across
+    every visible GPU through `get_device_map`. torch keeps the fraction per device and
+    defaults `device` to `current_device()`, so the call without one left cuda:1 and up
+    allocating freely while the log claimed the cap was in force."""
+    cuda, log = _run_section_1h(
+        is_rocm = False,
+        environ = {_GPU_MEM_FRACTION_ENV: "0.75"},
+        cuda = _FakeCuda(count = 4),
+    )
+    assert cuda.fractions == {
+        0: pytest.approx(0.75),
+        1: pytest.approx(0.75),
+        2: pytest.approx(0.75),
+        3: pytest.approx(0.75),
+    }
+    assert len(log.info) == 4, log.info
+    for index, line in enumerate(log.info):
+        assert f"cuda:{index}" in line, line
+        assert "18.0 of 24.0 GiB allowed" in line
+
+
+def test_the_cap_names_a_device_explicitly_rather_than_relying_on_the_current_one():
+    """The control for the bug's mechanism: a process whose current device is not 0
+    must still cap 0. A `set_per_process_memory_fraction(f)` with no device would
+    record only cuda:3 here."""
+    cuda, _log = _run_section_1h(
+        is_rocm = False,
+        environ = {_GPU_MEM_FRACTION_ENV: "0.5"},
+        cuda = _FakeCuda(count = 4, current = 3),
+    )
+    assert sorted(cuda.fractions) == [0, 1, 2, 3]
+
+
+def test_a_single_gpu_host_is_unchanged():
+    """The whole point is additive: one device still means one call and one line."""
+    cuda, log = _run_section_1h(
+        is_rocm = False,
+        environ = {_GPU_MEM_FRACTION_ENV: "0.9"},
+        cuda = _FakeCuda(count = 1),
+    )
+    assert cuda.fractions == {0: pytest.approx(0.9)}
+    assert len(log.info) == 1

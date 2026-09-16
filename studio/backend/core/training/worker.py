@@ -3858,18 +3858,27 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 import torch as _torch_cap
                 if _torch_cap.cuda.is_available():
                     _cap = _gpu_memory_fraction(0, False, sys.platform, "cuda", _cap_raw)
-                    _torch_cap.cuda.set_per_process_memory_fraction(_cap)
-                    _cap_props = _torch_cap.cuda.get_device_properties(0)
-                    _cap_total = int(getattr(_cap_props, "total_memory", 0) or 0)
-                    logger.info(
-                        "GPU memory cap: set_per_process_memory_fraction(%.4f) from %s — %s, %s",
-                        _cap,
-                        _cap_name,
-                        getattr(_cap_props, "name", "unknown device"),
-                        f"{_cap_total * _cap / 1024**3:.1f} of {_cap_total / 1024**3:.1f} GiB allowed"
-                        if _cap_total > 0
-                        else "device total unreported by this wheel",
-                    )
+                    # Every visible device, named explicitly. torch's allocator keeps the
+                    # fraction PER DEVICE and `set_per_process_memory_fraction(f)` with no
+                    # `device` applies it to `current_device()` alone, normally cuda:0, so
+                    # a job sharded by `get_device_map` left cuda:1 and up uncapped while
+                    # the log said the cap was in force. The fraction itself is an env
+                    # override and carries no device of its own, so the same value is the
+                    # right one for each.
+                    for _cap_index in range(_torch_cap.cuda.device_count()):
+                        _torch_cap.cuda.set_per_process_memory_fraction(_cap, _cap_index)
+                        _cap_props = _torch_cap.cuda.get_device_properties(_cap_index)
+                        _cap_total = int(getattr(_cap_props, "total_memory", 0) or 0)
+                        logger.info(
+                            "GPU memory cap: set_per_process_memory_fraction(%.4f, cuda:%d) from %s — %s, %s",
+                            _cap,
+                            _cap_index,
+                            _cap_name,
+                            getattr(_cap_props, "name", "unknown device"),
+                            f"{_cap_total * _cap / 1024**3:.1f} of {_cap_total / 1024**3:.1f} GiB allowed"
+                            if _cap_total > 0
+                            else "device total unreported by this wheel",
+                        )
                 else:
                     logger.debug(
                         "%s is set but no torch CUDA device is available; nothing to cap",
