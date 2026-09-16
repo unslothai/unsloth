@@ -7097,6 +7097,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             response = await openai_completions(Request(), current_subject = "test")
             body = b"".join([chunk async for chunk in response.body_iterator])
 
+            assert upstream_bodies[0]["return_progress"] is True
             assert upstream_bodies[0]["stream_options"]["include_usage"] is True
             assert b'"usage"' not in body
             [entry] = monitor.snapshot()
@@ -8476,6 +8477,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                 ],
             )
 
+            assert result.upstream_bodies[0]["return_progress"] is True
             assert (
                 result.response_headers.get("x-unsloth-monitor-id") == result.monitor_id
             ), result.response_headers

@@ -1584,6 +1584,39 @@ def test_monitor_usage_relays_live_progress_and_decode_phase(monkeypatch):
     assert row["prompt_progress"]["percent"] == 25.0
 
 
+@pytest.mark.parametrize(
+    "delta",
+    [
+        {
+            "tool_calls": [
+                {
+                    "index": 0,
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "search", "arguments": '{"query":'},
+                }
+            ]
+        },
+        {"function_call": {"name": "search", "arguments": '{"query":'}},
+    ],
+)
+def test_tool_only_stream_leaves_prefill_phase(monkeypatch, delta):
+    monitor = ApiMonitor(max_entries = 3)
+    monkeypatch.setattr(inference_route, "api_monitor", monitor)
+    entry_id = _start(monitor)
+    inference_route._monitor_openai_chunk(
+        entry_id,
+        {"prompt_progress": {"total": 1000, "processed": 1000}, "choices": []},
+        streaming = True,
+    )
+    inference_route._monitor_openai_chunk(
+        entry_id,
+        {"choices": [{"index": 0, "delta": delta}]},
+        streaming = True,
+    )
+    assert monitor.get(entry_id)["running_phase"] == "token_generation"
+
+
 def test_streaming_response_exposes_monitor_id():
     response = inference_route._sse_streaming_response(
         iter(()),

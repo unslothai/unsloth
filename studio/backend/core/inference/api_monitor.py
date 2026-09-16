@@ -678,6 +678,7 @@ class ApiMonitor:
                 budget,
                 serialize_json = True,
             )
+            entry.running_phase = "token_generation"
             now = time.monotonic()
             if entry.first_token_monotonic is None:
                 entry.first_token_monotonic = now
