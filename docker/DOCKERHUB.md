@@ -7,10 +7,10 @@ Source: [`docker/`](https://github.com/unslothai/unsloth/tree/main/docker). Guid
 ## Quick start
 
 ```bash
+# add  -e UNSLOTH_STUDIO_SECURE=1  for a public Cloudflare HTTPS link instead of the ports below
 docker run -d --name unsloth --gpus all --ipc=host \
   --ulimit memlock=-1 --ulimit stack=67108864 \
-  -e UNSLOTH_STUDIO_SECURE=1 \
-  -p 127.0.0.1:8888:8888 \
+  -p 8000:8000 -p 8888:8888 \
   -v "$PWD":/workspace/host \
   -v "$HOME/.cache/huggingface":/workspace/.cache/huggingface \
   -v unsloth-studio:/opt/unsloth-studio \
@@ -19,17 +19,13 @@ docker run -d --name unsloth --gpus all --ipc=host \
 
 That starts the container and follows its startup, which ends after about a minute with your links and a generated JupyterLab password. On the first run against a new `unsloth-studio` volume it generates a Studio password too; change that one on first sign-in or Studio stops after an hour. Reusing an existing volume keeps the Studio password already stored on it, and `docker exec unsloth unsloth studio reset-password` replaces it. Ctrl-C stops following the log, not the container.
 
-`UNSLOTH_STUDIO_SECURE=1` puts Studio behind a Cloudflare HTTPS link, printed in that log, and binds it to loopback inside the container so no raw port is ever published. It fails closed: no tunnel means no link, rather than serving in the clear. That is why 8000 is not published above, and why 8888 is published to `127.0.0.1` only, reachable through `ssh -L 8888:localhost:8888 user@your-host`.
+Those ports publish on every interface, which is fine on a laptop and not on a cloud host. Three ways to close that, in order of least work:
 
-On a laptop, where localhost is enough and a public link is not wanted, drop that variable and publish the ports instead:
+- `-e UNSLOTH_STUDIO_SECURE=1` and drop `-p 8000:8000`: Studio is served only over a Cloudflare HTTPS link, printed in the log, and binds to loopback inside the container so no raw port exists. It fails closed, so no tunnel means no link rather than serving in the clear. `UNSLOTH_STUDIO_CLOUDFLARE=1` keeps the local port as well.
+- Publish to `127.0.0.1` and tunnel: `-p 127.0.0.1:8000:8000 -p 127.0.0.1:8888:8888`, then `ssh -L 8000:localhost:8000 -L 8888:localhost:8888 user@your-host`.
+- Keep the ports and set real passwords with `-e UNSLOTH_STUDIO_PASSWORD=...` and `-e JUPYTER_PASSWORD=...`.
 
-```bash
-docker run -d --name unsloth --gpus all --ipc=host \
-  -p 8000:8000 -p 8888:8888 \
-  -v unsloth-studio:/opt/unsloth-studio unsloth/unsloth && docker logs -f unsloth
-```
-
-Those ports then publish on every interface, so set `-e UNSLOTH_STUDIO_PASSWORD=...` and `-e JUPYTER_PASSWORD=...` to real values, or bind them to `127.0.0.1`. Studio reports on start whether the port answered from the public internet. `UNSLOTH_STUDIO_CLOUDFLARE=1` is the middle option: the HTTPS link and the local port together.
+Studio reports on start whether the port answered from the public internet, so you are told either way.
 
 ### Before that, on a new machine
 
