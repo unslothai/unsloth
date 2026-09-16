@@ -333,3 +333,83 @@ def test_dpo_trains_on_cpu(tmp_path):
         optim = "adamw_torch",
     )
     DPOTrainer(model = model, processing_class = tok, args = cfg, train_dataset = ds).train()
+
+
+def test_grpo_trains_on_cpu_through_the_patched_batch_sampler(tmp_path):
+    """The canary above proves the GRPO trainer runs. It does NOT prove Unsloth's own
+    ``get_batch_samples`` runs, because ``_load_plain`` never goes through the loader that
+    installs it, so ``Trainer.get_batch_samples`` stays stock transformers.
+
+    That gap is not theoretical. unsloth-zoo#1217 rewrote a list-safe
+    ``"labels" in batch_samples[0]`` into ``batch_samples[0].get("labels")``, and GRPO's
+    collator is the identity, so every element of ``batch_samples`` is a list of dicts and
+    every GRPO run died at step 0 with ``AttributeError: 'list' object has no attribute
+    'get'``. It sat on main for a day, invisible to this file, and was found by accident.
+
+    So install the patch the way a real run does, assert it took, and take real steps.
+    """
+    import inspect
+
+    from datasets import Dataset
+    from transformers import Trainer
+    from trl import GRPOConfig, GRPOTrainer
+
+    from unsloth.models._utils import patch_gradient_accumulation_fix
+
+    patch_gradient_accumulation_fix(Trainer)
+    assert Trainer.get_batch_samples.__name__ == "_unsloth_get_batch_samples", (
+        "the batch sampler under test was never installed; this canary would pass against "
+        "any zoo at all"
+    )
+
+    seen = {"calls": 0, "list_batches": 0}
+    patched = Trainer.get_batch_samples
+
+    def counting(self, epoch_iterator, num_batches, *args, **kwargs):
+        seen["calls"] += 1
+        result = patched(self, epoch_iterator, num_batches, *args, **kwargs)
+        batch_samples = result[0] if isinstance(result, tuple) else result
+        if batch_samples and isinstance(batch_samples[0], list):
+            seen["list_batches"] += 1
+        return result
+
+    Trainer.get_batch_samples = counting
+    try:
+        model, tok = _load_plain()
+        _guard_finite_logits(model)
+        ds = Dataset.from_list([{"prompt": "hi there"}] * 4)
+        cfg = GRPOConfig(
+            output_dir = str(tmp_path / "ci_grpo_patched"),
+            per_device_train_batch_size = 2,
+            num_generations = 2,
+            max_steps = 2,
+            max_completion_length = 8,
+            logging_steps = 1,
+            report_to = "none",
+            temperature = 1.0,
+            beta = 0.0,
+            save_strategy = "no",
+            use_cpu = True,
+            use_vllm = False,
+            fp16 = False,
+            bf16 = False,
+            optim = "adamw_torch",
+        )
+        GRPOTrainer(
+            model = model,
+            processing_class = tok,
+            reward_funcs = [lambda completions, **k: [float(len(c)) for c in completions]],
+            args = cfg,
+            train_dataset = ds,
+        ).train()
+    finally:
+        Trainer.get_batch_samples = patched
+
+    assert seen["calls"] > 0, "the patched batch sampler was never entered"
+    # The shape that broke: TRL's GRPO collator is the identity, so a batch is a LIST of
+    # dicts, never a dict. A canary that only ever sees the SFT dict shape cannot catch a
+    # regression that assumes one.
+    assert seen["list_batches"] > 0, (
+        "no batch arrived as a list, so this canary is not exercising the GRPO collator "
+        "shape and would not have caught unsloth-zoo#1217"
+    )
