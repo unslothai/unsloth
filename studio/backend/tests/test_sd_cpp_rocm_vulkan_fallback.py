@@ -721,6 +721,14 @@ def test_the_rocm_failures_that_name_no_build_are_counted_not_ignored(
         # An allocation failure whose tail also carries a build-shaped string must not divert the
         # host on one occurrence either.
         "hipErrorNoBinaryForGpu reported while out of memory",
+        # "out of memory" is not the only way a card says it is full, and these two carry a
+        # build-shaped string of their own. The wordings are the ones this repository's own
+        # OOM classifier in `utils.utils` already recognises.
+        "sd-cli exited 1. Last output:\nROCm error: CUBLAS_STATUS_ALLOC_FAILED",
+        "sd-cli exited 1. Last output:\nrocBLAS error: memory allocation failed",
+        "sd-cli exited 1. Last output:\nhipMalloc: cannot allocate memory",
+        "sd-cli exited 1. Last output:\nggml_backend_alloc_ctx_tensors: allocation failure",
+        "sd-cli exited 1. Last output:\nROCm error: out of device memory",
     ],
 )
 def test_an_exhausted_card_is_never_read_as_an_unusable_build(output):

@@ -1079,12 +1079,25 @@ _ACCELERATOR_RUNTIME_FAILURE_MARKERS: tuple[str, ...] = (
 # carries a build-shaped string cannot divert the host on one occurrence either. That is the
 # conservative direction this whole path is written in: withholding a diversion leaves the user
 # with the real error, while a wrong diversion is silent and, once persisted, sticky.
+# The forms are the ones this repository's own OOM classifier already recognises, in
+# `utils.utils` -- "cannot allocate memory", "memory allocation failed" and
+# "cublas_status_alloc_failed" among them -- because "out of memory" is not the only way a
+# card says it is full. `ROCm error: CUBLAS_STATUS_ALLOC_FAILED` and `rocBLAS error: memory
+# allocation failed` both carry a build-shaped string and neither said anything about
+# capacity here, so two large requests were enough to divert a host whose ROCm build works.
 _ACCELERATOR_CAPACITY_FAILURE_MARKERS: tuple[str, ...] = (
     "out of memory",
     "outofmemory",
+    "out of device memory",
+    "out_of_device_memory",
+    "out_of_host_memory",
     "hiperroroutofmemory",
     "cudaerrormemoryallocation",
     "failed to allocate",
+    "cannot allocate memory",
+    "memory allocation failed",
+    "alloc_failed",
+    "allocation failure",
     "insufficient memory",
     "not enough memory",
 )
