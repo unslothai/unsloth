@@ -6,6 +6,12 @@ This is the AMD counterpart to [`unsloth/unsloth`](https://hub.docker.com/r/unsl
 
 ## Quick start
 
+Needs Docker and a working amdgpu driver. Without Docker, start here:
+
+```bash
+curl -fsSL https://get.docker.com -o get-docker.sh && sh get-docker.sh
+```
+
 AMD GPUs are reached through the kernel driver's device nodes, not through a container toolkit, so the run command differs from the NVIDIA one:
 
 ```bash

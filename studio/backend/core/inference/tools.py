@@ -2018,6 +2018,9 @@ _AUTO_SENSITIVE_MCP_NOUN_RE = re.compile(
 # Split a camelCase boundary with an underscore (runCommand -> run_Command) so the term-boundary MCP regexes match
 # camelCase tool names too.
 _CAMEL_CASE_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+# The term-boundary regexes above recognise only `_` and `-`, but MCP names may separate terms with anything the
+# spec allows (catalog.get-catalog-entity). Fold the rest to `_` so a verb behind a dot is still its own term.
+_MCP_TERM_SEPARATOR_RE = re.compile(r"[^A-Za-z0-9_\-]+")
 # A name that reads (get_release, search_code) names its SUBJECT, not the action, so the impact and runtime-noun
 # patterns below must not fire on it, or the everyday read tools of every server would prompt.
 _AUTO_READ_MCP_VERB_RE = re.compile(
@@ -6588,9 +6591,10 @@ def is_potentially_unsafe_tool_call(name: str, arguments: dict) -> bool:
     if name == "render_html":
         return _render_html_reaches_network(arguments)
     if name.startswith(MCP_TOOL_PREFIX):
-        tool_name = name.split("__", 2)[-1]
+        tool_name = _mcp_raw_tool_name(name)
         if tool_name in _BLENDER_CLI_SUMMARY_TOOLS:
             return True
+        tool_name = _MCP_TERM_SEPARATOR_RE.sub("_", tool_name)
         # A mutating verb anywhere (get_or_create_issue, read_and_delete)
         # overrides a read-only prefix.
         if _AUTO_UNSAFE_MCP_VERB_RE.search(tool_name):
@@ -8689,12 +8693,12 @@ def is_high_risk_tool_call(name: str, arguments: dict) -> bool:
         # A static canvas is fine; only a networked canvas can egress.
         return _render_html_reaches_network(arguments)
     if name.startswith(MCP_TOOL_PREFIX):
-        tool_name = name.split("__", 2)[-1]
+        tool_name = _mcp_raw_tool_name(name)
         if tool_name in _BLENDER_CLI_SUMMARY_TOOLS:
             return True
-        # Split camelCase into `_`-delimited terms so the term-boundary regexes
-        # below match camelCase names too.
-        tool_name = _CAMEL_CASE_RE.sub("_", tool_name)
+        # Reduce every separator the name uses to `_`, camelCase boundaries included, so the
+        # term-boundary regexes below see one vocabulary.
+        tool_name = _CAMEL_CASE_RE.sub("_", _MCP_TERM_SEPARATOR_RE.sub("_", tool_name))
         # An execution tool runs arbitrary commands on the MCP server, outside the terminal sandbox; a credential noun
         # discloses secrets; a read/write pointed at a sensitive path is a sensitive access. All prompt, while
         # ordinary create/update/delete MCP calls run.
@@ -12253,9 +12257,13 @@ DEEP_RESEARCH_TOOL = {
 }
 
 
-# OpenAI's function.name regex; MCP names that violate it would 400 the whole request, so validate up front and skip
-# with a warning.
-_OPENAI_FN_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+# OpenAI's function.name regex; MCP names that violate it would 400 the whole request, so they ship under an alias.
+_OPENAI_FN_NAME_MAX = 64
+_OPENAI_FN_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,%d}$" % _OPENAI_FN_NAME_MAX)
+
+_MCP_ALIAS_DIGEST_LEN = 8
+# The "_" plus digest every alias ends with, which is the room its stem does not get.
+_MCP_ALIAS_SUFFIX_LEN = _MCP_ALIAS_DIGEST_LEN + 1
 
 
 def _mcp_tool_model_visible(tool: dict) -> bool:
@@ -12276,9 +12284,47 @@ def _mcp_tool_model_visible(tool: dict) -> bool:
     return True
 
 
+def _mcp_tool_names(server: dict, mcp_tools: list[dict]) -> dict[str, str]:
+    """Composed function name -> raw MCP name, for the tools this server ships to a model.
+
+    Names that already satisfy ``function.name`` are claimed first, so an alias minted for a dotted
+    or oversized one can never take a name another tool ships under.
+    """
+    server_key = "blender" if server.get("builtin_id") == "blender" else server["id"]
+    prefix = f"{MCP_TOOL_PREFIX}{server_key}__"
+    raw_names = [
+        tool["name"] for tool in mcp_tools if tool.get("name") and _mcp_tool_model_visible(tool)
+    ]
+    names: dict[str, str] = {}
+    for raw_name in raw_names:
+        if _OPENAI_FN_NAME_RE.fullmatch(prefix + raw_name):
+            names.setdefault(prefix + raw_name, raw_name)
+    stem_room = max(0, _OPENAI_FN_NAME_MAX - len(prefix) - _MCP_ALIAS_SUFFIX_LEN)
+    for raw_name in raw_names:
+        if _OPENAI_FN_NAME_RE.fullmatch(prefix + raw_name):
+            continue
+        encoded = raw_name.encode("utf-8", "surrogatepass")
+        digest = hashlib.sha256(encoded).hexdigest()[:_MCP_ALIAS_DIGEST_LEN]
+        stem = re.sub(r"[^a-zA-Z0-9_-]", "_", raw_name)[:stem_room]
+        alias = f"{prefix}{stem}_{digest}"
+        if _OPENAI_FN_NAME_RE.fullmatch(alias):
+            names.setdefault(alias, raw_name)
+    return names
+
+
+# Aliases already shown to a model. Kept apart from the tool cache so an in-flight call still resolves after an edit
+# evicts it.
+_MCP_TOOL_ALIASES: dict[str, str] = {}
+
+
+def _mcp_raw_tool_name(name: str) -> str:
+    return _MCP_TOOL_ALIASES.get(name) or name.split("__", 2)[-1]
+
+
 def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
     """Convert an MCP server's tool list into OpenAI function specs."""
     display = server.get("display_name") or server["id"]
+    names_by_raw = {raw_name: name for name, raw_name in _mcp_tool_names(server, mcp_tools).items()}
     specs: list[dict] = []
     seen_names: set[str] = set()
     for tool in mcp_tools:
@@ -12289,30 +12335,34 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
         if not _mcp_tool_model_visible(tool):
             logger.debug("Skipping app-only MCP tool '%s' on '%s'.", raw_name, display)
             continue
-        server_key = "blender" if server.get("builtin_id") == "blender" else server["id"]
-        name = f"{MCP_TOOL_PREFIX}{server_key}__{raw_name}"
-        # Bad chars or oversized names would 400 the whole request; skip + warn
-        # so the rest of the tools still ship.
-        if not _OPENAI_FN_NAME_RE.fullmatch(name):
+        name = names_by_raw.get(raw_name)
+        if name is None:
             logger.warning(
-                "Skipping MCP tool '%s' on '%s': composed name '%s' is not "
-                "valid OpenAI function.name (regex ^[a-zA-Z0-9_-]{1,64}$).",
+                "Skipping MCP tool '%s' on '%s': no free OpenAI function.name for it.",
                 raw_name,
                 display,
-                name,
             )
             continue
-        # Duplicate tool names would also 400 OpenAI; drop dupes.
+        # Duplicate names would 400 OpenAI; drop dupes.
         if name in seen_names:
             logger.warning("Skipping duplicate MCP tool '%s' on '%s'.", raw_name, display)
             continue
         seen_names.add(name)
+        description = tool.get("description") or ""
+        if name.split("__", 2)[2] != raw_name:
+            _MCP_TOOL_ALIASES[name] = raw_name
+            # The alias is the only name the model may emit, so the description is the one place
+            # it can learn the name the server's docs and the user call this tool by.
+            description = f"({raw_name}) {description}"
+        else:
+            # A name shipped as itself must not resolve through an alias it replaced.
+            _MCP_TOOL_ALIASES.pop(name, None)
         specs.append(
             {
                 "type": "function",
                 "function": {
                     "name": name,
-                    "description": f"[{display}] {tool.get('description') or ''}".strip(),
+                    "description": f"[{display}] {description}".strip(),
                     # mcp<2 dumps "inputSchema", 2.x "input_schema"; accept both.
                     "parameters": tool.get("inputSchema")
                     or tool.get("input_schema")
@@ -12580,9 +12630,10 @@ def execute_tool(
         if _mcp_arguments_reference_studio_credential(arguments):
             return _STUDIO_CREDENTIAL_BLOCKED
         try:
-            _, server_id, tool_name = name.split("__", 2)
+            _, server_id, _ = name.split("__", 2)
         except ValueError:
             return f"Error: malformed MCP tool name '{name}'"
+        tool_name = _mcp_raw_tool_name(name)
         server = mcp_servers_db.get_server_for_tool(server_id)
         if not server:
             return f"Error: MCP server for tool '{tool_name}' not found"

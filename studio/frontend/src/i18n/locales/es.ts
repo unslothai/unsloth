@@ -1467,7 +1467,9 @@ export const es = {
       autoCompactHint:
         "Usa la longitud de contexto configurada, no la VRAM disponible.",
       pastedTextShortDescription:
-        "Convierte el texto pegado que supere este límite en archivos adjuntos .txt.",
+        "El texto pegado de {count} caracteres o más se convierte en un adjunto .txt. El texto más corto queda en el cuadro de mensaje.",
+      pastedTextOffDescription:
+        "Todo el texto pegado queda en el cuadro de mensaje, sin importar su longitud.",
       compactionDescriptionInherit: "Sigue la política de contexto del servidor.",
       compactionDescriptionCheckpoint:
         "Conserva el último intercambio y las instrucciones permanentes.",
@@ -1556,7 +1558,7 @@ export const es = {
         title: "Búsqueda web",
         images: "Mostrar imágenes de la búsqueda web",
         imagesDescription:
-          "Permite que la búsqueda web devuelva imágenes y obtiene una por cada elemento que enumera una respuesta. Unsloth descarga y redimensiona las miniaturas, así que el navegador nunca contacta con los servidores de imágenes.",
+          "Incluye imágenes en los resultados de búsqueda.",
       },
       artifacts: {
         title: "Canvas",

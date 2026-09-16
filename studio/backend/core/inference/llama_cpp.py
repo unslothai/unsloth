@@ -86,8 +86,12 @@ from core.inference.llama_server_args import (
     _effective_tensor_parallel,
     _flag_name,
     _tensor_parallel_matches_loaded,
+    LLAMA_CTX_CHECKPOINTS_DEFAULT,
     apply_load_mode_policy,
     apply_model_memory_policy,
+    ctx_checkpoints_within_host_budget,
+    effective_ctx_checkpoints,
+    parse_ctx_checkpoints_override,
     resolve_ctx_checkpoints,
     extra_args_disable_mmproj,
     extra_args_image_max_tokens,
@@ -3892,6 +3896,14 @@ def _kv_bytes_per_elem(cache_type: Optional[str]) -> float:
     }.get((cache_type or "f16").strip().lower(), 2.0)
 
 
+# Upper bound on any current tokenizer, for output rows when a truncated header drops
+# the token array. Above Llama 4 / Gemma 3 (256k), the widest shipping.
+_ASSUMED_MAX_VOCAB = 262144
+# Ceiling on the float32 activations a compute graph keeps per micro-batch token, for a
+# header that cannot be read: 4 * n_ff at n_ff = 65536, above Llama 3.1 405B's 53056.
+_ASSUMED_MAX_ACTIVATION_WIDTH = 262144
+
+
 def _pad_kv_cells(cells: int) -> int:
     return ((cells + 255) // 256) * 256
 
@@ -4467,6 +4479,22 @@ def _env_asks_for_the_native_context(env: Optional[Mapping[str, str]] = None) ->
         return False
 
 
+def _env_ctx_checkpoints_override(env: Optional[Mapping[str, str]] = None) -> Optional[int]:
+    """An inherited LLAMA_ARG_CTX_CHECKPOINTS count, else None.
+
+    llama.cpp applies the variable before parsing argv (arg.cpp's env loop runs ahead of
+    the flag loop), so an emitted --ctx-checkpoints would OVERRULE it. It is as explicit
+    an instruction as a typed flag, so the automatic cap stands down for it and the
+    estimate prices it. Anything unparseable is left to llama.cpp to reject.
+    """
+    value = (os.environ if env is None else env).get("LLAMA_ARG_CTX_CHECKPOINTS")
+    try:
+        count = int(str(value).strip())
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return count if count >= 0 else None
+
+
 def _kv_offload_from_args(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> bool:
@@ -4667,6 +4695,24 @@ def _flash_attn_enabled_from_args(
         elif value in _LLAMA_ARG_TRUE_OR_AUTO_VALUES:
             enabled = True
     return enabled
+
+
+def _planned_flash_attn(
+    extra_args: Optional[Iterable[str]],
+    supports_flash_attn: bool,
+    v_cache_type: Optional[str] = None,
+    architecture: Optional[str] = None,
+) -> bool:
+    """Flash attention as the launch command will resolve it.
+
+    The managed --flash-attn on follows the environment and precedes user extras, so
+    only extras can turn it off. A build without the flag gets neither the flag nor
+    the inherited LLAMA_ARG_FLASH_ATTN. A quantized V cache forces it on, except on
+    Grok, which llama.cpp always runs without it."""
+    if not supports_flash_attn or architecture == "grok":
+        return False
+    enabled = _flash_attn_enabled_from_args(extra_args, default = True, env = {})
+    return enabled or (v_cache_type or "f16").strip().lower() not in {"f16", "bf16", "f32"}
 
 
 def _effective_spec_type(
@@ -4917,6 +4963,60 @@ def _paravirtual_mmproj_pinnable(server_caps: Mapping[str, object]) -> bool:
     return bool(
         server_caps.get("supports_no_mmproj_offload")
         or not _paravirtual_probe_answered(server_caps)
+    )
+
+
+def ctx_checkpoints_allocated(server_caps: Mapping[str, object]) -> bool:
+    """Return false only when a PARSED help listing confirms no checkpoint flag.
+
+    A wrapper that exits 0 and prints nothing leaves help_probe_ok True over an empty
+    catalogue, which is silence, not absence -- the same rule the parser applies to its
+    own fail-open flags. Reading it as absence priced a recurrent model's whole snapshot
+    pool at zero while the child kept llama.cpp's default.
+    """
+    if server_caps.get("ctx_checkpoints_flag"):
+        return True
+    if not server_caps.get("help_probe_ok"):
+        return True
+    return not bool(server_caps.get("flags"))
+
+
+def ctx_checkpoints_default_for_caps(server_caps: Mapping[str, object]) -> int:
+    """The count this build keeps unflagged: what it advertised, else upstream's today."""
+    advertised = server_caps.get("ctx_checkpoints_default")
+    if isinstance(advertised, int) and advertised >= 0:
+        return advertised
+    return LLAMA_CTX_CHECKPOINTS_DEFAULT
+
+
+def effective_ctx_checkpoints_for_caps(
+    server_caps: Mapping[str, object],
+    extra_args: Optional[Iterable[str]],
+    requested: Optional[int],
+    *,
+    per_checkpoint_bytes: int = 0,
+    n_parallel: int = 1,
+    total_host_bytes: Optional[int] = None,
+    env: Optional[Mapping[str, str]] = None,
+) -> int:
+    """Resolve the count from capabilities, arguments, and host budget.
+
+    A confirmed unsupported build uses zero. If a detected binary has no confirmed alias,
+    Studio cannot emit its field or cap, so only pass-through extras override the default.
+    """
+    if not ctx_checkpoints_allocated(server_caps):
+        return 0
+    emittable = bool(server_caps.get("ctx_checkpoints_flag"))
+    describes_a_child = bool(server_caps.get("found"))
+    return effective_ctx_checkpoints(
+        extra_args,
+        requested if (emittable or not describes_a_child) else None,
+        supports_flag = True,
+        per_checkpoint_bytes = per_checkpoint_bytes,
+        n_parallel = n_parallel,
+        total_host_bytes = total_host_bytes if emittable else None,
+        upstream_default = ctx_checkpoints_default_for_caps(server_caps),
+        inherited = _env_ctx_checkpoints_override(env),
     )
 
 
@@ -6713,6 +6813,23 @@ def _write_direct_stream_key(key: str) -> "Path":
     return path
 
 
+def _extra_args_have_tensor_split(
+    extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]]
+) -> bool:
+    """PRESENCE of a pass-through split, parseable or not, in argv or the CHILD env.
+
+    _extra_args_tensor_split returns None for a value it cannot parse, and the repointer
+    does no numeric validation and takes the LAST occurrence, so a parse-check veto lets
+    the repointer permute a user share it exists to protect. Reads the child env rather
+    than os.environ because LLAMA_ARG_TENSOR_SPLIT is scrubbed before this point, and a
+    value the child never receives must not suppress the reorder.
+    """
+    for token in extra_args or ():
+        if str(token).split("=", 1)[0] in ("--tensor-split", "-ts", "--tensor_split"):
+            return True
+    return bool(str((env or {}).get("LLAMA_ARG_TENSOR_SPLIT", "")).strip())
+
+
 class LlamaCppBackend:
     """Manages a llama-server subprocess for GGUF model inference.
 
@@ -6941,8 +7058,17 @@ class LlamaCppBackend:
         # llama_pooling_type from the GGUF; present and non-zero marks an embedding model.
         self._pooling_type: Optional[int] = None
         # For the compute-graph buffer estimate; vocab from the tokens array len.
+        # feed_forward_length is the widest layer when the GGUF stores one per layer.
         self._feed_forward_length: Optional[int] = None
+        self._expert_used_count: Optional[int] = None
+        self._expert_feed_forward_length: Optional[int] = None
+        self._expert_shared_feed_forward_length: Optional[int] = None
+        self._expert_shared_count: Optional[int] = None
+        # Gemma 3n / Gemma 4 per-layer input embedding width.
+        self._embedding_length_per_layer_input: Optional[int] = None
         self._vocab_size: Optional[int] = None
+        # Set from reserves_micro_batch_outputs() by the callers that know the binary.
+        self._reserves_micro_batch_outputs: bool = False
         # Architecture-aware KV fields for 5-path estimation
         self._kv_key_length: Optional[int] = None
         self._kv_value_length: Optional[int] = None
@@ -8424,6 +8550,8 @@ class LlamaCppBackend:
     _CAPABILITY_PROBE_RETRY_SECONDS = 30.0
     _CAPABILITY_PROBE_RETRY_MAX_SECONDS = 600.0
     _capability_cache: dict[tuple[str, int, int], dict[str, object]] = {}
+    # (bin_path, mtime_ns, size) -> build number from `llama-server --version`, or None.
+    _build_number_cache: dict[tuple[str, int, int], Optional[int]] = {}
     _capability_retry_after: dict[tuple[str, int, int], float] = {}
     _capability_retry_backoff: dict[tuple[str, int, int], float] = {}
     _capability_cache_lock = threading.Lock()
@@ -8448,6 +8576,82 @@ class LlamaCppBackend:
         if not help_text or "--flash-attn" not in help_text:
             return True
         return bool(cls._FLASH_ATTN_ENUM_RE.search(help_text))
+
+    # ggml-org/llama.cpp#23861 capped the output rows a context reserves at the rows it
+    # can emit. Builds before it reserve a row for every micro-batch token.
+    _OUTPUT_ROWS_CAPPED_BUILD = 9460
+
+    @classmethod
+    def probe_build_number(cls, binary: Optional[str] = None) -> Optional[int]:
+        """The llama.cpp build number from ``llama-server --version``, cached per binary.
+
+        Current builds print ``version: X.Y.Z (build NNNN, commit ...)``, older ones
+        ``version: NNNN (commit)``. None when the binary is missing, the probe fails,
+        or the build reports 1 (a source build without tags)."""
+        bin_path = cls._exec_path_for_launch(binary or cls._find_llama_server_binary())
+        if not bin_path or not Path(bin_path).is_file():
+            return None
+        try:
+            binary_stat = Path(bin_path).stat()
+            cache_key = (bin_path, binary_stat.st_mtime_ns, binary_stat.st_size)
+        except OSError:
+            cache_key = (bin_path, 0, 0)
+        with cls._capability_cache_lock:
+            if cache_key in cls._build_number_cache:
+                return cls._build_number_cache[cache_key]
+        build: Optional[int] = None
+        try:
+            env = cls._llama_server_env_for_binary(bin_path)
+            if sys.platform == "darwin":
+                env["GGML_METAL_DEVICES"] = "0"  # see probe_server_capabilities
+            result = subprocess.run(
+                [bin_path, "--version"],
+                capture_output = True,
+                text = True,
+                encoding = "utf-8",
+                errors = "replace",
+                timeout = 10,
+                check = False,
+                env = env,
+                **_windows_hidden_subprocess_kwargs(),
+            )
+            output = (result.stdout or "") + "\n" + (result.stderr or "")
+            match = re.search(r"version:[^\r\n]*\bbuild\s+(\d+)\b", output) or re.search(
+                r"version:\s*(\d+)\b(?!\.)", output
+            )
+            if match and int(match.group(1)) > 1:
+                build = int(match.group(1))
+        except Exception as exc:
+            logger.debug("llama-server --version probe failed: %s", exc)
+        with cls._capability_cache_lock:
+            cls._build_number_cache[cache_key] = build
+        return build
+
+    @classmethod
+    def reserves_micro_batch_outputs(cls, binary: Optional[str] = None) -> bool:
+        """Whether this llama-server reserves an output row per micro-batch token.
+
+        Known builds before b9460, including the older-macOS b9415 fallback, do.
+        Unknown builds are priced as current, matching Studio's prebuilts."""
+        try:
+            build = cls.probe_build_number(binary)
+        except Exception:
+            return False
+        return build is not None and build < cls._OUTPUT_ROWS_CAPPED_BUILD
+
+    _ADVERTISED_DEFAULT_RE = re.compile(r"\(default:\s*(-?\d+)")
+
+    @classmethod
+    def _advertised_int_default(cls, help_block: Optional[str]) -> Optional[int]:
+        """The integer a flag's help block declares as its default, else None.
+
+        llama.cpp wraps the block across columns, so the caller passes the joined
+        text. None means "this build did not say", never a numeric guess.
+        """
+        if not help_block:
+            return None
+        match = cls._ADVERTISED_DEFAULT_RE.search(help_block)
+        return int(match.group(1)) if match else None
 
     @classmethod
     def probe_server_capabilities(cls, binary: Optional[str] = None) -> dict[str, object]:
@@ -8498,6 +8702,7 @@ class LlamaCppBackend:
                 "supports_cache_ram": False,
                 "supports_ctx_checkpoints": False,
                 "ctx_checkpoints_flag": None,
+                "ctx_checkpoints_default": None,
                 "supports_no_cache_prompt": False,
                 "supports_metrics": False,
                 "supports_slot_save": False,
@@ -8549,6 +8754,7 @@ class LlamaCppBackend:
         supports_cache_ram = False
         supports_ctx_checkpoints = False
         ctx_checkpoints_flag = None
+        ctx_checkpoints_default = None
         supports_no_cache_prompt = False
         supports_metrics = False
         supports_slot_save = False
@@ -8777,6 +8983,12 @@ class LlamaCppBackend:
                     ctx_checkpoints_flag = _alias
                     break
             supports_ctx_checkpoints = ctx_checkpoints_flag is not None
+            # The default shipped at 3 (ggml-org/llama.cpp#15293) and is 32 today, so a
+            # hardcoded 32 would RAISE an older build's count instead of capping it.
+            if ctx_checkpoints_flag:
+                ctx_checkpoints_default = cls._advertised_int_default(
+                    blocks.get(ctx_checkpoints_flag)
+                )
             supports_no_cache_prompt = _is_real("--no-cache-prompt")
             supports_metrics = _is_real("--metrics")
             supports_slot_save = _is_real("--slot-save-path")
@@ -8872,6 +9084,7 @@ class LlamaCppBackend:
             "supports_cache_ram": supports_cache_ram,
             "supports_ctx_checkpoints": supports_ctx_checkpoints,
             "ctx_checkpoints_flag": ctx_checkpoints_flag,
+            "ctx_checkpoints_default": ctx_checkpoints_default,
             "supports_no_cache_prompt": supports_no_cache_prompt,
             "supports_metrics": supports_metrics,
             "supports_slot_save": supports_slot_save,
@@ -9646,6 +9859,54 @@ class LlamaCppBackend:
         if len(parent_gpu_ids) == 1:
             return (int(parent_gpu_ids[0]),)
         return None
+
+    @staticmethod
+    def _inherited_child_gpu_order(pinned_ids: Iterable[int]) -> Optional[list[int]]:
+        """``pinned_ids`` in the parent mask's order, or None to keep them as given.
+
+        A numeric visibility mask defines enumeration ORDER as well as membership
+        (CUDA_VISIBLE_DEVICES=1,0 makes physical 1 the child's device 0), and every
+        producer of gpu_indices sorts ascending, so re-emitting it verbatim silently
+        reverses a deliberate reordering and the user has no way to place a card
+        first. Same rule _pin_visible_gpu_order_for_split applies to a manual
+        --tensor-split, which is where it was already spelled out.
+
+        Only when the mask covers the whole pinned set: a partial mask cannot say
+        where the ids it omits belong. None when the order is already what we would
+        emit, so callers can treat non-None as "this changed something".
+        """
+        inherited = LlamaCppBackend._resolve_visible_physical_ids()
+        if not inherited:
+            return None
+        wanted = [int(i) for i in pinned_ids]
+        ordered = [i for i in inherited if i in set(wanted)]
+        if sorted(ordered) != sorted(wanted) or ordered == wanted:
+            return None
+        return ordered
+
+    @staticmethod
+    def _repoint_emitted_tensor_split(
+        cmd: list, old_order: list[int], new_order: list[int]
+    ) -> bool:
+        """Move Unsloth's own ``--tensor-split`` shares onto the reordered devices.
+
+        _plan_tensor_parallel returns the shares positional over gpu_indices, so a
+        reordered mask without this hands the roomier card's share to the smaller
+        one. Returns False when the shares cannot be moved, which vetoes the whole
+        reorder: emitting the mask alone would be the same bug.
+        """
+        try:
+            at = len(cmd) - 1 - cmd[::-1].index("--tensor-split")
+        except ValueError:
+            return True  # no shares emitted, nothing positional to carry
+        if at + 1 >= len(cmd):
+            return False
+        shares = cmd[at + 1].split(",")
+        if len(shares) != len(old_order):
+            return False
+        by_id = dict(zip(old_order, shares))
+        cmd[at + 1] = ",".join(by_id[i] for i in new_order)
+        return True
 
     @staticmethod
     def _pin_visible_gpu_order_for_split(env: dict) -> Optional[tuple[int, ...]]:
@@ -11163,6 +11424,16 @@ class LlamaCppBackend:
             return self._is_vulkan_backend(self._find_llama_server_binary())
         except Exception:
             return False
+
+    def _gpu_ids_own_placement(self, gpu_ids) -> bool:
+        """Whether a ``gpu_ids`` pick overrules a user ``--device`` / ``--main-gpu``.
+
+        One predicate, not eleven copies: launch, fit classifier, cache tuning and
+        reload comparator disagreeing is how the argv and the already-loaded check
+        drift apart. Letting a full-set pick relinquish to a pass-through was tried
+        and withdrawn; the inherited-mask reorder already supplies that ordering.
+        """
+        return gpu_ids is not None
 
     @staticmethod
     def _strip_device_extra_args(extra_args):
@@ -12761,6 +13032,20 @@ class LlamaCppBackend:
         except Exception:
             pass
         return None
+
+    @staticmethod
+    def _host_memory_capacity_mib() -> Optional[int]:
+        """Host RAM this process may actually charge, in MiB.
+
+        MemTotal narrowed by an enforcing cgroup, whose limit a container's own
+        /proc/meminfo does not show. The LIMIT, never the remainder, which shrinks as
+        the container fills and would price against memory that is merely busy.
+        """
+        total = LlamaCppBackend._total_system_memory_mib()
+        limit = LlamaCppBackend._cgroup_memory_limit_mib()
+        if total is None:
+            return limit
+        return min(total, limit) if limit is not None else total
 
     _ARGV_MODEL = frozenset({"-m", "--model"})
     _ARGV_RPC = frozenset({"--rpc"})
@@ -14635,16 +14920,10 @@ class LlamaCppBackend:
         reserve_bytes_fn: Callable[[int], int],
         min_ctx: int = 8192,
     ) -> int:
-        """Largest context in [``min_ctx``, ``ctx``] whose replicated per-device reserve
-        still fits the SMALLEST card of a layer-split subset; 0 when even ``min_ctx``
-        does not. The reserve shrinks with the context, so a subset
-        ``_every_gpu_holds_reserve`` turns down at the pooled context usually serves a
-        lower one: 40000 + 2500 MiB free holds 31488, not the 4096 a drop would leave.
-        Bisects the reserve, which is monotone in context on every branch but
-        proportional on only some: deepseek4's flat indexer term makes a closed form
-        answer 43341 on a 4000 MiB card, whose reserve there is 6048 MiB. The MiB
-        comparison mirrors ``_every_gpu_holds_reserve``, so that gate accepts what this
-        returns."""
+        """Largest context in [min_ctx, ctx] whose reserve fits every selected GPU.
+
+        Bisect because reserves are monotone but may include fixed costs. Use the
+        same MiB comparison as _every_gpu_holds_reserve. Return 0 if min_ctx fails."""
         values = list(usable_mib)
         if not values or ctx < min_ctx:
             return 0
@@ -14804,7 +15083,11 @@ class LlamaCppBackend:
         per-layer KDA layout; Hybrid Mamba uses its architecture-level interval
         and group count in _mamba_recurrent_state_bytes.
         """
-        if not self._n_kv_heads_by_layer or not self._n_layers or not self._kda_head_dim:
+        # Lightweight probes may omit fields used only by other architectures.
+        heads_by_layer = getattr(self, "_n_kv_heads_by_layer", None)
+        n_layers_raw = getattr(self, "_n_layers", None)
+        kda_head_dim = getattr(self, "_kda_head_dim", None)
+        if not heads_by_layer or not n_layers_raw or not kda_head_dim:
             return 0
         n_recurrent = sum(1 for i in range(self._n_layers) if self._kv_heads_for_layer(i, 1) == 0)
         if n_recurrent == 0:
@@ -14816,15 +15099,52 @@ class LlamaCppBackend:
         return int(n_recurrent * (n_embd_r + n_embd_s) * 4 * max(1, n_parallel))
 
     def _rollback_state_bytes(self, n_parallel: int = 1) -> int:
-        """One target-context rollback snapshot, whichever recurrent family this is.
-
-        Both callers price the same thing (llama.cpp's `1 seqs N rs_seq`) and both
-        used to reach for the Mamba helper alone, which answers 0 for a KDA hybrid
-        and silently dropped the reserve. Route every caller through here.
-        """
+        """Size one target-context rollback snapshot for either recurrent family."""
         return self._mamba_recurrent_state_bytes(n_parallel) or self._recurrent_state_bytes(
             n_parallel
         )
+
+    def _bounded_ctx_checkpoints(
+        self,
+        n_parallel: int,
+        server_caps: Mapping[str, object],
+        extra_args: Optional[Iterable[str]] = None,
+        env: Optional[Mapping[str, str]] = None,
+    ) -> Optional[int]:
+        """Return an automatic recurrent-checkpoint cap, or None to preserve the argv."""
+        flag = server_caps.get("ctx_checkpoints_flag")
+        if not flag:
+            return None
+        # Extras and LLAMA_ARG_CTX_CHECKPOINTS are the operator's; emitting overrules them.
+        if parse_ctx_checkpoints_override(extra_args) is not None:
+            return None
+        if _env_ctx_checkpoints_override(env) is not None:
+            return None
+        per_checkpoint = self._rollback_state_bytes(1)
+        if per_checkpoint <= 0:
+            return None
+        total_ram_mib = self._host_memory_capacity_mib()
+        # This build's own default: capping against 32 would raise a build that keeps 3.
+        upstream_default = ctx_checkpoints_default_for_caps(server_caps)
+        bounded = ctx_checkpoints_within_host_budget(
+            per_checkpoint,
+            n_parallel,
+            (total_ram_mib * 1024 * 1024) if total_ram_mib else None,
+            upstream_default = upstream_default,
+        )
+        if bounded >= upstream_default:
+            return None
+        logger.info(
+            "Capping llama-server context checkpoints at %d per slot (this build's default %d): "
+            "each one snapshots this model's whole recurrent state (%.1f MiB), so the default "
+            "would hold %.1f GiB of host RAM across %d slot(s).",
+            bounded,
+            upstream_default,
+            per_checkpoint / (1024**2),
+            upstream_default * per_checkpoint * max(1, n_parallel) / (1024**3),
+            max(1, n_parallel),
+        )
+        return bounded
 
     def _target_kv_excludes_nextn(self) -> bool:
         """Whether this model's TARGET KV cache skips the embedded MTP blocks.
@@ -14957,7 +15277,9 @@ class LlamaCppBackend:
           n_parallel      -- --parallel slots: controls per-slot stream padding.
           kv_unified      -- --kv-unified: one shared stream vs one per slot.
           n_ubatch        -- --ubatch-size: SWA cache's processing headroom.
-          ctx_checkpoints -- --ctx-checkpoints: N SWA snapshots per slot.
+          ctx_checkpoints -- --ctx-checkpoints: N snapshots per slot. An SWA
+                             model snapshots its window; a hybrid recurrent one
+                             snapshots its WHOLE recurrent state (see path 2).
           flash_attn      -- False pads variable-width V tensors to the model max.
 
         Returns 0 if metadata is insufficient.
@@ -14993,6 +15315,9 @@ class LlamaCppBackend:
             int(self._DEFAULT_N_UBATCH if n_ubatch is None else n_ubatch),
         )
 
+        # A hybrid snapshot is the whole recurrent state, not a context-scaled window.
+        recurrent_checkpoints = slots * max(0, ctx_checkpoints) * self._rollback_state_bytes(1)
+
         # Path 1: MLA (DeepSeek-V2/V3, GLM-4.7, GLM-5, Kimi-K2.5)
         # One compressed KV latent per token/layer (shared across heads); V is
         # reconstructed from it, no separate V cache. key_length = kv_lora_rank
@@ -15014,9 +15339,11 @@ class LlamaCppBackend:
                     1 for i in range(n_layers_kv) if self._kv_heads_for_layer(i, n_kv_mla) > 0
                 )
                 n_mla_layers = max(1, attn)
-            return int(
-                n_mla_layers * total_cells * n_kv_mla * key_len * bpe_k
-            ) + self._recurrent_state_bytes(n_parallel)
+            return (
+                int(n_mla_layers * total_cells * n_kv_mla * key_len * bpe_k)
+                + self._recurrent_state_bytes(n_parallel)
+                + recurrent_checkpoints
+            )
 
         key_len = self._kv_key_length
         val_len = self._kv_value_length
@@ -15032,9 +15359,14 @@ class LlamaCppBackend:
                 return (
                     int(n_attn * total_cells * (n_kv * key_len * bpe_k + v_width * bpe_v))
                     + recurrent
+                    + recurrent_checkpoints
                 )
             head_dim = self._legacy_head_dim()
-            return int(n_attn * total_cells * n_kv * 2 * head_dim * bpe_k) + recurrent
+            return (
+                int(n_attn * total_cells * n_kv * 2 * head_dim * bpe_k)
+                + recurrent
+                + recurrent_checkpoints
+            )
 
         # Path 3: Sliding window (Gemma 2/3/3n/4, gpt-oss, Cohere2 ...). Pattern
         # from the resolver; if absent, falls through to the legacy 1/4-global
@@ -15354,14 +15686,56 @@ class LlamaCppBackend:
         target_recurrent_copies = 0
         if target_rollback and spec_draft_n_max > 0:
             target_recurrent_copies = self._rollback_state_bytes(n_parallel) * spec_draft_n_max
+        spec_compute = self._mtp_draft_compute_bytes(
+            n_ctx,
+            drafter_path = drafter_path,
+            n_ubatch = n_ubatch,
+            n_parallel = n_parallel,
+            spec_draft_n_max = spec_draft_n_max,
+        )
         if draft_kv is None:
             # KV unsized (exotic/remote drafter): still reserve known weights + any
             # MLA target copy so a large config can't launch over budget (the small
             # unsized draft KV rides in the cushion). Nothing known -> None, so the
             # caller keeps the flat fallback.
             total = weights + target_ctx_copy + target_recurrent_copies
-            return total if total > 0 else None
-        return draft_kv + weights + target_ctx_copy + target_recurrent_copies
+            return total + spec_compute if total > 0 else None
+        return draft_kv + weights + target_ctx_copy + target_recurrent_copies + spec_compute
+
+    def _mtp_draft_compute_bytes(
+        self,
+        n_ctx: int,
+        *,
+        drafter_path: Optional[str] = None,
+        n_ubatch: Optional[int] = None,
+        n_parallel: int = 1,
+        spec_draft_n_max: int = 0,
+    ) -> int:
+        """Draft mask and activations beyond the separately charged floor, plus
+        target verification rows. Use the drafter's dimensions when available,
+        otherwise the target's dimensions for an embedded head."""
+        verify_rows = self._spec_verify_rows_bytes(n_parallel, spec_draft_n_max)
+        if n_ctx <= 0:
+            return verify_rows
+        ub = max(1, int(self._DEFAULT_N_UBATCH if n_ubatch is None else n_ubatch))
+        width = self._compute_activation_width()
+        if drafter_path:
+            db = self._draft_backend_for(drafter_path)
+            draft_width = getattr(db, "_compute_activation_width", lambda: 0)()
+            if draft_width > 0:
+                width = draft_width + 2 * (getattr(self, "_embedding_length", None) or 0)
+        activations = int(width * ub * 4 * self._COMPUTE_BUFFER_SAFETY)
+        return verify_rows + max(0, ub * 2 * n_ctx + activations - self._MTP_DRAFT_COMPUTE_BYTES)
+
+    def _spec_verify_rows_bytes(self, n_parallel: int, spec_draft_n_max: int) -> int:
+        """Target output rows for verified draft tokens, wherever the drafter runs."""
+        return (
+            max(1, n_parallel)
+            * max(0, spec_draft_n_max)
+            * self._SPEC_VERIFY_ROW_COPIES
+            * (getattr(self, "_vocab_size", None) or _ASSUMED_MAX_VOCAB)
+            * 4
+        )
 
     def _mtp_reserve_note(
         self,
@@ -15428,7 +15802,7 @@ class LlamaCppBackend:
         )
 
     _DEFAULT_N_UBATCH = _DEFAULT_LLAMA_N_UBATCH
-    _COMPUTE_BUFFER_SAFETY = 1.15  # upper-bound margin on the compute-buffer estimate
+    _COMPUTE_BUFFER_SAFETY = 1.10  # margin on the modelled activation width
     # Soft VRAM the modeled terms omit; charged to the fit budget on tight tiers (#6682).
     _CUDA_CONTEXT_RESERVE_BYTES = 320 * 1024 * 1024  # CUDA ctx + cuBLAS workspace (~330 MiB)
     _MMPROJ_VRAM_SAFETY = 1.4  # mmproj worst-case buffer vs file size (runtime ~1.3x)
@@ -15444,30 +15818,10 @@ class LlamaCppBackend:
     # load while over-reserving only costs context. Zero cost on any other model,
     # where the recurrent state is nil.
     _UNKNOWN_SPEC_DRAFT_N_MAX = 16
-    # The flash-attn KQ mask + attention scratch grow ~linearly with context; the flat
-    # _estimate_compute_buffer_bytes term only covers ctx -> 0. The per-token rate
-    # depends on the KV cache type: a QUANTIZED cache (q8_0/q5/q4/iq4) needs a
-    # context-sized dequant scratch that scales with n_embd, measured at 0.74-2.02 x
-    # n_embd across Qwen3.5/3.6 (2B/4B/9B/27B) and Gemma-4 (12B/31B) at q8_0; an
-    # f16/bf16/f32 cache skips the dequant and pays only the KQ mask, a flat n_ubatch*2
-    # bytes per context token regardless of n_embd (measured 1024 B/tok on Qwen-9B and
-    # Gemma-31B alike). So Qwen3.5-4B at 256k is 1.30 GiB at q8_0 vs 0.31 GiB at f16.
-    # 2.25 covers the worst quantized case (Qwen3.5-4B, ~2.0x) plus the under-modeled
-    # flat base; the mask safety covers the f16 base gap. Without this term, tight tiers
-    # at extreme context over-pin and spill to CPU (the 3% cushion is only ~0.25 GiB on
-    # an 8 GB card, far below the ~1-2.4 GiB quantized buffer at 256k): e.g. Qwen3.5-4B
-    # Q4 at 256k needs ~8.5 GiB on a real 8 GB card (weights 2.4 + KV 4.3 + compute 1.3
-    # + CUDA ctx) -> CPU spill; with this reserve the auto context caps to ~210k, fits.
-    _CTX_COMPUTE_BYTES_PER_EMBD = 2.25  # quantized KV, regular attention (dequant scratch)
-    _CTX_COMPUTE_BYTES_PER_EMBD_MLA = 1.25  # quantized KV, MLA (compressed attn: measured 0.94x)
-    _CTX_COMPUTE_F16_MASK_SAFETY = 1.5  # f16/bf16/f32 KV: KQ mask only (n_ubatch*2 B/tok)
-    # Per-device f16 ctx-linear rate steps 4x once the model spans >1 device under
-    # `-sm layer`: pipeline parallelism sets the ggml scheduler's n_copies to
-    # GGML_SCHED_MAX_COPIES == 4, and the [n_kv, n_ubatch] f16 KQ mask is a
-    # GGML_TENSOR_FLAG_INPUT, so 1 live copy becomes 4. Hence a step on "is split", not
-    # a ramp in device count: measured 2.00 B/tok/ubatch on 1 GPU and 8.00 on 2-8 GPUs,
-    # architecture- and --parallel-independent. Charging 1x on a split under-reserves
-    # 2.67x (= 8/(2*1.5)). llama.cpp declines it in _pipeline_parallel_disabled_by_args.
+    # Vocabulary-wide float32 copies per verified draft token (logits and sampling).
+    _SPEC_VERIFY_ROW_COPIES = 3
+    # Pipeline parallelism uses GGML_SCHED_MAX_COPIES input copies per device.
+    # This applies only when _pipeline_parallel_disabled_by_args is false.
     _CTX_COMPUTE_SPLIT_MULT = 4
     # DeepSeek-V4 (deepseek4): its lightning indexer + sparse attention reserve a large
     # context-scaling compute buffer the rates above miss (present even with an f16
@@ -15489,39 +15843,132 @@ class LlamaCppBackend:
     # path): measured 402.5 GiB reserve at 1M ctx pre-fix, ~402 KiB per token.
     _INKLING_CTX_COMPUTE_DENSE_BYTES_PER_TOK = 402470  # per token at ub=512
 
+    def _compute_activation_width(self) -> int:
+        """Float32 activations the compute graph keeps live per micro-batch token.
+
+        Take the widest dense, expert or recurrent block, then add per-layer
+        embeddings. The 12 * n_embd floor covers attention and residual buffers.
+        Return 0 without embedding dimensions.
+        """
+
+        # getattr: a backend built with __new__ carries only the dims it was given.
+        def dim(name: str) -> int:
+            return getattr(self, name, None) or 0
+
+        n_embd = dim("_embedding_length")
+        if n_embd <= 0:
+            return 0
+
+        widths = [12 * n_embd]
+        if dim("_feed_forward_length") > 0:
+            widths.append(4 * dim("_feed_forward_length"))
+        n_used = dim("_expert_used_count")
+        # Granite 4.0 H writes its expert width as feed_forward_length.
+        n_ff_exp = dim("_expert_feed_forward_length") or (
+            dim("_feed_forward_length") if dim("_n_experts") else 0
+        )
+        if n_used > 0 and n_ff_exp > 0:
+            shared = dim("_expert_shared_feed_forward_length") or (
+                n_ff_exp * dim("_expert_shared_count")
+            )
+            widths.append(n_used * (2 * n_embd + 3 * n_ff_exp) + 3 * shared)
+        inner = dim("_ssm_inner_size")
+        if inner > 0:
+            conv_in = inner + 2 * (dim("_ssm_group_count") or 1) * dim("_ssm_state_size")
+            widths.append(4 * conv_in)
+        per_layer_input = dim("_embedding_length_per_layer_input") * dim("_n_layers")
+        return max(widths) + per_layer_input
+
     def _estimate_compute_buffer_bytes(
         self,
         *,
         n_ubatch: Optional[int] = None,
         n_parallel: int = 1,
         per_device_tensor: bool = False,
+        vocab_ceiling: Optional[int] = None,
     ) -> int:
-        """Per-device compute-graph buffer (bytes) from GGUF dims: a vocab-width
-        output buffer + activation scratch. Context-independent; scales with
-        ``--parallel`` (serving slots). Tensor mode materializes it on every device.
-        A slight upper bound over measured allocations; 0 when dims are missing."""
-        n_vocab = self._vocab_size or 0
-        n_embd = self._embedding_length or 0
-        if n_vocab <= 0 or n_embd <= 0:
+        """Per-device compute-graph buffer (bytes) that does not grow with context.
+
+        Includes activations, output rows, sliding-window masks and recurrent state.
+        Since b9460 (#23861), output rows are capped at min(ubatch, slots); older
+        builds reserve ubatch rows. Extra verification rows belong to the MTP reserve.
+
+        Tensor splits use the same buffer per device, so per_device_tensor does not
+        change the result. Return 0 for missing dimensions; vocab_ceiling supplies
+        a fallback vocabulary size."""
+        width = self._compute_activation_width()
+        n_vocab = self._vocab_size or vocab_ceiling or 0
+        if width <= 0 or n_vocab <= 0:
             return 0
         ub = max(
             1,
             int(self._DEFAULT_N_UBATCH if n_ubatch is None else n_ubatch),
         )
         par = max(1, int(n_parallel))
-        out_buffer = n_vocab * ub * 4  # f32 output/logits buffer
-        act_scratch = 4 * n_embd * ub * 4  # a few resident hidden-width buffers
-        if per_device_tensor:
-            # Output + comm/staging materialized on every device, every slot.
-            compute = 2 * act_scratch + out_buffer * par
+        activations = width * ub * 4
+        if self.is_embedding_gguf:
+            outputs = (self._embedding_length or 0) * ub * 4
+        elif getattr(self, "_reserves_micro_batch_outputs", False):
+            # Before ggml-org/llama.cpp#23861: a row for every micro-batch token, once.
+            # Measured on b9415 Vulkan: Gemma 4 E2B 515 MiB at ubatch 512, 137 on b10909.
+            outputs = n_vocab * ub * 4
         else:
-            # Each extra concurrent slot adds one output buffer (chat decode sizes
-            # ~one logit row per slot). Embedding mode outputs the whole first
-            # micro-batch too, so it pays for every slot rather than slots past one.
-            # Matches measured chat {1:36,2:492,4:1388,8:3220} MiB.
-            output_slots = par if self.is_embedding_gguf else max(0, par - 1)
-            compute = act_scratch + out_buffer * output_slots
-        return int(compute * self._COMPUTE_BUFFER_SAFETY)
+            outputs = n_vocab * min(ub, par) * 4
+        swa_mask = 0
+        sliding_window = self._effective_sliding_window()
+        if sliding_window > 0:
+            swa_mask = _pad_kv_cells(sliding_window * par + ub) * ub * 2
+        # A recurrent block works on every slot's state at once: Qwen3.5 4B's buffer
+        # grows 19.5 MiB from one slot to eight at the same micro-batch.
+        inner = getattr(self, "_ssm_inner_size", None) or 0
+        recurrent = 0
+        if inner > 0:
+            state = getattr(self, "_ssm_state_size", None) or 0
+            conv_in = inner + 2 * (getattr(self, "_ssm_group_count", None) or 1) * state
+            recurrent = par * (inner * state + 3 * conv_in) * 4
+        return int((activations + outputs + recurrent) * self._COMPUTE_BUFFER_SAFETY + swa_mask)
+
+    def _effective_sliding_window(self) -> int:
+        """The sliding window when some layer really slides, else 0. Phi-4-mini
+        declares a 262144 window over a 131072 context and no pattern, which bounds
+        nothing."""
+        window = getattr(self, "_sliding_window", None) or 0
+        if window <= 0:
+            return 0
+        pattern = getattr(self, "_sliding_window_pattern", None)
+        if pattern is not None:
+            return window if any(pattern) else 0
+        context = getattr(self, "_context_length", None) or 0
+        return window if not context or window < context else 0
+
+    def _attention_dequant_width(self) -> int:
+        """K+V elements per cell copied to f16 from a quantized cache.
+
+        Use the widest global layer: sliding-window layers do not scale with
+        context. MLA uses compressed K only. Fall back to n_embd without head dims."""
+        n_heads = getattr(self, "_n_heads", None)
+        n_kv = getattr(self, "_n_kv_heads", None) or n_heads
+        kv_lora_rank = getattr(self, "_kv_lora_rank", None)
+        key_len = getattr(self, "_kv_key_length", None)
+        val_len = getattr(self, "_kv_value_length", None)
+        if kv_lora_rank is not None:
+            rope_dim = getattr(self, "_key_length_mla", None) or 64
+            return (getattr(self, "_n_kv_heads", None) or 1) * (key_len or kv_lora_rank + rope_dim)
+        if key_len is None or val_len is None:
+            if not (n_heads and n_kv):
+                return getattr(self, "_embedding_length", None) or 0
+            return 2 * n_kv * self._legacy_head_dim()
+        by_layer = getattr(self, "_n_kv_heads_by_layer", None)
+        pattern = (
+            getattr(self, "_sliding_window_pattern", None)
+            if getattr(self, "_sliding_window", None)
+            else None
+        )
+        widest = 0
+        for i, heads in enumerate(by_layer or ()):
+            if not (pattern is not None and i < len(pattern) and pattern[i]):
+                widest = max(widest, heads)
+        return (widest or n_kv or 1) * (key_len + val_len)
 
     def _compute_buffer_ctx_bytes(
         self,
@@ -15530,21 +15977,18 @@ class LlamaCppBackend:
         cache_type_kv: Optional[str] = None,
         *,
         layer_split: bool = False,
+        flash_attn: bool = True,
+        n_parallel: int = 1,
     ) -> int:
-        """Context-linear growth of the per-device compute buffer (bytes), charged
-        on top of the flat ``_estimate_compute_buffer_bytes``. The flash-attn KQ
-        mask + attention scratch scale ~linearly with context and with the micro-
-        batch; the flat term only covers ctx -> 0. A quantized KV cache adds a
-        context-sized dequant scratch that scales with n_embd; f16/bf16/f32 pays only
-        the KQ mask, a flat n_ubatch*2 bytes per context token. ``cache_type_kv`` None
-        -> f16 (llama.cpp's default; env-set types are adopted by the caller via
-        ``_env_main_cache_type_for_budget``). Returns 0 when dims are missing or
-        ``n_ctx`` <= 0.
+        """Per-device context-dependent scratch, added to the flat compute buffer.
 
-        ``layer_split`` adds the extra KQ-mask copies a multi-device split pays (see
-        ``_CTX_COMPUTE_SPLIT_MULT``) on every architecture except deepseek4, whose own
-        rate already subsumes them. Tensor mode passes False, having been measured
-        separately at the single-device rate (see ``_plan_tensor_parallel``)."""
+        Includes the KQ mask and quantized-cache dequantization. Without flash
+        attention, also charge float32 scores and a float32 mask. Layer splits add
+        scheduler copies, with sliding-window masks sized by n_parallel; tensor
+        splits pass layer_split=False. DeepSeek and Inkling use separate rates.
+
+        None cache type means f16; callers resolve environment overrides.
+        Return 0 without n_embd or a positive context."""
         n_embd = self._embedding_length or 0
         if n_embd <= 0 or n_ctx <= 0:
             return 0
@@ -15552,10 +15996,11 @@ class LlamaCppBackend:
             1,
             int(self._DEFAULT_N_UBATCH if n_ubatch is None else n_ubatch),
         )
-        # One KQ mask copy ([n_kv, n_ubatch] f16), n_embd-independent. Every rate below
-        # is a single-GPU total containing exactly one, so a split adds the extra copies.
-        mask_rate = ub * 2 * self._CTX_COMPUTE_F16_MASK_SAFETY
-        split_extra = (self._CTX_COMPUTE_SPLIT_MULT - 1) * mask_rate if layer_split else 0.0
+        # One KQ mask copy ([n_kv, n_ubatch]), n_embd-independent: f16 under flash
+        # attention, f32 without it (build_attn_inp_kq_mask). Every rate below is a
+        # single-GPU total containing exactly one, so a split adds the extra copies.
+        mask_rate = ub * (2 if flash_attn else 4)
+        split_extra = (self._CTX_COMPUTE_SPLIT_MULT - 1) * mask_rate if layer_split else 0
         if getattr(self, "_architecture", None) == "deepseek4":
             # DSV4 indexer/CSA buffer (see constants): flat + linear, ub-scaled. Fires
             # for any KV type -- the indexer scratch is present even with an f16 cache.
@@ -15581,23 +16026,27 @@ class LlamaCppBackend:
             # Both paths allocate the mask, and 8192 has only ~1.5x headroom over the
             # 5.6 KiB/tok banded measurement -- a split alone would overrun it.
             return int(rate * n_ctx * ub_scale + split_extra * n_ctx)
+        per_tok = mask_rate
         if _kv_bytes_per_elem(cache_type_kv) < 2.0:
-            # Quantized cache: the dequant scratch dominates and scales with n_embd.
-            # MLA (compressed KV) needs far less of it: measured 0.94 x n_embd on
-            # GLM-5.2 and Kimi-K2.7 vs up to 2.02x on regular attention.
-            ub_scale = ub / self._DEFAULT_N_UBATCH
-            rate = (
-                self._CTX_COMPUTE_BYTES_PER_EMBD_MLA
-                if self._key_length_mla
-                else self._CTX_COMPUTE_BYTES_PER_EMBD
-            )
-            per_tok = rate * n_embd * ub_scale
-        else:
-            # f16/bf16/f32: only the KQ mask.
-            per_tok = mask_rate
-        # Only the mask goes 1x -> 4x, not the dequant scratch, so ADD the extra copies:
-        # max() would under-reserve the quantized path by the whole dequant scratch.
-        return int((per_tok + split_extra) * n_ctx)
+            # Quantized cache: the f16 K/V copy, independent of the micro-batch.
+            per_tok += self._attention_dequant_width() * 2
+        if not flash_attn:
+            n_head = getattr(self, "_n_heads", None) or max(1, n_embd // 64)
+            per_tok += ub * n_head * 4
+            if getattr(self, "_kv_lora_rank", None) is not None:
+                # MLA decompresses a float32 copy of the latent cache to attend over it:
+                # GLM-4.7-Flash grows 44 KiB per cell at ubatch 512, 2 KiB past the scores.
+                per_tok += self._attention_dequant_width() * 4
+        # Scheduler copies replicate masks and hidden states, but not dequant scratch.
+        # Sliding-window copies use the same per-slot cell count as the flat buffer.
+        split_fixed = 0
+        if layer_split:
+            split_fixed = self._CTX_COMPUTE_SPLIT_MULT * n_embd * ub * 4
+            sliding_window = self._effective_sliding_window()
+            if sliding_window > 0:
+                swa_cells = _pad_kv_cells(sliding_window * max(1, int(n_parallel)) + ub)
+                split_fixed += (self._CTX_COMPUTE_SPLIT_MULT - 1) * swa_cells * mask_rate
+        return int((per_tok + split_extra) * n_ctx + split_fixed)
 
     def _slots_that_fit_on_gpu(
         self,
@@ -15615,6 +16064,7 @@ class LlamaCppBackend:
         kv_unified: bool = True,
         flash_attn: bool = True,
         split_extra_bytes: int = 0,
+        split_extra_for_slots: Optional[Callable[[int], int]] = None,
         ubatch_for_slots: Optional[Callable[[int], Optional[int]]] = None,
         mtp_bytes_for_slots: Optional[Callable[[int, Optional[int]], int]] = None,
         ctx_checkpoints: int = 0,
@@ -15647,7 +16097,8 @@ class LlamaCppBackend:
         layers charges per slot. It takes the candidate micro-batch as well as the slot
         count, since a reduced candidate lowers the batch floor and so the ubatch too;
         pricing the reserve at the requested pair over-charged every candidate, so one that
-        fits could be rejected and the load kept --fit."""
+        fits could be rejected and the load kept --fit. ``split_extra_for_slots(slots)``
+        re-prices the split step, whose sliding-window masks also scale with slots."""
         for slots in range(n_parallel if include_requested else n_parallel - 1, 0, -1):
             _ub = ubatch_for_slots(slots) if ubatch_for_slots else n_ubatch
             cb = self._estimate_compute_buffer_bytes(
@@ -15677,7 +16128,9 @@ class LlamaCppBackend:
                 total_by_idx = total_by_idx,
                 per_device_overhead_bytes = per_device_overhead_bytes,
                 min_gpus = min_gpus,
-                split_extra_bytes = split_extra_bytes,
+                split_extra_bytes = (
+                    split_extra_for_slots(slots) if split_extra_for_slots else split_extra_bytes
+                ),
             )
             if not use_fit:
                 return gpu_indices, False, slots
@@ -16341,6 +16794,11 @@ class LlamaCppBackend:
         self._pooling_type = None
         self._gguf_path = gguf_path
         self._feed_forward_length = None
+        self._expert_used_count = None
+        self._expert_feed_forward_length = None
+        self._expert_shared_feed_forward_length = None
+        self._expert_shared_count = None
+        self._embedding_length_per_layer_input = None
         self._vocab_size = None
         self._kv_key_length = None
         self._kv_value_length = None
@@ -16461,6 +16919,11 @@ class LlamaCppBackend:
                                         f"{arch}.embedding_length": "embedding_length",
                                         f"{arch}.pooling_type": "pooling_type",
                                         f"{arch}.feed_forward_length": "feed_forward_length",
+                                        f"{arch}.expert_used_count": "expert_used_count",
+                                        f"{arch}.expert_feed_forward_length": "expert_feed_forward_length",
+                                        f"{arch}.expert_shared_feed_forward_length": "expert_shared_feed_forward_length",
+                                        f"{arch}.expert_shared_count": "expert_shared_count",
+                                        f"{arch}.embedding_length_per_layer_input": "embedding_length_per_layer_input",
                                         f"{arch}.attention.key_length": "kv_key_length",
                                         f"{arch}.attention.value_length": "kv_value_length",
                                         f"{arch}.attention.sliding_window": "sliding_window",
@@ -16523,6 +16986,8 @@ class LlamaCppBackend:
                                 elif attr == "sliding_window_pattern" and val_a is not None:
                                     self._sliding_window_pattern = [bool(x) for x in val_a]
                                     sliding_window_pattern_period = None
+                                elif attr == "feed_forward_length" and val_a:
+                                    self._feed_forward_length = max(int(x) for x in val_a)
                             else:
                                 self._gguf_skip_value(f, vtype)
                         else:
@@ -20180,22 +20645,20 @@ class LlamaCppBackend:
 
     @staticmethod
     def _cache_tuning_target_unknown(
-        extra_args: Optional[Iterable[str]],
-        gpu_ids: Optional[Iterable[int]],
-        env: Mapping[str, str],
+        extra_args: Optional[Iterable[str]], device_flags_owned: bool, env: Mapping[str, str]
     ) -> bool:
         """Whether the device this cache tuning would be chosen against is the one
         the child actually gets.
 
         A user device selection is not stripped on an automatic load and llama.cpp
         reads it last (argv) or first (env, before argv either way), so it, not the
-        automatic placement, names the target. Both spellings count: only an explicit
-        ``gpu_ids`` clears LLAMA_ARG_DEVICE, so on an automatic load the env twin
-        survives into the child verbatim. Fail-closed by design -- the failure that
+        automatic placement, names the target. Both spellings count: only a pick that
+        OWNS placement clears LLAMA_ARG_DEVICE, so otherwise the env twin survives
+        into the child verbatim. Fail-closed by design -- the failure that
         matters is emitting --cache-ram 0 against a shared pool, while keeping the
         prompt cache on a discrete card only forgoes a tuning.
         """
-        if gpu_ids is not None:
+        if device_flags_owned:
             return False
         return bool(
             _extra_args_set_any_flag(extra_args, _DEVICE_FLAGS)
@@ -21582,6 +22045,9 @@ class LlamaCppBackend:
                     reasoning_budget_message = reasoning_budget_message,
                 )
             is_vulkan_backend = self._is_vulkan_backend(binary)
+            # Once, and reused everywhere the strip is asked about: the reload
+            # comparator has to reach the same answer as the argv it compares against.
+            _gpu_ids_own_device_flags = self._gpu_ids_own_placement(gpu_ids)
             _vulkan_ordinal_pin = (
                 is_vulkan_backend and bool(gpu_ids) and gpu_ids_are_vulkan_ordinals is not False
             )
@@ -22102,6 +22568,7 @@ class LlamaCppBackend:
                 raise LlamaServerNotFoundError(LLAMA_SERVER_NOT_FOUND_DETAIL)
 
             server_caps = _launch_caps(binary)
+            self._reserves_micro_batch_outputs = self.reserves_micro_batch_outputs(binary)
 
             # Outside ``self._lock`` so /unload, /cancel, /status aren't
             # blocked. ``unload_model`` also records the kill, so the
@@ -22139,18 +22606,28 @@ class LlamaCppBackend:
                     )
 
                 _effective_ubatch = _ubatch_for_slots(n_parallel)
-                # What the SWA checkpoint reserve is priced against. Extras beat the
-                # field, as at launch: the control emits its flag before them, so a
-                # typed --ctx-checkpoints is what the child allocates. Only an
-                # explicit request counts at all: the estimator has always charged 0,
-                # and adopting llama.cpp's default of 32 would move the fit for every
-                # model. Gated on the capability the argv builder emits the flag on:
-                # a build with neither alias allocates nothing, so pricing it costs
-                # slots and context for bytes no child holds.
-                _effective_ctx_checkpoints = (
+
+                # The budget is per slot and the fit can still cut n_parallel, so both
+                # counts are taken after it settles, as _effective_ubatch is below.
+                def _ctx_checkpoints_for_final_slots() -> int:
+                    return effective_ctx_checkpoints_for_caps(
+                        server_caps,
+                        extra_args,
+                        ctx_checkpoints,
+                        per_checkpoint_bytes = self._rollback_state_bytes(1),
+                        n_parallel = n_parallel,
+                        total_host_bytes = ((self._host_memory_capacity_mib() or 0) * 1024 * 1024)
+                        or None,
+                    )
+
+                _requested_ctx_checkpoints = (
                     resolve_ctx_checkpoints(extra_args, ctx_checkpoints)
                     if server_caps.get("ctx_checkpoints_flag")
                     else 0
+                )
+                # Recurrent snapshots are host-only; SWA keeps its existing VRAM fit policy.
+                _fit_ctx_checkpoints = (
+                    0 if self._rollback_state_bytes(1) > 0 else _requested_ctx_checkpoints
                 )
                 # --embedding forces n_batch = n_ubatch, which aborts a load below the slots.
                 if (
@@ -22223,6 +22700,13 @@ class LlamaCppBackend:
                 _planned_cache_pair = _planned_main_cache_types(
                     None if _cache_type_from_env else cache_type_kv,
                     extra_args,
+                )
+                # Price compute for the launch; KV separately covers the no-flash retry.
+                _launch_flash_attn = _planned_flash_attn(
+                    extra_args,
+                    bool(server_caps.get("supports_flash_attn", True)),
+                    _planned_cache_pair[1],
+                    self._architecture,
                 )
                 # A user --split-mode in extras last-wins-overrides the toggle, and
                 # an inherited tensor LLAMA_ARG_SPLIT_MODE flips it on (the child
@@ -23012,7 +23496,11 @@ class LlamaCppBackend:
                             flash_attn = planned_flash_attn,
                         )
 
-                    def _cc_bytes(ctx: int, n_gpus: int = 1) -> int:
+                    def _cc_bytes(
+                        ctx: int,
+                        n_gpus: int = 1,
+                        slots: int = 0,
+                    ) -> int:
                         # Context-linear compute-buffer growth (flash-attn KQ mask +
                         # attention scratch); the flat _compute_buffer_pipeline folded
                         # into model_size_fit only covers ctx -> 0. Charged per
@@ -23026,18 +23514,21 @@ class LlamaCppBackend:
                         # under-reserves ~(n-1)x it (e.g. Qwen3.5-397B on 3 GPUs). The
                         # per-device rate also steps up once split, unless llama.cpp
                         # declines the pipeline parallelism that causes the step.
+                        # A nonzero ``slots`` prices that candidate count and its micro-batch.
                         return max(1, n_gpus) * self._compute_buffer_ctx_bytes(
                             ctx,
-                            _effective_ubatch,
+                            _ubatch_for_slots(slots) if slots else _effective_ubatch,
                             _scratch_cache_type_kv,
                             layer_split = n_gpus > 1 and not _pipeline_parallel_off,
+                            flash_attn = _launch_flash_attn,
+                            n_parallel = slots or n_parallel,
                         )
 
-                    def _cc_split_extra(ctx: int) -> int:
+                    def _cc_split_extra(ctx: int, slots: int = 0) -> int:
                         # Per-device step from the single-device rate to the split one,
                         # for the paths that must select GPUs before they know the
                         # count. 0 when llama.cpp declines pipeline parallelism.
-                        return max(0, _cc_bytes(ctx, 2) // 2 - _cc_bytes(ctx))
+                        return max(0, _cc_bytes(ctx, 2, slots) // 2 - _cc_bytes(ctx, 1, slots))
 
                     # Layer-split compute buffer (one lump; tensor mode reserves it
                     # per device in _plan_tensor_parallel). Context-independent, so
@@ -23055,9 +23546,9 @@ class LlamaCppBackend:
                         )
 
                     # ...and the tensor-mode rate, reserved on EVERY selected device:
-                    # the f32 output buffer and the comm staging are replicated rather
-                    # than split, so the layer lump above is a fraction of what a tensor
-                    # split allocates. Same flat fallback when the dims are missing.
+                    # each holds the whole buffer rather than a share of it, so the layer
+                    # lump above is one device of what a tensor split allocates. Same flat
+                    # fallback when the dims are missing.
                     _compute_buffer_tensor = self._estimate_compute_buffer_bytes(
                         n_ubatch = _effective_ubatch,
                         n_parallel = n_parallel,
@@ -23201,11 +23692,12 @@ class LlamaCppBackend:
                         # displaced does not run. The flat fraction below is gated on
                         # this; the byte-accurate callback was not, so the fit went on
                         # charging VRAM no drafter allocates.
-                        # One term survives: a recurrent target's rollback snapshots sit
-                        # in the TARGET context, so pinning the drafter to CPU does not
-                        # move them. Charge those alone. Flat in ctx (the
-                        # state is per-slot), hence the same _np/_n_ubatch keywords the
-                        # replaced callback takes, so _mtp_bytes can still re-price slots.
+                        # Two terms survive: a recurrent target's rollback snapshots and
+                        # the verification output rows sit in the TARGET context, so
+                        # pinning the drafter to CPU does not move them. Charge those
+                        # alone. Flat in ctx (both are per-slot), hence the same
+                        # _np/_n_ubatch keywords the replaced callback takes, so
+                        # _mtp_bytes can still re-price slots.
                         def _cpu_draft_target_state(
                             _ctx: int,
                             _np: int = n_parallel,
@@ -23213,9 +23705,10 @@ class LlamaCppBackend:
                             _n: int = _mtp_eff_n_max,
                             _rollback: bool = _target_rollback,
                         ) -> int:
-                            if not _rollback or _n <= 0:
+                            if _n <= 0:
                                 return 0
-                            return self._rollback_state_bytes(_np) * _n
+                            rollback = self._rollback_state_bytes(_np) * _n if _rollback else 0
+                            return rollback + self._spec_verify_rows_bytes(_np, _n)
 
                         mtp_overhead_fn = (
                             _cpu_draft_target_state
@@ -23528,7 +24021,6 @@ class LlamaCppBackend:
                                         n_parallel = n_parallel,
                                         kv_unified = planned_kv_unified,
                                         n_ubatch = _effective_ubatch,
-                                        ctx_checkpoints = _effective_ctx_checkpoints,
                                         flash_attn = planned_flash_attn,
                                         mtp_engaged = False,
                                         mtp_overhead_fn = None,
@@ -23536,6 +24028,7 @@ class LlamaCppBackend:
                                         budget_frac = 1.0,
                                         pooled = True,
                                         total_mib = None,
+                                        ctx_checkpoints = _fit_ctx_checkpoints,
                                     )
                                 )
                                 if _ctx_wo <= 0:
@@ -23609,7 +24102,6 @@ class LlamaCppBackend:
                                         n_parallel = n_parallel,
                                         kv_unified = planned_kv_unified,
                                         n_ubatch = _effective_ubatch,
-                                        ctx_checkpoints = _effective_ctx_checkpoints,
                                         flash_attn = planned_flash_attn,
                                         mtp_engaged = True,
                                         mtp_overhead_fn = mtp_overhead_fn,
@@ -23617,6 +24109,7 @@ class LlamaCppBackend:
                                         budget_frac = 1.0,
                                         pooled = True,
                                         total_mib = None,
+                                        ctx_checkpoints = _fit_ctx_checkpoints,
                                     )
                                 )
                                 if (
@@ -23865,7 +24358,6 @@ class LlamaCppBackend:
                                     n_parallel = n_parallel,
                                     kv_unified = planned_kv_unified,
                                     n_ubatch = _effective_ubatch,
-                                    ctx_checkpoints = _effective_ctx_checkpoints,
                                     flash_attn = planned_flash_attn,
                                     mtp_engaged = _mtp_reserves_gpu,
                                     mtp_overhead_fn = mtp_overhead_fn,
@@ -23873,6 +24365,7 @@ class LlamaCppBackend:
                                     budget_frac = 1.0,
                                     pooled = True,
                                     total_mib = None,
+                                    ctx_checkpoints = _fit_ctx_checkpoints,
                                 )
                                 kv = _kv_bytes(capped)
                                 footprint_mib = (
@@ -23959,7 +24452,6 @@ class LlamaCppBackend:
                                     n_parallel = n_parallel,
                                     kv_unified = planned_kv_unified,
                                     n_ubatch = _effective_ubatch,
-                                    ctx_checkpoints = _effective_ctx_checkpoints,
                                     flash_attn = planned_flash_attn,
                                     mtp_engaged = _mtp_reserves_gpu,
                                     mtp_overhead_fn = mtp_overhead_fn,
@@ -23967,6 +24459,7 @@ class LlamaCppBackend:
                                     budget_frac = 1.0,
                                     pooled = True,
                                     total_mib = None,
+                                    ctx_checkpoints = _fit_ctx_checkpoints,
                                 )
                                 kv = _kv_bytes(capped)
                                 footprint_mib = (
@@ -24136,7 +24629,6 @@ class LlamaCppBackend:
                                 n_parallel = n_parallel,
                                 kv_unified = planned_kv_unified,
                                 n_ubatch = _effective_ubatch,
-                                ctx_checkpoints = _effective_ctx_checkpoints,
                                 flash_attn = planned_flash_attn,
                                 mtp_engaged = _mtp_reserves_gpu,
                                 mtp_overhead_fn = mtp_overhead_fn,
@@ -24144,6 +24636,7 @@ class LlamaCppBackend:
                                 budget_frac = 1.0,
                                 pooled = True,
                                 total_mib = None,
+                                ctx_checkpoints = _fit_ctx_checkpoints,
                             )
 
                         def _apple_footprint_mib(ctx: int) -> float:
@@ -24347,10 +24840,10 @@ class LlamaCppBackend:
                             swa_full = swa_full,
                             kv_unified = planned_kv_unified,
                             flash_attn = planned_flash_attn,
-                            split_extra_bytes = _cc_split_extra(_reduce_ctx),
+                            split_extra_for_slots = lambda s: _cc_split_extra(_reduce_ctx, s),
                             ubatch_for_slots = _ubatch_for_slots,
                             mtp_bytes_for_slots = lambda s, ub: _mtp_bytes(_reduce_ctx, s, ub),
-                            ctx_checkpoints = _effective_ctx_checkpoints,
+                            ctx_checkpoints = _fit_ctx_checkpoints,
                         )
                         if not _uf_slots:
                             _slots_asked = n_parallel
@@ -24383,9 +24876,9 @@ class LlamaCppBackend:
                                     split_extra_bytes = _cc_split_extra(ctx),
                                     ubatch_for_slots = _ubatch_for_slots,
                                     mtp_bytes_for_slots = (lambda s, ub, c = ctx: _mtp_bytes(c, s, ub)),
-                                    ctx_checkpoints = _effective_ctx_checkpoints,
                                     include_requested = True,
                                     exact = True,  # only n_parallel is accepted below
+                                    ctx_checkpoints = _fit_ctx_checkpoints,
                                 )
                                 return _gi if not _uf and _got == n_parallel else None
 
@@ -24637,13 +25130,13 @@ class LlamaCppBackend:
                     # strips. Unpinned, the child inherits LLAMA_ARG_DEVICE verbatim.
                     _fit_extras = (
                         self._strip_device_extra_args(extra_args)
-                        if gpu_ids is not None
+                        if _gpu_ids_own_device_flags
                         else extra_args
                     )
                     _fit_env = dict(os.environ)
                     if gpu_memory_mode == "manual":
                         self._clear_manual_placement_env(_fit_env)
-                    if gpu_ids is not None:
+                    if _gpu_ids_own_device_flags:
                         self._clear_device_placement_env(_fit_env)
                     # What the placement branch below will emit, so the effective
                     # (last-wins) fitter state is readable before the final argv exists.
@@ -24747,14 +25240,19 @@ class LlamaCppBackend:
                         else _fit_env_mmproj_bytes
                         + self._inherited_mmproj_soft_overhead(_fit_env_mmproj_bytes, on_host = False)
                     )
+                    # Derive the host-only share from the same estimator as the total.
+                    _effective_ctx_checkpoints = _ctx_checkpoints_for_final_slots()
+                    _ckpt_host_bytes = max(
+                        0,
+                        _kv_bytes(effective_ctx, _effective_ctx_checkpoints)
+                        - _kv_bytes(effective_ctx, 0),
+                    )
                     _fit_load_mode = self._fit_derived_load_mode(
                         model_size = _fit_model_size,
                         mmproj_pinned_bytes = _mmproj_pinned_bytes
                         + (_fit_env_mmproj_bytes if _fit_env_mmproj_on_host else 0),
-                        # Re-read WITH the SWA snapshots --ctx-checkpoints allocates;
-                        # the closure leaves them at 0 for the placement paths, which
-                        # price them by their own route.
-                        kv_cache_bytes = _kv_bytes(effective_ctx, _effective_ctx_checkpoints),
+                        # Checkpoints are split into host_only_bytes below.
+                        kv_cache_bytes = _kv_bytes(effective_ctx, 0),
                         kv_sized = self._can_estimate_kv(),
                         mtp_bytes = _mtp_bytes(effective_ctx),
                         # _flat_mtp_engages whole: its other arm, _mtp_kv_unsized,
@@ -24766,9 +25264,8 @@ class LlamaCppBackend:
                             or _cpu_draft_fit_bytes is None
                             or _draft_split_across_host
                         ),
-                        # Host-only, not pooled: -ngld 0 puts the drafter in RAM, which
-                        # free VRAM cannot pay for.
-                        host_only_bytes = _cpu_draft_fit_bytes or 0,
+                        # Neither a CPU drafter nor checkpoints can be covered by free VRAM.
+                        host_only_bytes = (_cpu_draft_fit_bytes or 0) + _ckpt_host_bytes,
                         # One lump on the layer path, where the graph buffer is
                         # allocated once. A tensor split replicates it on every selected
                         # device, so pricing one LAYER-mode buffer there understates a
@@ -25456,7 +25953,9 @@ class LlamaCppBackend:
                 # Speculative decoding. See _build_speculative_flags for the
                 # mode resolution, benchmarks, and llama.cpp references.
                 _vulkan_pin_ids = gpu_indices if gpu_indices is not None else (gpu_ids or None)
-                _draft_device = _extra_args_main_device(extra_args) if gpu_ids is None else None
+                _draft_device = (
+                    _extra_args_main_device(extra_args) if not _gpu_ids_own_device_flags else None
+                )
                 if _draft_device is None and is_vulkan_backend and _vulkan_pin_ids:
                     _draft_device = ",".join(f"Vulkan{i}" for i in _vulkan_pin_ids)
                 launch_mtp_draft_path = self._resolve_launch_mtp_path(
@@ -25545,7 +26044,7 @@ class LlamaCppBackend:
                 if gpu_memory_mode == "manual":
                     self._clear_manual_placement_env(_spec_placement_env)
                 _spec_placement_extras = extra_args
-                if gpu_ids is not None:
+                if _gpu_ids_own_device_flags:
                     _spec_placement_extras = self._strip_device_extra_args(extra_args)
                     self._clear_device_placement_env(_spec_placement_env)
                 # A device the launch really carries, and not the CPU spelling of it.
@@ -25889,13 +26388,20 @@ class LlamaCppBackend:
                 # The exact tokens the tuning appended, so the arch-crash respawn can
                 # take them back off when it lands on a different device class.
                 _cache_flags_emitted: list[str] = []
+                # llama.cpp reads the variable before argv, so a 0 appended below would
+                # overrule the operator while every estimate still priced their value.
+                _ctx_checkpoints_owned = (
+                    ctx_checkpoints
+                    if ctx_checkpoints is not None
+                    else _env_ctx_checkpoints_override()
+                )
                 # extra_args, not the memory policy's list: that one is built later, and
                 # a gpu_ids pin is the case _strip_device_extra_args removes the flag in.
                 # The env twin counts too: only an explicit gpu_ids clears
                 # LLAMA_ARG_DEVICE, and llama.cpp reads it before argv, so an automatic
                 # load can place against a target the generated pin never names.
                 _cache_target_unknown = self._cache_tuning_target_unknown(
-                    extra_args, gpu_ids, os.environ
+                    extra_args, _gpu_ids_own_device_flags, os.environ
                 )
                 _shared_memory_offload = (
                     sys.platform == "win32"
@@ -25933,7 +26439,7 @@ class LlamaCppBackend:
                         _cache_flags_emitted.extend(["--cache-ram", "0"])
                     else:
                         unsupported_cache_flags.append("--cache-ram")
-                    if ctx_checkpoints is not None:
+                    if _ctx_checkpoints_owned is not None:
                         pass
                     elif server_caps.get("ctx_checkpoints_flag"):
                         _cache_flags_emitted.extend([str(server_caps["ctx_checkpoints_flag"]), "0"])
@@ -25945,6 +26451,37 @@ class LlamaCppBackend:
                             "Skipping unsupported Windows cache flags for llama-server: %s",
                             ", ".join(unsupported_cache_flags),
                         )
+
+                def _decide_auto_ctx_checkpoints() -> Optional[int]:
+                    """The cap for the slots n_parallel currently names, or None to stand down."""
+                    return (
+                        self._bounded_ctx_checkpoints(n_parallel, server_caps, extra_args)
+                        if ctx_checkpoints is None
+                        else None
+                    )
+
+                _auto_ctx_checkpoints = _decide_auto_ctx_checkpoints()
+                # Tracked apart from _cache_flags_emitted, which means "the Windows tuning
+                # ran", so the arch-crash respawn can re-decide each one on its own.
+                _auto_ckpt_emitted: list[str] = []
+
+                def _emit_auto_ctx_checkpoints(command: list[str]) -> list[str]:
+                    """Append the automatic cap unless the Windows tuning already zeroed it."""
+                    if _auto_ctx_checkpoints is None:
+                        return []
+                    if any(
+                        _flag_name(str(token)) in _CTX_CHECKPOINTS_FLAGS
+                        for token in _cache_flags_emitted
+                    ):
+                        return []
+                    pair = [
+                        str(server_caps["ctx_checkpoints_flag"]),
+                        str(_auto_ctx_checkpoints),
+                    ]
+                    command.extend(pair)
+                    return pair
+
+                _auto_ckpt_emitted = _emit_auto_ctx_checkpoints(cmd)
 
                 # Record the pin actually applied (fit-narrowed gpu_indices, else the raw
                 # request) for the keep-warm loop, dedupe, and /status, so an explicit
@@ -26020,7 +26557,7 @@ class LlamaCppBackend:
                 # so classifying on them would pin for a --device cpu the child
                 # never sees. Same helpers the launch uses, so they cannot drift.
                 _mem_extra_args = extra_args
-                if gpu_ids is not None:
+                if _gpu_ids_own_device_flags:
                     _mem_extra_args = self._strip_device_extra_args(extra_args)
                     self._clear_device_placement_env(_mem_env)
                 _mem_keep_resident, _mem_no_reserve = _mem_settings
@@ -26306,7 +26843,7 @@ class LlamaCppBackend:
                 # below when the Unsloth picker owns the GPU selection.
                 if _mem_extras:
                     _emit_extra_args = list(_mem_extras)
-                    if gpu_ids is not None:
+                    if _gpu_ids_own_device_flags:
                         # gpu_ids owns placement, so remove competing device flags.
                         _before_device_strip = list(_emit_extra_args)
                         _emit_extra_args = self._strip_device_extra_args(_emit_extra_args)
@@ -26319,7 +26856,6 @@ class LlamaCppBackend:
                     logger.info(
                         f"Appending user extra args to llama-server: {list(_emit_extra_args)}"
                     )
-
                 # Last so it wins: the drafter CPU pin on a virtualised Metal device
                 # is a correctness fix, not a preference, and llama.cpp is last-wins.
                 if _pv_draft_cpu_pin:
@@ -26557,7 +27093,7 @@ class LlamaCppBackend:
                     env.pop("LLAMA_ARG_TENSOR_SPLIT", None)
 
                 # A gpu_ids pin also owns inherited device placement.
-                if gpu_ids is not None:
+                if _gpu_ids_own_device_flags:
                     self._clear_device_placement_env(env)
 
                 # After the scrubs above, so a placement this launch already dropped
@@ -26917,14 +27453,38 @@ class LlamaCppBackend:
                     # we cannot pin, _p2p_veto_reason withholds the flag.
                     if _p2p_launch_order_pinned:
                         env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+                    # The set is ours to pin, but the ORDER is the user's to choose,
+                    # and gpu_indices is ascending at every producer. Keep a mask that
+                    # deliberately reorders the same cards.
+                    _pin_ids = list(gpu_indices)
+                    _inherited_order = self._inherited_child_gpu_order(_pin_ids)
+                    if _inherited_order is not None:
+                        # A user --tensor-split is positional over the order they
+                        # expected, so reordering under it re-weights the wrong cards.
+                        # Theirs to own: decline instead of rewriting it.
+                        if _extra_args_have_tensor_split(extra_args, env):
+                            logger.info(
+                                "Keeping ascending GPU order: a pass-through "
+                                "--tensor-split is positional over it."
+                            )
+                        elif self._repoint_emitted_tensor_split(cmd, _pin_ids, _inherited_order):
+                            logger.info(
+                                "Pinning the child's GPU order to the inherited "
+                                "visibility mask: %s (ascending would be %s).",
+                                _inherited_order,
+                                _pin_ids,
+                            )
+                            _pin_ids = _inherited_order
                     # Mask on AMD at the ROCr/HSA layer: HIP-only masking still
                     # enumerates every agent first, which segfaults on a deselected
                     # unsupported GPU (e.g. gfx1036 iGPU under a gfx103X prebuilt).
                     self._emit_child_gpu_visibility(
-                        env, LlamaCppBackend._child_visibility_for(gpu_indices), prefer_rocr = True
+                        env,
+                        LlamaCppBackend._child_visibility_for(_pin_ids),
+                        prefer_rocr = True,
                     )
-                    _child_gpu_physical_ids = tuple(int(i) for i in gpu_indices)
-                    _launch_pinned_ids = list(gpu_indices)
+                    _child_gpu_physical_ids = tuple(int(i) for i in _pin_ids)
+                    _launch_pinned_ids = list(_pin_ids)
                 elif not is_vulkan_backend and not gpu_ids:
                     # Nothing above pinned the child. Two shapes land here and the gate
                     # breaks both the same way, so they share one probe: `--fit on`
@@ -28032,6 +28592,11 @@ class LlamaCppBackend:
                                     gpu_indices = _remaining,
                                 )
                             )
+                            # Off first, or _retry_cache_tuning_flags reads the cap as a
+                            # count the user typed and declines to zero it.
+                            if _auto_ckpt_emitted:
+                                cmd = self._without_flag_pairs(cmd, _auto_ckpt_emitted)
+                                _auto_ckpt_emitted = []
                             if _retry_shared and _cache_flags_emitted:
                                 # Exactly the tokens this policy appended, each a flag
                                 # with its value, so the strip cannot eat a user extra.
@@ -28046,7 +28611,7 @@ class LlamaCppBackend:
                                 _retry_flags = self._retry_cache_tuning_flags(
                                     cmd,
                                     cache_ram = cache_ram,
-                                    ctx_checkpoints = ctx_checkpoints,
+                                    ctx_checkpoints = _ctx_checkpoints_owned,
                                     server_caps = server_caps,
                                 )
                                 if _retry_flags:
@@ -28056,6 +28621,7 @@ class LlamaCppBackend:
                                         "Retry lands on a GPU with its own memory: applied the "
                                         "Windows full-offload cache tuning."
                                     )
+                            _auto_ckpt_emitted = _emit_auto_ctx_checkpoints(cmd)
                         # GGML_CUDA_ENABLE_UNIFIED_MEMORY was decided for the CRASHED
                         # set. The canonical #7624 shape crashes on the APU and retries
                         # on the dGPU, where it is harmful, so withdraw it, but only
@@ -28335,7 +28901,14 @@ class LlamaCppBackend:
                         # Read by admission control; left as-is Studio over-admits.
                         n_parallel = 1  # allow-slot-clamp: llama-server refused more
                         kv_cache_unified = False
-                        healthy = _spawn_and_wait(_kvu_cmd, label = "-single-seq")
+                        # The cap in argv was sized for slots this retry no longer runs;
+                        # same re-decide as the arch-crash respawn.
+                        if _auto_ckpt_emitted:
+                            cmd = self._without_flag_pairs(cmd, _auto_ckpt_emitted)
+                            _auto_ckpt_emitted = []
+                        _auto_ctx_checkpoints = _decide_auto_ctx_checkpoints()
+                        _auto_ckpt_emitted = _emit_auto_ctx_checkpoints(cmd)
+                        healthy = _spawn_and_wait(cmd, label = "-single-seq")
 
                 # Flash-attention kernels hard-crash at startup on some ROCm/GPU
                 # builds (frequently inside the vision tower). Disabling FA keeps
@@ -28937,7 +29510,7 @@ class LlamaCppBackend:
                     # can't resurrect the dropped --device (#7188).
                     self._extra_args = (
                         self._strip_device_extra_args(extra_args)
-                        if gpu_ids is not None
+                        if _gpu_ids_own_device_flags
                         else list(extra_args)
                     )
                     # Device-stripped the same way, so both comparator sides share a rule.
@@ -28958,7 +29531,7 @@ class LlamaCppBackend:
                     )
                     self._requested_extra_args = (
                         self._strip_device_extra_args(_pv_requested)
-                        if gpu_ids is not None
+                        if _gpu_ids_own_device_flags
                         else list(_pv_requested)
                     )
                     self._extra_args_source = (model_identifier, hf_variant)
@@ -29701,7 +30274,7 @@ class LlamaCppBackend:
             list(intent.extra_args) if intent.extra_args is not None else self._extra_args
         )
         candidate_extra_args = list(effective_extra_args) if effective_extra_args else []
-        if intent.extra_args is not None and intent.gpu_ids is not None:
+        if intent.extra_args is not None and self._gpu_ids_own_placement(intent.gpu_ids):
             candidate_extra_args = self._strip_device_extra_args(candidate_extra_args)
         # A Model Memory toggle changes only the launch flags, so the intent is
         # unchanged and this would otherwise report already-loaded and leave the
@@ -31627,7 +32200,7 @@ class LlamaCppBackend:
                             if fallback_extra_args is not snapshot.extra_args:
                                 self._requested_extra_args = (
                                     self._strip_device_extra_args(_ea)
-                                    if snapshot.gpu_ids is not None
+                                    if self._gpu_ids_own_placement(snapshot.gpu_ids)
                                     else list(_ea)
                                 )
                             # Restore the requested mode + reason load_model("off") cleared,

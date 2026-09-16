@@ -201,7 +201,7 @@ import { useEffectiveProfile, UserAvatar } from "@/features/profile";
 import { resolveNavRowState } from "@/components/nav-row-state";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { videoNavHint } from "@/config/hardware-verdict";
-import { clearAuthTokens, logout } from "@/features/auth";
+import { AUTH_SESSION_ENDING_EVENT, clearAuthTokens, logout } from "@/features/auth";
 import { TOUR_OPEN_EVENT, getTourId, useTourAvailable } from "@/features/tour";
 import {
   deleteTrainingRun,
@@ -2826,6 +2826,7 @@ export function AppSidebar() {
       // Desktop signs out through the OS account menu, not here.
       if (isTauri) return;
       void (async () => {
+        if (!window.dispatchEvent(new Event(AUTH_SESSION_ENDING_EVENT, { cancelable: true }))) return;
         try {
           await logout();
         } catch {
@@ -4443,6 +4444,7 @@ export function AppSidebar() {
               {!isTauri && (
                 <DropdownMenuItem
                   onSelect={async () => {
+                    if (!window.dispatchEvent(new Event(AUTH_SESSION_ENDING_EVENT, { cancelable: true }))) return;
                     // Best-effort server revocation; ignore network errors so the local clear still runs.
                     try {
                       await logout();
