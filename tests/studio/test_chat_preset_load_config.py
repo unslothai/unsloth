@@ -407,7 +407,30 @@ def _selector_signature(selector: str, field: str):
     return 0, None, None
 
 
-_LITERAL = r"(?:null|undefined|true|false|-?\d+(?:\.\d+)?|'[^']*'|\"[^\"]*\")"
+_NUMBER = r"-?(?:0[xXbBoO][\da-fA-F]+|\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)"
+# The trailing guard matters as much as the pattern: without it `1e3` matches as `1`,
+# and a pin to 1000 reads as a pin to 1.
+_LITERAL = rf"(?:null|undefined|true|false|{_NUMBER}|'[^']*'|\"[^\"]*\")(?![\w$.])"
+
+
+def _top_level_conjuncts(guard: str) -> list:
+    """`guard` split on the `&&` operators that are not inside brackets."""
+    parts, depth, start = [], 0, 0
+    index = 0
+    while index < len(guard):
+        char = guard[index]
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        elif depth == 0 and guard.startswith("&&", index):
+            parts.append(guard[start:index])
+            index += 2
+            start = index
+            continue
+        index += 1
+    parts.append(guard[start:])
+    return [part.strip() for part in parts if part.strip()]
 
 
 def _pinned_literal(guard: str, taken: bool, access: str, field: str):
@@ -427,21 +450,27 @@ def _pinned_literal(guard: str, taken: bool, access: str, field: str):
     # the store.
     start, end = r"(?<![\w$.])", r"(?![\w$])"
     bound = rf"{start}{access}{end}"
-    equal = re.search(rf"(?:{bound}(?:===|==)({_LITERAL})|({_LITERAL})(?:===|==){bound})", guard)
-    unequal = re.search(rf"(?:{bound}(?:!==|!=)({_LITERAL})|({_LITERAL})(?:!==|!=){bound})", guard)
+    equal = rf"(?:{bound}(?:===|==)({_LITERAL})|({_LITERAL})(?:===|==){bound})"
+    unequal = rf"(?:{bound}(?:!==|!=)({_LITERAL})|({_LITERAL})(?:!==|!=){bound})"
     # A comparison under `!` says the opposite of what it reads, and the branch no longer implies
     # it. Anything carrying a logical not is refused rather than interpreted.
     if re.search(r"!(?![=])", re.sub(r"!==?", "", guard)):
         return None
-    if taken:
-        # A conjunction still implies its parts; a disjunction does not.
-        if equal is None or "||" in guard:
-            return None
-        return equal.group(1) or equal.group(2)
-    # Negating the guard only pins the field when the guard is that comparison and nothing else.
-    if unequal is None or "||" in guard or "&&" in guard:
+    if "||" in guard:
+        # A disjunction does not imply its parts, either way round.
         return None
-    return unequal.group(1) or unequal.group(2)
+    if taken:
+        # The comparison has to BE one of the conjuncts, not merely occur inside one. An inner
+        # equality can be fed to another operator, and `(budget === -1) === false` is taken for
+        # every value except -1, which is the opposite of what it reads as.
+        for conjunct in _top_level_conjuncts(guard):
+            match = re.fullmatch(equal, conjunct)
+            if match is not None:
+                return match.group(1) or match.group(2)
+        return None
+    # Negating the guard only pins the field when the guard is that comparison and nothing else.
+    match = re.fullmatch(unequal, guard)
+    return None if match is None else (match.group(1) or match.group(2))
 
 
 def _selector_reads(selector: str, field: str) -> bool:
@@ -547,6 +576,14 @@ SELECTOR_CASES = [
     ("(s) => -1 === s.reasoningBudget ? -1 : s.reasoningBudget", True),
     # A comparison under `!` says the opposite of what it reads.
     ("(s) => !(s.reasoningBudget === -1) ? -1 : s.reasoningBudget", False),
+    # Nor when the negation is spelled as a second comparison: this arm is taken for every
+    # budget except -1, so it pins nothing.
+    ("(s) => (s.reasoningBudget === -1) === false ? -1 : s.reasoningBudget", False),
+    # The literal has to be read whole. Half of `1e3` is `1`, and a pin to 1000 that reads as
+    # a pin to 1 accepts an arm returning 1 for a budget of 1000.
+    ("(s) => s.reasoningBudget === 1e3 ? 1 : s.reasoningBudget", False),
+    ("(s) => s.reasoningBudget === 1e3 ? 1e3 : s.reasoningBudget", True),
+    ("(s) => s.reasoningBudget === 0x10 ? 0x10 : s.reasoningBudget", True),
     # A pinned arm has to return the value the field holds there, or it collides: -1 becoming 0
     # returns 0 both before and after.
     ("(s) => s.reasoningBudget === -1 ? 0 : s.reasoningBudget", False),
