@@ -134,18 +134,25 @@ _repo_access_inflight: dict[tuple[str, str, str], threading.Lock] = {}
 # and the memory is dropped), and a repo that was never refused has nothing here, so an
 # air-gapped host, a Hub outage and a mirror without /auth-check are unaffected. Keyed exactly
 # like the verdict cache, so it says nothing about any other credential.
-_DENIAL_MEMORY_TTL_S = 900.0
+#
+# It has NO time limit, on purpose. A clock-based expiry hands the denial back on the one input
+# the caller controls: wait it out, ask again while the Hub is unaskable, and _resolve_unaskable
+# authorizes locally on the strength of the operator's disk -- for a credential the Hub refused,
+# with nothing having changed but the time. Only an affirmative answer is evidence that the
+# refusal no longer holds, so only an affirmative answer clears it. The size cap below is what
+# bounds the table, and the entries are recorded in insertion order so the cap evicts the
+# oldest refusal rather than an arbitrary one.
 _denied_repo_access: dict[tuple[str, str, str], float] = {}
 
 
 def _remember_denial(key: tuple[str, str, str], now: float) -> None:
     with _repo_access_lock:
-        if len(_denied_repo_access) >= _REPO_ACCESS_CACHE_MAX:
-            for stale in [k for k, until in _denied_repo_access.items() if until <= now]:
-                _denied_repo_access.pop(stale, None)
-            if len(_denied_repo_access) >= _REPO_ACCESS_CACHE_MAX:
-                _denied_repo_access.pop(next(iter(_denied_repo_access)), None)
-        _denied_repo_access[key] = now + _DENIAL_MEMORY_TTL_S
+        # Re-insert at the end so a refusal that is still being re-asked is not the first to be
+        # evicted. The stored time is the eviction order only; it never expires the entry.
+        _denied_repo_access.pop(key, None)
+        while len(_denied_repo_access) >= _REPO_ACCESS_CACHE_MAX:
+            _denied_repo_access.pop(next(iter(_denied_repo_access)), None)
+        _denied_repo_access[key] = now
 
 
 def _forget_denial(key: tuple[str, str, str]) -> None:
@@ -153,20 +160,14 @@ def _forget_denial(key: tuple[str, str, str]) -> None:
         _denied_repo_access.pop(key, None)
 
 
-def _denial_is_remembered(key: tuple[str, str, str], now: float) -> bool:
+def _denial_is_remembered(key: tuple[str, str, str]) -> bool:
     with _repo_access_lock:
-        until = _denied_repo_access.get(key)
-        if until is None:
-            return False
-        if until <= now:
-            _denied_repo_access.pop(key, None)
-            return False
-        return True
+        return key in _denied_repo_access
 
 
 def _with_remembered_denial(key: tuple[str, str, str], verdict: Optional[bool]) -> Optional[bool]:
     """A verdict of "could not ask" reads as the last answer the Hub gave, if it was no."""
-    if verdict is None and _denial_is_remembered(key, time.monotonic()):
+    if verdict is None and _denial_is_remembered(key):
         return False
     return verdict
 

@@ -332,6 +332,26 @@ def test_an_answered_no_is_not_overturned_by_a_later_outage(monkeypatch, tmp_pat
     assert cached_read_refused(OPERATOR_TOKEN, repo_id = ON_DISK, is_cached = lambda: True) is True
 
 
+def test_waiting_does_not_hand_back_a_repo_the_hub_refused(monkeypatch, tmp_path):
+    """The memory had a 900 s expiry, which made the boundary defeatable with the one input the
+    caller controls. Wait it out, ask again while the Hub is unaskable, and the local resolution
+    authorizes on the strength of the operator's disk -- for the same credential the Hub
+    refused, with nothing changed but the clock. Only an answer is evidence about access."""
+    root = _cache_root(monkeypatch, tmp_path)
+    _materialize_repo(root, ON_DISK)
+    _counting_probe(monkeypatch, False, offline = False)
+    assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is False
+
+    # A day passes, and the Hub is rate limiting rather than answering when the caller returns.
+    later = hf_tokens.time.monotonic() + 86_400.0
+    monkeypatch.setattr(hf_tokens, "time", SimpleNamespace(monotonic = lambda: later))
+    _counting_probe(monkeypatch, requests.exceptions.ConnectionError("refused"), offline = False)
+    assert (
+        cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is False
+    ), "the refusal was handed back to the caller by the passage of time alone"
+    assert cached_read_refused(OPERATOR_TOKEN, repo_id = ON_DISK, is_cached = lambda: True) is True
+
+
 def test_a_remembered_denial_is_dropped_once_the_hub_says_yes(monkeypatch, tmp_path):
     """Not a lockout. Access granted after a refusal takes effect on the next answer, and the
     outage behaviour goes back to reading the disk."""
@@ -386,7 +406,7 @@ def test_the_denial_memory_is_dropped_by_the_test_reset(monkeypatch, tmp_path):
 # second principal the operator's private downloads the moment the Hub is offline, times
 # out, 429s, 5xx's or sits behind an HF_ENDPOINT mirror with no /auth-check route. The
 # remembered denial does not close that: there may never have been an online denial to
-# remember, a new credential is a new key, the memory expires, and it is lost on restart.
+# remember, a new credential is a new key, and it is lost on restart.
 # So presence only answers for a caller that could have produced it.
 
 
