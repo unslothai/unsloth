@@ -313,6 +313,26 @@ def _nested_function_spans(block: str) -> list:
             return spans
 
 
+def _statement_start(head: str) -> int:
+    """Where the statement that `head` ends inside began.
+
+    Only a delimiter at bracket depth zero ends a statement. A `for (let i = 0; i < n; i++)`
+    header carries two semicolons of its own, and taking the last one as the boundary hides the
+    `for` from the caller, which then reads a loop body as an unconditional return.
+    """
+    depth, boundary = 0, -1
+    for index, char in enumerate(head):
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+            if depth == 0 and char == "}":
+                boundary = index
+        elif depth == 0 and char == ";":
+            boundary = index
+    return boundary + 1
+
+
 def _block_always_returns(block: str) -> bool:
     """Does every path out of this block go through a `return`?
 
@@ -343,8 +363,9 @@ def _block_always_returns(block: str) -> bool:
             return False
     # An `if (x) return y;` with no braces is the last statement and still falls through.
     head = block[: last.start()]
-    boundary = max(head.rfind(";"), head.rfind("}"))
-    return not re.search(r"\b(if|else|for|while|switch|catch)\b", head[boundary + 1 :])
+    return not re.search(
+        r"\b(if|else|for|while|switch|catch)\b", head[_statement_start(head) :]
+    )
 
 
 def _own_scope_returns(block: str) -> list:
@@ -642,6 +663,14 @@ SELECTOR_CASES = [
     ("(s) => { if (s.enabled) { return s.other; } return s.reasoningBudget; }", False),
     ("(s) => { if (s.enabled) { return s.reasoningBudget; } return s.reasoningBudget; }", True),
     ("(s) => { for (const x of s.list) { return s.other; } return s.reasoningBudget; }", False),
+    # A loop header's own semicolons do not end a statement: an empty list falls through to
+    # undefined, so the loop body is not an unconditional return.
+    ("(s) => { for (let i = 0; i < s.list.length; i++) return s.reasoningBudget; }", False),
+    (
+        "(s) => { for (let i = 0; i < s.list.length; i++) return s.reasoningBudget; "
+        "return s.reasoningBudget; }",
+        True,
+    ),
     ("(s) => { const f = (v) => { return v; }; return f(s.reasoningBudget); }", True),
     ("(s) => s.reasoningBudgetMessage", False),
     ("(s) => s.reasoningBudgets", False),
