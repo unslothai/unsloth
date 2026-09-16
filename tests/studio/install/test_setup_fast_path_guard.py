@@ -486,9 +486,7 @@ def test_the_installer_reads_uv_offline_the_same_way_the_shell_does(tmp_path):
     # effects, and a callee that goes missing is a NameError, not a wrong answer.
     wanted = ("_uv_env_flag", "_uv_is_offline")
     nodes = [
-        n
-        for n in _ast.parse(stack).body
-        if isinstance(n, _ast.FunctionDef) and n.name in wanted
+        n for n in _ast.parse(stack).body if isinstance(n, _ast.FunctionDef) and n.name in wanted
     ]
     assert {n.name for n in nodes} == set(wanted), sorted(n.name for n in nodes)
     namespace: dict = {"os": os}

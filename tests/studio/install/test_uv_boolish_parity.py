@@ -298,7 +298,6 @@ def test_the_pip_reader_is_a_separate_function_from_the_uv_one():
         (SETUP_SRC, "Test-UvEnvFlag", "Test-PipEnvFlag"),
     ):
         from woa_ps_harness import _function_source
-
         assert uv_name not in _function_source(source, pip_name)
 
 
@@ -320,9 +319,7 @@ OLD_IDIOM = '-notin @("", "0", "false")'
 def test_no_shipped_powershell_decides_a_resolver_flag_the_old_way(path):
     text = path.read_text(encoding = "utf-8-sig")
     offending = [
-        line
-        for line in text.splitlines()
-        if OLD_IDIOM in line and not line.strip().startswith("#")
+        line for line in text.splitlines() if OLD_IDIOM in line and not line.strip().startswith("#")
     ]
     assert not offending, (
         f"{path.name} decides a flag with {OLD_IDIOM}, which reads off/no/n/f as set. "
@@ -367,9 +364,7 @@ def test_the_two_powershell_copies_are_identical(name):
 @requires_pwsh
 @pytest.mark.parametrize("script", [INSTALL_PS1, SETUP_PS1], ids = ["install.ps1", "setup.ps1"])
 @pytest.mark.parametrize("value", ["off", "no", "n", "f", "0", "false"])
-def test_uv_no_config_set_to_a_false_value_does_not_suppress_the_uv_config(
-    script, value, tmp_path
-):
+def test_uv_no_config_set_to_a_false_value_does_not_suppress_the_uv_config(script, value, tmp_path):
     """The unsafe direction, and the reason this is worth changing at all.
 
     Reading UV_NO_CONFIG=off as "true" makes Get-WoaUvConfigIndexPolicy return its empty
@@ -435,9 +430,7 @@ def test_uv_offline_set_to_a_false_value_leaves_the_resolve_reaching_pypi(value)
 
 @requires_pwsh
 @pytest.mark.parametrize("script", [INSTALL_PS1, SETUP_PS1], ids = ["install.ps1", "setup.ps1"])
-@pytest.mark.parametrize(
-    ("variable", "resolver"), [("UV_NO_INDEX", "uv"), ("PIP_NO_INDEX", "pip")]
-)
+@pytest.mark.parametrize(("variable", "resolver"), [("UV_NO_INDEX", "uv"), ("PIP_NO_INDEX", "pip")])
 @pytest.mark.parametrize("value", ["off", "no", "n", "f"])
 def test_a_no_index_set_to_a_false_value_still_names_an_index(script, variable, resolver, value):
     """Get-WoaDependencyIndexArgs returning @() means "name no index at all", which under
