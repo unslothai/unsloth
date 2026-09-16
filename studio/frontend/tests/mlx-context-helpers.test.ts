@@ -341,7 +341,7 @@ test("reloading a split server sends the launch total, not one slot's share", ()
       activeGgufVariant: "Q4_K_M",
       pinnedMaxSeqLength: null,
       defaultMaxSeqLength: DEFAULT_MAX_SEQ_LENGTH,
-      presetSource: "model",
+      presetSource: "custom",
     }),
     32768,
   );
@@ -360,7 +360,7 @@ test("a backend that reports no launch total still reloads at the window it has"
       activeGgufVariant: "Q4_K_M",
       pinnedMaxSeqLength: null,
       defaultMaxSeqLength: DEFAULT_MAX_SEQ_LENGTH,
-      presetSource: "model",
+      presetSource: "custom",
     }),
     40223,
   );
@@ -380,7 +380,7 @@ test("a custom context length still outranks the launch total", () => {
       activeGgufVariant: "Q4_K_M",
       pinnedMaxSeqLength: null,
       defaultMaxSeqLength: DEFAULT_MAX_SEQ_LENGTH,
-      presetSource: "model",
+      presetSource: "custom",
     }),
     16384,
   );
