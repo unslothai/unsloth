@@ -6661,57 +6661,6 @@ if ($StageRoot -and $NeedLlamaSourceBuild) {
 }
 
 # ==========================================================================
-#  Report whether torchcodec can actually load
-# ==========================================================================
-# The wheel is Python-side only: it installs and satisfies notebook_validator's
-# torch/torchcodec matrix, then fails at import because Windows ships no FFmpeg
-# avcodec/avutil. `datasets` 4.x reports that as "please install 'torchcodec'",
-# naming a package already installed, so say it here instead. The fast update path
-# still probes when a venv exists: the broken install is already there.
-if (-not $SkipPythonDeps -or (Test-Path -LiteralPath (Join-Path $VenvDir 'Scripts\python.exe'))) {
-    # Importing torchcodec imports torch: bound it so a wedged GPU runtime cannot
-    # hang setup. No double quotes anywhere in the body, comments included: the helper
-    # wraps it in them for -c <body>, so one more silently truncates the program.
-    # The classification itself lives in unsloth/import_fixes.py, shared with setup.sh.
-    $_torchcodecProbe = @'
-import importlib.util, os, signal
-_alarm = getattr(signal, 'alarm', None)
-if _alarm is not None:
-    _alarm(60)
-# The probe is unsloth.import_fixes.torchcodec_load_state. Load that file alone: the package
-# import needs a GPU stack this venv may not have. No unsloth means no report, as an absent torchcodec does.
-_spec = importlib.util.find_spec('unsloth')
-# The first location holding the file: a bare `unsloth` directory elsewhere on sys.path is a namespace package without it.
-_paths = [os.path.join(d, 'import_fixes.py') for d in (getattr(_spec, 'submodule_search_locations', None) or [])] if _spec else []
-_paths = [p for p in _paths if os.path.isfile(p)]
-if _paths:
-    _fx = importlib.util.spec_from_file_location('unsloth_import_fixes', _paths[0])
-    _mod = importlib.util.module_from_spec(_fx)
-    _fx.loader.exec_module(_mod)
-    print('TORCHCODEC=' + _mod.torchcodec_load_state())
-'@
-    # The venv interpreter by path: under install.ps1's SKIP_STUDIO_BASE=1 nothing puts
-    # the venv on PATH, so bare `python` is the system one and answers a silent "absent".
-    $_torchcodecPy = Join-Path $VenvDir "Scripts\python.exe"
-    if (-not (Test-Path -LiteralPath $_torchcodecPy)) { $_torchcodecPy = "python" }
-    $_torchcodecProbeResult = Invoke-BoundedPythonProbe -PythonExe $_torchcodecPy -Code $_torchcodecProbe -TimeoutSec 60
-    # Line-anchored: a torch import banner ahead of the answer would match no state.
-    $torchcodecState = if ($_torchcodecProbeResult.Output -match '(?m)^TORCHCODEC=(\S+)\s*$') { $Matches[1] } else { "" }
-
-    if ($torchcodecState -eq "ffmpeg") {
-        step "torchcodec" "installed but cannot load its FFmpeg libraries; audio datasets decode through soundfile and PyAV's bundled FFmpeg instead (wav/flac/mp3/ogg, m4a/aac/webm); install an FFmpeg full-shared build only if you need torchcodec itself" "Yellow"
-    } elseif ($torchcodecState -eq "native") {
-        step "torchcodec" "installed but cannot load its native libraries, and FFmpeg is already on the loader path; audio datasets decode through soundfile and PyAV's bundled FFmpeg instead (wav/flac/mp3/ogg, m4a/aac/webm); likely causes are an FFmpeg major it does not support (it takes 4 to 8), a missing CUDA NPP runtime (nvidia-npp), or a build that does not match your torch" "Yellow"
-    } elseif ($torchcodecState -eq "broken") {
-        step "torchcodec" "installed but fails to import for a reason other than its FFmpeg libraries; audio datasets decode through soundfile and PyAV's bundled FFmpeg instead (wav/flac/mp3/ogg, m4a/aac/webm); reinstall torchcodec against this torch build" "Yellow"
-    } elseif ($torchcodecState -eq "ok") {
-        step "torchcodec" "FFmpeg libraries loaded"
-    }
-    # 'absent', a timeout and a probe that could not run stay silent: none of them
-    # says anything about FFmpeg, and soundfile plus PyAV still decode audio.
-}
-
-# ==========================================================================
 #  PHASE 3.5: Install OpenSSL dev (for HTTPS support in llama-server)
 # ==========================================================================
 $OpenSslAvailable = $false

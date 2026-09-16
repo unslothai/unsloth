@@ -2686,24 +2686,21 @@ def _ffmpeg_on_loader_path():
     return True
 
 
-def torchcodec_load_state():
-    """One of "ok", "absent", "broken", "ffmpeg" or "native": what `import torchcodec` does on this interpreter (#8642).
+def _torchcodec_load_failure(exc):
+    """Why an installed torchcodec did not import: "ffmpeg" (its FFmpeg libraries are not on the loader path), "native" (they are, so the cause is elsewhere) or "broken" (a failure that does not involve libtorchcodec at all)."""
+    import traceback
 
-    The wheel is Python-side only: it installs and satisfies the torch/torchcodec matrix, then fails at import when FFmpeg's avcodec/avutil are absent, which `datasets` 4.x reports as "please install torchcodec" for an installed package. The Studio installers print this after the Python deps land (loading this file by path, since `import unsloth` needs a GPU stack the venv may not have) and word their step line from it. Importing torchcodec imports torch, so callers bound it.
-    """
-    try:
-        import torchcodec  # noqa: F401
-    except ModuleNotFoundError as e:
-        # An absent package always names itself here, so any other name (a transitive module, or a submodule of a damaged wheel) means present but broken.
-        return "absent" if getattr(e, "name", "") == "torchcodec" else "broken"
-    except Exception:  # noqa: BLE001
-        import traceback
+    # One libtorchcodec message covers a missing FFmpeg, a torch mismatch and other runtime deps, so the text cannot pick between them. Ask the system: FFmpeg missing from the loader path is the one cause establishable here.
+    if "libtorchcodec" not in "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)):
+        return "broken"
+    return "native" if _ffmpeg_on_loader_path() else "ffmpeg"
 
-        # One libtorchcodec message covers a missing FFmpeg, a torch mismatch and other runtime deps, so the text cannot pick between them. Ask the system: FFmpeg missing from the loader path is the one cause establishable here.
-        if "libtorchcodec" not in traceback.format_exc():
-            return "broken"
-        return "native" if _ffmpeg_on_loader_path() else "ffmpeg"
-    return "ok"
+
+_TORCHCODEC_FALLBACK_NOTES = {
+    "ffmpeg": "cannot load its FFmpeg libraries; install an FFmpeg full-shared build only if you need torchcodec itself",
+    "native": "cannot load its native libraries although FFmpeg is on the loader path; likely an FFmpeg major it does not support (it takes 4 to 8), a missing CUDA NPP runtime (nvidia-npp), or a build that does not match this torch",
+    "broken": "fails to import for a reason other than its FFmpeg libraries; reinstall torchcodec against this torch build",
+}
 
 
 def disable_torchcodec_if_broken():
@@ -2731,7 +2728,7 @@ def disable_torchcodec_if_broken():
         # RuntimeError on dlopen failure, OSError on chained libavutil.so misses, and a damaged or
         # version-skewed wheel can raise anything else; the package is present, so every shape is "broken".
         from torchcodec.decoders import AudioDecoder
-    except Exception:
+    except Exception as load_error:
         if mismatch_hint is None:
             # Versions agree, so the load failed for another reason. A mismatched accelerator
             # build is the one this can still name, and the one pinning the index repairs.
@@ -2780,7 +2777,15 @@ def disable_torchcodec_if_broken():
         ]:
             sys.modules.pop(_stale, None)
         sys.modules["torchcodec"] = None
-        patch_datasets_audio_decoding_without_torchcodec()
+        decodes = patch_datasets_audio_decoding_without_torchcodec()
+        try:
+            import warnings
+            note = _TORCHCODEC_FALLBACK_NOTES[_torchcodec_load_failure(load_error)]
+            tail = ("audio datasets decode through soundfile and PyAV instead (wav/flac/mp3/ogg, m4a/aac/webm)" if decodes
+                    else "audio datasets will not decode until soundfile and PyAV are installed (pip install soundfile av)")
+            warnings.warn(f"Unsloth: torchcodec is installed but {note}; {tail}.", stacklevel = 2)
+        except Exception:
+            pass  # a report must never abort the disable fallback above
 
 
 def _audio_decode_with_av(source, stream_index = None):

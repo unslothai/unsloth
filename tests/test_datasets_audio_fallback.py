@@ -196,11 +196,18 @@ def test_a_wheel_that_raises_anything_at_import_is_disabled(broken_torchcodec, m
     monkeypatch.syspath_prepend(str(tmp_path))
     monkeypatch.setattr(import_fixes, "_torchcodec_version_mismatch_hint", lambda: None)
     monkeypatch.setattr(import_fixes, "_torchcodec_provenance_hint", lambda: None)
-    import_fixes.disable_torchcodec_if_broken()
+    import warnings
+
+    with warnings.catch_warnings(record = True) as caught:
+        warnings.simplefilter("always")
+        import_fixes.disable_torchcodec_if_broken()
     from datasets.features.audio import Audio
 
     assert sys.modules["torchcodec"] is None
     assert getattr(Audio, "_unsloth_audio_fallback", False) is True
+    # The one report a user gets, now that the installers say nothing: what failed and what decodes.
+    said = [str(w.message) for w in caught if "torchcodec is installed but" in str(w.message)]
+    assert said and "soundfile and PyAV" in said[0] and "reinstall torchcodec" in said[0]
 
 
 def test_the_audio_extras_carry_the_fallback_decoders():
@@ -216,26 +223,22 @@ def test_the_audio_extras_carry_the_fallback_decoders():
         assert {"torchcodec", "soundfile", "av"} <= names, name
 
 
-def test_torchcodec_load_state_names_each_outcome(monkeypatch, tmp_path):
-    # The installers print this word and pick their step line from it.
-    import sys
-    import types
+def test_the_load_failure_is_classified_for_the_warning(monkeypatch):
+    # The import-time warning names the cause it can establish: FFmpeg off the loader path,
+    # FFmpeg present so the cause is elsewhere, or a failure that never reached libtorchcodec.
+    def raised(msg, cls = RuntimeError):
+        try:
+            raise cls(msg)
+        except cls as exc:
+            return exc
 
-    for name in [n for n in sys.modules if n == "torchcodec" or n.startswith("torchcodec.")]:
-        monkeypatch.delitem(sys.modules, name)
-    monkeypatch.setitem(sys.modules, "torchcodec", types.ModuleType("torchcodec"))
-    assert import_fixes.torchcodec_load_state() == "ok"
-    monkeypatch.setitem(sys.modules, "torchcodec", None)
-    assert import_fixes.torchcodec_load_state() == "absent"
-    monkeypatch.delitem(sys.modules, "torchcodec")
-    monkeypatch.syspath_prepend(str(tmp_path))
-    (tmp_path / "torchcodec.py").write_text("raise RuntimeError('Could not load libtorchcodec')\n", encoding = "utf-8")
+    ffmpeg_gone = raised("Could not load libtorchcodec. Likely causes: 1. FFmpeg is not properly installed")
     monkeypatch.setattr(import_fixes, "_ffmpeg_on_loader_path", lambda: False)
-    assert import_fixes.torchcodec_load_state() == "ffmpeg"
+    assert import_fixes._torchcodec_load_failure(ffmpeg_gone) == "ffmpeg"
     monkeypatch.setattr(import_fixes, "_ffmpeg_on_loader_path", lambda: True)
-    assert import_fixes.torchcodec_load_state() == "native"
-    (tmp_path / "torchcodec.py").write_text("raise ImportError('DLL load failed while importing _core')\n", encoding = "utf-8")
-    assert import_fixes.torchcodec_load_state() == "broken"
+    assert import_fixes._torchcodec_load_failure(ffmpeg_gone) == "native"
+    assert import_fixes._torchcodec_load_failure(raised("DLL load failed while importing _core", ImportError)) == "broken"
+    assert set(import_fixes._TORCHCODEC_FALLBACK_NOTES) == {"ffmpeg", "native", "broken"}
 
 
 def _normalized(path: Path, name: str, rename: dict) -> str:

@@ -4385,62 +4385,6 @@ PY
     fi
 fi
 
-# ── torchcodec: report whether it can actually load ──
-# The wheel is Python-side only: it installs and satisfies notebook_validator's
-# torch/torchcodec matrix, then fails at import when FFmpeg's avcodec/avutil are
-# absent. `datasets` 4.x reports that as "please install 'torchcodec'", naming a
-# package already installed, so say it here instead. llama-only skips this: no
-# Python deps to report on, and _SKIP_PYTHON_DEPS is unassigned on that path. The fast
-# update path still probes when a venv exists: the broken install is already there.
-if [ "$_LLAMA_ONLY" != "1" ] && { [ "${_SKIP_PYTHON_DEPS:-false}" != true ] || [ -x "$VENV_DIR/bin/python" ]; }; then
-    # Importing torchcodec imports torch, so bound it: a wedged GPU runtime must not
-    # hang setup. The in-body alarm (POSIX only) covers hosts without coreutils
-    # timeout, stock macOS most of all; Windows bounds it with Invoke-BoundedPythonProbe.
-    # The classification itself lives in unsloth/import_fixes.py, shared with setup.ps1.
-    _TORCHCODEC_PROBE='
-import importlib.util, os, signal
-_alarm = getattr(signal, "alarm", None)
-if _alarm is not None:
-    _alarm(60)
-# The probe is unsloth.import_fixes.torchcodec_load_state. Load that file alone: the package
-# import needs a GPU stack this venv may not have. No unsloth means no report, as an absent torchcodec does.
-_spec = importlib.util.find_spec("unsloth")
-# The first location holding the file: a bare `unsloth` directory elsewhere on sys.path is a namespace package without it.
-_paths = [os.path.join(d, "import_fixes.py") for d in (getattr(_spec, "submodule_search_locations", None) or [])] if _spec else []
-_paths = [p for p in _paths if os.path.isfile(p)]
-if _paths:
-    _fx = importlib.util.spec_from_file_location("unsloth_import_fixes", _paths[0])
-    _mod = importlib.util.module_from_spec(_fx)
-    _fx.loader.exec_module(_mod)
-    print("TORCHCODEC=" + _mod.torchcodec_load_state())
-'
-    # The answer is read as its own line: a torch import banner on stdout would
-    # otherwise match no state below.
-    # The venv interpreter by path, mirroring setup.ps1: the uv installer branch
-    # prepends $HOME/.local/bin after activation, so a pyenv/pipx/asdf shim shadows
-    # the venv and bare `python` answers a silent "absent". Bare `python` is the
-    # Colab case, which has no venv and installs into the system interpreter.
-    _TORCHCODEC_PY="python"
-    if [ -x "$VENV_DIR/bin/python" ]; then _TORCHCODEC_PY="$VENV_DIR/bin/python"; fi
-    if command -v timeout >/dev/null 2>&1; then
-        _TORCHCODEC_STATE="$(timeout 60 "$_TORCHCODEC_PY" -c "$_TORCHCODEC_PROBE" 2>/dev/null | sed -n "s/^TORCHCODEC=//p" | tail -n 1 || true)"
-    else
-        _TORCHCODEC_STATE="$("$_TORCHCODEC_PY" -c "$_TORCHCODEC_PROBE" 2>/dev/null | sed -n "s/^TORCHCODEC=//p" | tail -n 1 || true)"
-    fi
-
-    if [ "$_TORCHCODEC_STATE" = "ffmpeg" ]; then
-        step "torchcodec" "installed but cannot load its FFmpeg libraries; audio datasets decode through soundfile and PyAV's bundled FFmpeg instead (wav/flac/mp3/ogg, m4a/aac/webm); install an FFmpeg full-shared build only if you need torchcodec itself" "$C_WARN"
-    elif [ "$_TORCHCODEC_STATE" = "native" ]; then
-        step "torchcodec" "installed but cannot load its native libraries, and FFmpeg is already on the loader path; audio datasets decode through soundfile and PyAV's bundled FFmpeg instead (wav/flac/mp3/ogg, m4a/aac/webm); likely causes are an FFmpeg major it does not support (it takes 4 to 8), a missing CUDA NPP runtime (nvidia-npp), or a build that does not match your torch" "$C_WARN"
-    elif [ "$_TORCHCODEC_STATE" = "broken" ]; then
-        step "torchcodec" "installed but fails to import for a reason other than its FFmpeg libraries; audio datasets decode through soundfile and PyAV's bundled FFmpeg instead (wav/flac/mp3/ogg, m4a/aac/webm); reinstall torchcodec against this torch build" "$C_WARN"
-    elif [ "$_TORCHCODEC_STATE" = "ok" ]; then
-        step "torchcodec" "FFmpeg libraries loaded"
-    fi
-    # "absent", a timeout and a probe that could not run stay silent: none of them
-    # says anything about FFmpeg, and soundfile plus PyAV still decode audio.
-fi
-
 # Named in the footer: every path to a lost GPU exits 0, and a mid-log line is what #9255's reporters scrolled past.
 _print_llama_gpu_notes() {
     if [ -n "$_LLAMA_KEPT_GPU_PREBUILT" ]; then
