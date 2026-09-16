@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
+from pathlib import Path
 
 import httpx
 import pytest
@@ -325,3 +327,38 @@ def test_a_mistral_model_outside_the_reasoning_docs_gets_no_effort_whatever_the_
     model, controls
 ):
     assert "reasoning_effort" not in _body("mistral", model, **controls)
+
+
+def _snapshot_reasoning_models(provider_type: str) -> dict[str, list[str]]:
+    """The ids the committed frontend snapshot marks reasoning-capable, with their effort lists.
+
+    Read out of the TypeScript rather than a fixture: the point is to catch the real file drifting
+    away from the wire allowlist, which a copy could not do."""
+    path = (
+        Path(__file__).resolve().parents[2] / "frontend/src/features/chat/model-catalog-snapshot.ts"
+    )
+    text = path.read_text(encoding = "utf-8")
+    start = text.index(f'"{provider_type}": {{')
+    bucket = text[start : text.index("\n  },", start)]
+    found: dict[str, list[str]] = {}
+    for model_id, entry in re.findall(r'"([^"]+)":\s*(\{.*\})', bucket):
+        parsed = json.loads(entry)
+        if parsed.get("reasoning") and parsed.get("efforts"):
+            found[model_id] = parsed["efforts"]
+    return found
+
+
+def test_every_mistral_model_the_snapshot_gives_an_effort_ladder_is_on_the_wire_allowlist():
+    """The composer offers a Thinking control whenever the catalog says the model reasons, so an id
+    the catalog lists but the wire drops renders a control that silently does nothing."""
+    snapshot = _snapshot_reasoning_models("mistral")
+    assert (
+        snapshot
+    ), "the snapshot's mistral bucket has no reasoning entries, so this proves nothing"
+    for model, efforts in sorted(snapshot.items()):
+        spec = ep_mod._mistral_thinking_spec(model)
+        assert spec.style == "reasoning_effort", f"{model} is offered a ladder but sends nothing"
+        # The frontend clamps a catalog ladder to CATALOG_REASONING_WIRE.mistral before it renders,
+        # so only the values in both sets can ever be selected; those are the ones that must arrive.
+        for effort in set(efforts) & set(spec.efforts):
+            assert _body("mistral", model, reasoning_effort = effort)["reasoning_effort"] == effort

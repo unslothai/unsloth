@@ -651,7 +651,20 @@ _MISTRAL_THINKING_SPECS = (
         style = "prompt_mode",
     ),
     _MistralThinkingSpec(
-        models = ("mistral-small-latest", "mistral-vibe-cli-latest", "mistral-medium-3-5"),
+        # Every id the catalog marks reasoning-capable with an effort list, so the composer's
+        # Thinking control and this allowlist cannot disagree and render a dead control. The
+        # catalog's own ladders are clamped to Mistral's documented pair before they reach the UI,
+        # so nothing here can send a third value. zai-glm-5-2 is a partner model in models.dev's
+        # mistral bucket rather than a Mistral release, hence the separate line.
+        models = (
+            "mistral-small-latest",
+            "mistral-small-2603",
+            "mistral-medium-latest",
+            "mistral-medium-2604",
+            "mistral-medium-3-5",
+            "mistral-vibe-cli-latest",
+            "zai-glm-5-2",
+        ),
         style = "reasoning_effort",
         efforts = ("none", "high"),
     ),
