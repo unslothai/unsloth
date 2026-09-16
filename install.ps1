@@ -7123,10 +7123,26 @@ exit 0
         }
     } catch {}
     if (-not $HasNvidiaSmi) {
+        # Two passes, not one, and the reason is the ordering this change introduces. Listing a
+        # GPU is not the same as being able to report a CUDA version: a partially installed or
+        # stale utility can answer -L and still print a banner Get-TorchIndexUrl cannot parse,
+        # and that path falls back to cu126. Taking the first binary that merely lists a GPU
+        # could therefore hand a cu128-capable host cu126 purely because of which directory is
+        # searched first. So prefer a candidate that answers BOTH questions, and only settle for
+        # one that just lists a GPU if none does.
+        $firstListing = $null
         foreach ($p in @(Get-NvidiaSmiCandidatePaths)) {
             try {
-                if (Test-NvidiaSmiHasGpu $p) { $HasNvidiaSmi = $true; $NvidiaSmiExe = $p; break }
+                if (-not (Test-NvidiaSmiHasGpu $p)) { continue }
+                if (-not $firstListing) { $firstListing = $p }
+                $banner = Invoke-NvidiaSmiBounded $p
+                if ($banner -match 'CUDA(?: UMD)? Version:\s+\d+\.\d+') {
+                    $HasNvidiaSmi = $true; $NvidiaSmiExe = $p; break
+                }
             } catch {}
+        }
+        if (-not $HasNvidiaSmi -and $firstListing) {
+            $HasNvidiaSmi = $true; $NvidiaSmiExe = $firstListing
         }
     }
     if (-not $HasNvidiaSmi -and (Get-NvidiaLibraryInventory)) {

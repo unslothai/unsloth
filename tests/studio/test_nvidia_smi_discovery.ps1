@@ -140,6 +140,55 @@ try {
     if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue }
 }
 
+# ------------------------------------------------- which candidate the detection loop settles on
+#
+# The scenario is the one this reordering could have caused, and it was found by an adversarial
+# audit rather than by me. Two binaries both answer -L. The one searched first prints a banner
+# with no parseable CUDA version; the one searched second reports 12.8. Taking the first would
+# send a cu128-capable host to cu126, purely because of which directory is searched first.
+$setupAll = Get-Content -Raw -LiteralPath $setupPs1
+$start = $setupAll.IndexOf('$firstListing = $null')
+if ($start -lt 0) { Check "the detection loop still makes two passes" $false }
+else {
+    $loop = $setupAll.Substring($start, 1400)
+    Check "the loop prefers a candidate that also reports a CUDA version" (
+        $loop -match "CUDA\(\?: UMD\)\? Version:")
+    Check "and still settles for one that only lists a GPU when none reports a version" (
+        $loop -match '\$firstListing' -and $loop -match 'if \(-not \$HasNvidiaSmi -and \$firstListing\)')
+}
+
+# Driven, not read. Both candidates list a GPU; only the second names a version.
+$script:SmiCalls = @()
+function Test-NvidiaSmiHasGpu { param([string]$Exe) $script:SmiCalls += "L:$Exe"; return $true }
+function Invoke-NvidiaSmiBounded {
+    param($Exe, $Arguments)
+    $script:SmiCalls += "B:$Exe"
+    if ($Exe -like "*second*") { return "CUDA Version: 12.8" }
+    return "NVIDIA-SMI has failed because it couldn't communicate with the driver"
+}
+function Write-StudioLine { param([string]$Line, [string]$ForegroundColor = "") }
+function Get-NvidiaSmiCandidatePaths { return @("C:\first\nvidia-smi.exe", "C:\second\nvidia-smi.exe") }
+$loopStart = $setupAll.IndexOf('$firstListing = $null')
+$loopEnd = $setupAll.IndexOf('if (-not $HasNvidiaSmi -and (Get-NvidiaLibraryInventory))', $loopStart)
+# The slice starts inside setup.ps1's "if (-not $HasNvidiaSmi) {" block, so it carries that
+# block's closing brace and is short one opening brace. Supply the opener rather than trimming a
+# brace off the end, which would silently drop the last statement.
+$loopSrc = 'if ($true) {' + [System.Environment]::NewLine + $setupAll.Substring($loopStart, $loopEnd - $loopStart)
+$HasNvidiaSmi = $false
+$NvidiaSmiExe = $null
+Invoke-Expression $loopSrc
+Check "the candidate that reports a CUDA version wins over the one searched first" (
+    $HasNvidiaSmi -eq $true -and $NvidiaSmiExe -eq "C:\second\nvidia-smi.exe")
+
+# And when NOTHING reports a version, the first that lists a GPU is still used: this must not
+# turn a detected GPU into no GPU at all.
+function Invoke-NvidiaSmiBounded { param($Exe, $Arguments) return "no version here" }
+$HasNvidiaSmi = $false
+$NvidiaSmiExe = $null
+Invoke-Expression $loopSrc
+Check "with no version anywhere, the first listing candidate is still taken" (
+    $HasNvidiaSmi -eq $true -and $NvidiaSmiExe -eq "C:\first\nvidia-smi.exe")
+
 if ($failures -gt 0) {
     Write-Host "$failures check(s) failed" -ForegroundColor Red
     exit 1

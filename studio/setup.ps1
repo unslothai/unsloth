@@ -2632,15 +2632,30 @@ try {
     }
 } catch {}
 if (-not $HasNvidiaSmi) {
+    # Two passes, not one, and the reason is the ordering this change introduces. Listing a GPU is
+    # not the same as being able to report a CUDA version: a partially installed or stale utility
+    # can answer -L and still print a banner the version ladder cannot parse. Taking the first
+    # binary that merely lists a GPU could hand a newer-capable host an older CUDA family purely
+    # because of which directory is searched first. Prefer a candidate that answers BOTH, and
+    # settle for one that just lists a GPU only if none does.
+    $firstListing = $null
     foreach ($p in @(Get-NvidiaSmiCandidatePaths)) {
         try {
-            if (Test-NvidiaSmiHasGpu $p) {
+            if (-not (Test-NvidiaSmiHasGpu $p)) { continue }
+            if (-not $firstListing) { $firstListing = $p }
+            $banner = Invoke-NvidiaSmiBounded $p
+            if ($banner -match 'CUDA(?: UMD)? Version:\s+\d+\.\d+') {
                 $HasNvidiaSmi = $true
                 $NvidiaSmiExe = $p
                 Write-StudioLine "   Found nvidia-smi at $(Split-Path $p -Parent)" -ForegroundColor Gray
                 break
             }
         } catch {}
+    }
+    if (-not $HasNvidiaSmi -and $firstListing) {
+        $HasNvidiaSmi = $true
+        $NvidiaSmiExe = $firstListing
+        Write-StudioLine "   Found nvidia-smi at $(Split-Path $firstListing -Parent)" -ForegroundColor Gray
     }
 }
 if (-not $HasNvidiaSmi -and (Get-NvidiaLibraryInventory)) {
