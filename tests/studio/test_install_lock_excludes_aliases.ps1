@@ -439,6 +439,66 @@ try {
     Check "and no longer writes the marker through WriteAllText" (
         $markerFn -notmatch 'WriteAllText\(\$marker')
 
+    # A non-empty entry at the lock path is moved aside, never destroyed.
+    #
+    # The length check exists because a planted HARD link would otherwise be held open with
+    # FileShare.None for the whole install. Deleting the entry handled that safely, since a hard
+    # link loses only its own directory entry. It did not handle an ORDINARY non-empty file at
+    # the same name that is its own only link: that one lost its contents merely because somebody
+    # started the installer, and nothing this installer writes can produce such a file.
+    #
+    # Refusing instead would hand the first case back as a denial of service, and the two cannot
+    # be told apart cheaply: the discriminator is the link count and .NET does not expose it
+    # here. A rename needs no discrimination, so that is what this asserts.
+    $keepRoot = Join-Path $tmp "non-empty-lock-root"
+    New-Item -ItemType Directory -Force -Path $keepRoot | Out-Null
+    $keepLock = Join-Path $keepRoot $lockFileName
+    [System.IO.File]::WriteAllText($keepLock, "somebody else's bytes")
+    $keepLockObj = Enter-StudioInstallLock -Path $keepRoot
+    Check "an install still starts with a non-empty entry at the lock path" ($null -ne $keepLockObj)
+    Check "the lock file it ends up holding is a fresh empty one" (
+        (Get-Item -LiteralPath $keepLock -Force).Length -eq 0)
+    $displaced = @(Get-ChildItem -LiteralPath $keepRoot -Force |
+        Where-Object { $_.Name -like "$lockFileName.displaced-*" })
+    Check "the original was moved aside rather than deleted" ($displaced.Count -eq 1)
+    Check "and it still has its contents" (
+        $displaced.Count -eq 1 -and
+        (Get-Content -Raw -LiteralPath $displaced[0].FullName) -eq "somebody else's bytes")
+    if ($keepLockObj) { Exit-StudioInstallLock -Lock $keepLockObj }
+
+    # The env-mode ownership branch must not be dead code.
+    #
+    # The override is created where it is read, thousands of lines before the lock, so by the
+    # time Enter-StudioInstallLock asks whether the directory existed the answer is always yes
+    # and the claim never happens for exactly the roots it was written for. A run that died
+    # between taking the lock and the later marker write would then leave a directory holding
+    # only the lock file, which scripts/uninstall.ps1's _IsStudioRoot does not recognise.
+    #
+    # The earlier checks in this file could not catch that: they call Write-StudioRootOwnerMarker
+    # themselves after taking the lock, so they prove the helper works and say nothing about
+    # whether the lock ever reaches it. This one takes the lock and then looks, with nothing in
+    # between.
+    $envFresh = Join-Path $tmp "env-root-created-earlier"
+    [System.IO.Directory]::CreateDirectory($envFresh) | Out-Null   # the early override create
+    $script:StudioEnvRootPath = $envFresh
+    $script:StudioEnvRootExisted = $false                          # it did NOT exist before that
+    $envLock = Enter-StudioInstallLock -Path $envFresh
+    Check "a root the override created this run is still claimed by the lock" (
+        Test-Path -LiteralPath (Join-Path $envFresh ".unsloth-studio-owned") -PathType Leaf)
+    if ($envLock) { Exit-StudioInstallLock -Lock $envLock }
+
+    # Bites control, and it is the safety half: a directory the USER already had must never be
+    # claimed, because the uninstaller deletes what the marker names.
+    $envOwned = Join-Path $tmp "env-root-user-already-had"
+    [System.IO.Directory]::CreateDirectory($envOwned) | Out-Null
+    $script:StudioEnvRootPath = $envOwned
+    $script:StudioEnvRootExisted = $true                           # it was there beforehand
+    $ownedLock = Enter-StudioInstallLock -Path $envOwned
+    Check "control: a root that existed before the run is NOT claimed" (
+        -not (Test-Path -LiteralPath (Join-Path $envOwned ".unsloth-studio-owned")))
+    if ($ownedLock) { Exit-StudioInstallLock -Lock $ownedLock }
+    $script:StudioEnvRootPath = $null
+
     # And the lock's own fresh-root branch has to go THROUGH that helper. A second copy of the
     # write inline would pass every check above while carrying the hazard, because the checks
     # drive the helper directly. Read the branch instead of trusting it.
