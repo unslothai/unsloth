@@ -164,6 +164,68 @@ def _store_selectors(source: str) -> list:
     return out
 
 
+def _split_ternary(expression: str) -> list:
+    """`cond ? a : b` as `[a, b]`, recursively; anything else as itself.
+
+    Depth aware, and `??` and `?.` are not ternaries. Used to look at what a selector
+    RETURNS rather than everything it mentions: a selector may name a field in its condition
+    and return something else entirely, which reads the store but does not track the field.
+    """
+
+    depth, question = 0, -1
+    index = 0
+    while index < len(expression):
+        char = expression[index]
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        elif depth == 0 and char == "?":
+            following = expression[index + 1 : index + 2]
+            if following in ("?", "."):
+                index += 2
+                continue
+            question = index
+            break
+        index += 1
+    if question == -1:
+        return [expression.strip()]
+
+    depth = 0
+    for index in range(question + 1, len(expression)):
+        char = expression[index]
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        elif depth == 0 and char == ":":
+            return _split_ternary(expression[question + 1 : index]) + _split_ternary(
+                expression[index + 1 :]
+            )
+    return [expression[question + 1 :].strip()]
+
+
+def _selector_reads(selector: str, field: str) -> bool:
+    """Does every value this selector can return depend on `field`?
+
+    Zustand re-renders on a change to the selector's RESULT, not to a property it happened to
+    touch, so a selector that tests `s.<field>` in a condition and returns
+    `s.loadedSomethingElse` either way reads the store without tracking the field. The
+    parameter name is taken from the selector's own signature rather than assumed to be `s`,
+    since renaming it is a refactor that changes nothing.
+    """
+
+    signature = re.match(r"\s*\(?\s*([A-Za-z_$][\w$]*)\s*\)?\s*(?::[^=]*)?=>", selector)
+    if signature is None:
+        return False
+    parameter = re.escape(signature.group(1))
+    body = selector[signature.end() :]
+    results = _split_ternary(body)
+    return bool(results) and all(
+        re.search(rf"\b{parameter}\.{field}\b", result) for result in results
+    )
+
+
 def _memo_dependency_lists(source: str) -> list:
     """The dependency array of every `useMemo(...)`, as a list of bare identifiers."""
     out, needle = [], "useMemo("
@@ -185,11 +247,17 @@ def test_preset_sheet_reacts_to_a_reasoning_budget_change():
     cannot move the Update button or the summary: with the sheet open, changing only
     the reasoning budget left both stale until some unrelated setting changed.
 
-    Asserted as "the selector reads it" and "the dependency lists name it", not as an
-    exact spelling. This used to require the literal `(s) => s.reasoningBudget` and count
-    the field at two fixed indentations, so af4e98e2f broke it by making the selector
-    conditional across several lines while still subscribing to exactly that field. A
-    guard that a legal refactor turns red says nothing about the behaviour it guards.
+    Asserted as "every value the selector can return depends on the field" and "the
+    dependency lists name it", not as an exact spelling. This used to require the literal
+    `(s) => s.reasoningBudget` and count the field at two fixed indentations, so af4e98e2f
+    broke it by making the selector conditional across several lines while still subscribing
+    to exactly that field. A guard that a legal refactor turns red says nothing about the
+    behaviour it guards.
+
+    The RESULT is what matters, not the mention: zustand compares the value a selector
+    returns, so naming the field only in a condition would read the store without tracking
+    it. What source alone cannot prove is that the returned value is distinct for distinct
+    field values; a selector mapping every budget to one constant would pass here.
     """
     sheet = _read("studio/frontend/src/features/chat/chat-settings-sheet.tsx")
     selectors = _store_selectors(sheet)
@@ -198,9 +266,9 @@ def test_preset_sheet_reacts_to_a_reasoning_budget_change():
     assert dependency_lists, "no useMemo() dependency list found in the sheet"
 
     for field in ("reasoningBudget", "reasoningBudgetMessage"):
-        assert any(re.search(rf"\bs\.{field}\b", text) for text in selectors), (
-            f"the preset sheet never subscribes to {field}, so a change to it "
-            "does not re-render the component whose memos capture it"
+        assert any(_selector_reads(text, field) for text in selectors), (
+            f"no useChatRuntimeStore selector returns a value derived from {field}, so a "
+            "change to it does not re-render the component whose memos capture it"
         )
         # Both memos: hasUnsavedPresetChanges (dirty state) and currentLoadSummary.
         naming = [names for names in dependency_lists if field in names]
