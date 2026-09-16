@@ -5919,6 +5919,16 @@ exit 0
             $script:StudioPythonProcessImageTable.ContainsKey($ProcessId)) {
             return $script:StudioPythonProcessImageTable[$ProcessId]
         }
+        # Freshness, which both table rungs share and neither used to state.
+        #
+        # Each is a snapshot taken once per run and keyed only by PID, so if a process exits and
+        # Windows reuses its PID, the answer describes the process that is gone. It is recorded
+        # here rather than fixed because the fix is the thing these rungs exist to avoid: asking
+        # per process instead of once. The consumer is Get-RunningStudioVenvProcesses, which asks
+        # about PIDs it enumerated moments earlier in the same run, so the window is short.
+        #
+        # This rung deliberately matches the WMI rung below rather than inventing a second
+        # contract; an audit read the ctypes snapshot as a new staleness, and it is not one.
         # Queried once per run, not once per process: this is the slow rung.
         if ($null -eq $script:StudioProcessImageTable) {
             $script:StudioProcessImageTable = @{}
