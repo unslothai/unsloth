@@ -3998,7 +3998,16 @@ get_torch_index_url() {
             # later legacy block (when the chosen tag is newer than rocm6.3) and
             # its prebuilt-BNB skip must remain unchanged. Other automatic generic
             # targets use the shared BNB ABI floor.
-            case "$_amd_gfx_probe" in
+            # Normalize first, exactly as _is_gfx906_bnb_skip and the legacy reroute
+            # block do: _probe_amd_gfx_arch emits one token per rocminfo match and
+            # rocminfo names each agent twice, so a real MI50 reads "gfx906\ngfx906";
+            # an UNSLOTH_ROCM_GFX_ARCH override keeps its ISA suffix
+            # (gfx906:sramecc-:xnack-). Comparing the raw probe missed both and floored
+            # the very hosts this exemption exists for. Deduping also gives the
+            # sole-distinct-arch rule for free: a mixed host keeps the generic floor.
+            _bnb_floor_gfx=$(printf '%s\n' "$_amd_gfx_probe" \
+                | sed 's/:.*$//' | tr -d '[:blank:]' | awk 'NF && !seen[$0]++')
+            case "$_bnb_floor_gfx" in
                 gfx906) echo "$_base/$_rocm_selected_tag" ;;
                 *) echo "$_base/$(_rocm_bnb_compatible_generic_tag "$_rocm_selected_tag")" ;;
             esac

@@ -183,6 +183,62 @@ MOCK
     echo "$_dir"
 }
 
+# amd-smi above emits ONE gfx token, which is not the shape a real host produces:
+# _probe_amd_gfx_arch greps every match out of rocminfo, and rocminfo names each
+# agent twice (Name: and the ISA Name:), so one card reads as two identical lines.
+# Any gfx comparison that matters has to be exercised against this shape.
+# $1 ROCm version, $2 gfx arch, $3 GPU agent count (default 1).
+make_mock_rocminfo() {
+    _dir=$(make_mock_amd_smi "$1" "$2")
+    _rocm_gfx="$2"
+    _rocm_agents="${3:-1}"
+    {
+        echo '#!/bin/sh'
+        echo "cat <<'ROCMINFO_OUT'"
+        echo 'ROCk module is loaded'
+        echo 'Agent 1'
+        echo '  Name:                    AMD Ryzen 9 5950X'
+        echo '  Device Type:             CPU'
+        _i=0
+        while [ "$_i" -lt "$_rocm_agents" ]; do
+            echo "Agent $((_i + 2))"
+            echo "  Name:                    $_rocm_gfx"
+            echo '  Device Type:             GPU'
+            echo '  ISA Info:'
+            echo "    Name:                  amdgcn-amd-amdhsa--$_rocm_gfx:sramecc-:xnack-"
+            _i=$((_i + 1))
+        done
+        echo 'ROCMINFO_OUT'
+    } > "$_dir/rocminfo"
+    chmod +x "$_dir/rocminfo"
+    echo "$_dir"
+}
+
+# Same, for a mixed host: $2 is a space-separated arch list, one GPU agent each.
+make_mock_rocminfo_multi() {
+    _dir=$(make_mock_amd_smi "$1" "${2%% *}")
+    _rocm_n=1
+    {
+        echo '#!/bin/sh'
+        echo "cat <<'ROCMINFO_OUT'"
+        echo 'ROCk module is loaded'
+        echo 'Agent 1'
+        echo '  Name:                    AMD Ryzen 9 5950X'
+        echo '  Device Type:             CPU'
+        for _a in $2; do
+            _rocm_n=$((_rocm_n + 1))
+            echo "Agent $_rocm_n"
+            echo "  Name:                    $_a"
+            echo '  Device Type:             GPU'
+            echo '  ISA Info:'
+            echo "    Name:                  amdgcn-amd-amdhsa--$_a:sramecc-:xnack-"
+        done
+        echo 'ROCMINFO_OUT'
+    } > "$_dir/rocminfo"
+    chmod +x "$_dir/rocminfo"
+    echo "$_dir"
+}
+
 # Build a minimal tools directory with symlinks to essential commands
 # (uname, grep, head, etc.) but WITHOUT nvidia-smi or amd-smi.
 _TOOLS_DIR=$(mktemp -d)
@@ -324,6 +380,39 @@ rm -rf "$_dir"
 _dir=$(make_mock_amd_smi "6.1" "gfx906")
 _result=$(run_func "$_dir")
 assert_eq "gfx906 ROCm 6.1 keeps its legacy generic tag" "https://download.pytorch.org/whl/rocm6.1" "$_result"
+rm -rf "$_dir"
+
+# The exemption must survive the shape REAL discovery produces, not just the single
+# token amd-smi emits. rocminfo names each agent twice, so one MI50 probes as
+# "gfx906\ngfx906"; comparing the raw probe floored it to rocm6.4 and handed it to
+# the legacy reroute, which then rewrote it to rocm6.3 instead of the literal tag.
+_dir=$(make_mock_rocminfo "6.1" "gfx906" 1)
+_result=$(run_func "$_dir")
+assert_eq "gfx906 via rocminfo (agent named twice) keeps rocm6.1" "https://download.pytorch.org/whl/rocm6.1" "$_result"
+rm -rf "$_dir"
+
+_dir=$(make_mock_rocminfo "6.1" "gfx906" 2)
+_result=$(run_func "$_dir")
+assert_eq "two gfx906 agents still keep rocm6.1" "https://download.pytorch.org/whl/rocm6.1" "$_result"
+rm -rf "$_dir"
+
+# A copied HIP gcnArchName in the override keeps its ISA suffix; every other gfx906
+# comparison in install.sh strips it, so this one must too.
+_dir=$(make_mock_amd_smi "6.1" "gfx906")
+_result=$(UNSLOTH_ROCM_GFX_ARCH=gfx906:sramecc-:xnack- run_func "$_dir")
+assert_eq "suffixed gfx906 override keeps rocm6.1" "https://download.pytorch.org/whl/rocm6.1" "$_result"
+rm -rf "$_dir"
+
+# The floor itself must still reach a non-gfx906 host through the same real shape.
+_dir=$(make_mock_rocminfo "6.1" "gfx1100" 1)
+_result=$(run_func "$_dir")
+assert_eq "gfx1100 via rocminfo still floors to rocm6.4" "https://download.pytorch.org/whl/rocm6.4" "$_result"
+rm -rf "$_dir"
+
+# A mixed host is not a sole gfx906 target, so it keeps the generic floor.
+_dir=$(make_mock_rocminfo_multi "6.1" "gfx906 gfx1100")
+_result=$(run_func "$_dir")
+assert_eq "mixed gfx906 + gfx1100 host floors to rocm6.4" "https://download.pytorch.org/whl/rocm6.4" "$_result"
 rm -rf "$_dir"
 
 # 15) ROCm 6.4 (no nvidia-smi) -> rocm6.4
