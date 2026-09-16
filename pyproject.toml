@@ -213,7 +213,7 @@ huggingfacenotorch = [
     # Apple Silicon stays capped at 5.5.0 by unsloth_zoo's marker-split requirement
     # (mlx-vlm >= 0.6.5 wants transformers >= 5.14.0); every extra naming transformers here
     # also names unsloth_zoo, so that lower cap applies without being repeated.
-    "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.17.0",
+    "transformers>=4.52.4,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.17.0",
     "trl>=0.18.2,!=0.19.0,<=0.24.0",
     "sentence-transformers",
 ]
@@ -860,7 +860,7 @@ colab-new = [
     "unsloth_zoo>=2026.9.3",
     "packaging",
     "tyro",
-    "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.17.0",
+    "transformers>=4.52.4,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.17.0",
     "datasets>=3.4.1,!=4.0.*,!=4.1.0,<4.4.0",
     "sentencepiece>=0.2.0",
     "tqdm",

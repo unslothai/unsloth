@@ -30,6 +30,16 @@ WORKFLOWS = REPO / ".github" / "workflows"
 # the sweep on the new release first.
 TESTED_CEILING = Version("5.17.0")
 
+# The oldest transformers the floor lanes actually run, and the floor pyproject declares.
+# It is NOT 4.51.3, which never worked: peft declares no transformers floor of its own (a
+# bare `transformers` on 0.18.0 through 0.21.0), and peft 0.18.0 -- the peft floor this same
+# file declares -- imports `GradientCheckpointingLayer` from `transformers.modeling_layers`
+# at peft/tuners/lora/model.py:26, a module that first exists in transformers 4.52.0. Our
+# bound is therefore the only thing standing between a user and a resolve that installs
+# cleanly and then raises ModuleNotFoundError at `import unsloth`. 4.52.4 and not 4.52.0
+# because 4.52.0 through 4.52.3 are rejected below.
+TESTED_FLOOR = Version("4.52.4")
+
 # Tested and rejected; a specifier rewrite that drops one silently re-admits a broken release.
 REJECTED = (
     "4.52.0",
@@ -112,6 +122,39 @@ def _ceiling(window: SpecifierSet) -> Version:
     return max(tops)
 
 
+def _floor(window: SpecifierSet) -> Version:
+    bottoms = [Version(str(spec.version)) for spec in window if spec.operator in (">=", ">")]
+    assert bottoms, f"the transformers window declares no lower bound at all: {window}"
+    return max(bottoms)
+
+
+def _floor_lane_transformers_pins() -> dict[str, str]:
+    """`{job: pinned transformers}` for every version-compat lane whose slug is `floor`.
+
+    Read out of the parsed YAML rather than grepped, because the file also pins transformers
+    exactly in lanes that are NOT the floor (the pinned-symbol matrix), and a grep cannot
+    tell those apart.
+    """
+    if sys.version_info < (3, 11):
+        pytest.skip("yaml parsing here needs the 3.11+ interpreter the job uses")
+    import yaml
+
+    doc = yaml.safe_load((WORKFLOWS / "version-compat-ci.yml").read_text(encoding = "utf-8"))
+    found = {}
+    for job_name, job in (doc.get("jobs") or {}).items():
+        for entry in ((job.get("strategy") or {}).get("matrix") or {}).get("include") or []:
+            if entry.get("slug") != "floor":
+                continue
+            pins = " ".join(str(v) for k, v in entry.items() if k.endswith("pins") or k.endswith("pin"))
+            match = re.search(r"transformers==([\d.]+)", pins)
+            assert match, (
+                f"the floor lane of {job_name} no longer pins transformers exactly, so "
+                f"nothing makes it run the declared floor. Retarget this test or restore the pin."
+            )
+            found[job_name] = match.group(1)
+    return found
+
+
 def test_pyproject_declares_one_transformers_window() -> None:
     window = _declared_window()
     assert len(_pyproject_transformers()) >= 2, (
@@ -123,6 +166,46 @@ def test_pyproject_declares_one_transformers_window() -> None:
         f"was run against {TESTED_CEILING}. Raising the cap means running the sweep on the "
         f"new release and moving TESTED_CEILING here in the same commit."
     )
+
+
+def test_pyproject_declares_the_floor_the_lanes_run() -> None:
+    """The ceiling half of this file has a twin: a floor can rot downward just as silently.
+
+    It did. `transformers>=4.51.3` was declared alongside `peft>=0.18.0`, and that pair
+    cannot import, so the published floor named a combination no user could run.
+    """
+    window = _declared_window()
+    assert _floor(window) == TESTED_FLOOR, (
+        f"pyproject.toml floors transformers at {_floor(window)} and the floor lanes run "
+        f"{TESTED_FLOOR}. Lowering the floor means proving the lower release imports with "
+        f"the peft floor declared beside it, in the same commit."
+    )
+
+
+def test_the_floor_lanes_run_the_declared_floor() -> None:
+    lanes = _floor_lane_transformers_pins()
+    assert len(lanes) >= 2, (
+        f"expected both version-compat floor lanes to pin transformers; found {lanes}. A "
+        f"floor nothing runs is the state this test exists to end."
+    )
+    drifted = {job: pin for job, pin in lanes.items() if Version(pin) != TESTED_FLOOR}
+    assert not drifted, (
+        f"these floor lanes pin a transformers other than the declared floor {TESTED_FLOOR}: "
+        f"{drifted}. A lane above the floor leaves the floor untested; below it, the lane "
+        f"tests a release users cannot install."
+    )
+
+
+def test_the_floor_excludes_the_release_that_could_not_import() -> None:
+    """Negative control for the two above: both are equality checks, which a constant
+    edited in the wrong direction satisfies just as well. 4.51.3 is the release that
+    actually failed, so the window must refuse it however the floor is spelled."""
+    window = _declared_window()
+    assert "4.51.3" not in window, (
+        "the transformers window admits 4.51.3 again. peft 0.18.0 imports "
+        "transformers.modeling_layers, which that release does not have."
+    )
+    assert str(TESTED_FLOOR) in window, "the window must admit the floor it declares"
 
 
 def test_the_window_admits_every_release_the_sweep_passed() -> None:

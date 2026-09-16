@@ -139,7 +139,7 @@ jobs:
             torch_pins: >-
               'torch==2.6.0' 'torchvision==0.21.0' 'torchcodec>=0.2,<0.3'
             pkg_pins: >-
-              'transformers==4.51.3' 'trl==0.18.2'
+              'transformers==4.52.4' 'trl==0.18.2'
               'peft==0.18.0' 'sentence-transformers>=5.0,<6' 'accelerate>=1.0'
               'datasets>=3.4,<4.4' 'bitsandbytes>=0.45.5' 'triton==3.2.0'
               hf_transfer
@@ -287,7 +287,7 @@ jobs:
             torch_pins: >-
               'torch==2.6.0' 'torchvision==0.21.0' 'torchcodec>=0.2,<0.3'
             pkg_pins: >-
-              'transformers==4.51.3' 'peft==0.18.0'
+              'transformers==4.52.4' 'peft==0.18.0'
               'accelerate>=1.0' 'datasets>=3.4,<4.4' 'bitsandbytes>=0.45.5'
               'triton==3.2.0' hf_transfer
             # The declared minimum, like the zoo-imports floor lane. This lane runs the
