@@ -228,6 +228,10 @@ class InferenceOrchestrator:
 
     def __init__(self):
         self._proc: Optional[mp.Process] = None
+        # The file the current worker mirrors its stderr into, so a worker that exits without
+        # answering can still be explained. Retired when the next worker is spawned; read by
+        # _worker_stderr_tail long after _proc has been cleared.
+        self._stderr_capture: Any = None
         self._cmd_queue: Any = None
         self._resp_queue: Any = None
         self._subprocess_shutdown_lock = threading.Lock()
@@ -432,6 +436,18 @@ class InferenceOrchestrator:
             else get_hf_cache_paths().child_env({})
         )
 
+        # One sink per worker. Retired here rather than at shutdown: a crash message can be
+        # produced after _shutdown_subprocess has cleared _proc, and the only thing that makes
+        # the previous worker's stderr worthless is a new worker taking its place.
+        self._retire_stderr_capture()
+        try:
+            from utils.worker_stderr import WorkerStderrCapture
+            self._stderr_capture = WorkerStderrCapture(prefix = "unsloth-inference-worker-")
+        except Exception as exc:
+            # No sink is the old behaviour: an exit status with no cause. Never a failed spawn.
+            logger.debug("Could not open a worker stderr mirror: %s", exc)
+            self._stderr_capture = None
+
         with (
             child_environment_for_spawn(cache_env),
             native_path_secret_removed_for_child_start(),
@@ -447,16 +463,22 @@ class InferenceOrchestrator:
             # rely on from here on: snapshotting it after start() would capture the None
             # and lose the only reference to a live child, which is the orphan this
             # change exists to prevent.
+            _child_kwargs: dict = {
+                "cmd_queue": self._cmd_queue,
+                "resp_queue": self._resp_queue,
+                "cancel_event": self._cancel_event,
+                "drain_event": self._drain_event,
+                "config": config,
+            }
+            if self._stderr_capture is not None:
+                from utils.native_path_leases import STDERR_MIRROR_KWARG
+
+                # Consumed by run_without_native_path_secret; it never reaches the entrypoint.
+                _child_kwargs[STDERR_MIRROR_KWARG] = self._stderr_capture.path
             _spawned_proc = _CTX.Process(
                 target = run_without_native_path_secret,
                 args = ("core.inference.worker", "run_inference_process", cache_env),
-                kwargs = {
-                    "cmd_queue": self._cmd_queue,
-                    "resp_queue": self._resp_queue,
-                    "cancel_event": self._cancel_event,
-                    "drain_event": self._drain_event,
-                    "config": config,
-                },
+                kwargs = _child_kwargs,
                 daemon = True,
             )
             self._proc = _spawned_proc
@@ -748,6 +770,27 @@ class InferenceOrchestrator:
 
     def _cleanup(self):
         self._shutdown_subprocess(timeout = 5.0)
+        self._retire_stderr_capture()
+
+    def _retire_stderr_capture(self) -> None:
+        capture = getattr(self, "_stderr_capture", None)
+        if capture is None:
+            return
+        try:
+            capture.close()
+        except Exception:
+            pass
+        self._stderr_capture = None
+
+    def _worker_stderr_tail(self) -> str:
+        """The end of what the worker wrote to stderr, or "" when nothing was captured."""
+        capture = getattr(self, "_stderr_capture", None)
+        if capture is None:
+            return ""
+        try:
+            return capture.tail()
+        except Exception:
+            return ""
 
     def _ensure_subprocess_alive(self) -> bool:
         return self._proc is not None and self._proc.is_alive()
@@ -770,6 +813,15 @@ class InferenceOrchestrator:
         if exitcode is None:
             return f"{message} Details: pid={pid}."
 
+        # What the worker itself said before it went. A worker that dies from an unhandled
+        # exception has its traceback printed by multiprocessing onto the inherited stderr,
+        # which never passes through the response queue, so without this the user is shown an
+        # exit status and no cause at all (#7843). Empty when nothing was captured, which is
+        # the case for a worker killed outright and for a host where the mirror could not be
+        # installed, and then the message is exactly what it was before.
+        tail = self._worker_stderr_tail()
+        details = f"\n\nWorker error output:\n{tail}" if tail else ""
+
         if exitcode < 0:
             signum = -exitcode
             try:
@@ -783,9 +835,12 @@ class InferenceOrchestrator:
                     " This usually means the system killed it under memory pressure. "
                     "Try a smaller model, lower context length, or close other GPU-heavy apps."
                 )
-            return f"{message}{suffix} Details: pid={pid}, signal={sig_name}, exitcode={exitcode}."
+            return (
+                f"{message}{suffix} Details: pid={pid}, signal={sig_name}, "
+                f"exitcode={exitcode}.{details}"
+            )
 
-        return f"{message} Details: pid={pid}, exitcode={exitcode}."
+        return f"{message} Details: pid={pid}, exitcode={exitcode}.{details}"
 
     def _send_cmd(self, cmd: dict) -> None:
         if self._cmd_queue is None:

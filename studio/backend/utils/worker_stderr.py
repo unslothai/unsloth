@@ -1,0 +1,313 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Keep a worker's stderr where the parent can read it back after the worker is gone.
+
+Studio's workers are ``multiprocessing`` spawn children that inherit the server's stderr.
+When such a child dies from an unhandled exception, the traceback ``multiprocessing``
+prints travels down that inherited handle and never through the response queue, so the
+parent is left holding an exit status and nothing else: "pid=6145, exitcode=1" with no
+cause (#7843).
+
+Two halves:
+
+* Parent side. :class:`WorkerStderrCapture` owns a file, hands its path to the child, and
+  :meth:`WorkerStderrCapture.tail` reads the end of it back once the child has exited.
+* Child side. :func:`install_worker_stderr_mirror` tees file descriptor 2 into that file
+  while still writing everything through to the inherited stderr, so the server log keeps
+  exactly what it had before.
+
+Everything here is best effort by design. A mirror that cannot be installed, a sink that
+cannot be written and a tail that cannot be read all degrade to the previous behaviour
+rather than turning a diagnosable crash into a failure to start.
+"""
+
+from __future__ import annotations
+
+import atexit
+import os
+import sys
+import tempfile
+import threading
+
+__all__ = [
+    "STDERR_MIRROR_KWARG",
+    "WorkerStderrCapture",
+    "decode_worker_stderr",
+    "install_worker_stderr_mirror",
+    "stderr_tail_from_bytes",
+]
+
+# The reserved keyword argument the shared child entrypoint intercepts. Passed as a kwarg
+# rather than an environment variable on purpose: several workers can be spawned at once,
+# and a process-wide variable would hand one worker's sink to another worker's child.
+STDERR_MIRROR_KWARG = "unsloth_stderr_mirror_path"
+
+# A traceback plus the couple of lines that preceded it. Enough to name the exception and
+# where it came from, short enough to put in a chat error bubble.
+DEFAULT_TAIL_LINES = 20
+DEFAULT_TAIL_CHARS = 4000
+
+# What the mirror file is allowed to hold. A worker's stderr is not small: progress bars,
+# transformers warnings and llama.cpp chatter all land in it over a long session. The pump
+# compacts the file down to this many trailing bytes once it has grown past twice it, so
+# the tail survives without the file growing without bound.
+MIRROR_FILE_CAP_BYTES = 256 * 1024
+
+# How much of the file the parent reads to build a tail. Bounded separately from the cap so
+# a sink written by some other producer cannot make the read expensive.
+TAIL_READ_BYTES = 64 * 1024
+
+_PUMP_JOIN_TIMEOUT_S = 2.0
+
+
+def decode_worker_stderr(data: bytes) -> str:
+    """Decode worker stderr bytes and normalise their line endings.
+
+    Encoding is probed, not assumed. A worker on Linux or macOS writes UTF-8, while on
+    Windows ``sys.stderr`` uses the ANSI code page unless UTF-8 mode is on, and native
+    libraries write whatever the console page is; cp1252 is the common case there. UTF-8 is
+    tried first because it is the stricter of the two, so text that is valid UTF-8 is never
+    mis-read as cp1252. Anything that is neither is decoded with replacement rather than
+    discarded: a mangled traceback still names the exception.
+
+    CRLF and lone CR both become LF, so a Windows traceback does not arrive with a trailing
+    carriage return on every line, and a progress bar that redraws itself with CR becomes
+    separate lines that the tail can then drop.
+    """
+    text: str | None = None
+    for encoding in ("utf-8", "cp1252"):
+        try:
+            text = data.decode(encoding)
+        except (UnicodeDecodeError, LookupError):
+            continue
+        break
+    if text is None:
+        text = data.decode("utf-8", errors = "replace")
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def stderr_tail_from_bytes(
+    data: bytes,
+    max_lines: int = DEFAULT_TAIL_LINES,
+    max_chars: int = DEFAULT_TAIL_CHARS,
+) -> str:
+    """Return the last few meaningful lines of *data* as text.
+
+    Blank lines are dropped: they carry nothing and, after the CR normalisation above, a
+    redrawn progress bar produces a great many of them. The character cap is applied after
+    the line cap and trims from the front, so the exception line at the end is the last
+    thing to go; a partial first line is dropped rather than shown cut in half.
+    """
+    text = decode_worker_stderr(data)
+    lines = [line.rstrip() for line in text.split("\n")]
+    lines = [line for line in lines if line.strip()]
+    if not lines:
+        return ""
+    if max_lines > 0:
+        lines = lines[-max_lines:]
+    joined = "\n".join(lines)
+    if max_chars > 0 and len(joined) > max_chars:
+        joined = joined[-max_chars:]
+        first_break = joined.find("\n")
+        if first_break != -1:
+            joined = joined[first_break + 1 :]
+    return joined
+
+
+# Sinks this process opened and has not retired yet. Its own paths only, never a pattern and
+# never a sweep of the directory: several Studios can share one temporary directory (separate
+# UNSLOTH_STUDIO_HOME values, or two accounts on one machine), and a sweep by prefix would
+# delete a sink belonging to another Studio's live worker.
+_OPEN_SINKS: "set[str]" = set()
+_ATEXIT_REGISTERED = False
+
+
+def _unlink_quietly(path: str) -> None:
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+def _remove_open_sinks() -> None:
+    """Retire whatever is still open at interpreter exit, bounding the residue to a hard kill."""
+    for path in list(_OPEN_SINKS):
+        _unlink_quietly(path)
+    _OPEN_SINKS.clear()
+
+
+class WorkerStderrCapture:
+    """A file a spawned worker mirrors its stderr into, readable after the worker exits."""
+
+    def __init__(
+        self,
+        directory: "str | None" = None,
+        prefix: str = "unsloth-worker-",
+    ) -> None:
+        global _ATEXIT_REGISTERED
+        handle, self._path = tempfile.mkstemp(
+            prefix = prefix,
+            suffix = ".stderr",
+            dir = directory,
+        )
+        os.close(handle)
+        # A sink is retired when the next worker is spawned, so at most one is live at a time.
+        # The server exiting is the case with no next worker: without this the last sink
+        # outlives the process that made it and waits for the temporary directory to be
+        # reclaimed, which on a long-lived desktop can be never.
+        _OPEN_SINKS.add(self._path)
+        if not _ATEXIT_REGISTERED:
+            atexit.register(_remove_open_sinks)
+            _ATEXIT_REGISTERED = True
+
+    @property
+    def path(self) -> str:
+        return self._path
+
+    def tail(
+        self,
+        max_lines: int = DEFAULT_TAIL_LINES,
+        max_chars: int = DEFAULT_TAIL_CHARS,
+    ) -> str:
+        """The end of what the worker wrote, or an empty string when there is nothing."""
+        try:
+            with open(self._path, "rb") as handle:
+                handle.seek(0, os.SEEK_END)
+                size = handle.tell()
+                handle.seek(max(0, size - TAIL_READ_BYTES))
+                data = handle.read()
+        except OSError:
+            return ""
+        return stderr_tail_from_bytes(data, max_lines = max_lines, max_chars = max_chars)
+
+    def close(self) -> None:
+        """Remove the sink. Tolerates a child still holding it open, which is the norm on
+        Windows: the file stays behind for the temporary directory to reclaim rather than
+        the caller taking a PermissionError during shutdown."""
+        _OPEN_SINKS.discard(self._path)
+        _unlink_quietly(self._path)
+
+
+def _compact_sink(sink, cap_bytes: int) -> int:
+    """Rewrite *sink* so it holds only its last *cap_bytes* bytes. Returns the new size."""
+    size = sink.seek(0, os.SEEK_END)
+    keep = min(size, cap_bytes)
+    sink.seek(size - keep)
+    data = sink.read(keep)
+    sink.seek(0)
+    sink.write(data)
+    sink.truncate()
+    return len(data)
+
+
+def _pump_stderr(read_fd: int, inherited_fd: int, sink, cap_bytes: int) -> None:
+    """Copy everything the process writes to fd 2 to both the inherited stderr and *sink*."""
+    written = 0
+    try:
+        while True:
+            chunk = os.read(read_fd, 65536)
+            if not chunk:
+                break
+            try:
+                os.write(inherited_fd, chunk)
+            except OSError:
+                # The server's own stderr going away must not stop the capture.
+                pass
+            try:
+                sink.write(chunk)
+                written += len(chunk)
+                if cap_bytes > 0 and written > 2 * cap_bytes:
+                    written = _compact_sink(sink, cap_bytes)
+            except (OSError, ValueError):
+                pass
+    except OSError:
+        pass
+    finally:
+        try:
+            sink.close()
+        except OSError:
+            pass
+        try:
+            os.close(read_fd)
+        except OSError:
+            pass
+
+
+def _stop_mirror(inherited_fd: int, pump: threading.Thread) -> None:
+    """Restore the inherited stderr and let the pump drain what is still in the pipe.
+
+    Registered with :mod:`atexit`, which is what makes this worth having: the pump has to be
+    a daemon thread or ``threading._shutdown`` inside ``BaseProcess._bootstrap`` would wait
+    on it for ever, and a daemon thread is killed at interpreter shutdown without draining.
+    ``multiprocessing`` prints the traceback and flushes the standard streams before that
+    point, so restoring fd 2 here closes the pipe's only writer, the pump reads EOF, and the
+    last bytes reach the sink before the process is gone.
+    """
+    try:
+        sys.stderr.flush()
+    except Exception:
+        pass
+    try:
+        os.dup2(inherited_fd, 2)
+    except OSError:
+        pass
+    pump.join(timeout = _PUMP_JOIN_TIMEOUT_S)
+    try:
+        os.close(inherited_fd)
+    except OSError:
+        pass
+
+
+def install_worker_stderr_mirror(
+    path: "str | None", cap_bytes: int = MIRROR_FILE_CAP_BYTES
+) -> bool:
+    """Tee this process's stderr into *path*. Returns True when the mirror is installed.
+
+    Installed at the file-descriptor level rather than by replacing ``sys.stderr``: a worker
+    that dies inside a C extension, or that is killed after ``faulthandler`` has written its
+    report, writes to fd 2 directly and would bypass a Python-level wrapper.
+    """
+    if not path:
+        return False
+    sink = None
+    try:
+        sink = open(path, "r+b", buffering = 0)
+    except OSError:
+        try:
+            sink = open(path, "wb", buffering = 0)
+        except OSError:
+            return False
+    try:
+        inherited = os.dup(2)
+    except OSError:
+        sink.close()
+        return False
+    try:
+        read_fd, write_fd = os.pipe()
+    except OSError:
+        os.close(inherited)
+        sink.close()
+        return False
+    try:
+        sys.stderr.flush()
+    except Exception:
+        pass
+    try:
+        os.dup2(write_fd, 2)
+    except OSError:
+        os.close(read_fd)
+        os.close(write_fd)
+        os.close(inherited)
+        sink.close()
+        return False
+    os.close(write_fd)
+    pump = threading.Thread(
+        target = _pump_stderr,
+        args = (read_fd, inherited, sink, cap_bytes),
+        name = "unsloth-worker-stderr-mirror",
+        daemon = True,
+    )
+    pump.start()
+    atexit.register(_stop_mirror, inherited, pump)
+    return True

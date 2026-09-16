@@ -20,6 +20,8 @@ if (isTauri) {
 
 const initialApiBase = apiBase
 
+const LOOPBACK_BASE_PORT = /^https?:\/\/127\.0\.0\.1:(\d+)$/
+
 export function resetApiBase() {
   apiBase = initialApiBase
 }
@@ -30,6 +32,22 @@ export function setApiBase(port: number) {
 
 export function getApiBase(): string {
   return apiBase
+}
+
+/**
+ * The port the backend is currently expected on, or null when none is known yet.
+ *
+ * Read by the Tauri transport-failure path so it can ask the Rust side for a second opinion
+ * before telling the user to relaunch. The placeholder base above is port 0, which never
+ * connects and is therefore not a port worth probing, so it reads as "no port yet".
+ */
+export function getApiPort(): number | null {
+  const match = LOOPBACK_BASE_PORT.exec(apiBase)
+  if (!match) {
+    return null
+  }
+  const port = Number(match[1])
+  return Number.isInteger(port) && port > 0 && port <= 65535 ? port : null
 }
 
 export function apiUrl(path: string): string {

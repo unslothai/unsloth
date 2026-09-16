@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { accountTransitionPending } from "@/lib/account-transition";
-import { apiUrl, isTauri } from "@/lib/api-base";
+import { apiUrl, getApiPort, isTauri } from "@/lib/api-base";
 import {
   clearAuthTokens,
   getAuthToken,
@@ -29,7 +29,16 @@ let refreshInflight: Promise<boolean> | null = null;
 let refreshInflightToken: string | null = null;
 let logoutGeneration = 0;
 
-const TAURI_FETCH_RETRY_DELAYS_MS = [250, 750, 1500] as const;
+// Sized against the launcher, not against a guess. src-tauri/src/commands.rs spends
+// HEALTH_PROBE_TIMEOUT (10s) on a single liveness probe and three of those before its
+// watchdog will call a backend dead, so a ladder that ran out after 250+750+1500ms was the
+// first thing in the app to give up: it put "Unsloth isn't running" in front of a backend the
+// launcher still considered perfectly alive. That is what a kernel-level loopback filter
+// produces, and what a multi-GPU warm-up produces on its own (#10520). These delays sum to
+// 10.5s, just past that per-probe budget, so the webview can no longer be the one to quit
+// first. Guarded against drift by `the_frontend_retry_ladder_outlives_one_probe_budget` in
+// src-tauri/src/commands.rs.
+const TAURI_FETCH_RETRY_DELAYS_MS = [250, 750, 1500, 3000, 5000] as const;
 const BROWSER_TIMEZONE_HEADER = "X-Unsloth-Timezone";
 const BROWSER_TIMEZONE_OFFSET_HEADER =
   "X-Unsloth-Timezone-Offset-Minutes";
@@ -124,9 +133,64 @@ async function redirectToAuth(passwordChangeRequired = false): Promise<void> {
   window.location.href = target;
 }
 
-function asTransportFailure(err: unknown): unknown {
+/** Copy shown when the backend really is unreachable and the launcher agrees. */
+export const BACKEND_NOT_RUNNING_MESSAGE =
+  "Unsloth isn't running -- please relaunch it.";
+/** Copy shown when the webview could not reach the backend but the launcher says it is up. */
+export const BACKEND_NOT_ANSWERING_MESSAGE =
+  "Unsloth is running but did not answer in time. It may still be starting up. Please try again in a moment.";
+
+/**
+ * Ask the Rust side whether the backend it manages is still there.
+ *
+ * The `check_health` command probes /api/liveness from the native process with the
+ * launcher's own budget and with proxies disabled, so it answers in cases where the
+ * webview's own fetch was starved or refused: a firewall that filters loopback per process,
+ * a proxy configuration the webview honours, or a backend whose event loop is held by the
+ * GIL while the ML stack imports. Any failure to ask at all reads as "no second opinion",
+ * which leaves the original verdict in place.
+ */
+let nativeHealthInflight: Promise<boolean> | null = null;
+
+async function nativeBackendIsAlive(): Promise<boolean> {
+  if (!isTauri) {
+    return false;
+  }
+  const port = getApiPort();
+  if (port === null) {
+    return false;
+  }
+  // Single flight. The condition this runs under takes out every panel at once: a hub with
+  // chat, training and settings polling loses all of them in the same tick, and each loss
+  // would otherwise open its own probe. On the firewall host those probes are the ones that
+  // actually wait out the launcher's budget rather than being refused immediately, so a
+  // shared answer is the difference between one 10s probe and one per panel. Not cached
+  // beyond the call: the answer is about right now, and the next failure deserves a fresh one.
+  if (nativeHealthInflight !== null) {
+    return nativeHealthInflight;
+  }
+  const probe = (async () => {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return (await invoke<boolean>("check_health", { port })) === true;
+    } catch {
+      return false;
+    }
+  })();
+  nativeHealthInflight = probe;
+  try {
+    return await probe;
+  } finally {
+    if (nativeHealthInflight === probe) {
+      nativeHealthInflight = null;
+    }
+  }
+}
+
+async function asTransportFailure(err: unknown): Promise<unknown> {
   // fetch TypeError = offline | backend down | CORS/DNS. Tagged so callers tell "never reached"
-  // from "rejected"; Tauri is always backend-down, the web build distinguishes offline.
+  // from "rejected"; the web build distinguishes offline, and under Tauri the launcher is
+  // asked before the app claims the backend is gone.
   if (!(err instanceof TypeError)) return err;
   if (
     !isTauri &&
@@ -140,10 +204,19 @@ function asTransportFailure(err: unknown): unknown {
       { unslothTransportFailure: true },
     );
   }
-  return Object.assign(
-    new Error("Unsloth isn't running -- please relaunch it."),
-    { unslothTransportFailure: true },
-  );
+  // A failed fetch in the webview is not proof the backend died, and "please relaunch it" is
+  // an instruction that throws away a running backend, an in-flight generation and, on the
+  // reported host, the only session the user could get. Only tell them that when the native
+  // side cannot see the backend either.
+  if (await nativeBackendIsAlive()) {
+    return Object.assign(new Error(BACKEND_NOT_ANSWERING_MESSAGE), {
+      unslothTransportFailure: true,
+      unslothBackendStillRunning: true,
+    });
+  }
+  return Object.assign(new Error(BACKEND_NOT_RUNNING_MESSAGE), {
+    unslothTransportFailure: true,
+  });
 }
 
 async function retryWithCurrentToken(
@@ -166,7 +239,7 @@ async function retryWithCurrentToken(
       beforeRetry,
     );
   } catch (err) {
-    throw asTransportFailure(err);
+    throw await asTransportFailure(err);
   }
 }
 
@@ -257,7 +330,7 @@ export async function authFetch(
       options?.beforeRetry,
     );
   } catch (err) {
-    throw asTransportFailure(err);
+    throw await asTransportFailure(err);
   }
 
   if (await isPasswordChangeRequiredResponse(response)) {

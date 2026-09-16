@@ -335,6 +335,11 @@ def test_auth_redirect_targets_are_idempotent_and_concurrent(tmp_path: Path):
             let access = null, refresh = null, passwordChange = false;
             export const apiUrl = (path) => path;
             export const isTauri = false;
+            // Read by the Tauri transport-failure path before it asks the native health
+            // check. This stub is the web build (isTauri false), where that path is never
+            // taken, but the import is unconditional and an ES module import of a name the
+            // stub does not export is a SyntaxError at instantiation, not at call time.
+            export const getApiPort = () => null;
             export const accountTransitionPending = () => false;
             export const reset = (a = null, r = null) => { access = a; refresh = r; passwordChange = false; };
             export const clearAuthTokens = () => { access = null; refresh = null; };

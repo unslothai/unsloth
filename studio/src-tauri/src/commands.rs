@@ -1390,6 +1390,50 @@ mod tests {
     }
 
     #[test]
+    fn the_frontend_retry_ladder_outlives_one_probe_budget() {
+        // #10520. The webview's own fetch retry ladder was the shortest timer in the app:
+        // 250 + 750 + 1500ms, against the 10s this file spends on a single liveness probe and
+        // the three of those the watchdog spends before it will call a backend dead. So the
+        // first thing to give up on a backend that was slow to answer on loopback -- a
+        // per-process firewall filter, a multi-GPU warm-up holding the GIL -- was the UI,
+        // which told the user to relaunch an app the launcher still considered healthy.
+        //
+        // The ladder lives in TypeScript and the budget lives here, so nothing but this guard
+        // keeps them in step. Same include_str! shape as the ownership-probe guard above,
+        // with the same CRLF normalisation for a Windows checkout.
+        let src = include_str!("../../frontend/src/features/auth/api.ts").replace("\r\n", "\n");
+        let marker = "const TAURI_FETCH_RETRY_DELAYS_MS = [";
+        let start = src
+            .find(marker)
+            .expect("the Tauri fetch retry ladder moved; update this guard")
+            + marker.len();
+        let ladder = &src[start..];
+        let ladder = &ladder[..ladder.find(']').expect("unterminated retry ladder")];
+        let total_ms: u64 = ladder
+            .split(',')
+            .map(str::trim)
+            .filter(|delay| !delay.is_empty())
+            .map(|delay| {
+                delay
+                    .parse::<u64>()
+                    .expect("a retry delay stopped being a plain number of milliseconds")
+            })
+            .sum();
+        assert!(
+            total_ms >= super::HEALTH_PROBE_TIMEOUT.as_millis() as u64,
+            "the webview gives up after {total_ms}ms while one native liveness probe is \
+             allowed {}ms, so a backend the launcher still considers alive is reported to \
+             the user as not running",
+            super::HEALTH_PROBE_TIMEOUT.as_millis()
+        );
+        assert!(
+            src.contains("invoke<boolean>(\"check_health\""),
+            "the transport-failure path no longer asks the native health check before it \
+             tells the user to relaunch"
+        );
+    }
+
+    #[test]
     fn the_startup_grace_survives_the_mac_cold_start_timeline() {
         // Replays the macOS report this grace period exists for. The warm thread held the
         // GIL through `import torch`, three probes in a row timed out inside the first
