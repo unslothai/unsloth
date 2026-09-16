@@ -1424,6 +1424,30 @@ export const ar = {
       },
     },
     chat: {
+      groups: {
+        conversations: { title: "المحادثات" },
+        files: { title: "الملفات واللصق" },
+        display: { title: "العرض" },
+        composer: { title: "مربع الرسالة" },
+        menu: { title: "قائمة الدردشة" },
+        advanced: { title: "إعدادات متقدمة" },
+        contextTitle: "السياق",
+      },
+      projectAttachmentsHint:
+        "يمكن تغيير هذا الإعداد لكل دردشة من قائمة المرفقات الخاصة بها.",
+      rememberParamsPerModelHint:
+        "عند إيقافه، تستخدم جميع النماذج الإعدادات نفسها.",
+      autoCompactHint:
+        "يعتمد على طول السياق الذي حددته، لا على ذاكرة VRAM المتاحة.",
+      pastedTextShortDescription:
+        "يصبح النص الملصق الذي يبلغ {count} حرفًا أو أكثر مرفقًا بصيغة .txt. يبقى النص الأقصر في مربع الرسالة.",
+      pastedTextOffDescription:
+        "يبقى كل النص الملصق في مربع الرسالة، مهما كان طوله.",
+      compactionDescriptionInherit: "يتبع سياسة السياق المحددة على الخادم.",
+      compactionDescriptionCheckpoint:
+        "يحتفظ بآخر تبادل للرسائل والتعليمات الدائمة.",
+      compactionDescriptionRolling:
+        "يحذف أقدم التبادلات للاحتفاظ بالسجل الحديث والمساحة الإضافية المحددة.",
       projectsSection: "إظهار قسم المشاريع",
       projectsSectionDescription:
         "يجمع محادثات المشروع تحت عنوان المشاريع. أوقف هذا الخيار لعرضها ضمن الأخيرة بدلاً من ذلك.",
@@ -1453,7 +1477,8 @@ export const ar = {
         exportChat: "تصدير المحادثة",
       },
       pastedTextThreshold: "ضغط النصوص الملصقة الطويلة",
-      pastedTextThresholdDescription: "النص الملصق الأطول من هذا الحد يصبح مرفق \u200e.txt بدلاً من ملء مربع الرسالة. اضغط {shortcut} للصق في مربع الرسالة على أي حال.",
+      pastedTextThresholdDescription:
+        "اضغط {shortcut} للصق مباشرة في مربع الرسالة.",
       pastedTextThresholdOff: "إيقاف",
       showResponseModel: "إظهار نموذج الاستجابة",
       showResponseModelDescription:
@@ -1463,13 +1488,13 @@ export const ar = {
         'إظهار عبارة "LLMs can make mistakes" أسفل مربع المحادثة.',
       projectAttachments: "مشاركة الملفات عبر المشروع",
       projectAttachmentsDescription:
-        "الإعداد الافتراضي للملفات المرفقة في محادثة تنتمي إلى مشروع: فهرستها للمشروع بأكمله حتى تتمكن كل محادثة فيه من استخدامها. يمكن لكل محادثة تجاوز ذلك من قائمة الإرفاق.",
+        "أتِح مرفقات الدردشة الجديدة لكل دردشة في المشروع.",
       rememberParamsPerModel: "تذكر الإعدادات لكل نموذج",
       rememberParamsPerModelDescription:
-        "عند تبديل النموذج تُستعاد درجة الحرارة والموجّه وبقية الإعدادات التي استخدمتها آخر مرة مع ذلك النموذج. عند الإيقاف تبقى مجموعة إعدادات واحدة لكل النماذج.",
+        "استعد آخر موجّه ودرجة حرارة وإعدادات أخرى استُخدمت مع كل نموذج.",
       autoCompact: "ضغط المحادثات الطويلة تلقائيًا",
       autoCompactDescription:
-        "عندما تصل محادثة GGUF محلية إلى طول السياق المحدد، احذف الأدوار الأقدم بدلًا من إرجاع خطأ. لا يعتمد ذلك على ذاكرة VRAM المتاحة.",
+        "احذف الأدوار الأقدم عندما تصل محادثة GGUF محلية إلى حد السياق.",
       compactionStyle: "عند امتلاء السياق",
       compactionStyleDescription:
         "يُبقي الخيار الافتراضي للخادم UNSLOTH_CONTEXT_POLICY. تحتفظ إعادة ضبط المحادثة بأحدث دور والتعليمات الدائمة. تحذف النافذة المنزلقة الأدوار الأقدم ويمكنها الاحتفاظ بمزيد من السجل الحديث.",
@@ -1502,7 +1527,7 @@ export const ar = {
         title: "البحث على الويب",
         images: "عرض الصور من البحث على الويب",
         imagesDescription:
-          "يتيح للبحث على الويب إرجاع صور، ويجلب صورة لكل عنصر تعدّده الإجابة. يجلب Unsloth الصور المصغّرة ويغيّر حجمها، لذا لا يتصل المتصفح بمضيفي الصور أبدًا.",
+          "تضمين الصور في نتائج البحث.",
       },
       artifacts: {
         title: "Canvas",

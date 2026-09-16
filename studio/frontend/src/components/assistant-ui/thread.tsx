@@ -23,6 +23,7 @@ import {
 } from "@/components/assistant-ui/message-response-details-sheet";
 import { ComposerDraftPreview } from "@/components/assistant-ui/composer-draft-preview";
 import { PromptQueueList } from "@/components/assistant-ui/lazy-prompt-queue-list";
+import { QueueResumeIcon } from "@/components/assistant-ui/queue-resume-icon";
 import { ProgressiveMessages } from "@/components/assistant-ui/progressive-messages";
 import { MessageTiming } from "@/components/assistant-ui/message-timing";
 import { attachThreadFastCopy } from "@/components/assistant-ui/thread-fast-copy";
@@ -6614,28 +6615,26 @@ const ComposerToolsMenu: FC<{
         {pinnedPlusItems.map((id) => (
           <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
         ))}
-        {overflowPlusItems.length > 0 ? (
-          <DropdownMenuSub>
-            <DropdownMenuSubTrigger>
-              <MoreHorizontalIcon className="size-4" />
-              More
-            </DropdownMenuSubTrigger>
-            <DropdownMenuSubContent className="unsloth-plus-menu w-[248px]">
-              {overflowPlusItems.map((id) => (
-                <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
-              ))}
-            </DropdownMenuSubContent>
-          </DropdownMenuSub>
-        ) : null}
-        <DropdownMenuSeparator />
-        <DropdownMenuItem
-          onSelect={() => useSettingsDialogStore.getState().openDialog("chat", {
-            scrollTarget: "chat-composer",
-          })}
-        >
-          <SlidersHorizontalIcon className="size-4" />
-          {t("composerSettings.settings")}
-        </DropdownMenuItem>
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger>
+            <MoreHorizontalIcon className="size-4" />
+            More
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent className="unsloth-plus-menu w-[248px]">
+            {overflowPlusItems.map((id) => (
+              <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
+            ))}
+            {overflowPlusItems.length > 0 && <DropdownMenuSeparator />}
+            <DropdownMenuItem
+              onSelect={() => useSettingsDialogStore.getState().openDialog("chat", {
+                scrollTarget: "chat-composer",
+              })}
+            >
+              <SlidersHorizontalIcon className="size-4" />
+              {t("composerSettings.settings")}
+            </DropdownMenuItem>
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
       </DropdownMenuContent>
     </DropdownMenu>
       <NewProjectDialog
@@ -6823,7 +6822,7 @@ const ComposerRightControls: FC<{
               className="aui-composer-send ml-1.5 size-9 rounded-full"
               aria-label="Resume queue"
             >
-              <FastForwardIcon className="size-[18px] stroke-2" />
+              <QueueResumeIcon />
             </TooltipIconButton>
           ) : queueEntry?.dispatched && !queueEntry.paused ? (
             <Button

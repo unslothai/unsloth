@@ -7,7 +7,6 @@ import {
   GripVerticalIcon,
   ListEndIcon,
   MoreHorizontalIcon,
-  PlayIcon,
 } from "lucide-react";
 import {
   Copy01Icon,
@@ -23,6 +22,7 @@ import {
 import { NonModalDropdownMenu } from "@/components/ui/non-modal-dropdown-menu";
 import { usePromptQueueReorder } from "./use-prompt-queue-reorder";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
+import { QueueResumeIcon } from "@/components/assistant-ui/queue-resume-icon";
 import {
   type PromptQueueUIEntry,
   type PromptQueueUIItem,
@@ -209,7 +209,7 @@ export function PromptQueueList({
                     tooltip="Drag to reorder"
                     aria-label={`Reorder queued prompt ${position} of ${items.length}`}
                     aria-describedby={instructionsId}
-                    className="h-8 w-4 shrink-0 touch-none cursor-grab text-muted-foreground/50 hover:text-muted-foreground active:cursor-grabbing pointer-coarse:h-11 pointer-coarse:w-8"
+                    className="h-8 w-4 shrink-0 touch-none cursor-grab text-muted-foreground/50 hover:bg-transparent hover:text-muted-foreground/50 active:cursor-grabbing pointer-coarse:h-11 pointer-coarse:w-8 dark:hover:bg-transparent"
                     disabled={!canMove}
                     onPointerDown={(event) => onPointerDown(event, item.id)}
                     onPointerMove={onPointerMove}
@@ -344,7 +344,7 @@ export function PromptQueueList({
                     </DropdownMenuItem>
                     {entry.paused && (
                       <DropdownMenuItem onSelect={onResume}>
-                        <PlayIcon /> Resume queue
+                        <QueueResumeIcon className="size-4" /> Resume queue
                       </DropdownMenuItem>
                     )}
                   </NonModalDropdownMenu>
