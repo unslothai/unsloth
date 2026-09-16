@@ -1331,3 +1331,35 @@ def test_a_handler_installed_after_startup_is_marked_too(_logging_restored):
     # is the one case the hook cannot wrap -- and it must not crash on it either.
     handler.setFormatter(None)
     assert handler.formatter is None
+
+
+def test_a_root_level_path_is_redacted_too():
+    """One component after the root is still an absolute path.
+
+    The expression required a separator AFTER a component, so `/model.gguf`, `C:\\model.gguf`
+    and `\\\\server\\share` matched nothing at all and went to the client verbatim. Nothing else
+    covers them: the earlier redactors handle registered native paths and recognised secrets,
+    and a crash diagnostic naming a file at the root is neither.
+    """
+    from core.inference.orchestrator import _redact_worker_output
+
+    for path, tail in (
+        ("/model.gguf", "model.gguf"),
+        ("C:\\model.gguf", "model.gguf"),
+        ("\\\\fileserver\\share", "share"),
+        ("/opt", "opt"),
+    ):
+        public = _redact_worker_output(f"could not open {path}\n")
+        # The tail survives by design -- a diagnostic still has to name the file -- so what
+        # must be gone is everything that locates it on this host.
+        assert public.strip() == f"could not open .../{tail}", public
+        assert not public.count("C:"), public
+
+    # And what is not a path is still not one: a lone separator, a ratio, a URL and a word
+    # with a slash in it are returned as they were written.
+    for text in (
+        'the "/" separator is not a path',
+        "a ratio of 3/4 at https://host/path/x",
+        "use / to split and/or join",
+    ):
+        assert _redact_worker_output(text + "\n").strip() == text, text

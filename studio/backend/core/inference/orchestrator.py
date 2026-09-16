@@ -63,9 +63,15 @@ logger = get_logger(__name__)
 # one match over the sentence between them. An apostrophe is NOT one of those: it is a
 # legal filename character and excluding it is the bug this replaced.
 _PATH_COMPONENT = r"[^\s\\/](?:[^\\/\n\",;]*[^\s\\/])?"
+# A root-level path is a path too. The repeated group needs a separator AFTER its component,
+# so `/model.gguf`, `C:\model.gguf` and `\\server\share` -- one component and no trailing
+# separator -- fell through the whole expression and left the host's filesystem location in a
+# message that goes to the client. The second alternative is that case, and it stops at a
+# quote, comma or semicolon like the component pattern does, so `the "/" separator` is still
+# not a path and `File "/a/b.py", line 1` is still one match rather than a run-on.
 _ABSOLUTE_PATH_RE = re.compile(
     r"(?<![\w:/])(?:\\\\[^\\/\s]+[\\/]|[A-Za-z]:[\\/]|/)"
-    r"(?:" + _PATH_COMPONENT + r"[\\/])+[^\s\\/]*"
+    r"(?:(?:" + _PATH_COMPONENT + r"[\\/])+[^\s\\/]*|[^\s\\/\",;]+[\\/]?)"
 )
 
 
