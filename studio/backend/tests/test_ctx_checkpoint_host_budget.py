@@ -841,7 +841,9 @@ class TestAnInheritedEnvCountIsTheOperatorsSetting:
         assert "if _ctx_checkpoints_owned is not None:" in source
         assert "ctx_checkpoints = _ctx_checkpoints_owned," in source
         owned = source.index("_ctx_checkpoints_owned = (")
-        zero = source.index('_cache_flags_emitted.extend([str(server_caps["ctx_checkpoints_flag"]), "0"])')
+        zero = source.index(
+            '_cache_flags_emitted.extend([str(server_caps["ctx_checkpoints_flag"]), "0"])'
+        )
         assert owned < zero, "decide ownership before the tuning would zero it"
 
     def test_the_retry_tuning_also_respects_an_inherited_count(self):
