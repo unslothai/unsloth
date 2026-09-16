@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """The large-head-dim flex opt-in must never move a VLM vision tower.
 
 On Transformers < 4.57 there is no per-sub-config attn_implementation mapping, so a plain
