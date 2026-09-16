@@ -99,7 +99,14 @@ def test_the_map_keys_are_all_already_normalised():
 def test_the_alias_set_is_the_one_the_trainer_accepts():
     """Cross-repo pin. If the zoo grows an alias, the preview has to grow it too, or
     the preview will refuse to standardise a dataset training accepts."""
-    dataset_utils = pytest.importorskip("unsloth_zoo.dataset_utils")
+    # Not importorskip: it only catches ImportError, and unsloth_zoo raises
+    # NotImplementedError at import on a host with no accelerator it recognises, which is
+    # every GitHub macOS and Windows runner. Probe whether the module is usable, not
+    # whether it is installed.
+    try:
+        import unsloth_zoo.dataset_utils as dataset_utils
+    except Exception as error:
+        pytest.skip(f"unsloth_zoo is not importable here: {type(error).__name__}: {error}")
     import inspect
 
     defaults = inspect.signature(dataset_utils.standardize_data_formats).parameters
