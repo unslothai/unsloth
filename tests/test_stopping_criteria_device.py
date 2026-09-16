@@ -67,3 +67,20 @@ def test_stop_token_follows_the_input_device():
 
     assert criteria[0](torch.tensor([9, 9, 2]), None) is True
     assert criteria[0].stop_token.device.type == "cpu"
+
+
+@pytest.mark.parametrize(
+    "stop_word, rows, expected",
+    [
+        ("eos_token", [[7, 8, 2], [7, 8, 3]], [True, False]),
+        ("eos_token", [[7, 8, 3], [7, 8, 2]], [False, True]),
+        ("<|stop|>", [[7, 100, 101], [7, 100, 8]], [True, False]),
+        ("<|stop|>", [[7, 100, 8], [7, 100, 101]], [False, True]),
+        ("<|stop|>", [[100], [101]], [False, False]),
+    ],
+)
+def test_stopping_criteria_matches_each_sequence(stop_word, rows, expected):
+    criteria = create_stopping_criteria(_FakeTokenizer(), stop_word = stop_word)
+    # Exercise Transformers' public aggregation, as generate() does.
+    result = criteria(torch.tensor(rows), scores = None)
+    torch.testing.assert_close(result, torch.tensor(expected))
