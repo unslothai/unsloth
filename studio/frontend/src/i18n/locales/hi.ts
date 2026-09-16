@@ -529,6 +529,29 @@ export const hi = {
       title: "आवाज़",
       description: "माइक्रोफ़ोन, डिक्टेशन, स्पीच-टू-टेक्स्ट और ज़ोर से पढ़ना",
       dictation: {
+        audioUploadTitle: "रिकॉर्डिंग से डिक्टेशन करें",
+        audioUploadDescription:
+          "आपके ब्राउज़र को Studio में सीधे रिकॉर्ड करने के लिए सुरक्षित कनेक्शन (HTTPS) चाहिए। इस HTTP कनेक्शन पर, इसके बजाय अपने फ़ोन का रिकॉर्डर इस्तेमाल करें या सेव की गई रिकॉर्डिंग चुनें। आपका Studio सर्वर ऑडियो को टेक्स्ट में बदलेगा और उसे आपके संदेश में जोड़ देगा।",
+        audioUploadChooseFile: "रिकॉर्डिंग चुनें",
+        audioUploadRecord: "ऑडियो रिकॉर्ड करें",
+        audioUploadIphoneHint:
+          "iPhone पर, Voice Memos या किसी अन्य रिकॉर्डर ऐप से रिकॉर्डिंग सेव करें, फिर उसे यहाँ चुनें।",
+        audioUploadServerModelNote:
+          "यह रिकॉर्डिंग Studio सर्वर पर ऊपर दिखाए गए स्थानीय मॉडल का उपयोग करती है, भले ही सामान्य डिक्टेशन किसी दूसरे इंजन का उपयोग करता हो।",
+        audioUploadAutomatic: "स्वचालित",
+        audioUploadModelReady: "इस Studio सर्वर पर तैयार",
+        audioUploadRetryTitle: "{file} को टेक्स्ट में नहीं बदला जा सका",
+        audioUploadRetry: "ट्रांसक्रिप्शन फिर से आज़माएँ",
+        audioUploadChooseModel:
+          "आवाज़ की सेटिंग में कोई स्थानीय स्पीच-रिकग्निशन मॉडल चुनें।",
+        audioUploadEmpty: "चुनी गई रिकॉर्डिंग खाली है।",
+        audioUploadTooLarge: "{size} से छोटी रिकॉर्डिंग चुनें।",
+        audioUploadVideoUnsupported:
+          "वीडियो के बजाय कोई ऑडियो रिकॉर्डिंग चुनें।",
+        audioUploadNoSpeech: "मॉडल को उस रिकॉर्डिंग में कोई आवाज़ सुनाई नहीं दी।",
+        audioUploadFailed: "रिकॉर्डिंग को टेक्स्ट में नहीं बदला जा सका।",
+        audioUploadCancel: "ट्रांसक्रिप्शन रद्द करें",
+        audioUploadTranscribing: "ऑडियो को टेक्स्ट में बदला जा रहा है…",
         sectionTitle: "डिक्टेशन",
         engineLabel: "डिक्टेशन इंजन",
         engineBrowser: "ब्राउज़र",

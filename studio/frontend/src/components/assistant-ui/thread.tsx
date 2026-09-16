@@ -53,6 +53,7 @@ import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
 import { WebSearchToolUI } from "@/components/assistant-ui/tool-ui-web-search";
 import { ChatDictationBar } from "@/components/assistant-ui/chat-dictation-bar";
 import {
+  ChatAudioUploadMount,
   ChatSkillsDialog,
   composerSubmitIntent,
   composerFollowUpBehavior,
@@ -73,11 +74,13 @@ import {
   pasteLongTextAsFile,
   isPlainPasteChord,
   plainPasteStillCounts,
+  currentDictationEntryMode,
   isStudioDictationAvailable,
   notifyStudioDictationUnavailable,
   YoutubeTranscriptPrompt,
   stripSearchImageTokens,
   useChatActive,
+  useChatAudioUpload,
   useInComparePane,
   refreshSkillsCatalog,
 } from "@/features/chat";
@@ -3386,6 +3389,35 @@ const Composer: FC<{
     ({ threadListItem }) => threadListItem.remoteId,
   );
   const referenceThreadId = threadId ?? activeThreadId ?? null;
+  // Thread switches reuse this composer, so the upload owner is the list item
+  // id, not referenceThreadId: that one moves from null to the remote id when
+  // a new chat first persists, which is still the same composer.
+  const composerIdentity = threadListItemId ?? "";
+  composerIdentityRef.current = composerIdentity;
+  const chatActive = useChatActive();
+  const readAudioUploadDraft = useCallback(
+    () => aui.composer().getState().text,
+    [aui],
+  );
+  const writeAudioUploadDraft = useCallback(
+    (value: string) => aui.composer().setText(value),
+    [aui],
+  );
+  const focusAudioUploadDraft = useCallback(() => {
+    inputRef.current?.focus({ preventScroll: true });
+  }, []);
+  // Keep the live mic's existing availability. The old upload trigger had
+  // send/attachment gates that must not leak into the unified Dictate action.
+  const dictationEntryDisabled = !chatActive;
+  const audioUpload = useChatAudioUpload({
+    owner: composerIdentity,
+    chatId: referenceThreadId,
+    disabled: dictationEntryDisabled || isDictating,
+    readDraft: readAudioUploadDraft,
+    writeDraft: writeAudioUploadDraft,
+    focusDraft: focusAudioUploadDraft,
+  });
+  const cancelAudioUpload = audioUpload.cancel;
   // Read at Send time, so a send that materializes after a project switch is still filed
   // where it was made.
   const projectScope = useChatProjectScope();
@@ -4076,6 +4108,7 @@ const Composer: FC<{
             promptQueueStartPendingRef.current.get(reservationKey) ===
               reservation
           ) {
+            cancelAudioUpload();
             startPromptQueue(
               items,
               target,
@@ -4109,7 +4142,12 @@ const Composer: FC<{
         });
       return true;
     },
-    [createPromptQueueTarget, pendingQueueStartIsStale, referenceThreadId],
+    [
+      cancelAudioUpload,
+      createPromptQueueTarget,
+      pendingQueueStartIsStale,
+      referenceThreadId,
+    ],
   );
 
   // The queue carries text, and a long paste is text the composer parked in a
@@ -4427,6 +4465,9 @@ const Composer: FC<{
     }
     preStreamRunReservationRef.current = reservationToken;
     try {
+      // The send owns the draft only after the reservation succeeds. A refused
+      // send must leave an in-flight transcript available to finish or cancel.
+      cancelAudioUpload();
       const sentText = aui.composer().getState().text;
       // Stamp the send BEFORE send() starts awaiting every incomplete attachment: a document
       // send reaches initialize() seconds later, by which time navigation may have moved the
@@ -4452,7 +4493,14 @@ const Composer: FC<{
           error instanceof Error ? error.message : "Please retry the send.",
       });
     }
-  }, [aui, armJustSent, preStreamThreadIds, projectScope, referenceThreadId]);
+  }, [
+    aui,
+    armJustSent,
+    cancelAudioUpload,
+    preStreamThreadIds,
+    projectScope,
+    referenceThreadId,
+  ]);
 
   // Gate for both form submit and the Send button. Returns true when it handled
   // the event (blocked or queued) so callers stop.
@@ -4620,12 +4668,6 @@ const Composer: FC<{
   usePublishedFrame(composerEl);
   const dictationBaseTextRef = useRef("");
   const dictationComposerRef = useRef("");
-  // Thread switches reuse this composer, so the send has to know where it
-  // started to avoid submitting the destination thread's draft. The list item
-  // id, not referenceThreadId: that one moves from null to the remote id when
-  // a new chat first persists, which is the same composer.
-  const composerIdentity = threadListItemId ?? "";
-  composerIdentityRef.current = composerIdentity;
   useEffect(() => {
     setIsWritingExpanded(false);
   }, [composerIdentity]);
@@ -4650,6 +4692,11 @@ const Composer: FC<{
   // Keep the mic clickable: if the engine can't run here, explain and point to
   // the local model instead of disabling the button.
   const startDictation = useCallback(() => {
+    if (audioUpload.busy || dictationEntryDisabled) return;
+    if (currentDictationEntryMode() === "recording-file") {
+      audioUpload.openDialog();
+      return;
+    }
     if (!isStudioDictationAvailable()) {
       notifyStudioDictationUnavailable();
       return;
@@ -4659,7 +4706,7 @@ const Composer: FC<{
     } catch {
       notifyStudioDictationUnavailable();
     }
-  }, [aui]);
+  }, [aui, audioUpload, dictationEntryDisabled]);
   const sendAfterDictation = useCallback(() => {
     sendAfterDictationRef.current = true;
     dictationComposerRef.current = composerIdentity;
@@ -4685,7 +4732,6 @@ const Composer: FC<{
   // Both chords live here, not with the controls below: the recording bar
   // replaces those while dictation runs, so a chord registered there could
   // start dictation and never stop it.
-  const chatActive = useChatActive();
   useShortcut(
     "startDictation",
     () => {
@@ -5146,6 +5192,7 @@ const Composer: FC<{
                 isComposing ||
                 hasPendingAttachments
               }
+              dictationDisabled={dictationEntryDisabled}
               // disableQueue (project new-chat composer) also blocks the queue
               // button, so a running thread shows Stop instead of Queue.
               queueDisabled={
@@ -5159,6 +5206,7 @@ const Composer: FC<{
               onStopClick={stopQueue}
               onResumeClick={resumeQueue}
               onDictateClick={startDictation}
+              audioUpload={audioUpload}
               pendingSend={pendingSend}
               menuSide={effectiveMenuSide}
               queueThreadIds={promptQueueThreadIds}
@@ -5170,6 +5218,7 @@ const Composer: FC<{
         open={researchWebsiteAccessOpen && effectiveDeepResearchEnabled}
         onOpenChange={setResearchWebsiteAccessOpen}
       />
+      <ChatAudioUploadMount audioUpload={audioUpload} />
     </>
   );
 
@@ -6673,27 +6722,32 @@ const PromptQueueStack: FC<{ queueThreadIds: string[] }> = ({
 
 const ComposerRightControls: FC<{
   disabled?: boolean;
+  dictationDisabled?: boolean;
   queueDisabled?: boolean;
   onQueueClick?: () => void;
   onSendClick?: (event: { preventDefault: () => void }) => void;
   onStopClick?: () => void;
   onResumeClick?: () => void;
   onDictateClick?: () => void;
+  audioUpload: ReturnType<typeof useChatAudioUpload>;
   pendingSend?: boolean;
   menuSide?: "top" | "bottom";
   queueThreadIds: string[];
 }> = ({
   disabled,
+  dictationDisabled,
   queueDisabled,
   onQueueClick,
   onSendClick,
   onStopClick,
   onResumeClick,
   onDictateClick,
+  audioUpload,
   pendingSend,
   menuSide,
   queueThreadIds,
 }) => {
+  const t = useT();
   const followUpBehavior = useChatPreferencesStore((s) => s.followUpBehavior);
   const sendShortcut = useChatPreferencesStore((s) => s.sendShortcut);
   const shortcutLabels = composerShortcutLabels(sendShortcut, isMacPlatform());
@@ -6768,16 +6822,33 @@ const ComposerRightControls: FC<{
       {/* Starts dictation; the recording bar then covers the input row and owns
           the stop and send actions. */}
       <ComposerPrimitive.If dictation={false}>
-        <TooltipIconButton
-          tooltip="Dictate"
-          aria-label="Dictate"
-          type="button"
-          variant="ghost"
-          className="size-9 rounded-full text-foreground"
-          onClick={onDictateClick}
-        >
-          <MicIcon className="unsloth-dictate-icon size-6" />
-        </TooltipIconButton>
+        {audioUpload.busy ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-9 gap-1.5 rounded-full px-2.5 text-muted-foreground"
+            aria-label={t("settings.voice.dictation.audioUploadCancel")}
+            title={t("settings.voice.dictation.audioUploadCancel")}
+            onClick={audioUpload.cancel}
+          >
+            <Spinner className="size-4" />
+            <span>{t("settings.voice.dictation.audioUploadTranscribing")}</span>
+            <XIcon className="size-3.5" aria-hidden="true" />
+          </Button>
+        ) : (
+          <TooltipIconButton
+            tooltip="Dictate"
+            aria-label="Dictate"
+            type="button"
+            variant="ghost"
+            className="size-9 rounded-full text-foreground"
+            disabled={dictationDisabled}
+            onClick={onDictateClick}
+          >
+            <MicIcon className="unsloth-dictate-icon size-6" />
+          </TooltipIconButton>
+        )}
       </ComposerPrimitive.If>
       <AuiIf
         condition={({ thread }) =>

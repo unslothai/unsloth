@@ -5,6 +5,7 @@
 The wheel is pure Python plus one DLL, generated upstream by sqlite-dist: replacing the DLL,
 the WHEEL tag and RECORD is the whole port. Usage: repack_sqlite_vec.py <amd64 wheel> <vec0.dll> <out dir>
 """
+
 import base64, hashlib, struct, sys, zipfile
 from pathlib import Path
 
@@ -18,9 +19,11 @@ assert data[e_lfanew : e_lfanew + 4] == b"PE\0\0", "not a PE file"
 machine = struct.unpack_from("<H", data, e_lfanew + 4)[0]
 assert machine == 0xAA64, f"vec0.dll machine is {machine:#x}, not ARM64 (0xaa64)"
 
+
 def record_line(name: str, blob: bytes) -> str:
     digest = base64.urlsafe_b64encode(hashlib.sha256(blob).digest()).rstrip(b"=").decode()
     return f"{name},sha256={digest},{len(blob)}"
+
 
 out.mkdir(parents = True, exist_ok = True)
 with zipfile.ZipFile(src) as zin, zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as zout:

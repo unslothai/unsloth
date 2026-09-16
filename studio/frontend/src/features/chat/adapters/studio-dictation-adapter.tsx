@@ -10,6 +10,10 @@ import { toast } from "@/lib/toast";
 import type { DictationAdapter } from "@assistant-ui/react";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
 import {
+  currentDictationEntryMode,
+  insecureDictationGuidance,
+} from "../utils/dictation-entry";
+import {
   StudioModelDictationAdapter,
   fetchSttStatus,
   sttEngineStatusFor,
@@ -45,9 +49,9 @@ function customSttConfigured(): boolean {
   const providerId = sttProviderId.trim();
   return Boolean(
     connectionsEnabled &&
-      providerId &&
-      sttProviderModel.trim() &&
-      providers.some((provider) => provider.id === providerId),
+    providerId &&
+    sttProviderModel.trim() &&
+    providers.some((provider) => provider.id === providerId),
   );
 }
 
@@ -98,7 +102,9 @@ export class StudioDictationAdapter implements DictationAdapter {
         );
       }
       if (StudioModelDictationAdapter.isSupported()) {
-        return new StudioModelDictationAdapter({ chatId: this.chatId }).listen();
+        return new StudioModelDictationAdapter({
+          chatId: this.chatId,
+        }).listen();
       }
       throw new Error(
         dictationEngine === "custom"
@@ -107,7 +113,9 @@ export class StudioDictationAdapter implements DictationAdapter {
       );
     }
     if (StudioWebSpeechDictationAdapter.isSupported()) {
-      return new StudioWebSpeechDictationAdapter({ chatId: this.chatId }).listen();
+      return new StudioWebSpeechDictationAdapter({
+        chatId: this.chatId,
+      }).listen();
     }
     throw new Error("Browser dictation is not supported in this browser.");
   }
@@ -129,8 +137,7 @@ export function notifyStudioDictationUnavailable(
   // Both engines need a secure context (localhost or HTTPS).
   if (typeof window !== "undefined" && !window.isSecureContext) {
     toast.error("Voice typing needs a secure connection.", {
-      description:
-        "Open Unsloth at http://127.0.0.1 (localhost) or over HTTPS to dictate.",
+      description: insecureDictationGuidance(currentDictationEntryMode()),
     });
     return;
   }

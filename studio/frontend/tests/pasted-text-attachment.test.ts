@@ -780,10 +780,12 @@ test("every locale keeps the shortcut in the threshold description", async () =>
     const source = await readFile(new URL(name, dir), "utf8");
     const at = source.indexOf("pastedTextThresholdDescription:");
     assert.notEqual(at, -1, `${name} carries the description`);
-    const line = source.slice(at, source.indexOf("\n", at));
+    const nextKey = source.indexOf("pastedTextThresholdOff:", at);
+    assert.notEqual(nextKey, -1, `${name} carries the following setting`);
+    const entry = source.slice(at, nextKey);
     // The chord reads ⇧⌘V or Ctrl+Shift+V, so the tab supplies it and a
     // translation that drops the placeholder loses the escape hatch.
-    assert.ok(line.includes("{shortcut}"), `${name} keeps {shortcut}`);
+    assert.ok(entry.includes("{shortcut}"), `${name} keeps {shortcut}`);
   }
 });
 

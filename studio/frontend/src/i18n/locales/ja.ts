@@ -528,6 +528,29 @@ export const ja = {
       title: "音声",
       description: "マイク、音声入力、音声認識、読み上げ",
       dictation: {
+        audioUploadTitle: "録音を使って音声入力",
+        audioUploadDescription:
+          "Studio で直接録音するには、ブラウザーでセキュア接続 (HTTPS) が必要です。この HTTP 接続では、代わりにスマートフォンのレコーダーを使うか、保存済みの録音を選択してください。Studio サーバーが音声を文字起こしし、テキストをメッセージに追加します。",
+        audioUploadChooseFile: "録音を選択",
+        audioUploadRecord: "音声を録音",
+        audioUploadIphoneHint:
+          "iPhone では、Voice Memos または別の録音アプリで録音を保存してから、ここで選択してください。",
+        audioUploadServerModelNote:
+          "この録音では、通常の音声入力に別のエンジンを使用している場合でも、Studio サーバー上で上に表示されているローカルモデルを使用します。",
+        audioUploadAutomatic: "自動",
+        audioUploadModelReady: "この Studio サーバーで使用可能",
+        audioUploadRetryTitle: "{file} を文字起こしできませんでした",
+        audioUploadRetry: "文字起こしを再試行",
+        audioUploadChooseModel:
+          "音声設定でローカル音声認識モデルを選択してください。",
+        audioUploadEmpty: "選択した録音は空です。",
+        audioUploadTooLarge: "{size} 未満の録音を選択してください。",
+        audioUploadVideoUnsupported:
+          "動画ではなく、音声録音を選択してください。",
+        audioUploadNoSpeech: "この録音から音声を検出できませんでした。",
+        audioUploadFailed: "録音を文字起こしできませんでした。",
+        audioUploadCancel: "文字起こしをキャンセル",
+        audioUploadTranscribing: "音声を文字起こし中…",
         sectionTitle: "音声入力",
         engineLabel: "音声入力エンジン",
         engineBrowser: "ブラウザー",

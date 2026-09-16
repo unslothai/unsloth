@@ -527,6 +527,29 @@ export const en = {
       title: "Voice",
       description: "Microphone, dictation, speech-to-text and read-aloud",
       dictation: {
+        audioUploadTitle: "Dictate with a recording",
+        audioUploadDescription:
+          "Your browser requires a secure connection (HTTPS) to record directly in Studio. On this HTTP connection, use your phone's recorder or choose a saved recording instead. Your Studio server will transcribe the audio and add the text to your message.",
+        audioUploadChooseFile: "Choose recording",
+        audioUploadRecord: "Record audio",
+        audioUploadIphoneHint:
+          "On iPhone, save a recording from Voice Memos or another recorder app, then choose it here.",
+        audioUploadServerModelNote:
+          "This recording uses the local model shown above on the Studio server, even if normal dictation uses a different engine.",
+        audioUploadAutomatic: "Automatic",
+        audioUploadModelReady: "Ready on this Studio server",
+        audioUploadRetryTitle: "Could not transcribe {file}",
+        audioUploadRetry: "Retry transcription",
+        audioUploadChooseModel:
+          "Choose a local speech-recognition model in Voice settings.",
+        audioUploadEmpty: "The selected recording is empty.",
+        audioUploadTooLarge: "Choose a recording smaller than {size}.",
+        audioUploadVideoUnsupported:
+          "Choose an audio recording, not a video.",
+        audioUploadNoSpeech: "The model heard no speech in that recording.",
+        audioUploadFailed: "The recording could not be transcribed.",
+        audioUploadCancel: "Cancel transcription",
+        audioUploadTranscribing: "Transcribing audio…",
         sectionTitle: "Dictation",
         engineLabel: "Dictation engine",
         engineBrowser: "Browser",
