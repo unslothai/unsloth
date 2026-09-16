@@ -4440,6 +4440,15 @@ exit 0
         return (Find-CompatiblePython -X64Only)
     }
 
+    # "I want the native ARM64 interpreter." One reader, because the answer has to be the
+    # same at every point that would otherwise replace an ARM64 environment: the fresh
+    # selection below, and the mismatch re-check further down that fires on a MIGRATED venv.
+    # Read at each site rather than captured, so setting it between passes of the installer
+    # takes effect on the next one.
+    function Test-Arm64PythonOptOut {
+        return ($env:UNSLOTH_ALLOW_ARM64_PYTHON -in @('1', 'true', 'yes', 'on'))
+    }
+
     # ── Windows on ARM: the interpreter handed to uv has to be x64 ──
     # pyarrow (via datasets) and hf-transfer publish no win_arm64 wheel, so a native ARM64
     # interpreter source-builds both and dies on CMake or Rust minutes into the run (#8495).
@@ -4455,7 +4464,7 @@ exit 0
         # interpreter; downloading an x64 CPython they did not want and then using it is not
         # an opt-out, and on a machine where that install succeeds, which is most of them,
         # the variable would otherwise do nothing at all.
-        if ($env:UNSLOTH_ALLOW_ARM64_PYTHON -in @('1', 'true', 'yes', 'on')) {
+        if (Test-Arm64PythonOptOut) {
             Write-StudioLine "[WARN] UNSLOTH_ALLOW_ARM64_PYTHON is set, so keeping native ARM64 Python $($SelectedPython.Version)." -ForegroundColor Yellow
             Write-StudioLine "       pyarrow (via datasets) and hf-transfer publish no win_arm64 wheels, so they will be" -ForegroundColor Yellow
             Write-StudioLine "       built from source, which needs CMake plus the MSVC and Rust toolchains." -ForegroundColor Yellow
@@ -4491,6 +4500,15 @@ exit 0
             $SelectedPython
         )
         if ((Get-HostMachineArch) -ne "arm64") { return $false }
+        # The opt-out has to be honoured HERE too, not only where a fresh interpreter is
+        # chosen. Resolve-WindowsOnArmX64Python never runs when the ordinary probe already
+        # found an x64 Python on the machine, so on a host that has both interpreters the
+        # variable would never be read and this branch would replace the very ARM64
+        # environment the user asked to keep, discarding whatever they installed into it.
+        if (Test-Arm64PythonOptOut) {
+            substep "windows on arm: UNSLOTH_ALLOW_ARM64_PYTHON is set, keeping the existing native ARM64 environment." "Yellow"
+            return $false
+        }
         if (-not $SelectedPython -or $SelectedPython.Arch -ne "x86_64") { return $false }
         if (-not (Test-Path -LiteralPath $VenvPython -PathType Leaf)) { return $false }
         return ((Get-PythonPlatformTag $VenvPython) -eq "win-arm64")
@@ -5396,6 +5414,12 @@ exit 0
     if (Test-StudioVenvArchMismatch -VenvPython $VenvPython -SelectedPython $DetectedPython) {
         substep "windows on arm: the existing environment runs native ARM64 Python, which cannot" "Yellow"
         substep "resolve pyarrow or hf-transfer -- rebuilding it on x64 Python $($DetectedPython.Version)." "Yellow"
+        # Stated, not implied: the new environment is built from scratch on a different
+        # architecture, so the ARM64 wheels in the old one cannot be carried into it and
+        # anything the user pip-installed there is not reinstalled. The old tree is kept
+        # under $StudioHome by the rollback helper rather than deleted, so it can be read.
+        substep "the ARM64 environment is kept under $StudioHome as unsloth_studio.rollback.*;" "Yellow"
+        substep "re-install any extra packages you had added to it, or set UNSLOTH_ALLOW_ARM64_PYTHON=1 to keep it." "Yellow"
         try {
             Start-StudioVenvRollback -ExistingDir $VenvDir
         } catch {

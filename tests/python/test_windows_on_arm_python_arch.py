@@ -79,6 +79,9 @@ def _run(
 # hardware on the windows-11-arm leg, and Get-PythonPlatformTag asks an interpreter for
 # sysconfig.get_platform(), which needs a Windows interpreter to answer win-arm64.
 def _preamble(host_arch: str, venv_tag: str, x64_available: bool) -> str:
+    # Verbatim from install.ps1, not a stub: both the fresh-selection path and the venv
+    # re-check call it, so a change to what the opt-out accepts has to move these cases too.
+    opt_out = _function("Test-Arm64PythonOptOut")
     x64 = (
         '@{ Version = "3.13"; Path = "C:\\x64\\python.exe"; Arch = "x86_64" }'
         if x64_available
@@ -97,6 +100,7 @@ function substep {{ param([string]$Message, [string]$Color = "DarkGray") Write-H
 function Get-HostMachineArch {{ return "{host_arch}" }}
 function Get-PythonPlatformTag {{ param([string]$Exe) return "{venv_tag}" }}
 function Install-X64Python {{ Write-Host "INSTALL-X64-CALLED"; return {x64} }}
+{opt_out}
 """
 
 
@@ -271,6 +275,87 @@ Write-Host ("MISMATCH=" + $mismatch)
     )
     out = _run(shell, script)
     assert f"MISMATCH={expected}" in out
+
+
+@pytest.mark.skipif(not POWERSHELLS, reason = "no PowerShell on this host")
+@pytest.mark.parametrize("shell", POWERSHELLS)
+@pytest.mark.parametrize("value", ["1", "true", "YES", "on"])
+def test_the_opt_out_also_protects_an_existing_arm64_environment(
+    tmp_path: Path, shell: str, value: str
+):
+    """The opt-out has to be read HERE, not only where a fresh interpreter is chosen.
+
+    Resolve-WindowsOnArmX64Python never runs when the ordinary probe already found an x64
+    Python on the machine, which is an ARM64 box that has both interpreters installed. On
+    such a host UNSLOTH_ALLOW_ARM64_PYTHON was never consulted at all, and this branch then
+    moved aside the very native ARM64 environment the user had asked to keep. The rebuild
+    is not a migration: the new venv is on a different architecture, so nothing the user
+    installed into the old one is carried over.
+    """
+    venv_python = tmp_path / "python.exe"
+    venv_python.write_text("", encoding = "utf-8")
+    selected = '@{ Version = "3.13"; Path = "C:\\p\\python.exe"; Arch = "x86_64" }'
+    script = (
+        _preamble("arm64", "win-arm64", x64_available = True)
+        + f"""
+{_function("Test-StudioVenvArchMismatch")}
+$selected = {selected}
+$mismatch = Test-StudioVenvArchMismatch -VenvPython "{venv_python}" -SelectedPython $selected
+Write-Host ("MISMATCH=" + $mismatch)
+"""
+    )
+    out = _run(shell, script, env = {"UNSLOTH_ALLOW_ARM64_PYTHON": value})
+    assert "MISMATCH=False" in out, (
+        "the opt-out was ignored and an existing ARM64 environment was scheduled for replacement"
+    )
+
+
+@pytest.mark.skipif(not POWERSHELLS, reason = "no PowerShell on this host")
+@pytest.mark.parametrize("shell", POWERSHELLS)
+def test_the_arm64_environment_is_still_replaced_without_the_opt_out(tmp_path: Path, shell: str):
+    """The other direction, so the guard above cannot be satisfied by never firing."""
+    venv_python = tmp_path / "python.exe"
+    venv_python.write_text("", encoding = "utf-8")
+    selected = '@{ Version = "3.13"; Path = "C:\\p\\python.exe"; Arch = "x86_64" }'
+    script = (
+        _preamble("arm64", "win-arm64", x64_available = True)
+        + f"""
+{_function("Test-StudioVenvArchMismatch")}
+$selected = {selected}
+$mismatch = Test-StudioVenvArchMismatch -VenvPython "{venv_python}" -SelectedPython $selected
+Write-Host ("MISMATCH=" + $mismatch)
+"""
+    )
+    out = _run(shell, script)
+    assert "MISMATCH=True" in out
+
+
+def test_both_arm64_opt_out_readers_go_through_one_helper():
+    """Two spellings of the same question drift. The fresh-selection path and the reuse
+    re-check must read it the same way, or an accepted value works in one and not the
+    other."""
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    assert source.count("function Test-Arm64PythonOptOut") == 1
+    # The literal comparison lives in the helper and nowhere else.
+    assert source.count("$env:UNSLOTH_ALLOW_ARM64_PYTHON -in") == 1, (
+        "the opt-out is compared in more than one place"
+    )
+    assert source.count("Test-Arm64PythonOptOut") >= 3, (
+        "both the selection path and the venv re-check have to call it"
+    )
+
+
+def test_the_arm64_rebuild_tells_the_user_what_it_does_not_carry_over():
+    """A rebuild on a different architecture cannot reuse the old wheels, so packages the
+    user added to the ARM64 environment are gone from the new one. That is unavoidable; a
+    silent version of it is not. The branch has to name where the old tree went and how to
+    opt out."""
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    start = source.find("Test-StudioVenvArchMismatch -VenvPython")
+    assert start != -1
+    block = source[start:source.find('step "venv" "creating Python', start)]
+    assert "unsloth_studio.rollback" in block, "the rebuild does not say where the old venv went"
+    assert "UNSLOTH_ALLOW_ARM64_PYTHON" in block, "the rebuild does not name its opt-out"
 
 
 def test_the_installer_stops_when_no_x64_interpreter_can_be_installed():

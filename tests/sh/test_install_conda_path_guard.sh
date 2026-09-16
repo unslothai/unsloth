@@ -181,11 +181,23 @@ run_fish() {
 run_fish "" ""
 assert_contains "fish, no conda: prepends" "$FISH_CONTENTS" "fish_add_path '$FISH_DIR'"
 
+# -a ALONE is not an append to PATH: without --path, fish_add_path edits $fish_user_paths,
+# which fish documents as prepended to PATH, so a bare -a still sits ahead of conda. The
+# conda arm therefore has to carry -P as well, and these assertions are exact so a
+# regression back to the bare spelling fails here.
 run_fish "" "/opt/anaconda3"
-assert_contains "fish, active conda: appends" "$FISH_CONTENTS" "fish_add_path -a '$FISH_DIR'"
+assert_contains "fish, active conda: appends to PATH itself" "$FISH_CONTENTS" \
+    "fish_add_path -a -P '$FISH_DIR'"
 
 run_fish "" "myenv" CONDA_DEFAULT_ENV
-assert_contains "fish, CONDA_DEFAULT_ENV alone: appends" "$FISH_CONTENTS" "fish_add_path -a '$FISH_DIR'"
+assert_contains "fish, CONDA_DEFAULT_ENV alone: appends to PATH itself" "$FISH_CONTENTS" \
+    "fish_add_path -a -P '$FISH_DIR'"
+
+# A bare -a would leave the directory inside fish_user_paths, ahead of the active conda
+# environment: the exact defect #5871 reports, arriving through fish instead of an rc file.
+run_fish "" "/opt/anaconda3"
+assert_eq "fish, active conda: no bare -a line" "0" \
+    "$(printf '%s\n' "$FISH_CONTENTS" | grep -cxF "fish_add_path -a '$FISH_DIR'")"
 
 # Idempotence across both spellings, the same way as the POSIX arm.
 WORK=$(mktemp -d)
@@ -255,6 +267,9 @@ assert_contains "setup.sh, CONDA_DEFAULT_ENV alone: appends" "$SETUP_RC" "export
 run_setup "/opt/anaconda3"
 assert_contains "setup.sh, active conda: appends" "$SETUP_RC" "export PATH=\"\$PATH:$SETUP_DIR\""
 assert_not_contains "setup.sh, active conda: does not prepend" "$SETUP_RC" "export PATH=\"$SETUP_DIR:\$PATH\""
-assert_contains "setup.sh, active conda: fish appends" "$SETUP_FISH" "fish_add_path -a '$SETUP_DIR'"
+assert_contains "setup.sh, active conda: fish appends to PATH itself" "$SETUP_FISH" \
+    "fish_add_path -a -P '$SETUP_DIR'"
+assert_eq "setup.sh, active conda: no bare -a line" "0" \
+    "$(printf '%s\n' "$SETUP_FISH" | grep -cxF "fish_add_path -a '$SETUP_DIR'")"
 
 summary

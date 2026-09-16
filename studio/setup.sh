@@ -2081,17 +2081,26 @@ _setup_persist_uv_path() {
         _supp_quoted=$(printf '%s' "$_supp_dir" | sed "s/\\\\/\\\\\\\\/g; s/'/\\\\'/g")
         # fish_add_path PREPENDS, and that ordering outlives the conda activation it was
         # written under, so from the next shell on this directory sits ahead of the active
-        # conda environment's own entries and conda resolves out of ours (#5871). -a is the
-        # same registration at the back. install.sh and install.ps1 make the same choice.
+        # conda environment's own entries and conda resolves out of ours (#5871).
+        # install.sh and install.ps1 make the same choice.
+        #
+        # -a ALONE IS NOT AN APPEND TO PATH. Without --path, fish_add_path edits
+        # $fish_user_paths, which fish itself documents as "prepended to PATH, so they
+        # still stay ahead of the system paths"; its own example for this case is
+        # `fish_add_path --append --path /opt/fallback/bin`. -P edits $PATH directly, which
+        # is right for a conf.d drop-in sourced by every shell after conda.fish.
+        # https://fishshell.com/docs/current/cmds/fish_add_path.html
         _supp_fish_line="fish_add_path '$_supp_quoted'"
         if _unsloth_conda_env_active; then
-            _supp_fish_line="fish_add_path -a '$_supp_quoted'"
+            _supp_fish_line="fish_add_path -a -P '$_supp_quoted'"
         fi
-        # The exact line, not any occurrence: /opt/uv-old must not pass for /opt/uv. BOTH
-        # spellings count as present, or a run outside conda adds a second line for a
-        # directory a run inside it already registered.
+        # The exact line, not any occurrence: /opt/uv-old must not pass for /opt/uv. EVERY
+        # spelling counts as present, or a run outside conda adds a second line for a
+        # directory a run inside it already registered; the bare -a one is kept because an
+        # install from before this fix wrote it.
         if ! grep -v '^[[:space:]]*#' "$_supp_fish" 2>/dev/null \
-            | grep -qxF -e "fish_add_path '$_supp_quoted'" -e "fish_add_path -a '$_supp_quoted'"; then
+            | grep -qxF -e "fish_add_path '$_supp_quoted'" -e "fish_add_path -a '$_supp_quoted'" \
+                        -e "fish_add_path -a -P '$_supp_quoted'"; then
             echo "# Added by Unsloth setup" >> "$_supp_fish"
             echo "$_supp_fish_line" >> "$_supp_fish"
         fi
