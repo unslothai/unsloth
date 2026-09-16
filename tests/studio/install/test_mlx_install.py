@@ -110,9 +110,7 @@ def test_mlx_install_respects_platform_mode_and_pins(
 ):
     # What the repository declares, not what the host's installed zoo narrows it to; the
     # narrowing has its own tests below.
-    monkeypatch.setattr(
-        stack, "_mlx_vlm_spec_for_installed_zoo", lambda: stack._MLX_VLM_SPEC
-    )
+    monkeypatch.setattr(stack, "_mlx_vlm_spec_for_installed_zoo", lambda: stack._MLX_VLM_SPEC)
     calls = _run_to_extras(
         monkeypatch,
         platform = platform,
