@@ -557,17 +557,18 @@ if [ "$RESTART" = "1" ]; then
             log "health check skipped (UNSLOTH_STUDIO_UPDATE_HEALTH_WAIT=0); the update is committed"
         else
             _deadline=$(( $(date +%s) + _wait ))
+            _port="${UNSLOTH_STUDIO_PORT:-8000}"
             _up=0
             while [ "$(date +%s)" -lt "$_deadline" ]; do
                 # --noproxy: a container-wide HTTP_PROXY must not answer for the loopback
-                curl -sf -o /dev/null --max-time 3 --noproxy '*' http://127.0.0.1:8000/api/health && { _up=1; break; }
+                curl -sf -o /dev/null --max-time 3 --noproxy '*' "http://127.0.0.1:${_port}/api/health" && { _up=1; break; }
                 sleep 2
             done
             if [ "$_up" = "1" ]; then
                 commit_update
-                log "Studio is answering on port 8000"
+                log "Studio is answering on port ${_port}"
             else
-                back_out "Studio did not answer on port 8000 within ${_wait}s (see docker logs)"
+                back_out "Studio did not answer on port ${_port} within ${_wait}s (see docker logs)"
             fi
         fi
     else

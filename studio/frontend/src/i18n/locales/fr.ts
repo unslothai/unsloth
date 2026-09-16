@@ -5,6 +5,67 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en";
 
 export const fr = {
+  composerSettings: {
+    title: "Saisie des messages",
+    plainText: "Saisie en texte brut",
+    plainTextDescription: "Conserver le code, le Markdown et les liens en texte brut. Désactivez pour afficher un aperçu mis en forme.",
+    showContext: "Afficher l’utilisation de la fenêtre de contexte",
+    sendShortcut: "Raccourci d’envoi",
+    sendDescription: "Choisissez si Entrée envoie un message ou insère une nouvelle ligne.",
+    followUp: "Messages de suivi",
+    followUpDescription: "Choisissez l’action lors d’un envoi pendant une réponse. Appuyez sur {shortcut} pour inverser ce choix pour un message.",
+    queue: "File d’attente",
+    steer: "Réorienter",
+    steerDescription: "Réorienter arrête la réponse en cours et envoie votre message de suivi en priorité.",
+    settings: "Paramètres de saisie",
+    preview: "Aperçu mis en forme",
+  },
+  promptQueue: {
+    loading: "Chargement des messages en file d’attente",
+    listLabel: "Messages en file d’attente",
+    regionLabel: "File d’attente des messages, {current} sur {total}",
+    itemLabel: "Message en file d’attente {position} sur {total} : {prompt}",
+    reorderInstructions: "Faites glisser la poignée pour réorganiser. Lorsque la poignée a le focus, utilisez Haut ou Bas pour déplacer d’une position, ou Début ou Fin pour aller au début ou à la fin.",
+    dragTooltip: "Faire glisser pour réorganiser",
+    reorderLabel: "Réorganiser le message en file d’attente {position} sur {total}",
+    paused: "En pause",
+    steer: "Réorienter",
+    steerTooltip: "Interrompre la réponse et envoyer ce message en priorité",
+    steerLabel: "Réorienter avec le message en file d’attente {position}",
+    removeTooltip: "Retirer de la file d’attente",
+    removeLabel: "Retirer le message en file d’attente {position}",
+    moreTooltip: "Plus d’options",
+    moreLabel: "Plus d’options pour le message en file d’attente {position}",
+    editItem: "Modifier le message",
+    copyItem: "Copier le message",
+    editLabel: "Modifier le message en file d’attente {position}",
+    cancel: "Annuler",
+    save: "Enregistrer",
+    turnOffQueueing: "Désactiver la file d’attente",
+    turnOnQueueing: "Activer la file d’attente",
+    resume: "Reprendre la file d’attente",
+    queueButton: "Mettre le message en file d’attente",
+    steerButton: "Réorienter la réponse",
+    sendTooltip: "Envoyer le message ({shortcut})",
+    sendLabel: "Envoyer le message",
+    followUpTooltip: "{action} ({send}) · {opposite} pour l’inverse",
+    announceUpdated: "Message en file d’attente mis à jour.",
+    announceEditFailed: "Ce message ne peut plus être modifié car la file d’attente a changé.",
+    announceRemoved: "Message retiré de la file d’attente.",
+    announceSteered: "Ce message réorientera la réponse en priorité.",
+    announceSteerFailed: "Ce message n’a pas pu réorienter la réponse. Vérifiez la file d’attente et réessayez.",
+    announceCopied: "Message copié.",
+    announceCopyFailed: "Impossible de copier ce message. Réessayez.",
+    announceQueueingOn: "Les nouveaux messages de suivi seront mis en file d’attente après la réponse en cours.",
+    announceQueueingOff: "Les nouveaux messages de suivi réorienteront la réponse en cours.",
+    announceMoved: "Message déplacé à la position {position} sur {total}.",
+    announceMoveFailed: "La file d’attente a changé avant que ce message puisse être déplacé. Réessayez.",
+    announceDragReset: "La file d’attente a changé. Faites glisser à nouveau pour réorganiser les messages restants.",
+    editingHint: "Modification du message",
+    queueingOffHint: "Les nouveaux messages arrêtent la réponse en cours et sont exécutés ensuite.",
+    queueingOnHint: "Les nouveaux messages attendent leur tour et sont exécutés dans l’ordre.",
+    queueingHintShared: "Les messages en file d’attente sont conservés.",
+  },
   picker: {
     onDevice: "Sur l'appareil",
     huggingFace: "Hugging Face",
@@ -1442,6 +1503,30 @@ export const fr = {
       },
     },
     chat: {
+      groups: {
+        conversations: { title: "Conversations" },
+        files: { title: "Fichiers et collage" },
+        display: { title: "Affichage" },
+        composer: { title: "Zone de message" },
+        menu: { title: "Menu du chat" },
+        advanced: { title: "Avancé" },
+        contextTitle: "Contexte",
+      },
+      projectAttachmentsHint:
+        "Modifiez ce réglage pour chaque chat dans son menu de pièces jointes.",
+      rememberParamsPerModelHint:
+        "Lorsque cette option est désactivée, tous les modèles utilisent les mêmes réglages.",
+      autoCompactHint:
+        "Utilise la longueur de contexte définie, pas la VRAM disponible.",
+      pastedTextShortDescription:
+        "Le texte collé de {count} caractères ou plus devient une pièce jointe .txt. Le texte plus court reste dans le champ de message.",
+      pastedTextOffDescription:
+        "Tout le texte collé reste dans le champ de message, quelle que soit sa longueur.",
+      compactionDescriptionInherit: "Suit la politique de contexte du serveur.",
+      compactionDescriptionCheckpoint:
+        "Conserve le dernier échange et les instructions permanentes.",
+      compactionDescriptionRolling:
+        "Supprime les échanges les plus anciens pour conserver les plus récents et la marge choisie.",
       projectsSection: "Afficher la section Projets",
       projectsSectionDescription:
         "Regroupe les discussions de projet sous un titre Projets. Désactivez cette option pour les lister dans Récents.",
@@ -1471,7 +1556,8 @@ export const fr = {
         exportChat: "Exporter le chat",
       },
       pastedTextThreshold: "Condenser les collages longs",
-      pastedTextThresholdDescription: "Le texte collé plus long que cette valeur devient une pièce jointe .txt au lieu de remplir le champ de message. Appuyez sur {shortcut} pour coller quand même dans le champ de message.",
+      pastedTextThresholdDescription:
+        "Appuyez sur {shortcut} pour coller directement dans le champ de message.",
       pastedTextThresholdOff: "Désactivé",
       showResponseModel: "Afficher le modèle de réponse",
       showResponseModelDescription:
@@ -1481,13 +1567,13 @@ export const fr = {
         'Afficher "Les LLM peuvent faire des erreurs" sous la zone de discussion.',
       projectAttachments: "Partager les fichiers dans tout le projet",
       projectAttachmentsDescription:
-        "Valeur par defaut pour les fichiers joints dans une discussion appartenant a un projet : les indexer pour tout le projet afin que chaque discussion puisse les utiliser. Chaque discussion peut le modifier depuis le menu des pieces jointes.",
+        "Rend les nouvelles pièces jointes accessibles à toutes les discussions du projet.",
       rememberParamsPerModel: "Mémoriser les réglages par modèle",
       rememberParamsPerModelDescription:
-        "Changer de modèle restaure la température, le prompt et les autres réglages utilisés en dernier avec ce modèle. Désactivé, un seul jeu de réglages s'applique à tous les modèles.",
+        "Restaure le dernier prompt, la température et les autres réglages utilisés pour chaque modèle.",
       autoCompact: "Compacter automatiquement les longues discussions",
       autoCompactDescription:
-        "Lorsqu’une discussion GGUF locale atteint la longueur de contexte définie, supprimez les anciens tours au lieu de renvoyer une erreur. Ce réglage ne dépend pas de la VRAM libre.",
+        "Supprime les anciens échanges lorsqu’une discussion GGUF locale atteint sa limite de contexte.",
       compactionStyle: "Lorsque le contexte est plein",
       compactionStyleDescription:
         "La valeur par défaut du serveur conserve UNSLOTH_CONTEXT_POLICY. Réinitialiser la discussion garde le dernier tour et les instructions permanentes. Une fenêtre glissante supprime les tours les plus anciens et peut conserver davantage d’historique récent.",
@@ -1524,7 +1610,7 @@ export const fr = {
         title: "Recherche web",
         images: "Afficher les images de la recherche web",
         imagesDescription:
-          "Permet à la recherche web de renvoyer des images et en récupère une pour chaque élément listé dans une réponse. Unsloth télécharge et redimensionne les vignettes : le navigateur ne contacte jamais les hébergeurs d'images.",
+          "Inclut des images dans les résultats de recherche.",
       },
       artifacts: {
         title: "Canvas",

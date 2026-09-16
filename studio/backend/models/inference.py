@@ -31,6 +31,7 @@ from core.inference.llama_server_args import (
 from core.inference.runtime_context import MAX_REQUESTABLE_CONTEXT
 from core.inference.video_families import MAX_VIDEO_NUM_FRAMES
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
+from utils.reasoning_budget import validate_reasoning_budget_message
 
 
 class LoadRequest(BaseModel):
@@ -331,7 +332,9 @@ class LoadRequest(BaseModel):
         ),
     )
 
-    @field_validator("n_batch", "n_ubatch", "ctx_checkpoints", "cache_ram", mode = "before")
+    @field_validator(
+        "n_batch", "n_ubatch", "ctx_checkpoints", "cache_ram", "reasoning_budget", mode = "before"
+    )
     @classmethod
     def _no_booleans(cls, value: Any) -> Any:
         # bool subclasses int and pydantic parses non-strictly, so `true` arrives as 1 and the load
@@ -366,6 +369,22 @@ class LoadRequest(BaseModel):
             "auth, UI/server mode) are rejected. Ignored for non-GGUF models."
         ),
     )
+    reasoning_budget: int = Field(
+        -1,
+        ge = -1,
+        le = 2_147_483_647,
+        description = "llama-server reasoning token budget (-1 = model/default behavior).",
+    )
+    reasoning_budget_message: str = Field(
+        "",
+        description = "Message emitted by llama-server when the reasoning budget is exhausted.",
+    )
+
+    @field_validator("reasoning_budget_message")
+    @classmethod
+    def _validate_reasoning_budget_message(cls, value: str) -> str:
+        return validate_reasoning_budget_message(value)
+
     force_cancel_active: bool = Field(
         False,
         description = (
@@ -565,6 +584,14 @@ class ValidateModelRequest(BaseModel):
             "asking for them needs materially more memory than one that does not."
         ),
     )
+    reasoning_budget: int = Field(-1, ge = -1, le = 2_147_483_647)
+    reasoning_budget_message: str = ""
+
+    @field_validator("reasoning_budget_message")
+    @classmethod
+    def _validate_reasoning_budget_message(cls, value: str) -> str:
+        return validate_reasoning_budget_message(value)
+
     include_context_length: bool = Field(
         False,
         description = "Also read the native context length from the local GGUF header. "
@@ -578,9 +605,9 @@ class ValidateModelRequest(BaseModel):
         "guard. Only the leased file's own embedded template is read, never sibling sidecars.",
     )
 
-    _no_booleans = field_validator("n_batch", "n_ubatch", "ctx_checkpoints", mode = "before")(
-        LoadRequest._no_booleans.__func__
-    )
+    _no_booleans = field_validator(
+        "n_batch", "n_ubatch", "ctx_checkpoints", "reasoning_budget", mode = "before"
+    )(LoadRequest._no_booleans.__func__)
 
 
 class TransformersUpgradeInfo(BaseModel):
@@ -1152,6 +1179,19 @@ class _InferenceRuntimeFields(BaseModel):
         False,
         description = "Whether reasoning is always on (hardcoded <think> tags, not toggleable)",
     )
+    reasoning_budget: int = Field(-1, description = "Effective llama-server reasoning token budget.")
+    reasoning_budget_message: str = Field(
+        "", description = "Effective llama-server reasoning-budget exhaustion message."
+    )
+    # The effective pair folds in LLAMA_ARG_THINK_BUDGET*, which no client can send or clear, so a
+    # caller comparing its own request against it reads a machine-wide default as a difference and
+    # reloads forever. These echo what the load ASKED for, which a client can reproduce.
+    requested_reasoning_budget: int = Field(
+        -1, description = "Reasoning token budget this load requested, before the environment."
+    )
+    requested_reasoning_budget_message: str = Field(
+        "", description = "Reasoning-budget message this load requested, before the environment."
+    )
     supports_preserve_thinking: bool = Field(
         False,
         description = "Whether the template understands the optional preserve_thinking kwarg",
@@ -1402,7 +1442,8 @@ class LoadResponse(_InferenceRuntimeFields):
         None,
         description = "Non-blocking advisory about this load, or null. Set when the "
         "weights do not fit in free VRAM plus available system RAM, so llama.cpp pages "
-        "them in from disk and generation will be slow. The model still loaded.",
+        "them in from disk and generation will be slow, or when the requested GGUF quant "
+        "did not fit on disk and a smaller one was loaded. The model still loaded.",
     )
     carveout_advice: Optional[dict] = Field(
         None,
@@ -1530,6 +1571,11 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
         False, description = "Whether the active model came from a local filesystem path"
     )
     gguf_variant: Optional[str] = Field(None, description = "GGUF quantization variant (e.g. Q4_K_M)")
+    memory_warning: Optional[str] = Field(
+        None,
+        description = "Non-blocking advisory about the active load, or null: the "
+        "memory_warning its load response carried, kept while that model is running.",
+    )
     loading: List[str] = Field(default_factory = list, description = "Models currently being loaded")
     loaded: List[str] = Field(default_factory = list, description = "Models currently loaded")
     inference: Optional[Dict[str, Any]] = Field(
@@ -4198,6 +4244,9 @@ class DiffusionStatusResponse(BaseModel):
     dtype: Optional[str] = Field(None, description = "Compute dtype")
     model_kind: Optional[str] = Field(
         None, description = "Resolved load kind: gguf | single_file | pipeline (gates GGUF-only UI)"
+    )
+    gguf_filename: Optional[str] = Field(
+        None, description = "Loaded single-file checkpoint filename, or null for a pipeline"
     )
     gguf_variant: Optional[str] = Field(
         None, description = "Selected GGUF quantisation variant (for example Q8_0)"

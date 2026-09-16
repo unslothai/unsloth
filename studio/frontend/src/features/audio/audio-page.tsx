@@ -28,6 +28,8 @@ import {
 } from "react";
 
 import { AdvancedDisclosure } from "@/components/advanced-disclosure";
+import { GuidedTour, useGuidedTourController } from "@/features/tour";
+import { buildAudioTourSteps } from "./tour";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -38,7 +40,6 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
-import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { usePlatformStore } from "@/config/env";
 import {
@@ -66,7 +67,6 @@ import {
   loadSttModel,
   startSttDownload,
   sttEngineStatusFor,
-  transcribeAudioBlob,
   unloadSttModel,
 } from "@/features/chat/adapters/studio-model-dictation-adapter";
 import { useStagedDownload } from "@/features/hub/download-manager";
@@ -79,16 +79,27 @@ import type {
   ModelSelectorChangeMeta,
 } from "@/features/model-picker/components/model-selector/types";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
-import { useSettingsDialogStore } from "@/features/settings";
+import { useSettingsDialogStore, useVoiceSettingsStore } from "@/features/settings";
 import {
   isTrackingSttDownload,
   trackSttDownload,
 } from "@/features/settings/lib/stt-download-mirror";
 import { sttModelSize } from "@/features/settings/stores/stt-model-catalog";
+import { TranscriptGallery } from "./transcript-gallery";
+import { AUTH_SESSION_ENDING_EVENT } from "@/features/auth";
+import {
+  readTranscriptDraft,
+  transcriptDraftKey,
+  writeTranscriptDraft,
+} from "./transcript-draft";
+import { downloadTranscript } from "./transcript-download";
+import { TranscriptionProgress } from "./transcription-progress";
+import type { TranscriptRecord, TranscriptProgress } from "./transcript-stream";
 import { usePersistedChoice } from "@/hooks/use-persisted-choice";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { fetchSystemInfo } from "@/hooks/use-system";
+import { isTauri } from "@/lib/api-base";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
 import { subscribeGalleryChanged } from "@/lib/gallery-flags";
 import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
@@ -105,6 +116,7 @@ import {
   getAudioDownloadPlan,
   listAudioGallery,
   setAudioClipFlags,
+  transcribeWithProgress,
 } from "./api";
 import {
   type AudioBusy,
@@ -325,6 +337,12 @@ export function AudioPage({
 }) {
   const initialReadySent = useRef(false);
   const [mode, setMode] = useState<CreateMode>("speak");
+  const tourSteps = useMemo(() => buildAudioTourSteps({ mode }), [mode]);
+  const tour = useGuidedTourController({
+    id: "audio",
+    steps: tourSteps,
+    enabled: active,
+  });
   const [selectorOpen, setSelectorOpen] = useState(false);
   const [busy, setBusy] = useState<AudioBusy>(null);
   const busyRef = useRef<AudioBusy>(busy);
@@ -390,6 +408,7 @@ export function AudioPage({
     requestStarted: boolean;
   } | null>(null);
 
+  const [lastSttRepo, setLastSttRepo] = usePersistedChoice("unsloth:audio:last-stt-model", "");
   const [selectedSttRepo, setSelectedSttRepo] = useState<string | null>(null);
   const [sttLoadedModel, setSttLoadedModel] = useState<string | null>(null);
   const [sttLoadedEngine, setSttLoadedEngine] = useState<
@@ -398,8 +417,18 @@ export function AudioPage({
   const [downloadedSttArtifacts, setDownloadedSttArtifacts] = useState<
     SttDownloadedArtifact[]
   >([]);
-  const [transcript, setTranscript] = useState("");
-  const [transcribedName, setTranscribedName] = useState<string | null>(null);
+  const [draftKey] = useState(transcriptDraftKey);
+  const [recoveredTranscript] = useState(() => readTranscriptDraft(draftKey));
+  const [transcript, setTranscript] = useState(recoveredTranscript?.text ?? "");
+  const [transcribedName, setTranscribedName] = useState<string | null>(recoveredTranscript?.title ?? null);
+  const [transcriptModel, setTranscriptModel] = useState(recoveredTranscript?.model ?? "");
+  const [transcriptRecord, setTranscriptRecord] = useState<TranscriptRecord | null>(null);
+  const [transcriptExported, setTranscriptExported] = useState(false);
+  const transcriptVersion = useRef(0);
+  const [transcriptionStartedAt, setTranscriptionStartedAt] = useState<number | null>(null);
+  const [transcriptionFinishedAt, setTranscriptionFinishedAt] = useState<number | null>(null);
+  const [transcriptionStopping, setTranscriptionStopping] = useState(false);
+  const [transcriptionProgress, setTranscriptionProgress] = useState<TranscriptProgress | null>(null);
   const [transcriptError, setTranscriptError] = useState<string | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [micRequestPending, setMicRequestPending] = useState(false);
@@ -537,10 +566,77 @@ export function AudioPage({
   }, []);
 
   const clearTranscript = useCallback(() => {
+    transcriptVersion.current += 1;
     setTranscript("");
     setTranscribedName(null);
     setTranscriptError(null);
+    setTranscriptModel("");
+    setTranscriptRecord(null);
+    setTranscriptExported(false);
   }, []);
+
+  const confirmTranscriptReplacement = useCallback(() => {
+    if (busyRef.current !== null) return false;
+    return (
+      !transcript ||
+      transcriptRecord !== null ||
+      transcriptExported ||
+      window.confirm(
+        "This transcript could not be saved. Download it before continuing, or continue and discard it?",
+      )
+    );
+  }, [transcript, transcriptRecord, transcriptExported]);
+
+  useEffect(() => {
+    const unsaved = Boolean(
+      transcript && transcriptRecord === null && !transcriptExported,
+    );
+    if (!writeTranscriptDraft(
+      draftKey,
+      unsaved ? {
+        text: transcript,
+        title: transcribedName ?? "Transcript",
+        model: transcriptModel,
+      } : null,
+    )) {
+      toast.error("Could not update transcript recovery. Download unsaved text before leaving.");
+    }
+    if (isTauri) {
+      void import("@tauri-apps/api/core")
+        .then(({ invoke }) =>
+          invoke("set_renderer_activity", {
+            kind: "unsaved_transcript",
+            active: unsaved,
+          }),
+        )
+        .catch(() =>
+          toast.error("Could not update transcript close protection."),
+        );
+    }
+    if (!unsaved) return;
+    const warn = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    const confirmLogout = (event: Event) => {
+      if (
+        !window.confirm(
+          "This transcript could not be saved. Download it before logging out, or log out and discard it?",
+        )
+      ) {
+        event.preventDefault();
+      } else if (!writeTranscriptDraft(draftKey, null)) {
+        event.preventDefault();
+        toast.error("Could not discard the transcript recovery copy. Try again.");
+      }
+    };
+    window.addEventListener("beforeunload", warn);
+    window.addEventListener(AUTH_SESSION_ENDING_EVENT, confirmLogout);
+    return () => {
+      window.removeEventListener("beforeunload", warn);
+      window.removeEventListener(AUTH_SESSION_ENDING_EVENT, confirmLogout);
+    };
+  }, [draftKey, transcript, transcribedName, transcriptModel, transcriptRecord, transcriptExported]);
 
   const refreshSttStatus = useCallback(async () => {
     const generation = ++sttStatusRefreshGeneration.current;
@@ -598,10 +694,6 @@ export function AudioPage({
         repoIdForSidecarKey: sttRepoIdForSidecarKey,
         engineForRepo: sttEngineForRepoId,
       });
-      // Shared sidecar: an adopted model strands the previous pick's transcript under it. null is the
-      // 5-minute idle unload, which must not delete it.
-      if (reconciled !== null && reconciled !== selectedSttRepoRef.current)
-        clearTranscript();
       selectedSttRepoRef.current = reconciled;
       setSelectedSttRepo(reconciled);
     } catch {
@@ -609,7 +701,7 @@ export function AudioPage({
       setSttLoadedModel(null);
       setSttLoadedEngine(null);
     }
-  }, [clearTranscript]);
+  }, []);
 
   const sttSelected = selectedSttRepo !== null;
   const sttReady = sttSelectionReady(
@@ -634,7 +726,6 @@ export function AudioPage({
       selectedSttRepoRef.current = null;
       sttLoadGeneration.current += 1;
       sttLoadedByThisPage.current = null;
-      clearTranscript();
       setSelectedSttRepo(null);
     };
     if (!owned) {
@@ -647,7 +738,7 @@ export function AudioPage({
     await unloadSttModel(sttEngineForRepoId(selected), claim);
     forget();
     await refreshSttStatus();
-  }, [clearTranscript, refreshSttStatus, sttReady, sttLoadedModel]);
+  }, [refreshSttStatus, sttReady, sttLoadedModel]);
 
   const ensureClipSrc = useCallback(async (clip: AudioGalleryClip) => {
     const cached = galleryCache.srcById.get(clip.id);
@@ -1414,8 +1505,12 @@ export function AudioPage({
           await loadSttModel(sidecarKey, engine, controller.signal);
           sttLoadedByThisPage.current = sidecarKey;
         }
-        if (isCurrent())
+        if (isCurrent()) {
+          setLastSttRepo(repoId);
           toast.success("Transcription model ready", { id: toastId });
+          return true;
+        }
+        return false;
       } catch (error) {
         if (isCurrent()) {
           toast.error(
@@ -1426,6 +1521,7 @@ export function AudioPage({
           );
         }
       } finally {
+        if (!isCurrent()) toast.dismiss(toastId);
         if (sttLoadingGeneration.current === generation) {
           sttLoadingGeneration.current = null;
           await refreshSttStatus();
@@ -1441,7 +1537,7 @@ export function AudioPage({
         if (sttLoadAbort.current === controller) sttLoadAbort.current = null;
       }
     },
-    [refreshSttStatus],
+    [refreshSttStatus, setLastSttRepo],
   );
 
   // A hidden page may let the shared download continue, but it must not load the sidecar. Returning
@@ -1558,7 +1654,6 @@ export function AudioPage({
         if (!transitionMode("transcribe")) return;
         const sidecarKey = sttSidecarKeyFor(id);
         const engine = sttEngineForRepoId(id);
-        if (selectedSttRepoRef.current !== id) clearTranscript();
         deferredSttLoad.current = null;
         selectedSttRepoRef.current = id;
         setSelectedSttRepo(id);
@@ -1659,7 +1754,6 @@ export function AudioPage({
       await loadOrStageTtsModel(id, exactGguf, meta);
     },
     [
-      clearTranscript,
       ensureSttLoaded,
       isMac,
       loadOrStageTtsModel,
@@ -1974,41 +2068,87 @@ export function AudioPage({
   useEffect(() => () => generateAbort.current?.abort(), []);
 
 
+  const prepareTranscriptionModel = useCallback(async () => {
+    const repo = selectedSttRepoRef.current ?? lastSttRepo;
+    if (!repo) {
+      toast.info("Pick a speech-to-text model first.");
+      return null;
+    }
+    selectedSttRepoRef.current = repo;
+    setSelectedSttRepo(repo);
+    const model = sttSidecarKeyFor(repo);
+    const engine = sttEngineForRepoId(repo);
+    if (sttLoadedModel !== model || sttLoadedEngine !== engine) {
+      if (!(await ensureSttLoaded(repo, model, engine))) return null;
+    }
+    setLastSttRepo(repo);
+    return { model, engine };
+  }, [
+    lastSttRepo,
+    sttLoadedModel,
+    sttLoadedEngine,
+    ensureSttLoaded,
+    setLastSttRepo,
+  ]);
+
   const runTranscription = useCallback(
-    async (blob: Blob, name: string) => {
-      if (!selectedSttRepo) return;
-      const key = sttSidecarKeyFor(selectedSttRepo);
-      const engine = sttEngineForRepoId(selectedSttRepo);
-      if (sttLoadedModel !== key || sttLoadedEngine !== engine) {
-        toast.info("Wait for the transcription model to finish loading.");
-        return;
-      }
-      transcriptionAbort.current?.abort();
+    async (blob: Blob, name: string, confirmedVersion?: number) => {
+      if (
+        transcriptionAbort.current ||
+        busyRef.current !== null ||
+        (confirmedVersion !== transcriptVersion.current &&
+          !confirmTranscriptReplacement())
+      ) return;
+      let started = false;
       const controller = new AbortController();
       transcriptionAbort.current = controller;
-      setBusy("transcribing");
-      // Or a failure reads as this file's transcript, exported under its name.
-      clearTranscript();
-      setTranscribedName(name);
       try {
-        const text = await transcribeAudioBlob(blob, {
-          model: key,
-          engine,
-          language: "",
-          signal: controller.signal,
-        });
-        if (controller.signal.aborted || !activeRef.current) return;
-        setTranscript(text);
-        if (!text) toast.info("The model heard no speech in that audio.");
-      } catch (error) {
+        const target = await prepareTranscriptionModel();
+        if (!target || controller.signal.aborted || !activeRef.current) return;
+        setBusy("transcribing");
+        clearTranscript();
+        setTranscribedName(name);
+        setTranscriptModel(target.model);
+        started = true;
+        setTranscriptionStartedAt(Date.now());
+        setTranscriptionFinishedAt(null);
+        setTranscriptionStopping(false);
+        setTranscriptionProgress(null);
+        const result = await transcribeWithProgress(
+          blob,
+          name,
+          {
+            ...target,
+            device: useVoiceSettingsStore.getState().sttDevice,
+            signal: controller.signal,
+          },
+          (progress) => {
+            if (!controller.signal.aborted) setTranscriptionProgress(progress);
+          },
+        );
         if (controller.signal.aborted) return;
+        setTranscript(result.text);
+        setTranscriptModel(result.model);
+        setTranscriptRecord(result.record);
+        if (!result.text)
+          toast.info("The model heard no speech in that audio.");
+        else if (!result.record)
+          toast.error(
+            "Transcript could not be saved. Download a copy to keep it.",
+          );
+      } catch (error) {
+        if (controller.signal.aborted) {
+          setTranscriptError("Transcription cancelled.");
+          return;
+        }
         const message =
           error instanceof Error ? error.message : "Transcription failed.";
-        if (activeRef.current) setTranscriptError(message);
+        setTranscriptError(message);
         toast.error(message);
       } finally {
         if (transcriptionAbort.current === controller) {
           transcriptionAbort.current = null;
+          if (started) setTranscriptionFinishedAt(Date.now());
           setBusy(null);
           if (activeRef.current) void refreshSttStatus();
         }
@@ -2016,9 +2156,8 @@ export function AudioPage({
     },
     [
       clearTranscript,
-      selectedSttRepo,
-      sttLoadedModel,
-      sttLoadedEngine,
+      confirmTranscriptReplacement,
+      prepareTranscriptionModel,
       refreshSttStatus,
     ],
   );
@@ -2029,11 +2168,18 @@ export function AudioPage({
       if (recorder && recorder.state !== "inactive") recorder.stop();
       return;
     }
-    if (micPendingGeneration.current !== null) return;
+    if (micPendingGeneration.current !== null || busyRef.current !== null) return;
+    if (!confirmTranscriptReplacement()) return;
+    const confirmedVersion = transcriptVersion.current;
     const requestGeneration = ++micRequestGeneration.current;
     micPendingGeneration.current = requestGeneration;
     setMicRequestPending(true);
     try {
+      if (
+        !(await prepareTranscriptionModel()) ||
+        !activeRef.current ||
+        micRequestGeneration.current !== requestGeneration
+      ) return;
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true },
       });
@@ -2102,7 +2248,8 @@ export function AudioPage({
         const blob = new Blob(chunks, {
           type: recorder.mimeType || "audio/webm",
         });
-        if (!discard && blob.size > 0) void runTranscription(blob, "Recording");
+        if (!discard && blob.size > 0)
+          void runTranscription(blob, "Recording", confirmedVersion);
       });
       recorderRef.current = recorder;
       // A timeslice is what makes the byte cap observable: with none, some browsers hold the whole
@@ -2129,20 +2276,24 @@ export function AudioPage({
         setMicRequestPending(false);
       }
     }
-  }, [isRecording, runTranscription, stopRecordStream]);
+  }, [
+    isRecording,
+    runTranscription,
+    stopRecordStream,
+    prepareTranscriptionModel,
+    confirmTranscriptReplacement,
+  ]);
 
   // Release the microphone on unmount AND whenever the page goes inactive: the page stays mounted
   // across tab switches, so unmount alone left a hidden recorder capturing.
   useEffect(() => {
     if (!active) {
       stopAndDiscardRecording();
-      transcriptionAbort.current?.abort();
     }
-    return () => {
-      stopAndDiscardRecording();
-      transcriptionAbort.current?.abort();
-    };
+    return stopAndDiscardRecording;
   }, [active, stopAndDiscardRecording]);
+
+  useEffect(() => () => transcriptionAbort.current?.abort(), []);
 
   const handleTranscribeFile = useCallback(
     (file: File | undefined) => {
@@ -2159,18 +2310,14 @@ export function AudioPage({
     );
   }, [transcript]);
 
-  const handleDownloadTranscript = useCallback(() => {
-    const blob = new Blob([transcript], { type: "text/plain" });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = `${(transcribedName ?? "transcript").replace(/\.[^.]+$/, "")}.txt`;
-    anchor.click();
-    // Deferred like the gallery download below: browsers that resolve the synthetic navigation
-    // asynchronously were left with a revoked URL and no file.
-    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  const handleDownloadTranscript = useCallback(async () => {
+    const version = transcriptVersion.current;
+    if (
+      (await downloadTranscript(transcript, transcribedName ?? "transcript")) &&
+      transcriptVersion.current === version
+    )
+      setTranscriptExported(true);
   }, [transcript, transcribedName]);
-
 
   const dropClip = useCallback((id: string) => {
     galleryCache.srcById.delete(id);
@@ -2416,6 +2563,8 @@ export function AudioPage({
 
   return (
     <div className="@container flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]">
+      {/* Portals to body, and this page stays mounted off-route, so gate it like the composer. */}
+      {active && <GuidedTour {...tour.tourProps} />}
       {/* Keep the tabs centered over the preview at every width. The model rail holds at 408px when
           space permits and shrinks only to preserve the controls. */}
       <div className="pointer-events-none relative z-40 grid h-[48px] shrink-0 grid-cols-[minmax(0,408px)_minmax(13rem,1fr)]">
@@ -2423,6 +2572,7 @@ export function AudioPage({
           {/* A long resident model name must yield to the mode pill instead of painting over it. */}
           <div className="pointer-events-auto flex min-w-0 max-w-full items-center gap-2 overflow-hidden pt-[var(--studio-chat-header-padding-top,11px)]">
             <ModelSelector
+              triggerDataTour="audio-model"
               models={selectorModels}
               additionalOnDeviceModels={
                 mode === "transcribe" ? sttOnDeviceModels : trainedTtsModels
@@ -2492,7 +2642,10 @@ export function AudioPage({
       {/* Below 50rem the panes stack and the page scrolls as one column, matching Images and Video:
           side by side, the 408px rail plus a usable preview needs more width. */}
       <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden @[50rem]:flex-row @[50rem]:overflow-hidden">
-        <div className="flex w-full shrink-0 flex-col border-b border-border/60 @[50rem]:w-[408px] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0">
+        <div
+          data-tour="audio-settings"
+          className="flex w-full shrink-0 flex-col border-b border-border/60 @[50rem]:w-[408px] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0"
+        >
           <div
             ref={attachSettingsScroll}
             onScroll={onSettingsScroll}
@@ -2520,6 +2673,7 @@ export function AudioPage({
             </div>
 
             <PillTabs
+              dataTour="audio-mode"
               ariaLabel="Create mode"
               value={mode}
               onValueChange={(v) => transitionMode(v as CreateMode)}
@@ -2709,11 +2863,12 @@ export function AudioPage({
                   }
                 >
                   <Button
+                    data-tour="audio-record"
                     id="audio-record"
                     variant={isRecording ? "destructive" : "secondary"}
                     disabled={
                       !recordingSupported ||
-                      (!isRecording && (!sttReady || busy !== null)) ||
+                      (!isRecording && (!(sttSelected || lastSttRepo) || busy !== null)) ||
                       micRequestPending
                     }
                     onClick={handleRecordToggle}
@@ -2725,7 +2880,7 @@ export function AudioPage({
                     {isRecording
                       ? "Stop recording"
                       : micRequestPending
-                        ? "Waiting for microphone…"
+                        ? busy === "loading" ? "Loading model…" : "Waiting for microphone…"
                         : "Record"}
                   </Button>
                 </Field>
@@ -2739,7 +2894,7 @@ export function AudioPage({
                     type="file"
                     accept="audio/*"
                     disabled={
-                      !sttReady ||
+                      !(sttSelected || lastSttRepo) ||
                       busy !== null ||
                       isRecording ||
                       micRequestPending
@@ -2751,7 +2906,7 @@ export function AudioPage({
                     className="text-ui-13 file:mr-3 file:rounded-md file:border-0 file:bg-muted file:px-3 file:py-1.5 file:text-ui-13 file:font-medium"
                   />
                 </Field>
-                {sttSelected ? null : (
+                {sttSelected || lastSttRepo ? null : (
                   <p className="text-ui-11p5 leading-snug text-muted-foreground">
                     Pick a speech-to-text model (Whisper or Qwen3-ASR) from the
                     selector above to transcribe.
@@ -2813,61 +2968,103 @@ export function AudioPage({
           ) : null}
         </div>
 
-        <div className="relative flex min-h-[60dvh] min-w-0 flex-1 flex-col overflow-hidden @[50rem]:min-h-0">
+        <div
+          data-tour="audio-output"
+          className="relative flex min-h-[60dvh] min-w-0 flex-1 flex-col overflow-hidden @[50rem]:min-h-0"
+        >
           {mode === "transcribe" ? (
             <div
               data-reload-snapshot-sensitive={
                 transcript || transcribedName ? "" : undefined
               }
-              className="hover-scrollbar flex flex-1 flex-col gap-3 overflow-auto p-6 px-10 @[50rem]:pt-[60px]"
+              className="flex min-h-0 flex-1 flex-col gap-3 p-6 px-10 @[50rem]:pt-[60px]"
             >
-              {busy === "transcribing" ? (
-                <div className="flex items-center gap-2 text-ui-13 text-muted-foreground">
-                  <Spinner className="size-4" />
-                  Transcribing {transcribedName ?? "audio"}…
-                </div>
-              ) : null}
-              {transcript ? (
-                <>
-                  <div className="flex items-center gap-2">
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      onClick={handleCopyTranscript}
-                    >
-                      Copy
-                    </Button>
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      onClick={handleDownloadTranscript}
-                    >
-                      <HugeiconsIcon
-                        icon={Download01Icon}
-                        className="mr-2 size-3.5"
-                      />
-                      Download .txt
-                    </Button>
+              <div className="hover-scrollbar flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
+                {transcriptionStartedAt !== null && (
+                  <TranscriptionProgress
+                    startedAt={transcriptionStartedAt}
+                    finishedAt={transcriptionFinishedAt}
+                    stopping={transcriptionStopping}
+                    progress={transcriptionProgress}
+                    onCancel={() => {
+                      setTranscriptionStopping(true);
+                      transcriptionAbort.current?.abort();
+                    }}
+                  />
+                )}
+                {transcript ? (
+                  <>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={handleCopyTranscript}
+                      >
+                        Copy
+                      </Button>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={handleDownloadTranscript}
+                      >
+                        <HugeiconsIcon icon={Download01Icon} className="mr-2 size-3.5" />
+                        Download .txt
+                      </Button>
+                    </div>
+                    <div className="flex items-center gap-2 text-ui-11p5 text-muted-foreground">
+                      <span className="truncate">{transcribedName}</span>
+                      <span>·</span>
+                      <span className="truncate">{transcriptModel}</span>
+                      {!transcriptRecord && !transcriptExported && (
+                        <span>· Not saved</span>
+                      )}
+                    </div>
+                    <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground">
+                      {transcript}
+                    </p>
+                  </>
+                ) : transcriptError ? (
+                  <div className="flex flex-col gap-1" role="alert">
+                    <p className="text-ui-13 font-medium text-destructive">
+                      Could not transcribe {transcribedName ?? "that audio"}.
+                    </p>
+                    <p className="text-ui-13 text-muted-foreground">{transcriptError}</p>
                   </div>
-                  <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground">
-                    {transcript}
-                  </p>
-                </>
-              ) : transcriptError ? (
-                <div className="flex flex-col gap-1" role="alert">
-                  <p className="text-ui-13 font-medium text-destructive">
-                    Could not transcribe {transcribedName ?? "that audio"}.
-                  </p>
+                ) : busy !== "transcribing" ? (
                   <p className="text-ui-13 text-muted-foreground">
-                    {transcriptError}
+                    Record or upload audio to transcribe. Completed transcripts are saved
+                    to history.
                   </p>
-                </div>
-              ) : busy !== "transcribing" ? (
-                <p className="text-ui-13 text-muted-foreground">
-                  The transcript appears here. It is not stored: copy or
-                  download what you want to keep.
-                </p>
-              ) : null}
+                ) : null}
+              </div>
+              <div className="shrink-0 pt-4">
+                <TranscriptGallery
+                  autoSelect={!transcript && !transcribedName && busy === null}
+                  active={active && mode === "transcribe"}
+                  currentId={transcriptRecord?.id ?? null}
+                  latest={transcriptRecord}
+                  canSelect={confirmTranscriptReplacement}
+                  onSelect={(record) => {
+                    transcriptVersion.current += 1;
+                    setTranscript(record.text);
+                    setTranscribedName(record.title);
+                    setTranscriptModel(record.model);
+                    setTranscriptRecord(record);
+                    setTranscriptError(null);
+                    setTranscriptExported(false);
+                    setTranscriptionStartedAt(null);
+                  }}
+                  onDelete={(ids) => {
+                    if (
+                      transcriptRecord &&
+                      (ids === null
+                        ? !transcriptRecord.archived
+                        : ids.includes(transcriptRecord.id))
+                    )
+                      clearTranscript();
+                  }}
+                />
+              </div>
             </div>
           ) : (
             <div className="flex min-h-0 flex-1 flex-col gap-4 p-6 px-10 @[50rem]:pt-[60px]">

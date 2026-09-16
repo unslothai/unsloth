@@ -19,6 +19,7 @@ import {
   useExternalProvidersStore,
   formatMcpToolName,
   mcpServerFromProvenance,
+  mcpToolFromProvenance,
 } from "@/features/chat";
 import { FIND_SKIP_ATTRIBUTE } from "@/features/find-in-page";
 import { cn } from "@/lib/utils";
@@ -135,10 +136,14 @@ function toolCategoryFromCall(toolName: string): string | null {
   return null;
 }
 
-function formatToolCallName(toolName: string, mcpServer?: string): string {
+function formatToolCallName(toolName: string, provenance?: unknown): string {
   const normalized = toolName.toLowerCase();
   if (TOOL_CALL_LABELS[normalized]) return TOOL_CALL_LABELS[normalized];
-  const mcpLabel = formatMcpToolName(toolName, mcpServer);
+  const mcpLabel = formatMcpToolName(
+    toolName,
+    mcpServerFromProvenance(provenance),
+    mcpToolFromProvenance(provenance),
+  );
   if (mcpLabel) return `MCP: ${mcpLabel}`;
   // Malformed but still MCP: keep the prefix so the category check agrees.
   if (normalized.startsWith("mcp__")) return `MCP: ${toolName.slice(5)}`;
@@ -166,17 +171,18 @@ function toolCallsFromContent(content: unknown): string[] {
   );
 }
 
-function mcpServersFromContent(content: unknown): Map<string, string> {
-  const servers = new Map<string, string>();
-  if (!Array.isArray(content)) return servers;
+function mcpProvenanceFromContent(content: unknown): Map<string, unknown> {
+  const provenance = new Map<string, unknown>();
+  if (!Array.isArray(content)) return provenance;
   for (const part of content) {
     if (!part || typeof part !== "object") continue;
     const p = part as { type?: unknown; toolName?: unknown; provenance?: unknown };
     if (p.type !== "tool-call" || typeof p.toolName !== "string") continue;
-    const server = mcpServerFromProvenance(p.provenance);
-    if (server) servers.set(p.toolName, server);
+    if (mcpServerFromProvenance(p.provenance)) {
+      provenance.set(p.toolName, p.provenance);
+    }
   }
-  return servers;
+  return provenance;
 }
 
 function enabledTools(
@@ -200,11 +206,11 @@ function enabledTools(
 
 function calledTools(
   toolCalls: string[],
-  mcpServers: Map<string, string>,
+  mcpProvenance: Map<string, unknown>,
 ): string | null {
   if (toolCalls.length === 0) return null;
   return uniqueValues(
-    toolCalls.map((name) => formatToolCallName(name, mcpServers.get(name))),
+    toolCalls.map((name) => formatToolCallName(name, mcpProvenance.get(name))),
   ).join(", ");
 }
 
@@ -365,7 +371,7 @@ export const MessageResponseDetailsSheet: FC<{
   const summaryLabel =
     modelLabel === "Not recorded" ? "Model not recorded" : `Used ${modelLabel}`;
   const messageToolCalls = toolCallsFromContent(message.content);
-  const mcpServers = mcpServersFromContent(message.content);
+  const mcpProvenance = mcpProvenanceFromContent(message.content);
   const toolCalls =
     responseDetails?.toolCalls && responseDetails.toolCalls.length > 0
       ? responseDetails.toolCalls
@@ -500,7 +506,7 @@ export const MessageResponseDetailsSheet: FC<{
               label="Enabled"
               value={enabledTools(responseDetails?.tools, toolCalls)}
             />
-            <DetailRow label="Called" value={calledTools(toolCalls, mcpServers)} />
+            <DetailRow label="Called" value={calledTools(toolCalls, mcpProvenance)} />
             <DetailRow
               label="Confirmation"
               value={

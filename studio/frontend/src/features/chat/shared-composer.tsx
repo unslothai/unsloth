@@ -13,6 +13,13 @@ import {
   thinkEffortAriaLabel,
   thinkToggleAriaLabel,
 } from "@/components/assistant-ui/think-aria-label";
+import { ComposerDraftPreview } from "@/components/assistant-ui/composer-draft-preview";
+import { useChatPreferencesStore } from "./stores/chat-preferences-store";
+import {
+  composerSubmitIntent,
+  composerShortcutLabels,
+} from "./utils/composer-preferences";
+import { useT } from "@/i18n";
 import { Button } from "@/components/ui/button";
 import { BulbIcon } from "@/lib/bulb-icon";
 import { MicIcon } from "@/lib/mic-icon";
@@ -43,6 +50,8 @@ import {
   COMPOSER_INPUT_SELECTOR,
   isSurfaceInForeground,
   useShortcut,
+  useSettingsDialogStore,
+  isMacPlatform,
 } from "@/features/settings";
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import {
@@ -78,6 +87,7 @@ import {
   MoreHorizontalIcon,
   PlusIcon,
   SquareIcon,
+  SlidersHorizontalIcon,
   XIcon,
 } from "lucide-react";
 import {
@@ -558,6 +568,9 @@ export function SharedComposer({
   sendUnavailableReason?: string;
   requireStableCheckpoint?: boolean;
 }): ReactElement {
+  const t = useT();
+  const sendShortcut = useChatPreferencesStore((s) => s.sendShortcut);
+  const shortcutLabels = composerShortcutLabels(sendShortcut, isMacPlatform());
   const navigate = useNavigate();
   // Exit compare: parent's restore handler, or fresh chat if opened by URL.
   const handleExitCompare = useCallback(() => {
@@ -1159,7 +1172,7 @@ export function SharedComposer({
     if (isGeneralizedCompare) {
       compareLifecycleLease = useChatRuntimeStore
         .getState()
-        .beginModelLoading();
+        .beginModelLoading("preparing");
       if (compareLifecycleLease === null) {
         toast.info("A model is loading", {
           description: "Wait for it to finish or cancel it first.",
@@ -1181,7 +1194,7 @@ export function SharedComposer({
       }
       compareLifecycleLease = useChatRuntimeStore
         .getState()
-        .beginModelLoading();
+        .beginModelLoading("preparing");
       if (compareLifecycleLease === null) {
         throw new Error("Another model load started during comparison");
       }
@@ -1490,6 +1503,12 @@ export function SharedComposer({
                 gpu_layers: effectiveGpuLayers,
                 // Slots scale the KV estimate; keep validate sized like the load.
                 n_parallel: ownConfig.nParallel ?? null,
+                reasoning_budget: resolvedIsDiffusion
+                  ? -1
+                  : ownConfig.reasoningBudget,
+                reasoning_budget_message: resolvedIsDiffusion
+                  ? ""
+                  : ownConfig.reasoningBudgetMessage,
                 // Only when this panel has read the stored value: omitted, the load inherits it, which is what
                 // keeps CLI-set flags working.
                 ...(ownConfig.llamaExtraArgs !== undefined
@@ -1567,6 +1586,14 @@ export function SharedComposer({
           mlx_kv_bits: ownConfig.mlxKvBits ?? null,
           speculative_type: effectiveSpeculativeType,
           spec_draft_n_max: effectiveSpecDraftNMax,
+          reasoning_budget:
+            targetIsGguf && !resolvedIsDiffusion
+              ? ownConfig.reasoningBudget
+              : -1,
+          reasoning_budget_message:
+            targetIsGguf && !resolvedIsDiffusion
+              ? ownConfig.reasoningBudgetMessage
+              : "",
           tensor_parallel: effectiveTensorParallel,
           disable_vision: effectiveDisableVision,
           force_cancel_active:
@@ -1666,6 +1693,30 @@ export function SharedComposer({
           // Click-time value, not the resolved echo (see the single-model load).
           nParallel: committedSlots,
           loadedNParallel: committedSlots,
+          reasoningBudget:
+            targetIsGguf && !(resp.is_diffusion ?? false)
+              ? (resp.reasoning_budget ?? ownConfig.reasoningBudget)
+              : -1,
+          loadedReasoningBudget:
+            targetIsGguf && !(resp.is_diffusion ?? false)
+              ? (resp.reasoning_budget ?? ownConfig.reasoningBudget)
+              : -1,
+          reasoningBudgetMessage:
+            targetIsGguf && !(resp.is_diffusion ?? false)
+              ? (resp.reasoning_budget_message ??
+                ownConfig.reasoningBudgetMessage)
+              : "",
+          loadedReasoningBudgetMessage:
+            targetIsGguf && !(resp.is_diffusion ?? false)
+              ? (resp.reasoning_budget_message ??
+                ownConfig.reasoningBudgetMessage)
+              : "",
+          loadedReasoningBudgetRequested: targetIsGguf && !resp.is_diffusion
+            ? (resp.requested_reasoning_budget ?? ownConfig.reasoningBudget)
+            : -1,
+          loadedReasoningBudgetMessageRequested: targetIsGguf && !resp.is_diffusion
+            ? (resp.requested_reasoning_budget_message ?? ownConfig.reasoningBudgetMessage)
+            : "",
           nBatch: committedNBatch,
           loadedNBatch: committedNBatch,
           nUbatch: committedNUbatch,
@@ -1912,7 +1963,7 @@ export function SharedComposer({
       }
       setCompositionState(false);
     }
-    if (e.key === "Enter" && !e.shiftKey) {
+    if (composerSubmitIntent(e, sendShortcut)) {
       e.preventDefault();
       if (!busy && !isDictating) {
         send();
@@ -2240,6 +2291,7 @@ export function SharedComposer({
         </div>
       )}
       {skillMentions.popover}
+      <ComposerDraftPreview text={text} />
 
       <textarea
         {...skillMentions.inputProps}
@@ -2438,19 +2490,26 @@ export function SharedComposer({
               {pinnedPlusItems.map((id) => (
                 <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
               ))}
-              {overflowPlusItems.length > 0 ? (
-                <DropdownMenuSub>
-                  <DropdownMenuSubTrigger>
-                    <MoreHorizontalIcon className="size-4" />
-                    More
-                  </DropdownMenuSubTrigger>
-                  <DropdownMenuSubContent className="unsloth-plus-menu w-[248px]">
-                    {overflowPlusItems.map((id) => (
-                      <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
-                    ))}
-                  </DropdownMenuSubContent>
-                </DropdownMenuSub>
-              ) : null}
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>
+                  <MoreHorizontalIcon className="size-4" />
+                  More
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent className="unsloth-plus-menu w-[248px]">
+                  {overflowPlusItems.map((id) => (
+                    <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
+                  ))}
+                  {overflowPlusItems.length > 0 && <DropdownMenuSeparator />}
+                  <DropdownMenuItem
+                    onSelect={() => useSettingsDialogStore.getState().openDialog("chat", {
+                      scrollTarget: "chat-composer",
+                    })}
+                  >
+                    <SlidersHorizontalIcon className="size-4" />
+                    {t("composerSettings.settings")}
+                  </DropdownMenuItem>
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
             </DropdownMenuContent>
           </DropdownMenu>
           {/* Active in compare mode; sits first. Click to exit back to single chat. */}
@@ -2842,14 +2901,17 @@ export function SharedComposer({
             </Button>
           ) : (
             <TooltipIconButton
-              tooltip={sendUnavailableReason ?? "Send message"}
+              tooltip={
+                sendUnavailableReason ??
+                t("promptQueue.sendTooltip", { shortcut: shortcutLabels.send })
+              }
               side="bottom"
               variant="default"
               size="icon"
               className="ml-1.5 size-9 rounded-full"
               onClick={send}
               disabled={!canSend}
-              aria-label="Send message"
+              aria-label={t("promptQueue.sendLabel")}
             >
               <ArrowUpIcon className="unsloth-send-icon size-[22px] stroke-2" />
             </TooltipIconButton>
