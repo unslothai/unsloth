@@ -2663,22 +2663,37 @@ if (-not $HasNvidiaSmi) {
     #
     # Get-Date rather than a Stopwatch: Constrained Language Mode refuses the method calls, and
     # this runs on hosts that enforce it.
+    # Enumerated BEFORE the clock starts. Discovery is Test-Path calls, but on a machine with a
+    # filesystem filter driver or slow storage it is not free, and charging it to the probe
+    # budget is how a slow disk turns into no GPU.
+    $smiCandidates = @(Get-NvidiaSmiCandidatePaths)
+    # Two budgets, because "stop early" means two different things here.
+    #
+    # The soft one applies ONLY once a usable answer is already in hand: there is a working
+    # nvidia-smi, and continuing just looks for a better CUDA banner. Giving that up costs at
+    # most a wheel family.
+    #
+    # The hard one is the only thing allowed to end the search with NOTHING found, because that
+    # outcome is CPU-only PyTorch on a machine with a GPU. The first version of this had a single
+    # budget and broke out of the loop after one slow failure, so a host whose System32 copy is
+    # broken and whose legacy NVSMI copy works lost its GPU entirely. That is strictly worse than
+    # the stall it was added to prevent.
     $probeDeadline = (Get-Date).AddSeconds(30)
+    $probeHardDeadline = (Get-Date).AddSeconds(60)
     $firstListing = $null
     # Captured beside the path, because $script:NvidiaSmiWedged describes the LAST binary probed
     # and the one this loop settles on can be an earlier one. Captured rather than assumed to be
     # false: it is false today because a candidate only becomes $firstListing when its -L probe
     # succeeded, and that is a property of Test-NvidiaSmiHasGpu rather than of this loop.
     $firstListingWedged = $false
-    foreach ($p in @(Get-NvidiaSmiCandidatePaths)) {
-        # After at least one probe, never before: the deadline must not be able to skip the whole
-        # loop on a slow machine and report no GPU without having looked.
+    foreach ($p in $smiCandidates) {
+        # Only give up early when there is already something to fall back on.
         if ($null -ne $firstListing -and (Get-Date) -gt $probeDeadline) { break }
+        # With nothing found, keep going to the hard bound. Reporting no GPU is the expensive
+        # answer, so it has to be the one that costs the most before it is reached.
+        if ((Get-Date) -gt $probeHardDeadline) { break }
         try {
-            if (-not (Test-NvidiaSmiHasGpu $p)) {
-                if ((Get-Date) -gt $probeDeadline) { break }
-                continue
-            }
+            if (-not (Test-NvidiaSmiHasGpu $p)) { continue }
             if (-not $firstListing) {
                 $firstListing = $p
                 $firstListingWedged = $script:NvidiaSmiWedged

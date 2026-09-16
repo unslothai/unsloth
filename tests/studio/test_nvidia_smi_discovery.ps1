@@ -188,7 +188,7 @@ try {
 # with no parseable CUDA version; the one searched second reports 12.8. Taking the first would
 # send a cu128-capable host to cu126, purely because of which directory is searched first.
 $setupAll = Get-Content -Raw -LiteralPath $setupPs1
-$start = $setupAll.IndexOf('$firstListing = $null')
+$start = $setupAll.IndexOf('$smiCandidates = @(Get-NvidiaSmiCandidatePaths)')
 if ($start -lt 0) { Check "the detection loop still makes two passes" $false }
 else {
     # Bounded by the next statement rather than by a character count. A fixed 1400 stopped
@@ -217,7 +217,7 @@ function Get-NvidiaSmiCandidatePaths { return @("C:\first\nvidia-smi.exe", "C:\s
 # $firstListing instead left $probeDeadline undefined inside the slice, and a comparison
 # against $null broke out on the first iteration: every driven check below then passed or
 # failed for the wrong reason. Observed here before it was fixed.
-$loopStart = $setupAll.IndexOf('$probeDeadline = (Get-Date)')
+$loopStart = $setupAll.IndexOf('$smiCandidates = @(Get-NvidiaSmiCandidatePaths)')
 $loopEnd = $setupAll.IndexOf('if (-not $HasNvidiaSmi -and (Get-NvidiaLibraryInventory))', $loopStart)
 # The slice starts inside setup.ps1's "if (-not $HasNvidiaSmi) {" block, so it carries that
 # block's closing brace and is short one opening brace. Supply the opener rather than trimming a
@@ -249,9 +249,11 @@ Check "with no version anywhere, the first listing candidate is still taken" (
 # The deadline in the shipped file is 30 seconds, which no test should sit through. The slice is
 # rewritten to 2 before it is invoked, and the real value is asserted separately just below so
 # that rewrite cannot quietly become the thing being tested.
-Check "the shipped deadline is 30 seconds" ($setupAll -match '\$probeDeadline = \(Get-Date\)\.AddSeconds\(30\)')
-$fastLoop = $loopSrc -replace 'AddSeconds\(30\)', 'AddSeconds(2)'
-Check "the slice really carries the shortened deadline (bites)" ($fastLoop -match 'AddSeconds\(2\)')
+Check "the shipped soft deadline is 30 seconds" ($setupAll -match '\$probeDeadline = \(Get-Date\)\.AddSeconds\(30\)')
+Check "the shipped hard deadline is 60 seconds" ($setupAll -match '\$probeHardDeadline = \(Get-Date\)\.AddSeconds\(60\)')
+$fastLoop = ($loopSrc -replace 'AddSeconds\(30\)', 'AddSeconds(2)') -replace 'AddSeconds\(60\)', 'AddSeconds(4)'
+Check "the slice really carries both shortened deadlines (bites)" (
+    $fastLoop -match 'AddSeconds\(2\)' -and $fastLoop -match 'AddSeconds\(4\)')
 
 $script:Probed = 0
 function Test-NvidiaSmiHasGpu { param([string]$Exe) $script:Probed++; Start-Sleep -Milliseconds 700; return $true }
@@ -323,6 +325,50 @@ $NvidiaSmiExe = $null
 Invoke-Expression $loopSrc
 Check "control: a selected binary that did hang is still reported wedged" (
     $script:NvidiaSmiWedged -eq $true)
+
+# ------------------------------------- giving up must never cost a GPU that was there to find
+#
+# This is the regression the first version of the deadline introduced, found by an adversarial
+# audit rather than by me. One budget, and a break in the failure branch, meant that a single
+# slow FAILING probe ended the whole search. A machine whose System32 copy is broken and whose
+# legacy NVSMI copy works lost its GPU entirely and went to CPU-only PyTorch, which is strictly
+# worse than the stall the deadline was added to prevent. The comment above the old break even
+# claimed this could not happen.
+#
+# Two budgets now: the soft one only applies once there is already a usable answer, and only the
+# hard one may end the search empty-handed.
+$script:Probed = 0
+function Test-NvidiaSmiHasGpu {
+    param([string]$Exe)
+    $script:Probed++
+    if ($Exe -like "*broken*") { Start-Sleep -Milliseconds 2500; return $false }   # slow AND failing
+    return $true
+}
+function Invoke-NvidiaSmiBounded { param($Exe, $Arguments) return "CUDA Version: 12.8" }
+function Get-NvidiaSmiCandidatePaths {
+    return @("C:\broken\nvidia-smi.exe", "C:\legacy\nvidia-smi.exe")
+}
+$script:NvidiaSmiWedged = $false
+$HasNvidiaSmi = $false
+$NvidiaSmiExe = $null
+Invoke-Expression $fastLoop
+Check "a slow FAILING first probe does not end the search" ($script:Probed -ge 2)
+Check "the working copy behind it is still found" (
+    $HasNvidiaSmi -eq $true -and $NvidiaSmiExe -eq "C:\legacy\nvidia-smi.exe")
+
+# The hard bound still exists: with nothing working anywhere, the loop stops rather than walking
+# an unbounded list. This is the property the deadline was added for, and it must survive the fix.
+$script:Probed = 0
+function Test-NvidiaSmiHasGpu { param([string]$Exe) $script:Probed++; Start-Sleep -Milliseconds 700; return $false }
+function Get-NvidiaSmiCandidatePaths { return @(1..20 | ForEach-Object { "C:\wedged$_\nvidia-smi.exe" }) }
+$HasNvidiaSmi = $false
+$NvidiaSmiExe = $null
+$t0 = Get-Date
+Invoke-Expression $fastLoop
+$spent = ((Get-Date) - $t0).TotalSeconds
+Check "with nothing working the hard bound still stops the walk" ($script:Probed -lt 20)
+Check "and it spends the HARD budget, not the soft one, before giving up" ($spent -ge 2)
+Check "control: giving up empty-handed really reports no GPU" ($HasNvidiaSmi -eq $false)
 
 if ($failures -gt 0) {
     Write-Host "$failures check(s) failed" -ForegroundColor Red
