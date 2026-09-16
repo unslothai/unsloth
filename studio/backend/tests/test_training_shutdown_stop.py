@@ -106,3 +106,60 @@ def test_a_refused_stop_is_reported(backend, monkeypatch):
     _running(backend)
     _record_stop(monkeypatch, backend, result = False)
     assert backend.stop_for_shutdown(timeout = 5) is False
+
+
+def _pump(backend, seconds: float) -> threading.Event:
+    """A pump still writing the run record for ``seconds`` after the worker is gone."""
+    written = threading.Event()
+    backend._pump_thread = threading.Thread(
+        target = lambda: (time.sleep(seconds), written.set()), daemon = True
+    )
+    backend._pump_thread.start()
+    return written
+
+
+def test_a_worker_that_exited_still_waits_for_the_run_record(backend, monkeypatch):
+    # Left running, the row is rewritten to an error on the next start, losing the stopped status.
+    proc = _running(backend)
+    proc.alive = False
+    written = _pump(backend, 0.6)
+    calls = _record_stop(monkeypatch, backend)
+    assert backend.stop_for_shutdown(timeout = 5) is True
+    assert written.is_set()
+    assert calls == []
+
+
+def test_the_stop_waits_for_the_run_record_after_the_worker_exits(backend, monkeypatch):
+    proc = _running(backend)
+    written = _pump(backend, 0.6)
+    _record_stop(
+        monkeypatch,
+        backend,
+        on_stop = lambda: threading.Timer(0.2, lambda: setattr(proc, "alive", False)).start(),
+    )
+    assert backend.stop_for_shutdown(timeout = 5) is True
+    assert written.is_set()
+
+
+def test_a_lingering_worker_is_not_held_for_its_pump(backend, monkeypatch):
+    # The pump cannot exit while the worker lives, so waiting on it would burn the whole budget.
+    _running(backend)
+    _pump(backend, 30)
+    _record_stop(
+        monkeypatch,
+        backend,
+        on_stop = lambda: threading.Timer(0.2, backend._complete_seen.set).start(),
+    )
+    t0 = time.monotonic()
+    assert backend.stop_for_shutdown(timeout = 5) is True
+    assert time.monotonic() - t0 < 4
+
+
+def test_the_run_record_wait_is_bounded(backend, monkeypatch):
+    proc = _running(backend)
+    proc.alive = False
+    _pump(backend, 30)
+    _record_stop(monkeypatch, backend)
+    t0 = time.monotonic()
+    assert backend.stop_for_shutdown(timeout = 0.5) is True
+    assert 0.4 < time.monotonic() - t0 < 3
