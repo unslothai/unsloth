@@ -32,6 +32,9 @@ import re
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# run_pwsh treats this as the verdict, so a real result is never retried as a startup crash.
+_VERDICT = "All Get-UvSafeRequirementsPath checks passed"
 INSTALL_PS1 = REPO_ROOT / "install.ps1"
 
 HELPER = "Get-UvSafeRequirementsPath"
@@ -113,18 +116,20 @@ def test_the_helper_behaviour_suite_runs():
     including the fallback chain and the give-up warning.
     """
     import shutil
-    import subprocess
 
     import pytest
+
+    from unsloth_pwsh_runner import run_pwsh
 
     if shutil.which("pwsh") is None:
         pytest.skip("pwsh not available")
     script = REPO_ROOT / "tests" / "studio" / "test_uv_safe_requirements_path.ps1"
     assert script.is_file(), f"missing: {script}"
-    proc = subprocess.run(
+    proc = run_pwsh(
         ["pwsh", "-NoProfile", "-File", str(script)],
+        verdict = _VERDICT,
         capture_output = True,
         text = True,
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert "All Get-UvSafeRequirementsPath checks passed" in proc.stdout, proc.stdout
+    assert _VERDICT in proc.stdout, proc.stdout
