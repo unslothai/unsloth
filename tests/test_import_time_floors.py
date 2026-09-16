@@ -676,7 +676,7 @@ def test_the_mlx_branch_installs_the_torch_diagnosis():
     bare AttributeError this PR exists to replace. The branch already mirrors three other
     _gpu_init fixes for exactly this reason."""
     source = (_UNSLOTH / "__init__.py").read_text(encoding = "utf-8")
-    mlx_branch = source[source.index("if _IS_MLX:"):source.index("import unsloth_zoo")]
+    mlx_branch = source[source.index("if _IS_MLX:") : source.index("import unsloth_zoo")]
     assert "patch_torch_missing_attribute_error" in mlx_branch, (
         "DRIFT DETECTED: the MLX branch no longer installs the torch-too-old diagnosis, "
         "so it is installed only on the GPU path."

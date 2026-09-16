@@ -2105,6 +2105,7 @@ def _blank_c_comments(source: str) -> str:
     and deleting text would move one relative to the other. Newlines are kept for the same
     reason, since both patterns are line-anchored.
     """
+
     def blank(match):
         text = match.group(0)
         return "".join("\n" if character == "\n" else " " for character in text)
