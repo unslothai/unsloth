@@ -4429,6 +4429,22 @@ exit 0
     # ── Windows on ARM: get an x64 CPython ──
     # --architecture x64 forces winget off the ARM64 build; python.org takes the same override.
     function Install-X64Python {
+        # Same ordering, and for the same reason, as the generic bootstrap below: winget's
+        # Python package hard-codes PrependPath=1, so inside an active conda environment a
+        # winget install puts Python in front of conda on PATH and there is no switch that
+        # asks it not to. python.org first there, python.org first here; without this, the
+        # Windows-on-ARM path reaches winget and recreates the corruption this change exists
+        # to prevent. winget stays as the fallback, because no x64 Python at all is a STOP.
+        $pythonOrgTried = $false
+        if (Test-ActiveCondaEnvironment) {
+            substep "conda environment active ($env:CONDA_PREFIX) -- installing x64 Python from python.org, which can be installed without taking PATH priority." "Yellow"
+            $pythonOrgTried = $true
+            $found = Install-PythonFromPythonOrg -Arch "x86_64"
+            if ($found -and $found.Arch -eq "x86_64") { return $found }
+            if ($script:WingetAvailable) {
+                substep "python.org could not provide an x64 Python -- falling back to winget, whose package always puts Python ahead of conda on PATH." "Yellow"
+            }
+        }
         if ($script:WingetAvailable) {
             $prevEAP = $ErrorActionPreference
             $ErrorActionPreference = "Continue"
@@ -4441,8 +4457,12 @@ exit 0
             if ($found -and $found.Arch -eq "x86_64") { return $found }
             substep "winget could not provide an x64 Python -- trying python.org..." "Yellow"
         }
-        $found = Install-PythonFromPythonOrg -Arch "x86_64"
-        if ($found -and $found.Arch -eq "x86_64") { return $found }
+        # $pythonOrgTried, so an offline box inside conda does not sit through the same
+        # failing download twice.
+        if (-not $pythonOrgTried) {
+            $found = Install-PythonFromPythonOrg -Arch "x86_64"
+            if ($found -and $found.Arch -eq "x86_64") { return $found }
+        }
         # Nothing installable (offline / no winget): an x64 build of another supported minor
         # still runs the wheels ARM64 cannot, so take it over the native interpreter.
         return (Find-CompatiblePython -X64Only)
@@ -4967,6 +4987,10 @@ exit 0
     $_Migrated = $false
     $script:StudioVenvRollbackDir = $null
     $script:StudioVenvRollbackTarget = $VenvDir
+    # Set only by the Windows-on-ARM architecture rebuild, which promises the user the old
+    # environment survives the run. Every other rollback is deleted once the replacement
+    # commits, which is right: it is the same architecture and the same packages.
+    $script:StudioVenvRollbackPreserve = $false
     $script:StudioVenvRollbackActive = $false
     $script:StudioVenvRollbackPartial = $false
     # Reset per run: under `irm | iex` the script scope IS the caller's session.
@@ -5225,6 +5249,9 @@ exit 0
         # put one half of a committed install back and keep the other.
         if ($script:StudioInstallCommitted) { return }
         if (-not $script:StudioVenvRollbackActive) { return }
+        # A restore puts the tree back at $VenvDir, so there is nothing left to preserve and
+        # the flag must not survive into any later rollback in the same run.
+        $script:StudioVenvRollbackPreserve = $false
         $backup = $script:StudioVenvRollbackDir
         $target = $script:StudioVenvRollbackTarget
         if (-not (Test-StudioPathPresent -Path $backup)) {
@@ -5287,9 +5314,36 @@ exit 0
         $script:StudioVenvRollbackActive = $false
         $script:StudioVenvRollbackDir = $null
         $script:StudioVenvRollbackPartial = $false
-        if (Test-StudioPathPresent -Path $backup) {
-            Remove-StudioVenvTreeWithRetry -Path $backup -Label "environment rollback" | Out-Null
+        $preserve = $script:StudioVenvRollbackPreserve
+        $script:StudioVenvRollbackPreserve = $false
+        if (-not (Test-StudioPathPresent -Path $backup)) { return }
+        if ($preserve) {
+            # The architecture rebuild told the user this tree would still be here to copy
+            # packages out of, so keep the promise instead of the disk space. Renamed out of
+            # the rollback namespace: Remove-StaleStudioVenvRollbacks globs
+            # unsloth_studio.rollback.*, and a preserved copy left under that name would be
+            # swept by the next run as soon as this PID stopped existing.
+            $stamp = Get-Date -Format "yyyyMMddHHmmss"
+            $kept = Join-Path $StudioHome "unsloth_studio.arm64.$stamp"
+            $suffix = 0
+            while (Test-Path -LiteralPath $kept) {
+                $suffix++
+                $kept = Join-Path $StudioHome "unsloth_studio.arm64.$stamp.$suffix"
+            }
+            try {
+                Move-Item -LiteralPath $backup -Destination $kept -ErrorAction Stop
+                substep "previous ARM64 environment kept at $kept"
+                substep "delete it once you have re-installed any extra packages you had added to it."
+                return
+            } catch {
+                # Naming it is the whole point, so a failed rename reports where it actually
+                # is rather than silently deleting the copy the user was told to expect.
+                Write-StudioLine "[WARN] Could not rename the previous ARM64 environment: $($_.Exception.Message)" -ForegroundColor Yellow
+                Write-StudioLine "       It is still at $backup" -ForegroundColor Yellow
+                return
+            }
         }
+        Remove-StudioVenvTreeWithRetry -Path $backup -Label "environment rollback" | Out-Null
     }
 
     # Bounded probe (async-drained, 30s) so a wedged "import torch" cannot stall the installer.
@@ -5425,11 +5479,15 @@ exit 0
         # Stated, not implied: the new environment is built from scratch on a different
         # architecture, so the ARM64 wheels in the old one cannot be carried into it and
         # anything the user pip-installed there is not reinstalled. The old tree is kept
-        # under $StudioHome by the rollback helper rather than deleted, so it can be read.
-        substep "the ARM64 environment is kept under $StudioHome as unsloth_studio.rollback.*;" "Yellow"
+        # under $StudioHome as unsloth_studio.arm64.* rather than deleted with the ordinary
+        # rollback, so it can still be read: $script:StudioVenvRollbackPreserve below.
+        substep "the ARM64 environment is kept under $StudioHome as unsloth_studio.arm64.*;" "Yellow"
         substep "re-install any extra packages you had added to it, or set UNSLOTH_ALLOW_ARM64_PYTHON=1 to keep it." "Yellow"
         try {
             Start-StudioVenvRollback -ExistingDir $VenvDir
+            # After the move, so a rollback that never started cannot leave the flag set for
+            # some later unrelated rollback to act on.
+            $script:StudioVenvRollbackPreserve = $true
         } catch {
             Write-StudioLine "[ERROR] Could not move the ARM64 environment aside: $($_.Exception.Message)" -ForegroundColor Red
             Write-StudioLine "        Close Unsloth Studio, including its tray process, then re-run install.ps1." -ForegroundColor Yellow
