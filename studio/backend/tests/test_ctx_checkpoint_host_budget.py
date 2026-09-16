@@ -949,9 +949,7 @@ class TestTheGuardOnlyDropsHostBytesFromADiscretePool:
     def test_an_integrated_cuda_part_shares(self, monkeypatch):
         """Jetson and DGX Spark set cudaDeviceProp::integrated and have one pool."""
         monkeypatch.setattr(LlamaCppBackend, "_torch_is_rocm", staticmethod(lambda _t: False))
-        monkeypatch.setattr(
-            LlamaCppBackend, "_integrated_cuda_gpu_ids", staticmethod(lambda: {0})
-        )
+        monkeypatch.setattr(LlamaCppBackend, "_integrated_cuda_gpu_ids", staticmethod(lambda: {0}))
         assert self._shares(is_vulkan_backend = False, requested_gpu_ids = [0]) is True
 
     def test_a_rocm_apu_shares_whether_or_not_it_is_pinned(self, monkeypatch):
