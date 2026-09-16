@@ -1432,7 +1432,8 @@ export const en = {
         "When off, use the same settings for every model.",
       autoCompactHint: "Uses the context length you set, not available VRAM.",
       pastedTextShortDescription:
-        "Turn pastes over this limit into .txt attachments.",
+        "Pastes of {count} characters or more become .txt attachments.",
+      pastedTextOffDescription: "Pasted text stays in the message box.",
       compactionDescriptionInherit: "Follow the server's context policy.",
       compactionDescriptionCheckpoint:
         "Keep the latest turn and standing instructions.",

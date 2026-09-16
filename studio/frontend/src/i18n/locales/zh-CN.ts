@@ -1405,7 +1405,8 @@ export const zhCN = {
       projectAttachmentsHint: "可在各聊天的附件菜单中单独调整此设置。",
       rememberParamsPerModelHint: "关闭后，所有模型使用同一套设置。",
       autoCompactHint: "依据你设置的上下文长度，而不是可用显存。",
-      pastedTextShortDescription: "将超过此长度的粘贴内容转为 .txt 附件。",
+      pastedTextShortDescription: "粘贴内容达到 {count} 个字符时，将转为 .txt 附件。",
+      pastedTextOffDescription: "粘贴的文本会保留在消息输入框中。",
       compactionDescriptionInherit: "遵循服务器的上下文策略。",
       compactionDescriptionCheckpoint: "保留最新一轮对话和持续生效的指令。",
       compactionDescriptionRolling:

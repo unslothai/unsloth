@@ -1454,7 +1454,8 @@ export const ptBR = {
         "Quando desativado, todos os modelos usam as mesmas configurações.",
       autoCompactHint: "Usa o tamanho de contexto definido, não a VRAM disponível.",
       pastedTextShortDescription:
-        "Converte textos colados acima deste limite em anexos .txt.",
+        "Textos colados com {count} caracteres ou mais viram anexos .txt.",
+      pastedTextOffDescription: "O texto colado permanece na caixa de mensagem.",
       compactionDescriptionInherit: "Segue a política de contexto do servidor.",
       compactionDescriptionCheckpoint:
         "Mantém a última troca de mensagens e as instruções permanentes.",

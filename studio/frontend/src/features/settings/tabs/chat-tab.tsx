@@ -426,7 +426,13 @@ export function ChatTab() {
         </SettingsRow>
         <SettingsRow
           label={t("settings.chat.pastedTextThreshold")}
-          description={t("settings.chat.pastedTextShortDescription")}
+          description={
+            pastedTextMinChars === 0
+              ? t("settings.chat.pastedTextOffDescription")
+              : t("settings.chat.pastedTextShortDescription", {
+                  count: pastedTextMinChars.toLocaleString(),
+                })
+          }
           hint={t("settings.chat.pastedTextThresholdDescription", {
             shortcut: plainPasteLabel,
           })}

@@ -1473,7 +1473,8 @@ export const fr = {
       autoCompactHint:
         "Utilise la longueur de contexte définie, pas la VRAM disponible.",
       pastedTextShortDescription:
-        "Convertit les textes collés dépassant cette limite en pièces jointes .txt.",
+        "Les textes collés de {count} caractères ou plus deviennent des pièces jointes .txt.",
+      pastedTextOffDescription: "Le texte collé reste dans le champ de message.",
       compactionDescriptionInherit: "Suit la politique de contexte du serveur.",
       compactionDescriptionCheckpoint:
         "Conserve le dernier échange et les instructions permanentes.",

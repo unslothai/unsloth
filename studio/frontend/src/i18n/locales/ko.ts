@@ -1435,7 +1435,8 @@ export const ko = {
       rememberParamsPerModelHint: "끄면 모든 모델에 같은 설정을 사용합니다.",
       autoCompactHint: "남은 VRAM이 아닌 설정한 컨텍스트 길이를 기준으로 합니다.",
       pastedTextShortDescription:
-        "이 길이를 넘는 붙여넣기 텍스트를 .txt 첨부 파일로 바꿉니다.",
+        "붙여넣은 텍스트가 {count}자 이상이면 .txt 첨부 파일로 바뀝니다.",
+      pastedTextOffDescription: "붙여넣은 텍스트가 입력창에 그대로 표시됩니다.",
       compactionDescriptionInherit: "서버의 컨텍스트 정책을 따릅니다.",
       compactionDescriptionCheckpoint:
         "최신 대화 턴과 계속 적용되는 지침을 유지합니다.",

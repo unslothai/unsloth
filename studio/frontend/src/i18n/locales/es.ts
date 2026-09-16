@@ -1467,7 +1467,8 @@ export const es = {
       autoCompactHint:
         "Usa la longitud de contexto configurada, no la VRAM disponible.",
       pastedTextShortDescription:
-        "Convierte el texto pegado que supere este límite en archivos adjuntos .txt.",
+        "El texto pegado de {count} caracteres o más se convierte en un archivo adjunto .txt.",
+      pastedTextOffDescription: "El texto pegado permanece en el cuadro de mensaje.",
       compactionDescriptionInherit: "Sigue la política de contexto del servidor.",
       compactionDescriptionCheckpoint:
         "Conserva el último intercambio y las instrucciones permanentes.",
