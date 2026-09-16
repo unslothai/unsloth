@@ -10,6 +10,10 @@ import { toast } from "@/lib/toast";
 import type { DictationAdapter } from "@assistant-ui/react";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
 import {
+  currentDictationEntryMode,
+  insecureDictationGuidance,
+} from "../utils/dictation-entry";
+import {
   StudioModelDictationAdapter,
   fetchSttStatus,
   sttEngineStatusFor,
@@ -133,8 +137,7 @@ export function notifyStudioDictationUnavailable(
   // Both engines need a secure context (localhost or HTTPS).
   if (typeof window !== "undefined" && !window.isSecureContext) {
     toast.error("Voice typing needs a secure connection.", {
-      description:
-        "Press Dictate to choose a recording on this connection, or open this Studio server through HTTPS to dictate live.",
+      description: insecureDictationGuidance(currentDictationEntryMode()),
     });
     return;
   }

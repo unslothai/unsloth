@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   dictationEntryMode,
+  insecureDictationGuidance,
   recordingPickerPlatform,
 } from "../src/features/chat/utils/dictation-entry.ts";
 
@@ -54,6 +55,18 @@ test("a non-HTTP insecure context keeps the existing live error path", () => {
       hostname: "studio.example.com",
     }),
     "live",
+  );
+  assert.equal(
+    insecureDictationGuidance("live"),
+    "Open Unsloth at http://127.0.0.1 (localhost) or over HTTPS to dictate.",
+  );
+  assert.doesNotMatch(insecureDictationGuidance("live"), /choose a recording/i);
+});
+
+test("only the HTTP fallback advertises the recording picker", () => {
+  assert.match(
+    insecureDictationGuidance("recording-file"),
+    /Press Dictate to choose a recording on this connection/,
   );
 });
 
