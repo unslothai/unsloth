@@ -402,6 +402,43 @@ try {
             $null -ne $written -and $written.Length -eq 0 -and $null -eq $written.Target)
     }
 
+    # And no window between the two. Deleting, confirming the name is free and then writing leaves
+    # a moment in which the same user can plant the link again, and the write lands on its target.
+    # The creation must therefore fail on an entry that is already there rather than overwrite it,
+    # which is what makes the check and the write one operation. Driven by leaving a link in place
+    # with no delete in front of it: that is the state the window produces.
+    $raceVictim = Join-Path $tmp "race-victim.txt"
+    [System.IO.File]::WriteAllText($raceVictim, "still here")
+    $raceRoot = Join-Path $tmp "race-root"
+    New-Item -ItemType Directory -Force -Path $raceRoot | Out-Null
+    $raceMarker = Join-Path $raceRoot ".unsloth-studio-owned"
+    $madeRaceLink = $false
+    try {
+        New-Item -ItemType SymbolicLink -Path $raceMarker -Target $raceVictim -ErrorAction Stop | Out-Null
+        $madeRaceLink = $true
+    } catch {}
+    if (-not $madeRaceLink) {
+        Write-Host "  SKIP  cannot create a symbolic link on this host" -ForegroundColor Yellow
+    } else {
+        $marker = $raceMarker
+        $createThrew = $false
+        $s = $null
+        try {
+            $s = [System.IO.File]::Open($marker, [System.IO.FileMode]::CreateNew,
+                [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+        } catch { $createThrew = $true } finally { if ($s) { $s.Dispose() } }
+        Check "creating the marker refuses a name that is already taken" ($createThrew -eq $true)
+        Check "and the link's target is untouched by the refusal" (
+            (Get-Content -Raw -LiteralPath $raceVictim) -eq "still here")
+    }
+
+    # Read the helper too: the drive above exercises CreateNew directly, so it would still pass
+    # with the helper back on a check followed by a WriteAllText.
+    $markerFn = @(Get-HelperSources $installPs1 @("Write-StudioRootOwnerMarker"))[0]
+    Check "the marker helper creates with CreateNew" ($markerFn -match 'FileMode\]::CreateNew')
+    Check "and no longer writes the marker through WriteAllText" (
+        $markerFn -notmatch 'WriteAllText\(\$marker')
+
     # And the lock's own fresh-root branch has to go THROUGH that helper. A second copy of the
     # write inline would pass every check above while carrying the hazard, because the checks
     # drive the helper directly. Read the branch instead of trusting it.

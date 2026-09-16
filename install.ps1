@@ -2934,8 +2934,31 @@ exit 1
             # Get-Item -Force, not Test-Path: the latter follows a dangling link and answers
             # false, after which WriteAllText follows the link and writes outside the root.
             Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
-            if (Get-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue) { return }
-            [System.IO.File]::WriteAllText($marker, "")
+            # CreateNew, not a check followed by a write. The check-then-write pair above left a
+            # window: the entry is confirmed absent, and a user who can write to this root plants
+            # a link at the name before the write lands, which then truncates the link's target.
+            # CreateNew fails if anything is already at the name, so the test and the creation are
+            # one operation and there is no window to aim at.
+            #
+            # Residual, stated rather than implied away: this closes the truncation, not every
+            # form of following. A link planted at the name makes CreateNew fail, which is the
+            # answer we want, but a DANGLING one is followed and an empty file is created at its
+            # target. That creates a zero-byte file somewhere; it cannot destroy an existing one,
+            # which is the hazard being guarded. Opening with FILE_FLAG_OPEN_REPARSE_POINT is the
+            # complete answer and .NET does not expose it here.
+            $markerStream = $null
+            try {
+                $markerStream = [System.IO.File]::Open($marker,
+                    [System.IO.FileMode]::CreateNew,
+                    [System.IO.FileAccess]::Write,
+                    [System.IO.FileShare]::None)
+            } catch {
+                # Something is at the name, or the root refuses the write. No marker is fine; the
+                # venv writes its own later.
+                return
+            } finally {
+                if ($markerStream) { try { $markerStream.Dispose() } catch {} }
+            }
         } catch { }
     }
 
