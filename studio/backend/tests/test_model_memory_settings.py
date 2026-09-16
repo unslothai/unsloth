@@ -1656,11 +1656,30 @@ class TestCpuMoeCountIsParsed:
             (["-cmoe"], True),
             (["-ot", "blk.*=CPU"], True),
             (["--override-tensor", "x"], True),
+            # The dense-model count: common/arg.cpp turns it into CPU FFN overrides.
+            (["-ncffn", "0"], False),
+            (["-ncffn", "4"], True),
+            (["--n-cpu-ffn", "4"], True),
+            (["--n-cpu-ffn=4"], True),
+            (["--n_cpu_ffn", "4"], True),
         ],
     )
     def test_the_predicate(self, extras, expected):
         from core.inference.llama_cpp import _args_place_tensors_on_cpu
         assert _args_place_tensors_on_cpu(extras) is expected
+
+    @pytest.mark.parametrize(
+        ("env", "expected"),
+        [
+            ({}, False),
+            ({"LLAMA_ARG_N_CPU_MOE": "4"}, True),
+            ({"LLAMA_ARG_N_CPU_FFN": "0"}, False),
+            ({"LLAMA_ARG_N_CPU_FFN": "4"}, True),
+        ],
+    )
+    def test_the_env_predicate(self, env, expected):
+        from core.inference.llama_cpp import _env_places_tensors_on_cpu
+        assert _env_places_tensors_on_cpu(env) is expected
 
     def test_it_is_the_same_predicate_the_pipeline_check_uses(self):
         import ast

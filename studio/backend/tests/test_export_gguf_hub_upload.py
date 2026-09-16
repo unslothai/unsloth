@@ -63,6 +63,14 @@ def _hub_doubles(calls, seen):
             calls.append("repo_info")
             return seen.get("repo_info_result")
 
+        def file_exists(
+            self,
+            repo_id,
+            filename,
+            repo_type = None,
+        ):
+            return seen.get("existing_files", {}).get(filename, False)
+
         def upload_file(
             self,
             path_or_fileobj,
@@ -106,6 +114,8 @@ def _hub_doubles(calls, seen):
         ):
             calls.append("model_card")
             seen["card_repo"] = repo_id
+            if seen.get("card_error"):
+                raise seen["card_error"]
 
     return _HfApi, _ModelCard
 

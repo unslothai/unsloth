@@ -353,7 +353,15 @@ def _landlock_preexec(
         raise OSError(ctypes.get_errno(), "landlock_create_ruleset failed")
     try:
         for path, access in rules:
-            parent_fd = os.open(path, os.O_PATH | os.O_CLOEXEC)
+            try:
+                parent_fd = os.open(path, os.O_PATH | os.O_CLOEXEC)
+            except FileNotFoundError:
+                # The rules come from a directory walk, and a path can go between that walk and
+                # this open: a cache purge, a model delete, an account delete. Landlock denies by
+                # default, so dropping a grant only ever narrows the child, while raising here
+                # kills the whole tool call as "Exception occurred in preexec_fn", which names
+                # neither the path nor the reason.
+                continue
             try:
                 beneath = _PathBeneathAttr(access & handled, parent_fd)
                 rc = libc.syscall(

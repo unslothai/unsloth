@@ -26,6 +26,7 @@ import types
 from pathlib import Path
 
 import pytest
+import urllib.parse
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LAUNCH = REPO_ROOT / "docker" / "studio_launch.sh"
@@ -91,7 +92,12 @@ def test_the_config_stays_valid_python_and_keeps_the_path(generator: str, name: 
     assert (
         config.ServerApp.preferred_dir == view
     ), "the path Jupyter ends up with must be the one the user asked for"
-    assert config.ServerApp.default_url == f"/lab/tree/{name}"
+    # default_url is a URL, not a path: the default view directory has a space in
+    # it, and unencoded it reached the banner Jupyter prints as
+    # "http://host:8888/lab/tree/Unsloth Notebooks", which is not a legal request
+    # target. quote() leaves "/" alone, so subdirectories still resolve.
+    assert config.ServerApp.default_url == "/lab/tree/" + urllib.parse.quote(name)
+    assert " " not in config.ServerApp.default_url, "an unencoded space breaks the printed link"
     assert (
         config.LabApp.default_url == config.ServerApp.default_url
     ), "LabApp otherwise overrides ServerApp back to /lab"

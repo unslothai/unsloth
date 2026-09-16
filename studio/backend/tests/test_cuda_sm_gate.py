@@ -217,6 +217,10 @@ def _gated_backend(
     monkeypatch.setattr(
         LlamaCppBackend, "_is_unsloth_managed_binary", staticmethod(lambda _binary: True)
     )
+    # The build probe runs `--version`, which the Popen patch below would count as a launch.
+    monkeypatch.setattr(
+        LlamaCppBackend, "probe_build_number", classmethod(lambda cls, binary = None: None)
+    )
     backend = LlamaCppBackend()
     backend._get_gpu_memory = lambda _binary = None, **_kw: []
     backend._get_gpu_free_memory = lambda _binary = None, **_kw: []

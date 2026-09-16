@@ -60,6 +60,56 @@ from hub.utils.hf_cache_state import (
 )
 
 
+# HTTP cannot fetch files above huggingface_hub's limit. Read the installed value when available.
+_HTTP_MAX_FILE_BYTES_FALLBACK = 50 * 1000 * 1000 * 1000
+
+_HTTP_SIZE_CEILING_MARKER = "too large to be downloaded using the regular download method"
+
+
+def http_max_file_bytes() -> int:
+    """The largest single file the HTTP transport can fetch."""
+    try:
+        from huggingface_hub import constants as hf_constants
+        value = int(getattr(hf_constants, "MAX_HTTP_DOWNLOAD_SIZE", 0) or 0)
+    except Exception:  # noqa: BLE001 - an unreadable constant is not a reason to fail a download
+        value = 0
+    return value if value > 0 else _HTTP_MAX_FILE_BYTES_FALLBACK
+
+
+def http_size_ceiling_reason(largest_file_bytes: Optional[int]) -> Optional[str]:
+    """Why HTTP cannot serve a download whose biggest file is *largest_file_bytes*, or None.
+
+    An unknown size (``None``/0, e.g. metadata that could not be read) is not evidence of anything and
+    leaves the transport choice exactly as it was.
+    """
+    try:
+        largest = int(largest_file_bytes or 0)
+    except (TypeError, ValueError):
+        return None
+    ceiling = http_max_file_bytes()
+    if largest <= ceiling:
+        return None
+    return (
+        f"HTTPS cannot fetch this download: its largest file is {largest / 1e9:.1f}GB and "
+        f"huggingface_hub refuses a plain HTTPS transfer above {ceiling / 1e9:.0f}GB. "
+        "Only the Xet transport can fetch a file this large."
+    )
+
+
+def humanize_worker_error(text: str, *, largest_file_bytes: Optional[int] = None) -> str:
+    """Replace the hub's misleading >50GB dependency error with the transport limit."""
+    if not text or _HTTP_SIZE_CEILING_MARKER not in text:
+        return text
+    reason = http_size_ceiling_reason(largest_file_bytes)
+    if reason is not None:
+        return reason
+    return (
+        "HTTPS cannot fetch this download: one of its files is larger than the "
+        f"{http_max_file_bytes() / 1e9:.0f}GB limit huggingface_hub allows over plain HTTPS. "
+        "Only the Xet transport can fetch a file this large."
+    )
+
+
 @dataclass(frozen = True)
 class DownloadTransportCapability:
     available: bool
@@ -78,10 +128,18 @@ class DownloadTransportCapabilities:
 
 
 def get_download_transport_capabilities(
-    *, probe: bool = False, ram_gate: bool = False
+    *,
+    probe: bool = False,
+    ram_gate: bool = False,
+    largest_file_bytes: Optional[int] = None,
 ) -> DownloadTransportCapabilities:
-    """What this machine can do, and what Auto resolves to on it. ``probe`` runs the live Xet health check and is only for the frontend resolving Auto at download start; ``ram_gate`` applies the free-RAM half of that same verdict WITHOUT the network probe, for a surface that has to state what the next download will pick, since the settings row said "Auto is using Xet" while the download path, which probes, chose HTTP."""
+    """Return transport availability and the current Auto choice.
+
+    ``probe`` checks live Xet health, ``ram_gate`` applies memory pressure, and
+    ``largest_file_bytes`` applies the HTTP size limit.
+    """
     xet_available = importlib.util.find_spec("hf_xet") is not None
+    http_reason = http_size_ceiling_reason(largest_file_bytes)
     auto_transport = TRANSPORT_XET if xet_available else TRANSPORT_HTTP
     auto_reason: Optional[str] = None
     auto_forced = False
@@ -119,8 +177,12 @@ def get_download_transport_capabilities(
         if pressure is not None:
             auto_transport = TRANSPORT_HTTP
             auto_reason = pressure
+    if http_reason is not None and xet_available:
+        # The size limit overrides preferences for HTTP based on health or RAM.
+        auto_transport = TRANSPORT_XET
+        auto_reason = "Xet (HTTPS cannot fetch a file this large)"
     return DownloadTransportCapabilities(
-        http = DownloadTransportCapability(available = True),
+        http = DownloadTransportCapability(available = http_reason is None, reason = http_reason),
         xet = DownloadTransportCapability(
             available = xet_available,
             reason = None
@@ -133,9 +195,11 @@ def get_download_transport_capabilities(
     )
 
 
-def download_transport_unavailable_reason(transport: str) -> Optional[str]:
+def download_transport_unavailable_reason(
+    transport: str, *, largest_file_bytes: Optional[int] = None
+) -> Optional[str]:
     if transport == TRANSPORT_HTTP:
-        return None
+        return http_size_ceiling_reason(largest_file_bytes)
     if transport == TRANSPORT_XET:
         caps = get_download_transport_capabilities().xet
         return None if caps.available else caps.reason
@@ -967,6 +1031,32 @@ def completed_blob_bytes(
             except OSError:
                 continue
     return total
+
+
+def finalized_blob_hashes(
+    repo_type: str,
+    repo_id: str,
+    blob_hashes: frozenset[str],
+    *,
+    root: Optional[Path] = None,
+) -> frozenset[str]:
+    """Return requested blob hashes that are finalized in the active cache."""
+    if not blob_hashes:
+        return frozenset()
+    found: set[str] = set()
+    for entry in iter_active_repo_cache_dirs(repo_type, repo_id, root = root):
+        blobs_dir = entry / "blobs"
+        if not blobs_dir.is_dir():
+            continue
+        for blob_hash in blob_hashes:
+            if blob_hash in found:
+                continue
+            try:
+                if (blobs_dir / blob_hash).is_file():
+                    found.add(blob_hash)
+            except OSError:
+                continue
+    return frozenset(found)
 
 
 def existing_blob_bytes(
