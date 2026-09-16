@@ -323,6 +323,18 @@ export const ko = {
           label: "페이지에서 찾기",
           description: "이 페이지의 텍스트를 검색합니다",
         },
+        zoomIn: {
+          label: "확대",
+          description: "UI 배율을 확대합니다",
+        },
+        zoomOut: {
+          label: "축소",
+          description: "UI 배율을 축소합니다",
+        },
+        resetZoom: {
+          label: "확대/축소 초기화",
+          description: "UI 배율을 100%로 초기화합니다",
+        },
         openSettings: {
           label: "설정 열기",
           description: "설정 창을 엽니다",

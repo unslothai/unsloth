@@ -326,6 +326,18 @@ export const hi = {
           label: "पेज में खोजें",
           description: "इस पेज के टेक्स्ट में खोजें",
         },
+        zoomIn: {
+          label: "ज़ूम इन",
+          description: "इंटरफ़ेस स्केल बढ़ाएँ",
+        },
+        zoomOut: {
+          label: "ज़ूम आउट",
+          description: "इंटरफ़ेस स्केल घटाएँ",
+        },
+        resetZoom: {
+          label: "ज़ूम रीसेट करें",
+          description: "इंटरफ़ेस स्केल 100% पर रीसेट करें",
+        },
         openSettings: {
           label: "सेटिंग्स खोलें",
           description: "सेटिंग्स संवाद खोलें",

@@ -321,6 +321,18 @@ export const zhCN = {
           label: "在页面中查找",
           description: "搜索此页面上的文本",
         },
+        zoomIn: {
+          label: "放大",
+          description: "放大界面",
+        },
+        zoomOut: {
+          label: "缩小",
+          description: "缩小界面",
+        },
+        resetZoom: {
+          label: "重置缩放",
+          description: "恢复界面缩放到 100%",
+        },
         openSettings: {
           label: "打开设置",
           description: "打开设置对话框",

@@ -325,6 +325,18 @@ export const ru = {
           label: "Поиск на странице",
           description: "Искать текст на этой странице",
         },
+        zoomIn: {
+          label: "Увеличить масштаб",
+          description: "Увеличить масштаб интерфейса",
+        },
+        zoomOut: {
+          label: "Уменьшить масштаб",
+          description: "Уменьшить масштаб интерфейса",
+        },
+        resetZoom: {
+          label: "Сбросить масштаб",
+          description: "Сбросить масштаб интерфейса до 100%",
+        },
         openSettings: {
           label: "Открыть настройки",
           description: "Открыть окно настроек",

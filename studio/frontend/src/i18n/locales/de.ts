@@ -327,6 +327,18 @@ export const de = {
           label: "Auf der Seite suchen",
           description: "Den Text auf dieser Seite durchsuchen",
         },
+        zoomIn: {
+          label: "Vergrößern",
+          description: "Benutzeroberfläche vergrößern",
+        },
+        zoomOut: {
+          label: "Verkleinern",
+          description: "Benutzeroberfläche verkleinern",
+        },
+        resetZoom: {
+          label: "Zoom zurücksetzen",
+          description: "Benutzeroberfläche auf 100 % zurücksetzen",
+        },
         openSettings: {
           label: "Einstellungen öffnen",
           description: "Den Einstellungsdialog öffnen",

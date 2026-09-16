@@ -2128,6 +2128,7 @@ fn main() {
             commands::get_server_logs,
             commands::open_logs_dir,
             commands::open_models_dir,
+            commands::set_webview_zoom,
             commands::start_backend_update,
             commands::start_managed_repair,
             commands::native_path_leases_usable,

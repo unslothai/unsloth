@@ -62,7 +62,10 @@ export type ShortcutId =
   | "forkChat"
   | "searchChats"
   | "renameChat"
-  | "openKeyboardShortcuts";
+  | "openKeyboardShortcuts"
+  | "zoomIn"
+  | "zoomOut"
+  | "resetZoom";
 
 export type ShortcutSlot = "primary" | "alternate";
 
@@ -196,6 +199,9 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     nonMacDefaultBinding: "Mod+Alt+Shift+KeyM",
   }),
   def("toggleSidebar", "Mod+KeyB"),
+  def("zoomIn", "Mod+Equal"),
+  def("zoomOut", "Mod+Minus"),
+  def("resetZoom", "Mod+Digit0"),
   def("openMcpServers", null),
   // ⇧Esc is Chrome's and Edge's task manager off macOS.
   def("clearAllUnreads", "Shift+Escape", {
@@ -519,6 +525,7 @@ function keyToCode(key: string): string {
     "\\": "Backslash",
     "-": "Minus",
     "=": "Equal",
+    "+": "Equal",
     "`": "Backquote",
   };
   return punctuation[key] ?? key;
@@ -536,9 +543,9 @@ export function matchesBinding(
     getModifierState?: (key: string) => boolean;
   },
   mac = isMacPlatform(),
+  shortcutId?: ShortcutId,
 ): boolean {
   const code = event.code || keyToCode(event.key ?? "");
-  if (code !== binding.code) return false;
   // Off macOS a Ctrl chord is unreachable, and without this a value stored on
   // a Mac would fall through the checks below and fire on the bare key.
   if (!mac && binding.ctrl) return false;
@@ -553,6 +560,45 @@ export function matchesBinding(
   } else if (otherModHeld) {
     return false;
   }
+
+  // Equal / Zoom in: '+' is Shift+'=' on standard layouts, so allow shift when matching Equal for zoomIn
+  if (shortcutId === "zoomIn" && binding.code === "Equal") {
+    if (
+      code === "Equal" ||
+      code === "NumpadAdd" ||
+      event.key === "+" ||
+      event.key === "="
+    ) {
+      const shiftMatches = binding.shift
+        ? event.shiftKey
+        : !event.shiftKey || event.key === "+" || code === "Equal";
+      return shiftMatches && event.altKey === binding.alt;
+    }
+  }
+
+  // Minus / Zoom out: allow NumpadSubtract for zoomOut
+  if (shortcutId === "zoomOut" && binding.code === "Minus") {
+    if (
+      code === "Minus" ||
+      code === "NumpadSubtract" ||
+      event.key === "-"
+    ) {
+      return event.shiftKey === binding.shift && event.altKey === binding.alt;
+    }
+  }
+
+  // Digit0 / Reset zoom: allow Numpad0 for resetZoom
+  if (shortcutId === "resetZoom" && binding.code === "Digit0") {
+    if (
+      code === "Digit0" ||
+      code === "Numpad0" ||
+      event.key === "0"
+    ) {
+      return event.shiftKey === binding.shift && event.altKey === binding.alt;
+    }
+  }
+
+  if (code !== binding.code) return false;
   return event.shiftKey === binding.shift && event.altKey === binding.alt;
 }
 

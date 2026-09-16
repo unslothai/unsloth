@@ -1865,3 +1865,65 @@ test("the logout row is not offered on the desktop build", async () => {
   );
   assert.match(KEYBOARD_SHORTCUTS_TAB, /!\(isTauri && def\.webOnly\)/);
 });
+
+test("zoom and key-level shortcut aliasing matches numpad and shifted/unshifted alias keys", () => {
+  const zoomIn = parseBinding("Mod+Equal");
+  assert.ok(zoomIn);
+  // Matches Cmd+= and Cmd++ (Shift+Equal) for zoomIn
+  assert.ok(matchesBinding(zoomIn, keyEvent("Equal", { metaKey: true }), true, "zoomIn"));
+  assert.ok(matchesBinding(zoomIn, keyEvent("Equal", { metaKey: true, shiftKey: true }), true, "zoomIn"));
+  assert.ok(matchesBinding(zoomIn, keyEvent("NumpadAdd", { metaKey: true }), true, "zoomIn"));
+  assert.ok(matchesBinding(zoomIn, { ...keyEvent(""), key: "+", metaKey: true }, true, "zoomIn"));
+  assert.ok(matchesBinding(zoomIn, { ...keyEvent(""), key: "=", metaKey: true }, true, "zoomIn"));
+  // Fails with extra Alt or without Mod
+  assert.equal(matchesBinding(zoomIn, keyEvent("Equal", { metaKey: true, altKey: true }), true, "zoomIn"), false);
+  assert.equal(matchesBinding(zoomIn, keyEvent("Equal"), true, "zoomIn"), false);
+
+  // Non-zoom action bound to Mod+Equal does NOT match NumpadAdd or shifted Equal
+  assert.ok(matchesBinding(zoomIn, keyEvent("Equal", { metaKey: true }), true));
+  assert.equal(matchesBinding(zoomIn, keyEvent("Equal", { metaKey: true, shiftKey: true }), true), false);
+  assert.equal(matchesBinding(zoomIn, keyEvent("NumpadAdd", { metaKey: true }), true), false);
+
+  // Mod+Shift+Equal binding strictly requires shift
+  const zoomInShift = parseBinding("Mod+Shift+Equal");
+  assert.ok(zoomInShift);
+  assert.ok(matchesBinding(zoomInShift, keyEvent("Equal", { metaKey: true, shiftKey: true }), true, "zoomIn"));
+  assert.equal(matchesBinding(zoomInShift, keyEvent("Equal", { metaKey: true }), true, "zoomIn"), false);
+
+  const zoomOut = parseBinding("Mod+Minus");
+  assert.ok(zoomOut);
+  assert.ok(matchesBinding(zoomOut, keyEvent("Minus", { metaKey: true }), true, "zoomOut"));
+  assert.ok(matchesBinding(zoomOut, keyEvent("NumpadSubtract", { metaKey: true }), true, "zoomOut"));
+  assert.ok(matchesBinding(zoomOut, { ...keyEvent(""), key: "-", metaKey: true }, true, "zoomOut"));
+  // Shift is not allowed for Minus unless binding explicitly has Shift
+  assert.equal(matchesBinding(zoomOut, keyEvent("Minus", { metaKey: true, shiftKey: true }), true, "zoomOut"), false);
+  // Non-zoom action on Mod+Minus does not match NumpadSubtract
+  assert.equal(matchesBinding(zoomOut, keyEvent("NumpadSubtract", { metaKey: true }), true), false);
+
+  const resetZoom = parseBinding("Mod+Digit0");
+  assert.ok(resetZoom);
+  assert.ok(matchesBinding(resetZoom, keyEvent("Digit0", { metaKey: true }), true, "resetZoom"));
+  assert.ok(matchesBinding(resetZoom, keyEvent("Numpad0", { metaKey: true }), true, "resetZoom"));
+  assert.ok(matchesBinding(resetZoom, { ...keyEvent(""), key: "0", metaKey: true }, true, "resetZoom"));
+  assert.equal(matchesBinding(resetZoom, keyEvent("Digit0", { metaKey: true, shiftKey: true }), true, "resetZoom"), false);
+  // Non-zoom action on Mod+Digit0 does not match Numpad0
+  assert.equal(matchesBinding(resetZoom, keyEvent("Numpad0", { metaKey: true }), true), false);
+});
+
+test("rebound action does not trigger on Equal, Minus, or Digit0 aliases", () => {
+  const rebound = parseBinding("Mod+KeyZ");
+  assert.ok(rebound);
+  // Triggers only on KeyZ
+  assert.ok(matchesBinding(rebound, keyEvent("KeyZ", { metaKey: true }), true, "zoomIn"));
+  // Does not trigger on Equal, Minus, Digit0 or their aliases even when shortcutId is zoomIn
+  assert.equal(matchesBinding(rebound, keyEvent("Equal", { metaKey: true }), true, "zoomIn"), false);
+  assert.equal(matchesBinding(rebound, keyEvent("Equal", { metaKey: true, shiftKey: true }), true, "zoomIn"), false);
+  assert.equal(matchesBinding(rebound, keyEvent("NumpadAdd", { metaKey: true }), true, "zoomIn"), false);
+  assert.equal(matchesBinding(rebound, { ...keyEvent(""), key: "+", metaKey: true }, true, "zoomIn"), false);
+  assert.equal(matchesBinding(rebound, keyEvent("Minus", { metaKey: true }), true, "zoomOut"), false);
+  assert.equal(matchesBinding(rebound, keyEvent("NumpadSubtract", { metaKey: true }), true, "zoomOut"), false);
+  assert.equal(matchesBinding(rebound, { ...keyEvent(""), key: "-", metaKey: true }, true, "zoomOut"), false);
+  assert.equal(matchesBinding(rebound, keyEvent("Digit0", { metaKey: true }), true, "resetZoom"), false);
+  assert.equal(matchesBinding(rebound, keyEvent("Numpad0", { metaKey: true }), true, "resetZoom"), false);
+  assert.equal(matchesBinding(rebound, { ...keyEvent(""), key: "0", metaKey: true }, true, "resetZoom"), false);
+});

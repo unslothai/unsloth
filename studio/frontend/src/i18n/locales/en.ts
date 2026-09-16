@@ -328,6 +328,18 @@ export const en = {
           label: "Find in page",
           description: "Search the text on this page",
         },
+        zoomIn: {
+          label: "Zoom in",
+          description: "Increase UI scale",
+        },
+        zoomOut: {
+          label: "Zoom out",
+          description: "Decrease UI scale",
+        },
+        resetZoom: {
+          label: "Reset zoom",
+          description: "Reset UI scale to 100%",
+        },
         openSettings: {
           label: "Open settings",
           description: "Open the settings dialog",

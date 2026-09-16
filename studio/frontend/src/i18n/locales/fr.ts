@@ -327,6 +327,18 @@ export const fr = {
           label: "Rechercher dans la page",
           description: "Rechercher le texte de cette page",
         },
+        zoomIn: {
+          label: "Zoom avant",
+          description: "Agrandir l'interface",
+        },
+        zoomOut: {
+          label: "Zoom arrière",
+          description: "Réduire l'interface",
+        },
+        resetZoom: {
+          label: "Réinitialiser le zoom",
+          description: "Réinitialiser l'échelle à 100 %",
+        },
         openSettings: {
           label: "Ouvrir les paramètres",
           description: "Ouvrir la fenêtre des paramètres",
