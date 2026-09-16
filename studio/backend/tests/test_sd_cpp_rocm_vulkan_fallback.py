@@ -1740,8 +1740,98 @@ def test_the_load_path_reads_the_fingerprint_before_it_installs_the_fallback():
     from core.inference import video as video_mod
 
     source = inspect.getsource(video_mod)
-    read = source.index("failed_fingerprint = _accelerator_fingerprint()")
+    # And it is the FAILED build's own root that is fingerprinted, not the current default:
+    # a binary the finder served out of the legacy tree beside the Unsloth home would
+    # otherwise carry a tag belonging to an unrelated install.
+    read = source.index("failed_fingerprint = _accelerator_fingerprint(binary)")
     install = source.index("fallback_binary = usable_or_recorded_failure(")
     note = source.index("note_accelerator_runtime_failure(\n")
     assert read < install < note, (read, install, note)
     assert "fingerprint = failed_fingerprint" in source[note:note + 200]
+
+
+def test_a_singleton_match_does_not_answer_for_a_position_it_cannot_hold(monkeypatch):
+    """One device answering is not proof that it is the card that was selected.
+
+    The position counts the cards of that name in the PHYSICAL enumeration, so a selection of
+    the second of two identical cards against a build that enumerates one of them is
+    unresolved: returning the singleton meant the graph could run on one card while the
+    arbiter reserved and accounted for the other.
+    """
+    from core.inference import sd_cpp_backend
+
+    listing = "Vulkan0\tAMD Radeon RX 7900 XTX (RADV NAVI31)\n"
+    monkeypatch.setattr(
+        sd_cpp_backend, "_sd_cpp_probe_output",
+        lambda binary, *args: listing if args == ("--list-devices",) else None,
+    )
+    assert sd_cpp_backend.sd_cpp_device_named(
+        "/opt/sd/vulkan/sd-cli", "AMD Radeon RX 7900 XTX", position = 1
+    ) is None
+    # Position 0 IS the one device, and no position at all is the unchanged single-match case.
+    assert sd_cpp_backend.sd_cpp_device_named(
+        "/opt/sd/vulkan/sd-cli", "AMD Radeon RX 7900 XTX", position = 0
+    ) == "Vulkan0"
+    assert sd_cpp_backend.sd_cpp_device_named(
+        "/opt/sd/vulkan/sd-cli", "AMD Radeon RX 7900 XTX"
+    ) == "Vulkan0"
+
+
+def test_the_fingerprint_reads_the_root_that_owns_the_binary(monkeypatch):
+    """`_installed_accelerator_of` reads the binary's own root and this read the default one.
+
+    A ROCm build the finder served out of the legacy tree beside the Unsloth home would
+    therefore be recorded under a tag that is None or belongs to an unrelated install, so
+    replacing or upgrading the legacy bundle could never invalidate the record and the host
+    stayed diverted to Vulkan until it was cleared by hand.
+    """
+    from pathlib import Path
+
+    from core.inference import sd_cpp_backend
+
+    asked: "list" = []
+
+    class _Installer:
+        @staticmethod
+        def read_install_record(root):
+            asked.append(str(root))
+            return {"tag": f"tag-for-{Path(root).name}"}
+
+    monkeypatch.setattr(sd_cpp_backend, "_installer_module", lambda: _Installer, raising = False)
+    monkeypatch.setattr(sd_cpp_backend, "_host_fingerprint", lambda: {}, raising = False)
+    monkeypatch.setattr(
+        sd_cpp_backend, "managed_install_root", lambda: Path("/roots/current"), raising = False
+    )
+    monkeypatch.setattr(
+        sd_cpp_backend, "owning_managed_root",
+        lambda binary: Path("/roots/legacy") if binary else None,
+        raising = False,
+    )
+
+    assert sd_cpp_backend._accelerator_fingerprint("/roots/legacy/bin/sd")["bundle"] == (
+        "tag-for-legacy"
+    )
+    # Named nothing, it is the current root, which is every other caller.
+    assert sd_cpp_backend._accelerator_fingerprint()["bundle"] == "tag-for-current"
+    assert asked == ["/roots/legacy", "/roots/current"], asked
+
+
+def test_the_decided_class_is_read_under_the_claim_that_validated_it():
+    """Read after the claim is released, an install that replaces the managed tree in between
+    is recorded as the class this load decided on: the re-vet then compares ROCm with ROCm,
+    both builds answer the device probe the same way, and the load commits the very build the
+    fallback existed to avoid."""
+    import inspect
+    from core.inference import video as video_mod
+
+    source = inspect.getsource(video_mod)
+    probe = source.index("accelerator_verdict = sd_cpp_accelerator_device_verdict(binary)")
+    read = source.index("decided_accelerator = _installed_accelerator_of(binary)", probe)
+    # Inside the same `with` block as the probe, which ends at the line that collapses it.
+    collapse = source.index("listed_accelerator = accelerator_verdict_keeps_gpu(", probe)
+    assert probe < read < collapse, (probe, read, collapse)
+    # And each rung that REPLACES the binary records its own class rather than inheriting one.
+    assert source.count("decided_accelerator = fallback_class") == 2, source.count(
+        "decided_accelerator = fallback_class"
+    )
+    assert "_UNREAD_ACCELERATOR" in source

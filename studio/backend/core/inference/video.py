@@ -682,6 +682,11 @@ def _note_sd_cpp_accelerator_failure(binary: Optional[str], output: str) -> None
         logger.debug("could not record the sd.cpp accelerator failure: %s", exc)
 
 
+# "Not read yet", distinct from None, which is the real answer for a user-supplied binary the
+# installer does not own.
+_UNREAD_ACCELERATOR = object()
+
+
 def _h3_te_canonical(repo_id: Optional[str]) -> str:
     """A repo id normalised for an EXACT identity compare: mirrors folded onto the id they copy,
     then trimmed and lowercased. Deliberately no tail-segment tolerance -- ``someone/MiniMax-H3``
@@ -1849,6 +1854,9 @@ class VideoBackend:
         # consults it). Re-checked under the reader claim, so a replacement that arrives mid-load cannot silently change
         # the answer this device choice rests on.
         listed_accelerator: Optional[bool] = None
+        # Sentinel, not None: None is a real answer here (a user-supplied binary has no
+        # recorded class), so it cannot also mean "not read yet".
+        decided_accelerator: Any = _UNREAD_ACCELERATOR
         if target.backend not in ("cpu", "mps"):
             # Under the claim, like the recheck. This probe SPAWNS the managed sd-cli, so leaving it unclaimed lets an
             # install started by another in-process load extract over the executing binary: on Windows that fails on the
@@ -1863,6 +1871,12 @@ class VideoBackend:
                 # what a generic ROCm prebuilt does on a card it has no hipBLAS kernels for (#8814, #9278). Collapsing
                 # None into True, which is right for the decision below, hid exactly that case.
                 accelerator_verdict = sd_cpp_accelerator_device_verdict(binary) if binary else False
+                # Under the SAME claim that just validated this binary. Read afterwards, an
+                # install that replaces the managed tree in between is recorded as the class
+                # this load decided on: the re-vet then compares ROCm with ROCm, both builds
+                # can answer the device probe the same way, and the load commits the very
+                # build the fallback existed to avoid.
+                decided_accelerator = _installed_accelerator_of(binary)
             # Unchanged from the collapsed reading this replaces, and through the same rule rather than a second
             # copy of it: "could not tell" keeps the GPU, since an unreadable probe is not evidence that the
             # accelerator is missing.
@@ -1882,7 +1896,7 @@ class VideoBackend:
                     # replaced the failed one -- after which a newer release's ROCm asset
                     # matches the stored tag and the record suppresses the retry that might
                     # have worked on it.
-                    failed_fingerprint = _accelerator_fingerprint()
+                    failed_fingerprint = _accelerator_fingerprint(binary)
                     fallback_binary = usable_or_recorded_failure(
                         ensure_h3_sd_cpp_binary(
                             allow_install = allow_install, accelerator = fallback
@@ -1893,6 +1907,8 @@ class VideoBackend:
                     if fallback_binary:
                         with _claim_tree(fallback_binary, cancel_event, VIDEO_CANCELLED_MSG):
                             fallback_verdict = sd_cpp_accelerator_device_verdict(fallback_binary)
+                            # Same rule on the rung that may replace it.
+                            fallback_class = _installed_accelerator_of(fallback_binary)
                     if fallback_verdict:
                         # Taken only on POSITIVE evidence -- the fallback build enumerates an accelerator device of its
                         # own -- so a host where this rung cannot be fetched or cannot run either behaves exactly as it
@@ -1911,6 +1927,7 @@ class VideoBackend:
                         )
                         binary = fallback_binary
                         accelerator = fallback
+                        decided_accelerator = fallback_class
                         listed_accelerator = True
                     elif fallback_binary:
                         # The fallback install can have REPLACED the managed tree, in which case the path resolved
@@ -1929,6 +1946,7 @@ class VideoBackend:
                         # promoting it to True on no evidence, which a bare re-collapse of the fallback verdict would
                         # have done.
                         binary = fallback_binary
+                        decided_accelerator = fallback_class
                         listed_accelerator = listed_accelerator and accelerator_verdict_keeps_gpu(
                             fallback_verdict
                         )
@@ -1949,6 +1967,10 @@ class VideoBackend:
                 "cpu",
             )
             native_device = "cpu"
+            # This rung replaces the binary too, so the class recorded for the decision is the
+            # one it just put there. No claimed probe runs here -- the branch is taken BECAUSE
+            # the accelerator reading was negative -- so this is the reading that belongs to it.
+            decided_accelerator = _installed_accelerator_of(binary)
             # The baseline this branch is compared against is the DECISION, not a fresh probe of what came back. An
             # install can replace the returned CPU binary with a GPU build between that ensure and this line, and
             # probing here would record ITS answer -- after which the re-check under the claim below compares the
@@ -1973,7 +1995,11 @@ class VideoBackend:
         # chosen to avoid. Read here and read back the same way, so a user-supplied binary -- which
         # has no recorded class -- compares None against None and is left to the identity and
         # capability tests that already cover it.
-        decided_accelerator = _installed_accelerator_of(binary)
+        # Only for the rungs that never ran a claimed probe -- the CPU build and a CPU or MPS
+        # target -- since those took no reading to be overtaken. Everything else recorded its
+        # class while the claim was held.
+        if decided_accelerator is _UNREAD_ACCELERATOR:
+            decided_accelerator = _installed_accelerator_of(binary)
         if cancel_event.is_set():
             raise RuntimeError(VIDEO_CANCELLED_MSG)
 

@@ -506,6 +506,21 @@ def sd_cpp_device_named(
         # can land on the XT when the non-XT was selected, and the load then runs on, and
         # accounts for, a different GPU. Mixed models are an ambiguity, not a tie.
         same_model = len({described for _name, described in loose}) == 1
+    if matches and position is not None and not (same_model and 0 <= position < len(matches)):
+        # A position the enumeration cannot honour is UNRESOLVED, including when only one
+        # device answers: nothing says that singleton is the card at that position, and the
+        # selection was made against the physical list. Returning it anyway meant the graph
+        # could run on one card while the arbiter reserved and accounted for the other.
+        logger.warning(
+            "sd_cpp.device_pin_ambiguous: the selection is card %s of the ones answering to "
+            "%r, and this build enumerates %s of them%s, so none is pinned and the graph runs "
+            "on this build's own default device",
+            position,
+            card_name,
+            len(matches),
+            "" if same_model else " across more than one model",
+        )
+        return None
     if len(matches) == 1:
         return matches[0]
     if matches and same_model and position is not None and 0 <= position < len(matches):
@@ -741,7 +756,7 @@ def _accelerator_class_of(accelerator: Optional[str]) -> str:
         return (accelerator or "").strip().lower()
 
 
-def _accelerator_fingerprint() -> dict:
+def _accelerator_fingerprint(binary: Optional[str] = None) -> dict:
     """What the note is a fact ABOUT: the sd.cpp bundle, the GPU runtime and the cards themselves.
 
     Every component is optional and every one is gathered from something already resolved or
@@ -754,7 +769,14 @@ def _accelerator_fingerprint() -> dict:
     """
     fp: dict = {"bundle": None}
     try:
-        record = _installer_module().read_install_record(managed_install_root())
+        # The root the BINARY is in when one is named, not the current default. The finder also
+        # serves a tree an older build left beside the Unsloth home, and a failure recorded for
+        # a binary out of that one would otherwise carry the default root's tag -- None, or a
+        # tag belonging to an unrelated install -- so replacing or upgrading the legacy bundle
+        # could never invalidate the record and the host stayed diverted until it was cleared
+        # by hand.
+        root = owning_managed_root(binary) if binary else None
+        record = _installer_module().read_install_record(root or managed_install_root())
         if isinstance(record, dict):
             # The release the managed tree came from, read LIVE rather than memoised: a new bundle
             # is a new build, an install can land inside the life of this process, and a new build
