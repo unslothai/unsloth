@@ -5,6 +5,7 @@ import type {
   ProviderAuthKind,
   ProviderAuthStatus,
 } from "./api/providers-api";
+import { modelCatalogSupportsVision } from "./model-catalog.ts";
 
 export interface ExternalProviderConfig {
   id: string;
@@ -204,6 +205,8 @@ export function providerModelSupportsVision(
     const capability = REGISTRY_MODEL_CAPABILITIES.get(providerType)?.[modelId];
     if (typeof capability?.vision === "boolean") return capability.vision;
   }
+  const catalogVision = modelCatalogSupportsVision(providerType, modelId);
+  if (catalogVision != null) return catalogVision;
   return providerTypeSupportsVision(providerType);
 }
 
@@ -412,9 +415,8 @@ export function toExternalBackendProviderType(
   providerType: string | null | undefined,
 ): string | undefined {
   if (!providerType) return undefined;
-  // vLLM's /v1/responses applies the loaded model's chat template, which 400s on
-  // strict-alternation templates. Pass the type through so the backend routes vLLM to
-  // /v1/chat/completions instead.
+  // vLLM's /v1/responses applies the loaded model's chat template, which 400s on strict-alternation
+  // templates. Pass the type through so the backend routes vLLM to /v1/chat/completions instead.
   if (providerType === "vllm") return "vllm";
   if (providerType === "ollama") return "ollama";
   if (providerType === "llama_cpp") return "llama_cpp";

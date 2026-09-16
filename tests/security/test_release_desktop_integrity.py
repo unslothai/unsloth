@@ -66,7 +66,9 @@ if [ "$1" = "api" ]; then
     printf 'HTTP/2.0 %s Test Response\n' "$status"
   fi
   if [ "$status" = "200" ]; then
-    if [ "$TARGET_HAS_DESKTOP_ASSETS" = "1" ]; then
+    if [ -n "${TARGET_ASSET_NAMES:-}" ]; then
+      printf '{"tag_name":"%s","draft":false,"assets":[{"name":"%s"}]}\n' "$DESKTOP_RELEASE_TAG" "$TARGET_ASSET_NAMES"
+    elif [ "$TARGET_HAS_DESKTOP_ASSETS" = "1" ]; then
       printf '{"tag_name":"%s","draft":false,"assets":[{"name":"latest.json"}]}\n' "$DESKTOP_RELEASE_TAG"
     else
       printf '{"tag_name":"%s","draft":false,"assets":[]}\n' "$DESKTOP_RELEASE_TAG"
@@ -346,11 +348,33 @@ def test_release_uploads_never_clobber_or_mutate_the_legacy_channel():
     uploads = _upload_commands(_workflow())
     versioned = [line for line in uploads if "$DESKTOP_RELEASE_TAG" in line]
     channel = [line for line in uploads if "desktop-latest" in line]
-    assert len(versioned) == 2, uploads
+    # The bundles, the signed scripts, and the updater manifest. The count is pinned so a new
+    # upload has to be added here deliberately rather than appearing unnoticed.
+    assert len(versioned) == 3, uploads
     assert channel == [], uploads
 
     for line in versioned:
         assert "--clobber" not in line, line
+
+
+def test_an_existing_script_asset_blocks_republishing_the_release(tmp_path):
+    """A script name already on the release must fail the pre-flight, not the upload.
+
+    The signed scripts are uploaded after the bundles and without --clobber. If the guard only
+    looked for Unsloth-Desktop-* and latest.json, a release already carrying install.ps1 would
+    pass it, the bundles would upload, and only then would the script upload fail, leaving the
+    release publicly half replaced.
+    """
+    for existing in ("install.ps1", "SHA256SUMS.txt", "uninstall.sh"):
+        result, _ = _run_step(
+            _workflow(),
+            "prepare-version",
+            "Guard against republishing an existing version",
+            tmp_path,
+            extra_env = {"TARGET_ASSET_NAMES": existing},
+        )
+        assert result.returncode == 1, f"{existing} did not block republishing: {result.stdout}"
+        assert existing in result.stderr, result.stderr
 
 
 def test_any_existing_manifest_blocks_republishing_the_release(tmp_path):
@@ -581,3 +605,52 @@ def test_a_sample_quarantined_mid_scan_passes_the_positive_control():
     assert recheck.index("-not (Test-Path $eicarPath)") < recheck.index(
         "$controlPassed = $true"
     ), "the control passes without first confirming the sample is gone"
+
+
+def test_cloud_block_level_is_verified_against_highplus():
+    """A refused HighPlus leaves the previous level, not zero, so -eq 0 passes a
+    runner still on High. 4 is HighPlus per the Defender Policy CSP."""
+    scan = _step(_workflow(), "build", "Scan Windows bundles with Defender")["run"]
+
+    assert "-CloudBlockLevel HighPlus" in scan
+    check = [line for line in scan.splitlines() if "$pref.CloudBlockLevel" in line]
+    assert len(check) == 1, f"expected one CloudBlockLevel check, found {check}"
+    assert "-ne 4" in check[0], (
+        "the CloudBlockLevel check no longer compares against 4 (HighPlus), so a "
+        "runner left on High passes as fully configured"
+    )
+
+
+def test_asr_verification_checks_the_action_not_just_the_rule_id():
+    """Add-MpPreference is additive, so a rule a policy set to Disabled or Block
+    keeps that action and an id-only check calls it applied."""
+    scan = _step(_workflow(), "build", "Scan Windows bundles with Defender")["run"]
+
+    verify = scan.split("Add-MpPreference -AttackSurfaceReductionRules_Ids", 1)[1]
+    verify = verify.split("$scanStart = Get-Date", 1)[0]
+    assert "AttackSurfaceReductionRules_Actions" in verify, (
+        "the ASR verification reads only the rule ids, so a rule stuck in Block "
+        "or Disabled still reports as applied in audit mode"
+    )
+    assert "-ne 2" in verify, "the ASR verification no longer requires AuditMode (2)"
+    assert (
+        "[Math]::Min(" in verify
+    ), "the ASR arrays are zipped without guarding a truncated Actions read"
+
+
+def test_asr_audit_events_are_reported_as_runner_activity_only():
+    """All four rules fire on process launch and this step only copies and scans
+    the bundle, so a 1121/1122 here is runner activity, not a verdict on it."""
+    scan = _step(_workflow(), "build", "Scan Windows bundles with Defender")["run"]
+
+    report = scan.split("$asrEvents = @(Get-WinEvent", 1)[1]
+    assert (
+        "$_.TimeCreated -ge $scanStart" in report
+    ), "the ASR event query is no longer bounded to this step's own window"
+    assert "::error::" not in report.split("if ($detected -or $unscanned)", 1)[0], (
+        "ASR audit events became fatal; 01443614 fires on low prevalence, which "
+        "every freshly built binary has, so this would block every release"
+    )
+    assert (
+        "not attributable" in report or "not a finding against it" in report
+    ), "the ASR warning reads as a verdict on the bundle, which is never executed"

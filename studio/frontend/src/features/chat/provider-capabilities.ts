@@ -5,6 +5,15 @@ import {
   normalizeProviderMaxOutputTokens,
   providerModelSupportsStudioTools,
 } from "./external-providers";
+import {
+  type ModelCatalogEntry,
+  REASONING_EFFORT_SCALE,
+  type ReasoningEffortLevel,
+  resolveModelCatalogEntry,
+  sortReasoningEfforts,
+} from "./model-catalog";
+
+export { modelCatalogVersion, subscribeModelCatalog } from "./model-catalog";
 
 /** Per-provider sampling capability matrix from each provider's chat docs (2026-05).
  *  Params a provider rejects are hidden; local models use a null capability, so all render. */
@@ -31,19 +40,21 @@ export type ExternalReasoningCapabilities = {
   reasoningStyle: "enable_thinking" | "reasoning_effort" | "enable_thinking_effort";
   reasoningAlwaysOn: boolean;
   supportsReasoningOff: boolean;
-  reasoningEffortLevels: readonly (
-    | "none"
-    | "minimal"
-    | "low"
-    | "medium"
-    | "high"
-    | "max"
-    | "xhigh"
-  )[];
+  reasoningEffortLevels: readonly ReasoningEffortLevel[];
+  defaultEffort?: ReasoningEffortLevel | null;
 };
 
 /** Pick a stored effort level present in `effortLevels`, mapping legacy "xhigh" to "max"
- *  when only the latter is exposed (Claude 4.6). */
+ *  when only the latter is exposed (Claude 4.6).
+ *
+ *  An unavailable level searches DOWNWARD to the nearest offered level, so the clamp never
+ *  spends more compute than was asked for; only a level under everything on offer falls up to
+ *  the weakest rung.
+ *
+ *  "none" is the off switch, not a rung, so it is skipped unless it is what was asked for:
+ *  otherwise a thinking request clamps onto thinking disabled (Mistral's none | high turned a
+ *  stored Medium into none). llama_cpp.py strips "none" from an enable_thinking_effort ladder
+ *  for the same reason; a reasoning_effort ladder keeps it, and an explicit ask still gets it. */
 export function clampReasoningEffortToLevels(
   preferred: ExternalReasoningCapabilities["reasoningEffortLevels"][number],
   effortLevels: ExternalReasoningCapabilities["reasoningEffortLevels"],
@@ -59,6 +70,25 @@ export function clampReasoningEffortToLevels(
   if (effortLevels.includes(candidate)) {
     return candidate;
   }
+  const rank = REASONING_EFFORT_SCALE.indexOf(
+    candidate as (typeof REASONING_EFFORT_SCALE)[number],
+  );
+  if (rank !== -1) {
+    // Scale order, not the order the provider table happens to list.
+    const offered = REASONING_EFFORT_SCALE.filter((level) =>
+      effortLevels.includes(level),
+    );
+    const rungs =
+      candidate === "none" ? offered : offered.filter((level) => level !== "none");
+    const searchable = rungs.length > 0 ? rungs : offered;
+    const below = searchable.filter(
+      (level) => REASONING_EFFORT_SCALE.indexOf(level) < rank,
+    );
+    const nearest = below.length > 0 ? below[below.length - 1] : searchable[0];
+    if (nearest !== undefined) {
+      return nearest;
+    }
+  }
   return effortLevels[0] ?? "low";
 }
 
@@ -71,12 +101,10 @@ const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
   prefixes: readonly string[];
   cap: number;
 }> = [
-  // OpenAI. The Responses API rejects an over-limit max_output_tokens rather
-  // than clamping it, so an overstated cap is a failed request and an
-  // understated one only a shorter answer. First match wins: a bare family
-  // prefix (`gpt-5`, `gpt-4`) goes last or it swallows its own minors, and the
-  // `-chat-latest` aliases go first because they cap at 16,384 whatever their
-  // family does.
+  // OpenAI. The Responses API rejects an over-limit max_output_tokens rather than clamping it, so
+  // an overstated cap is a failed request and an understated one only a shorter answer. First match
+  // wins: a bare family prefix (`gpt-5`, `gpt-4`) goes last or it swallows its own minors, and the
+  // `-chat-latest` aliases go first because they cap at 16,384 whatever their family does.
   {
     providerType: "openai",
     prefixes: [
@@ -106,7 +134,6 @@ const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
     cap: 4096,
   },
   { providerType: "openai", prefixes: ["gpt-4"], cap: 8192 },
-  // Anthropic
   {
     providerType: "anthropic",
     prefixes: [
@@ -138,7 +165,6 @@ const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
     prefixes: ["claude-opus-4-1", "claude-opus-4-20250514"],
     cap: 32000,
   },
-  // Gemini
   {
     providerType: "gemini",
     prefixes: ["gemini-3", "gemini-pro", "gemini-flash"],
@@ -165,8 +191,65 @@ export function getExternalMaxOutputTokens(
   return Math.max(resolved, getExternalMinOutputTokens(providerType));
 }
 
-/** The published per-model cap, or null when nothing documents this id. Generic Custom
- *  connections always read undocumented. OpenRouter `provider/model` prefixes are stripped. */
+/**
+ * The ceiling only when a published cap or the user's own override grounds it, else null.
+ * `getExternalMaxOutputTokens` guesses for an undocumented model, which is fine for a slider
+ * but not as a budget: a 32k-context self-hosted server holds the prompt in the same window.
+ */
+export function getGroundedExternalMaxOutputTokens(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+  connectionMaxOutputTokens?: number | null,
+): number | null {
+  const override = normalizeProviderMaxOutputTokens(connectionMaxOutputTokens);
+  if (override == null && _publishedMaxOutputTokens(providerType, modelId) == null) return null;
+  return getExternalMaxOutputTokens(providerType, modelId, connectionMaxOutputTokens);
+}
+
+/**
+ * True when the connection's override is the ONLY thing that can ground this model's ceiling.
+ * A durable run carries the ceiling it was created with, and the backend can see the cap is
+ * gone but not whether anything else was holding the number up.
+ */
+export function externalMaxOutputTokensNeedsConnectionCap(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+): boolean {
+  return _publishedMaxOutputTokens(providerType, modelId) == null;
+}
+
+/**
+ * The model's own published output limit, before any connection override is folded in. The
+ * folded number cannot tell a model that stops at 8192 from a 65536 model capped at 8192,
+ * and only the first may lower the report budget.
+ */
+export function getPublishedExternalMaxOutputTokens(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+): number | null {
+  return _publishedMaxOutputTokens(providerType, modelId);
+}
+
+/**
+ * `_documentedMaxOutputTokens`, minus entries that do not survive being sent unattended: an
+ * OpenRouter id resolves through the DIRECT provider's table, so `deepseek/deepseek-r1` reads
+ * as 384000 while the router serves it far below that.
+ */
+function _publishedMaxOutputTokens(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+): number | null {
+  if (providerType === "openrouter") {
+    return resolveModelCatalogEntry(providerType, modelId)?.maxOutputTokens ?? null;
+  }
+  return _documentedMaxOutputTokens(providerType, modelId);
+}
+
+/**
+ * The published per-model cap, or null when nothing documents this id. No table entry
+ * targets a generic Custom connection, so those always read as undocumented. OpenRouter
+ * `provider/model` ids have the prefix stripped before matching.
+ */
 function _documentedMaxOutputTokens(
   providerType: string | null | undefined,
   modelId: string | null | undefined,
@@ -174,6 +257,10 @@ function _documentedMaxOutputTokens(
   if (!providerType || !modelId) return null;
   const normalized = modelId.trim().toLowerCase();
   if (!normalized) return null;
+  if (providerType === "openrouter") {
+    const live = resolveModelCatalogEntry(providerType, normalized)?.maxOutputTokens;
+    if (live != null) return live;
+  }
   const stripped =
     providerType === "openrouter" && normalized.includes("/")
       ? normalized.split("/").slice(-1)[0]
@@ -541,11 +628,12 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
   // OpenRouter silently drops unsupported params, so surface every knob and let the gateway
   // fan out per model.
   openrouter: ALL_SUPPORTED,
-  // Local OpenAI-compat connections use the OpenAI path, but vLLM/Ollama/llama.cpp users
-  // want top_k/min_p/repetition, so be permissive.
-  custom: ALL_SUPPORTED,
+  // An OpenAI-shaped gateway 400s on unrecognized fields; vllm / llama_cpp take any base URL.
+  custom: OPENAI_COMPAT_BASE,
   vllm: ALL_SUPPORTED,
-  ollama: ALL_SUPPORTED,
+  // Ollama's /v1 silently drops top_k / min_p / repeat_penalty (native /api/chat options).
+  // https://docs.ollama.com/api/openai-compatibility
+  ollama: OPENAI_COMPAT_BASE,
   llama_cpp: ALL_SUPPORTED,
 };
 
@@ -646,6 +734,11 @@ function resolveAnthropicReasoningEffortCapabilities(modelId: string): Reasoning
 }
 
 const OPENAI_REASONING_MODELS = [
+  {
+    prefixes: ["gpt-6-astra"],
+    supportsOff: false,
+    levels: ["low", "medium", "high", "xhigh", "max"],
+  },
   {
     prefixes: ["gpt-5.5-pro", "gpt-5.4-pro"],
     supportsOff: false,
@@ -800,10 +893,9 @@ function resolveGeminiReasoningCapabilities(
     // Image generation; no thinking knob.
     return withEnableThinkingStyle();
   }
-  // Gemini 2.5 Flash-Lite: thinkingBudget 0 = off, positive from 512. Must be checked
-  // BEFORE the broader `gemini-2.5-flash` prefix.
-  // The backend maps "minimal" to that 512 floor in _stream_gemini.
-  // https://ai.google.dev/gemini-api/docs/thinking
+  // Gemini 2.5 Flash-Lite: thinkingBudget 0 = off, positive from 512. Must be checked BEFORE the
+  // broader `gemini-2.5-flash` prefix. The backend maps "minimal" to that 512 floor in
+  // _stream_gemini. https://ai.google.dev/gemini-api/docs/thinking
   if (m.startsWith("gemini-2.5-flash-lite")) {
     return withReasoningEffortStyle({
       supportsReasoning: true,
@@ -907,8 +999,76 @@ function resolveConnectionLevelReasoning(
   return null;
 }
 
-/** Resolve external-model thinking capabilities. Per-provider resolvers do the matching;
- *  anything else defaults to no reasoning controls. */
+type ReasoningWire = {
+  levels: readonly ReasoningEffortLevel[] | null;
+  aliases?: Partial<Record<ReasoningEffortLevel, ReasoningEffortLevel>>;
+  off: "unified" | "none-level";
+};
+
+/** What the OpenRouter branch in external_provider.py can put on the wire: the whole effort scale, with one
+ *  unified off switch. */
+const CATALOG_REASONING_WIRE: Record<string, ReasoningWire> = {
+  openrouter: { levels: null, off: "unified" },
+};
+
+function projectCatalogEntry(
+  entry: ModelCatalogEntry,
+  wire: ReasoningWire,
+): ExternalReasoningCapabilities {
+  if (!entry.reasoning) return withEnableThinkingStyle();
+  const supportsOff =
+    wire.off === "unified" ? !entry.mandatory : entry.efforts.includes("none");
+  let levels: ReasoningEffortLevel[] = [];
+  if (wire.levels === null || wire.levels.length > 0) {
+    const mapped = entry.efforts
+      .filter((level) => level !== "none")
+      .map((level) => wire.aliases?.[level] ?? level)
+      .filter((level) => wire.levels === null || wire.levels.includes(level));
+    levels = sortReasoningEfforts(mapped);
+  }
+  if (levels.length === 0) {
+    return withEnableThinkingStyle({
+      supportsReasoning: true,
+      reasoningAlwaysOn: entry.mandatory,
+      supportsReasoningOff: supportsOff,
+    });
+  }
+  const ladder: ReasoningEffortLevel[] = supportsOff ? ["none", ...levels] : levels;
+  // Checked against the final ladder: OpenRouter reports default_effort "none" for models such as openai/gpt-5.1.
+  const mappedDefault = entry.defaultEffort
+    ? (wire.aliases?.[entry.defaultEffort] ?? entry.defaultEffort)
+    : null;
+  const defaultEffort = mappedDefault && ladder.includes(mappedDefault) ? mappedDefault : null;
+  return {
+    ...withReasoningEffortStyle({
+      supportsReasoning: true,
+      supportsReasoningOff: supportsOff,
+      reasoningEffortLevels: ladder,
+    }),
+    defaultEffort,
+  };
+}
+
+function catalogCapabilities(
+  providerType: string,
+  modelId: string,
+): ExternalReasoningCapabilities | null {
+  const wire = CATALOG_REASONING_WIRE[providerType];
+  if (!wire) return null;
+  const entry = resolveModelCatalogEntry(providerType, modelId);
+  return entry ? projectCatalogEntry(entry, wire) : null;
+}
+
+const OPENROUTER_GENERIC_TOGGLE: ExternalReasoningCapabilities = {
+  supportsReasoning: true,
+  reasoningStyle: "enable_thinking",
+  reasoningAlwaysOn: false,
+  supportsReasoningOff: true,
+  reasoningEffortLevels: DEFAULT_EFFORT_LEVELS,
+};
+
+/** Resolve external-model thinking capabilities: the connection pin, then the live OpenRouter catalog for
+ *  OpenRouter routes, then the hand-maintained per-provider tables; anything else has no reasoning controls. */
 export function getExternalReasoningCapabilities(
   providerType: string | null | undefined,
   modelId: string | null | undefined,
@@ -925,6 +1085,11 @@ export function getExternalReasoningCapabilities(
   }
   if (!normalizedModel) {
     return withEnableThinkingStyle();
+  }
+
+  if (normalizedProvider === "openrouter" && !normalizedModel.startsWith("openrouter/")) {
+    const catalog = catalogCapabilities(normalizedProvider, normalizedModel);
+    if (catalog) return catalog;
   }
 
   // Some OpenRouter-routed ids are mandatory-reasoning and must stay on even when they
@@ -946,22 +1111,13 @@ export function getExternalReasoningCapabilities(
   const isOpenAIProvider =
     normalizedProvider === "openai" || normalizedProvider === "openai_codex";
   const isAnthropicProvider = normalizedProvider === "anthropic";
-  const isKimiProvider = normalizedProvider === "kimi";
-  const isMistralProvider = normalizedProvider === "mistral";
-  const isOpenRouterProvider = normalizedProvider === "openrouter";
-  if (isOpenRouterProvider) {
+  if (normalizedProvider === "openrouter") {
     // OpenRouter's unified `reasoning` param is accepted everywhere and no-ops for non-reasoning
-    // models, so past the mandatory guard everything gets a toggleable control.
-    return {
-      supportsReasoning: true,
-      reasoningStyle: "enable_thinking",
-      reasoningAlwaysOn: false,
-      supportsReasoningOff: true,
-      reasoningEffortLevels: DEFAULT_EFFORT_LEVELS,
-    };
+    // models, so a route the live catalog does not know still gets a toggleable control.
+    return OPENROUTER_GENERIC_TOGGLE;
   }
-  if (isKimiProvider) return resolveKimiReasoningCapabilities(modelForMatching);
-  if (isMistralProvider) return resolveMistralReasoningCapabilities(modelForMatching);
+  if (normalizedProvider === "kimi") return resolveKimiReasoningCapabilities(modelForMatching);
+  if (normalizedProvider === "mistral") return resolveMistralReasoningCapabilities(modelForMatching);
   if (normalizedProvider === "gemini") {
     // Custom Gemini OAI-compat gateways route through /chat/completions, which drops the native
     // thinkingConfig payload, so hide the ladder.
@@ -982,4 +1138,31 @@ export function getExternalReasoningCapabilities(
   }
 
   return withEnableThinkingStyle();
+}
+
+export type RuntimeReasoningFields = Pick<
+  ExternalReasoningCapabilities,
+  "supportsReasoning" | "reasoningAlwaysOn" | "reasoningStyle" | "supportsReasoningOff" | "reasoningEffortLevels"
+> & { reasoningEffort: ReasoningEffortLevel; reasoningEnabled: boolean };
+
+/** Runtime reasoning fields for a catalog that lands after the model is selected. A chosen effort the new ladder
+ *  still offers is kept and one it dropped is clamped; the model-selection defaults and pills are left alone. */
+export function reasoningFieldsAfterCatalogRefresh(
+  current: { reasoningEffort: ReasoningEffortLevel; reasoningEnabled: boolean },
+  caps: ExternalReasoningCapabilities,
+): RuntimeReasoningFields {
+  const levels = caps.reasoningEffortLevels;
+  return {
+    supportsReasoning: caps.supportsReasoning,
+    reasoningAlwaysOn: caps.reasoningAlwaysOn,
+    reasoningStyle: caps.reasoningStyle,
+    supportsReasoningOff: caps.supportsReasoningOff,
+    reasoningEffortLevels: levels,
+    reasoningEffort:
+      levels.length > 0 && !levels.includes(current.reasoningEffort)
+        ? clampReasoningEffortToLevels(current.reasoningEffort, levels)
+        : current.reasoningEffort,
+    reasoningEnabled:
+      caps.supportsReasoning && !caps.supportsReasoningOff ? true : current.reasoningEnabled,
+  };
 }

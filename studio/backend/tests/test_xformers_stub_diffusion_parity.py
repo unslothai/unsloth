@@ -320,7 +320,7 @@ def test_rocm_is_detected_off_disk_without_importing_torch(
     assert "torch" not in sys.modules
 
 
-# The two ways a ROCm wheel identifies itself: hip set (pytorch.org), or version tag only (AMD SDK / Radeon, per worker.py::_torch_has_hip).
+# The two ways a ROCm wheel identifies itself: torch.version.hip set (pytorch.org), or a "rocm" tag in torch.__version__ only (AMD SDK / Radeon).
 _ROCM_WHEELS = [("7.2.1", "2.9.1+rocm7.2.1"), (None, "2.10.0a0+rocm7.10.0a20251116")]
 
 

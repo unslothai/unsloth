@@ -43,6 +43,23 @@ from core.inference.external_provider import ExternalProviderClient
 _active_mock_clients: list[httpx.AsyncClient] = []
 
 
+def _assistant_call(
+    name,
+    arguments,
+    *,
+    id = "call_1",
+    content = "",
+):
+    """An assistant turn whose only content is one function tool call."""
+    return {
+        "role": "assistant",
+        "content": content,
+        "tool_calls": [
+            {"id": id, "type": "function", "function": {"name": name, "arguments": arguments}}
+        ],
+    }
+
+
 def _drive(coro):
     # Fresh loop per drive so tests don't share asyncio state. Close mocked
     # clients + shutdown async-generators inside this loop so Python 3.13
@@ -88,6 +105,75 @@ def _gemini_sse(events: list[dict]) -> bytes:
     return ("\n".join(chunks) + "\n").encode("utf-8")
 
 
+def _tool(*, name = "f", **fields):
+    """One function tool; ``fields`` fill out the body beside its name."""
+    return {"type": "function", "function": {"name": name, **fields}}
+
+
+def _tools(*, name = "f", **fields):
+    """A one-tool catalog in the OpenAI wire shape."""
+    return [_tool(name = name, **fields)]
+
+
+def _function_declarations(captured):
+    """The functionDeclarations Gemini was sent, or None when the request carried no tools."""
+    tools = captured["body"].get("tools") or []
+    return next((t["functionDeclarations"] for t in tools if "functionDeclarations" in t), None)
+
+
+def _capture_responses_input(monkeypatch, messages):
+    """Drive one OpenAI Responses stream and return the ``input`` items it put on the wire."""
+    captured: dict = {"input_items": None}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        captured["input_items"] = body.get("input")
+        return httpx.Response(
+            200,
+            content = b'data: {"type":"response.completed","response":{"output":[],"usage":{"input_tokens":1,"output_tokens":1}}}\n\n',
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http(monkeypatch, handler)
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "openai",
+            base_url = "https://api.openai.com/v1",
+            api_key = "sk-test",
+        )
+        async for _ in client.stream_chat_completion(
+            messages = messages, model = "gpt-5.5", temperature = 0.7, top_p = 1.0, max_tokens = 16
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+    return captured["input_items"] or []
+
+
+def _event(
+    parts,
+    *,
+    finish_reason = "STOP",
+    usage = None,
+    **candidate,
+):
+    """One Gemini SSE event: a model turn carrying ``parts``, plus optional usage metadata."""
+    event = {
+        "candidates": [
+            {
+                "content": {"role": "model", "parts": parts},
+                **candidate,
+                "finishReason": finish_reason,
+            }
+        ]
+    }
+    if usage is not None:
+        event["usageMetadata"] = usage
+    return event
+
+
 def _capture_body(monkeypatch, **kwargs) -> dict:
     """Drive a single stream and return the captured outbound request body."""
     captured: dict = {}
@@ -101,23 +187,7 @@ def _capture_body(monkeypatch, **kwargs) -> dict:
         return httpx.Response(
             200,
             content = _gemini_sse(
-                [
-                    {
-                        "candidates": [
-                            {
-                                "content": {
-                                    "role": "model",
-                                    "parts": [{"text": "ok"}],
-                                },
-                                "finishReason": "STOP",
-                            }
-                        ],
-                        "usageMetadata": {
-                            "promptTokenCount": 1,
-                            "candidatesTokenCount": 1,
-                        },
-                    }
-                ]
+                [_event([{"text": "ok"}], usage = {"promptTokenCount": 1, "candidatesTokenCount": 1})]
             ),
             headers = {"content-type": "text/event-stream"},
         )
@@ -536,19 +606,7 @@ def test_legacy_openai_base_url_normalized(monkeypatch):
 def test_finish_reason_swaps_to_tool_calls_when_function_call_emitted(monkeypatch):
     """Gemini emits finishReason="STOP" even for pure functionCall turns;
     surface as `tool_calls` so OAI clients run the tool."""
-    sse = [
-        {
-            "candidates": [
-                {
-                    "content": {
-                        "role": "model",
-                        "parts": [{"functionCall": {"name": "lookup", "args": {"k": "v"}}}],
-                    },
-                    "finishReason": "STOP",
-                }
-            ]
-        }
-    ]
+    sse = [_event([{"functionCall": {"name": "lookup", "args": {"k": "v"}}}])]
     lines = _collect(monkeypatch, sse)
     chunks = _parse_chunks(lines)
     finish_chunks = [
@@ -601,26 +659,14 @@ def test_thought_signature_emitted_in_tool_call_delta(monkeypatch):
     the outbound OpenAI tool_calls delta via
     `extra_content.google.thought_signature`."""
     sse = [
-        {
-            "candidates": [
+        _event(
+            [
                 {
-                    "content": {
-                        "role": "model",
-                        "parts": [
-                            {
-                                "functionCall": {
-                                    "name": "lookup",
-                                    "args": {"k": "v"},
-                                    "id": "call_xyz",
-                                },
-                                "thoughtSignature": "SIG-FROM-GEMINI",
-                            }
-                        ],
-                    },
-                    "finishReason": "STOP",
-                }
-            ]
-        }
+                    "functionCall": {"name": "lookup", "args": {"k": "v"}, "id": "call_xyz"},
+                    "thoughtSignature": "SIG-FROM-GEMINI",
+                },
+            ],
+        ),
     ]
     chunks = _parse_chunks(_collect(monkeypatch, sse))
     deltas = [
@@ -638,16 +684,7 @@ def test_image_models_suppress_phantom_web_search_card(monkeypatch):
     inbound stream must NOT emit web_search tool_start / tool_end (else the UI
     shows a misleading 'Search complete' card on a turn Gemini never
     searched)."""
-    sse = [
-        {
-            "candidates": [
-                {
-                    "content": {"role": "model", "parts": [{"text": "drawn"}]},
-                    "finishReason": "STOP",
-                }
-            ]
-        }
-    ]
+    sse = [_event([{"text": "drawn"}])]
     lines = _collect(
         monkeypatch,
         sse,
@@ -703,20 +740,15 @@ def test_usage_chunk_includes_thoughts_tokens(monkeypatch):
     `output_tokens_details.reasoning_tokens` so total_tokens reflects the full
     billable spend."""
     sse = [
-        {
-            "candidates": [
-                {
-                    "content": {"role": "model", "parts": [{"text": "ok"}]},
-                    "finishReason": "STOP",
-                }
-            ],
-            "usageMetadata": {
+        _event(
+            [{"text": "ok"}],
+            usage = {
                 "promptTokenCount": 10,
                 "candidatesTokenCount": 5,
                 "thoughtsTokenCount": 20,
                 "totalTokenCount": 35,
             },
-        }
+        ),
     ]
     chunks = _parse_chunks(_collect(monkeypatch, sse))
     usage_chunk = next((c for c in chunks if isinstance(c.get("usage"), dict)), None)
@@ -802,28 +834,10 @@ def test_image_response_emits_image_b64_tool_event(monkeypatch):
     """`inlineData` parts become a tool_end with image_b64 + image_mime."""
     fake_b64 = base64.b64encode(b"PNG-BYTES").decode()
     sse = [
-        {
-            "candidates": [
-                {
-                    "content": {
-                        "role": "model",
-                        "parts": [
-                            {
-                                "inlineData": {
-                                    "mimeType": "image/png",
-                                    "data": fake_b64,
-                                }
-                            }
-                        ],
-                    },
-                    "finishReason": "STOP",
-                }
-            ],
-            "usageMetadata": {
-                "promptTokenCount": 5,
-                "candidatesTokenCount": 0,
-            },
-        }
+        _event(
+            [{"inlineData": {"mimeType": "image/png", "data": fake_b64}}],
+            usage = {"promptTokenCount": 5, "candidatesTokenCount": 0},
+        ),
     ]
     lines = _collect(
         monkeypatch,
@@ -848,28 +862,10 @@ def test_image_response_emits_image_b64_tool_event(monkeypatch):
 def test_function_call_response_translates_to_tool_calls_delta(monkeypatch):
     """Gemini `functionCall` parts become OpenAI `tool_calls` delta chunks."""
     sse = [
-        {
-            "candidates": [
-                {
-                    "content": {
-                        "role": "model",
-                        "parts": [
-                            {
-                                "functionCall": {
-                                    "name": "get_weather",
-                                    "args": {"location": "Paris"},
-                                }
-                            }
-                        ],
-                    },
-                    "finishReason": "STOP",
-                }
-            ],
-            "usageMetadata": {
-                "promptTokenCount": 12,
-                "candidatesTokenCount": 4,
-            },
-        }
+        _event(
+            [{"functionCall": {"name": "get_weather", "args": {"location": "Paris"}}}],
+            usage = {"promptTokenCount": 12, "candidatesTokenCount": 4},
+        ),
     ]
     lines = _collect(monkeypatch, sse)
     chunks = _parse_chunks(lines)
@@ -893,20 +889,7 @@ def test_tool_message_translates_to_function_response_part(monkeypatch):
     """role=tool follow-ups are rewritten to functionResponse parts."""
     messages = [
         {"role": "user", "content": "Weather?"},
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [
-                {
-                    "id": "call_1",
-                    "type": "function",
-                    "function": {
-                        "name": "get_weather",
-                        "arguments": json.dumps({"location": "Paris"}),
-                    },
-                }
-            ],
-        },
+        _assistant_call("get_weather", json.dumps({"location": "Paris"})),
         {
             "role": "tool",
             "name": "get_weather",
@@ -940,36 +923,13 @@ def test_parallel_function_calls_get_distinct_tool_call_indices(monkeypatch):
     tool_calls[*].index. Hardcoding index=0 collapses parallel calls onto one
     slot in OpenAI-style reassemblers."""
     sse = [
-        {
-            "candidates": [
-                {
-                    "content": {
-                        "role": "model",
-                        "parts": [
-                            {
-                                "functionCall": {
-                                    "id": "call_alpha",
-                                    "name": "search",
-                                    "args": {"q": "alpha"},
-                                }
-                            },
-                            {
-                                "functionCall": {
-                                    "id": "call_beta",
-                                    "name": "search",
-                                    "args": {"q": "beta"},
-                                }
-                            },
-                        ],
-                    },
-                    "finishReason": "STOP",
-                }
+        _event(
+            [
+                {"functionCall": {"id": "call_alpha", "name": "search", "args": {"q": "alpha"}}},
+                {"functionCall": {"id": "call_beta", "name": "search", "args": {"q": "beta"}}},
             ],
-            "usageMetadata": {
-                "promptTokenCount": 8,
-                "candidatesTokenCount": 4,
-            },
-        }
+            usage = {"promptTokenCount": 8, "candidatesTokenCount": 4},
+        ),
     ]
     lines = _collect(monkeypatch, sse)
     chunks = _parse_chunks(lines)
@@ -1070,34 +1030,13 @@ def test_parse_gemini_models_translates_native_catalog():
 def test_code_execution_parts_translate_to_code_execution_tool_events(monkeypatch):
     """executableCode + codeExecutionResult parts emit code_execution events."""
     sse = [
-        {
-            "candidates": [
-                {
-                    "content": {
-                        "role": "model",
-                        "parts": [
-                            {
-                                "executableCode": {
-                                    "language": "PYTHON",
-                                    "code": "print(2+2)",
-                                }
-                            },
-                            {
-                                "codeExecutionResult": {
-                                    "outcome": "OUTCOME_OK",
-                                    "output": "4\n",
-                                }
-                            },
-                        ],
-                    },
-                    "finishReason": "STOP",
-                }
+        _event(
+            [
+                {"executableCode": {"language": "PYTHON", "code": "print(2+2)"}},
+                {"codeExecutionResult": {"outcome": "OUTCOME_OK", "output": "4\n"}},
             ],
-            "usageMetadata": {
-                "promptTokenCount": 8,
-                "candidatesTokenCount": 4,
-            },
-        }
+            usage = {"promptTokenCount": 8, "candidatesTokenCount": 4},
+        ),
     ]
     lines = _collect(monkeypatch, sse, enabled_tools = ["code_execution"])
     chunks = _parse_chunks(lines)
@@ -1122,34 +1061,18 @@ def test_code_execution_parts_translate_to_code_execution_tool_events(monkeypatc
 def test_code_execution_failure_outcome_surfaces_in_result(monkeypatch):
     """OUTCOME_FAILED is prefixed onto the result text so the UI shows it."""
     sse = [
-        {
-            "candidates": [
+        _event(
+            [
+                {"executableCode": {"language": "PYTHON", "code": "1/0"}},
                 {
-                    "content": {
-                        "role": "model",
-                        "parts": [
-                            {
-                                "executableCode": {
-                                    "language": "PYTHON",
-                                    "code": "1/0",
-                                }
-                            },
-                            {
-                                "codeExecutionResult": {
-                                    "outcome": "OUTCOME_FAILED",
-                                    "output": "ZeroDivisionError",
-                                }
-                            },
-                        ],
+                    "codeExecutionResult": {
+                        "outcome": "OUTCOME_FAILED",
+                        "output": "ZeroDivisionError",
                     },
-                    "finishReason": "STOP",
-                }
+                },
             ],
-            "usageMetadata": {
-                "promptTokenCount": 5,
-                "candidatesTokenCount": 2,
-            },
-        }
+            usage = {"promptTokenCount": 5, "candidatesTokenCount": 2},
+        ),
     ]
     lines = _collect(monkeypatch, sse, enabled_tools = ["code_execution"])
     chunks = _parse_chunks(lines)
@@ -1166,20 +1089,7 @@ def test_tool_message_recovers_name_from_tool_call_id(monkeypatch):
     """When name is omitted, recover it from the matching tool_call_id."""
     messages = [
         {"role": "user", "content": "Weather?"},
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [
-                {
-                    "id": "call_xyz",
-                    "type": "function",
-                    "function": {
-                        "name": "get_weather",
-                        "arguments": json.dumps({"location": "Paris"}),
-                    },
-                }
-            ],
-        },
+        _assistant_call("get_weather", json.dumps({"location": "Paris"}), id = "call_xyz"),
         {
             "role": "tool",
             "tool_call_id": "call_xyz",
@@ -1201,22 +1111,14 @@ def test_tool_message_recovers_name_from_tool_call_id(monkeypatch):
 
 def test_usage_chunk_translates_gemini_token_counts(monkeypatch):
     sse = [
-        {
-            "candidates": [
-                {
-                    "content": {
-                        "role": "model",
-                        "parts": [{"text": "ok"}],
-                    },
-                    "finishReason": "STOP",
-                }
-            ],
-            "usageMetadata": {
+        _event(
+            [{"text": "ok"}],
+            usage = {
                 "promptTokenCount": 1234,
                 "candidatesTokenCount": 56,
                 "cachedContentTokenCount": 1000,
             },
-        }
+        ),
     ]
     lines = _collect(monkeypatch, sse)
     chunks = _parse_chunks(lines)
@@ -1269,21 +1171,11 @@ def test_vision_data_url_translates_to_inline_data(monkeypatch):
 )
 def test_finish_reason_translation(monkeypatch, gemini_reason, openai_reason):
     sse = [
-        {
-            "candidates": [
-                {
-                    "content": {
-                        "role": "model",
-                        "parts": [{"text": "x"}],
-                    },
-                    "finishReason": gemini_reason,
-                }
-            ],
-            "usageMetadata": {
-                "promptTokenCount": 1,
-                "candidatesTokenCount": 1,
-            },
-        }
+        _event(
+            [{"text": "x"}],
+            finish_reason = gemini_reason,
+            usage = {"promptTokenCount": 1, "candidatesTokenCount": 1},
+        ),
     ]
     lines = _collect(monkeypatch, sse)
     chunks = _parse_chunks(lines)
@@ -1301,37 +1193,16 @@ def test_finish_reason_translation(monkeypatch, gemini_reason, openai_reason):
 def test_grounding_metadata_surfaces_as_tool_end_citations(monkeypatch):
     """`groundingMetadata.groundingChunks[].web` -> tool_end result block."""
     sse = [
-        {
-            "candidates": [
-                {
-                    "content": {
-                        "role": "model",
-                        "parts": [{"text": "Answer with sources."}],
-                    },
-                    "groundingMetadata": {
-                        "groundingChunks": [
-                            {
-                                "web": {
-                                    "uri": "https://example.com/a",
-                                    "title": "Example A",
-                                }
-                            },
-                            {
-                                "web": {
-                                    "uri": "https://example.com/b",
-                                    "title": "Example B",
-                                }
-                            },
-                        ]
-                    },
-                    "finishReason": "STOP",
-                }
-            ],
-            "usageMetadata": {
-                "promptTokenCount": 7,
-                "candidatesTokenCount": 3,
+        _event(
+            [{"text": "Answer with sources."}],
+            groundingMetadata = {
+                "groundingChunks": [
+                    {"web": {"uri": "https://example.com/a", "title": "Example A"}},
+                    {"web": {"uri": "https://example.com/b", "title": "Example B"}},
+                ],
             },
-        }
+            usage = {"promptTokenCount": 7, "candidatesTokenCount": 3},
+        ),
     ]
     lines = _collect(
         monkeypatch,
@@ -1462,24 +1333,10 @@ def test_empty_text_part_with_thought_signature_emits_extra_content(monkeypatch)
     `thoughtSignature`. The translator must still surface it on a
     delta.extra_content envelope so the next turn can replay it."""
     sse = [
-        {
-            "candidates": [
-                {
-                    "content": {
-                        "role": "model",
-                        "parts": [
-                            {"text": "answer"},
-                            {"thoughtSignature": "SIG-FINAL"},
-                        ],
-                    },
-                    "finishReason": "STOP",
-                }
-            ],
-            "usageMetadata": {
-                "promptTokenCount": 2,
-                "candidatesTokenCount": 1,
-            },
-        }
+        _event(
+            [{"text": "answer"}, {"thoughtSignature": "SIG-FINAL"}],
+            usage = {"promptTokenCount": 2, "candidatesTokenCount": 1},
+        ),
     ]
     lines = _collect(monkeypatch, sse)
     chunks = _parse_chunks(lines)
@@ -1661,23 +1518,7 @@ def test_youtube_and_files_api_uris_stay_as_file_data(monkeypatch):
         return httpx.Response(
             200,
             content = _gemini_sse(
-                [
-                    {
-                        "candidates": [
-                            {
-                                "content": {
-                                    "role": "model",
-                                    "parts": [{"text": "ok"}],
-                                },
-                                "finishReason": "STOP",
-                            }
-                        ],
-                        "usageMetadata": {
-                            "promptTokenCount": 1,
-                            "candidatesTokenCount": 1,
-                        },
-                    }
-                ]
+                [_event([{"text": "ok"}], usage = {"promptTokenCount": 1, "candidatesTokenCount": 1})]
             ),
             headers = {"content-type": "text/event-stream"},
         )
@@ -1726,23 +1567,15 @@ def test_tool_use_prompt_tokens_added_to_input_tokens(monkeypatch):
     """`toolUsePromptTokenCount` must roll into the OpenAI prompt total --
     else tool turns silently undercount input tokens."""
     sse = [
-        {
-            "candidates": [
-                {
-                    "content": {
-                        "role": "model",
-                        "parts": [{"text": "result"}],
-                    },
-                    "finishReason": "STOP",
-                }
-            ],
-            "usageMetadata": {
+        _event(
+            [{"text": "result"}],
+            usage = {
                 "promptTokenCount": 10,
                 "toolUsePromptTokenCount": 100,
                 "candidatesTokenCount": 5,
                 "thoughtsTokenCount": 2,
             },
-        }
+        ),
     ]
     lines = _collect(monkeypatch, sse)
     chunks = _parse_chunks(lines)
@@ -1760,22 +1593,10 @@ def test_usage_chunk_reasoning_tokens_surfaced(monkeypatch):
     completion_tokens_details.reasoning_tokens in the emitted OpenAI usage
     chunk."""
     sse = [
-        {
-            "candidates": [
-                {
-                    "content": {
-                        "role": "model",
-                        "parts": [{"text": "ok"}],
-                    },
-                    "finishReason": "STOP",
-                }
-            ],
-            "usageMetadata": {
-                "promptTokenCount": 8,
-                "candidatesTokenCount": 5,
-                "thoughtsTokenCount": 20,
-            },
-        }
+        _event(
+            [{"text": "ok"}],
+            usage = {"promptTokenCount": 8, "candidatesTokenCount": 5, "thoughtsTokenCount": 20},
+        ),
     ]
     lines = _collect(monkeypatch, sse)
     chunks = _parse_chunks(lines)
@@ -1815,37 +1636,22 @@ def test_code_execution_tool_events_stow_native_part(monkeypatch):
     thoughtSignature in google.native_part so follow-up turns can replay
     Gemini's required history shape."""
     sse = [
-        {
-            "candidates": [
+        _event(
+            [
                 {
-                    "content": {
-                        "role": "model",
-                        "parts": [
-                            {
-                                "executableCode": {
-                                    "id": "code_a",
-                                    "language": "PYTHON",
-                                    "code": "print(1+1)",
-                                },
-                                "thoughtSignature": "SIG-CODE",
-                            },
-                            {
-                                "codeExecutionResult": {
-                                    "id": "result_a",
-                                    "outcome": "OUTCOME_OK",
-                                    "output": "2\n",
-                                },
-                            },
-                        ],
+                    "executableCode": {"id": "code_a", "language": "PYTHON", "code": "print(1+1)"},
+                    "thoughtSignature": "SIG-CODE",
+                },
+                {
+                    "codeExecutionResult": {
+                        "id": "result_a",
+                        "outcome": "OUTCOME_OK",
+                        "output": "2\n",
                     },
-                    "finishReason": "STOP",
-                }
+                },
             ],
-            "usageMetadata": {
-                "promptTokenCount": 5,
-                "candidatesTokenCount": 4,
-            },
-        }
+            usage = {"promptTokenCount": 5, "candidatesTokenCount": 4},
+        ),
     ]
     lines = _collect(
         monkeypatch,
@@ -1881,29 +1687,18 @@ def test_inline_image_tool_end_carries_thought_signature(monkeypatch):
     """Inline image parts with thoughtSignature must persist it on the emitted
     tool_end so Gemini 3 image editing can echo it back."""
     sse = [
-        {
-            "candidates": [
+        _event(
+            [
                 {
-                    "content": {
-                        "role": "model",
-                        "parts": [
-                            {
-                                "inlineData": {
-                                    "mimeType": "image/png",
-                                    "data": base64.b64encode(b"PNG").decode(),
-                                },
-                                "thoughtSignature": "SIG-IMG",
-                            }
-                        ],
+                    "inlineData": {
+                        "mimeType": "image/png",
+                        "data": base64.b64encode(b"PNG").decode(),
                     },
-                    "finishReason": "STOP",
-                }
+                    "thoughtSignature": "SIG-IMG",
+                },
             ],
-            "usageMetadata": {
-                "promptTokenCount": 4,
-                "candidatesTokenCount": 1,
-            },
-        }
+            usage = {"promptTokenCount": 4, "candidatesTokenCount": 1},
+        ),
     ]
     lines = _collect(
         monkeypatch,
@@ -1933,42 +1728,20 @@ def test_code_execution_plot_attaches_inline_image_native_part(monkeypatch):
     replay the image alongside executableCode and codeExecutionResult."""
     plot_data = base64.b64encode(b"PLOT").decode()
     sse = [
-        {
-            "candidates": [
+        _event(
+            [
                 {
-                    "content": {
-                        "role": "model",
-                        "parts": [
-                            {
-                                "executableCode": {
-                                    "id": "code_a",
-                                    "language": "PYTHON",
-                                    "code": "plt.plot([0,1])",
-                                },
-                            },
-                            {
-                                "codeExecutionResult": {
-                                    "id": "result_a",
-                                    "outcome": "OUTCOME_OK",
-                                    "output": "",
-                                },
-                            },
-                            {
-                                "inlineData": {
-                                    "mimeType": "image/png",
-                                    "data": plot_data,
-                                },
-                            },
-                        ],
+                    "executableCode": {
+                        "id": "code_a",
+                        "language": "PYTHON",
+                        "code": "plt.plot([0,1])",
                     },
-                    "finishReason": "STOP",
-                }
+                },
+                {"codeExecutionResult": {"id": "result_a", "outcome": "OUTCOME_OK", "output": ""}},
+                {"inlineData": {"mimeType": "image/png", "data": plot_data}},
             ],
-            "usageMetadata": {
-                "promptTokenCount": 5,
-                "candidatesTokenCount": 4,
-            },
-        }
+            usage = {"promptTokenCount": 5, "candidatesTokenCount": 4},
+        ),
     ]
     lines = _collect(
         monkeypatch,
@@ -2001,26 +1774,10 @@ def test_text_chunk_carries_thought_signature(monkeypatch):
     """Text parts with thoughtSignature surface it on delta.extra_content so
     frontend persistence can replay it on the follow-up turn."""
     sse = [
-        {
-            "candidates": [
-                {
-                    "content": {
-                        "role": "model",
-                        "parts": [
-                            {
-                                "text": "hello",
-                                "thoughtSignature": "SIG-TEXT",
-                            }
-                        ],
-                    },
-                    "finishReason": "STOP",
-                }
-            ],
-            "usageMetadata": {
-                "promptTokenCount": 2,
-                "candidatesTokenCount": 1,
-            },
-        }
+        _event(
+            [{"text": "hello", "thoughtSignature": "SIG-TEXT"}],
+            usage = {"promptTokenCount": 2, "candidatesTokenCount": 1},
+        ),
     ]
     lines = _collect(monkeypatch, sse)
     chunks = _parse_chunks(lines)
@@ -2037,22 +1794,15 @@ def test_openai_tools_translated_into_function_declarations(monkeypatch):
     tools[].functionDeclarations envelope."""
     captured = _capture_body(
         monkeypatch,
-        tools = [
-            {
-                "type": "function",
-                "function": {
-                    "name": "get_weather",
-                    "description": "Look up the weather for a city.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "city": {"type": "string"},
-                        },
-                        "required": ["city"],
-                    },
-                },
-            }
-        ],
+        tools = _tools(
+            name = "get_weather",
+            description = "Look up the weather for a city.",
+            parameters = {
+                "type": "object",
+                "properties": {"city": {"type": "string"}},
+                "required": ["city"],
+            },
+        ),
         tool_choice = {"type": "function", "function": {"name": "get_weather"}},
     )
     tools_arr = captured["body"].get("tools") or []
@@ -2072,12 +1822,7 @@ def test_tool_choice_auto_maps_to_function_calling_mode_auto(monkeypatch):
     """tool_choice="auto" maps to toolConfig.functionCallingConfig.mode."""
     captured = _capture_body(
         monkeypatch,
-        tools = [
-            {
-                "type": "function",
-                "function": {"name": "noop", "parameters": {"type": "object"}},
-            }
-        ],
+        tools = _tools(name = "noop", parameters = {"type": "object"}),
         tool_choice = "auto",
     )
     fcc = captured["body"]["toolConfig"]["functionCallingConfig"]
@@ -2091,41 +1836,25 @@ def test_code_exec_inline_image_attaches_to_code_execution_card(monkeypatch):
     image_generation card, attach to the same code_execution tool_end via the
     `__IMAGES__:` marker the chat adapter already understands."""
     sse = [
-        {
-            "candidates": [
+        _event(
+            [
                 {
-                    "content": {
-                        "role": "model",
-                        "parts": [
-                            {
-                                "executableCode": {
-                                    "id": "code_plot",
-                                    "language": "PYTHON",
-                                    "code": "import matplotlib.pyplot as plt; plt.plot([1,2,3]); plt.savefig('out.png')",
-                                },
-                            },
-                            {
-                                "codeExecutionResult": {
-                                    "outcome": "OUTCOME_OK",
-                                    "output": "saved",
-                                },
-                            },
-                            {
-                                "inlineData": {
-                                    "mimeType": "image/png",
-                                    "data": base64.b64encode(b"PNGDATA").decode(),
-                                },
-                            },
-                        ],
+                    "executableCode": {
+                        "id": "code_plot",
+                        "language": "PYTHON",
+                        "code": "import matplotlib.pyplot as plt; plt.plot([1,2,3]); plt.savefig('out.png')",
                     },
-                    "finishReason": "STOP",
-                }
+                },
+                {"codeExecutionResult": {"outcome": "OUTCOME_OK", "output": "saved"}},
+                {
+                    "inlineData": {
+                        "mimeType": "image/png",
+                        "data": base64.b64encode(b"PNGDATA").decode(),
+                    },
+                },
             ],
-            "usageMetadata": {
-                "promptTokenCount": 5,
-                "candidatesTokenCount": 4,
-            },
-        }
+            usage = {"promptTokenCount": 5, "candidatesTokenCount": 4},
+        ),
     ]
     lines = _collect(
         monkeypatch,
@@ -2323,11 +2052,7 @@ def test_function_declarations_strip_openai_only_schema_keys(monkeypatch):
             }
         ],
     )
-    tools_arr = captured["body"].get("tools") or []
-    decls = next(
-        (t.get("functionDeclarations") for t in tools_arr if "functionDeclarations" in t),
-        None,
-    )
+    decls = _function_declarations(captured)
     assert decls is not None, captured["body"]
     params = decls[0]["parameters"]
     assert "additionalProperties" not in params
@@ -2376,11 +2101,7 @@ def test_function_declarations_inline_local_refs_into_gemini_schema(monkeypatch)
             }
         ],
     )
-    tools_arr = captured["body"].get("tools") or []
-    decls = next(
-        (t.get("functionDeclarations") for t in tools_arr if "functionDeclarations" in t),
-        None,
-    )
+    decls = _function_declarations(captured)
     assert decls is not None, captured["body"]
     params = decls[0]["parameters"]
     assert "$defs" not in params
@@ -2427,11 +2148,7 @@ def test_function_declarations_inline_local_refs_in_anyof_and_items(monkeypatch)
             }
         ],
     )
-    tools_arr = captured["body"].get("tools") or []
-    decls = next(
-        (t.get("functionDeclarations") for t in tools_arr if "functionDeclarations" in t),
-        None,
-    )
+    decls = _function_declarations(captured)
     assert decls is not None
     params = decls[0]["parameters"]
     primary = params["properties"]["primary"]
@@ -2480,11 +2197,7 @@ def test_function_declarations_self_referential_schema_terminates(monkeypatch):
             }
         ],
     )
-    tools_arr = captured["body"].get("tools") or []
-    decls = next(
-        (t.get("functionDeclarations") for t in tools_arr if "functionDeclarations" in t),
-        None,
-    )
+    decls = _function_declarations(captured)
     assert decls is not None
     root = decls[0]["parameters"]["properties"]["root"]
     assert root.get("type") == "object"
@@ -2505,20 +2218,7 @@ def test_gemini_native_skips_orphan_function_response_for_dropped_builtin(monkey
             "model": "gemini-2.5-flash",
             "messages": [
                 {"role": "user", "content": "search please"},
-                {
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [
-                        {
-                            "id": "call_s",
-                            "type": "function",
-                            "function": {
-                                "name": "web_search",
-                                "arguments": ('{"_server_tool": true, "query": "x"}'),
-                            },
-                        }
-                    ],
-                },
+                _assistant_call("web_search", '{"_server_tool": true, "query": "x"}', id = "call_s"),
                 {
                     "role": "tool",
                     "tool_call_id": "call_s",
@@ -2684,20 +2384,7 @@ def test_gemini_native_skips_synthetic_server_builtin_replay(monkeypatch):
             "model": "gemini-2.5-flash",
             "messages": [
                 {"role": "user", "content": "search please"},
-                {
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [
-                        {
-                            "id": "call_s",
-                            "type": "function",
-                            "function": {
-                                "name": "web_search",
-                                "arguments": ('{"_server_tool": true, "query": "x"}'),
-                            },
-                        }
-                    ],
-                },
+                _assistant_call("web_search", '{"_server_tool": true, "query": "x"}', id = "call_s"),
                 {
                     "role": "tool",
                     "tool_call_id": "call_s",
@@ -2844,27 +2531,18 @@ def test_function_schema_nullable_type_array_flattens(monkeypatch):
     translate the union form."""
     captured = _capture_body(
         monkeypatch,
-        tools = [
-            {
-                "type": "function",
-                "function": {
-                    "name": "lookup",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "city": {"type": ["string", "null"]},
-                            "score": {"type": ["number", "null"]},
-                        },
-                    },
+        tools = _tools(
+            name = "lookup",
+            parameters = {
+                "type": "object",
+                "properties": {
+                    "city": {"type": ["string", "null"]},
+                    "score": {"type": ["number", "null"]},
                 },
-            }
-        ],
+            },
+        ),
     )
-    decls = next(
-        t["functionDeclarations"]
-        for t in captured["body"].get("tools") or []
-        if "functionDeclarations" in t
-    )
+    decls = _function_declarations(captured)
     params = decls[0]["parameters"]["properties"]
     assert params["city"]["type"] == "string"
     assert params["city"]["nullable"] is True
@@ -2896,12 +2574,7 @@ def test_image_models_drop_function_declarations(monkeypatch):
         monkeypatch,
         model = "gemini-2.5-flash-image",
         enabled_tools = ["image_generation"],
-        tools = [
-            {
-                "type": "function",
-                "function": {"name": "noop", "parameters": {"type": "object"}},
-            }
-        ],
+        tools = _tools(name = "noop", parameters = {"type": "object"}),
     )
     assert captured["body"].get("tools") is None
     assert captured["body"]["generationConfig"]["responseModalities"] == ["TEXT", "IMAGE"]
@@ -2982,6 +2655,67 @@ def test_safe_fetch_image_pins_validated_ip_no_hostname_in_request(monkeypatch):
     assert captured["requests"][0]["host_header"] == "cdn.example.com"
 
 
+@pytest.mark.parametrize(
+    "configured,bypassed,proxied",
+    [(False, False, False), (True, False, True), (True, True, False)],
+)
+def test_safe_fetch_image_carries_the_addresses_only_on_a_direct_request(
+    monkeypatch, configured, bypassed, proxied
+):
+    """The URL pins the first validated address and all of them reach the connection,
+    where the fallback happens; a proxied request carries none. Routing is decided on
+    the hostname, since the pinned URL's IP matches no NO_PROXY entry."""
+    import socket
+    import urllib.error
+    import urllib.request
+
+    from core.inference import tools as tools_mod
+
+    addresses = ("2606:4700::1", "104.16.0.1")
+    original_getaddrinfo = socket.getaddrinfo
+
+    def fake_getaddrinfo(host, *args, **kwargs):
+        if host == "cdn.example.com":
+            return [
+                (socket.AF_INET6, socket.SOCK_STREAM, 0, "", (addresses[0], 0, 0, 0)),
+                (socket.AF_INET, socket.SOCK_STREAM, 0, "", (addresses[1], 0)),
+            ]
+        return original_getaddrinfo(host, *args, **kwargs)
+
+    captured: dict = {}
+
+    class _StubOpener:
+        def open(
+            self,
+            req,
+            timeout = None,
+        ):
+            captured["url"] = req.full_url
+            raise urllib.error.URLError(OSError(101, "Network is unreachable"))
+
+    def fake_build_opener(*handlers, **_kw):
+        captured["handlers"] = handlers
+        return _StubOpener()
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    proxies = {"https": "http://proxy.corp:3128"} if configured else {}
+    monkeypatch.setattr(urllib.request, "getproxies", lambda: proxies)
+    # A bracketed host is the pinned IP: NO_PROXY matching it but not the hostname
+    # makes urllib's own decision disagree with the request's.
+    monkeypatch.setattr(urllib.request, "proxy_bypass", lambda host: bypassed or host[0] == "[")
+    monkeypatch.setattr("urllib.request.build_opener", fake_build_opener)
+
+    _drive(ep_mod._safe_fetch_image_for_gemini("https://cdn.example.com/x.png", "image/png"))
+
+    assert captured["url"] == f"https://[{addresses[0]}]/x.png"
+    https = next(h for h in captured["handlers"] if isinstance(h, tools_mod._SNIHTTPSHandler))
+    assert https._addresses == (() if proxied else addresses)
+    opted_out = any(
+        isinstance(h, urllib.request.ProxyHandler) and not h.proxies for h in captured["handlers"]
+    )
+    assert opted_out is not proxied
+
+
 def test_safe_fetch_image_redirect_to_private_host_rejected(monkeypatch):
     """Round 17: each redirect hop must re-validate the new host. A public hop
     that redirects to an internal address must be dropped."""
@@ -3060,23 +2794,7 @@ def test_files_api_substring_url_not_misclassified_as_filedata(monkeypatch):
         return httpx.Response(
             200,
             content = _gemini_sse(
-                [
-                    {
-                        "candidates": [
-                            {
-                                "content": {
-                                    "role": "model",
-                                    "parts": [{"text": "ok"}],
-                                },
-                                "finishReason": "STOP",
-                            }
-                        ],
-                        "usageMetadata": {
-                            "promptTokenCount": 1,
-                            "candidatesTokenCount": 1,
-                        },
-                    }
-                ]
+                [_event([{"text": "ok"}], usage = {"promptTokenCount": 1, "candidatesTokenCount": 1})]
             ),
             headers = {"content-type": "text/event-stream"},
         )
@@ -3133,37 +2851,18 @@ def test_function_schema_anyof_null_variant_flattens_to_nullable(monkeypatch):
     non-null branch with `nullable: true`."""
     captured = _capture_body(
         monkeypatch,
-        tools = [
-            {
-                "type": "function",
-                "function": {
-                    "name": "lookup",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "label": {
-                                "anyOf": [
-                                    {"type": "string"},
-                                    {"type": "null"},
-                                ]
-                            },
-                            "count": {
-                                "anyOf": [
-                                    {"type": "integer"},
-                                    {"type": "null"},
-                                ]
-                            },
-                        },
-                    },
+        tools = _tools(
+            name = "lookup",
+            parameters = {
+                "type": "object",
+                "properties": {
+                    "label": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                    "count": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
                 },
-            }
-        ],
+            },
+        ),
     )
-    decls = next(
-        t["functionDeclarations"]
-        for t in captured["body"].get("tools") or []
-        if "functionDeclarations" in t
-    )
+    decls = _function_declarations(captured)
     params = decls[0]["parameters"]["properties"]
     assert params["label"]["type"] == "string"
     assert params["label"]["nullable"] is True
@@ -3258,61 +2957,33 @@ def test_user_function_named_with_server_tool_arg_not_dropped(monkeypatch):
     whose JSON arguments contain `_server_tool: true` UNLESS the function name
     is also a canonical builtin name. Otherwise a user schema with an
     `_server_tool` field becomes invisible to the model."""
-    captured: dict = {"input_items": None}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        body = json.loads(request.content.decode("utf-8"))
-        captured["input_items"] = body.get("input")
-        return httpx.Response(
-            200,
-            content = b'data: {"type":"response.completed","response":{"output":[],"usage":{"input_tokens":1,"output_tokens":1}}}\n\n',
-            headers = {"content-type": "text/event-stream"},
-        )
-
-    _mock_http(monkeypatch, handler)
-
-    async def run():
-        client = ExternalProviderClient(
-            provider_type = "openai",
-            base_url = "https://api.openai.com/v1",
-            api_key = "sk-test",
-        )
-        async for _ in client.stream_chat_completion(
-            messages = [
-                {"role": "user", "content": "hi"},
-                {
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [
-                        {
-                            "id": "call_user",
-                            "type": "function",
-                            "function": {
-                                "name": "user_function",
-                                "arguments": json.dumps({"_server_tool": True, "q": "x"}),
-                            },
-                        }
-                    ],
-                },
-                {
-                    "role": "tool",
-                    "content": "result",
-                    "tool_call_id": "call_user",
-                    "name": "user_function",
-                },
-                {"role": "user", "content": "continue"},
-            ],
-            model = "gpt-5.5",
-            temperature = 0.7,
-            top_p = 1.0,
-            max_tokens = 16,
-        ):
-            pass
-        await client.close()
-
-    _drive(run())
-
-    items = captured["input_items"] or []
+    items = _capture_responses_input(
+        monkeypatch,
+        [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_user",
+                        "type": "function",
+                        "function": {
+                            "name": "user_function",
+                            "arguments": json.dumps({"_server_tool": True, "q": "x"}),
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "content": "result",
+                "tool_call_id": "call_user",
+                "name": "user_function",
+            },
+            {"role": "user", "content": "continue"},
+        ],
+    )
     fn_calls = [i for i in items if i.get("type") == "function_call"]
     fn_outs = [i for i in items if i.get("type") == "function_call_output"]
     # User function call must survive (call + output).
@@ -3323,55 +2994,16 @@ def test_user_function_named_with_server_tool_arg_not_dropped(monkeypatch):
 def test_builtin_named_with_server_tool_marker_dropped(monkeypatch):
     """Round 17 control: a builtin (web_search) tagged with `_server_tool:
     true` continues to be filtered from outbound history."""
-    captured: dict = {"input_items": None}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        body = json.loads(request.content.decode("utf-8"))
-        captured["input_items"] = body.get("input")
-        return httpx.Response(
-            200,
-            content = b'data: {"type":"response.completed","response":{"output":[],"usage":{"input_tokens":1,"output_tokens":1}}}\n\n',
-            headers = {"content-type": "text/event-stream"},
-        )
-
-    _mock_http(monkeypatch, handler)
-
-    async def run():
-        client = ExternalProviderClient(
-            provider_type = "openai",
-            base_url = "https://api.openai.com/v1",
-            api_key = "sk-test",
-        )
-        async for _ in client.stream_chat_completion(
-            messages = [
-                {"role": "user", "content": "search please"},
-                {
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [
-                        {
-                            "id": "call_b",
-                            "type": "function",
-                            "function": {
-                                "name": "web_search",
-                                "arguments": json.dumps({"_server_tool": True, "query": "x"}),
-                            },
-                        }
-                    ],
-                },
-                {"role": "user", "content": "continue"},
-            ],
-            model = "gpt-5.5",
-            temperature = 0.7,
-            top_p = 1.0,
-            max_tokens = 16,
-        ):
-            pass
-        await client.close()
-
-    _drive(run())
-
-    items = captured["input_items"] or []
+    items = _capture_responses_input(
+        monkeypatch,
+        [
+            {"role": "user", "content": "search please"},
+            _assistant_call(
+                "web_search", json.dumps({"_server_tool": True, "query": "x"}), id = "call_b"
+            ),
+            {"role": "user", "content": "continue"},
+        ],
+    )
     fn_calls = [i for i in items if i.get("type") == "function_call"]
     # Builtin server-side tool call must be filtered out.
     assert all(c.get("name") != "web_search" for c in fn_calls), items
@@ -3396,12 +3028,7 @@ def test_gemini_tool_choice_none_disables_function_declarations(monkeypatch):
     captured = _capture_body(
         monkeypatch,
         tool_choice = "none",
-        tools = [
-            {
-                "type": "function",
-                "function": {"name": "lookup", "parameters": {"type": "object"}},
-            }
-        ],
+        tools = _tools(name = "lookup", parameters = {"type": "object"}),
     )
     assert captured["body"].get("tools") is None, captured["body"]
 
@@ -3412,32 +3039,17 @@ def test_schema_anyof_multitype_with_null_keeps_anyof_and_nullable(monkeypatch):
     Gemini rejects `{"type":"null"}` inside anyOf."""
     captured = _capture_body(
         monkeypatch,
-        tools = [
-            {
-                "type": "function",
-                "function": {
-                    "name": "lookup",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "either": {
-                                "anyOf": [
-                                    {"type": "string"},
-                                    {"type": "integer"},
-                                    {"type": "null"},
-                                ]
-                            },
-                        },
-                    },
+        tools = _tools(
+            name = "lookup",
+            parameters = {
+                "type": "object",
+                "properties": {
+                    "either": {"anyOf": [{"type": "string"}, {"type": "integer"}, {"type": "null"}]}
                 },
-            }
-        ],
+            },
+        ),
     )
-    decls = next(
-        t["functionDeclarations"]
-        for t in captured["body"].get("tools") or []
-        if "functionDeclarations" in t
-    )
+    decls = _function_declarations(captured)
     either = decls[0]["parameters"]["properties"]["either"]
     assert either.get("nullable") is True
     inner = either.get("anyOf")
@@ -3578,20 +3190,7 @@ def test_anthropic_translates_openai_tool_calls_into_tool_use_blocks(monkeypatch
         async for _ in client.stream_chat_completion(
             messages = [
                 {"role": "user", "content": "look up X"},
-                {
-                    "role": "assistant",
-                    "content": "let me check",
-                    "tool_calls": [
-                        {
-                            "id": "call_a",
-                            "type": "function",
-                            "function": {
-                                "name": "lookup",
-                                "arguments": '{"q":"x"}',
-                            },
-                        }
-                    ],
-                },
+                _assistant_call("lookup", '{"q":"x"}', id = "call_a", content = "let me check"),
                 {
                     "role": "tool",
                     "content": "result_text",
@@ -3642,22 +3241,7 @@ def test_unmarked_user_web_search_function_survives_serialization():
 
     payload = {
         "model": "gpt-5.5",
-        "messages": [
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call_user",
-                        "type": "function",
-                        "function": {
-                            "name": "web_search",
-                            "arguments": '{"query": "x"}',
-                        },
-                    }
-                ],
-            }
-        ],
+        "messages": [_assistant_call("web_search", '{"query": "x"}', id = "call_user")],
         "stream": True,
     }
     req = ChatCompletionRequest.model_validate(payload)
@@ -3685,22 +3269,7 @@ def test_marked_server_builtin_dropped_from_build_external_messages():
     marked_args = json.dumps({"_server_tool": True, "kind": "image"})
     payload = {
         "model": "gpt-5.5",
-        "messages": [
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call_b",
-                        "type": "function",
-                        "function": {
-                            "name": "image_generation",
-                            "arguments": marked_args,
-                        },
-                    }
-                ],
-            }
-        ],
+        "messages": [_assistant_call("image_generation", marked_args, id = "call_b")],
         "stream": True,
     }
     req = ChatCompletionRequest.model_validate(payload)
@@ -3915,22 +3484,7 @@ def test_user_code_execution_function_not_dropped():
 
     payload = {
         "model": "gpt-5.5",
-        "messages": [
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call_user",
-                        "type": "function",
-                        "function": {
-                            "name": "code_execution",
-                            "arguments": '{"code": "print(1)"}',
-                        },
-                    }
-                ],
-            }
-        ],
+        "messages": [_assistant_call("code_execution", '{"code": "print(1)"}', id = "call_user")],
         "stream": True,
     }
     req = ChatCompletionRequest.model_validate(payload)
@@ -3968,22 +3522,7 @@ def test_native_part_code_execution_treated_as_server_side():
     )
     payload = {
         "model": "gpt-5.5",
-        "messages": [
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call_x",
-                        "type": "function",
-                        "function": {
-                            "name": "code_execution",
-                            "arguments": args_with_native_part,
-                        },
-                    }
-                ],
-            }
-        ],
+        "messages": [_assistant_call("code_execution", args_with_native_part, id = "call_x")],
         "stream": True,
     }
     req = ChatCompletionRequest.model_validate(payload)
@@ -4016,23 +3555,7 @@ def test_remote_image_fetch_attempt_cap_includes_failures(monkeypatch):
         return httpx.Response(
             200,
             content = _gemini_sse(
-                [
-                    {
-                        "candidates": [
-                            {
-                                "content": {
-                                    "role": "model",
-                                    "parts": [{"text": "ok"}],
-                                },
-                                "finishReason": "STOP",
-                            }
-                        ],
-                        "usageMetadata": {
-                            "promptTokenCount": 1,
-                            "candidatesTokenCount": 1,
-                        },
-                    }
-                ]
+                [_event([{"text": "ok"}], usage = {"promptTokenCount": 1, "candidatesTokenCount": 1})]
             ),
             headers = {"content-type": "text/event-stream"},
         )
@@ -4074,61 +3597,22 @@ def test_orphan_function_call_output_dropped_when_call_skipped(monkeypatch):
     """Round 19: when a marked server-side builtin `function_call` is dropped
     from OpenAI Responses input items, the matching role=tool follow-up must
     also be dropped to avoid an orphan `function_call_output`."""
-    captured: dict = {"input_items": None}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        body = json.loads(request.content.decode("utf-8"))
-        captured["input_items"] = body.get("input")
-        return httpx.Response(
-            200,
-            content = b'data: {"type":"response.completed","response":{"output":[],"usage":{"input_tokens":1,"output_tokens":1}}}\n\n',
-            headers = {"content-type": "text/event-stream"},
-        )
-
-    _mock_http(monkeypatch, handler)
-
-    async def run():
-        client = ExternalProviderClient(
-            provider_type = "openai",
-            base_url = "https://api.openai.com/v1",
-            api_key = "sk-test",
-        )
-        async for _ in client.stream_chat_completion(
-            messages = [
-                {"role": "user", "content": "search please"},
-                {
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [
-                        {
-                            "id": "call_b",
-                            "type": "function",
-                            "function": {
-                                "name": "web_search",
-                                "arguments": json.dumps({"_server_tool": True, "query": "x"}),
-                            },
-                        }
-                    ],
-                },
-                {
-                    "role": "tool",
-                    "content": "result_text",
-                    "tool_call_id": "call_b",
-                    "name": "web_search",
-                },
-                {"role": "user", "content": "continue"},
-            ],
-            model = "gpt-5.5",
-            temperature = 0.7,
-            top_p = 1.0,
-            max_tokens = 16,
-        ):
-            pass
-        await client.close()
-
-    _drive(run())
-
-    items = captured["input_items"] or []
+    items = _capture_responses_input(
+        monkeypatch,
+        [
+            {"role": "user", "content": "search please"},
+            _assistant_call(
+                "web_search", json.dumps({"_server_tool": True, "query": "x"}), id = "call_b"
+            ),
+            {
+                "role": "tool",
+                "content": "result_text",
+                "tool_call_id": "call_b",
+                "name": "web_search",
+            },
+            {"role": "user", "content": "continue"},
+        ],
+    )
     fn_calls = [i for i in items if i.get("type") == "function_call"]
     fn_outs = [i for i in items if i.get("type") == "function_call_output"]
     assert all(c.get("call_id") != "call_b" for c in fn_calls), items
@@ -4142,26 +3626,15 @@ def test_schema_multitype_union_with_null_preserves_anyof(monkeypatch):
     function contract."""
     captured = _capture_body(
         monkeypatch,
-        tools = [
-            {
-                "type": "function",
-                "function": {
-                    "name": "lookup",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "either": {"type": ["string", "integer", "null"]},
-                        },
-                    },
-                },
-            }
-        ],
+        tools = _tools(
+            name = "lookup",
+            parameters = {
+                "type": "object",
+                "properties": {"either": {"type": ["string", "integer", "null"]}},
+            },
+        ),
     )
-    decls = next(
-        t["functionDeclarations"]
-        for t in captured["body"].get("tools") or []
-        if "functionDeclarations" in t
-    )
+    decls = _function_declarations(captured)
     either = decls[0]["parameters"]["properties"]["either"]
     assert either.get("nullable") is True
     inner = either.get("anyOf")
@@ -4232,22 +3705,7 @@ def test_empty_assistant_turn_skipped_after_synthetic_tool_calls_dropped():
     marked_args = json.dumps({"_server_tool": True, "kind": "image"})
     payload = {
         "model": "gpt-5.5",
-        "messages": [
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call_b",
-                        "type": "function",
-                        "function": {
-                            "name": "image_generation",
-                            "arguments": marked_args,
-                        },
-                    }
-                ],
-            }
-        ],
+        "messages": [_assistant_call("image_generation", marked_args, id = "call_b")],
         "stream": True,
     }
     req = ChatCompletionRequest.model_validate(payload)
@@ -4278,20 +3736,7 @@ def test_role_tool_dropped_when_matching_synthetic_call_filtered():
     payload = {
         "model": "gpt-5.5",
         "messages": [
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call_b",
-                        "type": "function",
-                        "function": {
-                            "name": "web_search",
-                            "arguments": marked_args,
-                        },
-                    }
-                ],
-            },
+            _assistant_call("web_search", marked_args, id = "call_b"),
             {
                 "role": "tool",
                 "content": "result_text",
@@ -4398,20 +3843,7 @@ def test_anthropic_role_tool_list_content_translates_to_tool_result(monkeypatch)
         async for _ in client.stream_chat_completion(
             messages = [
                 {"role": "user", "content": "look up X"},
-                {
-                    "role": "assistant",
-                    "content": "let me check",
-                    "tool_calls": [
-                        {
-                            "id": "call_a",
-                            "type": "function",
-                            "function": {
-                                "name": "lookup",
-                                "arguments": '{"q":"x"}',
-                            },
-                        }
-                    ],
-                },
+                _assistant_call("lookup", '{"q":"x"}', id = "call_a", content = "let me check"),
                 {
                     "role": "tool",
                     "content": [{"type": "text", "text": "result_text"}],
@@ -4499,61 +3931,20 @@ def test_openai_responses_assistant_text_serialized_before_function_call(monkeyp
     function_call item, matching the prior response.output sequence. Otherwise
     function_call_output (the role=tool follow-up) appears to follow an
     unrelated assistant message."""
-    captured: dict = {"input_items": None}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        body = json.loads(request.content.decode("utf-8"))
-        captured["input_items"] = body.get("input")
-        return httpx.Response(
-            200,
-            content = b'data: {"type":"response.completed","response":{"output":[],"usage":{"input_tokens":1,"output_tokens":1}}}\n\n',
-            headers = {"content-type": "text/event-stream"},
-        )
-
-    _mock_http(monkeypatch, handler)
-
-    async def run():
-        client = ExternalProviderClient(
-            provider_type = "openai",
-            base_url = "https://api.openai.com/v1",
-            api_key = "sk-test",
-        )
-        async for _ in client.stream_chat_completion(
-            messages = [
-                {"role": "user", "content": "weather?"},
-                {
-                    "role": "assistant",
-                    "content": "Let me check that.",
-                    "tool_calls": [
-                        {
-                            "id": "call_w",
-                            "type": "function",
-                            "function": {
-                                "name": "get_weather",
-                                "arguments": "{}",
-                            },
-                        }
-                    ],
-                },
-                {
-                    "role": "tool",
-                    "content": "sunny",
-                    "tool_call_id": "call_w",
-                    "name": "get_weather",
-                },
-                {"role": "user", "content": "thanks"},
-            ],
-            model = "gpt-5.5",
-            temperature = 0.7,
-            top_p = 1.0,
-            max_tokens = 16,
-        ):
-            pass
-        await client.close()
-
-    _drive(run())
-
-    items = captured["input_items"] or []
+    items = _capture_responses_input(
+        monkeypatch,
+        [
+            {"role": "user", "content": "weather?"},
+            _assistant_call("get_weather", "{}", id = "call_w", content = "Let me check that."),
+            {
+                "role": "tool",
+                "content": "sunny",
+                "tool_call_id": "call_w",
+                "name": "get_weather",
+            },
+            {"role": "user", "content": "thanks"},
+        ],
+    )
     types = [i.get("type") or i.get("role") for i in items]
     # Expected order:
     #   user ("weather?")
@@ -4590,12 +3981,7 @@ def test_gemini_forced_function_tool_choice_drops_hosted_builtins(monkeypatch):
     captured = _capture_body(
         monkeypatch,
         enabled_tools = ["web_search", "code_execution"],
-        tools = [
-            {
-                "type": "function",
-                "function": {"name": "lookup", "parameters": {"type": "object"}},
-            }
-        ],
+        tools = _tools(name = "lookup", parameters = {"type": "object"}),
         tool_choice = {
             "type": "function",
             "function": {"name": "lookup"},
@@ -4620,12 +4006,7 @@ def test_gemini_forced_function_tool_choice_drops_image_generation(monkeypatch):
             "type": "function",
             "function": {"name": "lookup"},
         },
-        tools = [
-            {
-                "type": "function",
-                "function": {"name": "lookup", "parameters": {"type": "object"}},
-            }
-        ],
+        tools = _tools(name = "lookup", parameters = {"type": "object"}),
     )
     body = captured["body"]
     assert body["generationConfig"].get("responseModalities") == ["TEXT"], body
@@ -4759,20 +4140,7 @@ def test_gemini_role_tool_list_content_flattens_to_result_text(monkeypatch):
     instead of the actual tool output text."""
     history = [
         {"role": "user", "content": "look up"},
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [
-                {
-                    "id": "call_1",
-                    "type": "function",
-                    "function": {
-                        "name": "lookup",
-                        "arguments": json.dumps({"q": "x"}),
-                    },
-                }
-            ],
-        },
+        _assistant_call("lookup", json.dumps({"q": "x"})),
         {
             "role": "tool",
             "tool_call_id": "call_1",
@@ -5051,15 +4419,7 @@ def test_openai_responses_forced_function_tool_choice_drops_hosted_tools(monkeyp
             top_p = 0.95,
             max_tokens = 16,
             enabled_tools = ["web_search", "code_execution", "image_generation"],
-            tools = [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "lookup_record",
-                        "parameters": {"type": "object", "properties": {}},
-                    },
-                },
-            ],
+            tools = _tools(name = "lookup_record", parameters = {"type": "object", "properties": {}}),
             tool_choice = {
                 "type": "function",
                 "function": {"name": "lookup_record"},

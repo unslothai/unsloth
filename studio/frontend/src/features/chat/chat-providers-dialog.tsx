@@ -83,6 +83,7 @@ import { useExternalProvidersStore } from "./stores/external-providers-store";
 import {
   mergeLearnedModelCapabilities,
   pruneProviderModelIds,
+  refreshProviderModelCatalogs,
   syncExternalProvidersFromBackend,
 } from "./sync-external-providers";
 
@@ -755,6 +756,7 @@ export function ChatProvidersSettings({
       ];
       providersRef.current = nextProviders;
       onProvidersChange(nextProviders);
+      void refreshProviderModelCatalogs([provider]);
       setSelectedModelIds(models);
       setAvailableModels(available);
       setEditingProviderId(created.id);
@@ -881,6 +883,7 @@ export function ChatProvidersSettings({
         ...providers.filter((p) => p.id !== created.id),
         provider,
       ]);
+      void refreshProviderModelCatalogs([provider]);
       resetForm();
       autoOpenedAddFormRef.current = true;
       setPage("list");
@@ -1005,31 +1008,31 @@ export function ChatProvidersSettings({
       const updatedAt = Number.isFinite(Date.parse(updated.updated_at))
         ? Date.parse(updated.updated_at)
         : Date.now();
+      const editedProvider: ExternalProviderConfig = {
+        ...existing,
+        backendProviderType: updated.provider_type,
+        name: updated.display_name,
+        baseUrl: updated.base_url ?? "",
+        models: modelsToSave,
+        availableModels: manualOnly
+          ? []
+          : pruneProviderModelIds(existing.providerType, availableModels),
+        maxOutputTokens: updated.max_output_tokens ?? undefined,
+
+        hasApiKey: updated.has_api_key,
+        isReasoningModel: supportsProviderReasoningToggle(
+          existing.providerType,
+        )
+          ? isReasoningModel
+          : undefined,
+        updatedAt,
+      };
       onProvidersChange(
         providers.map((provider) =>
-          provider.id === editingProviderId
-            ? {
-                ...provider,
-                backendProviderType: updated.provider_type,
-                name: updated.display_name,
-                baseUrl: updated.base_url ?? "",
-                models: modelsToSave,
-                availableModels: manualOnly
-                  ? []
-                  : pruneProviderModelIds(existing.providerType, availableModels),
-                maxOutputTokens: updated.max_output_tokens ?? undefined,
-
-                hasApiKey: updated.has_api_key,
-                isReasoningModel: supportsProviderReasoningToggle(
-                  existing.providerType,
-                )
-                  ? isReasoningModel
-                  : undefined,
-                updatedAt,
-              }
-            : provider,
+          provider.id === editingProviderId ? editedProvider : provider,
         ),
       );
+      void refreshProviderModelCatalogs([editedProvider]);
       toast.success("Connection updated.");
       resetForm();
       autoOpenedAddFormRef.current = true;

@@ -1,11 +1,8 @@
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
-#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-#
 #     http://www.apache.org/licenses/LICENSE-2.0
-#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -14,6 +11,7 @@
 
 __all__ = [
     "is_hip",
+    "npu_is_available",
     "get_device_type",
     "DEVICE_TYPE",
     "DEVICE_TYPE_TORCH",
@@ -30,6 +28,7 @@ __all__ = [
 ]
 
 import functools
+import importlib.util
 import inspect
 import os
 import re
@@ -59,6 +58,32 @@ def is_hip():
 
 
 @functools.cache
+def npu_is_available():
+    """True only when torch.npu is present AND usable.
+
+    Only torch_npu >= 2.5.1 autoloads the namespace, and importing it without a driver
+    raises, so an unguarded probe would break `import unsloth` on CUDA, ROCm and XPU too.
+    """
+    if _IS_MLX:
+        return False
+    npu = getattr(torch, "npu", None)
+    if npu is None:
+        if importlib.util.find_spec("torch_npu") is None:
+            return False
+        try:
+            import torch_npu  # noqa: F401
+        except Exception:
+            return False
+        npu = getattr(torch, "npu", None)
+        if npu is None:
+            return False
+    try:
+        return bool(npu.is_available())
+    except Exception:
+        return False
+
+
+@functools.cache
 def get_device_type():
     # MLX first: torch is never imported on the MLX runtime, so claiming "cuda" here would NameError in
     # get_device_count. Matches unsloth/__init__.py and unsloth_zoo.device_type.
@@ -74,17 +99,27 @@ def get_device_type():
         return "cuda"
     elif hasattr(torch, "xpu") and torch.xpu.is_available():
         return "xpu"
+    # After xpu: a host exposing both keeps selecting xpu, as it did before NPU.
+    elif npu_is_available():
+        return "npu"
+    accelerator = None
     if hasattr(torch, "accelerator"):
         if not torch.accelerator.is_available():
             raise NotImplementedError("Unsloth cannot find any torch accelerator? You need a GPU.")
         accelerator = str(torch.accelerator.current_accelerator())
-        if accelerator in ("cuda", "xpu", "hip"):
+        # Listed, not returned: torch.npu is unusable here, so it only defers the AttributeError.
+        if accelerator in ("cuda", "xpu", "hip", "npu"):
             raise RuntimeError(
-                f"Unsloth: Weirdly `torch.cuda.is_available()`, `torch.xpu.is_available()` and `is_hip` all failed.\n"
+                f"Unsloth: Weirdly `torch.cuda.is_available()`, `torch.xpu.is_available()`, `torch.npu.is_available()` and `is_hip` all failed.\n"
                 f"But `torch.accelerator.current_accelerator()` works with it being = `{accelerator}`\n"
                 f"Please reinstall torch - it's most likely broken :("
             )
-    raise NotImplementedError("Unsloth currently only works on NVIDIA, AMD and Intel GPUs.")
+    # torch.accelerator only exists from torch 2.6, so below that there is no name.
+    raise NotImplementedError(
+        f"Unsloth does not currently work on {accelerator}."
+        if accelerator
+        else "Unsloth does not currently work on this device."
+    )
 
 
 DEVICE_TYPE: str = get_device_type()
@@ -102,6 +137,8 @@ def get_device_count():
         return torch.cuda.device_count()
     elif DEVICE_TYPE == "xpu":
         return torch.xpu.device_count()
+    elif DEVICE_TYPE == "npu":
+        return torch.npu.device_count()
     else:
         return 1
 
@@ -113,7 +150,6 @@ DEVICE_COUNT: int = get_device_count()
 # but not Instinct (bitsandbytes-foundation/bitsandbytes#1748); since 0.49.2 blocksize=64 4-bit
 # is supported on CDNA (MI Instinct / gfx9xx) too (#1856).
 
-# |-----------------|-----------|------------|
 ALLOW_PREQUANTIZED_MODELS: bool = True
 # HSA_STATUS_ERROR_EXCEPTION checks - sometimes AMD fails for BnB
 ALLOW_BITSANDBYTES: bool = True
@@ -248,6 +284,17 @@ def get_device_stats() -> tuple[str, str, float]:
     elif DEVICE_TYPE == "xpu":
         name = gpu_stats.name + ". " if gpu_stats.name else "Intel XPU Device. "
         snippet = f"Intel Toolkit: {torch.version.xpu}."
+    elif DEVICE_TYPE == "npu":
+        # Named for the vendor, like the arms either side of it: torch.npu and torch_npu are
+        # Ascend's, so an unnamed one is an Ascend NPU the driver declined to name, not some
+        # generic NPU. #10686 added the tests that say so and the code that did not.
+        name = gpu_stats.name + ". " if gpu_stats.name else "Ascend NPU Device. "
+        # Report the toolkit like the cuda/xpu arms, not the name already in `name`.
+        try:
+            import torch_npu
+            snippet = f"Ascend NPU. torch_npu: {torch_npu.__version__}."
+        except Exception:
+            snippet = "Ascend NPU."
     else:
         name = gpu_stats.name + ". " if gpu_stats.name else "NVIDIA GPU Device. "
         snippet = f"CUDA: {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit: {torch.version.cuda}."

@@ -10,9 +10,6 @@ from pydantic import BaseModel, Field
 MAX_JSON_SAFE_INTEGER = 9_007_199_254_740_991
 
 
-# ── Registry (static provider info) ───────────────────────────────
-
-
 class ProviderRegistryEntry(BaseModel):
     """A supported provider type with its default configuration."""
 
@@ -49,9 +46,6 @@ class ProviderRegistryEntry(BaseModel):
         "remote",
         description = "remote = fetch /models; curated = huge catalogs — UI uses defaults + manual IDs only",
     )
-
-
-# ── Provider config CRUD ──────────────────────────────────────────
 
 
 class ProviderCreate(BaseModel):
@@ -153,9 +147,6 @@ class ProviderResponse(BaseModel):
     updated_at: str = Field(..., description = "ISO 8601 last-update timestamp")
 
 
-# ── Model listing ─────────────────────────────────────────────────
-
-
 class ProviderModelInfo(BaseModel):
     """A model available from an external provider."""
 
@@ -163,6 +154,21 @@ class ProviderModelInfo(BaseModel):
     display_name: str = Field("", description = "Human-readable model name")
     context_length: Optional[int] = Field(None, description = "Maximum context length in tokens")
     owned_by: Optional[str] = Field(None, description = "Model owner/organization")
+
+
+class ProviderModelReasoningInfo(BaseModel):
+    supported_efforts: Optional[list[str]] = None
+    mandatory: bool = False
+    default_effort: Optional[str] = None
+    default_enabled: Optional[bool] = None
+
+
+class ProviderModelCapabilityInfo(BaseModel):
+    id: str
+    input_modalities: Optional[list[str]] = None
+    reasoning: Optional[ProviderModelReasoningInfo] = None
+    max_output_tokens: Optional[int] = None
+    supported_parameters: Optional[list[str]] = None
 
 
 class ProviderModelsRequest(BaseModel):
@@ -180,9 +186,6 @@ class ProviderModelsRequest(BaseModel):
     base_url: Optional[str] = Field(
         None, description = "Custom base URL (overrides registry default)"
     )
-
-
-# ── Connection testing ────────────────────────────────────────────
 
 
 class ProviderTestRequest(BaseModel):

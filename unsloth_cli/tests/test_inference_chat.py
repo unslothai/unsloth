@@ -264,6 +264,102 @@ def test_chatbackend_normal_path_skips_adapter_control():
     assert fake.calls[0][0] == "plain"
 
 
+class _FakeGgufBackend:
+    def __init__(self):
+        self.calls = []
+
+    def generate_chat_completion(self, **kwargs):
+        self.calls.append(kwargs)
+        return iter(["hi"])
+
+
+def test_chat_max_new_tokens_is_unset_by_default():
+    opt = _option(chatmod.chat, "max_new_tokens")
+    assert getattr(opt, "default", "missing") is None
+    assert "--max-new-tokens" in (getattr(opt, "param_decls", None) or [])
+
+
+def test_chatbackend_forwards_an_unset_max_new_tokens_unset():
+    # Only the backend, once it has counted the prompt, can size an unset limit.
+    fake = _FakeBackend()
+    backend = ChatBackend("unsloth", fake)
+
+    list(
+        backend.stream(
+            [{"role": "user", "content": "x"}],
+            **{**_STREAM_KWARGS, "max_new_tokens": None},
+        )
+    )
+
+    assert fake.calls[0][2]["max_new_tokens"] is None
+
+
+def test_chatbackend_honours_an_explicit_max_new_tokens():
+    fake = _FakeBackend()
+    backend = ChatBackend("unsloth", fake)
+
+    list(backend.stream([{"role": "user", "content": "x"}], **_STREAM_KWARGS))
+
+    assert fake.calls[0][2]["max_new_tokens"] == 8
+
+
+def test_chatbackend_gguf_leaves_max_tokens_unset_for_llama_server():
+    fake = _FakeGgufBackend()
+    backend = ChatBackend("gguf", fake)
+
+    list(
+        backend.stream(
+            [{"role": "user", "content": "x"}],
+            **{**_STREAM_KWARGS, "max_new_tokens": None},
+        )
+    )
+    list(backend.stream([{"role": "user", "content": "x"}], **_STREAM_KWARGS))
+
+    assert [call["max_tokens"] for call in fake.calls] == [None, 8]
+
+
+class _FakeStatsBackend:
+    def __init__(self, stats):
+        self._stats = stats
+
+    def generate_chat_response(self, **kwargs):
+        holder = kwargs.get("stats_holder")
+
+        def stream():
+            yield "hi"
+            if holder is not None:
+                holder["stats"] = self._stats
+
+        return stream()
+
+
+def _drain_unsloth(stats):
+    backend = ChatBackend("unsloth", _FakeStatsBackend(stats))
+    list(backend.stream([{"role": "user", "content": "x"}], **_STREAM_KWARGS))
+    return backend.reply_hit_token_limit
+
+
+def test_chatbackend_reports_whether_a_reply_ran_out_of_budget():
+    assert _drain_unsloth({"truncated": True}) is True
+    assert _drain_unsloth({"finish_reason": "length"}) is True
+    assert _drain_unsloth({"truncated": False}) is False
+    assert _drain_unsloth({"finish_reason": "stop"}) is False
+    assert _drain_unsloth(None) is False
+
+
+def test_chatbackend_gguf_reports_a_length_finish_from_the_metadata_event():
+    class _Meta:
+        def generate_chat_completion(self, **kwargs):
+            return iter(["hi", {"type": "metadata", "finish_reason": "length"}])
+
+    backend = ChatBackend("gguf", _Meta())
+    chunks = list(backend.stream([{"role": "user", "content": "x"}], **_STREAM_KWARGS))
+
+    assert backend.reply_hit_token_limit is True
+    # The metadata event still reaches the stream helpers, which skip non-strings.
+    assert chunks[0] == "hi"
+
+
 def test_collect_stream_returns_last_cumulative_think_stripped():
     stream = iter(["<think>r</think>hel", "<think>r</think>hello"])
     assert collect_stream(stream, show_thinking = False) == "hello"
@@ -846,6 +942,20 @@ def test_chat_no_arg_chats_with_picked_trained_model(monkeypatch):
     assert resolved == ["outputs/run-42"]
 
 
+class _HealthResponse:
+    def __init__(self, body = b'{"status": "healthy", "service": "Unsloth UI Backend"}'):
+        self._body = body
+
+    def read(self, _limit = None):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
 def test_find_studio_server_none_when_not_running(monkeypatch):
     import urllib.request
 
@@ -856,6 +966,125 @@ def test_find_studio_server_none_when_not_running(monkeypatch):
 
     monkeypatch.setattr(urllib.request, "urlopen", refuse)
     assert _inference.find_studio_server() is None
+
+
+def test_find_studio_server_falls_back_to_a_recorded_studio_port(monkeypatch, tmp_path):
+    import importlib
+    import os
+    import urllib.request
+
+    from unsloth_cli import _inference
+
+    studio = importlib.import_module("unsloth_cli.commands.studio")
+    monkeypatch.delenv("UNSLOTH_STUDIO_URL", raising = False)
+    monkeypatch.setattr(studio, "STUDIO_HOME", tmp_path)
+    monkeypatch.setattr(studio, "_pid_alive", lambda pid: pid == os.getpid())
+    # Legacy records: a bare PID, no start time and no bind-address line.
+    (tmp_path / "studio-8887-424242.pid").write_text("424242", encoding = "utf-8")
+    (tmp_path / f"studio-8889-{os.getpid()}.pid").write_text(str(os.getpid()), encoding = "utf-8")
+    probed = []
+
+    def default_port_taken(request, *a, **k):
+        probed.append(request.full_url)
+        if ":8888/" in request.full_url:
+            raise OSError("HTTP Error 404: File not found")
+        return _HealthResponse()
+
+    monkeypatch.setattr(urllib.request, "urlopen", default_port_taken)
+    assert _inference.find_studio_server() == "http://127.0.0.1:8889"
+    assert probed == ["http://127.0.0.1:8888/api/health", "http://127.0.0.1:8889/api/health"]
+
+    probed.clear()
+    monkeypatch.setenv("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888")
+    assert _inference.find_studio_server() is None
+    assert probed == ["http://127.0.0.1:8888/api/health"]
+
+
+def test_find_studio_server_skips_a_recorded_pid_reused_by_another_process(monkeypatch, tmp_path):
+    import importlib
+    import sys
+    import types
+    import urllib.request
+
+    from unsloth_cli import _inference
+
+    studio = importlib.import_module("unsloth_cli.commands.studio")
+    monkeypatch.delenv("UNSLOTH_STUDIO_URL", raising = False)
+    monkeypatch.setattr(studio, "STUDIO_HOME", tmp_path)
+    monkeypatch.setattr(studio, "_pid_alive", lambda pid: True)
+    process = types.SimpleNamespace(create_time = lambda: 1000.0)
+    monkeypatch.setitem(sys.modules, "psutil", types.SimpleNamespace(Process = lambda pid: process))
+    # A crashed Studio's record whose PID now belongs to another process, next to a live one.
+    (tmp_path / "studio-8887-4242.pid").write_text("4242\n500.0\n127.0.0.1", encoding = "utf-8")
+    (tmp_path / "studio-8889-4343.pid").write_text("4343\n1000.0\n127.0.0.1", encoding = "utf-8")
+    probed = []
+
+    def urlopen(request, *a, **k):
+        probed.append(request.full_url)
+        if ":8888/" in request.full_url:
+            raise OSError("connection refused")
+        return _HealthResponse()
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    assert _inference.find_studio_server() == "http://127.0.0.1:8889"
+    assert probed == ["http://127.0.0.1:8888/api/health", "http://127.0.0.1:8889/api/health"]
+
+
+def test_find_studio_server_probes_a_recorded_port_on_the_family_it_bound(monkeypatch, tmp_path):
+    # An IPv6-only Studio shares its port number with whoever holds 127.0.0.1.
+    import importlib
+    import urllib.request
+
+    from unsloth_cli import _inference
+
+    studio = importlib.import_module("unsloth_cli.commands.studio")
+    monkeypatch.delenv("UNSLOTH_STUDIO_URL", raising = False)
+    monkeypatch.setattr(studio, "STUDIO_HOME", tmp_path)
+    monkeypatch.setattr(studio, "_pid_alive", lambda pid: True)
+    (tmp_path / "studio-8889-4343.pid").write_text("4343\n\n::1", encoding = "utf-8")
+    # `::` is v6only on macOS; a LAN-only bind is not reachable from this flow at all.
+    (tmp_path / "studio-8890-4344.pid").write_text("4344\n\n0.0.0.0,::", encoding = "utf-8")
+    (tmp_path / "studio-8891-4345.pid").write_text("4345\n\n::", encoding = "utf-8")
+    (tmp_path / "studio-8892-4346.pid").write_text("4346\n\n192.168.1.5", encoding = "utf-8")
+    probed = []
+
+    def nothing_answers(request, *a, **k):
+        probed.append(request.full_url)
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(urllib.request, "urlopen", nothing_answers)
+    assert _inference.find_studio_server() is None
+    assert probed == [
+        "http://127.0.0.1:8888/api/health",
+        "http://[::1]:8889/api/health",
+        "http://127.0.0.1:8890/api/health",
+        "http://[::1]:8890/api/health",
+        "http://[::1]:8891/api/health",
+    ]
+
+
+def test_find_studio_server_keeps_looking_past_a_stranger_on_the_default_port(
+    monkeypatch, tmp_path
+):
+    # Whatever took 8888 answers a health payload of its own for every path.
+    import importlib
+    import urllib.request
+
+    from unsloth_cli import _inference
+
+    studio = importlib.import_module("unsloth_cli.commands.studio")
+    monkeypatch.delenv("UNSLOTH_STUDIO_URL", raising = False)
+    monkeypatch.setattr(studio, "STUDIO_HOME", tmp_path)
+    monkeypatch.setattr(studio, "_pid_alive", lambda pid: True)
+    (tmp_path / "studio-8889-4343.pid").write_text("4343\n\n127.0.0.1", encoding = "utf-8")
+
+    def stranger_on_8888(request, *a, **k):
+        if ":8888/" in request.full_url:
+            return _HealthResponse(b'{"status": "healthy", "service": "some-other-app"}')
+        return _HealthResponse()
+
+    monkeypatch.setattr(urllib.request, "urlopen", stranger_on_8888)
+    assert _inference.find_studio_server() == "http://127.0.0.1:8889"
 
 
 def test_find_studio_server_prefers_ipv4_loopback_for_localhost(monkeypatch):
@@ -876,17 +1105,10 @@ def test_find_studio_server_prefers_ipv4_loopback_for_localhost(monkeypatch):
         ],
     )
 
-    class _OK:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
     def only_ipv4(request, *a, **k):
         if "127.0.0.1" not in request.full_url:
             raise OSError("connection refused")
-        return _OK()
+        return _HealthResponse()
 
     monkeypatch.setattr(urllib.request, "urlopen", only_ipv4)
     assert _inference.find_studio_server() == "http://127.0.0.1:8888"
@@ -920,6 +1142,59 @@ def test_http_backend_streams_cumulative_text(monkeypatch):
 
     out = list(backend.stream([{"role": "user", "content": "hi"}], **_STREAM_KWARGS))
     assert out == ["He", "Hello"]
+
+
+def _http_stream_body(monkeypatch, max_new_tokens):
+    backend = HttpChatBackend("http://localhost:8888", "token")
+    bodies = []
+
+    def fake_request(
+        method,
+        path,
+        payload = None,
+        timeout = None,
+    ):
+        bodies.append(payload)
+        return _FakeSSEResponse([b"data: [DONE]\n"])
+
+    monkeypatch.setattr(backend, "_request", fake_request)
+    list(
+        backend.stream(
+            [{"role": "user", "content": "hi"}],
+            **{**_STREAM_KWARGS, "max_new_tokens": max_new_tokens},
+        )
+    )
+    return bodies[0]
+
+
+def test_http_backend_omits_max_tokens_when_unset(monkeypatch):
+    # The server documents max_tokens=None as "generate until EOS"; sending a cap
+    # the user never asked for truncates every reply.
+    assert "max_tokens" not in _http_stream_body(monkeypatch, None)
+
+
+def test_http_backend_sends_an_explicit_max_tokens(monkeypatch):
+    assert _http_stream_body(monkeypatch, 128)["max_tokens"] == 128
+
+
+def _http_finish(monkeypatch, finish_reason):
+    backend = HttpChatBackend("http://localhost:8888", "token")
+    chunk = json.dumps({"choices": [{"delta": {"content": "hi"}, "finish_reason": finish_reason}]})
+    monkeypatch.setattr(
+        backend,
+        "_request",
+        lambda *a, **k: _FakeSSEResponse([f"data: {chunk}\n".encode(), b"data: [DONE]\n"]),
+    )
+    out = list(backend.stream([{"role": "user", "content": "hi"}], **_STREAM_KWARGS))
+    return backend.reply_hit_token_limit, out
+
+
+def test_http_backend_reports_whether_a_reply_ran_out_of_budget(monkeypatch):
+    hit, out = _http_finish(monkeypatch, "length")
+    assert hit is True
+    # The finish-reason chunk carries a delta too; it must not be dropped.
+    assert out == ["hi"]
+    assert _http_finish(monkeypatch, "stop")[0] is False
 
 
 class _FakeLoadResponse:
@@ -1424,6 +1699,41 @@ def test_chat_prefers_running_studio_server(monkeypatch):
     assert local_loads == []
     assert "stays warm" in result.output
     assert closed == ["http"]
+
+
+def _chat_run_with_limit_flag(monkeypatch, hit, *flags):
+    class _FakeHttpBackend:
+        def __init__(self):
+            self.reply_hit_token_limit = False
+
+        def stream(self, *a, **k):
+            self.reply_hit_token_limit = hit
+            return iter(["hello"])
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(chatmod, "resolve_model_config", lambda *a, **k: _FakeConfig())
+    monkeypatch.setattr(chatmod, "connect_studio_server", lambda *a, **k: _FakeHttpBackend())
+    monkeypatch.setattr(chatmod, "load_chat_backend", lambda *a, **k: None)
+    monkeypatch.setattr(chatmod, "_compare_needs_second_model", lambda: False)
+
+    result = CliRunner().invoke(_chat_app(), ["fake-model", *flags], input = "hi\n/exit\n")
+    assert result.exit_code == 0, result.output
+    return result.output
+
+
+def test_chat_tells_the_user_when_a_reply_stopped_at_the_token_limit(monkeypatch):
+    unset = _chat_run_with_limit_flag(monkeypatch, True)
+    capped = _chat_run_with_limit_flag(monkeypatch, True, "--max-new-tokens", "8")
+
+    # Only an unset limit grows with the context; a chosen one has to be raised itself.
+    assert "--max-seq-length" in unset and "--max-new-tokens" not in unset
+    assert "--max-new-tokens" in capped and "--max-seq-length" not in capped
+
+
+def test_chat_stays_quiet_when_a_reply_ended_on_its_own(monkeypatch):
+    assert "token limit" not in _chat_run_with_limit_flag(monkeypatch, False)
 
 
 def test_chat_forwards_gguf_runtime_options_to_loader(monkeypatch):
@@ -2451,6 +2761,136 @@ def test_catalog_local_gguf_folder_picks_the_preferred_quant(monkeypatch, tmp_pa
 
     entries = cat.local_folder_entries()
     assert entries and entries[0].model.endswith("mymodel-Q4_K_M.gguf"), entries[0].model
+
+
+def test_catalog_loose_gguf_file_rows_load_their_own_file(monkeypatch, tmp_path):
+    from unsloth_cli._inference import ensure_studio_backend_path
+    from unsloth_cli import _model_catalog as cat
+
+    ensure_studio_backend_path()
+    folder = tmp_path / "models"
+    folder.mkdir()
+    ling = folder / "Ling-3.0-tiny-Uncensored-Abliterated.f16.gguf"
+    minimax = folder / "MiniMax-H3-ref2va-curve-zs05-Q8_0.gguf"
+    for file in (ling, minimax):
+        file.write_bytes(b"GGUF" + b"\0" * 4096)
+    multi = tmp_path / "multi"
+    multi.mkdir()
+    (multi / "mymodel-Q4_K_M.gguf").write_bytes(b"GGUF" + b"\0" * 4096)
+    (multi / "mymodel-F16.gguf").write_bytes(b"GGUF" + b"\0" * 4096 * 4)
+
+    def row(path):
+        return SimpleNamespace(
+            source = "models_dir",
+            partial = False,
+            model_format = "gguf",
+            path = str(path),
+            display_name = path.stem,
+            load_id = str(path),
+            id = str(path),
+        )
+
+    monkeypatch.setattr(cat, "_local_catalog_rows", lambda: [row(ling), row(minimax), row(multi)])
+    monkeypatch.setattr(cat, "_local_model_task", lambda m: None)
+    monkeypatch.setattr(cat, "_local_model_can_chat", lambda m: None)
+    monkeypatch.setattr(cat, "_local_is_a_diffusers_pipeline", lambda m: False)
+
+    loads = {e.name: e.model for e in cat.local_folder_entries()}
+    assert loads == {
+        ling.stem: str(ling),
+        minimax.stem: str(minimax),
+        "multi": str(multi / "mymodel-Q4_K_M.gguf"),
+    }
+
+
+def test_catalog_loose_gguf_shard_rows_load_the_first_split(monkeypatch, tmp_path):
+    """Loose shards are listed one row each; resolving them to the first is what lets
+    _dedup_key, which keys on the inode, offer a split family as a single pick."""
+    from unsloth_cli._inference import ensure_studio_backend_path
+    from unsloth_cli import _model_catalog as cat
+
+    ensure_studio_backend_path()
+    folder = tmp_path / "models"
+    folder.mkdir()
+    shards = [folder / f"BigModel-Q4_K_M-0000{n}-of-00003.gguf" for n in (1, 2, 3)]
+    for shard in shards:
+        shard.write_bytes(b"GGUF" + b"\0" * 4096)
+    # An unrelated single-file GGUF beside them: no shard may resolve to it, and it stays itself.
+    loose = folder / "Unrelated-F16.gguf"
+    loose.write_bytes(b"GGUF" + b"\0" * 4096 * 10)
+    # Three digits is not the loader's -NNNNN-of-NNNNN, so detect_gguf_model opens each of these
+    # as its own model and collapsing them would be the wrong-file pick this fix removes.
+    unsplit = [folder / f"Other-00{n}-of-003.gguf" for n in (1, 2, 3)]
+    for file in unsplit:
+        file.write_bytes(b"GGUF" + b"\0" * 4096)
+
+    def row(path):
+        return SimpleNamespace(
+            source = "models_dir",
+            partial = False,
+            model_format = "gguf",
+            path = str(path),
+            display_name = path.stem,
+            load_id = str(path),
+            id = str(path),
+        )
+
+    listed = [*shards, loose, *unsplit]
+    monkeypatch.setattr(cat, "_local_catalog_rows", lambda: [row(p) for p in listed])
+    monkeypatch.setattr(cat, "_local_model_task", lambda m: None)
+    monkeypatch.setattr(cat, "_local_model_can_chat", lambda m: None)
+    monkeypatch.setattr(cat, "_local_is_a_diffusers_pipeline", lambda m: False)
+
+    loads = {e.name: e.model for e in cat.local_folder_entries()}
+    assert loads == {
+        **{shard.stem: str(shards[0]) for shard in shards},
+        **{file.stem: str(file) for file in unsplit},
+        loose.stem: str(loose),
+    }
+
+    for source in ("trained_entries", "exported_entries", "cached_entries"):
+        monkeypatch.setattr(cat, source, list)
+    assert sorted(e.model for e in cat.list_chat_models()) == sorted(
+        [str(shards[0]), str(loose), *(str(file) for file in unsplit)]
+    )
+
+
+def test_catalog_drops_loose_gguf_companions(monkeypatch, tmp_path):
+    """A vision repo copied into models/ lists its projector as its own scan row.
+
+    _local_dir_holds_a_payload already requires a main GGUF inside a DIRECTORY, so this is the
+    same rule; without it the picker offers a projector that detect_gguf_model refuses.
+    """
+    from unsloth_cli._inference import ensure_studio_backend_path
+    from unsloth_cli import _model_catalog as cat
+
+    ensure_studio_backend_path()
+    folder = tmp_path / "models"
+    folder.mkdir()
+    model = folder / "gemma-3-4b-it-UD-Q4_K_XL.gguf"
+    model.write_bytes(b"GGUF" + b"\0" * 4096)
+    companions = [folder / n for n in ("mmproj-F16.gguf", "mtp-gemma-3-4b-it.gguf")]
+    for companion in companions:
+        # Bigger, so a folder-wide resolve would have preferred one of them.
+        companion.write_bytes(b"GGUF" + b"\0" * 4096 * 10)
+
+    def row(path):
+        return SimpleNamespace(
+            source = "models_dir",
+            partial = False,
+            model_format = "gguf",
+            path = str(path),
+            display_name = path.stem,
+            load_id = str(path),
+            id = str(path),
+        )
+
+    monkeypatch.setattr(cat, "_local_catalog_rows", lambda: [row(model), *map(row, companions)])
+    monkeypatch.setattr(cat, "_local_model_task", lambda m: None)
+    monkeypatch.setattr(cat, "_local_model_can_chat", lambda m: None)
+    monkeypatch.setattr(cat, "_local_is_a_diffusers_pipeline", lambda m: False)
+
+    assert {e.name: e.model for e in cat.local_folder_entries()} == {model.stem: str(model)}
 
 
 def test_catalog_pins_an_active_cache_adapter_to_its_snapshot(tmp_path):
