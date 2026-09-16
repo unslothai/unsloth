@@ -241,6 +241,38 @@ ROW_TYPE_SECTIONS: Mapping[str, str] = {
 }
 
 
+def executed_balance(order: Sequence[Any], attempted: set[str]) -> bool | None:
+    """`runtime/ab.py` `order_is_balanced`, over the cells that actually ran.
+
+    Same rule, same reason: count which arm went first in each `(rung, rep)` pair and require
+    every arm to have gone first equally often, with one arm never balanced because nothing
+    cancels. It is recomputed rather than read because the plan's own verdict predates the run.
+
+    Taken from the cell ids, which `make_cell_id` builds as `r{rung}.{arm}.rep{rep}`; rsplit
+    from the right so a rung containing a dot still parses. None when the ids are not that
+    shape, which means this cannot tell and the caller should keep the plan's own word.
+    """
+
+    labels: set[str] = set()
+    first: dict[str, int] = {}
+    seen: set[tuple[str, str]] = set()
+    for cell_id in order:
+        if str(cell_id) not in attempted:
+            continue
+        try:
+            head, arm, rep = str(cell_id).rsplit(".", 2)
+        except ValueError:
+            return None
+        labels.add(arm)
+        if (head, rep) in seen:
+            continue
+        seen.add((head, rep))
+        first[arm] = first.get(arm, 0) + 1
+    if not labels:
+        return None
+    return len(labels) > 1 and len({first.get(label, 0) for label in labels}) == 1
+
+
 def merged_ab_plan(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     """One plan out of however many sessions wrote one.
 
@@ -264,6 +296,13 @@ def merged_ab_plan(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     straight from `latest_attempt_rows`: it moved off cell rows because an attempt hard-killed
     mid-cell never writes its terminal row, so keying on that alone hands the cell back to the
     older attempt. A second copy of that rule that disagreed would be worse than none.
+
+    And the verdict is recomputed over what each live session ATTEMPTED, because the row's own
+    `balanced` was computed over the whole plan before it ran. A `--reps 2` interrupted after
+    rep 0 planned `base, treatment, treatment, base` and ran `base, treatment`, so base went
+    first every time it ran: balanced as planned, drift charged to one side as executed, and
+    the completed pair is scored either way. `order` stays the requested ladder; `balanced`
+    describes the run.
     """
 
     plans = [r for r in records if r.get("row_type") == "ab_plan"]
@@ -283,7 +322,13 @@ def merged_ab_plan(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     owning = set(owner.values())
     # No attempt rows at all is not an experiment; the newest request is the best word there is.
     live = [row for row in plans if row.get("session_id") in owning] or [plans[-1]]
-    plan["balanced"] = all(bool(row.get("balanced")) for row in live)
+    verdicts = []
+    for row in live:
+        session = row.get("session_id")
+        attempted = {cell for cell, owned_by in owner.items() if owned_by == session}
+        ran = executed_balance(row.get("order", []), attempted)
+        verdicts.append(bool(row.get("balanced")) if ran is None else ran)
+    plan["balanced"] = all(verdicts)
     return plan
 
 
