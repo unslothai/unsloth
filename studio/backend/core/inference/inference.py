@@ -1330,6 +1330,9 @@ class InferenceBackend:
                     tools = tools,
                     tool_protocol_active = tool_protocol_active,
                     stop = stop,
+                    enable_thinking = enable_thinking,
+                    reasoning_effort = reasoning_effort,
+                    preserve_thinking = preserve_thinking,
                 )
                 return
             else:
@@ -1482,6 +1485,9 @@ class InferenceBackend:
         tools: Optional[list] = None,
         tool_protocol_active: Optional[bool] = None,
         stop: Optional[list] = None,
+        enable_thinking: Optional[bool] = None,
+        reasoning_effort: Optional[str] = None,
+        preserve_thinking: Optional[bool] = None,
     ) -> Generator[str, None, None]:
         """Handle vision model generation with true token-by-token streaming."""
         # Reset so a failed or uncountable run cannot surface stale stats.
@@ -1501,7 +1507,6 @@ class InferenceBackend:
             messages_have_tool_history,
             messages_with_attached_image,
             render_advertising_tools,
-            render_prompt_with_boundary,
             trailing_assistant_text,
             vlm_prompt_issue,
         )
@@ -1538,6 +1543,9 @@ class InferenceBackend:
                             processor,
                             vision_messages,
                             tools = catalog,
+                            enable_thinking = enable_thinking,
+                            reasoning_effort = reasoning_effort,
+                            preserve_thinking = preserve_thinking,
                             continue_final_message = bool(continue_partial),
                         )
                     except Exception as e:  # noqa: F841 -- read by the fallback below
@@ -1561,6 +1569,9 @@ class InferenceBackend:
                             processor,
                             without_system,
                             tools = catalog,
+                            enable_thinking = enable_thinking,
+                            reasoning_effort = reasoning_effort,
+                            preserve_thinking = preserve_thinking,
                             continue_final_message = bool(continue_partial),
                         )
                         rendered_with["messages"] = without_system
@@ -1594,17 +1605,15 @@ class InferenceBackend:
                         self.active_model_name,
                     )
             else:
-                # Processor's own template skips the choke point (#7066).
-                from core.inference.chat_template_helpers import markup_for_tokenizer
-
-                vision_messages = neutralize_control_markup_in_messages(
-                    vision_messages, None, markup_for_tokenizer(processor)
-                )
 
                 def _render_plain_vision(msgs):
-                    # Partial taken from the swept msgs, not the raw pre-sweep capture.
-                    return render_prompt_with_boundary(
-                        processor, msgs, continue_final_message = bool(continue_partial)
+                    return self._apply_chat_template_for_generation(
+                        processor,
+                        msgs,
+                        enable_thinking = enable_thinking,
+                        reasoning_effort = reasoning_effort,
+                        preserve_thinking = preserve_thinking,
+                        continue_final_message = bool(continue_partial),
                     )
 
                 try:
@@ -1698,6 +1707,23 @@ class InferenceBackend:
                 if _vision_input_ids is not None
                 else None
             )
+            if repetition_penalty != 1.0 and _vision_input_ids is not None:
+                from transformers import LogitsProcessorList, RepetitionPenaltyLogitsProcessor
+
+                # Prompt ids skipped: mllama's <|image|> id lies past the LM head.
+                try:
+                    _rp = RepetitionPenaltyLogitsProcessor(
+                        repetition_penalty, prompt_ignore_length = prompt_len
+                    )
+                except TypeError:
+                    # prompt_ignore_length landed in transformers 4.52; the declared
+                    # floor is 4.51.3, where the same slice belongs here instead.
+                    class _PromptSkippingRepetitionPenalty(RepetitionPenaltyLogitsProcessor):
+                        def __call__(self, input_ids, scores):
+                            return super().__call__(input_ids[:, prompt_len:], scores)
+
+                    _rp = _PromptSkippingRepetitionPenalty(repetition_penalty)
+                _pp = LogitsProcessorList([_rp, *(_pp or [])])
             timer = GenerationTimer()
             generation_kwargs["logits_processor"] = with_prefill_boundary_processor(_pp, timer)
             stop_streamer = _StopSequenceStreamer(streamer, stop)
