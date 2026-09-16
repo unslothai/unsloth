@@ -425,13 +425,14 @@ def _pinned_literal(guard: str, taken: bool, access: str, field: str):
     # The lookbehind matters: without it `s.reasoningBudget` matches inside
     # `defaults.reasoningBudget`, and a statement about some other object reads as one about
     # the store.
-    start = r"(?<![\w$.])"
-    equal = re.search(
-        rf"(?:{start}{access}(?:===|==)({_LITERAL})|({_LITERAL})(?:===|==){start}{access})", guard
-    )
-    unequal = re.search(
-        rf"(?:{start}{access}(?:!==|!=)({_LITERAL})|({_LITERAL})(?:!==|!=){start}{access})", guard
-    )
+    start, end = r"(?<![\w$.])", r"(?![\w$])"
+    bound = rf"{start}{access}{end}"
+    equal = re.search(rf"(?:{bound}(?:===|==)({_LITERAL})|({_LITERAL})(?:===|==){bound})", guard)
+    unequal = re.search(rf"(?:{bound}(?:!==|!=)({_LITERAL})|({_LITERAL})(?:!==|!=){bound})", guard)
+    # A comparison under `!` says the opposite of what it reads, and the branch no longer implies
+    # it. Anything carrying a logical not is refused rather than interpreted.
+    if re.search(r"!(?![=])", re.sub(r"!==?", "", guard)):
+        return None
     if taken:
         # A conjunction still implies its parts; a disjunction does not.
         if equal is None or "||" in guard:
@@ -542,6 +543,10 @@ SELECTOR_CASES = [
     ('(s) => s.reasoningBudget != null && s.mode === "x" ? s.reasoningBudget : null', False),
     # The comparison must be on the field read off the selector's own parameter.
     ("(s) => defaults.reasoningBudget === -1 ? -1 : s.reasoningBudget", False),
+    ("(s) => -1 === s.reasoningBudgetExtra ? -1 : s.reasoningBudget", False),
+    ("(s) => -1 === s.reasoningBudget ? -1 : s.reasoningBudget", True),
+    # A comparison under `!` says the opposite of what it reads.
+    ("(s) => !(s.reasoningBudget === -1) ? -1 : s.reasoningBudget", False),
     # A pinned arm has to return the value the field holds there, or it collides: -1 becoming 0
     # returns 0 both before and after.
     ("(s) => s.reasoningBudget === -1 ? 0 : s.reasoningBudget", False),
