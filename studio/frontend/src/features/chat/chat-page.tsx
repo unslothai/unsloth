@@ -2490,7 +2490,15 @@ export function ChatPage({
         // voice only configures it; entering the ball is a separate, explicit
         // action ("Start voice mode" in the popover) so picking a voice never
         // yanks you out of the text chat you might still be reading.
-        void authFetch("/api/inference/voice/unload", { method: "POST" });
+        //
+        // Behind any load still in flight, or the unload races that load on the
+        // backend and the voice it was loading comes up under a store that says
+        // browser voice; and only if this is still the pick once it settles.
+        const inflight = voiceLoadInflightRef.current;
+        void (inflight ? inflight.catch(() => {}) : Promise.resolve()).then(() => {
+          if (!current()) return;
+          return authFetch("/api/inference/voice/unload", { method: "POST" });
+        });
         return;
       }
 
