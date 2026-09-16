@@ -573,6 +573,30 @@ def test_a_folded_system_turn_is_wrapped_as_content_parts():
     assert out[0] is not None
 
 
+def test_the_plain_vision_render_keeps_the_participant_name():
+    backend, seen = _vision_probe()
+    _drain(
+        backend,
+        messages = [{"role": "user", "name": "alice", "content": "what is in this picture"}],
+    )
+    assert [(m["role"], m.get("name")) for m in seen["messages"]] == [("user", "alice")]
+
+
+def test_the_folded_vision_history_keeps_participant_names():
+    backend, seen = _vision_probe()
+    _drain(
+        backend,
+        messages = [
+            {"role": "system", "name": "supervisor", "content": "be brief"},
+            {"role": "user", "name": "alice", "content": "what is in this picture"},
+        ],
+    )
+    assert [(m["role"], m.get("name")) for m in seen["messages"]] == [
+        ("system", "supervisor"),
+        ("user", "alice"),
+    ]
+
+
 def test_a_nudge_retry_keeps_the_image_on_the_question_turn():
     """A plain reverse scan hands the image marker to the nudge retry's appended
     correction, so the question that asked about the picture renders image-less (#10092)."""
@@ -978,6 +1002,123 @@ def test_a_historical_image_stays_on_the_turn_that_sent_it_without_tools():
     assert later["content"] == "LATER_QUESTION unrelated to it"
 
 
+def test_an_image_turn_without_tools_keeps_the_earlier_turns():
+    backend, seen = _vision_probe()
+    _drain(
+        backend,
+        messages = [
+            {"role": "user", "content": "EARLIER"},
+            {"role": "assistant", "content": "ANSWER_ONE"},
+            {"role": "user", "content": "LATER"},
+        ],
+    )
+    rendered = json.dumps(seen["messages"])
+    assert "EARLIER" in rendered
+    assert "ANSWER_ONE" in rendered
+    assert [m["role"] for m in seen["messages"]] == ["user", "assistant", "user"]
+    assert [p["type"] for p in seen["messages"][-1]["content"]] == ["image", "text"]
+
+
+def test_an_image_turn_without_tools_leaves_the_image_on_the_turn_that_sent_it():
+    backend, seen = _vision_probe()
+    _drain(
+        backend,
+        system_prompt = "SYSTEM_RULE",
+        messages = [
+            {"role": "user", "content": "EARLIER"},
+            {"role": "assistant", "content": "ANSWER_ONE"},
+            {
+                "role": "user",
+                "content": [{"type": "image"}, {"type": "text", "text": "IMAGE_QUESTION"}],
+            },
+            {"role": "assistant", "content": "ANSWER_TWO"},
+            {"role": "user", "content": "LATER"},
+        ],
+    )
+    sent = seen["messages"]
+    assert [m["role"] for m in sent] == [
+        "system",
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+        "user",
+    ]
+    assert [[p["type"] for p in m["content"]] for m in sent] == [
+        ["text"],
+        ["text"],
+        ["text"],
+        ["image", "text"],
+        ["text"],
+        ["text"],
+    ]
+
+
+def test_an_image_only_turn_still_asks_about_the_image():
+    backend, seen = _vision_probe()
+    _drain(
+        backend,
+        messages = [
+            {"role": "user", "content": "EARLIER"},
+            {"role": "assistant", "content": "ANSWER_ONE"},
+            {"role": "user", "content": [{"type": "image"}, {"type": "text", "text": ""}]},
+        ],
+    )
+    assert seen["messages"][0]["content"] == [{"type": "text", "text": "EARLIER"}]
+    assert seen["messages"][-1]["content"][-1] == {"type": "text", "text": "Describe this image."}
+
+
+def test_an_image_continuation_resumes_the_replayed_partial_after_the_no_system_retry():
+    backend, _ = _vision_probe()
+    renders = []
+
+    def apply_chat_template(messages, **kwargs):
+        renders.append((messages, kwargs))
+        if any(m["role"] == "system" for m in messages):
+            raise ValueError("system role not supported")
+        return "PROMPT"
+
+    backend.models["vision-tools"]["processor"].apply_chat_template = apply_chat_template
+    _drain(
+        backend,
+        system_prompt = "SYSTEM_RULE",
+        continue_final_message = True,
+        messages = [
+            {"role": "user", "content": "EARLIER"},
+            {"role": "assistant", "content": "ANSWER_ONE"},
+            {"role": "user", "content": "LATER"},
+            {"role": "assistant", "content": "PARTIAL_ANSWER"},
+        ],
+    )
+    assert len(renders) == 2
+    assert renders[0][0][0]["role"] == "system"
+    messages, kwargs = renders[1]
+    assert [m["role"] for m in messages] == ["user", "assistant", "user", "assistant"]
+    assert messages[-1]["content"] == [{"type": "text", "text": "PARTIAL_ANSWER"}]
+    assert [p["type"] for p in messages[-2]["content"]] == ["image", "text"]
+    assert kwargs["continue_final_message"] is True
+
+
+@pytest.mark.parametrize(
+    "content, structured, expected",
+    [
+        ("", False, [{"type": "image"}, {"type": "text", "text": ""}]),
+        ("", True, [{"type": "image"}]),
+        (
+            [{"type": "image_url", "image_url": {"url": "x"}}],
+            True,
+            [{"type": "image_url", "image_url": {"url": "x"}}],
+        ),
+    ],
+)
+def test_an_image_only_turn_without_a_fallback_is_unchanged(content, structured, expected):
+    from core.inference.chat_template_helpers import messages_with_attached_image
+    out = messages_with_attached_image(
+        [{"role": "user", "content": content}], structured_content = structured
+    )
+    assert out == [{"role": "user", "content": expected}]
+
+
 def test_no_image_marker_on_the_plain_route_when_renders_image_is_false():
     """``renders_image`` is the whole gate, and it is read with ``.get``, so a model whose
     capability probe never reported one leaves the thread as strings.
@@ -1293,3 +1434,39 @@ def test_the_nudge_retry_skips_the_image_marker_on_a_text_only_fallback():
             body = message.get("content")
             if isinstance(body, list):
                 assert not any(p.get("type") == "image" for p in body), message
+
+
+def test_each_compare_pane_applies_its_own_adapter_state_on_an_image_turn(monkeypatch):
+    backend, _ = _vision_probe()
+    info = backend.models["vision-tools"]
+    info["is_vision"] = True
+    events = []
+    monkeypatch.setattr(
+        backend,
+        "_apply_adapter_state",
+        lambda state: events.append((state, backend._generation_lock.locked())),
+    )
+    monkeypatch.setattr(
+        info["model"],
+        "generate",
+        lambda **_kwargs: events.append(("generate", backend._generation_lock.locked())),
+    )
+
+    def pane(use_adapter):
+        list(
+            backend.generate_with_adapter_control(
+                use_adapter = use_adapter,
+                messages = [{"role": "user", "content": "what is in this picture"}],
+                image = object(),
+                max_new_tokens = 1,
+            )
+        )
+
+    panes = [threading.Thread(target = pane, args = (state,)) for state in (False, True)]
+    for thread in panes:
+        thread.start()
+    for thread in panes:
+        thread.join()
+
+    assert sorted(events[0::2]) == [(False, True), (True, True)]
+    assert events[1::2] == [("generate", True)] * 2

@@ -12,10 +12,26 @@ import {
   soleQuantFingerprint,
   soleQuantKey,
   takeDriftedRepos,
+  verifiedSoleHubVariant,
 } from "../src/features/model-picker/components/model-selector/sole-quant-cache.ts";
 
 const A = "unsloth/Qwen3-8B-GGUF";
 const B = "unsloth/Llama-3.1-8B-Instruct-GGUF";
+
+test("a sole Hub quant collapses only after dependency-aware verification", () => {
+  const complete = { quant: "Q4_K_M", downloaded: true };
+  assert.equal(verifiedSoleHubVariant([complete], false, true), complete);
+  assert.equal(verifiedSoleHubVariant([complete], true, true), null);
+  assert.equal(verifiedSoleHubVariant([complete], false, false), null);
+  assert.equal(
+    verifiedSoleHubVariant(
+      [{ quant: "Q4_K_M", downloaded: false }],
+      false,
+      true,
+    ),
+    null,
+  );
+});
 
 /** Two listed repos, each at its own cache version. */
 const targetsAt = (versionA: string, versionB: string): SoleQuantTarget[] => [

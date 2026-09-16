@@ -5,7 +5,8 @@
 #   --ipc=host           ample /dev/shm; the default 64MB crashes DataLoader workers
 #   --ulimit memlock=-1  unlimited pinned memory (else multi-GPU training stalls)
 #   --ulimit stack=64MB  larger libtorch thread stack (some kernels OOM the 8MB default)
-# Plus mounts the host HF + Triton caches so downloads and kernels persist.
+# Plus mounts the host HF + Triton caches so downloads and kernels persist, and the
+# LM Studio, Ollama and Hermes model folders it finds, read-only, so Studio lists them.
 #
 # With no command the image's own CMD runs, which on unsloth/unsloth:latest is the
 # Studio (8000) + JupyterLab (8888) launcher, not a REPL. $PWD is at /workspace/host.
@@ -34,6 +35,10 @@
 #   HF_HOME=$HOME/.cache/huggingface        host HF cache dir to mount
 #   TRITON_CACHE_DIR=...unsloth-triton      host Triton cache dir to mount
 #   UNSLOTH_WORKDIR=$PWD                    host dir mounted at /workspace/host
+#   UNSLOTH_LMSTUDIO_DIR=<detected>         host LM Studio models dir, "none" to skip
+#   UNSLOTH_OLLAMA_DIR=<detected>           host Ollama models dir, "none" to skip
+#   UNSLOTH_HERMES_DIR=<detected>           host Hermes models dir, "none" to skip
+#   UNSLOTH_MODELS_DIR=                     host dir of GGUFs/model folders for Studio
 #   UNSLOTH_STUDIO_VOLUME=unsloth-studio    named volume for Studio's data (accounts,
 #                                           chats, outputs) at /opt/unsloth-studio;
 #                                           set it empty to run without one
@@ -55,6 +60,10 @@ fi
 # UNSLOTH_DEV_ROOT prefixes the /dev probes (DESTDIR idiom). It exists so the
 # regression tests can stage a fake device tree; leave it unset in normal use.
 DEV_ROOT="${UNSLOTH_DEV_ROOT:-}"
+
+# Named once: the NVIDIA toolkit installer, both as the fallback download below
+# and in the message that tells you to run it yourself.
+TOOLKIT_URL="${UNSLOTH_TOOLKIT_URL:-https://raw.githubusercontent.com/unslothai/unsloth/main/docker/install_nvidia_toolkit.sh}"
 
 # --group-add needs NUMERIC gids: a name is resolved INSIDE the container, where
 # the host's video/render groups do not exist.
@@ -128,6 +137,77 @@ fi
 
 mkdir -p "$HF_CACHE" "$TRITON_CACHE"
 
+first_dir() {
+    local dir
+    for dir in "$@"; do
+        if [[ -n "$dir" && -d "$dir" ]]; then
+            printf '%s' "$dir"
+            return 0
+        fi
+    done
+}
+
+# Like Studio's _host_path: expand ~, and map a Windows path to its WSL mount.
+host_path() {
+    local path="$1"
+    case "$path" in
+        # backslash, not quotes: a quoted ~ reads to shellcheck as a literal tilde
+        # that will never expand (SC2088), and an unquoted one would be expanded
+        # in the pattern itself. Escaped, it matches the literal character.
+        \~ | \~/*) path="$HOME${path:1}" ;;
+        [A-Za-z]:\\* | [A-Za-z]:/*) path="$(wslpath -u "$path" 2>/dev/null)" || path="" ;;
+    esac
+    printf '%s' "$path"
+}
+
+lmstudio_dir() {
+    local settings="$HOME/.lmstudio/settings.json" custom=""
+    local re='"downloadsFolder"[[:space:]]*:[[:space:]]*"([^"]*)"'
+    if [[ -f "$settings" && "$(<"$settings")" =~ $re ]]; then
+        # JSON doubles any backslash in the path
+        custom="$(printf '%s' "${BASH_REMATCH[1]}" | sed 's/\\\\/\\/g')"
+        custom="$(host_path "$custom")"
+    fi
+    first_dir "$custom" "$HOME/.lmstudio/models" "$HOME/.cache/lm-studio/models"
+}
+
+# Mirrors Studio's _hermes_root: a HERMES_HOME outside ~/.hermes is the root, or
+# <root>/profiles/<name> for a profile; downloads land in <root>/models.
+hermes_dir() {
+    local native="$HOME/.hermes" root
+    root="$(host_path "${HERMES_HOME:-}")"
+    root="${root%/}"
+    if [[ -z "$root" || "$root" == "$native" || "$root" == "$native"/* ]]; then
+        root="$native"
+    elif [[ "${root%/*}" == */profiles ]]; then
+        root="${root%/profiles/*}"
+    fi
+    first_dir "$root/models" "$native/models"
+}
+
+ollama_dir() {
+    first_dir "$(host_path "${OLLAMA_MODELS:-}")" "$HOME/.ollama/models" \
+        /usr/share/ollama/.ollama/models /var/lib/ollama/.ollama/models
+}
+
+declare -a MODEL_MOUNTS=()
+mount_models() {
+    local name="$1" dir="$2" target="$3"
+    [[ -z "$dir" || "$dir" == none ]] && return 0
+    if [[ ! -d "$dir" ]]; then
+        printf "\033[1;33mWARN:\033[0m %s models folder %s does not exist; not mounting it.\n" "$name" "$dir" >&2
+        return 0
+    fi
+    [[ "$dir" == /* ]] || dir="$PWD/$dir"
+    MODEL_MOUNTS+=(-v "$dir:$target:ro")
+    printf "Mounting %s models from %s (read-only)\n" "$name" "$dir" >&2
+}
+
+mount_models "LM Studio" "${UNSLOTH_LMSTUDIO_DIR:-$(lmstudio_dir)}" /root/.lmstudio/models
+mount_models Ollama "${UNSLOTH_OLLAMA_DIR:-$(ollama_dir)}" /root/.ollama/models
+mount_models Hermes "${UNSLOTH_HERMES_DIR:-$(hermes_dir)}" /root/.hermes/models
+mount_models local "${UNSLOTH_MODELS_DIR:-}" /workspace/models
+
 # Docker resolves --gpus in the DAEMON, before the container exists: on a host with
 # no NVIDIA GPU it dies with "failed to discover GPU vendor from CDI: no known GPU
 # vendor found" and exit 125, so entrypoint.sh never runs and its diagnostics never
@@ -183,22 +263,34 @@ if [[ -n "$DOCKER_ERR" ]]; then
     printf "      Start the Docker daemon, or add yourself to the docker group (newgrp docker).\n\n" >&2
 elif [[ $ROCM -eq 0 && ${#GPU_FLAG[@]} -gt 0 ]] && host_has_nvidia \
         && ! grep -qi 'Runtimes:.*nvidia' <<<"$DOCKER_INFO"; then
+    # run.sh is also published on its own, so the sibling installer is missing
+    # whenever it was curled rather than cloned. Fetch it in that case: offering
+    # to run a path that does not exist is worse than not offering at all.
     INSTALLER="$(dirname "${BASH_SOURCE[0]}")/install_nvidia_toolkit.sh"
+    # Download it next to run.sh rather than into a scratch file: the path is then
+    # the one the message names, and a second run reuses it instead of refetching.
+    if [[ ! -f "$INSTALLER" ]]; then
+        curl -fsSL "$TOOLKIT_URL" -o "$INSTALLER" 2>/dev/null || { rm -f "$INSTALLER"; INSTALLER=""; }
+    fi
     printf "\033[1;33mWARN:\033[0m 'docker info' does not list 'nvidia' as a runtime: the NVIDIA\n" >&2
     printf "      Container Toolkit is not set up, so --gpus %s would fail at the daemon.\n" "$GPUS" >&2
     answer="${UNSLOTH_INSTALL_TOOLKIT:-}"
-    if [[ -z "$answer" && -t 0 && -t 1 ]]; then
+    if [[ -n "$INSTALLER" && -z "$answer" && -t 0 && -t 1 ]]; then
         read -r -p "      Install it now with sudo (bash $INSTALLER)? [Y/n] " answer </dev/tty || answer=n
         answer="${answer:-y}"
     fi
+    # Nothing on disk to run: a forced UNSLOTH_INSTALL_TOOLKIT=1 would otherwise
+    # select the branch below and `bash ""` would fail into `|| true`, leaving the
+    # user with no toolkit, no error, and a docker run that still lacks the runtime.
+    [[ -n "$INSTALLER" ]] || answer=n
     case "$answer" in
         1|[Yy]*)
             # -E keeps UNSLOTH_TOOLKIT_VERIFY and the proxy settings through env_reset; a failed, cancelled or driver-too-old install (exit 3) must not stop the docker run below.
             if [[ "$(id -u)" = 0 ]]; then bash "$INSTALLER" || true; else sudo -E bash "$INSTALLER" || true; fi
             ;;
         *)
-            printf "      Install it with one command (Linux, needs sudo):\n" >&2
-            printf "      curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/docker/install_nvidia_toolkit.sh -o install_nvidia_toolkit.sh && sudo -E bash install_nvidia_toolkit.sh\n\n" >&2
+            printf "      Install it with one command (Linux, needs root):\n" >&2
+            printf "      curl -fsSL %s -o install_nvidia_toolkit.sh && sudo -E bash install_nvidia_toolkit.sh\n\n" "$TOOLKIT_URL" >&2
             ;;
     esac
 fi
@@ -244,6 +336,7 @@ exec docker run --rm ${TTY_FLAG[@]+"${TTY_FLAG[@]}"} \
     -v "$TRITON_CACHE":/workspace/.cache/triton \
     -v "$WORK_DIR":/workspace/host \
     ${STUDIO_MOUNT[@]+"${STUDIO_MOUNT[@]}"} \
+    ${MODEL_MOUNTS[@]+"${MODEL_MOUNTS[@]}"} \
     "${ENV_FORWARD[@]}" \
     ${PORT_FLAGS[@]+"${PORT_FLAGS[@]}"} \
     "$IMAGE" "$@"

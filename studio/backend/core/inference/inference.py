@@ -34,7 +34,7 @@ from core.inference.runtime_context import (
     generation_budget_within_context,
     runtime_context_length,
 )
-from core.inference.message_content import content_to_text
+from core.inference.message_content import content_to_text, named_turn
 from core.inference.chat_eos import (
     chat_eos_repair,
     resolve_chat_turn_end_eos_ids_using,
@@ -1324,6 +1324,7 @@ class InferenceBackend:
                     max_new_tokens,
                     repetition_penalty,
                     cancel_event = cancel_event,
+                    _adapter_state = _adapter_state,
                     presence_penalty = presence_penalty,
                     continue_final_message = continue_final_message,
                     tools = tools,
@@ -1475,6 +1476,7 @@ class InferenceBackend:
         max_new_tokens,
         repetition_penalty,
         cancel_event = None,
+        _adapter_state = None,
         presence_penalty: float = 0.0,
         continue_final_message: bool = False,
         tools: Optional[list] = None,
@@ -1511,23 +1513,21 @@ class InferenceBackend:
             user_message = "Describe this image." if image else "Hello"
 
         if image:
-            # Ordinary vision turns keep the historic collapse; full history is unbounded.
             has_tool_history = messages_have_tool_history(messages)
             # Client-tools route signature: tool_choice="none" and a forced unknown name
             # also arrive tools=None, and the catalog alone missed them (#10092).
             folded_system = not system_prompt and any(
                 isinstance(m, dict) and m.get("role") in ("system", "developer") for m in messages
             )
+            # Rebuilding from newest user TEXT dropped the system turn and the tool
+            # history an OpenAI tool loop replays (#10092).
+            vision_messages = messages_with_attached_image(
+                messages,
+                system_prompt = system_prompt,
+                fallback_user_text = user_message,
+                structured_content = True,
+            )
             if bool(tools) or has_tool_history or folded_system:
-                # Rebuilding from newest user TEXT dropped the system turn and the tool
-                # history an OpenAI tool loop replays (#10092).
-                vision_messages = messages_with_attached_image(
-                    messages,
-                    system_prompt = system_prompt,
-                    fallback_user_text = user_message,
-                    structured_content = True,
-                )
-
                 # The conversation the LAST render used, not the no-tools probe's (#10092).
                 rendered_with: dict = {"messages": vision_messages}
 
@@ -1594,50 +1594,21 @@ class InferenceBackend:
                         self.active_model_name,
                     )
             else:
-                user_msg = {
-                    "role": "user",
-                    "content": [
-                        {"type": "image"},
-                        {"type": "text", "text": user_message},
-                    ],
-                }
-                if system_prompt:
-                    vision_messages = [
-                        {
-                            "role": "system",
-                            "content": [{"type": "text", "text": system_prompt}],
-                        },
-                        user_msg,
-                    ]
-                else:
-                    vision_messages = [user_msg]
-
-                # Resume the partial answer instead of opening a new turn.
-                if continue_partial:
-                    vision_messages.append(
-                        {
-                            "role": "assistant",
-                            "content": [{"type": "text", "text": continue_partial}],
-                        }
-                    )
-
-                # Processor's own template skips the choke point (#7066). Rebind user_msg
-                # so the no-system retry keeps the copy.
+                # Processor's own template skips the choke point (#7066).
                 from core.inference.chat_template_helpers import markup_for_tokenizer
 
                 vision_messages = neutralize_control_markup_in_messages(
                     vision_messages, None, markup_for_tokenizer(processor)
                 )
-                user_msg = next(m for m in reversed(vision_messages) if m.get("role") == "user")
 
-                def _render_collapsed_vision(msgs):
+                def _render_plain_vision(msgs):
                     # Partial taken from the swept msgs, not the raw pre-sweep capture.
                     return render_prompt_with_boundary(
                         processor, msgs, continue_final_message = bool(continue_partial)
                     )
 
                 try:
-                    input_text = _render_collapsed_vision(vision_messages)
+                    input_text = _render_plain_vision(vision_messages)
                 except Exception as e:
                     # Safe here: no catalog and no tool history to hide a failure behind.
                     if system_prompt:
@@ -1646,7 +1617,7 @@ class InferenceBackend:
                             f"system messages; retrying without. Original error: {e}"
                         )
                         vision_messages = [m for m in vision_messages if m.get("role") != "system"]
-                        input_text = _render_collapsed_vision(vision_messages)
+                        input_text = _render_plain_vision(vision_messages)
                     else:
                         raise
             inputs = processor(
@@ -1743,6 +1714,7 @@ class InferenceBackend:
             def generate_fn():
                 with self._generation_lock:
                     try:
+                        self._apply_adapter_state(_adapter_state)
                         # Started inside the lock so a queued request's wait is not billed as prefill.
                         timer.start()
                         # See generate_stream: only the returned sequences carry
@@ -1880,6 +1852,11 @@ class InferenceBackend:
                 if msg["role"] == "user" and msg.get("content"):
                     user_text = content_to_text(msg["content"])
                     break
+        # Not the caption scan above: that one falls back past a media-only turn.
+        last_user = next(
+            (m for m in reversed(messages or []) if m.get("role") == "user"),
+            None,
+        )
 
         if not system_prompt:
             system_prompt = "You are an assistant that transcribes speech accurately."
@@ -1887,13 +1864,16 @@ class InferenceBackend:
         # Gemma 3n format — audio goes INTO apply_chat_template
         audio_messages = [
             {"role": "system", "content": [{"type": "text", "text": system_prompt}]},
-            {
-                "role": "user",
-                "content": [
-                    {"type": "audio", "audio": audio_array},
-                    {"type": "text", "text": user_text},
-                ],
-            },
+            named_turn(
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "audio", "audio": audio_array},
+                        {"type": "text", "text": user_text},
+                    ],
+                },
+                last_user,
+            ),
         ]
 
         # Direct processor render like the vision path, so neutralize here too, with
@@ -2736,10 +2716,12 @@ class InferenceBackend:
                     import re
                     clean_content = re.sub(r"<[^>]+>", "", content).strip()
                     if clean_content:
-                        chat_messages.append({"role": role, "content": clean_content})
+                        chat_messages.append(
+                            named_turn({"role": role, "content": clean_content}, msg)
+                        )
                         last_role = role
                 elif role == "assistant":
-                    assistant_message = {"role": role, "content": content}
+                    assistant_message = named_turn({"role": role, "content": content}, msg)
                     if has_reasoning_content:
                         assistant_message["reasoning_content"] = reasoning_content
                     chat_messages.append(assistant_message)

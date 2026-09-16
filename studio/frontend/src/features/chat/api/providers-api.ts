@@ -61,6 +61,21 @@ export interface ProviderModelInfo {
   vision?: boolean | null;
 }
 
+export interface ProviderModelReasoningInfo {
+  supported_efforts?: string[] | null;
+  mandatory?: boolean | null;
+  default_effort?: string | null;
+  default_enabled?: boolean | null;
+}
+
+export interface ProviderModelCapabilityInfo {
+  id: string;
+  input_modalities?: string[] | null;
+  reasoning?: ProviderModelReasoningInfo | null;
+  max_output_tokens?: number | null;
+  supported_parameters?: string[] | null;
+}
+
 export interface ProviderTestResult {
   success: boolean;
   message: string;
@@ -338,6 +353,27 @@ export async function listProviderModels(payload: {
       }),
     });
     return parseJsonOrThrow<ProviderModelInfo[]>(response);
+  });
+}
+
+export async function listProviderModelCapabilities(payload: {
+  providerType: string;
+  providerId?: string | null;
+  apiKey: string;
+  baseUrl?: string | null;
+}): Promise<ProviderModelCapabilityInfo[]> {
+  return withApiKeyEncryptionRetry(payload.apiKey, async (encryptedApiKey) => {
+    const response = await authFetch("/api/providers/model-capabilities", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        provider_type: payload.providerType,
+        provider_id: payload.providerId ?? null,
+        encrypted_api_key: encryptedApiKey,
+        base_url: payload.baseUrl ?? null,
+      }),
+    });
+    return parseJsonOrThrow<ProviderModelCapabilityInfo[]>(response);
   });
 }
 

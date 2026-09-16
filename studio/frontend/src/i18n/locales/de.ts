@@ -5,6 +5,21 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en";
 
 export const de = {
+  composerSettings: {
+    title: "Nachrichteneingabe",
+    plainText: "Eingabe als Klartext",
+    plainTextDescription: "Code, Markdown und Links als wörtlichen Text anzeigen. Ausschalten, um eine formatierte Vorschau zu sehen.",
+    showContext: "Auslastung des Kontextfensters anzeigen",
+    sendShortcut: "Tastenkürzel zum Senden",
+    sendDescription: "Wähle, ob Enter eine Nachricht sendet oder eine neue Zeile einfügt.",
+    followUp: "Folgenachrichten",
+    followUpDescription: "Wähle, was beim Senden während einer Antwort passiert. Drücke {shortcut}, um für eine Nachricht das Gegenteil zu tun.",
+    queue: "Einreihen",
+    steer: "Umlenken",
+    steerDescription: "Umlenken stoppt die aktuelle Antwort und sendet deine Folgenachricht als Nächstes.",
+    settings: "Eingabeeinstellungen",
+    preview: "Formatierte Vorschau",
+  },
   picker: {
     onDevice: "Auf dem Gerät",
     huggingFace: "Hugging Face",
@@ -1053,6 +1068,13 @@ export const de = {
         minimal: "Minimal",
       },
       custom: {
+        chatWidth: {
+          label: "Chatbreite",
+          description: "Breite von Nachrichten und Eingabefeld festlegen. Volle Breite nutzt den Platz zwischen den Seitenleisten.",
+          standard: "Standard",
+          wide: "Breit",
+          full: "Volle Breite",
+        },
         reset: "Zurücksetzen",
         resetAll: "Anpassungen zurücksetzen",
         preferencesTitle: "Weitere Optionen",
@@ -1102,6 +1124,10 @@ export const de = {
           errorStorageFull:
             "Nicht genug lokaler Speicher für diese Schrift. Entfernen Sie zuerst eine importierte Schrift.",
           errorFailed: "Diese Schriftdatei konnte nicht geladen werden.",
+        },
+        interfaceScale: {
+          label: "Oberflächenskalierung",
+          description: "Passen Sie die Größe aller Oberflächenelemente an.",
         },
         uiFontSize: {
           label: "Schriftgröße der Oberfläche",
@@ -1434,6 +1460,30 @@ export const de = {
       },
     },
     chat: {
+      groups: {
+        conversations: { title: "Gespräche" },
+        files: { title: "Dateien und Einfügen" },
+        display: { title: "Anzeige" },
+        composer: { title: "Nachrichtenfeld" },
+        menu: { title: "Chatmenü" },
+        advanced: { title: "Erweitert" },
+        contextTitle: "Kontext",
+      },
+      projectAttachmentsHint:
+        "Diese Einstellung lässt sich im Anhangmenü jedes Chats einzeln ändern.",
+      rememberParamsPerModelHint:
+        "Wenn deaktiviert, verwenden alle Modelle dieselben Einstellungen.",
+      autoCompactHint:
+        "Verwendet die eingestellte Kontextlänge, nicht den verfügbaren VRAM.",
+      pastedTextShortDescription:
+        "Eingefügter Text ab {count} Zeichen wird als .txt-Datei angehängt. Kürzerer Text bleibt im Nachrichtenfeld.",
+      pastedTextOffDescription:
+        "Eingefügter Text bleibt unabhängig von seiner Länge im Nachrichtenfeld.",
+      compactionDescriptionInherit: "Folgt der Kontextrichtlinie des Servers.",
+      compactionDescriptionCheckpoint:
+        "Behält den letzten Austausch und die dauerhaft geltenden Anweisungen bei.",
+      compactionDescriptionRolling:
+        "Entfernt die ältesten Gesprächsrunden und behält neuere Inhalte mit dem gewählten zusätzlichen Freiraum.",
       projectsSection: "Projektbereich anzeigen",
       projectsSectionDescription:
         "Gruppiert Projekt-Chats unter einer Überschrift für Projekte. Deaktiviere dies, um sie stattdessen unter den zuletzt verwendeten Chats aufzulisten.",
@@ -1463,7 +1513,8 @@ export const de = {
         exportChat: "Chat exportieren",
       },
       pastedTextThreshold: "Lange Einfügungen verdichten",
-      pastedTextThresholdDescription: "Eingefügter Text, der länger ist, wird zu einem .txt-Anhang, statt das Nachrichtenfeld zu füllen. Mit {shortcut} wird trotzdem in das Nachrichtenfeld eingefügt.",
+      pastedTextThresholdDescription:
+        "Mit {shortcut} direkt in das Nachrichtenfeld einfügen.",
       pastedTextThresholdOff: "Aus",
       showResponseModel: "Antwortmodell anzeigen",
       showResponseModelDescription:
@@ -1473,13 +1524,13 @@ export const de = {
         "Zeigt „LLMs können Fehler machen“ unter dem Chatfeld an.",
       projectAttachments: "Dateien projektweit teilen",
       projectAttachmentsDescription:
-        "Standard für Dateien, die in einem Chat innerhalb eines Projekts angehängt werden: für das gesamte Projekt indizieren, damit jeder Chat darin sie nutzen kann. Jeder Chat kann dies im Anhangsmenü überschreiben.",
+        "Stellt neue Chat-Anhänge allen Chats im Projekt zur Verfügung.",
       rememberParamsPerModel: "Einstellungen pro Modell merken",
       rememberParamsPerModelDescription:
-        "Beim Modellwechsel werden Temperatur, Prompt und die weiteren Einstellungen wiederhergestellt, die Sie zuletzt mit diesem Modell verwendet haben. Aus: ein Satz Einstellungen für alle Modelle.",
+        "Stellt den zuletzt verwendeten Prompt, die Temperatur und weitere Einstellungen pro Modell wieder her.",
       autoCompact: "Lange Chats automatisch komprimieren",
       autoCompactDescription:
-        "Wenn ein lokaler GGUF-Chat die festgelegte Kontextlänge erreicht, werden ältere Gesprächsrunden verworfen, statt einen Fehler zurückzugeben. Dies richtet sich nicht nach freiem VRAM.",
+        "Entfernt ältere Gesprächsrunden, wenn ein lokaler GGUF-Chat sein Kontextlimit erreicht.",
       compactionStyle: "Wenn der Kontext voll ist",
       compactionStyleDescription:
         "Die Servervorgabe behält UNSLOTH_CONTEXT_POLICY bei. Gespräch zurücksetzen behält die letzte Runde und dauerhafte Anweisungen. Ein gleitendes Fenster verwirft die ältesten Runden und kann mehr aktuellen Verlauf behalten.",
@@ -1516,7 +1567,7 @@ export const de = {
         title: "Websuche",
         images: "Bilder aus der Websuche anzeigen",
         imagesDescription:
-          "Lässt die Websuche Bilder liefern und holt eines für jeden Punkt, den eine Antwort auflistet. Vorschaubilder lädt und verkleinert Unsloth, der Browser kontaktiert keine Bildhosts.",
+          "Bilder in Suchergebnisse aufnehmen.",
       },
       artifacts: {
         title: "Canvas",
@@ -1551,7 +1602,7 @@ export const de = {
       exportPerChatSuffix: "(pro Chat)",
       importChats: "Chats importieren",
       importChatsDescription:
-        "Einen Open-WebUI-, JSONL-, NDJSON- oder CSV-Export in Zuletzt importieren.",
+        "JSON-, JSONL-, NDJSON- oder CSV-Dateien in Zuletzt importieren.",
       importChatsAction: "Importieren",
       importNoConversations: "Keine Konversationen in der Datei gefunden.",
       importedOneChat: "1 Konversation in „Zuletzt verwendet“ importiert.",
@@ -1598,6 +1649,80 @@ export const de = {
       failedToClearChats: "Chats konnten nicht gelöscht werden",
     },
     data: {
+      library: {
+        defaultSort: "Standard",
+        updated: "Aktualisiert",
+        created: "Erstellt",
+        oldest: "Älteste zuerst",
+        alphabetical: "Alphabetisch",
+        allChats: "Alle Chats",
+        singleChats: "Einzelchats",
+        compareChats: "Vergleichschats",
+        allProjects: "Alle Projekte",
+        noProject: "Kein Projekt",
+        unavailableProject: "Projekt nicht verfügbar",
+        filterSort: "Filtern und sortieren",
+        sort: "Sortieren",
+        type: "Typ",
+        sortBy: "Sortieren nach",
+        filterProject: "Nach Projekt filtern",
+        searchProjects: "Projekte suchen",
+        noProjects: "Keine Projekte gefunden.",
+        untitled: "Ohne Titel",
+        oneChat: "1 Chat",
+        chatCount: "{count} Chats",
+        searchChats: "Chats oder Projekte suchen",
+        searchArchivedChats: "Archivierte Chats oder Projekte suchen",
+        searchImages: "Archivierte Bilder suchen",
+        searchVideos: "Archivierte Videos suchen",
+        searchAudio: "Archivierte Audiodateien suchen",
+        unarchive: "Aus Archiv wiederherstellen",
+        unarchiveAll: "Alle wiederherstellen",
+        unarchiveResults: "Ergebnisse wiederherstellen",
+        deleteResults: "Ergebnisse löschen",
+        noChats: "Keine Chats entsprechen deiner Suche.",
+        noArchivedChats: "Keine archivierten Chats.",
+        noArchivedMatches: "Keine archivierten Chats entsprechen deiner Suche.",
+        noMedia: "Keine archivierten Einträge.",
+        noMediaMatches: "Keine archivierten Einträge entsprechen deiner Suche.",
+        itemCount: "Einträge: {count}",
+        incompleteSearch: "Die Suche ist unvollständig. Lade die übrigen Einträge erneut.",
+        searchingRemaining: "Übrige Einträge werden durchsucht ({count} geladen)...",
+        noLoadedMatches: "Keine Treffer in den bisher geladenen Einträgen.",
+        deleteItem: "Löschen: {title}",
+        unarchiveItem: "Aus Archiv wiederherstellen: {title}",
+        deleteItemsTitle: "Archivierte Einträge löschen ({count})",
+        unarchiveItemsTitle: "Einträge wiederherstellen ({count})",
+        deleteFilesWarning: "Diese Dateien werden dauerhaft gelöscht. Dies kann nicht rückgängig gemacht werden.",
+        restoreWarning: "Diese Einträge werden wieder in der Galerie angezeigt.",
+        working: "Wird bearbeitet...",
+        loadFailed: "Archivierte Einträge konnten nicht geladen werden",
+        loadMoreFailed: "Weitere archivierte Einträge konnten nicht geladen werden",
+        restoreFailed: "Ausgewählte Einträge konnten nicht wiederhergestellt werden",
+        deleteFailed: "Ausgewählte Einträge konnten nicht gelöscht werden",
+        projectsFailed: "Archivierte Projekte konnten nicht geladen werden",
+        pageStalled: "Die Archivseite wurde nicht weitergeladen. Versuche es erneut.",
+        pageChanged: "Das Archiv hat sich während des Ladens geändert. Versuche es erneut.",
+        selectAll: "Alle sichtbaren Chats auswählen",
+        selectItem: "„{title}“ auswählen",
+        selectedChats: "Ausgewählte Chats: {count}",
+        move: "Verschieben",
+        pin: "Anheften",
+        unpin: "Loslösen",
+        archive: "Archivieren",
+        deletedChats: "Gelöschte Chats: {count}",
+        restoredChats: "Wiederhergestellte Chats: {count}",
+        pinnedChats: "Angeheftete Chats: {count}",
+        unpinnedChats: "Losgelöste Chats: {count}",
+        movedChatsToProject: "Nach {project} verschobene Chats: {count}",
+        movedChatsToRecents: "Nach Zuletzt verwendet verschobene Chats: {count}",
+        moveFailed: "Chats konnten nicht verschoben werden",
+        deleteChatsTitle: "Chats löschen ({count})",
+        deleteChatsWarning: "Ausgewählte Chats löschen ({count})? Dies kann nicht rückgängig gemacht werden.",
+        deleteArchivedTitle: "{count} archivierte Chats löschen",
+        deleteArchivedWarning: "Ausgewählte archivierte Chats löschen ({count})? Dies kann nicht rückgängig gemacht werden.",
+        deleting: "Wird gelöscht...",
+      },
       title: "Daten",
       backToData: "Zurück zu Daten",
       exportFailed: "Chats konnten nicht exportiert werden",
@@ -1642,6 +1767,27 @@ export const de = {
       alwaysDeleteFiles: "Dateien immer löschen",
       alwaysDeleteFilesDescription:
         "Beim Löschen eines Chats wird auch dessen eigener Sandbox-Ordner von der Festplatte entfernt. Dateien, die er in einem Projekt erstellt hat, bleiben im Arbeitsbereich dieses Projekts.",
+      chatsSection: "Chats und Archive",
+      transferSection: "Import und Export",
+      deletionSection: "Löschen",
+      archives: "Archive",
+      archiveChatsLabel: "Chats",
+      archiveVideosLabel: "Videos",
+      exportFormatsSummary:
+        "Exportiere Chats aus Zuletzt und Projekten im gewünschten Format.",
+      trainingSummary: "Erstelle aus deinen Chats einen Datensatz für das Fine-Tuning.",
+      confirmDeletionSummary: "Vor dem Löschen einzelner Chats nachfragen.",
+      sandboxFiles: "Sandbox-Dateien der Chats",
+      sandboxFilesDescription: "Standardaktion beim Löschen eines Chats.",
+      keepSandboxFiles: "Sandbox-Dateien behalten",
+      deleteSandboxFiles: "Sandbox-Dateien löschen",
+      projectFilesKept:
+        "Sandboxen sind Ordner für einzelne Chats. Dateien in Projektarbeitsbereichen bleiben erhalten.",
+      deleteAllAction: "Alle löschen",
+      deleteChatsOnly: "Nur Chats löschen…",
+      deleteChatsAndSandboxes: "Chats und Sandboxen löschen…",
+      deleteSandboxFilesDescription:
+        "Auch den Sandbox-Ordner jedes Chats samt Dateien löschen. Dateien in Projektarbeitsbereichen bleiben erhalten.",
       filesSection: "Dateien",
       uploadedFiles: "Hochgeladene Dateien",
       uploadedFilesDescription:

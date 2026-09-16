@@ -36,8 +36,13 @@ from utils.hardware import (
 )
 
 # recompile_limit was removed in some ROCm torch builds; guard for older wheels.
-if hasattr(torch._dynamo.config, "recompile_limit"):
-    torch._dynamo.config.recompile_limit = 64
+# getattr, not `torch._dynamo.config` directly: _dynamo is a LAZY torch submodule, so the bare
+# attribute triggers its import and returns a half-built module if one is already in flight
+# elsewhere in the process, raising at module-import time on a path with no handler. The two
+# inference call sites already read it this way; this one is the last that did not.
+_dynamo_config = getattr(getattr(torch, "_dynamo", None), "config", None)
+if _dynamo_config is not None and hasattr(_dynamo_config, "recompile_limit"):
+    _dynamo_config.recompile_limit = 64
 
 
 # Drop any unsloth/unsloth_zoo namespace-package shadow before importing them.
