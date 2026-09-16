@@ -678,7 +678,9 @@ assert install_worker_stderr_mirror(%(path)r) is True
 os.write(2, b"terminate called after throwing an instance of 'c10::Error'\n")
 # No flush, no atexit, no interpreter shutdown: the process is gone between one
 # instruction and the next, which is what SIGSEGV and SIGABRT do.
-os.kill(os.getpid(), signal.SIGKILL)
+# SIGKILL on POSIX; Windows has no such signal, and os.kill there calls
+# TerminateProcess, which is the same thing for this purpose: no handler, no cleanup.
+os.kill(os.getpid(), getattr(signal, "SIGKILL", signal.SIGTERM))
 """
 
 
@@ -692,7 +694,12 @@ def test_a_worker_killed_outright_still_leaves_its_last_words(tmp_path):
     the moment the kernel returns from the write.
 
     SIGKILL rather than SIGSEGV because it is the one signal nothing can intercept, so a
-    pass here cannot be an artefact of a handler running.
+    pass here cannot be an artefact of a handler running. Windows has no SIGKILL at all --
+    `signal.SIGKILL` raises AttributeError there, which is what the Windows CI leg caught --
+    and `os.kill` on Windows calls TerminateProcess, which ends the process just as abruptly.
+    The exit STATUS differs (a negative signal number against a Windows exit code), so only
+    the part that means the same thing on both is asserted: the process did not exit
+    normally, and the bytes are in the file anyway.
     """
     capture = WorkerStderrCapture(directory = str(tmp_path), prefix = "unsloth-test-")
     backend = str(Path(__file__).resolve().parent.parent)
@@ -703,7 +710,10 @@ def test_a_worker_killed_outright_still_leaves_its_last_words(tmp_path):
         capture_output = True,
         timeout = 120,
     )
-    assert completed.returncode == -signal.SIGKILL, completed.stderr[-400:]
+    if os.name == "nt":
+        assert completed.returncode != 0, completed.stderr[-400:]
+    else:
+        assert completed.returncode == -signal.SIGKILL, completed.stderr[-400:]
     assert "c10::Error" in capture.tail(), capture.tail()
 
 
