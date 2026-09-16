@@ -7,7 +7,7 @@
 # metadata still declares torch as a hard dep).
 
 # unsloth direct deps (from pyproject.toml [project].dependencies)
-typer>=0.12.0
+typer>=0.19.0
 click>=8.0
 rich>=13.0
 # typer's remaining runtime dep tree, needed explicitly under --no-deps.
