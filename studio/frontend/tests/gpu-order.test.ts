@@ -11,6 +11,8 @@ import {
   sameGpuSelection,
 } from "../src/hooks/gpu-selection.ts";
 
+import { readSrc } from "./helpers/kit.ts";
+
 /** The picker's toggle, as model-config-page drives it. */
 function toggle(current: number[], index: number): number[] {
   const next = current.includes(index)
@@ -65,5 +67,23 @@ test("dropping an unpinnable GPU keeps the order of the rest", () => {
   assert.deepEqual(
     reconcileGpuSelection([1, 0], "physical", "physical", [0, 1]).ids,
     [1, 0],
+  );
+});
+
+// Diffusion drives ONE device and matches_gpu_ids reduces the request to its lowest
+// id, so an ordering control there moves a row without moving the model. The arrows
+// and the sentence promising the first card takes the prompt are both withheld.
+test("the ordering controls and their promise are withheld for diffusion", () => {
+  const src = readSrc("features/model-picker/components/model-config-page.tsx");
+  const arrows = src.slice(src.indexOf("Move GPU ${d.index} earlier") - 900);
+  assert.match(
+    arrows.slice(0, 900),
+    /!singleGpuInUse && !isDiffusion/,
+    "the arrows must not render for a diffusion model",
+  );
+  assert.match(
+    src,
+    /!isDiffusion &&\s*" Their order here is the order they are given to the model/,
+    "the help text must not promise ordering for a diffusion model",
   );
 });

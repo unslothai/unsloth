@@ -889,9 +889,10 @@ function GpuMemorySettings({
             <span className={LABEL_CLASS}>GPUs</span>
             <InfoHint>
               By default, Unsloth chooses GPUs automatically. Editing this list
-              makes the checked GPUs the explicit candidate pool, and their
-              order here is the order they are given to the model, so the first
-              one takes the prompt. At least one GPU must stay selected.
+              makes the checked GPUs the explicit candidate pool.
+              {!isDiffusion &&
+                " Their order here is the order they are given to the model, so the first one takes the prompt."}{" "}
+              At least one GPU must stay selected.
             </InfoHint>
           </div>
           <div className="flex flex-col gap-2">
@@ -906,7 +907,10 @@ function GpuMemorySettings({
                     ? ` · ${Math.round(d.memoryTotalGb)} GiB`
                     : ""}
                 </span>
-                {isGpuChecked(d.index) && !singleGpuInUse && (
+                {/* Not for diffusion: that runner drives one device and matches_gpu_ids
+                    reduces the request to its lowest id, so the arrows would move a row
+                    without moving the model, under help text promising the opposite. */}
+                {isGpuChecked(d.index) && !singleGpuInUse && !isDiffusion && (
                   <div className="flex shrink-0 items-center gap-0.5">
                     <button
                       type="button"
