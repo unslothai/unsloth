@@ -136,3 +136,17 @@ def test_vulkan_pick_always_owns_device_flags(monkeypatch, tmp_path):
     assert backend._gpu_ids_own_placement([0, 1], is_vulkan = True) is True
     assert backend._gpu_ids_own_placement([0, 1], is_vulkan = False) is False
     assert backend._gpu_ids_own_placement(None, is_vulkan = False) is False
+
+
+def test_the_authoritative_effective_pin_keeps_the_picked_order(monkeypatch, tmp_path):
+    """/status serves _gpu_ids, and two blocks assign it: the later one wins.
+
+    Sorting in either put the order back, so a client round-tripping the effective
+    value matched the stored pin and skipped a reload the child needed.
+    """
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1")
+    monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = _TWO_GPUS)
+    backend._select_gpus = lambda *args, **kwargs: ([1, 0], False)
+    _launch(backend, gguf, n_ctx = 4096, gpu_ids = [1, 0])
+    assert backend._gpu_ids == [1, 0], f"the effective pin was re-sorted: {backend._gpu_ids}"

@@ -25380,9 +25380,7 @@ class LlamaCppBackend:
                     # pins below, but recording it would misreport an explicit pin and
                     # make dedupe miss the loaded server; mirrors the CUDA/ROCm branch.
                     self._gpu_ids = (
-                        sorted(int(x) for x in _vulkan_pin_ids)
-                        if (gpu_ids and _vulkan_pin_ids)
-                        else None
+                        [int(x) for x in _vulkan_pin_ids] if (gpu_ids and _vulkan_pin_ids) else None
                     )
                 elif gpu_ids:
                     # Physical pin: the fit-selected subset when the fit ran, else the raw
@@ -25393,8 +25391,12 @@ class LlamaCppBackend:
                         if gpu_indices is not None
                         else [int(x) for x in gpu_ids]
                     )
+                    # Survivor order, not sorted. This is the authoritative record and it
+                    # overwrites the one above, so sorting here put the order back and
+                    # /status reported a pin a client could round-trip into a match
+                    # against the opposite order.
                     self._gpu_ids = (
-                        sorted(int(x) for x in _effective_pin_ids) if _effective_pin_ids else None
+                        [int(x) for x in _effective_pin_ids] if _effective_pin_ids else None
                     )
                 else:
                     self._gpu_ids = None
