@@ -1087,3 +1087,71 @@ def test_a_marked_record_under_a_diagnostic_is_not_adopted_by_it():
     # And the abort itself, with its own genuine continuation, is still the message.
     assert "terminate called" in public, public
     assert "CUDA error: device-side assert triggered" in public, public
+
+
+def test_a_request_queued_behind_the_crash_is_not_given_its_last_words(monkeypatch):
+    """Compare mode keeps several mailboxes in flight while the subprocess runs the commands
+    one at a time.
+
+    When it dies, every waiting stream reaches the crash message, and the tail belongs to
+    whichever request was EXECUTING -- its traceback, its exception text, on a shared install
+    another account's. A request that never started gets the exit status and nothing else.
+    """
+    capture = _FixedCapture(
+        "Traceback (most recent call last):\n"
+        '  File "/home/alice/.unsloth/studio/worker.py", line 42, in run\n'
+        "RuntimeError: another account's prompt overflowed the context\n"
+    )
+    orchestrator = _orchestrator_with(-9, capture)
+    logged: "list[str]" = []
+    monkeypatch.setattr(
+        type(orchestrator), "_log_worker_stderr_once",
+        lambda self, pid, exitcode: logged.append(str(pid)),
+        raising = False,
+    )
+
+    executing = orchestrator._subprocess_crash_message("generation")
+    assert "Worker error output:" in executing
+    assert "RuntimeError: another account" in executing
+
+    orchestrator._stderr_tail_logged = None
+    queued = orchestrator._subprocess_crash_message("generation", with_worker_output = False)
+    assert "Worker error output:" not in queued, queued
+    assert "another account" not in queued, queued
+    # Still a real report: the context and the exit status are what it always had.
+    assert "generating a response" in queued
+    assert "SIGKILL" in queued
+    # And the operator's copy is written either way -- the narrowing is about the wire.
+    assert logged, "the server log lost the tail for the queued request's path"
+
+
+def test_the_stream_asks_who_owned_the_worker_before_handing_over_the_tail():
+    """The narrowing is only worth anything if the call site applies it, and `_owns_worker`
+    is the same test a Stop goes through, for the same reason: claimed but queued is not
+    executing. It answers True when nothing is in flight, so an ordinary single-request
+    crash is unchanged."""
+    import inspect
+    from core.inference import orchestrator as orchestrator_module
+
+    body = inspect.getsource(orchestrator_module.InferenceOrchestrator._consume_token_stream)
+    assert body.count("with_worker_output = self._owns_worker(cancel_event)") == 2, body
+
+
+def test_a_queued_compare_request_does_not_own_the_worker():
+    """The property the narrowing rests on, pinned here so a change to the claim
+    bookkeeping cannot quietly widen it again."""
+    module = _load_orchestrator_module()
+    orchestrator = module.InferenceOrchestrator.__new__(module.InferenceOrchestrator)
+    import threading
+
+    orchestrator._active_cancel_lock = threading.Lock()
+    first, second = threading.Event(), threading.Event()
+    orchestrator._active_cancel_events = []
+    orchestrator._executing_cancel_events = []
+    # Nothing in flight: an ordinary single-request crash still gets its tail.
+    assert orchestrator._owns_worker(first) is True
+
+    orchestrator._active_cancel_events = [first, second]
+    orchestrator._executing_cancel_events = [first]
+    assert orchestrator._owns_worker(first) is True
+    assert orchestrator._owns_worker(second) is False

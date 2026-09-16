@@ -1078,8 +1078,17 @@ class InferenceOrchestrator:
     def _ensure_subprocess_alive(self) -> bool:
         return self._proc is not None and self._proc.is_alive()
 
-    def _subprocess_crash_message(self, context: str) -> str:
-        """Return a user-facing crash message with the worker exit status."""
+    def _subprocess_crash_message(self, context: str, *, with_worker_output: bool = True) -> str:
+        """Return a user-facing crash message with the worker exit status.
+
+        ``with_worker_output`` is False for a request that was QUEUED behind the one the
+        worker died in. Compare mode keeps several mailboxes in flight while the subprocess
+        runs the commands one at a time, so when it dies every waiting stream reaches this
+        method and used to be handed the same tail -- and that tail is the executing
+        request's traceback and exception message, which on a shared install belongs to
+        another account. The operator's log still gets it either way; only what goes back
+        over the wire is narrowed.
+        """
         context_label = {
             "wait": "loading the model",
             "generation": "generating a response",
@@ -1114,7 +1123,7 @@ class InferenceOrchestrator:
         # installed, and then the message is exactly what it was before.
         # The PUBLIC tail: this string is returned to the client verbatim on a managed
         # install. See _public_worker_stderr_tail for what it drops and why.
-        tail = self._public_worker_stderr_tail()
+        tail = self._public_worker_stderr_tail() if with_worker_output else ""
         details = f"\n\nWorker error output:\n{tail}" if tail else ""
         # And the operator's copy, unredacted, into the server log. fd 2 in the worker now
         # points at the sink, and the thread that forwards it onward to the inherited stderr
@@ -1409,18 +1418,24 @@ class InferenceOrchestrator:
         initial_resp_queue = self._resp_queue
         while True:
             if self._proc is not initial_proc or self._resp_queue is not initial_resp_queue:
-                yield GenStreamError(
-                    f"Error: {self._subprocess_crash_message(crash_context)}",
-                    public = True,
+                detail = self._subprocess_crash_message(
+                    crash_context, with_worker_output = self._owns_worker(cancel_event)
                 )
+                yield GenStreamError(f"Error: {detail}", public = True)
                 return
             resp = read_one(read_timeout)
             if resp is None:
                 if not self._ensure_subprocess_alive():
-                    yield GenStreamError(
-                        f"Error: {self._subprocess_crash_message(crash_context)}",
-                        public = True,
+                    # Only the request the worker was RUNNING gets its last words. The
+                    # others were queued behind it, their own generations never started, and
+                    # the tail is the executing request's traceback -- on a shared install,
+                    # another account's. `_owns_worker` is the same test a Stop goes through
+                    # for the same reason, and it answers True when nothing is in flight, so
+                    # an ordinary single-request crash is unchanged.
+                    detail = self._subprocess_crash_message(
+                        crash_context, with_worker_output = self._owns_worker(cancel_event)
                     )
+                    yield GenStreamError(f"Error: {detail}", public = True)
                     return
                 continue
 
