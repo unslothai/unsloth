@@ -2472,7 +2472,14 @@ class TestNormalizeAnthropicOpenAIImages:
         assert new_url.startswith("data:image/png;base64,")
         assert new_url != original_url
 
-    def test_remote_url_left_unchanged(self):
+    def test_remote_url_is_replaced_by_the_bytes_we_fetched(self, monkeypatch):
+        import core.inference.external_provider as ep
+
+        monkeypatch.setattr(
+            ep,
+            "safe_fetch_remote_image_sync",
+            lambda *_a, **_k: ("image/png", _jpeg_data_url().partition(",")[2]),
+        )
         msgs = [
             {
                 "role": "user",
@@ -2485,7 +2492,7 @@ class TestNormalizeAnthropicOpenAIImages:
             }
         ]
         _normalize_anthropic_openai_images(msgs, is_vision = True)
-        assert msgs[0]["content"][0]["image_url"]["url"] == "https://x.example/y.png"
+        assert msgs[0]["content"][0]["image_url"]["url"].startswith("data:image/png;base64,")
 
     def test_bad_base64_raises_400(self):
         msgs = [

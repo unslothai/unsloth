@@ -773,22 +773,21 @@ _GEMINI_REMOTE_IMAGE_MAX_BYTES = 10 * 1024 * 1024
 _GEMINI_REMOTE_IMAGE_TIMEOUT_S = 15.0
 
 
-def _safe_fetch_image_for_gemini_sync(
+def safe_fetch_remote_image_sync(
     url: str,
     fallback_mime: str,
     max_bytes: int = _GEMINI_REMOTE_IMAGE_MAX_BYTES,
+    label: str = "Remote image fetch",
 ) -> Optional[tuple[str, str]]:
-    """Synchronous IP-pinned HTTPS image fetch with SSRF guards. Uses the same pinned-IP + SNI
-    pattern as `tools._fetch_page_text` so DNS rebinding between validation and the connection
-    cannot redirect us to a private/metadata address. Follows up to 4 hops, re-validating each
-    redirect target. Returns (mime, base64) or None. `max_bytes` is clamped to the per-image cap
-    and also lets the caller pass the remaining per-request budget, so an over-budget URL is
-    rejected via Content-Length instead of being fully downloaded then discarded."""
+    """Fetch an HTTPS image through a validated, pinned public IP.
+
+    Redirects are revalidated and the response is capped by ``max_bytes``. All failures return
+    ``None`` so callers do not expose details about the host network.
+    """
     import urllib.error
     import urllib.request
     from urllib.parse import urljoin, urlunparse
 
-    # Refuse upfront if the per-request budget is already spent.
     _byte_limit = min(max(0, int(max_bytes)), _GEMINI_REMOTE_IMAGE_MAX_BYTES)
     if _byte_limit <= 0:
         return None
@@ -803,28 +802,26 @@ def _safe_fetch_image_for_gemini_sync(
     )
 
     def _safe_parse_https(raw_url: str) -> Optional[tuple[Any, str, int]]:
-        """Validate https + hostname + port. Returns (parsed, host, port) or None. Handles
-        malformed-port and malformed-bracketed-IPv6 URLs that would else raise ValueError
-        mid-build."""
+        """Return a parsed HTTPS URL, hostname and port, or ``None``."""
         try:
             parsed_url = urlparse(raw_url)
             host_value = parsed_url.hostname
             port_value = parsed_url.port or 443
         except (ValueError, UnicodeError) as _err:
             logger.info(
-                "Gemini image fetch: refusing malformed url err=%s",
+                f"{label}: refusing malformed url err=%s",
                 type(_err).__name__,
             )
             return None
         scheme_value = (parsed_url.scheme or "").lower()
         if scheme_value != "https":
             logger.info(
-                "Gemini image fetch: refusing non-https scheme=%s",
+                f"{label}: refusing non-https scheme=%s",
                 scheme_value,
             )
             return None
         if not host_value:
-            logger.info("Gemini image fetch: refusing url with no hostname")
+            logger.info(f"{label}: refusing url with no hostname")
             return None
         return parsed_url, host_value, port_value
 
@@ -836,7 +833,7 @@ def _safe_fetch_image_for_gemini_sync(
     ok, reason, pinned_ips = _validate_and_resolve_host(current_host, current_port)
     if not ok:
         logger.warning(
-            "Gemini image fetch: refusing host=%s reason=%s",
+            f"{label}: refusing host=%s reason=%s",
             current_host,
             reason,
         )
@@ -868,7 +865,7 @@ def _safe_fetch_image_for_gemini_sync(
         except urllib.error.HTTPError as e:
             if e.code not in (301, 302, 303, 307, 308):
                 logger.info(
-                    "Gemini image fetch: status=%d host=%s",
+                    f"{label}: status=%d host=%s",
                     e.code,
                     current_host,
                 )
@@ -880,7 +877,7 @@ def _safe_fetch_image_for_gemini_sync(
                 current_url = urljoin(current_url, location)
             except (ValueError, UnicodeError) as _err:
                 logger.info(
-                    "Gemini image fetch: refusing malformed redirect err=%s",
+                    f"{label}: refusing malformed redirect err=%s",
                     type(_err).__name__,
                 )
                 return None
@@ -891,7 +888,7 @@ def _safe_fetch_image_for_gemini_sync(
             ok2, reason2, pinned_ips = _validate_and_resolve_host(current_host, current_port)
             if not ok2:
                 logger.warning(
-                    "Gemini image fetch: refusing redirect host=%s reason=%s",
+                    f"{label}: refusing redirect host=%s reason=%s",
                     current_host,
                     reason2,
                 )
@@ -899,7 +896,7 @@ def _safe_fetch_image_for_gemini_sync(
             continue
         except (urllib.error.URLError, OSError) as _err:
             logger.warning(
-                "Gemini image fetch failed host=%s err=%s",
+                f"{label} failed host=%s err=%s",
                 current_host,
                 type(_err).__name__,
             )
@@ -908,13 +905,13 @@ def _safe_fetch_image_for_gemini_sync(
         with resp:
             status = getattr(resp, "status", None) or resp.getcode()
             if status != 200:
-                logger.info("Gemini image fetch: status=%s host=%s", status, current_host)
+                logger.info(f"{label}: status=%s host=%s", status, current_host)
                 return None
             _hdr_mime = (resp.headers.get("content-type") or "").split(";")[0].strip().lower()
             # Declared non-image MIME is refused; missing MIME uses the caller's.
             if _hdr_mime and not _hdr_mime.startswith("image/"):
                 logger.info(
-                    "Gemini image fetch: non-image content-type=%s host=%s",
+                    f"{label}: non-image content-type=%s host=%s",
                     _hdr_mime,
                     current_host,
                 )
@@ -922,14 +919,14 @@ def _safe_fetch_image_for_gemini_sync(
             _final_mime_pre = _hdr_mime if _hdr_mime else fallback_mime
             if not isinstance(_final_mime_pre, str) or not _final_mime_pre.startswith("image/"):
                 logger.info(
-                    "Gemini image fetch: missing content-type and no image fallback host=%s",
+                    f"{label}: missing content-type and no image fallback host=%s",
                     current_host,
                 )
                 return None
             _hdr_len = resp.headers.get("content-length")
             if _hdr_len and _hdr_len.isdigit() and int(_hdr_len) > _byte_limit:
                 logger.info(
-                    "Gemini image fetch: declared %s bytes exceeds cap=%s host=%s",
+                    f"{label}: declared %s bytes exceeds cap=%s host=%s",
                     _hdr_len,
                     _byte_limit,
                     current_host,
@@ -939,15 +936,28 @@ def _safe_fetch_image_for_gemini_sync(
             raw = resp.read(_byte_limit + 1)
             if len(raw) > _byte_limit:
                 logger.info(
-                    "Gemini image fetch: streamed bytes exceed cap=%s host=%s",
+                    f"{label}: streamed bytes exceed cap=%s host=%s",
                     _byte_limit,
                     current_host,
                 )
                 return None
             return _final_mime_pre, base64.b64encode(raw).decode("ascii")
 
-    logger.info("Gemini image fetch: too many redirects host=%s", current_host)
+    logger.info(f"{label}: too many redirects host=%s", current_host)
     return None
+
+
+_GEMINI_IMAGE_FETCH_LABEL = "Gemini image fetch"
+
+
+def _safe_fetch_image_for_gemini_sync(
+    url: str,
+    fallback_mime: str,
+    max_bytes: int = _GEMINI_REMOTE_IMAGE_MAX_BYTES,
+) -> Optional[tuple[str, str]]:
+    return safe_fetch_remote_image_sync(
+        url, fallback_mime, max_bytes, label = _GEMINI_IMAGE_FETCH_LABEL
+    )
 
 
 async def _safe_fetch_image_for_gemini(

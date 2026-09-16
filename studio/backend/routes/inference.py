@@ -8206,6 +8206,7 @@ async def _preflight_image_for_switch(image_preflight: dict, target_is_gguf: boo
                 " GGUF build of it, which accepts several."
             ),
         )
+    # Non-GGUF backends only receive decoded base64 images.
     if not target_is_gguf and image_preflight.get("remote") and image_preflight.get("b64") is None:
         raise HTTPException(
             status_code = 400,
@@ -21266,7 +21267,9 @@ def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[s
                                 f"Ignoring image URL with no base64 payload: {url[:80]}..."
                             )
                     else:
-                        logger.warning(f"Remote image URLs not yet supported: {url[:80]}...")
+                        logger.warning(
+                            f"Dropping a remote image URL while flattening to text: {url[:80]}..."
+                        )
             # Latest message wins: send the image just attached, not the thread's first.
             if message_image_b64 is not None:
                 latest_image_b64 = message_image_b64
@@ -31742,19 +31745,96 @@ def _image_bytes_to_png_b64(raw: bytes) -> str:
     return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
+# Match llama-server's per-image limit and add a per-request budget.
+_REMOTE_IMAGE_MAX_BYTES = 10 * 1024 * 1024
+_REMOTE_IMAGE_REQUEST_BUDGET_BYTES = 32 * 1024 * 1024
+# Bound DNS, connection and redirect work independently of response size.
+_REMOTE_IMAGE_MAX_COUNT = 8
+
+# Do not reveal why a caller-selected host could not be fetched.
+_REMOTE_IMAGE_FETCH_REFUSAL = (
+    "Could not fetch the remote image URL. Send the image as a base64 data URL instead."
+)
+# Token counting renders a fixed media marker and charges a flat per-image allowance.
+_COUNT_IMAGE_PLACEHOLDER = (
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1Pe"
+    "AAAADElEQVR4nGNgYGAAAAAEAAH2FzhVAAAAAElFTkSuQmCC"
+)
+
+
+def _image_url_scheme(url: str) -> str:
+    """Return a short URL scheme, or ``""`` for llama-server's bare-base64 form."""
+    head = url[: _MAX_VIDEO_SCHEME_CHARS + 1]
+    return head.split(":", 1)[0].lower() if ":" in head else ""
+
+
+def _remote_image_scheme_rejection(scheme: str) -> Optional[tuple[int, str]]:
+    """Allow only the HTTPS scheme supported by the pinned fetcher."""
+    if scheme == "https":
+        return None
+    return (
+        400,
+        f"Unsupported image URL scheme ('{scheme}:'). Send the image over https, "
+        "or as a base64 data URL.",
+    )
+
+
+def _placeholder_remote_images_for_count(openai_messages: list[dict]) -> None:
+    """Replace remote images before ``/apply-template`` can fetch them."""
+    for msg in openai_messages:
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if not isinstance(part, dict) or part.get("type") != "image_url":
+                continue
+            image_url = part.get("image_url") or {}
+            url = image_url.get("url", "")
+            if url.startswith("data:"):
+                continue
+            scheme = _image_url_scheme(url)
+            if not scheme:
+                continue  # Bare base64 payload, not a URL. Nothing to dial.
+            rejection = _remote_image_scheme_rejection(scheme)
+            if rejection is not None:
+                raise HTTPException(status_code = rejection[0], detail = rejection[1])
+            image_url["url"] = _COUNT_IMAGE_PLACEHOLDER
+
+
+def _inline_remote_image_url(url: str, scheme: str, budget_bytes: int) -> tuple[str, int]:
+    """Fetch an image safely and return its data URL and decoded size."""
+    from core.inference.external_provider import safe_fetch_remote_image_sync
+
+    rejection = _remote_image_scheme_rejection(scheme)
+    if rejection is not None:
+        raise HTTPException(status_code = rejection[0], detail = rejection[1])
+    # Missing content types are safe because the caller decodes and re-encodes the image.
+    fetched = safe_fetch_remote_image_sync(
+        url,
+        "image/png",
+        max_bytes = min(_REMOTE_IMAGE_MAX_BYTES, budget_bytes),
+        label = "llama-server image fetch",
+    )
+    if fetched is None:
+        raise HTTPException(status_code = 400, detail = _REMOTE_IMAGE_FETCH_REFUSAL)
+    mime, b64 = fetched
+    # Convert the encoded length back to the request budget's byte unit.
+    return f"data:{mime};base64,{b64}", (len(b64) * 3) // 4
+
+
 def _normalize_openai_image_parts_to_png(openai_messages: list[dict], on_image = None) -> bool:
     """Re-encode every base64-data-URL ``image_url`` part to PNG, in place.
 
-    llama-server's stb_image only handles a few formats (JPEG/PNG/BMP/…), while
-    macOS and most browsers paste WebP and Claude Code sends WebP. Remote
-    (non-``data:``) URLs are forwarded as-is; llama-server will fetch (or fail)
-    per its own support matrix.
+    Remote URLs are fetched here so llama-server receives bytes rather than a URL. All images
+    are converted to PNG for llama-server's limited image decoder.
 
     ``on_image`` runs once per image part before conversion, so a caller can
     apply its own guard. Returns ``True`` when any image part was seen. Raises
-    HTTPException(400) when an image cannot be decoded.
+    HTTPException(400) when an image cannot be decoded or fetched.
     """
     has_image = False
+    remaining_bytes = _REMOTE_IMAGE_REQUEST_BUDGET_BYTES
+    remaining_fetches = _REMOTE_IMAGE_MAX_COUNT
     for msg in openai_messages:
         content = msg.get("content")
         if not isinstance(content, list):
@@ -31770,7 +31850,25 @@ def _normalize_openai_image_parts_to_png(openai_messages: list[dict], on_image =
             image_url = part.get("image_url") or {}
             url = image_url.get("url", "")
             if not url.startswith("data:"):
-                continue
+                scheme = _image_url_scheme(url)
+                if not scheme:
+                    # llama-server also accepts bare base64 payloads.
+                    continue
+                # A zero max_bytes value means no limit to some fetch callers.
+                if remaining_bytes <= 0 or remaining_fetches <= 0:
+                    raise HTTPException(
+                        status_code = 400,
+                        detail = (
+                            f"Too many remote image URLs in one request "
+                            f"(max {_REMOTE_IMAGE_MAX_COUNT})."
+                            if remaining_fetches <= 0
+                            else _REMOTE_IMAGE_FETCH_REFUSAL
+                        ),
+                    )
+                remaining_fetches -= 1
+                url, _spent = _inline_remote_image_url(url, scheme, remaining_bytes)
+                remaining_bytes -= _spent
+                image_url["url"] = url
 
             try:
                 _, b64data = url.split(",", 1)
@@ -32444,6 +32542,8 @@ async def anthropic_count_tokens(
     # matches the prompt the real request would build (otherwise empty-assistant
     # sentinels / synthetic tool history inflate the count or hit the fallback).
     openai_messages = _sanitize_anthropic_openai_messages(openai_messages, llama_backend)
+    # /apply-template fetches remote media even though token counting only needs its marker.
+    _placeholder_remote_images_for_count(openai_messages)
     openai_tools = anthropic_tools_to_openai(payload.tools or []) or None
     # Only the client-tool passthrough is forwarded verbatim, so reproduce /messages' own
     # routing rather than "any tools": a Studio server-tool alias, or a template without
@@ -35249,8 +35349,9 @@ def _openai_messages_for_passthrough(payload, normalize_images: bool = True) -> 
     ``role="tool"`` tool-result messages and assistant messages carrying
     structured ``tool_calls``. Base64-data-URL images already in the list are
     re-encoded to PNG exactly as ``_openai_messages_for_gguf_chat`` does, so
-    turning tools on does not change which formats llama-server can decode;
-    remote URLs are forwarded as-is. The vision guard lives in the callers,
+    turning tools on does not change which formats llama-server can decode, and
+    a remote URL is fetched here rather than by llama-server, for the same
+    reason and by the same helper. The vision guard lives in the callers,
     which reject a non-vision model before the body is built.
 
     ``normalize_images=False`` is for callers that are not building a
