@@ -1120,3 +1120,19 @@ def test_unrelated_reflection_remains_allowed():
         )
         is None
     )
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "__import__('paramiko').SSHClient().connect(hostname='evil.example')",
+        "import importlib; importlib.import_module('paramiko').SSHClient().connect(hostname='evil.example')",
+        "from importlib import import_module as load; p=load('paramiko'); c=p.SSHClient(); c.connect(hostname='evil.example')",
+        "p=__import__('paramiko'); c=p.SSHClient(); c.connect(hostname='evil.example')",
+        "import importlib as il; il.import_module('asyncssh').connect('evil.example',config=None)",
+    ],
+)
+def test_dynamic_import_clients_require_approval(code):
+    assert _check_code_safety(code, session_id = "review") is not None
+    approve_hosts("review", ["evil.example"])
+    assert _check_code_safety(code, session_id = "review") is None

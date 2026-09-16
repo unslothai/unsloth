@@ -381,10 +381,12 @@ def _ssh_import_bindings(tree: ast.AST) -> dict[str, str]:
         if isinstance(node, ast.Import):
             for alias in node.names:
                 root = alias.name.split(".", 1)[0]
-                if root in _SSH_PY_ROOT_MODULES:
+                if root in _SSH_PY_ROOT_MODULES or root in {"importlib", "builtins"}:
                     local = alias.asname or root
                     bindings[local] = alias.name if alias.asname else root
-        elif isinstance(node, ast.ImportFrom) and _module_is_ssh_root(node.module):
+        elif isinstance(node, ast.ImportFrom) and (
+            _module_is_ssh_root(node.module) or node.module in {"importlib", "builtins"}
+        ):
             module = node.module or ""
             for alias in node.names:
                 if alias.name == "*":
@@ -533,7 +535,31 @@ def _bound_name(node: Optional[ast.AST], bindings: dict[str, str]) -> str:
     reflected = _literal_getattr(node)
     if reflected is not None:
         node = reflected
-    name = _fq_name(node)
+    if isinstance(node, ast.Call):
+        importer = _bound_name(node.func, bindings)
+        if importer in {
+            "__import__",
+            "builtins.__import__",
+            "importlib.__import__",
+            "importlib.import_module",
+        }:
+            kwargs, _ = _call_keyword_values(node)
+            module = node.args[0] if node.args else kwargs.get("name")
+            if isinstance(module, ast.Constant) and isinstance(module.value, str):
+                if importer.endswith("__import__"):
+                    fromlist = node.args[3] if len(node.args) > 3 else kwargs.get("fromlist")
+                    if (
+                        fromlist is None
+                        or isinstance(fromlist, (ast.List, ast.Tuple))
+                        and not fromlist.elts
+                    ):
+                        return module.value.split(".", 1)[0]
+                return module.value
+    if isinstance(node, ast.Attribute):
+        owner = _bound_name(node.value, bindings)
+        name = f"{owner}.{node.attr}" if owner else node.attr
+    else:
+        name = _fq_name(node)
     root, sep, rest = name.partition(".")
     name = bindings.get(name, bindings.get(root, root) + (sep + rest if sep else ""))
     return _PYTHON_API_SYMBOLS.get(name, name)
@@ -948,7 +974,7 @@ def _scan_ssh_python_usage(
                 return
 
             if (
-                bindings
+                any(_module_is_ssh_root(value) for value in bindings.values())
                 and isinstance(node.func, ast.Attribute)
                 and node.func.attr in _SSH_PY_CONNECT_ATTRS
                 and (
