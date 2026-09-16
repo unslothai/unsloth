@@ -200,7 +200,8 @@ def test_the_jupyter_tunnel_probe_bypasses_a_container_wide_proxy(tmp_path: Path
     bin_dir = tmp_path / "stub-bin"
     log = tmp_path / "curl.log"
     _stub(bin_dir, "curl", 'echo "$*" >> "$STUB_LOG"\nexit 0\n')
-    _stub(bin_dir, "cloudflared", 'echo "STUB-CLOUDFLARED $*"\n')
+    # the script's first candidate, so a real /usr/local/bin/cloudflared is never run
+    _stub(tmp_path / "bin", "cloudflared", 'echo "STUB-CLOUDFLARED $*"\n')
     e = _clean_env(bin_dir)
     e.update(UNSLOTH_JUPYTER_CLOUDFLARE = "1", UNSLOTH_STUDIO_HOME = str(tmp_path), STUB_LOG = str(log))
     res = subprocess.run(
