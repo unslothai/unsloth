@@ -104,7 +104,6 @@ def _refusals_from_installed_transformers():
 def test_the_installed_transformers_refusals_are_both_recognised():
     """The drift guard proper, runnable against any transformers on any host."""
     import transformers
-
     for site, message in _refusals_from_installed_transformers().items():
         assert "pip install" in message, (site, message)
         assert _matches(message), (
