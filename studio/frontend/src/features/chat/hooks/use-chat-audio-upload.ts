@@ -33,6 +33,7 @@ import {
 } from "../adapters/studio-model-dictation-adapter";
 import { resolveDictationChatId } from "../adapters/studio-web-speech-dictation-adapter";
 import {
+  ChatAudioReadinessRefreshQueue,
   type ChatAudioUploadFence,
   MAX_AUDIO_SIZE_LABEL,
   appendChatAudioTranscript,
@@ -97,8 +98,7 @@ export function useChatAudioUpload({
     model,
   });
   const generationRef = useRef(0);
-  const readinessGenerationRef = useRef(0);
-  const readinessRefreshInFlightRef = useRef(false);
+  const readinessRefreshQueueRef = useRef(new ChatAudioReadinessRefreshQueue());
   const ownerRef = useRef(owner);
   const controllerRef = useRef<AbortController | null>(null);
   const activeFenceRef = useRef<ChatAudioUploadFence | null>(null);
@@ -110,8 +110,7 @@ export function useChatAudioUpload({
 
   const invalidateRefs = useCallback(() => {
     generationRef.current += 1;
-    readinessGenerationRef.current += 1;
-    readinessRefreshInFlightRef.current = false;
+    readinessRefreshQueueRef.current.invalidate();
     pickerSnapshotRef.current = null;
     activeFenceRef.current = null;
     controllerRef.current?.abort();
@@ -179,71 +178,71 @@ export function useChatAudioUpload({
 
   const refreshReadiness = useCallback(
     async (silent = false) => {
-      if (silent && readinessRefreshInFlightRef.current) return;
+      const queue = readinessRefreshQueueRef.current;
       const target = targetSettings();
       const targetModel = target.model;
-      const attempt = readinessGenerationRef.current + 1;
-      readinessGenerationRef.current = attempt;
-      const ownerAtStart = ownerRef.current;
-      const authAtStart = getAuthSessionEpoch();
-      if (!targetModel) {
-        setReadiness({ state: "error", model: targetModel });
-        return;
-      }
-      if (!silent) setReadiness({ state: "checking", model: targetModel });
-      readinessRefreshInFlightRef.current = true;
-      try {
-        const status = await fetchSttStatus(undefined, targetModel);
-        if (
-          readinessGenerationRef.current !== attempt ||
-          ownerRef.current !== ownerAtStart ||
-          getAuthSessionEpoch() !== authAtStart ||
-          accountTransitionPending()
-        ) {
-          return;
-        }
-        const engineStatus = sttEngineStatusFor(
-          status,
-          targetModel,
-          target.engine,
-        );
-        if (!engineStatus?.available) {
-          setReadiness({ state: "unavailable", model: targetModel });
-          return;
-        }
-        if (
-          engineStatus.download.downloading &&
-          engineStatus.download.model === targetModel
-        ) {
-          setReadiness({
-            state: "downloading",
-            model: targetModel,
-            progress: readinessProgress(
-              engineStatus.download.bytes_done,
-              engineStatus.download.bytes_total,
-            ),
-          });
-          return;
-        }
+      if (!silent) {
         setReadiness({
-          state: engineStatus.downloaded_models.includes(targetModel)
-            ? "ready"
-            : "missing",
+          state: targetModel ? "checking" : "error",
           model: targetModel,
         });
-      } catch {
-        if (
-          readinessGenerationRef.current === attempt &&
-          ownerRef.current === ownerAtStart &&
-          getAuthSessionEpoch() === authAtStart
-        ) {
-          setReadiness({ state: "error", model: targetModel });
-        }
-      } finally {
-        if (readinessGenerationRef.current === attempt) {
-          readinessRefreshInFlightRef.current = false;
-        }
       }
+      await queue.run(silent, async (attempt, signal) => {
+        const ownerAtStart = ownerRef.current;
+        const authAtStart = getAuthSessionEpoch();
+        if (!targetModel) {
+          setReadiness({ state: "error", model: targetModel });
+          return;
+        }
+        try {
+          const status = await fetchSttStatus(undefined, targetModel, signal);
+          if (
+            !queue.isCurrent(attempt) ||
+            ownerRef.current !== ownerAtStart ||
+            getAuthSessionEpoch() !== authAtStart ||
+            accountTransitionPending()
+          ) {
+            return;
+          }
+          const engineStatus = sttEngineStatusFor(
+            status,
+            targetModel,
+            target.engine,
+          );
+          if (!engineStatus?.available) {
+            setReadiness({ state: "unavailable", model: targetModel });
+            return;
+          }
+          if (
+            engineStatus.download.downloading &&
+            engineStatus.download.model === targetModel
+          ) {
+            setReadiness({
+              state: "downloading",
+              model: targetModel,
+              progress: readinessProgress(
+                engineStatus.download.bytes_done,
+                engineStatus.download.bytes_total,
+              ),
+            });
+            return;
+          }
+          setReadiness({
+            state: engineStatus.downloaded_models.includes(targetModel)
+              ? "ready"
+              : "missing",
+            model: targetModel,
+          });
+        } catch {
+          if (
+            queue.isCurrent(attempt) &&
+            ownerRef.current === ownerAtStart &&
+            getAuthSessionEpoch() === authAtStart
+          ) {
+            setReadiness({ state: "error", model: targetModel });
+          }
+        }
+      });
     },
     [targetSettings],
   );

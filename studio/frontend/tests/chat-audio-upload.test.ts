@@ -7,6 +7,7 @@ import test from "node:test";
 import { readSrc } from "./helpers/kit.ts";
 
 import {
+  ChatAudioReadinessRefreshQueue,
   appendChatAudioTranscript,
   chatAudioUploadFenceMatches,
   chatAudioUploadFileError,
@@ -17,6 +18,9 @@ const hookSource = readSrc("features/chat/hooks/use-chat-audio-upload.ts");
 const sharedComposerSource = readSrc("features/chat/shared-composer.tsx");
 const threadSource = readSrc("components/assistant-ui/thread.tsx");
 const dialogSource = readSrc("features/chat/components/chat-audio-upload.tsx");
+const modelAdapterSource = readSrc(
+  "features/chat/adapters/studio-model-dictation-adapter.ts",
+);
 
 test("audio upload rejects empty and oversized files", () => {
   assert.equal(chatAudioUploadFileError({ size: 0 }), "empty");
@@ -181,7 +185,7 @@ test("owner changes fence stale completions before passive effects", () => {
 test("an open dialog observes a missing model becoming ready", () => {
   assert.match(
     hookSource,
-    /const refreshReadiness = useCallback\(\s*async \(silent = false\) => \{[\s\S]*?if \(!silent\) setReadiness\(\{ state: "checking", model: targetModel \}\);/,
+    /const refreshReadiness = useCallback\(\s*async \(silent = false\) => \{[\s\S]*?if \(!silent\) \{[\s\S]*?state: targetModel \? "checking" : "error"/,
   );
   const pollStart = hookSource.indexOf(
     '(readiness.state !== "missing" && readiness.state !== "downloading")',
@@ -195,14 +199,139 @@ test("an open dialog observes a missing model becoming ready", () => {
     poll,
     /setInterval\(\(\) => void refreshReadiness\(true\), 1500\)/,
   );
+});
+
+test("readiness refreshes stay serialized across invalidation and reopen", async () => {
+  const queue = new ChatAudioReadinessRefreshQueue();
+  let resolveFirst = () => {};
+  let resolveSecond = () => {};
+  const firstGate = new Promise<void>((resolve) => {
+    resolveFirst = resolve;
+  });
+  const secondGate = new Promise<void>((resolve) => {
+    resolveSecond = resolve;
+  });
+  let calls = 0;
+  let firstGeneration = -1;
+  const committed: string[] = [];
+
+  const first = queue.run(false, async (generation) => {
+    firstGeneration = generation;
+    calls += 1;
+    await firstGate;
+    if (queue.isCurrent(generation)) committed.push("first");
+  });
+  assert.equal(calls, 1);
+  assert.equal(await queue.run(true, async () => {}), "skipped");
+
+  queue.invalidate();
+  const reopened = queue.run(false, async (generation) => {
+    calls += 1;
+    await secondGate;
+    if (queue.isCurrent(generation)) committed.push("reopened");
+  });
+  assert.equal(calls, 1);
+  assert.equal(queue.isCurrent(firstGeneration), false);
+  assert.equal(await queue.run(true, async () => {}), "skipped");
+
+  resolveFirst();
+  assert.equal(await first, "ran");
+  assert.deepEqual(committed, []);
+  await Promise.resolve();
+  assert.equal(calls, 2);
+  assert.equal(await queue.run(true, async () => {}), "skipped");
+
+  resolveSecond();
+  assert.equal(await reopened, "ran");
+  assert.equal(calls, 2);
+  assert.deepEqual(committed, ["reopened"]);
+});
+
+test("a newer explicit readiness refresh supersedes one still in flight", async () => {
+  const queue = new ChatAudioReadinessRefreshQueue();
+  let release = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let firstGeneration = -1;
+  const committed: string[] = [];
+
+  const first = queue.run(false, async (generation) => {
+    firstGeneration = generation;
+    await gate;
+    if (queue.isCurrent(generation)) committed.push("old-model");
+  });
+  const replacement = queue.run(false, async (generation) => {
+    if (queue.isCurrent(generation)) committed.push("new-model");
+  });
+
+  assert.equal(queue.isCurrent(firstGeneration), false);
+  release();
+  assert.equal(await first, "ran");
+  assert.equal(await replacement, "ran");
+  assert.deepEqual(committed, ["new-model"]);
+});
+
+test("invalidation aborts a hung refresh before a reopened one starts", async () => {
+  const queue = new ChatAudioReadinessRefreshQueue();
+  let calls = 0;
+  let firstAborted = false;
+
+  const first = queue.run(false, async (_generation, signal) => {
+    calls += 1;
+    await new Promise<void>((resolve) => {
+      signal.addEventListener(
+        "abort",
+        () => {
+          firstAborted = true;
+          resolve();
+        },
+        { once: true },
+      );
+    });
+  });
+  queue.invalidate();
+  const reopened = queue.run(false, async () => {
+    calls += 1;
+  });
+
+  assert.equal(await first, "ran");
+  assert.equal(firstAborted, true);
+  assert.equal(await reopened, "ran");
+  assert.equal(calls, 2);
+});
+
+test("readiness status passes the queue's abort signal to authFetch", () => {
   assert.match(
-    hookSource,
-    /if \(silent && readinessRefreshInFlightRef\.current\) return;/,
+    modelAdapterSource,
+    /export async function fetchSttStatus\([\s\S]*?signal\?: AbortSignal[\s\S]*?authFetch\([\s\S]*?\{ signal \},[\s\S]*?withAbort\(request, signal\)/,
   );
   assert.match(
     hookSource,
-    /finally \{\s*if \(readinessGenerationRef\.current === attempt\) \{\s*readinessRefreshInFlightRef\.current = false;/,
+    /queue\.run\(silent, async \(attempt, signal\)[\s\S]*?fetchSttStatus\(undefined, targetModel, signal\)/,
   );
+});
+
+test("a hung readiness refresh times out and releases the queue", async () => {
+  const queue = new ChatAudioReadinessRefreshQueue(5);
+  let timedOut = false;
+
+  const first = queue.run(false, async (_generation, signal) => {
+    await new Promise<void>((resolve) => {
+      signal.addEventListener(
+        "abort",
+        () => {
+          timedOut = true;
+          resolve();
+        },
+        { once: true },
+      );
+    });
+  });
+
+  assert.equal(await first, "ran");
+  assert.equal(timedOut, true);
+  assert.equal(await queue.run(false, async () => {}), "ran");
 });
 
 test("Main cancels an upload only after a queue or normal send is accepted", () => {
