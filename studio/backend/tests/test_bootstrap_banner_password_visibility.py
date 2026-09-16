@@ -9,7 +9,6 @@ PATH = "/opt/unsloth-studio/auth/.bootstrap_password"
 
 def _lines(**kwargs):
     from main import bootstrap_banner_lines
-
     return bootstrap_banner_lines("unsloth", PATH, PASSWORD, **kwargs)
 
 
@@ -31,9 +30,7 @@ def test_a_launch_without_autofill_prints_the_password():
 def test_a_missing_password_falls_back_to_the_path():
     from main import bootstrap_banner_lines
 
-    body = "\n".join(
-        bootstrap_banner_lines("unsloth", PATH, None, autofill_available = False)
-    )
+    body = "\n".join(bootstrap_banner_lines("unsloth", PATH, None, autofill_available = False))
 
     assert "password: None" not in body
     assert f"password saved to: {PATH}" in body
@@ -69,9 +66,9 @@ def test_the_banner_guard_does_not_key_only_on_this_call_creating_the_admin():
     guard = _banner_guard()
 
     assert "admin_created_this_process" in guard
-    assert "requires_password_change" in guard, (
-        "the gate can take a new password at its prompt, which retires the bootstrap one"
-    )
+    assert (
+        "requires_password_change" in guard
+    ), "the gate can take a new password at its prompt, which retires the bootstrap one"
 
 
 def test_the_creation_flag_survives_a_later_call_that_creates_nothing(monkeypatch):
@@ -156,6 +153,6 @@ def test_run_server_resets_the_per_launch_flags_before_the_gate():
     ]
 
     assert "app.state.api_only = api_only" in assigns
-    assert "app.state.suppress_bootstrap_injection = False" in assigns, (
-        "a sticky True from an earlier launch withholds the autofill that is available"
-    )
+    assert (
+        "app.state.suppress_bootstrap_injection = False" in assigns
+    ), "a sticky True from an earlier launch withholds the autofill that is available"
