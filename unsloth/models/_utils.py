@@ -517,7 +517,10 @@ def _prefers_flex_for_head_dim(config):
     if os.environ.get(_FLEX_LARGE_HEAD_DIM_ENV_VAR, "0") == "0":
         return False
     for attention_config in _text_attention_configs(config):
-        if _config_get(attention_config, "model_type", "").lower() in _FLEX_LARGE_HEAD_DIM_EXCLUDED_MODELS:
+        if (
+            _config_get(attention_config, "model_type", "").lower()
+            in _FLEX_LARGE_HEAD_DIM_EXCLUDED_MODELS
+        ):
             return False
     if _config_get(config, "model_type", "").lower() in _FLEX_LARGE_HEAD_DIM_EXCLUDED_MODELS:
         return False
@@ -558,7 +561,11 @@ def _flex_attn_impl_for(config, other_attn_implementation):
     if text_config is None or text_config is config:
         return "flex_attention"
     for field_name, child_config in _config_items(config):
-        if isinstance(field_name, str) and field_name.endswith("_config") and child_config is text_config:
+        if (
+            isinstance(field_name, str)
+            and field_name.endswith("_config")
+            and child_config is text_config
+        ):
             return {"": other_attn_implementation, field_name: "flex_attention"}
     return "flex_attention"
 
@@ -588,6 +595,7 @@ def _flex_support_anchor_class(model_class):
 
 def _modeling_module_is_interface_based(model_class):
     import sys
+
     module = sys.modules.get(getattr(model_class, "__module__", "") or "", None)
     if module is None:
         return False
