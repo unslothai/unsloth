@@ -246,7 +246,11 @@ def test_the_state_is_still_named_planned_flash_attn():
     import inspect
 
     source = inspect.getsource(inspect.unwrap(LlamaCppBackend.load_model))
-    assert "planned_flash_attn = _planned_flash_attn_state(" in source
+    # Through the reserve wrapper now, which only ever holds the planned reading DOWN where a
+    # no-flash respawn cannot be re-placed; the planner it wraps is still the thing that
+    # decides the state.
+    assert "planned_flash_attn = _reserved_flash_attn_state(" in source
+    assert "_planned_flash_attn_state(" in source
     assert "planned_flash_attn = False" not in source
 
 
@@ -442,3 +446,70 @@ class TestTheDowngradesRePlanTheAttention:
         assert getattr(passed["tensor_parallel"], "id", None) == "_current_tp"
         # And the stripped extras, read at call time rather than captured.
         assert getattr(call.args[0], "id", None) == "extra_args"
+
+
+class TestTheReserveWhenTheFitterIsOff:
+    """The planned state is what the first process runs with. The reserve has to survive the
+    respawn as well, and a user's own `--fit off` is what takes the re-placement away."""
+
+    def test_a_user_fit_off_keeps_the_conservative_reserve(self):
+        from core.inference.llama_cpp import _reserved_flash_attn_state
+
+        # The ordinary managed launch is unchanged: fitting is on, so a no-flash respawn is
+        # re-placed and there is nothing to hold back for.
+        assert _reserved_flash_attn_state(True, None, env = {}) is True
+        assert _reserved_flash_attn_state(True, ["--ctx-size", "4096"], env = {}) is True
+        # With the fitter off by the user's own argument, the respawn lands on the placement
+        # this reserve chose, and the padded, f16-floored V is what it will be holding.
+        assert _reserved_flash_attn_state(True, ["--fit", "off"], env = {}) is False
+        assert _reserved_flash_attn_state(True, ["--fit=off"], env = {}) is False
+        assert _reserved_flash_attn_state(True, None, env = {"LLAMA_ARG_FIT": "off"}) is False
+        # Last-wins, like every other flag: a later --fit on is the state that runs.
+        assert (
+            _reserved_flash_attn_state(True, ["--fit", "off", "--fit", "on"], env = {}) is True
+        )
+        assert (
+            _reserved_flash_attn_state(
+                True, ["--fit", "on"], env = {"LLAMA_ARG_FIT": "off"}
+            )
+            is True
+        )
+
+    def test_tensor_mode_keeps_its_answer(self):
+        """It cannot take the no-flash recovery at all: llama.cpp requires flash attention
+        under SPLIT_MODE_TENSOR, so there is no respawn to reserve for and pricing the padded
+        layout would refuse loads that fit."""
+        from core.inference.llama_cpp import _reserved_flash_attn_state
+
+        assert (
+            _reserved_flash_attn_state(
+                True, ["--fit", "off"], tensor_parallel = True, env = {}
+            )
+            is True
+        )
+        assert (
+            _reserved_flash_attn_state(
+                True, ["--fit", "off", "--split-mode", "tensor"], env = {}
+            )
+            is True
+        )
+
+    def test_a_false_plan_is_never_raised(self):
+        """This only ever holds a reading DOWN. A plan that already says no flash attention is
+        the conservative one."""
+        from core.inference.llama_cpp import _reserved_flash_attn_state
+
+        assert _reserved_flash_attn_state(False, ["--fit", "off"], env = {}) is False
+        assert _reserved_flash_attn_state(False, None, env = {}) is False
+
+    def test_the_load_reserves_through_it(self):
+        import inspect
+
+        from core.inference import llama_cpp as module
+
+        body = inspect.getsource(module.LlamaCppBackend.load_model)
+        assert "_reserved_flash_attn_state(" in body
+        # Both the first plan and every re-plan, or a downgrade would put the raw reading back.
+        assert body.count("_reserved_flash_attn_state(") == 2, body.count(
+            "_reserved_flash_attn_state("
+        )

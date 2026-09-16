@@ -4708,6 +4708,61 @@ def _planned_flash_attn_state(
     return _flash_attn_enabled_from_args(effective_args, default = True, env = env)
 
 
+def _user_fit_disabled(
+    extra_args: Optional[Iterable[str]] = None, *, env: Optional[Mapping[str, str]] = None
+) -> bool:
+    """Whether the USER has turned llama.cpp's fitter off, last-wins.
+
+    Unsloth's own ``--fit`` token is added before the extras and a retry rewrites that one, so
+    only a user's later value survives a re-place. Read the same way the launch reads it:
+    ``--fit off``, ``--fit=off`` or an inherited ``LLAMA_ARG_FIT`` that says the same thing.
+    """
+    values = [str(arg) for arg in extra_args] if extra_args else []
+    asked: Optional[str] = None
+    inherited = (os.environ if env is None else env).get("LLAMA_ARG_FIT")
+    if inherited is not None and str(inherited).strip():
+        asked = str(inherited).strip()
+    for i, raw in enumerate(values):
+        if _flag_name(raw) not in {"-fit", "--fit"}:
+            continue
+        _, eq, inline = raw.partition("=")
+        value = inline if eq else "on"
+        if not eq and i + 1 < len(values):
+            value = values[i + 1]
+        asked = value
+    return str(asked).strip().lower() in {"off", "0", "false", "no", "disabled"}
+
+
+def _reserved_flash_attn_state(
+    planned: bool,
+    extra_args: Optional[Iterable[str]] = None,
+    *,
+    tensor_parallel: bool = False,
+    env: Optional[Mapping[str, str]] = None,
+) -> bool:
+    """``planned``, held to the conservative reading where a respawn cannot be re-placed.
+
+    The planned state is what the FIRST process runs with, and it is the right answer for the
+    argv. It is not always the right answer for the RESERVE: a hard crash on a problematic
+    flash-attention kernel respawns with flash attention off, which pads V model-wide and
+    floors it at f16, and that respawn is normally re-placed by llama.cpp's fitter. A user's
+    own ``--fit off`` wins by last-arg over the token the retry rewrites, so there is no
+    re-placement to save it, and the larger cache lands on a placement chosen for the smaller
+    one -- an OOM at startup, repeatedly, on a total the estimate called safe.
+
+    Tensor mode is excluded because it cannot take that recovery at all: llama.cpp requires
+    flash attention under SPLIT_MODE_TENSOR, so there is no no-flash respawn to reserve for,
+    and pricing the padded layout there would refuse loads that fit.
+    """
+    if not planned:
+        return planned
+    if _effective_tensor_parallel(extra_args, tensor_parallel, env):
+        return planned
+    if _user_fit_disabled(extra_args, env = env):
+        return False
+    return planned
+
+
 def _asked_for_auto_flash_attn(
     extra_args: Optional[Iterable[str]] = None, *, env: Optional[Mapping[str, str]] = None
 ) -> bool:
@@ -22582,12 +22637,18 @@ class LlamaCppBackend:
                 # relaunch with: tensor mode cannot take that recovery (llama.cpp requires
                 # flash attention for SPLIT_MODE_TENSOR) and elsewhere the no-flash respawn
                 # goes back through _spawn_and_wait, which hands placement to --fit.
-                planned_flash_attn = _planned_flash_attn_state(
+                planned_flash_attn = _reserved_flash_attn_state(
+                    _planned_flash_attn_state(
+                        extra_args,
+                        planned_cache_types = _planned_cache_pair,
+                        supports_flash_attn = bool(
+                            server_caps.get("supports_flash_attn", True)
+                        ),
+                        # The toggle as it stands here; the helper resolves the extras and the
+                        # inherited env on top of it, exactly as the line below does.
+                        tensor_parallel = tensor_parallel,
+                    ),
                     extra_args,
-                    planned_cache_types = _planned_cache_pair,
-                    supports_flash_attn = bool(server_caps.get("supports_flash_attn", True)),
-                    # The toggle as it stands here; the helper resolves the extras and the
-                    # inherited env on top of it, exactly as the line below does.
                     tensor_parallel = tensor_parallel,
                 )
 
@@ -22600,10 +22661,16 @@ class LlamaCppBackend:
                     estimates priced after one would otherwise keep budgeting for an
                     unpadded V that a layer split with AUTO attention off does not get.
                     """
-                    return _planned_flash_attn_state(
+                    return _reserved_flash_attn_state(
+                        _planned_flash_attn_state(
+                            extra_args,
+                            planned_cache_types = _planned_cache_pair,
+                            supports_flash_attn = bool(
+                                server_caps.get("supports_flash_attn", True)
+                            ),
+                            tensor_parallel = _current_tp,
+                        ),
                         extra_args,
-                        planned_cache_types = _planned_cache_pair,
-                        supports_flash_attn = bool(server_caps.get("supports_flash_attn", True)),
                         tensor_parallel = _current_tp,
                     )
                 # A user --split-mode in extras last-wins-overrides the toggle, and
