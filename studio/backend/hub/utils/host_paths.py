@@ -70,6 +70,22 @@ HOST_PATH_LIST_FIELDS = frozenset(
 # is only redacted inside the models the routes name here, never by field name alone.
 HOST_PATH_AMBIGUOUS_FIELD = "path"
 
+# Conditionally a host path, decided by a SIBLING rather than by the route. ``base_model`` is
+# ``adapter_config.json``'s ``base_model_name_or_path`` verbatim: a Hub repo id for most
+# adapters, and an absolute path on this machine for one trained against a local base. It
+# cannot join HOST_PATH_SCALAR_FIELDS, which would blank a legitimate repo id on every LoRA
+# row and take away the thing a caller actually needs. The scan already writes which one it
+# is -- ``_base_model_source`` answers "local" only after resolving the value on this
+# filesystem -- so the pair decides it, and a row marked local is redacted like any other path.
+HOST_PATH_CONDITIONAL_FIELD = "base_model"
+HOST_PATH_CONDITIONAL_SOURCE_FIELD = "base_model_source"
+HOST_PATH_CONDITIONAL_SOURCE_LOCAL = "local"
+
+
+def _conditional_path_is_local(payload: Mapping) -> bool:
+    """Whether this mapping's ``base_model`` is a host path rather than a repo id."""
+    return payload.get(HOST_PATH_CONDITIONAL_SOURCE_FIELD) == HOST_PATH_CONDITIONAL_SOURCE_LOCAL
+
 # Sibling written beside a redacted scalar, so a client keeps the identity the path gave it.
 CACHE_REFERENCE_FIELD = "cache_ref"
 
@@ -155,9 +171,13 @@ def _redact(payload: Any, *, redact_ambiguous_path: bool) -> Any:
     if isinstance(payload, Mapping):
         out: dict[Any, Any] = {}
         reference: Optional[str] = None
+        # Read before the walk: the sibling that decides it may come after it in the dump.
+        base_model_is_local = _conditional_path_is_local(payload)
         for key, value in payload.items():
-            if key in HOST_PATH_SCALAR_FIELDS or (
-                redact_ambiguous_path and key == HOST_PATH_AMBIGUOUS_FIELD
+            if (
+                key in HOST_PATH_SCALAR_FIELDS
+                or (redact_ambiguous_path and key == HOST_PATH_AMBIGUOUS_FIELD)
+                or (base_model_is_local and key == HOST_PATH_CONDITIONAL_FIELD)
             ):
                 # Only the row-level cache directory earns a reference: one per scan root would
                 # say "these two rows came from the same root", which is host layout again.
@@ -201,12 +221,15 @@ def _find_leak(
     if dumped is not None:
         return _find_leak(dumped, needles, ambiguous_is_path = ambiguous_is_path, ignore = ignore)
     if isinstance(payload, Mapping):
+        base_model_is_local = _conditional_path_is_local(payload)
         for key, value in payload.items():
             if key in ignore:
                 continue
             text = _as_text(value)
-            is_path_field = key in HOST_PATH_SCALAR_FIELDS or (
-                ambiguous_is_path and key == HOST_PATH_AMBIGUOUS_FIELD
+            is_path_field = (
+                key in HOST_PATH_SCALAR_FIELDS
+                or (ambiguous_is_path and key == HOST_PATH_AMBIGUOUS_FIELD)
+                or (base_model_is_local and key == HOST_PATH_CONDITIONAL_FIELD)
             )
             if is_path_field and text and _looks_absolute(text):
                 return f"{key}={text}"

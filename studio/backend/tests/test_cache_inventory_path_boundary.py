@@ -530,3 +530,67 @@ def test_a_browser_session_keeps_every_path_and_gains_nothing():
     same = host_paths.redact_host_paths(row, via_api_key = False)
     assert same is row
     assert host_paths.CACHE_REFERENCE_FIELD not in same
+
+
+def test_a_local_adapter_base_model_is_redacted_but_a_repo_id_is_kept():
+    """`base_model` is a path for one adapter and a repo id for the next.
+
+    It carries `adapter_config.json`'s `base_model_name_or_path` verbatim. For most LoRAs
+    that is a Hub repo id, which a caller needs and which must survive. For one trained
+    against a local base it is an absolute path to a SEPARATE directory on this machine, and
+    an API-key request to `/api/hub/local` disclosed it: `base_model` is not in
+    HOST_PATH_SCALAR_FIELDS, and it could not simply be added there without blanking the
+    repo id on every other row. The sibling the scan already writes decides it --
+    `_base_model_source` answers "local" only after resolving the value on this filesystem.
+    """
+    from hub.utils.host_paths import redact_inventory_host_paths
+
+    payload = {
+        "models": [
+            {
+                "id": "my-lora",
+                "path": "/home/op/models/my-lora",
+                "base_model": "/home/op/models/Llama-3.1-8B",
+                "base_model_source": "local",
+            },
+            {
+                "id": "other-lora",
+                "path": "/home/op/models/other-lora",
+                "base_model": "meta-llama/Llama-3.1-8B",
+                "base_model_source": "huggingface",
+            },
+        ]
+    }
+
+    via_key = redact_inventory_host_paths(payload, via_api_key = True)["models"]
+    assert via_key[0]["base_model"] == "", "a local base-model PATH must not reach an API key"
+    assert via_key[0]["base_model_source"] == "local", "the source itself is not a path"
+    assert via_key[1]["base_model"] == "meta-llama/Llama-3.1-8B", (
+        "a Hub repo id is what the caller asked for and must survive redaction"
+    )
+
+    # The browser session sees the machine it runs on, as everywhere else in this file.
+    session = redact_inventory_host_paths(payload, via_api_key = False)["models"]
+    assert session[0]["base_model"] == "/home/op/models/Llama-3.1-8B"
+
+
+def test_the_leak_finder_knows_a_local_base_model_is_a_path():
+    """The drift gate has to see it too, or the next field like this is caught by nobody."""
+    from hub.utils.host_paths import response_leaks_host_path
+
+    leaky = {
+        "models": [
+            {"id": "my-lora", "base_model": "/home/op/models/Llama-3.1-8B",
+             "base_model_source": "local"},
+        ]
+    }
+    assert response_leaks_host_path(leaky, ["/home/op"]) is not None
+
+    # A repo id in the same field is not a leak, even though the root string is absent.
+    clean = {
+        "models": [
+            {"id": "other-lora", "base_model": "meta-llama/Llama-3.1-8B",
+             "base_model_source": "huggingface"},
+        ]
+    }
+    assert response_leaks_host_path(clean, ["/home/op"]) is None
