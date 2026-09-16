@@ -2745,6 +2745,22 @@ def _deferred_error_body(status_code: int, detail) -> bytes:
     return json.dumps(body).encode()
 
 
+def _handle_restored_http_exception(exc: HTTPException) -> HTTPException:
+    """The same refusal with every resolved inventory path put back as the caller's handle.
+
+    A new exception rather than a mutated one: `detail` is the only field this touches, and
+    rebuilding keeps the status code and headers exactly as raised.
+    """
+    from hub.utils.host_paths import restore_inventory_handles
+
+    detail = restore_inventory_handles(exc.detail)
+    if detail == exc.detail:
+        return exc
+    return HTTPException(
+        status_code = exc.status_code, detail = detail, headers = exc.headers
+    )
+
+
 async def _tunnel_safe_json(coro, *, label: str):
     """Await ``coro``, padding the response body if it outruns the tunnel timer.
 
@@ -2766,10 +2782,15 @@ async def _tunnel_safe_json(coro, *, label: str):
     task.add_done_callback(lambda t: t.cancelled() or t.exception())
     done, _ = await asyncio.wait({task}, timeout = _TUNNEL_KEEPALIVE_AFTER_S)
     if done:
-        # `.result()` re-raises exactly as an un-wrapped await would; the restoration only
-        # sees a value. Here rather than at each `return LoadResponse(...)` because this is
-        # the one funnel every tunnelled answer passes through, padded body included.
-        return restore_inventory_handles(task.result())
+        # Here rather than at each `return LoadResponse(...)` because this is the one funnel
+        # every tunnelled answer passes through, padded body included.
+        try:
+            return restore_inventory_handles(task.result())
+        except HTTPException as exc:
+            # And the failures too: `Invalid model identifier: <path>` names the thing the
+            # caller asked for, which is the same disclosure as an answer naming it. Rebuilt
+            # rather than mutated, so nothing else about the exception changes.
+            raise _handle_restored_http_exception(exc) from None
 
     logger.info(
         f"{label} exceeded {_TUNNEL_KEEPALIVE_AFTER_S:.0f}s; "
@@ -2786,7 +2807,9 @@ async def _tunnel_safe_json(coro, *, label: str):
                 payload = task.result()
             except HTTPException as exc:
                 logger.info(f"{label} failed with {exc.status_code} after the response committed")
-                yield _deferred_error_body(exc.status_code, exc.detail)
+                yield _deferred_error_body(
+                    exc.status_code, restore_inventory_handles(exc.detail)
+                )
             except Exception as exc:
                 logger.exception(f"{label} failed after the response was committed")
                 yield _deferred_error_body(500, f"{type(exc).__name__}: {exc}")

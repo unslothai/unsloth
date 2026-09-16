@@ -1104,6 +1104,46 @@ def test_the_load_and_validate_answers_go_through_the_restoration():
 
     source = inspect.getsource(inference_routes)
     assert "restore_inventory_handles(task.result())" in source
+    # The failures too: `.result()` re-raises before any restoration sees a value, and
+    # `Invalid model identifier: <path>` names the thing the caller asked for.
+    assert "_handle_restored_http_exception(exc)" in source
+    assert "restore_inventory_handles(exc.detail)" in source
     assert "restore_inventory_handles(ValidateModelResponse(" in source
     assert "jsonable_encoder(restore_inventory_handles(payload))" in source
     assert "restore_inventory_handles(redact_native_paths(str(e)))" in source
+
+
+def test_a_refusal_names_the_handle_the_caller_sent(monkeypatch):
+    """`Invalid model identifier: <path>` is the same disclosure as an answer naming it."""
+    from fastapi import HTTPException
+    from routes import inference as inference_routes
+    from models.inference import LoadRequest
+
+    path = f"{HOST_ROOT}/my models/Broken-1B"
+    reference = host_paths.cache_reference(path)
+    assert LoadRequest(model_path = reference).model_path == path
+
+    raised = HTTPException(status_code = 400, detail = f"Invalid model identifier: {path}")
+    restored = inference_routes._handle_restored_http_exception(raised)
+    assert restored.status_code == 400
+    assert restored.detail == f"Invalid model identifier: {reference}"
+    assert HOST_ROOT not in restored.detail
+
+    # A refusal that never named a resolved handle is returned as it was raised.
+    untouched = HTTPException(status_code = 409, detail = "A model is already loading")
+    assert inference_routes._handle_restored_http_exception(untouched) is untouched
+
+
+def test_the_reference_that_loaded_a_model_can_unload_it():
+    """The reverse of the load. A caller that only ever saw the reference has nothing else
+    to unload with, and the resident model is keyed on the path: without the resolution the
+    unload matched nothing, both backend checks no-opped, and the model stayed resident
+    holding its GPU while the caller was told it had gone."""
+    from models.inference import UnloadRequest
+
+    path = f"{HOST_ROOT}/my models/Llama-3.2-1B"
+    reference = host_paths.cache_reference(path)
+    assert UnloadRequest(model_path = reference).model_path == path
+    assert UnloadRequest(model_path = "unsloth/Llama-3.2-1B").model_path == (
+        "unsloth/Llama-3.2-1B"
+    )

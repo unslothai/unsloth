@@ -426,6 +426,12 @@ class UnloadRequest(BaseModel):
             "unload takes away the llama-server they are decoding on."
         ),
     )
+    # The same resolution the load side does, and for the reverse of the same reason: a
+    # caller that loaded a redacted row by reference has only that reference to unload it
+    # with, and the resident model is keyed on the path. Without this the unload matched
+    # nothing, both backend checks no-opped, and the model stayed resident holding its GPU
+    # while the caller was told it had gone.
+    _resolve_the_handle = field_validator("model_path")(resolve_inventory_handle)
 
 
 class SearchImagesLookupRequest(BaseModel):
