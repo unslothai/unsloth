@@ -781,12 +781,14 @@ def safe_fetch_remote_image_sync(
     max_bytes: int = _GEMINI_REMOTE_IMAGE_MAX_BYTES,
     label: str = "Remote image fetch",
     deadline: Optional[float] = None,
+    require_image_content_type: bool = True,
 ) -> Optional[tuple[str, str]]:
     """Fetch an HTTPS image through a validated, pinned public IP.
 
     Redirects are revalidated and the response is capped by ``max_bytes``. ``deadline`` is a
-    ``time.monotonic`` cutoff for the whole fetch. All failures return ``None`` so callers do
-    not expose details about the host network.
+    ``time.monotonic`` cutoff for the whole fetch. A caller that decodes the bytes itself can
+    pass ``require_image_content_type=False`` to accept any declared type as ``fallback_mime``.
+    All failures return ``None`` so callers do not expose details about the host network.
     """
     import http.client
     import urllib.error
@@ -947,7 +949,9 @@ def safe_fetch_remote_image_sync(
                 logger.info(f"{label}: status=%s host=%s", status, current_host)
                 return None
             _hdr_mime = (resp.headers.get("content-type") or "").split(";")[0].strip().lower()
-            # Declared non-image MIME is refused; missing MIME uses the caller's.
+            # A declared non-image MIME is refused unless the caller decodes the bytes itself.
+            if _hdr_mime and not _hdr_mime.startswith("image/") and not require_image_content_type:
+                _hdr_mime = ""
             if _hdr_mime and not _hdr_mime.startswith("image/"):
                 logger.info(
                     f"{label}: non-image content-type=%s host=%s",

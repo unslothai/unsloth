@@ -507,6 +507,67 @@ class TestFetcher:
 
         assert sent == ["https://93.184.216.34/caf%C3%A9%201.png?q=%C3%A9"]
 
+    @pytest.mark.parametrize("require,expected", [(True, None), (False, "image/png")])
+    def test_a_generic_content_type_is_left_to_callers_that_decode(
+        self, monkeypatch, require, expected
+    ):
+        _resolve_publicly(monkeypatch)
+        body = base64.b64decode(_webp_b64())
+
+        class _Response:
+            status = 200
+            headers = {"content-type": "application/octet-stream"}
+            _body = BytesIO(body)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_a):
+                return False
+
+            def read(self, n = -1):
+                return self._body.read(n)
+
+        class _Opener:
+            def open(
+                self,
+                _req,
+                timeout = None,
+            ):
+                return _Response()
+
+        monkeypatch.setattr("urllib.request.build_opener", lambda *_a, **_k: _Opener())
+        result = external_provider.safe_fetch_remote_image_sync(
+            "https://images.example/object",
+            "image/png",
+            require_image_content_type = require,
+        )
+
+        assert (result and result[0]) == expected
+
+    def test_the_llama_server_path_decodes_an_octet_stream_image(self, monkeypatch):
+        seen = {}
+
+        def _fetch(url, fallback_mime, **kwargs):
+            seen.update(kwargs)
+            return (
+                None
+                if kwargs.get("require_image_content_type", True)
+                else (fallback_mime, _webp_b64())
+            )
+
+        monkeypatch.setattr(external_provider, "safe_fetch_remote_image_sync", _fetch)
+        backend = _VisionGguf()
+        r = _client(monkeypatch, backend).post(
+            "/v1/chat/completions", json = _chat_body("https://images.example/object")
+        )
+
+        assert r.status_code == 200, r.text
+        assert seen["require_image_content_type"] is False
+        assert _image_urls(backend.dispatched[-1]["messages"])[0].startswith(
+            "data:image/png;base64,"
+        )
+
     def test_an_unencodable_path_is_a_400(self, monkeypatch):
         def _never(*_a, **_k):
             raise AssertionError("an unencodable URL must not be dialled")

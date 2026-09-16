@@ -31820,13 +31820,14 @@ def _inline_remote_image_url(
     rejection = _remote_image_scheme_rejection(scheme)
     if rejection is not None:
         raise HTTPException(status_code = rejection[0], detail = rejection[1])
-    # Missing content types are safe because the caller decodes and re-encodes the image.
+    # llama-server never read the content type, and the bytes are decoded and re-encoded here.
     fetched = safe_fetch_remote_image_sync(
         url,
         "image/png",
         max_bytes = min(_REMOTE_IMAGE_MAX_BYTES, budget_bytes),
         label = "llama-server image fetch",
         deadline = deadline,
+        require_image_content_type = False,
     )
     if fetched is None:
         raise HTTPException(status_code = 400, detail = _REMOTE_IMAGE_FETCH_REFUSAL)
