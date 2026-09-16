@@ -6575,6 +6575,50 @@ def _write_direct_stream_key(key: str) -> "Path":
     return path
 
 
+_DEVICE_ORDINAL_RE = re.compile(r"\s*(?:CUDA|ROCm|Vulkan|SYCL|MUSA)(\d+)\s*", re.IGNORECASE)
+
+
+def _device_selection_is_a_permutation(
+    extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]], visible: set
+) -> bool:
+    """Whether a surviving device selection names exactly ``visible``, reordered.
+
+    Both spellings, because llama.cpp reads LLAMA_ARG_DEVICE before argv: a value that
+    survives in either place owns placement just as much, and the guard this feeds also
+    gates the env scrub. A value naming anything else -- fewer cards, a card outside the
+    set, or a spelling we cannot parse -- is not a reorder and must not be passed through.
+    """
+    value = _extra_args_main_device(extra_args) if extra_args else None
+    if value is None and env is not None:
+        value = env.get("LLAMA_ARG_DEVICE")
+    if not value or not str(value).strip():
+        return False
+    ids = set()
+    for token in str(value).split(","):
+        match = _DEVICE_ORDINAL_RE.fullmatch(token)
+        if not match:
+            return False
+        ids.add(int(match.group(1)))
+    return ids == set(visible)
+
+
+def _extra_args_have_tensor_split(
+    extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]]
+) -> bool:
+    """PRESENCE of a pass-through split, parseable or not, in argv or the CHILD env.
+
+    _extra_args_tensor_split returns None for a value it cannot parse, and the repointer
+    does no numeric validation and takes the LAST occurrence, so a parse-check veto lets
+    the repointer permute a user share it exists to protect. Reads the child env rather
+    than os.environ because LLAMA_ARG_TENSOR_SPLIT is scrubbed before this point, and a
+    value the child never receives must not suppress the reorder.
+    """
+    for token in extra_args or ():
+        if str(token).split("=", 1)[0] in ("--tensor-split", "-ts", "--tensor_split"):
+            return True
+    return bool(str((env or {}).get("LLAMA_ARG_TENSOR_SPLIT", "")).strip())
+
+
 class LlamaCppBackend:
     """Manages a llama-server subprocess for GGUF model inference.
 
@@ -10934,6 +10978,8 @@ class LlamaCppBackend:
         gpu_ids,
         *,
         is_vulkan: Optional[bool] = None,
+        extra_args: Optional[Iterable[str]] = None,
+        env: Optional[Mapping[str, str]] = None,
     ) -> bool:
         """Whether a ``gpu_ids`` pick is narrow enough to overrule a user ``--device``.
 
@@ -10966,7 +11012,16 @@ class LlamaCppBackend:
         # and a --main-gpu naming the card that is not present still has to go.
         if len(visible) < 2:
             return True
-        return not picked.issuperset(visible)
+        # Equality, not issuperset: a pick naming a card that is not visible is a stale
+        # selection, and relinquishing placement to it would strip nothing while the
+        # planner still budgets the cards that ARE visible.
+        if picked != visible:
+            return True
+        # The pick covers the visible set, so it narrows nothing -- but only a device
+        # value that REORDERS that set is safe to pass through. One that narrows it
+        # (--device CUDA0 of two) contradicts a plan already budgeted and split across
+        # both cards, and llama.cpp reads it last, so the child would run on one.
+        return not _device_selection_is_a_permutation(extra_args, env, visible)
 
     @staticmethod
     def _strip_device_extra_args(extra_args):
@@ -21063,7 +21118,10 @@ class LlamaCppBackend:
             # Once, and reused everywhere the strip is asked about: the reload
             # comparator has to reach the same answer as the argv it compares against.
             _gpu_ids_own_device_flags = self._gpu_ids_own_placement(
-                gpu_ids, is_vulkan = is_vulkan_backend
+                gpu_ids,
+                is_vulkan = is_vulkan_backend,
+                extra_args = extra_args,
+                env = os.environ,
             )
             _vulkan_ordinal_pin = (
                 is_vulkan_backend and bool(gpu_ids) and gpu_ids_are_vulkan_ordinals is not False
@@ -24885,7 +24943,9 @@ class LlamaCppBackend:
                 # Speculative decoding. See _build_speculative_flags for the
                 # mode resolution, benchmarks, and llama.cpp references.
                 _vulkan_pin_ids = gpu_indices if gpu_indices is not None else (gpu_ids or None)
-                _draft_device = _extra_args_main_device(extra_args) if gpu_ids is None else None
+                _draft_device = (
+                    _extra_args_main_device(extra_args) if not _gpu_ids_own_device_flags else None
+                )
                 if _draft_device is None and is_vulkan_backend and _vulkan_pin_ids:
                     _draft_device = ",".join(f"Vulkan{i}" for i in _vulkan_pin_ids)
                 launch_mtp_draft_path = self._resolve_launch_mtp_path(
@@ -26329,7 +26389,7 @@ class LlamaCppBackend:
                         # A user --tensor-split is positional over the order they
                         # expected, so reordering under it re-weights the wrong cards.
                         # Theirs to own: decline instead of rewriting it.
-                        if _extra_args_tensor_split(extra_args, os.environ) is not None:
+                        if _extra_args_have_tensor_split(extra_args, env):
                             logger.info(
                                 "Keeping ascending GPU order: a pass-through "
                                 "--tensor-split is positional over it."
