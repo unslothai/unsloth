@@ -1159,18 +1159,12 @@ jobs:
           Write-Host "install.ps1 -> $($sig.Status) $($sig.SignerCertificate.Subject)"
           if ($sig.Status -ne 'Valid') { Write-Host "::error::install.ps1 is $($sig.Status) after signing"; exit 1 }
 
-      # The other two shipped PowerShell scripts are not bundle resources, so a user only ever
-      # gets them from a clone or from raw.githubusercontent, both unsigned. Sign copies here and
-      # publish them as release assets, giving every .ps1 we ship a signed distribution channel.
-      #
-      # Copies, not the working tree: install.ps1 has to be signed in place because the bundler
-      # packs it, but signing setup.ps1 or uninstall.ps1 in place would append a signature block
-      # to files that later steps and tests still read.
-      #
-      # .sh and .bat cannot carry an Authenticode signature. There is no subject interface package
-      # for either, and Windows performs no signature check on a batch file at all, so the most
-      # that can be done for those is a published digest. They are staged alongside so SHA256SUMS
-      # covers exactly the bytes the release serves.
+      # setup.ps1 and uninstall.ps1 are not bundle resources, so users only get them unsigned from
+      # a clone or raw.githubusercontent. Sign copies here and publish them as release assets.
+      # Copies, because signing them in place would append a signature block to files later steps
+      # still read; install.ps1 is the exception, signed in place above because the bundler packs it.
+      # .sh and .bat cannot be Authenticode signed (no subject interface package, and Windows never
+      # checks a batch file), so they get a published digest instead.
       - name: Sign the shipped scripts for release
         if: matrix.platform == 'windows-latest'
         shell: pwsh
@@ -1202,8 +1196,8 @@ jobs:
               }
           }
 
-          # Verify every staged .ps1, including the one signed by the earlier step, so a release
-          # can never carry a script whose signature does not check out on the machine that made it.
+          # Verify every staged .ps1, the earlier one included: a release must never carry a
+          # script whose signature does not check out on the machine that produced it.
           foreach ($file in (Get-ChildItem -LiteralPath $stage -Filter '*.ps1')) {
               $sig = Get-AuthenticodeSignature $file.FullName
               Write-Host "$($file.Name) -> $($sig.Status) $($sig.SignerCertificate.Subject)"
@@ -1224,7 +1218,7 @@ jobs:
               Copy-Item -LiteralPath (Resolve-Path $item.Source).Path -Destination (Join-Path $stage $item.Name)
           }
 
-          # Two spaces then the name, so `sha256sum -c SHA256SUMS.txt` accepts the file as is.
+          # Two spaces then the name, the form `sha256sum -c` accepts unmodified.
           $sums = foreach ($file in (Get-ChildItem -LiteralPath $stage -File | Sort-Object Name)) {
               "{0}  {1}" -f (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $file.Name
           }
@@ -2095,10 +2089,9 @@ jobs:
           set -euo pipefail
           gh release upload "$DESKTOP_RELEASE_TAG" "$RUNNER_TEMP/latest.json"
 
-      # After the manifest, not before it. The scripts are secondary to the update contract, so a
-      # failure here must not leave a release carrying bundles with no latest.json, which is the
-      # state that stops every updater client. Its own directory too: the asset set validated
-      # earlier is the bundle contract and must keep matching it exactly.
+      # After the manifest: the scripts are secondary to the update contract, and a failure here
+      # must not leave bundles published with no latest.json, the state that stops every updater
+      # client. Own directory too, since the asset set validated earlier is the bundle contract.
       - name: Download signed scripts
         if: ${{ !inputs.draft }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
