@@ -356,6 +356,20 @@ def test_grpo_trains_on_cpu_through_the_patched_batch_sampler(tmp_path):
 
     from unsloth.models._utils import patch_gradient_accumulation_fix
 
+    # patch_gradient_accumulation_fix mutates the Trainer CLASS, and in the grpo-fake-run
+    # workflow this file shares a pytest process with
+    # test_trl_loss_normalization_contract.py, which reads Trainer.get_batch_samples and
+    # Trainer.training_step to check what UPSTREAM transformers returns. Leaving either one
+    # patched makes that file inspect Unsloth's wrapper and call it transformers, so it can
+    # pass while the upstream shape this patcher depends on has changed, or skip because the
+    # generated source is unavailable.
+    #
+    # Snapshot the whole class dict rather than naming attributes: the patcher replaces
+    # training_step as well as get_batch_samples and wraps __init__ and compute_loss, and a
+    # hand-written list of names silently falls behind the next one it touches. monkeypatch
+    # has that same problem, since it also needs the names up front.
+    trainer_attributes_before = dict(Trainer.__dict__)
+
     patch_gradient_accumulation_fix(Trainer)
     assert Trainer.get_batch_samples.__name__ == "_unsloth_get_batch_samples", (
         "the batch sampler under test was never installed; this canary would pass against "
@@ -403,7 +417,18 @@ def test_grpo_trains_on_cpu_through_the_patched_batch_sampler(tmp_path):
             train_dataset = ds,
         ).train()
     finally:
-        Trainer.get_batch_samples = patched
+        for name in [n for n in Trainer.__dict__ if n not in trainer_attributes_before]:
+            delattr(Trainer, name)
+        for name, value in trainer_attributes_before.items():
+            if Trainer.__dict__.get(name) is not value:
+                setattr(Trainer, name, value)
+
+    # Prove the cleanup, rather than trusting it. Identity comparison, so a re-wrapped
+    # method that merely looks the same still fails.
+    assert dict(Trainer.__dict__) == trainer_attributes_before, (
+        "this canary left a patched attribute on the Trainer class, so any later test in "
+        "the same process that reads upstream's own methods is reading Unsloth's instead"
+    )
 
     assert seen["calls"] > 0, "the patched batch sampler was never entered"
     # The shape that broke: TRL's GRPO collator is the identity, so a batch is a LIST of
