@@ -1007,6 +1007,67 @@ def test_a_file_claimed_by_two_providers_is_settled_by_torchs_backend(monkeypatc
         import_fixes._installed_version.cache_clear()
 
 
+@pytest.mark.parametrize(
+    "order",
+    [("pytorch-triton-xpu", "triton-xpu"), ("triton-xpu", "pytorch-triton-xpu")],
+    ids = ["stale-first", "current-first"],
+)
+def test_a_rename_leftover_is_settled_by_what_torch_requires(monkeypatch, tmp_path, order):
+    """Both spellings name the backend, so the family rule cannot separate them.
+
+    An upgrade to a torch that installs `triton-xpu` leaves `pytorch-triton-xpu`'s
+    dist-info behind, both RECORDs claim the driver, and recommending the stale one would
+    install it over the provider this torch actually requires. torch declares that name
+    itself, which is the only record that settles it.
+    """
+    driver = tmp_path / "backends" / "intel" / "driver.c"
+    driver.parent.mkdir(parents = True)
+    driver.write_text("x", encoding = "utf-8")
+
+    import importlib.metadata as metadata
+
+    torch_module = types.ModuleType("torch")
+    torch_module.__version__ = "2.10.0+xpu"
+    monkeypatch.setitem(sys.modules, "torch", torch_module)
+    monkeypatch.setattr(
+        metadata,
+        "requires",
+        lambda name: ['triton-xpu==3.7.1; platform_system == "Linux"'] if name == "torch" else [],
+    )
+    monkeypatch.setattr(metadata, "packages_distributions", lambda: {"triton": list(order)})
+    monkeypatch.setattr(
+        metadata,
+        "distribution",
+        _fake_distribution({name: [str(driver)] for name in order}),
+    )
+    monkeypatch.setattr(import_fixes, "importlib_version", lambda name: "3.7.1")
+    import_fixes._installed_version.cache_clear()
+    try:
+        assert import_fixes._triton_distribution(str(driver))[0] == "triton-xpu"
+    finally:
+        import_fixes._installed_version.cache_clear()
+
+
+def test_the_declared_requirement_is_read_by_distribution_name(monkeypatch):
+    """The names are compared PEP 503 normalised, so an underscore spelling in torch's
+    own metadata still matches the dist-info name, and a non-Triton requirement is not
+    collected."""
+    import importlib.metadata as metadata
+
+    monkeypatch.setattr(
+        metadata,
+        "requires",
+        lambda name: [
+            "filelock",
+            "pytorch_triton_xpu==3.7.1; platform_system == \"Linux\"",
+            "sympy>=1.13.3",
+        ],
+    )
+    assert import_fixes._torch_required_triton_distributions() == frozenset(
+        {"pytorch-triton-xpu"}
+    )
+
+
 def test_two_claimants_a_cuda_torch_cannot_separate_name_the_generic_one(monkeypatch, tmp_path):
     """NEGATIVE CONTROL: with no accelerator in torch's tag there is no accelerator to
     preserve, so the generic provider is the answer rather than whichever came first."""

@@ -2237,6 +2237,32 @@ _TRITON_PROVIDERS = (
 )
 
 
+def _canonical_distribution(name):
+    """PEP 503 normalised, so `pytorch_triton_xpu` and `pytorch-triton-xpu` are one name."""
+    return re.sub(r"[-_.]+", "-", str(name)).lower()
+
+
+def _torch_required_triton_distributions():
+    """The Triton distributions the INSTALLED torch declares it needs, normalised.
+
+    torch pins its Triton by name as well as version (`triton~=3.8.0`,
+    `pytorch-triton-xpu==...`), so when a rename leaves the old dist-info in place beside
+    the new one this is the only record that says which of the two belongs to this torch.
+    Empty when torch declares none, or when its metadata cannot be read at all.
+    """
+    try:
+        from importlib.metadata import requires as _requires
+        declared = _requires("torch") or ()
+    except Exception:
+        return frozenset()
+    found = set()
+    for requirement in declared:
+        name = re.split(r"[\s;\[<>=!~(]", str(requirement).strip(), maxsplit = 1)[0]
+        if "triton" in name.lower():
+            found.add(_canonical_distribution(name))
+    return frozenset(found)
+
+
 def _distribution_owning_path(names, path):
     """The distribution among `names` whose installed file list contains `path`, or None.
 
@@ -2273,16 +2299,24 @@ def _distribution_owning_path(names, path):
     if not claimants:
         return None
     # Coexisting providers can both RECORD the same file, and then the first entry is
-    # nothing but ordering. torch's own backend is the tiebreak that matters, because the
-    # harmful answer is always the one that installs a CUDA build over an accelerator one:
-    # on an XPU or ROCm torch the accelerator provider wins, and otherwise the generic one
-    # does. A claimant list that neither rule picks out is genuinely ambiguous, and no
-    # answer is better than a guess that may name the wrong wheel.
+    # nothing but ordering. Three tiebreaks, most authoritative first.
+    #
+    # 1. The distribution torch itself requires. A renamed provider leaves the old
+    #    dist-info behind (`pytorch-triton-xpu` beside `triton-xpu` after an upgrade), so
+    #    both claim the file and both name the backend; only torch says which one belongs
+    #    to the torch that is installed.
+    required = _torch_required_triton_distributions()
+    named = [name for name in claimants if _canonical_distribution(name) in required]
+    if len(named) == 1:
+        return named[0]
+    # 2. Failing that, torch's backend family, because the harmful answer is always the one
+    #    that installs a CUDA build over an accelerator one.
     local = _torch_local_tag(getattr(sys.modules.get("torch"), "__version__", None)).lower()
     for family in ("xpu", "rocm"):
         if family in local:
             matches = [name for name in claimants if family in name.lower()]
             return matches[0] if len(matches) == 1 else None
+    # 3. And with no accelerator to preserve, the generic provider.
     generic = [name for name in claimants if name.lower() == "triton"]
     return generic[0] if len(generic) == 1 else None
 
