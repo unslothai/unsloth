@@ -62,9 +62,9 @@ export const ja = {
     announceMoveFailed: "移動前にキューが変更されました。再試行してください。",
     announceDragReset: "キューが変更されました。残りのメッセージをもう一度ドラッグして並べ替えてください。",
     editingHint: "メッセージを編集中",
-    queueingOffHint: "応答中に送信した新しいメッセージは、その応答を停止して次に実行されます。",
-    queueingOnHint: "応答中に送信した新しいメッセージは順番待ちになり、順に実行されます。",
-    queueingHintShared: "キュー内のメッセージはそのまま残ります。この設定でキューが一時停止または再開することはありません。",
+    queueingOffHint: "新しいメッセージは現在の応答を停止して次に実行されます。",
+    queueingOnHint: "新しいメッセージは順番待ちになり、順に実行されます。",
+    queueingHintShared: "キュー内のメッセージは保持されます。",
   },
   picker: {
     onDevice: "デバイス上",

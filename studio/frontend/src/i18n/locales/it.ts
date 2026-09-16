@@ -58,9 +58,9 @@ export const it = {
     announceMoveFailed: "La coda è cambiata prima che questo messaggio potesse essere spostato. Riprova.",
     announceDragReset: "La coda è cambiata. Trascina di nuovo per riordinare i messaggi rimanenti.",
     editingHint: "Modifica del messaggio",
-    queueingOffHint: "I nuovi messaggi inviati durante una risposta interrompono quella risposta e vengono eseguiti subito dopo.",
-    queueingOnHint: "I nuovi messaggi inviati durante una risposta restano in attesa e vengono eseguiti in ordine.",
-    queueingHintShared: "I messaggi già in coda vengono mantenuti; questo non mette in pausa né riprende la coda.",
+    queueingOffHint: "I nuovi messaggi interrompono la risposta corrente e vengono eseguiti subito dopo.",
+    queueingOnHint: "I nuovi messaggi attendono il turno e vengono eseguiti in ordine.",
+    queueingHintShared: "I messaggi in coda vengono mantenuti.",
   },
   common: {
     cancel: "Annulla",

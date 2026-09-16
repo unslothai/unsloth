@@ -61,9 +61,9 @@ export const ko = {
     announceMoveFailed: "옮기기 전에 대기열이 변경되었습니다. 다시 시도하세요.",
     announceDragReset: "대기열이 변경되었습니다. 남은 메시지를 다시 드래그해 순서를 바꾸세요.",
     editingHint: "메시지 편집 중",
-    queueingOffHint: "응답 중에 보낸 새 메시지는 그 응답을 중지하고 다음에 실행됩니다.",
-    queueingOnHint: "응답 중에 보낸 새 메시지는 대기열에서 순서대로 실행됩니다.",
-    queueingHintShared: "대기 중인 메시지는 그대로 유지되며, 이 설정은 대기열을 일시 중지하거나 재개하지 않습니다.",
+    queueingOffHint: "새 메시지가 현재 응답을 중지하고 다음에 실행됩니다.",
+    queueingOnHint: "새 메시지는 순서를 기다렸다가 차례로 실행됩니다.",
+    queueingHintShared: "대기 중인 메시지는 유지됩니다.",
   },
   picker: {
     onDevice: "기기",

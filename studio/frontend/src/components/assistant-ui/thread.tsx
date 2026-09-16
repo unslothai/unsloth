@@ -323,7 +323,6 @@ import {
   ChevronRightIcon,
   Columns2Icon,
   SlidersHorizontalIcon,
-  CornerUpRightIcon,
   FastForwardIcon,
   GitBranchIcon,
   GlobeIcon,
@@ -6861,11 +6860,7 @@ const ComposerRightControls: FC<{
               className="aui-composer-send ml-1.5 size-9 rounded-full"
               aria-label={followUpLabel}
             >
-              {followUpBehavior === "steer" ? (
-                <CornerUpRightIcon className="size-[21px] stroke-2" />
-              ) : (
-                <ArrowUpIcon className="unsloth-send-icon aui-composer-send-icon size-[21px] stroke-2" />
-              )}
+              <ArrowUpIcon className="unsloth-send-icon aui-composer-send-icon size-[21px] stroke-2" />
             </TooltipIconButton>
           )}
         </AuiIf>
@@ -6916,11 +6911,7 @@ const ComposerRightControls: FC<{
               className="aui-composer-send size-9 rounded-full"
               aria-label={followUpLabel}
             >
-              {followUpBehavior === "steer" ? (
-                <CornerUpRightIcon className="size-[21px] stroke-2" />
-              ) : (
-                <ArrowUpIcon className="unsloth-send-icon aui-composer-send-icon size-[21px] stroke-2" />
-              )}
+              <ArrowUpIcon className="unsloth-send-icon aui-composer-send-icon size-[21px] stroke-2" />
             </TooltipIconButton>
             )}
           </div>

@@ -61,9 +61,9 @@ export const ptBR = {
     announceMoveFailed: "A fila mudou antes que esta mensagem pudesse ser movida. Tente de novo.",
     announceDragReset: "A fila mudou. Arraste de novo para reordenar as mensagens restantes.",
     editingHint: "Editando a mensagem",
-    queueingOffHint: "Novas mensagens enviadas durante uma resposta vão interromper essa resposta e ser executadas em seguida.",
-    queueingOnHint: "Novas mensagens enviadas durante uma resposta vão esperar na fila e ser executadas em ordem.",
-    queueingHintShared: "As mensagens já na fila são mantidas; isso não pausa nem retoma a fila.",
+    queueingOffHint: "Mensagens novas interrompem a resposta atual e são executadas em seguida.",
+    queueingOnHint: "Mensagens novas esperam a vez e são executadas em ordem.",
+    queueingHintShared: "As mensagens na fila são mantidas.",
   },
   picker: {
     onDevice: "No dispositivo",

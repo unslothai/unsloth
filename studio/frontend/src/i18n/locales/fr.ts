@@ -61,9 +61,9 @@ export const fr = {
     announceMoveFailed: "La file d’attente a changé avant que ce message puisse être déplacé. Réessayez.",
     announceDragReset: "La file d’attente a changé. Faites glisser à nouveau pour réorganiser les messages restants.",
     editingHint: "Modification du message",
-    queueingOffHint: "Les nouveaux messages envoyés pendant une réponse arrêteront cette réponse et seront exécutés ensuite.",
-    queueingOnHint: "Les nouveaux messages envoyés pendant une réponse attendront leur tour et seront exécutés dans l’ordre.",
-    queueingHintShared: "Les messages déjà en file d’attente sont conservés ; ceci ne met pas la file en pause et ne la reprend pas.",
+    queueingOffHint: "Les nouveaux messages arrêtent la réponse en cours et sont exécutés ensuite.",
+    queueingOnHint: "Les nouveaux messages attendent leur tour et sont exécutés dans l’ordre.",
+    queueingHintShared: "Les messages en file d’attente sont conservés.",
   },
   picker: {
     onDevice: "Sur l'appareil",

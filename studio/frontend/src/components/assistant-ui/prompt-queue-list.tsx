@@ -169,7 +169,7 @@ export function PromptQueueList({
             >
               {isEditing ? (
                 <div className="group/queue-editor flex flex-wrap items-center justify-end gap-2 px-1 py-2">
-                  <div className="w-full overflow-hidden rounded-3xl border-0 bg-muted/40 p-3 has-[:focus-visible]:bg-muted dark:bg-card dark:has-[:focus-visible]:bg-accent">
+                  <div className="w-full overflow-hidden rounded-lg border-0 bg-muted/40 p-3 has-[:focus-visible]:bg-muted dark:bg-card dark:has-[:focus-visible]:bg-accent">
                     <textarea
                       ref={inputRef}
                       value={draft}
@@ -204,7 +204,10 @@ export function PromptQueueList({
                           saveEditing();
                         }
                       }}
-                      className="block max-h-36 min-h-12 w-full resize-y border-0 bg-transparent px-1 text-sm text-foreground outline-none"
+                      // Negative margins move the resize grip out to the corner,
+                      // stopping short of the radius so it is not clipped; the
+                      // matching padding keeps the text where it was.
+                      className="-mr-1.5 -mb-1.5 block max-h-36 min-h-12 w-[calc(100%+0.375rem)] resize-y border-0 bg-transparent pt-0 pr-1.5 pb-1.5 pl-1 text-sm text-foreground outline-none"
                       aria-label={t("promptQueue.editLabel", { position })}
                     />
                   </div>
@@ -406,7 +409,7 @@ export function PromptQueueList({
                     </Tooltip>
                     {entry.paused && (
                       <DropdownMenuItem onSelect={onResume}>
-                        <QueueResumeIcon className="size-4" />{" "}
+                        <QueueResumeIcon className="size-3.5" />
                         {t("promptQueue.resume")}
                       </DropdownMenuItem>
                     )}
