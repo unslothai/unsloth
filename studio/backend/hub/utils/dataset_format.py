@@ -709,6 +709,10 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
     }
 
 
+# The same seven aliases `unsloth_zoo.dataset_utils.standardize_data_formats` accepts
+# (aliases_for_system / user / assistant), so the preview shows the roles the training run
+# will actually see. Keys are in normalised form; look them up through
+# `_normalize_role_alias`, never with the raw value.
 _ROLE_MAP = {
     "human": "user",
     "user": "user",
@@ -718,6 +722,20 @@ _ROLE_MAP = {
     "output": "assistant",
     "system": "system",
 }
+
+
+def _normalize_role_alias(role: Any) -> str:
+    """Normalise a ShareGPT role the way the trainer does before matching aliases.
+
+    `standardize_data_formats` compares `role.strip().lower()` against its alias lists
+    (unslothai/unsloth-zoo#1225), because roles arrive with stray case and whitespace
+    ("Human", "GPT", " user "). This map was matched against the raw value, so those
+    spellings previewed with the raw string as the role while training standardised them,
+    and the preview disagreed with the run it was previewing.
+    """
+    if role is None:
+        return ""
+    return str(role).strip().lower()
 
 
 def _standardize_sharegpt_row(row: dict[str, Any], chat_column: str) -> dict[str, Any]:
@@ -730,9 +748,13 @@ def _standardize_sharegpt_row(row: dict[str, Any], chat_column: str) -> dict[str
             continue
         role = message.get("role") or message.get("from")
         content = message.get("content") if "content" in message else message.get("value")
+        normalized = _normalize_role_alias(role)
         messages.append(
             {
-                "role": _ROLE_MAP.get(str(role), str(role or "user")),
+                # An alias unknown even after normalising is shown as it is written, which is
+                # what this line has always done; only the matching is normalised. A role that
+                # is missing, empty or nothing but whitespace falls back to "user", as before.
+                "role": _ROLE_MAP.get(normalized, str(role)) if normalized else "user",
                 "content": "" if content is None else content,
             }
         )
