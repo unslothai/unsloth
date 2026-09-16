@@ -422,7 +422,7 @@ _EXPANSION_CHARS = frozenset("$`")
 _QUOTED_EXPANSION_MARK = "\x04"
 # The characters punctuation_chars glues into one token. A run like `|&` matches no _SHELL_SEPARATORS entry, so the
 # sed screen read past the end of the command. `{`/`}` are absent so find's `{}` stays an ordinary word.
-_OPERATOR_TOKEN_CHARS = frozenset(";&|()`")
+_OPERATOR_TOKEN_CHARS = frozenset(";&|()`\n")
 # One shell redirection as the lexer hands it over. The target may be glued on (`2>/dev/null`) or be the next token;
 # `&` splits off under punctuation_chars, so `2>&1` arrives as three.
 _REDIRECTION_RE = re.compile(r"^(?:\d+|&)?(?:<<<|<<-|<<|<>|>>|>\||<&|>&|<|>)")
@@ -1015,6 +1015,8 @@ def _quoted_separator_indexes(text: str, tokens: "list[str]", punctuation: str) 
         return frozenset()  # every separator character was bare
     try:
         lexer = shlex.shlex(masked, posix = True, punctuation_chars = punctuation)
+        if "\n" in punctuation:
+            lexer.whitespace = lexer.whitespace.replace("\n", "")
         lexer.whitespace_split = True
         marked = list(lexer)
     except ValueError:
@@ -1043,6 +1045,8 @@ def _masked_tokens(
     )
     try:
         lexer = shlex.shlex(masked, posix = True, punctuation_chars = punctuation)
+        if "\n" in punctuation:
+            lexer.whitespace = lexer.whitespace.replace("\n", "")
         lexer.whitespace_split = True
         marked = list(lexer)
     except ValueError:
@@ -1086,6 +1090,8 @@ def _unquoted_expansion_indexes(
     )
     try:
         lexer = shlex.shlex(masked, posix = True, punctuation_chars = punctuation)
+        if "\n" in punctuation:
+            lexer.whitespace = lexer.whitespace.replace("\n", "")
         lexer.whitespace_split = True
         marked = list(lexer)
     except ValueError:
@@ -1114,6 +1120,8 @@ def _unquoted_glob_indexes(text: str, tokens: "list[str]", punctuation: str) -> 
     )
     try:
         lexer = shlex.shlex(masked, posix = True, punctuation_chars = punctuation)
+        if "\n" in punctuation:
+            lexer.whitespace = lexer.whitespace.replace("\n", "")
         lexer.whitespace_split = True
         marked = list(lexer)
     except ValueError:
@@ -1364,11 +1372,24 @@ def _find_blocked_commands(
     # rm -rf x`. Keyed to the shell that will actually run this, not to the OS: on a Windows host with bash the
     # non-posix lexer never split on `;`, so `if true; then rm -rf x; fi` came back with nothing blocked.
     lexed_posix = _shell_is_posix()
+    punctuation = ";&|()`\n" if _ssh_segments is not None else ";&|()`"
+    if _ssh_segments is not None and "\\\n" in command:
+        states = _shell_quote_states(command)
+        joined = {
+            i
+            for i in range(len(command) - 1)
+            if command[i : i + 2] == "\\\n" and states[i + 1] == _ESCAPED_CHAR_STATE
+        }
+        command = "".join(
+            char for i, char in enumerate(command) if i not in joined and i - 1 not in joined
+        )
     try:
         if not lexed_posix:
             tokens = shlex.split(command, posix = False)
         else:
-            lexer = shlex.shlex(command, posix = True, punctuation_chars = ";&|()`")
+            lexer = shlex.shlex(command, posix = True, punctuation_chars = punctuation)
+            if _ssh_segments is not None:
+                lexer.whitespace = lexer.whitespace.replace("\n", "")
             lexer.whitespace_split = True
             tokens = list(lexer)
     except ValueError:
@@ -1378,10 +1399,10 @@ def _find_blocked_commands(
     # the quote marks and the split() fallback has no quoting model, so both report nothing and reach the same
     # verdict.
     quoted_separators = (
-        _quoted_separator_indexes(command, tokens, ";&|()`") if lexed_posix else frozenset()
+        _quoted_separator_indexes(command, tokens, punctuation) if lexed_posix else frozenset()
     )
     quoted_redirects = (
-        _quoted_redirection_indexes(command, tokens, ";&|()`") if lexed_posix else frozenset()
+        _quoted_redirection_indexes(command, tokens, punctuation) if lexed_posix else frozenset()
     )
     exec_flag_indexes, invocation_stops, redirect_indexes = _exec_scan_layout(
         tokens, quoted_separators, quoted_redirects

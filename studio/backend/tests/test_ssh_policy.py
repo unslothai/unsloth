@@ -1022,3 +1022,39 @@ def test_python_sftp_input_fails_closed():
     approve_hosts("review", ["approved.example"])
     code = "import subprocess; subprocess.run(['sftp','-F','none','approved.example'],input='!ssh -F none evil.example',text=True)"
     assert _check_code_safety(code, session_id = "review") is not None
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "bash -s <<'EOF'\nssh -F none evil.example uptime\nEOF",
+        "bash -s <<'EOF'\n# comment\nssh -F none evil.example uptime\nEOF",
+        "echo ready\nssh -F none evil.example uptime",
+    ],
+)
+def test_newline_ssh_requires_approval(command):
+    assert check_ssh_command_access(command, "review") is not None
+    approve_hosts("review", ["evil.example"])
+    assert check_ssh_command_access(command, "review") is None
+
+
+
+
+def test_ssh_line_continuation_preserves_arguments():
+    approve_hosts("review", ["approved.example"])
+    assert (
+        check_ssh_command_access("ssh -F none " + chr(92) + "\n approved.example uptime", "review")
+        is None
+    )
+
+
+def test_blank_lines_preserve_command_boundaries():
+    command = "bash -s <<'EOF'\n\nssh -F none evil.example uptime\nEOF"
+    assert check_ssh_command_access(command, "review") is not None
+    approve_hosts("review", ["evil.example"])
+    assert check_ssh_command_access(command, "review") is None
+
+
+def test_quoted_newline_is_still_data():
+    command = "printf '%s' 'hello\nssh -F none evil.example\n'"
+    assert check_ssh_command_access(command, "review") is None
