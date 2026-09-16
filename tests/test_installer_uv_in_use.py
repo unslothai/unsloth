@@ -62,8 +62,14 @@ def test_the_release_installer_copies_through_copy_uvset():
 
 def test_copy_uvset_skips_a_destination_that_already_holds_the_verified_bytes():
     body = _extract_function("Copy-UvSet")
-    skip = _locate(body, "if (Test-UvFileMatches -Source $src -Destination $dst) { continue }", "the identical-bytes skip")
-    copy = _locate(body, "Copy-Item -LiteralPath $src -Destination $dst -Force -ErrorAction Stop", "the copy")
+    skip = _locate(
+        body,
+        "if (Test-UvFileMatches -Source $src -Destination $dst) { continue }",
+        "the identical-bytes skip",
+    )
+    copy = _locate(
+        body, "Copy-Item -LiteralPath $src -Destination $dst -Force -ErrorAction Stop", "the copy"
+    )
     assert skip < copy, "the skip must be decided before the copy is attempted"
 
 
@@ -76,7 +82,11 @@ def test_copy_uvset_retries_a_transient_lock_then_names_the_file():
 # ---- behaviour, on a host with pwsh ---------------------------------------
 
 
-def _run_copy_uvset(tmp_path: Path, prelude: str, epilogue: str = "") -> subprocess.CompletedProcess:
+def _run_copy_uvset(
+    tmp_path: Path,
+    prelude: str,
+    epilogue: str = "",
+) -> subprocess.CompletedProcess:
     script = (
         _extract_function("Test-UvFileMatches")
         + _extract_function("Copy-UvSet")
