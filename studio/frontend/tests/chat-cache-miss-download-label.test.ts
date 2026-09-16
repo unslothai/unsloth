@@ -118,3 +118,27 @@ test("the load hook actually consults the watch, and on the cached branch", () =
     /const watchForCacheMiss =\n\s+isDownloaded && !isLocal && nativePathToken == null && !isOllamaModelId\(modelId\);/,
   );
 });
+
+test("an unknown total still updates the toast the user is looking at", () => {
+  // The state write in this branch is read only by the inline status shown AFTER the toast
+  // is dismissed. With the toast still up, and nothing else in the branch touching it, the
+  // words the user sees stay on whatever the previous phase set, which on exactly this path
+  // is "Loading cached model into memory" for the length of the download. That is #9094,
+  // reappearing on the branch where the backend cannot size the repo.
+  const hook = readText("../src/features/chat/hooks/use-chat-model-runtime.ts");
+  const start = hook.indexOf("prog.expected_bytes === 0 &&");
+  assert.ok(start > 0, "the unknown-total branch moved");
+  const end = hook.indexOf("} else if (prog.progress >= 1 && hasShownProgress)", start);
+  assert.ok(end > start, "the branch after the unknown-total one moved");
+  const branch = hook.slice(start, end);
+
+  // Dismissed: the inline status still gets the state write, and only then, so the chat page
+  // is not re-rendered on every poll while the toast is the thing being read.
+  assert.match(branch, /if \(loadToastDismissedRef\.current\) \{[\s\S]*setLoadProgress\(/);
+  // Visible: the toast is written directly, the same way both neighbouring branches do it.
+  assert.match(branch, /\} else \{[\s\S]*toast\(null, \{[\s\S]*renderLoadDescription\(/);
+  assert.match(branch, /"Downloading model…"/);
+  // No percentage: there is no total to compute one from, and inventing one is the failure
+  // the byte-count label exists to avoid.
+  assert.match(branch, /renderLoadDescription\(\s*"Downloading model…",[\s\S]*?null,/);
+});

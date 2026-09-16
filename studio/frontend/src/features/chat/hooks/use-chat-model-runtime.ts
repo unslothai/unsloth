@@ -2373,12 +2373,30 @@ export function useChatModelRuntime() {
               const est = estimate(dlSamples, prog.downloaded_bytes, 0);
               const rateSuffix =
                 est.stable ? ` • ${formatRate(est.rate)}` : "";
+              const unknownTotalLabel = `${dlGb.toFixed(1)} GB downloaded${rateSuffix}`;
               // Inline-status-only state; skip the chat-page re-render unless it is shown.
               if (loadToastDismissedRef.current) {
                 setLoadProgress({
                   percent: null,
-                  label: `${dlGb.toFixed(1)} GB downloaded${rateSuffix}`,
+                  label: unknownTotalLabel,
                   phase: "downloading",
+                });
+              } else {
+                // The toast is UP, and without this it keeps saying "Loading cached model
+                // into memory" for the whole download, which is the one case where that
+                // sentence is wrong: bytes are arriving from the Hub right now. A missing
+                // total is a supported answer, not an error, so the visible toast gets the
+                // same treatment as the known-total branch above with no percentage.
+                toast(null, {
+                  id: toastId,
+                  ...modelLoadToastOptions(
+                    renderLoadDescription(
+                      "Downloading model…",
+                      activeLoadingDescription,
+                      null,
+                      unknownTotalLabel,
+                    ),
+                  ),
                 });
               }
             } else if (prog.progress >= 1 && hasShownProgress) {

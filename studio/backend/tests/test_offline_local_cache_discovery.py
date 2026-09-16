@@ -43,6 +43,7 @@ from utils.models import model_config as model_config_module
 # Captured before the autouse fixture below replaces the attribute, so the one test that
 # is ABOUT the reader can still reach the real one.
 _REAL_AMBIENT_HF_TOKEN = hf_tokens._ambient_hf_token
+_REAL_SAVED_STUDIO_HF_TOKEN = hf_tokens._saved_studio_hf_token
 
 ON_DISK = "acme/downloaded-model"
 ABSENT = "acme/never-downloaded"
@@ -51,6 +52,11 @@ ABSENT = "acme/never-downloaded"
 # every "offline still reads my model" case below is the operator's credential by
 # construction, and FOREIGN_TOKEN is the second principal that must NOT inherit it.
 OPERATOR_TOKEN = "hf_operator_ambient_token"
+# The SAME operator, credential saved the other way: through Studio Settings, which writes
+# the encrypted credential store rather than the HF token file. `get_token()` never returns
+# it, and the UI replays it per request in X-Unsloth-HF-Token. On the ordinary Studio
+# install this is the only credential the host holds.
+STUDIO_UI_TOKEN = "hf_saved_in_studio_settings"
 FOREIGN_TOKEN = "hf_some_other_callers_token"
 REVISION = "a" * 40
 
@@ -73,9 +79,24 @@ def _host_credential(monkeypatch):
     monkeypatch.setattr(hf_tokens, "_ambient_hf_token", lambda: (True, OPERATOR_TOKEN))
 
 
+@pytest.fixture(autouse = True)
+def _saved_studio_credential(monkeypatch):
+    """Nothing saved in Studio Settings unless the case says so.
+
+    Autouse for the reason `_host_credential` is: this reader opens the real credential
+    store, and the machine running the suite must not be what decides these tests.
+    """
+    monkeypatch.setattr(hf_tokens, "_saved_studio_hf_token", lambda: (True, None))
+
+
 def _no_host_credential(monkeypatch):
     """A host that never configured an HF token: the ordinary install."""
     monkeypatch.setattr(hf_tokens, "_ambient_hf_token", lambda: (True, None))
+
+
+def _saved_ui_credential(monkeypatch, token = STUDIO_UI_TOKEN):
+    """A host whose operator saved a token in Studio Settings and configured none globally."""
+    monkeypatch.setattr(hf_tokens, "_saved_studio_hf_token", lambda: (True, token))
 
 
 def _materialize_repo(
@@ -457,6 +478,111 @@ def test_the_ambient_token_reader_prefers_the_hub_and_falls_back_to_the_env(monk
         raise OSError("token file unreadable")
 
     monkeypatch.setattr("huggingface_hub.get_token", _raises)
+    assert read() == (False, None)
+    assert hf_tokens._caller_populated_the_cache(None) is False
+    assert hf_tokens._caller_populated_the_cache("hf_anything") is False
+
+
+def test_the_ui_token_that_filled_the_cache_is_authorized_without_a_global_token(
+    monkeypatch, tmp_path
+):
+    """The ordinary Studio install, and the one the ambient-only comparison got wrong.
+
+    The operator saves an HF token in Settings, downloads a private model with it, and
+    never touches the HF token file or HF_TOKEN. `get_token()` therefore answers "this host
+    has no credential" while the host plainly has one, and the UI's own request -- carrying
+    the very token the bytes were fetched with, in X-Unsloth-HF-Token -- was refused its own
+    cached model the moment the Hub could not be asked. That is the exact flow this PR
+    exists to keep working, so it has to be authorized while the second principal is not.
+    """
+    root = _cache_root(monkeypatch, tmp_path)
+    _materialize_repo(root, ON_DISK)
+    _no_host_credential(monkeypatch)
+    _saved_ui_credential(monkeypatch)
+    _counting_probe(monkeypatch, True, offline = True)
+
+    assert cache_reads_authorized(STUDIO_UI_TOKEN, repo_id = ON_DISK) is True
+    # The boundary does not move: a different caller's token is still not the host's.
+    assert cache_reads_authorized(FOREIGN_TOKEN, repo_id = ON_DISK) is False
+    # And the host DOES hold a credential, so the credential-less caller is refused even
+    # though `get_token()` alone would have said there was nothing to protect.
+    assert public_cache_read_authorized(repo_id = ON_DISK) is False
+
+
+def test_either_store_answers_for_the_host(monkeypatch, tmp_path):
+    """Both credentials are the operator's, so both authorize.
+
+    A host can hold one, the other, or both: the CLI writes the token file, Settings writes
+    the credential store, and a machine used both ways has two. Whichever of them the caller
+    presents, it is a credential this host downloads with.
+    """
+    root = _cache_root(monkeypatch, tmp_path)
+    _materialize_repo(root, ON_DISK)
+    _saved_ui_credential(monkeypatch)
+    _counting_probe(monkeypatch, True, offline = True)
+
+    # `_host_credential` leaves the ambient one set to OPERATOR_TOKEN.
+    assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is True
+    assert cache_reads_authorized(STUDIO_UI_TOKEN, repo_id = ON_DISK) is True
+    assert cache_reads_authorized(FOREIGN_TOKEN, repo_id = ON_DISK) is False
+
+
+def test_a_credential_less_caller_still_needs_both_stores_empty(monkeypatch, tmp_path):
+    """The anonymous branch is presence-based, so it may only fire when the host holds
+    nothing at all.
+
+    Reading only the ambient store, a host whose sole credential lives in Studio Settings
+    looks tokenless, and an API-key caller with no HF credential is handed a cache that may
+    hold private bytes.
+    """
+    root = _cache_root(monkeypatch, tmp_path)
+    _materialize_repo(root, ON_DISK)
+    _no_host_credential(monkeypatch)
+    _saved_ui_credential(monkeypatch)
+    _counting_probe(monkeypatch, True, offline = True)
+
+    assert public_cache_read_authorized(repo_id = ON_DISK) is False
+
+    # With BOTH stores empty it is the tokenless offline install, which must still work.
+    monkeypatch.setattr(hf_tokens, "_saved_studio_hf_token", lambda: (True, None))
+    assert public_cache_read_authorized(repo_id = ON_DISK) is True
+
+
+def test_an_unreadable_credential_store_authorizes_nobody(monkeypatch, tmp_path):
+    """The third outcome, on the second store too.
+
+    A locked database or a missing encryption key leaves the host's credential set
+    unestablished. Collapsing that into "the host has none" is the same fail-open the
+    ambient reader refuses to make, one store over.
+    """
+    root = _cache_root(monkeypatch, tmp_path)
+    _materialize_repo(root, ON_DISK)
+    monkeypatch.setattr(hf_tokens, "_saved_studio_hf_token", lambda: (False, None))
+    _counting_probe(monkeypatch, True, offline = True)
+
+    assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is False
+    assert public_cache_read_authorized(repo_id = ON_DISK) is False
+
+
+def test_the_saved_token_reader_reads_the_studio_credential_store(monkeypatch):
+    """The reader itself, against the real store function.
+
+    Three outcomes, the same as the ambient reader: a saved token, an answered "none", and
+    an unanswered question. The store is the one Settings writes with `save_hf_token`.
+    """
+    from storage import credential_secrets
+
+    read = _REAL_SAVED_STUDIO_HF_TOKEN
+    monkeypatch.setattr(credential_secrets, "get_hf_token", lambda: "  hf_from_store  ")
+    assert read() == (True, "hf_from_store")
+
+    monkeypatch.setattr(credential_secrets, "get_hf_token", lambda: None)
+    assert read() == (True, None)
+
+    def _raises():
+        raise RuntimeError("credential database is locked")
+
+    monkeypatch.setattr(credential_secrets, "get_hf_token", _raises)
     assert read() == (False, None)
     assert hf_tokens._caller_populated_the_cache(None) is False
     assert hf_tokens._caller_populated_the_cache("hf_anything") is False

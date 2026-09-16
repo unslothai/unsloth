@@ -414,6 +414,52 @@ def _ambient_hf_token() -> "tuple[bool, Optional[str]]":
     return (False, None)
 
 
+def _saved_studio_hf_token() -> "tuple[bool, Optional[str]]":
+    """``(known, token)``: the HF credential the Studio UI saves and downloads with.
+
+    Separate from ``_ambient_hf_token`` because it is a separate store and neither can see
+    the other. Settings writes this one into the encrypted credential store
+    (``credential_secrets.save_hf_token``); nothing writes it to the token file or to
+    ``HF_TOKEN``, so ``huggingface_hub.get_token()`` does not return it, and the UI hands it
+    back on each request in ``X-Unsloth-HF-Token`` rather than relying on ambient pickup.
+
+    It is therefore just as much "the credential this host's cache was filled with" as the
+    ambient one, and on the ordinary Studio install it is the ONLY one. Same three outcomes
+    and the same reason for the third: an unreadable store (locked database, missing
+    encryption key) is not "the host has no credential", and collapsing it into one would
+    hand a credential-less caller a cache that may hold private bytes.
+
+    Not memoized, for the reason ``_ambient_hf_token`` is not: the operator can save, rotate
+    or clear this token at any moment from Settings.
+    """
+    try:
+        from storage import credential_secrets
+    except Exception:
+        # The store exists in every Studio install; failing to import it is an unanswered
+        # question about this host, not an answer.
+        return (False, None)
+    try:
+        token = credential_secrets.get_hf_token()
+    except Exception:
+        return (False, None)
+    if isinstance(token, str) and token.strip():
+        return (True, token.strip())
+    return (True, None)
+
+
+def _host_hf_credentials() -> "tuple[bool, tuple]":
+    """``(known, tokens)``: every HF credential this host holds, from both stores.
+
+    ``known`` is the AND of the two: if either store could not be read, the host's credential
+    set is not established and nobody is authorized, on either branch.
+    """
+    ambient_known, ambient = _ambient_hf_token()
+    saved_known, saved = _saved_studio_hf_token()
+    if not (ambient_known and saved_known):
+        return (False, ())
+    return (True, tuple(value for value in (ambient, saved) if value))
+
+
 def _caller_populated_the_cache(token: Optional[str]) -> bool:
     """Whether this caller's credential is the one this host's cache was filled with.
 
@@ -425,33 +471,56 @@ def _caller_populated_the_cache(token: Optional[str]) -> bool:
     behind an ``HF_ENDPOINT`` mirror with no /auth-check route. So presence only decides the
     question for a caller that could have produced it.
 
-    A caller with an explicit token qualifies when that token IS the host's ambient one:
-    the operator's own credential, the one the bytes were fetched with. Nothing is leaked
-    to it that it could not fetch from the Hub itself.
+    A caller with an explicit token qualifies when that token is one the HOST holds: the
+    operator's own credential, the one the bytes were fetched with. Nothing is leaked to it
+    that it could not fetch from the Hub itself.
 
-    A caller with NO credential qualifies only when the host has no ambient credential
-    either. Then nothing in the cache can have been fetched under a credential this caller
+    BOTH stores count, and which one matters depends on how Studio was set up. The ambient
+    credential (``get_token()``: token file, env aliases, OIDC) is the CLI operator's. The
+    Studio UI's is saved in the encrypted credential store and replayed in
+    ``X-Unsloth-HF-Token``; it never reaches ``get_token()``. Comparing only against the
+    ambient one refuses the ordinary UI case outright, where the operator saved a token in
+    Settings, downloaded a private model with it, and configured nothing globally: the
+    caller presents the very credential that filled the cache and is told it is not the
+    host's. That is the offline flow this gate exists to keep working.
+
+    A caller with NO credential qualifies only when the host holds NO credential in either
+    store. Then nothing in the cache can have been fetched under a credential this caller
     lacks, so everything in it was public when it was downloaded. That is the ordinary
     install: most hosts never configure an HF token, which is exactly the offline operator
-    this PR exists for. On a host that DOES hold a token, a credential-less caller is
-    refused, because a private repo could be sitting in that cache.
+    this PR exists for. On a host that DOES hold one, a credential-less caller is refused,
+    because a private repo could be sitting in that cache.
+
+    What this still cannot see is history. The HF cache records no provenance per blob, so
+    "the host holds this credential now" is the closest available stand-in for "the bytes
+    were fetched under it". An operator who downloads a private repo and then DELETES every
+    credential leaves a cache whose contents a credential-less caller is authorized for.
+    Closing that needs provenance recorded at download time rather than inferred here, and
+    the branch cannot simply be dropped: it is the tokenless offline install, the majority
+    case and the reason for the PR.
 
     Compared with ``compare_digest`` rather than ``==``: the comparison is on a secret, and
-    an early-exit compare over a repeated request is a timing oracle for it.
+    an early-exit compare over a repeated request is a timing oracle for it. Every held
+    credential is compared, without short-circuiting on a match, so the time taken does not
+    report WHICH store answered.
     """
-    known, ambient = _ambient_hf_token()
+    known, host_tokens = _host_hf_credentials()
     if not known:
         # Could not be established. Authorize nobody rather than guess, on either branch:
         # guessing "no credential" hands the cache to a caller with none, and guessing
         # "some credential" is not a value a caller's token can be compared against.
         return False
     if token is None:
-        return ambient is None
-    if not isinstance(token, str) or not token or ambient is None:
+        return not host_tokens
+    if not isinstance(token, str) or not token or not host_tokens:
         return False
     import hmac
 
-    return hmac.compare_digest(token, ambient)
+    matched = False
+    for held in host_tokens:
+        if hmac.compare_digest(token, held):
+            matched = True
+    return matched
 
 
 def _resolve_unaskable(repo_id: str, repo_type: str, *, token: Optional[str]) -> bool:
