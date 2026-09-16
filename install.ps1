@@ -6901,13 +6901,21 @@ exit 0
         # No 8.3 name: copy to a space-free directory instead. Several candidates, because %TEMP%
         # can carry the space itself (the #11012 case) and 8.3 creation is commonly disabled on
         # non-system volumes. Each is used only once confirmed space-free and writable.
-        $candidates = @(
-            [System.IO.Path]::GetTempPath()
-            $env:TEMP
-            $env:TMP
-            (Join-Path ([System.IO.Path]::GetPathRoot([System.IO.Path]::GetTempPath())) "Windows\Temp")
-            [System.IO.Path]::GetDirectoryName($Path)
-        )
+        # Produced one at a time and guarded. Under this script's ErrorActionPreference = "Stop" a
+        # single throwing element in an array literal is evaluated before the loop starts and
+        # aborts the install outright, and these calls do throw on a relative or malformed TMP:
+        # GetPathRoot returns "" and Join-Path then rejects the empty path.
+        $candidates = @()
+        foreach ($produce in @(
+            { [System.IO.Path]::GetTempPath() },
+            { $env:TEMP },
+            { $env:TMP },
+            { $root = [System.IO.Path]::GetPathRoot([System.IO.Path]::GetTempPath())
+              if ($root) { Join-Path $root "Windows\Temp" } },
+            { [System.IO.Path]::GetDirectoryName($Path) }
+        )) {
+            try { $candidates += & $produce } catch { }
+        }
         foreach ($candidate in $candidates) {
             if (-not $candidate) { continue }
             $dir = $candidate

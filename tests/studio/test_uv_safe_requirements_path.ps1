@@ -118,6 +118,27 @@ try {
     } finally {
         $env:TEMP = $savedTemp; $env:TMP = $savedTmp; $env:TMPDIR = $savedTmpDir
     }
+    # 6. A relative or malformed temp path must not abort the install. install.ps1 runs under
+    #    ErrorActionPreference = "Stop", so a throwing expression in the candidate list would be
+    #    evaluated before the loop and terminate the whole run, which is worse than the split
+    #    path this helper exists to prevent. GetPathRoot returns "" for a relative path and
+    #    Join-Path then rejects it, so this is reachable from a machine with an odd TMP.
+    $script:Warnings = @()
+    $savedTemp = $env:TEMP; $savedTmp = $env:TMP; $savedTmpDir = $env:TMPDIR
+    try {
+        $ErrorActionPreference = "Stop"
+        $env:TEMP = "relative-temp-dir"
+        $env:TMP = "relative-temp-dir"
+        $env:TMPDIR = "relative-temp-dir"
+        $threw = $false
+        try { $r5 = Get-UvSafeRequirementsPath -Path $spaced } catch { $threw = $true }
+        Check "a relative temp path does not abort the helper" (-not $threw)
+        if (-not $threw) {
+            Check "a relative temp path still yields a usable result" ($null -ne $r5.Path)
+        }
+    } finally {
+        $env:TEMP = $savedTemp; $env:TMP = $savedTmp; $env:TMPDIR = $savedTmpDir
+    }
 } finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 }
