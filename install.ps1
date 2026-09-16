@@ -2985,6 +2985,36 @@ exit 1
         return (Invoke-StudioEarlyPython -Exe $exe -Path $Path)
     }
 
+    # Tell Explorer a shortcut was rewritten, through a child interpreter. Used only where the
+    # type cannot be defined in this shell, which is where the refresh silently did not happen
+    # before. Returns $true when the child reported success.
+    #
+    # Cosmetic either way: the worst case is a stale icon on a shortcut that works. Nothing here
+    # may fail the install, so every path returns rather than throws.
+    function Invoke-StudioPythonShellIconRefresh {
+        param([string[]]$Paths = @())
+        if (-not ($env:OS -eq "Windows_NT")) { return $false }
+        $exe = Get-StudioEarlyPython
+        if (-not $exe) { return $false }
+        # SHCNE_UPDATEITEM 0x00002000 with SHCNF_PATHW 0x0005 per shortcut, then SHCNE_ASSOCCHANGED
+        # 0x08000000 as the global broadcast. Same two calls, same order, same constants as the
+        # rung above: the per-item notification is the one that matters, because the global
+        # broadcast misses a same-name .lnk that was rewritten in place.
+        $script = "import ctypes,sys" + [char]10 +
+            "from ctypes import wintypes" + [char]10 +
+            "s32=ctypes.WinDLL('shell32',use_last_error=True)" + [char]10 +
+            "s32.SHChangeNotify.restype=None" + [char]10 +
+            "s32.SHChangeNotify.argtypes=[wintypes.LONG,wintypes.UINT,wintypes.LPCWSTR,wintypes.LPCWSTR]" + [char]10 +
+            "for p in sys.argv[1:]:" + [char]10 +
+            "    s32.SHChangeNotify(0x00002000,0x0005,p,None)" + [char]10 +
+            "s32.SHChangeNotify(0x08000000,0,None,None)" + [char]10 +
+            "sys.stdout.write('ok')"
+        try {
+            $answer = Invoke-StudioEarlyPythonScript -Exe $exe -Script $script -ScriptArgs $Paths -TimeoutMs 10000
+        } catch { return $false }
+        return ("$answer".Trim() -eq "ok")
+    }
+
     # Exact = $true means the native resolver answered, so the string is what it
     # always was. Callers keying a lock on it use that to judge an inequality.
     function Resolve-StudioFinalPathInfo {
@@ -5211,7 +5241,15 @@ exit 0
                         }
                         # SHCNE_ASSOCCHANGED (0x08000000) global refresh (belt-and-suspenders)
                         [UnslothShellIconRefresh]::SHChangeNotify(0x08000000, 0, $null, [System.IntPtr]::Zero)
-                    } catch {}
+                    } catch {
+                        # Reached where the type cannot be defined in this shell, which is every
+                        # host under Constrained Language Mode or WDAC Dynamic Code Security.
+                        # Before this the refresh simply did not happen there and the icon stayed
+                        # stale until something else invalidated Explorer's cache. Same two
+                        # notifications through a child interpreter instead. Still cosmetic, and
+                        # still unable to fail the install.
+                        try { $null = Invoke-StudioPythonShellIconRefresh -Paths $createdShortcutPaths } catch {}
+                    }
                     if ($firstInstall -or $iconChanged) {
                         try { & "$env:SystemRoot\System32\ie4uinit.exe" -ClearIconCache 2>$null } catch {}
                         try { & "$env:SystemRoot\System32\ie4uinit.exe" -show 2>$null } catch {}
