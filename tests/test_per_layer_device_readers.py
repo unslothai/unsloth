@@ -432,9 +432,9 @@ def test_the_backend_probe_is_asked_once_per_device_type():
     index. The answer cannot change inside a process, so it is memoised."""
     from unsloth.models import _utils
 
-    assert hasattr(_utils._device_type_is_usable, "cache_clear"), (
-        "_device_type_is_usable must stay memoised; it is on the per-token path"
-    )
+    assert hasattr(
+        _utils._device_type_is_usable, "cache_clear"
+    ), "_device_type_is_usable must stay memoised; it is on the per-token path"
 
     _utils._device_type_is_usable.cache_clear()
     calls = []
