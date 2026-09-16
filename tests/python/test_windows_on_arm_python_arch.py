@@ -785,3 +785,33 @@ def test_the_opt_out_keeps_the_environment_it_says_it_keeps():
     assert "unsloth_studio.arm64.*" in source[optout : optout + 600], (
         "the user is not told where the kept environment is"
     )
+
+
+def test_the_opt_out_reaches_the_interpreter_selection():
+    """On a host that already has an x64 Python the swap never runs.
+
+    `Find-CompatiblePython` prefers x64 on an ARM64 host, so the selection is x64 already and
+    the guard below it -- which is where the opt-out was read -- is false. The variable
+    therefore did nothing: a fresh install built an x64 venv and a reinstall replaced the
+    native ARM64 one. It now ranks the candidates, and `Resolve-WindowsOnArmX64Python` keeps
+    what it picks.
+    """
+    body = _function("Find-CompatiblePython")
+    assert "Test-Arm64PythonOptOut" in body, (
+        "the interpreter selection does not consult the ARM64 opt-out"
+    )
+    prefer = body[body.index("$preferArm64 =") : body.index("$preferX64 =")]
+    # Never for Install-X64Python's own lookup, which exists to find x64 specifically.
+    assert "-not $X64Only" in prefer, prefer
+    assert "Get-HostMachineArch" in prefer, prefer
+    # The native-CUDA host keeps its own reason to prefer ARM64.
+    assert "WoaNativeCudaTorch" in prefer, prefer
+    # And x64 is still preferred on an ARM64 host WITHOUT the opt-out, which is the whole
+    # reason the preference exists.
+    x64 = body[body.index("$preferX64 =") :].split("\n", 1)[0]
+    assert "-not $preferArm64" in x64, x64
+
+    # The swap still keeps an ARM64 selection rather than bootstrapping over it.
+    resolve = _function("Resolve-WindowsOnArmX64Python")
+    assert "Test-Arm64PythonOptOut" in resolve
+    assert "return $SelectedPython" in resolve

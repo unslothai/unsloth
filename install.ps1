@@ -5360,7 +5360,17 @@ exit 0
         # Rust minutes in; x64 runs fine emulated. ARM64 is still returned when it is all
         # there is, and the caller then bootstraps x64 or warns.
         # ARM64 first on a native host, so a leftover x64 interpreter does not capture the venv.
-        $preferArm64 = $script:WoaNativeCudaTorch -and -not $X64Only
+        # And when UNSLOTH_ALLOW_ARM64_PYTHON is set: the opt-out has to reach the SELECTION,
+        # not only the swap that follows it. On a machine that already has an x64 interpreter
+        # the swap never runs -- the selection is x64 already, so the guard on its
+        # architecture is false -- and the variable then did nothing at all: a fresh install
+        # built an x64 venv and a reinstall replaced the native ARM64 one, which is the
+        # opposite of what it asks for. -X64Only is Install-X64Python's own lookup and is
+        # never the place to honour it.
+        $preferArm64 = (-not $X64Only) -and (
+            $script:WoaNativeCudaTorch -or
+            ((Get-HostMachineArch) -eq "arm64" -and (Test-Arm64PythonOptOut))
+        )
         $preferX64 = $X64Only -or ((Get-HostMachineArch) -eq "arm64" -and -not $preferArm64)
         $rankByArch = $preferX64 -or $preferArm64
         $candidates = @()
