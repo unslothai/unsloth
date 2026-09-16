@@ -28,9 +28,9 @@ def _code_lines(text: str) -> list[str]:
 
 def test_the_helper_is_defined():
     lines = _code_lines(INSTALL_PS1.read_text(encoding = "utf-8"))
-    assert any(re.match(rf"\s*function\s+{HELPER}\b", line) for line in lines), (
-        f"{HELPER} is missing from install.ps1"
-    )
+    assert any(
+        re.match(rf"\s*function\s+{HELPER}\b", line) for line in lines
+    ), f"{HELPER} is missing from install.ps1"
 
 
 def test_every_uv_requirements_flag_uses_a_sanitised_path():
@@ -46,7 +46,9 @@ def test_every_uv_requirements_flag_uses_a_sanitised_path():
             from_helper.add(hit.group(1))
     sanitised = set()
     for line in lines:
-        hit = re.search(r"(\$[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(\$[A-Za-z_][A-Za-z0-9_]*)\.Path\b", line)
+        hit = re.search(
+            r"(\$[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(\$[A-Za-z_][A-Za-z0-9_]*)\.Path\b", line
+        )
         if hit and hit.group(2) in from_helper:
             sanitised.add(hit.group(1))
     sanitised |= {f"{name}.Path" for name in from_helper}
@@ -70,8 +72,8 @@ def test_every_uv_requirements_flag_uses_a_sanitised_path():
 def test_a_copy_is_removed_but_the_users_own_file_is_not():
     """The helper may return a copy; only a copy may be deleted."""
     text = INSTALL_PS1.read_text(encoding = "utf-8")
-    body = text[text.index(f"function {HELPER}"):]
-    body = body[:body.index("\n    function ")]
+    body = text[text.index(f"function {HELPER}") :]
+    body = body[: body.index("\n    function ")]
     assert "Temporary = $true" in body, "the helper never reports that it made a copy"
     assert "Temporary = $false" in body, "the helper never reports a pass-through path"
 
@@ -81,9 +83,7 @@ def test_a_copy_is_removed_but_the_users_own_file_is_not():
     else:
         raise AssertionError("a temporary copy is created but never removed")
 
-    guarded = re.search(
-        r"if \(\$NoTorchReqSafe\.Temporary\) \{\s*\n\s*Remove-Item", text
-    )
+    guarded = re.search(r"if \(\$NoTorchReqSafe\.Temporary\) \{\s*\n\s*Remove-Item", text)
     assert guarded, (
         "the Remove-Item is not guarded on .Temporary, so a pass-through path "
         "would delete the user's own requirements file"
