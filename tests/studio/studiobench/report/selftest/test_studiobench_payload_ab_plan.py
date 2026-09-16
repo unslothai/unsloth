@@ -62,15 +62,50 @@ def test_absent_ab_plan_is_an_empty_mapping():
     assert built["ab_plan"] == {}
 
 
-# `--resume` emits its own plan, so `[0]` would name only the first session's cells.
-RESUMED_ROWS = [
-    *ROWS,
-    {
+# `--resume` emits its own plan, so `[0]` would name only the first session's cells. A plan is
+# written BEFORE its session runs, so the cell rows, not the plan, say which session owns a cell.
+def _plan(
+    session,
+    order,
+    balanced = True,
+):
+    return {
         "row_type": "ab_plan",
+        "session_id": session,
         "treatment_ref": "bbb",
-        "order": ["treatment", "base", "base_10k", "treatment_10k"],
-        "balanced": True,
-    },
+        "order": order,
+        "balanced": balanced,
+    }
+
+
+def _cells(
+    session,
+    *cell_ids,
+    row_type = "cell",
+):
+    # `Recorder.emit` stamps session_id on every row, and ownership is keyed on it exactly as
+    # `latest_attempt_rows` keys it, over the same ATTEMPT_ROW_TYPES.
+    return [
+        {
+            "row_type": row_type,
+            "session_id": session,
+            "completed": True,
+            "cell_id": c,
+            "fields": {"instrument_level": 2},
+        }
+        for c in cell_ids
+    ]
+
+
+PAIR = ["base", "treatment"]
+LADDER = ["base", "treatment", "base_10k", "treatment_10k"]
+
+RESUMED_ROWS = [
+    ROWS[0],
+    _plan("s1", PAIR),
+    *_cells("s1", *PAIR),
+    _plan("s2", LADDER),
+    *_cells("s2", *LADDER),
 ]
 
 
@@ -78,33 +113,61 @@ def test_a_resumed_session_does_not_lose_the_cells_it_added():
     built = _assemble(RESUMED_ROWS)
     assert built["record_counts"]["ab_plan"] == 2
     # First-seen order, re-declared ids not doubled. `[0]` gives ["base", "treatment"].
-    assert built["ab_plan"]["order"] == ["base", "treatment", "base_10k", "treatment_10k"]
+    assert built["ab_plan"]["order"] == LADDER
     assert built["ab_plan"]["treatment_ref"] == "bbb"
 
 
-def test_one_live_unbalanced_session_makes_the_experiment_unbalanced():
-    """An odd `--reps` charges drift to whichever side ran second, and the run says so;
-    reading `balanced` off a balanced neighbour would take that back."""
-    rows = [*ROWS, {**RESUMED_ROWS[-1], "balanced": False}]
+def test_a_session_that_re_ran_the_pair_takes_over_the_balance_claim():
+    """`skippable_cells` re-runs every pair, and `latest_attempt_rows` keeps the last attempt,
+    so the earlier session owns nothing and its imbalance is not in the scored cells."""
+    rows = [
+        ROWS[0],
+        _plan("s1", PAIR, balanced = False),
+        *_cells("s1", *PAIR),
+        _plan("s2", LADDER),
+        *_cells("s2", *LADDER),
+    ]
+    assert _assemble(rows)["ab_plan"]["balanced"] is True
+
+
+def test_a_resume_that_died_before_retrying_leaves_the_old_session_owning_the_pair():
+    """The plan is emitted before the session runs anything, so a declared id is a request.
+
+    A `--resume --reps 2` that crashes before the retry writes its plan and no cell, and the
+    unbalanced session that DID run the pair is still what `latest_attempt_rows` keeps. Reading
+    liveness off plan membership reports a balance nothing measured.
+    """
+    rows = [ROWS[0], _plan("s1", PAIR, balanced = False), *_cells("s1", *PAIR), _plan("s2", LADDER)]
     assert _assemble(rows)["ab_plan"]["balanced"] is False
-    assert _assemble(RESUMED_ROWS)["ab_plan"]["balanced"] is True
+    # The order is still the union, so the rungs the resume asked for are not lost.
+    assert _assemble(rows)["ab_plan"]["order"] == LADDER
 
-    # From the other end: a first session whose rungs the resume did not re-run is still live.
-    added_rungs_only = {**ROWS[1], "order": ["base_10k", "treatment_10k"], "balanced": True}
-    rows = [ROWS[0], {**ROWS[1], "balanced": False}, ROWS[2], added_rungs_only]
+
+def test_an_unbalanced_session_the_resume_did_not_touch_stays_live():
+    """Both sessions own cells, so one unbalanced among them is an unbalanced experiment."""
+    rows = [
+        ROWS[0],
+        _plan("s1", PAIR, balanced = False),
+        *_cells("s1", *PAIR),
+        _plan("s2", ["base_10k", "treatment_10k"]),
+        *_cells("s2", "base_10k", "treatment_10k"),
+    ]
     assert _assemble(rows)["ab_plan"]["balanced"] is False
 
 
-def test_a_plan_whose_cells_were_all_re_run_no_longer_speaks_for_balance():
-    """A resume re-runs EVERY pair of its work (`runtime/ab.py` `skippable_cells`) and
-    `latest_attempt_rows` keeps the last attempt, so a fully re-run plan scores no cell."""
-    superseded = {**ROWS[1], "order": ["base", "treatment"], "balanced": False}
-    replacement = {
-        **ROWS[1],
-        "order": ["base", "treatment", "base_rep1", "treatment_rep1"],
-        "balanced": True,
-    }
-    built = _assemble([ROWS[0], superseded, ROWS[2], replacement])
-    assert built["ab_plan"]["balanced"] is True
-    # Order is still the union; only the balance claim is scoped.
-    assert built["ab_plan"]["order"] == ["base", "treatment", "base_rep1", "treatment_rep1"]
+def test_a_retry_that_never_reached_its_cell_row_still_owns_the_cell():
+    """Why ownership reads ATTEMPT_ROW_TYPES rather than `cell` rows alone.
+
+    `latest_attempt_rows` moved off cell rows for exactly this: an attempt hard-killed mid-cell
+    writes `action` and `window` rows and never its terminal `cell` row, so keying on that alone
+    hands the cell back to the older attempt. Ownership here has to agree with it, or the report
+    scores one session's cells while describing another session's balance.
+    """
+    rows = [
+        ROWS[0],
+        _plan("s1", PAIR, balanced = False),
+        *_cells("s1", *PAIR),
+        _plan("s2", PAIR),
+        *_cells("s2", *PAIR, row_type = "window"),
+    ]
+    assert _assemble(rows)["ab_plan"]["balanced"] is True
