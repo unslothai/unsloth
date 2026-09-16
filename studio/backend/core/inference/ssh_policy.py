@@ -439,7 +439,37 @@ def _assignment_pairs(tree: ast.AST):
         for child in ast.iter_child_nodes(node):
             yield from scoped_nodes(child, scope)
 
+    functions = {
+        node.name: node.args
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
     for node, scope in scoped_nodes(tree):
+        if isinstance(node, ast.Call) and _fq_name(node.func) in functions:
+            parameters = functions[_fq_name(node.func)]
+            positional = parameters.posonlyargs + parameters.args
+            defaults = (
+                dict(
+                    zip(
+                        [arg.arg for arg in positional[-len(parameters.defaults) :]],
+                        parameters.defaults,
+                    )
+                )
+                if parameters.defaults
+                else {}
+            )
+            defaults.update(
+                (arg.arg, value)
+                for arg, value in zip(parameters.kwonlyargs, parameters.kw_defaults)
+                if value is not None
+            )
+            defaults.update((arg.arg, value) for arg, value in zip(positional, node.args))
+            keywords, _ = _call_keyword_values(node)
+            defaults.update(keywords)
+            for arg in positional + parameters.kwonlyargs:
+                if arg.arg in defaults:
+                    yield ast.Name(id = arg.arg), defaults[arg.arg]
+            continue
         if isinstance(node, (ast.With, ast.AsyncWith)):
             for item in node.items:
                 if item.optional_vars is not None:
@@ -483,27 +513,31 @@ def _assignment_pairs(tree: ast.AST):
 def _ssh_client_bindings(tree: ast.AST, bindings: dict[str, str]) -> dict[str, str]:
     """Map variables and attributes assigned from SSH client factories."""
     clients: dict[str, str] = {}
-    for target, value in _assignment_pairs(tree):
-        name = _fq_name(target)
-        if not name:
-            continue
-        if isinstance(value, ast.Call):
-            factory = _bound_name(value.func, bindings)
-            if factory.endswith(
-                (
-                    ".SSHClient",
-                    ".Transport",
-                    ".Connection",
-                    ".Group",
-                    ".SerialGroup",
-                    ".ThreadingGroup",
-                )
-            ):
-                clients[name] = factory
-        elif _fq_name(value) in clients:
-            clients[name] = clients[_fq_name(value)]
-        elif isinstance(value, ast.Subscript):
-            clients[name] = "unresolved"
+    pairs = list(_assignment_pairs(tree))
+    previous_count = -1
+    while len(clients) > previous_count:
+        previous_count = len(clients)
+        for target, value in pairs:
+            name = _fq_name(target)
+            if not name:
+                continue
+            if isinstance(value, ast.Call):
+                factory = _bound_name(value.func, bindings)
+                if factory.endswith(
+                    (
+                        ".SSHClient",
+                        ".Transport",
+                        ".Connection",
+                        ".Group",
+                        ".SerialGroup",
+                        ".ThreadingGroup",
+                    )
+                ):
+                    clients[name] = factory
+            elif _fq_name(value) in clients:
+                clients[name] = clients[_fq_name(value)]
+            elif isinstance(value, ast.Subscript):
+                clients[name] = "unresolved"
     return clients
 
 

@@ -1212,3 +1212,19 @@ def test_expanded_command_assignment_fails_closed(command):
 def test_parameter_expansion_as_data_remains_allowed():
     assert not _find_blocked_commands('value=${PR10642_UNSET:-ssh}; printf "%s" "$value"')
     assert not _find_blocked_commands("cmd='${PR10642_UNSET:-ssh}'; printf '%s' \"$cmd\"")
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "import paramiko\ndef deploy(client): client.connect(hostname='evil.example')\ndeploy(paramiko.SSHClient())",
+        "import paramiko\ndef deploy(client): client.connect(hostname='evil.example')\nc=paramiko.SSHClient(); deploy(client=c)",
+        "import paramiko\ndef deploy(*,client): client.connect(hostname='evil.example')\ndeploy(client=paramiko.SSHClient())",
+        "import paramiko\ndef deploy(client=paramiko.SSHClient()): client.connect(hostname='evil.example')\ndeploy()",
+        "import paramiko\ndef outer(source): inner(source)\ndef inner(client): client.connect(hostname='evil.example')\nouter(paramiko.SSHClient())",
+    ],
+)
+def test_helper_clients_require_approval(code):
+    assert _check_code_safety(code, session_id = "review") is not None
+    approve_hosts("review", ["evil.example"])
+    assert _check_code_safety(code, session_id = "review") is None
