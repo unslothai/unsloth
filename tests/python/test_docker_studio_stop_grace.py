@@ -32,9 +32,20 @@ def _program(name: str) -> str:
     return match.group(1)
 
 
+# Sourced under an EXIT trap so the wait the launcher exports for supervisord can be read
+# back; the check-only exit still runs the trap, and nothing is written to the host.
+_PROBE = r"""trap 'printf "WAIT=%s\n" "${UNSLOTH_STUDIO_STOP_WAIT_S-unset}"' EXIT; . "$1" """
+
+
 def _launch(**env: str) -> subprocess.CompletedProcess:
     e = dict(os.environ, UNSLOTH_STUDIO_LAUNCH_CHECK_ONLY = "1", JUPYTER_PORT = "8888", **env)
-    return subprocess.run(["bash", str(LAUNCH)], capture_output = True, text = True, env = e, timeout = 120)
+    return subprocess.run(
+        ["bash", "-c", _PROBE, "_", str(LAUNCH)],
+        capture_output = True,
+        text = True,
+        env = e,
+        timeout = 120,
+    )
 
 
 def test_supervisord_waits_for_the_save_and_then_kills_the_whole_tree():
@@ -51,34 +62,32 @@ def test_the_image_defaults_resolve_the_placeholder_without_the_launcher():
     assert "UNSLOTH_STUDIO_STOP_WAIT_S=150" in dockerfile
 
 
-def test_the_launcher_derives_supervisords_wait_from_the_budget():
-    body = LAUNCH.read_text(encoding = "utf-8")
-    assert (
-        "UNSLOTH_STUDIO_STOP_WAIT_S=$(( 10#$UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S + 30 ))" in body
-    )
-    assert body.index("UNSLOTH_STUDIO_STOP_WAIT_S=") < body.index(
-        "UNSLOTH_STUDIO_LAUNCH_CHECK_ONLY:-"
-    )
+# "0600" and "08" would read as octal, and an unset budget must still produce a wait.
+@pytest.mark.parametrize(
+    "value, expected", [(None, "150"), ("0", "30"), ("120", "150"), ("0600", "630"), ("08", "38")]
+)
+def test_the_launcher_derives_supervisords_wait_from_the_budget(value, expected):
+    res = _launch(**({} if value is None else {"UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S": value}))
+    assert res.returncode == 0, res.stderr
+    assert f"WAIT={expected}" in res.stdout, res.stdout
 
 
-@pytest.mark.parametrize("value", ["soon", "-1", "1.5", ""])
+@pytest.mark.parametrize("value", ["soon", "-1", "1.5"])
 def test_a_budget_that_is_not_a_number_of_seconds_is_refused(value: str):
     res = _launch(UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S = value)
-    if value == "":
-        assert res.returncode == 0, res.stderr
-        return
     assert res.returncode != 0
     assert f"UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S={value}" in res.stderr, res.stderr
+    assert "WAIT=unset" in res.stdout, res.stdout
 
 
-@pytest.mark.parametrize("value", ["0", "120", "0600"])
-def test_a_number_of_seconds_passes(value: str):
-    res = _launch(UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S = value)
+def test_an_empty_budget_falls_back_to_the_default():
+    res = _launch(UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S = "")
     assert res.returncode == 0, res.stderr
+    assert "WAIT=150" in res.stdout, res.stdout
 
 
 def _run_sh(
-    tmp_path: Path, budget: "str | None"
+    tmp_path: Path, budget: "str | None", **extra: str
 ) -> "tuple[subprocess.CompletedProcess, list[str]]":
     bindir = tmp_path / "bin"
     bindir.mkdir()
@@ -104,6 +113,7 @@ def _run_sh(
     )
     if budget is not None:
         env["UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S"] = budget
+    env.update(extra)
     res = subprocess.run(
         [shutil.which("bash"), str(DOCKER / "run.sh"), "true"],
         capture_output = True,
@@ -137,12 +147,21 @@ def test_run_sh_refuses_a_budget_that_is_not_a_number_of_seconds(tmp_path, budge
     assert argv == []
 
 
-def test_run_sh_forwards_the_budget_into_the_container():
-    body = (DOCKER / "run.sh").read_text(encoding = "utf-8")
-    assert "ENV_FORWARD+=(-e UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S)" in body
+# The watchdog cap travels too: a budget raised past it alone waits on a save it kills.
+_BUDGET_VARS = ("UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S", "UNSLOTH_STUDIO_TRAINING_STOP_TIMEOUT_S")
 
 
-def test_the_server_asks_for_a_save_before_it_kills_the_worker():
-    body = (REPO_ROOT / "studio" / "backend" / "run.py").read_text(encoding = "utf-8")
-    block = body[body.index("from core.training.training import _training_backend") :]
-    assert block.index("stop_for_shutdown()") < block.index("force_terminate()")
+@_posix_only
+def test_run_sh_forwards_both_budgets_into_the_container(tmp_path):
+    res, argv = _run_sh(tmp_path, "900", UNSLOTH_STUDIO_TRAINING_STOP_TIMEOUT_S = "900")
+    assert res.returncode == 0, res.stderr
+    for name in _BUDGET_VARS:
+        assert argv[argv.index(name) - 1] == "-e", name
+
+
+@_posix_only
+def test_run_sh_forwards_nothing_the_host_did_not_set(tmp_path):
+    res, argv = _run_sh(tmp_path, None)
+    assert res.returncode == 0, res.stderr
+    for name in _BUDGET_VARS:
+        assert name not in argv

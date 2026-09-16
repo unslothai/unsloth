@@ -45,6 +45,9 @@
 #   UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S=120  how long a training run gets to save a
 #                                           checkpoint on docker stop; --stop-timeout is
 #                                           set 30s above it
+#   UNSLOTH_STUDIO_TRAINING_STOP_TIMEOUT_S=600  when the training stop watchdog gives up
+#                                           on a saving worker; raise it alongside the
+#                                           budget above, which it caps
 # --rocm only:
 #   UNSLOTH_ROCM=1                          same as a leading --rocm
 #   HSA_OVERRIDE_GFX_VERSION                force a gfx target (e.g. 10.3.0)
@@ -296,7 +299,9 @@ declare -a ENV_FORWARD=(-e HF_HUB_ENABLE_HF_TRANSFER=1)
 [[ -n "${JUPYTER_PASSWORD:-}"           ]] && ENV_FORWARD+=(-e JUPYTER_PASSWORD)
 [[ -n "${UNSLOTH_STUDIO_PASSWORD:-}"    ]] && ENV_FORWARD+=(-e UNSLOTH_STUDIO_PASSWORD)
 [[ -n "${UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT:-}" ]] && ENV_FORWARD+=(-e UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT)
+# both, or raising only the shutdown budget waits on a save the watchdog kills at its own cap
 [[ -n "${UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S:-}" ]] && ENV_FORWARD+=(-e UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S)
+[[ -n "${UNSLOTH_STUDIO_TRAINING_STOP_TIMEOUT_S:-}" ]] && ENV_FORWARD+=(-e UNSLOTH_STUDIO_TRAINING_STOP_TIMEOUT_S)
 [[ -n "${PUBLIC_KEY:-}"                 ]] && ENV_FORWARD+=(-e PUBLIC_KEY)
 [[ -n "${SSH_KEY:-}"                    ]] && ENV_FORWARD+=(-e SSH_KEY)
 [[ -n "${UNSLOTH_JUPYTER_CLOUDFLARE:-}" ]] && ENV_FORWARD+=(-e UNSLOTH_JUPYTER_CLOUDFLARE)

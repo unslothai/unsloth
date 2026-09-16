@@ -107,7 +107,7 @@ Turing has no bfloat16; Unsloth falls back to float16 there. AMD GPUs are not su
 | `UNSLOTH_SKIP_NOTEBOOK_REFRESH=1` | Do not refresh the notebooks from GitHub on start; the copy baked into the image is still used. |
 | `UNSLOTH_SKIP_NOTEBOOK_SYNC=1` | Do not set up the notebooks at all: nothing is created at `/workspace/unsloth-notebooks` or `/workspace/Unsloth Notebooks` (copies left there by an earlier start on a mounted `/workspace` stay as they are). |
 | `HF_TOKEN`, `WANDB_API_KEY` | Forwarded to Hugging Face and Weights and Biases. |
-| `UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S` | How long a training run gets to save a checkpoint when the container stops. Default `120`. |
+| `UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S` | How long a training run gets to save a checkpoint when the container stops. Default `120`, and capped by `UNSLOTH_STUDIO_TRAINING_STOP_TIMEOUT_S` (default `600`). |
 
 On a host with no GPU, Studio, JupyterLab and its kernels, and login shells all run in
 CPU mode. A non-login `docker exec` is built from the image, not the container's first
@@ -140,13 +140,17 @@ Studio's code (its venv, source tree, Node, prebuilt tools) ships in the image u
 
 ## Stopping while training
 
-On `docker stop`, `docker restart` and a host shutdown, Studio stops a running training job at the next step and saves a checkpoint before it exits, so the run can be resumed from the Training page. Docker only waits 10 seconds by default, which is not enough for a large model, so give it the budget:
+On `docker stop` and `docker restart`, Studio stops a running training job at the next step and saves a checkpoint before it exits, so the run can be resumed from the Training page. Docker only waits 10 seconds by default, which is not enough for a large model, so give it the budget:
 
 ```bash
 docker stop -t 150 <container>
 ```
 
 or `stop_grace_period: 150s` in Compose. `docker/run.sh` sets this for you. `UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S` (default 120) is the time Studio itself waits for the save; the container's own limit is 30 seconds above it.
+
+A save is also bounded by the training stop watchdog, which force-terminates a worker that has not finished after `UNSLOTH_STUDIO_TRAINING_STOP_TIMEOUT_S` (default 600). Raising the shutdown budget past that does nothing on its own; raise both, and `docker/run.sh` forwards both.
+
+A host shutdown is not covered: the daemon stops every container under its own `--shutdown-timeout` (15 seconds by default), so a save that takes longer is cut short. Stop the container yourself before shutting the host down.
 
 ## Updating inside a running container
 

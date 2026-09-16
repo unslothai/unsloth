@@ -2831,8 +2831,12 @@ def _pid_is_studio_server(pid: int, created_times: "Sequence[float | None]" = ()
 
 
 def _graceful_shutdown_on_sigterm() -> None:
+    """Route SIGTERM (docker stop, `unsloth studio stop`) into the wait loop's Ctrl+C path,
+    which stops and saves a running training job before anything is killed."""
     import signal as _signal
+
     def _handler(signum, frame):
+        # Restore the default so a second signal force-quits if the shutdown stalls.
         _signal.signal(_signal.SIGTERM, _signal.SIG_DFL)
         raise KeyboardInterrupt
 

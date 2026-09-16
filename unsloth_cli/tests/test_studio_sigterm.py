@@ -3,12 +3,12 @@
 
 """SIGTERM (docker stop through supervisord, `unsloth studio stop`) takes the same path as Ctrl+C.
 
-The `unsloth studio` and `unsloth start` commands run the server in-process and only
-caught KeyboardInterrupt, so a SIGTERM killed the process with Python's default action:
-no `_graceful_shutdown`, no stop-and-save for a running training job, no child cleanup.
+`unsloth studio` and `unsloth start` run the server in-process and caught only
+KeyboardInterrupt, so a SIGTERM died on Python's default action: no `_graceful_shutdown`,
+no stop-and-save for a running training job, no child cleanup.
 """
 
-import re
+import ast
 import signal
 from pathlib import Path
 
@@ -17,6 +17,28 @@ import pytest
 from unsloth_cli.commands import studio as studio_mod
 
 STUDIO_SRC = Path(studio_mod.__file__).read_text(encoding = "utf-8")
+
+
+def _installs_before_waiting(fn: ast.FunctionDef) -> bool:
+    waits = [
+        node.lineno
+        for node in ast.walk(fn)
+        if isinstance(node, ast.While)
+        and any(
+            isinstance(inner, ast.Attribute) and inner.attr == "_shutdown_event"
+            for inner in ast.walk(node)
+        )
+    ]
+    if not waits:
+        return False
+    return any(
+        isinstance(stmt, ast.Expr)
+        and isinstance(stmt.value, ast.Call)
+        and isinstance(stmt.value.func, ast.Name)
+        and stmt.value.func.id == "_graceful_shutdown_on_sigterm"
+        and stmt.lineno < min(waits)
+        for stmt in fn.body
+    )
 
 
 @pytest.fixture
@@ -36,12 +58,7 @@ def test_sigterm_becomes_a_keyboard_interrupt_once(restore_sigterm):
 
 
 def test_both_server_wait_loops_install_the_handler():
-    loops = [
-        m.start() for m in re.finditer(r"run_mod\._shutdown_event\.wait\(timeout = 1\)", STUDIO_SRC)
-    ]
-    assert len(loops) == 2, loops
-    for loop in loops:
-        before = STUDIO_SRC[:loop]
-        assert (
-            "_graceful_shutdown_on_sigterm()" in before[before.rindex("run_server(**run_kwargs)") :]
-        )
+    """Both in-process commands, matched on the parsed tree so a commented-out call fails."""
+    functions = [n for n in ast.walk(ast.parse(STUDIO_SRC)) if isinstance(n, ast.FunctionDef)]
+    installed = sorted(fn.name for fn in functions if _installs_before_waiting(fn))
+    assert installed == ["run", "studio_default"], installed

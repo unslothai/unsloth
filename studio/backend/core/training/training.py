@@ -72,6 +72,8 @@ _STOP_TIMEOUT_S = _env_int("UNSLOTH_STUDIO_TRAINING_STOP_TIMEOUT_S", 600)
 _CANCEL_TIMEOUT_S = _env_int("UNSLOTH_STUDIO_TRAINING_CANCEL_TIMEOUT_S", 120)
 # Generous: is_run_finished already unwedges the UI, and a post-run wandb sync can legitimately take a while.
 _COMPLETE_EXIT_GRACE_S = _env_int("UNSLOTH_STUDIO_TRAINING_COMPLETE_EXIT_GRACE_S", 120)
+# Also bounded by the stop watchdog above: raising this past _STOP_TIMEOUT_S only waits longer
+# for a worker that gets force-terminated at the watchdog's cap anyway.
 _SHUTDOWN_STOP_TIMEOUT_S = _env_int("UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S", 120)
 
 # A few short retries so a transient SQLite lock doesn't lose the terminal state.

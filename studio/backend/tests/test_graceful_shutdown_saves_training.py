@@ -1,11 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A SIGTERM to the Studio process alone (docker stop through supervisord, `unsloth studio stop`)
-reaches the same stop-and-save path as the Stop button.
+"""Shutdown order: both trainers are asked to stop and save before anything is torn down.
 
-The save has to finish before uvicorn's lifespan teardown starts: measured on the
-published Docker image, a save that overlapped the teardown lost the worker mid-write.
+Measured on the published Docker image, a save that overlapped uvicorn's lifespan teardown
+lost the worker mid-write, so the wait has to come before should_exit and the force-kill.
 """
 
 from types import SimpleNamespace
