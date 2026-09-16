@@ -710,13 +710,39 @@ const ANTHROPIC_REASONING_MODELS = [
     supportsOff: true,
     levels: ["none", "low", "medium", "high"],
   },
+  {
+    // Earlier Claude 4 and 3.7 Sonnet, which take manual budget_tokens only. Listed after the
+    // 4-5..4-8 entries so those match first, and kept here rather than left to the catalog:
+    // models.dev carries no entry for these ids, so without this the picker offers no thinking
+    // control at all and the backend's manual shape is unreachable.
+    prefixes: [
+      "claude-opus-4-1",
+      "claude-opus-4-0",
+      "claude-opus-4-2025",
+      "claude-sonnet-4-0",
+      "claude-sonnet-4-2025",
+      "claude-3-7-sonnet",
+    ],
+    supportsOff: true,
+    levels: ["none", "low", "medium", "high"],
+  },
 ] as const;
 
 function matchesModelPrefix(
   modelId: string,
   prefixes: readonly string[],
 ): boolean {
-  return prefixes.some((prefix) => modelId.startsWith(prefix));
+  // Mirrors `_anthropic_spec_prefix_matches` in external_provider.py. A version prefix has to
+  // stop at a boundary or "claude-opus-4-1" also claims "claude-opus-4-15"; a date-truncated
+  // prefix such as "claude-opus-4-2025" has to run on into the rest of the date.
+  return prefixes.some((prefix) => {
+    if (modelId === prefix) return true;
+    if (!modelId.startsWith(prefix)) return false;
+    const rest = modelId.slice(prefix.length);
+    if (rest.startsWith("-")) return true;
+    const trailingDigits = /\d+$/.exec(prefix)?.[0] ?? "";
+    return trailingDigits.length >= 4 && /^\d/.test(rest);
+  });
 }
 
 function resolveAnthropicReasoningEffortCapabilities(modelId: string): ReasoningCaps {
