@@ -2898,7 +2898,14 @@ exit 1
             if (Test-Path -LiteralPath $Root) {
                 $occupied = $true
                 try {
+                    # The install lock's own file does not count as occupancy. Enter-StudioInstallLock
+                    # creates it in this very root before anything else runs, so counting it would
+                    # make a fresh env-mode root look like somebody else's directory and refuse the
+                    # claim. An install that then died before the venv marker at
+                    # Write-StudioVenvOwnerMarker would leave a root the uninstaller does not
+                    # recognise, which is the opposite of what the marker is for.
                     $occupied = @(Get-ChildItem -LiteralPath $Root -Force -ErrorAction Stop |
+                        Where-Object { $_.Name -ne $script:StudioInstallLockFileName } |
                         Select-Object -First 1).Count -gt 0
                 } catch { $occupied = $true }
                 $claimable = (
@@ -5215,6 +5222,19 @@ exit 0
             $existedBefore = [System.IO.Directory]::Exists($Path)
             $null = [System.IO.Directory]::CreateDirectory($Path)
             $lockPath = Join-Path $Path $script:StudioInstallLockFileName
+            # A link planted at the lock path is not a lock, it is a way to point our exclusive
+            # handle at somebody else's file: File.Open follows it, so the target would be held
+            # open with FileShare.None for the whole install even though nothing is written to it.
+            # Remove the link itself, never its target, then let the open below create a real
+            # file. Get-Item -Force rather than Test-Path, which follows a dangling link and
+            # answers false; Write-StudioRootOwnerMarker guards the same hazard the same way.
+            try {
+                $existingLock = Get-Item -LiteralPath $lockPath -Force -ErrorAction SilentlyContinue
+                if ($existingLock -and
+                    ($existingLock.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                    Remove-Item -LiteralPath $lockPath -Force -ErrorAction Stop
+                }
+            } catch {}
             try {
                 $stream = [System.IO.File]::Open(
                     $lockPath,
@@ -5222,21 +5242,33 @@ exit 0
                     [System.IO.FileAccess]::ReadWrite,
                     [System.IO.FileShare]::None)
             } catch [System.IO.IOException] {
-                # A sharing violation is another installer holding it, which is the answer this
-                # function exists to give. Any other IO failure is not, so it is rethrown below.
+                # Only a sharing or lock violation means "another installer holds it". Anything
+                # else, a transient storage fault or a network share dropping out, is a real
+                # failure and must not be reported as a concurrent install: that hides the fault
+                # and sends the user looking for a second installer that does not exist.
+                # HResult's low 16 bits carry the Win32 code on Windows: 32 is
+                # ERROR_SHARING_VIOLATION and 33 is ERROR_LOCK_VIOLATION. Off Windows .NET
+                # implements FileShare with flock and reports the errno instead, 11 for
+                # EAGAIN/EWOULDBLOCK, which is what the test suite exercises on Linux. Measured
+                # rather than assumed, because the first version of this check only knew the
+                # Windows codes and turned every real conflict on Linux into a rethrow.
+                #
+                # A directory sitting where the lock file should be raises
+                # UnauthorizedAccessException, not IOException, so it is never caught here and
+                # already reaches the caller as the failure it is.
+                $code = $_.Exception.HResult -band 0xFFFF
+                if ($code -ne 32 -and $code -ne 33 -and $code -ne 11) { throw }
                 if ($stream) { $stream.Dispose() }
                 Exit-StudioInstallMutex -Mutex $mutex
                 return $null
             }
-            # Owner details for support logs only; nothing reads them back. OpenOrCreate does not
-            # truncate, so clear whatever a previous run left before writing.
-            try {
-                $stream.SetLength(0)
-                $stamp = [System.Text.Encoding]::UTF8.GetBytes(
-                    "pid=$PID started=$([DateTime]::UtcNow.ToString('o'))`n")
-                $stream.Write($stamp, 0, $stamp.Length)
-                $stream.Flush()
-            } catch {}
+            # Nothing is written to the handle on purpose. Holding it open exclusively IS the
+            # lock, and writing would be actively unsafe: File.Open follows a symbolic or hard
+            # link, so a `.unsloth-install.lock` planted in the destination by another user would
+            # have its TARGET truncated merely by starting the installer. That matters most for a
+            # shared or custom root under an elevated install, which is exactly where a planted
+            # link is plausible. Write-StudioRootOwnerMarker already guards the same hazard the
+            # same way; this follows it rather than inventing a second answer.
             # Taking the lock is now the first thing that can create the root, earlier than
             # anything else writes to it. scripts/uninstall.ps1's _IsStudioRoot reads exactly this
             # marker so "a partial install identifies itself instead of being guessed at"; without

@@ -195,7 +195,57 @@ try {
         Stop-Holder $holder
     }
 
-    # 6. A holder that dies without releasing must not wedge the destination: the OS closes the
+    # 6. A planted link at the lock path must not have its target touched. File.Open follows a
+    #    symbolic or hard link, so anything written through that handle lands in the link's
+    #    TARGET. Another user who can write into a shared or custom root could then have an
+    #    arbitrary writable file emptied merely by someone starting the installer. Taking the
+    #    lock writes nothing at all, which is why this holds.
+    $victimDir = Join-Path $tmp "victim-root"
+    New-Item -ItemType Directory -Force -Path $victimDir | Out-Null
+    $victim = Join-Path $tmp "precious.txt"
+    $precious = "do not truncate me"
+    $precious | Set-Content -LiteralPath $victim
+    $planted = Join-Path $victimDir $lockFileName
+    $plantedOk = $false
+    try {
+        New-Item -ItemType SymbolicLink -Path $planted -Target $victim -ErrorAction Stop | Out-Null
+        $plantedOk = $true
+    } catch {
+        Write-Host "  SKIP  could not plant a file link: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+    if ($plantedOk) {
+        $plantedLock = $null
+        try { $plantedLock = Enter-StudioInstallLock -Path $victimDir } catch {}
+        # Checked WHILE the lock is held, which is the point: following the link would leave the
+        # victim opened with FileShare.None for the whole install, so it would be unreadable here
+        # even though nothing was written to it. That is a denial of service on somebody else's
+        # file, and it is why the link is removed rather than merely not written to.
+        $victimReadable = $false
+        try { $victimReadable = ((Get-Content -Raw -LiteralPath $victim).Trim() -eq $precious) } catch {}
+        Check "a planted link's target stays readable while the lock is held" $victimReadable
+        Check "the lock file is a real file, not the planted link" (
+            $null -ne (Get-Item -LiteralPath $planted -Force -ErrorAction SilentlyContinue) -and
+            ((Get-Item -LiteralPath $planted -Force).Attributes -band
+                [System.IO.FileAttributes]::ReparsePoint) -eq 0)
+        if ($plantedLock) { Exit-StudioInstallLock -Lock $plantedLock }
+        Check "a planted link's target is not truncated" (
+            (Get-Content -Raw -LiteralPath $victim).Trim() -eq $precious)
+    }
+
+    # 7. A real I/O fault must not be reported as "another installer is running". Only a sharing
+    #    or lock violation means that. Here the lock path already exists as a DIRECTORY, so the
+    #    open fails for a reason that is nobody's concurrent install, and the caller must see the
+    #    failure rather than a misleading "wait for the other install to finish".
+    $blockedRoot = Join-Path $tmp "blocked-root"
+    New-Item -ItemType Directory -Force -Path (Join-Path $blockedRoot $lockFileName) | Out-Null
+    $blockedThrew = $false
+    $blockedResult = "not-run"
+    try { $blockedResult = Enter-StudioInstallLock -Path $blockedRoot } catch { $blockedThrew = $true }
+    Check "a non-sharing failure is not silently reported as a busy lock" (
+        $blockedThrew -or $null -ne $blockedResult)
+    if ($blockedResult -and $blockedResult -ne "not-run") { Exit-StudioInstallLock -Lock $blockedResult }
+
+    # 8. A holder that dies without releasing must not wedge the destination: the OS closes the
     #    handle, so the next run takes the lock. This is why the file is not deleted on release.
     $crashDir = Join-Path $tmp "crashed"
     New-Item -ItemType Directory -Force -Path $crashDir | Out-Null
