@@ -9,20 +9,21 @@ This is the AMD counterpart to [`unsloth/unsloth`](https://hub.docker.com/r/unsl
 AMD GPUs are reached through the kernel driver's device nodes, not through a container toolkit, so the run command differs from the NVIDIA one:
 
 ```bash
-GPU_GROUPS=$(for g in video render; do
+GPU_FLAGS="--device /dev/kfd"
+[ -e /dev/dri ] && GPU_FLAGS="$GPU_FLAGS --device /dev/dri"
+for g in video render; do
   gid=$(getent group "$g" | cut -d: -f3)
-  [ -n "$gid" ] && printf -- '--group-add %s ' "$gid"
-done)
+  [ -n "$gid" ] && GPU_FLAGS="$GPU_FLAGS --group-add $gid"
+done
 
 docker run --rm -it \
-  --device /dev/kfd --device /dev/dri \
-  $GPU_GROUPS \
+  $GPU_FLAGS \
   --ipc=host \
   -v "$HOME/.cache/huggingface":/workspace/.cache/huggingface \
   unsloth/unsloth-rocm
 ```
 
-That loop is there for two reasons. `--group-add` needs the numeric group ids, because a name is resolved inside the container, where the host's `video` and `render` groups do not exist, so passing the names can add the wrong groups and leave `/dev/kfd` unreadable. And a minimal host may have no `render` group at all, in which case a plain `--group-add "$(getent group render | cut -d: -f3)"` expands to an empty argument that Docker rejects before the container starts.
+Those few lines build the flags the way `docker/run.sh` does, and each part earns its place. `--group-add` needs the numeric group ids, because a name is resolved inside the container, where the host's `video` and `render` groups do not exist, so passing the names can add the wrong groups and leave `/dev/kfd` unreadable. A minimal host may have no `render` group at all, and a plain `--group-add "$(getent group render | cut -d: -f3)"` would then expand to an empty argument. And Docker refuses to start over a device that does not exist, so `/dev/dri` is named only when it is there, leaving the entrypoint to explain an incomplete driver rather than failing in the daemon.
 
 The Hugging Face mount is not optional if you care about your downloads: `HF_HOME` inside the container is `/workspace/.cache/huggingface`, which lives in the container's writable layer, so without it every model is fetched again after `docker rm`.
 
@@ -33,11 +34,10 @@ curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/docker/run.s
 bash run.sh --rocm
 ```
 
-Check the GPU is visible before anything else, with `GPU_GROUPS` set as above:
+Check the GPU is visible before anything else, with `GPU_FLAGS` set as above:
 
 ```bash
-docker run --rm --device /dev/kfd --device /dev/dri \
-  $GPU_GROUPS \
+docker run --rm $GPU_FLAGS \
   -v "$HOME/.cache/huggingface":/workspace/.cache/huggingface \
   unsloth/unsloth-rocm python /workspace/smoke_test_rocm.py
 ```
@@ -61,7 +61,7 @@ RDNA2 and newer, and CDNA, except `gfx1033`. The image is built against the gene
 
 Three cases need care:
 
-- **Strix Halo / Strix Point APUs (`gfx1150`, `gfx1151`, `gfx1152`) and RDNA4 (`gfx1200`, `gfx1201`)** run on the generic wheels, and the entrypoint says so on start, but AMD's per-architecture wheels carry kernels tuned for them. Build with `ROCM_GFX=gfx1151` (or your arch) if you want those.
+- **Strix Halo / Strix Point APUs (`gfx1150`, `gfx1151`, `gfx1152`) and RDNA4 (`gfx1200`, `gfx1201`)** run on the generic wheels, and the entrypoint says so on start, but AMD's per-architecture wheels carry fixes the generic index lacks, not only tuning: the `_grouped_mm` segfault on `gfx1151` is one of them. The generic image may well work for what you run, and everything measured below was measured on it, but if training crashes on one of these arches, rebuilding with `ROCM_GFX=gfx1151` (or your arch) is the fix rather than a speedup.
 - **Van Gogh (`gfx1033`, Steam Deck)** is refused outright. It is RDNA2, but training diverges to NaN under ROCm while forward passes look valid, so the entrypoint exits rather than train on it, and `HSA_OVERRIDE_GFX_VERSION` does not help because it hides the silicon, not the arithmetic.
 - **Vega 20 (`gfx906`)** lost its kernels after ROCm 6.3. Build with `ROCM_GFX=gfx906` and `ROCM_VERSION=6.3.4`; that variant ships without bitsandbytes, since no prebuilt wheel carries gfx906 kernels.
 
