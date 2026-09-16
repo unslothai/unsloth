@@ -157,6 +157,25 @@ def test_the_upgrade_names_the_accelerator_it_found(
     assert "https://pytorch.org/get-started/locally/" in message
 
 
+def test_a_conda_torch_is_pointed_at_conda_not_pip(patched_torch, monkeypatch, tmp_path):
+    """conda writes no local tag, so a conda torch reads like a PyPI one by version alone.
+    `pip install --upgrade torch` there overlays the conda-managed files with a PyPI wheel
+    and can change the backend with them, so the remedy has to name conda instead."""
+    conda_meta = tmp_path / "conda-meta"
+    conda_meta.mkdir()
+    (conda_meta / "pytorch-2.7.0-py3.12_cuda12.4_cudnn9_0.json").write_text("{}", encoding = "utf-8")
+    monkeypatch.setattr(import_fixes.sys, "prefix", str(tmp_path))
+    monkeypatch.setattr(patched_torch, "__version__", "2.7.0")
+
+    with pytest.raises(import_fixes.UnslothTorchTooOldError) as raised:
+        _access_from("transformers.integrations.finegrained_fp8", "unsloth_probe_dtype")
+
+    message = str(raised.value)
+    assert "conda installed this torch" in message
+    assert "conda update pytorch" in message
+    assert "--index-url" not in message
+
+
 @pytest.mark.parametrize("torch_version", ["2.7.0", "2.9.0.dev20250101", "2.7.0+fbcode"])
 def test_a_pypi_torch_gets_no_accelerator_note(patched_torch, monkeypatch, torch_version):
     """NEGATIVE CONTROL: no recognised backend tag means PyPI is already the right
@@ -384,6 +403,16 @@ def test_the_installed_triton_is_not_flagged():
         ("#define PY_SSIZE_T_CLEAN\n#undef PY_SSIZE_T_CLEAN\n", "", True),
         ("", "#define PY_SSIZE_T_CLEAN\n", True),
         ('const char *why = "PY_SSIZE_T_CLEAN";\n', "", True),
+        # The compiler strips comments before the preprocessor sees a directive, so a
+        # define that exists only inside one is not a definition at all.
+        ("/*\n#define PY_SSIZE_T_CLEAN\n*/\n", "", True),
+        ("/* x */ /*\n#  define PY_SSIZE_T_CLEAN 1\n*/\n", "", True),
+        ("//#define PY_SSIZE_T_CLEAN\n", "", True),
+        # A real define followed by an UNDEF hidden in a comment is still defined, which
+        # is the control for blanking too much.
+        ("#define PY_SSIZE_T_CLEAN\n/*\n#undef PY_SSIZE_T_CLEAN\n*/\n", "", False),
+        # A comment between the define and the include changes nothing.
+        ("#define PY_SSIZE_T_CLEAN\n/* now include it */\n", "", False),
     ],
 )
 def test_the_macro_only_counts_when_it_is_in_effect(monkeypatch, tmp_path, prefix, suffix, named):

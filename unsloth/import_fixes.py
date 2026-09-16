@@ -1585,7 +1585,20 @@ def _torch_accelerator_note(torch_version_raw):
     true for every release.
     """
     local = _torch_local_tag(torch_version_raw)
-    if not local or not _TORCH_BACKEND_INDEX.fullmatch(local):
+    if not local:
+        # conda never writes a local tag, so an untagged version alone reads like a PyPI
+        # install. `pip install --upgrade torch` into a conda environment overlays the
+        # conda-managed files with a PyPI wheel, and the backend it lands on is whatever
+        # PyPI ships by default rather than the one the channel built.
+        if _torch_is_conda_managed(torch_version_raw):
+            return (
+                "    conda installed this torch, so upgrade it the same way "
+                "(`conda update pytorch` on the channel it came from). `pip install "
+                "--upgrade` would overlay the conda files with a PyPI wheel and can "
+                "change the backend with them."
+            )
+        return ""
+    if not _TORCH_BACKEND_INDEX.fullmatch(local):
         return ""
     family = local.rstrip("0123456789.").lower()
     family = {"cu": "CUDA", "rocm": "ROCm", "xpu": "XPU", "cpu": "CPU"}.get(family, local)
@@ -2075,6 +2088,30 @@ _PY_SSIZE_T_CLEAN_DIRECTIVE = re.compile(
 _PYTHON_H_INCLUDE = re.compile(r"^[ \t]*#[ \t]*include[ \t]*[<\"][^>\"]*Python\.h[>\"]", re.M)
 
 
+_C_COMMENT_OR_STRING = re.compile(
+    r"/\*.*?\*/|//[^\n]*|\"(?:\\.|[^\"\\\n])*\"|'(?:\\.|[^'\\\n])*'",
+    re.S,
+)
+
+
+def _blank_c_comments(source: str) -> str:
+    """`source` with comment and string-literal spans blanked, offsets and lines intact.
+
+    The compiler removes comments before the preprocessor ever sees a directive, so a
+    `#define PY_SSIZE_T_CLEAN` that only appears inside a `/* ... */` is not a definition
+    at all, and treating it as one silences the warning on a shim that still dies at the
+    first kernel launch. Blanked rather than deleted so every span keeps its length: the
+    scan below compares directive positions against the `#include <Python.h>` position,
+    and deleting text would move one relative to the other. Newlines are kept for the same
+    reason, since both patterns are line-anchored.
+    """
+    def blank(match):
+        text = match.group(0)
+        return "".join("\n" if character == "\n" else " " for character in text)
+
+    return _C_COMMENT_OR_STRING.sub(blank, source)
+
+
 def _defines_py_ssize_t_clean_before_python_h(source: str) -> bool:
     """Is the macro in effect where CPython needs it: defined, and still defined, at the
     point Python.h is included.
@@ -2090,6 +2127,7 @@ def _defines_py_ssize_t_clean_before_python_h(source: str) -> bool:
     The LAST directive before the include is the one that decides, which is what makes
     the `#define` / `#undef` pair read correctly rather than just the presence of either.
     """
+    source = _blank_c_comments(source)
     include = _PYTHON_H_INCLUDE.search(source)
     if include is None:
         return False
