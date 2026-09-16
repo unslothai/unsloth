@@ -24,6 +24,10 @@ import {
 } from "@/features/chat";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import {
+  SharedRunConfigControls,
+  cancelRunConfigImportForEdit,
+} from "@/features/share-run-configs";
+import {
   type VramBudgetSettings,
   dropVramBudgetRetry,
   flushVramBudgetSave,
@@ -2481,6 +2485,7 @@ export function ModelConfigPage({
   const gpuIndexKind =
     pinnableGpuContext(gpuDevices, resolvedIsDiffusion).indexKind ?? null;
   const update = (patch: Partial<PerModelConfig>) => {
+    cancelRunConfigImportForEdit(draftKey);
     // Every control lands here and nothing else does: the hydration effect's own sanitising
     // writes go through setConfig, and marking those would have the read refuse its result.
     markModelConfigDraftEdited(draftKey);
@@ -3055,7 +3060,10 @@ export function ModelConfigPage({
   };
 
   return (
-    <div className="flex flex-col">
+    <div
+      className="flex flex-col"
+      onChange={() => cancelRunConfigImportForEdit(draftKey)}
+    >
       {variant === "page" && showHeader && (
         <div className="flex items-center gap-2.5 pb-4">
           {onBack && (
@@ -3255,6 +3263,7 @@ export function ModelConfigPage({
             id={rememberId}
             checked={remember}
             onCheckedChange={(checked) => {
+              cancelRunConfigImportForEdit(draftKey);
               // Not in setRemember, which the save path calls again to settle the box. An
               // unticked Remember is a pending Forget the next read would otherwise re-tick.
               markModelConfigDraftEdited(draftKey);
@@ -3282,6 +3291,7 @@ export function ModelConfigPage({
             className="h-8"
             disabled={atDefault}
             onClick={() => {
+              cancelRunConfigImportForEdit(draftKey);
               // Reset writes through setConfig, not update, so it marks the draft itself.
               markModelConfigDraftEdited(draftKey);
               // And drops the raw edit: token equality alone would make the discarded text
@@ -3297,6 +3307,22 @@ export function ModelConfigPage({
           >
             Reset
           </Button>
+          <SharedRunConfigControls
+            target={target}
+            config={config}
+            ready={!extraArgsHydrating}
+            canImport={variant !== "sidebar"}
+            hydrated={
+              !target.isGguf ||
+              resolvedIsDiffusion ||
+              isExtraArgsHydratedForDraft(draftKey)
+            }
+            disabled={
+              sharedExtraArgsRefused ||
+              (!extraArgsLoadable && !sharedExtraArgsCleared)
+            }
+            onImport={() => setAutoOpenAdvanced(true)}
+          />
           <Button
             type="button"
             size="sm"

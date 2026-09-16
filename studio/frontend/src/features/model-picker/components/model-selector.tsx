@@ -400,6 +400,7 @@ function ModelSelectorContent({
   const [configTarget, setConfigTarget] = useState<ModelPickTarget | null>(
     null,
   );
+  const contentRef = useRef<HTMLDivElement>(null);
   const [adoptedConfigRequestId, setAdoptedConfigRequestId] = useState<
     string | null
   >(null);
@@ -521,7 +522,13 @@ function ModelSelectorContent({
 
   return (
     <PopoverContent
+      ref={contentRef}
       align="start"
+      onFocusOutside={(event) => {
+        if (contentRef.current?.querySelector("[data-shared-run-config]")) {
+          event.preventDefault();
+        }
+      }}
       alignOffset={10}
       aria-label={
         visibleConfigTarget

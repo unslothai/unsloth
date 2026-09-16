@@ -16,7 +16,11 @@ async function restoreMainWindow(): Promise<void> {
   await invoke("reveal_main_window");
 }
 
-export function DeepLinkHandler() {
+export function DeepLinkHandler({
+  onOpenUrls,
+}: {
+  onOpenUrls?: (urls: string[]) => boolean;
+}) {
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -28,6 +32,11 @@ export function DeepLinkHandler() {
 
     const handleUrls = (urls: string[]): boolean => {
       if (disposed) return false;
+      if (onOpenUrls?.(urls)) {
+        acceptIntent.clear();
+        void restoreMainWindow().catch(() => undefined);
+        return true;
+      }
 
       let hasValidIntent = false;
       let intent: ReturnType<typeof parseUnslothDeepLink> = null;
@@ -84,7 +93,7 @@ export function DeepLinkHandler() {
       disposed = true;
       unlisten?.();
     };
-  }, [navigate]);
+  }, [navigate, onOpenUrls]);
 
   return null;
 }

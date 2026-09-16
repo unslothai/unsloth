@@ -48,8 +48,8 @@ export const BUDGET = {
   // days. rawBytes stays put at 64.7 KB spare so both halves come up for one re-measure
   // together instead of each dragging main red on its own.
   transferBytes: 1_690_000,
-  // same-toolchain merge comparison: 5381.0 to 5384.0 kib raw, with 84 eager chunks.
-  rawBytes: 5_520_000,
+  // same-toolchain merge comparison: 5390.4 to 5408.2 kib raw, with 84 eager chunks.
+  rawBytes: 5_540_000,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

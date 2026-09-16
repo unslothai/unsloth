@@ -29,6 +29,7 @@ import { bootstrapPersistedCredentials } from "@/features/credentials/bootstrap"
 import { backfillModelOverrides } from "@/features/model-picker/api/migrate-model-overrides";
 import { usePersonalizationSync } from "@/features/profile";
 import { RemoteCodeConsentDialog } from "@/features/security";
+import { SharedRunConfigLinkHandler } from "@/features/share-run-configs";
 import {
   SettingsDialogMount,
   useSettingsDialogStore,
@@ -686,6 +687,7 @@ function RootLayout() {
   return (
     <AppProvider>
       <CredentialBootstrapGate active={!isAuthFlowRoute}>
+        <SharedRunConfigLinkHandler />
         {content}
       </CredentialBootstrapGate>
     </AppProvider>
