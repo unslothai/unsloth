@@ -3885,7 +3885,7 @@ def _deliberate_cpu_torch() -> bool:
     return _explicit_cpu_torch_index_pin() or _expected_torch_flavor_was_pinned("cpu")
 
 
-def _ensure_cuda_torch() -> None:
+def _ensure_cuda_torch(*, probe_only: bool = False) -> "bool | None":
     """Repair a venv whose torch is a ROCm build on an NVIDIA host.
 
     Counterpart to _ensure_rocm_torch. A venv poisoned by the pre-fix KFD
@@ -3897,6 +3897,9 @@ def _ensure_cuda_torch() -> None:
     Also repairs a CUDA torch whose wheel family ships no kernels for the host's
     GPUs (a pre-Turing box that the driver-only ladder sent to cu128/cu130).
     Healthy CUDA torch and deliberate CPU-only torch are left untouched.
+
+    probe_only returns True where the repair would install and installs nothing, so the
+    fast-path escape that calls it cannot drift from what the repair actually does.
     """
     # Respect install.sh's backend: only "" (standalone update) or "cuda" force CUDA wheels.
     if _TORCH_BACKEND not in ("", "cuda"):
@@ -3932,6 +3935,8 @@ def _ensure_cuda_torch() -> None:
         # reinstall an already-installed torch, so reinstall from the pin (self-resolving).
         if not _cuda_pinned:
             return
+        if probe_only:
+            return True
         index_url = _detect_cuda_torch_index_url()
         _torch_pkg, _vision_pkg, _audio_pkg = _CUDA_TORCH_PKG_SPEC
         _safe_print(
@@ -4018,6 +4023,8 @@ def _ensure_cuda_torch() -> None:
     else:
         return  # healthy CUDA torch matching the pin, or a deliberate CPU wheel
 
+    if probe_only:
+        return True
     if index_url is None:
         index_url = _detect_cuda_torch_index_url()
     _torch_pkg, _vision_pkg, _audio_pkg = _CUDA_TORCH_PKG_SPEC
@@ -5179,6 +5186,21 @@ def _missing_torch_needs_dependency_pass() -> bool:
             ):
                 return True
     return False
+
+
+def _cuda_torch_needs_dependency_pass() -> bool:
+    """Return True when only the dependency pass can put CUDA torch back on this host.
+
+    The repair lives inside that pass, so an install whose GPU was hidden (or whose driver
+    was broken) at install time keeps its CPU wheel on every "up to date" update until the
+    package version happens to move. Answered by the repair in probe mode, so the two can
+    never disagree; Windows heals this at setup.ps1's stale-venv check and macOS has no
+    CUDA, and the repair already excludes both. Never installs, and fails closed.
+    """
+    try:
+        return bool(_ensure_cuda_torch(probe_only = True))
+    except Exception:  # noqa: BLE001 - a probe that cannot answer keeps the fast path
+        return False
 
 
 def _amd_torch_needs_dependency_pass() -> bool:
@@ -11158,6 +11180,9 @@ if __name__ == "__main__":
             f"probe={_TORCH_RUNTIME_PROBE!r}"
         )
         sys.exit(0 if _needs_pass else 1)
+    if sys.argv[1:] == ["--cuda-torch-needs-dependency-pass"]:
+        # Exit 0 forces the dependency pass; exit 1 keeps the fast path.
+        sys.exit(0 if _cuda_torch_needs_dependency_pass() else 1)
     if sys.argv[1:] == ["--missing-torch-needs-dependency-pass"]:
         # Exit 0 forces the dependency pass; exit 1 keeps the fast path.
         sys.exit(0 if _missing_torch_needs_dependency_pass() else 1)

@@ -654,6 +654,109 @@ def _preserve_tokenizer_eos_token(
         )
 
 
+def _config_mtp_holders(config, key):
+    """Every config declaring the MTP layer count: `text_config` on Qwen3.5 multimodal, top level on text-only."""
+    holders = []
+    for candidate in (config, getattr(config, "text_config", None)):
+        if candidate is None:
+            continue
+        if key in getattr(candidate, "__dict__", {}):
+            holders.append(candidate)
+    return holders
+
+
+def _strip_absent_mtp_declaration(config_dict, tensor_names):
+    """Drop `mtp_num_hidden_layers` from a config dict when the tensors carry no MTP weights. Never raises. "Has a head" comes from the zoo's `mtp_head_is_present`, so this and `reconcile_mtp_config` cannot disagree."""
+    # Unknown is not empty: editing a declaration blind is never justified.
+    if tensor_names is None:
+        return False
+    try:
+        # Quiet: the zoo upgrades separately, and an older one is not a per-save error.
+        from unsloth_zoo.saving_utils import MTP_CONFIG_KEY, mtp_head_is_present
+    except ImportError:
+        return False
+    try:
+        if not isinstance(config_dict, dict):
+            return False
+        holders = [config_dict]
+        nested = config_dict.get("text_config")
+        if isinstance(nested, dict):
+            holders.append(nested)
+        holders = [holder for holder in holders if MTP_CONFIG_KEY in holder]
+        if not holders:
+            return False
+        tensor_names = list(tensor_names)
+        if any(mtp_head_is_present(tensor_names, config_dict, holder) for holder in holders):
+            return False
+        for holder in holders:
+            holder.pop(MTP_CONFIG_KEY, None)
+        logger.warning_once(
+            f"Unsloth: This checkpoint declares `{MTP_CONFIG_KEY}` but the "
+            f"merged weights carry no `mtp.*` tensors, so the declaration is "
+            f"omitted from the exported config. transformers does not load the "
+            f"multi-token prediction head, so a merge or re-save cannot "
+            f"preserve it. The export is otherwise complete and serves "
+            f"normally without speculative decoding."
+        )
+        return True
+    except Exception as error:
+        logger.warning_once(
+            f"Unsloth: Could not reconcile the multi-token prediction config: {error}"
+        )
+        return False
+
+
+@contextmanager
+def _mtp_config_matching_tensors(model, tensor_names):
+    """Drop `mtp_num_hidden_layers` for the duration of a save when the tensors carry no `mtp.*` weights, then put it back. Never raises: a metadata repair must not fail a save."""
+    # Recorded before anything is removed, so a partial failure still restores.
+    restore = []
+    try:
+        if tensor_names is not None:
+            try:
+                from unsloth_zoo.saving_utils import MTP_CONFIG_KEY, mtp_head_is_present
+            except ImportError:
+                MTP_CONFIG_KEY = None
+            if MTP_CONFIG_KEY is None:
+                tensor_names = None
+        if tensor_names is not None:
+            config = getattr(model, "config", None)
+            holders = _config_mtp_holders(config, MTP_CONFIG_KEY)
+            # Materialised once: the rule runs per holder, and this may be a generator.
+            tensor_names = list(tensor_names)
+            # Against the LIVE config, so the extra-`layers.N` spelling is seen.
+            if holders and not any(
+                mtp_head_is_present(tensor_names, config, holder) for holder in holders
+            ):
+                for holder in holders:
+                    restore.append((holder, MTP_CONFIG_KEY, getattr(holder, MTP_CONFIG_KEY)))
+                    delattr(holder, MTP_CONFIG_KEY)
+                if restore:
+                    logger.warning_once(
+                        f"Unsloth: This checkpoint declares `{MTP_CONFIG_KEY}` but "
+                        f"the weights being exported carry no `mtp.*` tensors, so "
+                        f"the declaration is omitted from the exported config. "
+                        f"transformers does not load the multi-token prediction "
+                        f"head, so a merge or re-save cannot preserve it. The "
+                        f"export is otherwise complete and serves normally "
+                        f"without speculative decoding."
+                    )
+    except Exception as error:
+        logger.warning_once(
+            f"Unsloth: Could not reconcile the multi-token prediction config "
+            f"before saving: {error}"
+        )
+    try:
+        yield
+    finally:
+        # No import here: an exception from a finally block would mask the save's own.
+        for holder, key, value in restore:
+            try:
+                setattr(holder, key, value)
+            except Exception:
+                pass
+
+
 def _is_qwen3_5_vlm(model):
     config = getattr(model, "config", None)
     if config is None or not hasattr(config, "vision_config"):
@@ -1264,6 +1367,8 @@ def unsloth_save_model(
     new_config = model.config.to_dict()
     if "quantization_config" in new_config:
         del new_config["quantization_config"]
+    # The merged state dict is what gets written, so its keys decide MTP presence.
+    _strip_absent_mtp_declaration(new_config, state_dict.keys())
     original_model = model
     new_config = type(model.config).from_dict(new_config)
     while hasattr(original_model, "model"):
@@ -1271,34 +1376,36 @@ def unsloth_save_model(
         original_model.config = new_config
     model.config = new_config
 
-    if save_pretrained_settings["push_to_hub"] and (username != actual_username):
-        print(f"Unsloth: Saving to organization with address {new_save_directory}")
-        # Pushing to an organization: .save_pretrained does not work, so save locally first and upload manually.
-        save_pretrained_settings["save_directory"] = new_save_directory
-        save_pretrained_settings["push_to_hub"] = False
-        internal_model.save_pretrained(**save_pretrained_settings)
+    # try/finally: a failed write must not leave the caller holding the scrubbed config.
+    try:
+        if save_pretrained_settings["push_to_hub"] and (username != actual_username):
+            print(f"Unsloth: Saving to organization with address {new_save_directory}")
+            # Pushing to an organization: .save_pretrained does not work, so save locally first and upload manually.
+            save_pretrained_settings["save_directory"] = new_save_directory
+            save_pretrained_settings["push_to_hub"] = False
+            internal_model.save_pretrained(**save_pretrained_settings)
 
-        filenames = os.listdir(new_save_directory)
+            filenames = os.listdir(new_save_directory)
 
-        hf_api = HfApi(token = save_pretrained_settings["token"])
+            hf_api = HfApi(token = save_pretrained_settings["token"])
 
-        print("Unsloth: Uploading all files... Please wait...")
-        hf_api.upload_folder(
-            folder_path = new_save_directory,
-            path_in_repo = ".",
-            repo_id = new_save_directory,
-            repo_type = "model",
-            commit_message = "(Trained with Unsloth)",
-            ignore_patterns = "*.md",
-        )
-    else:
-        internal_model.save_pretrained(**save_pretrained_settings)
-
-    original_model = model
-    while hasattr(original_model, "model"):
-        original_model = original_model.model
-        original_model.config = old_config
-    model.config = old_config
+            print("Unsloth: Uploading all files... Please wait...")
+            hf_api.upload_folder(
+                folder_path = new_save_directory,
+                path_in_repo = ".",
+                repo_id = new_save_directory,
+                repo_type = "model",
+                commit_message = "(Trained with Unsloth)",
+                ignore_patterns = "*.md",
+            )
+        else:
+            internal_model.save_pretrained(**save_pretrained_settings)
+    finally:
+        original_model = model
+        while hasattr(original_model, "model"):
+            original_model = original_model.model
+            original_model.config = old_config
+        model.config = old_config
     print("Done.")
 
     if push_to_hub and hasattr(model, "config"):
@@ -5552,19 +5659,30 @@ def unsloth_generic_save(
         if state_dict is not None:
             _save_kwargs["state_dict"] = state_dict
 
+        # A push has no local folder to repair afterwards, unlike a save.
+        if state_dict is not None:
+            _mtp_tensor_names = list(state_dict.keys())
+        else:
+            # push_to_hub serialises the resident state dict, so None disarms the guard.
+            try:
+                _mtp_tensor_names = list(model.state_dict().keys())
+            except Exception:
+                # Cannot report its tensors: leave the config exactly as the caller had it.
+                _mtp_tensor_names = None
         if push_to_hub:
             print(f"Unsloth: Pushing full fine-tuned model to '{save_directory}' ...")
-            model.push_to_hub(
-                repo_id = save_directory,
-                token = token,
-                private = private,
-                commit_message = commit_message,
-                create_pr = create_pr,
-                revision = revision,
-                commit_description = commit_description,
-                tags = tags,
-                **_save_kwargs,
-            )
+            with _mtp_config_matching_tensors(model, _mtp_tensor_names):
+                model.push_to_hub(
+                    repo_id = save_directory,
+                    token = token,
+                    private = private,
+                    commit_message = commit_message,
+                    create_pr = create_pr,
+                    revision = revision,
+                    commit_description = commit_description,
+                    tags = tags,
+                    **_save_kwargs,
+                )
             if tokenizer is not None:
                 _tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
                 old_padding_side = _tokenizer.padding_side
@@ -5581,6 +5699,12 @@ def unsloth_generic_save(
         else:
             print(f"Unsloth: Saving full fine-tuned model to '{save_directory}' ...")
             model.save_pretrained(save_directory, **_save_kwargs)
+            # Guarded: an older zoo must not raise once the weights are already on disk.
+            try:
+                from unsloth_zoo.saving_utils import reconcile_mtp_config
+                reconcile_mtp_config(save_directory)
+            except ImportError:
+                pass
             if tokenizer is not None:
                 _tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
                 old_padding_side = _tokenizer.padding_side
