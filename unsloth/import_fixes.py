@@ -995,7 +995,18 @@ def _carry_rope_theta_across_assignment(config, carried):
     readable = current is not None
     if is_flat_dict and not readable:
         try:
-            parameters["rope_theta"] = base
+            # A COPY, never the dict in place. transformers 5 stores the object the caller
+            # assigned as `rope_parameters` verbatim, so writing into it writes into the
+            # caller's own dict. Reusing one scaling dict across configs -- an ordinary
+            # loop over several models -- then carries the FIRST config's base into it,
+            # and on the next assignment that planted key is read back as `current` and
+            # beats the second config's own rope_theta. Measured on transformers 5.0.0,
+            # 5.5.4 and 5.17.0: a config declaring rope_theta=10000.0 silently came out
+            # with 500000.0, which is wrong inverse frequencies with nothing raised.
+            replacement = dict(parameters)
+            replacement["rope_theta"] = base
+            config.rope_parameters = replacement
+            parameters = replacement
             readable = True
         except Exception:
             pass

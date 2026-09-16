@@ -1128,11 +1128,14 @@ def test_rope_theta_carry_only_writes_when_the_base_would_be_lost():
     assert config.rope_theta == 1000000.0
 
     # 3. The base would be lost: restore it inside rope_parameters, where 5.x reads
-    #    it, and leave the config without a top-level attribute it never had.
+    #    it, and leave the config without a top-level attribute it never had. The
+    #    restore goes through a COPY -- the dict handed in is the caller's own (see
+    #    case 6), so it is read back off the config, not off the object passed in.
     parameters = {"rope_type": "linear", "factor": 4.0}
     config = SimpleNamespace(rope_parameters = parameters)
     assert carry(config, 500000.0) == 500000.0
-    assert parameters["rope_theta"] == 500000.0
+    assert config.rope_parameters["rope_theta"] == 500000.0
+    assert parameters == {"rope_type": "linear", "factor": 4.0}
     assert not hasattr(config, "rope_theta")
 
     # 4. Object-style replacement, which is issue #2405's own shape: there is no dict
@@ -1147,7 +1150,22 @@ def test_rope_theta_carry_only_writes_when_the_base_would_be_lost():
     parameters = {"rope_type": "linear", "factor": 4.0}
     config = SimpleNamespace(rope_parameters = parameters, rope_theta = 500000.0)
     assert carry(config, None) == 500000.0
-    assert parameters["rope_theta"] == 500000.0
+    assert config.rope_parameters["rope_theta"] == 500000.0
+    assert parameters == {"rope_type": "linear", "factor": 4.0}
+
+    # 6. The caller's dict is never written to. transformers 5 stores the object
+    #    assigned to rope_scaling verbatim, so an in-place restore wrote into the
+    #    caller's own dict; one scaling dict reused across two configs then carried
+    #    the first config's base into the second, which is silently wrong inverse
+    #    frequencies rather than an error. Reuse is an ordinary loop over models.
+    shared = {"rope_type": "linear", "factor": 4.0}
+    first = SimpleNamespace(rope_parameters = shared)
+    assert carry(first, 500000.0) == 500000.0
+    assert shared == {"rope_type": "linear", "factor": 4.0}, shared
+    second = SimpleNamespace(rope_parameters = shared, rope_theta = 10000.0)
+    assert carry(second, None) == 10000.0
+    assert second.rope_parameters["rope_theta"] == 10000.0
+    assert first.rope_parameters["rope_theta"] == 500000.0
 
     # 6. Nothing to carry and nothing stated: untouched.
     parameters = {"rope_type": "linear", "factor": 4.0}
@@ -1183,7 +1201,8 @@ def test_rope_theta_carry_only_writes_when_the_base_would_be_lost():
     assert (
         config.rope_theta == 10000.0
     ), "the carry overwrote a base frequency the caller set deliberately"
-    assert parameters["rope_theta"] == 10000.0
+    assert config.rope_parameters["rope_theta"] == 10000.0
+    assert parameters == {"rope_type": "default"}
 
 
 def test_rope_scaling_patch_wired_into_gpu_init():
