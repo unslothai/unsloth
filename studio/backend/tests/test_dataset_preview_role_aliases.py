@@ -259,3 +259,27 @@ def test_the_preview_and_the_training_path_agree_on_every_spelling():
         "conversations"
     ]
     assert [m["role"] for m in trained] == [m["role"] for m in previewed]
+
+
+@pytest.mark.parametrize("role", [None, "", "   ", "\t"])
+def test_the_training_path_defaults_a_blank_role_like_the_preview(role):
+    """The last place the two standardisers disagreed.
+
+    `_standardize_sharegpt_row` maps a missing, empty or whitespace-only role to "user";
+    the training path preserved the original, so the tokenizer received an empty or
+    whitespace role, which most chat templates reject outright.
+    """
+    datasets = pytest.importorskip("datasets")
+    from utils.datasets.format_conversion import standardize_chat_format
+
+    dataset = datasets.Dataset.from_list(
+        [{"conversations": [{"from": role, "value": "x"}, {"from": "gpt", "value": "y"}]}] * 4
+    )
+    trained = standardize_chat_format(dataset, num_proc = 1)[0]["conversations"]
+    previewed = _standardize_sharegpt_row(
+        {"conversations": [{"from": role, "value": "x"}, {"from": "gpt", "value": "y"}]},
+        "conversations",
+    )["conversations"]
+
+    assert trained[0]["role"] == "user"
+    assert [m["role"] for m in trained] == [m["role"] for m in previewed]

@@ -153,9 +153,15 @@ def standardize_chat_format(
                     original_content = message.get("content") or message.get("value") or ""
 
                 # Unknown even after normalising: left exactly as written, which is what this
-                # line has always done. Only the matching is normalised.
-                standard_role = aliases_mapping.get(
-                    _normalize_role_alias(original_role), original_role
+                # line has always done. Only the matching is normalised. A role that is
+                # missing, empty or nothing but whitespace is "user", the same default the
+                # preview applies, because an empty role reaches the chat template as one and
+                # most templates reject it.
+                normalized_role = _normalize_role_alias(original_role)
+                standard_role = (
+                    aliases_mapping.get(normalized_role, original_role)
+                    if normalized_role
+                    else "user"
                 )
 
                 if is_vlm:
