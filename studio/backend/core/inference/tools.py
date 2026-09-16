@@ -205,7 +205,7 @@ _BLOCKED_COMMANDS = (
 
 # ssh/slogin/scp/sftp are gated by ssh_policy (approved-server allowlist) instead
 # of the unconditional blocklist, but still scanned at command position.
-_SSH_GATED_COMMANDS = frozenset({"ssh", "slogin", "scp", "sftp"})
+_SSH_GATED_COMMANDS = frozenset({"ssh", "slogin", "scp", "sftp", "git"})
 
 
 _SHELL_SEPARATORS = frozenset({";", "&&", "||", "|", "&", "\n", "(", ")", "`", "{", "}"})
@@ -1470,7 +1470,7 @@ def _find_blocked_commands(
         if _ssh_segments is None or name not in _SSH_GATED_COMMANDS:
             return
         if index in ssh_xargs_indexes:
-            _ssh_segments.append((name, []))
+            _ssh_segments.append((name, ["$dynamic"] if name == "git" else []))
             return
         args: list[str] = []
         for j in range(index + 1, len(tokens)):

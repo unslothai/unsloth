@@ -355,12 +355,146 @@ def extract_ssh_hosts_from_command(
     hosts: set[str] = set()
     dynamic = False
     for name, arg_tokens in _find_ssh_command_segments(command):
+        if name == "git":
+            segment_hosts, segment_dynamic = _hosts_from_git_segment(arg_tokens)
+            hosts.update(segment_hosts)
+            dynamic |= segment_dynamic
+            continue
         if name not in _SSH_COMMANDS:
             continue
         segment_hosts, segment_dynamic = _hosts_from_ssh_segment(name, arg_tokens)
         hosts.update(segment_hosts)
         dynamic = dynamic or segment_dynamic or name == "sftp" and _stdin_supplied
     return hosts, dynamic
+
+
+def _hosts_from_git_segment(tokens: list[str]) -> tuple[set[str], bool]:
+    """Reject Git transports whose SSH destinations depend on configuration."""
+    from core.inference.tools import _GIT_GLOBAL_VALUE_FLAGS
+
+    index = 0
+    configured_transport = False
+    while index < len(tokens) and tokens[index].startswith("-"):
+        option = tokens[index]
+        index += 1
+        value = option
+        if option in _GIT_GLOBAL_VALUE_FLAGS:
+            if index == len(tokens):
+                return set(), True
+            value = tokens[index]
+            index += 1
+        if option == "-c" or option.startswith(("-c", "--config-env")):
+            configured_transport |= any(
+                key in value.lower() for key in ("ssh", "url.", "remote.", "include")
+            )
+    if index == len(tokens):
+        return set(), False
+    subcommand, operands = tokens[index], tokens[index + 1 :]
+    if any(char in subcommand for char in "$`"):
+        return set(), True
+    if subcommand not in {
+        "clone",
+        "fetch",
+        "pull",
+        "push",
+        "ls-remote",
+        "submodule",
+        "remote",
+        "archive",
+    }:
+        return set(), False
+    if subcommand == "remote" and not any(
+        arg in {"update", "prune", "-f", "--fetch"} for arg in operands
+    ):
+        return set(), False
+    if subcommand == "archive" and not any(arg.startswith("--remote") for arg in operands):
+        return set(), False
+    if subcommand in {"remote", "submodule"} or any(
+        arg in {"--all", "--multiple", "-m"} or arg.startswith("--recurse-submodules")
+        for arg in operands
+    ):
+        return set(), True
+    value_flags = {
+        "--template",
+        "--reference",
+        "--reference-if-able",
+        "--origin",
+        "--branch",
+        "--revision",
+        "--upload-pack",
+        "--depth",
+        "--shallow-since",
+        "--shallow-exclude",
+        "--separate-git-dir",
+        "--ref-format",
+        "--server-option",
+        "--filter",
+        "--jobs",
+        "--deepen",
+        "--refmap",
+        "--negotiation-tip",
+        "--receive-pack",
+        "--exec",
+        "--push-option",
+        "--sort",
+        "-o",
+        "-j",
+    }
+    if subcommand == "clone":
+        value_flags.update({"-b", "-u"})
+    boolean_flags = {
+        "-v",
+        "-q",
+        "-n",
+        "-f",
+        "-t",
+        "-4",
+        "-6",
+        "-u",
+        "-b",
+        "--quiet",
+        "--verbose",
+        "--bare",
+        "--mirror",
+        "--tags",
+        "--refs",
+        "--symref",
+        "--exit-code",
+        "--dry-run",
+        "--no-tags",
+        "--no-checkout",
+    }
+    index = 0
+    endpoint = None
+    while index < len(operands):
+        arg = operands[index]
+        index += 1
+        if arg == "--":
+            endpoint = operands[index] if index < len(operands) else None
+            break
+        if arg.startswith(("--remote=", "--repo=")):
+            endpoint = arg.split("=", 1)[1]
+            break
+        if arg in {"--remote", "--repo"}:
+            endpoint = operands[index] if index < len(operands) else None
+            break
+        if arg.split("=", 1)[0] in value_flags:
+            if "=" not in arg:
+                index += 1
+            continue
+        if arg in boolean_flags:
+            continue
+        if arg.startswith("-"):
+            return set(), True
+        endpoint = arg
+        break
+    if not endpoint:
+        return set(), True
+    if endpoint.startswith(("http://", "https://", "git://", "file://", "/", "./", "../")):
+        return set(), configured_transport
+    host = _extract_host_from_endpoint(endpoint) if ":" in endpoint else None
+    # git can rewrite even literal ssh urls and override core.sshcommand through the environment.
+    return {host} if host else set(), True
 
 
 def _literal_host_from_ast(node: ast.AST) -> Optional[str]:
