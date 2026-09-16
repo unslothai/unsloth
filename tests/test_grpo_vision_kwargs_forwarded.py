@@ -209,7 +209,13 @@ def test_the_wrapper_survives_accelerates_fp32_unwrap():
     class _Toy(torch.nn.Module):
         config = type("cfg", (), {"is_encoder_decoder": False})()
 
-        def forward(self, input_ids = None, pixel_values = None, spatial_shapes = None, **kwargs):
+        def forward(
+            self,
+            input_ids = None,
+            pixel_values = None,
+            spatial_shapes = None,
+            **kwargs,
+        ):
             return input_ids
 
     model = _Toy()
@@ -223,18 +229,19 @@ def test_the_wrapper_survives_accelerates_fp32_unwrap():
     assert _install_grpo_hidden_states_forward_wrapper(model)
     assert getattr(model.forward, "_unsloth_grpo_hidden_states_forward_wrapped", False)
     # No __wrapped__: that attribute is the entire mechanism accelerate unwraps through.
-    assert not hasattr(model.forward, "__wrapped__"), (
-        "the wrapper carries __wrapped__, so accelerate will unwrap straight past it"
-    )
+    assert not hasattr(
+        model.forward, "__wrapped__"
+    ), "the wrapper carries __wrapped__, so accelerate will unwrap straight past it"
 
     unwrapped = extract_model_from_parallel(model, keep_fp32_wrapper = False)
 
-    assert getattr(unwrapped.forward, "_unsloth_grpo_hidden_states_forward_wrapped", False) or \
-        getattr(
-            getattr(unwrapped.forward, "__func__", None),
-            "_unsloth_grpo_hidden_states_forward_wrapped",
-            False,
-        ), "accelerate removed the hidden-state wrapper"
+    assert getattr(
+        unwrapped.forward, "_unsloth_grpo_hidden_states_forward_wrapped", False
+    ) or getattr(
+        getattr(unwrapped.forward, "__func__", None),
+        "_unsloth_grpo_hidden_states_forward_wrapped",
+        False,
+    ), "accelerate removed the hidden-state wrapper"
     # And generate still sees the vision kwargs after that rebind.
     after = list(_inspect.signature(unwrapped.forward).parameters)
     assert "pixel_values" in after and "spatial_shapes" in after, after
