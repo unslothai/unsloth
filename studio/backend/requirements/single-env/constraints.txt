@@ -10,6 +10,7 @@ tokenizers>=0.22.0,<=0.23.0
 trl==0.23.1
 huggingface-hub>=1.23.0,<2.0; python_version >= "3.10"
 huggingface-hub==0.36.2; python_version < "3.10"
+hf-xet>=1.5.1,<2.0; python_version >= "3.10"
 
 # Unsloth stack
 datasets==4.3.0
