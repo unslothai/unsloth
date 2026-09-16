@@ -330,10 +330,10 @@ def _compact_sink(
 
     * *reader* and *inherited_fd*, when given, are drained to the console FIRST, so nothing
       still unforwarded can be deleted without having been seen.
-    * After the rewrite the file is read again from the old end, and whatever arrived in
-      the meantime is appended to the retained text instead of being truncated away. That
-      covers the wide part of the window, which is the read and the rewrite of a quarter of
-      a megabyte.
+    * The file is read past its accounted-for end twice, once after the tail read and again
+      after the rewrite, and whatever arrived in the meantime is kept instead of being
+      truncated away. Those two reads cover the wide parts of the window: reading and then
+      writing a quarter of a megabyte.
 
     What remains is the gap between the last read that came back empty and the ``truncate``
     itself, a single syscall apart. It cannot be closed portably: an ``O_APPEND`` write and
@@ -359,6 +359,9 @@ def _compact_sink(
     keep = min(size, cap_bytes)
     sink.seek(size - keep)
     data = sink.read(keep)
+    # How many bytes of the file have been accounted for. Everything past it is an append
+    # that arrived after this function started looking.
+    total = size
     for _ in range(_COMPACT_CATCH_UP_ROUNDS):
         # Continues from the old end of the file, so this is exactly what was appended
         # while the read above was in flight, with nothing counted twice.
@@ -371,10 +374,30 @@ def _compact_sink(
             except OSError:
                 pass
         data += appended
+        total += len(appended)
     sink.seek(0)
     sink.write(data)
-    sink.truncate()
-    return len(data)
+    end = len(data)
+    # The rewrite above is the other wide part of the window: writing a quarter of a
+    # megabyte takes long enough for a native thread to emit a fatal diagnostic into the
+    # region that is about to be truncated away. Read past the accounted-for end again and
+    # keep whatever arrived, rather than letting `truncate` delete it.
+    for _ in range(_COMPACT_CATCH_UP_ROUNDS):
+        sink.seek(total)
+        late = sink.read()
+        if not late:
+            break
+        if inherited_fd is not None:
+            try:
+                os.write(inherited_fd, late)
+            except OSError:
+                pass
+        total += len(late)
+        sink.seek(end)
+        sink.write(late)
+        end += len(late)
+    sink.truncate(end)
+    return end
 
 
 def _tail_sink_to_stderr(

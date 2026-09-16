@@ -774,6 +774,7 @@ def test_compaction_never_deletes_what_a_racing_writer_appended(tmp_path):
         def __init__(self, inner):
             self._inner = inner
             self._raced = False
+            self._raced_the_write = False
 
         def __getattr__(self, name):
             return getattr(self._inner, name)
@@ -785,6 +786,13 @@ def test_compaction_never_deletes_what_a_racing_writer_appended(tmp_path):
                 os.write(appender, b"terminate called after throwing an instance of 'c10::Error'\n")
             return data
 
+        def write(self, payload):
+            written = self._inner.write(payload)
+            if not self._raced_the_write:
+                self._raced_the_write = True
+                os.write(appender, b"what():  CUDA error: device-side assert triggered\n")
+            return written
+
     try:
         _compact_sink(_WriterRacesTheRead(handle), 1024)
     finally:
@@ -792,5 +800,8 @@ def test_compaction_never_deletes_what_a_racing_writer_appended(tmp_path):
         os.close(appender)
 
     kept = path.read_bytes()
-    assert b"terminate called" in kept, kept[-200:]
-    assert len(kept) <= 1024 + 128, len(kept)
+    # Both windows: the append that landed during the tail READ, and the one that landed
+    # during the REWRITE, which is the other half of a quarter-megabyte round trip.
+    assert b"terminate called" in kept, kept[-300:]
+    assert b"device-side assert" in kept, kept[-300:]
+    assert len(kept) <= 1024 + 256, len(kept)
