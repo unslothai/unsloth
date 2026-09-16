@@ -3754,21 +3754,21 @@ class MLXInferenceBackend:
         # Matched on the sampled text, for the reason _generate_text gives.
         sequences = _mlx_stop_sequences(stop)
         stopped = False
-        # Written before the limit reads it: the clip arrives base64-encoded, which expands to
-        # nothing the processor can read, and the budget would admit it on its placeholder alone.
-        clip_path = _write_video_clip(video) if video is not None else None
+        # Counted from a file: the base64 the route sends expands to nothing the processor can read.
+        # Discarded here rather than handed on, since setup below can raise before the stream's
+        # cleanup is entered; generation writes its own copy under that cleanup.
+        counted_clip = _write_video_clip(video) if video is not None else None
         try:
             max_new_tokens = self._generation_limit(
                 prompt,
                 max_new_tokens,
                 images = images,
-                videos = [clip_path] if clip_path is not None else None,
+                videos = [counted_clip] if counted_clip is not None else None,
                 cap = UNSET_GENERATION_BUDGET if image is not None or video is not None else None,
             )
-        except BaseException:
-            if clip_path is not None:
-                _discard_video_clip(clip_path)
-            raise
+        finally:
+            if counted_clip is not None:
+                _discard_video_clip(counted_clip)
         logger.info(
             "VLM generating: prompt_len=%d, has_image=%s, has_video=%s",
             len(prompt),
@@ -3874,8 +3874,10 @@ class MLXInferenceBackend:
                 generation_scope.enter_context(_mlx_fused_moe_gate_up(self._model))
                 generation_scope.enter_context(_mlx_fused_decode_conv_silu(self._model))
                 final_response = None
+                clip_path = None
                 try:
-                    if clip_path is not None:
+                    if video is not None:
+                        clip_path = _write_video_clip(video)
                         vlm_kwargs["video"] = [clip_path]
                         frame_rate = _video_frame_rate(clip_path, self._processor)
                         if frame_rate is not None:

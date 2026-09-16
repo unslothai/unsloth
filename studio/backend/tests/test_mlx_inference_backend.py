@@ -4348,11 +4348,13 @@ def test_the_vlm_entry_point_hands_the_limit_a_clip_the_processor_can_read(monke
 
     monkeypatch.setattr(backend, "_generation_limit", _limit)
     clip = base64.b64encode(b"not a readable clip").decode()
-    # Everything past the limit needs a real decoder, which a stub path cannot carry.
+    # Everything past the limit needs a real decoder, which a stub path cannot carry: the failure
+    # that follows is the setup raising before the stream's own cleanup is entered.
     with contextlib.suppress(Exception):
         _drive_vlm_generation(backend, monkeypatch, video = clip)
     assert seen["videos"] != [clip]
     assert seen["on_disk"] == [True]
+    assert not os.path.exists(seen["videos"][0])
 
 
 def test_a_max_tokens_at_the_whole_window_is_the_chat_saying_no_cap(monkeypatch):
