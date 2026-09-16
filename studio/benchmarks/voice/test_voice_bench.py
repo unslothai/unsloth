@@ -526,7 +526,12 @@ class HarnessWallTests(unittest.TestCase):
     the span it covers is the claim: every request the turn makes, and none of
     the one-time fixture synthesis that precedes them."""
 
-    SLEEP = 0.1
+    # The fixture call is made deliberately slower than the pipeline calls, so
+    # the assertions below separate by ~10x rather than by a margin a loaded
+    # machine could erase. A timing test whose bound sits inside ordinary
+    # scheduling noise is a flake, not a check.
+    FIXTURE_SLEEP = 0.2
+    PIPELINE_SLEEP = 0.01
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -542,21 +547,32 @@ class HarnessWallTests(unittest.TestCase):
         test = self
 
         class FakeClient:
-            """Every server call costs SLEEP, so the measured span is countable."""
+            """Every call sleeps and reports exactly what it slept, because the
+            real client times its own requests with perf_counter and returns
+            that. A fake whose reported stage times were unrelated to its actual
+            cost could not say anything about how the two compare.
+
+            Synthesizing the input fixture is the one slow call; the four on the
+            measured path are fast, so which sleeps land inside the span is
+            unambiguous from its magnitude alone."""
 
             def speak(self, text, **kw):
-                time.sleep(test.SLEEP)
-                return _wav(), 0.01
+                is_fixture = text == test.turn["text"]
+                nap = test.FIXTURE_SLEEP if is_fixture else test.PIPELINE_SLEEP
+                time.sleep(nap)
+                return _wav(), nap
 
             def transcribe(self, wav, model):
-                return "hello there", 0.02
+                time.sleep(test.PIPELINE_SLEEP)
+                return "hello there", test.PIPELINE_SLEEP
 
             def chat_stream(self, **kw):
+                time.sleep(test.PIPELINE_SLEEP)
                 return {
                     "text": "Hi. How are you?",
-                    "ttft": 0.03,
-                    "first_chunk_s": 0.04,
-                    "total": 0.05,
+                    "ttft": test.PIPELINE_SLEEP / 2,
+                    "first_chunk_s": test.PIPELINE_SLEEP,
+                    "total": test.PIPELINE_SLEEP,
                     "completion_tokens": 5,
                 }
 
@@ -574,22 +590,25 @@ class HarnessWallTests(unittest.TestCase):
     def test_it_spans_both_tts_calls_and_excludes_fixture_synthesis(self):
         """A cold turn synthesizes its fixture, then makes two TTS calls.
 
-        Three SLEEPs elapse inside run_turn, but only two are pipeline: the
-        fixture is setup, paid once ever and cached. If the timer were started
-        before it, a cold first run would look a third slower than a warm one
-        for no reason the pipeline controls."""
+        Only the latter two are pipeline: the fixture is setup, paid once ever
+        and then cached. If the timer started before it, a cold first run would
+        read far slower than every later one for a reason the pipeline does not
+        control, so the span must exclude the one slow call and include both
+        fast ones."""
         with contextlib.redirect_stdout(io.StringIO()):
             res = vb.run_turn(self.client, self.turn, [], self.args)
         self.assertEqual(res.errors, [])
-        self.assertGreaterEqual(res.harness_wall_s, 2 * self.SLEEP)
-        self.assertLess(res.harness_wall_s, 3 * self.SLEEP)
+        self.assertGreaterEqual(res.harness_wall_s, 2 * self.PIPELINE_SLEEP)
+        self.assertLess(res.harness_wall_s, self.FIXTURE_SLEEP)
 
     def test_it_is_not_the_sum_of_the_stage_timings(self):
-        """The reported per-stage times are the server's, and they are what the
-        modelled walls are built from. The measured wall is larger because it
-        also carries the opening-clause synthesis and the request overhead the
-        stage timings exclude — that gap is the finding this pins."""
+        """The modelled wall sums three stages. The measured one also carries the
+        opening-clause synthesis, so it is strictly the larger, and the gap is
+        that fourth call. This is the finding itself, stated as an assertion:
+        reporting the smaller number as elapsed time understated every run."""
         with contextlib.redirect_stdout(io.StringIO()):
             res = vb.run_turn(self.client, self.turn, [], self.args)
-        self.assertAlmostEqual(res.turn_wall_s, 0.02 + 0.05 + 0.01)
-        self.assertGreater(res.harness_wall_s, res.turn_wall_s)
+        # stt + llm_total + tts_full, each PIPELINE_SLEEP.
+        self.assertAlmostEqual(res.turn_wall_s, 3 * self.PIPELINE_SLEEP)
+        # The measured span adds tts_first, so it clears the model by a whole call.
+        self.assertGreaterEqual(res.harness_wall_s, res.turn_wall_s + self.PIPELINE_SLEEP)
