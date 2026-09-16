@@ -406,6 +406,75 @@ def llama_server_pids() -> list[int]:
     return pids
 
 
+def llama_server_argvs() -> dict[int, list[str]]:
+    """Full argv of every llama-server child, split on NUL.
+
+    The sibling above throws away everything after argv[0], and for the flags
+    this payload asserts on that is the whole answer. It has to come from the
+    process table: ``GET /api/inference/status`` carries ``tensor_parallel``
+    but its ``tensor_split`` field is documented as the MANUAL-mode ratio and
+    is never written on the auto path, so an auto load reports
+    ``tensor_split: null`` whatever is on the child's command line.
+
+    Split on ``\\x00``, never on whitespace: a model path with a space in it
+    would otherwise become two arguments and shift every index after it.
+    """
+    out: dict[int, list[str]] = {}
+    proc_root = Path("/proc")
+    if not proc_root.is_dir():
+        return out
+    for entry in proc_root.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            raw = (entry / "cmdline").read_bytes().decode("utf-8", errors = "replace")
+        except OSError:
+            continue
+        argv = [part for part in raw.split("\x00") if part]
+        if not argv:
+            continue
+        if "llama-server" in Path(argv[0]).name:
+            out[int(entry.name)] = argv
+    return out
+
+
+def argv_flag(argv: list[str], name: str) -> str | None:
+    """The value of ``name`` in an argv, accepting ``--flag v`` and ``--flag=v``.
+
+    Returns None when absent. Raises on a DUPLICATE, because two spellings of
+    the same flag mean the last one wins and an assertion that read the first
+    would be reporting on a value the server is not using.
+    """
+    hits: list[str] = []
+    for i, token in enumerate(argv):
+        if token == name:
+            if i + 1 < len(argv):
+                hits.append(argv[i + 1])
+        elif token.startswith(name + "="):
+            hits.append(token.split("=", 1)[1])
+    if len(hits) > 1:
+        raise ValueError(f"{name} appears {len(hits)} times: {hits}")
+    return hits[0] if hits else None
+
+
+def split_ratio(raw: str | None) -> tuple[float, ...] | None:
+    """A ``--tensor-split`` value as a normalized proportion.
+
+    llama.cpp normalizes the list, so ``3,1`` and ``75,25`` are the same
+    instruction and must compare equal here.
+    """
+    if raw is None:
+        return None
+    try:
+        values = [float(part) for part in raw.split(",")]
+    except ValueError:
+        return None
+    total = sum(values)
+    if total <= 0:
+        return None
+    return tuple(round(v / total, 6) for v in values)
+
+
 class Payload:
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
@@ -1038,6 +1107,325 @@ class Payload:
 
         detail["failures"] = failures
         return self.record("server_flags", not failures, detail)
+
+    # ------------------------------------------- auto tensor-parallel split
+
+    _TP_FILE = "studio/backend/core/inference/llama_cpp.py"
+
+    def _auto_tp_load(self, ratio: list[float] | None, *, force: bool) -> dict:
+        """One auto-mode tensor-parallel load, and what the child was launched with.
+
+        ``gpu_memory_mode: "auto"`` with ``tensor_parallel: true`` is the exact
+        shape unslothai/unsloth#10355 is about: on two cards of the same size
+        with a model that fits, the planner decides an even share is safe and
+        returns no ratio of its own, and the user's ratio is the only one there
+        is. ``force_reload`` is the real field name -- ``force`` is not on
+        ``LoadRequest`` and pydantic drops it -- so passing it is how this
+        drives a genuine relaunch, and omitting it is how the deduplication
+        half of the check gets a real answer.
+        """
+        body: dict = {
+            "model_path": self.args.chat_model,
+            "is_lora": False,
+            "max_seq_length": self.args.studio_ctx,
+            "gpu_memory_mode": "auto",
+            "tensor_parallel": True,
+            # f16, not a quantized cache: a quantized KV on a llama.cpp older
+            # than b9455 makes the backend drop tensor mode outright, and this
+            # check would then be measuring that drop rather than the split.
+            "cache_type_kv": "f16",
+            "force_reload": force,
+        }
+        if ratio is not None:
+            body["tensor_split"] = list(ratio)
+        if self.args.chat_variant:
+            body["gguf_variant"] = self.args.chat_variant
+        cards = gpu_inventory()
+        if len(cards) >= 2:
+            body["gpu_ids"] = list(range(len(cards)))
+
+        before = llama_server_argvs()
+        self.studio.expect("POST", "/api/inference/load", body, timeout = self.args.load_timeout)
+        code, status = self.studio.get("/api/inference/status")
+        argvs = llama_server_argvs()
+        # The child that is serving NOW. A relaunch gets a new pid, so taking
+        # the newest one is what makes the reload half of this check readable;
+        # with exactly one server there is nothing to choose between.
+        pid = None
+        if argvs:
+            fresh = [p for p in argvs if p not in before] or list(argvs)
+            pid = max(fresh)
+        argv = argvs.get(pid, []) if pid is not None else []
+        try:
+            split_mode = argv_flag(argv, "--split-mode")
+            tensor_split = argv_flag(argv, "--tensor-split")
+            duplicate = None
+        except ValueError as exc:
+            split_mode = tensor_split = None
+            duplicate = str(exc)
+        return {
+            "requested_ratio": list(ratio) if ratio is not None else None,
+            "status_code": code,
+            "status_tensor_parallel": (status or {}).get("tensor_parallel")
+            if isinstance(status, dict)
+            else None,
+            # What /status SAYS the split is, alongside what the child was
+            # actually launched with. These two disagreed for the whole life of
+            # the auto path -- the property returned the manual-mode field,
+            # which auto never writes -- so a client had no way to see the
+            # ratio at all. Reported as its own key so the report shows the
+            # pair rather than one of them.
+            "status_tensor_split": (status or {}).get("tensor_split")
+            if isinstance(status, dict)
+            else None,
+            "llama_server_pid": pid,
+            "split_mode": split_mode,
+            "tensor_split": tensor_split,
+            "tensor_split_ratio": split_ratio(tensor_split),
+            "duplicate_flag": duplicate,
+            "cards_visible": len(cards),
+            "compute_apps": nvidia_compute_apps(),
+        }
+
+    def _checkout_tp_file(self, ref: str) -> tuple[bool, str]:
+        """Put ONE file at ``ref``. The two legs then differ by the PR, and by
+        nothing else: same install, same binary, same weights, same session."""
+        fetch = run(
+            ["git", "-C", str(self.repo_root), "fetch", "--depth", "1", "origin", ref],
+            timeout = 600,
+        )
+        checkout = run(
+            ["git", "-C", str(self.repo_root), "checkout", ref, "--", self._TP_FILE],
+            timeout = 120,
+        )
+        blob = run(
+            ["git", "-C", str(self.repo_root), "hash-object", self._TP_FILE],
+            timeout = 120,
+        )
+        ok = checkout.returncode == 0
+        return ok, (
+            blob.stdout or ""
+        ).strip() or f"checkout rc={checkout.returncode} " f"fetch rc={fetch.returncode}"
+
+    def _restart_for_leg(self, label: str) -> bool:
+        """Stop Unsloth and bring it back on the code now on disk.
+
+        Restarting is the whole point: ``install.sh --local`` overlays the
+        checkout as an EDITABLE install, so the file swapped above is the file
+        the next process imports -- but only the next one. A leg that reused
+        the running server would be measuring the other revision.
+        """
+        self.stop_server()
+        for _ in range(60):
+            if not llama_server_pids():
+                break
+            time.sleep(1)
+        if not self.start_server():
+            log(f"{label}: Unsloth did not come back up")
+            return False
+        return self.authenticate()
+
+    def assert_auto_tensor_split(self) -> bool:
+        """The user's per-GPU ratio must reach llama-server in AUTO mode.
+
+        Three things are checked, and the second is the one nothing else here
+        can see:
+
+        1. tensor mode is really on, per ``/api/inference/status``;
+        2. ``--tensor-split`` is on the LIVE child's argv, carrying the
+           proportion that was asked for. Status cannot answer this: its
+           ``tensor_split`` field is the manual-mode ratio and is null on this
+           path whatever the child was launched with;
+        3. the server still serves, with memory on both cards.
+
+        Then deduplication, without ``force_reload``, because a fix that
+        forwards the ratio and then reloads on every identical request has
+        traded one bug for a worse one: an identical repeat must REUSE the
+        server, and a changed ratio must replace it.
+        """
+        failures: list[str] = []
+        cards = gpu_inventory()
+        detail: dict = {"cards_visible": len(cards), "legs": {}}
+        if len(cards) < 2:
+            detail["failures"] = [
+                f"only {len(cards)} card visible, so auto tensor-parallel placement "
+                f"was NOT exercised; this proves nothing about "
+                f"unslothai/unsloth#10355"
+            ]
+            detail["void"] = True
+            return self.record("auto_tensor_split", False, detail)
+
+        ratio = [float(x) for x in self.args.auto_split_ratio.split(",")]
+        other = list(reversed(ratio))
+
+        first = self._auto_tp_load(ratio, force = True)
+        detail["legs"]["requested"] = first
+        if first.get("duplicate_flag"):
+            failures.append(f"the launch argv is ambiguous: {first['duplicate_flag']}")
+        if first.get("status_tensor_parallel") is not True:
+            failures.append(
+                f"status reports tensor_parallel={first.get('status_tensor_parallel')!r} "
+                f"after an auto tensor-parallel load, so the mode was dropped and the "
+                f"split has nothing to be applied to"
+            )
+        if first.get("split_mode") != "tensor":
+            failures.append(f"the live llama-server has --split-mode {first.get('split_mode')!r}")
+        if first.get("tensor_split") is None:
+            failures.append(
+                f"the live llama-server has NO --tensor-split after a load that asked "
+                f"for {ratio}. This is unslothai/unsloth#10355: auto mode emitted "
+                f"--split-mode tensor and dropped the ratio"
+            )
+        elif first.get("tensor_split_ratio") != split_ratio(",".join(str(x) for x in ratio)):
+            failures.append(
+                f"--tensor-split is {first.get('tensor_split')!r}, which is not the "
+                f"proportion {ratio} that was asked for"
+            )
+        else:
+            # And the API has to be able to SAY so. The argv is ground truth,
+            # but a user cannot read /proc; for the whole life of the auto path
+            # the status property returned the manual-mode field, which auto
+            # never writes, so a server running 3,1 reported null and there was
+            # no way to tell a forwarded ratio from a dropped one from outside.
+            reported = first.get("status_tensor_split")
+            if reported is None:
+                failures.append(
+                    f"the live llama-server runs --tensor-split "
+                    f"{first.get('tensor_split')!r} and /api/inference/status reports "
+                    f"tensor_split: null, so the applied ratio is invisible to every "
+                    f"client"
+                )
+            elif split_ratio(",".join(str(x) for x in reported)) != first.get("tensor_split_ratio"):
+                failures.append(
+                    f"/api/inference/status reports tensor_split {reported!r} while the "
+                    f"live llama-server runs {first.get('tensor_split')!r}"
+                )
+
+        # It has to still serve. A split that loaded and cannot decode is not a
+        # fix, and a CPU fallback answers a chat request just as happily.
+        try:
+            completion = self.studio.expect(
+                "POST",
+                "/v1/chat/completions",
+                {
+                    "model": self.args.chat_model,
+                    "messages": [{"role": "user", "content": "Say OK."}],
+                    # Generous on purpose. A reasoning model spends its budget on
+                    # the thinking block first, so a tight cap comes back with an
+                    # empty `content` and finish_reason "length" -- a server that
+                    # decoded perfectly well, scored as a failure. Measured on
+                    # unsloth-t4-ci-d15ea193 with Qwen3-0.6B at max_tokens 16.
+                    "max_tokens": 256,
+                    "stream": False,
+                },
+                timeout = self.args.chat_timeout,
+            )
+            choice = (completion.get("choices") or [{}])[0]
+            message = choice.get("message") or {}
+            # Either channel counts as decoding: `reasoning_content` is where a
+            # thinking model's tokens land, and tokens are tokens.
+            text = (message.get("content") or "") + (message.get("reasoning_content") or "")
+            usage = completion.get("usage") or {}
+            detail["completion_chars"] = len(text)
+            detail["completion_tokens"] = usage.get("completion_tokens")
+            detail["finish_reason"] = choice.get("finish_reason")
+            if not text.strip() and not usage.get("completion_tokens"):
+                failures.append(
+                    f"the split server decoded nothing: finish_reason="
+                    f"{choice.get('finish_reason')!r}, usage={usage}"
+                )
+        except StudioError as exc:
+            failures.append(f"the split server could not serve a completion: {exc}"[:600])
+
+        apps = first.get("compute_apps")
+        pid = first.get("llama_server_pid")
+        if isinstance(apps, dict) and pid is not None and pid not in apps:
+            # Evidence, not a verdict: nvidia-smi's per-process view is empty
+            # inside some containers, and an absent row is not a CPU fallback.
+            detail["note_compute_apps"] = (
+                f"nvidia-smi lists no compute app for pid {pid}; GPU residency is "
+                f"unproven here, see the gpu_inference assertion"
+            )
+
+        # ---- deduplication, the half a fix can regress.
+        repeat = self._auto_tp_load(ratio, force = False)
+        detail["legs"]["repeat_same_ratio"] = repeat
+        if repeat.get("llama_server_pid") != first.get("llama_server_pid"):
+            failures.append(
+                f"an IDENTICAL auto request replaced the server "
+                f"(pid {first.get('llama_server_pid')} -> "
+                f"{repeat.get('llama_server_pid')}). Nothing changed, so this "
+                f"reloads the model on every request"
+            )
+
+        changed = self._auto_tp_load(other, force = False)
+        detail["legs"]["changed_ratio"] = changed
+        if changed.get("llama_server_pid") == first.get("llama_server_pid"):
+            failures.append(
+                f"asking for {other} reused the server launched for {ratio}, so the "
+                f"new ratio was silently ignored"
+            )
+        elif changed.get("tensor_split_ratio") != split_ratio(",".join(str(x) for x in other)):
+            failures.append(
+                f"after changing the ratio to {other} the live argv carries "
+                f"{changed.get('tensor_split')!r}"
+            )
+
+        detail["failures"] = failures
+        return self.record("auto_tensor_split", not failures, detail)
+
+    def assert_auto_tensor_split_baseline(self) -> bool:
+        """Run the same probe against the merge-base, first.
+
+        This is what makes the head result mean anything. If the base revision
+        ALSO emits the ratio then the defect is not there, the two legs prove
+        nothing about the PR, and the run is void rather than green -- so the
+        rule below is written as "the base must reproduce", not as a pass.
+        """
+        ok, blob = self._checkout_tp_file(self.args.base_sha)
+        detail: dict = {"base_sha": self.args.base_sha, "blob": blob}
+        if not ok:
+            detail["failures"] = [f"could not put {self._TP_FILE} at the base revision: {blob}"]
+            detail["void"] = True
+            return self.record("auto_tensor_split_baseline", False, detail)
+        if not self._restart_for_leg("baseline"):
+            detail["failures"] = ["Unsloth did not restart on the base revision"]
+            detail["void"] = True
+            return self.record("auto_tensor_split_baseline", False, detail)
+
+        ratio = [float(x) for x in self.args.auto_split_ratio.split(",")]
+        probe = self._auto_tp_load(ratio, force = True)
+        detail["probe"] = probe
+        failures: list[str] = []
+        if probe.get("split_mode") != "tensor":
+            failures.append(
+                f"the base revision did not enter tensor mode at all "
+                f"(--split-mode {probe.get('split_mode')!r}), so the two legs do not "
+                f"differ by the PR and this comparison is void"
+            )
+            detail["void"] = True
+        elif probe.get("tensor_split") is not None:
+            failures.append(
+                f"the base revision ALREADY emits --tensor-split "
+                f"{probe.get('tensor_split')!r}, so #10355 does not reproduce on this "
+                f"hardware and the head result proves nothing"
+            )
+            detail["void"] = True
+        detail["bug_reproduced"] = not failures
+        detail["failures"] = failures
+        return self.record("auto_tensor_split_baseline", not failures, detail)
+
+    def restore_head_revision(self) -> bool:
+        ok, blob = self._checkout_tp_file(self.args.head_sha or "HEAD")
+        self.record(
+            "auto_tensor_split_head_restored",
+            ok,
+            {
+                "blob": blob,
+                "failures": [] if ok else [f"could not restore {self._TP_FILE}: {blob}"],
+            },
+        )
+        return ok and self._restart_for_leg("head")
 
     def assert_compaction(self) -> bool:
         """A conversation past the window must COMPACT, and a short one must not.
@@ -2640,6 +3028,55 @@ class Payload:
 
     # ------------------------------------------------------------------ main
 
+    def execute_legs(self) -> int:
+        """Run exactly the assertions ``--legs`` names, in that order.
+
+        The standard run is one shape: install, boot, then everything. A GPU
+        session has a ceiling and a flag-level regression does not need a
+        training run to be answered, so this exists to spend the session on the
+        question being asked. It names the assertions rather than accepting an
+        arbitrary callable, so a typo is a refusal here and not an empty pass
+        forty minutes into a rented session.
+        """
+        available = {
+            "auto_tensor_split": self.assert_auto_tensor_split,
+            "gpu_inference": self.assert_gpu_inference,
+            "tool_calling": self.assert_tool_calling,
+            "code_execution": self.assert_code_execution,
+            "web_search": self.assert_web_search,
+            "server_flags": self.assert_server_flags,
+            "compaction": self.assert_compaction,
+            "api_key": self.assert_api_key,
+            "tabs": self.assert_tabs,
+        }
+        wanted = [name.strip() for name in self.args.legs.split(",") if name.strip()]
+        unknown = [name for name in wanted if name not in available]
+        if unknown:
+            self.record(
+                "legs",
+                False,
+                {
+                    "requested": wanted,
+                    "failures": [
+                        f"unknown assertion(s) {unknown}; this run measured nothing. "
+                        f"Known: {sorted(available)}"
+                    ],
+                },
+            )
+            return self.finish()
+
+        # The baseline leg runs FIRST and on its own revision, so the head leg
+        # below is the same session, the same binary and the same weights with
+        # one file changed.
+        if self.args.base_sha and "auto_tensor_split" in wanted:
+            self.assert_auto_tensor_split_baseline()
+            if not self.restore_head_revision():
+                return self.finish()
+
+        for name in wanted:
+            available[name]()
+        return self.finish()
+
     def execute(self) -> int:
         if not self.preflight():
             return self.finish()
@@ -2653,6 +3090,11 @@ class Payload:
             return self.finish()
         if not self.authenticate():
             return self.finish()
+
+        # A focused run: the named assertions, in the order named, and nothing
+        # else. The standard set below is unchanged when --legs is empty.
+        if self.args.legs:
+            return self.execute_legs()
 
         # Before the GPU work: it needs nothing but a logged-in session, and
         # putting it after a 20-minute training run would mean a training
@@ -2867,6 +3309,35 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--skip-ui",
         action = "store_true",
         help = "do not drive playwright_chat_ui.py (for debugging the API assertions alone)",
+    )
+    # Auto tensor-parallel split (unslothai/unsloth#10355, PR #10884).
+    ap.add_argument(
+        "--legs",
+        default = "",
+        help = "comma-separated assertion names to run, in the order listed here; "
+        "empty runs the standard set. A focused run of one flag on real "
+        "multi-GPU hardware does not need a 20-minute training leg to be "
+        "meaningful, and a Kaggle session has a ceiling.",
+    )
+    ap.add_argument(
+        "--auto-split-ratio",
+        default = "3,1",
+        help = "the per-GPU ratio the auto tensor-parallel check asks for. Skewed "
+        "on purpose: an even ratio is what the planner emits anyway, so it "
+        "cannot tell a forwarded ratio from a default one.",
+    )
+    ap.add_argument(
+        "--base-sha",
+        default = "",
+        help = "run the auto tensor-parallel check against this revision FIRST, with "
+        "only studio/backend/core/inference/llama_cpp.py swapped, so the two "
+        "legs differ by the change under test and by nothing else. The base "
+        "leg must reproduce the defect or the comparison is void.",
+    )
+    ap.add_argument(
+        "--head-sha",
+        default = "",
+        help = "the revision to restore after a --base-sha leg (default: HEAD).",
     )
     return ap.parse_args(argv)
 

@@ -19,6 +19,7 @@ import pytest
 import core.inference.gpu_arbiter as arb
 import core.inference.media_keepwarm as mk
 import utils.openai_auto_switch_settings as settings
+from core.inference.llama_keepwarm import LlamaKeepWarmMiddleware
 
 
 class _FakeEngine:
@@ -620,7 +621,6 @@ def test_a_load_that_has_not_registered_yet_is_not_unloaded(media, monkeypatch):
     # and the page silently rolls the pick back. The window has to be closed, not narrowed,
     # so the tick is pinned to the exact moment the route has started and the backend still
     # reports nothing loading.
-    from core.inference.llama_keepwarm import LlamaKeepWarmMiddleware
 
     monkeypatch.setattr(settings, "get_media_auto_unload_idle_seconds", lambda: 60)
     _step()
@@ -649,8 +649,6 @@ def test_a_load_that_has_not_registered_yet_is_not_unloaded(media, monkeypatch):
 
 
 def test_the_middleware_counts_a_generation_against_its_backend(media, monkeypatch):
-    from core.inference.llama_keepwarm import LlamaKeepWarmMiddleware
-
     monkeypatch.setattr(settings, "get_media_auto_unload_idle_seconds", lambda: 60)
     _step()
     _idle(arb.DIFFUSION)
@@ -679,7 +677,6 @@ def test_a_cancelled_wait_on_the_media_gate_leaves_no_chat_request_behind(media,
     # process-wide chat count positive for good: chat idle unload would never fire again and
     # every training start would go on being told an inference request was running.
     import core.inference.llama_keepwarm as lk
-    from core.inference.llama_keepwarm import LlamaKeepWarmMiddleware
 
     monkeypatch.setattr(lk, "_inflight", 0)
     monkeypatch.setattr(lk, "_pending", 0)
@@ -715,8 +712,6 @@ def test_a_cancelled_wait_on_the_media_gate_leaves_no_chat_request_behind(media,
 
 
 def test_an_unauthenticated_probe_does_not_keep_the_pipeline_warm(media, monkeypatch):
-    from core.inference.llama_keepwarm import LlamaKeepWarmMiddleware
-
     monkeypatch.setattr(settings, "get_media_auto_unload_idle_seconds", lambda: 60)
     _step()
     _idle(arb.DIFFUSION)
@@ -743,8 +738,6 @@ def _stalled_media_request(path, headers):
     dependency runs, so nothing downstream ever produces a status for it."""
 
     async def _run():
-        from core.inference.llama_keepwarm import LlamaKeepWarmMiddleware
-
         started = asyncio.Event()
 
         async def _app(scope, receive, send):

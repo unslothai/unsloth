@@ -11,9 +11,11 @@ import secrets
 import sqlite3
 import threading
 import time
+from pathlib import Path
 from typing import Any, Iterable, Union
 
 from storage.studio_db import get_connection
+from utils.paths import studio_db_path
 
 ACTIVE_STATUSES = frozenset({"queued", "running", "cancelling"})
 TERMINAL_STATUSES = frozenset({"cancelled", "completed", "failed"})
@@ -23,8 +25,7 @@ _RUN_TOMBSTONE_PREFIX = "chat-generation-run-tombstone:"
 ChatGenerationEventInput = Union[tuple[str, dict[str, Any]], tuple[str, dict[str, Any], int]]
 
 # Progress lease columns live here rather than in _ensure_schema so the base table stays owned by
-# studio_db; named _schema_ready to match the flag the test harness resets.
-_schema_ready = False
+_schema_ready: set[Path] = set()
 _schema_lock = threading.Lock()
 
 
@@ -36,15 +37,27 @@ def now_ms() -> int:
     return int(time.time() * 1000)
 
 
+def reset_schema_state_for_tests() -> None:
+    with _schema_lock:
+        _schema_ready.clear()
+
+
+def _database_path(conn: sqlite3.Connection) -> Path:
+    """The file this connection opened, so polling paths do not resolve the account root twice."""
+    row = conn.execute("PRAGMA database_list").fetchone()
+    return Path(row[2]) if row and row[2] else studio_db_path()
+
+
 def _connect() -> sqlite3.Connection:
     """get_connection plus the one-off progress-lease migration for this database."""
-    global _schema_ready
     conn = get_connection()
-    if _schema_ready:
+    db_path = _database_path(conn)
+    if db_path in _schema_ready:
         return conn
     try:
         with _schema_lock:
-            if not _schema_ready:
+            schema_path = db_path.resolve()
+            if schema_path not in _schema_ready:
                 columns = {
                     row[1]
                     for row in conn.execute("PRAGMA table_info(chat_generation_runs)").fetchall()
@@ -62,7 +75,7 @@ def _connect() -> sqlite3.Connection:
                         if "duplicate column" not in str(exc).lower():
                             raise
                 conn.commit()
-                _schema_ready = True
+                _schema_ready.add(schema_path)
     except sqlite3.OperationalError:
         # A writer holds the database, and the columns are additive, so let this call through and migrate
         # later rather than turning contention into a failed history read.
@@ -167,12 +180,10 @@ def _append_events_locked(
 
 
 def _missing_lease_columns(exc: sqlite3.OperationalError) -> bool:
-    """Whether `exc` is this database still waiting on the progress-lease migration.
-
-    _connect lets a call through when contention blocks the ALTER, so every statement
-    naming progress_at or progress_tokens can meet a table that predates them. Degrading
-    to the pre-migration behaviour keeps that window harmless: without it a blocked
-    migration would abort a generation with `no such column` the moment the writer let go.
+    """Whether `exc` is this database still waiting on the progress-lease migration. _connect lets a call through
+    when contention blocks the ALTER, so every statement naming progress_at or progress_tokens can meet a table
+    that predates them. Degrading to the pre-migration behaviour keeps that window harmless: without it a
+    blocked migration would abort a generation with `no such column` the moment the writer let go.
     """
     message = str(exc).lower()
     return "no such column" in message and (
@@ -181,20 +192,15 @@ def _missing_lease_columns(exc: sqlite3.OperationalError) -> bool:
 
 
 def _touch_progress_locked(conn: sqlite3.Connection, run_id: str, tokens: int) -> None:
-    """Stamp the progress lease for one flush of streamed output.
-
-    Monotonic in both fields, the same rule studio_db._safe_generation_assistant_update
-    applies to the assistant row this run owns: the token counter only ever accumulates,
-    and progress_at takes MAX(stored, now) so a wall-clock step backwards (NTP, suspend)
-    cannot age a live run into the sweep below. One chunk carries at most one token
-    delta, so the count of chunk events is the token count.
-
-    updated_at moves with it, as it already does on every event append. That is what the
-    follower's snapshot poll compares, so a client watching a run through a long model
-    preparation or an admission wait, neither of which emits events, sees the server is
-    alive and rearms its own no-progress deadline instead of reporting an interruption
-    over healthy work.
-    """
+    """Stamp the progress lease for one flush of streamed output. Monotonic in both fields, the same
+    rule studio_db._safe_generation_assistant_update applies to the assistant row this run owns: the
+    token counter only ever accumulates, and progress_at takes MAX(stored, now) so a wall-clock step
+    backwards (NTP, suspend) cannot age a live run into the sweep below. One chunk carries at most
+    one token delta, so the count of chunk events is the token count. updated_at moves with it, as
+    it already does on every event append. That is what the follower's snapshot poll compares, so a
+    client watching a run through a long model preparation or an admission wait, neither of which
+    emits events, sees the server is alive and rearms its own no-progress deadline instead of
+    reporting an interruption over healthy work."""
     now = now_ms()
     try:
         conn.execute(
@@ -469,13 +475,10 @@ def get_worker_run(
 
 
 def touch_progress(run_id: str) -> None:
-    """Renew one run's progress lease without recording any streamed output.
-
-    For work the lease cannot see. Automatic model loading, idle reload and auto-download
-    all happen between mark_running and the first token, and the engine's own first-token
-    budget does not start until after them, so ageing a run from mark_running could reap a
-    legitimate load followed by a legitimate prefill.
-    """
+    """Renew one run's progress lease without recording any streamed output. For work the lease cannot
+    see: automatic model loading, idle reload and auto-download all happen between mark_running and
+    the first token, and the engine's own first-token budget does not start until after them, so
+    ageing a run from mark_running could reap a legitimate load followed by a legitimate prefill."""
     conn = _connect()
     try:
         _touch_progress_locked(conn, run_id, 0)
@@ -748,16 +751,12 @@ def wait_for_events(
 def reconcile_runs(
     *, error: str = "Studio restarted during generation", stale_after_ms: int | None = None
 ) -> list[str]:
-    """Settle active runs, returning the ids settled.
-
-    ``stale_after_ms`` is what makes this safe to run while Studio is serving: with it,
-    only runs whose progress lease has not moved for that long are settled, so a slow
-    but advancing generation is never touched. Without it (process boot) every active
-    run is orphaned by definition and all of them are settled.
-
-    Partial output survives either way: only the run row and the assistant message's
-    status metadata are rewritten, never the streamed content or the event log.
-    """
+    """Settle active runs, returning the ids settled. ``stale_after_ms`` is what makes this safe to run
+    while Studio is serving: with it, only runs whose progress lease has not moved for that long are
+    settled, so a slow but advancing generation is never touched. Without it (process boot) every
+    active run is orphaned by definition and all of them are settled. Partial output survives either
+    way: only the run row and the assistant message's status metadata are rewritten, never the
+    streamed content or the event log."""
     conn = _connect()
     settled: list[str] = []
     try:
@@ -777,8 +776,8 @@ def reconcile_runs(
             if not _missing_lease_columns(exc):
                 raise
             # Contention blocked the migration, so falling back to started_at/created_at is the opposite of
-            # conservative: those stamps are older by the whole life of the run, so one that streamed moments
-            # ago is reaped once its total AGE passes the timeout. Boot reconcile passes no stale_after_ms.
+            # conservative: those stamps are older by the whole life of the run, so one that streamed moments ago is
+            # reaped once its total AGE passes the timeout. Boot reconcile passes no stale_after_ms.
             if stale_after_ms is not None:
                 conn.rollback()
                 return []

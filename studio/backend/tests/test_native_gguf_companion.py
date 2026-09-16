@@ -22,6 +22,7 @@ from routes.inference import _validate_native_mtp_drafter
 from routes.inference import _loaded_is_local_model
 from routes.inference import _mtp_draft_for_path
 from routes.inference import _native_gguf_companion_usable
+from routes.inference import _native_mmproj_accept
 from utils.models.model_config import (
     _local_gguf_companion_search_root,
     detect_dflash_file,
@@ -81,6 +82,91 @@ def _write_pair(tmp_path: Path, folder: str | None = None) -> tuple[Path, Path]:
 def test_native_companion_allows_model_directory(tmp_path):
     weight, companion = _write_pair(tmp_path)
     _validate_native_gguf_companion(str(companion), str(weight), "vision companion")
+
+
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("root_projector", [False, True])
+def test_projector_discovery_admits_before_reading(tmp_path, monkeypatch, native, root_projector):
+    from utils.models import model_config as mc
+
+    weight = tmp_path / "Qwen3.8-27B-Q4_K_M.gguf"
+    weight.write_bytes(b"\0" * 32)
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    outside = assets / "mmproj-Qwen3.8-27B-BF16.gguf"
+    outside.write_bytes(b"\0" * 32)
+    sibling = tmp_path / "mmproj-F16.gguf"
+    if root_projector:
+        sibling.write_bytes(b"\0" * 32)
+
+    reads = []
+    original = mc.read_gguf_general_metadata
+
+    def read(path):
+        reads.append(Path(path).resolve())
+        if native:
+            assert Path(path).resolve() != outside.resolve()
+        return original(path)
+
+    monkeypatch.setattr(mc, "read_gguf_general_metadata", read)
+    config = mc.ModelConfig.from_identifier(
+        str(weight),
+        mmproj_accept = _native_mmproj_accept if native else None,
+    )
+    expected = sibling if native and root_projector else None if native else outside
+    assert config.gguf_mmproj_file == (str(expected.resolve()) if expected else None)
+    assert config.is_vision is (expected is not None)
+    if native:
+        assert outside.resolve() not in reads
+        intent = _resolve_gguf_load_intent(
+            config,
+            LoadRequest(model_path = str(weight)),
+            native_grant_backed = True,
+            chat_template_override = None,
+            extra_args = None,
+            placement = SimpleNamespace(resolved_gpu_ids = None, gpu_ids_are_vulkan_ordinals = False),
+            n_parallel = 1,
+        )
+        assert intent.mmproj_path == config.gguf_mmproj_file
+    else:
+        assert outside.resolve() in reads
+
+
+@pytest.mark.parametrize("directory_link", [False, True])
+def test_native_projector_symlink_rejected_before_header_read(
+    tmp_path, monkeypatch, directory_link
+):
+    from utils.models import model_config as mc
+
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    weight = model_dir / "model.gguf"
+    weight.write_bytes(b"\0" * 32)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    projector = outside / "mmproj-F16.gguf"
+    projector.write_bytes(b"\0" * 32)
+    try:
+        if directory_link:
+            (model_dir / "assets").symlink_to(outside, target_is_directory = True)
+        else:
+            (model_dir / projector.name).symlink_to(projector)
+    except OSError as exc:
+        pytest.skip(f"symlinks unavailable: {exc}")
+
+    original = mc.read_gguf_general_metadata
+
+    def read(path):
+        assert Path(path).resolve() != projector.resolve()
+        return original(path)
+
+    monkeypatch.setattr(mc, "read_gguf_general_metadata", read)
+    assert (
+        mc.detect_mmproj_file(
+            str(weight), accept = lambda candidate: _native_mmproj_accept(candidate, str(weight))
+        )
+        is None
+    )
 
 
 @pytest.mark.parametrize("folder", ["MTP", "mtp", "MtP"])

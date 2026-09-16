@@ -12,11 +12,14 @@ import { looksLikeLocalPath } from "@/lib/local-path";
 export {
   isNativeFileLabel,
   isOllamaLinkPath,
+  isOllamaModelId,
   isStandaloneGgufPath,
+  ggufVariantsMatch,
   modelDisplayName,
   normalizeGgufVariantIdentity,
   normalizeModelIdentity,
   publicModelId,
+  residentModelIdMatches,
 } from "@/features/hub/lib/model-identity";
 
 const MODEL_STORAGE_KEY_PREFIX = "v2:";

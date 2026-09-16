@@ -28,6 +28,7 @@ import {
 import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
 import { cn } from "@/lib/utils";
 import { Spinner } from "@/components/ui/spinner";
+import { hasCreatedFiles } from "./sandbox-files";
 import { syncToolActivityPreference } from "./tool-activity-open-state";
 
 const ANIMATION_DURATION = 200;
@@ -64,10 +65,9 @@ function ToolGroupRoot({
   ...props
 }: ToolGroupRootProps) {
   const collapsibleRef = useRef<HTMLDivElement>(null);
-  // Same treatment as ToolFallbackRoot. ToolGroupImpl passes `undefined`
-  // whenever it is not forcing the group open, so this uncontrolled state is
-  // what is on screen for most of a group's life -- without the sync, a group
-  // expanded by hand stays open while every card inside it closes.
+  // Same treatment as ToolFallbackRoot. ToolGroupImpl passes `undefined` whenever it is not forcing
+  // the group open, so this uncontrolled state is what is on screen for most of a group's life --
+  // without the sync, a group expanded by hand stays open while every card inside it closes.
   const collapseByDefault = useChatPreferencesStore(
     (state) => state.collapseToolActivityByDefault,
   );
@@ -241,7 +241,9 @@ const ToolGroupImpl: FC<
       .some(
         (part) =>
           part.type === "tool-call" &&
-          (part.toolName === "render_html" || part.toolName === "python"),
+          (part.toolName === "render_html" ||
+            part.toolName === "python" ||
+            hasCreatedFiles(part.toolName, part.result)),
       ),
   );
   // A blocking allow/deny prompt must never be hidden inside a collapsed
@@ -301,8 +303,8 @@ const ToolGroupImpl: FC<
       ((hasLiveOutput && messageRunning) ||
         (forcedOpenRef.current && messageRunning)));
 
-  // Render single calls, canvases, and Python scripts directly so their
-  // persistent content never hides in a collapsed group.
+  // Render single calls, canvases, Python scripts, and calls that created files
+  // directly so their persistent content never hides in a collapsed group.
   if (toolCount <= 1 || containsUngroupedTool) {
     return <>{children}</>;
   }

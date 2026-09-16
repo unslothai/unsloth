@@ -24,6 +24,17 @@ class GgufVariantDetail(BaseModel):
     )
     size_bytes: int = Field(0, description = "File size in bytes")
     download_size_bytes: int = Field(0, description = "Total bytes needed to download this variant")
+    pending_drafter_filename: Optional[str] = Field(
+        None,
+        description = (
+            "The sole missing MTP/DSpark/DFlash companion when the main GGUF and any "
+            "vision projector are already cached. Lets the download UI name the artifact "
+            "it is actually transferring instead of presenting it as the whole model."
+        ),
+    )
+    pending_drafter_size_bytes: int = Field(
+        0, description = "Remote size of pending_drafter_filename"
+    )
     shard_count: int = Field(0, description = "Part count for a complete canonical split GGUF")
     download_remaining_bytes: Optional[int] = Field(
         None,
@@ -97,6 +108,10 @@ class GgufVariantsResponse(BaseModel):
         False,
         description = "Whether this answer came from resolving repo_id as a local path",
     )
+    dependencies_resolved: bool = Field(
+        False,
+        description = "Whether Hub metadata was available to resolve the variant's required companion files",
+    )
     loadable_variants: Optional[List[str]] = Field(
         None,
         description = (
@@ -142,7 +157,7 @@ class LocalModelInfo(BaseModel):
         default_factory = LocalModelCapabilities,
         description = "Declared capabilities for this inventory row",
     )
-    source: Literal["models_dir", "hf_cache", "lmstudio", "ollama", "custom"] = Field(
+    source: Literal["models_dir", "hf_cache", "lmstudio", "ollama", "hermes", "custom"] = Field(
         ...,
         description = "Discovery source",
     )
@@ -218,6 +233,10 @@ class LocalModelListResponse(BaseModel):
     ollama_dirs: List[str] = Field(
         default_factory = list,
         description = "Ollama model directories that were scanned",
+    )
+    hermes_dirs: List[str] = Field(
+        default_factory = list,
+        description = "Hermes model directories that were scanned",
     )
     models: List[LocalModelInfo] = Field(
         default_factory = list,
