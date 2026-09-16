@@ -370,6 +370,7 @@ class TurnResult:
     llm_tok_s: Optional[float] = None
     first_audio_latency_s: Optional[float] = None
     turn_wall_s: Optional[float] = None
+    harness_wall_s: Optional[float] = None
     topical_ok: Optional[bool] = None
     errors: list[str] = field(default_factory = list)
 
@@ -457,6 +458,11 @@ def ensure_fixture(client: StudioClient, turn: dict) -> tuple[bytes, float, bool
 
 def run_turn(client: StudioClient, turn: dict, messages: list[dict], args) -> TurnResult:
     res = TurnResult(id = turn["id"], ground_truth = turn["text"])
+    # Real elapsed across every request this turn makes, started once the input
+    # fixture is in hand so one-time synthesis is not charged to the pipeline.
+    # Unlike the derived walls below this is measured, and it is the only number
+    # here that includes the extra first-chunk synthesis the harness performs.
+    pipeline_started: Optional[float] = None
 
     # 1) STT
     try:
@@ -464,6 +470,7 @@ def run_turn(client: StudioClient, turn: dict, messages: list[dict], args) -> Tu
         res.input_audio_s = dur
         if generated:
             print(f"    (synthesized input fixture for turn {turn['id']})")
+        pipeline_started = time.perf_counter()
         res.transcript, res.stt_s = client.transcribe(wav, args.stt_model)
         res.wer = word_error_rate(turn["text"], res.transcript)
         if res.stt_s and res.stt_s > 0:
@@ -513,9 +520,16 @@ def run_turn(client: StudioClient, turn: dict, messages: list[dict], args) -> Tu
         except Exception as e:  # noqa: BLE001
             res.errors.append(f"tts_full: {e}")
 
-    # Derived latencies. First audio is charged for the LLM until the first
-    # synthesizable chunk is complete, not just its first token: speak() cannot
-    # start on a token, and the tokens between the two are real waiting.
+    if pipeline_started is not None:
+        res.harness_wall_s = time.perf_counter() - pipeline_started
+
+    # Derived latencies. Both are MODELS of a client, not this harness's own
+    # elapsed time: the harness synthesizes the opening clause as well as the
+    # whole reply, and neither model is charged for both. `harness_wall_s`
+    # above is the measured number. First audio is charged for the LLM until
+    # the first synthesizable chunk is complete, not just its first token:
+    # speak() cannot start on a token, and the tokens between the two are real
+    # waiting.
     if None not in (res.stt_s, res.llm_first_chunk_s, res.tts_first_s):
         res.first_audio_latency_s = res.stt_s + res.llm_first_chunk_s + res.tts_first_s
     if None not in (res.stt_s, res.llm_total_s, res.tts_full_s):
@@ -677,6 +691,7 @@ def summarize(passes: list[list[TurnResult]]) -> dict:
                 "tts_full_s": _median([r.tts_full_s for r in rs]),
                 "first_audio_latency_s": _median([r.first_audio_latency_s for r in rs]),
                 "turn_wall_s": _median([r.turn_wall_s for r in rs]),
+                "harness_wall_s": _median([r.harness_wall_s for r in rs]),
                 "stt_rtf": _median([r.stt_rtf for r in rs]),
                 "tts_rtf": _median([r.tts_rtf for r in rs]),
                 "llm_tok_s": _median([r.llm_tok_s for r in rs]),
@@ -699,9 +714,14 @@ def summarize(passes: list[list[TurnResult]]) -> dict:
         "incomplete": gaps,
         "per_turn": per_turn,
         "totals": {
-            # The headline: sum of true elapsed on the realtime critical path.
+            # The headline: the modelled streaming critical path, summed over
+            # turns. `pipeline_wall_s` models a non-streaming client instead.
+            # Both are built from per-stage timings; `harness_wall_s` is the
+            # measured elapsed and is the larger of the three, because the
+            # harness synthesizes the opening clause on top of the full reply.
             "first_audio_latency_s": total("first_audio_latency_s"),
             "pipeline_wall_s": total("turn_wall_s"),
+            "harness_wall_s": total("harness_wall_s"),
             "stt_s": total("stt_s"),
             "llm_total_s": total("llm_total_s"),
             "tts_full_s": total("tts_full_s"),
@@ -746,7 +766,8 @@ def print_report(summary: dict, meta: dict) -> None:
     print("-" * 84)
     tot, mean = summary["totals"], summary["means"]
     print(f"  TOTAL first-audio latency (drive this down) : {_fmt(tot['first_audio_latency_s'])}")
-    print(f"  TOTAL full-pipeline wall                    : {_fmt(tot['pipeline_wall_s'])}")
+    print(f"  TOTAL non-streaming pipeline (modelled)     : {_fmt(tot['pipeline_wall_s'])}")
+    print(f"  TOTAL measured harness elapsed              : {_fmt(tot['harness_wall_s'])}")
     print(f"  mean first-audio latency / turn             : {_fmt(mean['first_audio_latency_s'])}")
     print(
         f"  mean STT rtf {_fmt(mean['stt_rtf'],'x',2)}   mean TTS rtf {_fmt(mean['tts_rtf'],'x',2)}"
@@ -792,7 +813,8 @@ def diff_baseline(summary: dict, baseline_path: Path) -> None:
     print("-" * 78)
     pairs = [
         ("totals", "first_audio_latency_s", "total first-audio latency"),
-        ("totals", "pipeline_wall_s", "total pipeline wall"),
+        ("totals", "pipeline_wall_s", "total non-streaming (modelled)"),
+        ("totals", "harness_wall_s", "total measured harness wall"),
         ("means", "first_audio_latency_s", "mean first-audio/turn"),
         ("means", "llm_ttft_s", "mean LLM ttft"),
         ("means", "llm_first_chunk_s", "mean LLM first chunk"),

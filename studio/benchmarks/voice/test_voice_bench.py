@@ -18,6 +18,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import types
 import unittest
 import unittest.mock
@@ -52,6 +53,9 @@ def _turn(turn_id: int, **timings) -> vb.TurnResult:
         r.first_audio_latency_s = r.stt_s + r.llm_first_chunk_s + r.tts_first_s
     if None not in (r.stt_s, r.llm_total_s, r.tts_full_s):
         r.turn_wall_s = r.stt_s + r.llm_total_s + r.tts_full_s
+    # What a real run measures: every request the turn made, so both TTS calls.
+    if None not in (r.stt_s, r.llm_total_s, r.tts_full_s, r.tts_first_s):
+        r.harness_wall_s = r.stt_s + r.llm_total_s + r.tts_full_s + r.tts_first_s
     return r
 
 
@@ -154,6 +158,32 @@ class SummarizeTests(unittest.TestCase):
         self.assertEqual(s["incomplete"], [])
         self.assertAlmostEqual(s["totals"]["first_audio_latency_s"], 2 * (0.2 + 0.5 + 0.4))
         self.assertAlmostEqual(s["means"]["llm_first_chunk_s"], 0.5)
+
+    def test_the_measured_wall_totals_beside_the_modelled_one(self):
+        """`summarize` must carry the measured wall through, not fold it in.
+
+        `pipeline_wall_s` stays the non-streaming model it has always been, so
+        a baseline recorded against it keeps its meaning; the measured number
+        is a separate total."""
+        s = vb.summarize([[_turn(1), _turn(2)], [_turn(1), _turn(2)]])
+        modelled = s["totals"]["pipeline_wall_s"]
+        measured = s["totals"]["harness_wall_s"]
+        self.assertAlmostEqual(modelled, 2 * (0.2 + 1.0 + 1.5))
+        self.assertAlmostEqual(measured, modelled + 2 * 0.4)
+
+    def test_a_baseline_without_the_measured_wall_still_diffs(self):
+        """Reports written before `harness_wall_s` existed must stay comparable."""
+        with tempfile.TemporaryDirectory() as d:
+            base_path = Path(d) / "base.json"
+            old = vb.summarize([[_turn(1)]])
+            del old["totals"]["harness_wall_s"]
+            base_path.write_text(json.dumps({"summary": old}), encoding = "utf-8")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                vb.diff_baseline(vb.summarize([[_turn(1)]]), base_path)
+            text = out.getvalue()
+            self.assertIn("total first-audio latency", text)
+            self.assertNotIn("total measured harness wall", text)
 
     def test_failed_stage_marks_run_incomplete(self):
         bad = _turn(2, tts_first_s = None, tts_full_s = None)
@@ -487,3 +517,79 @@ class FixtureTests(unittest.TestCase):
 if __name__ == "__main__":
     os.chdir(Path(__file__).resolve().parent)
     unittest.main()
+
+
+class HarnessWallTests(unittest.TestCase):
+    """What `harness_wall_s` is measured over, pinned at both ends.
+
+    The two derived walls are models of a client. This one is elapsed time, so
+    the span it covers is the claim: every request the turn makes, and none of
+    the one-time fixture synthesis that precedes them."""
+
+    SLEEP = 0.1
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        saved = (vb.FIXTURES, vb.DOWNLOADS)
+        vb.FIXTURES, vb.DOWNLOADS = root / "fixtures", root / "downloads"
+        self.addCleanup(self.tmp.cleanup)
+
+        def restore():
+            vb.FIXTURES, vb.DOWNLOADS = saved
+
+        self.addCleanup(restore)
+        test = self
+
+        class FakeClient:
+            """Every server call costs SLEEP, so the measured span is countable."""
+
+            def speak(self, text, **kw):
+                time.sleep(test.SLEEP)
+                return _wav(), 0.01
+
+            def transcribe(self, wav, model):
+                return "hello there", 0.02
+
+            def chat_stream(self, **kw):
+                return {
+                    "text": "Hi. How are you?",
+                    "ttft": 0.03,
+                    "first_chunk_s": 0.04,
+                    "total": 0.05,
+                    "completion_tokens": 5,
+                }
+
+        self.client = FakeClient()
+        self.args = argparse.Namespace(
+            stt_model = None,
+            model = "chat",
+            seed = 7,
+            temperature = 0.0,
+            max_tokens = 64,
+            think = False,
+        )
+        self.turn = {"id": 1, "text": "hello there", "expect_any": []}
+
+    def test_it_spans_both_tts_calls_and_excludes_fixture_synthesis(self):
+        """A cold turn synthesizes its fixture, then makes two TTS calls.
+
+        Three SLEEPs elapse inside run_turn, but only two are pipeline: the
+        fixture is setup, paid once ever and cached. If the timer were started
+        before it, a cold first run would look a third slower than a warm one
+        for no reason the pipeline controls."""
+        with contextlib.redirect_stdout(io.StringIO()):
+            res = vb.run_turn(self.client, self.turn, [], self.args)
+        self.assertEqual(res.errors, [])
+        self.assertGreaterEqual(res.harness_wall_s, 2 * self.SLEEP)
+        self.assertLess(res.harness_wall_s, 3 * self.SLEEP)
+
+    def test_it_is_not_the_sum_of_the_stage_timings(self):
+        """The reported per-stage times are the server's, and they are what the
+        modelled walls are built from. The measured wall is larger because it
+        also carries the opening-clause synthesis and the request overhead the
+        stage timings exclude — that gap is the finding this pins."""
+        with contextlib.redirect_stdout(io.StringIO()):
+            res = vb.run_turn(self.client, self.turn, [], self.args)
+        self.assertAlmostEqual(res.turn_wall_s, 0.02 + 0.05 + 0.01)
+        self.assertGreater(res.harness_wall_s, res.turn_wall_s)

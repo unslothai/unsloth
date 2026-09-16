@@ -51,12 +51,25 @@ first_audio_latency = stt_s + llm_first_chunk_s + tts_first_s
 
 The LLM is charged until its first synthesizable chunk is complete, not just its
 first token: speech cannot start on a token, and the tokens between the first one
-and the end of the opening clause are real waiting. (The harness itself still
-calls TTS after the whole reply has streamed, so `turn_wall_s` =
-`stt_s + llm_total_s + tts_full_s` is the latency of the pipeline as implemented
-today; `first_audio_latency` is the projection of what a streaming TTS would
-achieve.) That's the realtime "feel". The summary prints the total across all
-turns; that total is the thing to drive down.
+and the end of the opening clause are real waiting. That's the realtime "feel".
+The summary prints the total across all turns; that total is the thing to drive
+down.
+
+**The three walls, and which one is measured.** Two of them are models built
+from the per-stage timings, and only the third is elapsed time:
+
+| number | what it is | measured? |
+|---|---|---|
+| `first_audio_latency_s` | `stt_s + llm_first_chunk_s + tts_first_s` — a clause-first *streaming* client | derived |
+| `pipeline_wall_s` (`turn_wall_s` per turn) | `stt_s + llm_total_s + tts_full_s` — a *non-streaming* client that synthesizes once, after the reply has fully streamed | derived |
+| `harness_wall_s` | wall-clock across every request the turn actually made, from the STT call to the end of the full-reply synthesis | **measured** |
+
+`harness_wall_s` is the largest of the three and always will be: the harness
+synthesizes the opening clause *and* the whole reply, so it pays one extra TTS
+call per turn that neither modelled client would. That extra call is how
+`tts_first_s` is obtained; it is instrumentation, not pipeline. Compare
+deployments on the two modelled numbers, and use `harness_wall_s` to know what
+a benchmark run costs you in real time.
 
 ## Accuracy / correctness
 
