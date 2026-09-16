@@ -316,3 +316,42 @@ def test_an_empty_release_index_keeps_every_load_bearing_tag() -> None:
     module = _matrix_module(empty)
 
     assert set(module._ALWAYS).issubset(module.TRANSFORMERS_TAGS)
+
+
+def test_the_declared_ceiling_stays_in_the_matrix_after_a_patch_release() -> None:
+    """The matrix keeps one tag per minor, so a 5.17.1 would evict 5.17.0.
+
+    5.17.0 is the exact maximum `transformers<=5.17.0` admits. Letting a later patch take
+    its slot would stop checking the supported ceiling and start checking a version no
+    user can resolve through the declared window. The anchor is derived from pyproject's
+    own cap, so lifting the cap moves it rather than leaving a stale literal behind.
+    """
+    import io
+    import json as _json
+
+    class _Response(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self.close()
+            return False
+
+    published = {
+        "5.17.0": [{"yanked": False}],
+        # The patch that has not shipped yet, which is what evicts the ceiling.
+        "5.17.1": [{"yanked": False}],
+    }
+
+    def releases(*args, **kwargs):
+        return _Response(_json.dumps({"releases": published}).encode("utf-8"))
+
+    module = _matrix_module(releases)
+
+    assert module._declared_ceiling_tag() == ("v5.17.0",), (
+        "the anchor is no longer read from pyproject's transformers cap"
+    )
+    assert "v5.17.1" in module.TRANSFORMERS_TAGS, "the newest patch is still measured"
+    assert "v5.17.0" in module.TRANSFORMERS_TAGS, (
+        "a patch release evicted the declared ceiling from the matrix"
+    )

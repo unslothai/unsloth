@@ -14,6 +14,7 @@ import json
 import re
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 import pytest
 
@@ -28,6 +29,26 @@ _FLOOR = (4, 57, 6)
 # first required tokenizers>=0.23.1, which broke the Apple Silicon install when an unbounded
 # override let it in (tests/studio/install/test_transformers_tokenizers_pair.py).
 _ALWAYS = ("v4.57.6", "v5.5.0", "v5.16.0")
+
+# pyproject's own transformers cap, read rather than repeated. The matrix keeps one tag per
+# minor, so the day upstream ships 5.17.1 the (5, 17) slot becomes 5.17.1 and 5.17.0, the
+# exact maximum `transformers<=5.17.0` admits, stops being checked at all while a version
+# no user can resolve is checked instead. Deriving the anchor from the cap means lifting
+# the cap moves the anchor with it.
+_CAP = re.compile(r"^\s*\"transformers[^\"]*?<=\s*([0-9]+(?:\.[0-9]+)*)", re.M)
+
+
+def _declared_ceiling_tag() -> tuple[str, ...]:
+    """The tag for the newest transformers pyproject admits, or empty if unreadable."""
+    pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
+    try:
+        found = _CAP.findall(pyproject.read_text(encoding = "utf-8"))
+    except OSError:
+        return ()
+    if not found:
+        return ()
+    # The highest, so a lower marker-gated half of a split cap cannot lower the anchor.
+    return ("v" + max(found, key = lambda v: tuple(int(p) for p in v.split("."))),)
 
 # PyPI version -> the tag that actually carries it, where upstream disagrees with itself.
 # Upstream tagged PyPI 5.10.4 as v5.10.3 (that tag's __init__ says 5.10.4); there is no
@@ -108,9 +129,10 @@ def _with_always(tags) -> list[str]:
     Every return path goes through here, the fallback ones included. `_ALWAYS` names the
     patches a specific check exists for, and `_TAGS_FALLBACK` carries one tag per minor, so
     it does not hold v5.5.0 or v5.16.0: returning it unmerged let a PyPI outage drop the
-    Apple Silicon ceiling and the tokenizers breakpoint and still report green.
+    Apple Silicon ceiling and the tokenizers breakpoint and still report green. The
+    declared ceiling is merged here too, for the reason `_declared_ceiling_tag` gives.
     """
-    return sorted(set(tuple(tags) + _ALWAYS), key = _sort_key)
+    return sorted(set(tuple(tags) + _ALWAYS + _declared_ceiling_tag()), key = _sort_key)
 
 
 def _sort_key(tag: str) -> tuple[int, ...]:
