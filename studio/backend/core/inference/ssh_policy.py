@@ -26,7 +26,10 @@ _SSH_PY_ROOT_MODULES = frozenset(
 
 _SSH_PY_CONNECT_ATTRS = frozenset({"connect", "connect_ssh"})
 
+_FABRIC_GROUP_FQ = frozenset({"fabric.Group", "fabric.SerialGroup", "fabric.ThreadingGroup"})
+
 _SSH_PY_CONNECT_FQ = (
+    *_FABRIC_GROUP_FQ,
     "paramiko.SSHClient.connect",
     "paramiko.Transport",
     "asyncssh.connect",
@@ -60,6 +63,9 @@ _PYTHON_API_SYMBOLS.update(
         "paramiko.transport.Transport": "paramiko.Transport",
         "paramiko.client.SSHClient": "paramiko.SSHClient",
         "fabric.config.Config": "fabric.Config",
+        "fabric.group.Group": "fabric.Group",
+        "fabric.group.SerialGroup": "fabric.SerialGroup",
+        "fabric.group.ThreadingGroup": "fabric.ThreadingGroup",
     }
 )
 
@@ -394,7 +400,14 @@ def _ssh_import_bindings(tree: ast.AST) -> dict[str, str]:
             for base in node.bases:
                 factory = _bound_name(base, bindings)
                 if factory.split(".", 1)[0] in _SSH_PY_ROOT_MODULES and factory.endswith(
-                    (".SSHClient", ".Transport", ".Connection")
+                    (
+                        ".SSHClient",
+                        ".Transport",
+                        ".Connection",
+                        ".Group",
+                        ".SerialGroup",
+                        ".ThreadingGroup",
+                    )
                 ):
                     bindings[node.name] = factory
                     break
@@ -442,7 +455,16 @@ def _ssh_client_bindings(tree: ast.AST, bindings: dict[str, str]) -> dict[str, s
             continue
         if isinstance(value, ast.Call):
             factory = _bound_name(value.func, bindings)
-            if factory.endswith((".SSHClient", ".Transport", ".Connection")):
+            if factory.endswith(
+                (
+                    ".SSHClient",
+                    ".Transport",
+                    ".Connection",
+                    ".Group",
+                    ".SerialGroup",
+                    ".ThreadingGroup",
+                )
+            ):
                 clients[name] = factory
         elif _fq_name(value) in clients:
             clients[name] = clients[_fq_name(value)]
@@ -462,6 +484,8 @@ def _fq_name(node: Optional[ast.AST]) -> str:
 
 def _bound_name(node: Optional[ast.AST], bindings: dict[str, str]) -> str:
     """Resolve imported or assigned symbols to the public SSH API names."""
+    if isinstance(node, ast.Lambda) and isinstance(node.body, ast.Call):
+        return _bound_name(node.body.func, bindings)
     name = _fq_name(node)
     root, sep, rest = name.partition(".")
     name = bindings.get(name, bindings.get(root, root) + (sep + rest if sep else ""))
@@ -486,6 +510,9 @@ def _ssh_factory_helpers(tree: ast.AST, bindings: dict[str, str]) -> None:
             ):
                 pending.extend(ast.iter_child_nodes(node))
         returns[function.name] = values
+    for target, value in _assignment_pairs(tree):
+        if isinstance(value, ast.Lambda) and (name := _fq_name(target)):
+            returns[name] = [value.body]
     while returns:
         clients = _ssh_client_bindings(tree, bindings)
         resolved = []
@@ -497,7 +524,14 @@ def _ssh_factory_helpers(tree: ast.AST, bindings: dict[str, str]) -> None:
                     else clients.get(_fq_name(value), "")
                 )
                 if factory.split(".", 1)[0] in _SSH_PY_ROOT_MODULES and factory.endswith(
-                    (".SSHClient", ".Transport", ".Connection")
+                    (
+                        ".SSHClient",
+                        ".Transport",
+                        ".Connection",
+                        ".Group",
+                        ".SerialGroup",
+                        ".ThreadingGroup",
+                    )
                 ):
                     bindings[name] = factory
                     resolved.append(name)
@@ -798,6 +832,17 @@ def _scan_ssh_python_usage(
                 uses_ssh = True
                 dynamic |= not _ssh_python_configuration_is_explicit(node, ssh_call, bindings)
                 connect_spans.append(_ssh_call_span(node))
+                if ssh_call in _FABRIC_GROUP_FQ:
+                    dynamic |= not node.args
+                    for endpoint in node.args:
+                        host = _literal_host_from_ast(endpoint)
+                        host = _extract_host_from_endpoint(host) if host else None
+                        if host:
+                            hosts.add(host)
+                        else:
+                            dynamic = True
+                    self.generic_visit(node)
+                    return
                 host_lit: Optional[str] = None
                 host_index = 1 if ssh_call == "asyncssh.create_connection" else 0
                 if len(node.args) > host_index:

@@ -921,3 +921,35 @@ def test_super_connect_uses_actual_destination():
     assert _check_code_safety(code, session_id = "review") is not None
     approve_hosts("review", ["evil.example"])
     assert _check_code_safety(code, session_id = "review") is None
+
+
+@pytest.mark.parametrize(
+    "group", ["fabric.SerialGroup", "fabric.ThreadingGroup", "fabric.group.SerialGroup"]
+)
+def test_all_group_hosts_require_approval(group):
+    approve_hosts("review", ["approved.example"])
+    code = f"import fabric; {group}('approved.example','review@evil.example:22',config=fabric.Config(lazy=True)).run('hostname')"
+    assert _check_code_safety(code, session_id = "review") is not None
+    approve_hosts("review", ["evil.example"])
+    assert _check_code_safety(code, session_id = "review") is None
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        "make=lambda: paramiko.SSHClient()",
+        "first=lambda: paramiko.SSHClient(); make=lambda: first()",
+    ],
+)
+def test_lambda_client_requires_approval(factory):
+    code = f"import paramiko; {factory}; make().connect(hostname='evil.example')"
+    assert _check_code_safety(code, session_id = "review") is not None
+    approve_hosts("review", ["evil.example"])
+    assert _check_code_safety(code, session_id = "review") is None
+
+
+def test_inline_lambda_requires_approval():
+    code = "import paramiko; (lambda: paramiko.SSHClient())().connect(hostname='evil.example')"
+    assert _check_code_safety(code, session_id = "review") is not None
+    approve_hosts("review", ["evil.example"])
+    assert _check_code_safety(code, session_id = "review") is None
