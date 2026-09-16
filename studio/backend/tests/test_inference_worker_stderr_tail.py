@@ -432,6 +432,35 @@ def test_a_worker_holding_a_second_handle_on_stderr_still_exits_promptly(tmp_pat
     )
 
 
+@pytest.mark.skipif(not hasattr(os, "fork"), reason = "fork is POSIX only")
+def test_a_forked_child_does_not_retire_its_parents_live_sink(tmp_path):
+    """A fork inherits both the open-sink set and the atexit registration.
+
+    A forked child that exits normally then runs the inherited handler and unlinks a sink its
+    parent is still filling, which is the same class of mistake as sweeping the directory:
+    the paths are named exactly, but they are somebody else's. Spawn children re-import this
+    module clean, so this is about the backend's own fork sites (dataset preprocessing pools)
+    rather than about the workers.
+    """
+    capture = WorkerStderrCapture(directory = str(tmp_path), prefix = "unsloth-test-")
+    Path(capture.path).write_bytes(b"the parent is still writing here\n")
+
+    pid = os.fork()
+    if pid == 0:                                    # pragma: no cover - runs in the child
+        # What a normal interpreter exit does, without unwinding into pytest's own teardown.
+        import atexit as _atexit
+
+        try:
+            _atexit._run_exitfuncs()
+        finally:
+            os._exit(0)
+    os.waitpid(pid, 0)
+
+    assert os.path.exists(capture.path), "a forked child retired its parent's live sink"
+    assert "the parent is still writing here" in capture.tail()
+    capture.close()
+
+
 def test_the_sink_directory_is_never_swept_by_pattern():
     """Another Studio's live sink is not ours to delete. Several installs share one temporary
     directory (a second UNSLOTH_STUDIO_HOME, a second account), so cleanup must name the exact

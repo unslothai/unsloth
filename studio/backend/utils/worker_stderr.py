@@ -156,6 +156,12 @@ def stderr_tail_from_bytes(
 # delete a sink belonging to another Studio's live worker.
 _OPEN_SINKS: "set[str]" = set()
 _ATEXIT_REGISTERED = False
+# Which process the set above belongs to. A fork inherits both the set and the atexit
+# registration, and a forked child that exits normally would then run the handler and delete
+# a sink its parent is still filling. Spawn children are unaffected, since they re-import
+# this module clean, but the backend does fork elsewhere (dataset preprocessing pools), and
+# "the exact paths this process opened" has to mean this process.
+_SINKS_OWNER_PID: "int | None" = None
 
 
 def _unlink_quietly(path: str) -> None:
@@ -167,6 +173,10 @@ def _unlink_quietly(path: str) -> None:
 
 def _remove_open_sinks() -> None:
     """Retire whatever is still open at interpreter exit, bounding the residue to a hard kill."""
+    if os.getpid() != _SINKS_OWNER_PID:
+        # An inherited handler in a forked child. These paths are the parent's and the
+        # parent is still writing to one of them.
+        return
     for path in list(_OPEN_SINKS):
         _unlink_quietly(path)
     _OPEN_SINKS.clear()
@@ -180,7 +190,7 @@ class WorkerStderrCapture:
         directory: "str | None" = None,
         prefix: str = "unsloth-worker-",
     ) -> None:
-        global _ATEXIT_REGISTERED
+        global _ATEXIT_REGISTERED, _SINKS_OWNER_PID
         handle, self._path = tempfile.mkstemp(
             prefix = prefix,
             suffix = ".stderr",
@@ -192,6 +202,7 @@ class WorkerStderrCapture:
         # outlives the process that made it and waits for the temporary directory to be
         # reclaimed, which on a long-lived desktop can be never.
         _OPEN_SINKS.add(self._path)
+        _SINKS_OWNER_PID = os.getpid()
         if not _ATEXIT_REGISTERED:
             atexit.register(_remove_open_sinks)
             _ATEXIT_REGISTERED = True
