@@ -53,7 +53,7 @@ function loadAuthApi(options: {
       "@tauri-apps/api/core": {
         invoke: async (command: string, args: Record<string, unknown>) => {
           options.onInvoke?.(command, args);
-          if (command !== "check_health") {
+          if (command !== "check_backend_present") {
             throw new Error(`unexpected command ${command}`);
           }
           return options.checkHealth?.(args.port as number) ?? false;
@@ -196,7 +196,7 @@ test("a backend the launcher cannot see either still says to relaunch", async ()
   }
 });
 
-test("a check_health that throws leaves the original verdict in place", async () => {
+test("a presence probe that throws leaves the original verdict in place", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => {
     throw new TypeError("fetch failed");
@@ -326,7 +326,7 @@ test("updating an existing install does not go through the changed path", async 
   // The second opinion is asked for with a command the installed launcher already registers
   // and already answers in this exact shape, so a webview that is newer than the shell it
   // runs in is not asking for anything new. A shell old enough not to have it rejects the
-  // invoke, which is the case "a check_health that throws" above covers.
+  // invoke, which is the case "a presence probe that throws" above covers.
   const backend = await readFile(
     new URL("../src/hooks/use-tauri-backend.ts", import.meta.url),
     "utf8",
@@ -337,6 +337,17 @@ test("updating an existing install does not go through the changed path", async 
     "utf8",
   );
   assert.ok(main.includes("commands::check_health,"));
+  // The auth path asks the presence command instead, because check_health collapses a stalled
+  // probe onto false and that is the verdict this whole file exists to stop showing.
+  assert.ok(main.includes("commands::check_backend_present,"));
+  const authApiSrc = await readFile(
+    new URL("../src/features/auth/api.ts", import.meta.url),
+    "utf8",
+  );
+  assert.ok(
+    authApiSrc.includes('invoke<boolean>("check_backend_present", { port })'),
+    "the auth transport probe must ask for presence, not health",
+  );
 });
 
 test("the background chat storage filter accepts every transport verdict", async () => {

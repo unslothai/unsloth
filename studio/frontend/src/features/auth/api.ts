@@ -149,6 +149,14 @@ export const BACKEND_NOT_ANSWERING_MESSAGE =
  * a proxy configuration the webview honours, or a backend whose event loop is held by the
  * GIL while the ML stack imports. Any failure to ask at all reads as "no second opinion",
  * which leaves the original verdict in place.
+ *
+ * `check_backend_present` and not `check_health`: the latter returns `liveness.alive`, so a
+ * probe that ran out of budget is indistinguishable from a refused connection. That last case
+ * is precisely the one this function exists for. A backend holding the GIL through the ML
+ * imports outlasts the retry ladder plus the 10s probe and answers nothing, and reading that
+ * as death is how a live backend gets a "relaunch it" verdict. `probe_timed_out` is the
+ * distinction the watchdog already keeps, for the same reason: silence from a closed port is
+ * death, silence from an accepted connection is a stall.
  */
 let nativeHealthInflight: Promise<boolean> | null = null;
 
@@ -172,7 +180,7 @@ async function nativeBackendIsAlive(): Promise<boolean> {
   const probe = (async () => {
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      return (await invoke<boolean>("check_health", { port })) === true;
+      return (await invoke<boolean>("check_backend_present", { port })) === true;
     } catch {
       return false;
     }

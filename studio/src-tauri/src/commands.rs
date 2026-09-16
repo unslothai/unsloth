@@ -459,6 +459,28 @@ pub async fn check_health(port: u16) -> Result<bool, String> {
     }
 }
 
+/// Whether a process is still holding the port, as opposed to the port being closed.
+///
+/// `check_health` collapses a stall onto `false`, which is the right answer for a caller
+/// asking "may I use this backend" but the wrong one for a caller deciding whether to tell
+/// the user to relaunch. `probe_timed_out` is the distinction the watchdog already keeps and
+/// the reason `BackendLiveness` records it: silence from a closed port is death, silence from
+/// an accepted connection is a stall, and a backend held by the GIL while the ML stack imports
+/// produces the second. Answering `false` there threw away a running backend and whatever it
+/// had in flight.
+///
+/// An error asking at all stays `false`: no second opinion leaves the original verdict alone.
+#[tauri::command]
+pub async fn check_backend_present(port: u16) -> Result<bool, String> {
+    match check_health_inner(port, HEALTH_PROBE_TIMEOUT).await {
+        Ok(liveness) => Ok(liveness.alive || liveness.probe_timed_out),
+        Err(e) => {
+            info!("Backend presence check on port {} failed: {}", port, e);
+            Ok(false)
+        }
+    }
+}
+
 /// Probe the backend for process liveness.
 ///
 /// `/api/liveness` rather than `/api/health`: health awaits hardware detection through
@@ -1427,10 +1449,49 @@ mod tests {
             super::HEALTH_PROBE_TIMEOUT.as_millis()
         );
         assert!(
-            src.contains("invoke<boolean>(\"check_health\""),
-            "the transport-failure path no longer asks the native health check before it \
-             tells the user to relaunch"
+            src.contains("invoke<boolean>(\"check_backend_present\""),
+            "the transport-failure path no longer asks the native side before it tells the \
+             user to relaunch"
         );
+        // And not the health command, which answers `liveness.alive` and so reports a probe
+        // that ran out of budget exactly as it reports a refused connection. The stall is the
+        // case this path exists for: past the ladder plus one probe, a backend holding the GIL
+        // through the ML imports is alive and silent.
+        assert!(
+            !src.contains("invoke<boolean>(\"check_health\""),
+            "the transport-failure path is back on check_health, which collapses a stalled \
+             probe onto \"not running\""
+        );
+    }
+
+    #[test]
+    fn a_stalled_probe_is_not_reported_as_an_absent_backend() {
+        // check_health answers `alive`, so a timeout and a closed port are the same answer.
+        // check_backend_present keeps them apart, which is the whole point of recording
+        // probe_timed_out on BackendLiveness in the first place.
+        let stalled = super::BackendLiveness {
+            alive: false,
+            probe_timed_out: true,
+            ..Default::default()
+        };
+        let closed = super::BackendLiveness::default();
+        let answered = super::BackendLiveness {
+            alive: true,
+            ..Default::default()
+        };
+
+        // What each command reports, spelled out rather than invoked, since the commands
+        // themselves need a live port to probe.
+        assert!(!stalled.alive, "a stall is not an answer");
+        assert!(
+            stalled.alive || stalled.probe_timed_out,
+            "a stalled probe must read as a backend that is still present"
+        );
+        assert!(
+            !(closed.alive || closed.probe_timed_out),
+            "a refused connection must still read as absent"
+        );
+        assert!(answered.alive || answered.probe_timed_out);
     }
 
     #[test]
