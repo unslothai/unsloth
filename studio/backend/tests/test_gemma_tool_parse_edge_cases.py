@@ -10,13 +10,17 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
 from core.inference.tool_call_parser import (
+    StreamingMarkupStripper,
     _gemma_parse_value,
     parse_tool_calls_from_text,
+    promotable_gemma_call_pos,
 )
 from core.tool_healing import strip_tool_call_markup
 
@@ -462,3 +466,50 @@ def test_streaming_display_of_prose_call_never_shrinks():
         assert len(out) >= len(seen), (i, out, seen)
         seen = out
     assert seen == prose
+
+
+_FENCED_EXAMPLES = [
+    '```\ncall:web_search{query: "cats"}\n```',
+    "```text\ncall:web_search{query:cats}\n```",
+    "Here is the syntax:\n~~~\ncall:web_search{query:cats}\n~~~",
+    "Use `call:web_search{query:cats}` to search.",
+]
+
+
+@pytest.mark.parametrize("text", _FENCED_EXAMPLES)
+def test_wrapperless_call_quoted_in_markdown_code_is_documentation(text):
+    en = {"web_search"}
+    assert parse_tool_calls_from_text(text, enabled_tool_names = en) == []
+    assert promotable_gemma_call_pos(text, en) == -1
+    assert _strip(text, en) == text
+
+
+def test_streamed_fenced_example_never_turns_into_a_call():
+    text = 'Example:\n```\ncall:web_search{query: "cats"}\n```\nDone.'
+    en = {"web_search"}
+    stripper = StreamingMarkupStripper(en)
+    seen = ""
+    for i in range(1, len(text) + 1):
+        out = stripper.strip(text[:i])
+        assert out.startswith(seen), (i, out, seen)
+        assert parse_tool_calls_from_text(text[:i], enabled_tool_names = en) == [], i
+        assert promotable_gemma_call_pos(text[:i], en) == -1, i
+        seen = out
+    assert seen == text
+
+
+def test_unfenced_wrapperless_call_is_still_promoted_beside_a_fence():
+    text = "```\ncall:web_search{query:dogs}\n```\ncall:web_search{query:cats}"
+    en = {"web_search"}
+    calls = parse_tool_calls_from_text(text, enabled_tool_names = en)
+    assert [_args(c) for c in calls] == [{"query": "cats"}]
+    assert _strip(text, en) == "```\ncall:web_search{query:dogs}\n```"
+
+
+def test_native_token_gemma_call_inside_a_fence_is_still_a_call():
+    text = '```\n<|tool_call>call:web_search{query:<|"|>cats<|"|>}<tool_call|>\n```'
+    en = {"web_search"}
+    calls = parse_tool_calls_from_text(text, enabled_tool_names = en)
+    assert len(calls) == 1, calls
+    assert _args(calls[0]) == {"query": "cats"}
+    assert "call:web_search" not in _strip(text, en)

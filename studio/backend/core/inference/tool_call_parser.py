@@ -1295,8 +1295,8 @@ def _unmask_blocked_bodies(text: str, bodies: list) -> Optional[str]:
 def _strip_gemma_wrapperless_calls(text: str, enabled_tool_names: Optional[set] = None) -> str:
     """Strip closed wrapper-less Gemma ``call:NAME{...}`` calls with balanced brace scanning (nested
     arguments are removed whole). Gated like the parser: a name that is not markerless-promotable
-    stays visible, as does an unanchored mid-sentence call. ``None`` strips every anchored closed
-    non-execution call."""
+    stays visible, as does a call quoted in markdown code or an unanchored mid-sentence one.
+    ``None`` strips every anchored closed non-execution call."""
     if _whole_content_is_json_value(text):
         return text
     n = len(text)
@@ -1310,6 +1310,7 @@ def _strip_gemma_wrapperless_calls(text: str, enabled_tool_names: Optional[set] 
     # A blocked prefix in EITHER markerless format anchors, or the peer behind it is promoted
     # while its raw text stays in the content and the next iteration replays the call.
     floor = blocked_markerless_prefix_end(text, cursor, enabled_tool_names)
+    code_spans = None
     while cursor < n:
         m = _GEMMA_BARE_TC_RE.search(text, cursor)
         if not m:
@@ -1321,6 +1322,10 @@ def _strip_gemma_wrapperless_calls(text: str, enabled_tool_names: Optional[set] 
         keep_as_prose = not _markerless_promotable(m.group(1), enabled_tool_names) or (
             not _gemma_call_is_anchored(text, m.start(), floor)
         )
+        if not keep_as_prose:
+            if code_spans is None:
+                code_spans = _tool_healing._code_spans(text)
+            keep_as_prose = _tool_healing._in_code(code_spans, m.start())
         brace = m.end() - 1
         # Same boundary scanner as the parser: strip exactly what it consumed.
         end = _gemma_body_brace_end(text, brace)
@@ -3214,9 +3219,9 @@ def _parse_gemma_tool_calls(
     ``skip_special_tokens`` stream where the wrapper and string markers were stripped (bare
     ``call:NAME{k:v, ...}``). ``enabled_tool_names`` gates on the parsed name: the wrapper-less
     shape is indistinguishable from prose documenting the syntax, so a disabled/example name must
-    not be stolen as a call (``None`` keeps the name-agnostic behaviour). Execution-class and MCP
-    names are never promoted here whatever the gate, since a bare call may be attacker-quoted prose;
-    they must carry the ``<|tool_call>`` wrapper."""
+    not be stolen as a call (``None`` keeps the name-agnostic behaviour), nor may one quoted in
+    markdown code. Execution-class and MCP names are never promoted here whatever the gate, since
+    a bare call may be attacker-quoted prose; they must carry the ``<|tool_call>`` wrapper."""
     out: list[dict] = []
     # The WRAPPED form (strict + nested-marker handling) is tool_healing's, which runs first: defer content with a
     # wrapped opener. A marker literal alone is not enough -- a wrapper-less call mentioning ``<|tool_call>`` would be
@@ -3255,6 +3260,7 @@ def _parse_gemma_tool_calls(
         _reh_cursor = _reh_end + 1
     # Monotonic index into the sorted spans: re-testing every span per match is quadratic.
     blocked_i = 0
+    code_spans = None
     while True:
         m = _GEMMA_BARE_TC_RE.search(content, cursor)
         if m is None:
@@ -3273,6 +3279,10 @@ def _parse_gemma_tool_calls(
             break
         cursor = end + 1
         if not _markerless_promotable(name, enabled_tool_names):
+            continue
+        if code_spans is None:
+            code_spans = _tool_healing._code_spans(content)
+        if _tool_healing._in_code(code_spans, m.start()):
             continue
         body = content[body_start + 1 : end]
         try:
@@ -3600,14 +3610,17 @@ def promotable_gemma_call_pos(
     if start < 0:
         return -1
     names = enabled_tool_names() if callable(enabled_tool_names) else enabled_tool_names
+    code_spans = None
     for m in _GEMMA_BARE_TC_RE.finditer(text, start):
         # Skip and keep scanning, never give up: the widening above can re-find a call the
         # caller has already stepped past (one rehearsed inside a ``<think>`` block), and
         # returning it made the caller treat "below my floor" as "no call anywhere", so a
         # real call after the block went undetected while streaming.
-        if m.start() < floor:
+        if m.start() < floor or not _markerless_promotable(m.group(1), names):
             continue
-        if _markerless_promotable(m.group(1), names):
+        if code_spans is None:
+            code_spans = _tool_healing._code_spans(text)
+        if not _tool_healing._in_code(code_spans, m.start()):
             return m.start()
     return -1
 
