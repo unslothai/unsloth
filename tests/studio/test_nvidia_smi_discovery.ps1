@@ -209,7 +209,11 @@ function Invoke-NvidiaSmiBounded {
 }
 function Write-StudioLine { param([string]$Line, [string]$ForegroundColor = "") }
 function Get-NvidiaSmiCandidatePaths { return @("C:\first\nvidia-smi.exe", "C:\second\nvidia-smi.exe") }
-$loopStart = $setupAll.IndexOf('$firstListing = $null')
+# Anchored on the deadline, which is the first statement of the loop's setup. Anchoring on
+# $firstListing instead left $probeDeadline undefined inside the slice, and a comparison
+# against $null broke out on the first iteration: every driven check below then passed or
+# failed for the wrong reason. Observed here before it was fixed.
+$loopStart = $setupAll.IndexOf('$probeDeadline = (Get-Date)')
 $loopEnd = $setupAll.IndexOf('if (-not $HasNvidiaSmi -and (Get-NvidiaLibraryInventory))', $loopStart)
 # The slice starts inside setup.ps1's "if (-not $HasNvidiaSmi) {" block, so it carries that
 # block's closing brace and is short one opening brace. Supply the opener rather than trimming a
@@ -229,6 +233,50 @@ $NvidiaSmiExe = $null
 Invoke-Expression $loopSrc
 Check "with no version anywhere, the first listing candidate is still taken" (
     $HasNvidiaSmi -eq $true -and $NvidiaSmiExe -eq "C:\first\nvidia-smi.exe")
+
+# ----------------------------------------------------- and it gives up before setup does
+#
+# Each candidate gets its own bounded runner, and on a host with a wedged NVIDIA driver every one
+# of them waits out that bound before failing. Broadening the search made the list longer, so what
+# used to be two stalls can now be ten, all of it spent in front of a driver-library fallback that
+# answers in milliseconds. Driven with probes that actually sleep, because the thing under test is
+# elapsed time and a stubbed clock would only prove the arithmetic.
+#
+# The deadline in the shipped file is 30 seconds, which no test should sit through. The slice is
+# rewritten to 2 before it is invoked, and the real value is asserted separately just below so
+# that rewrite cannot quietly become the thing being tested.
+Check "the shipped deadline is 30 seconds" ($setupAll -match '\$probeDeadline = \(Get-Date\)\.AddSeconds\(30\)')
+$fastLoop = $loopSrc -replace 'AddSeconds\(30\)', 'AddSeconds(2)'
+Check "the slice really carries the shortened deadline (bites)" ($fastLoop -match 'AddSeconds\(2\)')
+
+$script:Probed = 0
+function Test-NvidiaSmiHasGpu { param([string]$Exe) $script:Probed++; Start-Sleep -Milliseconds 700; return $true }
+function Invoke-NvidiaSmiBounded { param($Exe, $Arguments) return "no version here" }
+function Get-NvidiaSmiCandidatePaths {
+    return @(1..10 | ForEach-Object { "C:\wedged$_\nvidia-smi.exe" })
+}
+$HasNvidiaSmi = $false
+$NvidiaSmiExe = $null
+$started = Get-Date
+Invoke-Expression $fastLoop
+$elapsed = ((Get-Date) - $started).TotalSeconds
+
+Check "a wedged host stops probing instead of walking every candidate" ($script:Probed -lt 10)
+Check "it probed at least once rather than skipping the loop outright" ($script:Probed -ge 1)
+Check "the whole loop is bounded near its deadline, not by the candidate count" ($elapsed -lt 6)
+# The bound must not cost a detection. A host that answers is still detected, and it is the FIRST
+# listing candidate, exactly as it was without the deadline.
+Check "giving up early still reports the GPU it did find" (
+    $HasNvidiaSmi -eq $true -and $NvidiaSmiExe -eq "C:\wedged1\nvidia-smi.exe")
+
+# Bites control: the same loop on a host where nothing hangs walks the entire list, so the check
+# above is about elapsed time and not about the loop simply stopping after one candidate.
+$script:Probed = 0
+function Test-NvidiaSmiHasGpu { param([string]$Exe) $script:Probed++; return $false }
+$HasNvidiaSmi = $false
+$NvidiaSmiExe = $null
+Invoke-Expression $fastLoop
+Check "control: with fast probes every candidate is still tried" ($script:Probed -eq 10)
 
 if ($failures -gt 0) {
     Write-Host "$failures check(s) failed" -ForegroundColor Red

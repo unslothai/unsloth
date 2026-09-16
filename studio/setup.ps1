@@ -2652,10 +2652,28 @@ if (-not $HasNvidiaSmi) {
     # binary that merely lists a GPU could hand a newer-capable host an older CUDA family purely
     # because of which directory is searched first. Prefer a candidate that answers BOTH, and
     # settle for one that just lists a GPU only if none does.
+    #
+    # One deadline across the whole loop, not just the per-call one. Each candidate gets its own
+    # bounded runner, and on a host with a wedged driver every one of them waits out that bound
+    # before failing. The list is longer than it was, so what used to be two stalls could now be
+    # ten, and all of it is spent in front of the driver-library fallback that would have answered
+    # in milliseconds. The bound is on TIME rather than on the number of candidates because the
+    # cost being controlled is time: a machine where every probe answers at once still gets to
+    # try them all, and one where they hang stops early.
+    #
+    # Get-Date rather than a Stopwatch: Constrained Language Mode refuses the method calls, and
+    # this runs on hosts that enforce it.
+    $probeDeadline = (Get-Date).AddSeconds(30)
     $firstListing = $null
     foreach ($p in @(Get-NvidiaSmiCandidatePaths)) {
+        # After at least one probe, never before: the deadline must not be able to skip the whole
+        # loop on a slow machine and report no GPU without having looked.
+        if ($null -ne $firstListing -and (Get-Date) -gt $probeDeadline) { break }
         try {
-            if (-not (Test-NvidiaSmiHasGpu $p)) { continue }
+            if (-not (Test-NvidiaSmiHasGpu $p)) {
+                if ((Get-Date) -gt $probeDeadline) { break }
+                continue
+            }
             if (-not $firstListing) { $firstListing = $p }
             $banner = Invoke-NvidiaSmiBounded $p
             if ($banner -match 'CUDA(?: UMD)? Version:\s+\d+\.\d+') {
