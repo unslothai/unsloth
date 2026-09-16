@@ -405,7 +405,7 @@ def _selector_signature(selector: str, field: str):
     return 0, None
 
 
-_PIN = re.compile(r"(===|!==|==|!=)\s*(null|undefined|-?\d+|'[^']*'|\"[^\"]*\")")
+_LITERAL = r"(?:null|undefined|true|false|-?\d+(?:\.\d+)?|'[^']*'|\"[^\"]*\")"
 
 
 def _pins(guard: str, taken: bool, field: str) -> bool:
@@ -415,13 +415,20 @@ def _pins(guard: str, taken: bool, field: str) -> bool:
     it is null, so a constant result on that path is still the whole of what the selector can
     return for that value. `budget > 0` fixes nothing: every budget above zero reaches the same
     result, which is a subscription in name only.
+
+    The comparison has to be against the field itself. Asking separately whether the guard names
+    the field and whether it compares something to a literal lets the two answers come from
+    different operands, so `s.budget > 0 && s.mode === "x"` reads as pinning the budget.
     """
-    if not re.search(rf"\b\w+\.{field}\b", guard):
-        return False
-    match = _PIN.search(guard)
-    if match is None:
-        return False
-    return (match.group(1) in ("===", "==")) == taken
+    # Guards arrive normalised, so there is no whitespace to allow for.
+    reference = rf"(?:\w+\.)?{field}"
+    equal = re.search(rf"(?:{reference}(===|==){_LITERAL}|{_LITERAL}(===|==){reference})", guard)
+    unequal = re.search(rf"(?:{reference}(!==|!=){_LITERAL}|{_LITERAL}(!==|!=){reference})", guard)
+    if taken:
+        # A conjunction still implies its parts; a disjunction does not.
+        return equal is not None and "||" not in guard
+    # Negating the guard only pins the field when the guard is that comparison and nothing else.
+    return unequal is not None and "||" not in guard and "&&" not in guard
 
 
 def _selector_reads(selector: str, field: str) -> bool:
@@ -511,6 +518,11 @@ SELECTOR_CASES = [
     # budget, so the sheet never re-renders on a change between two of them.
     ("(s) => s.reasoningBudget != null ? s.other : null", False),
     ("(s) => s.reasoningBudget > 0 ? s.other : null", False),
+    # The literal has to be compared against the field, not merely to sit in the same guard.
+    ('(s) => s.reasoningBudget > 0 && s.mode === "x" ? s.other : s.reasoningBudget', False),
+    ('(s) => s.reasoningBudget === -1 && s.mode === "x" ? -1 : s.reasoningBudget', True),
+    ('(s) => s.reasoningBudget === -1 || s.mode === "x" ? -1 : s.reasoningBudget', False),
+    ('(s) => s.reasoningBudget != null && s.mode === "x" ? s.reasoningBudget : null', False),
     # A guard cannot rescue a subpath it does not pin: `enabled` false holds s.other steady.
     ("(s) => s.reasoningBudget != null ? (s.enabled ? s.reasoningBudget : s.other) : null", False),
     # Falling off the end of a block returns undefined, which tracks nothing.
