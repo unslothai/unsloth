@@ -511,9 +511,8 @@ def test_a_live_hash_format_beside_a_comment_is_still_a_finding(monkeypatch, tmp
     """NEGATIVE CONTROL: masking comments must not mask the call itself, and a `//`
     inside a string literal must not blank the rest of the file."""
     source = (
-        '/* the parser below still uses a length format */\n'
-        'static const char *kDoc = "see //triton/backends for /* details */";\n'
-        + _UNGUARDED_SHIM
+        "/* the parser below still uses a length format */\n"
+        'static const char *kDoc = "see //triton/backends for /* details */";\n' + _UNGUARDED_SHIM
     )
     spec, driver = _fake_triton(tmp_path, source)
     monkeypatch.setattr(sys, "version_info", (3, 12, 3))
@@ -528,7 +527,7 @@ def test_a_hash_format_only_inside_a_string_literal_is_not_a_finding(monkeypatch
     """A documentation string quoting an example call is not a call. The format has to be
     readable, so literals are kept, but the CALL has to be located in code."""
     source = (
-        'static const char *kUsage =\n'
+        "static const char *kUsage =\n"
         '    "example: PyArg_ParseTuple(args, \\"ss#ii\\", &name, &data, &size, &shared)";\n'
         + _UNGUARDED_SHIM.replace('"ss#ii"', '"sslii"')
     )
@@ -980,9 +979,7 @@ def test_the_provider_that_ships_the_offending_file_is_the_one_named(monkeypatch
     [("triton", "triton-xpu"), ("triton-xpu", "triton")],
     ids = ["generic-first", "accelerator-first"],
 )
-def test_a_file_claimed_by_two_providers_is_settled_by_torchs_backend(
-    monkeypatch, tmp_path, order
-):
+def test_a_file_claimed_by_two_providers_is_settled_by_torchs_backend(monkeypatch, tmp_path, order):
     """Coexisting providers RECORD the same paths, so both claim the offending file and the
     first entry is nothing but ordering. The harmful answer is always the one that installs
     a CUDA build over an accelerator one, so an XPU torch settles it for the XPU provider."""
