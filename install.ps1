@@ -2764,13 +2764,38 @@ exit 1
         # fallback with Exact = $false, which fails closed.
         #
         # Test-Path is not enough on its own: it returns true for the loop's own symlink.
+        # The version gate is load-bearing, not hygiene. Before 3.8, Windows path resolution did
+        # not follow junctions or symlinks, so an older interpreter would hand back the ALIAS
+        # spelling and this rung would mark it exact. Test-StudioPathEqual would then read an
+        # alias and its target as definitively different instead of taking both runtime locks,
+        # which is permission to install over a live managed environment. The probe cannot catch
+        # it either, since it only resolves the interpreter's own ordinary directory. Refusing
+        # the interpreter outright is the honest answer: the ladder falls through to lexical and
+        # Exact stays false.
         $script = "import pathlib,sys" + [char]10 +
+                  "sys.exit(2) if sys.version_info < (3,8) else None" + [char]10 +
                   "sys.stdout.buffer.write(str(pathlib.Path(sys.argv[1]).resolve(strict=True)).encode('utf-8'))"
         $proc = $null
         try {
             $psi = New-Object System.Diagnostics.ProcessStartInfo
             $psi.FileName = $Exe
-            foreach ($a in @("-I", "-c", $script, $Path)) { $null = $psi.ArgumentList.Add($a) }
+            # ArgumentList is .NET Core only. Windows PowerShell 5.1, which is the host the
+            # desktop installer launches, gets ProcessStartInfo from .NET Framework where the
+            # property does not exist, so .Add() throws, the catch below returns null and every
+            # candidate is rejected: the rung would never work on the primary Windows host while
+            # looking perfectly healthy. Branch on the property rather than assume it.
+            $argv = @("-I", "-c", $script, $Path)
+            if ($null -ne $psi.PSObject.Properties["ArgumentList"]) {
+                foreach ($a in $argv) { $null = $psi.ArgumentList.Add($a) }
+            } else {
+                # Quote for CommandLineToArgvW. The script carries no double quote by
+                # construction and a Windows path cannot contain one, so only two things matter:
+                # wrap each argument, and double any run of trailing backslashes, since
+                # "C:\dir\" would otherwise escape its own closing quote.
+                $psi.Arguments = (@($argv | ForEach-Object {
+                    '"' + ($_ -replace '(\\+)$', '$1$1') + '"'
+                }) -join ' ')
+            }
             $psi.UseShellExecute = $false
             $psi.RedirectStandardOutput = $true
             $psi.RedirectStandardError = $true

@@ -150,6 +150,38 @@ try {
         Check "a link loop is not promoted to an exact identity" ([string]::IsNullOrWhiteSpace($loopAnswer))
     }
 
+    # A path with spaces must survive argument construction. On Windows PowerShell 5.1 there is no
+    # ProcessStartInfo.ArgumentList, so the arguments go through a single quoted string and the
+    # quoting has to be right. This exercises the result on whichever branch the host takes.
+    $spacedDir = Join-Path $tmp "a dir with spaces"
+    New-Item -ItemType Directory -Force -Path $spacedDir | Out-Null
+    $spacedAnswer = Get-StudioPythonFinalPath -Path $spacedDir
+    Check "a path containing spaces resolves" (
+        -not [string]::IsNullOrWhiteSpace($spacedAnswer) -and $spacedAnswer.EndsWith("spaces"))
+
+    # The 5.1 branch itself, asserted on the source: ArgumentList does not exist in .NET
+    # Framework, so using it unconditionally makes every candidate fail on the one host that
+    # matters most, and it fails invisibly because the finder just reports "no Python".
+    $src = Get-Content -Raw -LiteralPath $installPs1
+    Check "argument construction does not assume ArgumentList exists" (
+        $src -match 'PSObject\.Properties\["ArgumentList"\]')
+    # Likewise the version gate: before 3.8 Windows path resolution did not follow junctions, so
+    # such an interpreter would return the alias spelling and this rung would call it exact.
+    Check "the probe refuses an interpreter older than 3.8" (
+        $src -match 'sys\.version_info\s*<\s*\(3,\s*8\)')
+
+    # An interpreter that answers non-zero is rejected rather than trusted, which is the path the
+    # version gate above takes on an old Python.
+    $refuser = Join-Path $tmp $(if ($IsWindows -or $env:OS -eq "Windows_NT") { "refuse.cmd" } else { "refuse.sh" })
+    if ($IsWindows -or $env:OS -eq "Windows_NT") {
+        "@echo off`r`nexit /b 2`r`n" | Set-Content -LiteralPath $refuser -Encoding ASCII
+    } else {
+        "#!/bin/sh`nexit 2`n" | Set-Content -LiteralPath $refuser
+        & chmod +x $refuser
+    }
+    Check "an interpreter that exits non-zero is rejected" (
+        $null -eq (Invoke-StudioEarlyPython -Exe $refuser -Path $real))
+
     # A hung interpreter must not hang the installer. The whole point of running this before the
     # install lock is that it cannot be allowed to wedge the run.
     $slow = Join-Path $tmp $(if ($IsWindows -or $env:OS -eq "Windows_NT") { "slow.cmd" } else { "slow.sh" })
