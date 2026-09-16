@@ -23769,18 +23769,10 @@ async def produce_openai_chat_completions(
                         await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
                         _tracker.__exit__(None, None, None)
 
-                return _SameTaskStreamingResponse(
+                return _sse_streaming_response(
                     audio_input_stream(),
                     unstarted_cleanup = _tracked_cancel_unstarted_cleanup(_tracker),
-                    media_type = "text/event-stream",
-                    headers = _monitor_response_headers(
-                        {
-                            "Cache-Control": "no-cache",
-                            "Connection": "close",
-                            "X-Accel-Buffering": "no",
-                        },
-                        monitor_id,
-                    ),
+                    monitor_id = monitor_id,
                 )
             else:
                 # `stream` defaults to False, so this is the ordinary shape of an audio-input chat and it
@@ -24957,18 +24949,10 @@ async def produce_openai_chat_completions(
                     reservation.cancel()
                     _tracker.__exit__(None, None, None)
 
-                return _SameTaskStreamingResponse(
+                return _sse_streaming_response(
                     admitted_gguf_tool_stream(),
                     unstarted_cleanup = _gguf_tool_admission_unstarted_cleanup,
-                    media_type = "text/event-stream",
-                    headers = _monitor_response_headers(
-                        {
-                            "Cache-Control": "no-cache",
-                            "Connection": "close",
-                            "X-Accel-Buffering": "no",
-                        },
-                        monitor_id,
-                    ),
+                    monitor_id = monitor_id,
                 )
 
             # Non-streaming JSON: drain the agentic generator into one
@@ -25579,18 +25563,10 @@ async def produce_openai_chat_completions(
                 reservation.cancel()
                 _tracker.__exit__(None, None, None)
 
-            return _SameTaskStreamingResponse(
+            return _sse_streaming_response(
                 admitted_gguf_stream_chunks(),
                 unstarted_cleanup = _gguf_admission_unstarted_cleanup,
-                media_type = "text/event-stream",
-                headers = _monitor_response_headers(
-                    {
-                        "Cache-Control": "no-cache",
-                        "Connection": "close",
-                        "X-Accel-Buffering": "no",
-                    },
-                    monitor_id,
-                ),
+                monitor_id = monitor_id,
             )
         else:
             try:
@@ -26469,18 +26445,10 @@ async def produce_openai_chat_completions(
                 _sf_tracker.__exit__(None, None, None)
 
         if payload.stream:
-            return _SameTaskStreamingResponse(
+            return _sse_streaming_response(
                 sf_tool_stream(),
                 unstarted_cleanup = _tracked_cancel_unstarted_cleanup(_sf_tracker),
-                media_type = "text/event-stream",
-                headers = _monitor_response_headers(
-                    {
-                        "Cache-Control": "no-cache",
-                        "Connection": "close",
-                        "X-Accel-Buffering": "no",
-                    },
-                    monitor_id,
-                ),
+                monitor_id = monitor_id,
             )
 
         # Non-streaming JSON: drain the loop, build one ChatCompletion.
@@ -27039,18 +27007,10 @@ async def produce_openai_chat_completions(
                         pass
                 _tracker.__exit__(None, None, None)
 
-        return _SameTaskStreamingResponse(
+        return _sse_streaming_response(
             stream_chunks(),
             unstarted_cleanup = _tracked_cancel_unstarted_cleanup(_tracker),
-            media_type = "text/event-stream",
-            headers = _monitor_response_headers(
-                {
-                    "Cache-Control": "no-cache",
-                    "Connection": "close",
-                    "X-Accel-Buffering": "no",
-                },
-                monitor_id,
-            ),
+            monitor_id = monitor_id,
         )
 
     # ── Non-streaming response ────────────────────────────────────
@@ -31529,18 +31489,10 @@ async def _responses_stream(
         api_monitor.finish(monitor_id, "cancelled")
         reservation.cancel()
 
-    return _SameTaskStreamingResponse(
+    return _sse_streaming_response(
         admitted_event_generator(),
-        media_type = "text/event-stream",
-        headers = _monitor_response_headers(
-            {
-                "Cache-Control": "no-cache",
-                "Connection": "close",
-                "X-Accel-Buffering": "no",
-            },
-            monitor_id,
-        ),
         unstarted_cleanup = _responses_admission_unstarted_cleanup,
+        monitor_id = monitor_id,
     )
 
 
@@ -35718,18 +35670,8 @@ async def _openai_passthrough_stream(
         reservation.cancel()
         _tracker.__exit__(None, None, None)
 
-    return _SameTaskStreamingResponse(
-        _queued_stream(),
-        media_type = "text/event-stream",
-        headers = _monitor_response_headers(
-            {
-                "Cache-Control": "no-cache",
-                "Connection": "close",
-                "X-Accel-Buffering": "no",
-            },
-            monitor_id,
-        ),
-        unstarted_cleanup = _queued_unstarted_cleanup,
+    return _sse_streaming_response(
+        _queued_stream(), unstarted_cleanup = _queued_unstarted_cleanup, monitor_id = monitor_id
     )
 
 
@@ -36579,18 +36521,8 @@ async def _openai_passthrough_stream_admitted(
                 finally:
                     _release_admission(admission_lease, _tracker)
 
-        return _SameTaskStreamingResponse(
-            _stream(),
-            media_type = "text/event-stream",
-            headers = _monitor_response_headers(
-                {
-                    "Cache-Control": "no-cache",
-                    "Connection": "close",
-                    "X-Accel-Buffering": "no",
-                },
-                monitor_id,
-            ),
-            unstarted_cleanup = _unstarted_cleanup,
+        return _sse_streaming_response(
+            _stream(), unstarted_cleanup = _unstarted_cleanup, monitor_id = monitor_id
         )
     except BaseException as exc:
         if isinstance(exc, asyncio.CancelledError):
