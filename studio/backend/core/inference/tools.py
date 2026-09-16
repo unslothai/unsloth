@@ -12258,7 +12258,12 @@ DEEP_RESEARCH_TOOL = {
 
 
 # OpenAI's function.name regex; MCP names that violate it would 400 the whole request, so they ship under an alias.
-_OPENAI_FN_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+_OPENAI_FN_NAME_MAX = 64
+_OPENAI_FN_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,%d}$" % _OPENAI_FN_NAME_MAX)
+
+_MCP_ALIAS_DIGEST_LEN = 8
+# The "_" plus digest every alias ends with, which is the room its stem does not get.
+_MCP_ALIAS_SUFFIX_LEN = _MCP_ALIAS_DIGEST_LEN + 1
 
 
 def _mcp_tool_model_visible(tool: dict) -> bool:
@@ -12280,6 +12285,11 @@ def _mcp_tool_model_visible(tool: dict) -> bool:
 
 
 def _mcp_tool_names(server: dict, mcp_tools: list[dict]) -> dict[str, str]:
+    """Composed function name -> raw MCP name, for the tools this server ships to a model.
+
+    Names that already satisfy ``function.name`` are claimed first, so an alias minted for a dotted
+    or oversized one can never take a name another tool ships under.
+    """
     server_key = "blender" if server.get("builtin_id") == "blender" else server["id"]
     prefix = f"{MCP_TOOL_PREFIX}{server_key}__"
     raw_names = [
@@ -12289,11 +12299,13 @@ def _mcp_tool_names(server: dict, mcp_tools: list[dict]) -> dict[str, str]:
     for raw_name in raw_names:
         if _OPENAI_FN_NAME_RE.fullmatch(prefix + raw_name):
             names.setdefault(prefix + raw_name, raw_name)
+    stem_room = max(0, _OPENAI_FN_NAME_MAX - len(prefix) - _MCP_ALIAS_SUFFIX_LEN)
     for raw_name in raw_names:
         if _OPENAI_FN_NAME_RE.fullmatch(prefix + raw_name):
             continue
-        digest = hashlib.sha256(raw_name.encode("utf-8", "surrogatepass")).hexdigest()[:8]
-        stem = re.sub(r"[^a-zA-Z0-9_-]", "_", raw_name)[: 55 - len(prefix)]
+        encoded = raw_name.encode("utf-8", "surrogatepass")
+        digest = hashlib.sha256(encoded).hexdigest()[:_MCP_ALIAS_DIGEST_LEN]
+        stem = re.sub(r"[^a-zA-Z0-9_-]", "_", raw_name)[:stem_room]
         alias = f"{prefix}{stem}_{digest}"
         if _OPENAI_FN_NAME_RE.fullmatch(alias):
             names.setdefault(alias, raw_name)
@@ -12339,6 +12351,8 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
         description = tool.get("description") or ""
         if name.split("__", 2)[2] != raw_name:
             _MCP_TOOL_ALIASES[name] = raw_name
+            # The alias is the only name the model may emit, so the description is the one place
+            # it can learn the name the server's docs and the user call this tool by.
             description = f"({raw_name}) {description}"
         else:
             # A name shipped as itself must not resolve through an alias it replaced.

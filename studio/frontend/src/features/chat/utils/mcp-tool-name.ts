@@ -17,11 +17,12 @@ export function mcpServerFromProvenance(provenance: unknown): string | undefined
   return provenanceString(provenance, "mcp_server");
 }
 
+/** The raw MCP tool name; an aliased tool's composed name no longer spells it. */
 export function mcpToolFromProvenance(provenance: unknown): string | undefined {
   return provenanceString(provenance, "mcp_tool");
 }
 
-/** "GitHub · create_issue" for mcp__<serverId>__<tool>, else null. Falls back to the raw id. */
+/** "GitHub · create_issue" for mcp__<serverId>__<tool>, else null. Falls back to the raw parts. */
 export function formatMcpToolName(
   toolName: string,
   mcpServer?: string,
