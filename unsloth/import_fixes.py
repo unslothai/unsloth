@@ -889,11 +889,9 @@ _ROPE_SCALING_PATCH_FLAG = "_unsloth_patched_rope_scaling_setter"
 def _rope_scaling_property_owner():
     """The class that DEFINES a writable ``rope_scaling`` property, or ``None``.
 
-    transformers 5 moved the dict to ``rope_parameters`` and left ``rope_scaling``
-    as a read/write alias property; 4.x has no property at all, it is a plain
-    instance attribute, so this answers ``None`` there. Walk the MRO instead of
-    naming a class: the base config is spelled ``PretrainedConfig`` on 4.x and
-    ``PreTrainedConfig`` on 5.x, and the alias has been defined on either.
+    transformers 5 keeps ``rope_scaling`` as an alias for ``rope_parameters``; 4.x has a
+    plain attribute, so ``None`` there. The MRO is walked because the base config is
+    spelled ``PretrainedConfig`` on 4.x and ``PreTrainedConfig`` on 5.x.
     """
     try:
         from transformers.configuration_utils import PretrainedConfig
@@ -922,11 +920,9 @@ def _rope_probe_inherits(owner):
 def _rope_scaling_setter_is_patched(owner = None):
     """Is the LIVE ``rope_scaling`` setter ours, right now?
 
-    Asked of the descriptor rather than of a flag on the class. A class flag
-    outlives what it describes: ``importlib.reload(transformers.configuration_utils)``
-    re-runs the class body and puts the upstream property back while an attribute we
-    set survives, and gating on that flag would then refuse to re-patch a build that
-    is vulnerable again, which is the opposite of what an idempotence guard is for.
+    Asked of the descriptor, not of a class flag: a reload of
+    ``transformers.configuration_utils`` puts the upstream property back while a class
+    attribute survives, so a flag would refuse to re-patch a vulnerable build.
     """
     if owner is None:
         owner = _rope_scaling_property_owner()
@@ -941,10 +937,9 @@ def _rope_scaling_setter_is_patched(owner = None):
 def _rope_parameters_are_per_layer(config, parameters):
     """Is this a per-layer-type rope dict rather than one global one?
 
-    transformers' own discriminator, mirrored: ``standardize_rope_params`` treats the
-    dict as per-layer exactly when the config declares ``layer_types`` and every key is
-    one of them. Writing a global key into such a dict would make transformers read it
-    as one flat dict instead, so it has to be asked before touching anything.
+    transformers' own discriminator: per-layer exactly when the config declares
+    ``layer_types`` and every key is one of them. A global key written into such a dict
+    makes transformers read the whole thing as flat, so this is asked first.
     """
     layer_types = getattr(config, "layer_types", None)
     if not layer_types or not isinstance(parameters, dict) or not parameters:
@@ -958,11 +953,10 @@ def _rope_parameters_are_per_layer(config, parameters):
 def _rope_theta_snapshot(config):
     """The base(s) ``rope_parameters`` holds right now, in the shape it holds them.
 
-    A flat dict has one base and this returns it. A PER-LAYER dict has one per layer type
-    (transformers 5.5's ``T5Gemma2DecoderConfig`` starts at 10000.0 for sliding attention
-    and 1000000.0 for full attention) and this returns ``{layer_type: base}``, because a
-    single scalar cannot describe them and reading ``parameters["rope_theta"]`` off the
-    outer dict finds nothing at all -- which is how both bases used to be lost.
+    A flat dict has one base. A per-layer dict has one per layer type (5.5's
+    ``T5Gemma2DecoderConfig``: 10000.0 sliding, 1000000.0 full), returned as
+    ``{layer_type: base}``; the outer dict has no ``rope_theta``, which is how both
+    bases used to be lost.
     """
     parameters = getattr(config, "rope_parameters", None)
     if not isinstance(parameters, dict):
@@ -979,11 +973,9 @@ def _rope_theta_snapshot(config):
 def _carry_per_layer_rope_theta(config, parameters, carried):
     """Put each layer type's base back into a per-layer replacement that lost it.
 
-    The global path cannot serve this shape: a top-level ``rope_theta`` in a per-layer dict
-    makes ``standardize_rope_params`` read the whole thing as one flat dict, so the base has
-    to go back into each nested entry. Copies throughout, never the caller's dicts in place,
-    for the same reason the flat path copies. An entry that names its own base is left
-    exactly as the caller wrote it.
+    A top-level ``rope_theta`` would make the dict read as flat, so the base goes back
+    into each nested entry. Copies throughout, never the caller's dicts in place. An
+    entry naming its own base is left alone.
     """
     if not isinstance(carried, dict) or not carried:
         return None
@@ -1011,57 +1003,36 @@ def _carry_per_layer_rope_theta(config, parameters, carried):
 def _carry_rope_theta_across_assignment(config, carried):
     """Keep the RoPE base frequency across a ``rope_scaling`` replacement.
 
-    Separated from the wrapper so it can be tested on every shape the parameters can
-    arrive as, rather than only through a live transformers.
+    Separated from the wrapper so every parameter shape is testable without a live
+    transformers.
 
-    ``carried`` is the base the parameters held BEFORE the assignment. The base the
-    config states for itself wins over it, and the base the NEW parameters name wins
-    over both, so nothing a caller said is ever overwritten. That order is not
-    decoration: ``unsloth_zoo/empty_model.py`` builds Gemma's local rotary as
-    ``rope_theta = rope_local_base_freq`` and then replaces the scaling with
-    ``{"rope_type": "default"}``, and carrying the global base over it would give the
-    local rotary the wrong base.
+    Precedence, so nothing a caller said is overwritten: the NEW parameters' base, then
+    the config's own, then ``carried`` (the base held before the assignment). That order
+    matters because ``unsloth_zoo/empty_model.py`` sets Gemma's local rotary base and
+    then replaces the scaling, and carrying the global base over it would be wrong.
 
-    The base is then written to the one place it is readable from, preferring
-    ``rope_parameters``, which is where 5.x keeps it: writing it there means the answer
-    does not depend on ``standardize_rope_params`` being called first, and means
-    ``validate_rope`` and ``save_pretrained`` see a complete dict. A per-layer dict is
-    left alone, since a global key does not belong in one.
+    The base is written to ``rope_parameters`` where 5.x keeps it, so the answer does
+    not depend on ``standardize_rope_params`` running first and ``validate_rope`` and
+    ``save_pretrained`` see a complete dict. A per-layer dict is left alone.
 
-    The config's own ``rope_theta`` attribute, which is the 4.x slot
-    ``standardize_rope_params`` still recovers the base from, is written only when it
-    is the one place that can hold it, or when it is already there:
-
-    * a NON-dict replacement, which is issue #2405's own shape, has no dict to write
-      into, and the attribute is the only thing that can carry the base forward to the
-      normalized retry that follows;
-    * an attribute that already exists is kept in step, so a later read cannot find a
-      stale base;
-    * otherwise nothing is written, so a saved config gains no top-level key it did not
-      have before.
-
-    Writes nothing at all when the new parameters already name their own base and the
-    config states none, which is what makes this self-neutralising: on a transformers
-    that keeps the base by itself there is nothing to do.
+    The config's ``rope_theta`` attribute (the 4.x slot) is written only when it is the
+    only slot that can hold the base, which is the non-dict replacement of #2405, or
+    when it already exists and would otherwise go stale. Otherwise a saved config gains
+    no key it did not have. Writes nothing when the new parameters name their own base
+    and the config states none, so this is a no-op on a build that keeps the base.
     """
     parameters = getattr(config, "rope_parameters", None)
     per_layer = _rope_parameters_are_per_layer(config, parameters)
     if per_layer:
-        # Per-layer bases go back one level down, in their own shape: a top-level
-        # `rope_theta` would make `standardize_rope_params` read the whole dict as one flat
-        # one, and a single scalar cannot describe two layer types that started at
-        # different bases. Only when there is no nested snapshot to restore does this fall
-        # through to the global attribute below, which is the one slot a per-layer dict has.
+        # Per-layer bases go back one level down. Falls through to the global attribute
+        # below only when there is no nested snapshot to restore.
         restored = _carry_per_layer_rope_theta(config, parameters, carried)
         if restored is not None:
             return restored
     elif isinstance(carried, dict):
-        # Per-layer parameters replaced by a FLAT dict. The snapshot is a mapping and every
-        # slot below this point holds a number, so passing it through would write a dict
-        # into `rope_parameters["rope_theta"]` and the first RoPE arithmetic on it would
-        # raise. One base can stand for the mapping only when every layer type agreed on
-        # it; when they did not there is no scalar that is true, and inventing one is worse
-        # than carrying nothing.
+        # Per-layer parameters replaced by a FLAT dict. Passing the mapping through would
+        # write a dict where a number belongs. One base stands for it only when every
+        # layer type agreed; otherwise carry nothing rather than invent a scalar.
         bases = set(carried.values())
         carried = bases.pop() if len(bases) == 1 else None
     is_flat_dict = isinstance(parameters, dict) and not per_layer
@@ -1079,14 +1050,10 @@ def _carry_rope_theta_across_assignment(config, carried):
     readable = current is not None
     if is_flat_dict and not readable:
         try:
-            # A COPY, never the dict in place. transformers 5 stores the object the caller
-            # assigned as `rope_parameters` verbatim, so writing into it writes into the
-            # caller's own dict. Reusing one scaling dict across configs -- an ordinary
-            # loop over several models -- then carries the FIRST config's base into it,
-            # and on the next assignment that planted key is read back as `current` and
-            # beats the second config's own rope_theta. Measured on transformers 5.0.0,
-            # 5.5.4 and 5.17.0: a config declaring rope_theta=10000.0 silently came out
-            # with 500000.0, which is wrong inverse frequencies with nothing raised.
+            # A COPY, never the dict in place: transformers 5 stores the caller's object
+            # verbatim, so one scaling dict reused across a loop of models would carry the
+            # first config's base into the second. Measured on 5.0.0, 5.5.4 and 5.17.0: a
+            # config declaring 10000.0 came out with 500000.0, silently.
             replacement = dict(parameters)
             replacement["rope_theta"] = base
             config.rope_parameters = replacement
@@ -1105,17 +1072,10 @@ def _carry_rope_theta_across_assignment(config, carried):
 def _transformers_rope_scaling_assignment_drops_theta():
     """Does replacing ``config.rope_scaling`` on THIS build lose the base frequency?
 
-    Answered by replacing one and asking transformers for the inverse frequencies,
-    not by comparing versions: the move of ``rope_theta`` into ``rope_parameters``,
-    the alias property and the strict field validation all landed in different 5.x
-    releases and have been backported, so a version window mislabels distros
-    carrying them early or late.
-
-    Two configs, because ``ROPE_INIT_FUNCTIONS`` mutates the config it is handed
-    (it calls ``config.standardize_rope_params()`` first), so a reference and a
-    subject cannot share one. Absent positive evidence answer ``False`` and leave
-    transformers alone; a build that refuses the assignment outright has no base to
-    carry and is not this defect.
+    Measured, not inferred from a version: the move into ``rope_parameters``, the alias
+    property and the strict validation landed in different 5.x releases and have been
+    backported. Two configs, because ``ROPE_INIT_FUNCTIONS`` mutates the one it is
+    handed. Absent positive evidence answer ``False`` and leave transformers alone.
     """
     try:
         import torch
@@ -1130,8 +1090,8 @@ def _transformers_rope_scaling_assignment_drops_theta():
     scaling = {"rope_type": "linear", "factor": 4.0}
 
     def build():
-        # Deliberately tiny, and a base far from the 10000.0 default, so a base that
-        # silently fell back to the default reads as a difference rather than a match.
+        # Tiny, and a base far from the 10000.0 default so a silent fallback shows up
+        # as a difference rather than a match.
         return LlamaConfig(
             hidden_size = 64,
             num_attention_heads = 2,
@@ -1142,9 +1102,8 @@ def _transformers_rope_scaling_assignment_drops_theta():
             rope_scaling = dict(scaling),
         )
 
-    # CPU explicitly, never the ambient default: under a `torch.set_default_device`
-    # of "meta" the comparison below cannot be read, which would answer "not
-    # affected" for a reason that has nothing to do with the bug.
+    # CPU explicitly: under a "meta" default device the comparison cannot be read, which
+    # would answer "not affected" for a reason unrelated to the bug.
     device = torch.device("cpu")
     try:
         reference, _attention_factor = rope_init_fn(build(), device)
@@ -1169,55 +1128,37 @@ def _transformers_rope_scaling_assignment_drops_theta():
 def fix_transformers_rope_scaling_drops_theta():
     """Stop a replaced ``rope_scaling`` silently unscaling RoPE (issue #2405).
 
-    transformers 5 moved ``rope_theta`` off the config and into
-    ``config.rope_parameters``, and kept ``rope_scaling`` as an alias property that
-    REPLACES that whole dict. So assigning a normalized scaling dict takes the base
-    frequency with it: ``standardize_rope_params`` refills ``rope_theta`` from
-    ``getattr(self, "rope_theta", None)``, which on 5.x is nothing, and
-    ``_compute_linear_scaling_rope_parameters`` then raises ``TypeError: unsupported
-    operand type(s) for ** or pow(): 'NoneType' and 'Tensor'``.
+    transformers 5 moved ``rope_theta`` into ``config.rope_parameters`` and kept
+    ``rope_scaling`` as an alias that REPLACES that whole dict, so assigning a
+    normalized scaling dict takes the base with it and
+    ``_compute_linear_scaling_rope_parameters`` raises ``TypeError: unsupported operand
+    type(s) for ** or pow(): 'NoneType' and 'Tensor'``. That assignment is what
+    ``models/llama.py``'s ``_compute_config_rope_inv_freq`` retry does, and unsloth
+    catches the raise and falls back to UNSCALED RoPE, which is #2405's gibberish past
+    the original context.
 
-    That assignment is exactly what ``models/llama.py``'s
-    ``_compute_config_rope_inv_freq`` does when ``config.rope_scaling`` arrives as a
-    config OBJECT rather than a dict: it retries on a copy carrying the normalized
-    dict. The retry raises, unsloth catches it and falls back to UNSCALED RoPE, so a
-    Llama-3.1 style model runs with the wrong inverse frequencies and degrades into
-    repeated-pattern gibberish past its original context, which is the symptom
-    #2405 was filed for.
+    Measured here, one venv per transformers minor on torch 2.11.0:
+    ``tests/utils/test_rope_scaling_drift.py`` fails on 5.0.0 through 5.3.0 and passes
+    on 4.57.6, where ``rope_theta`` is an attribute the assignment cannot touch. From
+    5.4.0 a config refuses a non-dict ``rope_parameters``, so the object route is
+    unreachable, but any dict assignment still drops the base and ``save_pretrained``
+    raises ``KeyError: Missing required keys ... {'rope_theta'}`` instead. The probe
+    therefore fires on every 5.x.
 
-    Measured on this host, one venv per transformers minor, torch 2.11.0:
-    ``tests/utils/test_rope_scaling_drift.py`` fails on 5.0.0, 5.1.0, 5.2.0 and
-    5.3.0 and the warning names the TypeError above. On 4.57.6 the retry works,
-    because there ``rope_theta`` is a config attribute the assignment cannot touch.
-    On 5.4.0 and later a config refuses a non-dict ``rope_parameters`` outright
-    (huggingface_hub strict dataclass validation), so the object-style route is
-    unreachable there. The base is still dropped by any dict assignment though, and on
-    5.4.0 and 5.5.0 ``save_pretrained`` then raises ``KeyError: Missing required keys
-    in `rope_parameters` for 'rope_type'='linear': {'rope_theta'}`` instead, so the
-    probe fires on every 5.x and this is not scoped to the four minors the drift test
-    named.
-
-    Wrapping the alias setter is the smallest site that can fix it: it is the only
-    place where the outgoing and the incoming parameters are both visible. Nothing is
-    normalized or rejected on the way in, so a dict, ``None`` and a real
-    ``RopeParameters`` all reach the original setter unchanged; the only thing the
-    wrapper does is put the base frequency back afterwards, and only where it would
-    otherwise be gone. Assignments to ``rope_parameters`` itself are not covered, and
-    do not need to be: neither repo makes one, and a caller writing that field is
-    writing the field transformers reads.
+    The alias setter is the only site where the outgoing and incoming parameters are
+    both visible. Nothing is normalized or rejected on the way in; the wrapper only puts
+    the base back where it would otherwise be gone. Assignments to ``rope_parameters``
+    itself need no cover: a caller writing that field writes what transformers reads.
     """
     owner = _rope_scaling_property_owner()
     if owner is not None and _rope_scaling_setter_is_patched(owner):
         return
-    # The probe answers through `transformers.LlamaConfig`, which is cached in
-    # `sys.modules` and keeps its old bases. After
-    # `importlib.reload(transformers.configuration_utils)` the live owner is a NEW,
-    # unpatched class while LlamaConfig still inherits the patched one, so the probe
-    # reports the base survives and this would return with the new base class left
-    # unpatched, ready to lose `rope_theta` for any config module imported next. A probe
-    # that cannot see the live owner is no evidence, so it does not get to veto: install
-    # on the owner instead. Safe to do on a healthy build, because the wrapper only puts
-    # the base back where it would otherwise be gone and is a no-op where it would not.
+    # The probe answers through the cached `transformers.LlamaConfig`. After a reload of
+    # configuration_utils that class still inherits the OLD patched owner while the live
+    # owner is new and unpatched, so the probe would report the base survives and leave
+    # the live owner to lose it. A probe that cannot see the owner is no evidence and
+    # does not get to veto; installing anyway is safe, since the wrapper is a no-op on a
+    # build that keeps the base.
     probe_can_see_owner = owner is None or _rope_probe_inherits(owner)
     if probe_can_see_owner and not _transformers_rope_scaling_assignment_drops_theta():
         return
@@ -1232,10 +1173,9 @@ def fix_transformers_rope_scaling_drops_theta():
 
     @functools.wraps(original)
     def rope_scaling(self, value):
-        # Both halves are guarded: this runs inside a config setter on every model load,
-        # so a config shape neither half expected must not turn an assignment into a
-        # traceback. The assignment itself is never guarded, since swallowing THAT would
-        # be a silent behaviour change.
+        # Both halves are guarded, since this runs on every model load and an unexpected
+        # config shape must not turn an assignment into a traceback. The assignment
+        # itself is not, since swallowing that would be a silent behaviour change.
         try:
             carried = _rope_theta_snapshot(self)
         except Exception:
@@ -1247,12 +1187,10 @@ def fix_transformers_rope_scaling_drops_theta():
             pass
         return result
 
-    # functools.wraps sets __wrapped__, but set it explicitly: the guard above and the
-    # tests both read it, and a wraps-less edit must not make the patch un-probeable
-    # and un-undoable.
+    # Set explicitly as well as by wraps: the unwrap above and the tests read it, so a
+    # wraps-less edit must not make the patch un-probeable.
     rope_scaling.__wrapped__ = original
-    # The mark travels ON the setter, so the guard reads the live descriptor and a
-    # reload that drops it is re-patched rather than skipped.
+    # The mark travels ON the setter, so a reload that drops it is re-patched.
     setattr(rope_scaling, _ROPE_SCALING_PATCH_FLAG, True)
 
     try:

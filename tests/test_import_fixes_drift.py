@@ -1066,13 +1066,9 @@ def test_rope_scaling_replacement_keeps_the_base_frequency():
             "rope_scaling property to patch"
         )
     elif not _rope_scaling_setter_is_patched(owner):
-        # An unpatched setter on a build that HAS the alias property is the healthy
-        # case, not a drift: `fix_transformers_rope_scaling_drops_theta` returns before
-        # installing anything when the probe finds no loss, so a future transformers
-        # that keeps the alias and fixes the base frequency lands exactly here. Nothing
-        # was installed, so the live build IS the unpatched one and the assertion above
-        # has already answered for it. Requiring the wrapper here would fail this
-        # hard-gated suite on the release that makes the fix unnecessary.
+        # Healthy, not drift: the fix installs nothing when the probe finds no loss, so a
+        # transformers that keeps the alias and fixes the base lands here. Requiring the
+        # wrapper would fail this hard gate on the release that makes it unnecessary.
         assert not _transformers_rope_scaling_assignment_drops_theta()
 
 
@@ -1122,8 +1118,7 @@ def test_rope_theta_carry_only_writes_when_the_base_would_be_lost():
 
     from unsloth.import_fixes import _carry_rope_theta_across_assignment as carry
 
-    # 1. The new parameters name their own base and the config states none: write
-    #    nothing at all, so a healthy build is left exactly as it was.
+    # 1. The new parameters name their own base: write nothing at all.
     parameters = {"rope_type": "linear", "factor": 4.0, "rope_theta": 1000000.0}
     config = SimpleNamespace(rope_parameters = parameters)
     assert carry(config, 500000.0) == 1000000.0
@@ -1138,10 +1133,8 @@ def test_rope_theta_carry_only_writes_when_the_base_would_be_lost():
     assert carry(config, 500000.0) == 1000000.0
     assert config.rope_theta == 1000000.0
 
-    # 3. The base would be lost: restore it inside rope_parameters, where 5.x reads
-    #    it, and leave the config without a top-level attribute it never had. The
-    #    restore goes through a COPY -- the dict handed in is the caller's own (see
-    #    case 6), so it is read back off the config, not off the object passed in.
+    # 3. The base would be lost: restore it inside rope_parameters, through a COPY, and
+    #    leave the config without a top-level attribute it never had.
     parameters = {"rope_type": "linear", "factor": 4.0}
     config = SimpleNamespace(rope_parameters = parameters)
     assert carry(config, 500000.0) == 500000.0
@@ -1149,26 +1142,22 @@ def test_rope_theta_carry_only_writes_when_the_base_would_be_lost():
     assert parameters == {"rope_type": "linear", "factor": 4.0}
     assert not hasattr(config, "rope_theta")
 
-    # 4. Object-style replacement, which is issue #2405's own shape: there is no dict
-    #    to write into, so the attribute is the only thing that can carry the base to
-    #    the normalized retry that follows.
+    # 4. Object-style replacement, #2405's own shape: no dict to write into, so the
+    #    attribute is the only thing that carries the base to the retry.
     config = SimpleNamespace(rope_parameters = object())
     assert carry(config, 500000.0) == 500000.0
     assert config.rope_theta == 500000.0
 
-    # 5. The retry itself: the parameters are a dict again and the base survives in
-    #    the attribute case 4 wrote, so it lands back inside rope_parameters.
+    # 5. The retry: a dict again, and the base case 4 wrote lands back inside it.
     parameters = {"rope_type": "linear", "factor": 4.0}
     config = SimpleNamespace(rope_parameters = parameters, rope_theta = 500000.0)
     assert carry(config, None) == 500000.0
     assert config.rope_parameters["rope_theta"] == 500000.0
     assert parameters == {"rope_type": "linear", "factor": 4.0}
 
-    # 6. The caller's dict is never written to. transformers 5 stores the object
-    #    assigned to rope_scaling verbatim, so an in-place restore wrote into the
-    #    caller's own dict; one scaling dict reused across two configs then carried
-    #    the first config's base into the second, which is silently wrong inverse
-    #    frequencies rather than an error. Reuse is an ordinary loop over models.
+    # 6. The caller's dict is never written to: transformers 5 stores it verbatim, so
+    #    one scaling dict reused across two configs would carry the first base into the
+    #    second, silently wrong rather than an error.
     shared = {"rope_type": "linear", "factor": 4.0}
     first = SimpleNamespace(rope_parameters = shared)
     assert carry(first, 500000.0) == 500000.0
@@ -1178,16 +1167,15 @@ def test_rope_theta_carry_only_writes_when_the_base_would_be_lost():
     assert second.rope_parameters["rope_theta"] == 10000.0
     assert first.rope_parameters["rope_theta"] == 500000.0
 
-    # 6. Nothing to carry and nothing stated: untouched.
+    # 7. Nothing to carry and nothing stated: untouched.
     parameters = {"rope_type": "linear", "factor": 4.0}
     config = SimpleNamespace(rope_parameters = parameters)
     assert carry(config, None) is None
     assert not hasattr(config, "rope_theta")
     assert "rope_theta" not in parameters
 
-    # 7. Per-layer-type parameters: the base belongs one level down, so the top-level
-    #    dict must not gain a key, or transformers reads the whole thing as one flat
-    #    dict instead of one per layer type.
+    # 8. Per-layer parameters: the base belongs one level down, so the top-level dict
+    #    must not gain a key or transformers reads the whole thing as flat.
     parameters = {
         "full_attention": {"rope_type": "linear", "factor": 4.0},
         "sliding_attention": {"rope_type": "default"},
