@@ -19,6 +19,7 @@ import importlib.abc
 import importlib.machinery
 import importlib.util
 from pathlib import Path
+from importlib.metadata import distribution as importlib_distribution
 from importlib.metadata import version as importlib_version
 from importlib.metadata import PackageNotFoundError
 from packaging.version import Version as TrueVersion
@@ -1489,6 +1490,59 @@ _TORCHVISION_ABI_MARKERS = (
 # unrelated reason must keep importing unsloth, not get "reinstall torchvision".
 _LOADER_FAILURE_MARKERS = ("undefined symbol", "cannot open shared object file")
 _TORCH_LIBRARY_MARKERS = ("torchvision", "libtorch", "libc10", "_C.so", "c10::")
+# A lazily-imported torchvision with a dead extension surfaces as this, not a loader error.
+# "partially initialized" is load-bearing: without it a typo on a healthy torchvision
+# ("module 'torchvision' has no attribute 'nms'") would be answered with "reinstall". Nothing
+# AFTER the module name is, because CPython words the rest four ways for the one fault:
+#   3.9 - 3.12   partially initialized module 'torchvision' has no attribute 'extension'
+#   3.13, 3.14   partially initialized module 'torchvision' from '<file>' has no attribute
+#   from-import  cannot import name 'extension' from partially initialized module 'torchvision'
+#   submodule    cannot access submodule 'ops' of module 'torchvision'
+# The first three share "partially initialized module 'torchvision'"; the fourth names it as
+# the parent instead, so it gets its own alternative.
+_TORCHVISION_ATTRIBUTE_RE = re.compile(
+    r"partially initialized module 'torchvision(?:\.[\w.]+)?'"
+    r"|cannot access submodule '[\w.]+' of module 'torchvision(?:\.[\w.]+)?'"
+)
+
+
+def _shadowing_torchvision_path():
+    """What is standing in for torchvision, if something is, else None.
+
+    A local `torchvision` earlier on sys.path raises the same "partially initialized" words
+    while the metadata still describes the installed distribution, so the binary check would
+    answer it with "reinstall", which cannot change which sys.path entry is searched first.
+
+    Identity, not shape: a `torchvision/` directory is a package exactly like the real one, so
+    only asking whether the resolved file is the one the metadata installed separates them.
+
+    find_spec, not sys.modules: the caller is in the `except` of the import that failed, and
+    CPython has already removed the half-built module by then.
+    """
+    try:
+        spec = importlib.util.find_spec("torchvision")
+    except Exception:
+        # A shadow can break find_spec itself. No answer is not evidence of shadowing.
+        return None
+    origin = getattr(spec, "origin", None) if spec is not None else None
+    if not origin:
+        return None
+    try:
+        installed = os.fspath(
+            importlib_distribution("torchvision").locate_file("torchvision/__init__.py")
+        )
+    except Exception:
+        return None
+    if not os.path.exists(installed):
+        # Editable install, usually. Cannot tell, so do not send anyone hunting a file.
+        return None
+    try:
+        if os.path.samefile(origin, installed):
+            return None
+    except OSError:
+        if os.path.realpath(origin) == os.path.realpath(installed):
+            return None
+    return origin
 
 
 def _is_broken_torchvision_error(error) -> bool:
@@ -1498,6 +1552,8 @@ def _is_broken_torchvision_error(error) -> bool:
         checked.add(id(current))
         message = str(current)
         if any(marker in message for marker in _TORCHVISION_ABI_MARKERS):
+            return True
+        if _TORCHVISION_ATTRIBUTE_RE.search(message) and _shadowing_torchvision_path() is None:
             return True
         if any(m in message for m in _LOADER_FAILURE_MARKERS) and any(
             m in message for m in _TORCH_LIBRARY_MARKERS
@@ -1614,6 +1670,15 @@ def _probe_torchvision_binary(
         import torchvision  # noqa: F401
         import torchvision.ops  # noqa: F401  where the compiled nms lives
     except Exception as error:
+        shadow = _shadowing_torchvision_path()
+        if shadow is not None and _TORCHVISION_ATTRIBUTE_RE.search(str(error)):
+            # Named: the metadata says torchvision is installed and it is, so a reinstall
+            # changes nothing. The file is the whole fix.
+            raise ImportError(
+                f"Unsloth: {shadow} is being imported as `torchvision`, ahead of the "
+                f"installed package ({type(error).__name__}: {error}). Rename or move that "
+                f"file; reinstalling torchvision will not change which one wins."
+            ) from error
         # Anything else is left for whoever actually needs torchvision.
         if not _is_broken_torchvision_error(error):
             return
