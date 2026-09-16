@@ -3338,9 +3338,7 @@ class EmptyLogits:
         # Protocol probes get an honest AttributeError; ordinary attribute
         # access still gets the callable that explains UNSLOTH_RETURN_LOGITS.
         if len(attr) > 4 and attr.startswith("__") and attr.endswith("__"):
-            raise AttributeError(
-                f"{type(self).__name__!r} object has no attribute {attr!r}"
-            )
+            raise AttributeError(f"{type(self).__name__!r} object has no attribute {attr!r}")
         return raise_logits_error
 
     __getitem__ = raise_logits_error
