@@ -447,21 +447,31 @@ def _switch_always_returns(statement: str) -> bool:
 
 
 def _breaks_out(arm: str) -> bool:
-    """A `break` belonging to this arm, rather than to a loop or switch nested in it.
+    """A `break` or `continue` that leaves this switch arm without reaching a return.
 
     Bracket depth is the wrong test. `if (stop) { break; }` sits inside braces and still leaves
-    the switch, so only the statements that can absorb a `break` of their own are skipped: a
-    loop, a nested switch, and a function body.
+    the switch, so only the statements that can absorb the jump are skipped. They differ: a
+    nested switch absorbs a `break` but not a `continue`, which goes on to the surrounding
+    loop's test and out of the switch either way.
     """
     scan = _outside_literals(arm)
-    absorbing = [
+    loops = [
         (match.start(), _consume_statement(scan, match.start())[1])
-        for match in re.finditer(r"\b(?:for|while|do|switch)\b", scan)
+        for match in re.finditer(r"\b(?:for|while|do)\b", scan)
     ]
-    absorbing += _nested_function_spans(scan)
-    return any(
-        not any(begin <= match.start() < end for begin, end in absorbing)
-        for match in re.finditer(r"\bbreak\b", scan)
+    switches = [
+        (match.start(), _consume_statement(scan, match.start())[1])
+        for match in re.finditer(r"\bswitch\b", scan)
+    ]
+    functions = _nested_function_spans(scan)
+    def _escapes(keyword: str, absorbing: list) -> bool:
+        return any(
+            not any(begin <= match.start() < end for begin, end in absorbing)
+            for match in re.finditer(rf"\b{keyword}\b", scan)
+        )
+
+    return _escapes("break", loops + switches + functions) or _escapes(
+        "continue", loops + functions
     )
 
 
@@ -471,9 +481,18 @@ def _try_always_returns(statement: str) -> bool:
     `finally` runs on every path, so a return there settles it. Otherwise both the attempt and
     its `catch` have to return: a `try` alone leaves the throwing path uncovered.
     """
-    clauses, index = [], 0
-    for match in re.finditer(r"\b(try|catch|finally)\b", _outside_literals(statement)):
-        cursor = match.end()
+    # Walked from the start, clause by clause, rather than searched. A nested try/catch has
+    # clauses of its own, and collecting them flat let an inner body stand in for the outer
+    # one, so a path that falls out of the outer `try` read as covered.
+    scan = _outside_literals(statement)
+    bodies, cursor = {}, 0
+    while cursor < len(statement):
+        while cursor < len(statement) and statement[cursor].isspace():
+            cursor += 1
+        clause = re.match(r"\b(try|catch|finally)\b", scan[cursor:])
+        if clause is None:
+            break
+        cursor += clause.end()
         while cursor < len(statement) and statement[cursor].isspace():
             cursor += 1
         if cursor < len(statement) and statement[cursor] == "(":
@@ -482,8 +501,9 @@ def _try_always_returns(statement: str) -> bool:
                 cursor += 1
         if cursor >= len(statement) or statement[cursor] != "{":
             return False
-        clauses.append((match.group(1), _balanced(statement, cursor, "{", "}")))
-    bodies = dict(clauses)
+        body = _balanced(statement, cursor, "{", "}")
+        bodies.setdefault(clause.group(1), body)
+        cursor += len(body) + 2
     if "finally" in bodies and _block_always_returns(bodies["finally"]):
         return True
     return (
@@ -1049,6 +1069,12 @@ SELECTOR_CASES = [
     # A `try` alone leaves the throwing path uncovered, and a `finally` that returns nothing
     # settles nothing.
     ("(s) => { try { return s.reasoningBudget; } finally { cleanup(); } }", False),
+    # A nested try's clauses are its own: with `enabled` false the outer try falls out.
+    (
+        "(s) => { try { if (s.enabled) { try { return s.reasoningBudget; } "
+        "catch { return s.reasoningBudget; } } } catch { return s.reasoningBudget; } }",
+        False,
+    ),
     # `do` is the one loop whose body runs before the test; the others may not run at all.
     ("(s) => { do { return s.reasoningBudget; } while (s.on); }", True),
     ("(s) => { while (s.on) { return s.reasoningBudget; } }", False),
@@ -1057,6 +1083,24 @@ SELECTOR_CASES = [
     (
         '(s) => { switch (s.mode) { case "x": switch (s.sub) { default: return s.reasoningBudget; } } }',
         False,
+    ),
+    # `continue` jumps to the surrounding loop's test, so that arm never reaches the next label.
+    (
+        '(s) => { do { switch (s.mode) { case "x": continue; '
+        "default: return s.reasoningBudget; } } while (false); }",
+        False,
+    ),
+    # A nested switch absorbs a `break`, but never a `continue`: that goes to the loop.
+    (
+        '(s) => { do { switch (s.mode) { case "x": switch (s.sub) { default: continue; } '
+        "default: return s.reasoningBudget; } } while (false); }",
+        False,
+    ),
+    # A `continue` inside a nested loop belongs to that loop, not to the switch.
+    (
+        '(s) => { switch (s.mode) { case "x": for (const q of s.l) { continue; } '
+        "return s.reasoningBudget; default: return s.reasoningBudget; } }",
+        True,
     ),
     # A `break` in a plain block still leaves the switch; one inside a loop belongs to the loop.
     (
