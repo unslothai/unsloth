@@ -3461,7 +3461,6 @@ pub fn start_backend(
     if let Some(stdout) = stdout {
         let app_handle = app.clone();
         let state_clone = Arc::clone(state);
-        let shutdown_clone = Arc::clone(shutdown);
         let diagnostics_clone = diagnostics_state.clone();
         let backend_log_clone = backend_log.clone();
         std::thread::spawn(move || {
@@ -3469,7 +3468,6 @@ pub fn start_backend(
                 stdout,
                 &app_handle,
                 &state_clone,
-                &shutdown_clone,
                 &diagnostics_clone,
                 &backend_log_clone,
                 false,
@@ -3482,7 +3480,6 @@ pub fn start_backend(
     if let Some(stderr) = stderr {
         let app_handle = app.clone();
         let state_clone = Arc::clone(state);
-        let shutdown_clone = Arc::clone(shutdown);
         let diagnostics_clone = diagnostics_state.clone();
         let backend_log_clone = backend_log.clone();
         std::thread::spawn(move || {
@@ -3490,7 +3487,6 @@ pub fn start_backend(
                 stderr,
                 &app_handle,
                 &state_clone,
-                &shutdown_clone,
                 &diagnostics_clone,
                 &backend_log_clone,
                 true,
@@ -3501,40 +3497,6 @@ pub fn start_backend(
     }
 
     Ok(generation)
-}
-
-pub(crate) fn request_staged_rollback_restart(app: &AppHandle, state: &BackendState) -> bool {
-    let home = diagnostics::studio_dir();
-    let recovered = match with_studio_runtime_launch_guard(|| {
-        if state
-            .lock()
-            .map(|process| process.has_owned_backend())
-            .unwrap_or(true)
-        {
-            return Ok(false);
-        }
-        crate::staged_update::recover_failed_activation(&home, || {})
-    }) {
-        Ok(recovered) => recovered,
-        Err(error) => {
-            error!("Staged backend rollback failed: {error}");
-            false
-        }
-    };
-    if !recovered {
-        return false;
-    }
-    #[cfg(target_os = "macos")]
-    match crate::schedule_staged_rollback_relaunch(app) {
-        Ok(()) => app.exit(0),
-        Err(error) => {
-            error!("Could not schedule staged rollback relaunch: {error}");
-            app.request_restart();
-        }
-    }
-    #[cfg(not(target_os = "macos"))]
-    app.request_restart();
-    true
 }
 
 async fn generic_backend_health_ok(port: u16) -> bool {
@@ -3628,57 +3590,9 @@ async fn generic_backend_health_ok(port: u16) -> bool {
 const PORT_VALIDATION_RETRY_MIN: Duration = Duration::from_millis(250);
 const PORT_VALIDATION_RETRY_MAX: Duration = Duration::from_secs(5);
 
-fn pending_backend_validation(
-    required: Option<&str>,
-    readiness: &crate::desktop_backend_owner::OwnedBackendReadiness,
-    observed: Option<&str>,
-    torch_warm_in_progress: bool,
-) -> (bool, bool) {
-    let Some(required) = required else {
-        return (true, false);
-    };
-    let accepted = !torch_warm_in_progress
-        && matches!(
-            readiness,
-            crate::desktop_backend_owner::OwnedBackendReadiness::Ready
-        )
-        && observed.is_some_and(|observed| {
-            crate::desktop_update_policy::compare_versions(observed, required) >= 0
-        });
-    (accepted, !accepted && !torch_warm_in_progress)
-}
-
-fn staged_probe_requires_immediate_rejection(reason: &str) -> bool {
-    matches!(
-        reason,
-        "desktop_protocol_incompatible"
-            | "desktop_auth_unsupported"
-            | "desktop_manageability_unsupported"
-            | "desktop_backend_ownership_unsupported"
-            | "desktop_auth_secret_missing"
-            | "desktop_auth_secret_rejected"
-            | "desktop_auth_token_rejected"
-            | "desktop_auth_token_response_invalid"
-            | "desktop_backend_version_invalid"
-    )
-}
-
-fn roll_back_rejected_staged_backend(
-    app: &AppHandle,
-    state: &BackendState,
-    shutdown: &ShutdownFlag,
-    diagnostics_state: &DiagnosticsState,
-) {
-    let stopped = stop_backend(state, shutdown, Some(diagnostics_state));
-    if stopped.is_err() || !request_staged_rollback_restart(app, state) {
-        let _ = app.emit("server-crashed", ());
-    }
-}
-
 async fn validate_candidate_port(
     app: AppHandle,
     state: BackendState,
-    shutdown: ShutdownFlag,
     diagnostics_state: DiagnosticsState,
     session_id: String,
     generation: u64,
@@ -3686,10 +3600,6 @@ async fn validate_candidate_port(
     deadline: std::time::Instant,
 ) {
     let started = std::time::Instant::now();
-    let pending = crate::staged_update::pending_versions(&diagnostics::studio_dir());
-    let pending_backend_version = pending
-        .as_ref()
-        .map(|versions| versions.backend_version.as_str());
     let owner = {
         let proc = match state.lock() {
             Ok(proc) => proc,
@@ -3717,7 +3627,6 @@ async fn validate_candidate_port(
     let mut delay = PORT_VALIDATION_RETRY_MIN;
     let mut attempts = 0u32;
     let mut verified_late = false;
-    let mut validated_backend_version = None;
     let valid = loop {
         // Before the probe, not just after a failed one: the announcement
         // itself can arrive past the deadline on a very slow start, and the
@@ -3726,62 +3635,17 @@ async fn validate_candidate_port(
             break false;
         }
         attempts += 1;
-        let (ok, reject_staged) = if let Some(owner) = owner.clone() {
-            let (probe, torch_warm_in_progress) = if pending_backend_version.is_some() {
-                crate::desktop_backend_owner::probe_owned_backend_state_for_staged_activation(
-                    owner,
-                    Some(port),
-                )
-                .await
-            } else {
-                (
-                    crate::desktop_backend_owner::probe_owned_backend_state(
-                        owner,
-                        Some(port),
-                        false,
-                    )
+        let ok = if let Some(owner) = owner.clone() {
+            matches!(
+                crate::desktop_backend_owner::probe_owned_backend_state(owner, Some(port), false)
                     .await,
-                    false,
-                )
-            };
-            match probe {
                 crate::desktop_backend_owner::OwnedBackendProbe::Verified(
-                    crate::desktop_backend_owner::VerifiedOwnedBackend {
-                        port: verified_port,
-                        readiness,
-                        backend_version,
-                        ..
-                    },
-                ) => {
-                    let owned_port = verified_port == port;
-                    let (version_matches, reject_version) = pending_backend_validation(
-                        pending_backend_version,
-                        &readiness,
-                        backend_version.as_deref(),
-                        torch_warm_in_progress,
-                    );
-                    if owned_port && version_matches {
-                        validated_backend_version = backend_version;
-                    }
-                    (owned_port && version_matches, owned_port && reject_version)
-                }
-                crate::desktop_backend_owner::OwnedBackendProbe::Unmanageable {
-                    reason, ..
-                } if pending_backend_version.is_some() => {
-                    (false, staged_probe_requires_immediate_rejection(&reason))
-                }
-                _ => (false, false),
-            }
-        } else if pending_backend_version.is_some() {
-            (false, true)
+                    crate::desktop_backend_owner::VerifiedOwnedBackend { port: verified_port, .. }
+                ) if verified_port == port
+            )
         } else {
-            (generic_backend_health_ok(port).await, false)
+            generic_backend_health_ok(port).await
         };
-        if reject_staged {
-            warn!("Staged backend failed authenticated version validation");
-            roll_back_rejected_staged_backend(&app, &state, &shutdown, &diagnostics_state);
-            return;
-        }
         if ok {
             // A probe that started in time can still finish late. Emitting
             // server-port after the watchdog's server-start-timeout strands the
@@ -3811,14 +3675,6 @@ async fn validate_candidate_port(
     };
 
     if !valid {
-        if pending_backend_version.is_some()
-            && crate::staged_update::pending_versions(&diagnostics::studio_dir()).is_some()
-            && std::time::Instant::now() >= deadline
-        {
-            warn!("Staged backend validation timed out");
-            roll_back_rejected_staged_backend(&app, &state, &shutdown, &diagnostics_state);
-            return;
-        }
         if verified_late {
             warn!(
                 "Backend port {} verified after the start deadline; not emitting",
@@ -3860,23 +3716,6 @@ async fn validate_candidate_port(
             false
         }
     };
-
-    let activation_confirmed = if should_emit && pending_backend_version.is_some() {
-        validated_backend_version.as_deref().is_some_and(|version| {
-            crate::staged_update::confirm_activated(&diagnostics::studio_dir(), version)
-        })
-    } else {
-        true
-    };
-    if should_emit && !activation_confirmed {
-        if let Ok(mut proc) = state.lock() {
-            if proc.generation == generation && proc.port == Some(port) {
-                proc.port = None;
-            }
-        }
-        warn!("Staged backend confirmation changed during validation");
-        return;
-    }
 
     info!(
         "Validated backend port candidate {} valid={} emit={} in {}ms",
@@ -4000,7 +3839,6 @@ fn read_output_stream<R: std::io::Read>(
     stream: R,
     app: &AppHandle,
     state: &BackendState,
-    shutdown: &ShutdownFlag,
     diagnostics_state: &DiagnosticsState,
     backend_log: &BackendLog,
     is_stderr: bool,
@@ -4071,14 +3909,12 @@ fn read_output_stream<R: std::io::Read>(
                 if let Some(port) = candidate_port {
                     let app_handle = app.clone();
                     let state_clone = Arc::clone(state);
-                    let shutdown_clone = Arc::clone(shutdown);
                     let diagnostics_clone = diagnostics_state.clone();
                     let session_id = backend_log.session_id.clone();
                     tauri::async_runtime::spawn(async move {
                         validate_candidate_port(
                             app_handle,
                             state_clone,
-                            shutdown_clone,
                             diagnostics_clone,
                             session_id,
                             generation,
@@ -4200,9 +4036,6 @@ fn read_output_stream<R: std::io::Read>(
             );
         }
         if emit_crash {
-            if request_staged_rollback_restart(app, state) {
-                return;
-            }
             error!("Backend process stdout closed unexpectedly (crash detected)");
             let _ = app.emit("server-crashed", ());
         }
@@ -6121,99 +5954,6 @@ mod managed_cli_working_dir_tests {
             backend_args(8888),
             vec!["studio", "--api-only", "-H", "127.0.0.1", "-p", "8888"]
         );
-    }
-
-    #[test]
-    fn pending_activation_requires_a_ready_backend_at_or_above_the_required_version() {
-        use crate::desktop_backend_owner::OwnedBackendReadiness;
-
-        assert_eq!(
-            pending_backend_validation(None, &OwnedBackendReadiness::Ready, None, false),
-            (true, false)
-        );
-        assert_eq!(
-            pending_backend_validation(
-                Some("2026.9.1"),
-                &OwnedBackendReadiness::Ready,
-                Some("2026.9.1"),
-                false
-            ),
-            (true, false)
-        );
-        assert_eq!(
-            pending_backend_validation(
-                Some("2026.9.1"),
-                &OwnedBackendReadiness::Ready,
-                Some("2026.8.4"),
-                false
-            ),
-            (false, true)
-        );
-        assert_eq!(
-            pending_backend_validation(
-                Some("2026.9.1"),
-                &OwnedBackendReadiness::Ready,
-                Some("2026.9.2"),
-                false
-            ),
-            (true, false)
-        );
-        assert_eq!(
-            pending_backend_validation(
-                Some("2026.9.1"),
-                &OwnedBackendReadiness::Stale {
-                    reason: "desktop_backend_version_too_old".to_string()
-                },
-                Some("2026.9.1"),
-                false
-            ),
-            (false, true)
-        );
-    }
-
-    #[test]
-    fn pending_activation_waits_for_authenticated_backend_warmup() {
-        use crate::desktop_backend_owner::OwnedBackendReadiness;
-
-        assert_eq!(
-            pending_backend_validation(
-                Some("2026.9.1"),
-                &OwnedBackendReadiness::Ready,
-                Some("2026.9.1"),
-                true
-            ),
-            (false, false)
-        );
-    }
-
-    #[test]
-    fn pending_activation_retries_transient_authenticated_probe_failures() {
-        for reason in [
-            "desktop_login_probe_failed",
-            "desktop_auth_secret_probe_failed",
-            "desktop_auth_secret_probe_http_500 Internal Server Error",
-            "desktop_auth_health_unverified",
-            "error sending request for url",
-        ] {
-            assert!(!staged_probe_requires_immediate_rejection(reason));
-        }
-    }
-
-    #[test]
-    fn pending_activation_rejects_completed_incompatibility_evidence() {
-        for reason in [
-            "desktop_protocol_incompatible",
-            "desktop_auth_unsupported",
-            "desktop_manageability_unsupported",
-            "desktop_backend_ownership_unsupported",
-            "desktop_auth_secret_missing",
-            "desktop_auth_secret_rejected",
-            "desktop_auth_token_rejected",
-            "desktop_auth_token_response_invalid",
-            "desktop_backend_version_invalid",
-        ] {
-            assert!(staged_probe_requires_immediate_rejection(reason));
-        }
     }
 
     // The platform the bug was reported on, on the Windows leg of studio-tauri-smoke:

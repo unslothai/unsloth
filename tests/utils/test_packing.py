@@ -34,6 +34,9 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+from real_accelerator import (
+    has_real_accelerator,
+)  # tests/_shared, on sys.path via tests/conftest.py
 import torch
 from datasets import Dataset, IterableDataset
 from trl import SFTConfig, SFTTrainer
@@ -1403,6 +1406,35 @@ def test_text_model_stream_without_metadata_keeps_packing():
     assert next(iter(dataset))["text"] == "first"
 
 
+def _fake_sft_self():
+    """A stand-in `self` for the three `SFTTrainer._prepare_dataset` tests below
+    (four cases; the last one is parameterized).
+
+    Fails first, and by name, if `SFTTrainer` is not Unsloth's. Those tests call
+    `_prepare_dataset` unbound with a SimpleNamespace, which is fine against the
+    patched implementation (it reads `data_collator` and nothing else) and is not
+    fine against TRL's own, which reaches for `self._is_vlm`. So when the patch
+    silently falls back -- `import unsloth` warns and continues, see
+    `_patch_trl_rl_trainers` in unsloth/models/rl.py -- all four report
+
+        AttributeError: 'types.SimpleNamespace' object has no attribute '_is_vlm'
+
+    which names the fake object and not the patcher. That is what unsloth-zoo
+    #1192 vs the source anchor fixed in #10854 actually looked like from here,
+    and it is why 16 failures across five files took a while to add up to one
+    cause. Padding the namespace out with `_is_vlm` would be worse than the
+    AttributeError: the tests would then quietly pass against TRL's trainer and
+    assert nothing about Unsloth's.
+    """
+    assert SFTTrainer.__name__ == "UnslothSFTTrainer", (
+        f"trl.SFTTrainer is {SFTTrainer.__name__!r}, so Unsloth's SFT patch did not "
+        "apply and these tests would be exercising TRL's _prepare_dataset instead of "
+        "the patched one. `import unsloth` reports the cause as a warning "
+        "('Could not build the patched trl.trainer.sft_trainer'), not an error."
+    )
+    return SimpleNamespace(model = None)
+
+
 def test_bfd_packing_truncates_before_packing(monkeypatch):
     args = SimpleNamespace(
         dataset_num_proc = 1,
@@ -1410,7 +1442,7 @@ def test_bfd_packing_truncates_before_packing(monkeypatch):
         max_length = 4,
         packing_strategy = "bfd",
     )
-    trainer = SimpleNamespace(model = None)
+    trainer = _fake_sft_self()
     dataset = Dataset.from_dict({"prompt": ["abc"], "completion": ["defghij"]})
     prepare_globals = SFTTrainer._prepare_dataset.__globals__
 
@@ -1438,7 +1470,7 @@ def test_wrapped_strategy_without_packing_still_truncates():
         max_length = 4,
         packing_strategy = "wrapped",
     )
-    trainer = SimpleNamespace(model = None)
+    trainer = _fake_sft_self()
     dataset = Dataset.from_dict({"text": ["abcdefghi"]})
 
     prepared = SFTTrainer._prepare_dataset(
@@ -1464,7 +1496,7 @@ def test_wrapped_packing_preserves_overlength_tokens(monkeypatch, legacy_api):
     if not legacy_api:
         args_kwargs["packing_strategy"] = "wrapped"
     args = SimpleNamespace(**args_kwargs)
-    trainer = SimpleNamespace(model = None)
+    trainer = _fake_sft_self()
     dataset = Dataset.from_dict({"text": ["abcdefghi"]})
     prepare_globals = SFTTrainer._prepare_dataset.__globals__
     pack_dataset = prepare_globals["pack_dataset"]
@@ -1626,9 +1658,9 @@ def test_enable_sample_packing_only_requires_torch_call():
     assert torch.equal(batch["packed_seq_lengths"], torch.tensor([2, 1, 3], dtype = torch.int32))
 
 
-@pytest.mark.skipif(
-    not torch.cuda.is_available(), reason = "builds a real 4bit model on an accelerator"
-)
+# has_real_accelerator(), not has_real_cuda(): the body below picks xpu when cuda is absent
+# and _build_packed_training_setup has an xpu dtype arm, so this is real XPU coverage.
+@pytest.mark.skipif(not has_real_accelerator(), reason = "builds a real 4bit model on an accelerator")
 def test_enable_sample_packing_trl_collator(tmp_path):
     if torch.cuda.is_available():
         device = torch.device("cuda")
@@ -1690,9 +1722,9 @@ def test_enable_padding_free_metadata():
     assert trainer.args.remove_unused_columns is False
 
 
-@pytest.mark.skipif(
-    not torch.cuda.is_available(), reason = "builds a real 4bit model on an accelerator"
-)
+# has_real_accelerator(), not has_real_cuda(): the body below picks xpu when cuda is absent
+# and _build_packed_training_setup has an xpu dtype arm, so this is real XPU coverage.
+@pytest.mark.skipif(not has_real_accelerator(), reason = "builds a real 4bit model on an accelerator")
 def test_packing_sdpa(tmp_path):
     if torch.cuda.is_available():
         device = torch.device("cuda")
@@ -1850,6 +1882,42 @@ def test_require_replace_raises_on_missing_anchor():
         _require_replace("abc", "z", "Z", where = "unit test")
     # an optional edit warns once and returns the source unchanged (no dangling ref)
     assert _require_replace("abc", "z", "Z", required = False, where = "optional") == "abc"
+
+
+def test_require_replace_survives_a_trailing_comment_on_the_anchor():
+    """A comment appearing on an anchored line is not a code change.
+
+    unsloth_zoo #1192 put `# noqa: F821` on the `pack_dataset(` call while
+    building a lint gate. The literal anchor stopped matching, the required edit
+    raised, and every SFT run silently fell back to TRL's own trainer -- losing
+    the packing and truncation fixes this module exists to apply. The code the
+    anchor points at never moved.
+    """
+    from unsloth.models.rl_replacements import _require_replace
+
+    anchor = "dataset = pack_dataset(\n    a,\n    b,\n)"
+    replacement = "dataset = pack_dataset(\n    a,\n    **kw,\n)"
+
+    # The exact shape that broke: a trailing comment on the first anchored line.
+    commented = "x = 1\ndataset = pack_dataset(  # noqa: F821 -- reached only past the probe\n    a,\n    b,\n)\ny = 2"
+    assert _require_replace(commented, anchor, replacement) == f"x = 1\n{replacement}\ny = 2"
+
+    # A comment on any other anchored line is tolerated too.
+    inner = "dataset = pack_dataset(\n    a,  # the columns\n    b,\n)"
+    assert _require_replace(inner, anchor, replacement) == replacement
+
+    # Tolerance must not reach across a real code change: `b` -> `c` still raises.
+    with pytest.raises(RuntimeError):
+        _require_replace(
+            "dataset = pack_dataset(\n    a,\n    c,\n)",
+            anchor,
+            replacement,
+            where = "changed argument",
+        )
+
+    # A `#` inside a string literal is not a comment and must still match exactly.
+    hashed = 'sep = "#"\n'
+    assert _require_replace(hashed + anchor, anchor, replacement) == hashed + replacement
 
 
 def test_resolve_string_model_config_forwards_token(monkeypatch):

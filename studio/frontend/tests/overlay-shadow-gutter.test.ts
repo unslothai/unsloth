@@ -11,13 +11,11 @@
 // placed, so this reads the source: the node suite has no DOM to compute in.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
-const PROVIDER = readFileSync(
-  new URL("../src/app/provider.tsx", import.meta.url),
-  "utf8",
-);
+import { readSrc } from "./helpers/kit.ts";
+
+const PROVIDER = readSrc("app/provider.tsx");
 
 /** A `const NAME = <number>;` declaration in the provider. */
 function constant(name: string): number {

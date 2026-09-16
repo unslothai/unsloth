@@ -37,6 +37,28 @@ def wait_state(predicate):
     raise AssertionError(f"Server condition was not reached: {state}")
 
 
+def _snapshot(page):
+    """What the page and the fixture server held when a case failed.
+
+    A wait that expires reports only its own timeout, which says nothing about which side
+    stopped: the upload never posted, the stream never ended, or the rows were dropped.
+    """
+    snapshot = {}
+    try:
+        snapshot["page"] = page.evaluate(
+            "({documents: window.sim.documents, uploading: window.sim.uploading, "
+            "hasIndexing: window.sim.hasIndexing, errors: window.errors, "
+            "pageErrors: window.pageErrors, url: location.href})"
+        )
+    except Exception as exc:  # noqa: BLE001 - a snapshot must not replace the real failure
+        snapshot["page"] = f"unreadable: {exc}"
+    try:
+        snapshot["server"] = request("/__state")
+    except Exception as exc:  # noqa: BLE001 - same
+        snapshot["server"] = f"unreadable: {exc}"
+    return snapshot
+
+
 def run_case(browser, mode, action):
     request("/__scenario", {"mode": mode})
     context = browser.new_context()
@@ -49,6 +71,9 @@ def run_case(browser, mode, action):
         action(page)
         assert not errors, errors
         assert not page.evaluate("window.pageErrors"), "Unexpected browser error"
+    except Exception as exc:
+        exc.rag_snapshot = _snapshot(page)
+        raise
     finally:
         request("/__release", {})
         context.close()
@@ -270,6 +295,9 @@ def main():
                         "status": "failed",
                         "error": str(exc),
                     }
+                    snapshot = getattr(exc, "rag_snapshot", None)
+                    if snapshot is not None:
+                        record["snapshot"] = snapshot
                 record["seconds"] = round(time.monotonic() - start, 3)
                 print(json.dumps(record), flush = True)
                 records.append(record)

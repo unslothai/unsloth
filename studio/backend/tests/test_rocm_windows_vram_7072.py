@@ -34,6 +34,25 @@ import pytest
 
 from utils.hardware import hardware as hw
 
+
+def _shared_setup_1(monkeypatch):
+    monkeypatch.setattr(
+        hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(REPORTER_ADAPTERS))
+    )
+
+    devices, _ = hw._rocm_windows_per_device_vram([0, 1])
+    return devices
+
+
+def _shared_setup_2(monkeypatch):
+    monkeypatch.setitem(
+        sys.modules, "torch", _fake_torch(IGPU_DGPU_DEVICES, free_equals_total = True)
+    )
+    monkeypatch.setattr(
+        hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(IGPU_DGPU_ADAPTERS))
+    )
+
+
 GB = 1024**3
 MiB = 1024**2
 
@@ -581,12 +600,7 @@ IGPU_DGPU_ADAPTERS = [
 
 def test_igpu_and_dgpu_each_report_their_own(win_rocm, monkeypatch):
     """The dGPU keeps its LUID usage while the shared iGPU declines."""
-    monkeypatch.setitem(
-        sys.modules, "torch", _fake_torch(IGPU_DGPU_DEVICES, free_equals_total = True)
-    )
-    monkeypatch.setattr(
-        hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(IGPU_DGPU_ADAPTERS))
-    )
+    _shared_setup_2(monkeypatch)
     monkeypatch.setattr(
         hw,
         "_windows_amd_adapter_records_by_luid",
@@ -604,12 +618,7 @@ def test_igpu_and_dgpu_each_report_their_own(win_rocm, monkeypatch):
 def test_a_name_the_two_sides_spell_differently_still_joins(win_rocm, monkeypatch):
     """DirectX takes the Description from the driver INF and HIP from the ASIC
     record, so an iGPU reaches the join under two spellings of one card."""
-    monkeypatch.setitem(
-        sys.modules, "torch", _fake_torch(IGPU_DGPU_DEVICES, free_equals_total = True)
-    )
-    monkeypatch.setattr(
-        hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(IGPU_DGPU_ADAPTERS))
-    )
+    _shared_setup_2(monkeypatch)
     monkeypatch.setattr(
         hw,
         "_windows_amd_adapter_records_by_luid",
@@ -626,12 +635,7 @@ def test_a_name_the_two_sides_spell_differently_still_joins(win_rocm, monkeypatc
 def test_the_arch_answers_when_the_names_do_not(win_rocm, monkeypatch):
     """A generic iGPU Description that normalizing cannot reconcile. The gfx
     target both sides carry separates an iGPU from the dGPU beside it."""
-    monkeypatch.setitem(
-        sys.modules, "torch", _fake_torch(IGPU_DGPU_DEVICES, free_equals_total = True)
-    )
-    monkeypatch.setattr(
-        hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(IGPU_DGPU_ADAPTERS))
-    )
+    _shared_setup_2(monkeypatch)
     monkeypatch.setattr(
         hw,
         "_windows_amd_adapter_records_by_luid",
@@ -1572,11 +1576,7 @@ def test_an_unsettled_classifier_does_not_cost_a_card_its_occupancy(win_rocm, mo
     torch = _fake_torch(DEVICES, free_equals_total = True)
     monkeypatch.setitem(sys.modules, "torch", torch)
     monkeypatch.setattr(hw, "_rocm_props_total_is_carve_out", lambda props: True)
-    monkeypatch.setattr(
-        hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(REPORTER_ADAPTERS))
-    )
-
-    devices, _ = hw._rocm_windows_per_device_vram([0, 1])
+    devices = _shared_setup_1(monkeypatch)
     assert [d["total_gb"] for d in devices] == [48.0, 8.0]
     assert devices[0]["used_gb"] == pytest.approx(40.0, abs = 0.01)
 
@@ -1713,11 +1713,7 @@ def test_a_driver_total_below_the_carve_out_is_not_adopted(win_rocm, monkeypatch
     monkeypatch.setattr(
         torch.cuda, "mem_get_info", lambda i: (0, 36 * GB) if i == 0 else (0, 8 * GB)
     )
-    monkeypatch.setattr(
-        hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(REPORTER_ADAPTERS))
-    )
-
-    devices, _ = hw._rocm_windows_per_device_vram([0, 1])
+    devices = _shared_setup_1(monkeypatch)
     assert [d["total_gb"] for d in devices] == [48.0, 8.0]
     assert devices[0]["used_gb"] == pytest.approx(40.0, abs = 0.01)
     assert all(d["used_gb"] <= d["total_gb"] for d in devices if d["used_gb"] is not None)
@@ -1734,11 +1730,7 @@ def test_a_failing_carve_out_probe_keeps_the_device(win_rocm, monkeypatch):
         raise RuntimeError("classifier unavailable")
 
     monkeypatch.setattr(hw, "_rocm_props_total_is_carve_out", _boom)
-    monkeypatch.setattr(
-        hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(REPORTER_ADAPTERS))
-    )
-
-    devices, _ = hw._rocm_windows_per_device_vram([0, 1])
+    devices = _shared_setup_1(monkeypatch)
     assert [d["total_gb"] for d in devices] == [48.0, 8.0]
     assert devices[0]["used_gb"] == pytest.approx(40.0, abs = 0.01)
 
@@ -1944,11 +1936,7 @@ def test_the_poll_does_not_probe_an_unclassified_discrete_card(win_rocm, monkeyp
     monkeypatch.setattr(torch.cuda, "mem_get_info", lambda i: (probed.append(i), (0, 99 * GB))[1])
     monkeypatch.setattr(hw, "_rocm_props_total_is_carve_out", lambda props: True)  # fails open
     monkeypatch.setattr(hw, "_rocm_props_are_positively_unified", lambda props: False)
-    monkeypatch.setattr(
-        hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(REPORTER_ADAPTERS))
-    )
-
-    devices, _ = hw._rocm_windows_per_device_vram([0, 1])
+    devices = _shared_setup_1(monkeypatch)
     assert probed == [], "a discrete card was asked for a context it does not need"
     assert [d["total_gb"] for d in devices] == [48.0, 8.0]  # props totals, unwidened
 

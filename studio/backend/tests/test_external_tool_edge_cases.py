@@ -34,6 +34,21 @@ from core.inference.studio_tool_loop import (
 _DONE = "data: [DONE]"
 
 
+def _tool_call_delta(
+    name,
+    arguments,
+    *,
+    id = "c1",
+    index = 0,
+):
+    """A streaming delta payload carrying one function tool call."""
+    return {
+        "tool_calls": [
+            {"index": index, "id": id, "function": {"name": name, "arguments": arguments}}
+        ]
+    }
+
+
 def _sse(
     delta = None,
     finish = None,
@@ -254,13 +269,7 @@ def _call_turn(
     arguments = '{"query":"q"}',
 ):
     return [
-        _sse(
-            {
-                "tool_calls": [
-                    {"index": 0, "id": call_id, "function": {"name": name, "arguments": arguments}}
-                ]
-            }
-        ),
+        _sse(_tool_call_delta(name, arguments, id = call_id)),
         _sse(finish = "tool_calls"),
         _DONE,
     ]
@@ -285,17 +294,7 @@ def test_intermediate_done_sentinel_is_not_relayed(executed):
     transport = FakeTransport(
         [
             [
-                _sse(
-                    {
-                        "tool_calls": [
-                            {
-                                "index": 0,
-                                "id": "c1",
-                                "function": {"name": "web_search", "arguments": "{}"},
-                            }
-                        ]
-                    }
-                ),
+                _sse(_tool_call_delta("web_search", "{}")),
                 _sse(finish = "tool_calls"),
                 _DONE,
             ],
@@ -385,17 +384,7 @@ def test_call_without_finish_reason_is_still_executed(executed):
     transport = FakeTransport(
         [
             [
-                _sse(
-                    {
-                        "tool_calls": [
-                            {
-                                "index": 0,
-                                "id": "c1",
-                                "function": {"name": "web_search", "arguments": '{"query":"x"}'},
-                            }
-                        ]
-                    }
-                ),
+                _sse(_tool_call_delta("web_search", '{"query":"x"}')),
                 _DONE,
             ],
             _answer_turn(),
@@ -415,17 +404,7 @@ def test_structured_call_with_finish_reason_stop_is_executed(executed):
     transport = FakeTransport(
         [
             [
-                _sse(
-                    {
-                        "tool_calls": [
-                            {
-                                "index": 0,
-                                "id": "c1",
-                                "function": {"name": "web_search", "arguments": '{"query":"x"}'},
-                            }
-                        ]
-                    }
-                ),
+                _sse(_tool_call_delta("web_search", '{"query":"x"}')),
                 _sse(finish = "stop"),
                 _DONE,
             ],
@@ -467,17 +446,7 @@ def test_empty_string_id_is_still_executed(executed):
     transport = FakeTransport(
         [
             [
-                _sse(
-                    {
-                        "tool_calls": [
-                            {
-                                "index": 0,
-                                "id": "",
-                                "function": {"name": "web_search", "arguments": '{"query":"x"}'},
-                            }
-                        ]
-                    }
-                ),
+                _sse(_tool_call_delta("web_search", '{"query":"x"}', id = "")),
                 _sse(finish = "tool_calls"),
                 _DONE,
             ],
@@ -498,17 +467,7 @@ def test_argument_fragments_without_an_index_continue_the_open_call(executed):
     transport = FakeTransport(
         [
             [
-                _sse(
-                    {
-                        "tool_calls": [
-                            {
-                                "index": 0,
-                                "id": "c1",
-                                "function": {"name": "web_search", "arguments": ""},
-                            }
-                        ]
-                    }
-                ),
+                _sse(_tool_call_delta("web_search", "")),
                 _sse({"tool_calls": [{"function": {"arguments": '{"query":'}}]}),
                 _sse({"tool_calls": [{"function": {"arguments": '"paris"}'}}]}),
                 _sse(finish = "tool_calls"),
@@ -532,28 +491,8 @@ def test_two_distinct_calls_at_the_same_index_are_not_merged(executed):
     transport = FakeTransport(
         [
             [
-                _sse(
-                    {
-                        "tool_calls": [
-                            {
-                                "index": 0,
-                                "id": "a",
-                                "function": {"name": "web_search", "arguments": '{"query":"one"}'},
-                            }
-                        ]
-                    }
-                ),
-                _sse(
-                    {
-                        "tool_calls": [
-                            {
-                                "index": 0,
-                                "id": "b",
-                                "function": {"name": "web_search", "arguments": '{"query":"two"}'},
-                            }
-                        ]
-                    }
-                ),
+                _sse(_tool_call_delta("web_search", '{"query":"one"}', id = "a")),
+                _sse(_tool_call_delta("web_search", '{"query":"two"}', id = "b")),
                 _sse(finish = "tool_calls"),
                 _DONE,
             ],
@@ -570,28 +509,8 @@ def test_same_index_merge_never_forwards_raw_garbage(executed):
     transport = FakeTransport(
         [
             [
-                _sse(
-                    {
-                        "tool_calls": [
-                            {
-                                "index": 0,
-                                "id": "a",
-                                "function": {"name": "web_search", "arguments": '{"query":"one"}'},
-                            }
-                        ]
-                    }
-                ),
-                _sse(
-                    {
-                        "tool_calls": [
-                            {
-                                "index": 0,
-                                "id": "b",
-                                "function": {"name": "web_search", "arguments": '{"query":"two"}'},
-                            }
-                        ]
-                    }
-                ),
+                _sse(_tool_call_delta("web_search", '{"query":"one"}', id = "a")),
+                _sse(_tool_call_delta("web_search", '{"query":"two"}', id = "b")),
                 _sse(finish = "tool_calls"),
                 _DONE,
             ],
@@ -608,34 +527,8 @@ def test_negative_index_does_not_reorder_calls(executed):
     transport = FakeTransport(
         [
             [
-                _sse(
-                    {
-                        "tool_calls": [
-                            {
-                                "index": 0,
-                                "id": "a",
-                                "function": {
-                                    "name": "web_search",
-                                    "arguments": '{"query":"first"}',
-                                },
-                            }
-                        ]
-                    }
-                ),
-                _sse(
-                    {
-                        "tool_calls": [
-                            {
-                                "index": -1,
-                                "id": "b",
-                                "function": {
-                                    "name": "web_search",
-                                    "arguments": '{"query":"second"}',
-                                },
-                            }
-                        ]
-                    }
-                ),
+                _sse(_tool_call_delta("web_search", '{"query":"first"}', id = "a")),
+                _sse(_tool_call_delta("web_search", '{"query":"second"}', id = "b", index = -1)),
                 _sse(finish = "tool_calls"),
                 _DONE,
             ],
@@ -785,17 +678,7 @@ def test_finish_reason_length_mid_tool_call_does_not_execute(executed):
     transport = FakeTransport(
         [
             [
-                _sse(
-                    {
-                        "tool_calls": [
-                            {
-                                "index": 0,
-                                "id": "c1",
-                                "function": {"name": "web_search", "arguments": '{"que'},
-                            }
-                        ]
-                    }
-                ),
+                _sse(_tool_call_delta("web_search", '{"que')),
                 _sse(finish = "length"),
                 _DONE,
             ]
@@ -865,17 +748,7 @@ def test_text_and_structured_form_of_one_call_run_once(executed):
                         "content": '<tool_call>{"name": "web_search", "arguments": {"query": "dup"}}</tool_call>'
                     }
                 ),
-                _sse(
-                    {
-                        "tool_calls": [
-                            {
-                                "index": 0,
-                                "id": "c1",
-                                "function": {"name": "web_search", "arguments": '{"query":"dup"}'},
-                            }
-                        ]
-                    }
-                ),
+                _sse(_tool_call_delta("web_search", '{"query":"dup"}')),
                 _sse(finish = "tool_calls"),
                 _DONE,
             ],
@@ -1049,15 +922,7 @@ def test_one_megabyte_argument_streams_in_fragments(executed):
     blob = "x" * (1024 * 1024)
     arguments = json.dumps({"query": blob})
     chunks = [arguments[i : i + 4096] for i in range(0, len(arguments), 4096)]
-    turn = [
-        _sse(
-            {
-                "tool_calls": [
-                    {"index": 0, "id": "c1", "function": {"name": "web_search", "arguments": ""}}
-                ]
-            }
-        )
-    ]
+    turn = [_sse(_tool_call_delta("web_search", ""))]
     turn += [
         _sse({"tool_calls": [{"index": 0, "function": {"arguments": chunk}}]}) for chunk in chunks
     ]
@@ -1133,17 +998,7 @@ def test_text_around_tool_calls_keeps_document_order(executed):
         [
             [
                 _sse({"content": "BEFORE "}),
-                _sse(
-                    {
-                        "tool_calls": [
-                            {
-                                "index": 0,
-                                "id": "c1",
-                                "function": {"name": "web_search", "arguments": "{}"},
-                            }
-                        ]
-                    }
-                ),
+                _sse(_tool_call_delta("web_search", "{}")),
                 _sse(finish = "tool_calls"),
                 _DONE,
             ],
@@ -1216,17 +1071,7 @@ def test_non_string_content_reaches_the_conversation_replay(executed):
                         ]
                     }
                 ),
-                _sse(
-                    {
-                        "tool_calls": [
-                            {
-                                "index": 0,
-                                "id": "c1",
-                                "function": {"name": "web_search", "arguments": "{}"},
-                            }
-                        ]
-                    }
-                ),
+                _sse(_tool_call_delta("web_search", "{}")),
                 _sse(finish = "tool_calls"),
                 _DONE,
             ],

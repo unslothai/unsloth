@@ -253,6 +253,9 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # The action copies the repo's Apache-2.0, but both images ship Studio (AGPL-3.0) too.
+          labels: |
+            org.opencontainers.image.licenses=Apache-2.0 AND AGPL-3.0-only
 
       - name: Build and push (per-arch by digest)
         id: build
@@ -262,14 +265,12 @@ jobs:
           file: ./docker/Dockerfile
           platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
-          # Registry cache, not type=gha. mode=max exports every intermediate layer,
-          # which on the GHA backend put 127 blob entries and 32GB into a 50GB repo
-          # cache in a single morning and starved the GGUF and pip caches sharing it.
-          # A cache tag on the image's own repo has no such budget, so mode=max keeps
-          # its rebuild speed without the eviction pressure. The Docker Hub login
-          # above covers both reading and writing this ref.
-          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-core-${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }}
-          cache-to:   type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-core-${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }},mode=max
+          # No cache-from / cache-to. The buildcache-core-* refs this used to write
+          # held 21.29GB (amd64) and 20.26GB (arm64) on the image's own Docker Hub
+          # repo, and prepare freezes UNSLOTH_REF / UNSLOTH_ZOO_REF to SHAs that move
+          # most nights, so the install layer they were meant to save is invalidated
+          # anyway. What is left is the base and apt layers, against a build whose
+          # wall time is dominated by exporting and pushing 27GB.
           outputs:    type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
           # Keep prose OUT of build-args: build-push-action forwards every non-empty
           # line verbatim, so a #-line becomes a bogus --build-arg.
@@ -444,6 +445,9 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # The action copies the repo's Apache-2.0, but both images ship Studio (AGPL-3.0) too.
+          labels: |
+            org.opencontainers.image.licenses=Apache-2.0 AND AGPL-3.0-only
 
       - name: Build and push (per-arch by digest)
         id: build
@@ -453,12 +457,9 @@ jobs:
           file: ./docker/Dockerfile.studio
           platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
-          # Kept at mode=min. The original reason was the GHA cache quota, which no
-          # longer applies now that this is a registry ref on the image's own repo,
-          # but the remaining cost is Docker Hub storage rather than a hard budget,
-          # so raising it is a separate decision from moving the transport.
-          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-studio-${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }}
-          cache-to:   type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-studio-${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }},mode=min
+          # No cache-from / cache-to, for the same reason as the core build above.
+          # The buildcache-studio-* refs held 13.90GB (amd64) and 13.48GB (arm64),
+          # and at mode=min they only carried the final layers in the first place.
           outputs:    type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
           # the same values the base build baked, so Studio matches it even if upstream
           # moved mid-run (build-args must be KEY=VALUE only)
@@ -467,6 +468,22 @@ jobs:
             UNSLOTH_STUDIO_REF=${{ needs.prepare.outputs.unsloth_ref }}
             UNSLOTH_STUDIO_ZOO_REF=${{ needs.prepare.outputs.zoo_ref }}
             LLAMA_PREBUILT_TAG=${{ needs.prepare.outputs.llama_tag }}
+
+      # A GPU-free check on the artifact the registry serves, not on the Dockerfile
+      # text: an image-wide UNSLOTH_ALLOW_CPU reaches every process and turns off
+      # Unsloth's TRL trainer patches on GPU hosts (#10825), and the smoke-test job
+      # below needs a GPU runner this repo does not have. The image opts in to CPU
+      # hosts through UNSLOTH_IMAGE_ALLOW_CPU=1 instead; entrypoint.sh translates it.
+      - name: Assert the Studio image env cannot disable training
+        run: |
+          REF='${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}'
+          ENV_JSON="$(docker buildx imagetools inspect "$REF" --format '{{json .Image}}' \
+                      | jq -c '[.. | objects | select(has("config")) | .config.Env // []] | add')"
+          echo "$ENV_JSON" | jq -r '.[] | select(startswith("UNSLOTH_"))'
+          echo "$ENV_JSON" | jq -e 'index("UNSLOTH_IMAGE_ALLOW_CPU=1") != null' >/dev/null \
+            || { echo "::error::Studio image env lacks UNSLOTH_IMAGE_ALLOW_CPU=1"; exit 1; }
+          echo "$ENV_JSON" | jq -e 'map(select(startswith("UNSLOTH_ALLOW_CPU="))) | length == 0' >/dev/null \
+            || { echo "::error::Studio image env carries UNSLOTH_ALLOW_CPU, which disables Unsloth's TRL patches on GPU hosts"; exit 1; }
 
       - name: Export digest
         run: |

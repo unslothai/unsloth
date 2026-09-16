@@ -1,28 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""In-app whisper.cpp prebuilt update.
-
-Builds on utils.whisper_cpp_freshness (which detects whether a newer prebuilt
-release exists) and adds the *apply* half: run install_whisper_prebuilt.py to
-download the newest bundle for this host and atomically swap it in, so the next
-model load uses it. Applies only run as the whisper phase of the combined
-llama+whisper update (utils.llama_cpp_update.start_update chains
-run_chained_phase); there is no standalone whisper update trigger.
-
-Design notes:
-- Detection is delegated to check_prebuilt_freshness(). We surface an
-  ``update_available`` flag (installed_tag != latest_tag), laxer than freshness'
-  ``stale`` (which also requires the install to be >= 3 days old). The UI shows
-  the single main update item on update_available.
-- Everything fails open: a missing marker / offline GitHub / source build just
-  reports update_available=False and never blocks the app.
-- The mechanics (managed-root resolution, local-link detection, the resolve
-  probe, the streamed installer run) live in utils.prebuilt.update_flow; this
-  module keeps the whisper policy. The ``job`` dict in the status payload stays
-  idle (kept for response-shape stability): chained applies report progress
-  through the llama job.
-"""
+"""In-app whisper.cpp prebuilt update: the *apply* half over utils.whisper_cpp_freshness, running install_whisper_prebuilt.py to download the newest bundle for this host and atomically swap it in. Applies only run as the whisper phase of the combined llama+whisper update (utils.llama_cpp_update.start_update chains run_chained_phase); there is no standalone whisper update trigger. Detection is delegated to check_prebuilt_freshness(), and ``update_available`` (installed_tag != latest_tag) is laxer than freshness' ``stale`` (which also requires the install to be >= 3 days old); the UI shows the single main update item on update_available. Everything fails open: a missing marker, offline GitHub or a source build reports update_available=False and never blocks the app. The mechanics (managed-root resolution, local-link detection, the resolve probe, the streamed installer run) live in utils.prebuilt.update_flow; this module keeps the whisper policy, and the ``job`` dict in the status payload stays idle (kept for response-shape stability) since chained applies report progress through the llama job."""
 
 from __future__ import annotations
 
@@ -55,8 +34,7 @@ logger = structlog.get_logger(__name__)
 DEFAULT_PUBLISHED_REPO = "unslothai/whisper.cpp"
 _INSTALL_TIMEOUT_SECONDS = 1800
 
-# Always-idle job payload: whisper applies run inside the chained llama job, so
-# nothing flips this to running. Kept so status payload shapes stay stable.
+# Always-idle job payload: whisper applies run inside the chained llama job, so nothing flips this to running. Kept so status payload shapes stay stable.
 _job_lock = threading.Lock()
 _job: dict = _flow.new_job()
 
@@ -64,9 +42,7 @@ _rocm_install_args = _flow.rocm_install_args
 
 
 def _find_binary() -> Optional[str]:
-    """Locate the active whisper-server binary via the STT sidecar's own resolver
-    so update targets exactly what Unsloth runs. Lazy import keeps the heavy
-    inference module off this module's import path."""
+    """Locate the active whisper-server binary via the STT sidecar's own resolver so update targets exactly what Unsloth runs. Lazy import keeps the heavy inference module off this module's import path."""
     try:
         from core.inference.stt_ggml_sidecar import find_whisper_server_binary
         return find_whisper_server_binary()
@@ -76,9 +52,7 @@ def _find_binary() -> Optional[str]:
 
 
 def _install_dir_for(binary_path: Optional[str]) -> Optional[Path]:
-    """The directory holding UNSLOTH_WHISPER_PREBUILT_INFO.json: the install root
-    install_whisper_prebuilt.py wrote (``<install-dir>`` whose canonical server is
-    ``build/bin/whisper-server``) and the one we re-install into."""
+    """The directory holding UNSLOTH_WHISPER_PREBUILT_INFO.json: the install root install_whisper_prebuilt.py wrote (``<install-dir>`` whose canonical server is ``build/bin/whisper-server``) and the one we re-install into."""
     root = canonical_install_root(binary_path)
     if root is not None and (root / _INSTALL_MARKER_NAME).is_file():
         return root
@@ -92,8 +66,7 @@ def _installer_script() -> Optional[Path]:
     )
 
 
-# Markerless (source-build) installs have no UNSLOTH_WHISPER_PREBUILT_INFO.json,
-# so we ask the installer whether an official prebuilt now exists for this host.
+# Markerless (source-build) installs have no UNSLOTH_WHISPER_PREBUILT_INFO.json, so we ask the installer whether an official prebuilt now exists for this host.
 _resolve_memo: dict = {}
 
 
@@ -104,14 +77,7 @@ def _resolve_prebuilt_for_host(
     published_repo: Optional[str] = None,
     published_release_tag: Optional[str] = None,
 ) -> Optional[dict]:
-    """Run install_whisper_prebuilt.py --resolve-prebuilt (no download); return
-    {prebuilt_available, repo, release_tag, upstream_tag, backend, asset, os,
-    arch, ...} or None. Fail-open: any error -> None so a source build never
-    blocks the app.
-
-    A caller installing a pinned release must pass the same pin here, or it probes
-    a different artifact than it installs: the unpinned latest pointer sorts by
-    commit date and can lag the published_at pick (#6219)."""
+    """Run install_whisper_prebuilt.py --resolve-prebuilt (no download); return {prebuilt_available, repo, release_tag, upstream_tag, backend, asset, os, arch, ...} or None. Fail-open: any error -> None so a source build never blocks the app. A caller installing a pinned release must pass the same pin here, or it probes a different artifact than it installs: the unpinned latest pointer sorts by commit date and can lag the published_at pick (#6219)."""
     extra_args = ("--backend", backend) if backend else ()
     if published_repo:
         extra_args += ("--published-repo", published_repo)
@@ -127,9 +93,7 @@ def _resolve_prebuilt_for_host(
 
 
 def _installed_whisper_version(binary: Optional[str]) -> Optional[str]:
-    """Best-effort ``v<A.B.C>`` from ``whisper-server --version``. None when the
-    binary is missing, reports no version, or cannot run. Used only for the
-    markerless source-build downgrade guard, so it fails open to None."""
+    """Best-effort ``v<A.B.C>`` from ``whisper-server --version``. None when the binary is missing, reports no version, or cannot run. Used only for the markerless source-build downgrade guard, so it fails open to None."""
     if not binary:
         return None
     try:
@@ -150,8 +114,7 @@ def _installed_whisper_version(binary: Optional[str]) -> Optional[str]:
 
 
 def _whisper_install_root(binary: Optional[str]) -> Optional[Path]:
-    """The Unsloth-managed whisper.cpp root the active binary lives under, or None
-    when the binary is unmanaged (see update_flow.managed_install_root)."""
+    """The Unsloth-managed whisper.cpp root the active binary lives under, or None when the binary is unmanaged (see update_flow.managed_install_root)."""
     return _flow.managed_install_root(
         binary,
         marker_root = _install_dir_for(binary),
@@ -162,32 +125,27 @@ def _whisper_install_root(binary: Optional[str]) -> Optional[Path]:
 
 
 def _source_build_status(binary: str, *, force_refresh: bool) -> Optional[dict]:
-    """Update status for a markerless (source-build) install: offer the official
-    prebuilt when one exists for this host and is newer than the installed binary.
-    None -> caller falls through to the no-marker default (unsupported)."""
+    """Update status for a markerless (source-build) install: offer the official prebuilt when one exists for this host and is newer than the installed binary. None -> caller falls through to the no-marker default (unsupported)."""
     res = _resolve_prebuilt_for_host(force_refresh = force_refresh)
     if not res or not res.get("prebuilt_available"):
         return None
     release_tag = res.get("release_tag")
     if not release_tag:
         return None
-    # No resolvable install root (e.g. a pinned WHISPER_SERVER_PATH we cannot manage) means an apply would not take
-    # effect, so do not offer it.
+    # No resolvable install root (e.g. a pinned WHISPER_SERVER_PATH we cannot manage) means an apply would not take effect, so do not offer it.
     if _whisper_install_root(binary) is None:
         return None
     installed_tag = _installed_whisper_version(binary)
     installed_key = parse_release_version(installed_tag) if installed_tag else None
     latest_key = parse_release_version(release_tag)
     if installed_key is None or latest_key is None:
-        # Unknown installed/latest version (involuntary source-build case): treat
-        # as behind so we still offer the prebuilt.
+        # Unknown installed/latest version (involuntary source-build case): treat as behind so we still offer the prebuilt.
         update_available = True
     else:
         # Same downgrade guard as is_behind: only a strictly newer key is behind.
         update_available = latest_key > installed_key
     latest = release_tag
-    # Size of the resolved prebuilt, so source builds show it like the marker
-    # path. Fails open to None (offline / asset absent from release).
+    # Size of the resolved prebuilt, so source builds show it like the marker path. Fails open to None (offline / asset absent from release).
     update_size_bytes = None
     if update_available:
         asset_name = res.get("asset")
@@ -216,8 +174,7 @@ def _source_build_status(binary: str, *, force_refresh: bool) -> Optional[dict]:
 
 
 def _active_install_is_local_link(binary: Optional[str]) -> bool:
-    """True when the active whisper-server resolves through a locally-linked
-    whisper.cpp directory (see update_flow.active_install_is_local_link)."""
+    """True when the active whisper-server resolves through a locally-linked whisper.cpp directory (see update_flow.active_install_is_local_link)."""
     return _flow.active_install_is_local_link(binary, dir_name = "whisper.cpp")
 
 
@@ -227,19 +184,14 @@ def _local_link_status() -> dict:
 
 
 def get_update_status(*, force_refresh: bool = False) -> dict:
-    """Report whether a newer prebuilt exists plus the current job state.
-
-    force_refresh bypasses the 24h release cache for an explicit "check now".
-    """
+    """Report whether a newer prebuilt exists plus the current job state. force_refresh bypasses the 24h release cache for an explicit "check now"."""
     binary = _find_binary()
-    # A locally-linked whisper.cpp dir is the user's own tree; never offer to replace it. Bail before any
-    # network/freshness work.
+    # A locally-linked whisper.cpp dir is the user's own tree; never offer to replace it. Bail before any network/freshness work.
     if _active_install_is_local_link(binary):
         return _local_link_status()
     marker = read_install_marker(binary)
 
-    # No marker = source build / custom path. Offer the official prebuilt if one
-    # exists for this host.
+    # No marker = source build / custom path. Offer the official prebuilt if one exists for this host.
     if marker is None and binary is not None:
         src = _source_build_status(binary, force_refresh = force_refresh)
         if src is not None:
@@ -248,7 +200,6 @@ def get_update_status(*, force_refresh: bool = False) -> dict:
     repo = (marker or {}).get("published_repo") or DEFAULT_PUBLISHED_REPO
 
     if force_refresh and repo:
-        # Prime the cache so the freshness read below sees the newest tag.
         try:
             latest_published_release(repo, force_refresh = True)
         except Exception as exc:  # pragma: no cover - network defensive
@@ -267,9 +218,7 @@ def get_update_status(*, force_refresh: bool = False) -> dict:
         if (resolved or {}).get("prebuilt_available") and isinstance(compatible_latest, str):
             compatible_override = compatible_latest != latest
             latest = compatible_latest
-    # `behind` compares the release version with a downgrade guard, so a lagging
-    # /releases/latest or lower published tag can't show a false update
-    # (whisper_cpp_freshness.is_behind).
+    # `behind` compares the release version with a downgrade guard, so a lagging /releases/latest or lower published tag can't show a false update (whisper_cpp_freshness.is_behind).
     update_available = bool(
         freshness.get("has_marker")
         and (
@@ -279,8 +228,7 @@ def get_update_status(*, force_refresh: bool = False) -> dict:
         )
     )
 
-    # Size of the prebuilt Update would download, for the banner. Only when an
-    # update is offered; fails open to None (offline / no matching asset).
+    # Size of the prebuilt Update would download, for the banner. Only when an update is offered; fails open to None (offline / no matching asset).
     update_size_bytes = None
     if update_available and not compatible_override:
         try:
@@ -325,13 +273,10 @@ def _install_latest(
         from core.inference.stt_ggml_sidecar import get_ggml_stt_sidecar
         sidecar = get_ggml_stt_sidecar()
     except Exception as exc:
-        # Replacing the tree without the singleton's maintenance barrier would
-        # reopen the Windows executable-lock and stale-process races. Fail closed.
+        # Replacing the tree without the singleton's maintenance barrier would reopen the Windows executable-lock and stale-process races. Fail closed.
         raise RuntimeError("could not coordinate the whisper.cpp sidecar update") from exc
 
-    # update_maintenance publishes its guard before waiting for an existing
-    # transcription, unloads the warm server, and holds the sidecar lock across
-    # the complete atomic install. No new process can relock or outlive the tree.
+    # update_maintenance publishes its guard before waiting for an existing transcription, unloads the warm server, and holds the sidecar lock across the complete atomic install. No new process can relock or outlive the tree.
     with sidecar.update_maintenance() as model_was_active:
         return _install_latest_while_blocked(
             install_dir,
@@ -368,7 +313,6 @@ def _install_latest_while_blocked(
         "--published-repo",
         repo,
     ]
-    # Preserve the installed accelerator across updates.
     if isinstance(backend, str) and backend:
         cmd.extend(["--backend", backend])
     if pin_release_tag:
@@ -376,7 +320,6 @@ def _install_latest_while_blocked(
     cmd.extend(_rocm_install_args(asset))
     logger.info("whisper update: installing", cmd = " ".join(cmd))
     env = dict(os.environ, UNSLOTH_PROGRESS_PERCENT_STEP = "5")
-    # Every nonzero exit is a failed phase.
     _flow.stream_installer(
         cmd,
         env,
@@ -384,8 +327,7 @@ def _install_latest_while_blocked(
         timeout_seconds = _INSTALL_TIMEOUT_SECONDS,
     )
 
-    # Drop stale caches so the banner re-checks the swapped marker. If GitHub is
-    # offline, latest stays unknown and the banner fails open.
+    # Drop stale caches so the banner re-checks the swapped marker. If GitHub is offline, latest stays unknown and the banner fails open.
     reset_caches(drop_disk = True)
     try:
         latest_published_release(repo, force_refresh = True)
@@ -419,12 +361,7 @@ def _installed_llama_bundle() -> tuple[Optional[str], Optional[str]]:
 
 
 def slim_pairing_is_stale() -> bool:
-    """Whether a slim install still hardlinks the runtime of a different backend.
-
-    The same comparison ``run_repair_phase`` makes before it does any work, exposed
-    so the llama planner can tell a re-pair that is still owed from one already done.
-    A repair that failed retryably leaves exactly this state: llama has moved, whisper
-    has not."""
+    """Whether a slim install still hardlinks the runtime of a different backend. The same comparison ``run_repair_phase`` makes before it does any work, exposed so the llama planner can tell a re-pair that is still owed from one already done: a repair that failed retryably leaves exactly this state, llama has moved, whisper has not."""
     backend, _ = _installed_llama_bundle()
     if backend is None:
         return False
@@ -435,13 +372,7 @@ def slim_pairing_is_stale() -> bool:
 
 
 def repair_pairing_plan() -> dict:
-    """Whisper's half of a llama.cpp backend switch.
-
-    A slim install has no ggml of its own -- it hardlinks llama's -- so replacing
-    the llama bundle leaves dictation on the very backend the switch was meant to
-    leave behind. Only whether such an install exists is decided here: which
-    backend to install is whatever the llama phase actually lands on, which the
-    runner reads from the marker once that phase has finished."""
+    """Whisper's half of a llama.cpp backend switch. A slim install has no ggml of its own (it hardlinks llama's) so replacing the llama bundle leaves dictation on the very backend the switch was meant to leave behind. Only whether such an install exists is decided here: which backend to install is whatever the llama phase actually lands on, which the runner reads from the marker once that phase has finished."""
     plan: dict = {"update_available": False, "skip_reason": None, "phase": None}
     binary = _find_binary()
     if _active_install_is_local_link(binary):
@@ -468,8 +399,7 @@ def repair_pairing_plan() -> dict:
         "install_dir": install_dir,
         "repo": marker.get("published_repo") or DEFAULT_PUBLISHED_REPO,
         "script": script,
-        # Unpinned: the installer resolves the whisper release that pairs with
-        # whichever llama.cpp release is installed when this phase runs.
+        # Unpinned: the installer resolves the whisper release that pairs with whichever llama.cpp release is installed when this phase runs.
         "pin_release_tag": None,
         "repair": True,
     }
@@ -483,9 +413,7 @@ def run_repair_phase(phase: dict, set_progress) -> dict:
         logger.info("whisper repair: skipped, llama backend unknown")
         return {}
     if (read_install_marker(_find_binary()) or {}).get("backend") == backend:
-        # Detection can land back on the backend whisper is already built against,
-        # and the switch preserves the release, so the hardlinks still point at the
-        # same build. Nothing to repair, and nothing to claim was repaired.
+        # Detection can land back on the backend whisper is already built against, and the switch preserves the release, so the hardlinks still point at the same build. Nothing to repair, and nothing to claim was repaired.
         return {}
     try:
         result = _install_latest(
@@ -501,9 +429,7 @@ def run_repair_phase(phase: dict, set_progress) -> dict:
     except _flow.InstallerExit as exc:
         if exc.returncode != 2:
             raise
-        # 2 is "no compatible release": this llama.cpp release publishes no
-        # whisper bundle for the new backend. The old hardlinked runtime still
-        # works, so dictation degrades rather than failing the switch.
+        # 2 is "no compatible release": this llama.cpp release publishes no whisper bundle for the new backend. The old hardlinked runtime still works, so dictation degrades rather than failing the switch.
         logger.info("whisper repair: skipped", backend = backend, detail = str(exc)[-500:])
         return {
             "message": (
@@ -511,7 +437,6 @@ def run_repair_phase(phase: dict, set_progress) -> dict:
                 f"published for this llama.cpp release on {backend} yet."
             ),
         }
-    # Describe the backend change instead of an incidental version change.
     result["message"] = f"Re-paired whisper.cpp with the {backend} backend."
     return result
 
@@ -519,15 +444,7 @@ def run_repair_phase(phase: dict, set_progress) -> dict:
 def chained_phase_plan(
     *, force_refresh: bool = False, paired_llama_will_update: bool = False
 ) -> dict:
-    """Whisper's side of the combined llama+whisper update item.
-
-    Returns {status, update_available, skip_reason, phase}: `status` is the
-    marker-path status dict (or a minimal one when whisper is skipped),
-    `update_available` says the chained apply would run a whisper phase, and
-    `phase` carries what run_chained_phase needs. Only marker-managed installs are
-    chained: local links, source builds and unmanaged/pinned paths are silently
-    skipped so whisper can never block a llama update. Never raises; failures
-    degrade to a skip."""
+    """Whisper's side of the combined llama+whisper update item. Returns {status, update_available, skip_reason, phase}: `status` is the marker-path status dict (or a minimal one when whisper is skipped), `update_available` says the chained apply would run a whisper phase, and `phase` carries what run_chained_phase needs. Only marker-managed installs are chained: local links, source builds and unmanaged/pinned paths are silently skipped so whisper can never block a llama update. Never raises; failures degrade to a skip."""
     binary = _find_binary()
     if _active_install_is_local_link(binary):
         return {
@@ -538,8 +455,7 @@ def chained_phase_plan(
         }
     marker = read_install_marker(binary)
     if marker is None:
-        # No marker: whisper is absent or a source/custom build. The standalone
-        # utils API can update source builds; the chain does not.
+        # No marker: whisper is absent or a source/custom build. The standalone utils API can update source builds; the chain does not.
         return {
             "status": None,
             "update_available": False,
@@ -549,15 +465,11 @@ def chained_phase_plan(
     status = get_update_status(force_refresh = force_refresh)
     plan: dict = {"status": status, "update_available": False, "skip_reason": None, "phase": None}
     if not status.get("update_available"):
-        # Skew note: a slim install keeps hardlinks to the OLD llama ggml inodes, still the exact build whisper was
-        # installed against, so skipping is correct and needs no re-wiring.
-        # A whisper phase that does run re-wires via the installer (prepare_runtime_payload).
+        # Skew note: a slim install keeps hardlinks to the OLD llama ggml inodes, still the exact build whisper was installed against, so skipping is correct and needs no re-wiring. A whisper phase that does run re-wires via the installer (prepare_runtime_payload).
         plan["skip_reason"] = "up_to_date"
         return plan
     if marker.get("install_kind") == "slim" and not paired_llama_will_update:
-        # A slim install can only be refreshed from a COMPLETED managed llama prebuilt, so ask the
-        # installer's read-only resolver: local links, markerless source builds and incomplete managed
-        # trees must not produce an Update button that can only fail.
+        # A slim install can only be refreshed from a COMPLETED managed llama prebuilt, so ask the installer's read-only resolver: local links, markerless source builds and incomplete managed trees must not produce an Update button that can only fail.
         resolved = _resolve_prebuilt_for_host(
             force_refresh = force_refresh,
             backend = marker.get("backend") if isinstance(marker.get("backend"), str) else None,
@@ -580,23 +492,14 @@ def chained_phase_plan(
         "asset": marker.get("asset"),
         "backend": marker.get("backend"),
         "script": script,
-        # Install exactly the release the check offered: the unpinned "latest" sorts by commit date and can lag the
-        # published_at pick, reinstalling an older build in a loop (#6219).
-        # Not on macOS: the llama phase is unpinned there (walk-back to an os-compatible release), so pinning whisper to
-        # the newest tag could be an impossible pairing (min_os / requires_llama_tag) on every retry.
+        # Install exactly the release the check offered: the unpinned "latest" sorts by commit date and can lag the published_at pick, reinstalling an older build in a loop (#6219). Not on macOS: the llama phase is unpinned there (walk-back to an os-compatible release), so pinning whisper to the newest tag could be an impossible pairing (min_os / requires_llama_tag) on every retry.
         "pin_release_tag": None if sys.platform == "darwin" else status.get("latest_tag"),
     }
     return plan
 
 
 def _phase_repaired_to_installed_llama(phase: dict) -> dict:
-    """Point a slim phase at the backend the llama phase actually installed.
-
-    The plan is built before that phase runs, so on a backend migration it still names
-    the outgoing runtime: installing it would fetch a whisper build for a ggml that is no
-    longer there, and pass the old asset's arch flags with it. A self-contained install
-    carries its own ggml, so llama's backend is not its backend and it keeps its own.
-    """
+    """Point a slim phase at the backend the llama phase actually installed. The plan is built before that phase runs, so on a backend migration it still names the outgoing runtime: installing it would fetch a whisper build for a ggml that is no longer there, and pass the old asset's arch flags with it. A self-contained install carries its own ggml, so llama's backend is not its backend and it keeps its own."""
     backend, asset = _installed_llama_bundle()
     if not backend or backend == phase.get("backend"):
         return phase
@@ -612,15 +515,7 @@ def _phase_repaired_to_installed_llama(phase: dict) -> dict:
 
 
 def run_chained_phase_after_llama(phase: dict, set_progress) -> dict:
-    """Make the pairing check chained_phase_plan deferred, now that llama is installed.
-
-    The plan assumes the new llama supplies a workable pairing. That was false for ten
-    days (llama reached b10687, whisper stayed on b10472-mix-4b653db), so the phase ran
-    an install that could only exit 2 and failed a job llama had already won.
-
-    An attempt that goes ahead still surfaces exit 2, which is what keeps an
-    incompatible release actionable rather than a false success.
-    """
+    """Make the pairing check chained_phase_plan deferred, now that llama is installed. The plan assumes the new llama supplies a workable pairing; that was false for ten days (llama reached b10687, whisper stayed on b10472-mix-4b653db), so the phase ran an install that could only exit 2 and failed a job llama had already won. An attempt that goes ahead still surfaces exit 2, which is what keeps an incompatible release actionable rather than a false success."""
     phase = _phase_repaired_to_installed_llama(phase)
     try:
         backend = phase.get("backend")
@@ -635,18 +530,14 @@ def run_chained_phase_after_llama(phase: dict, set_progress) -> dict:
     except Exception as exc:
         logger.debug("whisper pairing pre-flight failed", error = str(exc))
         resolved = None
-    # A POSITIVE incompatibility only: an unreachable API also reports prebuilt_available false, and
-    # a pre-flight that cannot answer must fail towards the install. Deliberately no test on the
-    # INSTALLED kind: a fat marker carries no install_kind, so gating on it skips the likeliest host.
+    # A POSITIVE incompatibility only: an unreachable API also reports prebuilt_available false, and a pre-flight that cannot answer must fail towards the install. Deliberately no test on the INSTALLED kind: a fat marker carries no install_kind, so gating on it skips the likeliest host.
     if (resolved or {}).get("unavailable_reason") == "incompatible":
         return {"skipped": True, "skip_reason": "paired_llama_unavailable"}
     return run_chained_phase(phase, set_progress)
 
 
 def run_chained_phase(phase: dict, set_progress) -> dict:
-    """Run the whisper phase of a combined update (spec from chained_phase_plan):
-    same unload/install/cache-refresh path as the standalone job, reporting
-    progress through the chained job's window rather than whisper's own."""
+    """Run the whisper phase of a combined update (spec from chained_phase_plan): same unload/install/cache-refresh path as the standalone job, reporting progress through the chained job's window rather than whisper's own."""
     return _install_latest(
         phase["install_dir"],
         phase["repo"],

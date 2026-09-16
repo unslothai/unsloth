@@ -22,6 +22,11 @@ if str(_BACKEND) not in sys.path:
 import utils.mlx_repair as mr  # noqa: E402
 
 
+class _Result:
+    returncode = 0
+    stdout = ""
+
+
 @pytest.fixture(autouse = True)
 def _reset_attempt_guard(monkeypatch):
     monkeypatch.setattr(mr, "_attempted", False)
@@ -120,10 +125,6 @@ def test_repair_install_pins_transformers_and_cleans_up(monkeypatch):
     monkeypatch.setattr(mr, "_transformers_constraint_args", _spy_args)
     monkeypatch.setattr(mr, "_uv_executable", lambda: "/usr/bin/uv")
 
-    class _Result:
-        returncode = 0
-        stdout = ""
-
     def _fake_run(cmd, **kwargs):
         captured["cmd"] = cmd
         captured["env"] = kwargs.get("env")
@@ -159,10 +160,6 @@ def test_install_requires_prebuilt_wheels(monkeypatch):
     # mlx-lm/mlx-vlm publish py3-none-any wheels, so a healthy self-heal still works.
     pytest.importorskip("transformers")
     captured = {}
-
-    class _Result:
-        returncode = 0
-        stdout = ""
 
     monkeypatch.setattr(mr, "_uv_executable", lambda: "/usr/bin/uv")
     monkeypatch.setattr(
@@ -216,10 +213,6 @@ def test_install_env_drops_secrets_and_source_redirects(monkeypatch):
 def test_repair_rejects_inadequate_stack(monkeypatch):
     # A successful uv run that still leaves an old/missing mlx-vlm must NOT clear
     # chat-only: attempt_mlx_repair returns False so Train/Export stay disabled.
-    class _Result:
-        returncode = 0
-        stdout = ""
-
     monkeypatch.setattr(mr.subprocess, "run", lambda *a, **k: _Result())
     monkeypatch.setattr(mr, "mlx_stack_available", lambda: False)
     assert mr.attempt_mlx_repair() is False
@@ -229,10 +222,6 @@ def test_inadequate_stack_warning_names_the_floors_not_the_install_pins(monkeypa
     # The gate this message reports on is mlx_stack_available(), which tests the
     # floors. Quoting the install pins instead would tell an operator running a
     # perfectly usable mlx 0.33 that they need exactly 0.32.1.
-    class _Result:
-        returncode = 0
-        stdout = ""
-
     warnings = []
     # Pin both, or this test measures the host. attempt_mlx_repair returns early
     # when _uv_executable() finds nothing, long before the message under test, so
@@ -253,10 +242,6 @@ def test_inadequate_stack_warning_names_the_floors_not_the_install_pins(monkeypa
 
 def test_repair_invalidates_import_caches_before_stack_check(monkeypatch):
     events = []
-
-    class _Result:
-        returncode = 0
-        stdout = ""
 
     def _stack_available():
         events.append("check")
@@ -354,6 +339,8 @@ def test_disable_env_skips(monkeypatch):
 
 
 def test_apple_silicon_missing_mlx_starts_repair_and_redetects(monkeypatch):
+    import utils.hardware.hardware as hw
+
     import threading
 
     monkeypatch.setattr(mr, "is_apple_silicon", lambda: True)
@@ -370,8 +357,6 @@ def test_apple_silicon_missing_mlx_starts_repair_and_redetects(monkeypatch):
     # _run_repair_and_redetect imports utils.hardware.hardware lazily; stub repair
     # and capture that re-detection is invoked on success.
     monkeypatch.setattr(mr, "attempt_mlx_repair", _fake_repair)
-
-    import utils.hardware.hardware as hw
 
     monkeypatch.setattr(hw, "detect_hardware", lambda: redetected.__setitem__("called", True))
 
@@ -581,6 +566,7 @@ def _join_the_repair_worker():
 
 def test_a_stack_that_measures_usable_overturns_the_verdict(monkeypatch):
     # The #9120 shape: chat-only cached from a race the warm has since finished importing.
+
     import utils.hardware.hardware as hw
 
     monkeypatch.setattr(mr, "is_apple_silicon", lambda: True)

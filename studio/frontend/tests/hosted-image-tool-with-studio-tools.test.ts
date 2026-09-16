@@ -2,19 +2,16 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import test from "node:test";
+
+import { readSrc } from "./helpers/kit.ts";
 
 // The request body is built deep inside the adapter's run closure, which needs
 // a live runtime, a provider store and an encryption key to reach. The property
 // that regressed is structural though: which names the Unsloth-tools branch puts
 // in enabled_tools. So this reads that branch out of the source, the same way
 // the backend's route tests read the gate out of routes/inference.py.
-const SOURCE = readFileSync(
-  fileURLToPath(new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url)),
-  "utf8",
-);
+const SOURCE = readSrc("features/chat/api/chat-adapter.ts");
 
 // The branch taken when the provider runs Unsloth's tools. Bounded by the
 // hosted-only branch that follows it, so the two cannot be confused.

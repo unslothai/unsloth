@@ -5,6 +5,8 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 
+import { readSrc } from "./helpers/kit.ts";
+
 /**
  * The one property that makes this change different from the viewport gate that came before it,
  * pinned as source facts.
@@ -20,15 +22,9 @@ import test from "node:test";
  * protecting is structural anyway -- "no code path sets this back to false".
  */
 
-const SOURCE = readFileSync(
-  new URL("../src/components/assistant-ui/code-fence-defer.tsx", import.meta.url),
-  "utf8",
-);
+const SOURCE = readSrc("components/assistant-ui/code-fence-defer.tsx");
 
-const MARKDOWN_TEXT = readFileSync(
-  new URL("../src/components/assistant-ui/markdown-text.tsx", import.meta.url),
-  "utf8",
-);
+const MARKDOWN_TEXT = readSrc("components/assistant-ui/markdown-text.tsx");
 
 test("the latch is only ever set to true", () => {
   const writes = SOURCE.match(/setLatched\([^)]*\)/g) ?? [];
@@ -398,10 +394,7 @@ test("nothing is watched once there is nothing left to defer", () => {
   );
 });
 
-const CODE_PLUGIN = readFileSync(
-  new URL("../src/components/assistant-ui/code-plugin.ts", import.meta.url),
-  "utf8",
-);
+const CODE_PLUGIN = readSrc("components/assistant-ui/code-plugin.ts");
 
 test("the fence language is a language, not the whole info string", () => {
   // `getCodeFence` captures everything after the backticks, so ```python startLine=10 arrives as

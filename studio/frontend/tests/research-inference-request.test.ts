@@ -62,6 +62,34 @@ test("invalid optional settings do not leak into a local research request", () =
   );
 });
 
+test("top_p at Off is left out of a connection's research request but kept locally", () => {
+  const base = {
+    temperature: 0.2,
+    topP: 1,
+    maxTokens: 4096,
+    reasoningRequested: false,
+    reasoningStyle: "none",
+    reasoningEffort: "low" as const,
+    reasoningEffortLevels: ["low", "medium", "high"] as const,
+    clampReasoningEffort: clamp,
+  };
+  const external = buildResearchInferenceRequest({
+    ...base,
+    checkpoint: "external::p1::claude-sonnet-4-6",
+    external: {
+      providerId: "p1",
+      providerType: "custom",
+      modelId: "claude-sonnet-4-6",
+      maxOutputTokens: null,
+      maxOutputTokensFromSavedCap: false,
+      maxOutputTokensPublished: null,
+    },
+  });
+  assert.equal("topP" in external, false);
+  assert.equal(external.temperature, 0.2);
+  assert.equal(buildResearchInferenceRequest({ ...base, checkpoint: "local/model.gguf" }).topP, 1);
+});
+
 test("the report ceiling the connection resolved reaches the run config", () => {
   const request = buildResearchInferenceRequest({
     checkpoint: "external::provider::gemini-3.6-flash",

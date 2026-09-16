@@ -20,30 +20,25 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SCRIPT_DIR/_harness.sh"
 INSTALL_SH="$SCRIPT_DIR/../../install.sh"
-PASS=0
-FAIL=0
-
-assert_eq() {
-    _label="$1"; _expected="$2"; _actual="$3"
-    if [ "$_actual" = "$_expected" ]; then
-        echo "  PASS: $_label"
-        PASS=$((PASS + 1))
-    else
-        echo "  FAIL: $_label (expected '$_expected', got '$_actual')"
-        FAIL=$((FAIL + 1))
-    fi
-}
-
 # Lift the block out of install.sh so the real code is what runs here.
 _FN_FILE=$(mktemp)
 _TMP=$(mktemp -d)
 trap 'rm -rf "$_FN_FILE" "$_TMP"' EXIT
+# The helper first: the block asks it whether the cache is usable, and leaving it out does not
+# fail loudly. `command not found` exits 127, `if !` reads that as "not writable", and every
+# case quietly reports an unset UV_CACHE_DIR.
+awk '/^_uv_cache_root_is_writable\(\) \{$/,/^\}$/' "$INSTALL_SH" > "$_FN_FILE"
 awk '/^# Keep uv.s cache on the same filesystem as the venv it fills\.$/,/^fi$/' \
-    "$INSTALL_SH" > "$_FN_FILE"
+    "$INSTALL_SH" >> "$_FN_FILE"
 
 if ! grep -q 'UV_CACHE_DIR="\$STUDIO_HOME/cache/uv"' "$_FN_FILE"; then
     echo "FAIL: could not extract the UV_CACHE_DIR block from install.sh"
+    exit 1
+fi
+if ! grep -q '^_uv_cache_root_is_writable() {' "$_FN_FILE"; then
+    echo "FAIL: could not extract _uv_cache_root_is_writable from install.sh"
     exit 1
 fi
 

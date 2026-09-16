@@ -93,6 +93,11 @@ def train(
 
         data = cfg.model_dump()
         data["training"]["output_dir"] = str(data["training"]["output_dir"])
+        # model_dump carries the config file's tokens verbatim, and this goes to stdout: CI logs,
+        # notebook output, scrollback. Mask only what is set, so an unset token still reads as null.
+        for name in ("hf_token", "wandb_token"):
+            if data["logging"].get(name) is not None:
+                data["logging"][name] = "[redacted]"
         typer.echo(yaml.dump(data, default_flow_style = False, sort_keys = False))
         raise typer.Exit(code = 0)
 
@@ -124,7 +129,9 @@ def train(
         model_name = cfg.model,
         max_seq_length = cfg.training.max_seq_length,
         load_in_4bit = cfg.training.load_in_4bit if use_lora else False,
+        full_finetuning = not use_lora,
         hf_token = hf_token,
+        use_gradient_checkpointing = cfg.training.gradient_checkpointing,
     ):
         typer.echo("Model load failed", err = True)
         raise typer.Exit(code = 1)

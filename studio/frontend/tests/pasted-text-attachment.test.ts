@@ -31,6 +31,8 @@ import {
   unwrapPastedTextContent,
 } from "../src/features/chat/utils/pasted-text.ts";
 
+import { readSrcAsync } from "./helpers/kit.ts";
+
 type ClipboardStub = {
   readonly files: readonly File[];
   readonly items: readonly { kind: string }[];
@@ -715,10 +717,7 @@ test("a keyboard reporting no code falls back to the key", () => {
 
 test("the composer reads the chord from the keydown and clears it", async () => {
   const { readFile } = await import("node:fs/promises");
-  const thread = await readFile(
-    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
-    "utf8",
-  );
+  const thread = await readSrcAsync("components/assistant-ui/thread.tsx");
   // A paste event carries no modifiers, so the chord has to come from the
   // keydown before it, on capture so inputProps keeps its own onKeyDown.
   assert.match(thread, /onKeyDownCapture=\{notePlainPasteChord\}/);
@@ -820,10 +819,7 @@ test("the settings label names the chord the composer accepts", async () => {
     );
   }
   // The tab builds that same binding rather than spelling the chord out.
-  const tab = await readFile(
-    new URL("../src/features/settings/tabs/chat-tab.tsx", import.meta.url),
-    "utf8",
-  );
+  const tab = await readSrcAsync("features/settings/tabs/chat-tab.tsx");
   assert.match(
     tab,
     /code: "KeyV", mod: true, ctrl: false, shift: true, alt: macPlatform/,

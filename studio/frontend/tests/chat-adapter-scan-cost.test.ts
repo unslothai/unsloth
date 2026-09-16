@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { createSegmentedAssistantText } from "../src/features/chat/utils/incremental-assistant-content.ts";
@@ -15,6 +14,8 @@ import {
   createTrailingPlaceholderWatch,
   stripTrailingTemplatePlaceholder,
 } from "../src/features/chat/utils/trailing-template-placeholder.ts";
+
+import { readSrc } from "./helpers/kit.ts";
 
 /**
  * Complexity tests, not timing tests: they count the characters the scans look
@@ -363,10 +364,7 @@ test("the whole per-arrival path is linear in the reply length", () => {
 
 // ------------------------------------------------------------ source pins ---
 
-const ADAPTER = readFileSync(
-  new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
-  "utf8",
-);
+const ADAPTER = readSrc("features/chat/api/chat-adapter.ts");
 
 /** Drop comments, so a commented-out call cannot satisfy a search. */
 function withoutComments(source: string): string {

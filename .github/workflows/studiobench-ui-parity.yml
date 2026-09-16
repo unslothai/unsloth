@@ -171,6 +171,8 @@ on:
       - '.github/scripts/boot-studio-api-only.sh'
       - '.github/scripts/wait-for-health.sh'
       - '.github/scripts/retry-with-apt-lock.sh'
+      - '.github/actions/uv-cache-restore/action.yml'
+      - '.github/actions/uv-cache-save/action.yml'
 
 # No `push:` trigger. This job compares a merge base against a head; a push to
 # main has no such pair. It therefore never SAVES a cache either, and does not
@@ -289,23 +291,12 @@ jobs:
           git worktree add --detach "$RUNNER_TEMP/side_a" "${{ steps.refs.outputs.merge_base }}"
           git worktree add --detach "$RUNNER_TEMP/side_b" "${{ steps.refs.outputs.side_b }}"
 
-      # Same key and the same reasoning as .github/actions/install-unsloth-local,
-      # so this job starts from the entry main already saved. A download cache is
-      # content-addressed by URL and hash, so the worst a stale entry can do is
-      # miss. Restore only: this workflow never runs on main and so never writes.
-      - name: Point uv's cache somewhere cacheable
-        run: |
-          echo "UV_CACHE_DIR=${{ github.workspace }}/.uv-cache" >> "$GITHUB_ENV"
-          mkdir -p "${{ github.workspace }}/.uv-cache"
-
+      # The same uv download cache install-unsloth-local restores, through the action
+      # that owns its key, so this job starts from the entry main saved. An inline copy
+      # of that key is the drift tests/studio/test_uv_cache_discipline.py exists to stop.
       - name: Restore the uv download cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
-        continue-on-error: true
-        with:
-          path: ${{ github.workspace }}/.uv-cache
-          key: uv-${{ runner.os }}-${{ hashFiles('studio/backend/requirements/**', 'pyproject.toml') }}
-          restore-keys: |
-            uv-${{ runner.os }}-
+        id: uv-cache
+        uses: ./.github/actions/uv-cache-restore
 
       # No frontend-dist cache here, and that is not an oversight. Its key hashes
       # the ROOT checkout's frontend, and the two sides of this job are two
@@ -326,6 +317,14 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: bash .github/scripts/parity-install-side.sh "$RUNNER_TEMP/side_b" "$HOME_B" logs/install_b.log
+
+      # No upload: nothing here runs on main, so this job only declares itself a consumer.
+      - name: Declare this job a uv cache consumer, not a producer
+        uses: ./.github/actions/uv-cache-save
+        with:
+          cache-hit: ${{ steps.uv-cache.outputs.cache-hit }}
+          key: ${{ steps.uv-cache.outputs.key }}
+          save: 'false'
 
       - name: Pin the Playwright version so the browser cache has a key
         id: pw

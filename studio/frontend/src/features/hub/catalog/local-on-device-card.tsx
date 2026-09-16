@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useHfEndpoint } from "@/lib/hf-endpoint";
 import { ModelMemoryBarFor } from "@/components/model-memory-bar";
 import {
   Popover,
@@ -127,6 +128,8 @@ function BaseModelReference({
   baseModelSummary?: string | null;
 }) {
   const canOpenHub = baseModelSource === "huggingface" && !!baseModelHubId;
+  const hfEndpoint = useHfEndpoint();
+  const hubUrl = `${hfEndpoint}/${baseModelHubId}`;
   return (
     <div className="flex min-w-0 items-center gap-2 rounded-[10px] border border-border/55 bg-muted/35 px-3 py-2">
       <div className="flex size-7 shrink-0 items-center justify-center rounded-[8px] bg-background/70 text-muted-foreground">
@@ -155,18 +158,14 @@ function BaseModelReference({
         <Tooltip>
           <TooltipTrigger asChild={true}>
             <a
-              href={`https://huggingface.co/${baseModelHubId}`}
+              href={hubUrl}
               target="_blank"
               rel="noopener noreferrer"
               aria-label={`Open ${baseModelHubId} on Hugging Face`}
               className="inline-flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
               onClick={(event) => {
                 event.stopPropagation();
-                if (
-                  confirmExternalLink(
-                    `https://huggingface.co/${baseModelHubId}`,
-                  )
-                ) {
+                if (confirmExternalLink(hubUrl)) {
                   event.preventDefault();
                 }
               }}
@@ -323,10 +322,9 @@ export function LocalOnDeviceCard({
       };
     });
   }, [currentVariantState.variants, remoteVariantState.variants]);
-  // The same live VRAM Budget the memory bar on this card reads. Without it the
-  // quant menu ranked against the 0.97 default while the bar beside it used the
-  // saved fraction, so an over-budget variant could sit above a smaller one that
-  // actually fits.
+  // The same live VRAM Budget the memory bar on this card reads. Without it the quant menu ranked
+  // against the 0.97 default while the bar beside it used the saved fraction, so an over-budget
+  // variant could sit above a smaller one that actually fits.
   const budgetFraction = useVramBudgetFraction() ?? undefined;
   const sortedVariants = useMemo(
     () =>
@@ -398,10 +396,9 @@ export function LocalOnDeviceCard({
     !runPending &&
     !updateJobActive &&
     updateAvailable;
-  // Update runs as a MANAGED download (same path as a normal download) so it
-  // shows in the Downloads panel with manifest-based progress and a working
-  // Cancel. The worker re-resolves `main` and pulls changed blobs while the old
-  // cached copy stays runnable until the new revision verifies.
+  // Update runs as a MANAGED download (same path as a normal download) so it shows in the Downloads
+  // panel with manifest-based progress and a working Cancel. The worker re-resolves `main` and
+  // pulls changed blobs while the old cached copy stays runnable until the new revision verifies.
   const handleConfirmUpdate = () => {
     if (!repoId || !updateTargetVariant) return;
     setUpdateOpen(false);

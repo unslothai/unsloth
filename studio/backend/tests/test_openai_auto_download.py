@@ -19,6 +19,10 @@ from core.inference import llama_keepwarm
 from core.inference import openai_auto_download as auto_dl
 from core.inference.local_model_resolver import warm_index_soon as _real_warm_index_soon
 from utils import openai_auto_switch_settings as settings
+from core.inference import local_model_resolver as resolver
+from core.inference.api_monitor import api_monitor
+from hub.services.models import downloads
+import threading
 
 
 class _Sibling:
@@ -139,7 +143,6 @@ def test_the_hub_error_helper_carries_a_status_on_both_majors():
 def hub(monkeypatch):
     """Wire the whole remote surface to fakes and record what was dispatched."""
     import huggingface_hub
-    from hub.services.models import downloads
 
     state = {
         "info": _gguf_repo_info(),
@@ -525,7 +528,6 @@ def test_repeat_request_reports_progress_without_reprobing(hub, monkeypatch):
 
 def test_progress_is_scaled_to_a_percentage(monkeypatch):
     # The hub service reports a 0-1 fraction; a raw 0.492 would render as "0%".
-    from hub.services.models import downloads
 
     async def _fraction(
         repo_id,
@@ -588,7 +590,6 @@ def test_an_adoptable_dispatch_still_tracks_the_existing_job(hub):
 
 def test_a_failed_status_probe_does_not_end_the_watch(hub, monkeypatch):
     # A probe that raised says nothing: reading it as "idle" freed the slot mid-download.
-    from hub.services.models import downloads
 
     async def _boom(repo_id, gguf_variant = ""):
         raise RuntimeError("registry unavailable")
@@ -614,7 +615,6 @@ def test_a_hanging_code_probe_does_not_pin_the_slot(hub, monkeypatch):
     # hf_hub_download and auth_check take no timeout and run while the provisional slot
     # is held, so an unresponsive Hub stalled the request and reported every other model
     # busy. Unchecked is not cleared, so the bounded probe refuses instead of admitting.
-    import threading
 
     entered, release = threading.Event(), threading.Event()
 
@@ -646,7 +646,6 @@ def test_a_hanging_code_probe_does_not_pin_the_slot(hub, monkeypatch):
 def test_a_hanging_auth_check_falls_through_to_the_download(hub, monkeypatch):
     # Inconclusive, not denied: the download's own auth is the real gate, so a slow
     # gated-repo check must not turn into a refusal.
-    import threading
 
     hub["info"].gated = True
     release = threading.Event()
@@ -772,8 +771,6 @@ def test_setting_off_does_nothing_at_all(hub):
 
 
 def test_hook_raises_the_openai_envelope_with_retry_after(hub):
-    from fastapi import HTTPException
-
     with pytest.raises(HTTPException) as excinfo:
         _hook("unsloth/x-GGUF:UD-Q5_K_XL", _Req(), enabled = True)
     exc = excinfo.value
@@ -785,8 +782,6 @@ def test_hook_raises_the_openai_envelope_with_retry_after(hub):
 
 
 def test_hook_uses_the_anthropic_envelope_on_messages(hub):
-    from fastapi import HTTPException
-
     with pytest.raises(HTTPException) as excinfo:
         _hook("unsloth/x-GGUF", _Req(path = "/v1/messages"), enabled = True)
     detail = excinfo.value.detail
@@ -808,7 +803,6 @@ def test_hook_swallows_unexpected_failures(hub, monkeypatch):
 
 
 def _download_rows():
-    from core.inference.api_monitor import api_monitor
     return [e for e in api_monitor.snapshot() if e["event"] == "download"]
 
 
@@ -817,9 +811,6 @@ def test_a_ui_session_download_is_not_marked_as_api_traffic(hub):
     "someone is serving other clients" from "someone is using Unsloth". Unsloth's
     own chat hits these same /v1 endpoints with a session JWT, so hardcoding the
     flag on the download row popped the panel open mid-chat."""
-    from fastapi import HTTPException
-    from core.inference.api_monitor import api_monitor
-
     api_monitor.clear()
     with pytest.raises(HTTPException):
         # No Authorization header: the UI's session-JWT path.
@@ -831,9 +822,7 @@ def test_a_ui_session_download_is_not_marked_as_api_traffic(hub):
 def test_an_api_key_download_keeps_the_attribution_and_names_its_caller(hub):
     """The row is shared, so it needs the subject as well: without one the
     attribution is reported to every logged-in browser instead of the caller."""
-    from fastapi import HTTPException
     from auth.authentication import API_KEY_PREFIX
-    from core.inference.api_monitor import api_monitor
 
     api_monitor.clear()
     with pytest.raises(HTTPException):
@@ -857,9 +846,7 @@ def test_an_api_key_caller_waiting_on_someone_elses_download_gets_a_row(hub):
     handler's own api_monitor.start. Without a row of its own that call is invisible:
     the only row is the session's via_api_key=False download, so the overlay stays
     shut and the monitor presents API traffic as Unsloth's own."""
-    from fastapi import HTTPException
     from auth.authentication import API_KEY_PREFIX
-    from core.inference.api_monitor import api_monitor
 
     api_monitor.clear()
     with pytest.raises(HTTPException):
@@ -889,9 +876,7 @@ def test_an_api_key_caller_waiting_on_someone_elses_download_gets_a_row(hub):
 
 
 def test_hook_prefers_the_hub_header_token(hub):
-    from fastapi import HTTPException
     from hub.dependencies import HUB_HF_TOKEN_HEADER
-
     with pytest.raises(HTTPException):
         _hook(
             "unsloth/x-GGUF",
@@ -1409,7 +1394,6 @@ def test_a_resolver_alias_for_the_resident_model_is_not_refused(monkeypatch):
 
 def test_the_request_path_never_triggers_a_model_index_rescan(monkeypatch):
     # The scan takes seconds under a lock, so this hook must answer from the last built index.
-    from core.inference import local_model_resolver as resolver
 
     scans = []
     warmed = []
@@ -1440,7 +1424,6 @@ def test_the_request_path_never_triggers_a_model_index_rescan(monkeypatch):
 def test_a_cold_index_is_scanned_rather_than_read_as_nothing_here(monkeypatch):
     # With no cached evidence yet, reading that as "not downloaded" answers a named
     # local model with the resident one. Pay the scan once, off the loop.
-    from core.inference import local_model_resolver as resolver
 
     entry = resolver._LocalGgufEntry("org/other", "/srv/models/org--other", ("Q4_K_M",))
     scans = []
@@ -1477,9 +1460,6 @@ def test_a_cold_index_is_scanned_rather_than_read_as_nothing_here(monkeypatch):
 def test_a_cold_scan_that_never_finishes_says_so_instead_of_guessing(monkeypatch):
     # The scan is bounded, but an unfinished one knows nothing about the name, and
     # falling through would put the resident model behind it: answer "not yet".
-    import threading
-
-    from core.inference import local_model_resolver as resolver
 
     monkeypatch.setattr(resolver, "_scan", (0.0, {}))
     monkeypatch.setattr(inference_route, "_COLD_INDEX_WAIT_S", 0.05)
@@ -1538,10 +1518,7 @@ def test_a_refusal_is_never_swallowed_by_the_cannot_verify_handler(monkeypatch):
 
 def test_warming_the_index_never_waits_on_the_scan_lock(monkeypatch):
     # _lock is held for the whole scan, so contending for it would park every later request.
-    import threading
     import time as _time
-
-    from core.inference import local_model_resolver as resolver
 
     monkeypatch.setattr(resolver, "_scan", (0.0, {}))
     released = threading.Event()
@@ -1563,10 +1540,7 @@ def test_warming_the_index_never_waits_on_the_scan_lock(monkeypatch):
 
 
 def test_invalidation_during_a_warm_preserves_a_second_scan(monkeypatch):
-    import threading
     import time as _time
-
-    from core.inference import local_model_resolver as resolver
 
     first_scan_started = threading.Event()
     release_first_scan = threading.Event()
@@ -1624,7 +1598,6 @@ def test_invalidation_during_a_warm_preserves_a_second_scan(monkeypatch):
 def test_a_stale_index_is_refreshed_so_a_hub_download_becomes_visible(monkeypatch):
     # Only the auto-download watcher calls invalidate_index, so a Hub UI download is seen
     # only if the warm can run again.
-    from core.inference import local_model_resolver as resolver
 
     scans = []
     monkeypatch.setattr(resolver, "_build_index", lambda: scans.append(1) or {})
@@ -1641,7 +1614,6 @@ def test_a_stale_index_is_refreshed_so_a_hub_download_becomes_visible(monkeypatc
 def test_an_id_v1_models_advertised_is_refused_before_the_resolver_warms(monkeypatch):
     # /v1/models can advertise an unloaded local GGUF while the resolver index is cold. A bare
     # id has no quant to refuse on, so without that evidence the resident model would answer.
-    from core.inference import local_model_resolver as resolver
 
     monkeypatch.setattr(resolver, "_scan", (0.0, {}))
     # Stub the walk: a real multi-root scan inside the cold-wait budget makes this
@@ -1671,7 +1643,6 @@ def test_an_id_v1_models_advertised_is_refused_before_the_resolver_warms(monkeyp
 def test_an_advertised_alias_for_the_resident_weights_is_still_served(monkeypatch):
     # The flip side: the catalog can list the resident weights under an alias, which is not
     # evidence of a different model.
-    from core.inference import local_model_resolver as resolver
 
     monkeypatch.setattr(resolver, "_scan", (0.0, {}))
     # Stub the walk: a real multi-root scan inside the cold-wait budget makes this
@@ -1750,7 +1721,6 @@ def test_a_quant_request_is_not_satisfied_by_transformers_weights(monkeypatch):
     # A Transformers model active from a directory that also holds GGUF exports resolves
     # to that directory, so the path match let admission answer an explicit quant with
     # the safetensors weights. Only llama.cpp has a quant identity.
-    from core.inference import local_model_resolver as resolver
 
     entry = resolver._LocalGgufEntry("alias", "/srv/models/tuned", ("Q4_K_M",))
     monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"alias": entry}))
@@ -1823,7 +1793,6 @@ def test_a_timed_out_download_stops_holding_the_slot_once_unprobeable(monkeypatc
 def test_a_sibling_quant_in_the_same_directory_is_not_the_resident_one(monkeypatch):
     # Quants of one repo share a directory, so the path match alone cannot tell them
     # apart, and an explicit :Q8_0 was answered by a resident Q4_K_M.
-    from core.inference import local_model_resolver as resolver
 
     entry = resolver._LocalGgufEntry("org/model", "/hf/org--model/snap", ("Q4_K_M", "Q8_0"))
     monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"org/model": entry}))
@@ -1903,7 +1872,6 @@ def test_windows_style_paths_still_match_their_own_directory(monkeypatch):
 def test_a_bare_request_for_a_just_downloaded_model_is_refused(monkeypatch):
     # End of the same chain: the note has to reach admission, or a bare request between
     # the download landing and the scan is served by the resident model.
-    from core.inference import local_model_resolver as resolver
 
     monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {}))
     monkeypatch.setattr(resolver, "_just_downloaded", {"org/fresh"})
@@ -1925,7 +1893,6 @@ def test_a_non_quant_tag_does_not_tear_down_a_serving_quant(monkeypatch):
     # _already_serving split on ":" rather than on whether the suffix names a quant, so
     # org/model:latest against a serving Q8_0 counted as a mismatch and swapped in the
     # preferred Q4_K_M, for a request either one satisfies.
-    from core.inference import local_model_resolver as resolver
 
     entry = resolver._LocalGgufEntry("org/model", "/hf/org--model/snap", ("Q4_K_M", "Q8_0"))
     monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"org/model": entry}))
