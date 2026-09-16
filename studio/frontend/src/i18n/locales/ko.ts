@@ -1425,10 +1425,9 @@ export const ko = {
         conversations: { title: "대화" },
         files: { title: "파일 및 붙여넣기" },
         display: { title: "표시" },
-        composer: { title: "메시지 입력창" },
+        composer: { title: "채팅 기본 설정" },
         menu: { title: "채팅 메뉴" },
         advanced: { title: "고급" },
-        contextTitle: "컨텍스트",
       },
       projectAttachmentsHint:
         "각 채팅의 첨부 메뉴에서 이 설정을 개별적으로 변경할 수 있습니다.",

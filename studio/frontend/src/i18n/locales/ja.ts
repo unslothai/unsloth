@@ -1416,10 +1416,9 @@ export const ja = {
         conversations: { title: "会話" },
         files: { title: "ファイルと貼り付け" },
         display: { title: "表示" },
-        composer: { title: "メッセージ入力欄" },
+        composer: { title: "チャットのデフォルト設定" },
         menu: { title: "チャットメニュー" },
         advanced: { title: "詳細設定" },
-        contextTitle: "コンテキスト",
       },
       projectAttachmentsHint: "各チャットの添付メニューで個別に変更できます。",
       rememberParamsPerModelHint:

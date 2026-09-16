@@ -1461,10 +1461,9 @@ export const fr = {
         conversations: { title: "Conversations" },
         files: { title: "Fichiers et collage" },
         display: { title: "Affichage" },
-        composer: { title: "Zone de message" },
+        composer: { title: "Réglages par défaut du chat" },
         menu: { title: "Menu du chat" },
         advanced: { title: "Avancé" },
-        contextTitle: "Contexte",
       },
       projectAttachmentsHint:
         "Modifiez ce réglage pour chaque chat dans son menu de pièces jointes.",

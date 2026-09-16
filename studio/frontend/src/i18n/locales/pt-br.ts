@@ -1443,10 +1443,9 @@ export const ptBR = {
         conversations: { title: "Conversas" },
         files: { title: "Arquivos e colagem" },
         display: { title: "Exibição" },
-        composer: { title: "Caixa de mensagem" },
+        composer: { title: "Configurações padrão do chat" },
         menu: { title: "Menu do chat" },
         advanced: { title: "Avançado" },
-        contextTitle: "Contexto",
       },
       projectAttachmentsHint:
         "Altere esta configuração para cada chat pelo menu de anexos.",

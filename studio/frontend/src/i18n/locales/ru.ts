@@ -1440,10 +1440,9 @@ export const ru = {
         conversations: { title: "Беседы" },
         files: { title: "Файлы и вставка" },
         display: { title: "Отображение" },
-        composer: { title: "Поле сообщения" },
+        composer: { title: "Настройки чата по умолчанию" },
         menu: { title: "Меню чата" },
         advanced: { title: "Дополнительно" },
-        contextTitle: "Контекст",
       },
       projectAttachmentsHint:
         "Для отдельного чата настройку можно изменить в его меню вложений.",

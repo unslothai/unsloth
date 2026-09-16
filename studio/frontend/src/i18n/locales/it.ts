@@ -1428,10 +1428,9 @@ export const it = {
         conversations: { title: "Conversazioni" },
         files: { title: "File e incolla" },
         display: { title: "Visualizzazione" },
-        composer: { title: "Casella del messaggio" },
+        composer: { title: "Impostazioni predefinite della chat" },
         menu: { title: "Menu della chat" },
         advanced: { title: "Avanzate" },
-        contextTitle: "Contesto",
       },
       projectAttachmentsHint:
         "Modifica questa impostazione per ogni chat dal relativo menu degli allegati.",

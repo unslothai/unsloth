@@ -1455,10 +1455,9 @@ export const es = {
         conversations: { title: "Conversaciones" },
         files: { title: "Archivos y pegado" },
         display: { title: "Visualización" },
-        composer: { title: "Cuadro de mensaje" },
+        composer: { title: "Valores predeterminados del chat" },
         menu: { title: "Menú del chat" },
         advanced: { title: "Avanzado" },
-        contextTitle: "Contexto",
       },
       projectAttachmentsHint:
         "Cambia este ajuste para cada chat desde su menú de archivos adjuntos.",

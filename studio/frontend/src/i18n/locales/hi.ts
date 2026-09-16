@@ -1434,10 +1434,9 @@ export const hi = {
         conversations: { title: "बातचीत" },
         files: { title: "फ़ाइलें और पेस्ट" },
         display: { title: "दिखावट" },
-        composer: { title: "संदेश बॉक्स" },
+        composer: { title: "चैट की डिफ़ॉल्ट सेटिंग्स" },
         menu: { title: "चैट मेन्यू" },
         advanced: { title: "उन्नत" },
-        contextTitle: "संदर्भ",
       },
       projectAttachmentsHint:
         "हर चैट के अटैचमेंट मेन्यू से इस सेटिंग को अलग से बदलें।",

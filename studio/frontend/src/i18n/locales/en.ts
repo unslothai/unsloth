@@ -1421,10 +1421,9 @@ export const en = {
         conversations: { title: "Conversations" },
         files: { title: "Files & pasting" },
         display: { title: "Display" },
-        composer: { title: "Message box" },
+        composer: { title: "Chat defaults" },
         menu: { title: "Chat menu" },
         advanced: { title: "Advanced" },
-        contextTitle: "Context",
       },
       projectAttachmentsHint:
         "Override this setting from each chat's attachment menu.",

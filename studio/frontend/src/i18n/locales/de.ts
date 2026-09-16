@@ -1464,10 +1464,9 @@ export const de = {
         conversations: { title: "Gespräche" },
         files: { title: "Dateien und Einfügen" },
         display: { title: "Anzeige" },
-        composer: { title: "Nachrichtenfeld" },
+        composer: { title: "Chat-Standardeinstellungen" },
         menu: { title: "Chatmenü" },
         advanced: { title: "Erweitert" },
-        contextTitle: "Kontext",
       },
       projectAttachmentsHint:
         "Diese Einstellung lässt sich im Anhangmenü jedes Chats einzeln ändern.",

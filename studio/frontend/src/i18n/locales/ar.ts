@@ -1428,10 +1428,9 @@ export const ar = {
         conversations: { title: "المحادثات" },
         files: { title: "الملفات واللصق" },
         display: { title: "العرض" },
-        composer: { title: "مربع الرسالة" },
+        composer: { title: "الإعدادات الافتراضية للدردشة" },
         menu: { title: "قائمة الدردشة" },
         advanced: { title: "إعدادات متقدمة" },
-        contextTitle: "السياق",
       },
       projectAttachmentsHint:
         "يمكن تغيير هذا الإعداد لكل دردشة من قائمة المرفقات الخاصة بها.",
