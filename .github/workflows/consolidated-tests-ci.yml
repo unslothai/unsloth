@@ -397,6 +397,14 @@ jobs:
         # against simulated CPU counts and memory so the result is identical on
         # a 4-vCPU runner and a 192-core box.
         #
+        # The drift guard is named here for the same reason and a different
+        # one: it reads routes/inference.py with `ast` and needs nothing but
+        # transformers, and the wording it exists to survive landed in
+        # transformers 5.10 -- outside the `>=4.51,<5.5` pin every job that
+        # auto-discovers it installs. Named explicitly because these jobs
+        # collect selected paths rather than a tree, so a file nobody lists is
+        # a file nobody runs, which is the same shape as the defect it guards.
+        #
         # The Unsloth file runs here rather than in studio-backend-ci, which
         # installs studio.txt and so has no unsloth_zoo at all. Note the policy
         # module is not on unsloth_zoo main either until the companion PR lands,
@@ -409,7 +417,8 @@ jobs:
             tests/utils/test_dataset_num_proc.py \
             tests/utils/test_train_on_responses_only_num_proc.py
           PYTHONPATH=studio/backend python -m pytest -v --tb=short \
-            studio/backend/tests/test_dataset_map_num_proc.py
+            studio/backend/tests/test_dataset_map_num_proc.py \
+            studio/backend/tests/test_compressed_tensors_signature_drift.py
 
       - name: unsloth Bucket-A — CPU tests not in Repo tests (CPU)
         # CPU tests across 6 files under tests/saving/, tests/utils/, tests/python/

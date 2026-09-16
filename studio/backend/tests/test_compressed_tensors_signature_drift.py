@@ -168,3 +168,25 @@ def test_this_guard_needs_no_studio_backend_dependency():
             imported.add(node.module.split(".")[0])
     forbidden = {"fastapi", "models", "routes", "core", "utils", "starlette", "jwt"}
     assert not (imported & forbidden), sorted(imported & forbidden)
+
+
+def test_a_workflow_that_installs_a_modern_transformers_actually_collects_this_file():
+    """The guard above is worth nothing in an environment that never runs it.
+
+    Every job that auto-discovers this file pins `transformers>=4.51,<5.5`, and the wording
+    the matcher exists to survive landed in 5.10. The jobs that DO install a modern
+    transformers collect selected paths rather than a tree, so a file nobody lists is a file
+    nobody runs -- which is the same shape as the defect this file guards, one level up.
+    """
+    workflow = (
+        Path(__file__).resolve().parents[3]
+        / ".github"
+        / "workflows"
+        / "consolidated-tests-ci.yml"
+    )
+    text = workflow.read_text(encoding = "utf-8")
+    assert "studio/backend/tests/test_compressed_tensors_signature_drift.py" in text, (
+        "the modern-transformers matrix does not collect this file"
+    )
+    # And that matrix is the one that installs a transformers past the 5.5 ceiling.
+    assert 'transformers_spec: "transformers>=5,<6"' in text
