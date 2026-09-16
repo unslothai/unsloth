@@ -366,14 +366,19 @@ def test_the_installer_stops_when_no_x64_interpreter_can_be_installed():
     passing while the installer behaved exactly as it did before.
     """
     source = INSTALL_PS1.read_text(encoding = "utf-8")
-    match = re.search(
-        r"if \(\$DetectedPython -and \(Get-HostMachineArch\) -eq \"arm64\".*?\n    \}\n",
-        source,
-        flags = re.DOTALL,
-    )
+    # Anchored on the call, not on the shape of the if: the guard is multi-line since the
+    # native CUDA torch check joined it, and an anchor on "$DetectedPython -and" silently
+    # matched an unrelated earlier block instead of failing.
+    call = source.index("$DetectedPython = Resolve-WindowsOnArmX64Python")
+    opening = source.rindex("\n    if (", 0, call)
+    match = re.search(r".*?\n    \}\n", source[opening + 1:], flags = re.DOTALL)
     assert match is not None, "install.ps1 no longer guards the Windows-on-ARM swap"
     block = match.group(0)
     assert "Resolve-WindowsOnArmX64Python" in block
+    assert "-not $script:WoaNativeCudaTorch" in block, (
+        "a host with native ARM64 CUDA torch wants its ARM64 interpreter; swapping it for "
+        "x64 there gives a Triton that cannot do sm_121"
+    )
     assert "Exit-InstallFailure" in block, (
         "an unobtainable x64 interpreter has to end the install here; continuing moves the "
         "failure to the pyarrow build, which is what #10875 reported"
