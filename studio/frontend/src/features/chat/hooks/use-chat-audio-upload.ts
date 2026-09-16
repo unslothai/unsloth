@@ -98,6 +98,7 @@ export function useChatAudioUpload({
   });
   const generationRef = useRef(0);
   const readinessGenerationRef = useRef(0);
+  const readinessRefreshInFlightRef = useRef(false);
   const ownerRef = useRef(owner);
   const controllerRef = useRef<AbortController | null>(null);
   const activeFenceRef = useRef<ChatAudioUploadFence | null>(null);
@@ -110,6 +111,7 @@ export function useChatAudioUpload({
   const invalidateRefs = useCallback(() => {
     generationRef.current += 1;
     readinessGenerationRef.current += 1;
+    readinessRefreshInFlightRef.current = false;
     pickerSnapshotRef.current = null;
     activeFenceRef.current = null;
     controllerRef.current?.abort();
@@ -177,6 +179,7 @@ export function useChatAudioUpload({
 
   const refreshReadiness = useCallback(
     async (silent = false) => {
+      if (silent && readinessRefreshInFlightRef.current) return;
       const target = targetSettings();
       const targetModel = target.model;
       const attempt = readinessGenerationRef.current + 1;
@@ -188,6 +191,7 @@ export function useChatAudioUpload({
         return;
       }
       if (!silent) setReadiness({ state: "checking", model: targetModel });
+      readinessRefreshInFlightRef.current = true;
       try {
         const status = await fetchSttStatus(undefined, targetModel);
         if (
@@ -234,6 +238,10 @@ export function useChatAudioUpload({
           getAuthSessionEpoch() === authAtStart
         ) {
           setReadiness({ state: "error", model: targetModel });
+        }
+      } finally {
+        if (readinessGenerationRef.current === attempt) {
+          readinessRefreshInFlightRef.current = false;
         }
       }
     },

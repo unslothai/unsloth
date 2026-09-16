@@ -195,6 +195,14 @@ test("an open dialog observes a missing model becoming ready", () => {
     poll,
     /setInterval\(\(\) => void refreshReadiness\(true\), 1500\)/,
   );
+  assert.match(
+    hookSource,
+    /if \(silent && readinessRefreshInFlightRef\.current\) return;/,
+  );
+  assert.match(
+    hookSource,
+    /finally \{\s*if \(readinessGenerationRef\.current === attempt\) \{\s*readinessRefreshInFlightRef\.current = false;/,
+  );
 });
 
 test("Main cancels an upload only after a queue or normal send is accepted", () => {
