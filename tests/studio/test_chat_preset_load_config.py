@@ -329,39 +329,90 @@ def _statement_start(head: str) -> int:
     return boundary + 1
 
 
-def _block_always_returns(block: str) -> bool:
-    """Does every path out of this block go through a `return`?
+def _consume_statement(block: str, index: int):
+    """The statement starting at `index`, and where the one after it starts.
 
-    Only the simple shape counts: the block's last statement is an unconditional return. A block
-    that can fall off the end returns `undefined`, and a selector doing that holds `undefined`
-    steady while the field moves, so the caller has to score that path too.
+    Brace-bodied forms end at their closing brace, everything else at its own `;`, so a helper
+    declared mid-block does not swallow the return that follows it.
     """
-    nested = _nested_function_spans(block)
-    last = None
-    for match in re.finditer(r"\breturn\b", block):
-        if not any(begin <= match.start() < end for begin, end in nested):
-            last = match
-    if last is None:
-        return False
-    tail = block[last.end() :]
+    while index < len(block) and block[index].isspace():
+        index += 1
+    if index >= len(block):
+        return "", len(block)
+    if block[index] == "{":
+        # _balanced answers the text between the braces, so the span is two characters longer.
+        body = _balanced(block, index, "{", "}")
+        end = index + len(body) + 2
+        return block[index:end], end
+    keyword = re.match(r"\b(if|for|while|switch|catch|try|else|function)\b", block[index:])
+    if keyword is not None:
+        cursor = index + keyword.end()
+        while cursor < len(block) and block[cursor] != "(" and block[cursor] != "{":
+            cursor += 1
+        if cursor < len(block) and block[cursor] == "(":
+            cursor += len(_balanced(block, cursor, "(", ")")) + 2
+        if keyword.group(1) == "if":
+            _, cursor = _consume_statement(block, cursor)
+            tail = block[cursor:]
+            following = re.match(r"\s*\belse\b", tail)
+            if following is not None:
+                _, cursor = _consume_statement(block, cursor + following.end())
+            return block[index:cursor], cursor
+        _, cursor = _consume_statement(block, cursor)
+        return block[index:cursor], cursor
     depth = 0
-    for index, char in enumerate(tail):
+    for cursor in range(index, len(block)):
+        char = block[cursor]
         if char in "([{":
             depth += 1
         elif char in ")]}":
             depth -= 1
         elif depth == 0 and char == ";":
-            if tail[index + 1 :].strip():
-                return False
+            return block[index : cursor + 1], cursor + 1
+    return block[index:], len(block)
+
+
+def _block_always_returns(block: str) -> bool:
+    """Does every path out of this block go through a `return`?
+
+    A block that can fall off the end returns `undefined`, and a selector doing that holds
+    `undefined` steady while the field moves, so the caller has to score that path too. Walking
+    the block's own statements is what makes an exhaustive `if`/`else` count: it returns on every
+    path, and reading only for a trailing unconditional return would invent a fall-through for it.
+
+    A loop never counts. Its body may not run at all, so `for (...) return x;` falls through.
+    """
+    index = 0
+    while index < len(block):
+        statement, index = _consume_statement(block, index)
+        stripped = statement.strip()
+        if not stripped:
             break
-    else:
-        if tail.strip():
-            return False
-    # An `if (x) return y;` with no braces is the last statement and still falls through.
-    head = block[: last.start()]
-    return not re.search(
-        r"\b(if|else|for|while|switch|catch)\b", head[_statement_start(head) :]
-    )
+        if re.match(r"\breturn\b", stripped):
+            return True
+        if stripped.startswith("{") and _block_always_returns(_balanced(stripped, 0, "{", "}")):
+            return True
+        branch = re.match(r"\bif\b\s*", stripped)
+        if branch is None:
+            continue
+        cursor = branch.end()
+        cursor += len(_balanced(stripped, cursor, "(", ")")) + 2
+        taken, cursor = _consume_statement(stripped, cursor)
+        following = re.match(r"\s*\belse\b", stripped[cursor:])
+        if following is None:
+            continue
+        missed, _ = _consume_statement(stripped, cursor + following.end())
+        if _arm_always_returns(taken) and _arm_always_returns(missed):
+            return True
+    return False
+
+
+def _arm_always_returns(arm: str) -> bool:
+    """One branch of an `if`, braced or not, seen as a block."""
+    arm = arm.strip()
+    if arm.startswith("{"):
+        arm = _balanced(arm, 0, "{", "}")
+    return _block_always_returns(arm)
 
 
 def _own_scope_returns(block: str) -> list:
@@ -634,6 +685,28 @@ SELECTOR_CASES = [
     ("(s) => s.reasoningBudget !== null ? (s.enabled ? s.reasoningBudget : s.other) : null", False),
     # Falling off the end of a block returns undefined, which tracks nothing.
     ("(s) => { if (s.enabled) return s.reasoningBudget; }", False),
+    # An exhaustive if/else returns on every path, so there is no fall-through to invent.
+    ("(s) => { if (s.enabled) return s.reasoningBudget; else return s.reasoningBudget; }", True),
+    (
+        "(s) => { if (s.enabled) { return s.reasoningBudget; } "
+        "else { return s.reasoningBudget; } }",
+        True,
+    ),
+    ("(s) => { if (s.enabled) return s.reasoningBudget; else return s.other; }", False),
+    # `else` binds to the nearest `if`, so the outer one is not exhaustive here.
+    (
+        "(s) => { if (s.a) { if (s.b) return s.reasoningBudget; } "
+        "else return s.reasoningBudget; }",
+        False,
+    ),
+    (
+        "(s) => { if (s.a) { if (s.b) return s.reasoningBudget; else return s.reasoningBudget; } "
+        "else return s.reasoningBudget; }",
+        True,
+    ),
+    # A loop body may never run, so it is not a path that always returns.
+    ("(s) => { while (s.on) return s.reasoningBudget; }", False),
+    ("(s) => { { return s.reasoningBudget; } }", True),
     ("(s) => { if (s.enabled) { return s.reasoningBudget; } return s.reasoningBudget; }", True),
     ("(s) => s.reasoningBudget === -1 ? -1 : s.reasoningBudget", True),
     # Parenthesising a comparison, or the value it pins to, is a reformatting and nothing more.
