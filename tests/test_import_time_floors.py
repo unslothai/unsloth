@@ -243,10 +243,14 @@ def test_a_failed_probe_does_not_re_read_the_installed_metadata(patched_torch, m
         for _ in range(25):
             with pytest.raises(import_fixes.UnslothTorchTooOldError):
                 _access_from("transformers.integrations.finegrained_fp8", "unsloth_probe_dtype")
-        assert sorted(set(calls)) == ["transformers"], calls
-        assert len(calls) == 1, (
-            f"the installed version was resolved {len(calls)} times for one package; "
-            f"it cannot change inside a process and this path runs on every failed "
+        # The message also names the companion packages that have to move with torch, and
+        # each of those is a lookup too. What must hold is ONE lookup per package across 50
+        # failed accesses, not one lookup in total.
+        assert "transformers" in calls
+        assert set(calls) <= {"transformers", "torchvision", "torchaudio"}, calls
+        assert len(calls) == len(set(calls)), (
+            f"the installed version was resolved more than once for some package: {calls}. "
+            f"It cannot change inside a process and this path runs on every failed "
             f"attribute lookup"
         )
     finally:
@@ -752,3 +756,69 @@ def test_an_unownable_path_falls_back_to_the_previous_answer(monkeypatch, tmp_pa
         assert import_fixes._triton_distribution(str(tmp_path / "nope.c"))[0] == "triton-windows"
     finally:
         import_fixes._installed_version.cache_clear()
+
+
+def test_the_upgrade_moves_the_companions_that_pin_torch_exactly(patched_torch, monkeypatch):
+    """`pip install --upgrade` upgrades the packages it is given and nothing else.
+
+    Every torchvision wheel requires an exact `torch==X.Y.Z`, so naming torch alone moves
+    torch and leaves the torchvision built against the old one: the "operator
+    torchvision::nms does not exist" mismatch that `_torchvision_repair_command` in this
+    same file exists to repair, created by following the remedy.
+    """
+    monkeypatch.setattr(
+        import_fixes,
+        "importlib_version",
+        lambda name: "9.9.9" if name in ("transformers", "torchvision") else _raise_missing(name),
+    )
+    import_fixes._installed_version.cache_clear()
+    try:
+        with pytest.raises(import_fixes.UnslothTorchTooOldError) as raised:
+            _access_from("transformers.integrations.finegrained_fp8", "unsloth_probe_dtype")
+        message = str(raised.value)
+        assert 'pip install --upgrade "torch>=2.7.0" "torchvision"' in message
+        # NEGATIVE CONTROL: torchaudio is not installed in this case, so it is not named.
+        assert "torchaudio" not in message
+    finally:
+        import_fixes._installed_version.cache_clear()
+
+
+def test_a_bare_torch_install_gets_the_plain_upgrade(patched_torch, monkeypatch):
+    """NEGATIVE CONTROL: nothing that pins torch is installed, so nothing extra is named."""
+    monkeypatch.setattr(
+        import_fixes,
+        "importlib_version",
+        lambda name: "9.9.9" if name == "transformers" else _raise_missing(name),
+    )
+    import_fixes._installed_version.cache_clear()
+    try:
+        with pytest.raises(import_fixes.UnslothTorchTooOldError) as raised:
+            _access_from("transformers.integrations.finegrained_fp8", "unsloth_probe_dtype")
+        assert 'pip install --upgrade "torch>=2.7.0"\n' in str(raised.value)
+    finally:
+        import_fixes._installed_version.cache_clear()
+
+
+@pytest.mark.parametrize(
+    "distribution, torch_version, expect_index",
+    [
+        # torch 2.10 renamed pytorch-triton-xpu to triton-xpu, and pyproject pins the new
+        # name straight from download.pytorch.org, where the old prefix no longer matches.
+        ("triton-xpu", "2.10.0+xpu", True),
+        ("pytorch-triton-xpu", "2.7.0+xpu", True),
+        ("pytorch-triton-rocm", "2.7.0+rocm6.3", True),
+        # NEGATIVE CONTROLS: PyPI serves these, so no index is added.
+        ("triton", "2.6.0+cu124", False),
+        ("triton-windows", "2.7.1+cu126", False),
+    ],
+)
+def test_every_torch_index_triton_provider_gets_the_accelerator_index(
+    monkeypatch, distribution, torch_version, expect_index
+):
+    torch_module = types.ModuleType("torch")
+    torch_module.__version__ = torch_version
+    monkeypatch.setitem(sys.modules, "torch", torch_module)
+
+    command = import_fixes._triton_reinstall_command(distribution, "3.6.0")
+    assert ("--index-url https://download.pytorch.org/whl/" in command) is expect_index
+    assert f'"{distribution}==3.6.0"' in command

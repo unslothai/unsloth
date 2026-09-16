@@ -1572,6 +1572,23 @@ def _torch_wheel_index(torch_version_raw):
     return ""
 
 
+def _torch_companion_specs():
+    """The packages that must move WITH torch, as a `"pkg" ` prefix for the upgrade command.
+
+    `pip install --upgrade` upgrades the packages it is given and nothing else, so naming
+    only torch moves torch and leaves the companion that was built against the old one. Every
+    torchvision wheel requires an exact `torch==X.Y.Z`, which is why `_torchvision_repair_command`
+    above pins the pair; a torch upgrade on its own is how the mismatch it repairs gets created
+    in the first place ("operator torchvision::nms does not exist"). Only packages that are
+    actually installed are named, so an install without torchvision gets the plain command.
+    """
+    return "".join(
+        f' "{name}"'
+        for name in ("torchvision", "torchaudio")
+        if _installed_version(name) != "unknown"
+    )
+
+
 def _torch_accelerator_note(torch_version_raw):
     """The sentence that keeps an UPGRADE on the right accelerator, without naming an index.
 
@@ -1989,7 +2006,7 @@ def _torch_too_old_message(attribute, package, exception):
     lines += [
         "",
         f"Upgrade torch, which leaves {package} where it is:",
-        f"    pip install --upgrade {requirement}",
+        f"    pip install --upgrade {requirement}{_torch_companion_specs()}",
     ]
     accelerator = _torch_accelerator_note(torch_version)
     if accelerator:
@@ -2143,12 +2160,18 @@ def _defines_py_ssize_t_clean_before_python_h(source: str) -> bool:
 # Every distribution this repository knows of that provides the `triton` import name. Only a
 # fallback for interpreters without `packages_distributions`; the mapping is asked for first
 # wherever it exists, so a provider added upstream is still found on 3.10 and later.
+# Providers published only on download.pytorch.org, so a reinstall of one needs torch's own
+# accelerator index rather than PyPI. `pytorch-triton*` is matched by prefix; these are the
+# renamed spellings that prefix no longer covers.
+_TORCH_INDEX_TRITON_PROVIDERS = ("triton-xpu", "triton-rocm")
+
 _TRITON_PROVIDERS = (
     "triton",
     "triton-windows",
     "pytorch-triton",
     "pytorch-triton-rocm",
     "pytorch-triton-xpu",
+    "triton-xpu",
 )
 
 
@@ -2250,7 +2273,11 @@ def _triton_reinstall_command(distribution, triton_version):
     pin to give, and an invented one would resolve to nothing at all, so that case stays bare.
     """
     index = ""
-    if distribution.startswith("pytorch-triton"):
+    # `triton-xpu` as well as `pytorch-triton-*`: torch 2.10 renamed the XPU provider and
+    # pyproject pins the new name straight from download.pytorch.org (studio/setup.ps1
+    # records the rename too). Matching only the old spelling asked PyPI for `triton-xpu`,
+    # where that pinned wheel is not published at all.
+    if distribution.startswith("pytorch-triton") or distribution in _TORCH_INDEX_TRITON_PROVIDERS:
         torch_version_raw = getattr(sys.modules.get("torch"), "__version__", None)
         index = _torch_wheel_index(torch_version_raw)
     if not triton_version or triton_version == "unknown":
