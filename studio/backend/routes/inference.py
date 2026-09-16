@@ -17601,6 +17601,7 @@ async def _decode_request_images(
     backend,
     encoded_images,
     decoded = None,
+    reject = None,
 ):
     """The images *encoded_images* names, in that order, reusing anything *decoded* already holds.
 
@@ -17608,14 +17609,19 @@ async def _decode_request_images(
     Pillow admits images up to about 179 million pixels, so decoding a conversation's images
     together would hold that many rasters at once where one image has always held one.
     """
-    distinct = len(set(encoded_images))
-    if distinct > _MAX_SERVED_IMAGES:
-        raise HTTPException(
-            status_code = 400,
-            detail = (
-                f"This request carries {distinct} images; at most {_MAX_SERVED_IMAGES} are "
-                "served per request. Send fewer, or split the conversation."
-            ),
+    # Occurrences, not distinct payloads: this helper reuses one PIL object per payload, but the
+    # worker decodes every entry of images_base64 (core/inference/worker.py:679-683), so a repeat
+    # costs a raster there whatever it costs here.
+    total = len(encoded_images)
+    if total > _MAX_SERVED_IMAGES:
+        detail = (
+            f"This request carries {total} images; at most {_MAX_SERVED_IMAGES} are "
+            "served per request. Send fewer, or split the conversation."
+        )
+        # Through the caller's reject, so an open API monitor row is failed rather than left
+        # reported as running.
+        raise reject(400, detail) if reject is not None else HTTPException(
+            status_code = 400, detail = detail,
         )
     ready = dict(decoded or {})
     images = []
@@ -25447,7 +25453,7 @@ async def produce_openai_chat_completions(
                 )
 
             if served_images:
-                images = await _decode_request_images(backend, served_images)
+                images = await _decode_request_images(backend, served_images, reject = _reject)
             elif image_b64:
                 image = await asyncio.to_thread(
                     _decode_and_resize_image,
@@ -26270,7 +26276,7 @@ async def produce_openai_chat_completions(
             )
             # The same pictures the extraction already decoded, unless the rebuild dropped one.
             gen_kwargs["images"] = await _decode_request_images(
-                backend, _sf_payloads, dict(zip(served_images, images))
+                backend, _sf_payloads, dict(zip(served_images, images)), reject = _reject
             )
             gen_kwargs["messages"] = _set_or_prepend_system_message(
                 _structured_tool_history_for_local_template(_sf_rebuilt), system_prompt

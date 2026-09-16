@@ -221,6 +221,7 @@ def test_a_request_beyond_the_image_budget_is_refused_before_decoding(monkeypatc
     with pytest.raises(HTTPException) as exc:
         _call(monkeypatch, [ChatMessage(role = "user", content = content)])
     assert exc.value.status_code == 400
+    assert "carries 4 images" in str(exc.value.detail)
     assert "at most 3 are served per request" in str(exc.value.detail)
     # Refused before allocating any of them, which is the point.
     assert decoded == []
@@ -233,3 +234,38 @@ def test_a_request_at_the_image_budget_is_served(monkeypatch):
     content = [_part(Image.new("RGB", (8 + i, 8), "white")) for i in range(3)] + [_ASK]
     call = _call(monkeypatch, [ChatMessage(role = "user", content = content)]).calls[0]
     assert [image.width for image in call["images"]] == [8, 9, 10]
+
+
+def test_the_image_budget_counts_repeats_not_distinct_payloads(monkeypatch):
+    """The worker decodes every entry of images_base64, so a payload repeated N times costs N
+    rasters there even though this route reuses one PIL object for all of them."""
+    from routes import inference as inference_route
+
+    monkeypatch.setattr(inference_route, "_MAX_SERVED_IMAGES", 3)
+    same = _part(Image.new("RGB", (8, 8), "white"))
+    content = [same, same, same, same, _ASK]
+    with pytest.raises(HTTPException) as exc:
+        _call(monkeypatch, [ChatMessage(role = "user", content = content)])
+    assert exc.value.status_code == 400
+    assert "carries 4 images" in str(exc.value.detail)
+
+
+def test_the_image_budget_refusal_goes_through_the_callers_reject(monkeypatch):
+    """_reject fails the open API monitor row before raising; a raw HTTPException would leave
+    it reported as running."""
+    import asyncio
+
+    from routes import inference as inference_route
+
+    monkeypatch.setattr(inference_route, "_MAX_SERVED_IMAGES", 1)
+    seen = []
+
+    def reject(status_code, detail):
+        seen.append((status_code, detail))
+        return HTTPException(status_code = status_code, detail = detail)
+
+    with pytest.raises(HTTPException):
+        asyncio.run(
+            inference_route._decode_request_images(None, ["a", "b"], None, reject = reject)
+        )
+    assert len(seen) == 1 and seen[0][0] == 400
