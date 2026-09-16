@@ -2848,7 +2848,10 @@ exit 1
             # arguments. Same rule as the other launcher's 5.1 branch, and for the same reason:
             # wrap each argument, and double any run of trailing backslashes, since "C:\dir\"
             # would otherwise escape its own closing quote.
-            $argv = (@(@("-I", $scriptFile.FullName) + $ScriptArgs | ForEach-Object {
+            # -I -S, the same pair as the primary launcher. These two are asserted to return the
+            # same string byte for byte, and a sitecustomize running in one of them but not the
+            # other is exactly the kind of difference that assertion exists to catch.
+            $argv = (@(@("-I", "-S", $scriptFile.FullName) + $ScriptArgs | ForEach-Object {
                 '"' + ($_ -replace '(\\+)$', '$1$1') + '"'
             }) -join ' ')
             $proc = Start-Process -FilePath $Exe -ArgumentList $argv -NoNewWindow -PassThru `

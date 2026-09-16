@@ -260,15 +260,20 @@ try {
     Check "-I alone leaves site imported on this interpreter" ("$isoOnly".Trim() -eq "0")
     Check "-S is what turns site off" ("$isoPlus".Trim() -eq "1")
 
-    # And the resolver passes it. Read out of the launcher, because the end-to-end drive is not
+    # And every launcher passes it. Read out of the source, because the end-to-end drive is not
     # available here: sitecustomize is resolved on sys.path and the stdlib directory precedes
     # site-packages, so a planted copy is shadowed by the host's own on any machine that has one.
-    $resolverFn = @($ast.FindAll({ param($n)
-        $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
-        $n.Name -eq "Invoke-StudioEarlyPython"
-    }, $true))[0].Extent.Text
-    Check "the resolver runs the probe with -S as well as -I" (
-        $resolverFn -match '@\("-I",\s*"-S",\s*"-c"')
+    #
+    # Written against every argument vector rather than one named function, because which
+    # function builds it moves: the resolver assembles its own here and delegates to a shared
+    # runner once that exists, and the runner has a second cmdlet-only launcher beside it for
+    # Constrained Language Mode. A check naming one of them passes while another drops the flag.
+    $vectors = [regex]::Matches((Get-Content -Raw -LiteralPath $installPs1), '@\(\s*"-I"[^)]*\)')
+    Check "at least one launcher argument vector was found (bites)" ($vectors.Count -ge 1)
+    foreach ($v in $vectors) {
+        Check "the launcher at offset $($v.Index) runs with -S as well as -I" (
+            $v.Value -match '"-I",\s*"-S"')
+    }
 } finally {
     Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }
