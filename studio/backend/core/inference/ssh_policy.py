@@ -179,9 +179,9 @@ def _extract_host_from_endpoint(token: str) -> Optional[str]:
             return normalize_host(urlsplit(token).hostname or "") or None
         except ValueError:
             return None
-    if "@" in token and any(c in token.split("@", 1)[0] for c in "*?[]{}~"):
+    if "@" in token and any(c in token.rsplit("@", 1)[0] for c in "*?[]{}~"):
         return None
-    host_part = token.split("@", 1)[-1]
+    host_part = token.rsplit("@", 1)[-1]
     if host_part.count(":") > 1 and not host_part.startswith("["):
         try:
             return str(ipaddress.IPv6Address(host_part))

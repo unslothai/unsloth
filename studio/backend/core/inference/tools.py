@@ -209,7 +209,9 @@ _SSH_GATED_COMMANDS = frozenset({"ssh", "slogin", "scp", "sftp"})
 _SHELL_SEPARATORS = frozenset({";", "&&", "||", "|", "&", "\n", "(", ")", "`", "{", "}"})
 # Bash keywords starting a new command position. `if`/`while`/`until` are followed by a CONDITION the shell executes,
 # so a command right after them is at command position.
-_SHELL_KEYWORDS_AS_SEP = frozenset({"then", "do", "else", "elif", "if", "while", "until", "!"})
+_SHELL_KEYWORDS_AS_SEP = frozenset(
+    {"then", "do", "else", "elif", "if", "while", "until", "coproc", "!"}
+)
 # Wrappers whose next non-flag argument is the command Bash will exec.
 _COMMAND_PREFIXES = frozenset(
     {
