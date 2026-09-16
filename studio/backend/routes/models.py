@@ -3966,6 +3966,9 @@ async def get_kv_cache_estimate(
                         planned_cache_types = _plan_cache_types(cache_type_kv, _planner_extras),
                         # An unreadable probe keeps the managed default.
                         supports_flash_attn = bool(_plan_caps.get("supports_flash_attn", True)),
+                        # The route's own toggle; the helper folds the extras and the
+                        # inherited split-mode env on top of it.
+                        tensor_parallel = bool(tensor_parallel),
                     ),
                     # The loader's own default: unified only for >1 slot, only if supported.
                     "kv_unified": _kv_unified_from_args(

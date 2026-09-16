@@ -10809,6 +10809,9 @@ def _gguf_runtime_bytes(
             llama_extra_args,
             planned_cache_types = planned_cache_types,
             supports_flash_attn = _fa_supported,
+            # The caller's toggle; the helper folds the extras and the inherited
+            # LLAMA_ARG_SPLIT_MODE on top, the same way load_model does.
+            tensor_parallel = bool(tensor_parallel),
             env = os.environ,
         )
         kv = probe._estimate_kv_cache_bytes(

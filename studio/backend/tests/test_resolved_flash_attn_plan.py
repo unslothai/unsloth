@@ -286,6 +286,40 @@ class TestAutoIsNotAnAnswer:
             _planned_flash_attn_state(["-fa", "auto"], planned_cache_types = ("q8_0", "q4_0")) is True
         )
 
+    def test_tensor_split_decides_auto_rather_than_leaving_it_open(self):
+        """The one other thing auto cannot undo.
+
+        llama.cpp upgrades AUTO to ENABLED under SPLIT_MODE_TENSOR: the branch immediately
+        above the quantized-KV guard in llama-context.cpp, the same one whose failure path
+        is "SPLIT_MODE_TENSOR requires flash_attn to be enabled". Pricing the padded,
+        f16-floored V layout there charges a cache the child never allocates, and the
+        context published from it is smaller than what the load can really hold.
+        """
+        # The toggle, a user --split-mode in the extras, and the inherited env, which are
+        # the three ways the launch itself decides the mode.
+        assert _planned_flash_attn_state(["-fa", "auto"], tensor_parallel = True) is True
+        assert (
+            _planned_flash_attn_state(["-fa", "auto", "--split-mode", "tensor"], env = {}) is True
+        )
+        assert (
+            _planned_flash_attn_state(
+                ["-fa", "auto"], env = {"LLAMA_ARG_SPLIT_MODE": "tensor"}
+            )
+            is True
+        )
+        # And an explicit split mode in the extras last-wins over the toggle, so a layer
+        # split is still undecided however the toggle was set.
+        assert (
+            _planned_flash_attn_state(
+                ["-fa", "auto", "--split-mode", "layer"], tensor_parallel = True, env = {}
+            )
+            is False
+        )
+        assert _planned_flash_attn_state(["-fa", "auto"], env = {}) is False
+        # A user OFF is not silently flipped on: llama.cpp refuses that pair outright, and
+        # the refusal is the launch guard's job, not the estimate's.
+        assert _planned_flash_attn_state(["-fa", "off"], tensor_parallel = True) is False
+
     def test_the_managed_launch_is_unaffected(self):
         assert _planned_flash_attn_state(None) is True
         assert _planned_flash_attn_state([]) is True

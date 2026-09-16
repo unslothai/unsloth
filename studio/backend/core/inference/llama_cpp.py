@@ -4669,6 +4669,7 @@ def _planned_flash_attn_state(
     *,
     planned_cache_types: Optional[tuple[str, str]] = None,
     supports_flash_attn: bool = True,
+    tensor_parallel: bool = False,
     env: Optional[Mapping[str, str]] = None,
 ) -> bool:
     """One answer for the estimate and for the argv: ``_estimate_kv_cache_bytes`` floors V at
@@ -4690,6 +4691,17 @@ def _planned_flash_attn_state(
     # with flash attention ON (#9697, #10489).
     effective_args = ["--flash-attn", "on", *(str(arg) for arg in extra_args or ())]
     if _asked_for_auto_flash_attn(effective_args, env = env):
+        if _effective_tensor_parallel(extra_args, tensor_parallel, env):
+            # Not undecided here. llama.cpp upgrades AUTO to ENABLED under SPLIT_MODE_TENSOR
+            # rather than deciding it per load -- the branch directly above the quantized-KV
+            # guard in llama-context.cpp, the same one that returns nullptr for
+            # "SPLIT_MODE_TENSOR requires flash_attn to be enabled". Sizing the padded V
+            # layout for a load that will run with flash attention on prices a cache the
+            # child never allocates, and the published context is then smaller than what it
+            # can actually hold. The split mode is read from the extras, the toggle and the
+            # inherited LLAMA_ARG_SPLIT_MODE through the same helper the launch uses, so the
+            # estimate and the argv cannot disagree about which mode is running.
+            return True
         # ``auto`` is decided at load time, silently, and can come back no. Size for the
         # answer that costs more.
         return False
@@ -22574,6 +22586,9 @@ class LlamaCppBackend:
                     extra_args,
                     planned_cache_types = _planned_cache_pair,
                     supports_flash_attn = bool(server_caps.get("supports_flash_attn", True)),
+                    # The toggle as it stands here; the helper resolves the extras and the
+                    # inherited env on top of it, exactly as the line below does.
+                    tensor_parallel = tensor_parallel,
                 )
                 # A user --split-mode in extras last-wins-overrides the toggle, and
                 # an inherited tensor LLAMA_ARG_SPLIT_MODE flips it on (the child
