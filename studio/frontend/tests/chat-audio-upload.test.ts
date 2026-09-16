@@ -178,6 +178,51 @@ test("owner changes fence stale completions before passive effects", () => {
   );
 });
 
+test("an open dialog observes a missing model becoming ready", () => {
+  assert.match(
+    hookSource,
+    /const refreshReadiness = useCallback\(\s*async \(silent = false\) => \{[\s\S]*?if \(!silent\) setReadiness\(\{ state: "checking", model: targetModel \}\);/,
+  );
+  const pollStart = hookSource.indexOf(
+    '(readiness.state !== "missing" && readiness.state !== "downloading")',
+  );
+  assert.notEqual(pollStart, -1);
+  const poll = hookSource.slice(
+    pollStart,
+    hookSource.indexOf("  }, [dialogOpen", pollStart),
+  );
+  assert.match(
+    poll,
+    /setInterval\(\(\) => void refreshReadiness\(true\), 1500\)/,
+  );
+});
+
+test("Main cancels an upload only when a queue or parked send is accepted", () => {
+  const queueStart = threadSource.indexOf(
+    "const startHydratedPromptQueue = useCallback",
+  );
+  const queue = threadSource.slice(
+    queueStart,
+    threadSource.indexOf("const queuePastedTextPrompt", queueStart),
+  );
+  const accepted = queue.indexOf("cancelAudioUpload();");
+  assert.ok(accepted > queue.indexOf(".then((target) =>"));
+  assert.ok(accepted < queue.indexOf("startPromptQueue(", accepted));
+  assert.ok(queue.indexOf("onAborted?.()", accepted) > accepted);
+
+  const releaseStart = threadSource.indexOf(
+    "// Fire the parked send once indexing clears",
+  );
+  const release = threadSource.slice(
+    releaseStart,
+    threadSource.indexOf("// Drop any queued send", releaseStart),
+  );
+  const send = release.lastIndexOf("sendReservedComposer();");
+  const cancel = release.lastIndexOf("cancelAudioUpload();", send);
+  assert.ok(cancel >= 0 && cancel < send);
+  assert.ok(cancel > release.indexOf("if (isResearchActive)"));
+});
+
 test("Compare routes button and shortcut through the same Dictate entry", () => {
   const wrapperStart = sharedComposerSource.indexOf(
     "const startDictation = useCallback",

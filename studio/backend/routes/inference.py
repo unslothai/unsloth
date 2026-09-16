@@ -127,6 +127,8 @@ from core.inference.llama_admission import (
     peek_llama_admission_snapshot,
 )
 from core.inference.tool_stream_exec import TOOL_APPROVAL_FLUSH_DELAY_S
+from core.inference.llama_cpp import requested_video_fps
+from core.inference.llama_video_input import shrink_video_for_llama
 
 
 def _positive_int_or_none(value: Any) -> Optional[int]:
@@ -1628,7 +1630,11 @@ try:
         drop_managed_flags,
         extra_args_disable_mmproj,
         parse_gpu_layers_override,
+        parse_reasoning_budget_message_override,
+        parse_reasoning_budget_override,
         parse_split_mode_override,
+        resolve_reasoning_budget,
+        resolve_reasoning_budget_message,
         resolve_tensor_parallel,
         strip_shadowing_flags,
         validate_extra_args,
@@ -1686,7 +1692,11 @@ except ImportError:
         drop_managed_flags,
         extra_args_disable_mmproj,
         parse_gpu_layers_override,
+        parse_reasoning_budget_message_override,
+        parse_reasoning_budget_override,
         parse_split_mode_override,
+        resolve_reasoning_budget,
+        resolve_reasoning_budget_message,
         resolve_tensor_parallel,
         strip_shadowing_flags,
         validate_extra_args,
@@ -1977,6 +1987,10 @@ def _openai_llama_admission_image_tokens(llama_backend) -> int:
 
 
 _ADMISSION_IMAGE_PART_TYPES = ("image_url", "image")
+# Both spellings: the server-side tool loop recosts the conversation AFTER
+# _translate_video_parts has renamed the part, so matching video_url alone priced the
+# whole base64 payload as prompt text and inflated the lease toward the KV budget.
+_ADMISSION_VIDEO_PART_TYPES = ("video_url", "input_video")
 
 
 def _openai_llama_admission_compact_image_part(part: dict) -> dict:
@@ -2042,6 +2056,11 @@ def _openai_llama_admission_messages_for_estimate(messages) -> tuple[list[dict],
                     estimate_content.append(part)
                     continue
 
+                # Priced by its own byte allowance, not as an image and not as prompt text.
+                if part_type in _ADMISSION_VIDEO_PART_TYPES:
+                    estimate_content.append({"type": part_type, part_type: {"url": "[video]"}})
+                    continue
+
                 if part_type not in _ADMISSION_IMAGE_PART_TYPES:
                     estimate_content.append(part)
                     continue
@@ -2053,11 +2072,35 @@ def _openai_llama_admission_messages_for_estimate(messages) -> tuple[list[dict],
     return estimate_messages, image_parts
 
 
+def _conversation_video_clips(messages) -> list[str]:
+    """Clips still present in a tool-loop conversation, in either spelling.
+
+    The loop recosts AFTER ``_translate_video_parts`` has renamed the part, so reading
+    ``video_url`` alone would find nothing and charge no video at all.
+    """
+    clips: list[str] = []
+    for msg in messages or []:
+        content = msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", None)
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            media = part.get(part.get("type") or "")
+            if part.get("type") not in _ADMISSION_VIDEO_PART_TYPES or not isinstance(media, dict):
+                continue
+            value = media.get("data") or media.get("url") or ""
+            if isinstance(value, str) and value:
+                clips.append(value)
+    return clips
+
+
 def _openai_llama_admission_media_tokens(
     payload,
     *,
     message_image_parts: int = 0,
     image_tokens: int = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS,
+    message_video_clips: Optional[list[str]] = None,
 ) -> int:
     """Estimate media KV usage without charging transport bytes as prompt tokens.
 
@@ -2074,10 +2117,26 @@ def _openai_llama_admission_media_tokens(
     extra += max(0, message_image_parts) * image_tokens
     if _legacy_image_is_distinct(payload):
         extra += image_tokens
-    for attribute in ("audio_base64", "video_base64"):
+    # _inject_video_part splices the legacy clip into the conversation as input_video before the
+    # loop starts, so during a recost the clips below already include it and charging the field
+    # too priced it exactly twice.
+    fields = (
+        ("audio_base64",) if message_video_clips is not None else ("audio_base64", "video_base64")
+    )
+    for attribute in fields:
         value = getattr(payload, attribute, None)
         if isinstance(value, str) and value:
             extra += max(1, len(value) // 4)
+    # Recosting passes the CURRENT conversation: a clip on a turn that truncate_oldest has since
+    # evicted is no longer sent, and charging it from the opening payload kept every later round
+    # reserved at the full budget. Images already come from the conversation via message_image_parts.
+    clips = (
+        message_video_clips
+        if message_video_clips is not None
+        else _message_video_urls(getattr(payload, "messages", None))
+    )
+    for clip in clips:
+        extra += max(1, len(clip) // 4)
     return extra
 
 
@@ -2292,6 +2351,7 @@ def _openai_llama_admission_recost(
             payload,
             message_image_parts = message_image_parts,
             image_tokens = _openai_llama_admission_image_tokens(llama_backend),
+            message_video_clips = _conversation_video_clips(conversation),
         )
         # Reading "Max" literally here would put the run back on the whole cache at its
         # first round boundary.
@@ -3204,6 +3264,7 @@ from models.inference import (
     InputAudioContentPart,
     UnknownContentPart,
     ImageUrl,
+    VideoContentPart,
     ResponsesRequest,
     ResponsesInputTextPart,
     ResponsesInputImagePart,
@@ -7301,6 +7362,8 @@ def _active_gguf_intent(
             strip_spec = False,
             strip_template = False,
             strip_split_mode = False,
+            strip_reasoning_budget = "reasoning_budget" in request_fields_set,
+            strip_reasoning_budget_message = "reasoning_budget_message" in request_fields_set,
             strip_batch = "n_batch" in request_fields_set,
             strip_ubatch = "n_ubatch" in request_fields_set,
             strip_ctx_checkpoints = "ctx_checkpoints" in request_fields_set,
@@ -12869,6 +12932,60 @@ def _classify_diffusion_gguf(config: ModelConfig) -> Optional[bool]:
     return True if name_says_diffusion else None
 
 
+async def _validate_reasoning_budget_preflight(
+    config: ModelConfig,
+    diffusion_kind: Optional[bool],
+    extra_args: Optional[list[str]],
+    request: LoadRequest | ValidateModelRequest,
+) -> None:
+    """Reject unsupported reasoning controls before any resident model is torn down.
+
+    Explicit config only, exactly as LlamaCppBackend gates the load itself. Counting
+    an inherited LLAMA_ARG_THINK_BUDGET* as a request rejected every undownloaded
+    GGUF and every DiffusionGemma, naming a setting the UI already shows as default.
+    """
+    if not config.is_gguf:
+        return
+    effective_budget = resolve_reasoning_budget(extra_args, request.reasoning_budget)
+    effective_message = resolve_reasoning_budget_message(
+        extra_args, request.reasoning_budget_message
+    )
+    requested = any(
+        LlamaCppBackend.reasoning_budget_settings_requested(
+            extra_args = extra_args,
+            reasoning_budget = effective_budget,
+            reasoning_budget_message = effective_message,
+        )
+    )
+    if diffusion_kind and requested:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Reasoning Budget settings are not supported for DiffusionGemma models.",
+        )
+    if diffusion_kind is None and requested:
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                "Reasoning Budget settings cannot be applied until this GGUF is "
+                "downloaded and its architecture can be verified. Load it once with "
+                "the default reasoning budget, then apply these settings."
+            ),
+        )
+    if not requested:
+        return
+    backend = get_llama_cpp_backend()
+    try:
+        await asyncio.to_thread(
+            backend.validate_reasoning_budget_capabilities,
+            backend._find_llama_server_binary(),
+            extra_args = extra_args,
+            reasoning_budget = effective_budget,
+            reasoning_budget_message = effective_message,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+
+
 async def _override_gpu_ids_still_resolve(
     gpu_ids: List[int], stored_index_kind: str = "physical"
 ) -> bool:
@@ -14137,6 +14254,8 @@ def _resolve_inherited_extra_args(
             # must not last-wins-override it. auto leaves a user's inherited -ngl
             # alone. getattr: a validate request reuses this resolver, no offload fields.
             strip_offload = getattr(request, "gpu_memory_mode", "auto") == "manual",
+            strip_reasoning_budget = "reasoning_budget" in fields_set,
+            strip_reasoning_budget_message = "reasoning_budget_message" in fields_set,
             # a set field emits its own flag; an inherited -b / -ub would last-wins-override it
             strip_batch = "n_batch" in fields_set,
             strip_ubatch = "n_ubatch" in fields_set,
@@ -14992,6 +15111,14 @@ async def _load_model_impl(
             None if request.llama_extra_args is None else extra_llama_args
         )
 
+        _reasoning_updates = {}
+        _reasoning_budget_override = parse_reasoning_budget_override(extra_llama_args)
+        if _reasoning_budget_override is not None:
+            _reasoning_updates["reasoning_budget"] = _reasoning_budget_override
+        _reasoning_message_override = parse_reasoning_budget_message_override(extra_llama_args)
+        if _reasoning_message_override is not None:
+            _reasoning_updates["reasoning_budget_message"] = _reasoning_message_override
+
         # Manual mode owns the offload flags. Preserve an explicit layer count
         # by translating its last-wins value into the first-class field before
         # stripping the raw flags. This keeps CLI pass-through such as
@@ -15025,6 +15152,8 @@ async def _load_model_impl(
         # particular, the already-loaded comparator must not compare the raw
         # request's managed offload flags against the stripped launch state.
         request = request.model_copy(update = {"llama_extra_args": extra_llama_args})
+        if _reasoning_updates:
+            request = request.model_copy(update = _reasoning_updates)
 
         resolved_ollama_path = await _lease_ollama_model_ref(
             request,
@@ -15264,6 +15393,11 @@ async def _load_model_impl(
 
         # Invalid GPU IDs must fail before the training coexistence guard.
         placement = await _prepare_load_placement(config, request, extra_llama_args)
+        # Ahead of the diffusion drop below: an explicit reasoning flag is a refusal, not a
+        # silent no-op, and the check needs the authoritative classification.
+        await _validate_reasoning_budget_preflight(
+            config, placement.diffusion_kind, extra_llama_args, request
+        )
         if placement.diffusion_kind is True and extra_llama_args:
             # The visual runner builds its own command and appends none of these, so
             # keeping them would record a load as running arguments the process never
@@ -16332,6 +16466,11 @@ async def validate_model(
         # Apply the same placement policy as /load before the frontend unloads
         # the current model.
         placement = await _prepare_load_placement(config, request, effective_extra_args)
+        # Same ordering as /load: judged before the diffusion drop, or an explicit
+        # pass-through flag would be ignored rather than refused.
+        await _validate_reasoning_budget_preflight(
+            config, placement.diffusion_kind, effective_extra_args, request
+        )
         if placement.diffusion_kind is True and effective_extra_args:
             # Same drop as /load, and for the same reason: the diffusion runner appends
             # none of these, so an estimate that reads a --ctx-size out of them approves
@@ -18569,6 +18708,13 @@ async def generate_audio(
             "messages",
             "Audio input is not supported here; this route speaks the message text.",
         )
+    # A known tag now, so the guard above no longer covers it: the clip would be dropped and
+    # the text spoken alone.
+    if _request_has_video(payload):
+        _raise_unsupported_openai_parameter(
+            "messages",
+            "Video input is not supported here; this route speaks the message text.",
+        )
 
     # Extract text from the last user message
     _, chat_messages, _ = _extract_content_parts(payload.messages)
@@ -19919,7 +20065,22 @@ _MAX_AUDIO_RAW_BYTES = STT_AUDIO_RAW_MAX_BYTES
 _MAX_AUDIO_B64_CHARS = STT_AUDIO_B64_MAX_CHARS
 # The composer's 64 MB cap as padded base64: 4 chars per 3 bytes, rounded up.
 # Flooring instead refused a file of exactly the size the composer allows.
-_MAX_VIDEO_B64_CHARS = 4 * math.ceil((64 * 1024 * 1024) / 3)
+_MAX_VIDEO_BYTES = 64 * 1024 * 1024
+_MAX_VIDEO_B64_CHARS = 4 * math.ceil(_MAX_VIDEO_BYTES / 3)
+# Longest scheme named back to the caller; bounds the scan over a megabytes-long clip.
+_MAX_VIDEO_SCHEME_CHARS = 16
+# llama-server, not Studio, would fetch a remote clip, and its downloader sets
+# set_follow_location(true) (common/http.h), so a public URL redirecting to a private address
+# defeats any host check made here. Refuse the whole shape; #11010 tracks a pinned fetch that
+# would let images and video both accept one.
+# Each clip is a separate ffprobe + ffmpeg pair, so this bounds process launches per request.
+# Four rather than one: GGUF genuinely serves several clips, and the non-GGUF path already
+# refuses more than one on its own.
+_MAX_VIDEO_CLIPS_PER_REQUEST = 4
+_REMOTE_VIDEO_REFUSAL = (
+    400,
+    "Remote video URLs are not supported. Send the clip as a data URI instead.",
+)
 _MAX_AUDIO_SECONDS = 30 * 60
 # The duration cap alone is rate-relative, so a high-rate container retains far
 # more memory for the same 30 minutes: at 48 kHz that is 86M float32 samples,
@@ -20581,13 +20742,64 @@ _VIDEO_INPUT_REFUSAL = (
 
 
 def _local_video_clip(payload, model_info) -> str:
-    """The clip, as bare base64, that a non-GGUF backend is handed, else a refusal by name."""
+    """The clip, as bare base64, that a non-GGUF backend is handed, else a refusal by name.
+
+    Reads both spellings, so MLX serves a ``video_url`` part exactly as it serves the field.
+    """
     if not model_info.get("has_video_input"):
         raise HTTPException(status_code = 400, detail = _VIDEO_INPUT_REFUSAL)
-    video_b64, rejection = _video_b64_rejection(payload.video_base64)
+    clips = _request_video_clips(payload)
+    if not clips:
+        raise HTTPException(status_code = 400, detail = "Could not read the provided video file.")
+    # Generation takes one video kwarg, so a second clip would be dropped in silence and the
+    # same request would mean different things on this backend and on GGUF, which forwards all.
+    if len(clips) > 1:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Only one video is supported per request on this model.",
+        )
+    # Generation is handed one clip and no turn, so MLX would move it onto the newest turn and
+    # answer as though it had just been attached.
+    if _video_is_on_an_older_turn(payload):
+        raise HTTPException(
+            status_code = 400,
+            detail = "A video must be attached to the latest message on this model.",
+        )
+    # Refused everywhere, so the message must not send the caller to GGUF for it.
+    if _is_remote_video(clips[0]):
+        raise HTTPException(status_code = _REMOTE_VIDEO_REFUSAL[0], detail = _REMOTE_VIDEO_REFUSAL[1])
+    # _request_video_rejection runs only when a pre-switch validation happens, so an unsupported
+    # scheme reached here and was decoded as base64 instead of earning the 400 GGUF returns.
+    scheme_rejection = _video_scheme_rejection(clips[0])
+    if scheme_rejection is not None:
+        raise HTTPException(status_code = scheme_rejection[0], detail = scheme_rejection[1])
+    video_b64, rejection = _video_b64_rejection(clips[0])
     if rejection is not None:
         raise HTTPException(status_code = rejection[0], detail = rejection[1])
     return video_b64
+
+
+def _video_payload_chars(clip: str) -> int:
+    """Base64 length without the data URI header, measured rather than sliced."""
+    if clip[:5].lower() != "data:":
+        return len(clip)
+    comma = clip.find(",")
+    return len(clip) - comma - 1 if comma != -1 else 0
+
+
+def _video_size_rejection(clip: str) -> Optional[tuple[int, str]]:
+    """``_video_b64_rejection``'s verdict, measured rather than sliced.
+
+    Validation runs twice per request, before the switch and again after the load, and only
+    wants the verdict. Slicing the header off to get it copied the whole payload each time:
+    89 MB and 47 ms for a clip at the 64 MB limit, against 0 MB here.
+    """
+    payload_len = _video_payload_chars(clip)
+    if not payload_len:
+        return (400, "Could not read the provided video file.")
+    if payload_len > _MAX_VIDEO_B64_CHARS:
+        return (413, "Video file is too large (max 64 MB).")
+    return None
 
 
 def _video_b64_rejection(video_b64: str) -> tuple[str, Optional[tuple[int, str]]]:
@@ -20597,7 +20809,7 @@ def _video_b64_rejection(video_b64: str) -> tuple[str, Optional[tuple[int, str]]
     size the composer allows. Returned rather than raised so the pre-switch and
     post-load checks share one rule while raising their own way.
     """
-    if video_b64.startswith("data:"):
+    if video_b64[:5].lower() == "data:":
         video_b64 = video_b64.split(",", 1)[1] if "," in video_b64 else ""
     if not video_b64:
         return "", (400, "Could not read the provided video file.")
@@ -20610,7 +20822,7 @@ def _inject_video_part(messages: list[dict], video_b64: str) -> None:
     """Append an input_video part to the last user message, in place.
 
     llama-server samples the clip into frames itself (ffmpeg via mtmd), so the
-    container is forwarded untouched. Rides the message list like image_url and
+    part carries a container, not frames. Rides the message list like image_url and
     input_audio, so it flows through the plain and tool-calling paths alike.
     Ref: llama.cpp tools/server/server-common.cpp, `type == "input_video"`.
     """
@@ -20720,6 +20932,172 @@ def _normalise_chat_content_parts(payload) -> None:
             msg.content = kept
     if lifted and not getattr(payload, "audio_base64", None):
         payload.audio_base64 = lifted
+
+
+def _message_video_urls(messages) -> list[str]:
+    urls: list[str] = []
+    for msg in messages or []:
+        content = msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", None)
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if isinstance(part, VideoContentPart):
+                urls.append(part.video_url.url)
+            elif isinstance(part, dict) and part.get("type") == "video_url":
+                video_url = part.get("video_url")
+                url = video_url.get("url") if isinstance(video_url, dict) else video_url
+                urls.append(url if isinstance(url, str) else "")
+    return urls
+
+
+def _video_is_on_an_older_turn(payload) -> bool:
+    """True when a ``video_url`` part sits anywhere before the newest user turn.
+
+    GGUF keeps a part on the turn that carried it. The non-GGUF path flattens the parts away and
+    hands generation one video kwarg, which MLX attaches to the newest user turn, so the same
+    request would put the clip on a different turn per backend.
+    """
+    messages = getattr(payload, "messages", None) or []
+    roles = [m.get("role") if isinstance(m, dict) else getattr(m, "role", None) for m in messages]
+    if "user" not in roles:
+        return False
+    return bool(_message_video_urls(messages[: len(roles) - 1 - roles[::-1].index("user")]))
+
+
+def _request_video_clips(payload) -> list[str]:
+    legacy = getattr(payload, "video_base64", None)
+    return ([legacy] if legacy else []) + _message_video_urls(getattr(payload, "messages", None))
+
+
+def _request_has_video(payload) -> bool:
+    return bool(_request_video_clips(payload))
+
+
+def _is_remote_video(url: str) -> bool:
+    # Schemes are case-insensitive and a clip is megabytes: read the prefix, not a copy.
+    return url[:8].lower().startswith(("http://", "https://"))
+
+
+def _video_scheme_rejection(clip: str) -> Optional[tuple[int, str]]:
+    """Refuse a clip whose URL names a scheme neither we nor llama-server should honour.
+
+    ``handle_media`` reads ``input_video`` as ``data`` else ``url`` and treats the one string it
+    finds the same way, honouring ``file://`` under ``--media-path``. Forwarding such a clip as
+    opaque payload is therefore still a local file read, so refuse it by name instead.
+    """
+    if not clip or clip[:5].lower() == "data:" or _is_remote_video(clip):
+        return None
+    # ':' is not in the base64 alphabet, so an early colon marks a URL, not payload.
+    head = clip[: _MAX_VIDEO_SCHEME_CHARS + 1]
+    if ":" not in head:
+        return None
+    return (
+        400,
+        f"Unsupported video URL scheme ('{head.split(':', 1)[0]}:'). "
+        "Send the clip as a data URI.",
+    )
+
+
+def _request_video_rejection(payload) -> Optional[tuple[int, str]]:
+    clips = _request_video_clips(payload)
+    # Bytes alone do not bound the work: each clip costs its own ffprobe and ffmpeg (30s and
+    # 300s ceilings), so thousands of tiny clips stay under the byte cap while holding the
+    # request, and its admission lease, for hours. Count is the bound on process launches.
+    if len(clips) > _MAX_VIDEO_CLIPS_PER_REQUEST:
+        return (
+            400,
+            f"Too many videos in one request (max {_MAX_VIDEO_CLIPS_PER_REQUEST}).",
+        )
+    total = 0
+    for clip in clips:
+        if _is_remote_video(clip):
+            return _REMOTE_VIDEO_REFUSAL
+        rejection = _video_scheme_rejection(clip)
+        if rejection is not None:
+            return rejection
+        rejection = _video_size_rejection(clip)
+        if rejection is not None:
+            return rejection
+        total += _video_payload_chars(clip)
+        # And bytes bound the per-clip transcode cost the count cannot see.
+        if total > _MAX_VIDEO_B64_CHARS:
+            return (413, "Videos are too large (max 64 MB per request).")
+    return None
+
+
+async def _shrink_clip_for_llama(video_b64: str, llama_backend) -> str:
+    """Transcode one clip down to the cap, as the legacy field's path does.
+
+    The transcode runs BEFORE llama-server samples and the server can only duplicate what was
+    dropped, so an explicit rate must reach it.
+    """
+    try:
+        return await asyncio.to_thread(
+            shrink_video_for_llama,
+            video_b64,
+            _MAX_VIDEO_BYTES,
+            sampled_fps = requested_video_fps(getattr(llama_backend, "extra_args", None)),
+        )
+    except Exception as e:
+        # The helper absorbs its own ffmpeg failures, so reaching here means something it does
+        # not model went wrong. Reject like the audio path, rather than letting a raw 500 leak
+        # the monitor entry with it.
+        logger.warning("Video preprocessing failed: %s", e, exc_info = True)
+        raise HTTPException(
+            status_code = 400, detail = "Could not process the provided video file."
+        ) from None
+
+
+async def _shrink_video_parts(messages: list[dict], llama_backend) -> None:
+    """Transcode every ``video_url`` part in place, before translation renames them.
+
+    The legacy field is shrunk on its own path. Doing it here as well is what keeps the two
+    spellings identical: a part-carried clip would otherwise reach llama-server untranscoded and
+    at a different resolution than the same clip sent as the field.
+    """
+    for msg in messages:
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if not isinstance(part, dict) or part.get("type") != "video_url":
+                continue
+            video_url = part.get("video_url")
+            url = video_url.get("url") if isinstance(video_url, dict) else video_url
+            url = url if isinstance(url, str) else ""
+            if _is_remote_video(url) or _video_scheme_rejection(url) is not None:
+                continue  # _translate_video_parts refuses these by name a moment later.
+            clip, rejection = _video_b64_rejection(url)
+            if rejection is not None:
+                continue
+            part["video_url"] = {"url": await _shrink_clip_for_llama(clip, llama_backend)}
+
+
+def _translate_video_parts(messages: list[dict]) -> None:
+    """Rewrite ``video_url`` parts in place as llama-server's ``input_video``, always as bytes."""
+    for msg in messages:
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if not isinstance(part, dict) or part.get("type") != "video_url":
+                continue
+            video_url = part.get("video_url")
+            url = video_url.get("url") if isinstance(video_url, dict) else video_url
+            url = url if isinstance(url, str) else ""
+            # Restated: _request_video_rejection only runs when a pre-switch validation happens,
+            # so no caller reaching here by another route may hand llama-server a URL to dial.
+            if _is_remote_video(url):
+                raise HTTPException(
+                    status_code = _REMOTE_VIDEO_REFUSAL[0], detail = _REMOTE_VIDEO_REFUSAL[1]
+                )
+            scheme_rejection = _video_scheme_rejection(url)
+            if scheme_rejection is not None:
+                raise HTTPException(status_code = scheme_rejection[0], detail = scheme_rejection[1])
+            part.clear()
+            part.update(
+                {"type": "input_video", "input_video": {"data": _video_b64_rejection(url)[0]}}
+            )
 
 
 def _inject_audio_part(messages: list[dict], audio_b64: str, audio_format: str) -> None:
@@ -22695,8 +23073,9 @@ async def produce_openai_chat_completions(
         untrack_current_request(request.scope)
         if _wants_multiple_choices(payload):
             _raise_unsupported_n("external provider chat completions")
-        # The proxy has nowhere to put the clip; say so rather than answering without it.
-        if payload.video_base64:
+        # The proxy has nowhere to put the clip; say so rather than answering without it. Both
+        # spellings, so a video_url part is refused here the way the legacy field is.
+        if _request_has_video(payload):
             raise HTTPException(status_code = 400, detail = _VIDEO_INPUT_REFUSAL)
         # _build_external_messages carries no input_audio case, so the recording would be
         # stripped and the provider would answer the text alone -- a plausible reply to a
@@ -22864,7 +23243,7 @@ async def produce_openai_chat_completions(
         # Video rides that projector too. Its own /props gate can only run after
         # the load, so this at least keeps a text-only target from evicting a
         # working model to serve a clip it could never take.
-        _needs_video = bool(payload.video_base64)
+        _needs_video = _request_has_video(payload)
         _needs_vision = _needs_image or bool(payload.audio_base64) or _needs_video
         # Name what is actually attached, so the refusal does not report a
         # modality the request never carried.
@@ -22874,7 +23253,7 @@ async def produce_openai_chat_completions(
                 for name, present in (
                     ("image", _needs_image),
                     ("audio", bool(payload.audio_base64)),
-                    ("video", bool(payload.video_base64)),
+                    ("video", _needs_video),
                 )
                 if present
             )
@@ -22882,10 +23261,9 @@ async def produce_openai_chat_completions(
         )
         # Size is knowable now and the switch is not cheap: refuse an oversized
         # clip before it costs a model load.
-        if payload.video_base64:
-            _, _video_rejection = _video_b64_rejection(payload.video_base64)
-            if _video_rejection is not None:
-                raise HTTPException(status_code = _video_rejection[0], detail = _video_rejection[1])
+        _video_rejection = _request_video_rejection(payload)
+        if _video_rejection is not None:
+            raise HTTPException(status_code = _video_rejection[0], detail = _video_rejection[1])
         _needs_audio_input = bool(payload.audio_base64)
 
     # the rest of the audio checks depend on the target's format, so the switch runs them.
@@ -23043,7 +23421,7 @@ async def produce_openai_chat_completions(
         model_info = backend.models.get(backend.active_model_name, {})
         # Before the speech and audio-input dispatches, which return before the clip is attached.
         _video_clip = None
-        if payload.video_base64:
+        if _request_has_video(payload):
             _video_clip = _local_video_clip(payload, model_info)
             # Settled here: a model without audio input never enters the audio-input path.
             if payload.audio_base64:
@@ -23504,7 +23882,7 @@ async def produce_openai_chat_completions(
                 400,
                 "Audio input is not supported together with guided decoding or client-supplied tools yet.",
             )
-        if payload.video_base64:
+        if _request_has_video(payload):
             # Same shape: _build_openai_passthrough_body forwards an explicit
             # field list, so the clip would be dropped and the model would
             # answer without it.
@@ -23604,19 +23982,21 @@ async def produce_openai_chat_completions(
                 logger.warning("Audio decode failed: %s", e, exc_info = True)
                 raise _reject(400, "Could not decode the provided audio file.")
 
-        # Forwarded whole: llama-server owns the frame sampling, and takes the
-        # clip only when /props reports modalities.video.
+        # llama-server samples frames but encodes each at the clip's resolution.
         video_b64 = None
-        if payload.video_base64:
+        if _request_has_video(payload):
             if not getattr(llama_backend, "_has_video_input", False):
                 raise _reject(
                     400,
                     "Video provided but the current GGUF model cannot take video input. "
                     "It needs an mmproj with video support, and ffmpeg/ffprobe installed.",
                 )
-            video_b64, video_rejection = _video_b64_rejection(payload.video_base64)
+            video_rejection = _request_video_rejection(payload)
             if video_rejection is not None:
                 raise _reject(*video_rejection)
+            if payload.video_base64:
+                video_b64, _ = _video_b64_rejection(payload.video_base64)
+                video_b64 = await _shrink_clip_for_llama(video_b64, llama_backend)
 
         gguf_messages, _ = await _openai_messages_for_gguf_chat_async(
             payload,
@@ -23628,6 +24008,8 @@ async def produce_openai_chat_completions(
             _inject_audio_part(gguf_messages, audio_b64, audio_format)
         if video_b64:
             _inject_video_part(gguf_messages, video_b64)
+        await _shrink_video_parts(gguf_messages, llama_backend)
+        _translate_video_parts(gguf_messages)
 
         cancel_event = _chat_cancel_event(request)
 
@@ -31737,7 +32119,7 @@ async def chat_count_tokens(
             detail = "Cannot count tokens for messages containing audio.",
         )
     # And video, whose frames llama-server samples at completion time.
-    if getattr(payload, "video_base64", None):
+    if _request_has_video(payload):
         raise HTTPException(
             status_code = 503,
             detail = "Cannot count tokens for messages containing video.",

@@ -24,21 +24,21 @@ import {
   useState,
 } from "react";
 import {
+  type SttEngine,
   SttModelNotDownloadedError,
   fetchSttStatus,
   sttEngineFor,
   sttEngineStatusFor,
   transcribeAudioBlob,
-  type SttEngine,
 } from "../adapters/studio-model-dictation-adapter";
 import { resolveDictationChatId } from "../adapters/studio-web-speech-dictation-adapter";
 import {
-  appendChatAudioTranscript,
-  chatAudioUploadFileError,
-  chatAudioUploadFenceMatches,
-  completeChatAudioUpload,
-  MAX_AUDIO_SIZE_LABEL,
   type ChatAudioUploadFence,
+  MAX_AUDIO_SIZE_LABEL,
+  appendChatAudioTranscript,
+  chatAudioUploadFenceMatches,
+  chatAudioUploadFileError,
+  completeChatAudioUpload,
 } from "../utils/chat-audio-upload";
 
 export interface UseChatAudioUploadOptions {
@@ -175,76 +175,84 @@ export function useChatAudioUpload({
         };
   }, [device, language, model]);
 
-  const refreshReadiness = useCallback(async () => {
-    const target = targetSettings();
-    const targetModel = target.model;
-    const attempt = readinessGenerationRef.current + 1;
-    readinessGenerationRef.current = attempt;
-    const ownerAtStart = ownerRef.current;
-    const authAtStart = getAuthSessionEpoch();
-    if (!targetModel) {
-      setReadiness({ state: "error", model: targetModel });
-      return;
-    }
-    setReadiness({ state: "checking", model: targetModel });
-    try {
-      const status = await fetchSttStatus(undefined, targetModel);
-      if (
-        readinessGenerationRef.current !== attempt ||
-        ownerRef.current !== ownerAtStart ||
-        getAuthSessionEpoch() !== authAtStart ||
-        accountTransitionPending()
-      ) {
-        return;
-      }
-      const engineStatus = sttEngineStatusFor(
-        status,
-        targetModel,
-        target.engine,
-      );
-      if (!engineStatus?.available) {
-        setReadiness({ state: "unavailable", model: targetModel });
-        return;
-      }
-      if (
-        engineStatus.download.downloading &&
-        engineStatus.download.model === targetModel
-      ) {
-        setReadiness({
-          state: "downloading",
-          model: targetModel,
-          progress: readinessProgress(
-            engineStatus.download.bytes_done,
-            engineStatus.download.bytes_total,
-          ),
-        });
-        return;
-      }
-      setReadiness({
-        state: engineStatus.downloaded_models.includes(targetModel)
-          ? "ready"
-          : "missing",
-        model: targetModel,
-      });
-    } catch {
-      if (
-        readinessGenerationRef.current === attempt &&
-        ownerRef.current === ownerAtStart &&
-        getAuthSessionEpoch() === authAtStart
-      ) {
+  const refreshReadiness = useCallback(
+    async (silent = false) => {
+      const target = targetSettings();
+      const targetModel = target.model;
+      const attempt = readinessGenerationRef.current + 1;
+      readinessGenerationRef.current = attempt;
+      const ownerAtStart = ownerRef.current;
+      const authAtStart = getAuthSessionEpoch();
+      if (!targetModel) {
         setReadiness({ state: "error", model: targetModel });
+        return;
       }
-    }
-  }, [targetSettings]);
+      if (!silent) setReadiness({ state: "checking", model: targetModel });
+      try {
+        const status = await fetchSttStatus(undefined, targetModel);
+        if (
+          readinessGenerationRef.current !== attempt ||
+          ownerRef.current !== ownerAtStart ||
+          getAuthSessionEpoch() !== authAtStart ||
+          accountTransitionPending()
+        ) {
+          return;
+        }
+        const engineStatus = sttEngineStatusFor(
+          status,
+          targetModel,
+          target.engine,
+        );
+        if (!engineStatus?.available) {
+          setReadiness({ state: "unavailable", model: targetModel });
+          return;
+        }
+        if (
+          engineStatus.download.downloading &&
+          engineStatus.download.model === targetModel
+        ) {
+          setReadiness({
+            state: "downloading",
+            model: targetModel,
+            progress: readinessProgress(
+              engineStatus.download.bytes_done,
+              engineStatus.download.bytes_total,
+            ),
+          });
+          return;
+        }
+        setReadiness({
+          state: engineStatus.downloaded_models.includes(targetModel)
+            ? "ready"
+            : "missing",
+          model: targetModel,
+        });
+      } catch {
+        if (
+          readinessGenerationRef.current === attempt &&
+          ownerRef.current === ownerAtStart &&
+          getAuthSessionEpoch() === authAtStart
+        ) {
+          setReadiness({ state: "error", model: targetModel });
+        }
+      }
+    },
+    [targetSettings],
+  );
 
   useEffect(() => {
     if (!dialogOpen || disabled) return;
     queueMicrotask(() => void refreshReadiness());
-  }, [dialogOpen, disabled, model, refreshReadiness]);
+  }, [dialogOpen, disabled, refreshReadiness]);
 
   useEffect(() => {
-    if (!dialogOpen || readiness.state !== "downloading") return;
-    const timer = window.setInterval(() => void refreshReadiness(), 1500);
+    if (
+      !dialogOpen ||
+      (readiness.state !== "missing" && readiness.state !== "downloading")
+    ) {
+      return;
+    }
+    const timer = window.setInterval(() => void refreshReadiness(true), 1500);
     return () => window.clearInterval(timer);
   }, [dialogOpen, readiness.state, refreshReadiness]);
 
