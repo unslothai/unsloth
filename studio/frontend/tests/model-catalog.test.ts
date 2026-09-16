@@ -253,6 +253,28 @@ test("a served models.dev catalog outranks the bundled snapshot and feeds the na
   assert.equal(getExternalReasoningCapabilities("deepseek", "deepseek-v9-ultra").supportsReasoning, false);
 });
 
+test("a served bucket overrides its own models without hiding the rest of the bundled one", async () => {
+  // The browser cache survives an app upgrade and the backend serves an expired disk copy
+  // while offline, so a bucket written by an older release can omit models the newer
+  // bundled snapshot knows. Replacing the namespace wholesale dropped their controls.
+  // DeepSeek, not Ollama: the Ollama branch has a by-name fallback that hides the defect.
+  const { setModelsDevCatalog } = await import("../src/features/chat/model-catalog.ts");
+  const bundled = getExternalReasoningCapabilities("deepseek", "deepseek-v4-pro");
+  assert.deepEqual([...bundled.reasoningEffortLevels], ["none", "high", "max"]);
+  setModelsDevCatalog({
+    fetched_at: 1_700_000_000,
+    providers: { deepseek: { "deepseek-v5": { reasoning: true, efforts: ["low"], toggle: true, input: ["text"] } } },
+  });
+  try {
+    const served = getExternalReasoningCapabilities("deepseek", "deepseek-v5");
+    assert.deepEqual([...served.reasoningEffortLevels], ["none", "low"]);
+    const survivor = getExternalReasoningCapabilities("deepseek", "deepseek-v4-pro");
+    assert.deepEqual([...survivor.reasoningEffortLevels], ["none", "high", "max"]);
+  } finally {
+    setModelsDevCatalog({ fetched_at: 0, providers: {} });
+  }
+});
+
 test("every catalog write notifies subscribers, so a composer already on screen re-renders", async () => {
   const { modelCatalogVersion, setModelsDevCatalog, subscribeModelCatalog } = await import(
     "../src/features/chat/model-catalog.ts"

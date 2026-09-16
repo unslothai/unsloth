@@ -152,6 +152,7 @@ export function setModelsDevCatalog(catalog: ModelCatalogResponse): void {
   modelsDev = catalog;
   nameIndex = null;
   familyIndex = null;
+  mergedNamespaces = null;
   notifyCatalogChange();
   if (!canUseStorage()) return;
   try {
@@ -166,11 +167,26 @@ export function modelsDevCatalogFetchedAt(): number | null {
   return modelsDev?.fetched_at ?? null;
 }
 
+// Merged namespaces, rebuilt whenever a served catalog lands.
+let mergedNamespaces: Map<string, Readonly<Record<string, ModelCatalogSnapshotEntry>>> | null = null;
+
 function snapshotNamespace(
   providerType: string,
 ): Readonly<Record<string, ModelCatalogSnapshotEntry>> | undefined {
   hydrateModelsDev();
-  return modelsDev?.providers[providerType] ?? MODEL_CATALOG_SNAPSHOT[providerType];
+  const served = modelsDev?.providers[providerType];
+  const bundled = MODEL_CATALOG_SNAPSHOT[providerType];
+  if (!served) return bundled;
+  if (!bundled) return served;
+  // Served entries win per MODEL, not per namespace. A browser cache survives an app
+  // upgrade and the backend serves an expired disk copy while offline, so replacing the
+  // namespace wholesale hides models the newer bundled snapshot ships knowledge for.
+  if (!mergedNamespaces) mergedNamespaces = new Map();
+  const cached = mergedNamespaces.get(providerType);
+  if (cached) return cached;
+  const merged = { ...bundled, ...served };
+  mergedNamespaces.set(providerType, merged);
+  return merged;
 }
 
 function fromLiveModel(model: ProviderModelCapabilityInfo): ModelCatalogEntry {
