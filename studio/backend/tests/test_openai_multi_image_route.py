@@ -171,3 +171,33 @@ def test_a_16_bit_image_keeps_its_levels_instead_of_clipping_to_white(monkeypatc
         155,
         255,
     ]
+
+
+_PDF = {
+    "type": "input_document",
+    "file_data": "data:application/pdf;base64,JVBERi0xLjQK",
+    "filename": "spec.pdf",
+}
+
+
+def test_a_document_part_in_history_never_reaches_the_local_template(monkeypatch):
+    """Local templates take text and image only: mistral3's raises "Only text and image blocks
+    are supported in message content!", and mlx_inference re-raises that instead of recovering
+    whenever the request carries tools or a reasoning knob, so the turn 500s."""
+    messages = [
+        ChatMessage(role = "user", content = [_text("here is the spec"), _PDF, _sized(2)]),
+        ChatMessage(role = "assistant", content = "Got it."),
+        ChatMessage(role = "user", content = [_sized(4), _ASK]),
+    ]
+    call = _call(monkeypatch, messages).calls[0]
+
+    kept = [
+        part.get("type")
+        for message in call["messages"]
+        if isinstance(message.get("content"), list)
+        for part in message["content"]
+    ]
+    assert "input_document" not in kept
+    # Dropping the document must not drop the text beside it, nor either picture.
+    assert [image.width for image in call["images"]] == [2, 4]
+    assert "here is the spec" in str(call["messages"])

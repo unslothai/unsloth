@@ -20880,6 +20880,13 @@ def _conversation_with_image_markers(messages) -> tuple[list[dict], list[str]]:
                     parts.append({"type": "image"})
                 # Otherwise dropped: a part left here claims a marker nothing can bind.
                 continue
+            if _part_attr(part, "type") != "text":
+                # Text and image only, like _flatten_content_parts_for_local_template: a local
+                # template raises on anything else ("Only text and image blocks are supported in
+                # message content!" on mistral3), and mlx_inference re-raises that instead of
+                # recovering whenever the request carries tools or a reasoning knob, so an
+                # input_document earlier in the conversation would turn the turn into a 500.
+                continue
             parts.append(part)
         rebuilt.append({**plain, "content": parts})
     return rebuilt, payloads
