@@ -413,6 +413,12 @@ def test_a_file_shadowing_torchvision_is_named_rather_than_blamed_on_the_binary(
 
     Driven through a real import: the fix turns on which file the finders resolve.
     """
+    # A shadow only exists relative to an INSTALLED torchvision: with none installed the
+    # local file is not shadowing anything, _shadowing_torchvision_path returns None by
+    # design, and this case has nothing to assert. Without the guard it FAILS rather than
+    # skips on any environment that has no torchvision, which several of the test venvs
+    # and CI jobs are.
+    pytest.importorskip("torchvision")
     body = "import torchvision\ntorchvision.extension\n"
     if kind == "module":
         shadow = tmp_path / "torchvision.py"
@@ -465,4 +471,69 @@ def test_the_marker_matches_what_this_interpreter_actually_says(tmp_path, monkey
         produced.replace("tvshape", "torchvision")
     ), produced
     # The name does the work, not the shape alone.
+    assert not import_fixes._TORCHVISION_ATTRIBUTE_RE.search(produced), produced
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        # `from torchvision import extension` while torchvision is still executing. CPython
+        # words this one as an ImportError and never says "has no attribute".
+        "cannot import name 'extension' from partially initialized module 'torchvision' "
+        "(most likely due to a circular import) (/usr/lib/torchvision/__init__.py)",
+        "cannot import name 'nms' from partially initialized module 'torchvision.ops' "
+        "(most likely due to a circular import)",
+        # Reached after one of its submodules has already failed to initialise, which is
+        # what a second `import torchvision.ops` in the same process produces.
+        "cannot access submodule 'ops' of module 'torchvision' "
+        "(most likely due to a circular import)",
+    ],
+)
+def test_the_other_two_cpython_wordings_of_the_same_break_are_recognised(message):
+    """Four wordings, one fault. The two above carry no "has no attribute" clause at all,
+    so a marker anchored on that clause reports a healthy box for a torchvision that
+    cannot import."""
+    assert import_fixes._is_broken_torchvision_error(ImportError(message))
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        # Same two shapes, someone else's module.
+        "cannot import name 'x' from partially initialized module 'mytorchvision' "
+        "(most likely due to a circular import)",
+        "cannot access submodule 'torchvision' of module 'mypackage' "
+        "(most likely due to a circular import)",
+        "cannot access submodule 'ops' of module 'torchvisionfoo'",
+        # A fully imported torchvision refusing a name that is not there: no circular
+        # import, nothing to reinstall.
+        "cannot import name 'nsm' from 'torchvision.ops' (/usr/lib/torchvision/ops.py)",
+    ],
+)
+def test_the_other_two_wordings_do_not_claim_another_module(message):
+    assert not import_fixes._is_broken_torchvision_error(ImportError(message))
+
+
+def test_the_from_import_wording_is_what_this_interpreter_actually_says():
+    """Provoked, not quoted, for the same reason as the attribute wording above."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        package = pathlib.Path(tmp) / "tvfrom"
+        package.mkdir()
+        (package / "__init__.py").write_text("from tvfrom import extension\n")
+        sys.path.insert(0, tmp)
+        try:
+            with mock.patch.dict(sys.modules):
+                sys.modules.pop("tvfrom", None)
+                with pytest.raises(ImportError) as excinfo:
+                    importlib.import_module("tvfrom")
+        finally:
+            sys.path.remove(tmp)
+
+    produced = str(excinfo.value)
+    assert "partially initialized" in produced, produced
+    assert import_fixes._TORCHVISION_ATTRIBUTE_RE.search(
+        produced.replace("tvfrom", "torchvision")
+    ), produced
     assert not import_fixes._TORCHVISION_ATTRIBUTE_RE.search(produced), produced

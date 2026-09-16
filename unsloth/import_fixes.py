@@ -1493,11 +1493,18 @@ _TORCH_LIBRARY_MARKERS = ("torchvision", "libtorch", "libc10", "_C.so", "c10::")
 # A lazily-imported torchvision with a dead extension surfaces as this, not a loader error.
 # "partially initialized" is load-bearing: without it a typo on a healthy torchvision
 # ("module 'torchvision' has no attribute 'nms'") would be answered with "reinstall".
-# The `from '<file>'` clause is 3.13+ only (3.12.3 omits it), so it must be optional: a real
-# torchvision always has a __file__, so requiring either wording misses half the interpreters.
+# Nothing after the module name is: CPython words the rest of that sentence four ways for
+# the same fault, and pinning any one of them matches on some interpreters and not others.
+#   3.9 - 3.12   partially initialized module 'torchvision' has no attribute 'extension'
+#   3.13, 3.14   partially initialized module 'torchvision' from '<file>' has no attribute
+#   from-import  cannot import name 'extension' from partially initialized module 'torchvision'
+#   submodule    cannot access submodule 'ops' of module 'torchvision'
+# The first three all carry "partially initialized module 'torchvision'", so matching that
+# much covers every one; the fourth is the wording used once a submodule has already failed
+# to initialise, and it names torchvision as the parent, so it gets its own alternative.
 _TORCHVISION_ATTRIBUTE_RE = re.compile(
     r"partially initialized module 'torchvision(?:\.[\w.]+)?'"
-    r"(?: from '[^']*')? has no attribute"
+    r"|cannot access submodule '[\w.]+' of module 'torchvision(?:\.[\w.]+)?'"
 )
 
 
