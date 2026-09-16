@@ -201,6 +201,8 @@ export function loadedContextFields(resp: {
   native_context_length?: number | null;
   max_context_length?: number | null;
   context_length_enforced?: boolean | null;
+  launch_context_length?: number | null;
+  pre_fit_context_length?: number | null;
 } | null): {
   loadedContextLength: number | null;
   maxContextLength: number | null;
@@ -208,6 +210,8 @@ export function loadedContextFields(resp: {
   loadedIsGguf: boolean | null;
   loadedIsMlx: boolean | null;
   loadedContextEnforced: boolean | null;
+  launchContextLength: number | null;
+  preFitContextLength: number | null;
 } {
   if (!resp) {
     return {
@@ -217,6 +221,8 @@ export function loadedContextFields(resp: {
       loadedIsGguf: null,
       loadedIsMlx: null,
       loadedContextEnforced: null,
+      launchContextLength: null,
+      preFitContextLength: null,
     };
   }
   const isGguf = resp.is_gguf ?? false;
@@ -230,6 +236,8 @@ export function loadedContextFields(resp: {
       loadedIsGguf: false,
       loadedIsMlx: resp.is_mlx ?? null,
       loadedContextEnforced: null,
+      launchContextLength: null,
+      preFitContextLength: null,
     };
   }
   return {
@@ -243,6 +251,10 @@ export function loadedContextFields(resp: {
     // llama.cpp allocates what it reports, so GGUF is enforced by construction.
     // Everything else answers for itself, or says nothing.
     loadedContextEnforced: isGguf ? true : (resp.context_length_enforced ?? null),
+    // Only llama.cpp launches a child, so only it can report a total distinct from
+    // the per-slot window, or a --fit step that shrank one below the other.
+    launchContextLength: resp.launch_context_length ?? null,
+    preFitContextLength: resp.pre_fit_context_length ?? null,
   };
 }
 

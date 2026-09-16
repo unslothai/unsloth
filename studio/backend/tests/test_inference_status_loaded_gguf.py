@@ -101,6 +101,39 @@ def test_a_backend_without_the_flag_still_reports(status_route):
     assert status.is_local_model is False
 
 
+def test_status_reports_the_launch_total_beside_the_per_slot_window(status_route):
+    """A --parallel split makes the two differ, and a client needs both.
+
+    ``context_length`` is what one request may use; ``launch_context_length`` is
+    the whole allocation it was carved from. Publishing only the first makes a
+    working 4-slot server look like it lost three quarters of its context.
+    """
+    backend = _StatusBackend("org/A-GGUF")
+    backend.context_length = 8192
+    backend.launch_context_length = 32768
+    backend.effective_parallel_slots = 4
+
+    status = status_route(backend)
+
+    assert status.context_length == 8192
+    assert status.launch_context_length == 32768
+    # Nothing was reduced: 8192 is 32768 divided four ways.
+    assert status.pre_fit_context_length is None
+
+
+def test_status_reports_a_fit_reduction(status_route):
+    """When --fit really did shrink the window, the expected value reaches the client."""
+    backend = _StatusBackend("org/A-GGUF")
+    backend.context_length = 67584
+    backend.launch_context_length = 98304
+    backend.pre_fit_context_length = 98304
+
+    status = status_route(backend)
+
+    assert status.context_length == 67584
+    assert status.pre_fit_context_length == 98304
+
+
 def test_a_native_lease_load_reports_the_label_not_the_leased_path(status_route):
     # The leased on-disk path is exactly what /status must not hand back.
     leased = os.path.join(os.sep, "models", "private", "A-Q4_K_M.gguf")

@@ -27,6 +27,11 @@ export type ContextUsageBarInput = {
   isMlx?: boolean;
   /** context_length_enforced as the load reported it; null where it does not answer. */
   contextEnforced?: boolean | null;
+  /**
+   * pre_fit_context_length: the per-slot context expected before llama-server's --fit
+   * step reduced it. Null unless it really did, so `total` is otherwise unexplained.
+   */
+  preFitTotal?: number | null;
 };
 
 /**
@@ -61,6 +66,20 @@ function contextLimitAdvice(
   return used > total ? "mlx-past-limit" : "mlx-near-limit";
 }
 
+/**
+ * The --fit reduction to name, or null when the window is what was asked for.
+ *
+ * Guarded on `from > to` rather than taken on trust: an equal pair would otherwise
+ * render "reduced from 32,768 to 32,768", and the warning has to earn its amber.
+ */
+function fitReductionOf(
+  preFitTotal: number | null | undefined,
+  total: number,
+): { from: number; to: number } | null {
+  if (typeof preFitTotal !== "number" || preFitTotal <= total) return null;
+  return { from: preFitTotal, to: total };
+}
+
 export type ContextUsageBarState = {
   face: string;
   label: string;
@@ -71,6 +90,8 @@ export type ContextUsageBarState = {
   // whether any per-turn row renders, so the tooltip rule never floats above nothing
   hasUsageDetails: boolean;
   advice: ContextLimitAdvice;
+  // null unless --fit really shrank the per-slot window below what was launched
+  fitReduced: { from: number; to: number } | null;
 };
 
 // a counted zero and an uncounted chat differ: an unmeasured prompt must not read as 0% of the window
@@ -83,6 +104,7 @@ export function deriveContextUsageBar({
   completionTokens,
   isMlx,
   contextEnforced,
+  preFitTotal,
 }: ContextUsageBarInput): ContextUsageBarState | null {
   const limit = typeof total === "number" && total > 0 ? total : null;
   const usedTokens =
@@ -105,6 +127,8 @@ export function deriveContextUsageBar({
       percent: null,
       hasUsageDetails,
       advice: "none",
+      // no window to have been reduced from
+      fitReduced: null,
     };
   }
 
@@ -117,6 +141,7 @@ export function deriveContextUsageBar({
       percent: null,
       hasUsageDetails,
       advice: "none",
+      fitReduced: fitReductionOf(preFitTotal, limit),
     };
   }
 
@@ -128,5 +153,6 @@ export function deriveContextUsageBar({
     percent: Math.min((usedTokens / limit) * 100, 100),
     hasUsageDetails,
     advice: contextLimitAdvice(usedTokens, limit, isMlx, contextEnforced),
+    fitReduced: fitReductionOf(preFitTotal, limit),
   };
 }

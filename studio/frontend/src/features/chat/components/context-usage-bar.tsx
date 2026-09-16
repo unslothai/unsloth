@@ -33,6 +33,7 @@ export const ContextUsageBar: FC<
   completionTokens,
   isMlx,
   contextEnforced,
+  preFitTotal,
   className,
 }) => {
   const state = deriveContextUsageBar({
@@ -44,6 +45,7 @@ export const ContextUsageBar: FC<
     completionTokens,
     isMlx,
     contextEnforced,
+    preFitTotal,
   });
   if (!state) return null;
 
@@ -158,6 +160,15 @@ export const ContextUsageBar: FC<
                   the chat Settings panel to keep going.
                 </>
               )}
+            </div>
+          ) : null}
+          {state.fitReduced ? (
+            <div className="mt-1 max-w-64 text-ui-11 leading-snug text-amber-600/90 dark:text-amber-500/90">
+              llama-server reduced the per-request context from{" "}
+              {formatTokenCountFull(state.fitReduced.from)} to{" "}
+              {formatTokenCountFull(state.fitReduced.to)} tokens to fit VRAM (
+              <span className="font-medium">--fit</span>). The bar reflects the
+              window a single request can actually use.
             </div>
           ) : null}
         </div>

@@ -2307,6 +2307,9 @@ export function ChatPage({
   const loadedContextLength = useChatRuntimeStore(
     (state) => state.loadedContextLength,
   );
+  const preFitContextLength = useChatRuntimeStore(
+    (state) => state.preFitContextLength,
+  );
   const nativeContextLength = useChatRuntimeStore(
     (state) => state.nativeContextLength,
   );
@@ -4146,6 +4149,8 @@ export function ChatPage({
                 used={contextUsage?.totalTokens ?? null}
                 // null on external providers; the bar handles that.
                 total={loadedContextLength}
+                // Names the --fit reduction behind an unexpectedly small window.
+                preFitTotal={preFitContextLength}
                 cached={contextUsage?.cachedTokens}
                 cacheWrites={contextUsage?.cacheWriteTokens}
                 promptTokens={contextUsage?.promptTokens}

@@ -61,6 +61,8 @@ test("an MLX response carries a window without a native one", () => {
     loadedIsGguf: false,
     loadedIsMlx: true,
     loadedContextEnforced: null,
+    launchContextLength: null,
+    preFitContextLength: null,
   });
   // Transformers, which sizes nothing, still contributes no window.
   assert.deepEqual(loadedContextFields({ is_gguf: false, context_length: 2048 }), {
@@ -70,6 +72,8 @@ test("an MLX response carries a window without a native one", () => {
     loadedIsGguf: false,
     loadedIsMlx: null,
     loadedContextEnforced: null,
+    launchContextLength: null,
+    preFitContextLength: null,
   });
   assert.equal(loadedContextFields(null).loadedIsGguf, null);
 });
@@ -284,5 +288,100 @@ test("a load keeps the pin it was built from, wherever the record held it", () =
       defaultMaxSeqLength: DEFAULT_MAX_SEQ_LENGTH,
       presetSource: "custom",
     }),
+  );
+});
+
+// The launch total and the per-slot window are different numbers under --parallel,
+// and only llama.cpp launches a child that can have either.
+test("a GGUF load carries the launch total and any --fit reduction", () => {
+  assert.deepEqual(
+    loadedContextFields({
+      is_gguf: true,
+      context_length: 67584,
+      launch_context_length: 98304,
+      pre_fit_context_length: 98304,
+    }),
+    {
+      loadedContextLength: 67584,
+      maxContextLength: 67584,
+      nativeContextLength: null,
+      loadedIsGguf: true,
+      loadedIsMlx: null,
+      loadedContextEnforced: true,
+      launchContextLength: 98304,
+      preFitContextLength: 98304,
+    },
+  );
+});
+
+test("a backend that launches no llama-server reports neither", () => {
+  const mlx = loadedContextFields({
+    is_gguf: false,
+    is_mlx: true,
+    context_length: 8192,
+  });
+  assert.equal(mlx.launchContextLength, null);
+  assert.equal(mlx.preFitContextLength, null);
+  assert.equal(loadedContextFields(null).launchContextLength, null);
+});
+
+// max_seq_length on the wire is the TOTAL -c; loadedContextLength is one slot's share
+// of it. Reloading a --parallel 4 server from the per-slot value would resize it from
+// 32768 down to 8192, and again on the next reload, with nothing in the UI saying so.
+test("reloading a split server sends the launch total, not one slot's share", () => {
+  assert.equal(
+    resolveLoadMaxSeqLength({
+      modelId: "org/A-GGUF",
+      ggufVariant: "Q4_K_M",
+      isGguf: true,
+      customContextLength: null,
+      loadedContextLength: 8192,
+      launchContextLength: 32768,
+      currentCheckpoint: "org/A-GGUF",
+      activeGgufVariant: "Q4_K_M",
+      pinnedMaxSeqLength: null,
+      defaultMaxSeqLength: DEFAULT_MAX_SEQ_LENGTH,
+      presetSource: "model",
+    }),
+    32768,
+  );
+});
+
+test("a backend that reports no launch total still reloads at the window it has", () => {
+  assert.equal(
+    resolveLoadMaxSeqLength({
+      modelId: "org/A-GGUF",
+      ggufVariant: "Q4_K_M",
+      isGguf: true,
+      customContextLength: null,
+      loadedContextLength: 40223,
+      launchContextLength: null,
+      currentCheckpoint: "org/A-GGUF",
+      activeGgufVariant: "Q4_K_M",
+      pinnedMaxSeqLength: null,
+      defaultMaxSeqLength: DEFAULT_MAX_SEQ_LENGTH,
+      presetSource: "model",
+    }),
+    40223,
+  );
+});
+
+// An explicit pin is the user's own number and outranks anything the server reports.
+test("a custom context length still outranks the launch total", () => {
+  assert.equal(
+    resolveLoadMaxSeqLength({
+      modelId: "org/A-GGUF",
+      ggufVariant: "Q4_K_M",
+      isGguf: true,
+      customContextLength: 16384,
+      loadedContextLength: 8192,
+      launchContextLength: 32768,
+      currentCheckpoint: "org/A-GGUF",
+      activeGgufVariant: "Q4_K_M",
+      pinnedMaxSeqLength: null,
+      defaultMaxSeqLength: DEFAULT_MAX_SEQ_LENGTH,
+      presetSource: "model",
+    }),
+    16384,
   );
 });
