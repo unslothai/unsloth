@@ -1358,16 +1358,21 @@ def _cmd_ssh_tokens(command: str) -> "tuple[list[str], frozenset[int]]":
     literal_indexes: set[int] = set()
     word: list[str] = []
     quoted = literal = False
+    literal_redirect = False
+    last_char_literal = False
 
     def flush() -> None:
-        nonlocal literal
+        nonlocal literal, literal_redirect
         if word or literal:
             value = "".join(word)
-            if literal or _looks_like_separator(value):
+            if (
+                literal and (literal_redirect or not _REDIRECTION_RE.match(value))
+            ) or _looks_like_separator(value):
                 literal_indexes.add(len(tokens))
             tokens.append(value)
             word.clear()
             literal = False
+            literal_redirect = False
 
     index = 0
     while index < len(command):
@@ -1375,6 +1380,8 @@ def _cmd_ssh_tokens(command: str) -> "tuple[list[str], frozenset[int]]":
         if char == "^" and not quoted and index + 1 < len(command):
             word.append(command[index + 1])
             literal = True
+            literal_redirect |= command[index + 1] in "<>"
+            last_char_literal = True
             index += 2
             continue
         if char == '"':
@@ -1388,8 +1395,17 @@ def _cmd_ssh_tokens(command: str) -> "tuple[list[str], frozenset[int]]":
             tokens.append(char)
         elif not quoted and char.isspace():
             flush()
+        elif not quoted and char in "<>" and word and word[-1] not in "<>":
+            descriptor = word.pop() if word[-1] in "0123456789" and not last_char_literal else ""
+            flush()
+            if descriptor:
+                word.append(descriptor)
+            word.append(char)
+            last_char_literal = False
         else:
             word.append(char)
+            literal_redirect |= quoted and char in "<>"
+            last_char_literal = quoted
         index += 1
     flush()
     return tokens, frozenset(literal_indexes)
@@ -1427,6 +1443,22 @@ def _find_blocked_commands(
         command = "".join(
             char for i, char in enumerate(command) if i not in joined and i - 1 not in joined
         )
+    if lexed_posix and _ssh_segments is not None and any(c in command for c in "<>"):
+        states = _shell_quote_states(command)
+        parts: list[str] = []
+        word_start = 0
+        for i, char in enumerate(command):
+            if not states[i]:
+                if char.isspace() or char in ";&|()`":
+                    word_start = i + 1
+                elif char in "<>":
+                    prefix = command[word_start:i]
+                    # retain numeric file descriptors while separating command arguments from redirects.
+                    if prefix and not prefix.isdecimal():
+                        parts.append(" ")
+                    word_start = i + 1
+            parts.append(char)
+        command = "".join(parts)
     try:
         if not lexed_posix and _ssh_segments is not None:
             tokens, cmd_literal_indexes = _cmd_ssh_tokens(command)

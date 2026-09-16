@@ -282,6 +282,83 @@ class TestSessionCleanup:
 @pytest.mark.parametrize(
     "command",
     [
+        "ssh -F none evil.example>user@approved.example",
+        "ssh -F none evil.example>>user@approved.example",
+        "ssh -F none evil.example<user@approved.example",
+        "ssh -F none evil.example>first>user@approved.example",
+        "ssh>user@approved.example -F none evil.example",
+        "ssh -F none 2>user@approved.example evil.example",
+        "ssh -F none 'evil.example'>user@approved.example",
+    ],
+)
+def test_glued_redirections_cannot_supply_approved_host(command):
+    approve_hosts("review", ["approved.example"])
+    assert extract_ssh_hosts_from_command(command) == ({"evil.example"}, False)
+    assert check_ssh_command_access(command, "review") is not None
+    approve_hosts("review", ["evil.example"])
+    assert check_ssh_command_access(command, "review") is None
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'ssh -F none "user>name@approved.example"',
+        r"ssh -F none user\>name@approved.example",
+        "ssh -F none approved.example 2>output",
+    ],
+)
+def test_literal_redirect_characters_and_file_descriptors_keep_host(command):
+    approve_hosts("review", ["approved.example"])
+    assert extract_ssh_hosts_from_command(command) == ({"approved.example"}, False)
+    assert check_ssh_command_access(command, "review") is None
+
+
+def test_python_shell_redirection_requires_actual_host_approval():
+    code = "import subprocess; subprocess.run('ssh -F none evil.example>user@approved.example', shell=True)"
+    approve_hosts("review", ["approved.example"])
+    assert check_ssh_python_access(code, "review") is not None
+    approve_hosts("review", ["evil.example"])
+    assert check_ssh_python_access(code, "review") is None
+
+
+@pytest.mark.parametrize(
+    "command, host",
+    [
+        ("ssh -F none evil.example>user@approved.example", "evil.example"),
+        ('ssh -F none >"user@approved.example" evil.example', "evil.example"),
+        ("ssh -F none evil.example>>user@approved.example", "evil.example"),
+        ("ssh -F none 2>user@approved.example evil.example", "evil.example"),
+        ("ssh -F none evil.example2>user@approved.example", "evil.example"),
+        ('ssh -F none "evil.example2">user@approved.example', "evil.example2"),
+        ('ssh -F none "user>name@approved.example"', "approved.example"),
+        ("ssh -F none ^>user@approved.example", "approved.example"),
+    ],
+)
+def test_cmd_redirections_keep_actual_destination(monkeypatch, command, host):
+    from core.inference import tools as tools_mod
+    monkeypatch.setattr(tools_mod, "_shell_is_posix", lambda: False)
+    assert extract_ssh_hosts_from_command(command) == ({host}, False)
+
+
+@pytest.mark.parametrize(
+    "approved, destination",
+    [
+        ("[2001:0db8:0:0:0:0:0:1]", "2001:db8::1"),
+        ("2001:db8::1", "2001:0db8:0:0:0:0:0:1"),
+    ],
+)
+def test_equivalent_ipv6_spellings_share_approval(approved, destination):
+    approve_hosts("review", [approved])
+    assert approved_hosts("review") == frozenset({"2001:db8::1"})
+    assert check_ssh_command_access(f"ssh -F none user@[{destination}]", "review") is None
+    code = f"import paramiko; c=paramiko.SSHClient(); c.connect(hostname={destination!r})"
+    assert check_ssh_python_access(code, "review") is None
+    assert check_ssh_command_access("ssh -F none user@[2001:db8::2]", "review") is not None
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
         "ssh -F none -P approved.example unapproved.example uptime",
         "ssh -F none -F alternate.conf approved.example uptime",
         "scp -F none -o HostName=unapproved.example file approved.example:/tmp/file",

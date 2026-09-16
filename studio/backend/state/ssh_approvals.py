@@ -7,6 +7,7 @@ When a user confirms a tool call that reaches an SSH server, the target host is
 recorded here so later terminal and python invocations can connect consistently.
 """
 
+import ipaddress
 import threading
 from typing import Iterable, Optional
 
@@ -22,6 +23,10 @@ def normalize_host(host: str) -> str:
     h = (host or "").strip().lower().rstrip(".")
     if h.startswith("[") and "]" in h:
         h = h[1 : h.index("]")]
+    try:
+        return str(ipaddress.ip_address(h))
+    except ValueError:
+        pass
     return h
 
 
