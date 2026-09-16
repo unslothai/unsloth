@@ -164,13 +164,21 @@ def _store_selectors(source: str) -> list:
     return out
 
 
-def _split_ternary(expression: str) -> list:
-    """`cond ? a : b` as `[a, b]`, recursively; anything else as itself.
+def _split_ternary(
+    expression: str,
+    guards: tuple = (),
+) -> list:
+    """`cond ? a : b` as `[(a, conditions), (b, conditions)]`, recursively.
 
-    Depth aware, and `??` and `?.` are not ternaries. Used to look at what a selector
-    RETURNS rather than everything it mentions: a selector may name a field in its condition
-    and return something else entirely, which reads the store but does not track the field.
+    Each result is paired with every condition governing whether it is the one returned, so a
+    caller can tell a constant the field decides from a constant it has no say in. Depth aware,
+    and `??` / `?.` are not ternaries.
     """
+
+    # A wholly wrapped arm hides its own ternary at depth 1, where the scan below never looks.
+    expression = expression.strip()
+    while expression.startswith("(") and _balanced(expression, 0) == expression[1:-1]:
+        expression = expression[1:-1].strip()
 
     depth, question = 0, -1
     index = 0
@@ -189,8 +197,9 @@ def _split_ternary(expression: str) -> list:
             break
         index += 1
     if question == -1:
-        return [expression.strip()]
+        return [(expression.strip(), guards)]
 
+    inner = guards + (expression[:question],)
     depth = 0
     for index in range(question + 1, len(expression)):
         char = expression[index]
@@ -199,30 +208,30 @@ def _split_ternary(expression: str) -> list:
         elif char in ")]}":
             depth -= 1
         elif depth == 0 and char == ":":
-            return _split_ternary(expression[question + 1 : index]) + _split_ternary(
-                expression[index + 1 :]
+            return _split_ternary(expression[question + 1 : index], inner) + _split_ternary(
+                expression[index + 1 :], inner
             )
-    return [expression[question + 1 :].strip()]
+    return [(expression[question + 1 :].strip(), inner)]
 
 
 def _selector_reads(selector: str, field: str) -> bool:
     """Does every value this selector can return depend on `field`?
 
-    Zustand re-renders on a change to the selector's RESULT, not to a property it happened to
-    touch, so a selector that tests `s.<field>` in a condition and returns
-    `s.loadedSomethingElse` either way reads the store without tracking the field. The
-    parameter name is taken from the selector's own signature rather than assumed to be `s`,
-    since renaming it is a refactor that changes nothing.
+    Zustand re-renders on the RESULT, not on a property the selector happened to touch, so one
+    that tests `s.<field>` and returns something else either way tracks nothing. A result the
+    field does not appear in still counts when the field decides whether it is returned at all,
+    as in `s.<field> != null ? s.<field> : null`. The parameter name comes from the signature
+    rather than being assumed to be `s`.
     """
 
     signature = re.match(r"\s*\(?\s*([A-Za-z_$][\w$]*)\s*\)?\s*(?::[^=]*)?=>", selector)
     if signature is None:
         return False
-    parameter = re.escape(signature.group(1))
-    body = selector[signature.end() :]
-    results = _split_ternary(body)
+    read = re.compile(rf"\b{re.escape(signature.group(1))}\.{field}\b")
+    results = _split_ternary(selector[signature.end() :])
     return bool(results) and all(
-        re.search(rf"\b{parameter}\.{field}\b", result) for result in results
+        read.search(result) or any(read.search(guard) for guard in guards)
+        for result, guards in results
     )
 
 
@@ -240,6 +249,34 @@ def _memo_dependency_lists(source: str) -> list:
     return out
 
 
+# The guard above is only as good as this predicate, and it is the part a refactor of the sheet
+# will walk into. Accepted and rejected forms, stated as cases rather than left to the one
+# spelling the sheet happens to use today.
+SELECTOR_CASES = [
+    ("(s) => s.reasoningBudget", True),
+    ("(store) => store.reasoningBudget", True),
+    ("(s: RuntimeState) => s.reasoningBudget", True),
+    ("(s) => (s.reasoningBudget)", True),
+    ("(s) => s.reasoningBudget ?? s.fallback", True),
+    ("(s) => formatBudget(s.reasoningBudget)", True),
+    # A constant arm the field itself decides between still moves when the field moves.
+    ("(s) => s.reasoningBudget != null ? s.reasoningBudget : null", True),
+    ("(s) => s.reasoningBudget != null ? s.other : null", True),
+    # Read but not returned: zustand compares results, so these subscribe to something else.
+    ("(s) => s.enabled ? s.reasoningBudget : s.fallback", False),
+    ("(s) => s.mode === 'x' ? (s.on ? s.reasoningBudget : s.q) : s.reasoningBudget", False),
+    ("(s) => s.enabled ? s.other : s.fallback", False),
+    ("(s) => s.reasoningBudgetMessage", False),
+    ("(s) => s.reasoningBudgets", False),
+    ("{ budget: state.reasoningBudget }", False),
+]
+
+
+def test_the_subscription_predicate_accepts_refactors_and_rejects_non_subscriptions():
+    for selector, expected in SELECTOR_CASES:
+        assert _selector_reads(selector, "reasoningBudget") is expected, selector
+
+
 def test_preset_sheet_reacts_to_a_reasoning_budget_change():
     """capturePresetLoadConfig() reads the runtime store through getState().
 
@@ -247,17 +284,12 @@ def test_preset_sheet_reacts_to_a_reasoning_budget_change():
     cannot move the Update button or the summary: with the sheet open, changing only
     the reasoning budget left both stale until some unrelated setting changed.
 
-    Asserted as "every value the selector can return depends on the field" and "the
-    dependency lists name it", not as an exact spelling. This used to require the literal
-    `(s) => s.reasoningBudget` and count the field at two fixed indentations, so af4e98e2f
-    broke it by making the selector conditional across several lines while still subscribing
-    to exactly that field. A guard that a legal refactor turns red says nothing about the
-    behaviour it guards.
+    Asserted as behaviour, not spelling. Requiring the literal `(s) => s.reasoningBudget` at
+    two fixed indentations made af4e98e2f red for writing the same subscription as a
+    multi-line conditional. A guard a legal refactor breaks says nothing about what it guards.
 
-    The RESULT is what matters, not the mention: zustand compares the value a selector
-    returns, so naming the field only in a condition would read the store without tracking
-    it. What source alone cannot prove is that the returned value is distinct for distinct
-    field values; a selector mapping every budget to one constant would pass here.
+    Source alone cannot prove the returned value is distinct for distinct field values; a
+    selector mapping every budget to one constant would pass here.
     """
     sheet = _read("studio/frontend/src/features/chat/chat-settings-sheet.tsx")
     selectors = _store_selectors(sheet)
