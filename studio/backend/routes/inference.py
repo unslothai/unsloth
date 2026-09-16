@@ -11066,6 +11066,7 @@ def _admission_pool_shares_host_ram(
     is_vulkan_backend: bool,
     vulkan_gpu_memory: Optional[list] = None,
     requested_gpu_ids: Optional[list[int]] = None,
+    gpu_ids_are_vulkan_ordinals: bool = False,
 ) -> bool:
     """Whether the pool the training guard checks against is also the host heap.
 
@@ -11077,9 +11078,13 @@ def _admission_pool_shares_host_ram(
         from core.inference.llama_cpp import LlamaCppBackend
 
         if is_vulkan_backend:
-            # total 0 means integrated, as _shared_gpu_ids reads it. Over every row,
-            # not the pin, which may be a Vulkan ordinal or a physical id here.
+            # total 0 means integrated, as _shared_gpu_ids reads it. Narrowed to the pin
+            # only when it is confirmed to be in Vulkan's own index space; a physical id
+            # read as an ordinal would answer for the wrong adapter.
             rows = list(vulkan_gpu_memory or [])
+            if gpu_ids_are_vulkan_ordinals and requested_gpu_ids:
+                pinned = {int(i) for i in requested_gpu_ids}
+                rows = [row for row in rows if int(row[0]) in pinned]
             return not rows or any(int(total) <= 0 for _idx, _free, total in rows)
         import torch
 
@@ -14090,6 +14095,7 @@ def _guard_chat_load_against_training(
                 is_vulkan_backend = is_vulkan_backend,
                 vulkan_gpu_memory = vulkan_gpu_memory,
                 requested_gpu_ids = requested_gpu_ids,
+                gpu_ids_are_vulkan_ordinals = gpu_ids_are_vulkan_ordinals,
             ),
         )
     # A confirmed-diffusion positive split puts only ngl/n_layers of the weights on the GPU (a

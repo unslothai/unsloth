@@ -950,6 +950,37 @@ class TestTheGuardOnlyDropsHostBytesFromADiscretePool:
     def test_a_discrete_vulkan_device_does_not(self):
         assert self._shares(is_vulkan_backend = True, vulkan_gpu_memory = [(0, 8192, 24576)]) is False
 
+    def test_a_confirmed_ordinal_pin_narrows_the_rows(self):
+        """A mixed host pinned to the discrete adapter is checked against that adapter."""
+        mixed = [(0, 8192, 0), (1, 8192, 24576)]
+        assert self._shares(
+            is_vulkan_backend = True,
+            vulkan_gpu_memory = mixed,
+            requested_gpu_ids = [1],
+            gpu_ids_are_vulkan_ordinals = True,
+        ) is False
+        assert self._shares(
+            is_vulkan_backend = True,
+            vulkan_gpu_memory = mixed,
+            requested_gpu_ids = [0],
+            gpu_ids_are_vulkan_ordinals = True,
+        ) is True
+
+    def test_a_pin_in_an_unconfirmed_index_space_reads_every_row(self):
+        """A physical id read as a Vulkan ordinal would answer for the wrong adapter."""
+        mixed = [(0, 8192, 0), (1, 8192, 24576)]
+        assert self._shares(
+            is_vulkan_backend = True, vulkan_gpu_memory = mixed, requested_gpu_ids = [1]
+        ) is True
+
+    def test_a_pin_that_matches_no_row_fails_closed(self):
+        assert self._shares(
+            is_vulkan_backend = True,
+            vulkan_gpu_memory = [(0, 8192, 24576)],
+            requested_gpu_ids = [7],
+            gpu_ids_are_vulkan_ordinals = True,
+        ) is True
+
     def test_a_mixed_or_unreadable_vulkan_inventory_fails_closed(self):
         assert self._shares(is_vulkan_backend = True, vulkan_gpu_memory = []) is True
         assert self._shares(is_vulkan_backend = True, vulkan_gpu_memory = None) is True
