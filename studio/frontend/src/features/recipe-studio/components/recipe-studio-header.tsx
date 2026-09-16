@@ -129,7 +129,7 @@ export function RecipeStudioHeader({
           </span>
         </div>
       </div>
-      <div className="justify-self-center">
+      <div data-tour="recipe-views" className="justify-self-center">
         <Tabs value={activeView} onValueChange={handleViewValueChange}>
           <TabsList>
             {supportsEasyMode && (
@@ -190,6 +190,7 @@ export function RecipeStudioHeader({
           type="button"
           size="sm"
           variant="outline"
+          data-tour="recipe-save"
           onClick={onSaveRecipe}
           disabled={saveLoading}
         >

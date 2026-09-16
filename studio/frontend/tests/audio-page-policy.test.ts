@@ -381,10 +381,10 @@ test("gallery refresh preserves fallback selection and pagination identity", () 
 });
 
 test("Audio transcription uses backend language auto-detection", () => {
-  assert.match(
-    audioPageSource,
-    /transcribeAudioBlob\(blob, \{[\s\S]*model: key,[\s\S]*engine,[\s\S]*language: ""/,
-  );
+  const api = readSrc("features/audio/api.ts");
+  const transcription = api.slice(api.indexOf("export async function transcribeWithProgress"), api.indexOf("export async function listTranscripts"));
+  assert.doesNotMatch(transcription, /dictationLanguage|language:/);
+  assert.match(transcription, /stream: "true"/);
 });
 
 test("older STT status requests cannot overwrite newer residency", () => {
@@ -559,12 +559,8 @@ test("the trained-model list applies the native-aware macOS policy", () => {
 });
 
 test("the transcript download revokes its URL only after the click is consumed", () => {
-  // Immediate revocation raced browsers that resolve a synthetic download navigation
-  // asynchronously, leaving the action with no file.
-  assert.match(
-    audioPageSource,
-    /anchor\.download = `\$\{\(transcribedName[\s\S]*?anchor\.click\(\);[\s\S]*?window\.setTimeout\(\(\) => URL\.revokeObjectURL\(url\), 0\);/,
-  );
+  assert.match(readSrc("features/audio/transcript-download.ts"), /await downloadFile\(\s*text,/);
+  assert.match(readSrc("lib/native-files.ts"), /anchor\.click\(\);[\s\S]*?window\.setTimeout\(\(\) => URL\.revokeObjectURL\(url\), 0\);/);
 });
 
 test("a complete first page drops cached rows the server no longer holds", () => {

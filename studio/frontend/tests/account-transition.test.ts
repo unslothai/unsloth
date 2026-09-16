@@ -571,3 +571,37 @@ test("saved recipes live in a per-account store and are never purged", () => {
     "unsloth-data-recipes:alice",
   );
 });
+
+test("transcript recovery survives reauthentication but is cleared on account changes", async () => {
+  const { readTranscriptDraft, transcriptDraftKey, writeTranscriptDraft } =
+    await import("../src/features/audio/transcript-draft.ts");
+  const b = browserWith({ [BROWSER_ACCOUNT_KEY]: "account:alice-id:alice" });
+  const originals = ["window", "sessionStorage"].map((name) => [
+    name, Object.getOwnPropertyDescriptor(globalThis, name),
+  ] as const);
+  Object.defineProperty(globalThis, "window", { configurable: true, value: b.browser });
+  Object.defineProperty(globalThis, "sessionStorage", {
+    configurable: true, value: b.browser.sessionStorage,
+  });
+  try {
+    const key = transcriptDraftKey();
+    const draft = { text: "keep this transcript", title: "speech.wav", model: "tiny" };
+    assert.equal(writeTranscriptDraft(key, draft), true);
+    b.data.delete("unsloth_auth_token");
+    await transitionBrowserAccount(
+      { username: "alice", accountId: "alice-id" }, "/chat", () => {}, b.browser,
+    );
+    assert.deepEqual(readTranscriptDraft(transcriptDraftKey()), draft);
+    await transitionBrowserAccount(
+      { username: "bob", accountId: "bob-id" }, "/chat", () => {}, b.browser,
+    );
+    assert.notEqual(transcriptDraftKey(), key);
+    assert.equal(readTranscriptDraft(key), null);
+    assert.equal(readTranscriptDraft(transcriptDraftKey()), null);
+  } finally {
+    for (const [name, descriptor] of originals) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else Reflect.deleteProperty(globalThis, name);
+    }
+  }
+});

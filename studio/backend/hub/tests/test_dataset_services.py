@@ -1183,7 +1183,7 @@ def test_dataset_claim_register_cancel_uses_registry_marker_owner(monkeypatch):
     monkeypatch.setattr(
         downloads.download_registry,
         "download_transport_unavailable_reason",
-        lambda _transport: None,
+        lambda _transport, **_kwargs: None,
     )
     monkeypatch.setattr(
         downloads.download_lifecycle,

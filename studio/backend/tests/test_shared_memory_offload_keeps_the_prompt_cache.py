@@ -239,23 +239,23 @@ def test_a_trailing_flag_without_its_value_is_left_alone():
 
 
 def test_a_user_device_flag_makes_the_target_unknown():
-    assert LlamaCppBackend._cache_tuning_target_unknown(["--device", "ROCm1"], None, {})
+    assert LlamaCppBackend._cache_tuning_target_unknown(["--device", "ROCm1"], False, {})
 
 
 def test_an_inherited_device_env_makes_the_target_unknown():
     # Only an explicit gpu_ids clears the env twin, and llama.cpp reads it before argv, so
     # the generated pin is not what the child places against. Reading argv alone emitted
     # --cache-ram 0 at an APU the picker had paired with a discrete card.
-    assert LlamaCppBackend._cache_tuning_target_unknown(None, None, {"LLAMA_ARG_DEVICE": "ROCm0"})
-    assert not LlamaCppBackend._cache_tuning_target_unknown(None, None, {"LLAMA_ARG_DEVICE": "  "})
+    assert LlamaCppBackend._cache_tuning_target_unknown(None, False, {"LLAMA_ARG_DEVICE": "ROCm0"})
+    assert not LlamaCppBackend._cache_tuning_target_unknown(None, False, {"LLAMA_ARG_DEVICE": "  "})
 
 
 def test_an_explicit_pin_owns_the_placement_so_the_target_is_known():
     # The control: gpu_ids clears both spellings, so neither can name another device.
     assert not LlamaCppBackend._cache_tuning_target_unknown(
-        ["--device", "ROCm1"], [0], {"LLAMA_ARG_DEVICE": "ROCm0"}
+        ["--device", "ROCm1"], True, {"LLAMA_ARG_DEVICE": "ROCm0"}
     )
-    assert not LlamaCppBackend._cache_tuning_target_unknown(None, None, {})
+    assert not LlamaCppBackend._cache_tuning_target_unknown(None, False, {})
 
 
 # ── the arch-crash retry keeps the launch's precedence ──

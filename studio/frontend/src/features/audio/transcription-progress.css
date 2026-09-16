@@ -1,0 +1,23 @@
+/* SPDX-License-Identifier: AGPL-3.0-only */
+/* Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0 */
+
+@keyframes transcription-wave {
+  0%, 100% { transform: scaleY(0.45); }
+  50% { transform: scaleY(1); }
+}
+
+.transcription-wave > span {
+  animation: transcription-wave 1.6s ease-in-out infinite;
+}
+
+.transcription-wave[data-stopping="true"] > span {
+  animation-play-state: paused;
+}
+
+html.force-reduced-motion .transcription-wave > span {
+  animation: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html:not(.force-motion) .transcription-wave > span { animation: none; }
+}

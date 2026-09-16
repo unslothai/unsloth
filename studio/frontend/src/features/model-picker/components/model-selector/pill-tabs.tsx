@@ -21,6 +21,7 @@ export function PillTabs({
   compact = false,
   fit = false,
   disabled = false,
+  dataTour,
 }: {
   tabs: PillTab[];
   value: string;
@@ -28,6 +29,8 @@ export function PillTabs({
   ariaLabel: string;
   className?: string;
   compact?: boolean;
+  /** Guided-tour anchor, read as `[data-tour="..."]`. */
+  dataTour?: string;
   /** Block every tab, for a choice that cannot be applied right now. */
   disabled?: boolean;
   /** Size each tab to its label instead of equal widths. The active tab carries
@@ -43,6 +46,7 @@ export function PillTabs({
     <div
       role="tablist"
       aria-label={ariaLabel}
+      data-tour={dataTour}
       className={cn(
         "hub-menu-trigger hub-tab-toggle relative inline-flex items-center rounded-full",
         compact ? "h-7" : "h-(--picker-control-h)",
