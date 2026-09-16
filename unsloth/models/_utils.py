@@ -4014,7 +4014,9 @@ def get_moe_target_parameters(
         if moe_module_targets is None:
             moe_module_targets = get_moe_target_modules(model, target_modules)
         if not moe_module_targets and not _moe_experts_reachable_by_module_name(
-            model, target_set, target_modules,
+            model,
+            target_set,
+            target_modules,
         ):
             logger.warning(
                 f"Unsloth: MoE model with {num_experts = } resolved no expert parameters for "
@@ -4039,7 +4041,11 @@ def _moe_parameter_exists(
     return False
 
 
-def _moe_experts_reachable_by_module_name(model, target_set, target_modules = None) -> bool:
+def _moe_experts_reachable_by_module_name(
+    model,
+    target_set,
+    target_modules = None,
+) -> bool:
     """True if an ordinary target_modules match already reaches the experts.
 
     transformers 4.x builds Qwen3-MoE and Mixtral experts as per-expert submodules
