@@ -527,6 +527,9 @@ def _logical_lines(lines):
 # own cwd, which is what pip always uses. main() sets it for uv.
 _WORKING_DIR = None
 
+# Set for `pip uninstall`, where `pkg[extra]` names pkg itself rather than extras to add.
+_UNINSTALLING = False
+
 
 def _uv_working_dir(tool, argv):
     """The directory uv will change to before resolving a relative requirements
@@ -616,7 +619,11 @@ def _filter_requirements_file(path, _depth = 0):
             # every _KEEP package below, and the sidecar only replaces the version:
             # dropping the whole token loses deepspeed/sentencepiece/... and still
             # reports ok. The pin is stripped, so this can only ADD.
-            extras = _extras_only_target(spec) if _is_installed("transformers") else None
+            extras = (
+                _extras_only_target(spec)
+                if _is_installed("transformers") and not _UNINSTALLING
+                else None
+            )
             if extras is not None:
                 out.append(extras + ("\n" if group[-1].endswith("\n") else ""))
                 changed = True
@@ -625,7 +632,7 @@ def _filter_requirements_file(path, _depth = 0):
             changed = True
             continue
         if _is_protected(name):
-            extras = _extras_only_target(spec)
+            extras = None if _UNINSTALLING else _extras_only_target(spec)
             if extras is not None:
                 out.append(extras + ("\n" if group[-1].endswith("\n") else ""))
                 changed = True
@@ -864,12 +871,20 @@ def _subcommand_index(tool, argv, sub):
 
 
 def _uninstall_file(path, dropped):
+    """Filtered path, or None when nothing is left: pip errors on an empty file."""
     filtered, _, drp = _filter_requirements_file(path)
     dropped.extend(drp)
-    return filtered
+    if filtered == path:
+        return filtered
+    with open(filtered, encoding = "utf-8") as f:
+        if any(ln.strip() and not ln.strip().startswith("#") for ln in f):
+            return filtered
+    return None
 
 
 def _uninstall(tool, argv, i):
+    global _UNINSTALLING
+    _UNINSTALLING = True
     head, tail = argv[: i + 1], _expand_short_clusters(argv[i + 1 :])
     child_env = None
     if tool == "pip":
@@ -884,20 +899,28 @@ def _uninstall(tool, argv, i):
         if pending is not None:
             if pending in _REQ_FILE_FLAGS:
                 tok = _uninstall_file(tok, dropped)
-                has_target = True
-            keep += [pending, tok]
+                if tok is not None:
+                    keep += [pending, tok]
+                    has_target = True
+            else:
+                keep += [pending, tok]
             pending = None
             continue
         if tok.startswith("--") and "=" in tok:
             flag, _, val = tok.partition("=")
             if flag in _REQ_FILE_FLAGS:
-                tok = flag + "=" + _uninstall_file(val, dropped)
-                has_target = True
+                filtered = _uninstall_file(val, dropped)
+                if filtered is not None:
+                    keep.append(flag + "=" + filtered)
+                    has_target = True
+                continue
             keep.append(tok)
             continue
         if len(tok) > 2 and tok[:2] in _REQ_FILE_FLAGS:
-            keep += [tok[:2], _uninstall_file(tok[2:], dropped)]
-            has_target = True
+            filtered = _uninstall_file(tok[2:], dropped)
+            if filtered is not None:
+                keep += [tok[:2], filtered]
+                has_target = True
             continue
         if tok in _VALUE_FLAGS:
             pending = tok

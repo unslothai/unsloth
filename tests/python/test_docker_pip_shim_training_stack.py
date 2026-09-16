@@ -325,7 +325,10 @@ def test_the_shipped_falcon_cell_cannot_remove_unsloth(shim, capsys):
 
 
 def test_the_shipped_qwen_moe_cell_keeps_torchcodec(shim):
-    assert _run(shim, ["-y", "sentence-transformers", "torchcodec"], sub = "uninstall") == ["-y", "sentence-transformers"]
+    assert _run(shim, ["-y", "sentence-transformers", "torchcodec"], sub = "uninstall") == [
+        "-y",
+        "sentence-transformers",
+    ]
 
 
 @pytest.mark.parametrize("pkg", ["torch", "vllm", "trl", "transformers", "nvidia-cublas-cu12"])
@@ -366,3 +369,19 @@ def test_uninstall_protection_survives_the_pip_requirement_env(shim, tmp_path, m
     execd = _run(shim, ["-y"], sub = "uninstall")
     assert execd is not None and execd[0] == "-r" and execd[2] == "-y", execd
     assert Path(execd[1]).read_text().split() == [UNBAKED]
+
+
+def test_uninstall_requirements_file_extras_do_not_reach_the_baked_package(shim, tmp_path):
+    req = tmp_path / "remove.txt"
+    req.write_text(f"torch[opt]\ntransformers[torch]\n{UNBAKED}\n")
+    execd = _run(shim, ["-y", "-r", str(req)], sub = "uninstall")
+    assert Path(execd[-1]).read_text().split() == [UNBAKED]
+
+
+def test_uninstall_requirements_file_of_only_baked_packages_is_a_no_op(shim, tmp_path, capsys):
+    req = tmp_path / "remove.txt"
+    req.write_text("# baked\ntorchcodec\nunsloth[colab-new]\n")
+    for args in (["-y", "-r", str(req)], ["-y", f"-r{req}"], ["-y", f"--requirement={req}"]):
+        assert _run(shim, args, sub = "uninstall") is None, args
+        assert "nothing to uninstall" in capsys.readouterr().out
+    assert _run(shim, ["-y", "-r", str(req), UNBAKED], sub = "uninstall") == ["-y", UNBAKED]
