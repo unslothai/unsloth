@@ -1147,3 +1147,67 @@ def test_the_reference_that_loaded_a_model_can_unload_it():
     assert UnloadRequest(model_path = "unsloth/Llama-3.2-1B").model_path == (
         "unsloth/Llama-3.2-1B"
     )
+
+
+def test_a_path_that_outlives_its_request_is_still_referenced():
+    """The per-request restoration cannot reach a record that outlives the request.
+
+    A load or a training run started from an inventory reference PERSISTS the resolved path
+    -- as `repo_id` on the resident model, as `model_name` on the run -- and `/images/status`,
+    `/video/status` and the run list answer minutes or days later, with no request context to
+    put the handle back from. The value is what decides there: an identity field holding an
+    absolute path becomes the same opaque reference the caller was given in the first place,
+    which is stable for the life of the server.
+    """
+    path = f"{HOST_ROOT}/my models/Llama-3.2-1B"
+    reference = host_paths.cache_reference(path)
+
+    status = {"loaded": True, "repo_id": path, "device": "cuda"}
+    redacted = host_paths.redact_host_paths(status, via_api_key = True)
+    assert redacted["repo_id"] == reference
+    assert HOST_ROOT not in json.dumps(redacted), redacted
+    assert host_paths.resolve_host_path_reference(redacted["repo_id"]) == path
+
+    run = {"run_id": "abc", "model_name": path, "status": "completed"}
+    assert host_paths.redact_host_paths(run, via_api_key = True)["model_name"] == reference
+
+    # A repo id is never touched, which is the whole reason the value decides.
+    hub_row = {"repo_id": "unsloth/Llama-3.2-1B", "model_name": "unsloth/Llama-3.2-1B"}
+    assert host_paths.redact_host_paths(hub_row, via_api_key = True) == hub_row
+    # And a browser session still sees its own machine.
+    assert host_paths.redact_host_paths(status, via_api_key = False) == status
+
+
+def test_a_local_row_keeps_a_repo_id_that_is_not_a_path(monkeypatch):
+    """A local row is named by its path, so `id` and `load_id` are referenced on the strength
+    of the row's SOURCE. `repo_id` is not one of those: a filesystem row can carry a repo id
+    that is not a path at all, and blanking that would take away the only thing the caller
+    could act on."""
+    row = {
+        "source": "models_dir",
+        "id": f"{HOST_ROOT}/models/Llama-3.2-1B",
+        "load_id": f"{HOST_ROOT}/models/Llama-3.2-1B",
+        "repo_id": "unsloth/Llama-3.2-1B",
+    }
+    redacted = host_paths.redact_inventory_host_paths(row, via_api_key = True)
+    assert redacted["id"].startswith("ref:")
+    assert redacted["load_id"].startswith("ref:")
+    assert redacted["repo_id"] == "unsloth/Llama-3.2-1B"
+
+
+def test_the_long_lived_routes_redact_what_they_persisted():
+    """A route that returns the record straight back would leave every assertion above
+    passing and the path still going out."""
+    import inspect
+    from routes import inference as inference_routes
+    from routes import training_history as training_routes
+    from routes import video as video_routes
+
+    for module, needle in (
+        (inference_routes, "redact_host_paths(DiffusionStatusResponse("),
+        (video_routes, "redact_host_paths(VideoStatusResponse("),
+        (training_routes, "TrainingRunListResponse(runs = runs, total = result[\"total\"]),"),
+    ):
+        source = inspect.getsource(module)
+        assert needle in source, (module.__name__, needle)
+        assert "authenticated_via_api_key" in source, module.__name__

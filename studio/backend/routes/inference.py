@@ -3276,7 +3276,11 @@ from core.inference.anthropic_compat import (
     AnthropicPassthroughEmitter,
 )
 from auth import policy as auth_policy, storage as auth_storage
-from auth.authentication import API_KEY_PREFIX, get_current_subject
+from auth.authentication import (
+    API_KEY_PREFIX,
+    authenticated_via_api_key,
+    get_current_subject,
+)
 from state import active_generations
 
 
@@ -37513,15 +37517,23 @@ async def unload_diffusion_model(current_subject: str = Depends(get_current_subj
 
 
 @studio_router.get("/images/status", response_model = DiffusionStatusResponse)
-async def diffusion_status(current_subject: str = Depends(get_current_subject)):
+async def diffusion_status(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
     if account_access.resident_hidden("diffusion"):
         return account_access.hidden_resident_response()
     from core.inference.diffusion_engine_router import active_status
+    from hub.utils.host_paths import redact_host_paths
 
     status_dict = active_status()
     if account_access.resident_hidden("diffusion", status_dict.get("repo_id")):
         return account_access.hidden_resident_response()
-    return DiffusionStatusResponse(**status_dict)
+    # A load started from an inventory reference records the resolved path, and this route
+    # answers long after the request that resolved it has ended, so the reference cannot be
+    # put back from the request context. The redactor hands back the same opaque reference
+    # instead, which is what the caller sent and what it can send again.
+    return redact_host_paths(DiffusionStatusResponse(**status_dict), via_api_key = via_api_key)
 
 
 @studio_router.get("/images/info", response_model = DiffusionInferenceInfoResponse)

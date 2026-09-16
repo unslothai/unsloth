@@ -32,7 +32,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import ValidationError
 from starlette.datastructures import UploadFile
 
-from auth.authentication import get_current_subject, request_admitted_without_credential
+from auth.authentication import (
+    authenticated_via_api_key,
+    get_current_subject,
+    request_admitted_without_credential,
+)
 from core.inference.model_ids import public_model_id
 from hub.dependencies import get_hf_token
 from hub.services.models import account_access
@@ -674,15 +678,23 @@ async def cancel_video_generation(current_subject: str = Depends(get_current_sub
 
 
 @router.get("/video/status", response_model = VideoStatusResponse)
-async def video_status(current_subject: str = Depends(get_current_subject)):
+async def video_status(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
     if account_access.resident_hidden("video"):
         return account_access.hidden_resident_response()
     from core.inference.video import get_video_backend
+    from hub.utils.host_paths import redact_host_paths
 
     status_dict = get_video_backend().status()
     if account_access.resident_hidden("video", status_dict.get("repo_id")):
         return account_access.hidden_resident_response()
-    return VideoStatusResponse(**status_dict)
+    # A load started from an inventory reference records the resolved path, and this route
+    # answers long after the request that resolved it has ended, so the reference cannot be
+    # put back from the request context. The redactor hands back the same opaque reference
+    # instead, which is what the caller sent and what it can send again.
+    return redact_host_paths(VideoStatusResponse(**status_dict), via_api_key = via_api_key)
 
 
 @router.post("/video/unload", response_model = VideoStatusResponse)

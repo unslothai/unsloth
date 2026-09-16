@@ -99,7 +99,18 @@ def _conditional_path_is_local(payload: Mapping) -> bool:
 # These rows are not blanked, because a row with no identity cannot be told apart from the
 # next one: each identity becomes its opaque reference, which is stable within the response
 # and across the life of the server and reverses to nothing.
-HOST_PATH_IDENTITY_FIELDS = ("id", "load_id")
+# `repo_id` and `model_name` are here for the same reason as `load_id` and on the same
+# terms: they are a repo id almost always, and an absolute path when the thing they name is
+# a local folder -- which is what a load or a training run started from an inventory
+# reference records, and what `/images/status`, `/video/status` and the training run list
+# hand back long after the request that resolved the reference has ended. The value decides,
+# so a repo id is never touched.
+HOST_PATH_IDENTITY_FIELDS = ("id", "load_id", "repo_id", "model_name")
+# The subset a LOCAL row is named by, which is referenced on the strength of the row's
+# source alone. The other two are only ever referenced when the value itself is a path: a
+# local row can carry a `repo_id` that is not one, and blanking that would take away the
+# only thing the caller could act on.
+HOST_PATH_ROW_IDENTITY_FIELDS = ("id", "load_id")
 HOST_PATH_ENCODED_IDENTITY_FIELD = "inventory_id"
 HOST_PATH_ROW_SOURCE_FIELD = "source"
 # `hf_cache` is absent because those rows are named by repo id. Where they are NOT -- a cached
@@ -340,7 +351,8 @@ def _redact(payload: Any, *, redact_ambiguous_path: bool) -> Any:
         identity_is_a_path = redact_ambiguous_path and _row_identity_is_a_path(payload)
         for key, value in payload.items():
             if key in HOST_PATH_IDENTITY_FIELDS and (
-                identity_is_a_path or _identity_value_is_a_path(value)
+                (identity_is_a_path and key in HOST_PATH_ROW_IDENTITY_FIELDS)
+                or _identity_value_is_a_path(value)
             ):
                 out[key] = _referenced_identity(value)
                 continue

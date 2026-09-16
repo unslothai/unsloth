@@ -22,7 +22,7 @@ from fastapi.testclient import TestClient
 import core.inference.gpu_arbiter as gpu_arbiter
 import core.inference.video as video_module
 import core.inference.video_gallery as gallery_module
-from auth.authentication import get_current_subject
+from auth.authentication import authenticated_via_api_key, get_current_subject
 from core.inference.video_families import (
     VIDEO_CANCELLED_MSG,
     VIDEO_GENERATION_BUSY_MSG,
@@ -292,6 +292,10 @@ def client(monkeypatch, tmp_path):
     app = FastAPI()
     app.include_router(video_router, prefix = "/api/inference")
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    # A browser session, like every other harness here: the status routes redact host paths
+    # for an API-key caller, and the dependency that answers that question has no credential
+    # to read in a bare TestClient.
+    app.dependency_overrides[authenticated_via_api_key] = lambda: False
     return TestClient(app)
 
 

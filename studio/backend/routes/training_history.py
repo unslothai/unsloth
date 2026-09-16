@@ -13,7 +13,11 @@ from typing import Literal, Optional, Union
 from fastapi import APIRouter, Depends, HTTPException, Query
 from loggers import get_logger
 
-from auth.authentication import authenticated_without_credential, get_current_subject
+from auth.authentication import (
+    authenticated_via_api_key,
+    authenticated_without_credential,
+    get_current_subject,
+)
 from core.training.resume import artifacts_present, can_resume_run
 from utils.training_runs import drop_non_finite
 from models import (
@@ -271,6 +275,7 @@ async def list_training_runs(
     offset: int = Query(0, ge = 0),
     current_subject: str = Depends(get_current_subject),
     no_credential: bool = Depends(authenticated_without_credential),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     """List training runs, newest first."""
     result = list_runs(limit = limit, offset = offset)
@@ -280,9 +285,14 @@ async def list_training_runs(
         result["runs"],
         sharing_on,
     )
-    return TrainingRunListResponse(
-        runs = runs,
-        total = result["total"],
+    # A run started from an inventory reference persists the resolved path as its
+    # `model_name`, and this route answers days later, so the reference cannot be put back
+    # from the request context. The redactor hands back the same opaque reference instead.
+    from hub.utils.host_paths import redact_host_paths
+
+    return redact_host_paths(
+        TrainingRunListResponse(runs = runs, total = result["total"]),
+        via_api_key = via_api_key,
     )
 
 
