@@ -25,6 +25,7 @@ rather than turning a diagnosable crash into a failure to start.
 from __future__ import annotations
 
 import atexit
+import logging
 import os
 import sys
 import tempfile
@@ -32,12 +33,31 @@ import threading
 import time
 
 __all__ = [
+    "LOG_RECORD_CONTINUATION_PREFIX",
     "STDERR_MIRROR_KWARG",
     "WorkerStderrCapture",
     "decode_worker_stderr",
     "install_worker_stderr_mirror",
+    "mark_log_record_continuations",
     "stderr_tail_from_bytes",
 ]
+
+# What a log record's SECOND and later lines carry, so the parent can tell them apart from
+# the lines a crashing runtime writes.
+#
+# The parent's filter has to answer, per line, "did the logging stack write this". A record
+# is prefixed on its first line only, so every line after it is bare content at column 0 --
+# and `logger.error(..., exc_info = True)`, which `worker.py` uses for a request failure it
+# RECOVERS from, writes a whole `Traceback (most recent call last):` that way. No amount of
+# pattern matching separates that from the traceback of a process that actually died: the
+# bytes are the same. Guessing in one direction hands another account's exception text to
+# the next caller as their crash; guessing in the other drops the diagnosis this capture
+# exists to deliver.
+#
+# So the writer says which it is instead. Every continuation line of every record is marked
+# here, at the one handler that writes them, and anything left unmarked at column 0 came
+# from something that was not the logging stack.
+LOG_RECORD_CONTINUATION_PREFIX = "    | "
 
 # The reserved keyword argument the shared child entrypoint intercepts. Passed as a kwarg
 # rather than an environment variable on purpose: several workers can be spawned at once,
@@ -558,3 +578,48 @@ def install_worker_stderr_mirror(
     pump.start()
     atexit.register(_stop_mirror, inherited, pump, stop)
     return True
+
+
+class _EveryLineCarriesThePrefix(logging.Formatter):
+    """A formatter that marks a record's continuation lines and delegates everything else.
+
+    Wrapping rather than replacing: the handler's own formatter decides what a record looks
+    like, including structlog's, and this only touches what happens after the first
+    newline. A single-line record is returned byte for byte.
+    """
+
+    def __init__(self, inner: "logging.Formatter") -> None:
+        super().__init__()
+        self._inner = inner
+
+    def format(self, record: "logging.LogRecord") -> str:
+        text = self._inner.format(record)
+        first, newline, rest = text.partition("\n")
+        if not newline:
+            return text
+        return first + "\n" + "\n".join(
+            LOG_RECORD_CONTINUATION_PREFIX + line for line in rest.split("\n")
+        )
+
+    def __getattr__(self, name: str):
+        # Anything else a handler asks of its formatter belongs to the real one.
+        return getattr(self._inner, name)
+
+
+def mark_log_record_continuations(logger_object = None) -> int:
+    """Mark every continuation line written by the handlers on *logger_object*.
+
+    Called by the worker right after its logging is configured, so the parent reading its
+    stderr can tell a logged traceback from a crash. Returns how many handlers were wrapped,
+    which is what a test can assert on; wrapping twice is a no-op, so calling it again after
+    a reconfiguration is safe.
+    """
+    root = logger_object if logger_object is not None else logging.getLogger()
+    wrapped = 0
+    for handler in list(getattr(root, "handlers", ())):
+        formatter = handler.formatter
+        if isinstance(formatter, _EveryLineCarriesThePrefix):
+            continue
+        handler.setFormatter(_EveryLineCarriesThePrefix(formatter or logging.Formatter()))
+        wrapped += 1
+    return wrapped

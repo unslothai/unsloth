@@ -27,18 +27,23 @@ type AuthApi = {
 /** The stub map api.ts needs, with the Tauri-specific parts under the caller's control. */
 function loadAuthApi(options: {
   port: number | null;
+  /** For the one test where the port MOVES while a probe is pending, as setApiBase can. */
+  getPort?: () => number | null;
   checkHealth?: (port: number) => boolean | Promise<boolean>;
   onInvoke?: (command: string, args: Record<string, unknown>) => void;
 }): AuthApi {
+  const currentPort = options.getPort ?? (() => options.port);
   return loadWithStubs<AuthApi>(
     new URL("../src/features/auth/api.ts", import.meta.url),
     {
       "@/lib/api-base": {
-        apiUrl: (path: string) =>
-          options.port === null
+        apiUrl: (path: string) => {
+          const port = currentPort();
+          return port === null
             ? `http://127.0.0.1:0${path}`
-            : `http://127.0.0.1:${options.port}${path}`,
-        getApiPort: () => options.port,
+            : `http://127.0.0.1:${port}${path}`;
+        },
+        getApiPort: () => currentPort(),
         isTauri: true,
       },
       "@/lib/account-transition": { accountTransitionPending: () => false },
@@ -411,6 +416,62 @@ test("a POST is not retried on the long ladder", async () => {
       attempts > 1,
       "the unsafe ladder still retries, as it always did",
     );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("a probe pending against the old port is not the answer about the new one", async () => {
+  // setApiBase can move the port inside a probe's 10s budget: the backend restarts, or the
+  // app adopts a launcher listening somewhere else. Sharing the pending promise then reports
+  // the PREVIOUS backend's liveness as the new one's -- a live backend called absent, or a
+  // dead one called present -- for the rest of that budget.
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    throw new TypeError("fetch failed");
+  };
+
+  const asked: number[] = [];
+  let port = 61810;
+  let releaseFirst: (() => void) | null = null;
+  const firstProbeStarted = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+
+  try {
+    const authApi = loadAuthApi({
+      port,
+      getPort: () => port,
+      checkHealth: async (probedPort: number) => {
+        asked.push(probedPort);
+        if (asked.length === 1) {
+          releaseFirst?.();
+          await new Promise((resolve) => setTimeout(resolve, 60));
+          return false; // the old backend is gone, which is why the port moved
+        }
+        return true; // the new one is up
+      },
+    });
+    const call = () =>
+      authApi
+        .authFetch("/api/models", undefined, { retryNetworkErrors: false })
+        .then(
+          () => null,
+          (rejection: unknown) => rejection,
+        );
+
+    const first = call();
+    await firstProbeStarted;
+    port = 61811;
+    const second = await call();
+    const firstError = await first;
+
+    assert.deepEqual(asked, [61810, 61811], "the new port was never probed");
+    assert.ok(second instanceof Error);
+    assert.equal(second.message, authApi.BACKEND_NOT_ANSWERING_MESSAGE);
+    // And the caller that asked about the old port still gets the old port's answer.
+    assert.ok(firstError instanceof Error);
+    assert.equal(firstError.message, authApi.BACKEND_NOT_RUNNING_MESSAGE);
   } finally {
     globalThis.fetch = originalFetch;
   }

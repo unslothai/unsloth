@@ -88,9 +88,22 @@ _LOG_RECORD_RE = re.compile(
     re.VERBOSE,
 )
 
+# And the SECOND and later lines of one, which the worker marks at the handler that writes
+# them. A record is prefixed on its first line only, so everything after it is bare content
+# at column 0; `logger.error(..., exc_info = True)` for a request the worker RECOVERS from
+# puts a whole traceback there, and no pattern separates it from the traceback of a process
+# that died, because the bytes are identical. The writer is the only place that knows, so
+# the writer says so. See `utils.worker_stderr.mark_log_record_continuations`.
+_LOG_CONTINUATION_PREFIX = "    | "
+
 
 def _looks_like_a_log_record(line: str) -> bool:
     """Whether this stderr line came from the logging stack.
+
+    Two answers, and the marked one is the reliable half. A continuation carrying the
+    worker's own marker IS a log record, whatever it says; the patterns below are the
+    fallback for a producer that did not go through that handler -- a library writing to fd
+    2 itself, a child process, a worker from an older build.
 
     Deliberately shaped rather than exhaustive. Getting it wrong in one direction drops a
     diagnostic line from an error message; in the other it forwards someone else's logged
@@ -98,6 +111,8 @@ def _looks_like_a_log_record(line: str) -> bool:
     a native abort and a fatal-signal line do not. `RuntimeError: boom` has no dot before
     its colon and is kept.
     """
+    if line.startswith(_LOG_CONTINUATION_PREFIX):
+        return True
     return bool(_LOG_RECORD_RE.match(line))
 
 
@@ -162,6 +177,12 @@ def _diagnostic_lines_only(lines: "list[str]") -> "list[str]":
     kept: "list[str]" = []
     inside_a_diagnostic = False
     for line in lines:
+        if line.startswith(_LOG_CONTINUATION_PREFIX):
+            # A marked line is known to be a record's continuation, so it says nothing about
+            # whatever diagnostic was open: another thread logging in the middle of an abort
+            # does not end the abort, and closing it here dropped the `  what():` line that
+            # carries the actual error. Dropped, and the state is left as it was.
+            continue
         if _looks_like_a_log_record(line):
             inside_a_diagnostic = False
             continue

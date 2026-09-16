@@ -182,7 +182,12 @@ export const BACKEND_NOT_ANSWERING_MESSAGE =
  * distinction the watchdog already keeps, for the same reason: silence from a closed port is
  * death, silence from an accepted connection is a stall.
  */
-let nativeHealthInflight: Promise<boolean> | null = null;
+// The port is carried WITH the promise, not read again when the answer comes back. The probe
+// budget is 10s and `setApiBase` can move the port inside it -- a backend restart, an adopted
+// launcher on a different port -- after which sharing the pending answer reports the previous
+// backend's liveness as the new one's: a live backend called absent, or a dead one called
+// present, until the old probe lands.
+let nativeHealthInflight: { port: number; probe: Promise<boolean> } | null = null;
 
 async function nativeBackendIsAlive(): Promise<boolean> {
   if (!isTauri) {
@@ -198,8 +203,9 @@ async function nativeBackendIsAlive(): Promise<boolean> {
   // actually wait out the launcher's budget rather than being refused immediately, so a
   // shared answer is the difference between one 10s probe and one per panel. Not cached
   // beyond the call: the answer is about right now, and the next failure deserves a fresh one.
-  if (nativeHealthInflight !== null) {
-    return nativeHealthInflight;
+  // Shared only with a caller asking about the SAME port, for the reason above.
+  if (nativeHealthInflight !== null && nativeHealthInflight.port === port) {
+    return nativeHealthInflight.probe;
   }
   const probe = (async () => {
     try {
@@ -211,11 +217,14 @@ async function nativeBackendIsAlive(): Promise<boolean> {
       return false;
     }
   })();
-  nativeHealthInflight = probe;
+  const inflight = { port, probe };
+  nativeHealthInflight = inflight;
   try {
     return await probe;
   } finally {
-    if (nativeHealthInflight === probe) {
+    // Identity, not the port: a probe for a newer port started while this one was pending
+    // owns the slot now, and clearing it by port number would throw away its answer.
+    if (nativeHealthInflight === inflight) {
       nativeHealthInflight = null;
     }
   }

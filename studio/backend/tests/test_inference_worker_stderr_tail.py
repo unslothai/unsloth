@@ -955,3 +955,117 @@ def test_a_path_component_with_punctuation_in_it_is_still_redacted():
     assert _redact_worker_output("a ratio of 3/4 at https://host/path/x\n").strip() == (
         "a ratio of 3/4 at https://host/path/x"
     )
+
+
+MARK = "    | "
+
+
+def test_the_worker_marks_every_continuation_line_of_a_record():
+    """A record is prefixed on its first line only, so everything after it is bare content
+    at column 0 -- including the traceback `exc_info = True` appends. The writer is the only
+    place that knows which it is, so the writer says so."""
+    import logging
+    from utils.worker_stderr import LOG_RECORD_CONTINUATION_PREFIX, mark_log_record_continuations
+
+    assert LOG_RECORD_CONTINUATION_PREFIX == MARK
+
+    logger_object = logging.getLogger("unsloth-test-marking")
+    logger_object.handlers = []
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+    logger_object.addHandler(handler)
+
+    assert mark_log_record_continuations(logger_object) == 1
+    # Idempotent: a second call after a reconfiguration must not double the prefix.
+    assert mark_log_record_continuations(logger_object) == 0
+
+    record = logger_object.makeRecord(
+        "unsloth-test-marking", logging.ERROR, __file__, 1,
+        "generated text: line one\nRuntimeError: not really\nTraceback (most recent call last):",
+        (), None,
+    )
+    formatted = handler.formatter.format(record)
+    lines = formatted.split("\n")
+    assert lines[0].startswith("ERROR unsloth-test-marking:"), lines
+    assert all(line.startswith(MARK) for line in lines[1:]), lines
+
+    single = logger_object.makeRecord(
+        "unsloth-test-marking", logging.ERROR, __file__, 1, "one line", (), None,
+    )
+    assert "\n" not in handler.formatter.format(single)
+
+
+def test_a_logged_traceback_is_not_returned_when_the_worker_dies_silently():
+    """The case a later diagnostic cannot rescue. One request raises a handled error, its
+    traceback is logged, the worker keeps running, and a LATER request ends it by SIGKILL
+    or the OOM killer, which write nothing at all. The last traceback in the capture is
+    then the earlier request's, and returning it hands another account's exception text and
+    frames to whoever asked second."""
+    logged = (
+        "2026-09-16 10:00:03 worker: Generation error: another account's prompt was rejected\n"
+        + MARK + "Traceback (most recent call last):\n"
+        + MARK + '  File "/home/alice/.unsloth/studio/worker.py", line 9, in handle\n'
+        + MARK + "ValueError: another account's prompt was rejected\n"
+    )
+    public = _orchestrator_with_capture(logged)._public_worker_stderr_tail()
+    assert public == "", public
+
+
+def test_a_marked_continuation_that_reads_like_a_diagnostic_is_still_content():
+    """`decode_bicodec` logs the first 500 characters of generated text, and generated text
+    can contain anything -- `RuntimeError:`, `Fatal Python error:`, `Killed`. Reclassifying
+    a continuation by what it says is what let that content out."""
+    content = (
+        "2026-09-16 10:00:01 audio_codecs.decode_bicodec: generated text:\n"
+        + MARK + "RuntimeError: another account's private prompt\n"
+        + MARK + "Fatal Python error: also theirs\n"
+        + MARK + "Killed\n"
+    )
+    public = _orchestrator_with_capture(content)._public_worker_stderr_tail()
+    assert public == "", public
+    assert "another account" not in public
+
+
+def test_a_crash_after_a_marked_record_is_still_the_crash():
+    """The marking is what makes the record self-delimiting: its continuations are marked,
+    so the first UNMARKED line after it is not a continuation and is classified on its own.
+    Without that the strict reading would have to drop a real traceback written straight
+    after a log line, which is most of them."""
+    text = (
+        "2026-09-16 10:00:01 audio_codecs.decode_bicodec: generated text:\n"
+        + MARK + "another account's private prompt\n"
+        + TRACEBACK
+    )
+    public = _orchestrator_with_capture(text)._public_worker_stderr_tail()
+    assert "another account" not in public, public
+    assert "RuntimeError: boom" in public, public
+
+
+def test_the_worker_installs_the_marking_where_its_logging_is_configured():
+    """The filter above is only sound because the writer marks. A worker that configured
+    logging and never called this would leave every case here passing and the product
+    unchanged."""
+    import inspect
+    from core.inference import worker as worker_module
+
+    source = inspect.getsource(worker_module)
+    assert "mark_log_record_continuations()" in source
+    setup = source.index("LogConfig.setup_logging(")
+    assert 0 < setup < source.index("mark_log_record_continuations()")
+
+
+def test_a_marked_record_under_a_diagnostic_is_not_adopted_by_it():
+    """Indentation alone cannot carry this. An indented line CONTINUES whatever is open, and
+    `  what():  CUDA error: ...` under an abort genuinely does, so a logged line that merely
+    happens to be indented was being adopted by the abort above it and sent out with it. The
+    marker says what the indentation only suggests."""
+    text = (
+        "terminate called after throwing an instance of 'c10::Error'\n"
+        + MARK + "another account's private prompt\n"
+        "  what():  CUDA error: device-side assert triggered\n"
+    )
+    public = _orchestrator_with_capture(text)._public_worker_stderr_tail()
+    assert "another account" not in public, public
+    # And the abort itself, with its own genuine continuation, is still the message.
+    assert "terminate called" in public, public
+    assert "CUDA error: device-side assert triggered" in public, public
