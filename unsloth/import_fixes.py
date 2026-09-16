@@ -2814,13 +2814,14 @@ def _audio_decode_with_av(source, stream_index = None):
     with av.open(source, mode = "r", metadata_errors = "ignore") as container:
         if not container.streams.audio:
             raise ValueError("audio container has no audio stream")
-        # datasets.Audio(stream_index=...) is the container's absolute stream index, as torchcodec reads it; None is the first audio stream.
+        # datasets.Audio(stream_index=...) is the container's absolute stream index, as torchcodec reads it; None is the best audio stream.
         try:
-            stream = (
-                container.streams.audio[0]
-                if stream_index is None
-                else container.streams[stream_index]
-            )
+            if stream_index is None:
+                # av_find_best_stream, which torchcodec uses: the default-disposition track wins over the first. PyAV < 13 has no wrapper, so take the first audio track there.
+                best = getattr(container.streams, "best", None)
+                stream = best("audio") if best is not None else container.streams.audio[0]
+            else:
+                stream = container.streams[stream_index]
         except IndexError:
             raise ValueError(
                 f"stream {stream_index} is not in the container, which has {len(container.streams)} streams"
