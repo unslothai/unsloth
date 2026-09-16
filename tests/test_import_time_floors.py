@@ -94,8 +94,7 @@ def test_a_dependency_reaching_for_a_missing_dtype_gets_the_upgrade(patched_torc
     assert "transformers==" in message
     assert patched_torch.__version__ in message
     assert "first appears in torch 2.7.0" in message
-    index = import_fixes._torch_wheel_index(patched_torch.__version__)
-    assert f'pip install --upgrade{index} "torch>=2.7.0"' in message
+    assert 'pip install --upgrade "torch>=2.7.0"' in message
     # Still an AttributeError, so no caller's except clause changes meaning.
     assert isinstance(raised.value, AttributeError)
 
@@ -108,8 +107,7 @@ def test_an_unknown_attribute_still_gets_the_diagnosis_without_a_floor(patched_t
 
     message = str(raised.value)
     assert "first appears in torch" not in message
-    index = import_fixes._torch_wheel_index(patched_torch.__version__)
-    assert f'pip install --upgrade{index} "torch"' in message
+    assert 'pip install --upgrade "torch"' in message
 
 
 @pytest.mark.parametrize(
@@ -126,27 +124,48 @@ def test_user_and_torch_frames_are_left_exactly_as_torch_wrote_them(patched_torc
 
 
 @pytest.mark.parametrize(
-    "torch_version, index",
+    "torch_version, family",
     [
-        ("2.7.0+rocm6.3", " --index-url https://download.pytorch.org/whl/rocm6.3"),
-        ("2.7.0+xpu", " --index-url https://download.pytorch.org/whl/xpu"),
-        ("2.7.0+cpu", " --index-url https://download.pytorch.org/whl/cpu"),
-        # NEGATIVE CONTROL: PyPI already serves this one, so no index is added.
-        ("2.7.0+cu126", " --index-url https://download.pytorch.org/whl/cu126"),
-        ("2.7.0", ""),
-        ("2.9.0.dev20250101", ""),
+        ("2.7.0+rocm6.3", "ROCm"),
+        ("2.7.0+xpu", "XPU"),
+        ("2.7.0+cpu", "CPU"),
+        ("2.6.0+cu124", "CUDA"),
     ],
 )
-def test_the_upgrade_keeps_the_accelerator_it_found(patched_torch, monkeypatch, torch_version, index):
+def test_the_upgrade_names_the_accelerator_it_found(patched_torch, monkeypatch, torch_version, family):
     """pip's --index-url defaults to pypi.org, which ships one build per release: the
-    default CUDA one. ROCm and XPU torch live only on download.pytorch.org, so an
-    unqualified upgrade replaces a working torch+rocm with an incompatible build."""
+    default CUDA one. So an unqualified upgrade silently moves a ROCm or XPU user off
+    their accelerator, and the message has to say so. It must NOT paste the installed
+    tag into --index-url: each index carries only the releases built for it, and the
+    reported torch 2.6.0+cu124 case would then get a command with no candidate at all
+    (download.pytorch.org/whl/cu124 stops at torch 2.6.0; 2.7 shipped on cu126/cu128)."""
     monkeypatch.setattr(patched_torch, "__version__", torch_version)
 
     with pytest.raises(import_fixes.UnslothTorchTooOldError) as raised:
         _access_from("transformers.integrations.finegrained_fp8", "unsloth_probe_dtype")
 
-    assert f'pip install --upgrade{index} "torch>=2.7.0"' in str(raised.value)
+    message = str(raised.value)
+    assert 'pip install --upgrade "torch>=2.7.0"' in message
+    assert "--index-url" in message
+    assert f"--index-url https://download.pytorch.org/whl/{torch_version.split('+')[1]}" not in message
+    assert f"This torch is a {torch_version.split('+')[1]} build" in message
+    assert f"pick the {family} index" in message
+    assert "https://pytorch.org/get-started/locally/" in message
+
+
+@pytest.mark.parametrize("torch_version", ["2.7.0", "2.9.0.dev20250101", "2.7.0+fbcode"])
+def test_a_pypi_torch_gets_no_accelerator_note(patched_torch, monkeypatch, torch_version):
+    """NEGATIVE CONTROL: no recognised backend tag means PyPI is already the right
+    place, so the plain command stands alone with nothing extra to read."""
+    monkeypatch.setattr(patched_torch, "__version__", torch_version)
+
+    with pytest.raises(import_fixes.UnslothTorchTooOldError) as raised:
+        _access_from("transformers.integrations.finegrained_fp8", "unsloth_probe_dtype")
+
+    message = str(raised.value)
+    assert 'pip install --upgrade "torch>=2.7.0"' in message
+    assert "--index-url" not in message
+    assert "get-started" not in message
 
 
 def test_an_unattributable_access_keeps_torchs_own_error(patched_torch, monkeypatch):

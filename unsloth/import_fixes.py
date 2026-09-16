@@ -1572,6 +1572,31 @@ def _torch_wheel_index(torch_version_raw):
     return ""
 
 
+def _torch_accelerator_note(torch_version_raw):
+    """The sentence that keeps an UPGRADE on the right accelerator, without naming an index.
+
+    A repair reinstalls the release that is already here, so the installed torch's own index
+    is guaranteed to carry it and `_torch_wheel_index` can hand over a ready command. An
+    upgrade moves to a release that index may never have had: each
+    download.pytorch.org/whl/<backend> holds only what was built for that backend, and the
+    CUDA families retire (cu124's newest torch is 2.6.0, while torch 2.7 shipped on cu126 and
+    cu128), so pinning the installed tag would hand the reported torch 2.6.0+cu124 user a
+    command with no candidate at all. Naming the family and the selector is the part that is
+    true for every release.
+    """
+    local = _torch_local_tag(torch_version_raw)
+    if not local or not _TORCH_BACKEND_INDEX.fullmatch(local):
+        return ""
+    family = local.rstrip("0123456789.").lower()
+    family = {"cu": "CUDA", "rocm": "ROCm", "xpu": "XPU", "cpu": "CPU"}.get(family, local)
+    return (
+        f"    That takes the default build from PyPI. This torch is a {local} build, and each "
+        f"https://download.pytorch.org/whl/ index carries only the releases built for it, so "
+        f"pick the {family} index for the release you are moving to at "
+        f"https://pytorch.org/get-started/locally/ and pass it as --index-url."
+    )
+
+
 def _torchvision_repair_advice(required = None, torch_version_raw = None):
     """The one sentence telling the user how to repair a broken torchvision."""
     if _has_no_matching_public_wheel(torch_version_raw):
@@ -1951,7 +1976,12 @@ def _torch_too_old_message(attribute, package, exception):
     lines += [
         "",
         f"Upgrade torch, which leaves {package} where it is:",
-        f"    pip install --upgrade{_torch_wheel_index(torch_version)} {requirement}",
+        f"    pip install --upgrade {requirement}",
+    ]
+    accelerator = _torch_accelerator_note(torch_version)
+    if accelerator:
+        lines.append(accelerator)
+    lines += [
         "",
         f"Installing a {package} that matches this torch works too. Pip allowed the "
         f"pair because {package} declares a lower torch floor than its own modules "
