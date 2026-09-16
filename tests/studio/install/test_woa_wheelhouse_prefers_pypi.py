@@ -145,9 +145,9 @@ def test_the_release_tag_is_the_one_the_workflow_publishes(source):
     )
     match = re.search(r'release_tag:\s*\n\s*description:[^\n]*\n\s*default:\s*"([^"]+)"', workflow)
     assert match, "woa-wheelhouse.yml no longer declares a default release_tag"
-    assert DEFAULT_WHEELHOUSE.endswith("/" + match.group(1)), (
-        f"the installer points at {DEFAULT_WHEELHOUSE}, the workflow publishes {match.group(1)}"
-    )
+    assert DEFAULT_WHEELHOUSE.endswith(
+        "/" + match.group(1)
+    ), f"the installer points at {DEFAULT_WHEELHOUSE}, the workflow publishes {match.group(1)}"
 
 
 @requires_pwsh
