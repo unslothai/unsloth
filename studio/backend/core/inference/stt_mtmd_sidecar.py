@@ -1022,6 +1022,7 @@ class MtmdSttSidecar:
         language: Optional[str] = None,
         fast: bool = False,
         cancel_event: Optional[threading.Event] = None,
+        on_progress = None,
     ) -> dict:
         """Transcribe encoded audio bytes, as the other sidecars do.
 
@@ -1062,7 +1063,12 @@ class MtmdSttSidecar:
             # outside the lock: a held lock would block unload, including a training run's, for the whole request
             # timeout
             text = self._post_transcribe(
-                port, model_id, wav_bytes, audio_seconds, cancel_event = cancel_event
+                port,
+                model_id,
+                wav_bytes,
+                audio_seconds,
+                cancel_event = cancel_event,
+                **({"on_progress": on_progress} if on_progress is not None else {}),
             )
             if cancel_event is not None and cancel_event.is_set():
                 raise SttTranscriptionCancelledError("Transcription cancelled.")
@@ -1094,6 +1100,7 @@ class MtmdSttSidecar:
         audio_seconds: Optional[float] = None,
         *,
         cancel_event: Optional[threading.Event] = None,
+        on_progress = None,
     ) -> str:
         spec = MTMD_STT_MODELS[model_id]
         payload = {
@@ -1116,6 +1123,8 @@ class MtmdSttSidecar:
             "temperature": 0,
             "max_tokens": _transcript_token_budget(audio_seconds),
         }
+        if on_progress is not None:
+            payload["stream"] = True
         connection = http.client.HTTPConnection(
             "127.0.0.1", port, timeout = _TRANSCRIBE_TIMEOUT_SECONDS
         )
@@ -1136,6 +1145,36 @@ class MtmdSttSidecar:
                 headers = {"Content-Type": "application/json"},
             )
             with connection.getresponse() as response:
+                if on_progress is not None and 200 <= response.status < 300:
+                    text = ""
+                    finished = False
+                    for line in response:
+                        if cancel_event is not None and cancel_event.is_set():
+                            raise SttTranscriptionCancelledError("Transcription cancelled.")
+                        if not line.startswith(b"data:"):
+                            continue
+                        data = line[5:].strip()
+                        if data == b"[DONE]":
+                            finished = True
+                            break
+                        event = json.loads(data)
+                        if event.get("error"):
+                            raise RuntimeError(
+                                "The transcription server could not complete this recording."
+                            )
+                        choices = event.get("choices") or []
+                        if choices:
+                            finished = finished or choices[0].get("finish_reason") is not None
+                            text += choices[0].get("delta", {}).get("content") or ""
+                            if not spec.transcript_marker or spec.transcript_marker in text:
+                                on_progress(
+                                    {"text": _clean_transcript(text, spec.transcript_marker)}
+                                )
+                    if not finished:
+                        raise RuntimeError(
+                            "The transcription server disconnected before finishing."
+                        )
+                    return _clean_transcript(text, spec.transcript_marker)
                 response_body = response.read()
                 if not 200 <= response.status < 300:
                     raise RuntimeError(
