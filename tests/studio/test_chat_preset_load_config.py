@@ -136,23 +136,78 @@ def test_preset_summary_marks_a_budget_message():
     ), "the message is free prose up to 8 KiB; the summary takes a marker only"
 
 
+def _balanced(
+    source: str,
+    open_at: int,
+    opener: str = "(",
+    closer: str = ")",
+) -> str:
+    """The text between `open_at`'s bracket and its match, so a nested one does not end it."""
+    depth = 0
+    for index in range(open_at, len(source)):
+        if source[index] == opener:
+            depth += 1
+        elif source[index] == closer:
+            depth -= 1
+            if depth == 0:
+                return source[open_at + 1 : index]
+    raise AssertionError(f"unbalanced {opener} at {open_at}")
+
+
+def _store_selectors(source: str) -> list:
+    """Every `useChatRuntimeStore(...)` argument, whatever shape the selector takes."""
+    out, needle = [], "useChatRuntimeStore("
+    start = source.find(needle)
+    while start != -1:
+        out.append(_balanced(source, start + len(needle) - 1))
+        start = source.find(needle, start + 1)
+    return out
+
+
+def _memo_dependency_lists(source: str) -> list:
+    """The dependency array of every `useMemo(...)`, as a list of bare identifiers."""
+    out, needle = [], "useMemo("
+    start = source.find(needle)
+    while start != -1:
+        body = _balanced(source, start + len(needle) - 1)
+        bracket = body.rfind("[")
+        if bracket != -1:
+            names = _balanced(body, bracket, "[", "]")
+            out.append([name.strip() for name in names.split(",") if name.strip()])
+        start = source.find(needle, start + 1)
+    return out
+
+
 def test_preset_sheet_reacts_to_a_reasoning_budget_change():
     """capturePresetLoadConfig() reads the runtime store through getState().
 
     A captured field the sheet neither subscribes to nor lists as a memo dependency
     cannot move the Update button or the summary: with the sheet open, changing only
     the reasoning budget left both stale until some unrelated setting changed.
+
+    Asserted as "the selector reads it" and "the dependency lists name it", not as an
+    exact spelling. This used to require the literal `(s) => s.reasoningBudget` and count
+    the field at two fixed indentations, so af4e98e2f broke it by making the selector
+    conditional across several lines while still subscribing to exactly that field. A
+    guard that a legal refactor turns red says nothing about the behaviour it guards.
     """
     sheet = _read("studio/frontend/src/features/chat/chat-settings-sheet.tsx")
+    selectors = _store_selectors(sheet)
+    assert selectors, "no useChatRuntimeStore() call found; has the sheet been renamed?"
+    dependency_lists = _memo_dependency_lists(sheet)
+    assert dependency_lists, "no useMemo() dependency list found in the sheet"
+
     for field in ("reasoningBudget", "reasoningBudgetMessage"):
-        assert f"(s) => s.{field}" in sheet, (
+        assert any(re.search(rf"\bs\.{field}\b", text) for text in selectors), (
             f"the preset sheet never subscribes to {field}, so a change to it "
             "does not re-render the component whose memos capture it"
         )
         # Both memos: hasUnsavedPresetChanges (dirty state) and currentLoadSummary.
-        assert (
-            sheet.count(f"\n    {field},\n") + sheet.count(f"\n      {field},\n") == 2
-        ), f"{field} is missing from a capturePresetLoadConfig() memo dependency list"
+        naming = [names for names in dependency_lists if field in names]
+        assert len(naming) == 2, (
+            f"{field} is named by {len(naming)} capturePresetLoadConfig() memo dependency "
+            "lists, expected 2 (hasUnsavedPresetChanges and currentLoadSummary)"
+        )
 
 
 def test_a_preset_records_a_self_sizing_load_s_pin_and_not_its_window():
