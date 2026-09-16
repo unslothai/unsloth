@@ -1853,12 +1853,26 @@ def test_the_fingerprint_reads_the_root_that_owns_the_binary(monkeypatch):
         raising = False,
     )
 
+    monkeypatch.setattr(sd_cpp_backend, "find_sd_cpp_binary", lambda: None, raising = False)
     assert sd_cpp_backend._accelerator_fingerprint("/roots/legacy/bin/sd")["bundle"] == (
         "tag-for-legacy"
     )
-    # Named nothing, it is the current root, which is every other caller.
+    # Named nothing and nothing discovered, it is the current root.
     assert sd_cpp_backend._accelerator_fingerprint()["bundle"] == "tag-for-current"
     assert asked == ["/roots/legacy", "/roots/current"], asked
+
+    # And named nothing while the finder serves the legacy tree -- which is every
+    # CONSULTATION, since `accelerator_runtime_failed` passes no binary -- it is the legacy
+    # root as well. Reading the current one there compared a record written against one
+    # bundle with another bundle's tag: stale at once if that root has any tag of its own,
+    # and never retired at all if it has none, so replacing the legacy build could not clear
+    # the diversion.
+    asked.clear()
+    monkeypatch.setattr(
+        sd_cpp_backend, "find_sd_cpp_binary", lambda: "/roots/legacy/bin/sd", raising = False
+    )
+    assert sd_cpp_backend._accelerator_fingerprint()["bundle"] == "tag-for-legacy"
+    assert asked == ["/roots/legacy"], asked
 
 
 def test_the_decided_class_is_read_under_the_claim_that_validated_it():
@@ -2159,3 +2173,72 @@ def test_a_substituted_cpu_build_is_not_evidence_about_rocm(
     assert _noted_accelerators(fake_settings) == []
     assert _recorded_strikes(fake_settings) == 1
     assert sd_cpp_backend.preferred_accelerator("rocm") == "rocm"
+
+
+def test_a_server_that_starts_and_dies_is_recorded_from_its_own_output(fake_settings, monkeypatch):
+    """The recorder was wired to the generate paths only.
+
+    A ROCm build that cannot come up at all fails inside the load, where the error carries the
+    child's own output, and nothing there was reading it: the load fell back to one-shot, the
+    render failed later or the load failed outright, and every retry chose ROCm again because
+    no note had been written.
+    """
+    import inspect
+
+    from core.inference import sd_cpp_backend
+
+    source = inspect.getsource(sd_cpp_backend.SdCppDiffusionBackend._run_load)
+    start = source.index("sd-server failed to start")
+    window = source[start:start + 900]
+    assert "note_accelerator_failure_from_output(server_binary" in window, window
+
+    # And the recorder really does act on the text that error carries.
+    monkeypatch.setattr(sd_cpp_backend, "_installed_accelerator_of", lambda _b: "rocm")
+    sd_cpp_backend.note_accelerator_failure_from_output(
+        "/opt/sd/rocm/sd-server",
+        "sd-server exited 1. Last output:\nROCm error: no kernel image is available for "
+        "execution on the device",
+    )
+    assert _noted_accelerators(fake_settings) == ["rocm"]
+
+
+def test_a_build_that_cannot_launch_at_all_is_counted(fake_settings, monkeypatch):
+    """A build that dies in the dynamic loader prints nothing to classify.
+
+    On Windows that is an unsigned status like 0xC0000135 -- a dependent DLL missing, which is
+    what a ROCm build looks like on a host with no HIP runtime -- and it arrives as a large
+    POSITIVE exit code, so the pre-download probe accepts it and the failure surfaces as a
+    start that never comes up. Counted rather than acted on: a missing execute bit or an
+    interrupted extraction fail identically and say nothing about the accelerator.
+    """
+    from core.inference import sd_cpp_backend
+
+    monkeypatch.setattr(sd_cpp_backend, "_installed_accelerator_of", lambda _b: "rocm")
+    sd_cpp_backend.note_unlaunchable_accelerator_build("/opt/sd/rocm/sd-server")
+    assert _recorded_strikes(fake_settings) == 1
+    assert _noted_accelerators(fake_settings) == [], "one launch failure must not divert"
+    sd_cpp_backend.note_unlaunchable_accelerator_build("/opt/sd/rocm/sd-server")
+    assert _noted_accelerators(fake_settings) == ["rocm"], "a host that keeps failing is moved"
+
+    # A build with no rung below it is left alone, and so is a binary with no recorded class.
+    monkeypatch.setattr(sd_cpp_backend, "_installed_accelerator_of", lambda _b: "cpu")
+    sd_cpp_backend.note_unlaunchable_accelerator_build("/opt/sd/cpu/sd-server")
+    monkeypatch.setattr(sd_cpp_backend, "_installed_accelerator_of", lambda _b: None)
+    sd_cpp_backend.note_unlaunchable_accelerator_build("/somewhere/else/sd-server")
+    assert _noted_accelerators(fake_settings) == ["rocm"]
+    assert _recorded_strikes(fake_settings, "cpu") == 0
+
+
+def test_both_unlaunchable_load_paths_record_before_they_raise():
+    """The two places the load gives up on a present-but-unrunnable build."""
+    import inspect
+
+    from core.inference import sd_cpp_backend
+
+    source = inspect.getsource(sd_cpp_backend.SdCppDiffusionBackend._run_load)
+    for raised in (
+        'raise RuntimeError("sd-server binary is present but not runnable.")',
+        'raise RuntimeError("sd-cli binary is present but not runnable.")',
+    ):
+        arm = source[: source.index(raised)]
+        assert "note_unlaunchable_accelerator_build(" in arm[-400:], raised

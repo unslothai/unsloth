@@ -786,6 +786,19 @@ def _accelerator_class_of(accelerator: Optional[str]) -> str:
         return (accelerator or "").strip().lower()
 
 
+def _discovered_managed_root() -> Optional[str]:
+    """The managed root of the build this host would actually use, or None when there is none.
+
+    Cheap and never raises: `find_sd_cpp_binary` is a path lookup, and every caller here has a
+    default to fall back on.
+    """
+    try:
+        found = find_sd_cpp_binary()
+        return owning_managed_root(found) if found else None
+    except Exception:  # noqa: BLE001 -- a root that cannot be resolved is simply not one
+        return None
+
+
 def _accelerator_fingerprint(binary: Optional[str] = None) -> dict:
     """What the note is a fact ABOUT: the sd.cpp bundle, the GPU runtime and the cards themselves.
 
@@ -805,7 +818,13 @@ def _accelerator_fingerprint(binary: Optional[str] = None) -> dict:
         # tag belonging to an unrelated install -- so replacing or upgrading the legacy bundle
         # could never invalidate the record and the host stayed diverted until it was cleared
         # by hand.
-        root = owning_managed_root(binary) if binary else None
+        # With no binary named -- every consultation -- the root is resolved from the build
+        # that is actually DISCOVERED rather than from the current default. The finder also
+        # serves a tree an older build left beside the Unsloth home, and a failure recorded
+        # against that tree's tag was then compared with the default root's: stale at once if
+        # that root carries any other tag, and never retired at all if it carries none, so
+        # replacing the legacy bundle could not clear the diversion.
+        root = owning_managed_root(binary) if binary else _discovered_managed_root()
         record = _installer_module().read_install_record(root or managed_install_root())
         if isinstance(record, dict):
             # The release the managed tree came from, read LIVE rather than memoised: a new bundle
@@ -1594,6 +1613,38 @@ def note_accelerator_failure_from_output(
         logger.debug("could not record the sd.cpp accelerator failure: %s", exc)
 
 
+def note_unlaunchable_accelerator_build(binary: Optional[str], *, source: str = "diffusion") -> None:
+    """Record that the build ``binary`` came from could not be LAUNCHED on this host.
+
+    The load path's other recorder reads the child's own output, and a build that dies in the
+    dynamic loader produces none: on Windows an unsigned loader status like 0xC0000135 (a
+    dependent DLL missing, which is what a ROCm build on a host without the HIP runtime looks
+    like) is a large POSITIVE exit code, so `_server_binary_runnable` accepts it and the
+    failure surfaces later as a start that never comes up. With nothing recorded, every retry
+    chose the same build and the rung below it was never reached.
+
+    Always an ambiguous strike, never proven: a missing execute bit, an interrupted extraction
+    or a prebuilt for the wrong CPU fail to launch in exactly the same way and say nothing
+    about the accelerator. Several of them under one fingerprint move the host; one does not.
+    """
+    if not binary:
+        return
+    try:
+        accelerator = _installed_accelerator_of(binary)
+        if not accelerator or not fallback_accelerator_for(accelerator):
+            return
+        logger.warning(
+            "%s.sd_cpp_accelerator_launch_failure: the %s stable-diffusion.cpp build could "
+            "not be launched on this host; counting it, the %s build is the fallback",
+            source,
+            accelerator,
+            fallback_accelerator_for(accelerator),
+        )
+        note_accelerator_runtime_failure(accelerator, proven = False)
+    except Exception as exc:  # noqa: BLE001 -- a preference, never a reason to mask the error
+        logger.debug("could not record the sd.cpp launch failure: %s", exc)
+
+
 def ensure_sd_cpp_binary(*, allow_install: bool = True, accelerator: str = "cpu") -> Optional[str]:
     """Path to a usable ``sd-cli`` binary, installing the prebuilt once if needed. Returns the
     binary path, or None when it is absent and cannot be installed (install disabled, no network,
@@ -2249,6 +2300,10 @@ class SdCppDiffusionBackend:
                     except Exception:  # noqa: BLE001
                         usable = False
                     if not usable or fallback is None:
+                        # Neither this accelerator's server nor its one-shot CLI will launch.
+                        # There is no output to classify -- a build that dies in the loader
+                        # prints nothing -- so it is counted rather than acted on.
+                        note_unlaunchable_accelerator_build(server_binary)
                         raise RuntimeError("sd-server binary is present but not runnable.")
                     mode, server_binary, engine = "oneshot", None, fallback
             # The accelerator the managed tree held when THIS binary was chosen, taken where the choice is made rather
@@ -2266,6 +2321,7 @@ class SdCppDiffusionBackend:
                 # version() is None when a present binary can't run; fail now, not on the first generation
                 assert engine is not None
                 if engine.version() is None:
+                    note_unlaunchable_accelerator_build(getattr(engine, "binary", None))
                     raise RuntimeError("sd-cli binary is present but not runnable.")
 
             # Swap ONCE so the size probe and the download agree: sizes come from paths-info, which -- unlike
@@ -2471,6 +2527,12 @@ class SdCppDiffusionBackend:
                             "sd-server failed to start (%s); falling back to one-shot sd-cli.",
                             start_exc,
                         )
+                        # The load half of the same recording the generate paths do. A server
+                        # that starts and dies carries the build's own output in this error --
+                        # "sd-server exited N. Last output: ..." -- and nothing else on this
+                        # path was reading it, so a ROCm build that cannot come up at all left
+                        # no note and every retry chose it again.
+                        note_accelerator_failure_from_output(server_binary, str(start_exc))
                         server.stop()
                         # Unpublish BEFORE resolving the one-shot engine: _pending_server means "a process is running
                         # out of the tree", and leaving this stopped one there would block the very sd-cli install
