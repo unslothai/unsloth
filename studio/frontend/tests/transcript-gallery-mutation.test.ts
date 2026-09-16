@@ -96,11 +96,8 @@ test("pending transcript mutations use the current view and deletion callback", 
 });
 
 test("a failed view switch does not leave the other view's rows on screen", async () => {
-  // Switching History <-> Archived only changes `archived`; `records` and `cursor` are
-  // written solely by refresh's success path. A refresh that rejects (offline, a 500, an
-  // expired session) therefore used to leave the PREVIOUS view's rows rendered under the
-  // new heading: selecting one handed back a record whose `archived` contradicts the
-  // view, and Load more paged the old view's cursor onto them.
+  // `records`/`cursor` are written only by refresh's success path, so a rejected refresh
+  // used to leave the previous view's rows under the new heading, with the wrong cursor.
   const source = readSrc("features/audio/transcript-gallery.tsx");
   const tree = ts.createSourceFile(
     "transcript-gallery.tsx",

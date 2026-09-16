@@ -77,10 +77,8 @@ export function TranscriptGallery({
       })
       .catch((error: unknown) => {
         if (ticket !== generation.current) return;
-        // Drop the rows too. They belong to the view we just left, and leaving them
-        // renders History entries under the Archived heading: selecting one hands back
-        // a record whose `archived` contradicts the view, and Load more pages the OTHER
-        // view's cursor onto them.
+        // Rows and cursor belong to the view we just left: keeping them renders History
+        // entries under the Archived heading and pages the wrong cursor onto them.
         setRecords([]);
         setCursor(null);
         toast.error(

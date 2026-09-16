@@ -3704,11 +3704,9 @@ export function ImagesPage({
         ]}
       />
       {/* The dense transformer_quant fast path engages only on the GGUF kind, so gate the control to
-          GGUF (or nothing loaded) and otherwise say why it is unavailable. The native sd.cpp engine
-          now reports model_kind "gguf" too, so that it can be recalled by exact checkpoint, but it
-          runs no torchao path at all and reports transformer_quant null whatever is picked. Gate it
-          out by ENGINE, or the control appears, offers FP8/INT8/NVFP4, carries no resolved badge to
-          contradict them, and silently snaps back on the next load. */}
+          GGUF (or nothing loaded) and otherwise say why it is unavailable. Native sd.cpp reports
+          model_kind "gguf" as well, to be recallable by exact checkpoint, but runs no torchao path:
+          gate it out by ENGINE or it offers FP8/INT8/NVFP4 with no badge and snaps back on load. */}
       {!status?.loaded
       || (status.model_kind === "gguf" && !isNativeEngineStatus(status)) ? (
         <AdvancedSelect

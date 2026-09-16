@@ -27,8 +27,8 @@ const DIFFUSERS_GGUF = {
   dtype: "bfloat16",
   engine: "diffusers",
 };
-// What SdCppDiffusionBackend.status() reports. `model_kind` is "gguf" so the model can be
-// recalled by exact checkpoint; the engine is what says the torchao path is unavailable.
+// SdCppDiffusionBackend.status(): model_kind "gguf" to be recallable by exact checkpoint,
+// engine "sd_cpp" to say the torchao path is unavailable.
 const SD_CPP_NATIVE = {
   loaded: true,
   model_kind: "gguf",
@@ -48,9 +48,8 @@ test("the Precision control is offered for a diffusers GGUF and withheld from na
     false,
     "a full pipeline has no GGUF to quantise",
   );
-  // The regression this guards. sd.cpp reports transformer_quant null whatever is picked
-  // and carries no `resolved` map, so an offered control has no badge to contradict it
-  // and silently snaps back on the next load.
+  // The regression this guards: sd.cpp reports transformer_quant null and no `resolved`
+  // map, so an offered control has no badge and snaps back on the next load.
   assert.equal(
     precisionControlShown(SD_CPP_NATIVE),
     false,

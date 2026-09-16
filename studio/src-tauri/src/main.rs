@@ -3124,9 +3124,8 @@ media-src 'self' https:"
         assert!(hardened.ends_with("\nTryExec=/plain/app"));
     }
 
-    // One element per field of RendererActivity. A tuple narrower than the struct is how
-    // a kind gets shipped untested while a test named "each kind" still passes: the
-    // unsaved_transcript arm could be deleted outright and every assertion below held.
+    // One element per field of RendererActivity: a narrower tuple is how a kind ships
+    // untested while a test named "each kind" still passes.
     fn renderer_activity(state: &RendererActivityState) -> (bool, bool, bool) {
         let activity = state
             .lock()
