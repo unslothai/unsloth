@@ -329,7 +329,6 @@ def test_a_conda_torch_is_not_sent_to_pypis_torchvision(tmp_path):
         # The reported message (unsloth#1793).
         "partially initialized module 'torchvision' has no attribute 'extension' "
         "(most likely due to a circular import)",
-        # A submodule, and the same break reached through one.
         "partially initialized module 'torchvision.transforms' has no attribute "
         "'InterpolationMode'",
         "partially initialized module 'torchvision.io.image' has no attribute 'decode_jpeg'",
@@ -364,16 +363,13 @@ def test_the_lazy_module_wrapper_around_it_is_recognised():
 @pytest.mark.parametrize(
     "message",
     [
-        # A typo'd attribute on a HEALTHY torchvision. The module is fully imported, so
-        # CPython does not say "partially initialized", and telling this user to
-        # reinstall torchvision is wrong.
+        # A typo on a HEALTHY torchvision: fully imported, so no "partially initialized".
         "module 'torchvision' has no attribute 'extension'",
         "module 'torchvision' has no attribute 'nms'",
         "module 'torchvision.ops' has no attribute 'nsm'",
         # Someone else's circular import.
         "partially initialized module 'numpy' has no attribute 'array'",
         "partially initialized module 'mypackage.torchvision' has no attribute 'x'",
-        # Names that merely start with or contain torchvision.
         "partially initialized module 'torchvisionfoo' has no attribute 'x'",
         "partially initialized module 'not_torchvision' has no attribute 'x'",
         "partially initialized module 'mytorchvision' has no attribute 'extension'",
@@ -408,16 +404,10 @@ def test_the_probe_stays_silent_on_a_typo_against_a_healthy_torchvision():
 def test_a_file_shadowing_torchvision_is_named_rather_than_blamed_on_the_binary(
     tmp_path, monkeypatch, kind
 ):
-    """A local torchvision raises the same words a half-loaded extension does, while the
-    metadata still reports the installed one, so the binary branch would say "reinstall".
-
-    Driven through a real import: the fix turns on which file the finders resolve.
-    """
-    # A shadow only exists relative to an INSTALLED torchvision: with none installed the
-    # local file is not shadowing anything, _shadowing_torchvision_path returns None by
-    # design, and this case has nothing to assert. Without the guard it FAILS rather than
-    # skips on any environment that has no torchvision, which several of the test venvs
-    # and CI jobs are.
+    """A local torchvision raises the same words while the metadata still reports the
+    installed one. Driven through a real import: the fix turns on which file resolves."""
+    # A shadow exists only relative to an INSTALLED torchvision, so with none this has
+    # nothing to assert and would fail rather than skip.
     pytest.importorskip("torchvision")
     body = "import torchvision\ntorchvision.extension\n"
     if kind == "module":
@@ -444,7 +434,6 @@ def test_a_file_shadowing_torchvision_is_named_rather_than_blamed_on_the_binary(
 
 
 def test_the_real_torchvision_is_not_mistaken_for_a_shadow():
-    """Without this the fix is indistinguishable from deleting the detection outright."""
     pytest.importorskip("torchvision")
     assert import_fixes._shadowing_torchvision_path() is None
     assert import_fixes._is_broken_torchvision_error(
@@ -453,9 +442,8 @@ def test_the_real_torchvision_is_not_mistaken_for_a_shadow():
 
 
 def test_the_marker_matches_what_this_interpreter_actually_says(tmp_path, monkeypatch):
-    """The wording is CPython's and it moves: 3.13.12 adds a `from '<file>'` clause 3.12.3
-    does not. A marker written against one silently matches nothing on the other, which looks
-    exactly like a healthy box, so provoke the error here and check the marker against it."""
+    """3.13.12 adds a `from '<file>'` clause 3.12.3 does not, and a marker matching nothing
+    looks exactly like a healthy box. So provoke it here rather than quoting a bug report."""
     package = tmp_path / "tvshape"
     package.mkdir()
     (package / "__init__.py").write_text("import tvshape\ntvshape.extension\n")
@@ -470,21 +458,18 @@ def test_the_marker_matches_what_this_interpreter_actually_says(tmp_path, monkey
     assert import_fixes._TORCHVISION_ATTRIBUTE_RE.search(
         produced.replace("tvshape", "torchvision")
     ), produced
-    # The name does the work, not the shape alone.
     assert not import_fixes._TORCHVISION_ATTRIBUTE_RE.search(produced), produced
 
 
 @pytest.mark.parametrize(
     "message",
     [
-        # `from torchvision import extension` while torchvision is still executing. CPython
-        # words this one as an ImportError and never says "has no attribute".
+        # `from torchvision import X` mid-execution: an ImportError, never "has no attribute".
         "cannot import name 'extension' from partially initialized module 'torchvision' "
         "(most likely due to a circular import) (/usr/lib/torchvision/__init__.py)",
         "cannot import name 'nms' from partially initialized module 'torchvision.ops' "
         "(most likely due to a circular import)",
-        # Reached after one of its submodules has already failed to initialise, which is
-        # what a second `import torchvision.ops` in the same process produces.
+        # A second `import torchvision.ops` after the first failed to initialise.
         "cannot access submodule 'ops' of module 'torchvision' "
         "(most likely due to a circular import)",
     ],
@@ -499,14 +484,12 @@ def test_the_other_two_cpython_wordings_of_the_same_break_are_recognised(message
 @pytest.mark.parametrize(
     "message",
     [
-        # Same two shapes, someone else's module.
         "cannot import name 'x' from partially initialized module 'mytorchvision' "
         "(most likely due to a circular import)",
         "cannot access submodule 'torchvision' of module 'mypackage' "
         "(most likely due to a circular import)",
         "cannot access submodule 'ops' of module 'torchvisionfoo'",
-        # A fully imported torchvision refusing a name that is not there: no circular
-        # import, nothing to reinstall.
+        # A fully imported torchvision refusing a name: nothing to reinstall.
         "cannot import name 'nsm' from 'torchvision.ops' (/usr/lib/torchvision/ops.py)",
     ],
 )
@@ -515,7 +498,6 @@ def test_the_other_two_wordings_do_not_claim_another_module(message):
 
 
 def test_the_from_import_wording_is_what_this_interpreter_actually_says():
-    """Provoked, not quoted, for the same reason as the attribute wording above."""
     import tempfile
 
     with tempfile.TemporaryDirectory() as tmp:

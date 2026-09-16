@@ -1492,16 +1492,14 @@ _LOADER_FAILURE_MARKERS = ("undefined symbol", "cannot open shared object file")
 _TORCH_LIBRARY_MARKERS = ("torchvision", "libtorch", "libc10", "_C.so", "c10::")
 # A lazily-imported torchvision with a dead extension surfaces as this, not a loader error.
 # "partially initialized" is load-bearing: without it a typo on a healthy torchvision
-# ("module 'torchvision' has no attribute 'nms'") would be answered with "reinstall".
-# Nothing after the module name is: CPython words the rest of that sentence four ways for
-# the same fault, and pinning any one of them matches on some interpreters and not others.
+# ("module 'torchvision' has no attribute 'nms'") would be answered with "reinstall". Nothing
+# AFTER the module name is, because CPython words the rest four ways for the one fault:
 #   3.9 - 3.12   partially initialized module 'torchvision' has no attribute 'extension'
 #   3.13, 3.14   partially initialized module 'torchvision' from '<file>' has no attribute
 #   from-import  cannot import name 'extension' from partially initialized module 'torchvision'
 #   submodule    cannot access submodule 'ops' of module 'torchvision'
-# The first three all carry "partially initialized module 'torchvision'", so matching that
-# much covers every one; the fourth is the wording used once a submodule has already failed
-# to initialise, and it names torchvision as the parent, so it gets its own alternative.
+# The first three share "partially initialized module 'torchvision'"; the fourth names it as
+# the parent instead, so it gets its own alternative.
 _TORCHVISION_ATTRIBUTE_RE = re.compile(
     r"partially initialized module 'torchvision(?:\.[\w.]+)?'"
     r"|cannot access submodule '[\w.]+' of module 'torchvision(?:\.[\w.]+)?'"

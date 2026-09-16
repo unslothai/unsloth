@@ -244,13 +244,10 @@ ROW_TYPE_SECTIONS: Mapping[str, str] = {
 def executed_balance(order: Sequence[Any], attempted: set[str]) -> bool | None:
     """`runtime/ab.py` `order_is_balanced`, over the cells that actually ran.
 
-    Same rule, same reason: count which arm went first in each `(rung, rep)` pair and require
-    every arm to have gone first equally often, with one arm never balanced because nothing
-    cancels. It is recomputed rather than read because the plan's own verdict predates the run.
-
-    Taken from the cell ids, which `make_cell_id` builds as `r{rung}.{arm}.rep{rep}`; rsplit
-    from the right so a rung containing a dot still parses. None when the ids are not that
-    shape, which means this cannot tell and the caller should keep the plan's own word.
+    Same rule: which arm led each `(rung, rep)` pair, every arm equally often, one arm never
+    balanced because nothing cancels. Read off `make_cell_id`'s `r{rung}.{arm}.rep{rep}`,
+    rsplit from the right so a dotted rung parses. None when the ids are another shape, which
+    is cannot-tell, not unbalanced.
     """
 
     labels: set[str] = set()
@@ -276,33 +273,22 @@ def executed_balance(order: Sequence[Any], attempted: set[str]) -> bool | None:
 def merged_ab_plan(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     """One plan out of however many sessions wrote one.
 
-    `--resume` appends to the same payload and emits a fresh `ab_plan` for the work THAT
-    session was asked to do, so the cells a later session added are named only in a later
-    row. Taking `[0]` would drop their order while `record_counts` still reports the plans
-    exist, which is the same silent loss that moving this row out of `header` was for, one
-    layer down.
+    `--resume` emits a fresh `ab_plan` for the work that session was asked to do, so `[0]`
+    drops the cells a later one added while `record_counts` still reports both plans, which is
+    the loss that moved this row out of `header`, one layer down.
 
-    `order` is the union, so nothing a later session added is dropped. The refs come from the
-    first plan; a resume whose refs disagree is refused upstream.
+    `order` is the union; the refs come from the first plan, and a resume whose refs disagree
+    is refused upstream.
 
-    `balanced` is ANDed over the sessions that still OWN a cell, decided the same way
-    `latest_attempt_rows` decides it and not from the plan. A plan is written before its
-    session runs anything, so its `order` is a request: a `--resume --reps 2` that dies before
-    retrying the old pair leaves that pair owned by the unbalanced `--reps 1` session that did
-    run it, and the later plan's `True` would report a balance nothing measured.
+    `balanced` is ANDed over the sessions that still own a cell, taking ownership from
+    `latest_attempt_rows`: `ATTEMPT_ROW_TYPES` rather than `cell` rows alone, keyed on the
+    `session_id` `Recorder.emit` stamps on every row. A second copy of that rule that
+    disagreed would be worse than none.
 
-    Ownership is read off `ATTEMPT_ROW_TYPES`, not `cell` rows alone, and keyed on
-    `session_id`, which `Recorder.emit` stamps on every row including this one. Both come
-    straight from `latest_attempt_rows`: it moved off cell rows because an attempt hard-killed
-    mid-cell never writes its terminal row, so keying on that alone hands the cell back to the
-    older attempt. A second copy of that rule that disagreed would be worse than none.
-
-    And the verdict is recomputed over what each live session ATTEMPTED, because the row's own
-    `balanced` was computed over the whole plan before it ran. A `--reps 2` interrupted after
-    rep 0 planned `base, treatment, treatment, base` and ran `base, treatment`, so base went
-    first every time it ran: balanced as planned, drift charged to one side as executed, and
-    the completed pair is scored either way. `order` stays the requested ladder; `balanced`
-    describes the run.
+    Each verdict is recomputed over what that session ATTEMPTED, since the row's own was
+    computed over the whole plan before it ran: a `--reps 2` interrupted after rep 0 planned
+    base, treatment, treatment, base and ran base, treatment, so base led every pair that
+    happened. `order` stays the requested ladder; `balanced` describes the run.
     """
 
     plans = [r for r in records if r.get("row_type") == "ab_plan"]
