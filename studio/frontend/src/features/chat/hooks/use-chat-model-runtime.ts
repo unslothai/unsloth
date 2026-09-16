@@ -210,13 +210,14 @@ async function readServerWideReloadHints(): Promise<boolean> {
   return serverWideReloadRequired({ modelMemory, vramBudget });
 }
 
-/** Placement is a set: the backend narrows and reorders it at fit time. */
+/** Placement is an ordered list: position decides which card the model is given
+ *  first, so the same set in a different order is a different placement. */
 function sameGpuSelection(
   left: readonly number[] | null | undefined,
   right: readonly number[] | null | undefined,
 ): boolean {
-  const a = [...(left ?? [])].sort((x, y) => x - y);
-  const b = [...(right ?? [])].sort((x, y) => x - y);
+  const a = left ?? [];
+  const b = right ?? [];
   return a.length === b.length && a.every((id, index) => id === b[index]);
 }
 

@@ -53,12 +53,19 @@ def test_reordered_parent_mask_reaches_the_child(monkeypatch, tmp_path):
     assert result["env"]["CUDA_VISIBLE_DEVICES"] == "1,0"
 
 
-def test_reordered_parent_mask_survives_a_gpu_pick(monkeypatch, tmp_path):
-    """The picker owns the SET; the mask still owns the order within it."""
+def test_an_explicit_pick_outranks_the_inherited_mask(monkeypatch, tmp_path):
+    """Both name an order. The picker is the more explicit and more recent one."""
     backend, result = _run(monkeypatch, tmp_path, mask = "1,0", gpu_ids = [0, 1])
-    assert result["env"]["CUDA_VISIBLE_DEVICES"] == "1,0"
+    assert result["env"]["CUDA_VISIBLE_DEVICES"] == "0,1"
     # The ordinal -> physical map the buffer parser reads has to match what we emitted.
+    assert backend._child_gpu_physical_ids == (0, 1)
+
+
+def test_the_picked_order_is_the_child_order(monkeypatch, tmp_path):
+    backend, result = _run(monkeypatch, tmp_path, mask = None, gpu_ids = [1, 0])
+    assert result["env"]["CUDA_VISIBLE_DEVICES"] == "1,0"
     assert backend._child_gpu_physical_ids == (1, 0)
+    assert backend.requested_gpu_ids == [1, 0]
 
 
 def test_ascending_parent_mask_is_left_alone(monkeypatch, tmp_path):
@@ -132,7 +139,9 @@ def test_a_split_scrubbed_from_the_child_does_not_veto(monkeypatch, tmp_path):
     backend, gguf = _backend(tmp_path, vulkan = False, memory = _TWO_GPUS)
     backend._get_gguf_size_bytes = lambda _path: 14 * 1024**3
     backend._select_gpus = lambda *args, **kwargs: ([0, 1], False)
-    result = _launch(backend, gguf, n_ctx = 4096, gpu_ids = [0, 1], tensor_parallel = True)
+    # No explicit pick: here the picker outranks the inherited mask, so only an
+    # unpicked load reaches the mask reorder this cell is about.
+    result = _launch(backend, gguf, n_ctx = 4096, tensor_parallel = True)
     assert result["env"].get("LLAMA_ARG_TENSOR_SPLIT") is None
     assert result["env"]["CUDA_VISIBLE_DEVICES"] == "1,0"
 
@@ -160,6 +169,43 @@ def test_an_explicit_pick_always_owns_device_flags(monkeypatch, tmp_path):
     assert own(None) is False
 
 
+def test_the_authoritative_effective_pin_keeps_the_picked_order(monkeypatch, tmp_path):
+    """/status serves _gpu_ids, and two blocks assign it: the later one wins.
+
+    Sorting in either put the order back, so a client round-tripping the effective
+    value matched the stored pin and skipped a reload the child needed.
+    """
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1")
+    monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = _TWO_GPUS)
+    backend._select_gpus = lambda *args, **kwargs: ([1, 0], False)
+    _launch(backend, gguf, n_ctx = 4096, gpu_ids = [1, 0])
+    assert backend._gpu_ids == [1, 0], f"the effective pin was re-sorted: {backend._gpu_ids}"
+
+
+def test_the_reported_split_follows_the_reorder(monkeypatch, tmp_path):
+    """/status serves the recorded emitted split, which was captured before the
+    reorder rewrote it, so each share was paired with the wrong visible device."""
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1,0")
+    monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = _TWO_GPUS)
+    backend._get_gguf_size_bytes = lambda _path: 14 * 1024**3
+    backend._select_gpus = lambda *args, **kwargs: ([0, 1], False)
+    # No explicit pick: in this branch an explicit pick outranks the inherited
+    # mask, so only an unpicked load reaches the mask reorder at all.
+    result = _launch(backend, gguf, n_ctx = 4096, tensor_parallel = True)
+    cmd = result["cmd"]
+    assert result["env"]["CUDA_VISIBLE_DEVICES"] == "1,0"
+    in_argv = [float(x) for x in cmd[cmd.index("--tensor-split") + 1].split(",")]
+    reported = backend.tensor_split
+    assert reported is not None, "no split reported at all; this would be vacuous"
+    assert [round(float(x), 3) for x in reported] == [
+        round(v / sum(in_argv), 3) for v in in_argv
+    ] or list(
+        reported
+    ) == in_argv, f"reported {reported} does not match the argv the child ran: {in_argv}"
+
+
 def test_a_full_set_pick_strips_a_device_flag(monkeypatch, tmp_path):
     """Both spellings, including the env twin, which needs no user argv at all."""
     monkeypatch.setenv("LLAMA_ARG_DEVICE", "CUDA0")
@@ -174,8 +220,12 @@ def test_a_full_set_pick_strips_a_device_flag(monkeypatch, tmp_path):
     assert result["env"].get("LLAMA_ARG_DEVICE") is None
 
 
-def test_the_mask_is_still_how_a_full_pick_orders_its_cards(monkeypatch, tmp_path):
-    """The ordering route the withdrawn pass-through was meant to preserve."""
-    backend, result = _run(monkeypatch, tmp_path, mask = "1,0", gpu_ids = [0, 1])
+def test_the_picker_is_how_a_full_pick_orders_its_cards(monkeypatch, tmp_path):
+    """The ordering route the withdrawn pass-through was meant to preserve.
+
+    In this branch the picker carries the order and outranks the inherited mask,
+    so the pick is what the child enumerates by.
+    """
+    backend, result = _run(monkeypatch, tmp_path, mask = "0,1", gpu_ids = [1, 0])
     assert result["env"]["CUDA_VISIBLE_DEVICES"] == "1,0"
     assert backend._child_gpu_physical_ids == (1, 0)
