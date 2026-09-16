@@ -2201,9 +2201,7 @@ def test_terminate_pid_keeps_a_record_taskkill_could_not_confirm(monkeypatch):
     # The validated sweep, not `taskkill /T`: the Windows tree kill is enumerated by
     # `_windows_collect_descendants` so it cannot re-expand through a recycled pid. The
     # contract under test is unchanged -- a tree that did not go down keeps its record.
-    monkeypatch.setattr(
-        lifetime, "_windows_terminate_validated_tree", lambda pid: state["tree"]
-    )
+    monkeypatch.setattr(lifetime, "_windows_terminate_validated_tree", lambda pid: state["tree"])
 
     def track():
         with lifetime._record_lock:

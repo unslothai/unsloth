@@ -820,9 +820,7 @@ def _windows_collect_descendants(pid: int) -> "list[tuple[int, Optional[str]]]":
     return _windows_collect_descendants_known(pid)[0]
 
 
-def _windows_collect_descendants_known(
-    pid: int,
-) -> "tuple[list[tuple[int, Optional[str]]], bool]":
+def _windows_collect_descendants_known(pid: int) -> "tuple[list[tuple[int, Optional[str]]], bool]":
     """`collect_descendants` for the Toolhelp table, which needs an ancestry proof.
 
     Each candidate is ordered against ITS OWN immediate parent's creation time, carried
@@ -920,9 +918,7 @@ def terminate_descendants(
     ]
 
 
-def _windows_terminate_collected(
-    collected: "list[tuple[int, Optional[str]]]",
-) -> "list[int]":
+def _windows_terminate_collected(collected: "list[tuple[int, Optional[str]]]") -> "list[int]":
     """``taskkill /F`` each survivor individually, deepest first. Never ``/T``.
 
     Windows has no process group, so once the leader has been terminated nothing
@@ -964,8 +960,10 @@ def _windows_terminate_collected(
             # so the record and the pidfile went and a live worker was left with nothing
             # naming it. Unknown is carried out as an unresolved survivor instead: never
             # signalled, always reported.
-            if _pid_alive(pid) and not _pid_is_zombie(pid) and not _provably_different(
-                pid, identity
+            if (
+                _pid_alive(pid)
+                and not _pid_is_zombie(pid)
+                and not _provably_different(pid, identity)
             ):
                 unresolved.append(pid)
             continue
