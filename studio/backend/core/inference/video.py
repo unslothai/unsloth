@@ -594,7 +594,6 @@ def _physical_card_name(ordinal: Optional[int]) -> "tuple[Optional[str], Optiona
     """The video path's name for the shared reader. It moved next to `sd_cpp_device_named`,
     which is what consumes it, once the image path needed the same pin."""
     from .sd_cpp_backend import physical_card_name
-
     return physical_card_name(ordinal)
 
 
@@ -623,7 +622,6 @@ def _note_sd_cpp_accelerator_failure(binary: Optional[str], output: str) -> None
     """
     try:
         from .sd_cpp_backend import note_accelerator_failure_from_output
-
         note_accelerator_failure_from_output(binary, output, source = "video")
     except Exception as exc:  # noqa: BLE001 -- a preference, never a reason to mask the real error
         logger.debug("could not record the sd.cpp accelerator failure: %s", exc)
@@ -1857,9 +1855,7 @@ class VideoBackend:
                     # have worked on it.
                     failed_fingerprint = _accelerator_fingerprint(binary)
                     fallback_binary = usable_or_recorded_failure(
-                        ensure_h3_sd_cpp_binary(
-                            allow_install = allow_install, accelerator = fallback
-                        ),
+                        ensure_h3_sd_cpp_binary(allow_install = allow_install, accelerator = fallback),
                         fallback,
                     )
                     fallback_verdict: Optional[bool] = None

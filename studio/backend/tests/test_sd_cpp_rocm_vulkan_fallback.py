@@ -1475,23 +1475,27 @@ def test_the_vulkan_fallback_pins_the_card_that_was_selected(monkeypatch):
         "Vulkan1\tAMD Radeon RX 7900 XTX (RADV NAVI31)\n"
     )
     monkeypatch.setattr(
-        sd_cpp_backend, "_sd_cpp_probe_output",
+        sd_cpp_backend,
+        "_sd_cpp_probe_output",
         lambda binary, *args: listing if args == ("--list-devices",) else None,
     )
     # The physical index means nothing here, which is the defect.
     assert sd_cpp_backend.sd_cpp_device_name_for_ordinal("/opt/sd/vulkan/sd-cli", 1) is None
     # The name does.
-    assert sd_cpp_backend.sd_cpp_device_named(
-        "/opt/sd/vulkan/sd-cli", "AMD Radeon RX 7900 XTX"
-    ) == "Vulkan1"
-    assert sd_cpp_backend.sd_cpp_device_named(
-        "/opt/sd/vulkan/sd-cli", "AMD Radeon RX 7600"
-    ) == "Vulkan0"
+    assert (
+        sd_cpp_backend.sd_cpp_device_named("/opt/sd/vulkan/sd-cli", "AMD Radeon RX 7900 XTX")
+        == "Vulkan1"
+    )
+    assert (
+        sd_cpp_backend.sd_cpp_device_named("/opt/sd/vulkan/sd-cli", "AMD Radeon RX 7600")
+        == "Vulkan0"
+    )
     # And it becomes a real pin rather than sd.cpp's default device.
     from core.inference.sd_cpp_args import device_backend_flags
 
     assert device_backend_flags("Vulkan1") == [
-        "--backend", "diffusion=Vulkan1,te=Vulkan1,vae=Vulkan1"
+        "--backend",
+        "diffusion=Vulkan1,te=Vulkan1,vae=Vulkan1",
     ]
 
 
@@ -1506,25 +1510,36 @@ def test_two_identical_cards_are_not_pinned_on_a_guess(monkeypatch):
         "Vulkan1\tAMD Radeon RX 7900 XTX (RADV NAVI31)\n"
     )
     monkeypatch.setattr(
-        sd_cpp_backend, "_sd_cpp_probe_output",
+        sd_cpp_backend,
+        "_sd_cpp_probe_output",
         lambda binary, *args: listing if args == ("--list-devices",) else None,
     )
-    assert sd_cpp_backend.sd_cpp_device_named(
-        "/opt/sd/vulkan/sd-cli", "AMD Radeon RX 7900 XTX"
-    ) is None
+    assert (
+        sd_cpp_backend.sd_cpp_device_named("/opt/sd/vulkan/sd-cli", "AMD Radeon RX 7900 XTX")
+        is None
+    )
     # Unless the selection's place in the run of identical cards is known: the second card of
     # that name physically is the second Vulkan entry of that name, because both namespaces
     # walk one vendor's GPUs in the order the driver reports them.
-    assert sd_cpp_backend.sd_cpp_device_named(
-        "/opt/sd/vulkan/sd-cli", "AMD Radeon RX 7900 XTX", position = 1
-    ) == "Vulkan1"
-    assert sd_cpp_backend.sd_cpp_device_named(
-        "/opt/sd/vulkan/sd-cli", "AMD Radeon RX 7900 XTX", position = 0
-    ) == "Vulkan0"
+    assert (
+        sd_cpp_backend.sd_cpp_device_named(
+            "/opt/sd/vulkan/sd-cli", "AMD Radeon RX 7900 XTX", position = 1
+        )
+        == "Vulkan1"
+    )
+    assert (
+        sd_cpp_backend.sd_cpp_device_named(
+            "/opt/sd/vulkan/sd-cli", "AMD Radeon RX 7900 XTX", position = 0
+        )
+        == "Vulkan0"
+    )
     # And a position the device list cannot honour pins nothing rather than guessing.
-    assert sd_cpp_backend.sd_cpp_device_named(
-        "/opt/sd/vulkan/sd-cli", "AMD Radeon RX 7900 XTX", position = 5
-    ) is None
+    assert (
+        sd_cpp_backend.sd_cpp_device_named(
+            "/opt/sd/vulkan/sd-cli", "AMD Radeon RX 7900 XTX", position = 5
+        )
+        is None
+    )
     # An unreadable probe and a card nothing answers to are the same answer.
     assert sd_cpp_backend.sd_cpp_device_named("/opt/sd/vulkan/sd-cli", "NVIDIA RTX 4090") is None
     assert sd_cpp_backend.sd_cpp_device_named("/opt/sd/vulkan/sd-cli", None) is None
@@ -1578,9 +1593,7 @@ def test_the_position_among_identical_cards_is_what_is_carried(monkeypatch):
         def get_device_name(index):
             return ["AMD Radeon RX 7600", "AMD Radeon RX 7900 XTX", "AMD Radeon RX 7900 XTX"][index]
 
-    monkeypatch.setitem(
-        __import__("sys").modules, "torch", type("torch", (), {"cuda": _FakeCuda})
-    )
+    monkeypatch.setitem(__import__("sys").modules, "torch", type("torch", (), {"cuda": _FakeCuda}))
     assert video_mod._physical_card_name(0) == ("AMD Radeon RX 7600", 0)
     assert video_mod._physical_card_name(1) == ("AMD Radeon RX 7900 XTX", 0)
     assert video_mod._physical_card_name(2) == ("AMD Radeon RX 7900 XTX", 1)
@@ -1603,19 +1616,19 @@ def _pinned_torch(monkeypatch, names):
         def get_device_name(index):
             return names[index]
 
-    monkeypatch.setitem(
-        __import__("sys").modules, "torch", type("torch", (), {"cuda": _FakeCuda})
-    )
+    monkeypatch.setitem(__import__("sys").modules, "torch", type("torch", (), {"cuda": _FakeCuda}))
 
 
 def _pinned_inventory(monkeypatch, devices):
     from utils.hardware import hardware
-
     monkeypatch.setattr(
         hardware,
         "get_physical_gpu_inventory",
         lambda *, block = True: {
-            "available": True, "devices": list(devices), "sources": ["test"], "unknown": False,
+            "available": True,
+            "devices": list(devices),
+            "sources": ["test"],
+            "unknown": False,
         },
     )
 
@@ -1634,10 +1647,13 @@ def test_a_visibility_mask_is_translated_before_the_tie_is_broken(monkeypatch):
     _no_visibility_mask(monkeypatch)
     monkeypatch.setenv("HIP_VISIBLE_DEVICES", "1")
     _pinned_torch(monkeypatch, ["AMD Radeon RX 7900 XTX"])
-    _pinned_inventory(monkeypatch, [
-        {"vendor": "amd", "index": 0, "name": "AMD Radeon RX 7900 XTX"},
-        {"vendor": "amd", "index": 1, "name": "AMD Radeon RX 7900 XTX"},
-    ])
+    _pinned_inventory(
+        monkeypatch,
+        [
+            {"vendor": "amd", "index": 0, "name": "AMD Radeon RX 7900 XTX"},
+            {"vendor": "amd", "index": 1, "name": "AMD Radeon RX 7900 XTX"},
+        ],
+    )
 
     assert video_mod._physical_card_name(0) == ("AMD Radeon RX 7900 XTX", 1)
 
@@ -1649,12 +1665,12 @@ def test_the_masks_compose_the_way_rocm_applies_them(monkeypatch):
 
     _no_visibility_mask(monkeypatch)
     monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "1,2,3")
-    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "2")            # -> physical 3
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "2")  # -> physical 3
     _pinned_torch(monkeypatch, ["AMD Radeon RX 7900 XTX"])
-    _pinned_inventory(monkeypatch, [
-        {"vendor": "amd", "index": index, "name": "AMD Radeon RX 7900 XTX"}
-        for index in range(4)
-    ])
+    _pinned_inventory(
+        monkeypatch,
+        [{"vendor": "amd", "index": index, "name": "AMD Radeon RX 7900 XTX"} for index in range(4)],
+    )
 
     assert video_mod._physical_card_name(0) == ("AMD Radeon RX 7900 XTX", 3)
 
@@ -1668,10 +1684,13 @@ def test_a_mask_this_cannot_read_declines_the_tie_break(monkeypatch):
     _no_visibility_mask(monkeypatch)
     monkeypatch.setenv("HIP_VISIBLE_DEVICES", "GPU-a1b2c3d4e5f60718")
     _pinned_torch(monkeypatch, ["AMD Radeon RX 7900 XTX"])
-    _pinned_inventory(monkeypatch, [
-        {"vendor": "amd", "index": 0, "name": "AMD Radeon RX 7900 XTX"},
-        {"vendor": "amd", "index": 1, "name": "AMD Radeon RX 7900 XTX"},
-    ])
+    _pinned_inventory(
+        monkeypatch,
+        [
+            {"vendor": "amd", "index": 0, "name": "AMD Radeon RX 7900 XTX"},
+            {"vendor": "amd", "index": 1, "name": "AMD Radeon RX 7900 XTX"},
+        ],
+    )
 
     assert video_mod._physical_card_name(0) == ("AMD Radeon RX 7900 XTX", None)
 
@@ -1685,10 +1704,13 @@ def test_an_unnamed_physical_card_still_answers_the_position(monkeypatch):
     _no_visibility_mask(monkeypatch)
     monkeypatch.setenv("HIP_VISIBLE_DEVICES", "1")
     _pinned_torch(monkeypatch, ["AMD Radeon(TM) Graphics"])
-    _pinned_inventory(monkeypatch, [
-        {"vendor": "amd", "index": 0, "name": None, "gfx_candidates": ["gfx11", "gfx1151"]},
-        {"vendor": "amd", "index": 1, "name": None, "gfx_candidates": ["gfx11", "gfx1151"]},
-    ])
+    _pinned_inventory(
+        monkeypatch,
+        [
+            {"vendor": "amd", "index": 0, "name": None, "gfx_candidates": ["gfx11", "gfx1151"]},
+            {"vendor": "amd", "index": 1, "name": None, "gfx_candidates": ["gfx11", "gfx1151"]},
+        ],
+    )
 
     assert video_mod._physical_card_name(0) == ("AMD Radeon(TM) Graphics", 1)
 
@@ -1727,7 +1749,8 @@ def test_a_second_strike_taken_blind_still_expires_when_the_cards_change(
 
     monkeypatch.setattr(sd_cpp_backend, "_installed_accelerator_of", lambda _b: "rocm")
     monkeypatch.setattr(
-        sd_cpp_backend, "_accelerator_fingerprint",
+        sd_cpp_backend,
+        "_accelerator_fingerprint",
         lambda: {"bundle": "b1", "runtime": "rocm6.2", "gpus": "gfx1100"},
     )
     video_mod._note_sd_cpp_accelerator_failure(
@@ -1735,7 +1758,8 @@ def test_a_second_strike_taken_blind_still_expires_when_the_cards_change(
     )
     # The second strike is taken while the cards cannot be read.
     monkeypatch.setattr(
-        sd_cpp_backend, "_accelerator_fingerprint",
+        sd_cpp_backend,
+        "_accelerator_fingerprint",
         lambda: {"bundle": None, "runtime": "rocm6.2", "gpus": None},
     )
     video_mod._note_sd_cpp_accelerator_failure(
@@ -1745,7 +1769,8 @@ def test_a_second_strike_taken_blind_still_expires_when_the_cards_change(
 
     # A new card. The record has to expire, which it cannot do against a fingerprint of Nones.
     monkeypatch.setattr(
-        sd_cpp_backend, "_accelerator_fingerprint",
+        sd_cpp_backend,
+        "_accelerator_fingerprint",
         lambda: {"bundle": "b1", "runtime": "rocm6.2", "gpus": "gfx1201"},
     )
     assert sd_cpp_backend.accelerator_runtime_failed("rocm") is False
@@ -1767,17 +1792,24 @@ def test_a_related_model_name_is_not_tie_broken_by_position(monkeypatch):
         "Vulkan1\tAMD Radeon RX 7600 (RADV NAVI33)\n"
     )
     monkeypatch.setattr(
-        sd_cpp_backend, "_sd_cpp_probe_output",
+        sd_cpp_backend,
+        "_sd_cpp_probe_output",
         lambda binary, *args: listing if args == ("--list-devices",) else None,
     )
     # The driver tag is dropped and the rest compared for equality, so each card is found as
     # itself rather than as a substring of the other.
-    assert sd_cpp_backend.sd_cpp_device_named(
-        "/opt/sd/vulkan/sd-cli", "AMD Radeon RX 7600", position = 0
-    ) == "Vulkan1"
-    assert sd_cpp_backend.sd_cpp_device_named(
-        "/opt/sd/vulkan/sd-cli", "AMD Radeon RX 7600 XT", position = 0
-    ) == "Vulkan0"
+    assert (
+        sd_cpp_backend.sd_cpp_device_named(
+            "/opt/sd/vulkan/sd-cli", "AMD Radeon RX 7600", position = 0
+        )
+        == "Vulkan1"
+    )
+    assert (
+        sd_cpp_backend.sd_cpp_device_named(
+            "/opt/sd/vulkan/sd-cli", "AMD Radeon RX 7600 XT", position = 0
+        )
+        == "Vulkan0"
+    )
 
     # And where only containment can match, a candidate list that mixes models is an
     # ambiguity rather than a tie: nothing is pinned, whatever position says.
@@ -1786,15 +1818,22 @@ def test_a_related_model_name_is_not_tie_broken_by_position(monkeypatch):
         "Vulkan1\tAMD Radeon RX 7600 Special Edition\n"
     )
     monkeypatch.setattr(
-        sd_cpp_backend, "_sd_cpp_probe_output",
+        sd_cpp_backend,
+        "_sd_cpp_probe_output",
         lambda binary, *args: mixed if args == ("--list-devices",) else None,
     )
-    assert sd_cpp_backend.sd_cpp_device_named(
-        "/opt/sd/vulkan/sd-cli", "AMD Radeon RX 7600", position = 0
-    ) is None
-    assert sd_cpp_backend.sd_cpp_device_named(
-        "/opt/sd/vulkan/sd-cli", "AMD Radeon RX 7600", position = 1
-    ) is None
+    assert (
+        sd_cpp_backend.sd_cpp_device_named(
+            "/opt/sd/vulkan/sd-cli", "AMD Radeon RX 7600", position = 0
+        )
+        is None
+    )
+    assert (
+        sd_cpp_backend.sd_cpp_device_named(
+            "/opt/sd/vulkan/sd-cli", "AMD Radeon RX 7600", position = 1
+        )
+        is None
+    )
 
 
 def test_a_build_recorded_as_unrunnable_is_not_accepted_back_from_the_ensure(monkeypatch):
@@ -1813,7 +1852,8 @@ def test_a_build_recorded_as_unrunnable_is_not_accepted_back_from_the_ensure(mon
         sd_cpp_backend, "_installed_accelerator_of", lambda binary: "rocm", raising = False
     )
     monkeypatch.setattr(
-        sd_cpp_backend, "accelerator_runtime_failed",
+        sd_cpp_backend,
+        "accelerator_runtime_failed",
         lambda accelerator: accelerator == "rocm",
         raising = False,
     )
@@ -1872,7 +1912,7 @@ def test_every_ensure_in_the_h3_load_is_checked_against_the_record():
     from core.inference import video as video_mod
 
     source = inspect.getsource(video_mod)
-    load = source[source.index("allow_install = _install_allowed()"):]
+    load = source[source.index("allow_install = _install_allowed()") :]
     ensures = load.count("ensure_h3_sd_cpp_binary(")
     guarded = load.count("usable_or_recorded_failure(")
     assert ensures >= 3, ensures
@@ -1894,12 +1934,14 @@ def test_the_note_can_be_pinned_to_the_build_that_failed(monkeypatch):
         sd_cpp_backend, "_stored_accelerator_runtime_failures", lambda: stored, raising = False
     )
     monkeypatch.setattr(
-        sd_cpp_backend, "_write_accelerator_runtime_failures",
+        sd_cpp_backend,
+        "_write_accelerator_runtime_failures",
         lambda records: stored.update(records),
         raising = False,
     )
     monkeypatch.setattr(
-        sd_cpp_backend, "_accelerator_fingerprint",
+        sd_cpp_backend,
+        "_accelerator_fingerprint",
         lambda: {"bundle": "after-the-install"},
         raising = False,
     )
@@ -1934,11 +1976,11 @@ def test_the_load_path_reads_the_fingerprint_before_it_installs_the_fallback():
     install = source.index("fallback_binary = usable_or_recorded_failure(")
     note = source.index("note_accelerator_runtime_failure(\n")
     assert read < install < note, (read, install, note)
-    assert "fingerprint = failed_fingerprint" in source[note:note + 400]
+    assert "fingerprint = failed_fingerprint" in source[note : note + 400]
     # And the note is only PROVEN where the host's own build answered.
     assert (
         "proven = accelerator_probe_ran and accelerator_verdict is not None"
-        in source[note:note + 400]
+        in source[note : note + 400]
     )
 
 
@@ -1954,19 +1996,27 @@ def test_a_singleton_match_does_not_answer_for_a_position_it_cannot_hold(monkeyp
 
     listing = "Vulkan0\tAMD Radeon RX 7900 XTX (RADV NAVI31)\n"
     monkeypatch.setattr(
-        sd_cpp_backend, "_sd_cpp_probe_output",
+        sd_cpp_backend,
+        "_sd_cpp_probe_output",
         lambda binary, *args: listing if args == ("--list-devices",) else None,
     )
-    assert sd_cpp_backend.sd_cpp_device_named(
-        "/opt/sd/vulkan/sd-cli", "AMD Radeon RX 7900 XTX", position = 1
-    ) is None
+    assert (
+        sd_cpp_backend.sd_cpp_device_named(
+            "/opt/sd/vulkan/sd-cli", "AMD Radeon RX 7900 XTX", position = 1
+        )
+        is None
+    )
     # Position 0 IS the one device, and no position at all is the unchanged single-match case.
-    assert sd_cpp_backend.sd_cpp_device_named(
-        "/opt/sd/vulkan/sd-cli", "AMD Radeon RX 7900 XTX", position = 0
-    ) == "Vulkan0"
-    assert sd_cpp_backend.sd_cpp_device_named(
-        "/opt/sd/vulkan/sd-cli", "AMD Radeon RX 7900 XTX"
-    ) == "Vulkan0"
+    assert (
+        sd_cpp_backend.sd_cpp_device_named(
+            "/opt/sd/vulkan/sd-cli", "AMD Radeon RX 7900 XTX", position = 0
+        )
+        == "Vulkan0"
+    )
+    assert (
+        sd_cpp_backend.sd_cpp_device_named("/opt/sd/vulkan/sd-cli", "AMD Radeon RX 7900 XTX")
+        == "Vulkan0"
+    )
 
 
 def test_the_fingerprint_reads_the_root_that_owns_the_binary(monkeypatch):
@@ -1995,7 +2045,8 @@ def test_the_fingerprint_reads_the_root_that_owns_the_binary(monkeypatch):
         sd_cpp_backend, "managed_install_root", lambda: Path("/roots/current"), raising = False
     )
     monkeypatch.setattr(
-        sd_cpp_backend, "owning_managed_root",
+        sd_cpp_backend,
+        "owning_managed_root",
         lambda binary: Path("/roots/legacy") if binary else None,
         raising = False,
     )
@@ -2053,14 +2104,10 @@ def test_a_second_unreadable_rocm_probe_does_divert(h3_amd_host, fake_settings):
     from core.inference import sd_cpp_backend
 
     for _ in range(sd_cpp_backend._AMBIGUOUS_FAILURE_STRIKES - 1):
-        host = h3_amd_host(
-            platform = "linux", backend = "rocm", device = "cuda", devices = _ROCM_BROKEN
-        )
+        host = h3_amd_host(platform = "linux", backend = "rocm", device = "cuda", devices = _ROCM_BROKEN)
         host.run()
         assert _noted_accelerators(fake_settings) == []
-    host = h3_amd_host(
-        platform = "linux", backend = "rocm", device = "cuda", devices = _ROCM_BROKEN
-    )
+    host = h3_amd_host(platform = "linux", backend = "rocm", device = "cuda", devices = _ROCM_BROKEN)
     host.run()
     assert _noted_accelerators(fake_settings) == ["rocm"]
 
@@ -2075,9 +2122,7 @@ def test_an_image_generation_that_dies_in_hipblas_records_it_too(fake_settings, 
     from core.inference import sd_cpp_backend
 
     monkeypatch.setattr(sd_cpp_backend, "_installed_accelerator_of", lambda _b: "rocm")
-    backend = sd_cpp_backend.SdCppDiffusionBackend.__new__(
-        sd_cpp_backend.SdCppDiffusionBackend
-    )
+    backend = sd_cpp_backend.SdCppDiffusionBackend.__new__(sd_cpp_backend.SdCppDiffusionBackend)
     backend._engine = types.SimpleNamespace(binary = "/opt/sd/rocm/sd-cli")
     cancel = threading.Event()
     source = inspect.getsource(sd_cpp_backend.SdCppDiffusionBackend.generate)
@@ -2101,14 +2146,12 @@ def test_a_cancelled_image_generation_records_nothing(fake_settings, monkeypatch
 
     source = inspect.getsource(sd_cpp_backend.SdCppDiffusionBackend.generate)
     handler = source.index("note_accelerator_failure_from_output(")
-    window = source[max(0, handler - 1400):handler]
+    window = source[max(0, handler - 1400) : handler]
     assert "cancel.is_set()" in window, window
     assert "DIFFUSION_CANCELLED_MSG not in str(exc)" in window, window
 
 
-def test_the_availability_probe_reads_the_same_record_selection_does(
-    fake_settings, monkeypatch,
-):
+def test_the_availability_probe_reads_the_same_record_selection_does(fake_settings, monkeypatch):
     """The prediction and the selection are read together.
 
     The prediction decides which planner stages the download; selection decides what loads. A
@@ -2141,7 +2184,7 @@ def test_the_availability_probe_reads_the_same_record_selection_does(
 
 
 def test_a_server_that_dies_mid_render_is_recorded_against_its_own_binary(
-    fake_settings, monkeypatch,
+    fake_settings, monkeypatch
 ):
     """The resident sd-server is the preferred path, and it is not the engine.
 
@@ -2156,7 +2199,7 @@ def test_a_server_that_dies_mid_render_is_recorded_against_its_own_binary(
 
     source = inspect.getsource(sd_cpp_backend.SdCppDiffusionBackend.generate)
     handler = source.index("note_accelerator_failure_from_output(")
-    window = source[max(0, handler - 1400):handler]
+    window = source[max(0, handler - 1400) : handler]
     assert 'getattr(state, "server", None), "binary"' in window, window
 
     monkeypatch.setattr(sd_cpp_backend, "_installed_accelerator_of", lambda _b: "rocm")
@@ -2188,17 +2231,13 @@ def test_the_image_pin_follows_the_card_into_the_vulkan_namespace(monkeypatch):
         sd_cpp_backend, "physical_card_name", lambda ordinal: ("AMD Radeon RX 7900 XTX", 0)
     )
     flags = sd_cpp_backend._offload_with_device_pin_impl(["--offload-to-cpu"], "/sd/sd-cli", 1)
-    assert flags == [
-        "--offload-to-cpu",
-        "--backend",
-        "diffusion=Vulkan1,te=Vulkan1,vae=Vulkan1",
-    ]
+    assert flags == ["--offload-to-cpu", "--backend", "diffusion=Vulkan1,te=Vulkan1,vae=Vulkan1"]
 
     # An unresolvable card still pins nothing, which is the behaviour every build had before.
     monkeypatch.setattr(sd_cpp_backend, "physical_card_name", lambda ordinal: (None, None))
-    assert sd_cpp_backend._offload_with_device_pin_impl(
-        ["--offload-to-cpu"], "/sd/sd-cli", 1
-    ) == ["--offload-to-cpu"]
+    assert sd_cpp_backend._offload_with_device_pin_impl(["--offload-to-cpu"], "/sd/sd-cli", 1) == [
+        "--offload-to-cpu"
+    ]
 
 
 def test_the_image_pin_tells_two_identical_cards_apart(monkeypatch):
@@ -2265,17 +2304,13 @@ def test_a_failed_fetch_does_not_divert_a_host_whose_rocm_build_works(
     assert _noted_accelerators(fake_settings) == []
     assert sd_cpp_backend.preferred_accelerator("rocm") == "rocm"
 
-    recovered = h3_amd_host(
-        platform = platform, backend = "rocm", device = "cuda", devices = _ROCM_WORKS
-    )
+    recovered = h3_amd_host(platform = platform, backend = "rocm", device = "cuda", devices = _ROCM_WORKS)
     assert recovered.run()._state.device == "cuda"
     assert recovered.ensured == ["rocm"], recovered.ensured
 
     # And a host where it keeps happening is still diverted, by the second strike: the
     # ambiguity is what makes one of them insufficient, not a reason to ignore them.
-    again = h3_amd_host(
-        platform = platform, backend = "rocm", device = "cuda", devices = _VULKAN_ONLY
-    )
+    again = h3_amd_host(platform = platform, backend = "rocm", device = "cuda", devices = _VULKAN_ONLY)
     again.run()
     assert _recorded_strikes(fake_settings) == 2
     assert _noted_accelerators(fake_settings) == ["rocm"]
@@ -2336,7 +2371,7 @@ def test_a_server_that_starts_and_dies_is_recorded_from_its_own_output(fake_sett
 
     source = inspect.getsource(sd_cpp_backend.SdCppDiffusionBackend._run_load)
     start = source.index("sd-server failed to start")
-    window = source[start:start + 900]
+    window = source[start : start + 900]
     assert "note_accelerator_failure_from_output(server_binary" in window, window
 
     # And the recorder really does act on the text that error carries.
@@ -2404,9 +2439,7 @@ def test_the_router_counts_a_binary_it_rejects_for_not_launching(fake_settings, 
     from core.inference import sd_cpp_backend
 
     monkeypatch.setattr(router, "_install_allowed", lambda: True)
-    monkeypatch.setattr(
-        router, "ensure_sd_server_binary", lambda **_k: "/opt/sd/rocm/sd-server"
-    )
+    monkeypatch.setattr(router, "ensure_sd_server_binary", lambda **_k: "/opt/sd/rocm/sd-server")
     monkeypatch.setattr(router, "ensure_sd_cpp_binary", lambda **_k: "/opt/sd/rocm/sd-cli")
     monkeypatch.setattr(router, "_server_binary_runnable", lambda _b: False)
     monkeypatch.setattr(
@@ -2422,9 +2455,7 @@ def test_the_router_counts_a_binary_it_rejects_for_not_launching(fake_settings, 
     monkeypatch.setattr(sd_cpp_backend, "_installed_accelerator_of", lambda _b: "rocm")
     monkeypatch.setenv("UNSLOTH_DIFFUSION_ENGINE", "sd_cpp")
 
-    chosen = router.select_and_activate_engine(
-        _detect_load_family(H3_REPO, None, "minimax-h3")
-    )
+    chosen = router.select_and_activate_engine(_detect_load_family(H3_REPO, None, "minimax-h3"))
     assert chosen == "diffusers", chosen
     # Both probes rejected a build, so both are counted -- and a strike is all either is: a
     # missing execute bit fails identically and says nothing about the accelerator.

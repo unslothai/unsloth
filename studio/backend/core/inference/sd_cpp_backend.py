@@ -527,7 +527,8 @@ def _physical_position_of(physical_index: int) -> "tuple[Optional[str], Optional
         if (inventory or {}).get("unknown"):
             return None, None
         devices = [
-            device for device in ((inventory or {}).get("devices") or [])
+            device
+            for device in ((inventory or {}).get("devices") or [])
             if isinstance(device, dict) and device.get("index") is not None
         ]
     except Exception:  # noqa: BLE001 -- no reader, no position; the name alone still pins
@@ -540,7 +541,8 @@ def _physical_position_of(physical_index: int) -> "tuple[Optional[str], Optional
     if identity is None:
         return None, None
     position = sum(
-        1 for device in devices
+        1
+        for device in devices
         if device.get("index") < physical_index and _card_identity(device) == identity
     )
     name = (selected.get("name") or "").strip() or None
@@ -574,7 +576,6 @@ def physical_card_name(ordinal: Optional[int]) -> "tuple[Optional[str], Optional
         return None, None
     try:
         import torch
-
         if not torch.cuda.is_available() or ordinal >= torch.cuda.device_count():
             return None, None
         names = [torch.cuda.get_device_name(index) for index in range(torch.cuda.device_count())]
@@ -586,9 +587,7 @@ def physical_card_name(ordinal: Optional[int]) -> "tuple[Optional[str], Optional
         # The visible list IS the physical list, so torch answers both halves.
         if not name:
             return None, None
-        return name, sum(
-            1 for index in range(ordinal) if (names[index] or "").strip() == name
-        )
+        return name, sum(1 for index in range(ordinal) if (names[index] or "").strip() == name)
     physical_name, position = (None, None)
     if physical_index is not None:
         physical_name, position = _physical_position_of(physical_index)
@@ -599,7 +598,10 @@ def physical_card_name(ordinal: Optional[int]) -> "tuple[Optional[str], Optional
 
 
 def sd_cpp_device_named(
-    binary: Optional[str], card_name: Optional[str], *, position: Optional[int] = None
+    binary: Optional[str],
+    card_name: Optional[str],
+    *,
+    position: Optional[int] = None,
 ) -> Optional[str]:
     """The ggml device that IS *card_name*, when exactly one of them is.
 
@@ -1177,7 +1179,10 @@ def _persist_accelerator_runtime_failures(records: dict[str, dict]) -> None:
 
 
 def note_accelerator_runtime_failure(
-    accelerator: Optional[str], *, proven: bool = True, fingerprint: Optional[dict] = None
+    accelerator: Optional[str],
+    *,
+    proven: bool = True,
+    fingerprint: Optional[dict] = None,
 ) -> None:
     """Record that the ``accelerator`` sd.cpp build could not be run on this host.
 
@@ -1698,7 +1703,10 @@ def _installed_accelerator_of(binary: Optional[str]) -> Optional[str]:
 
 
 def note_accelerator_failure_from_output(
-    binary: Optional[str], output: str, *, source: str = "diffusion"
+    binary: Optional[str],
+    output: str,
+    *,
+    source: str = "diffusion",
 ) -> None:
     """Record that the sd.cpp build ``binary`` came from cannot run on this host, when its own
     output says so.
@@ -1745,7 +1753,9 @@ def note_accelerator_failure_from_output(
         logger.debug("could not record the sd.cpp accelerator failure: %s", exc)
 
 
-def note_unlaunchable_accelerator_build(binary: Optional[str], *, source: str = "diffusion") -> None:
+def note_unlaunchable_accelerator_build(
+    binary: Optional[str], *, source: str = "diffusion"
+) -> None:
     """Record that the build ``binary`` came from could not be LAUNCHED on this host.
 
     The load path's other recorder reads the child's own output, and a build that dies in the
