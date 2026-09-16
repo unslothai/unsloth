@@ -2673,6 +2673,116 @@ exit 1
         return $current
     }
 
+    # An interpreter to answer path questions with, found WITHOUT installing one.
+    #
+    # Python resolves a path the same way the native helper does: os.path.realpath on Windows
+    # calls GetFinalPathNameByHandleW, so it follows junctions, symlinks and SUBST drives, expands
+    # 8.3 names and reports the stored casing. That matters twice over, because
+    # unsloth_cli/_studio_runtime_gate.py computes the runtime lock name from os.path.realpath
+    # too: an answer from here agrees with the running Unsloth by construction rather than by two
+    # implementations happening to match.
+    #
+    # Finding one must not mutate anything, because this runs before the install lock is taken.
+    # Get-Command and Test-Path only, never Install-PythonFromPythonOrg, and never the full
+    # Find-CompatiblePython, which is defined thousands of lines below this point anyway.
+    $script:StudioEarlyPythonProbed = $false
+    $script:StudioEarlyPython = $null
+
+    function Get-StudioEarlyPython {
+        if ($script:StudioEarlyPythonProbed) { return $script:StudioEarlyPython }
+        $script:StudioEarlyPythonProbed = $true
+        # Same kill switch shape as UNSLOTH_NVIDIA_LIBRARY_PROBE: a host where spawning an
+        # interpreter is unwelcome, or a support case that needs the old behaviour back, sets this
+        # to 0 and the ladder falls through to the lexical resolver exactly as it did before.
+        if ("$($env:UNSLOTH_EARLY_PYTHON_PROBE)".Trim() -eq "0") { return $null }
+        $candidates = @()
+        # A previous install's own interpreter first: it is the one this installer chose last
+        # time, and reaching it through $VenvDir means an alias of the root resolves to the same
+        # file without anyone canonicalising anything. $VenvDir is not set yet on the earliest
+        # calls, so read it defensively rather than assuming.
+        $venvDirValue = $null
+        try { $venvDirValue = Get-Variable -Name VenvDir -ValueOnly -ErrorAction SilentlyContinue } catch {}
+        if (-not [string]::IsNullOrWhiteSpace($venvDirValue)) {
+            $candidates += (Join-Path $venvDirValue "Scripts\python.exe")
+            $candidates += (Join-Path $venvDirValue "bin/python3")
+        }
+        foreach ($name in @("python3", "python")) {
+            try {
+                foreach ($cmd in @(Get-Command $name -All -CommandType Application -ErrorAction SilentlyContinue)) {
+                    if ($cmd -and $cmd.Source) { $candidates += $cmd.Source }
+                }
+            } catch {}
+        }
+        foreach ($candidate in $candidates) {
+            if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
+            if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
+            # The probe IS a realpath call, so an interpreter that cannot answer one is rejected
+            # here rather than passing a check and failing later. Python 2 fails it too, since its
+            # Windows realpath does not follow links.
+            # The interpreter's own directory: it exists, since the executable inside it just
+            # passed Test-Path. Not $PSScriptRoot, which is empty under `irm | iex` (no script
+            # file), and not the temp directory, which this installer relocates.
+            $probeDir = [System.IO.Path]::GetDirectoryName($candidate)
+            if ([string]::IsNullOrWhiteSpace($probeDir)) { continue }
+            $probe = Invoke-StudioEarlyPython -Exe $candidate -Path $probeDir
+            if (-not [string]::IsNullOrWhiteSpace($probe)) {
+                $script:StudioEarlyPython = $candidate
+                return $candidate
+            }
+        }
+        return $null
+    }
+
+    # os.path.realpath in a bounded child. Null on anything other than a clean answer, because
+    # every caller already treats "no exact answer" as "use the lexical one".
+    function Invoke-StudioEarlyPython {
+        param(
+            [Parameter(Mandatory = $true)][string]$Exe,
+            [Parameter(Mandatory = $true)][string]$Path,
+            [int]$TimeoutMs = 10000
+        )
+        # -I isolates the run from PYTHONPATH, a sitecustomize and the user site directory, so a
+        # broken environment cannot change the answer. studio/setup.sh runs nvidia_probe.py the
+        # same way.
+        $script = "import os,sys" + [char]10 + "sys.stdout.write(os.path.realpath(sys.argv[1]))"
+        $proc = $null
+        try {
+            $psi = New-Object System.Diagnostics.ProcessStartInfo
+            $psi.FileName = $Exe
+            foreach ($a in @("-I", "-c", $script, $Path)) { $null = $psi.ArgumentList.Add($a) }
+            $psi.UseShellExecute = $false
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            $psi.CreateNoWindow = $true
+            $proc = [System.Diagnostics.Process]::Start($psi)
+            $stdout = $proc.StandardOutput.ReadToEndAsync()
+            $null = $proc.StandardError.ReadToEndAsync()
+            if (-not $proc.WaitForExit($TimeoutMs)) {
+                try { $proc.Kill() } catch {}
+                return $null
+            }
+            if ($proc.ExitCode -ne 0) { return $null }
+            $answer = "$($stdout.Result)".Trim()
+            if ([string]::IsNullOrWhiteSpace($answer)) { return $null }
+            # A relative answer is not an identity, and a path that does not exist cannot be the
+            # resolution of one that does.
+            if (-not [System.IO.Path]::IsPathRooted($answer)) { return $null }
+            if (-not (Test-Path -LiteralPath $answer)) { return $null }
+            return $answer
+        } catch {
+            return $null
+        } finally {
+            if ($proc) { try { $proc.Dispose() } catch {} }
+        }
+    }
+
+    function Get-StudioPythonFinalPath {
+        param([Parameter(Mandatory = $true)][string]$Path)
+        $exe = Get-StudioEarlyPython
+        if (-not $exe) { return $null }
+        return (Invoke-StudioEarlyPython -Exe $exe -Path $Path)
+    }
+
     # Exact = $true means the native resolver answered, so the string is what it
     # always was. Callers keying a lock on it use that to judge an inequality.
     function Resolve-StudioFinalPathInfo {
@@ -2714,6 +2824,16 @@ exit 1
                     Write-StudioLine "[WARN] Could not resolve a path with the native helper; continuing with the PowerShell resolver." -ForegroundColor Yellow
                 }
             }
+        }
+        if ([string]::IsNullOrEmpty($resolved)) {
+            # Strictly additive: this rung only runs where the native one already gave up, so a
+            # host that resolves natively today behaves exactly as it did. Where it answers, the
+            # identity is exact for the same reason the native one is, os.path.realpath being
+            # GetFinalPathNameByHandleW on Windows, so Exact = $true is earned rather than
+            # assumed. Where there is no usable interpreter it returns null and the lexical
+            # fallback below runs, which is today's behaviour unchanged.
+            $resolved = Get-StudioPythonFinalPath -Path $existingPath
+            if (-not [string]::IsNullOrWhiteSpace($resolved)) { $exact = $true }
         }
         if ([string]::IsNullOrEmpty($resolved)) {
             $resolved = Get-StudioLexicalPath -Path $existingPath
