@@ -253,6 +253,56 @@ def test_the_models_folder_is_not_disclosed(monkeypatch):
     assert _hub(via_api_key = False).get("/api/hub/models-folder").json()["path"] == HOST_ROOT
 
 
+def test_the_models_folder_error_is_not_disclosed_either(monkeypatch):
+    """The redactors only ever see a payload that was BUILT.
+
+    This route raises with the cache path in the detail when the folder cannot be created
+    or turns out to be a file, and an exception raised while evaluating an argument never
+    reaches the function it was being passed to. So the one caller the whole redaction
+    exists for got the host path out of the 500 instead of out of the 200, on a failure
+    that is not exotic: a read-only HF_HOME, or a file where the directory should be.
+    """
+    from fastapi import HTTPException
+
+    def _raises():
+        raise HTTPException(
+            status_code = 500,
+            detail = f"Failed to create models folder: {HOST_ROOT}/hub: Permission denied",
+        )
+
+    monkeypatch.setattr(local_inventory, "get_models_folder_response", _raises)
+
+    response = _hub(via_api_key = True).get("/api/hub/models-folder")
+    assert response.status_code == 500
+    detail = response.json()["detail"]
+    assert HOST_ROOT not in detail, detail
+    # The cause survives the redaction, or the error stops being actionable.
+    assert "Permission denied" in detail, detail
+    assert "Failed to create models folder" in detail, detail
+
+    # A UI session still sees the path, which is the whole point of the distinction.
+    session = _hub(via_api_key = False).get("/api/hub/models-folder")
+    assert session.status_code == 500
+    assert HOST_ROOT in session.json()["detail"]
+
+
+def test_a_structured_error_detail_is_walked_too(monkeypatch):
+    """Nothing stops a route from raising a dict, and a scrubber that only handles strings
+    would hand the path straight back."""
+    from fastapi import HTTPException
+
+    def _raises():
+        raise HTTPException(
+            status_code = 500,
+            detail = {"message": "bad folder", "path": f"{HOST_ROOT}/hub"},
+        )
+
+    monkeypatch.setattr(local_inventory, "get_models_folder_response", _raises)
+    detail = _hub(via_api_key = True).get("/api/hub/models-folder").json()["detail"]
+    assert HOST_ROOT not in str(detail), detail
+    assert detail["message"] == "bad folder"
+
+
 def test_the_scan_folder_list_is_not_disclosed(monkeypatch):
     monkeypatch.setattr(
         local_inventory,

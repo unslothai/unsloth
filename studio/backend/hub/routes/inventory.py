@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Body, Depends, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from auth.authentication import (
     allow_ambient_hf_token,
@@ -15,7 +15,11 @@ from auth.authentication import (
     get_current_subject,
 )
 from hub.dependencies import get_hf_token, get_request_hf_token
-from hub.utils.host_paths import redact_host_paths, redact_inventory_host_paths
+from hub.utils.host_paths import (
+    redact_host_paths,
+    redact_inventory_error_detail,
+    redact_inventory_host_paths,
+)
 from hub.schemas.downloads import (
     ActiveDownloadsResponse,
     CancelDownloadResponse,
@@ -106,9 +110,22 @@ def get_models_folder(
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    return redact_inventory_host_paths(
-        local_inventory.get_models_folder_response(), via_api_key = via_api_key
-    )
+    # The call is inside the try, not inside the redactor's argument list. This route
+    # RAISES with the cache path in the detail when the folder cannot be created or is a
+    # file, and an exception raised while evaluating an argument never reaches the function
+    # it was being passed to, so the one caller the redaction exists for was getting the
+    # host path out of the 500 instead of out of the 200.
+    try:
+        payload = local_inventory.get_models_folder_response()
+    except HTTPException as error:
+        raise HTTPException(
+            status_code = error.status_code,
+            detail = redact_inventory_error_detail(
+                error.detail, via_api_key = via_api_key
+            ),
+            headers = error.headers,
+        ) from error
+    return redact_inventory_host_paths(payload, via_api_key = via_api_key)
 
 
 @router.get("/gguf-variants", response_model = GgufVariantsResponse)

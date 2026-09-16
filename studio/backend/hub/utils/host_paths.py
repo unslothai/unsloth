@@ -299,6 +299,52 @@ def scrub_paths(text: Any) -> str:
     return _ABSOLUTE_PATH_RE.sub(lambda match: short_path_for_log(match.group(0)), message)
 
 
+_REDACTED_PATH = "<path>"
+
+
+def redact_paths_in_text(text: Any) -> str:
+    """Remove every absolute path from a message, rather than shortening it.
+
+    The stronger sibling of ``scrub_paths``. That one keeps the last component because a
+    local log is read by the person who owns the filesystem, and a name is what makes the
+    line useful. This one is for text that LEAVES the host, where the last component is
+    still the operator's layout: a home directory name, a drive letter, a share.
+    """
+    message = text if isinstance(text, str) else ("" if text is None else str(text))
+    if not message:
+        return ""
+    return _ABSOLUTE_PATH_RE.sub(_REDACTED_PATH, message)
+
+
+def redact_inventory_error_detail(detail: Any, *, via_api_key: bool) -> Any:
+    """An error detail with host paths removed for a caller that may not see them.
+
+    The response redactors only ever see a payload that was BUILT. A route that raises
+    while building one hands the client the exception instead, and these details are
+    formatted with the path in them, so the one caller the redaction exists for got the
+    host path out of the 500 rather than out of the 200.
+
+    Strings are scrubbed; a structured detail is walked so a dict or list detail is covered
+    too, since nothing stops a route from raising one.
+    """
+    if host_paths_visible(via_api_key):
+        return detail
+    if isinstance(detail, str):
+        return redact_paths_in_text(detail)
+    if isinstance(detail, Mapping):
+        return {
+            key: redact_inventory_error_detail(value, via_api_key = via_api_key)
+            for key, value in detail.items()
+        }
+    if isinstance(detail, (list, tuple)):
+        redacted = [
+            redact_inventory_error_detail(value, via_api_key = via_api_key)
+            for value in detail
+        ]
+        return type(detail)(redacted) if isinstance(detail, tuple) else redacted
+    return detail
+
+
 def _dump_model(payload: Any) -> Optional[dict]:
     """A pydantic response object as a plain dict, or ``None`` when it is not one.
 

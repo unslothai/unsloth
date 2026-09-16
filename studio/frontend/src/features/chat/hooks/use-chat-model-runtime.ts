@@ -2489,6 +2489,15 @@ export function useChatModelRuntime() {
             cacheMissWatch = verdict.watch;
             if (!verdict.started) return false;
             cacheMissDownload = true;
+            // Detection IS movement observed: `watchCacheMissDownload` only returns started
+            // after two readings whose byte counts grew. Leaving the flag false meant the
+            // completion branch in pollDownload, which is gated on it, could not fire, and a
+            // tail that finished between this request and the pollDownload right behind it
+            // reported `progress >= 1` to a poller that ignored it. `downloadComplete` then
+            // stayed false forever, every later tick re-entered pollDownload instead of
+            // pollLoad, and the UI sat in the downloading phase with the mmap and startup
+            // progress suppressed until the whole load finished.
+            hasShownProgress = true;
             downloadComplete = false;
             activeLoadingDescription = cacheMissDescription;
             setLoadProgress({

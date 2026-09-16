@@ -142,3 +142,24 @@ test("an unknown total still updates the toast the user is looking at", () => {
   // the byte-count label exists to avoid.
   assert.match(branch, /renderLoadDescription\(\s*"Downloading model…",[\s\S]*?null,/);
 });
+
+test("detecting the download counts as having shown progress", () => {
+  // The completion branch in pollDownload is gated on hasShownProgress, and the only other
+  // places that set it are the two branches that report bytes. A tail that finishes between
+  // the watcher request and the pollDownload immediately behind it therefore arrives at a
+  // poller that ignores `progress >= 1`: downloadComplete stays false, every later tick
+  // re-enters pollDownload rather than pollLoad, and the UI is stuck in the downloading
+  // phase with the mmap and startup progress suppressed for the rest of the load.
+  const hook = readText("../src/features/chat/hooks/use-chat-model-runtime.ts");
+  const start = hook.indexOf("const cacheMissDownloadStarted");
+  assert.ok(start > 0, "the watcher moved");
+  const end = hook.indexOf("const pollProgress", start);
+  assert.ok(end > start);
+  const branch = hook.slice(start, end);
+  assert.match(branch, /if \(!verdict\.started\) return false;/);
+  assert.match(branch, /cacheMissDownload = true;[\s\S]*hasShownProgress = true;/);
+  // And it is set only once the watch has actually reported movement, so a first reading
+  // cannot arm it.
+  const armed = branch.indexOf("hasShownProgress = true;");
+  assert.ok(armed > branch.indexOf("if (!verdict.started) return false;"));
+});
