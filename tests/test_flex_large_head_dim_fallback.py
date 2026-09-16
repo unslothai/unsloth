@@ -7,6 +7,7 @@ regression rather than a fallback: the tower has a small head dim so SDPA alread
 fused kernel, and it attends over a different length every call, which would make flex
 recompile per shape. These pin that the unofferable case degrades to sdpa instead.
 """
+
 import pytest
 
 import unsloth  # noqa: F401  (must precede transformers)
@@ -15,7 +16,8 @@ import unsloth.models._utils as u
 
 class _Cfg:
     def __init__(self, **kw):
-        for k, v in kw.items(): setattr(self, k, v)
+        for k, v in kw.items():
+            setattr(self, k, v)
 
 
 def _text_only():
@@ -24,9 +26,11 @@ def _text_only():
 
 def _multimodal():
     text = _Cfg(model_type = "fake", head_dim = 256, num_attention_heads = 8)
-    return _Cfg(model_type = "fake_vl", text_config = text,
-                vision_config = _Cfg(model_type = "fake_vision", head_dim = 64,
-                                     num_attention_heads = 8))
+    return _Cfg(
+        model_type = "fake_vl",
+        text_config = text,
+        vision_config = _Cfg(model_type = "fake_vision", head_dim = 64, num_attention_heads = 8),
+    )
 
 
 @pytest.fixture(autouse = True)
@@ -68,9 +72,11 @@ def test_mapping_support_text_only_is_a_plain_string():
 # its custom masks cannot be merged safely. Forcing it there would select a backend its authors
 # ruled out, so the read has to come off vars() with the MRO walk stopping at the generic base.
 
+
 def _real_model_class(module_path, class_name):
     pytest.importorskip("transformers")
     import importlib
+
     try:
         mod = importlib.import_module(module_path)
     except Exception:
@@ -82,20 +88,23 @@ def _real_model_class(module_path, class_name):
 
 
 def test_qwen3_5_only_inherits_the_base_default():
-    cls = _real_model_class("transformers.models.qwen3_5.modeling_qwen3_5",
-                            "Qwen3_5ForConditionalGeneration")
+    cls = _real_model_class(
+        "transformers.models.qwen3_5.modeling_qwen3_5", "Qwen3_5ForConditionalGeneration"
+    )
     assert u._declares_flex_support(cls) is None
 
 
 def test_t5gemma2_declares_its_own_opt_out():
-    cls = _real_model_class("transformers.models.t5gemma2.modeling_t5gemma2",
-                            "T5Gemma2ForConditionalGeneration")
+    cls = _real_model_class(
+        "transformers.models.t5gemma2.modeling_t5gemma2", "T5Gemma2ForConditionalGeneration"
+    )
     assert u._declares_flex_support(cls) is False
 
 
 def test_force_enable_refuses_an_explicit_opt_out():
-    cls = _real_model_class("transformers.models.t5gemma2.modeling_t5gemma2",
-                            "T5Gemma2ForConditionalGeneration")
+    cls = _real_model_class(
+        "transformers.models.t5gemma2.modeling_t5gemma2", "T5Gemma2ForConditionalGeneration"
+    )
     u._FLEX_SUPPORT_FORCED.clear()
     assert u._enable_flex_attention_support(cls, "t5gemma2") is False
     # and it must not have mutated the class on the way out
@@ -103,7 +112,8 @@ def test_force_enable_refuses_an_explicit_opt_out():
 
 
 def test_force_enable_still_opts_in_qwen3_5():
-    cls = _real_model_class("transformers.models.qwen3_5.modeling_qwen3_5",
-                            "Qwen3_5ForConditionalGeneration")
+    cls = _real_model_class(
+        "transformers.models.qwen3_5.modeling_qwen3_5", "Qwen3_5ForConditionalGeneration"
+    )
     u._FLEX_SUPPORT_FORCED.clear()
     assert u._enable_flex_attention_support(cls, "qwen3_5") is True
