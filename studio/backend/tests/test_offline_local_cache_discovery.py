@@ -70,12 +70,12 @@ def _host_credential(monkeypatch):
     environment this suite runs in, which would otherwise decide these tests. Overridden
     per test with `_no_host_credential` where the case is a host that has none.
     """
-    monkeypatch.setattr(hf_tokens, "_ambient_hf_token", lambda: OPERATOR_TOKEN)
+    monkeypatch.setattr(hf_tokens, "_ambient_hf_token", lambda: (True, OPERATOR_TOKEN))
 
 
 def _no_host_credential(monkeypatch):
     """A host that never configured an HF token: the ordinary install."""
-    monkeypatch.setattr(hf_tokens, "_ambient_hf_token", lambda: None)
+    monkeypatch.setattr(hf_tokens, "_ambient_hf_token", lambda: (True, None))
 
 
 def _materialize_repo(
@@ -430,7 +430,7 @@ def test_the_ownership_check_reads_the_hosts_token_every_time(monkeypatch, tmp_p
     _counting_probe(monkeypatch, True, offline = True)
 
     assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is True
-    monkeypatch.setattr(hf_tokens, "_ambient_hf_token", lambda: "hf_rotated")
+    monkeypatch.setattr(hf_tokens, "_ambient_hf_token", lambda: (True, "hf_rotated"))
     assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is False
     assert cache_reads_authorized("hf_rotated", repo_id = ON_DISK) is True
 
@@ -444,14 +444,21 @@ def test_the_ambient_token_reader_prefers_the_hub_and_falls_back_to_the_env(monk
     monkeypatch.setattr("huggingface_hub.get_token", lambda: "  hf_from_hub  ")
     for key in hf_tokens._HF_TOKEN_ENV_KEYS:
         monkeypatch.delenv(key, raising = False)
-    assert read() == "hf_from_hub"
+    assert read() == (True, "hf_from_hub")
 
+    # The Hub library ANSWERING "none" is an answer, and the only one that lets a
+    # credential-less caller read the cache offline.
     monkeypatch.setattr("huggingface_hub.get_token", lambda: None)
-    assert read() is None
-    monkeypatch.setenv("HF_OIDC_RESOURCE", "some-resource-name")
-    assert read() is None, "a resource name was read as a credential"
-    monkeypatch.setenv("HUGGINGFACEHUB_API_TOKEN", "hf_from_env")
-    assert read() == "hf_from_env"
+    assert read() == (True, None)
+
+    # Asked and NOT answered is the third outcome. Collapsing it into "this host has no
+    # credential" is a fail-open: the token file could hold one this process cannot read.
+    def _raises():
+        raise OSError("token file unreadable")
+    monkeypatch.setattr("huggingface_hub.get_token", _raises)
+    assert read() == (False, None)
+    assert hf_tokens._caller_populated_the_cache(None) is False
+    assert hf_tokens._caller_populated_the_cache("hf_anything") is False
 
 
 # --------------------------------------------------------------------------- probe classifier

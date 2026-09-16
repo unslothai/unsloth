@@ -483,3 +483,50 @@ def test_a_named_tuple_in_a_payload_is_rebuilt_rather_than_raising():
     payload = {"rows": [Row("acme/x", 5)]}
     out = redact_host_paths(payload, via_api_key = True)
     assert out["rows"][0] == Row("acme/x", 5)
+
+# ------------------------------------------------------------ what a client can still tell apart
+#
+# A redacted scalar is the empty string, not None, and the difference is load bearing: a client
+# that tested `if row["cache_path"]` used to read "this row is cached". After the redaction that
+# test is false for every row, cached or not, so the discriminator has to be somewhere. It is
+# `cache_ref`, which is written exactly when the row HAD a path and omitted when it did not, and
+# these cases pin that so it cannot be dropped as an implementation detail.
+
+
+def test_a_redacted_row_is_still_distinguishable_from_one_with_no_path_at_all():
+    """`cache_ref` is the discriminator a truthiness test on `cache_path` used to be."""
+    cached = {"repo_id": "acme/model", "cache_path": "/home/op/.cache/huggingface/hub/x"}
+    uncached = {"repo_id": "acme/other", "cache_path": None}
+
+    red_cached = host_paths.redact_host_paths(cached, via_api_key = True)
+    red_uncached = host_paths.redact_host_paths(uncached, via_api_key = True)
+
+    assert red_cached["cache_path"] == ""
+    assert red_uncached["cache_path"] is None
+    assert red_cached[host_paths.CACHE_REFERENCE_FIELD].startswith("ref:")
+    assert host_paths.CACHE_REFERENCE_FIELD not in red_uncached, (
+        "a row with no path must not gain a reference, or the discriminator says nothing"
+    )
+
+
+def test_the_reference_is_stable_within_the_process_and_differs_per_path():
+    """A client groups rows and de-duplicates a repo cached under two roots with it, so it has to
+    be the same answer for the same path and a different one for a different path."""
+    a = {"cache_path": "/home/op/.cache/huggingface/hub/a"}
+    b = {"cache_path": "/home/op/.cache/huggingface/hub/b"}
+    ref = lambda row: host_paths.redact_host_paths(row, via_api_key = True)[
+        host_paths.CACHE_REFERENCE_FIELD
+    ]
+    assert ref(a) == ref(dict(a))
+    assert ref(a) != ref(b)
+    assert "/home/op" not in ref(a) and "hub" not in ref(a)
+
+
+def test_a_browser_session_keeps_every_path_and_gains_nothing():
+    """The other half: the operator looking at their own machine is unchanged, including not
+    acquiring a reference field their bundle does not expect."""
+    row = {"repo_id": "acme/model", "cache_path": "/home/op/.cache/huggingface/hub/x"}
+    same = host_paths.redact_host_paths(row, via_api_key = False)
+    assert same is row
+    assert host_paths.CACHE_REFERENCE_FIELD not in same
+

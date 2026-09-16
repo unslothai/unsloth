@@ -364,25 +364,44 @@ def _is_local_path(repo_id: str) -> bool:
         return False
 
 
-def _ambient_hf_token() -> Optional[str]:
-    """The credential THIS HOST downloads with, or None when it has none.
+def _ambient_hf_token() -> "tuple[bool, Optional[str]]":
+    """``(known, token)``: the credential THIS HOST downloads with.
 
-    ``huggingface_hub.get_token()`` is the authority: it is what every download in this
+    ``huggingface_hub.get_token()`` is the authority. It is what every download in this
     process resolves, so it covers the env aliases, the OIDC exchange and the token file
     together, and asking it is the only way to be sure the answer matches what actually
-    populated the cache. The env keys are the fallback for a hub too old to export it.
+    populated the cache.
 
-    Not memoized. It is read only inside the unaskable branch, an operator can revoke or
-    set a token at any moment, and a memo would decide authorization from a credential the
-    host no longer has.
+    THREE outcomes, not two, and the third is the one that matters. ``(True, "hf_...")`` the
+    host has this credential; ``(True, None)`` the Hub library says the host has none;
+    ``(False, None)`` the question could not be answered here. Collapsing the third into
+    "this host has no credential" is a fail-open: the token file could hold one this process
+    could not read, and a credential-less caller would then be told the cache contains
+    nothing it lacks permission for. Unknown therefore authorizes nobody.
+
+    The env keys are the fallback for a hub too old to export ``get_token``, and finding one
+    there IS an answer; finding none is not, because the token file is the source that
+    fallback cannot see.
+
+    Not memoized. It is read only inside the unaskable branch, an operator can revoke or set
+    a token at any moment, and a memo would decide authorization from a credential the host
+    no longer has.
     """
+    get_token = None
     try:
-        from huggingface_hub import get_token
-        token = get_token()
-        if isinstance(token, str) and token.strip():
-            return token.strip()
+        from huggingface_hub import get_token as _get_token
+        get_token = _get_token
     except Exception:
-        pass
+        get_token = None
+    if get_token is not None:
+        try:
+            token = get_token()
+        except Exception:
+            # Asked and not answered. Not the same as "there is none".
+            return (False, None)
+        if isinstance(token, str) and token.strip():
+            return (True, token.strip())
+        return (True, None)
     import os
 
     for key in _HF_TOKEN_ENV_KEYS:
@@ -391,8 +410,8 @@ def _ambient_hf_token() -> Optional[str]:
             continue
         value = os.environ.get(key)
         if isinstance(value, str) and value.strip():
-            return value.strip()
-    return None
+            return (True, value.strip())
+    return (False, None)
 
 
 def _caller_populated_the_cache(token: Optional[str]) -> bool:
@@ -420,7 +439,12 @@ def _caller_populated_the_cache(token: Optional[str]) -> bool:
     Compared with ``compare_digest`` rather than ``==``: the comparison is on a secret, and
     an early-exit compare over a repeated request is a timing oracle for it.
     """
-    ambient = _ambient_hf_token()
+    known, ambient = _ambient_hf_token()
+    if not known:
+        # Could not be established. Authorize nobody rather than guess, on either branch:
+        # guessing "no credential" hands the cache to a caller with none, and guessing
+        # "some credential" is not a value a caller's token can be compared against.
+        return False
     if token is None:
         return ambient is None
     if not isinstance(token, str) or not token or ambient is None:
