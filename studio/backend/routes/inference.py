@@ -6292,6 +6292,10 @@ def _monitor_openai_chunk(
             if isinstance(choice, dict) and choice.get("finish_reason"):
                 api_monitor.note_stop_reason(monitor_id, str(choice["finish_reason"]))
     timings = data.get("timings")
+    prompt_progress = data.get("prompt_progress")
+    if isinstance(prompt_progress, dict):
+        timings = dict(timings) if isinstance(timings, dict) else {}
+        timings["prompt_progress"] = prompt_progress
     _monitor_usage(
         monitor_id,
         data.get("usage"),
@@ -35716,11 +35720,14 @@ async def _openai_passthrough_stream(
     return _SameTaskStreamingResponse(
         _queued_stream(),
         media_type = "text/event-stream",
-        headers = {
-            "Cache-Control": "no-cache",
-            "Connection": "close",
-            "X-Accel-Buffering": "no",
-        },
+        headers = _monitor_response_headers(
+            {
+                "Cache-Control": "no-cache",
+                "Connection": "close",
+                "X-Accel-Buffering": "no",
+            },
+            monitor_id,
+        ),
         unstarted_cleanup = _queued_unstarted_cleanup,
     )
 
@@ -35906,11 +35913,14 @@ async def _openai_passthrough_stream_admitted(
                 return _SameTaskStreamingResponse(
                     iter(()),
                     media_type = "text/event-stream",
-                    headers = {
-                        "Cache-Control": "no-cache",
-                        "Connection": "keep-alive",
-                        "X-Accel-Buffering": "no",
-                    },
+                    headers = _monitor_response_headers(
+                        {
+                            "Cache-Control": "no-cache",
+                            "Connection": "keep-alive",
+                            "X-Accel-Buffering": "no",
+                        },
+                        monitor_id,
+                    ),
                 )
 
             if resp.status_code == 200:
@@ -36570,11 +36580,14 @@ async def _openai_passthrough_stream_admitted(
         return _SameTaskStreamingResponse(
             _stream(),
             media_type = "text/event-stream",
-            headers = {
-                "Cache-Control": "no-cache",
-                "Connection": "close",
-                "X-Accel-Buffering": "no",
-            },
+            headers = _monitor_response_headers(
+                {
+                    "Cache-Control": "no-cache",
+                    "Connection": "close",
+                    "X-Accel-Buffering": "no",
+                },
+                monitor_id,
+            ),
             unstarted_cleanup = _unstarted_cleanup,
         )
     except BaseException as exc:
