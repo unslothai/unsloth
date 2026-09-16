@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { stripTypeScriptTypes } from "node:module";
+import ts from "typescript";
 import test from "node:test";
 import { classifyUnslothSupport } from "../src/features/hub/lib/unsloth-support.ts";
 
@@ -12,7 +12,7 @@ const start = source.indexOf("function makeMapModel(");
 assert.notEqual(start, -1);
 const end = source.indexOf("\n}\n", start) + 2;
 const makeMapModel = new Function("classifyUnslothSupport", "EMBEDDING_TAGS", "isGgufLike", "estimateSizeFromDtypes", "detectBaseModel",
-  stripTypeScriptTypes(source.slice(start, end)) + "; return makeMapModel;",
+  ts.transpileModule(source.slice(start, end), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText + "; return makeMapModel;",
 )(classifyUnslothSupport, new Set(["sentence-transformers", "sentence-similarity"]), (id: string) => id.endsWith("-GGUF"), () => undefined, () => null);
 
 for (const device of ["mac", "cuda"]) {
@@ -36,5 +36,18 @@ for (const device of ["mac", "cuda"]) {
     const discover = makeMapModel(false, true, "", device);
     assert.ok(discover({ name: "owner/model", tags: ["onnx"] }));
     assert.ok(map({ name: "owner/embedding", tags: ["sentence-transformers", "onnx"] }));
+  });
+}
+
+for (const device of ["mac", "cuda"]) {
+  test(`${device}: supported quantization does not bypass export rejection`, () => {
+    const map = makeMapModel(false, false, "", device);
+    for (const quant_method of ["bitsandbytes", "bnb", "bnb_4bit", "bnb_8bit"]) {
+      for (const format of ["onnx", "openvino"]) {
+        const config = { quantization_config: { quant_method } };
+        assert.equal(map({ name: `owner/model-${format}`, tags: [format], config }), null);
+        assert.ok(map({ name: "owner/model", tags: [format, "safetensors"], config }));
+      }
+    }
   });
 }

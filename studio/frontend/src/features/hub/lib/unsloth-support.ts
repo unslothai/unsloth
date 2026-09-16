@@ -96,13 +96,6 @@ const FORMAT_NAME_PATTERNS: ReadonlyArray<{ key: string; pattern: RegExp }> = [
   { key: "ctranslate2", pattern: /(?:^|[-_./])ctranslate2(?:$|[-_./])/i },
 ];
 
-const SUPPORTED_QUANT_METHODS: ReadonlySet<string> = new Set([
-  "bitsandbytes",
-  "bnb",
-  "bnb_4bit",
-  "bnb_8bit",
-]);
-
 const UNSUPPORTED_QUANT_METHODS: Record<string, string> = {
   awq: "AWQ quantization",
   gptq: "GPTQ quantization",
@@ -236,9 +229,6 @@ export function classifyUnslothSupport({
     (modelId ? /(?:^|[-_.])gguf$/i.test(repoLeaf(modelId)) : false);
 
   if (normalizedQuant && !isGguf) {
-    if (SUPPORTED_QUANT_METHODS.has(normalizedQuant)) {
-      return { status: "supported", reason: null };
-    }
     if (Object.hasOwn(UNSUPPORTED_QUANT_METHODS, normalizedQuant)) {
       return {
         status: "unsupported",
