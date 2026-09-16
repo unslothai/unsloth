@@ -4733,11 +4733,49 @@ def _user_fit_disabled(
     return str(asked).strip().lower() in {"off", "0", "false", "no", "disabled"}
 
 
+def _placement_is_fitter_proof(
+    extra_args: Optional[Iterable[str]] = None,
+    *,
+    gpu_layers: Optional[int] = None,
+    env: Optional[Mapping[str, str]] = None,
+) -> bool:
+    """Whether a layer count llama.cpp's fitter refuses to move owns this placement.
+
+    ``common_params_fit_impl`` throws "n_gpu_layers already set by user"
+    (common/fit.cpp:377) for any value but llama.cpp's own default of -1
+    (llama-model.cpp:2453), and the caller downgrades that to a warning
+    (common/fit.cpp:805), so the launch proceeds with the count exactly as given.
+    Turning the fitter back on for a respawn therefore buys nothing on such a launch:
+    the placement is the same one either way. A count comes from Unsloth's Manual mode
+    (``gpu_layers >= 0``, emitted as ``--gpu-layers N --fit off``), from a pass-through
+    ``-ngl`` in the extras, or from an inherited ``LLAMA_ARG_N_GPU_LAYERS``, which the
+    fitting path never emits an ``-ngl`` to lose to.
+
+    ``auto`` and ``-1`` are that default rather than an override, so they leave the
+    fitter free and do not count.
+    """
+    if gpu_layers is not None and gpu_layers >= 0:
+        return True
+    values = [str(arg) for arg in extra_args] if extra_args else []
+    for i, raw in enumerate(values):
+        if _flag_name(raw) not in _GPU_LAYER_FLAGS:
+            continue
+        _, eq, inline = raw.partition("=")
+        value = inline if eq else ""
+        if not eq and i + 1 < len(values):
+            value = values[i + 1]
+        value = value.strip().lower()
+        if value and value not in _LLAMA_ARG_AUTO_VALUES:
+            return True
+    return bool(_env_fixes_gpu_layers(env))
+
+
 def _reserved_flash_attn_state(
     planned: bool,
     extra_args: Optional[Iterable[str]] = None,
     *,
     tensor_parallel: bool = False,
+    gpu_layers: Optional[int] = None,
     env: Optional[Mapping[str, str]] = None,
 ) -> bool:
     """``planned``, held to the conservative reading where a respawn cannot be re-placed.
@@ -4759,6 +4797,11 @@ def _reserved_flash_attn_state(
     if _effective_tensor_parallel(extra_args, tensor_parallel, env):
         return planned
     if _user_fit_disabled(extra_args, env = env):
+        return False
+    # And the placement llama.cpp's fitter will not move, for the same reason: the retry
+    # rewrites the fit token back on, but a count the user fixed makes that a no-op, so the
+    # padded cache lands on the placement priced for the unpadded one.
+    if _placement_is_fitter_proof(extra_args, gpu_layers = gpu_layers, env = env):
         return False
     return planned
 
@@ -22632,6 +22675,9 @@ class LlamaCppBackend:
                     None if _cache_type_from_env else cache_type_kv,
                     extra_args,
                 )
+                # Unsloth's own fixed count, when Manual mode pinned one. Auto leaves it
+                # negative, which is llama.cpp's default and no override at all.
+                _manual_gpu_layers = gpu_layers if gpu_memory_mode == "manual" else None
                 # After the cache pair, because a quantized V forces flash attention on.
                 # NOT pinned False to pre-reserve the cache a hard-crash recovery would
                 # relaunch with: tensor mode cannot take that recovery (llama.cpp requires
@@ -22650,6 +22696,7 @@ class LlamaCppBackend:
                     ),
                     extra_args,
                     tensor_parallel = tensor_parallel,
+                    gpu_layers = _manual_gpu_layers,
                 )
 
                 def _replan_env(_current_tp: bool) -> "Optional[Mapping[str, str]]":
@@ -22695,6 +22742,7 @@ class LlamaCppBackend:
                         ),
                         extra_args,
                         tensor_parallel = _current_tp,
+                        gpu_layers = _manual_gpu_layers,
                         env = _env,
                     )
                 # A user --split-mode in extras last-wins-overrides the toggle, and
@@ -27778,12 +27826,24 @@ class LlamaCppBackend:
                     so the rewrite would change nothing except in the one case where Unsloth
                     added no token at all and the first ``--fit`` in the argv is theirs. A
                     user-disabled fitter is the case `_reserved_flash_attn_state` holds the
-                    reserve down for instead, so nothing here needs to reach it.
+                    reserve down for instead, so nothing here needs to reach it, and so is a
+                    layer count llama.cpp's fitter refuses to move: Manual mode's own
+                    ``--gpu-layers N`` carries a managed ``--fit off`` that looks exactly like
+                    an auto placement's, but flipping it re-places nothing.
                     """
                     if "--fit" not in fa_cmd:
                         return fa_cmd
                     if any(
                         _flag_name(str(token)) in {"-fit", "--fit"} for token in (extra_args or ())
+                    ):
+                        return fa_cmd
+                    # A count the fitter refuses to move makes the flip a no-op -- Manual
+                    # mode's own `--gpu-layers N`, a pass-through `-ngl`, or an inherited
+                    # LLAMA_ARG_N_GPU_LAYERS -- so the respawn keeps the fixed placement it
+                    # was given and `_reserved_flash_attn_state` prices the padded cache
+                    # against it rather than against a re-placement that cannot happen.
+                    if _placement_is_fitter_proof(
+                        fa_cmd, gpu_layers = _manual_gpu_layers, env = env
                     ):
                         return fa_cmd
                     index = fa_cmd.index("--fit")

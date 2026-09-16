@@ -2290,7 +2290,7 @@ def test_the_replayed_cpu_fallback_recomputes_the_memory_record():
     assert "self._record_memory_state(cmd,env)" in arm
 
 
-def _no_flash_fit_rewriter(extra_args):
+def _no_flash_fit_rewriter(extra_args, *, manual_gpu_layers = None, env = None):
     """The nested `_enable_managed_fit_for_no_flash` as a callable, bound to `extra_args`.
 
     It closes over load_model's locals, so it cannot be imported; compiling its own source
@@ -2298,13 +2298,21 @@ def _no_flash_fit_rewriter(extra_args):
     which is what makes the cases below observe behaviour instead of text.
     """
     from core.inference.llama_cpp import LlamaCppBackend as B
+    from core.inference import llama_cpp as B_module
     from core.inference.llama_cpp import logger, _flag_name
     import inspect, textwrap
 
     src = inspect.getsource(B.load_model)
     start = src.index("                def _enable_managed_fit_for_no_flash(")
     end = src.index("                def ", start + 1)
-    namespace = {"logger": logger, "_flag_name": _flag_name, "extra_args": extra_args}
+    namespace = {
+        "logger": logger,
+        "_flag_name": _flag_name,
+        "_placement_is_fitter_proof": B_module._placement_is_fitter_proof,
+        "extra_args": extra_args,
+        "_manual_gpu_layers": manual_gpu_layers,
+        "env": {} if env is None else env,
+    }
     exec(textwrap.dedent(src[start:end]), namespace)
     return namespace["_enable_managed_fit_for_no_flash"]
 
@@ -2362,3 +2370,54 @@ def test_the_no_flash_retry_re_places_at_both_respawns():
         arm = arm[arm.rindex("self._with_flash_attn_off(") :]
         assert "_enable_managed_fit_for_no_flash(_fa_cmd)" in arm
     assert src.count("_enable_managed_fit_for_no_flash(_fa_cmd)") == 2
+
+
+def test_a_fixed_layer_count_keeps_the_no_flash_retry_on_its_placement():
+    """Manual mode's `--fit off` is not an auto placement's, and must not be flipped.
+
+    A Manual load emits `--gpu-layers N --fit off`, which is token for token what an auto
+    placement that fits emits for the fitter. The difference is what the flip would buy:
+    `common_params_fit_impl` throws "n_gpu_layers already set by user" (common/fit.cpp:377)
+    for any count but llama.cpp's own -1 default and the caller downgrades it to a warning,
+    so the retry keeps the fixed placement whatever the fit flag says. Flipping it and then
+    pricing the reserve as if a re-placement were coming is how the padded flash-attention-off
+    cache lands on a placement chosen for the unpadded one.
+    """
+    rewrite = _no_flash_fit_rewriter(None, manual_gpu_layers = 20)
+    fixed = ["llama-server", "--gpu-layers", "20", "--fit", "off"]
+    assert rewrite(fixed) == fixed
+
+    # The count in the argv decides even without Unsloth's own record of it, since
+    # llama.cpp reads the tokens and not this process's idea of the mode.
+    assert _no_flash_fit_rewriter(None)(fixed) == fixed
+    # And an inherited count, which the fitting path emits no -ngl to lose to.
+    inherited = _no_flash_fit_rewriter(None, env = {"LLAMA_ARG_N_GPU_LAYERS": "20"})
+    auto = ["llama-server", "--fit", "off"]
+    assert inherited(auto) == auto
+    # llama.cpp's own default is not an override, so an auto placement still re-places.
+    default_count = ["llama-server", "--gpu-layers", "-1", "--fit", "off"]
+    assert _no_flash_fit_rewriter(None)(default_count)[-1] == "on"
+
+
+def test_the_reserve_holds_for_a_placement_the_fitter_will_not_move():
+    """The other half of the same case, on the estimate rather than the argv.
+
+    With no re-placement available the reserve has to price the padded, f16-floored V the
+    retry would run with, exactly as it does for a user's own `--fit off`.
+    """
+    from core.inference.llama_cpp import _placement_is_fitter_proof, _reserved_flash_attn_state
+
+    assert _reserved_flash_attn_state(True, None, gpu_layers = 20, env = {}) is False
+    assert _reserved_flash_attn_state(True, ["-ngl", "20"], env = {}) is False
+    assert _reserved_flash_attn_state(True, None, env = {"LLAMA_ARG_N_GPU_LAYERS": "20"}) is False
+    # Auto placements keep the planned answer: the retry really is re-placed there.
+    assert _reserved_flash_attn_state(True, None, gpu_layers = -1, env = {}) is True
+    assert _reserved_flash_attn_state(True, ["-ngl", "-1"], env = {}) is True
+    assert _reserved_flash_attn_state(True, None, env = {}) is True
+
+    # The predicate itself, on the spellings llama.cpp accepts.
+    assert _placement_is_fitter_proof(["--gpu-layers=20"], env = {}) is True
+    assert _placement_is_fitter_proof(["--n-gpu-layers", "0"], env = {}) is True
+    assert _placement_is_fitter_proof(["-ngl", "auto"], env = {}) is False
+    assert _placement_is_fitter_proof(None, gpu_layers = 0, env = {}) is True
+    assert _placement_is_fitter_proof(None, env = {}) is False
