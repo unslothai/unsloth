@@ -232,6 +232,84 @@ try {
             (Get-Content -Raw -LiteralPath $victim).Trim() -eq $precious)
     }
 
+    # 6b. The same hazard planted as a HARD link. A hard link is a second directory entry for an
+    #     existing file, so it carries no reparse point attribute and the attributes check cannot
+    #     see it at all; File.Open follows it just the same and would hold the victim with
+    #     FileShare.None for the whole install. That is a denial of service on somebody else's
+    #     file, reached by a route the reparse check does not cover.
+    $hardDir = Join-Path $tmp "hardlink-root"
+    New-Item -ItemType Directory -Force -Path $hardDir | Out-Null
+    $hardVictim = Join-Path $tmp "precious-hard.txt"
+    $hardPrecious = "do not deny me"
+    $hardPrecious | Set-Content -LiteralPath $hardVictim -NoNewline
+    $hardVictimLength = (Get-Item -LiteralPath $hardVictim).Length
+    $hardPlanted = Join-Path $hardDir $lockFileName
+    $hardOk = $false
+    try {
+        New-Item -ItemType HardLink -Path $hardPlanted -Target $hardVictim -ErrorAction Stop | Out-Null
+        $hardOk = $true
+    } catch {
+        Write-Host "  SKIP  this host cannot create a hard link: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+    if ($hardOk) {
+        # Proof the planted entry really is a hard link and not something the existing defence
+        # already catches. Without this the checks below could pass for the wrong reason.
+        $hardItem = Get-Item -LiteralPath $hardPlanted -Force
+        Check "a planted hard link carries NO reparse attribute, so the attributes check is blind to it (bites)" (
+            ($hardItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0)
+        Check "the planted hard link really reaches the victim's contents" (
+            $hardItem.Length -eq $hardVictimLength -and $hardVictimLength -gt 0)
+
+        $hardLock = $null
+        try { $hardLock = Enter-StudioInstallLock -Path $hardDir } catch {}
+        Check "the lock is still granted with a hard link planted" ($null -ne $hardLock)
+        # Read WHILE the lock is held. Following the hard link would leave the victim open with
+        # FileShare.None until the install finishes, so a second exclusive open of it would be
+        # refused. Get-Content is not enough on its own here, since a shared read can succeed
+        # against a handle opened for reading; ask for the same exclusivity the installer takes.
+        $victimFree = $false
+        try {
+            $probeStream = [System.IO.File]::Open($hardVictim, [System.IO.FileMode]::Open,
+                [System.IO.FileAccess]::Read, [System.IO.FileShare]::None)
+            $probeStream.Dispose()
+            $victimFree = $true
+        } catch {}
+        Check "a planted hard link's target is NOT held open by the lock" $victimFree
+        Check "the lock file is a fresh empty file, not the victim" (
+            (Get-Item -LiteralPath $hardPlanted -Force).Length -eq 0)
+        if ($hardLock) { Exit-StudioInstallLock -Lock $hardLock }
+        Check "a planted hard link's target keeps its contents" (
+            (Get-Content -Raw -LiteralPath $hardVictim) -eq $hardPrecious)
+        Check "a planted hard link's target keeps its length" (
+            (Get-Item -LiteralPath $hardVictim).Length -eq $hardVictimLength)
+
+        # 6c. Removing a non-empty entry must never become a way to steal a lock somebody else
+        #     already holds. The file here is BOTH non-empty, which is what the new check keys
+        #     on, and held by a real second process, so a fix that removed first and asked
+        #     questions afterwards would hand out a second lock for one destination. The refusal
+        #     has to come first, and the file has to survive intact.
+        $stealDir = Join-Path $tmp "steal-root"
+        New-Item -ItemType Directory -Force -Path $stealDir | Out-Null
+        $stealLockPath = Join-Path $stealDir $lockFileName
+        $stealBody = "held by somebody else"
+        $stealBody | Set-Content -LiteralPath $stealLockPath -NoNewline
+        $stealHolder = Start-Holder $stealLockPath
+        try {
+            $stolen = "not-run"
+            try { $stolen = Enter-StudioInstallLock -Path $stealDir } catch {}
+            Check "a held non-empty lock is refused, not removed and retaken" ($null -eq $stolen)
+            if ($stolen -and $stolen -ne "not-run") { Exit-StudioInstallLock -Lock $stolen }
+            Check "the held lock file still exists after the refusal" (
+                Test-Path -LiteralPath $stealLockPath)
+        } finally {
+            Stop-Holder $stealHolder
+        }
+        # Its contents are only readable once the holder has let go, since the holder takes it
+        # with FileShare.None exactly as the installer does.
+        Check "the held lock file survives the refusal intact" (
+            (Get-Content -Raw -LiteralPath $stealLockPath) -eq $stealBody)
+    }
+
     # 7. A real I/O fault must not be reported as "another installer is running". Only a sharing
     #    or lock violation means that. Here the lock path already exists as a DIRECTORY, so the
     #    open fails for a reason that is nobody's concurrent install, and the caller must see the

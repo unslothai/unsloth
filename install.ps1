@@ -5241,33 +5241,83 @@ exit 0
                     Remove-Item -LiteralPath $lockPath -Force -ErrorAction Stop
                 }
             } catch {}
-            try {
-                $stream = [System.IO.File]::Open(
-                    $lockPath,
-                    [System.IO.FileMode]::OpenOrCreate,
-                    [System.IO.FileAccess]::ReadWrite,
-                    [System.IO.FileShare]::None)
-            } catch [System.IO.IOException] {
-                # Only a sharing or lock violation means "another installer holds it". Anything
-                # else, a transient storage fault or a network share dropping out, is a real
-                # failure and must not be reported as a concurrent install: that hides the fault
-                # and sends the user looking for a second installer that does not exist.
-                # HResult's low 16 bits carry the Win32 code on Windows: 32 is
-                # ERROR_SHARING_VIOLATION and 33 is ERROR_LOCK_VIOLATION. Off Windows .NET
-                # implements FileShare with flock and reports the errno instead, 11 for
-                # EAGAIN/EWOULDBLOCK, which is what the test suite exercises on Linux. Measured
-                # rather than assumed, because the first version of this check only knew the
-                # Windows codes and turned every real conflict on Linux into a rethrow.
-                #
-                # A directory sitting where the lock file should be raises
-                # UnauthorizedAccessException, not IOException, so it is never caught here and
-                # already reaches the caller as the failure it is.
-                $code = $_.Exception.HResult -band 0xFFFF
-                if ($code -ne 32 -and $code -ne 33 -and $code -ne 11) { throw }
-                if ($stream) { $stream.Dispose() }
-                Exit-StudioInstallMutex -Mutex $mutex
-                return $null
+            # The attributes check above cannot see a HARD link. A hard link is a second
+            # directory entry for an existing file, not a reparse point, so it carries no
+            # attribute to test and File.Open follows it just the same: the target would be held
+            # with FileShare.None for the whole install, which is the denial of service the
+            # reparse removal exists to prevent. The discriminator is the opened stream's own
+            # Length. Nothing is ever written to this lock file, so ours is always zero bytes,
+            # while any planted alias to a file worth denying access to is not. Reading it from
+            # the handle rather than from the directory entry also closes the window between the
+            # check above and this open, which an attacker controls.
+            #
+            # At most one repair, and the reopen is CreateNew rather than OpenOrCreate. That is
+            # what keeps two installers that spell the destination differently (the mutex only
+            # serialises identical spellings) from each ending up holding a different file: if
+            # somebody re-created the entry between the removal and the reopen, CreateNew fails
+            # instead of silently handing out a second lock, and the run reports a busy lock.
+            $repaired = $false
+            while ($true) {
+                if ($repaired) { $mode = [System.IO.FileMode]::CreateNew }
+                else { $mode = [System.IO.FileMode]::OpenOrCreate }
+                try {
+                    $stream = [System.IO.File]::Open(
+                        $lockPath,
+                        $mode,
+                        [System.IO.FileAccess]::ReadWrite,
+                        [System.IO.FileShare]::None)
+                } catch [System.IO.IOException] {
+                    # Only a sharing or lock violation means "another installer holds it". Anything
+                    # else, a transient storage fault or a network share dropping out, is a real
+                    # failure and must not be reported as a concurrent install: that hides the fault
+                    # and sends the user looking for a second installer that does not exist.
+                    # HResult's low 16 bits carry the Win32 code on Windows: 32 is
+                    # ERROR_SHARING_VIOLATION and 33 is ERROR_LOCK_VIOLATION. Off Windows .NET
+                    # implements FileShare with flock and reports the errno instead, 11 for
+                    # EAGAIN/EWOULDBLOCK, which is what the test suite exercises on Linux. Measured
+                    # rather than assumed, because the first version of this check only knew the
+                    # Windows codes and turned every real conflict on Linux into a rethrow.
+                    #
+                    # 80 ERROR_FILE_EXISTS, 183 ERROR_ALREADY_EXISTS and 17 EEXIST are how the
+                    # CreateNew reopen reports losing that race, and mean the same thing to the
+                    # caller: somebody else has the lock, come back later.
+                    #
+                    # A directory sitting where the lock file should be raises
+                    # UnauthorizedAccessException, not IOException, so it is never caught here and
+                    # already reaches the caller as the failure it is.
+                    $code = $_.Exception.HResult -band 0xFFFF
+                    $lost = $repaired -and ($code -eq 80 -or $code -eq 183 -or $code -eq 17)
+                    if (-not $lost -and $code -ne 32 -and $code -ne 33 -and $code -ne 11) { throw }
+                    if ($stream) { $stream.Dispose() }
+                    Exit-StudioInstallMutex -Mutex $mutex
+                    return $null
+                }
+                if ($stream.Length -eq 0) { break }
+                if ($repaired) {
+                    # A file this run just created cannot be non-empty, so reaching here means the
+                    # path is not behaving like a file at all. Fail loudly instead of looping.
+                    throw "The install lock file at $lockPath is not empty after being replaced."
+                }
+                # Drop the handle before removing the entry, then let the reopen create a real
+                # file. Removing a hard link deletes only that directory entry and never the
+                # target's data, the same property the reparse removal above relies on.
+                $stream.Dispose()
+                $stream = $null
+                try {
+                    Remove-Item -LiteralPath $lockPath -Force -ErrorAction Stop
+                } catch {
+                    # Another process holding the entry with FileShare.None is what makes this
+                    # fail, so this is "busy", not a fault to swallow and carry on from.
+                    Exit-StudioInstallMutex -Mutex $mutex
+                    return $null
+                }
+                $repaired = $true
             }
+            # Residual, stated plainly rather than implied away: a hard link to a genuinely EMPTY
+            # file is indistinguishable from our own lock file and is used as the lock. Nothing is
+            # written to it, so no data is lost and the only thing denied for the length of the
+            # install is access to a zero-byte file. That is not worth a canonicalisation
+            # apparatus, and it is not the hazard the reparse and length checks are here for.
             # Nothing is written to the handle on purpose. Holding it open exclusively IS the
             # lock, and writing would be actively unsafe: File.Open follows a symbolic or hard
             # link, so a `.unsloth-install.lock` planted in the destination by another user would
