@@ -122,7 +122,6 @@ def fsdp_will_wrap():
         return False
     try:
         from accelerate.state import AcceleratorState
-
         distributed_type = AcceleratorState._shared_state.get("distributed_type", None)
         if distributed_type is not None and "FSDP" in str(distributed_type).upper():
             return True

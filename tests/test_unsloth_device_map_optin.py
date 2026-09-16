@@ -998,7 +998,10 @@ def _prepare_device_map_guards():
 
     def walk(node, guards):
         for child in ast.iter_child_nodes(node):
-            if isinstance(child, ast.Call) and getattr(child.func, "id", None) == "prepare_device_map":
+            if (
+                isinstance(child, ast.Call)
+                and getattr(child.func, "id", None) == "prepare_device_map"
+            ):
                 found.append((child.lineno, list(guards)))
             if isinstance(child, ast.If):
                 walk_body(child.body, guards + [ast.unparse(child.test)])
