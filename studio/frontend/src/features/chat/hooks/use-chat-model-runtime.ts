@@ -2482,10 +2482,14 @@ export function useChatModelRuntime() {
         /** Whether this "cached" load has quietly become a download. */
         const cacheMissDownloadStarted = async (): Promise<boolean> => {
           try {
-            const verdict = watchCacheMissDownload(
-              cacheMissWatch,
-              await getDownloadProgress(modelId, hfToken),
-            );
+            const reading = await getDownloadProgress(modelId, hfToken);
+            // Re-read AFTER the await, as pollDownload does: the load can finish or be
+            // cancelled while this request is in flight, and `finally` then clears the
+            // interval and calls resetLoadingUi(). Writing the watch or the progress from
+            // this outstanding callback afterwards left the dismissed-toast inline status
+            // stuck on "Downloading the rest of the model" for a load that had ended.
+            if (abortCtrl.signal.aborted || !loadingModelRef.current) return false;
+            const verdict = watchCacheMissDownload(cacheMissWatch, reading);
             cacheMissWatch = verdict.watch;
             if (!verdict.started) return false;
             cacheMissDownload = true;

@@ -163,3 +163,35 @@ test("detecting the download counts as having shown progress", () => {
   const armed = branch.indexOf("hasShownProgress = true;");
   assert.ok(armed > branch.indexOf("if (!verdict.started) return false;"));
 });
+
+test("the cache-miss watcher re-reads the load after its own await", () => {
+  // The request is in flight for as long as the backend takes to answer, and a load that
+  // completes or is cancelled in that window runs `finally`: the interval is cleared and
+  // resetLoadingUi() puts the UI back. A callback that then writes the watch and
+  // setLoadProgress left the dismissed-toast inline status reading "Downloading the rest of
+  // the model" for a load that had already ended. pollDownload and pollLoad both re-read
+  // after their awaits for this reason; this one did not.
+  const hook = readText("../src/features/chat/hooks/use-chat-model-runtime.ts");
+  const start = hook.indexOf("const cacheMissDownloadStarted");
+  assert.ok(start > 0, "the watcher moved");
+  const end = hook.indexOf("const pollProgress", start);
+  assert.ok(end > start);
+  const branch = hook.slice(start, end);
+
+  const awaited = branch.indexOf("await getDownloadProgress(");
+  assert.ok(awaited > 0, "the watcher no longer reads download progress");
+  const recheck = branch.indexOf(
+    "if (abortCtrl.signal.aborted || !loadingModelRef.current) return false;",
+  );
+  assert.ok(recheck > awaited, "the load is not re-read after the await");
+  // Before anything is mutated: the watch, the flags and the progress write all follow it.
+  for (const mutation of [
+    "cacheMissWatch = verdict.watch;",
+    "cacheMissDownload = true;",
+    "hasShownProgress = true;",
+    "setLoadProgress({",
+  ]) {
+    const at = branch.indexOf(mutation);
+    assert.ok(at > recheck, `${mutation} runs before the re-read`);
+  }
+});
