@@ -409,10 +409,7 @@ def test_the_venv_reuse_path_re_checks_before_it_reuses():
 
 
 def _x64_bootstrap_preamble(
-    conda_active: bool,
-    python_org_arch: str,
-    winget_available: bool,
-    winget_arch: str,
+    conda_active: bool, python_org_arch: str, winget_available: bool, winget_arch: str
 ) -> str:
     """Stubs for everything Install-X64Python calls, so the case drives the decision.
 
@@ -463,12 +460,14 @@ def test_the_x64_bootstrap_skips_winget_inside_conda(shell: str):
     the PATH corruption the rest of this change prevents. The stub writes WINGET-CALLED, so
     "python.org answered" is not mistaken for "winget was never reached".
     """
-    script = _x64_bootstrap_preamble(
-        conda_active = True,
-        python_org_arch = "x86_64",
-        winget_available = True,
-        winget_arch = "x86_64",
-    ) + f"""
+    script = (
+        _x64_bootstrap_preamble(
+            conda_active = True,
+            python_org_arch = "x86_64",
+            winget_available = True,
+            winget_arch = "x86_64",
+        )
+        + f"""
 function Invoke-Winget {{ Write-Host "WINGET-CALLED" }}
 {_function("Install-X64Python").replace('& $script:WingetExe install', 'Invoke-Winget #')}
 $found = Install-X64Python
@@ -476,9 +475,12 @@ Write-Host ("ARCH=" + $(if ($found) {{ $found.Arch }} else {{ "none" }}))
 Write-Host ("PATH=" + $(if ($found) {{ $found.Path }} else {{ "none" }}))
 Write-Host ("PYTHON-ORG-CALLS=" + $script:PythonOrgCalls)
 """
+    )
     out = _run(shell, script)
     assert "ARCH=x86_64" in out
-    assert "PATH=C:\\pyorg\\python.exe" in out, "the conda path must take the python.org interpreter"
+    assert (
+        "PATH=C:\\pyorg\\python.exe" in out
+    ), "the conda path must take the python.org interpreter"
     assert "WINGET-CALLED" not in out, (
         "winget hard-codes PrependPath=1, so reaching it inside conda puts Python ahead of "
         "the active environment with no way to ask for anything else"
@@ -495,18 +497,21 @@ def test_the_x64_bootstrap_still_falls_back_to_winget_inside_conda(shell: str):
     through to winget rather than give up, and it has to say what that costs. The fallback
     must not re-run the python.org download it just watched fail.
     """
-    script = _x64_bootstrap_preamble(
-        conda_active = True,
-        python_org_arch = "",
-        winget_available = True,
-        winget_arch = "x86_64",
-    ) + f"""
+    script = (
+        _x64_bootstrap_preamble(
+            conda_active = True,
+            python_org_arch = "",
+            winget_available = True,
+            winget_arch = "x86_64",
+        )
+        + f"""
 function Invoke-Winget {{ Write-Host "WINGET-CALLED" }}
 {_function("Install-X64Python").replace('& $script:WingetExe install', 'Invoke-Winget #')}
 $found = Install-X64Python
 Write-Host ("ARCH=" + $(if ($found) {{ $found.Arch }} else {{ "none" }}))
 Write-Host ("PYTHON-ORG-CALLS=" + $script:PythonOrgCalls)
 """
+    )
     out = _run(shell, script)
     assert "WINGET-CALLED" in out
     assert "ARCH=x86_64" in out
@@ -525,18 +530,21 @@ def test_the_x64_bootstrap_is_unchanged_outside_conda(shell: str):
     winget is the faster and more reliable source on a normal machine, and this change is
     only about the environment whose PATH it would break.
     """
-    script = _x64_bootstrap_preamble(
-        conda_active = False,
-        python_org_arch = "x86_64",
-        winget_available = True,
-        winget_arch = "x86_64",
-    ) + f"""
+    script = (
+        _x64_bootstrap_preamble(
+            conda_active = False,
+            python_org_arch = "x86_64",
+            winget_available = True,
+            winget_arch = "x86_64",
+        )
+        + f"""
 function Invoke-Winget {{ Write-Host "WINGET-CALLED" }}
 {_function("Install-X64Python").replace('& $script:WingetExe install', 'Invoke-Winget #')}
 $found = Install-X64Python
 Write-Host ("PATH=" + $(if ($found) {{ $found.Path }} else {{ "none" }}))
 Write-Host ("PYTHON-ORG-CALLS=" + $script:PythonOrgCalls)
 """
+    )
     out = _run(shell, script)
     assert "WINGET-CALLED" in out
     assert "PATH=C:\\winget\\python.exe" in out
@@ -568,10 +576,7 @@ function Remove-StudioVenvTreeWithRetry {{
 
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
-def test_the_preserved_arm64_environment_survives_a_successful_install(
-    tmp_path: Path,
-    shell: str,
-):
+def test_the_preserved_arm64_environment_survives_a_successful_install(tmp_path: Path, shell: str):
     """The rebuild tells the user the ARM64 environment is kept so they can copy packages
     out of it. Nothing else in the run acts on that promise.
 
@@ -585,7 +590,9 @@ def test_the_preserved_arm64_environment_survives_a_successful_install(
     (backup / "Lib").mkdir(parents = True)
     (backup / "Lib" / "marker.txt").write_text("a package the user added", encoding = "utf-8")
 
-    script = _rollback_preamble(home) + f"""
+    script = (
+        _rollback_preamble(home)
+        + f"""
 $script:StudioVenvRollbackActive = $true
 $script:StudioVenvRollbackDir = "{backup}"
 $script:StudioVenvRollbackPartial = $false
@@ -594,24 +601,21 @@ Complete-StudioVenvRollback
 Write-Host ("COMMITTED=" + $script:StudioInstallCommitted)
 Write-Host ("PRESERVE=" + $script:StudioVenvRollbackPreserve)
 """
+    )
     out = _run(shell, script)
     assert "COMMITTED=True" in out, "the commit flag is what stops a later restore"
     assert "PRESERVE=False" in out, "the flag must not survive into a later rollback"
     assert "REMOVED" not in out, "the tree the user was told to read must not be deleted"
     assert not backup.exists(), "it has to leave the rollback namespace, see below"
 
-    kept = [
-        path
-        for path in home.iterdir()
-        if path.name.startswith("unsloth_studio.arm64.")
-    ]
+    kept = [path for path in home.iterdir() if path.name.startswith("unsloth_studio.arm64.")]
     assert len(kept) == 1, f"expected one preserved ARM64 tree, found {[p.name for p in kept]}"
     assert (kept[0] / "Lib" / "marker.txt").read_text(encoding = "utf-8") == (
         "a package the user added"
     )
-    assert f"previous ARM64 environment kept at {kept[0]}" in out, (
-        "a preserved tree nobody is told the path of is just disk usage"
-    )
+    assert (
+        f"previous ARM64 environment kept at {kept[0]}" in out
+    ), "a preserved tree nobody is told the path of is just disk usage"
 
 
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
@@ -626,13 +630,16 @@ def test_an_ordinary_rollback_is_still_deleted_on_success(tmp_path: Path, shell:
     backup = home / "unsloth_studio.rollback.20260101000000.4242"
     backup.mkdir(parents = True)
 
-    script = _rollback_preamble(home) + f"""
+    script = (
+        _rollback_preamble(home)
+        + f"""
 $script:StudioVenvRollbackActive = $true
 $script:StudioVenvRollbackDir = "{backup}"
 $script:StudioVenvRollbackPartial = $false
 $script:StudioVenvRollbackPreserve = $false
 Complete-StudioVenvRollback
 """
+    )
     out = _run(shell, script)
     assert f"REMOVED {backup}" in out
     assert not backup.exists()
@@ -652,16 +659,14 @@ def test_the_preserved_tree_leaves_the_swept_rollback_namespace():
     block = source[complete : source.index("\n    }\n", complete)]
     # Comments out: this function's explain why it does NOT use the rollback name, and a
     # test that reads them as code would fail on the sentence describing the fix.
-    code = "\n".join(
-        line for line in block.splitlines() if not line.lstrip().startswith("#")
-    )
+    code = "\n".join(line for line in block.splitlines() if not line.lstrip().startswith("#"))
     assert "unsloth_studio.arm64." in code, "the preserved copy is not renamed"
-    assert "unsloth_studio.rollback." not in code, (
-        "a preserved copy under the swept name is removed by the next install"
-    )
+    assert (
+        "unsloth_studio.rollback." not in code
+    ), "a preserved copy under the swept name is removed by the next install"
     sweep = source.index("function Remove-StaleStudioVenvRollbacks")
     sweep_block = source[sweep : source.index("\n    }\n", sweep)]
-    assert "'unsloth_studio.rollback.*'" in sweep_block, (
-        "the sweep no longer matches what this test reasons about"
-    )
+    assert (
+        "'unsloth_studio.rollback.*'" in sweep_block
+    ), "the sweep no longer matches what this test reasons about"
     assert "unsloth_studio.arm64" not in sweep_block
