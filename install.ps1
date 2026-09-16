@@ -2888,6 +2888,13 @@ exit 1
     # The emptiness test is inline, not Test-DirectoryHasEntries, which is defined below this
     # function's first caller: the name error would land in the catch and skip the claim in
     # silence. An unreadable root counts as occupied, so failure means "do not claim".
+    # Defined here, above its earliest reader, not beside the lock functions that also use it.
+    # Write-StudioRootOwnerMarker filters this name out of its emptiness test, and it runs
+    # thousands of lines before the lock helpers; a $null here would filter nothing and quietly
+    # restore the bug the filter exists to prevent. Same hazard the comment above describes for
+    # Test-DirectoryHasEntries, and it fails just as silently.
+    $script:StudioInstallLockFileName = ".unsloth-install.lock"
+
     function Write-StudioRootOwnerMarker {
         param([Parameter(Mandatory = $true)][string]$Root)
         try {
@@ -5207,7 +5214,6 @@ exit 0
     # Both are taken rather than swapping one for the other. The mutex is what an already-released
     # installer uses, and dropping it would mean a new run and an old run no longer see each other
     # during an upgrade. Holding both can only exclude more than either alone.
-    $script:StudioInstallLockFileName = ".unsloth-install.lock"
 
     function Enter-StudioInstallLock {
         param([Parameter(Mandatory = $true)][string]$Path)
