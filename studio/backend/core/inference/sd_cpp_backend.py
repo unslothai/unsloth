@@ -1516,6 +1516,54 @@ def _installed_accelerator_of(binary: Optional[str]) -> Optional[str]:
         return None
 
 
+def note_accelerator_failure_from_output(
+    binary: Optional[str], output: str, *, source: str = "diffusion"
+) -> None:
+    """Record that the sd.cpp build ``binary`` came from cannot run on this host, when its own
+    output says so.
+
+    Two gates, because a render can fail for reasons that have nothing to do with the build: the
+    output has to name a GPU-backend failure (``output_shows_accelerator_failure``), and the build
+    has to be one with a rung below it to fall back to. Anything else is left alone, so an ordinary
+    failure never moves a working host off its own accelerator. Never raises: this is a preference,
+    and the caller is on its way to re-raising the real error.
+
+    A third distinction decides whether this ONE failure is allowed to divert the host. A decisive
+    message names the build having no code for this card and is acted on immediately; an ambiguous
+    one names a GPU fault whose cause it does not establish (a wedged queue, a driver reset, a card
+    another process is mistreating all print the same strings) and is only counted. A host has to
+    produce several of those under one fingerprint before it is moved, so a single transient error
+    on a machine whose ROCm works cannot bypass it.
+
+    Here rather than in the video module it grew up in, because the same sd-cli, with the same
+    hipBLAS failure, is run by the image path too: an image-only host was reporting exactly these
+    errors and having none of them recorded, so every retry reinstalled and ran ROCm again and the
+    Vulkan rung below it was never reached.
+    """
+    if not binary or not output:
+        return
+    try:
+        if not output_shows_accelerator_failure(output):
+            return
+        accelerator = _installed_accelerator_of(binary)
+        if not accelerator or not fallback_accelerator_for(accelerator):
+            return
+        decisive = output_shows_decisive_accelerator_failure(output)
+        logger.warning(
+            "%s.sd_cpp_accelerator_runtime_failure: the %s stable-diffusion.cpp build failed "
+            "on this host mid-generation (%s); the %s build is the fallback",
+            source,
+            accelerator,
+            "the message names the build, acting on it now"
+            if decisive
+            else "the message does not establish the build as the cause, counting it",
+            fallback_accelerator_for(accelerator),
+        )
+        note_accelerator_runtime_failure(accelerator, proven = decisive)
+    except Exception as exc:  # noqa: BLE001 -- a preference, never a reason to mask the real error
+        logger.debug("could not record the sd.cpp accelerator failure: %s", exc)
+
+
 def ensure_sd_cpp_binary(*, allow_install: bool = True, accelerator: str = "cpu") -> Optional[str]:
     """Path to a usable ``sd-cli`` binary, installing the prebuilt once if needed. Returns the
     binary path, or None when it is absent and cannot be installed (install disabled, no network,
@@ -3013,36 +3061,54 @@ class SdCppDiffusionBackend:
                         hf_token = state.hf_token,
                         cancel_event = cancel,
                     )
-                if state.mode == "server" and state.server is not None:
-                    images, seeds = self._generate_server(
-                        state,
-                        prompt = prompt,
-                        negative_prompt = negative_prompt,
-                        width = width,
-                        height = height,
-                        steps = steps,
-                        seed = seed,
-                        batch_size = batch_size,
-                        cfg_scale = cfg_scale,
-                        flux_guidance = flux_guidance,
-                        lora_resolved = lora_resolved,
-                        cancel = cancel,
-                    )
-                else:
-                    images, seeds = self._generate_oneshot(
-                        state,
-                        prompt = prompt,
-                        negative_prompt = negative_prompt,
-                        width = width,
-                        height = height,
-                        steps = steps,
-                        seed = seed,
-                        batch_size = batch_size,
-                        cfg_scale = cfg_scale,
-                        flux_guidance = flux_guidance,
-                        lora_resolved = lora_resolved,
-                        cancel = cancel,
-                    )
+                try:
+                    if state.mode == "server" and state.server is not None:
+                        images, seeds = self._generate_server(
+                            state,
+                            prompt = prompt,
+                            negative_prompt = negative_prompt,
+                            width = width,
+                            height = height,
+                            steps = steps,
+                            seed = seed,
+                            batch_size = batch_size,
+                            cfg_scale = cfg_scale,
+                            flux_guidance = flux_guidance,
+                            lora_resolved = lora_resolved,
+                            cancel = cancel,
+                        )
+                    else:
+                        images, seeds = self._generate_oneshot(
+                            state,
+                            prompt = prompt,
+                            negative_prompt = negative_prompt,
+                            width = width,
+                            height = height,
+                            steps = steps,
+                            seed = seed,
+                            batch_size = batch_size,
+                            cfg_scale = cfg_scale,
+                            flux_guidance = flux_guidance,
+                            lora_resolved = lora_resolved,
+                            cancel = cancel,
+                        )
+                except RuntimeError as exc:
+                    # The same failure the video path records, from the same sd-cli: the ROCm
+                    # build starts, loads the tensors and dies in hipBLAS mid-render. Nothing
+                    # about the install is wrong, so without this the next load picks the same
+                    # build again -- and on an image-only host nothing else was recording it,
+                    # so the Vulkan rung below it was never reached however many times it
+                    # failed. A cancellation is not a failure of the build.
+                    if not cancel.is_set() and DIFFUSION_CANCELLED_MSG not in str(exc):
+                        # The engine as it stands, never a fresh resolve: resolving here can
+                        # itself raise ("binary is unavailable"), and an exception from inside
+                        # an except block replaces the failure the caller is waiting for.
+                        note_accelerator_failure_from_output(
+                            getattr(getattr(self, "_engine", None), "binary", None),
+                            str(exc),
+                            source = "diffusion",
+                        )
+                    raise
                 # Check and deregister under _lock, the lock cancel_generate takes, so the two cannot interleave: a
                 # cancel that saw this event registered ran strictly before the check and the run unwinds as
                 # cancelled, and one arriving after finds nothing to set and answers false. Same critical section as

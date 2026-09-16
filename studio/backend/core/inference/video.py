@@ -636,48 +636,17 @@ def _sd_cli_identity(binary: Optional[str]) -> Optional[tuple[int, int]]:
 
 
 def _note_sd_cpp_accelerator_failure(binary: Optional[str], output: str) -> None:
-    """Record that the sd.cpp build ``binary`` came from cannot run on this host, when its own
-    output says so.
+    """The video path's name for the shared recorder, kept because that is what the render
+    failure handler below reads.
 
-    Two gates, because a render can fail for reasons that have nothing to do with the build: the
-    output has to name a GPU-backend failure (``output_shows_accelerator_failure``), and the build
-    has to be one with a rung below it to fall back to. Anything else is left alone, so an ordinary
-    failure never moves a working host off its own accelerator. Never raises: this is a preference,
-    and the caller is on its way to re-raising the real error.
-
-    A third distinction decides whether this ONE failure is allowed to divert the host. A decisive
-    message names the build having no code for this card and is acted on immediately; an ambiguous
-    one names a GPU fault whose cause it does not establish (a wedged queue, a driver reset, a card
-    another process is mistreating all print the same strings) and is only counted. A host has to
-    produce several of those under one fingerprint before it is moved, so a single transient error
-    on a machine whose ROCm works cannot bypass it."""
-    if not binary or not output:
-        return
+    The implementation moved next to the records it writes, in sd_cpp_backend, once the image
+    path had to reach it too: the same sd-cli, run by a different caller, produces the same
+    hipBLAS failure, and an image-only host was having none of them recorded.
+    """
     try:
-        from .sd_cpp_backend import (
-            _installed_accelerator_of,
-            fallback_accelerator_for,
-            note_accelerator_runtime_failure,
-            output_shows_accelerator_failure,
-            output_shows_decisive_accelerator_failure,
-        )
+        from .sd_cpp_backend import note_accelerator_failure_from_output
 
-        if not output_shows_accelerator_failure(output):
-            return
-        accelerator = _installed_accelerator_of(binary)
-        if not accelerator or not fallback_accelerator_for(accelerator):
-            return
-        decisive = output_shows_decisive_accelerator_failure(output)
-        logger.warning(
-            "video.sd_cpp_accelerator_runtime_failure: the %s stable-diffusion.cpp build failed "
-            "on this host mid-generation (%s); the %s build is the fallback",
-            accelerator,
-            "the message names the build, acting on it now"
-            if decisive
-            else "the message does not establish the build as the cause, counting it",
-            fallback_accelerator_for(accelerator),
-        )
-        note_accelerator_runtime_failure(accelerator, proven = decisive)
+        note_accelerator_failure_from_output(binary, output, source = "video")
     except Exception as exc:  # noqa: BLE001 -- a preference, never a reason to mask the real error
         logger.debug("could not record the sd.cpp accelerator failure: %s", exc)
 

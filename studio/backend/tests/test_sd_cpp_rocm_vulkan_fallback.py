@@ -23,6 +23,7 @@ answer canned ``--help`` / ``--list-devices`` text, which is how the rest of the
 
 from __future__ import annotations
 
+import inspect
 import threading
 import types
 from pathlib import Path
@@ -1892,3 +1893,78 @@ def test_a_second_unreadable_rocm_probe_does_divert(h3_amd_host, fake_settings):
     )
     host.run()
     assert _noted_accelerators(fake_settings) == ["rocm"]
+
+
+def test_an_image_generation_that_dies_in_hipblas_records_it_too(fake_settings, monkeypatch):
+    """The recorder was reached only from the video path.
+
+    The same sd-cli, run by the image path, produces the same hipBLAS failure, and on an
+    image-only host nothing recorded it: `preferred_accelerator` never moved, so every retry
+    reinstalled and ran the ROCm build again and the Vulkan rung below it was never reached.
+    """
+    from core.inference import sd_cpp_backend
+
+    monkeypatch.setattr(sd_cpp_backend, "_installed_accelerator_of", lambda _b: "rocm")
+    backend = sd_cpp_backend.SdCppDiffusionBackend.__new__(
+        sd_cpp_backend.SdCppDiffusionBackend
+    )
+    backend._engine = types.SimpleNamespace(binary = "/opt/sd/rocm/sd-cli")
+    cancel = threading.Event()
+    source = inspect.getsource(sd_cpp_backend.SdCppDiffusionBackend.generate)
+    # The handler is on the branch that runs BOTH image paths, so neither the server mode nor
+    # the one-shot mode can be the one that is not covered.
+    assert "note_accelerator_failure_from_output(" in source, source[-2000:]
+
+    sd_cpp_backend.note_accelerator_failure_from_output(
+        getattr(getattr(backend, "_engine", None), "binary", None),
+        "sd-cli exited 1. Last output:\nROCm error: CUBLAS_STATUS_INVALID_VALUE at hipblasSetStream",
+        source = "diffusion",
+    )
+    assert _noted_accelerators(fake_settings) == ["rocm"]
+    assert sd_cpp_backend.preferred_accelerator("rocm") == "vulkan"
+    assert not cancel.is_set()
+
+
+def test_a_cancelled_image_generation_records_nothing(fake_settings, monkeypatch):
+    """A cancel unwinds through the same RuntimeError, and it says nothing about the build."""
+    from core.inference import sd_cpp_backend
+
+    source = inspect.getsource(sd_cpp_backend.SdCppDiffusionBackend.generate)
+    handler = source.index("note_accelerator_failure_from_output(")
+    window = source[max(0, handler - 700):handler]
+    assert "cancel.is_set()" in window, window
+    assert "DIFFUSION_CANCELLED_MSG not in str(exc)" in window, window
+
+
+def test_the_availability_probe_reads_the_same_record_selection_does(
+    fake_settings, monkeypatch,
+):
+    """The prediction and the selection are read together.
+
+    The prediction decides which planner stages the download; selection decides what loads. A
+    record that condemns this host's accelerator makes selection refuse a binary that is still
+    on disk and still answers its runnability probe, so counting it here predicted native while
+    the load went to diffusers -- and an offline load then had none of the diffusers assets,
+    because the planner for that engine was never run.
+    """
+    from core.inference import diffusion_engine_router as router
+    from core.inference import sd_cpp_backend
+
+    monkeypatch.setattr(
+        router, "resolve_diffusion_device_target", lambda: types.SimpleNamespace(backend = "cuda")
+    )
+    monkeypatch.setattr(router, "_install_accelerator_for", lambda _backend: "rocm")
+    monkeypatch.setattr(router, "ensure_sd_server_binary", lambda **_k: None)
+    monkeypatch.setattr(router, "ensure_sd_cpp_binary", lambda **_k: "/opt/sd/rocm/sd-cli")
+    monkeypatch.setattr(
+        router, "SdCppEngine", lambda binary: types.SimpleNamespace(version = lambda: "1.0")
+    )
+    # Nothing recorded: the binary on disk is available, exactly as before.
+    assert router.native_binary_installed() is True
+
+    monkeypatch.setattr(sd_cpp_backend, "_installed_accelerator_of", lambda _b: "rocm")
+    sd_cpp_backend.note_accelerator_runtime_failure("rocm")
+    assert sd_cpp_backend.preferred_accelerator("rocm") == "vulkan"
+    # Now selection would refuse that binary as a substitute for the Vulkan build it asked
+    # for, so the probe must not answer that native is available either.
+    assert router.native_binary_installed() is False

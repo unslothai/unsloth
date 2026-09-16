@@ -292,11 +292,28 @@ def native_binary_installed() -> bool:
     Separated from the prediction because the two answers differ where it matters: prediction
     counts an absent binary as available whenever installing one is allowed, and a caller that
     must know whether selection could still fall back to diffusers needs the unassumed answer.
+
+    Through the SAME preferred accelerator and the same recorded-failure filter selection uses,
+    because the two are read together: the prediction decides which planner stages the download
+    and selection decides what actually loads. A record that condemns this host's accelerator
+    makes selection refuse a binary that is still on disk and still answers its runnability
+    probe, so counting that binary as available here predicted native while the load went to
+    diffusers -- and an offline load then had none of the diffusers assets, because the planner
+    for that engine was never run.
     """
-    server_binary = ensure_sd_server_binary(allow_install = False)
+    install_accelerator = preferred_accelerator(
+        _install_accelerator_for(resolve_diffusion_device_target().backend)
+    )
+    server_binary = usable_or_recorded_failure(
+        ensure_sd_server_binary(allow_install = False, accelerator = install_accelerator),
+        install_accelerator,
+    )
     if server_binary and _server_binary_runnable(server_binary):
         return True
-    binary = ensure_sd_cpp_binary(allow_install = False)
+    binary = usable_or_recorded_failure(
+        ensure_sd_cpp_binary(allow_install = False, accelerator = install_accelerator),
+        install_accelerator,
+    )
     return bool(binary and SdCppEngine(binary = binary).version() is not None)
 
 
