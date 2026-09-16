@@ -392,6 +392,21 @@ test("Compare routes button and shortcut through the same Dictate entry", () => 
   assert.match(shortcut, /startDictation\(\)/);
 });
 
+test("Compare keeps its current draft synchronous for transcript appends", () => {
+  assert.match(
+    sharedComposerSource,
+    /const setCurrentText = useCallback\([\s\S]*?typeof value === "function" \? value\(textRef\.current\) : value;[\s\S]*?textRef\.current = next;\s*setText\(next\);/,
+  );
+  assert.match(
+    sharedComposerSource,
+    /const writeAudioUploadDraft = useCallback\(\s*\(value: string\) => setCurrentText\(value\)/,
+  );
+  assert.match(
+    sharedComposerSource,
+    /onChange=\{\(e\) => \{[\s\S]*?setCurrentText\(e\.target\.value\);/,
+  );
+});
+
 test("the controlled dialog has separate Android recorder and saved-file inputs", () => {
   assert.doesNotMatch(dialogSource, /DialogTrigger|Upload01Icon/);
   assert.match(dialogSource, /accept="audio\/\*"\s*capture="user"/);
@@ -432,7 +447,7 @@ test("Compare queue setup preserves an upload until a queued send is accepted", 
   );
   assert.match(
     advanceQueue,
-    /setText\(next\);\s*setTimeout\(\(\) => \{ sendRef\.current\?\.\(\); \}, 100\);/,
+    /setCurrentText\(next\);\s*setTimeout\(\(\) => \{ sendRef\.current\?\.\(\); \}, 100\);/,
   );
   assert.doesNotMatch(advanceQueue, /audioUpload\.cancel\(\)/);
 
@@ -444,7 +459,7 @@ test("Compare queue setup preserves an upload until a queued send is accepted", 
   const incompleteModelGuard = runList.indexOf(
     "if (hasCompareHandles && !isGeneralizedCompare)",
   );
-  const replace = runList.indexOf("setText(filtered[0])");
+  const replace = runList.indexOf("setCurrentText(filtered[0])");
   assert.ok(incompleteModelGuard >= 0 && incompleteModelGuard < replace);
   assert.doesNotMatch(runList, /audioUpload\.cancel\(\)/);
 });
