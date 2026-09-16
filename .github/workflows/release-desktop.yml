@@ -305,26 +305,11 @@ jobs:
               sys.exit(f'Release {tag} is a prerelease; GitHub cannot mark it latest.')
 
           prefix = 'Unsloth-Desktop-'
-          # The signed scripts are uploaded after the bundles and without --clobber, so a name
-          # that already exists would fail that step with the bundles and manifest already
-          # public. They belong in the same pre-flight guard as the bundles, not in a later
-          # check that can only report a release which is already half replaced.
-          script_assets = {
-              'install.ps1',
-              'setup.ps1',
-              'uninstall.ps1',
-              'install.sh',
-              'setup.sh',
-              'uninstall.sh',
-              'setup.bat',
-              'SHA256SUMS.txt',
-          }
           clashing = sorted(
               asset['name']
               for asset in release.get('assets', [])
               if str(asset.get('name', '')).startswith(prefix)
               or asset.get('name') == 'latest.json'
-              or asset.get('name') in script_assets
           )
 
           if clashing:
@@ -1159,85 +1144,6 @@ jobs:
           Write-Host "install.ps1 -> $($sig.Status) $($sig.SignerCertificate.Subject)"
           if ($sig.Status -ne 'Valid') { Write-Host "::error::install.ps1 is $($sig.Status) after signing"; exit 1 }
 
-      # setup.ps1 and uninstall.ps1 are not bundle resources, so users only get them unsigned from
-      # a clone or raw.githubusercontent. Sign copies here and publish them as release assets.
-      # Copies, because signing them in place would append a signature block to files later steps
-      # still read; install.ps1 is the exception, signed in place above because the bundler packs it.
-      # .sh and .bat cannot be Authenticode signed (no subject interface package, and Windows never
-      # checks a batch file), so they get a published digest instead.
-      - name: Sign the shipped scripts for release
-        if: matrix.platform == 'windows-latest'
-        shell: pwsh
-        env:
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          AZURE_TRUSTED_SIGNING_ACCOUNT_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME }}
-          AZURE_CERTIFICATE_PROFILE_NAME: ${{ secrets.AZURE_CERTIFICATE_PROFILE_NAME }}
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $stage = Join-Path $env:RUNNER_TEMP 'release-scripts'
-          New-Item -ItemType Directory -Force -Path $stage | Out-Null
-
-          # install.ps1 was signed in place by the step above; copy it rather than sign it twice.
-          Copy-Item -LiteralPath (Resolve-Path 'install.ps1').Path -Destination (Join-Path $stage 'install.ps1')
-
-          $toSign = @(
-              @{ Source = 'studio/setup.ps1';      Name = 'setup.ps1' }
-              @{ Source = 'scripts/uninstall.ps1'; Name = 'uninstall.ps1' }
-          )
-          foreach ($item in $toSign) {
-              $target = Join-Path $stage $item.Name
-              Copy-Item -LiteralPath (Resolve-Path $item.Source).Path -Destination $target
-              studio/src-tauri/windows/sign-with-trusted-signing.ps1 -Path $target
-              if ($LASTEXITCODE -ne 0) {
-                  Write-Host "::error::could not sign $($item.Source) (exit $LASTEXITCODE)"
-                  exit 1
-              }
-          }
-
-          # Verify every staged .ps1, the earlier one included: a release must never carry a
-          # script whose signature does not check out on the machine that produced it.
-          foreach ($file in (Get-ChildItem -LiteralPath $stage -Filter '*.ps1')) {
-              $sig = Get-AuthenticodeSignature $file.FullName
-              Write-Host "$($file.Name) -> $($sig.Status) $($sig.SignerCertificate.Subject)"
-              if ($sig.Status -ne 'Valid') {
-                  Write-Host "::error::$($file.Name) is $($sig.Status) after signing"
-                  exit 1
-              }
-          }
-
-          # Unsignable, but still published so the digests below describe the whole set.
-          $asIs = @(
-              @{ Source = 'install.sh';            Name = 'install.sh' }
-              @{ Source = 'studio/setup.sh';       Name = 'setup.sh' }
-              @{ Source = 'studio/setup.bat';      Name = 'setup.bat' }
-              @{ Source = 'scripts/uninstall.sh';  Name = 'uninstall.sh' }
-          )
-          foreach ($item in $asIs) {
-              Copy-Item -LiteralPath (Resolve-Path $item.Source).Path -Destination (Join-Path $stage $item.Name)
-          }
-
-          # Two spaces then the name, the form `sha256sum -c` accepts unmodified.
-          $sums = foreach ($file in (Get-ChildItem -LiteralPath $stage -File | Sort-Object Name)) {
-              "{0}  {1}" -f (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $file.Name
-          }
-          $sumsPath = Join-Path $stage 'SHA256SUMS.txt'
-          [System.IO.File]::WriteAllText($sumsPath, (($sums -join "`n") + "`n"), (New-Object System.Text.UTF8Encoding($false)))
-          Get-Content -LiteralPath $sumsPath | Write-Host
-
-      # Deliberately not named desktop-release-*: the publish job merges that pattern into one
-      # directory and validates it against an exact bundle name list, which these would break.
-      - name: Upload signed scripts
-        if: matrix.platform == 'windows-latest'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
-        with:
-          name: release-scripts-signed
-          path: ${{ runner.temp }}/release-scripts/*
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
-
       - name: Build Windows app
         id: build_windows
         if: matrix.platform == 'windows-latest'
@@ -1957,26 +1863,11 @@ jobs:
               sys.exit(f'Release {tag} is a prerelease; GitHub cannot mark it latest.')
 
           prefix = 'Unsloth-Desktop-'
-          # The signed scripts are uploaded after the bundles and without --clobber, so a name
-          # that already exists would fail that step with the bundles and manifest already
-          # public. They belong in the same pre-flight guard as the bundles, not in a later
-          # check that can only report a release which is already half replaced.
-          script_assets = {
-              'install.ps1',
-              'setup.ps1',
-              'uninstall.ps1',
-              'install.sh',
-              'setup.sh',
-              'uninstall.sh',
-              'setup.bat',
-              'SHA256SUMS.txt',
-          }
           clashing = sorted(
               asset['name']
               for asset in release.get('assets', [])
               if str(asset.get('name', '')).startswith(prefix)
               or asset.get('name') == 'latest.json'
-              or asset.get('name') in script_assets
           )
 
           if clashing:
@@ -2088,35 +1979,6 @@ jobs:
         run: |
           set -euo pipefail
           gh release upload "$DESKTOP_RELEASE_TAG" "$RUNNER_TEMP/latest.json"
-
-      # After the manifest: the scripts are secondary to the update contract, and a failure here
-      # must not leave bundles published with no latest.json, the state that stops every updater
-      # client. Own directory too, since the asset set validated earlier is the bundle contract.
-      - name: Download signed scripts
-        if: ${{ !inputs.draft }}
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
-        with:
-          name: release-scripts-signed
-          path: ${{ runner.temp }}/release-scripts
-
-      - name: Publish signed scripts
-        if: ${{ !inputs.draft }}
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          script_assets=()
-          for asset in "$RUNNER_TEMP/release-scripts"/*; do
-            script_assets+=("$asset")
-          done
-          if [[ ${#script_assets[@]} -eq 0 ]]; then
-            echo "::error::no signed scripts were staged"
-            exit 1
-          fi
-          # No --clobber, matching the bundle upload above: a re-run must fail rather than quietly
-          # replace bytes whose digest has already been published.
-          gh release upload "$DESKTOP_RELEASE_TAG" "${script_assets[@]}"
 
       - name: Download versioned updater metadata
         if: ${{ !inputs.draft }}

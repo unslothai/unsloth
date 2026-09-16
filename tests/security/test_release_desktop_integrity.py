@@ -66,9 +66,7 @@ if [ "$1" = "api" ]; then
     printf 'HTTP/2.0 %s Test Response\n' "$status"
   fi
   if [ "$status" = "200" ]; then
-    if [ -n "${TARGET_ASSET_NAMES:-}" ]; then
-      printf '{"tag_name":"%s","draft":false,"assets":[{"name":"%s"}]}\n' "$DESKTOP_RELEASE_TAG" "$TARGET_ASSET_NAMES"
-    elif [ "$TARGET_HAS_DESKTOP_ASSETS" = "1" ]; then
+    if [ "$TARGET_HAS_DESKTOP_ASSETS" = "1" ]; then
       printf '{"tag_name":"%s","draft":false,"assets":[{"name":"latest.json"}]}\n' "$DESKTOP_RELEASE_TAG"
     else
       printf '{"tag_name":"%s","draft":false,"assets":[]}\n' "$DESKTOP_RELEASE_TAG"
@@ -348,33 +346,11 @@ def test_release_uploads_never_clobber_or_mutate_the_legacy_channel():
     uploads = _upload_commands(_workflow())
     versioned = [line for line in uploads if "$DESKTOP_RELEASE_TAG" in line]
     channel = [line for line in uploads if "desktop-latest" in line]
-    # The bundles, the signed scripts, and the updater manifest. The count is pinned so a new
-    # upload has to be added here deliberately rather than appearing unnoticed.
-    assert len(versioned) == 3, uploads
+    assert len(versioned) == 2, uploads
     assert channel == [], uploads
 
     for line in versioned:
         assert "--clobber" not in line, line
-
-
-def test_an_existing_script_asset_blocks_republishing_the_release(tmp_path):
-    """A script name already on the release must fail the pre-flight, not the upload.
-
-    The signed scripts are uploaded after the bundles and without --clobber. If the guard only
-    looked for Unsloth-Desktop-* and latest.json, a release already carrying install.ps1 would
-    pass it, the bundles would upload, and only then would the script upload fail, leaving the
-    release publicly half replaced.
-    """
-    for existing in ("install.ps1", "SHA256SUMS.txt", "uninstall.sh"):
-        result, _ = _run_step(
-            _workflow(),
-            "prepare-version",
-            "Guard against republishing an existing version",
-            tmp_path,
-            extra_env = {"TARGET_ASSET_NAMES": existing},
-        )
-        assert result.returncode == 1, f"{existing} did not block republishing: {result.stdout}"
-        assert existing in result.stderr, result.stderr
 
 
 def test_any_existing_manifest_blocks_republishing_the_release(tmp_path):
