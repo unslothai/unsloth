@@ -32633,6 +32633,65 @@ class LlamaCppBackend:
         n_ctx = settings.get("n_ctx")
         return int(n_ctx) if n_ctx else None
 
+    _RUNTIME_N_CTX_STDOUT_RE = re.compile(r"new slot, n_ctx = (\d+)")
+
+    def _parse_runtime_n_ctx_from_stdout(self) -> Optional[int]:
+        """Per-slot ``n_ctx`` from llama-server's startup log.
+
+        Last resort for builds that answer neither probe endpoint. Snapshots the
+        list because the stdout reader thread appends to it concurrently.
+        """
+        for line in list(self._stdout_lines):
+            match = self._RUNTIME_N_CTX_STDOUT_RE.search(line)
+            if match:
+                return int(match.group(1))
+        return None
+
+    def _query_slots_n_ctx(self) -> Optional[int]:
+        """Per-slot context straight from ``/slots``, or None if unavailable.
+
+        ``trust_env=False`` keeps an ambient ``HTTP(S)_PROXY`` from hijacking the
+        loopback request; the auth header keeps an ``--api-key`` child from 401ing
+        it (neither endpoint is public in llama.cpp).
+        """
+        try:
+            resp = httpx.get(
+                f"{self.base_url}/slots",
+                headers = self._auth_headers,
+                timeout = 2.0,
+                trust_env = False,
+            )
+            if resp.status_code != 200:
+                return None
+            slots = resp.json()
+        except Exception as exc:
+            logger.debug("Runtime context probe via /slots failed: %s", exc)
+            return None
+        if not isinstance(slots, list) or not slots:
+            return None
+        slot = slots[0]
+        if not isinstance(slot, dict):
+            return None
+        n_ctx = slot.get("n_ctx")
+        return int(n_ctx) if isinstance(n_ctx, int) and n_ctx > 0 else None
+
+    def _probe_runtime_n_ctx(self) -> Optional[int]:
+        """Per-slot context llama-server actually allocated: ``/slots``, else
+        ``/props``, else the startup log.
+
+        ``/slots`` wins because ``/props``' ``default_generation_settings.n_ctx``
+        reports the total ``-c`` on builds where ``/slots`` reports the real
+        per-slot window -- publishing the total as per-slot is what lets clients
+        size past the real window and hit ``exceed_context_size_error`` 400s.
+        ``/slots`` is absent under ``--no-slots``, hence the chain.
+
+        ``_query_server_n_ctx`` is called first regardless of which source wins:
+        it records the declared modalities on the way past, and video input
+        depends on build flags and ffmpeg, neither visible from the GGUF.
+        """
+        props_n_ctx = self._query_server_n_ctx()
+        return self._query_slots_n_ctx() or props_n_ctx or self._parse_runtime_n_ctx_from_stdout()
+
     def _reconcile_effective_ctx_with_server(self, requested_n_ctx: int = 0) -> None:
         """Adopt the server's real ``n_ctx`` within an explicit requested ceiling.
 
@@ -32653,7 +32712,7 @@ class LlamaCppBackend:
         ALLOCATED, not that it fits VRAM without spilling, so the "may use system
         RAM" warning is right and ``max_context_length < context_length`` is legal.
         """
-        actual_n_ctx = self._query_server_n_ctx()
+        actual_n_ctx = self._probe_runtime_n_ctx()
         if not actual_n_ctx or actual_n_ctx <= 0:
             return
         slots = 1 if self._kv_cache_unified else self.effective_parallel_slots

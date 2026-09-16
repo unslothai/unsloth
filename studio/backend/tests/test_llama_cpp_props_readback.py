@@ -114,6 +114,8 @@ def _make_backend(
     inst._effective_parallel_slots = 1
     inst._kv_cache_unified = False
     inst._kv_cache_context_total = None
+    inst._stdout_lines = []
+    inst._has_video_input = False
     return inst
 
 
@@ -123,24 +125,65 @@ def _stub_props(
     body = None,
     exc = None,
 ):
+    """Stub ``/props``; ``/slots`` answers 404 so the chain falls through to it.
+
+    Mirrors a ``--no-slots`` child, which is the case these /props tests describe.
+    """
+
     def fake_get(
         url,
         headers = None,
         timeout = None,
         trust_env = None,
     ):
-        assert url.endswith("/props")
-
         assert trust_env is False
-        # /props sits behind llama-server's api-key middleware, so a direct-stream
-        # child must be addressed with the bearer token; without one the header
-        # stays absent rather than becoming a bogus "Bearer None".
+        # These endpoints sit behind llama-server's api-key middleware, so a
+        # direct-stream child must be addressed with the bearer token; without one
+        # the header stays absent rather than becoming a bogus "Bearer None".
         assert headers is None or headers == {"Authorization": "Bearer test-key"}
+        if url.endswith("/slots"):
+            return _FakeResponse(404, {})
+        assert url.endswith("/props")
         if exc is not None:
             raise exc
         return _FakeResponse(status_code, body)
 
     monkeypatch.setattr(llama_cpp_mod.httpx, "get", fake_get, raising = False)
+
+
+def _stub_endpoints(
+    monkeypatch,
+    slots = None,
+    props = None,
+    slots_exc = None,
+    props_exc = None,
+):
+    """Stub both probe endpoints independently.
+
+    ``slots``/``props`` take a ``_FakeResponse``; ``None`` means the endpoint is
+    absent (404), which is how a ``--no-slots`` build answers.
+    """
+    seen = []
+
+    def fake_get(
+        url,
+        headers = None,
+        timeout = None,
+        trust_env = None,
+    ):
+        assert trust_env is False
+        seen.append(url)
+        if url.endswith("/slots"):
+            if slots_exc is not None:
+                raise slots_exc
+            return slots if slots is not None else _FakeResponse(404, {})
+        assert url.endswith("/props")
+        if props_exc is not None:
+            raise props_exc
+        return props if props is not None else _FakeResponse(404, {})
+
+    monkeypatch.setattr(llama_cpp_mod.httpx, "get", fake_get, raising = False)
+    return seen
 
 
 # ---------------------------------------------------------------------------
@@ -169,6 +212,110 @@ def test_query_n_ctx_missing_key_returns_none(monkeypatch):
 def test_query_n_ctx_swallows_transport_errors(monkeypatch):
     _stub_props(monkeypatch, exc = RuntimeError("connection refused"))
     assert _make_backend()._query_server_n_ctx() is None
+
+
+# ---------------------------------------------------------------------------
+# /slots -> /props -> stdout probe chain
+#
+# /props' default_generation_settings.n_ctx can report the TOTAL -c on builds
+# where /slots reports the real per-slot window, which is exactly the
+# launch-vs-per-slot confusion this probe exists to resolve. Prefer /slots,
+# fall back to /props, and read the startup log only when both are unavailable
+# (--no-slots, or a build that omits default_generation_settings).
+# ---------------------------------------------------------------------------
+
+
+def test_slots_is_preferred_over_props(monkeypatch):
+    """With --parallel 4, /props can report the total while /slots is per-slot."""
+    _stub_endpoints(
+        monkeypatch,
+        slots = _FakeResponse(200, [{"id": 0, "n_ctx": 8192}]),
+        props = _FakeResponse(200, {"default_generation_settings": {"n_ctx": 32768}}),
+    )
+    assert _make_backend()._probe_runtime_n_ctx() == 8192
+
+
+def test_no_slots_build_falls_back_to_props(monkeypatch):
+    """--no-slots disables the endpoint; /props still answers."""
+    _stub_endpoints(
+        monkeypatch,
+        slots = _FakeResponse(404, {}),
+        props = _FakeResponse(200, {"default_generation_settings": {"n_ctx": 67584}}),
+    )
+    assert _make_backend()._probe_runtime_n_ctx() == 67584
+
+
+def test_malformed_slots_payload_falls_back_to_props(monkeypatch):
+    for bad in ([], {}, [{"id": 0}], [{"id": 0, "n_ctx": 0}], ["nope"]):
+        _stub_endpoints(
+            monkeypatch,
+            slots = _FakeResponse(200, bad),
+            props = _FakeResponse(200, {"default_generation_settings": {"n_ctx": 4096}}),
+        )
+        assert _make_backend()._probe_runtime_n_ctx() == 4096, bad
+
+
+def test_both_endpoints_unavailable_falls_back_to_stdout(monkeypatch):
+    _stub_endpoints(
+        monkeypatch, slots_exc = RuntimeError("refused"), props_exc = RuntimeError("refused")
+    )
+    inst = _make_backend()
+    inst._stdout_lines = [
+        "llama_context: constructing llama_context",
+        "slot         init: id  0 | task -1 | new slot, n_ctx = 2048",
+    ]
+    assert inst._probe_runtime_n_ctx() == 2048
+
+
+def test_all_three_sources_unavailable_returns_none(monkeypatch):
+    _stub_endpoints(
+        monkeypatch, slots_exc = RuntimeError("refused"), props_exc = RuntimeError("refused")
+    )
+    inst = _make_backend()
+    inst._stdout_lines = ["nothing useful here"]
+    assert inst._probe_runtime_n_ctx() is None
+
+
+def test_video_modality_still_recorded_when_slots_wins(monkeypatch):
+    """/props is the only source of modality info, so it must be read even when
+    /slots supplies the context value -- otherwise video input silently breaks."""
+    _stub_endpoints(
+        monkeypatch,
+        slots = _FakeResponse(200, [{"id": 0, "n_ctx": 8192}]),
+        props = _FakeResponse(
+            200,
+            {
+                "default_generation_settings": {"n_ctx": 32768},
+                "modalities": {"vision": True, "video": True},
+            },
+        ),
+    )
+    inst = _make_backend()
+    assert inst._probe_runtime_n_ctx() == 8192
+    assert inst._has_video_input is True
+
+
+def test_slots_probe_authenticates_and_bypasses_proxies(monkeypatch):
+    """An ambient HTTP(S)_PROXY must not hijack the loopback probe, and an
+    --api-key child must not 401 it."""
+    captured = {}
+
+    def fake_get(
+        url,
+        headers = None,
+        timeout = None,
+        trust_env = None,
+    ):
+        if url.endswith("/slots"):
+            captured["headers"] = headers
+            captured["trust_env"] = trust_env
+            return _FakeResponse(200, [{"id": 0, "n_ctx": 8192}])
+        return _FakeResponse(404, {})
+
+    monkeypatch.setattr(llama_cpp_mod.httpx, "get", fake_get, raising = False)
+    assert _make_backend(api_key = "test-key")._probe_runtime_n_ctx() == 8192
+    assert captured["trust_env"] is False
+    assert captured["headers"] == {"Authorization": "Bearer test-key"}
 
 
 # ---------------------------------------------------------------------------
