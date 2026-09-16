@@ -201,3 +201,35 @@ def test_a_document_part_in_history_never_reaches_the_local_template(monkeypatch
     # Dropping the document must not drop the text beside it, nor either picture.
     assert [image.width for image in call["images"]] == [2, 4]
     assert "here is the spec" in str(call["messages"])
+
+
+def test_a_request_beyond_the_image_budget_is_refused_before_decoding(monkeypatch):
+    """Each retained raster is up to 1.92 MB while a solid 800x800 PNG is ~4.8 KB of base64, so
+    an unbounded list reaches gigabytes from a body small enough to pass any transport limit."""
+    from routes import inference as inference_route
+
+    monkeypatch.setattr(inference_route, "_MAX_SERVED_IMAGES", 3)
+    decoded = []
+    real = inference_route._decode_and_resize_image
+
+    def counted(backend, encoded):
+        decoded.append(encoded)
+        return real(backend, encoded)
+
+    monkeypatch.setattr(inference_route, "_decode_and_resize_image", counted)
+    content = [_part(Image.new("RGB", (8 + i, 8), "white")) for i in range(4)] + [_ASK]
+    with pytest.raises(HTTPException) as exc:
+        _call(monkeypatch, [ChatMessage(role = "user", content = content)])
+    assert exc.value.status_code == 400
+    assert "at most 3 are served per request" in str(exc.value.detail)
+    # Refused before allocating any of them, which is the point.
+    assert decoded == []
+
+
+def test_a_request_at_the_image_budget_is_served(monkeypatch):
+    from routes import inference as inference_route
+
+    monkeypatch.setattr(inference_route, "_MAX_SERVED_IMAGES", 3)
+    content = [_part(Image.new("RGB", (8 + i, 8), "white")) for i in range(3)] + [_ASK]
+    call = _call(monkeypatch, [ChatMessage(role = "user", content = content)]).calls[0]
+    assert [image.width for image in call["images"]] == [8, 9, 10]

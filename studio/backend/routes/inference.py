@@ -17589,6 +17589,14 @@ def _decode_and_resize_image(backend, encoded: str):
     return image
 
 
+# Serving a whole conversation's images made the retained set grow with the request, where one
+# image had always held one. resize_image caps each raster at 800x800, but a solid 800x800 PNG is
+# ~4.8 KB of base64 against a 1.92 MB raster, a 391x amplification, so a body small enough to pass
+# any transport limit still reaches gigabytes of resident pixels. No model in this path consumes
+# anything near this many images, so the cap costs real conversations nothing.
+_MAX_SERVED_IMAGES = 64
+
+
 async def _decode_request_images(
     backend,
     encoded_images,
@@ -17600,6 +17608,15 @@ async def _decode_request_images(
     Pillow admits images up to about 179 million pixels, so decoding a conversation's images
     together would hold that many rasters at once where one image has always held one.
     """
+    distinct = len(set(encoded_images))
+    if distinct > _MAX_SERVED_IMAGES:
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                f"This request carries {distinct} images; at most {_MAX_SERVED_IMAGES} are "
+                "served per request. Send fewer, or split the conversation."
+            ),
+        )
     ready = dict(decoded or {})
     images = []
     for encoded in encoded_images:
