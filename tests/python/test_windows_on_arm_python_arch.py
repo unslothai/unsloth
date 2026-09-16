@@ -305,9 +305,9 @@ Write-Host ("MISMATCH=" + $mismatch)
 """
     )
     out = _run(shell, script, env = {"UNSLOTH_ALLOW_ARM64_PYTHON": value})
-    assert "MISMATCH=False" in out, (
-        "the opt-out was ignored and an existing ARM64 environment was scheduled for replacement"
-    )
+    assert (
+        "MISMATCH=False" in out
+    ), "the opt-out was ignored and an existing ARM64 environment was scheduled for replacement"
 
 
 @pytest.mark.skipif(not POWERSHELLS, reason = "no PowerShell on this host")
@@ -337,12 +337,12 @@ def test_both_arm64_opt_out_readers_go_through_one_helper():
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     assert source.count("function Test-Arm64PythonOptOut") == 1
     # The literal comparison lives in the helper and nowhere else.
-    assert source.count("$env:UNSLOTH_ALLOW_ARM64_PYTHON -in") == 1, (
-        "the opt-out is compared in more than one place"
-    )
-    assert source.count("Test-Arm64PythonOptOut") >= 3, (
-        "both the selection path and the venv re-check have to call it"
-    )
+    assert (
+        source.count("$env:UNSLOTH_ALLOW_ARM64_PYTHON -in") == 1
+    ), "the opt-out is compared in more than one place"
+    assert (
+        source.count("Test-Arm64PythonOptOut") >= 3
+    ), "both the selection path and the venv re-check have to call it"
 
 
 def test_the_arm64_rebuild_tells_the_user_what_it_does_not_carry_over():
@@ -353,7 +353,7 @@ def test_the_arm64_rebuild_tells_the_user_what_it_does_not_carry_over():
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     start = source.find("Test-StudioVenvArchMismatch -VenvPython")
     assert start != -1
-    block = source[start:source.find('step "venv" "creating Python', start)]
+    block = source[start : source.find('step "venv" "creating Python', start)]
     assert "unsloth_studio.rollback" in block, "the rebuild does not say where the old venv went"
     assert "UNSLOTH_ALLOW_ARM64_PYTHON" in block, "the rebuild does not name its opt-out"
 
