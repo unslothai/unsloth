@@ -118,6 +118,46 @@ Check "the cmdlet launcher answers at all" ($cmdletAnswer -eq "a b|c\")
 # depending on the host's language mode.
 Check "both launchers return the same string, byte for byte" ($primaryAnswer -ceq $cmdletAnswer)
 
+# One payload is not a contract. The check above used a single line with no newline in it, and
+# passed for a year of edits while the two launchers actually DISAGREED on anything containing a
+# CRLF: the ProcessStartInfo launcher reads the child's bytes straight through, and the cmdlet
+# launcher's redirection goes via a file. Measured at the time this was added: a child writing
+# 61 0d 0a 62 came back 61 0d 0a 62 from one and 61 0a 62 from the other.
+#
+# Driven over a table instead, with the shapes a child actually produces: an embedded CRLF, an
+# embedded LF, trailing newlines of both kinds, no newline at all, and a tab.
+function Get-LauncherHex($s) {
+    if ($null -eq $s) { return "<null>" }
+    return ((([System.Text.Encoding]::UTF8.GetBytes($s)) | ForEach-Object { $_.ToString("x2") }) -join " ")
+}
+$payloads = @(
+    @{ Name = "an embedded CRLF";      Py = "b'a\r\nb'" },
+    @{ Name = "an embedded LF";        Py = "b'a\nb'" },
+    @{ Name = "a trailing CRLF";       Py = "b'x\r\n'" },
+    @{ Name = "several trailing LFs";  Py = "b'p\nq\n\n'" },
+    @{ Name = "no newline at all";     Py = "b'solo'" },
+    @{ Name = "an embedded tab";       Py = "b'tab\ttab'" }
+)
+foreach ($case in $payloads) {
+    $src = "import sys" + [char]10 + "sys.stdout.buffer.write($($case.Py))"
+    $viaPrimary = Invoke-StudioEarlyPythonScript -Exe $exe -Script $src
+    $viaCmdlet = Invoke-StudioEarlyPythonScriptViaCmdlets -Exe $exe -Script $src
+    Check "the launchers agree on $($case.Name)" ($viaPrimary -ceq $viaCmdlet)
+    if ($viaPrimary -cne $viaCmdlet) {
+        Write-Host "        primary=$(Get-LauncherHex $viaPrimary)  cmdlet=$(Get-LauncherHex $viaCmdlet)" -ForegroundColor Red
+    }
+}
+
+# And the bites control for the whole group: the harness must be able to SEE a difference, or
+# every row above passes because both launchers are broken in the same way or neither ran.
+Check "control: the comparison distinguishes different strings" (
+    ("a`nb" -ceq "a`r`nb") -eq $false)
+# Parenthesised on purpose: an unparenthesised concatenation in an argument position binds its
+# first term to -Script and the rest positionally, which lands [char]10 on -TimeoutMs.
+$roundTripSrc = "import sys" + [char]10 + "sys.stdout.buffer.write(b'tab\ttab')"
+Check "control: a payload really did round-trip" (
+    (Invoke-StudioEarlyPythonScript -Exe $exe -Script $roundTripSrc) -ceq "tab`ttab")
+
 $cmdletUtf8 = Invoke-StudioEarlyPythonScriptViaCmdlets -Exe $exe `
     -Script "import sys;sys.stdout.buffer.write((chr(0xe9)+chr(0x4e2d)).encode('utf-8'))"
 Check "the cmdlet launcher keeps non-ASCII intact" (

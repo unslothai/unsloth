@@ -2741,7 +2741,24 @@ exit 1
     function Remove-StudioTrailingNewline {
         param([string]$Text)
         if ($null -eq $Text) { return $Text }
-        return ($Text -replace "\r?\n$", "")
+        # Two normalisations, and the name undersells both, so they are written down.
+        #
+        # 1. CRLF is folded to LF. The two launchers otherwise disagree and the contract that
+        #    they are interchangeable is false. Measured: a child writing the bytes 61 0d 0a 62
+        #    comes back as 61 0d 0a 62 through the ProcessStartInfo launcher and as 61 0a 62
+        #    through the cmdlet launcher, whose redirection goes through a file.
+        # 2. EVERY trailing newline is removed, not one. .NET's $ matches before a final \n as
+        #    well as at the end, so -replace strips each of them: "a\n\n" measures as "a". That
+        #    is deliberate rather than tolerated. Start-Process redirection appends a newline the
+        #    child never wrote while the ProcessStartInfo launcher does not, so removing exactly
+        #    one would leave the two disagreeing whenever the child's own output ends in a
+        #    newline, which is the ordinary case for print().
+        #
+        # The cost is that a payload whose meaningful content ends in blank lines cannot be
+        # carried through here. No consumer does: the path resolver returns one line, the icon
+        # refresh compares a single token, and the process table splits on newlines and ignores
+        # empty entries. A future consumer that needs trailing blank lines must not use this.
+        return (($Text -replace "\r\n", "`n") -replace "\n$", "")
     }
 
     # Run a script in a bounded child and return its stdout, or $null on anything other than a
