@@ -672,7 +672,6 @@ def prewarm_diffusers_if_image_models_exist() -> bool:
         # work this exists to do, and the load path calls the same idempotent helper anyway.
         try:
             from loggers.config import quiet_third_party_progress_bars  # noqa: PLC0415
-
             quiet_third_party_progress_bars()
         except Exception as exc:  # noqa: BLE001 -- cosmetic only
             logger.debug("quieting third-party progress bars failed: %r", exc)

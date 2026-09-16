@@ -248,7 +248,8 @@ export function ParamsSection({
                     min={1}
                     max={useEpochs ? epochsSliderMax : maxStepsSliderMax}
                     step={1}
-                    className="w-14 shrink-0 text-right font-mono text-xs font-medium bg-muted/50 border border-border rounded-lg px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-ring [&::-webkit-inner-spin-button]:appearance-none"
+                    // Same floor: a step count needs more room at 16px.
+                    className="w-14 pointer-coarse:w-20 shrink-0 text-right font-mono text-xs font-medium bg-muted/50 border border-border rounded-lg px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-ring [&::-webkit-inner-spin-button]:appearance-none"
                   />
                 </div>
               </div>

@@ -1679,6 +1679,35 @@ def test_the_private_temp_removal_only_takes_what_it_created(tmp_path: Path):
     assert (data / "studio.port").exists()
 
 
+# Split-Path's -LiteralPath lives in its own parameter set in Windows PowerShell 5.1, so naming
+# -Parent with it throws AmbiguousParameterSet at runtime, not at parse time, which is why eight of
+# them reached a release. -LiteralPath alone already splits off the parent, and -Path globs.
+# Static, because CI has no Windows PowerShell 5.1 to run the scripts under.
+_SPLIT_PATH_LITERAL_PARENT = re.compile(
+    r"Split-Path\b[^\r\n|;]*?-LiteralPath\b[^\r\n|;]*?-Parent\b"
+    r"|Split-Path\b[^\r\n|;]*?-Parent\b[^\r\n|;]*?-LiteralPath\b"
+)
+
+
+# The two installers this change touches. scripts/uninstall.ps1 has its own eight of these and its
+# own PR (#10471); listed here it failed on this tree unconditionally.
+@pytest.mark.parametrize("name", ("install.ps1", "studio/setup.ps1"))
+def test_split_path_never_pairs_literalpath_with_parent(name: str) -> None:
+    text = (REPO_ROOT / name).read_text(encoding = "utf-8")
+    offenders = [
+        f"{name}:{number}: {line.strip()}"
+        for number, line in enumerate(text.splitlines(), start = 1)
+        # Comments are prose about the rule, not a call the shell binds.
+        if not line.strip().startswith("#") and _SPLIT_PATH_LITERAL_PARENT.search(line)
+    ]
+    assert not offenders, (
+        "Split-Path -LiteralPath cannot be combined with -Parent: Windows PowerShell 5.1 "
+        "resolves no parameter set for the pair and the call throws at runtime. Drop "
+        "-Parent -- -LiteralPath alone already returns the parent, and unlike -Path it does "
+        "not treat [ ] in an install root as a wildcard.\n  " + "\n  ".join(offenders)
+    )
+
+
 SETUP_PS1 = REPO_ROOT / "studio" / "setup.ps1"
 
 
@@ -1700,13 +1729,27 @@ def _gate(source: str) -> str:
     )
 
 
+# Both, because both still carry the apparatus. What changed is its only CONSUMER in
+# studio/setup.ps1: a cosmetic ANSI colour thunk. A CI pre-flight measured Windows PowerShell 5.1
+# attached to a real console and found the console mode already 0x7 before anything of ours ran, so
+# bit 0x4, ENABLE_VIRTUAL_TERMINAL_PROCESSING, was set by the host at startup and the SetConsoleMode
+# was re-setting a bit that was already set. The thunk became a read of
+# $Host.UI.SupportsVirtualTerminal.
+#
+# The apparatus itself stays in setup.ps1 and so does its coverage here: Get-NvidiaLibraryProbeType
+# emits the nvml and nvcuda imports through the same gate, so deleting the apparatus would break the
+# GPU inventory. Only the tests about the CONSOLE helper specifically are install-only now.
+EMIT_SCRIPTS = ["install", "setup"]
+CONSOLE_HELPER_SCRIPTS = ["install"]
+
+
 # Status 0 is "no policy" and answers without spawning anything. Anything else is a policy
 # whose OPTIONS decide the answer, and Win32_DeviceGuard does not report them: option 19
 # Dynamic Code Security always blocks unsigned System.Reflection.Emit assemblies and is
 # enforced even in an audit policy before Windows 11 24H2, while an audit policy without it
 # emits fine. So the gate asks a child process, and these assert that it delegates.
 @requires_pwsh
-@pytest.mark.parametrize("script", ["install", "setup"])
+@pytest.mark.parametrize("script", EMIT_SCRIPTS)
 @pytest.mark.parametrize("status", ["1", "2"])
 @pytest.mark.parametrize("probe,expected", [("$true", "True"), ("$false", "False")])
 def test_an_active_policy_is_decided_by_the_child_probe(
@@ -1737,7 +1780,7 @@ def test_an_active_policy_is_decided_by_the_child_probe(
 
 
 @requires_pwsh
-@pytest.mark.parametrize("script", ["install", "setup"])
+@pytest.mark.parametrize("script", EMIT_SCRIPTS)
 def test_no_policy_answers_without_spawning_a_probe(script: str):
     """The probe costs a process. A machine with no policy is the overwhelming majority and
     must not pay for it."""
@@ -1766,7 +1809,7 @@ def test_no_policy_answers_without_spawning_a_probe(script: str):
 # The runtime test below catches this by executing it, but only where emit succeeds. This
 # one is the invariant itself, and the one a future edit trips: one double quote added to
 # the probe body is enough, and the resulting failure points nowhere near the quote.
-@pytest.mark.parametrize("script", ["install", "setup"])
+@pytest.mark.parametrize("script", EMIT_SCRIPTS)
 def test_the_probe_body_carries_no_double_quote(script: str):
     source = (INSTALL_PS1 if script == "install" else SETUP_PS1).read_text(encoding = "utf-8")
     body = re.search(r"\$probe = @'\n(.*?)\n'@", source, flags = re.DOTALL)
@@ -1787,7 +1830,7 @@ def test_the_probe_body_carries_no_double_quote(script: str):
 # accept case would fail while the deadline case passed without waiting.
 @pytest.mark.skipif(os.name == "nt", reason = "the fake host is a shell script")
 @requires_pwsh
-@pytest.mark.parametrize("script", ["install", "setup"])
+@pytest.mark.parametrize("script", EMIT_SCRIPTS)
 @pytest.mark.parametrize(
     "emits,code,expected,outcome,label",
     [
@@ -1847,7 +1890,7 @@ def test_the_probe_only_accepts_a_clean_exact_answer(
 # "the managed Unsloth environment is busy". The compiled version tried twice before caching
 # a negative. A genuinely blocked machine still pays for exactly one probe.
 @requires_pwsh
-@pytest.mark.parametrize("script", ["install", "setup"])
+@pytest.mark.parametrize("script", EMIT_SCRIPTS)
 @pytest.mark.parametrize(
     "outcome,calls",
     [("indeterminate", "2"), ("blocked", "1")],
@@ -1976,7 +2019,7 @@ def test_an_already_emitted_type_settles_it_without_asking_a_child():
 # type, so one failed probe threw away a helper already loaded and working in this process.
 # The compiled version checked the type first.
 @requires_pwsh
-@pytest.mark.parametrize("script", ["install", "setup"])
+@pytest.mark.parametrize("script", CONSOLE_HELPER_SCRIPTS)
 def test_the_console_helper_keeps_a_type_it_already_has(script: str):
     source = (INSTALL_PS1 if script == "install" else SETUP_PS1).read_text(encoding = "utf-8")
     result = _run_powershell(
@@ -2052,7 +2095,7 @@ def test_a_child_that_never_returns_does_not_hang_the_installer(tmp_path: Path):
 # be put into that binder with $PSNativeCommandArgumentPassing, so this is reachable from
 # Linux.
 @requires_pwsh
-@pytest.mark.parametrize("script", ["install", "setup"])
+@pytest.mark.parametrize("script", EMIT_SCRIPTS)
 @pytest.mark.parametrize("binding", ["Legacy", "Standard"])
 def test_the_child_probe_survives_the_5_1_argument_binder(script: str, binding: str):
     source = (INSTALL_PS1 if script == "install" else SETUP_PS1).read_text(encoding = "utf-8")
@@ -2077,7 +2120,7 @@ def test_the_child_probe_survives_the_5_1_argument_binder(script: str, binding: 
 
 
 @requires_pwsh
-@pytest.mark.parametrize("script", ["install", "setup"])
+@pytest.mark.parametrize("script", EMIT_SCRIPTS)
 @pytest.mark.parametrize(
     "provider,label",
     [
@@ -2168,10 +2211,19 @@ def test_each_import_carries_the_charset_its_declaration_had(method: str, charse
 # The value is blittable and callers initialise it first, so writeback works either way; this
 # pins that the metadata says what the declaration said and that the Out key is wired through.
 @requires_pwsh
-@pytest.mark.parametrize("script", ["install", "setup"])
-def test_the_console_mode_parameter_is_still_declared_out(script: str):
+@pytest.mark.parametrize("script", EMIT_SCRIPTS)
+def test_the_emitter_still_honours_an_out_position(script: str):
+    """No import declares one any more, and the capability stays anyway.
+
+    The only by-ref import was GetConsoleMode, which went with the console thunk. Six lines in the
+    emitter keep honouring an `Out` position, and they are worth keeping without a consumer: the
+    next native import that needs one would otherwise marshal silently wrong -- the call succeeds,
+    the out value never comes back, and nothing raises. That is the kind of bug that costs a day.
+
+    So this probes the emitter directly with a locally invented type rather than asserting against a
+    declaration in the script, which is what it used to do and which no longer has anything to read.
+    """
     source = (INSTALL_PS1 if script == "install" else SETUP_PS1).read_text(encoding = "utf-8")
-    which = "StudioVTNative" if script == "setup" else "StudioVTNative"
     result = _run_powershell(
         "\n".join(
             [
@@ -2193,12 +2245,17 @@ def test_the_console_mode_parameter_is_still_declared_out(script: str):
     assert result.returncode == 0, result.stderr
     assert _lines(result, "OUT:") == ["OUT:True"]
     assert _lines(result, "BYREF:") == ["BYREF:True"]
-    # And the real declaration in the script carries the key, not just the emitter's
-    # ability to honour it.
-    block = re.search(r'Name = "GetConsoleMode".*?\}', source, flags = re.DOTALL)
-    assert block is not None and "Out = @(2)" in block.group(
-        0
-    ), "GetConsoleMode lost its Out position"
+    # Deliberately no assertion that some declaration in the script uses it. There is no longer such
+    # a declaration, and writing one purely to keep this test alive would be adding a native import
+    # to a file this work exists to remove native imports from.
+    # A declaration, not a substring: the replacement code explains in a comment which three native
+    # calls it replaced, and naming them is the point of that comment.
+    assert not re.search(r'Name\s*=\s*"GetConsoleMode"', source), (
+        "an import named GetConsoleMode is declared in the installer again. It was removed because "
+        "the host already enables virtual terminal processing before our code runs -- the console "
+        "mode is 0x7 before we touch it -- so the call was a no-op. If it is genuinely needed "
+        "again, say why here."
+    )
 
 
 # Almost every import declares no Out position, and reading an absent hashtable key is fatal
@@ -2208,7 +2265,7 @@ def test_the_console_mode_parameter_is_still_declared_out(script: str):
 # emitter asks ContainsKey first, as it does for CharSet; this runs it under the strictest
 # setting.
 @requires_pwsh
-@pytest.mark.parametrize("script", ["install", "setup"])
+@pytest.mark.parametrize("script", EMIT_SCRIPTS)
 def test_an_import_without_an_out_position_survives_strict_mode(script: str):
     source = (INSTALL_PS1 if script == "install" else SETUP_PS1).read_text(encoding = "utf-8")
     result = _run_powershell(

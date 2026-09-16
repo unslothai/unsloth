@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { readImageModel, rememberImageModel, matchesRememberedModel, type RememberedImageModel } from "./image-model-recall";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ArrowLeftRightIcon,
@@ -89,7 +90,7 @@ import {
 } from "@/lib/gallery-flags";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
 import { useImageWorkflowStore } from "./stores/image-workflow-store";
-import { WORKFLOW_TABS } from "./workflows";
+import { WORKFLOW_TABS, type WorkflowId } from "./workflows";
 import { ParamSlider } from "@/features/chat";
 import { ModelLoadDescription } from "@/features/chat/components/model-load-status";
 import {
@@ -1161,6 +1162,8 @@ export function ImagesPage({
   onInitialReady?: () => void;
 }) {
   const initialReadySent = useRef(false);
+  const [rememberedModel, setRememberedModel] = useState(readImageModel);
+  const pendingRecalledGeneration = useRef<{ model: RememberedImageModel; load: number; workflow: WorkflowId } | null>(null);
   const { isMobile, pinned } = useSidebar();
   const hostClass = useHostClass();
   const imageModels = useImageModels(hostClass);
@@ -2134,6 +2137,10 @@ export function ImagesPage({
         }
         setStatusIfNewest(ticket, loaded);
         toast.success("Model loaded");
+        if (lastLoad.current && matchesRememberedModel(lastLoad.current, loaded)) {
+          rememberImageModel(lastLoad.current);
+          setRememberedModel(lastLoad.current);
+        }
         setBusy(null);
         // Load succeeded: the optimistic quant is now the real one, so drop the pending revert.
         quantRevert.current?.commitRecipeClaim?.();
@@ -2145,6 +2152,7 @@ export function ImagesPage({
         return;
       }
       if (p.phase === "error") {
+        pendingRecalledGeneration.current = null;
         dismissLoadToast();
         reportLoadFailure(p.error, "Failed to load model");
         setBusy(null);
@@ -2165,6 +2173,7 @@ export function ImagesPage({
         return;
       }
       if (p.phase === null) {
+        pendingRecalledGeneration.current = null;
         // No load in flight and nothing loaded: the load was cancelled or evicted. Terminal, else this
         // loop spins forever.
         dismissLoadToast();
@@ -2356,9 +2365,9 @@ export function ImagesPage({
   }, [resolvedKey]);
 
   const bakedLorasFor = useCallback(
-    (repoId: string): LoraSpecInput[] => {
+    (repoId: string, preserveSelection = false): LoraSpecInput[] => {
       const sameTarget = repoId === (lastLoad.current?.repoId ?? status?.repo_id ?? null);
-      if (!sameTarget) return [];
+      if (!sameTarget && !preserveSelection) return [];
       return loras
         .map((l) => ({ id: l.id.trim(), weight: l.weight }))
         .filter((l) => l.id && l.weight > 0);
@@ -2368,8 +2377,8 @@ export function ImagesPage({
 
   // One snapshot of every Advanced control a load sends, so a staged pick can pin the values it planned against.
   const currentLoadAdvanced = useCallback(
-    (repoId: string): LoadAdvanced => {
-      const baked = bakedLorasFor(repoId);
+    (repoId: string, preserveSelection = false): LoadAdvanced => {
+      const baked = bakedLorasFor(repoId, preserveSelection);
       return {
         cpu_offload: cpuOffload,
         speed_mode: speedMode === "auto" ? undefined : speedMode,
@@ -2811,6 +2820,7 @@ export function ImagesPage({
   );
 
   const beginPick = useCallback(() => {
+    pendingRecalledGeneration.current = null;
     pickSeq.current += 1;
     pendingStagedLoad.current = null;
     pendingLoadEntries.current = null;
@@ -3211,6 +3221,7 @@ export function ImagesPage({
 
   // Resolves true when the backend accepted the unload; handleCancelLoad reports the cancel only then.
   const handleUnload = useCallback(async (): Promise<boolean> => {
+    pendingRecalledGeneration.current = null;
     // Ejecting cancels any in-flight replacement load, so tear down its client-side tracking too
     // or the toast leaks forever.
     dropResidentState();
@@ -3563,6 +3574,82 @@ export function ImagesPage({
     }
   }, []);
 
+  const handleGenerateWithRecall = useCallback(async () => {
+    if (busy !== null || !imagePresets.hydrated) return;
+    if (status?.loaded) {
+      const kind = status.model_kind;
+      if (
+        status.repo_id &&
+        (kind === "pipeline" ||
+          ((kind === "gguf" || kind === "single_file") && status.gguf_filename))
+      ) {
+        const model: RememberedImageModel = {
+          repoId: status.repo_id,
+          kind,
+          filename: status.gguf_filename ?? undefined,
+        };
+        rememberImageModel(model);
+        setRememberedModel(model);
+      }
+      await handleGenerate();
+      return;
+    }
+    if (!rememberedModel || !prompt.trim()) {
+      toast.info(
+        rememberedModel
+          ? "Enter a prompt first."
+          : "Pick an image model first.",
+      );
+      return;
+    }
+    pendingRecalledGeneration.current = {
+      model: rememberedModel,
+      load: loadSeq.current + 1,
+      workflow,
+    };
+    const started = await handleLoad(
+      rememberedModel.repoId,
+      { kind: rememberedModel.kind, filename: rememberedModel.filename },
+      currentLoadAdvanced(rememberedModel.repoId, true),
+    );
+    if (!started) pendingRecalledGeneration.current = null;
+  }, [
+    busy,
+    currentLoadAdvanced,
+    handleGenerate,
+    handleLoad,
+    imagePresets.hydrated,
+    prompt,
+    rememberedModel,
+    status,
+    workflow,
+  ]);
+
+  useEffect(() => {
+    const pending = pendingRecalledGeneration.current;
+    if (!pending) return;
+    if (!active || pending.load !== loadSeq.current) {
+      pendingRecalledGeneration.current = null;
+      return;
+    }
+    if (busy !== null || !status?.loaded) return;
+    pendingRecalledGeneration.current = null;
+    const tab = WORKFLOW_TABS.find(
+      (candidate) => candidate.id === pending.workflow,
+    );
+    if (
+      pending.workflow !== workflow ||
+      !tab ||
+      !(status.workflows ?? []).includes(tab.requires ?? "txt2img")
+    ) {
+      toast.info(
+        "Choose a workflow supported by the loaded model before generating.",
+      );
+      return;
+    }
+    if (matchesRememberedModel(pending.model, status)) void handleGenerate();
+  }, [active, busy, handleGenerate, status, workflow]);
+
   // Publish what the loaded model can do, so the sidebar submenu dims the rest. null while
   // nothing is loaded, which leaves every workflow open to set up first.
   useEffect(() => {
@@ -3617,8 +3704,11 @@ export function ImagesPage({
         ]}
       />
       {/* The dense transformer_quant fast path engages only on the GGUF kind, so gate the control to
-          GGUF (or nothing loaded) and otherwise say why it is unavailable. */}
-      {!status?.loaded || status.model_kind === "gguf" ? (
+          GGUF (or nothing loaded) and otherwise say why it is unavailable. Native sd.cpp reports
+          model_kind "gguf" as well, to be recallable by exact checkpoint, but runs no torchao path:
+          gate it out by ENGINE or it offers FP8/INT8/NVFP4 with no badge and snaps back on load. */}
+      {!status?.loaded
+      || (status.model_kind === "gguf" && !isNativeEngineStatus(status)) ? (
         <AdvancedSelect
           label="Precision"
           hint="How the model computes. Auto picks the fastest precision the hardware supports (at least INT8 on a capable GPU; FP8 on data-center cards) by loading the FULL base model and quantising its transformer onto low-precision tensor cores, and falls back to running the GGUF as-is when the device, VRAM or disk can't take it. Off always runs the GGUF as-is."
@@ -4442,8 +4532,8 @@ export function ImagesPage({
             ) : (
               <Button
                 className="relative z-10 h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
-                onClick={handleGenerate}
-                disabled={busy !== null || !status?.loaded}
+                onClick={handleGenerateWithRecall}
+                disabled={busy !== null || !imagePresets.hydrated || (!status?.loaded && !rememberedModel)}
               >
                 Generate
               </Button>
