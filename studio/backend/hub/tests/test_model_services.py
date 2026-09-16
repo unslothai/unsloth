@@ -733,6 +733,23 @@ def test_custom_dedupe_overlapping_symlink_scans_collapse_to_one_row(tmp_path):
     assert local_inventory._dedupe_custom_local_models([row, row]) == [row]
 
 
+def test_custom_dedupe_collapses_duplicate_scanner_rows_for_one_symlink_alias(tmp_path):
+    """Multiple scanners can emit the same symlink alias path once per scan."""
+    target = tmp_path / "weights"
+    target.mkdir()
+    (target / "model.gguf").write_bytes(b"x" * 10)
+    alias = tmp_path / "alias"
+    try:
+        alias.symlink_to(target, target_is_directory = True)
+    except OSError:
+        pytest.skip("symlinks unavailable")
+    row = _custom_gguf_row(tmp_path, load_path = alias / "model.gguf")
+    duplicate = _custom_gguf_row(tmp_path, load_path = alias / "model.gguf", size_bytes = 20)
+    result = local_inventory._dedupe_custom_local_models([row, duplicate])
+    assert len(result) == 1
+    assert result[0].size_bytes == 20
+
+
 def test_custom_dedupe_distinct_symlink_aliases_stay_separate_rows(tmp_path):
     """Different symlink paths to one on-disk model keep separate settings rows."""
     target = tmp_path / "weights"

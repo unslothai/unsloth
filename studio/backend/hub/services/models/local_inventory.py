@@ -622,13 +622,24 @@ def _dedupe_custom_local_models(custom_models: List[LocalModelInfo]) -> list[Loc
 
     kept: list[LocalModelInfo] = []
     for group in by_physical.values():
-        symlinks = [m for m in group if _local_model_path_is_symlink(m.path)]
-        non_symlinks = [m for m in group if not _local_model_path_is_symlink(m.path)]
+        by_alias_path: dict[str, list[LocalModelInfo]] = {}
+        for model in group:
+            by_alias_path.setdefault(model.path, []).append(model)
+        unique_rows: list[LocalModelInfo] = []
+        for alias_group in by_alias_path.values():
+            winner = alias_group[0]
+            for candidate in alias_group[1:]:
+                if _prefer_local_inventory_row(candidate, winner):
+                    winner = candidate
+            unique_rows.append(winner)
+
+        symlinks = [m for m in unique_rows if _local_model_path_is_symlink(m.path)]
+        non_symlinks = [m for m in unique_rows if not _local_model_path_is_symlink(m.path)]
         if len(symlinks) >= 2 and not non_symlinks:
-            kept.extend(group)
+            kept.extend(unique_rows)
             continue
-        winner = group[0]
-        for candidate in group[1:]:
+        winner = unique_rows[0]
+        for candidate in unique_rows[1:]:
             if _prefer_local_inventory_row(candidate, winner):
                 winner = candidate
         kept.append(winner)
