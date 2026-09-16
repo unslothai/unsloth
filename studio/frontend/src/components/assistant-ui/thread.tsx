@@ -4465,6 +4465,9 @@ const Composer: FC<{
     }
     preStreamRunReservationRef.current = reservationToken;
     try {
+      // The send owns the draft only after the reservation succeeds. A refused
+      // send must leave an in-flight transcript available to finish or cancel.
+      cancelAudioUpload();
       const sentText = aui.composer().getState().text;
       // Stamp the send BEFORE send() starts awaiting every incomplete attachment: a document
       // send reaches initialize() seconds later, by which time navigation may have moved the
@@ -4490,7 +4493,14 @@ const Composer: FC<{
           error instanceof Error ? error.message : "Please retry the send.",
       });
     }
-  }, [aui, armJustSent, preStreamThreadIds, projectScope, referenceThreadId]);
+  }, [
+    aui,
+    armJustSent,
+    cancelAudioUpload,
+    preStreamThreadIds,
+    projectScope,
+    referenceThreadId,
+  ]);
 
   // Gate for both form submit and the Send button. Returns true when it handled
   // the event (blocked or queued) so callers stop.
@@ -4605,7 +4615,6 @@ const Composer: FC<{
         }
         return;
       }
-      cancelAudioUpload();
       clearStoredDraft();
       sendReservedComposer();
     }
@@ -4619,7 +4628,6 @@ const Composer: FC<{
     aui,
     canQueueCurrentPrompt,
     canQueuePastedTextPrompt,
-    cancelAudioUpload,
     clearStoredDraft,
     dismissWaitToast,
     queueComposerText,
@@ -4844,9 +4852,6 @@ const Composer: FC<{
         parkIfWaitingOnAttachments();
         return;
       }
-      // A send owns the draft now; an uploaded transcript arriving afterwards
-      // must not land in the cleared or queued composer.
-      audioUpload.cancel();
       // Before the queue branch below, not after it: a prompt queued while this chat's
       // own settings are still on their way is snapshotted from the installation
       // defaults on screen, so a chat stored as "ask" would queue as "off".
@@ -4984,7 +4989,6 @@ const Composer: FC<{
       sendReservedComposer();
     },
     [
-      audioUpload,
       aui,
       canQueueCurrentPrompt,
       canQueuePastedTextPrompt,

@@ -43,6 +43,12 @@ const releaseCallback = lift(
       .getText(source)
       .includes("const behavior = pendingFollowUpBehaviorRef.current;"),
 );
+const reservedSendCallback = lift(
+  (n) =>
+    ts.isArrowFunction(n) &&
+    n.getText(source).startsWith("(...alsoGuard: string[]) =>") &&
+    n.getText(source).includes("reservePreStreamRun"),
+);
 function createCallback(
   code: string,
   deps: Record<string, unknown>,
@@ -137,7 +143,6 @@ for (const active of ["runtime", "pre-stream", "queue", "idle"]) {
       overlay: false,
       hasAttachments: false,
       hasPendingAudio: false,
-      cancelAudioUpload: () => calls.push("cancel-upload"),
       clearStoredDraft: () => calls.push("clear"),
       sendReservedComposer: () => calls.push("send"),
     };
@@ -147,12 +152,57 @@ for (const active of ["runtime", "pre-stream", "queue", "idle"]) {
     assert.deepEqual(
       calls,
       active === "idle"
-        ? ["cancel-upload", "clear", "send"]
+        ? ["clear", "send"]
         : [[active !== "queue", "steer"]],
     );
     assert.equal(pendingSendRef.current, false);
   });
 }
+
+test("main cancels an audio upload only after a normal send reservation succeeds", () => {
+  const run = (reservationToken: symbol | null) => {
+    const calls: string[] = [];
+    const deps = {
+      aui: {
+        threads: () => ({ __internal_getAssistantRuntime: () => undefined }),
+        composer: () => ({
+          getState: () => ({ text: "Draft" }),
+          send: () => calls.push("send"),
+        }),
+      },
+      reservePreStreamRun: () => reservationToken,
+      preStreamThreadIds: ["chat"],
+      parseExternalModelId: () => null,
+      useChatRuntimeStore: {
+        getState: () => ({
+          params: { checkpoint: "local/model" },
+          incognito: false,
+          activeGgufVariant: null,
+        }),
+      },
+      preStreamRunReservationRef: { current: null },
+      toast: { error: () => calls.push("refused") },
+      cancelAudioUpload: () => calls.push("cancel-upload"),
+      claimThreadCreation: () => calls.push("claim"),
+      projectScope: null,
+      armJustSent: () => calls.push("arm"),
+      releasePreStreamRunReservation: () => true,
+      notifyPromptQueueRunFailed: () => undefined,
+      referenceThreadId: "chat",
+    };
+    const send = createCallback(reservedSendCallback, deps);
+    send();
+    return calls;
+  };
+
+  assert.deepEqual(run(null), ["refused"]);
+  assert.deepEqual(run(Symbol("reservation")), [
+    "cancel-upload",
+    "claim",
+    "send",
+    "arm",
+  ]);
+});
 
 test("main, edit and comparison composers use the setting and expose settings access", () => {
   assert.match(text, /submitMode="none"/);

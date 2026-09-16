@@ -197,7 +197,7 @@ test("an open dialog observes a missing model becoming ready", () => {
   );
 });
 
-test("Main cancels an upload only when a queue or parked send is accepted", () => {
+test("Main cancels an upload only after a queue or normal send is accepted", () => {
   const queueStart = threadSource.indexOf(
     "const startHydratedPromptQueue = useCallback",
   );
@@ -210,17 +210,24 @@ test("Main cancels an upload only when a queue or parked send is accepted", () =
   assert.ok(accepted < queue.indexOf("startPromptQueue(", accepted));
   assert.ok(queue.indexOf("onAborted?.()", accepted) > accepted);
 
-  const releaseStart = threadSource.indexOf(
-    "// Fire the parked send once indexing clears",
+  const sendStart = threadSource.indexOf(
+    "const sendReservedComposer = useCallback",
   );
-  const release = threadSource.slice(
-    releaseStart,
-    threadSource.indexOf("// Drop any queued send", releaseStart),
+  const send = threadSource.slice(
+    sendStart,
+    threadSource.indexOf("const interceptSend", sendStart),
   );
-  const send = release.lastIndexOf("sendReservedComposer();");
-  const cancel = release.lastIndexOf("cancelAudioUpload();", send);
-  assert.ok(cancel >= 0 && cancel < send);
-  assert.ok(cancel > release.indexOf("if (isResearchActive)"));
+  const refused = send.indexOf("if (!reservationToken)");
+  const cancel = send.indexOf("cancelAudioUpload();", refused);
+  assert.ok(refused >= 0 && cancel > refused);
+  assert.ok(cancel < send.indexOf("aui.composer().send();", cancel));
+
+  const submitStart = threadSource.indexOf("const handleSubmit = useCallback");
+  const submit = threadSource.slice(
+    submitStart,
+    threadSource.indexOf("const stopQueue", submitStart),
+  );
+  assert.equal(submit.includes("audioUpload.cancel();"), false);
 });
 
 test("Compare routes button and shortcut through the same Dictate entry", () => {
