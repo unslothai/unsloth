@@ -5717,6 +5717,52 @@ exit 0
         return $null
     }
 
+    function Get-StudioVenvBasePython {
+        param([Parameter(Mandatory = $true)][string]$VenvDir)
+        # The ARM64 interpreter the EXISTING environment was built from, when the machine no
+        # longer registers one of its own.
+        #
+        # UNSLOTH_ALLOW_ARM64_PYTHON asks for the native environment to be kept, and the
+        # selection honours it by preferring an ARM64 build -- but only among the
+        # interpreters discovery can see. Remove the ARM64 CPython that built the venv (an
+        # upgrade, a cleanup) and there is nothing left to prefer: the selection returns the
+        # x64 interpreter, the environment is rebuilt on it, and the ARM64 tree is only
+        # PRESERVED beside it, while the opt-out's own message said it would not be rebuilt
+        # on x64. pyvenv.cfg still names that base interpreter, so if it is on disk the
+        # opt-out has something to honour after all.
+        #
+        # Read here, before the reinstall moves the environment to its rollback path.
+        $cfg = Join-Path $VenvDir "pyvenv.cfg"
+        if (-not (Test-Path -LiteralPath $cfg -PathType Leaf)) { return $null }
+        $venvHome = $null
+        $baseExe = $null
+        foreach ($line in @(Get-Content -LiteralPath $cfg -ErrorAction SilentlyContinue)) {
+            if ($line -match '^\s*home\s*=\s*(.+?)\s*$') { $venvHome = $Matches[1] }
+            elseif ($line -match '^\s*base-executable\s*=\s*(.+?)\s*$') { $baseExe = $Matches[1] }
+        }
+        # base-executable names the interpreter exactly; home is its directory, which is what
+        # a venv built by an older Python records on its own.
+        $candidates = @()
+        if ($baseExe) { $candidates += $baseExe }
+        if ($venvHome) { $candidates += (Join-Path $venvHome "python.exe") }
+        foreach ($exe in $candidates) {
+            if (-not $exe) { continue }
+            if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { continue }
+            if (Test-IsCondaPython $exe) { continue }
+            # ARM64 only, and a supported minor only: this is the opt-out's interpreter, so
+            # anything that is not provably native is no better than the x64 selection it
+            # would replace.
+            if ((Get-PythonPlatformTag $exe) -ne "win-arm64") { continue }
+            $out = (& $exe --version 2>&1 | Out-String)
+            if ($out -notmatch "Python ((3\.1[1-3])\.\d+)") { continue }
+            $full = $Matches[1]
+            $ver = $Matches[2]
+            if ($PythonSkip -contains $full) { continue }
+            return @{ Version = $ver; Path = $exe; Arch = "arm64" }
+        }
+        return $null
+    }
+
     # Does an environment we are about to REUSE still match the interpreter we chose? The
     # swap above only ever changes a FRESH selection, so a venv migrated from an older
     # install keeps whatever interpreter it was built with, and on Windows on ARM that is
@@ -5751,7 +5797,17 @@ exit 0
         # variable would never be read and this branch would replace the very ARM64
         # environment the user asked to keep, discarding whatever they installed into it.
         if (Test-Arm64PythonOptOut) {
-            substep "windows on arm: UNSLOTH_ALLOW_ARM64_PYTHON is set, so the environment is not rebuilt on x64." "Yellow"
+            # Two different outcomes, so two different sentences. With an ARM64 interpreter in
+            # hand the environment really is not rebuilt on x64. With none -- the machine
+            # registers no ARM64 Python and the one this environment was built from is gone --
+            # the reinstall has already moved the tree aside and the new one IS built on x64,
+            # and saying otherwise is the only thing the variable would have changed.
+            if ($SelectedPython -and $SelectedPython.Arch -eq "x86_64") {
+                substep "windows on arm: UNSLOTH_ALLOW_ARM64_PYTHON is set, but no ARM64 Python is left on" "Yellow"
+                substep "this machine, so the new environment is built on x64; the ARM64 one is kept." "Yellow"
+            } else {
+                substep "windows on arm: UNSLOTH_ALLOW_ARM64_PYTHON is set, so the environment is not rebuilt on x64." "Yellow"
+            }
             return $false
         }
         if (-not $SelectedPython -or $SelectedPython.Arch -ne "x86_64") { return $false }
@@ -5911,6 +5967,20 @@ exit 0
             $script:WoaTorchIndexUrl = $null
         }
     }
+    # ── Windows on ARM: the opt-out's last ARM64 interpreter ──
+    # The selection prefers ARM64 under UNSLOTH_ALLOW_ARM64_PYTHON, but only among the
+    # interpreters discovery can see. With none left, an x64 one is selected and the native
+    # environment is rebuilt on it -- exactly what the variable asks against -- so the
+    # environment's own base interpreter, which pyvenv.cfg still names, is tried first.
+    if ((Get-HostMachineArch) -eq "arm64" -and (Test-Arm64PythonOptOut) -and
+            (-not $DetectedPython -or $DetectedPython.Arch -ne "arm64")) {
+        $ArmBasePython = Get-StudioVenvBasePython -VenvDir $VenvDir
+        if ($ArmBasePython) {
+            step "python" "windows on arm: UNSLOTH_ALLOW_ARM64_PYTHON is set and no other ARM64 Python is registered; using the ARM64 Python $($ArmBasePython.Version) the existing environment was built from"
+            $DetectedPython = $ArmBasePython
+        }
+    }
+
     # ── Windows on ARM: swap a native ARM64 interpreter for x64 ──
     # No x64 interpreter means no install, so this stops rather than warning: see
     # Resolve-WindowsOnArmX64Python.

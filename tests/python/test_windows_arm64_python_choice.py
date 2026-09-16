@@ -235,3 +235,84 @@ def _pwsh(script: str) -> str:
 )
 def test_arm64_host_prefers_an_x64_interpreter(installed, can_download, expected):
     assert _pwsh(_resolver_script(installed, can_download)) == expected
+
+
+def _venv_base_script(cfg_lines: str, base_arch: str, base_present: bool) -> str:
+    """The real Get-StudioVenvBasePython over a fake pyvenv.cfg and base interpreter."""
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    reader = _extract(r"    function Get-StudioVenvBasePython \{.*?\n    \}\n", source)
+    tag = {"arm64": "win-arm64", "x86_64": "win-amd64"}.get(base_arch, base_arch)
+    present = "$true" if base_present else "$false"
+    return f"""
+$ErrorActionPreference = "Stop"
+$PythonSkip = @()
+$CfgLines = @'
+{cfg_lines}
+'@ -split "`n"
+function Test-Path {{
+    param([Parameter(Position = 0)][string]$LiteralPath,
+          [Parameter(ValueFromRemainingArguments = $true)]$Rest)
+    if ($LiteralPath -like "*pyvenv.cfg") {{ return $true }}
+    return {present}
+}}
+function Get-Content {{
+    param([Parameter(ValueFromRemainingArguments = $true)]$Rest)
+    return $CfgLines
+}}
+function Test-IsCondaPython {{ param([string]$Exe) return $false }}
+function Get-PythonPlatformTag {{ param([string]$Exe) return "{tag}" }}
+function BasePython.exe {{
+    param([Parameter(ValueFromRemainingArguments = $true)]$Rest)
+    return "Python 3.12.4"
+}}
+# The home-only spelling resolves to <home>/python.exe, so that exact name answers too.
+function /py312/python.exe {{
+    param([Parameter(ValueFromRemainingArguments = $true)]$Rest)
+    return "Python 3.12.4"
+}}
+{reader}
+$found = Get-StudioVenvBasePython -VenvDir "/home/unsloth_studio"
+if ($found) {{ Write-Output "$($found.Version)|$($found.Arch)" }} else {{ Write-Output "none" }}
+"""
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
+@pytest.mark.parametrize(
+    ("cfg", "arch", "present", "expected"),
+    [
+        # base-executable names it exactly, which is what a modern venv records.
+        ("home = /py312\nbase-executable = BasePython.exe\n", "arm64", True, "3.12|arm64"),
+        # An older venv records only home; the interpreter beside it is the same answer.
+        ("home = /py312\n", "arm64", True, "3.12|arm64"),
+        # The interpreter that built it is gone: nothing to honour the opt-out with, and
+        # inventing one would be worse than the x64 selection this replaces.
+        ("base-executable = BasePython.exe\n", "arm64", False, "none"),
+        # An x64 base is not what the opt-out asks for, so it is not preferred over the
+        # selection the ordinary rules already made.
+        ("base-executable = BasePython.exe\n", "x86_64", True, "none"),
+        # A cfg with neither key answers nothing rather than guessing a path.
+        ("include-system-site-packages = false\n", "arm64", True, "none"),
+    ],
+)
+def test_the_existing_environments_base_interpreter_is_the_last_arm64_python(
+    cfg, arch, present, expected,
+):
+    """UNSLOTH_ALLOW_ARM64_PYTHON with no ARM64 interpreter registered on the machine.
+
+    The selection prefers ARM64 only among the interpreters discovery can see. Remove the
+    ARM64 CPython that built the venv and there is nothing left to prefer: an x64 interpreter
+    is selected, the reinstall has already moved the native environment aside, and the new one
+    is built on x64 -- while the opt-out's own message said it would not be. pyvenv.cfg still
+    names that base interpreter, so when it is on disk the variable has something to honour.
+    """
+    result = run_pwsh(
+        [
+            "pwsh", "-NoProfile", "-NonInteractive", "-Command",
+            _venv_base_script(cfg, arch, present),
+        ],
+        check = True,
+        capture_output = True,
+        text = True,
+        env = _environment_without_the_arm64_opt_out(),
+    )
+    assert result.stdout.strip() == expected
