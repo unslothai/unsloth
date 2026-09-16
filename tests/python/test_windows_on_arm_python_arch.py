@@ -371,7 +371,7 @@ def test_the_installer_stops_when_no_x64_interpreter_can_be_installed():
     # matched an unrelated earlier block instead of failing.
     call = source.index("$DetectedPython = Resolve-WindowsOnArmX64Python")
     opening = source.rindex("\n    if (", 0, call)
-    match = re.search(r".*?\n    \}\n", source[opening + 1:], flags = re.DOTALL)
+    match = re.search(r".*?\n    \}\n", source[opening + 1 :], flags = re.DOTALL)
     assert match is not None, "install.ps1 no longer guards the Windows-on-ARM swap"
     block = match.group(0)
     assert "Resolve-WindowsOnArmX64Python" in block
@@ -691,9 +691,9 @@ def test_the_platform_tag_is_read_before_the_rollback_move():
     recheck = source.find("Test-StudioVenvArchMismatch -VenvPython")
     assert record != -1, "install.ps1 no longer records the existing interpreter's tag"
     assert record < move, "the tag is read after the move that takes the interpreter away"
-    assert "-RecordedTag $script:PrevVenvPlatformTag" in source[recheck : recheck + 400], (
-        "the re-check does not use the recorded tag, so it cannot see a moved environment"
-    )
+    assert (
+        "-RecordedTag $script:PrevVenvPlatformTag" in source[recheck : recheck + 400]
+    ), "the re-check does not use the recorded tag, so it cannot see a moved environment"
 
 
 def _arch_mismatch_preamble(
@@ -766,9 +766,9 @@ def test_the_architecture_rebuild_does_not_move_the_venv_twice():
     guard = tail.index("if ($script:StudioVenvRollbackActive)")
     move = tail.index("Start-StudioVenvRollback -ExistingDir $VenvDir")
     assert guard < move, "the rebuild still moves the environment unconditionally"
-    assert "$script:StudioVenvRollbackPreserve = $true" in tail[guard:move], (
-        "an already-active rollback is not marked for preservation"
-    )
+    assert (
+        "$script:StudioVenvRollbackPreserve = $true" in tail[guard:move]
+    ), "an already-active rollback is not marked for preservation"
 
 
 def test_the_opt_out_keeps_the_environment_it_says_it_keeps():
@@ -782,9 +782,9 @@ def test_the_opt_out_keeps_the_environment_it_says_it_keeps():
     create = source.index('step "venv" "creating Python')
     assert optout < create, "the opt-out preservation runs after the rebuild has started"
     assert "$script:StudioVenvRollbackPreserve = $true" in source[optout : optout + 600]
-    assert "unsloth_studio.arm64.*" in source[optout : optout + 600], (
-        "the user is not told where the kept environment is"
-    )
+    assert (
+        "unsloth_studio.arm64.*" in source[optout : optout + 600]
+    ), "the user is not told where the kept environment is"
 
 
 def test_the_opt_out_reaches_the_interpreter_selection():
@@ -797,9 +797,9 @@ def test_the_opt_out_reaches_the_interpreter_selection():
     what it picks.
     """
     body = _function("Find-CompatiblePython")
-    assert "Test-Arm64PythonOptOut" in body, (
-        "the interpreter selection does not consult the ARM64 opt-out"
-    )
+    assert (
+        "Test-Arm64PythonOptOut" in body
+    ), "the interpreter selection does not consult the ARM64 opt-out"
     prefer = body[body.index("$preferArm64 =") : body.index("$preferX64 =")]
     # Never for Install-X64Python's own lookup, which exists to find x64 specifically.
     assert "-not $X64Only" in prefer, prefer

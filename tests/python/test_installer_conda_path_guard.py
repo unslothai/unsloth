@@ -629,12 +629,15 @@ def test_the_rc_repointer_rewrites_only_the_line_it_wrote(path: Path, tmp_path: 
     script = (
         _shell_function(path, "_unsloth_repoint_rc_line")
         + f'_unsloth_repoint_rc_line "{rc}"'
-        + ' \'export PATH="$HOME/.local/bin:$PATH"\''
-        + ' \'export PATH="$PATH:$HOME/.local/bin"\'\n'
+        + " 'export PATH=\"$HOME/.local/bin:$PATH\"'"
+        + " 'export PATH=\"$PATH:$HOME/.local/bin\"'\n"
         + 'echo "status=$?"\n'
     )
     out = subprocess.run(
-        ["sh", "-c", script], capture_output = True, text = True, timeout = 60,
+        ["sh", "-c", script],
+        capture_output = True,
+        text = True,
+        timeout = 60,
     )
     assert "status=0" in out.stdout, (out.stdout, out.stderr)
     assert rc.read_text(encoding = "utf-8") == (
@@ -660,8 +663,8 @@ def test_the_rc_repointer_keeps_a_symlinked_rc_a_symlink(tmp_path: Path):
     script = (
         _shell_function(INSTALL_SH, "_unsloth_repoint_rc_line")
         + f'_unsloth_repoint_rc_line "{link}"'
-        + ' \'export PATH="$HOME/.local/bin:$PATH"\''
-        + ' \'export PATH="$PATH:$HOME/.local/bin"\'\n'
+        + " 'export PATH=\"$HOME/.local/bin:$PATH\"'"
+        + " 'export PATH=\"$PATH:$HOME/.local/bin\"'\n"
     )
     subprocess.run(["sh", "-c", script], capture_output = True, text = True, timeout = 60)
     assert link.is_symlink(), "the rc file was replaced instead of rewritten"
@@ -681,9 +684,9 @@ def test_every_posix_writer_repositions_a_stale_prepend(path: Path, arms: tuple[
     reached again by the next `irm | iex`."""
     for name in arms:
         body = _shell_function(path, name)
-        assert "_unsloth_repoint_rc_line" in body, (
-            f"{path.name}:{name} accepts a stale prepend as present instead of moving it"
-        )
+        assert (
+            "_unsloth_repoint_rc_line" in body
+        ), f"{path.name}:{name} accepts a stale prepend as present instead of moving it"
 
 
 def test_the_repoint_pass_runs_before_the_presence_guards():
@@ -705,9 +708,9 @@ def test_the_repoint_pass_runs_before_the_presence_guards():
 
     setup = SETUP_SH_POSIX.read_text(encoding = "utf-8")
     early_return = setup.index('_setup_path_has_dir "${_SETUP_LOGIN_PATH:-$PATH}" "$_supp_dir"')
-    assert "_unsloth_conda_env_active || return 0" in setup[early_return : early_return + 300], (
-        "studio/setup.sh still returns before it can reposition anything"
-    )
+    assert (
+        "_unsloth_conda_env_active || return 0" in setup[early_return : early_return + 300]
+    ), "studio/setup.sh still returns before it can reposition anything"
 
 
 @pytest.mark.parametrize(
@@ -730,7 +733,8 @@ def test_the_repoint_only_mode_adds_nothing(tmp_path: Path, mode: str, expected:
         _shell_function(INSTALL_SH, "_unsloth_repoint_rc_line")
         + _shell_function(INSTALL_SH, "_unsloth_conda_env_active")
         + _shell_function(INSTALL_SH, "_persist_fish_path_dir")
-        + re.search(r"^_PATH_LINE_RE=.*$", source, flags = re.M).group(0) + "\n"
+        + re.search(r"^_PATH_LINE_RE=.*$", source, flags = re.M).group(0)
+        + "\n"
         + _shell_function(INSTALL_SH, "_persist_login_path_dir")
     )
     script = f"""
