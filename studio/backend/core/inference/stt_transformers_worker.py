@@ -40,7 +40,6 @@ _BACKEND_PATH = str(Path(__file__).resolve().parent.parent.parent)
 # both bounds only break a hang: a cold-disk large-v3 load and a 30 minute transcription are legitimately slow
 _LOAD_TIMEOUT_SECONDS = 600.0
 _TRANSCRIBE_TIMEOUT_SECONDS = 600.0
-# generation stops within a token, but a load inside from_pretrained never sees the cancel
 # How long a cancelled command gets before the child is killed. Generation stops within a token, but a load inside
 # from_pretrained never sees the cancel, and training is waiting for that memory.
 _CANCEL_GRACE_SECONDS = 10.0
@@ -68,9 +67,6 @@ class SttWorkerSpawnError(SttWorkerError):
     Distinct because it says nothing about the model or the device, so the
     caller answers it by loading in process rather than by giving up.
     """
-
-
-# ---------------------------------------------------------------------------
 
 
 def _ensure_backend_on_path() -> None:
@@ -286,9 +282,6 @@ def run_stt_worker(
                 return
 
 
-# ---------------------------------------------------------------------------
-
-
 def _raise_worker_error(response: dict) -> None:
     from core.inference import stt_sidecar
 
@@ -316,7 +309,6 @@ class WhisperWorker:
         # that failed at something
         self._ready_event = None
         self._answered = False
-        # a child that answered neither terminate nor kill answers no later command either
         # Set once close() found a child that outlived terminate and kill. The handle is kept so its memory stays
         # accounted, but a child that answered neither signal answers no later command either, and its terminate left
         # the queues liable to corruption, so it must never be handed to a later dictation.
@@ -430,7 +422,6 @@ class WhisperWorker:
         generate_kwargs: dict,
         cancel_event: Optional[threading.Event] = None,
     ) -> str:
-        """Transcribe one decoded window and return its text."""
         if self._cancel_event is not None:
             self._cancel_event.clear()
         self._send(

@@ -39,7 +39,7 @@ from utils.paths import (
     resolve_output_dir,
 )
 from core.inference import get_inference_backend
-from utils.paths.path_utils import drop_appledouble_metadata
+from utils.paths.path_utils import any_not_appledouble_metadata, drop_appledouble_metadata
 
 # GPU/PyTorch-only imports, skipped on MLX and --no-torch installs so the module stays importable.
 torch = None
@@ -47,7 +47,6 @@ _TORCH_IMPORT_ERROR: Optional[BaseException] = None
 if not _IS_MLX:
     try:
         from peft import PeftModel, PeftModelForCausalLM
-        from transformers.modeling_utils import PushToHubMixin
         import torch
     except Exception as _torch_exc:
         _TORCH_IMPORT_ERROR = _torch_exc
@@ -437,6 +436,39 @@ This model was converted to GGUF format using [Unsloth](https://github.com/unslo
 """
 
 
+# export_metadata.json is local bookkeeping whose base model can be a local path; the GGUF push
+# keeps it out of the repo too.
+_HUB_UPLOAD_IGNORE = ["export_metadata.json", "._*"]
+
+_STAGING_PREFIX = "unsloth-hub-upload-"
+
+
+def _staging_dir(export_parent):
+    """Stage a copy of an export where it fits: merge_and_overwrite_lora refuses a save its
+    destination cannot hold, and neither the temporary directory nor the export's own filesystem is
+    reliably the roomier, or even writable — only the export directory itself has to be.
+    """
+    roomiest = []
+    for parent in (Path(tempfile.gettempdir()), Path(export_parent)):
+        try:
+            roomiest.append((shutil.disk_usage(parent).free, parent))
+        except OSError:
+            continue
+    roomiest.sort(key = lambda candidate: -candidate[0])
+    for _, parent in roomiest:
+        try:
+            return tempfile.TemporaryDirectory(prefix = _STAGING_PREFIX, dir = parent)
+        except OSError:
+            continue
+    return tempfile.TemporaryDirectory(prefix = _STAGING_PREFIX)
+
+
+def _holds_checkpoint_weights(directory):
+    return Path(directory).is_dir() and any(
+        entry.suffix in (".safetensors", ".bin") for entry in Path(directory).iterdir()
+    )
+
+
 def _ensure_hub_repo_private(hf_api, repo_id):
     """Tighten an existing repo to private: create_repo sets `private` only at creation."""
     try:
@@ -452,14 +484,11 @@ def _ensure_hub_repo_private(hf_api, repo_id):
         raise RuntimeError(
             f"private=True was requested but {repo_id!r} could not be confirmed private "
             "(the token likely lacks `write:repo_settings`, or the repository belongs to "
-            "someone else). Refusing to upload rather than publish the GGUF files to a "
-            "public repository."
+            "someone else). Refusing to upload rather than publish to a public repository."
         ) from exception
 
 
 class ExportBackend:
-    """Handles model export operations"""
-
     def __init__(self):
         self.inference_backend = get_inference_backend()
         self.current_checkpoint = None
@@ -493,14 +522,17 @@ class ExportBackend:
             return False
 
     def scan_checkpoints(
-        self, outputs_dir: str = str(outputs_root())
+        self, outputs_dir: Optional[str] = None
     ) -> List[Tuple[str, List[Tuple[str, str]]]]:
         """
         Scan outputs folder for training runs and their checkpoints.
 
         Returns: [(model_name, [(display_name, checkpoint_path), ...]), ...]
         """
+        if outputs_dir is None:
+            outputs_dir = str(outputs_root())
         from utils.models.checkpoints import scan_checkpoints
+
         return scan_checkpoints(outputs_dir = outputs_dir)
 
     def load_checkpoint(
@@ -511,20 +543,19 @@ class ExportBackend:
         trust_remote_code: bool = False,
         hf_token: HfTokenArg = None,
         _device_map_override: Optional[dict] = None,
+        base_model: Optional[str] = None,
     ) -> Tuple[bool, str]:
-        """
-        Load a checkpoint for export.
+        """Load a checkpoint for export.
 
-        ``hf_token`` authenticates the actual weight load for gated/private
-        checkpoints, matching the token the worker used for the security preflight
-        (otherwise a gated repo passes scanning then 401s at from_pretrained).
+        ``base_model`` is the caller's authorized adapter base; it wins over adapter_config.json.
 
-        ``False`` (denied the ambient token) must travel all the way down: ``None`` reads as
-        "go and find a credential" (``if token is None: get_token()`` in ``save.py`` and
-        ``hf_login``), and ``get_token()`` reads the operator's stored login off disk.
+        ``hf_token`` authenticates the actual weight load for gated/private checkpoints, matching
+        the token the worker used for the security preflight (otherwise a gated repo passes scanning
+        then 401s at from_pretrained).
 
-        Returns:
-            Tuple of (success: bool, message: str)
+        ``False`` (denied the ambient token) must travel all the way down: ``None`` reads as "go and
+        find a credential" (``if token is None: get_token()`` in ``save.py`` and ``hf_login``), and
+        ``get_token()`` reads the operator's stored login off disk.
         """
         token = normalize_token(hf_token)
         # Loaders only: the probes' cache guards refuse an anonymous read, which offline
@@ -538,11 +569,12 @@ class ExportBackend:
             checkpoint_path_obj = Path(checkpoint_path)
 
             adapter_config = checkpoint_path_obj / "adapter_config.json"
-            base_model = None
             if adapter_config.exists():
-                base_model = get_base_model_from_lora(checkpoint_path)
+                base_model = base_model or get_base_model_from_lora(checkpoint_path)
                 if not base_model:
                     return False, "Could not determine base model for adapter"
+            else:
+                base_model = None
 
             model_id = base_model or checkpoint_path
 
@@ -765,22 +797,12 @@ class ExportBackend:
         private: bool = False,
         compressed_method: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
-        """
-        Export merged model (for PEFT models).
+        """Export a merged model (a no-op merge for non-PEFT base models).
 
-        Args:
-            save_directory: Local directory to save model
-            format_type: "16-bit (FP16)", "4-bit (FP4)", or a compressed-tensors label
-            compressed_method: Optional compressed-tensors scheme alias (e.g. "fp8",
-                "fp8_static", "w8a8", "w4a16", "mxfp4", "mxfp8", "nvfp4"). Overrides
-                format_type and is resolved against unsloth.save COMPRESSED_EXPORT_SCHEMES.
-            push_to_hub: Whether to push to Hugging Face Hub
-            repo_id: Hub repository ID (username/model-name)
-            hf_token: Hugging Face token
-            private: Whether to make the repo private
-
-        Returns:
-            Tuple of (success: bool, message: str, output_path: Optional[str])
+        ``format_type`` is "16-bit (FP16)", "4-bit (FP4)", or a compressed-tensors label.
+        ``compressed_method`` is an optional compressed-tensors scheme alias (fp8, fp8_static, w8a8,
+        w4a16, mxfp4, mxfp8, nvfp4); it overrides ``format_type`` and is resolved against
+        unsloth.save COMPRESSED_EXPORT_SCHEMES.
         """
         if not _export_runtime_available():
             return False, _export_runtime_message(), None
@@ -790,6 +812,7 @@ class ExportBackend:
         # save_pretrained_merged is a no-op merge for non-PEFT base models, so one path covers both.
 
         output_path: Optional[str] = None
+        save_dir_was_empty = False
         # Two backends: compressed-tensors (llm-compressor, NVIDIA-only) and portable torchao FP8/INT8.
         # The alias comes from compressed_method (the "all formats" dropdown) or the format_type label.
         _LABEL_TO_ALIAS = {
@@ -890,6 +913,12 @@ class ExportBackend:
             if save_directory:
                 save_directory = str(resolve_export_write_dir(save_directory))
                 logger.info(f"Saving merged model locally to: {save_directory}")
+                # Leftovers in a reused folder would be uploaded too, so only a fresh one is
+                # pushed as is. Finder metadata does not count; the upload drops it anyway.
+                save_dir_was_empty = not (
+                    Path(save_directory).is_dir()
+                    and any_not_appledouble_metadata(Path(save_directory).iterdir())
+                )
                 ensure_dir(Path(save_directory))
 
                 # No push, but the merge resolves the base repo and save.py turns None into
@@ -958,40 +987,73 @@ class ExportBackend:
                                 token = hf_token,
                                 private = private,
                             )
-                elif (is_compressed or is_torchao) and output_path and Path(output_path).is_dir():
-                    # Upload the artifact already built in output_path; push_to_hub_merged(save_method=...) would
-                    # redo the expensive quantization.
-                    hf_api = HfApi(token = hf_token)
-                    repo_id = PushToHubMixin._create_repo(
-                        PushToHubMixin,
-                        repo_id = repo_id,
-                        private = private,
-                        token = hf_token,
-                    )
-                    content = MODEL_CARD.format(
-                        username = repo_id.split("/")[0],
-                        base_model = getattr(self.current_model.config, "_name_or_path", "unknown"),
-                        model_type = getattr(self.current_model.config, "model_type", "llm"),
-                        method = compressed_alias or format_type,
-                        extra = "unsloth",
-                    )
-                    ModelCard(content).push_to_hub(
-                        repo_id, token = hf_token, commit_message = "Unsloth Model Card"
-                    )
-                    hf_api.upload_folder(
-                        folder_path = output_path,
-                        repo_id = repo_id,
-                        repo_type = "model",
-                    )
                 else:
-                    hub_save_method = save_method if save_method is not None else "merged_16bit"
-                    self.current_model.push_to_hub_merged(
-                        repo_id,
-                        self.current_tokenizer,
-                        save_method = hub_save_method,
-                        token = hf_token,
-                        private = private,
-                    )
+                    uploaded = False
+                    if output_path and Path(output_path).is_dir():
+                        # Upload the artifact already built in output_path; push_to_hub_merged(save_method=...) would
+                        # redo the expensive merge and quantization.
+                        with contextlib.ExitStack() as stack:
+                            upload_dir = output_path
+                            if not (is_compressed or is_torchao or save_dir_was_empty):
+                                # A reused folder can hold leftovers, so upload a clean second save
+                                # instead.
+                                upload_dir = stack.enter_context(
+                                    _staging_dir(Path(output_path).parent)
+                                )
+                                self.current_model.save_pretrained_merged(
+                                    upload_dir,
+                                    self.current_tokenizer,
+                                    save_method = save_method,
+                                    **merged_token_kw,
+                                )
+                            # Whatever was built, only weights are worth a repo; without them the
+                            # merging push below runs instead, as it did before this was uploaded.
+                            if _holds_checkpoint_weights(upload_dir):
+                                hf_api = HfApi(token = hf_token)
+                                repo_url = hf_api.create_repo(
+                                    repo_id, private = private, exist_ok = True
+                                )
+                                repo_id = getattr(repo_url, "repo_id", repo_id)
+                                if private:
+                                    _ensure_hub_repo_private(hf_api, repo_id)
+                                hf_api.upload_folder(
+                                    folder_path = upload_dir,
+                                    repo_id = repo_id,
+                                    repo_type = "model",
+                                    ignore_patterns = _HUB_UPLOAD_IGNORE,
+                                )
+                                uploaded = True
+                    if uploaded:
+                        # Last and best-effort like the GGUF card; an existing card is kept, as
+                        # push_to_hub_merged does.
+                        try:
+                            if not hf_api.file_exists(repo_id, "README.md", repo_type = "model"):
+                                base_model = getattr(
+                                    self.current_model.config, "_name_or_path", "unknown"
+                                )
+                                content = MODEL_CARD.format(
+                                    username = repo_id.split("/")[0],
+                                    base_model = repo_id if os.path.isdir(base_model) else base_model,
+                                    model_type = getattr(
+                                        self.current_model.config, "model_type", "llm"
+                                    ),
+                                    method = compressed_alias or format_type,
+                                    extra = "unsloth",
+                                )
+                                ModelCard(content).push_to_hub(
+                                    repo_id, token = hf_token, commit_message = "Unsloth Model Card"
+                                )
+                        except Exception as exception:
+                            logger.warning(f"Could not publish the model card: {exception}")
+                    else:
+                        hub_save_method = save_method if save_method is not None else "merged_16bit"
+                        self.current_model.push_to_hub_merged(
+                            repo_id,
+                            self.current_tokenizer,
+                            save_method = hub_save_method,
+                            token = hf_token,
+                            private = private,
+                        )
                 logger.info(f"Model pushed successfully to {repo_id}")
 
             return True, "Model exported successfully", output_path
@@ -1012,12 +1074,6 @@ class ExportBackend:
         private: bool = False,
         base_model_id: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
-        """
-        Export base model (for non-PEFT models).
-
-        Returns:
-            Tuple of (success: bool, message: str, output_path: Optional[str])
-        """
         if not _export_runtime_available():
             return False, _export_runtime_message(), None
         if not self.current_model or not self.current_tokenizer:
@@ -1091,12 +1147,10 @@ class ExportBackend:
                     )
 
                     hf_api = HfApi(token = hf_token)
-                    repo_id = PushToHubMixin._create_repo(
-                        PushToHubMixin,
-                        repo_id = repo_id,
-                        private = private,
-                        token = hf_token,
-                    )
+                    repo_url = hf_api.create_repo(repo_id, private = private, exist_ok = True)
+                    repo_id = getattr(repo_url, "repo_id", repo_id)
+                    if private:
+                        _ensure_hub_repo_private(hf_api, repo_id)
                     username = repo_id.split("/")[0]
 
                     content = MODEL_CARD.format(
@@ -1143,23 +1197,12 @@ class ExportBackend:
         private: bool = False,
         gguf_shard_size: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
-        """
-        Export model in GGUF format.
+        """Export the model in GGUF format.
 
-        Args:
-            save_directory: Local directory to save model
-            quantization_method: A single GGUF quant method (e.g., "Q4_K_M") or a list of them
-                (e.g., ["Q4_K_M", "Q8_0"]). A list produces one GGUF per quant from a single
-                model load (unsloth save_to_gguf loops internally).
-            push_to_hub: Whether to push to Hugging Face Hub
-            repo_id: Hub repository ID
-            hf_token: Hugging Face token
-            imatrix_file: Optional importance matrix file path or boolean
-            private: Whether to make the Hub repository private
-            gguf_shard_size: Maximum final full-precision GGUF shard size
-
-        Returns:
-            Tuple of (success: bool, message: str, output_path: Optional[str])
+        ``quantization_method`` is a single GGUF quant method ("Q4_K_M") or a list of them; a list
+        produces one GGUF per quant from a single model load, since unsloth save_to_gguf loops
+        internally. ``imatrix_file`` is an importance matrix path or boolean, and
+        ``gguf_shard_size`` caps the final full-precision GGUF shard size.
         """
         if not _export_runtime_available():
             return False, _export_runtime_message(), None
@@ -1482,16 +1525,11 @@ class ExportBackend:
         gguf: bool = False,
         gguf_outtype: str = "q8_0",
     ) -> Tuple[bool, str, Optional[str]]:
-        """
-        Export LoRA adapter only (not merged).
+        """Export the LoRA adapter only, not merged.
 
-        Args:
-            gguf: If True, also convert the adapter to a GGUF LoRA file (llama.cpp
-                convert_lora_to_gguf.py), loadable with `llama-cli --lora ...`.
-            gguf_outtype: GGUF LoRA output float type; one of q8_0/f16/bf16/f32.
-
-        Returns:
-            Tuple of (success: bool, message: str, output_path: Optional[str])
+        ``gguf`` also converts the adapter to a GGUF LoRA file (llama.cpp convert_lora_to_gguf.py),
+        loadable with `llama-cli --lora ...`; ``gguf_outtype`` is its output float type, one of
+        q8_0/f16/bf16/f32.
         """
         if not _export_runtime_available():
             return False, _export_runtime_message(), None
@@ -1635,7 +1673,6 @@ _export_backend = None
 
 
 def get_export_backend() -> ExportBackend:
-    """Get or create the global export backend instance"""
     global _export_backend
     if _export_backend is None:
         _export_backend = ExportBackend()

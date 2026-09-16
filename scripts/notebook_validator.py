@@ -53,9 +53,7 @@ from typing import Any, Iterable, Iterator
 
 
 def _atomic_write_bytes(path: pathlib.Path, data: bytes) -> None:
-    """Atomic write (see scripts/scan_packages.py::update_req_file). A crash
-    between mkstemp and os.replace leaves the prior file intact, so a
-    half-downloaded cache file can't poison later runs."""
+    """Atomic write (see scripts/scan_packages.py::update_req_file). A crash between mkstemp and os.replace leaves the prior file intact, so a half-downloaded cache file cannot poison later runs."""
     path.parent.mkdir(parents = True, exist_ok = True)
     dirpath = str(path.parent) or "."
     fd, tmp_path = tempfile.mkstemp(prefix = ".nb_val.", dir = dirpath)
@@ -82,8 +80,7 @@ COLAB_PIP_FREEZE_URL = (
 )
 COLAB_FALLBACK_FILE = DATA_DIR / "colab_pip_freeze.gpu.txt"
 
-# Oracle files snapshotted from googlecolab/backend-info; colab-diff reports NEW/REMOVED/
-# CHANGED, so a base image rotation reaches CI within ~24h.
+# Oracle files snapshotted from googlecolab/backend-info; colab-diff reports NEW/REMOVED/CHANGED, so a base image rotation reaches CI within ~24h.
 # The image's Python, from the os-info oracle. Markers only, so an unreadable snapshot just
 # replays every requirement.
 _COLAB_OS_INFO_FILE = DATA_DIR / "colab_os_info.gpu.txt"
@@ -119,10 +116,7 @@ def _colab_python_version() -> str | None:
 
 
 def _marker_environment(colab: dict[str, str]) -> dict[str, str] | None:
-    """The environment PEP 508 markers are evaluated against, or None to skip them.
-
-    Only the Colab image, the one environment this can name; anything else replays every
-    requirement."""
+    """The environment PEP 508 markers are evaluated against, or None to skip them: only the Colab image, the one environment this can name, since anything else replays every requirement."""
     if not colab:
         return None
     full = _colab_python_version()
@@ -165,10 +159,7 @@ _MARKER_VARIABLES = frozenset(
 
 
 def _requirement_applies(raw: str, environment: dict[str, str] | None) -> bool:
-    """False only when the requirement carries a marker that is false for `environment`.
-
-    pip skips such a requirement, so replaying its bounds moves a version the cell never touches.
-    Anything unjudgeable (unparseable marker, no `packaging`, no environment) is replayed."""
+    """False only when the requirement carries a marker that is false for `environment`. pip skips such a requirement, so replaying its bounds moves a version the cell never touches; anything unjudgeable (unparseable marker, no `packaging`, no environment) is replayed."""
     if environment is None or ";" not in raw:
         return True
     marker_text = raw.split(";", 1)[1].strip()
@@ -226,10 +217,7 @@ def _split_marker(text: str) -> tuple[list[str], list[str]]:
 
 
 def _marker_truth(text: str, environment: dict[str, str]) -> bool | None:
-    """Three-valued marker evaluation: True, False, or unknown.
-
-    An unanswerable field makes its own TERM unknown, not the whole marker: a decisive
-    `python_version < '3.0' and implementation_name == 'cpython'` stays false on a 3.13 image."""
+    """Three-valued marker evaluation: True, False, or unknown. An unanswerable field makes its own TERM unknown, not the whole marker: a decisive `python_version < '3.0' and implementation_name == 'cpython'` stays false on a 3.13 image."""
     text = text.strip()
     if not text:
         return None
@@ -268,9 +256,7 @@ COLAB_ORACLE_FILES: dict[str, str] = {
     "apt-list-gpu.txt": "colab_apt_list.gpu.txt",
     "os-info-gpu.txt": "colab_os_info.gpu.txt",
 }
-# The pip oracle fails --strict, since the rules resolve against it. os-info is rule-bearing
-# too (its Python line), so both refresh together and COLAB_STRICT_ORACLE_KEYS makes that one
-# line strict. The rest is advisory: an Ubuntu bump nothing consults must not redden CI.
+# The pip oracle fails --strict, since the rules resolve against it. os-info is rule-bearing too (its Python line), so both refresh together and COLAB_STRICT_ORACLE_KEYS makes that one line strict. The rest is advisory: an Ubuntu bump nothing consults must not redden CI.
 COLAB_STRICT_ORACLE = "pip-freeze.gpu.txt"
 # Keys within a non-strict oracle that are rule-bearing anyway. `python` is the one
 # _parse_os_lines emits for the "Python 3.13.15" line.
@@ -304,8 +290,7 @@ PEFT_TORCHAO_FLOOR: list[dict[str, str]] = [
     {"trigger_peft": "0.19", "torchao_floor": "0.16.0"},
 ]
 
-# git+ allowlist: install lines that legitimately fetch from GitHub. Anything
-# else flags R-INST-001.
+# git+ allowlist: install lines that legitimately fetch from GitHub. Anything else flags R-INST-001.
 GIT_PLUS_ALLOWLIST = (
     "github.com/SparkAudio/Spark-TTS",
     "github.com/state-spaces/mamba",
@@ -337,8 +322,7 @@ class Finding:
 def iter_notebooks(
     notebooks_dir: pathlib.Path, include_templates: bool = False
 ) -> Iterator[pathlib.Path]:
-    """Yield user-facing .ipynb files under nb/ and kaggle/.
-    include_templates=True also walks original_template/ (for convert)."""
+    """Yield user-facing .ipynb files under nb/ and kaggle/. include_templates=True also walks original_template/ (for convert)."""
     subs = ("nb", "kaggle")
     if include_templates:
         subs = ("nb", "kaggle", "original_template")
@@ -385,8 +369,7 @@ _PIP_CELL_RE = re.compile(
 
 
 def install_cells(nb: dict[str, Any]) -> list[tuple[int, str]]:
-    """Heuristic: any code cell that contains a `pip install`, `pip uninstall`
-    or `uv pip install` shell command, or a top-line `%%capture` magic."""
+    """Heuristic: any code cell that contains a `pip install`, `pip uninstall` or `uv pip install` shell command, or a top-line `%%capture` magic."""
     out = []
     for i, src in code_cells(nb):
         first = src.lstrip().splitlines()[:1]
@@ -400,8 +383,7 @@ def install_cells(nb: dict[str, Any]) -> list[tuple[int, str]]:
     return out
 
 
-# Colab oracle only applies to notebooks that run on Colab; AMD, Kaggle,
-# DGX-Spark have their own preinstalls and the Colab-vs-cell rules don't apply.
+# Colab oracle only applies to notebooks that run on Colab; AMD, Kaggle, DGX-Spark have their own preinstalls and the Colab-vs-cell rules don't apply.
 def target_environment(notebook_name: str) -> str:
     parts = pathlib.PurePath(notebook_name).parts
     base = parts[-1] if parts else notebook_name
@@ -646,9 +628,7 @@ def parse_pip_line(line: str, line_no: int = 0) -> PipInvocation | None:
 
 
 def _glue_line_continuations(text: str) -> list[tuple[int, str]]:
-    """Return (logical_line_no, joined_text) for each logical line, treating
-    a trailing backslash as a continuation. Logical line numbers point at the
-    first physical line of each logical line."""
+    """Return (logical_line_no, joined_text) for each logical line, treating a trailing backslash as a continuation. Logical line numbers point at the first physical line of each logical line."""
     out: list[tuple[int, str]] = []
     buf = ""
     start = 0
@@ -2358,9 +2338,7 @@ def pypi_metadata(name: str, version: str) -> dict[str, Any] | None:
 
 
 def transitive_constraint(name: str, version: str, target: str) -> tuple[str | None, list[str]]:
-    """Return (raw_specifier_string_or_None, list_of_(op,version) tuples)
-    for the constraint that `name==version` places on `target`.
-    """
+    """Return (raw_specifier_string_or_None, list_of_(op,version) tuples) for the constraint that `name==version` places on `target`."""
     md = pypi_metadata(name, version)
     if not md:
         return None, []
@@ -2368,8 +2346,7 @@ def transitive_constraint(name: str, version: str, target: str) -> tuple[str | N
     requires = info.get("requires_dist") or []
     target_l = target.lower()
     for req in requires:
-        # Examples: 'tokenizers (<=0.23.0,>=0.22.0)', 'tokenizers <=0.23.0,>=0.22.0',
-        # 'tokenizers (>=0.22.0,<=0.23.0); python_version >= "3.9"'
+        # Examples: 'tokenizers (<=0.23.0,>=0.22.0)', 'tokenizers <=0.23.0,>=0.22.0', 'tokenizers (>=0.22.0,<=0.23.0); python_version >= "3.9"'
         head = req.split(";", 1)[0].strip()
         m = re.match(r"^([A-Za-z0-9._-]+)\s*\(?([^)]*)?\)?\s*$", head)
         if not m:
@@ -2411,13 +2388,7 @@ def constraint_satisfied(version: str, ops: list[tuple[str, str]]) -> bool:
 
 
 def resolved_set(install_cell: str, colab: dict[str, str]) -> dict[str, str]:
-    """Merge install-cell constraints with Colab pip-freeze (cell wins).
-
-    Resolution order per package: (1) exact `==V` pin, (2) upper-bound `<=V`
-    (pip picks the highest allowed = V), (3) Colab fallback. Lower-bound `>=V`
-    is intentionally NOT reflected (it doesn't lower an already-higher Colab
-    version); R-INST-003 models that via `_install_cell_lower_bound`.
-    """
+    """Merge install-cell constraints with Colab pip-freeze (cell wins). Resolution order per package: (1) exact `==V` pin, (2) upper-bound `<=V` (pip picks the highest allowed = V), (3) Colab fallback. Lower-bound `>=V` is intentionally NOT reflected (it does not lower an already-higher Colab version); R-INST-003 models that via `_install_cell_lower_bound`."""
     out = dict(colab)
     pinned: set[str] = set()
     upper_bounds: dict[str, str] = {}
@@ -2638,9 +2609,7 @@ def _install_cell_lower_bound(
     target: str,
     environment: dict[str, str] | None = None,
 ) -> str | None:
-    """Return the highest lower bound any install line places on `target`
-    (treating `==V` as both bounds), or None. Used by R-INST-003 so a
-    `torchao>=0.16.0` line satisfies the floor without a `==` pin."""
+    """Return the highest lower bound any install line places on `target` (treating `==V` as both bounds), or None. Used by R-INST-003 so a `torchao>=0.16.0` line satisfies the floor without a `==` pin."""
     best: str | None = None
     for inv in unconditional_pip_invocations(install_cell):
         if _is_dry_run(inv):
@@ -3144,10 +3113,7 @@ def rule_inst_004_torchcodec_torch(
 def rule_inst_005_transformers_tokenizers(
     install_cell: str, colab: dict[str, str], file: str, cell_idx: int
 ) -> list[Finding]:
-    """Fires only when transformers is installed with `--no-deps` (otherwise
-    pip resolves tokenizers transitively and flagging would be a false
-    positive). Targets the PR #261b/#264 pattern: `--no-deps transformers==X`
-    next to a Colab `tokenizers` outside transformers's window."""
+    """Fires only when transformers is installed with `--no-deps` (otherwise pip resolves tokenizers transitively and flagging would be a false positive). Targets the PR #261b/#264 pattern: `--no-deps transformers==X` next to a Colab `tokenizers` outside transformers's window."""
     findings: list[Finding] = []
     res = resolved_set(install_cell, colab)
     tf = res.get("transformers")
@@ -3159,7 +3125,6 @@ def rule_inst_005_transformers_tokenizers(
     )
     if tok is None and not tokenizers_removed:
         return findings
-    # Find the transformers pin and check for --no-deps.
     environment = _marker_environment(colab)
     transformers_line_no_deps = False
     for inv in unconditional_pip_invocations(install_cell):
@@ -3230,10 +3195,7 @@ def rule_inst_006_double_bang(install_cell: str, file: str, cell_idx: int) -> li
 
 
 class _APIScanner(ast.NodeVisitor):
-    """Scan user-facing code cells for known deprecated patterns. R-API-001
-    (`for_training`/`for_inference`) is intentionally absent: those helpers are
-    still live as of 2026-05 (PR #221 removed them cosmetically, not as a
-    deprecation). R-API-004 catches actual removals dynamically."""
+    """Scan user-facing code cells for known deprecated patterns. R-API-001 (`for_training`/`for_inference`) is intentionally absent: those helpers are still live as of 2026-05 (PR #221 removed them cosmetically, not as a deprecation). R-API-004 catches actual removals dynamically."""
 
     def __init__(self, file: str, cell_idx: int):
         self.file = file
@@ -3241,10 +3203,7 @@ class _APIScanner(ast.NodeVisitor):
         self.findings: list[Finding] = []
 
     def visit_Call(self, node: ast.Call) -> None:
-        # SFTConfig with suboptimal optim (R-API-003).
-        # NOTE: PR #221 also stripped gradient_checkpointing kwargs from some
-        # vision notebooks, but they're still accepted by live TRL (trl==0.25.1)
-        # so that was cosmetic. We don't flag them; R-API-004 catches real drift.
+        # SFTConfig with suboptimal optim (R-API-003). PR #221 also stripped gradient_checkpointing kwargs from some vision notebooks, but they are still accepted by live TRL (trl==0.25.1) so that was cosmetic; R-API-004 catches real drift.
         if isinstance(node.func, ast.Name) and node.func.id == "SFTConfig":
             for kw in node.keywords:
                 if (
@@ -3300,9 +3259,7 @@ POLICY_CLAUSES_DEFAULT = [
 
 
 def extract_policy_clauses(update_script: pathlib.Path) -> list[tuple[str, re.Pattern[str], Any]]:
-    """Best-effort scan of update_all_notebooks.py for canonical phrases;
-    falls back to POLICY_CLAUSES_DEFAULT (which we use directly today). The
-    permissive regexes avoid false positives on template rewords."""
+    """Best-effort scan of update_all_notebooks.py for canonical phrases; falls back to POLICY_CLAUSES_DEFAULT (which we use directly today). The permissive regexes avoid false positives on template rewords."""
     return list(POLICY_CLAUSES_DEFAULT)
 
 
@@ -3501,8 +3458,7 @@ def cmd_lint(args: argparse.Namespace) -> int:
             continue
         rel = str(path.relative_to(nbdir))
         env = target_environment(rel)
-        # Colab oracle applies only to Colab notebooks; other targets get the
-        # environment-agnostic rules only (their preinstalls aren't tracked).
+        # Colab oracle applies only to Colab notebooks; other targets get the environment-agnostic rules only (their preinstalls aren't tracked).
         oracle = colab if env == "colab" else {}
         cells = install_cells(nb)
         # Per-cell forbid-pattern checks.
@@ -3638,13 +3594,10 @@ def _oracle_payload_is_usable(upstream_name: str, data: bytes) -> bool:
 
 
 def cmd_refresh_colab(args: argparse.Namespace) -> int:
-    """Pull the latest Colab pip-freeze.gpu.txt and write to disk. --all
-    refreshes every oracle file into --snapshot-dir instead, which is how a
-    colab-diff drift report is acknowledged in one command."""
+    """Pull the latest Colab pip-freeze.gpu.txt and write to disk. --all refreshes every oracle file into --snapshot-dir instead, which is how a colab-diff drift report is acknowledged in one command."""
     if args.all:
         snapshot_dir = pathlib.Path(args.snapshot_dir).resolve()
-        # Fetch everything before writing anything: writing as we go would let a transient failure
-        # leave a mixed-generation directory, and the tripwire would go quiet on a failed refresh.
+        # Fetch everything before writing anything: writing as we go would let a transient failure leave a mixed-generation directory, and the tripwire would go quiet on a failed refresh.
         payloads: dict[str, bytes] = {}
         skipped: list[str] = []
         for upstream_name, snapshot_name in COLAB_ORACLE_FILES.items():
@@ -3773,8 +3726,7 @@ _COLAB_ORACLE_PARSERS = {
 def _diff_oracle(
     upstream: dict[str, str], snapshot: dict[str, str]
 ) -> tuple[list[tuple[str, str]], list[tuple[str, str]], list[tuple[str, str, str]]]:
-    """Return (new, removed, changed). new/removed are (key, value);
-    changed is (key, old, new)."""
+    """Return (new, removed, changed). new/removed are (key, value); changed is (key, old, new)."""
     new = sorted((k, upstream[k]) for k in upstream.keys() - snapshot.keys())
     removed = sorted((k, snapshot[k]) for k in snapshot.keys() - upstream.keys())
     changed = sorted(
@@ -3806,10 +3758,7 @@ def _strict_key_usable(oracle: str, key: str, parsed: dict[str, str]) -> bool:
 
 
 def cmd_colab_diff(args: argparse.Namespace) -> int:
-    """Diff each Colab oracle file against its committed snapshot and print
-    NEW/REMOVED/CHANGED. Advisory (rc=0) by default; --strict makes drift in
-    the rule-bearing oracle (COLAB_STRICT_ORACLE) rc=1 so the daily cron fails
-    loudly on upstream rotation."""
+    """Diff each Colab oracle file against its committed snapshot and print NEW/REMOVED/CHANGED. Advisory (rc=0) by default; --strict makes drift in the rule-bearing oracle (COLAB_STRICT_ORACLE) rc=1 so the daily cron fails loudly on upstream rotation."""
     snapshot_dir = pathlib.Path(args.snapshot_dir).resolve()
     any_diff = False
     strict_diff = False

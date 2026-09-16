@@ -100,7 +100,6 @@ def stream_codex_with_studio_tools(
             messages = run.messages,
             session_id = run.session_id,
             thread_id = run.thread_id,
-            # keep the Codex model id: the shared loop sums usage into one chunk
             # Before this loop was shared, Codex relayed the provider's own usage chunks and they carried the Codex
             # model id. The shared loop sums them into one synthetic chunk instead, so dropping the model here would
             # relabel that accounting "external" and move behaviour the Codex path is meant to keep.

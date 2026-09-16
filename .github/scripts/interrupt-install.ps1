@@ -1,12 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-#
 # Windows counterpart of interrupt-install.sh: run install.ps1 and kill it partway
 # through, reproducing a user quitting the desktop app mid-install.
-#
 # Windows has no process groups (hence the app's windows_job.rs), so this kills the whole
 # process TREE: killing the leader alone leaves uv/python children to finish the dep pass.
-#
 # Usage:
 #   pwsh -File .github/scripts/interrupt-install.ps1 -Marker 'studio deps' `
 #        -LogPath logs/install.log -InstallArgs '--tauri --no-torch --local'
@@ -143,7 +140,6 @@ for ($i = 0; $i -lt ($KillAtSeconds * 5); $i++) {
       # prints before the work, so the kill is inside the phase the moment the line appears,
       # and any wait is a bet on the phase outlasting it that staging runs 30419729244 and
       # 30426111484 both lost.
-      #
       # The installer can still exit on its own between the match and the signal, which
       # would record marker-hit over an install that interrupted nothing.
       if ($proc.HasExited) { $reason = 'exited-before-signal'; break }

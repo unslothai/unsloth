@@ -315,9 +315,8 @@ def test_the_launch_charges_the_cpu_pinned_drafter_to_the_fit():
     assert compact.index("_cpu_draft_path=_mtp_draft_for_budget") < compact.index(
         "if_draft_on_cpu:_mtp_draft_for_budget=None"
     )
-    # ... and charged to the footprint as a HOST-ONLY term (free VRAM cannot pay for
-    # an allocation the child only ever makes in RAM), abstaining when unpriceable.
-    assert "host_only_bytes=_cpu_draft_fit_bytesor0" in compact
+    # CPU-pinned drafter and checkpoint bytes are host-only.
+    assert "host_only_bytes=(_cpu_draft_fit_bytesor0)+_ckpt_host_bytes," in compact
     assert "or_cpu_draft_fit_bytesisNone" in compact
 
 
@@ -707,6 +706,7 @@ def test_the_cpu_fallback_drops_the_fits_load_mode(monkeypatch):
     from unittest import mock
 
     backend = LlamaCppBackend.__new__(LlamaCppBackend)
+    backend._memory_dio_flags = []
     backend._fit_load_mode_flags = ["--load-mode", "none"]
     replay = [
         "llama-server",
@@ -742,6 +742,7 @@ def test_the_cpu_fallback_keeps_a_load_mode_the_user_asked_for(monkeypatch):
     from unittest import mock
 
     backend = LlamaCppBackend.__new__(LlamaCppBackend)
+    backend._memory_dio_flags = []
     backend._fit_load_mode_flags = []  # user pick: nothing recorded
     replay = ["llama-server", "-m", "model.gguf", "--load-mode", "none"]
     with (
@@ -1479,14 +1480,8 @@ def test_a_cpu_only_kv_cache_is_not_charged_twice(monkeypatch):
 
 
 def test_a_tensor_split_charges_the_replicated_compute_buffer():
-    """Checked at the source: reaching this call needs a real multi-GPU probe.
-
-    _plan_tensor_parallel admits devices against, and reserves per device,
-    _estimate_compute_buffer_bytes(per_device_tensor = True). The fit has to charge
-    the same thing: the layer-mode lump is ONE device's buffer at the smaller rate,
-    and understating it on a pooled multi-GPU credit is the direction that claims a
-    fit that is not there.
-    """
+    """Check that the fit charges the same per-device buffer as _plan_tensor_parallel.
+    This source check avoids requiring a multi-GPU probe."""
     from core.inference.llama_cpp import LlamaCppBackend as B
     import inspect
 
@@ -1507,26 +1502,18 @@ def test_a_tensor_split_charges_the_replicated_compute_buffer():
     ) in compact
 
 
-def test_the_tensor_rate_really_exceeds_the_layer_one():
-    """The under-charge the fix closes is not a rounding difference: at one slot
-    the layer figure drops the vocab-width output buffer entirely."""
-
-    class _Dims:
-        # is_embedding_gguf is a read-only property on the real backend.
-        _vocab_size = 151936
-        _embedding_length = 5120
-        is_embedding_gguf = False
-        _DEFAULT_N_UBATCH = LlamaCppBackend._DEFAULT_N_UBATCH
-        _COMPUTE_BUFFER_SAFETY = LlamaCppBackend._COMPUTE_BUFFER_SAFETY
-
-    layer = LlamaCppBackend._estimate_compute_buffer_bytes(
-        _Dims(), n_ubatch = 512, n_parallel = 1, per_device_tensor = False
-    )
-    tensor = LlamaCppBackend._estimate_compute_buffer_bytes(
-        _Dims(), n_ubatch = 512, n_parallel = 1, per_device_tensor = True
-    )
-    assert tensor > layer
-    # 4-GPU tensor split: what the fit used to charge vs what it now does.
+def test_a_tensor_split_pays_the_buffer_on_every_device():
+    """Each device of a tensor split reserves the whole single-GPU compute buffer
+    (Qwen3 8B across two GPUs: 128 MiB on each at ubatch 512, 512 MiB at 2048), so
+    the fit's per-device multiplication is the whole difference from a layer lump."""
+    b = LlamaCppBackend()
+    b._vocab_size = 151936
+    b._embedding_length = 4096
+    b._feed_forward_length = 12288
+    layer = b._estimate_compute_buffer_bytes(n_ubatch = 2048, n_parallel = 1)
+    tensor = b._estimate_compute_buffer_bytes(n_ubatch = 2048, n_parallel = 1, per_device_tensor = True)
+    assert tensor == layer
+    # 4-GPU tensor split: three more copies than the layer lump.
     assert 4 * tensor - layer > GIB
 
 
@@ -1724,13 +1711,16 @@ def test_context_checkpoint_snapshots_move_the_fit_verdict(monkeypatch):
 
 
 def test_the_fit_prices_the_effective_checkpoint_count():
-    """...and the call site really passes it, while the closure default leaves the
-    placement paths -- which price the snapshots by their own route -- unmoved."""
+    """The load-mode footprint prices checkpoints as host-only bytes."""
     from core.inference.llama_cpp import LlamaCppBackend as B
     import inspect
 
     compact = "".join(inspect.getsource(B.load_model).split())
-    assert "kv_cache_bytes=_kv_bytes(effective_ctx,_effective_ctx_checkpoints)," in compact
+    assert "kv_cache_bytes=_kv_bytes(effective_ctx,0)," in compact
+    assert "_kv_bytes(effective_ctx,_effective_ctx_checkpoints)-_kv_bytes(effective_ctx,0)," in (
+        compact
+    )
+    assert "host_only_bytes=(_cpu_draft_fit_bytesor0)+_ckpt_host_bytes," in compact
     assert "def_kv_bytes(ctx:int,ctx_checkpoints:int=0)->int:" in compact
 
 
@@ -1750,7 +1740,8 @@ def test_an_inherited_loader_mode_wins_over_the_fits_pick():
     ]
     # Asked of the child's environment AFTER the same scrub it gets, so a var a
     # Model Memory toggle drops vetoes nothing.
-    assert "scrub_memory_env(_fit_load_mode_env_view)" in arm
+    # Now handed the launch's snapshot explicitly, the same value it read before.
+    assert "scrub_memory_env(_fit_load_mode_env_view,_mem_settings)" in arm
     # Assert the CONDITIONS, not one rendering: the formatter is free to wrap this,
     # which breaks a single-string pin. Each clause is asserted on its own.
     assert "_fit_load_mode" in arm and "notload_mode" in arm
@@ -2152,9 +2143,9 @@ def test_the_no_flash_rung_recomputes_the_memory_record():
     # Bounded at the next definition, so this proves the recompute is in the
     # helper and not merely somewhere later in load_model.
     helper = helper[: helper.index("_spawn_and_wait")]
-    assert "self._memory_state" in helper
+    assert "self._record_memory_state" in helper
     compact = "".join(helper.split())
-    assert "resolve_effective_memory_state(stripped" in compact
+    assert "self._record_memory_state(stripped" in compact
 
 
 def test_the_cpu_projector_rung_recomputes_the_memory_record():
@@ -2165,9 +2156,9 @@ def test_the_cpu_projector_rung_recomputes_the_memory_record():
     src = inspect.getsource(B.load_model)
     arm = src[: src.index('"-mmproj-cpu"')]
     arm = arm[arm.rindex("_with_mmproj_offload_disabled") :]
-    assert "self._memory_state" in arm
+    assert "self._record_memory_state" in arm
     compact = "".join(arm.split())
-    assert "resolve_effective_memory_state(_stripped_cpu_projector_cmd" in compact
+    assert "self._record_memory_state(_stripped_cpu_projector_cmd" in compact
 
 
 def test_the_arch_crash_rung_records_from_the_argv_not_the_parts():
@@ -2194,7 +2185,7 @@ def test_the_arch_crash_rung_records_from_the_argv_not_the_parts():
     # Reachability: single call expression, whitespace stripped, so a reformat
     # that wraps the call cannot break it.
     compact = "".join(inspect.getsource(B.load_model).split())
-    assert "resolve_effective_memory_state(cmd,env)" in compact
+    assert "self._record_memory_state(cmd,env)" in compact
 
 
 # ------------------ round 12: the CPU fallback is a rung that strips the loader
@@ -2218,6 +2209,7 @@ def test_the_cpu_replay_and_the_launch_record_disagree(monkeypatch):
     )
 
     backend = LlamaCppBackend.__new__(LlamaCppBackend)
+    backend._memory_dio_flags = []
     backend._fit_load_mode_flags = ["--load-mode", FIT_MODE]
     launched = ["llama-server", "-m", "model.gguf", "--load-mode", FIT_MODE]
     with (
@@ -2263,7 +2255,7 @@ def test_the_crash_path_cpu_fallback_recomputes_the_memory_record():
     # Bounded at the normalisation that closes the recovery, so this proves the
     # recompute is in the arm and not merely somewhere later in load_model.
     arm = arm[: arm.index("_apply_cpu_fallback_state")]
-    assert "resolve_effective_memory_state(_last_spawn_cmd,env)" in arm
+    assert "self._record_memory_state(_last_spawn_cmd,env)" in arm
 
 
 def test_the_replayed_cpu_fallback_recomputes_the_memory_record():
@@ -2277,4 +2269,4 @@ def test_the_replayed_cpu_fallback_recomputes_the_memory_record():
     # crash path's, which reads the same helper without it.
     arm = src[src.index("allow_manual_cpu=True") :]
     arm = arm[: arm.index("_apply_cpu_fallback_state")]
-    assert "resolve_effective_memory_state(cmd,env)" in arm
+    assert "self._record_memory_state(cmd,env)" in arm

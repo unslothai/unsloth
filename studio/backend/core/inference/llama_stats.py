@@ -208,11 +208,10 @@ class LlamaServerStatsLogger:
                 self._log.info("engine_stats", **fields)
 
 
-# bounded by threading.TIMEOUT_MAX as well
-# A week already means "never" for a poll interval or a stall timeout. Bounded by threading.TIMEOUT_MAX as well, because
-# the ceiling is platform specific and much lower than it looks: Linux accepts ~9.2e9 seconds, Windows about 49.7 days,
-# since the timeout becomes a DWORD of milliseconds there. Picking a constant by hand got this wrong once already, so
-# let the platform state its own limit.
+# A week already means "never" for a poll interval or a stall timeout. Bounded by threading.TIMEOUT_MAX as well,
+# because the ceiling is platform specific and much lower than it looks: Linux accepts ~9.2e9 seconds, Windows about
+# 49.7 days, since the timeout becomes a DWORD of milliseconds there. Picking a constant by hand got this wrong once
+# already, so let the platform state its own limit.
 _MAX_ENV_SECONDS = min(7.0 * 24.0 * 60.0 * 60.0, threading.TIMEOUT_MAX)
 
 
@@ -239,10 +238,9 @@ def _env_float(name, default, logger):
         )
         return default
     if value > _MAX_ENV_SECONDS:
-        # Event.wait() builds an absolute deadline
         # Event.wait() builds an absolute deadline, and one far enough out raises "timestamp out of range for platform
-        # time_t" once the wait is entered, killing the poll thread. Measured: a century still waits, 1e10 seconds does
-        # not.
+        # time_t" once the wait is entered, killing the poll thread. Measured: a century still waits, 1e10 seconds
+        # does not.
         logger.warning(
             "engine_stats_env_clamped",
             variable = name,

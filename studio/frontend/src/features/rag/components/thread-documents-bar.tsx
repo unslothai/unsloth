@@ -374,9 +374,8 @@ export function ThreadDocumentsBar({
     initPromiseRef.current = null;
   }, [threadId]);
 
-  // An abandoned composer leaves its choice under the pending key, where the
-  // next new chat would claim it. Adoption removes the key, so this drops only
-  // what nobody claimed.
+  // An abandoned composer leaves its choice under the pending key, where the next new chat would
+  // claim it. Adoption removes the key, so this drops only what nobody claimed.
   useEffect(
     () => () =>
       useChatRuntimeStore.getState().clearPendingProjectAttachmentTarget(),
@@ -444,14 +443,13 @@ export function ThreadDocumentsBar({
     projectLister,
   );
 
-  // Tell the composer whether any doc is still indexing, so it can hold a queued
-  // send until retrieval covers them (Composer.enqueueSend). For KB / RAG-off scope
-  // is null, so both lists are empty and this reads false.
-  // From the hooks, not the rows: work started in the Sources panel is in flight
-  // before either instance has a row for it, and a job already running on a
-  // reopened project arrives with the first list, so hold until that lands.
-  // Both scopes hold on their first list, for the same reason: reopening a chat
-  // whose own attachment was still indexing lists nothing until it lands either.
+  // Tell the composer whether any doc is still indexing, so it can hold a queued send until
+  // retrieval covers them (Composer.enqueueSend). For KB / RAG-off scope is null, so both lists are
+  // empty and this reads false. From the hooks, not the rows: work started in the Sources panel is
+  // in flight before either instance has a row for it, and a job already running on a reopened
+  // project arrives with the first list, so hold until that lands. Both scopes hold on their first
+  // list, for the same reason: reopening a chat whose own attachment was still indexing lists
+  // nothing until it lands either.
   const hasIndexing =
     threadIndexing || threadListLoading || projectIndexing || projectListLoading;
   useEffect(() => {
@@ -607,10 +605,9 @@ export function ThreadDocumentsBar({
   if (ragEnabled && ragSource.type === "kb") {
     return <KnowledgeBaseSourceChip kbId={ragSource.kbId} />;
   }
-  // Project sources retrieve whether the Docs pill is on or not (chat-adapter's
-  // projectRagEnabled), so list them either way rather than letting the model
-  // answer from files the user cannot see. The attach controls stay behind the
-  // pill: with it off, thread scope is inert.
+  // Project sources retrieve whether the Docs pill is on or not (chat-adapter's projectRagEnabled),
+  // so list them either way rather than letting the model answer from files the user cannot see.
+  // The attach controls stay behind the pill: with it off, thread scope is inert.
   if (!ragEnabled) {
     return projectDocuments.length > 0 ? (
       <InheritedProjectSources documents={projectDocuments} />

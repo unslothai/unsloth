@@ -42,6 +42,8 @@ import {
   usePinnedProjectsStore,
   type ProjectRecord,
 } from "@/features/chat";
+import { GuidedTour, useGuidedTourController } from "@/features/tour";
+import { buildProjectsTourSteps } from "./tour";
 import { NewProjectDialog } from "./components/new-project-dialog";
 import {
   Delete02Icon,
@@ -260,6 +262,13 @@ export function ProjectsPage() {
     : sortedProjects.slice(0, visibleCount);
   const hasMore = !isSearching && sortedProjects.length > visibleCount;
 
+  // The list only renders once at least one project exists, so its step is dropped until then.
+  const tourSteps = useMemo(
+    () => buildProjectsTourSteps({ hasProjects: visibleProjects.length > 0 }),
+    [visibleProjects.length],
+  );
+  const tour = useGuidedTourController({ id: "projects", steps: tourSteps });
+
   useEffect(() => {
     if (!hasLoaded || reloadReadySent.current) {
       return;
@@ -389,6 +398,7 @@ export function ProjectsPage() {
 
   return (
     <main className="mx-auto w-full max-w-5xl px-6 pb-10 pt-16 font-heading sm:px-10">
+      <GuidedTour {...tour.tourProps} />
       {/* Global import file input */}
       <input
         ref={globalImportRef}
@@ -441,6 +451,7 @@ export function ProjectsPage() {
               <Button
                 variant="outline"
                 size="icon"
+                data-tour="projects-io"
                 title="Import / Export projects"
                 className="rounded-full border-none bg-muted shadow-none dark:bg-card"
               >
@@ -507,7 +518,9 @@ export function ProjectsPage() {
               </DropdownMenuSub>
             </DropdownMenuContent>
           </DropdownMenu>
-          <Button onClick={() => setCreating(true)}>New project</Button>
+          <Button data-tour="projects-new" onClick={() => setCreating(true)}>
+            New project
+          </Button>
         </div>
       </div>
 
@@ -559,7 +572,7 @@ export function ProjectsPage() {
             <span className="w-40 shrink-0">Modified</span>
             <span className="w-8 shrink-0" />
           </div>
-          <div ref={listRef}>
+          <div ref={listRef} data-tour="projects-list">
           {visibleProjects.map((project) => {
             const pinned = pinnedProjectIdSet.has(project.id);
             return (
