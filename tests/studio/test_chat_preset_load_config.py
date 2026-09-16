@@ -280,6 +280,37 @@ def _without_comments(source: str) -> str:
     return "".join(out)
 
 
+_FUNCTION_BODY_OPENS = re.compile(r"=>\s*\{|\bfunction\b[^(){};]*\([^()]*\)\s*\{")
+
+
+def _nested_function_spans(block: str) -> list:
+    """Where functions declared inside this block begin and end.
+
+    Only these are another scope. An `if` or a `for` body is the selector's own, so excluding
+    by brace depth alone would drop `if (s.enabled) { return s.other; }` and read a selector
+    that can return something else entirely as though it always returned the field.
+    """
+    spans, index = [], 0
+    while True:
+        match = _FUNCTION_BODY_OPENS.search(block, index)
+        if match is None:
+            return spans
+        opener = block.index("{", match.start())
+        depth = 0
+        for offset in range(opener, len(block)):
+            if block[offset] == "{":
+                depth += 1
+            elif block[offset] == "}":
+                depth -= 1
+                if depth == 0:
+                    spans.append((match.start(), offset))
+                    index = offset
+                    break
+        else:
+            spans.append((match.start(), len(block)))
+            return spans
+
+
 def _own_scope_returns(block: str) -> list:
     """The `return` expressions belonging to this block, not to a function nested in it.
 
@@ -287,23 +318,18 @@ def _own_scope_returns(block: str) -> list:
     compares, so counting it would reject `{ function n(v) { return v ?? -1; } return
     n(s.field); }` for reading the field through a helper.
     """
-    out, depth, index = [], 0, 0
-    while index < len(block):
-        char = block[index]
-        if char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-        elif depth == 0 and re.match(r"\breturn\b", block[index:]):
-            end = len(block)
-            for offset in range(index, len(block)):
-                if block[offset] == ";" or (block[offset] == "}" and depth == 0):
-                    end = offset
-                    break
-            out.append(block[index + len("return") : end])
-            index = end
+    nested = _nested_function_spans(block)
+    out = []
+    for match in re.finditer(r"\breturn\b", block):
+        start = match.start()
+        if any(begin <= start < end for begin, end in nested):
             continue
-        index += 1
+        end = len(block)
+        for offset in range(match.end(), len(block)):
+            if block[offset] in ";}":
+                end = offset
+                break
+        out.append(block[match.end() : end])
     return out
 
 
@@ -365,7 +391,9 @@ def _selector_reads(selector: str, field: str) -> bool:
         block = _balanced(body, 0, "{", "}")
         # Inline plain bindings, so naming the value before returning it stays a refactor:
         # `const v = s.budget; return v ? ... : ...` reads the field through `v`.
-        for name, expression in re.findall(r"\b(?:const|let)\s+(\w+)\s*=\s*([^;]+);", block):
+        # Brace-free right-hand sides only. A binding whose value is itself a function has a `;`
+        # inside its body, so a looser capture would cut it mid-body and substitute the pieces.
+        for name, expression in re.findall(r"\b(?:const|let)\s+(\w+)\s*=\s*([^;{}]+);", block):
             block = re.sub(rf"\b{re.escape(name)}\b", f"({expression})", block)
         results = [
             result
@@ -441,6 +469,11 @@ SELECTOR_CASES = [
     ("(s) => { const v = s.reasoningBudget; return v ? s.reasoningBudget : -1; }", True),
     ("(s) => { void s.reasoningBudget; return null; }", False),
     ("(s) => { s.reasoningBudget; }", False),
+    # A control block is the selector's own scope; a function declared inside it is not.
+    ("(s) => { if (s.enabled) { return s.other; } return s.reasoningBudget; }", False),
+    ("(s) => { if (s.enabled) { return s.reasoningBudget; } return s.reasoningBudget; }", True),
+    ("(s) => { for (const x of s.list) { return s.other; } return s.reasoningBudget; }", False),
+    ("(s) => { const f = (v) => { return v; }; return f(s.reasoningBudget); }", True),
     ("(s) => s.reasoningBudgetMessage", False),
     ("(s) => s.reasoningBudgets", False),
     ("{ budget: state.reasoningBudget }", False),
