@@ -1406,10 +1406,21 @@ class TestWhichLoadsLeaveTheEmbeddingsInTheMapping:
         from core.inference.offload_layout import ModelLayout
         assert self._bytes(monkeypatch, layout = ModelLayout()) == 0
 
-    def test_no_measurement_abstains_and_says_so(self, monkeypatch, caplog):
-        with caplog.at_level("INFO"):
-            assert self._bytes(monkeypatch, measured = None) == 0
-        assert "could not measure" in caplog.text
+    def test_no_measurement_abstains_and_says_so(self, monkeypatch):
+        """Recorded off the module logger, not caplog.
+
+        The structlog stub at the top of this file is installed with
+        `sys.modules.setdefault`, so in a full run any module that imported the real
+        structlog first wins and the log never reaches a stdlib handler. Under xdist
+        that depends on which worker gets this file, which made the caplog spelling
+        pass alone and fail in CI.
+        """
+        import core.inference.llama_cpp as llama_cpp
+
+        said = []
+        monkeypatch.setattr(llama_cpp.logger, "info", lambda msg, *a, **kw: said.append(str(msg)))
+        assert self._bytes(monkeypatch, measured = None) == 0
+        assert any("could not measure" in line for line in said)
 
 
 # b10909-mix output from an 8 GB M1; the second table adds -ncffn 30.
