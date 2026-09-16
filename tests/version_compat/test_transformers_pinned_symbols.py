@@ -37,9 +37,26 @@ _TAG_OVERRIDES = {"5.10.4": "v5.10.3"}
 # Used when PyPI cannot be reached. A frozen list is the point: a network failure must not
 # quietly shrink the matrix to nothing and report green.
 _TAGS_FALLBACK = (
-    "v4.57.6", "v5.0.0", "v5.1.0", "v5.2.0", "v5.3.0", "v5.4.0", "v5.5.4", "v5.6.2",
-    "v5.7.0", "v5.8.1", "v5.9.0", "v5.10.2", "v5.10.3", "v5.11.0", "v5.12.1", "v5.13.1",
-    "v5.14.1", "v5.15.1", "v5.16.1", "v5.17.0",
+    "v4.57.6",
+    "v5.0.0",
+    "v5.1.0",
+    "v5.2.0",
+    "v5.3.0",
+    "v5.4.0",
+    "v5.5.4",
+    "v5.6.2",
+    "v5.7.0",
+    "v5.8.1",
+    "v5.9.0",
+    "v5.10.2",
+    "v5.10.3",
+    "v5.11.0",
+    "v5.12.1",
+    "v5.13.1",
+    "v5.14.1",
+    "v5.15.1",
+    "v5.16.1",
+    "v5.17.0",
 )
 
 
@@ -56,7 +73,8 @@ def _release_tags() -> list[str]:
     """
     try:
         with urllib.request.urlopen(
-            "https://pypi.org/pypi/transformers/json", timeout = 20,
+            "https://pypi.org/pypi/transformers/json",
+            timeout = 20,
         ) as response:
             releases = json.loads(response.read().decode("utf-8"))["releases"]
     except (urllib.error.URLError, TimeoutError, ValueError, KeyError):
