@@ -386,7 +386,9 @@ def _switch_always_returns(statement: str) -> bool:
     body = _balanced(body, 0, "{", "}")
     if not re.search(r"\bdefault\s*:", _outside_literals(body)):
         return False
-    labels = [m.end() for m in re.finditer(r"\b(?:case\b[^:]*|default\s*):", _outside_literals(body))]
+    labels = [
+        m.end() for m in re.finditer(r"\b(?:case\b[^:]*|default\s*):", _outside_literals(body))
+    ]
     if not labels:
         return False
     for position, start in enumerate(labels):
@@ -843,7 +845,10 @@ SELECTOR_CASES = [
     ('(s) => { switch (s.mode) { case "x": return s.reasoningBudget; } }', False),
     # `break` leaves the switch with no value, which is the fall-through again.
     ('(s) => { switch (s.mode) { case "x": break; default: return s.reasoningBudget; } }', False),
-    ('(s) => { switch (s.mode) { case "x": return s.other; default: return s.reasoningBudget; } }', False),
+    (
+        '(s) => { switch (s.mode) { case "x": return s.other; default: return s.reasoningBudget; } }',
+        False,
+    ),
     # A loop header's own semicolons do not end a statement: an empty list falls through to
     # undefined, so the loop body is not an unconditional return.
     ("(s) => { for (let i = 0; i < s.list.length; i++) return s.reasoningBudget; }", False),
