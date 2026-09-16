@@ -204,11 +204,17 @@ def test_the_jupyter_tunnel_probe_bypasses_a_container_wide_proxy(tmp_path: Path
     e = _clean_env(bin_dir)
     e.update(UNSLOTH_JUPYTER_CLOUDFLARE = "1", UNSLOTH_STUDIO_HOME = str(tmp_path), STUB_LOG = str(log))
     res = subprocess.run(
-        ["bash", str(DOCKER / "unsloth_jupyter_tunnel.sh")], capture_output = True, text = True, env = e, timeout = 60
+        ["bash", str(DOCKER / "unsloth_jupyter_tunnel.sh")],
+        capture_output = True,
+        text = True,
+        env = e,
+        timeout = 60,
     )
     assert res.returncode == 0, res.stderr
     assert "STUB-CLOUDFLARED tunnel" in res.stdout, res.stdout
-    assert log.read_text().splitlines() == ["-fsS -o /dev/null --noproxy * http://localhost:8888/login"]
+    assert log.read_text().splitlines() == [
+        "-fsS -o /dev/null --noproxy * http://localhost:8888/login"
+    ]
 
 
 @behavioural
