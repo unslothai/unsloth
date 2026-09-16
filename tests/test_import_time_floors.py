@@ -373,6 +373,44 @@ def test_a_shim_with_no_hash_format_is_not_named(monkeypatch, tmp_path):
     assert import_fixes._triton_driver_shims_missing_py_ssize_t_clean() == []
 
 
+@pytest.mark.parametrize(
+    "comment",
+    [
+        '/* legacy: PyArg_ParseTuple(args, "ss#ii", &name, &data, &size, &shared); */',
+        '// legacy: PyArg_ParseTuple(args, "ss#ii", &name, &data, &size, &shared);',
+    ],
+    ids = ["block", "line"],
+)
+def test_a_hash_format_only_in_a_comment_is_not_a_finding(monkeypatch, tmp_path, comment):
+    """A repackaged shim can keep the old call around as a comment. The compiler never
+    sees it, so the active parser is the one without a '#' and the first kernel launch
+    does not fail. Naming it would promise a failure that cannot happen and recommend a
+    force reinstall for nothing."""
+    source = comment + "\n" + _UNGUARDED_SHIM.replace('"ss#ii"', '"sslii"')
+    spec, _ = _fake_triton(tmp_path, source)
+    monkeypatch.setattr(sys, "version_info", (3, 12, 3))
+    monkeypatch.setattr(import_fixes.importlib.util, "find_spec", lambda name: spec)
+
+    assert import_fixes._triton_driver_shims_missing_py_ssize_t_clean() == []
+
+
+def test_a_live_hash_format_beside_a_comment_is_still_a_finding(monkeypatch, tmp_path):
+    """NEGATIVE CONTROL: masking comments must not mask the call itself, and a `//`
+    inside a string literal must not blank the rest of the file."""
+    source = (
+        '/* the parser below still uses a length format */\n'
+        'static const char *kDoc = "see //triton/backends for /* details */";\n'
+        + _UNGUARDED_SHIM
+    )
+    spec, driver = _fake_triton(tmp_path, source)
+    monkeypatch.setattr(sys, "version_info", (3, 12, 3))
+    monkeypatch.setattr(import_fixes.importlib.util, "find_spec", lambda name: spec)
+
+    assert import_fixes._triton_driver_shims_missing_py_ssize_t_clean() == [
+        ("nvidia", str(driver)),
+    ]
+
+
 def test_python_313_and_later_do_not_pay_for_the_probe(monkeypatch, tmp_path):
     """CPython stopped requiring the macro in 3.13, so the shim is fine there and
     the file is never read."""
@@ -635,7 +673,20 @@ def test_a_callable_with_no_readable_signature_is_still_called():
     assert logger.warnings == []
 
 
-def test_the_provider_lookup_still_works_without_packages_distributions(monkeypatch):
+@pytest.mark.parametrize(
+    "installed, version",
+    [
+        ("pytorch-triton-rocm", "3.3.0"),
+        # download.pytorch.org renamed both accelerator providers. pytorch-triton-rocm
+        # stops at 3.5.1 and triton-rocm carries 3.7 onwards, the same split the XPU
+        # provider has, so a current ROCm host is only found under the new name.
+        ("triton-rocm", "3.8.0"),
+        ("triton-xpu", "3.7.1"),
+    ],
+)
+def test_the_provider_lookup_still_works_without_packages_distributions(
+    monkeypatch, installed, version
+):
     """`importlib.metadata.packages_distributions` is Python 3.10+, and pyproject still
     admits 3.9. There the import raises, the mapping comes back empty, and the message
     used to report `triton==unknown` and recommend the CUDA `triton` over the platform
@@ -650,11 +701,11 @@ def test_the_provider_lookup_still_works_without_packages_distributions(monkeypa
     monkeypatch.setattr(
         import_fixes,
         "importlib_version",
-        lambda name: "3.3.0" if name == "pytorch-triton-rocm" else _raise_missing(name),
+        lambda name: version if name == installed else _raise_missing(name),
     )
     import_fixes._installed_version.cache_clear()
     try:
-        assert import_fixes._triton_distribution() == ("pytorch-triton-rocm", "3.3.0")
+        assert import_fixes._triton_distribution() == (installed, version)
     finally:
         import_fixes._installed_version.cache_clear()
 
@@ -810,6 +861,7 @@ def test_a_bare_torch_install_gets_the_plain_upgrade(patched_torch, monkeypatch)
         ("triton-xpu", "2.10.0+xpu", True),
         ("pytorch-triton-xpu", "2.7.0+xpu", True),
         ("pytorch-triton-rocm", "2.7.0+rocm6.3", True),
+        ("triton-rocm", "2.10.0+rocm6.4", True),
         # NEGATIVE CONTROLS: PyPI serves these, so no index is added.
         ("triton", "2.6.0+cu124", False),
         ("triton-windows", "2.7.1+cu126", False),

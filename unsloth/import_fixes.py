@@ -2111,8 +2111,9 @@ _C_COMMENT_OR_STRING = re.compile(
 )
 
 
-def _blank_c_comments(source: str) -> str:
-    """`source` with comment and string-literal spans blanked, offsets and lines intact.
+def _blank_c_spans(source: str, keep_strings: bool = False) -> str:
+    """`source` with comment spans blanked, offsets and lines intact, and string literals
+    blanked too unless `keep_strings`.
 
     The compiler removes comments before the preprocessor ever sees a directive, so a
     `#define PY_SSIZE_T_CLEAN` that only appears inside a `/* ... */` is not a definition
@@ -2121,10 +2122,17 @@ def _blank_c_comments(source: str) -> str:
     scan below compares directive positions against the `#include <Python.h>` position,
     and deleting text would move one relative to the other. Newlines are kept for the same
     reason, since both patterns are line-anchored.
+
+    `keep_strings` is for the caller that has to read inside a literal: the PyArg_Parse
+    scan decides on the format string itself, so blanking literals would make every shim
+    look clean. String spans are still matched either way, since that is what stops a
+    `//` or a `/*` inside a literal from blanking the rest of the file.
     """
 
     def blank(match):
         text = match.group(0)
+        if keep_strings and not text.startswith(("/*", "//")):
+            return text
         return "".join("\n" if character == "\n" else " " for character in text)
 
     return _C_COMMENT_OR_STRING.sub(blank, source)
@@ -2145,7 +2153,7 @@ def _defines_py_ssize_t_clean_before_python_h(source: str) -> bool:
     The LAST directive before the include is the one that decides, which is what makes
     the `#define` / `#undef` pair read correctly rather than just the presence of either.
     """
-    source = _blank_c_comments(source)
+    source = _blank_c_spans(source)
     include = _PYTHON_H_INCLUDE.search(source)
     if include is None:
         return False
@@ -2171,7 +2179,13 @@ _TRITON_PROVIDERS = (
     "pytorch-triton",
     "pytorch-triton-rocm",
     "pytorch-triton-xpu",
+    # The renamed spellings. Both accelerator providers were renamed on
+    # download.pytorch.org: `pytorch-triton-rocm` stops at 3.5.1 and `triton-rocm` carries
+    # 3.7 onwards, the same split `pytorch-triton-xpu` and `triton-xpu` have. Missing here,
+    # a current ROCm or XPU shim reads as `triton==unknown` on the probing fallback, and
+    # the repair command then installs generic CUDA `triton` over the installed provider.
     "triton-xpu",
+    "triton-rocm",
 )
 
 
@@ -2319,8 +2333,15 @@ def _triton_driver_shims_missing_py_ssize_t_clean():
                 continue
             if _defines_py_ssize_t_clean_before_python_h(source):
                 continue
-            # Only a '#' in a PyArg_Parse format needs the macro.
-            if not re.search(r"PyArg_Parse\w*\([^;]*?\"[^\"]*#", source, re.S):
+            # Only a '#' in a PyArg_Parse format needs the macro, and only in a call the
+            # compiler still sees: a repackaged shim can carry an old commented-out call
+            # whose format is no longer what the active parser uses. The literals stay,
+            # since the format argument is exactly what this reads.
+            if not re.search(
+                r"PyArg_Parse\w*\([^;]*?\"[^\"]*#",
+                _blank_c_spans(source, keep_strings = True),
+                re.S,
+            ):
                 continue
             offenders.append((driver.parent.name, str(driver)))
     return offenders
