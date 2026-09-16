@@ -621,6 +621,7 @@ def _shell_function(path: Path, name: str) -> str:
 def test_the_rc_repointer_rewrites_only_the_line_it_wrote(path: Path, tmp_path: Path):
     rc = tmp_path / "rc"
     rc.write_text(
+        '# Added by Unsloth installer\n'
         'export PATH="$HOME/.local/bin:$PATH"\n'
         "# a comment\n"
         'export PATH="/opt/mine:$PATH"\n'
@@ -642,6 +643,7 @@ def test_the_rc_repointer_rewrites_only_the_line_it_wrote(path: Path, tmp_path: 
     )
     assert "status=0" in out.stdout, (out.stdout, out.stderr)
     assert rc.read_text(encoding = "utf-8") == (
+        '# Added by Unsloth installer\n'
         'export PATH="$PATH:$HOME/.local/bin"\n'
         "# a comment\n"
         # The user's own line is untouched: only an exact match on what we write is ours.
@@ -657,7 +659,10 @@ def test_the_rc_repointer_keeps_a_symlinked_rc_a_symlink(tmp_path: Path):
     with a fresh file would detach it from the thing that manages it."""
     real = tmp_path / "dotfiles" / "bashrc"
     real.parent.mkdir()
-    real.write_text('export PATH="$HOME/.local/bin:$PATH"\n', encoding = "utf-8")
+    real.write_text(
+        '# Added by Unsloth installer\nexport PATH="$HOME/.local/bin:$PATH"\n',
+        encoding = "utf-8",
+    )
     link = tmp_path / ".bashrc"
     link.symlink_to(real)
 
@@ -669,7 +674,9 @@ def test_the_rc_repointer_keeps_a_symlinked_rc_a_symlink(tmp_path: Path):
     )
     subprocess.run(["sh", "-c", script], capture_output = True, text = True, timeout = 60)
     assert link.is_symlink(), "the rc file was replaced instead of rewritten"
-    assert real.read_text(encoding = "utf-8") == 'export PATH="$PATH:$HOME/.local/bin"\n'
+    assert real.read_text(encoding = "utf-8") == (
+        '# Added by Unsloth installer\nexport PATH="$PATH:$HOME/.local/bin"\n'
+    )
 
 
 @pytest.mark.parametrize(
@@ -717,8 +724,8 @@ def test_the_repoint_pass_runs_before_the_presence_guards():
 @pytest.mark.parametrize(
     "mode,expected",
     [
-        ("repoint", 'export PATH="$PATH:/opt/unsloth/bin"\n'),
-        ("", 'export PATH="$PATH:/opt/unsloth/bin"\n'),
+        ("repoint", '# Added by Unsloth installer\nexport PATH="$PATH:/opt/unsloth/bin"\n'),
+        ("", '# Added by Unsloth installer\nexport PATH="$PATH:/opt/unsloth/bin"\n'),
     ],
     ids = ["repoint-only", "ordinary"],
 )
@@ -726,7 +733,10 @@ def test_the_repoint_only_mode_adds_nothing(tmp_path: Path, mode: str, expected:
     """Repointing must not put a line in the rc file of someone whose PATH comes from
     somewhere else: the caller's guard already decided against adding one."""
     rc = tmp_path / "rc"
-    rc.write_text('export PATH="/opt/unsloth/bin:$PATH"\n', encoding = "utf-8")
+    rc.write_text(
+        '# Added by Unsloth installer\nexport PATH="/opt/unsloth/bin:$PATH"\n',
+        encoding = "utf-8",
+    )
     empty = tmp_path / "empty"
     empty.write_text("# nothing here\n", encoding = "utf-8")
     source = INSTALL_SH.read_text(encoding = "utf-8")
@@ -797,7 +807,10 @@ def test_the_rc_repointer_keeps_the_permission_bits_it_found(tmp_path: Path):
     before a line of it is rewritten.
     """
     rc = tmp_path / "rc"
-    rc.write_text('export PATH="$HOME/.local/bin:$PATH"\n', encoding = "utf-8")
+    rc.write_text(
+        '# Added by Unsloth installer\nexport PATH="$HOME/.local/bin:$PATH"\n',
+        encoding = "utf-8",
+    )
     rc.chmod(0o600)
     script = (
         _shell_function(INSTALL_SH, "_unsloth_repoint_rc_line")
@@ -806,7 +819,9 @@ def test_the_rc_repointer_keeps_the_permission_bits_it_found(tmp_path: Path):
         + " 'export PATH=\"$PATH:$HOME/.local/bin\"'\n"
     )
     subprocess.run(["sh", "-c", script], capture_output = True, text = True, timeout = 60)
-    assert rc.read_text(encoding = "utf-8") == 'export PATH="$PATH:$HOME/.local/bin"\n'
+    assert rc.read_text(encoding = "utf-8") == (
+        '# Added by Unsloth installer\nexport PATH="$PATH:$HOME/.local/bin"\n'
+    )
     assert stat.S_IMODE(rc.stat().st_mode) == 0o600, oct(rc.stat().st_mode)
 
 
@@ -850,7 +865,9 @@ def test_the_rc_repointer_rewrites_a_line_holding_a_backslash(path: Path, tmp_pa
     rc = tmp_path / "rc"
     old_line = 'export PATH="/opt/od\\\\d/bin:$PATH"'
     new_line = 'export PATH="$PATH:/opt/od\\\\d/bin"'
-    rc.write_text(old_line + "\n# keep me\n", encoding = "utf-8")
+    rc.write_text(
+        "# Added by Unsloth installer\n" + old_line + "\n# keep me\n", encoding = "utf-8"
+    )
     script = (
         _shell_function(path, "_unsloth_repoint_rc_line")
         + "_unsloth_repoint_rc_line "
@@ -859,9 +876,9 @@ def test_the_rc_repointer_rewrites_a_line_holding_a_backslash(path: Path, tmp_pa
     )
     out = subprocess.run(["sh", "-c", script], capture_output = True, text = True, timeout = 60)
     assert "status=0" in out.stdout, (out.stdout, out.stderr)
-    assert rc.read_text(encoding = "utf-8") == new_line + "\n# keep me\n", rc.read_text(
-        encoding = "utf-8"
-    )
+    assert rc.read_text(encoding = "utf-8") == (
+        "# Added by Unsloth installer\n" + new_line + "\n# keep me\n"
+    ), rc.read_text(encoding = "utf-8")
 
 
 def test_the_uv_repoint_pass_moves_the_home_relative_spelling_too():
@@ -901,3 +918,36 @@ def test_the_standalone_setup_repoints_the_home_relative_prepend_too():
     # In the repoint-only branch AND in the present-already branch, which are the two places
     # a stale prepend is reachable.
     assert body.count("_supp_export_home_prepend\"") >= 2, body
+
+
+@pytest.mark.parametrize(
+    "path",
+    [INSTALL_SH, SETUP_SH_POSIX],
+    ids = ["install.sh", "studio/setup.sh"],
+)
+def test_the_rc_repointer_leaves_a_line_the_user_wrote(path: Path, tmp_path: Path):
+    """`export PATH="$HOME/.local/bin:$PATH"` is a line people write by hand all the time.
+
+    Rewriting one moves every executable in that directory behind the rest of PATH for good,
+    in every later shell, conda or not. Both installers write a `# Added by Unsloth ...`
+    comment immediately above the line they add, so that marker is the ownership record and
+    an identical line without it is not ours to touch.
+    """
+    rc = tmp_path / "rc"
+    original = (
+        '# my own path\n'
+        'export PATH="$HOME/.local/bin:$PATH"\n'
+        'alias ll="ls -l"\n'
+    )
+    rc.write_text(original, encoding = "utf-8")
+    script = (
+        _shell_function(path, "_unsloth_repoint_rc_line")
+        + f'_unsloth_repoint_rc_line "{rc}"'
+        + " 'export PATH=\"$HOME/.local/bin:$PATH\"'"
+        + " 'export PATH=\"$PATH:$HOME/.local/bin\"'\n"
+        + 'echo "status=$?"\n'
+    )
+    out = subprocess.run(["sh", "-c", script], capture_output = True, text = True, timeout = 60)
+    # Not ours -> a refusal, and the caller's own branch prints the manual advice.
+    assert "status=1" in out.stdout, (out.stdout, out.stderr)
+    assert rc.read_text(encoding = "utf-8") == original, rc.read_text(encoding = "utf-8")
