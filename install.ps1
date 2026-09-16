@@ -2994,7 +2994,11 @@ exit 1
     function Invoke-StudioPythonShellIconRefresh {
         param([string[]]$Paths = @())
         if (-not ($env:OS -eq "Windows_NT")) { return $false }
-        $exe = Get-StudioEarlyPython
+        # Inside the try, not above it. Discovery can throw, and this function promises it never
+        # does; the caller's own catch happened to cover it, but the promise was still false.
+        try {
+            $exe = Get-StudioEarlyPython
+        } catch { return $false }
         if (-not $exe) { return $false }
         # SHCNE_UPDATEITEM 0x00002000 with SHCNF_PATHW 0x0005 per shortcut, then SHCNE_ASSOCCHANGED
         # 0x08000000 as the global broadcast. Same two calls, same order, same constants as the
