@@ -235,7 +235,6 @@ def test_the_message_survives_the_trip_out_of_the_inference_worker(message):
     the signatures above are matched against the text transformers actually wrote.
     """
     from utils.utils import format_error_message
-
     assert format_error_message(ImportError(message), "unsloth/gemma-4-E2B-it-NVFP4") == message
 
 
@@ -290,9 +289,9 @@ def test_no_other_quantization_family_is_re_routed_into_this_refusal():
         detail = inference_route._unsupported_quantization_detail(message)
         if module == "quantizer_compressed_tensors":
             continue
-        assert detail is None, (
-            f"{module} message now matches the compressed-tensors refusal: {message!r}"
-        )
+        assert (
+            detail is None
+        ), f"{module} message now matches the compressed-tensors refusal: {message!r}"
 
 
 def test_the_mlx_refusal_is_unchanged():
