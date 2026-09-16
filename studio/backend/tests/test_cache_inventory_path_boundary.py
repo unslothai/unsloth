@@ -1130,22 +1130,33 @@ def test_the_load_and_validate_answers_go_through_the_restoration():
     """A route that builds the response and returns it unwrapped would leave every
     assertion above passing and the path still going out."""
     import inspect
+    import re
+
     from routes import inference as inference_routes
 
+    # Whitespace-insensitive, because these are claims about WHAT the route calls and the
+    # formatter decides where the line breaks go. Asserting the literal text made a
+    # re-wrap by the formatting bot read as the restoration having been removed.
+    def _squeeze(text: str) -> str:
+        return re.sub(r"\s+", "", text)
+
+    def _calls(needle: str) -> bool:
+        return _squeeze(needle) in _squeeze(source)
+
     source = inspect.getsource(inference_routes)
-    assert "restore_inventory_handles(task.result())" in source
+    assert _calls("restore_inventory_handles(task.result())")
     # The failures too: `.result()` re-raises before any restoration sees a value, and
     # `Invalid model identifier: <path>` names the thing the caller asked for.
-    assert "_handle_restored_http_exception(exc)" in source
-    assert "restore_inventory_handles(exc.detail)" in source
-    assert "restore_inventory_handles(ValidateModelResponse(" in source
-    assert "jsonable_encoder(restore_inventory_handles(payload))" in source
-    assert "restore_inventory_handles(redact_native_paths(str(e)))" in source
+    assert _calls("_handle_restored_http_exception(exc)")
+    assert _calls("restore_inventory_handles(exc.detail)")
+    assert _calls("restore_inventory_handles(ValidateModelResponse(")
+    assert _calls("jsonable_encoder(restore_inventory_handles(payload))")
+    assert _calls("restore_inventory_handles(redact_native_paths(str(e)))")
     # And the HTTPException branch of the validate route, which used to re-raise untouched:
     # only the non-HTTP failures were restored, so a refusal naming the resolved path went
     # out whole for a caller that had only ever seen the reference.
-    assert "raise _handle_restored_http_exception(http_error) from http_error" in source
-    assert "detail = restore_inventory_handles(str(e))" in source
+    assert _calls("raise _handle_restored_http_exception(http_error) from http_error")
+    assert _calls("detail = restore_inventory_handles(str(e))")
 
 
 def test_a_refusal_names_the_handle_the_caller_sent(monkeypatch):
