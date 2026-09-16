@@ -473,12 +473,22 @@ pub async fn check_health(port: u16) -> Result<bool, String> {
 #[tauri::command]
 pub async fn check_backend_present(port: u16) -> Result<bool, String> {
     match check_health_inner(port, HEALTH_PROBE_TIMEOUT).await {
-        Ok(liveness) => Ok(liveness.alive || liveness.probe_timed_out),
+        Ok(liveness) => Ok(backend_is_present(&liveness)),
         Err(e) => {
             info!("Backend presence check on port {} failed: {}", port, e);
             Ok(false)
         }
     }
+}
+
+/// The rule `check_backend_present` applies, as a value rather than as an expression inlined
+/// into the command.
+///
+/// Separated so the test for it can actually fail. The commands themselves need a live port to
+/// probe, so a test that re-spells `alive || probe_timed_out` over hand-built structs asserts
+/// its own arithmetic and goes on passing no matter what the command does.
+fn backend_is_present(liveness: &BackendLiveness) -> bool {
+    liveness.alive || liveness.probe_timed_out
 }
 
 /// Probe the backend for process liveness.
@@ -1480,18 +1490,25 @@ mod tests {
             ..Default::default()
         };
 
-        // What each command reports, spelled out rather than invoked, since the commands
-        // themselves need a live port to probe.
+        // Through the rule the command actually applies, not through the same expression
+        // written out again here: an inlined copy asserts its own arithmetic and would keep
+        // passing if check_backend_present went back to answering `liveness.alive`.
         assert!(!stalled.alive, "a stall is not an answer");
         assert!(
-            stalled.alive || stalled.probe_timed_out,
+            super::backend_is_present(&stalled),
             "a stalled probe must read as a backend that is still present"
         );
         assert!(
-            !(closed.alive || closed.probe_timed_out),
+            !super::backend_is_present(&closed),
             "a refused connection must still read as absent"
         );
-        assert!(answered.alive || answered.probe_timed_out);
+        assert!(super::backend_is_present(&answered));
+        // And the health command must keep collapsing the stall, since that is the answer its
+        // own caller wants: "may I use this backend" is no.
+        assert!(
+            !stalled.alive,
+            "check_health still reports a stall as not usable"
+        );
     }
 
     #[test]
