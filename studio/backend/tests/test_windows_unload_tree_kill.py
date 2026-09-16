@@ -639,7 +639,12 @@ def test_the_surviving_root_fallback_does_not_re_expand_the_tree(monkeypatch):
     monkeypatch.setattr(pl, "_windows_terminate_pid", _kill)
 
     pl.terminate_pid(500, timeout = 0.01, owner_verified = True)
-    assert killed == [600, 500], "deepest first, and the validated set only"
+    # Root first, then the snapshot deepest-first. The root is stopped the moment the
+    # snapshot exists, because working through the snapshot spends one `taskkill` per
+    # descendant and a root that is still running can spawn into a window that nothing
+    # afterwards examines. Its descendants are already named, with their identities, so
+    # stopping it cannot lose them.
+    assert killed == [500, 600], "the root is stopped first, then the validated set only"
     assert 500 not in pl._tracked_pids, "a tree that went down releases its record"
 
 
@@ -1113,3 +1118,47 @@ def test_an_unverifiable_late_descendant_is_reported_not_dropped(monkeypatch):
     )
     reported = pl._windows_terminate_collected([(survivor, "0:6000")])
     assert late_pid not in [pid for pid, _ in reported], reported
+
+
+def test_the_root_is_stopped_before_its_snapshot_is_worked_through(monkeypatch):
+    """Each `taskkill` has a 15 second ceiling, so working through a snapshot of N
+    descendants leaves a root that is still running for as long as N of those.
+
+    Anything it starts in that window is in no snapshot, the read-back examines only what
+    WAS snapshotted, and the caller is told the tree is gone. The root therefore goes first,
+    the moment the snapshot exists.
+    """
+    root, child = 700, 701
+    spawned_during_teardown = []
+    monkeypatch.setattr(pl, "_is_windows", lambda: True)
+    monkeypatch.setattr(pl, "_signalable", lambda pid: True)
+    monkeypatch.setattr(pl, "_pid_is_zombie", lambda pid: False)
+    monkeypatch.setattr(
+        pl,
+        "_pid_identity",
+        lambda pid: {root: "0:700", child: "0:701"}.get(pid),
+    )
+    monkeypatch.setattr(
+        pl,
+        "_windows_collect_descendants_known",
+        lambda pid: ([(child, "0:701")], True) if pid == root else ([], True),
+    )
+    dead: "set[int]" = set()
+    order = []
+
+    def _kill(pid):
+        order.append(pid)
+        dead.add(pid)
+        # A root that is still alive keeps spawning. This is what the old order allowed.
+        if root not in dead:
+            spawned_during_teardown.append(len(order))
+        return True
+
+    monkeypatch.setattr(pl, "_windows_terminate_pid", _kill)
+    monkeypatch.setattr(pl, "_pid_alive", lambda pid: pid not in dead)
+
+    assert pl._windows_terminate_validated_tree(root) is True
+    assert order[0] == root, order
+    assert (
+        spawned_during_teardown == []
+    ), "the root was still running while its snapshot was being killed"

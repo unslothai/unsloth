@@ -1069,7 +1069,9 @@ def _windows_terminate_validated_tree(pid: int) -> bool:
     process back to the kill anyway.
 
     Descendants are enumerated BEFORE the root is signalled: once the root exits its own
-    identity stops being readable, and the collector needs it as the ancestry floor.
+    identity stops being readable, and the collector needs it as the ancestry floor. The
+    root is then stopped FIRST, before the snapshot is worked through, so it cannot keep
+    extending the tree while each `taskkill` spends its budget.
 
     A tree this cannot enumerate collapses to killing the root alone and answering False,
     which is the same answer the ``/T`` fallback gave when taskkill was unavailable, and
@@ -1078,6 +1080,18 @@ def _windows_terminate_validated_tree(pid: int) -> bool:
     walk did not name.
     """
     descendants, known = _windows_collect_descendants_known(pid)
+    # The root goes FIRST, the moment the snapshot exists. Killing the snapshot first spends
+    # one `taskkill` per descendant, each with a 15 second ceiling, and the root is still
+    # running for all of it: anything it starts in that window is in no snapshot, the
+    # read-back below only examines what was snapshotted, and the caller is told the tree is
+    # gone. Stopping the root cannot orphan the descendants here -- they are already named,
+    # with their identities, in `descendants` -- which is the whole reason the snapshot is
+    # taken before anything is signalled.
+    if _signalable(pid) and _pid_alive(pid):
+        try:
+            _windows_terminate_pid(pid)
+        except Exception:  # noqa: BLE001 - best effort, like the rest of this
+            pass
     for child, child_identity in reversed(descendants):
         if not _signalable(child) or not _pid_alive(child):
             continue
@@ -1085,11 +1099,6 @@ def _windows_terminate_validated_tree(pid: int) -> bool:
             continue
         try:
             _windows_terminate_pid(child)
-        except Exception:  # noqa: BLE001 - best effort, like the rest of this
-            pass
-    if _signalable(pid) and _pid_alive(pid):
-        try:
-            _windows_terminate_pid(pid)
         except Exception:  # noqa: BLE001 - best effort, like the rest of this
             pass
     # An unenumerable tree is not an empty one, so the root-only kill above is all that
