@@ -411,15 +411,32 @@ def _switch_always_returns(statement: str) -> bool:
     for position, start in enumerate(labels):
         end = labels[position + 1] if position + 1 < len(labels) else len(body)
         arm = re.sub(r"\b(?:case\b[^:]*|default\s*):\s*$", "", body[start:end]).strip()
-        if not arm:
-            # Empty: control falls into the next label, which is then the one that has to
-            # return. A last label has none to fall into, so it leaves the switch instead.
-            if position + 1 == len(labels):
-                return False
+        # A `break` leaves the switch carrying no value, so that path reaches no return.
+        if _breaks_out(arm):
+            return False
+        if _block_always_returns(arm):
             continue
-        if not _block_always_returns(arm):
+        # Anything else falls into the next label, empty or not: fall-through is not a property
+        # of empty arms, it is what any arm does when it neither returns nor breaks. The next
+        # label is then the one that has to carry it, and a last label has none to fall into.
+        if position + 1 == len(labels):
             return False
     return True
+
+
+def _breaks_out(arm: str) -> bool:
+    """A `break` belonging to this arm, rather than to a loop or switch nested in it."""
+    scan = _outside_literals(arm)
+    depth = 0
+    for match in re.finditer(r"[(\[{}\])]|\bbreak\b", scan):
+        token = match.group(0)
+        if token in "([{":
+            depth += 1
+        elif token in ")]}":
+            depth -= 1
+        elif depth == 0:
+            return True
+    return False
 
 
 def _block_always_returns(block: str) -> bool:
@@ -642,12 +659,10 @@ def _pinned_literal(guard: str, taken: bool, access: str, field: str):
     unequal = rf"(?:{bound}!==({_LITERAL})|({_LITERAL})!=={bound})"
     # Under `!` a comparison says the opposite of what it reads, so a logical not is refused
     # rather than interpreted.
-    operators = _outside_literals(guard)
-    if re.search(r"!(?![=])", re.sub(r"!==", "", operators)):
-        return None
-    # A disjunction does not imply its parts, either way round.
-    if "||" in operators:
-        return None
+    # No blanket search for `!` or `||`. Requiring the comparison to match a top-level conjunct
+    # end to end already excludes both: a negated or disjoined comparison is not a conjunct
+    # equal to itself. Rejecting on the operator anywhere in the guard threw out unrelated
+    # conditions too, so `budget === -1 && !disabled` was refused for the `!`.
     def _separates(literal: str) -> bool:
         """`===` tells this literal apart from every other value.
 
@@ -783,6 +798,8 @@ SELECTOR_CASES = [
     ("(s) => defaults.reasoningBudget === -1 ? -1 : s.reasoningBudget", False),
     ("(s) => -1 === s.reasoningBudgetExtra ? -1 : s.reasoningBudget", False),
     ("(s) => -1 === s.reasoningBudget ? -1 : s.reasoningBudget", True),
+    # A negated condition beside the pin is an ordinary extra condition, not a negated pin.
+    ("(s) => s.reasoningBudget === -1 && !s.disabled ? -1 : s.reasoningBudget", True),
     # A comparison under `!` says the opposite of what it reads.
     ("(s) => !(s.reasoningBudget === -1) ? -1 : s.reasoningBudget", False),
     # The literal has to be read whole. Half of `1e3` is `1`, and a pin to 1000 that reads as
@@ -885,6 +902,14 @@ SELECTOR_CASES = [
         "default: return s.reasoningBudget; } }",
         True,
     ),
+    # Fall-through is what any arm does when it neither returns nor breaks, empty or not.
+    (
+        '(s) => { switch (s.mode) { case "x": sideEffect(); case "y": return s.reasoningBudget; '
+        "default: return s.reasoningBudget; } }",
+        True,
+    ),
+    ('(s) => { switch (s.mode) { case "x": sideEffect(); default: return s.reasoningBudget; } }', True),
+    ('(s) => { switch (s.mode) { default: return s.reasoningBudget; case "x": sideEffect(); } }', False),
     # An empty LAST label has nothing to fall into, so that value leaves the switch.
     ('(s) => { switch (s.mode) { default: return s.reasoningBudget; case "x": } }', False),
     # Undefaulted: a mode matching nothing falls past the switch and returns undefined.
