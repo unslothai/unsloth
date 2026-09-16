@@ -1922,8 +1922,19 @@ class VideoBackend:
                         # Only now, so the preference that survives this process is one we have SHOWN to be better.
                         # Noting it on the failure alone would move every later load onto a rung that may not exist on
                         # this host, for no gain.
+                        # proven only when the host's own build ANSWERED. A False verdict is an
+                        # enumeration that ran and listed no accelerator device, which together with
+                        # the fallback listing one is the evidence this record is for. A None is a
+                        # probe that timed out, exited nonzero or raised: the fallback enumerating
+                        # says nothing about why the first build could not be read, and persisting
+                        # that as proven diverted the host off a healthy, faster ROCm build
+                        # indefinitely after one transient reading. Unproven it is an ambiguous
+                        # strike, so it takes `_AMBIGUOUS_FAILURE_STRIKES` of them under one
+                        # fingerprint to divert anything.
                         note_accelerator_runtime_failure(
-                            accelerator, fingerprint = failed_fingerprint
+                            accelerator,
+                            proven = accelerator_verdict is not None,
+                            fingerprint = failed_fingerprint,
                         )
                         binary = fallback_binary
                         accelerator = fallback

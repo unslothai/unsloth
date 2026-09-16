@@ -110,6 +110,17 @@ def _noted_accelerators(store: dict) -> list:
     )
 
 
+def _recorded_strikes(store: dict, klass: str = "rocm") -> int:
+    """Strikes standing against *klass*, diverting or not.
+
+    A record that does not divert is not the same as no record: an unreadable probe leaves a
+    strike, and it is the accumulation of them under one fingerprint that eventually moves the
+    host. Tests that assert "not diverted yet" say which of the two they mean through this.
+    """
+    record = (store.get("sd_cpp_accelerator_runtime_failures") or {}).get(klass) or {}
+    return int(record.get("strikes", 0))
+
+
 class _PlanInfo:
     def __init__(self, siblings) -> None:
         self.siblings = siblings
@@ -272,15 +283,22 @@ def test_a_working_rocm_build_is_left_alone(h3_amd_host, fake_settings, platform
 
 @pytest.mark.parametrize("platform", PLATFORMS)
 @pytest.mark.parametrize(
-    "state,devices",
+    "state,devices,diverts",
     [
-        ("rocm_unrunnable", _ROCM_BROKEN),
-        ("rocm_cpu_only", _ROCM_CPU_ONLY),
-        ("no_rocm_asset", _VULKAN_ONLY),
+        # The host's own build is installed and cannot be asked anything. The fallback
+        # enumerating a device says nothing about WHY, so this is a strike, not a proof.
+        ("rocm_unrunnable", _ROCM_BROKEN, False),
+        # It answered, and what it answered was "no accelerator of my own". That, with the
+        # fallback listing one, is the evidence the record is for.
+        ("rocm_cpu_only", _ROCM_CPU_ONLY, True),
+        # No ROCm build exists for this host, which the probe does not have to run to know.
+        # The bundle tag is part of the fingerprint, so a release that ships the asset retires
+        # this record on its own.
+        ("no_rocm_asset", _VULKAN_ONLY, True),
     ],
 )
 def test_a_rocm_build_that_cannot_run_falls_back_to_vulkan(
-    h3_amd_host, fake_settings, platform, state, devices
+    h3_amd_host, fake_settings, platform, state, devices, diverts
 ):
     """The fix. On main every one of these commits ``native_device = "cpu"`` (or refuses), because
     the only rung below ROCm was the CPU build. The Vulkan build runs on both reporters' cards."""
@@ -290,8 +308,11 @@ def test_a_rocm_build_that_cannot_run_falls_back_to_vulkan(
     # Committed on the GPU, on the Vulkan build, with the bundle fetched exactly once.
     assert backend_obj._state.device == "cuda"
     assert len(host.downloads) == 4
-    # And remembered, so the next load does not pay for the broken ROCm build again.
-    assert _noted_accelerators(fake_settings) == ["rocm"]
+    # And remembered, so the next load does not pay for the broken ROCm build again -- where
+    # what was seen amounts to proof. Where it does not, the strike is still kept, so a host
+    # that keeps failing this way is diverted by the second one.
+    assert _noted_accelerators(fake_settings) == (["rocm"] if diverts else [])
+    assert _recorded_strikes(fake_settings) == 1
 
 
 @pytest.mark.parametrize("platform", PLATFORMS)
@@ -502,7 +523,10 @@ def test_only_the_amd_corners_with_a_rocm_asset_take_the_new_rung(
     takes_the_rung = backend == "rocm"
     if takes_the_rung:
         assert host.ensured == ["rocm", "vulkan"], host.ensured
-        assert _noted_accelerators(fake_settings) == ["rocm"]
+        # rocm_runs=False here is the build that cannot be asked anything, so one load is a
+        # strike rather than a diversion.
+        assert _noted_accelerators(fake_settings) == []
+        assert _recorded_strikes(fake_settings) == 1
     else:
         assert host.ensured == [_FIRST_ENSURE[backend]], host.ensured
         assert fake_settings == {}
@@ -1080,9 +1104,18 @@ def test_the_whole_load_routing_space_is_enumerated(h3_amd_host, fake_settings, 
     assert backend_obj._state.device == expected_device
     # And the preference is written in exactly the corners that were upgraded, never in one where
     # the fallback was not shown to be better.
+    upgraded = _why == "upgraded on positive evidence"
+    # ...and only where the host's own build ANSWERED. A probe that could not be read is not
+    # evidence about the build: the fallback enumerating a device of its own says nothing about
+    # why the first one was unreadable, and persisting that as proven skipped an otherwise
+    # healthy, faster ROCm build on every later load.
     assert _noted_accelerators(fake_settings) == (
-        ["rocm"] if _why == "upgraded on positive evidence" else []
+        ["rocm"] if (upgraded and rocm_answer != _N) else []
     )
+    # The unreadable one still leaves a strike, which is what eventually diverts a host where
+    # this keeps happening. (_X is not a probe at all: no build of that accelerator exists here,
+    # and the bundle tag in the fingerprint retires that record when a release ships one.)
+    assert _recorded_strikes(fake_settings) == (1 if upgraded else 0)
 
 
 def _main_would_commit(rocm_answer: str) -> str:
@@ -1747,7 +1780,9 @@ def test_the_load_path_reads_the_fingerprint_before_it_installs_the_fallback():
     install = source.index("fallback_binary = usable_or_recorded_failure(")
     note = source.index("note_accelerator_runtime_failure(\n")
     assert read < install < note, (read, install, note)
-    assert "fingerprint = failed_fingerprint" in source[note:note + 200]
+    assert "fingerprint = failed_fingerprint" in source[note:note + 400]
+    # And the note is only PROVEN where the host's own build answered.
+    assert "proven = accelerator_verdict is not None" in source[note:note + 400]
 
 
 def test_a_singleton_match_does_not_answer_for_a_position_it_cannot_hold(monkeypatch):
@@ -1835,3 +1870,25 @@ def test_the_decided_class_is_read_under_the_claim_that_validated_it():
         "decided_accelerator = fallback_class"
     )
     assert "_UNREAD_ACCELERATOR" in source
+
+
+def test_a_second_unreadable_rocm_probe_does_divert(h3_amd_host, fake_settings):
+    """The strike is not a no-op: it accumulates, it just is not a proof on its own.
+
+    One unreadable probe can be a timeout, a nonzero exit or a transient fault, and diverting
+    on it permanently skipped an otherwise healthy, faster ROCm build. Repeating under the same
+    fingerprint is a different claim, and that one does move the host.
+    """
+    from core.inference import sd_cpp_backend
+
+    for _ in range(sd_cpp_backend._AMBIGUOUS_FAILURE_STRIKES - 1):
+        host = h3_amd_host(
+            platform = "linux", backend = "rocm", device = "cuda", devices = _ROCM_BROKEN
+        )
+        host.run()
+        assert _noted_accelerators(fake_settings) == []
+    host = h3_amd_host(
+        platform = "linux", backend = "rocm", device = "cuda", devices = _ROCM_BROKEN
+    )
+    host.run()
+    assert _noted_accelerators(fake_settings) == ["rocm"]
