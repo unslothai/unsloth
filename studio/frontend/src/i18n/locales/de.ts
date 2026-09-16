@@ -1327,6 +1327,8 @@ export const de = {
           sourceBuild: "Dieses llama.cpp wurde aus dem Quellcode gebaut; sein Backend lässt sich hier nicht wechseln.",
           customPath: "Ein benutzerdefinierter llama.cpp-Ordner ist ausgewählt. Dessen Build bestimmt das Compute-Backend.",
           unresolved: "Die verfügbaren Backends konnten nicht geprüft werden. Prüfe deine Verbindung und versuche es erneut.",
+          updateChecksDisabled:
+            "Update-Prüfungen sind deaktiviert (UNSLOTH_DISABLE_UPDATE_CHECK=1), daher werden die verfügbaren Backends nicht abgefragt.",
         },
         // Wird nicht angezeigt: zusätzliche Begriffe für die Einstellungssuche.
         llamaBackendKeywords:

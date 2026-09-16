@@ -1322,6 +1322,8 @@ export const es = {
           sourceBuild: "Este llama.cpp se compiló desde el código fuente, así que su backend no se puede cambiar desde aquí.",
           customPath: "Hay una carpeta personalizada de llama.cpp seleccionada. Su compilación determina el backend de cómputo.",
           unresolved: "No se pudieron consultar los backends disponibles. Revisa tu conexión e inténtalo de nuevo.",
+          updateChecksDisabled:
+            "Las comprobaciones de actualizaciones están desactivadas (UNSLOTH_DISABLE_UPDATE_CHECK=1), así que no se consultan los backends disponibles.",
         },
         // No se muestra: términos adicionales para la búsqueda de ajustes.
         llamaBackendKeywords:
