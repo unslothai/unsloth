@@ -127,9 +127,11 @@ class AuthSafeRedirectHandler(urllib.request.HTTPRedirectHandler):
     or an HTTPS-to-HTTP downgrade — would hand the user's token to a host the
     operator never configured. Pass this to ``build_opener`` (which replaces
     the default redirect handler): the Authorization header is dropped as soon
-    as scheme, host or port changes, and a TLS downgrade is not followed at
-    all — the 3xx stands as the response, which every probe here already
-    treats as "reachable".
+    as scheme, host or port changes, and a TLS downgrade is not followed at all.
+    Refusing one means returning None, which urllib turns into an ``HTTPError``
+    for the 3xx rather than handing the 3xx back as a response; every probe here
+    catches ``HTTPError`` and reads a non-401/403/404 as "reachable", so the
+    refusal fails open.
     """
 
     @staticmethod

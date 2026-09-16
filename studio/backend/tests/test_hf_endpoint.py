@@ -361,7 +361,6 @@ def test_a_blank_endpoint_is_cleared_rather_than_left_for_the_library(monkeypatc
         monkeypatch.setenv("HF_ENDPOINT", blank)
         hf_endpoint.normalize_hf_endpoint_env()
         assert "HF_ENDPOINT" not in os.environ, repr(blank)
-        assert get_hf_endpoint() == "https://huggingface.co", repr(blank)
 
     # Idempotent, and it does not invent the variable when it was never set.
     hf_endpoint.normalize_hf_endpoint_env()

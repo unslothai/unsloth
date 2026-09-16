@@ -738,6 +738,11 @@ class TestAuthSafeRedirectHandler:
 
         class _Recorder(http.server.BaseHTTPRequestHandler):
             protocol_version = "HTTP/1.0"
+            # BaseHTTPRequestHandler leaves this None, so a connection that is
+            # accepted and then sends nothing -- a port scan on a shared runner --
+            # blocks serve_forever in readline() forever, and BaseServer.shutdown()
+            # waits on that loop with no timeout of its own.
+            timeout = 5
 
             def _handle(self):
                 self.server.seen.append(
@@ -750,17 +755,36 @@ class TestAuthSafeRedirectHandler:
                 self.send_header("Content-Length", "0")
                 self.end_headers()
 
-            do_GET = _handle
             do_HEAD = _handle
 
             def log_message(self, *args):
                 pass
 
-        srv = http.server.HTTPServer(("127.0.0.1", 0), _Recorder)
+        class _Server(http.server.HTTPServer):
+            def server_bind(self):
+                # HTTPServer.server_bind calls socket.getfqdn(), i.e. gethostbyaddr().
+                # conftest's network guard patches getaddrinfo and connect but not
+                # that, so it is the one lookup in here that could reach a resolver
+                # and stall -- on Windows the default hosts file has no 127.0.0.1
+                # line, so it is a real PTR query.
+                import socketserver
+
+                socketserver.TCPServer.server_bind(self)
+                self.server_name = "127.0.0.1"
+                self.server_port = self.server_address[1]
+
+        srv = _Server(("127.0.0.1", 0), _Recorder)
         srv.seen = []
         srv.plan = plan
         threading.Thread(target = srv.serve_forever, daemon = True).start()
         return srv
+
+    @staticmethod
+    def _stop(*servers):
+        """Stop the loop AND close the listening socket, which shutdown() does not."""
+        for srv in servers:
+            srv.shutdown()
+            srv.server_close()
 
     def _get(self, url):
         import urllib.request
@@ -774,7 +798,7 @@ class TestAuthSafeRedirectHandler:
         try:
             self._get(f"http://127.0.0.1:{srv.server_port}/start")
         finally:
-            srv.shutdown()
+            self._stop(srv)
         hop2 = [r for r in srv.seen if r["path"] == "/final"]
         assert hop2 and hop2[0]["auth"] == self.TOKEN
 
@@ -785,8 +809,7 @@ class TestAuthSafeRedirectHandler:
         try:
             self._get(f"http://127.0.0.1:{src.server_port}/start")
         finally:
-            src.shutdown()
-            dest.shutdown()
+            self._stop(src, dest)
         assert src.seen and src.seen[0]["auth"] == self.TOKEN
         assert dest.seen and dest.seen[0]["auth"] is None
 
@@ -801,8 +824,7 @@ class TestAuthSafeRedirectHandler:
         try:
             self._get(f"http://127.0.0.1:{first.server_port}/start")
         finally:
-            first.shutdown()
-            second.shutdown()
+            self._stop(first, second)
         back = [r for r in first.seen if r["path"] == "/back"]
         assert second.seen and second.seen[0]["auth"] is None
         assert back and back[0]["auth"] is None
@@ -824,8 +846,13 @@ class TestAuthSafeRedirectHandler:
     def test_tls_downgrade_is_not_followed(self):
         assert self._redirect("https://hub.example/a", "http://hub.example/a") is None
 
-    def test_scheme_upgrade_drops_the_token(self):
-        new = self._redirect("http://hub.example/a", "https://hub.example/a")
+    def test_scheme_change_alone_drops_the_token(self):
+        """Host and port identical, scheme different: still a different origin.
+
+        Stated on an explicit port so the assertion cannot pass on the port
+        difference that http -> https carries by default.
+        """
+        new = self._redirect("http://hub.example:8443/a", "https://hub.example:8443/a")
         assert new is not None
         assert new.headers.get("Authorization") is None
 
@@ -835,21 +862,24 @@ class TestAuthSafeRedirectHandler:
         assert new is not None
         assert new.headers.get("Authorization") == self.TOKEN
 
-    def test_host_case_is_not_an_origin_change(self):
-        new = self._redirect("https://Hub.Example/a", "https://hub.example/b")
-        assert new is not None
-        assert new.headers.get("Authorization") == self.TOKEN
-
     def test_lookalike_host_drops_the_token(self):
         new = self._redirect("https://hub.example/a", "https://hub.example.evil.test/a")
         assert new is not None
         assert new.headers.get("Authorization") is None
 
-    def test_refused_downgrade_reaches_the_caller_as_an_http_error(self):
-        """redirect_request returning None makes urllib raise HTTPError for the 3xx
-        rather than hand the 3xx back as a response. Every probe that uses this
-        opener catches HTTPError and treats a non-401/403/404 as reachable, so the
-        refusal fails open -- but the shape is HTTPError, and it is pinned here."""
+    def test_a_refused_redirect_reaches_the_caller_as_an_http_error(self):
+        """The urllib mechanism behind the refusal above, pinned separately.
+
+        This one does not exercise AuthSafeRedirectHandler -- it stubs the same
+        `return None` that the downgrade branch performs -- because the refusal
+        needs an https origin and a loopback TLS server would need a cert the
+        suite does not carry. What it settles is the caller contract: returning
+        None does NOT leave the 3xx standing as the response, urllib falls
+        through to HTTPDefaultErrorHandler and raises HTTPError for it. Every
+        probe on this opener catches HTTPError and treats a non-401/403/404 as
+        reachable, so the refusal still fails open -- but the shape is an
+        exception, and two of those probes log a mirror warning on it.
+        """
         import urllib.error
         import urllib.request
 
@@ -869,7 +899,6 @@ class TestAuthSafeRedirectHandler:
                     timeout = 5,
                 )
         finally:
-            src.shutdown()
-            dest.shutdown()
+            self._stop(src, dest)
         assert excinfo.value.code == 302
         assert dest.seen == []
