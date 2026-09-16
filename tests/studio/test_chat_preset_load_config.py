@@ -533,7 +533,10 @@ SELECTOR_CASES = [
     ("(s) => { return s.reasoningBudget; }", True),
     # A truthiness test pins nothing: a budget of 0 and a budget of null both land on -1.
     ("(s) => { const v = s.reasoningBudget; return v ? s.reasoningBudget : -1; }", False),
-    ("(s) => { const v = s.reasoningBudget; return v ? s.reasoningBudget : s.reasoningBudget; }", True),
+    (
+        "(s) => { const v = s.reasoningBudget; return v ? s.reasoningBudget : s.reasoningBudget; }",
+        True,
+    ),
     ("(s) => { void s.reasoningBudget; return null; }", False),
     ("(s) => { s.reasoningBudget; }", False),
     # A control block is the selector's own scope; a function declared inside it is not.
