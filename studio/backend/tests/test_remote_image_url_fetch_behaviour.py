@@ -457,6 +457,48 @@ class TestFetcher:
             is None
         )
 
+    def test_a_non_ascii_or_spaced_path_is_percent_encoded(self, monkeypatch):
+        _resolve_publicly(monkeypatch)
+        sent = []
+
+        class _Opener:
+            def open(
+                self,
+                req,
+                timeout = None,
+            ):
+                sent.append(req.full_url)
+                raise urllib.error.URLError("stop after the request is built")
+
+        monkeypatch.setattr("urllib.request.build_opener", lambda *_a, **_k: _Opener())
+        external_provider.safe_fetch_remote_image_sync(
+            "https://images.example/caf\u00e9 1.png?q=\u00e9", "image/png"
+        )
+
+        assert sent == ["https://93.184.216.34/caf%C3%A9%201.png?q=%C3%A9"]
+
+    def test_a_request_the_client_cannot_build_is_a_400(self, monkeypatch):
+        import http.client
+
+        _resolve_publicly(monkeypatch)
+
+        class _Opener:
+            def open(
+                self,
+                _req,
+                timeout = None,
+            ):
+                raise http.client.InvalidURL("URL can't contain control characters")
+
+        monkeypatch.setattr("urllib.request.build_opener", lambda *_a, **_k: _Opener())
+        backend = _VisionGguf()
+        r = _client(monkeypatch, backend).post(
+            "/v1/chat/completions", json = _chat_body("https://images.example/a.png")
+        )
+
+        assert r.status_code == 400, r.text
+        assert backend.dispatched == []
+
     @pytest.mark.parametrize(
         "url,authority",
         [

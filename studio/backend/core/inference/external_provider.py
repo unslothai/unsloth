@@ -791,7 +791,7 @@ def safe_fetch_remote_image_sync(
     import http.client
     import urllib.error
     import urllib.request
-    from urllib.parse import urljoin, urlunparse
+    from urllib.parse import quote, urljoin, urlunparse
 
     _byte_limit = min(max(0, int(max_bytes)), _GEMINI_REMOTE_IMAGE_MAX_BYTES)
     if _byte_limit <= 0:
@@ -799,6 +799,8 @@ def safe_fetch_remote_image_sync(
 
     # Reuse tools.py's pinned-IP hardening: validate-once-then-pin.
     from .tools import (
+        _IRI_PATH_SAFE,
+        _IRI_QUERY_SAFE,
         _explicit_proxy_applies,
         _fetch_budget_exceeded,
         _fetch_hop_timeout,
@@ -860,6 +862,12 @@ def safe_fetch_remote_image_sync(
         if cp_info is None:
             return None
         cp, _cp_host, _cp_port = cp_info
+        # http.client refuses a non-ASCII or spaced selector; encode it as _fetch_url_raw does.
+        cp = cp._replace(
+            path = quote(cp.path, safe = _IRI_PATH_SAFE),
+            params = quote(cp.params, safe = _IRI_PATH_SAFE),
+            query = quote(cp.query, safe = _IRI_QUERY_SAFE),
+        )
         pinned_url = urlunparse(cp._replace(netloc = _pinned_netloc(pinned_ips[0], cp.port)))
 
         # Route on the hostname, as _fetch_url_raw does: no NO_PROXY entry matches the
@@ -914,7 +922,7 @@ def safe_fetch_remote_image_sync(
                 )
                 return None
             continue
-        except (urllib.error.URLError, OSError) as _err:
+        except (urllib.error.URLError, OSError, http.client.HTTPException, ValueError) as _err:
             logger.warning(
                 f"{label} failed host=%s err=%s",
                 current_host,
