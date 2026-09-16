@@ -87,3 +87,21 @@ test("the ordering controls and their promise are withheld for diffusion", () =>
     "the help text must not promise ordering for a diffusion model",
   );
 });
+
+// The arrows move the list, but Apply is gated on the config differing from the
+// loaded baseline. A sorting signature made a reorder read as no change, so the
+// control moved the GPUs and could never apply them.
+test("a reorder is a config change, so Apply stays reachable", async () => {
+  const { gpuFieldsSignature } = await import(
+    "../src/features/model-picker/model-config/config-signature.ts"
+  );
+  const base = { selectedGpuIds: [0, 1], selectedGpuIndexKind: "physical" } as never;
+  const swapped = { selectedGpuIds: [1, 0], selectedGpuIndexKind: "physical" } as never;
+  assert.notEqual(
+    gpuFieldsSignature(base),
+    gpuFieldsSignature(swapped),
+    "a reordered pick must not share a signature with the loaded baseline",
+  );
+  const same = { selectedGpuIds: [0, 1], selectedGpuIndexKind: "physical" } as never;
+  assert.equal(gpuFieldsSignature(base), gpuFieldsSignature(same));
+});
