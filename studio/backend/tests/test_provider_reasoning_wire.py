@@ -277,3 +277,26 @@ def test_claude_models_without_extended_thinking_stream_without_a_thinking_field
     assert "thinking" not in body and "output_config" not in body
     body = _body("anthropic", model, **sampling)
     assert "thinking" not in body and "output_config" not in body
+
+
+@pytest.mark.parametrize("model", ["claude-opus-4-10-20260901", "claude-opus-4-15-20260901"])
+def test_a_two_digit_claude_minor_is_not_read_as_the_4_1_spec(model):
+    """`claude-opus-4-1` is a prefix of `claude-opus-4-15`, so an unbounded match sent a model
+    numbered after 4.6 the manual budget shape and dropped xhigh/max."""
+    body = _body("anthropic", model, reasoning_effort = "xhigh", max_tokens = 8192)
+    assert body["thinking"] == {"type": "adaptive", "display": "summarized"}
+    assert body["output_config"] == {"effort": "xhigh"}
+
+
+def test_a_capitalized_claude_id_keeps_its_thinking_spec():
+    """Model ids reach us as typed in a custom model field; the version helpers lowercase, so the
+    spec lookup must too or the id silently loses extended thinking."""
+    body = _body("anthropic", "Claude-Opus-4-1-20250805", reasoning_effort = "low", max_tokens = 8192)
+    assert body["thinking"] == {"type": "enabled", "budget_tokens": 1024}
+
+
+def test_a_non_reasoning_mistral_model_is_left_alone_by_an_effort_of_none():
+    """The catch-all Mistral tail writes reasoning_effort for any model; Mistral documents the
+    parameter for mistral-small-latest and mistral-medium-3-5 only."""
+    body = _body("mistral", "mistral-large-latest", enable_thinking = False, reasoning_effort = "none")
+    assert body["reasoning_effort"] == "none"

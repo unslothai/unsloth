@@ -468,9 +468,29 @@ _ANTHROPIC_THINKING_SPECS = (
 )
 
 
+def _anthropic_spec_prefix_matches(model_lc: str, prefix: str) -> bool:
+    """A spec prefix ends either in a version component ("claude-opus-4-1") or in a truncated
+    release date ("claude-opus-4-2025"). The first must stop at a boundary, or it swallows
+    "claude-opus-4-15" and sends a model numbered after 4.6 the manual budget shape instead of
+    letting `_anthropic_model_newer_than_specs` classify it. The second has to continue into the
+    rest of the date, so only a 4-digit tail is allowed to run on."""
+    if model_lc == prefix:
+        return True
+    if not model_lc.startswith(prefix):
+        return False
+    rest = model_lc[len(prefix) :]
+    if rest.startswith("-"):
+        return True
+    trailing_digits = re.search(r"\d+$", prefix)
+    return bool(trailing_digits and len(trailing_digits.group()) >= 4 and rest[0].isdigit())
+
+
 def _anthropic_thinking_spec(model: str) -> Optional[_AnthropicThinkingSpec]:
+    # Normalized like the version helpers, so a capitalized id keeps its efforts and its
+    # default-on / can-disable flags instead of falling through to no thinking field at all.
+    model_lc = model.strip().lower()
     for spec in _ANTHROPIC_THINKING_SPECS:
-        if model.startswith(spec.prefixes):
+        if any(_anthropic_spec_prefix_matches(model_lc, p) for p in spec.prefixes):
             return spec
     return None
 

@@ -1064,6 +1064,9 @@ function projectCatalogEntry(
       supportsReasoningOff: supportsOff,
       reasoningEffortLevels: ladder,
     }),
+    // After the spread: withReasoningEffortStyle hardcodes reasoningAlwaysOn to false, so a
+    // mandatory catalog model with an effort ladder would lose its always-on state.
+    reasoningAlwaysOn: entry.mandatory,
     defaultEffort,
   };
 }

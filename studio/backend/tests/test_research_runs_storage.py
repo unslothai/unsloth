@@ -4421,3 +4421,10 @@ def test_planner_opt_out_is_only_sent_where_the_model_has_one(research_home, mon
     assert with_off["enable_thinking"] is False and with_off["reasoning_effort"] == "none"
     older_run = planner_payload(reasoningEffort = "high")
     assert older_run["enable_thinking"] is False and older_run["reasoning_effort"] == "none"
+
+    # Mistral documents reasoning_effort for mistral-small-latest and mistral-medium-3-5 only, and the
+    # provider branch now writes it for every model, so the planner opt-out must not reach a
+    # non-reasoning model such as mistral-large-latest.
+    external["providerType"] = "mistral"
+    mistral = planner_payload(supportsReasoning = False, supportsReasoningOff = False)
+    assert "enable_thinking" not in mistral and "reasoning_effort" not in mistral
