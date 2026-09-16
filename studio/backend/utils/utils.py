@@ -120,18 +120,12 @@ def hf_proxy_configured() -> bool:
 
 
 class AuthSafeRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """Redirect policy for requests carrying a Hub token over urllib.
+    """Redirect policy for a urllib request carrying a Hub token.
 
-    urllib's default ``HTTPRedirectHandler`` forwards the request headers to the
-    redirect target, so a mirror answering ``/resolve/`` with a cross-host 302 —
-    or an HTTPS-to-HTTP downgrade — would hand the user's token to a host the
-    operator never configured. Pass this to ``build_opener`` (which replaces
-    the default redirect handler): the Authorization header is dropped as soon
-    as scheme, host or port changes, and a TLS downgrade is not followed at all.
-    Refusing one means returning None, which urllib turns into an ``HTTPError``
-    for the 3xx rather than handing the 3xx back as a response; every probe here
-    catches ``HTTPError`` and reads a non-401/403/404 as "reachable", so the
-    refusal fails open.
+    urllib's default handler copies request headers onto the redirect target, so a
+    mirror's cross-host 302 hands the token to a host the operator never configured.
+    Pass this to ``build_opener``, which then leaves out the default. A refusal
+    surfaces as ``HTTPError`` on the 3xx, which every probe here reads as reachable.
     """
 
     @staticmethod
@@ -148,20 +142,14 @@ class AuthSafeRedirectHandler(urllib.request.HTTPRedirectHandler):
             return None  # no TLS downgrade, whatever the target is
         result = super().redirect_request(req, fp, code, msg, headers, newurl)
         if result is not None and new != old:
-            # Strip from the redirected request, not the caller's. urllib
-            # builds the new Request's headers as a fresh dict, so this drops
-            # the token for the cross-origin hop while the original request
-            # stays reusable with its Authorization intact.
+            # The redirected request, not the caller's: urllib copied req.headers into a
+            # fresh dict, so the original stays reusable.
             result.headers.pop("Authorization", None)
         return result
 
 
 def auth_safe_open(req, timeout):
-    """``urlopen`` through :class:`AuthSafeRedirectHandler` — the single call seam.
-
-    Tests patch THIS (not ``urllib.request.urlopen``) so the redirect policy
-    cannot be bypassed by a refactor that swaps the opener under them.
-    """
+    """The single seam: tests patch THIS, never ``urllib.request.urlopen``."""
     return urllib.request.build_opener(AuthSafeRedirectHandler()).open(req, timeout = timeout)
 
 

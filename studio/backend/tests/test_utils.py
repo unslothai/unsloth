@@ -711,21 +711,11 @@ class TestFormatErrorMessage:
         assert msg == "Something completely unexpected"
 
 
-# ---------------------------------------------------------------------------
-# AuthSafeRedirectHandler
-# ---------------------------------------------------------------------------
-
-
 class TestAuthSafeRedirectHandler:
     """A Hub token must not leave the origin the operator configured.
 
-    urllib's default redirect handler copies the request headers onto the
-    redirect target, so a mirror answering /resolve/ with a cross-host 302 --
-    or an HTTPS-to-HTTP downgrade -- receives the caller's Authorization header.
-    Socket-level cases run over loopback on two ports, which is a real cross-
-    origin redirect on every platform; the scheme cases are driven against
-    redirect_request directly, since a loopback TLS server would need a cert the
-    suite does not carry.
+    Origin cases run over loopback sockets; scheme cases go through redirect_request
+    directly, since a loopback TLS server would need a cert this suite does not carry.
     """
 
     TOKEN = "Bearer hf_FAKE_TOKEN_FOR_TESTS"
@@ -738,10 +728,8 @@ class TestAuthSafeRedirectHandler:
 
         class _Recorder(http.server.BaseHTTPRequestHandler):
             protocol_version = "HTTP/1.0"
-            # BaseHTTPRequestHandler leaves this None, so a connection that is
-            # accepted and then sends nothing -- a port scan on a shared runner --
-            # blocks serve_forever in readline() forever, and BaseServer.shutdown()
-            # waits on that loop with no timeout of its own.
+            # Defaults to None: a connection that sends nothing wedges serve_forever in
+            # readline(), and shutdown() waits on that loop with no timeout of its own.
             timeout = 5
 
             def _handle(self):
@@ -755,11 +743,8 @@ class TestAuthSafeRedirectHandler:
                 self.send_header("Content-Length", "0")
                 self.end_headers()
 
-            # do_GET is NOT dead. Python 3.13 preserves HEAD across a redirect
-            # (`method="HEAD" if m == "HEAD" else "GET"` in redirect_request);
-            # 3.12 and earlier build the redirected Request with no method and it
-            # defaults to GET. Serving only HEAD therefore passes on 3.13 and
-            # answers 501 Unsupported method ('GET') on every 3.12 runner.
+            # do_GET is NOT dead: 3.13 preserves HEAD across a redirect, 3.12 downgrades
+            # it to GET, so HEAD-only answers 501 on every 3.12 runner.
             do_GET = _handle
             do_HEAD = _handle
 
@@ -768,11 +753,8 @@ class TestAuthSafeRedirectHandler:
 
         class _Server(http.server.HTTPServer):
             def server_bind(self):
-                # HTTPServer.server_bind calls socket.getfqdn(), i.e. gethostbyaddr().
-                # conftest's network guard patches getaddrinfo and connect but not
-                # that, so it is the one lookup in here that could reach a resolver
-                # and stall -- on Windows the default hosts file has no 127.0.0.1
-                # line, so it is a real PTR query.
+                # HTTPServer.server_bind calls socket.getfqdn(), which conftest's network
+                # guard does not patch: a real PTR query on Windows, and it can stall.
                 import socketserver
 
                 socketserver.TCPServer.server_bind(self)
@@ -820,7 +802,6 @@ class TestAuthSafeRedirectHandler:
         assert dest.seen and dest.seen[0]["auth"] is None
 
     def test_token_does_not_come_back_on_the_return_hop(self):
-        """A -> B -> A must not re-attach the token once B has been in the chain."""
         ports = {}
         first = self._serve(
             lambda p: (302, f"http://127.0.0.1:{ports['b']}/via") if p == "/start" else (200, None)
@@ -853,17 +834,12 @@ class TestAuthSafeRedirectHandler:
         assert self._redirect("https://hub.example/a", "http://hub.example/a") is None
 
     def test_scheme_change_alone_drops_the_token(self):
-        """Host and port identical, scheme different: still a different origin.
-
-        Stated on an explicit port so the assertion cannot pass on the port
-        difference that http -> https carries by default.
-        """
+        """Explicit port on both sides, so this cannot pass on http/https's port gap."""
         new = self._redirect("http://hub.example:8443/a", "https://hub.example:8443/a")
         assert new is not None
         assert new.headers.get("Authorization") is None
 
     def test_explicit_default_port_is_the_same_origin(self):
-        """https://h/a -> https://h:443/b is one origin, not two."""
         new = self._redirect("https://hub.example/a", "https://hub.example:443/b")
         assert new is not None
         assert new.headers.get("Authorization") == self.TOKEN
@@ -888,17 +864,9 @@ class TestAuthSafeRedirectHandler:
         assert req.headers.get("Authorization") == self.TOKEN
 
     def test_a_refused_redirect_reaches_the_caller_as_an_http_error(self):
-        """The urllib mechanism behind the refusal above, pinned separately.
+        """Stubs the refusal rather than driving it, since that needs an https origin.
 
-        This one does not exercise AuthSafeRedirectHandler -- it stubs the same
-        `return None` that the downgrade branch performs -- because the refusal
-        needs an https origin and a loopback TLS server would need a cert the
-        suite does not carry. What it settles is the caller contract: returning
-        None does NOT leave the 3xx standing as the response, urllib falls
-        through to HTTPDefaultErrorHandler and raises HTTPError for it. Every
-        probe on this opener catches HTTPError and treats a non-401/403/404 as
-        reachable, so the refusal still fails open -- but the shape is an
-        exception, and two of those probes log a mirror warning on it.
+        Settles the caller contract only: returning None raises HTTPError on the 3xx.
         """
         import urllib.error
         import urllib.request

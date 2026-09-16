@@ -2861,9 +2861,7 @@ def _preflight_gated_base(base_model: str, hf_token: Optional[str]) -> None:
     url = f"{get_hf_endpoint()}/{repo}/resolve/main/model_index.json"
     headers = {"Authorization": f"Bearer {hf_token}"} if hf_token else {}
     req = urllib.request.Request(url, method = "HEAD", headers = headers)
-    # A mirror can answer /resolve/ with a cross-host 302; urllib's default
-    # redirect carries the Authorization header along, which would hand the
-    # Hub token to a host the operator never configured.
+    # Not urlopen: a mirror's cross-host 302 would carry this token off-origin.
     try:
         auth_safe_open(req, timeout = 5)
     except urllib.error.HTTPError as e:

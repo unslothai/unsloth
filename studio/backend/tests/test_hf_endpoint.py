@@ -352,11 +352,9 @@ def test_the_environment_is_normalised_for_huggingface_hub(monkeypatch):
 
 
 def test_a_blank_endpoint_is_cleared_rather_than_left_for_the_library(monkeypatch):
-    """huggingface_hub reads os.getenv("HF_ENDPOINT", default), which returns the
-    default only when the key is ABSENT, and its .rstrip("/") does not touch
-    whitespace. Leaving "   " behind therefore gives the library "   " as its
-    endpoint -- every HfApi call fails on an unknown scheme -- while Studio itself
-    serves huggingface.co. datasets/config.py has the same shape."""
+    """huggingface_hub's os.getenv("HF_ENDPOINT", default) falls back only when the key
+    is ABSENT, and its rstrip("/") does not touch whitespace, so "   " reached the
+    library verbatim while Studio served the default. datasets/config.py is the same."""
     for blank in ("", "   ", "\t", "\n", " \t\n "):
         monkeypatch.setenv("HF_ENDPOINT", blank)
         hf_endpoint.normalize_hf_endpoint_env()
