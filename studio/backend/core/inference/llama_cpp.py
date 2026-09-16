@@ -6698,8 +6698,9 @@ class LlamaCppBackend:
         # Reset by _begin_load_warnings so one load's notice is never reported against
         # the next.
         self._last_load_warning: Optional[str] = None
+        # Same, for a quant fallback: the download fills the pair, the launch publishes it.
         self._variant_fallback_warning: Optional[str] = None
-        self._gguf_variant_fallback: Optional[tuple[str, str]] = None
+        self._pending_variant_fallback: Optional[tuple[str, str]] = None
         # Set per launch by _record_carveout_advice; None on nearly every load.
         self._last_carveout_advice: Optional[dict] = None
         self._model_identifier: Optional[str] = None
@@ -13259,7 +13260,7 @@ class LlamaCppBackend:
         return " ".join(notice for notice in notices if notice) or None
 
     def _begin_load_warnings(self) -> None:
-        """Drop the previous load's advisory notice, at the point a load commits to
+        """Drop the previous load's memory notice, at the point a load commits to
         replacing the resident server. Without it a warned load followed by a
         comfortable one would report the first load's notice against the second.
 
@@ -15611,10 +15612,7 @@ class LlamaCppBackend:
     ) -> Optional[tuple[str, int, list[str]]]:
         """Find a GGUF variant (including all shards) smaller than the requested one.
 
-        The largest variant that still leaves ``_DISK_RESERVE_BYTES`` free, else the
-        smallest that fits; a variant already complete in the cache needs no new bytes.
-        Groups split shards by variant prefix and sums their sizes (e.g.
-        UD-Q4_K_XL with 9 shards of 50 GB each = 450 GB total).
+        The largest that leaves ``_DISK_RESERVE_BYTES`` free, else the fewest new bytes.
 
         Returns (first_shard_filename, total_size_bytes, extra_shards) or None.
         """
@@ -15632,8 +15630,7 @@ class LlamaCppBackend:
                 and not _is_companion_gguf_path(f)
                 and not _is_big_endian_gguf_path(f)
             ]
-            # A repo can publish several checkpoints; a smaller quant of another one is
-            # different weights, not a fallback.
+            # A sibling checkpoint's smaller quant is different weights, not a fallback.
             if requested_file is not None:
                 checkpoint = gguf_checkpoint_family(requested_file)
                 gguf_files = [f for f in gguf_files if gguf_checkpoint_family(f) == checkpoint]
@@ -15669,10 +15666,11 @@ class LlamaCppBackend:
                 return None
 
             roomy = [v for v in fitting if v[3] + _DISK_RESERVE_BYTES <= free_bytes]
+            # Only cached variants can tie on new bytes, and the larger costs no more.
             first_file, total_size, extra_shards, _ = (
                 max(roomy, key = lambda v: v[1])
                 if roomy
-                else min(fitting, key = lambda v: (v[3], v[1]))
+                else min(fitting, key = lambda v: (v[3], -v[1]))
             )
             return first_file, total_size, extra_shards
         except Exception:
@@ -17030,7 +17028,7 @@ class LlamaCppBackend:
                             "was loaded instead."
                         )
                         logger.warning(notice)
-                        self._gguf_variant_fallback = (fallback_variant, notice)
+                        self._pending_variant_fallback = (fallback_variant, notice)
                         gguf_filename = fallback_file
                         gguf_extra_shards = fallback_shards
 
@@ -21443,7 +21441,7 @@ class LlamaCppBackend:
                 _paravirtual_cpu_forced and not self.diffusion_split_supported()
             )
             _preflight_model_path = None
-            self._gguf_variant_fallback = None
+            self._pending_variant_fallback = None
             if hf_repo and (_vulkan_ordinal_pin or _cpu_only_pin or _pv_diffusion_unpinnable):
                 _resolved_repo = _resolve_repo_id_casing(hf_repo)
                 if _resolved_repo != hf_repo:
@@ -21627,8 +21625,10 @@ class LlamaCppBackend:
                             hf_token = hf_token,
                             cancel_event = download_cancel_event,
                         )
-                    if self._gguf_variant_fallback:
-                        hf_variant, self._variant_fallback_warning = self._gguf_variant_fallback
+                    if self._pending_variant_fallback:
+                        hf_variant, self._variant_fallback_warning = self._pending_variant_fallback
+                        # Replayed by the respawn and a variant-less Apply, which would re-download.
+                        intent = replace(intent, hf_variant = hf_variant)
                     # Auto-download mmproj for vision models unless opted out. Vision
                     # switched off does NOT opt out: remote discovery calls any mmproj
                     # filename vision, and only the file's metadata separates an image

@@ -593,7 +593,7 @@ class TestLoadReusesCachedCopy:
 
         assert downloaded == ["gemma-test-Q4_K_M.gguf"]
         assert out == f"/fake/{REPO}/gemma-test-Q4_K_M.gguf"
-        variant, notice = backend._gguf_variant_fallback
+        variant, notice = backend._pending_variant_fallback
         assert variant == "Q4_K_M"
         assert "Q8_0" in notice and "Q4_K_M (2.0 GB)" in notice
 
@@ -603,7 +603,7 @@ class TestLoadReusesCachedCopy:
             backend._download_gguf(hf_repo = REPO, hf_variant = "Q8_0")
 
         assert downloaded == ["gemma-test-UD-IQ1_S.gguf"]
-        assert backend._gguf_variant_fallback[0] == "UD-IQ1_S"
+        assert backend._pending_variant_fallback[0] == "UD-IQ1_S"
 
     def test_low_disk_fallback_reuses_cached_variant_before_downloading(self, hf_cache):
         backend = LlamaCppBackend()
@@ -613,6 +613,17 @@ class TestLoadReusesCachedCopy:
 
         assert downloaded == []
         assert out == str(snap / "gemma-test-Q4_K_M.gguf")
+
+    def test_low_disk_fallback_prefers_the_largest_cached_variant_under_the_reserve(self, hf_cache):
+        backend = LlamaCppBackend()
+        snap = _build_cache(
+            hf_cache, REPO, {"gemma-test-Q4_K_M.gguf": 4, "gemma-test-Q6_K.gguf": 4}
+        )
+        with _low_disk_hub(GIB // 2, snap = snap) as downloaded:
+            out = backend._download_gguf(hf_repo = REPO, hf_variant = "Q8_0")
+
+        assert downloaded == []
+        assert out == str(snap / "gemma-test-Q6_K.gguf")
 
     def test_low_disk_fallback_never_picks_a_larger_cached_variant(self, hf_cache):
         backend = LlamaCppBackend()
@@ -633,7 +644,7 @@ class TestLoadReusesCachedCopy:
             backend._download_gguf(hf_repo = REPO, hf_variant = "Q8_0")
 
         assert downloaded == ["gemma-test-Q4_K_M.gguf"]
-        assert backend._gguf_variant_fallback[0] == "Q4_K_M"
+        assert backend._pending_variant_fallback[0] == "Q4_K_M"
 
     def test_low_disk_fallback_ignores_a_truncated_cached_variant(self, hf_cache):
         backend = LlamaCppBackend()
@@ -647,6 +658,19 @@ class TestLoadReusesCachedCopy:
         backend = LlamaCppBackend()
         with _low_disk_hub(GIB // 2), pytest.raises(RuntimeError, match = "any variant"):
             backend._download_gguf(hf_repo = REPO, hf_variant = "Q8_0")
+
+    def test_a_fallback_and_a_memory_notice_are_both_reported(self):
+        backend = LlamaCppBackend()
+        backend._variant_fallback_warning = "Q4_K_M was loaded instead."
+        backend._record_load_warning("The model does not fit in GPU memory.")
+
+        assert backend.last_load_warning == (
+            "Q4_K_M was loaded instead. The model does not fit in GPU memory."
+        )
+
+        # The arch-crash retry calls this again after the download; the teardown clears both.
+        backend._begin_load_warnings()
+        assert backend.last_load_warning == "Q4_K_M was loaded instead."
 
     def test_low_disk_fallback_load_records_the_served_variant(self, hf_cache, tmp_path):
         backend = LlamaCppBackend()
@@ -680,6 +704,8 @@ class TestLoadReusesCachedCopy:
         assert "Q4_K_M" in (backend.last_load_warning or "")
         assert not backend.matches_load_source(requested)
         assert backend.matches_load_source(replace(requested, hf_variant = "Q4_K_M"))
+        # Replayed by the crash respawn, so it must name the quant that is running.
+        assert backend.last_load_intent.hf_variant == "Q4_K_M"
 
         with _low_disk_hub(100 * GIB, served = str(served)):
             assert backend.load_model(requested) is True

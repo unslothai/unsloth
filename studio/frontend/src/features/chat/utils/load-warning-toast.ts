@@ -3,6 +3,7 @@
 
 import { toast } from "@/lib/toast";
 
+/** One id, so the second call REPLACES rather than stacks. */
 export const LOAD_WARNING_TOAST_ID = "model-load-warning";
 
 export function showLoadWarning(warning: string | null | undefined): void {

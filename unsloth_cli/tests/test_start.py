@@ -1609,7 +1609,8 @@ def test_connect_prints_the_running_models_load_warning(fake_studio, monkeypatch
     result = CliRunner().invoke(start.start_app, ["claude", "--no-launch", "--model", MODEL["id"]])
 
     assert result.exit_code == 0, result.output
-    assert f"Warning: {notice}" in result.output
+    assert f"Warning: {notice}" in result.stderr
+    assert f"Warning: {notice}" not in result.stdout
 
 
 def test_connect_skips_the_load_warning_of_another_active_model(fake_studio, monkeypatch):
