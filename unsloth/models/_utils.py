@@ -2544,6 +2544,11 @@ _PER_LAYER_DEVICE_MISSING = object()
 # Shared: `getattr(module, "__dict__", {})` would allocate a dict per layer per token.
 _NO_INSTANCE_DICT = {}
 
+# Deliberately not spelled `_per_layer_device*`: unsloth_zoo publishes those two names and
+# this one is unsloth's own cache of what they resolve to, so the grep that keeps the five
+# readers in step with the publisher should not find it.
+_PER_LAYER_DEVICE_MEMO = "_unsloth_resolved_layer_device"
+
 
 @functools.lru_cache(maxsize = None)
 def _device_type_is_usable(device_type: str) -> bool:
@@ -2628,10 +2633,22 @@ def per_layer_device(module, default = 0):
     moving an activation there destroys it silently. Does NOT fix a layer genuinely on CPU
     while `temp_gates` / `out_weights` sit on an accelerator; that still ends in a loud
     cross-device RuntimeError."""
+    # Fast path, and the only one that matters: the answer memoised on the layer, validated
+    # by identity against the published value it was derived from, so re-placing a model
+    # invalidates it without a version counter. Subscripts inside try, not `.get`: a hit is
+    # the whole point and the `.get` form costs about 25 ns more per lookup.
+    try:
+        published = module.__dict__
+        source, resolved, source_name = published[_PER_LAYER_DEVICE_MEMO]
+        if source is published[source_name] and default == 0:
+            return resolved
+    except (AttributeError, KeyError, TypeError):
+        # No instance dictionary, no memo yet, or the index is gone. Resolve below.
+        published = getattr(module, "__dict__", _NO_INSTANCE_DICT)
+
     # Instance dictionary, not getattr: `nn.Module.__getattr__` scans _parameters, _buffers
     # and _modules before raising, on a path run per layer per token. getattr fallback only
     # when neither name is present, so a class attribute or property still works.
-    published = getattr(module, "__dict__", _NO_INSTANCE_DICT)
     device = published.get("_per_layer_device")
     index = published.get("_per_layer_device_index", _PER_LAYER_DEVICE_MISSING)
     if device is None and index is _PER_LAYER_DEVICE_MISSING:
@@ -2645,6 +2662,15 @@ def per_layer_device(module, default = 0):
         # hashes equal to 0), and an unhashable value must fall through, not raise.
         resolved = _resolved_published_index(index, default)
         if resolved is not None:
+            if default == 0 and published is not _NO_INSTANCE_DICT:
+                # Only this route is memoised on the layer. It depends on the published
+                # value and nothing else, so the identity check on the fast path is a
+                # complete invalidation. The routes below read the module's parameters or
+                # its accelerate hook, which can move without the index changing, so a memo
+                # of those would go stale silently and send activations to a dead device.
+                published[_PER_LAYER_DEVICE_MEMO] = (
+                    index, resolved, "_per_layer_device_index",
+                )
             return resolved
 
     if not isinstance(device, torch.device):
@@ -2674,6 +2700,16 @@ def per_layer_device(module, default = 0):
         # No indexed accelerator, so no buffer of its own: the historical subscript keeps
         # the per-device tuples in range.
         buffer_index = index if isinstance(index, int) and not isinstance(index, bool) else default
+    if default == 0 and published is not _NO_INSTANCE_DICT:
+        # The other memoisable route: a layer that publishes the device itself, which is
+        # what a current unsloth_zoo writes. Only when the answer IS the published object,
+        # so a parameter- or hook-derived one, which can move without the published value
+        # changing, is never memoised.
+        published_device = published.get("_per_layer_device")
+        if published_device is not None and published_device is device:
+            published[_PER_LAYER_DEVICE_MEMO] = (
+                published_device, (device, buffer_index), "_per_layer_device",
+            )
     return device, buffer_index
 
 

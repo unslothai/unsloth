@@ -130,6 +130,60 @@ def test_a_boolean_index_does_not_poison_the_memo_for_zero():
     assert buffer_index == 0
 
 
+def test_a_re_placed_layer_is_not_answered_from_the_memo():
+    """The memo is validated by identity against the published value it came from, so
+    unsloth_zoo re-running `verify_and_set_device` invalidates it with no explicit clear.
+    Without that check a moved model keeps sending activations to the old device."""
+    from unsloth.models._utils import per_layer_device
+
+    layer = _Layer(index = 0, parameter_device = "cpu")
+    per_layer_device(layer)
+    layer._per_layer_device_index = "cpu"
+    device, buffer_index = per_layer_device(layer)
+    assert device == torch.device("cpu"), "the memo survived the index it was derived from"
+    assert buffer_index == 0
+
+
+def test_a_published_device_is_memoised_too():
+    """A current unsloth_zoo publishes the device, not just the index, and that route has to
+    be answered from the memo as well or it pays the full resolution on every token."""
+    from unsloth.models._utils import per_layer_device
+
+    published = torch.device("cpu")
+    layer = _Layer(device = published, index = 0, parameter_device = "cpu")
+    first = per_layer_device(layer)
+    second = per_layer_device(layer)
+    assert first == second == (published, 0)
+    layer._per_layer_device = torch.device("meta")
+    third_device, _ = per_layer_device(layer)
+    assert third_device != torch.device("meta"), (
+        "the memo answered for a device that is no longer published, and meta destroys an "
+        "activation moved to it"
+    )
+
+
+def test_a_hook_derived_answer_is_never_memoised():
+    """A meta layer's real device comes from `AlignDevicesHook.execution_device`, and
+    accelerate moves an offloaded layer between runs without touching `_per_layer_device`.
+    Memoising that answer would keep sending activations to the device it left."""
+    from unsloth.models._utils import per_layer_device
+
+    class _Hook:
+        def __init__(self, execution_device):
+            self.execution_device = execution_device
+
+    layer = _Layer(device = torch.device("meta"), index = 0, parameter_device = "meta")
+    layer._hf_hook = _Hook(torch.device("cpu"))
+    first, _ = per_layer_device(layer)
+    assert first == torch.device("cpu")
+
+    layer._hf_hook.execution_device = torch.device("cpu") if not has_real_cuda() else torch.device(0)
+    second, _ = per_layer_device(layer)
+    assert second == layer._hf_hook.execution_device, (
+        "the memo answered with the device accelerate has already moved this layer off"
+    )
+
+
 def test_the_memo_is_keyed_on_the_default_as_well_as_the_index():
     """An unindexed device takes its buffer subscript from `default`, so the memo has to key
     on both. Keyed on the index alone, the second call here answers with the first call's
