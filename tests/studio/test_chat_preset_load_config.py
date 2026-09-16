@@ -244,6 +244,69 @@ def _split_ternary(expression: str, guards: tuple = ()) -> list:
     return [(expression[question + 1 :].strip(), inner)]
 
 
+def _without_comments(source: str) -> str:
+    """`//` and `/* */` removed, leaving string literals alone.
+
+    A comment is not part of the value an arm returns, so two arms that differ only by one are
+    the same expression and the condition between them steers nothing.
+    """
+    out, index, quote = [], 0, None
+    while index < len(source):
+        char = source[index]
+        if quote is not None:
+            out.append(char)
+            if char == "\\":
+                out.append(source[index + 1 : index + 2])
+                index += 2
+                continue
+            if char == quote:
+                quote = None
+        elif char in "\"'`":
+            quote = char
+            out.append(char)
+        elif source.startswith("//", index):
+            index = source.find("\n", index)
+            if index == -1:
+                break
+            continue
+        elif source.startswith("/*", index):
+            end = source.find("*/", index + 2)
+            index = len(source) if end == -1 else end + 2
+            out.append(" ")
+            continue
+        else:
+            out.append(char)
+        index += 1
+    return "".join(out)
+
+
+def _own_scope_returns(block: str) -> list:
+    """The `return` expressions belonging to this block, not to a function nested in it.
+
+    A helper declared inside a selector returns its own value, which is not what zustand
+    compares, so counting it would reject `{ function n(v) { return v ?? -1; } return
+    n(s.field); }` for reading the field through a helper.
+    """
+    out, depth, index = [], 0, 0
+    while index < len(block):
+        char = block[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+        elif depth == 0 and re.match(r"\breturn\b", block[index:]):
+            end = len(block)
+            for offset in range(index, len(block)):
+                if block[offset] == ";" or (block[offset] == "}" and depth == 0):
+                    end = offset
+                    break
+            out.append(block[index + len("return") : end])
+            index = end
+            continue
+        index += 1
+    return out
+
+
 def _normalised(expression: str) -> str:
     """Whitespace out and `s["x"]` written as `s.x`, so one access has one spelling.
 
@@ -290,6 +353,7 @@ def _selector_reads(selector: str, field: str) -> bool:
     rather than being assumed to be `s`.
     """
 
+    selector = _without_comments(selector)
     signature, read = _selector_signature(selector, field)
     if read is None:
         return False
@@ -303,8 +367,11 @@ def _selector_reads(selector: str, field: str) -> bool:
         # `const v = s.budget; return v ? ... : ...` reads the field through `v`.
         for name, expression in re.findall(r"\b(?:const|let)\s+(\w+)\s*=\s*([^;]+);", block):
             block = re.sub(rf"\b{re.escape(name)}\b", f"({expression})", block)
-        returned = re.findall(r"\breturn\b([^;}]*)", block)
-        results = [result for expression in returned for result in _split_ternary(expression)]
+        results = [
+            result
+            for expression in _own_scope_returns(block)
+            for result in _split_ternary(expression)
+        ]
     else:
         results = _split_ternary(body)
     if not results:
@@ -386,6 +453,12 @@ SELECTOR_CASES = [
     # One access, two spellings: the guard steers nothing if both arms mean the same read.
     ('(s) => s.reasoningBudget ? s.other : s["other"]', False),
     ('(s) => s["reasoningBudget"]', True),
+    # A comment is not part of the value an arm returns.
+    ("(s) => s.reasoningBudget ? s.other : /* same value */ s.other", False),
+    ("(s) => s.reasoningBudget ? s.other : s.another // differs", True),
+    # A helper's own return is not what zustand compares.
+    ("(s) => { function n(v) { return v ?? -1; } return n(s.reasoningBudget); }", True),
+    ("(s) => { function n(v) { return v ?? -1; } return n(s.other); }", False),
 ]
 
 
