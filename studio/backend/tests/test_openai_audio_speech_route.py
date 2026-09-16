@@ -1039,6 +1039,55 @@ def test_an_ordinary_model_id_is_still_recorded_verbatim(monkeypatch):
         assert api_monitor.snapshot(include_details = False)[0]["model"] == requested
 
 
+def test_voice_load_applies_the_managed_account_gate_before_resolving(monkeypatch):
+    """A managed account may only load a model within its grants, and an absent token is
+    the account's own, never the installation's ambient Hub credential. /load and
+    /validate apply both before resolving; /voice/load resolved the caller's identifier
+    with the caller's token first, which made the voice slot a second door past both."""
+    from hub.services.models import account_access
+    from utils import models as models_module
+
+    monkeypatch.setattr(account_access, "managed_account", lambda: True)
+
+    def _resolve_before_gate(*_a, **_k):
+        raise AssertionError("resolved the model before the access check")
+
+    monkeypatch.setattr(models_module.ModelConfig, "from_identifier", _resolve_before_gate)
+
+    def _deny(reference, repo_type = "model"):
+        raise HTTPException(status_code = 403, detail = f"no grant for {reference}")
+
+    monkeypatch.setattr(account_access, "require_model_access", _deny)
+    monkeypatch.setattr(account_access, "account_hf_token", lambda token: "account-token")
+    request = routes_module._VoiceLoadRequest(model_path = "org/private-voice-GGUF")
+    with pytest.raises(HTTPException) as denied:
+        asyncio.run(routes_module.voice_load_model(request, "tester"))
+    assert denied.value.status_code == 403
+
+
+def test_voice_load_resolves_with_the_account_token_not_the_callers(monkeypatch):
+    from hub.services.models import account_access
+    from utils import models as models_module
+
+    seen = {}
+
+    def _resolve(**kwargs):
+        seen.update(kwargs)
+        raise RuntimeError("stop after resolve")
+
+    monkeypatch.setattr(account_access, "managed_account", lambda: True)
+    monkeypatch.setattr(account_access, "require_model_access", lambda *a, **k: None)
+    monkeypatch.setattr(account_access, "account_hf_token", lambda token: "account-token")
+    monkeypatch.setattr(models_module.ModelConfig, "from_identifier", staticmethod(_resolve))
+    request = routes_module._VoiceLoadRequest(
+        model_path = "org/voice-GGUF", hf_token = "callers-own-token"
+    )
+    with pytest.raises(HTTPException) as failed:
+        asyncio.run(routes_module.voice_load_model(request, "tester"))
+    assert failed.value.status_code == 400  # the route wraps the resolve failure
+    assert seen["hf_token"] == "account-token"
+
+
 def test_voice_load_rejects_a_context_above_the_requestable_ceiling():
     """/voice/load models its load as a chat LoadRequest for the training-coexistence
     guard, and that model caps max_seq_length at MAX_REQUESTABLE_CONTEXT. Without the

@@ -17779,6 +17779,15 @@ async def voice_load_model(
     from utils.models import ModelConfig
 
     model_identifier = request.model_path.strip()
+    # The same gate /load and /validate apply, and before anything resolves: in a
+    # managed-account install the caller may only load a model within its grants,
+    # and an absent token is the account's own, never the installation's ambient
+    # Hub credential. Without this the voice slot was a second door past both.
+    if account_access.managed_account():
+        request = request.model_copy(
+            update = {"hf_token": account_access.account_hf_token(request.hf_token)}
+        )
+        await asyncio.to_thread(account_access.require_model_access, model_identifier)
     voice_backend = get_voice_llama_backend()
 
     # Resolve model config — auto-selects GGUF variant when gguf_variant is None,
