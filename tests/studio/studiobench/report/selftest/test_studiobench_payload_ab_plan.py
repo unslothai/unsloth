@@ -223,3 +223,17 @@ def test_one_arm_running_alone_is_never_balanced():
     base_only = [cell for cell in LADDER if ".base." in cell]
     rows = [ROWS[0], _plan("s1", LADDER, balanced = True), *_cells("s1", *base_only)]
     assert _assemble(rows)["ab_plan"]["balanced"] is False
+
+
+def test_the_merged_plan_does_not_claim_one_sessions_identity():
+    """It is a synthesis: `order` spans every session and `balanced` comes from the live ones.
+
+    Keeping `plans[0]`'s `session_id` labelled the result `s1` while `s2` owned every surviving
+    cell and supplied the verdict, which is a field asserting something false.
+    """
+    built = _assemble(RESUMED_ROWS)["ab_plan"]
+    assert "session_id" not in built, built
+    assert "ts_ms" not in built, built
+    assert built["sessions"] == ["s1", "s2"]
+    # The facts that are genuinely the first plan's still come from it.
+    assert built["treatment_ref"] == "bbb"

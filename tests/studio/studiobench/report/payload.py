@@ -309,6 +309,12 @@ def merged_ab_plan(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     if not plans:
         return {}
     plan = dict(plans[0])
+    # The merged object is a synthesis of every session's plan, so the first row's own stamps
+    # would assert it was written by one of them at one moment. `sessions` says who contributed
+    # instead, which is the question those fields were being read for.
+    plan["sessions"] = [row.get("session_id") for row in plans]
+    for stamp in ("session_id", "ts_ms"):
+        plan.pop(stamp, None)
     order: list[Any] = []
     for row in plans:
         for cell_id in row.get("order", []):
