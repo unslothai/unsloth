@@ -677,23 +677,31 @@ def resolve_ctx_checkpoints(args: Optional[Iterable[str]], requested: Optional[i
 
 
 def ctx_checkpoints_within_host_budget(
-    per_checkpoint_bytes: int, n_parallel: int, total_host_bytes: Optional[int]
+    per_checkpoint_bytes: int,
+    n_parallel: int,
+    total_host_bytes: Optional[int],
+    *,
+    upstream_default: Optional[int] = None,
 ) -> int:
-    """Fit checkpoints per slot within the host budget and upstream default.
+    """Fit checkpoints per slot within the host budget and this build's own default.
 
-    Unknown sizes keep the default. The minimum useful count may exceed the target budget.
+    Unknown sizes keep the default. The minimum useful count may exceed the target budget
+    but never the default: this caps what the child would keep, it never raises it.
     """
+    default = (
+        LLAMA_CTX_CHECKPOINTS_DEFAULT if upstream_default is None else max(0, int(upstream_default))
+    )
     if per_checkpoint_bytes <= 0 or not total_host_bytes or total_host_bytes <= 0:
-        return LLAMA_CTX_CHECKPOINTS_DEFAULT
+        return default
     budget = max(
         CTX_CHECKPOINT_HOST_BUDGET_FLOOR_BYTES,
         int(total_host_bytes * CTX_CHECKPOINT_HOST_BUDGET_FRACTION),
     )
     per_round = int(per_checkpoint_bytes) * max(1, int(n_parallel))
     affordable = budget // per_round
-    if affordable >= LLAMA_CTX_CHECKPOINTS_DEFAULT:
-        return LLAMA_CTX_CHECKPOINTS_DEFAULT
-    return max(CTX_CHECKPOINTS_MIN_USEFUL, int(affordable))
+    if affordable >= default:
+        return default
+    return min(default, max(CTX_CHECKPOINTS_MIN_USEFUL, int(affordable)))
 
 
 def effective_ctx_checkpoints(
@@ -704,6 +712,7 @@ def effective_ctx_checkpoints(
     per_checkpoint_bytes: int = 0,
     n_parallel: int = 1,
     total_host_bytes: Optional[int] = None,
+    upstream_default: Optional[int] = None,
 ) -> int:
     """Resolve the child count: extras, field, then the budgeted default."""
     if not supports_flag:
@@ -713,7 +722,9 @@ def effective_ctx_checkpoints(
         return override
     if parse_ctx_checkpoints_override(args) == 0 or requested == 0:
         return 0
-    return ctx_checkpoints_within_host_budget(per_checkpoint_bytes, n_parallel, total_host_bytes)
+    return ctx_checkpoints_within_host_budget(
+        per_checkpoint_bytes, n_parallel, total_host_bytes, upstream_default = upstream_default
+    )
 
 
 def resolve_requested_ctx(args: Optional[Iterable[str]], fallback_n_ctx: int) -> int:

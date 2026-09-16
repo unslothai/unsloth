@@ -10,6 +10,7 @@ import pytest
 from core.inference.llama_cpp import (
     LlamaCppBackend,
     ctx_checkpoints_allocated,
+    ctx_checkpoints_default_for_caps,
     effective_ctx_checkpoints_for_caps,
 )
 from core.inference.llama_server_args import (
@@ -585,3 +586,107 @@ class TestTheCapSurvivesAWindowsDeviceRetry:
         tuning = source.index("_retry_cache_tuning_flags(")
         re_emit = source.rindex("_emit_auto_ctx_checkpoints(cmd)")
         assert strip < tuning < re_emit, "strip, re-decide the tuning, then re-apply the cap"
+
+
+# --------------------------------------------------------------- what THIS build defaults to
+
+
+class TestTheCapNeverRaisesTheBuildsOwnDefault:
+    """The flag shipped at 3 as --swa-checkpoints (ggml-org/llama.cpp#15293) and is 32 now."""
+
+    def _caps_with_default(self, advertised, flag = "--ctx-checkpoints"):
+        return {"found": True, "help_probe_ok": True, "ctx_checkpoints_flag": flag,
+                "ctx_checkpoints_default": advertised}
+
+    @pytest.mark.parametrize(
+        "block, expected",
+        [
+            pytest.param(
+                "-ctxcp, --ctx-checkpoints, --swa-checkpoints N max number of context checkpoints"
+                " to create per slot (default: 32)[(more info)](https://github.com/ggml-org/"
+                "llama.cpp/pull/15293) (env: LLAMA_ARG_CTX_CHECKPOINTS)",
+                32,
+                id = "today-wrapped-across-columns",
+            ),
+            pytest.param(
+                "--swa-checkpoints N max number of SWA checkpoints per slot to create"
+                " (default: 3)",
+                3,
+                id = "as-it-shipped",
+            ),
+            pytest.param(
+                "--ctx-checkpoints N number of context checkpoints (default: 0)", 0, id = "zero"
+            ),
+            pytest.param("--ctx-checkpoints N number of context checkpoints", None, id = "silent"),
+            pytest.param(None, None, id = "no-block"),
+        ],
+    )
+    def test_the_advertised_default_is_read_from_the_help_block(self, block, expected):
+        assert LlamaCppBackend._advertised_int_default(block) == expected
+
+    def test_a_silent_build_falls_back_to_upstreams_default_today(self):
+        assert ctx_checkpoints_default_for_caps({}) == LLAMA_CTX_CHECKPOINTS_DEFAULT
+        assert ctx_checkpoints_default_for_caps(
+            self._caps_with_default(None)
+        ) == LLAMA_CTX_CHECKPOINTS_DEFAULT
+        assert ctx_checkpoints_default_for_caps(self._caps_with_default(3)) == 3
+        assert ctx_checkpoints_default_for_caps(self._caps_with_default(0)) == 0
+
+    def test_a_build_that_keeps_three_is_never_pushed_to_eight(self, monkeypatch):
+        """94 GiB affords 8, but this build would only have kept 3 unflagged."""
+        monkeypatch.setattr(
+            LlamaCppBackend, "_total_system_memory_mib", staticmethod(lambda: 94 * 1024)
+        )
+        backend = _backend()
+        caps = self._caps_with_default(3, flag = "--swa-checkpoints")
+        assert backend._bounded_ctx_checkpoints(4, _caps("--swa-checkpoints")) == 8
+        assert backend._bounded_ctx_checkpoints(4, caps) is None
+
+    def test_a_build_that_disables_them_is_left_disabled(self, monkeypatch):
+        monkeypatch.setattr(
+            LlamaCppBackend, "_total_system_memory_mib", staticmethod(lambda: 94 * 1024)
+        )
+        backend = _backend()
+        caps = self._caps_with_default(0)
+        assert backend._bounded_ctx_checkpoints(4, caps) is None
+        assert effective_ctx_checkpoints_for_caps(
+            caps,
+            None,
+            None,
+            per_checkpoint_bytes = backend._rollback_state_bytes(1),
+            n_parallel = 4,
+            total_host_bytes = 94 * GIB,
+        ) == 0
+
+    def test_a_small_default_still_gets_capped_on_a_tiny_host(self, monkeypatch):
+        """Capping below the build's own default is still allowed, and still floored at 2."""
+        monkeypatch.setattr(
+            LlamaCppBackend, "_total_system_memory_mib", staticmethod(lambda: 4 * 1024)
+        )
+        backend = _backend()
+        assert backend._bounded_ctx_checkpoints(4, self._caps_with_default(3)) == (
+            CTX_CHECKPOINTS_MIN_USEFUL
+        )
+
+    def test_the_floor_never_climbs_above_the_default(self):
+        for default in (0, 1, 2, 3):
+            got = ctx_checkpoints_within_host_budget(
+                int(149.625 * MIB), 4, 1 * GIB, upstream_default = default
+            )
+            assert got <= default, default
+
+    def test_the_priced_count_is_the_builds_own_default_for_a_blank_field(self):
+        for default in (0, 3, 32):
+            caps = self._caps_with_default(default)
+            assert effective_ctx_checkpoints_for_caps(
+                caps, None, None, per_checkpoint_bytes = 0, n_parallel = 4, total_host_bytes = None
+            ) == default
+
+    def test_an_explicit_count_still_outranks_the_advertised_default(self):
+        caps = self._caps_with_default(3)
+        budget = dict(per_checkpoint_bytes = int(149.625 * MIB), n_parallel = 4,
+                      total_host_bytes = 94 * GIB)
+        assert effective_ctx_checkpoints_for_caps(caps, None, 64, **budget) == 64
+        assert effective_ctx_checkpoints_for_caps(
+            caps, ["--ctx-checkpoints", "64"], None, **budget
+        ) == 64

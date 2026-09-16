@@ -4913,6 +4913,14 @@ def ctx_checkpoints_allocated(server_caps: Mapping[str, object]) -> bool:
     return not bool(server_caps.get("help_probe_ok"))
 
 
+def ctx_checkpoints_default_for_caps(server_caps: Mapping[str, object]) -> int:
+    """The count this build keeps unflagged: what it advertised, else upstream's today."""
+    advertised = server_caps.get("ctx_checkpoints_default")
+    if isinstance(advertised, int) and advertised >= 0:
+        return advertised
+    return LLAMA_CTX_CHECKPOINTS_DEFAULT
+
+
 def effective_ctx_checkpoints_for_caps(
     server_caps: Mapping[str, object],
     extra_args: Optional[Iterable[str]],
@@ -4938,6 +4946,7 @@ def effective_ctx_checkpoints_for_caps(
         per_checkpoint_bytes = per_checkpoint_bytes,
         n_parallel = n_parallel,
         total_host_bytes = total_host_bytes if emittable else None,
+        upstream_default = ctx_checkpoints_default_for_caps(server_caps),
     )
 
 
@@ -8387,6 +8396,20 @@ class LlamaCppBackend:
             return True
         return bool(cls._FLASH_ATTN_ENUM_RE.search(help_text))
 
+    _ADVERTISED_DEFAULT_RE = re.compile(r"\(default:\s*(-?\d+)")
+
+    @classmethod
+    def _advertised_int_default(cls, help_block: Optional[str]) -> Optional[int]:
+        """The integer a flag's help block declares as its default, else None.
+
+        llama.cpp wraps the block across columns, so the caller passes the joined
+        text. None means "this build did not say", never a numeric guess.
+        """
+        if not help_block:
+            return None
+        match = cls._ADVERTISED_DEFAULT_RE.search(help_block)
+        return int(match.group(1)) if match else None
+
     @classmethod
     def probe_server_capabilities(cls, binary: Optional[str] = None) -> dict[str, object]:
         """Parse `llama-server --help` for feature flags. Returns
@@ -8436,6 +8459,7 @@ class LlamaCppBackend:
                 "supports_cache_ram": False,
                 "supports_ctx_checkpoints": False,
                 "ctx_checkpoints_flag": None,
+                "ctx_checkpoints_default": None,
                 "supports_no_cache_prompt": False,
                 "supports_metrics": False,
                 "supports_slot_save": False,
@@ -8484,6 +8508,7 @@ class LlamaCppBackend:
         supports_cache_ram = False
         supports_ctx_checkpoints = False
         ctx_checkpoints_flag = None
+        ctx_checkpoints_default = None
         supports_no_cache_prompt = False
         supports_metrics = False
         supports_slot_save = False
@@ -8710,6 +8735,14 @@ class LlamaCppBackend:
                     ctx_checkpoints_flag = _alias
                     break
             supports_ctx_checkpoints = ctx_checkpoints_flag is not None
+            # The count this build keeps when Studio emits nothing. It was 3 when the
+            # flag shipped as --swa-checkpoints (ggml-org/llama.cpp#15293) and is 32
+            # today, so a hardcoded 32 would RAISE the count on an older build instead
+            # of capping it, and price a cache the child never allocates.
+            if ctx_checkpoints_flag:
+                ctx_checkpoints_default = cls._advertised_int_default(
+                    blocks.get(ctx_checkpoints_flag)
+                )
             supports_no_cache_prompt = _is_real("--no-cache-prompt")
             supports_metrics = _is_real("--metrics")
             supports_slot_save = _is_real("--slot-save-path")
@@ -8803,6 +8836,7 @@ class LlamaCppBackend:
             "supports_cache_ram": supports_cache_ram,
             "supports_ctx_checkpoints": supports_ctx_checkpoints,
             "ctx_checkpoints_flag": ctx_checkpoints_flag,
+            "ctx_checkpoints_default": ctx_checkpoints_default,
             "supports_no_cache_prompt": supports_no_cache_prompt,
             "supports_metrics": supports_metrics,
             "supports_slot_save": supports_slot_save,
@@ -14548,21 +14582,25 @@ class LlamaCppBackend:
         if per_checkpoint <= 0:
             return None
         total_ram_mib = self._host_memory_capacity_mib()
+        # This build's own default, not the constant: the flag shipped at 3 and only
+        # later became 32, so capping against 32 would RAISE an older build's count.
+        upstream_default = ctx_checkpoints_default_for_caps(server_caps)
         bounded = ctx_checkpoints_within_host_budget(
             per_checkpoint,
             n_parallel,
             (total_ram_mib * 1024 * 1024) if total_ram_mib else None,
+            upstream_default = upstream_default,
         )
-        if bounded >= LLAMA_CTX_CHECKPOINTS_DEFAULT:
+        if bounded >= upstream_default:
             return None
         logger.info(
-            "Capping llama-server context checkpoints at %d per slot (llama.cpp default %d): "
+            "Capping llama-server context checkpoints at %d per slot (this build's default %d): "
             "each one snapshots this model's whole recurrent state (%.1f MiB), so the default "
             "would hold %.1f GiB of host RAM across %d slot(s).",
             bounded,
-            LLAMA_CTX_CHECKPOINTS_DEFAULT,
+            upstream_default,
             per_checkpoint / (1024**2),
-            LLAMA_CTX_CHECKPOINTS_DEFAULT * per_checkpoint * max(1, n_parallel) / (1024**3),
+            upstream_default * per_checkpoint * max(1, n_parallel) / (1024**3),
             max(1, n_parallel),
         )
         return bounded
