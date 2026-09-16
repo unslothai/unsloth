@@ -37,6 +37,57 @@ _MLX_INSTALL_SPECS = {
     "mlx-vlm": ">=0.4.4,<=0.7.1",
 }
 MLX_PACKAGES = tuple(f"{name}{spec}" for name, spec in _MLX_INSTALL_SPECS.items())
+
+
+def _zoo_declared_specifier(package: str) -> str:
+    """The version range the INSTALLED unsloth-zoo declares for `package`, or "".
+
+    The specs above track the zoo in the repository, but the self-heal runs against whatever zoo is on
+    the machine, and it never upgrades it. mlx-vlm 0.7.1 passes `cache` to `gated_delta_update`, which a
+    zoo predating that keyword does not accept, so admitting 0.7.1 next to an older zoo raises TypeError
+    at the first Qwen3.5 VLM training step, after mlx_stack_available() has already cleared the
+    chat-only gate. Reading the installed zoo's own requirement is what keeps the two in step without
+    naming a zoo version here: it widens on its own the moment a zoo that declares 0.7.1 is installed.
+    """
+    try:
+        from importlib.metadata import requires
+    except ImportError:  # pragma: no cover - importlib.metadata is stdlib on every supported Python
+        return ""
+    try:
+        from packaging.requirements import Requirement
+        from packaging.utils import canonicalize_name
+    except ImportError:
+        return ""
+    try:
+        declared = requires("unsloth_zoo") or ()
+    except Exception:
+        # Not installed, or metadata unreadable. Either way there is no zoo constraint to honour.
+        return ""
+    wanted = canonicalize_name(package)
+    for raw in declared:
+        try:
+            requirement = Requirement(raw)
+        except Exception:
+            continue
+        if canonicalize_name(requirement.name) == wanted and str(requirement.specifier):
+            return str(requirement.specifier)
+    return ""
+
+
+def _install_packages() -> tuple[str, ...]:
+    """MLX_PACKAGES, with mlx-vlm narrowed to what the installed unsloth-zoo declares.
+
+    Only mlx-vlm: it is the one whose call shape the zoo has to match, and mlx/mlx-lm are pinned
+    exactly at both ends, so intersecting those would just empty the range on any zoo a patch release
+    behind. Both specifiers are passed and uv intersects them.
+    """
+    packages = []
+    for name, spec in _MLX_INSTALL_SPECS.items():
+        declared = _zoo_declared_specifier(name) if name == "mlx-vlm" else ""
+        packages.append(f"{name}{spec},{declared}" if declared else f"{name}{spec}")
+    return tuple(packages)
+
+
 _MLX_REINSTALL_ARGS = tuple(
     arg for name in _MLX_PACKAGE_NAMES for arg in ("--reinstall-package", name)
 )
@@ -287,12 +338,13 @@ def attempt_mlx_repair(*, timeout: int = _REPAIR_TIMEOUT_S) -> bool:
     constraint_path = None
     try:
         constraint_args, constraint_path = _transformers_constraint_args()
+        packages = _install_packages()
         cmd = _uv_install_cmd(
             "--upgrade",
             _ONLY_BINARY_ARG,
             *_MLX_REINSTALL_ARGS,
             *constraint_args,
-            *MLX_PACKAGES,
+            *packages,
         )
         if cmd is None:
             logger.warning(
@@ -300,7 +352,7 @@ def attempt_mlx_repair(*, timeout: int = _REPAIR_TIMEOUT_S) -> bool:
                 "staying chat-only. Run `unsloth studio update` to restore uv."
             )
             return False
-        logger.info("MLX self-heal: installing %s", ", ".join(MLX_PACKAGES))
+        logger.info("MLX self-heal: installing %s", ", ".join(packages))
         # Before the wait, not after: every package is passed with --reinstall-package, so uv removes and replaces them as it goes and a timeout or a non-zero exit part way through leaves a stack neither the one detection measured nor the one asked for. Nothing before this line touches the environment.
         _environment_mutated = True
         result = subprocess.run(

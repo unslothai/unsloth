@@ -74,6 +74,39 @@ def test_uv_cmd_targets_this_interpreter_with_mlx_packages(monkeypatch):
         assert spec.startswith("=="), f"{name} must be pinned, not floored: got {spec}"
 
 
+def test_install_narrows_mlx_vlm_to_what_the_installed_zoo_declares(monkeypatch):
+    # An mlx-vlm the installed zoo excludes must not be installed unattended: 0.7.1 passes
+    # `cache` to gated_delta_update and an older zoo's patch does not take it, so training
+    # raises TypeError after mlx_stack_available() has already cleared the chat-only gate.
+    monkeypatch.setattr(
+        mr, "_zoo_declared_specifier", lambda name: "<0.7.0,>=0.4.4" if name == "mlx-vlm" else ""
+    )
+    packages = mr._install_packages()
+    vlm = next(p for p in packages if p.startswith("mlx-vlm"))
+    assert "<0.7.0" in vlm
+    # mlx and mlx-lm are pinned at both ends, so they are left alone: intersecting them with a
+    # zoo one patch release behind would empty the range and break every self-heal.
+    assert "mlx==0.32.2" in packages
+    assert "mlx-lm==0.31.3" in packages
+
+
+def test_install_keeps_the_full_range_when_the_zoo_declares_nothing(monkeypatch):
+    # No zoo installed, or unreadable metadata: there is no constraint to honour.
+    monkeypatch.setattr(mr, "_zoo_declared_specifier", lambda _name: "")
+    assert mr._install_packages() == mr.MLX_PACKAGES
+
+
+def test_zoo_declared_specifier_reads_the_real_requirement(monkeypatch):
+    monkeypatch.setattr(
+        mr,
+        "_zoo_declared_specifier",
+        mr._zoo_declared_specifier,
+    )
+    # Markers and ordering are the installed zoo's business; only the range comes back.
+    spec = mr._zoo_declared_specifier("mlx-vlm")
+    assert spec == "" or all(part[0] in "<>=!~" for part in spec.split(","))
+
+
 def test_uv_executable_finds_installer_location_when_path_is_minimal(monkeypatch, tmp_path):
     uv = tmp_path / ".local" / "bin" / "uv"
     uv.parent.mkdir(parents = True)
@@ -142,8 +175,11 @@ def test_repair_install_pins_transformers_and_cleans_up(monkeypatch):
     reinstall_pairs = set(zip(cmd, cmd[1:]))
     for name in mr._MLX_PACKAGE_NAMES:
         assert ("--reinstall-package", name) in reinstall_pairs
-    for pkg in mr.MLX_PACKAGES:
+    # Not MLX_PACKAGES verbatim: mlx-vlm carries the installed zoo's range appended to ours.
+    for pkg in mr._install_packages():
         assert pkg in cmd
+    for pkg in mr.MLX_PACKAGES:
+        assert any(sent.startswith(pkg) for sent in cmd), pkg
     assert created_paths and not Path(created_paths[0]).exists()
     # The install mirrors the main installer by relaxing the transformers pin via
     # UV_OVERRIDE so a current mlx-vlm can coexist with the Unsloth Transformers pin.
