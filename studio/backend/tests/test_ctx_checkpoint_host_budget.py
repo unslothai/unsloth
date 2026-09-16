@@ -965,17 +965,33 @@ class TestTheGuardOnlyDropsHostBytesFromADiscretePool:
             LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: unified)
         )
 
-    def test_a_discrete_cuda_host_keeps_the_subtraction(self, monkeypatch):
+    def _cuda(self, monkeypatch, *, probe_free, integrated):
         monkeypatch.setattr(LlamaCppBackend, "_torch_is_rocm", staticmethod(lambda _t: False))
         monkeypatch.setattr(
-            LlamaCppBackend, "_integrated_cuda_gpu_ids", staticmethod(lambda: set())
+            LlamaCppBackend, "_integrated_cuda_probe_is_free", staticmethod(lambda: probe_free)
         )
+
+        def _must_not_probe():
+            raise AssertionError("must not probe CUDA while training holds the card")
+
+        monkeypatch.setattr(
+            LlamaCppBackend,
+            "_integrated_cuda_gpu_ids",
+            staticmethod((lambda: integrated) if probe_free else _must_not_probe),
+        )
+
+    def test_a_discrete_cuda_host_keeps_the_subtraction(self, monkeypatch):
+        self._cuda(monkeypatch, probe_free = True, integrated = set())
         assert self._shares(is_vulkan_backend = False, requested_gpu_ids = [0]) is False
 
     def test_an_integrated_cuda_part_shares(self, monkeypatch):
         """Jetson and DGX Spark set cudaDeviceProp::integrated and have one pool."""
-        monkeypatch.setattr(LlamaCppBackend, "_torch_is_rocm", staticmethod(lambda _t: False))
-        monkeypatch.setattr(LlamaCppBackend, "_integrated_cuda_gpu_ids", staticmethod(lambda: {0}))
+        self._cuda(monkeypatch, probe_free = True, integrated = {0})
+        assert self._shares(is_vulkan_backend = False, requested_gpu_ids = [0]) is True
+
+    def test_an_uncached_cuda_classification_is_never_probed_for(self, monkeypatch):
+        """The probe pins ~700 MiB per card for the process, and training holds them."""
+        self._cuda(monkeypatch, probe_free = False, integrated = set())
         assert self._shares(is_vulkan_backend = False, requested_gpu_ids = [0]) is True
 
     def test_a_rocm_apu_shares_whether_or_not_it_is_pinned(self, monkeypatch):

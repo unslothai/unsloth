@@ -11092,7 +11092,13 @@ def _admission_pool_shares_host_ram(
                 return True
             unified = LlamaCppBackend._rocm_unified_memory_gpu_ids()
         else:
-            # Jetson and DGX Spark class parts are CUDA and unified too.
+            # Jetson and DGX Spark class parts are CUDA and unified too, but NEVER probe
+            # for them here: _integrated_cuda_gpu_ids pins a ~700 MiB primary context per
+            # visible card for the life of the process, and this runs while training
+            # holds those cards. Read a classification only if one is already cached,
+            # else keep the charge, which is this guard's own default-deny.
+            if not LlamaCppBackend._integrated_cuda_probe_is_free():
+                return True
             unified = LlamaCppBackend._integrated_cuda_gpu_ids()
         if not unified:
             return False
