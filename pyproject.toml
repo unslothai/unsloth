@@ -208,10 +208,12 @@ huggingfacenotorch = [
     "accelerate>=0.34.1",
     "peft>=0.18.0,!=0.11.0",
     "huggingface_hub>=0.34.0",
-    # No win_arm64 wheel; hf_xet covers fast downloads there.
+    # No win_arm64 wheel; only imported under HF_HUB_ENABLE_HF_TRANSFER=1, and hf_xet
+    # covers fast downloads there.
     "hf_transfer ; sys_platform != 'win32' or platform_machine != 'ARM64'",
     # 0.39 is the floor the diffusion pipelines assume (Krea 2, Flux2, Z-Image).
-    # diffusers dropped 3.9 in 0.37, so the floor only applies on 3.10+.
+    # diffusers dropped 3.9 in 0.37, so the floor only applies on 3.10+. The MiniMax-H3
+    # commit pin lives in the installer requirements: PyPI rejects VCS refs in wheel metadata.
     "diffusers>=0.39.0 ; python_version >= '3.10'",
     "diffusers ; python_version < '3.10'",
     "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.5.0",
@@ -220,7 +222,8 @@ huggingfacenotorch = [
 ]
 # torchcodec for Gemma audio / datasets>=4 (#7225); pick the audio-torch* matching
 # your torch minor. Markers gate on the platforms torchcodec ships wheels for
-# (PLATFORM_LACKS_TORCHCODEC_WHEEL). soundfile and PyAV are the decode fallback.
+# (PLATFORM_LACKS_TORCHCODEC_WHEEL). soundfile and PyAV are the decode fallback
+# when torchcodec installs but cannot load; PyAV < 12.3 needs numpy < 2.
 audio-torch211 = [
     "torchcodec>=0.11.0,<0.12.0 ; python_version >= '3.10' and python_version < '3.15' and (((sys_platform == 'linux' or sys_platform == 'win32') and (platform_machine == 'x86_64' or platform_machine == 'AMD64')) or (sys_platform == 'linux' and platform_machine == 'aarch64') or (sys_platform == 'darwin' and platform_machine == 'arm64'))",
     "soundfile>=0.12.1 ; python_version >= '3.10' and python_version < '3.15' and (((sys_platform == 'linux' or sys_platform == 'win32') and (platform_machine == 'x86_64' or platform_machine == 'AMD64')) or (sys_platform == 'linux' and platform_machine == 'aarch64') or (sys_platform == 'darwin' and platform_machine == 'arm64'))",
@@ -248,8 +251,10 @@ huggingface = [
     "unsloth[triton]",
 ]
 # xFormers' Windows wheels are per-CUDA-family and no marker can see which torch
-# is resident, so this extra is CUDA-agnostic and deliberately uncapped. Use a
-# cuXXX-torchYYY extra with the matching --index-url for a CUDA match. (#8156)
+# is resident, so this extra is CUDA-agnostic and deliberately uncapped. For a
+# CUDA match use a cuXXX-torchYYY extra with the matching --index-url; the index
+# is not optional, since those extras pin no torch and PyPI's Windows torch is
+# CPU-only. install.ps1 picks its own wheel and never reaches this extra. (#8156)
 windows = [
     "unsloth[huggingface]",
     # bitsandbytes ships a win_arm64 wheel from 0.50.0, so this row covers it.
@@ -496,7 +501,8 @@ cu130onlytorch2100 = [
     "xformers @ https://download.pytorch.org/whl/cu130/xformers-0.0.34-cp39-abi3-win_amd64.whl ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
 ]
 cu126onlytorch2110 = [
-    # Pin the trio to +cuNNN: torch 2.11+ defaults to CUDA 13 and xformers 0.0.35 does not pin torch.
+    # Pin the trio to +cuNNN: torch 2.11+ defaults to CUDA 13 and xformers 0.0.35 does
+    # not pin torch. == (not ===) so the +cu126 local version still wins under PEP 440.
     "torch==2.11.0+cu126",
     "torchvision==0.26.0+cu126",
     "torchaudio==2.11.0+cu126",
@@ -1639,5 +1645,6 @@ markers = [
 ]
 
 # CI runs gpu/slow in their own leg; pass `-m gpu` (or `-m server` for live
-# Studio tests) to get them back locally.
+# Studio tests) to get them back locally. Naming one of those files directly
+# reports "no tests ran" until you do.
 addopts = "-m 'not gpu and not slow and not server'"
