@@ -2230,6 +2230,7 @@ async def get_model_config(
     header_hf_token: Optional[str] = Depends(get_hf_token),
     allow_ambient_token: bool = Depends(allow_ambient_hf_token),
     current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     """Get configuration for a specific model (wraps load_model_defaults)."""
     # An inventory listing shows a filesystem-backed row to an API-key caller under an opaque
@@ -2376,9 +2377,17 @@ async def get_model_config(
         # The answer carries the handle back rather than the path it stood for: the details
         # are built out of what was asked for, so a caller who may not see host paths would
         # otherwise read the path out of the very lookup it performed with the reference.
-        from hub.utils.host_paths import restore_inventory_handles
+        # Restored first, then redacted. The restoration puts back the handle the CALLER
+        # sent; the redaction covers a second path the caller never named -- a LoRA whose
+        # `base_model_name_or_path` is another absolute local path, which this lookup reports
+        # verbatim, so the ordinary config lookup handed back host layout the caller only had
+        # one reference for.
+        from hub.utils.host_paths import redact_host_paths, restore_inventory_handles
 
-        return restore_inventory_handles(await asyncio.to_thread(_resolve, model_name))
+        return redact_host_paths(
+            restore_inventory_handles(await asyncio.to_thread(_resolve, model_name)),
+            via_api_key = via_api_key,
+        )
 
     except HTTPException:
         raise

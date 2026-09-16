@@ -1717,3 +1717,49 @@ def test_the_chat_status_does_not_hand_back_the_path_the_load_resolved(monkeypat
         inference_routes.inference_status(current_subject = "alice", via_api_key = False)
     )
     assert ui.model_identifier == REPO_DIR
+
+
+def test_a_lora_base_model_path_is_referenced_not_returned():
+    """The second path in the answer, which the caller never named.
+
+    `/api/models/config/<ref>` resolves the caller's handle so the lookup can read the
+    checkpoint, and reports the LoRA's `base_model_name_or_path` verbatim. Restoration knows
+    only the path it resolved, so the base path went out whole: host layout recovered through
+    an ordinary config lookup. The inventory rows keep their existing treatment, since there
+    the sibling `base_model_source` decides it and a blank is what those rows carry.
+    """
+    base = f"{HOST_ROOT}/my models/Llama-3.2-1B"
+    details = {"id": "ref:whatever", "is_lora": True, "base_model": base}
+    redacted = host_paths.redact_host_paths(details, via_api_key = True)
+    assert HOST_ROOT not in json.dumps(redacted), redacted
+    # Referenced, not blanked: nothing else in this answer names the base, and the reference
+    # is what the caller can hand back.
+    assert redacted["base_model"] == host_paths.cache_reference(base)
+    # A repo id is not a path and is never touched.
+    assert host_paths.redact_host_paths(
+        {"base_model": "unsloth/Llama-3.2-1B"}, via_api_key = True
+    )["base_model"] == "unsloth/Llama-3.2-1B"
+    # The browser session still sees its own machine.
+    assert host_paths.redact_host_paths(details, via_api_key = False)["base_model"] == base
+
+
+def test_the_model_details_route_takes_the_caller_class():
+    """A route that resolves a handle and answers without the redaction is how the first one
+    got out."""
+    import inspect
+
+    source = inspect.getsource(models_routes.get_model_config)
+    assert "via_api_key: bool = Depends(authenticated_via_api_key)" in source
+    assert "redact_host_paths(" in source
+    assert "restore_inventory_handles(await asyncio.to_thread(_resolve, model_name))" in source
+
+
+def test_the_upgrade_check_answers_with_the_handle_it_was_sent():
+    """The ordinary training preflight. The validator resolves the reference so the check can
+    read the checkpoint, and the response echoes `model_name` straight back."""
+    import inspect
+
+    from routes import inference as inference_routes
+
+    source = inspect.getsource(inference_routes)
+    assert "model_name = restore_inventory_handles(model_name)," in source

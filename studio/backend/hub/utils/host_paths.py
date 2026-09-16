@@ -410,6 +410,19 @@ def _redact(payload: Any, *, redact_ambiguous_path: bool) -> Any:
                 out[key] = _referenced_inventory_id(value)
                 continue
             if (
+                key == HOST_PATH_CONDITIONAL_FIELD
+                and not base_model_is_local
+                and _identity_value_is_a_path(value)
+            ):
+                # A row with no `base_model_source` beside it -- the model-details lookup,
+                # which reports a LoRA's `base_model_name_or_path` verbatim -- still says
+                # plainly what it is when the VALUE is an absolute path. Referenced rather
+                # than blanked, because unlike the inventory row above there is nothing else
+                # in this answer naming the base, and the reference is the handle the caller
+                # can hand back.
+                out[key] = _referenced_identity(value)
+                continue
+            if (
                 key in HOST_PATH_SCALAR_FIELDS
                 or (redact_ambiguous_path and key == HOST_PATH_AMBIGUOUS_FIELD)
                 or (base_model_is_local and key == HOST_PATH_CONDITIONAL_FIELD)

@@ -16902,8 +16902,14 @@ async def check_transformers_upgrade_route(
         install_breaks_exact_resume = await asyncio.to_thread(
             _install_breaks_exact_resume, request.resume_run_id
         )
+    # The handle goes back out as the handle. The request validator resolved the caller's
+    # opaque reference into an absolute path so the preflight could read the checkpoint, and
+    # this response echoes it: without the restoration the ordinary training preflight hands
+    # an API-key caller the path the inventory redaction exists to hide.
+    from hub.utils.host_paths import restore_inventory_handles
+
     return TransformersUpgradeCheckResponse(
-        model_name = model_name,
+        model_name = restore_inventory_handles(model_name),
         requires_transformers_upgrade = transformers_upgrade is not None,
         transformers_upgrade = transformers_upgrade,
         # Already booleans: False, or the preflight's own bool result. Re-wrapping the
