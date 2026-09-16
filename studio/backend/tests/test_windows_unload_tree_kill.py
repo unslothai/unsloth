@@ -624,8 +624,9 @@ def test_the_surviving_root_fallback_does_not_re_expand_the_tree(monkeypatch):
 
     monkeypatch.setattr(pl, "_windows_terminate_tree", _no_tree)
     monkeypatch.setattr(
-        pl, "_windows_collect_descendants_known",
-        lambda pid: ([(600, "0:600")], True) if pid == 500 else ([], True)
+        pl,
+        "_windows_collect_descendants_known",
+        lambda pid: ([(600, "0:600")], True) if pid == 500 else ([], True),
     )
     dead: "set[int]" = set()
     killed = []
@@ -661,8 +662,9 @@ def test_the_surviving_root_fallback_keeps_the_record_when_something_lives(monke
     monkeypatch.setattr(pl, "_write_breadcrumb", lambda: None)
     monkeypatch.setattr(pl, "_group_has_members", lambda pgid: False)
     monkeypatch.setattr(
-        pl, "_windows_collect_descendants_known",
-        lambda pid: ([(600, "0:600")], True) if pid == 500 else ([], True)
+        pl,
+        "_windows_collect_descendants_known",
+        lambda pid: ([(600, "0:600")], True) if pid == 500 else ([], True),
     )
     monkeypatch.setattr(pl, "_windows_terminate_pid", lambda pid: True)
 
@@ -882,7 +884,7 @@ def test_a_walk_that_failed_partway_is_not_a_table(monkeypatch):
     assert "ctypes.get_last_error() != ERROR_NO_MORE_FILES" in body
     # And the branch returns None, which is what `known` is derived from, rather than the
     # partial table.
-    error_branch = body[body.index("ctypes.get_last_error()"):]
+    error_branch = body[body.index("ctypes.get_last_error()") :]
     assert error_branch.split("\n")[1].strip() == "return None", error_branch.split("\n")[1]
 
 
@@ -958,7 +960,8 @@ def test_a_live_unverifiable_descendant_is_an_incomplete_tree_kill(monkeypatch):
     monkeypatch.setattr(pl, "_pid_is_zombie", lambda pid: False)
     monkeypatch.setattr(pl, "_windows_terminate_pid", lambda pid: True)
     monkeypatch.setattr(
-        pl, "_windows_collect_descendants_known",
+        pl,
+        "_windows_collect_descendants_known",
         lambda pid: ([(600, "0:600")], True) if pid == 500 else ([], True),
     )
     # The root dies, the descendant survives, and its identity is unreadable NOW.
