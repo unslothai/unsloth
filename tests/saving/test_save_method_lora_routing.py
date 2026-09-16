@@ -696,9 +696,7 @@ def test_the_lora_docstring_does_not_promise_an_adapter_only_directory():
         assert "no base-model weights" in promise, promise
 
 
-@pytest.mark.parametrize(
-    "spelling", ["lora", "LoRA", " lora ", "  LORA", "lora\t", " Lora "]
-)
+@pytest.mark.parametrize("spelling", ["lora", "LoRA", " lora ", "  LORA", "lora\t", " Lora "])
 def test_the_sentence_transformer_normaliser_keeps_whitespace_aliases_recognisable(spelling):
     """`_normalize_save_method` runs BEFORE the adapter guard, so it must not turn a
     spelling `_is_adapter_save_method` accepts into one it does not.
@@ -733,7 +731,6 @@ def test_the_sentence_transformer_normaliser_keeps_whitespace_aliases_recognisab
 )
 def test_the_sentence_transformer_normaliser_is_otherwise_unchanged(spelling, expected):
     from unsloth.models.sentence_transformer import _normalize_save_method
-
     assert _normalize_save_method(spelling) == expected
 
 
@@ -752,12 +749,12 @@ def test_the_docstrings_describe_none_as_the_stronger_safetensors_request():
     save_py = Path(__file__).resolve().parents[2] / "unsloth" / "save.py"
     source = save_py.read_text(encoding = "utf-8")
 
-    assert "`None` is accepted and means the same thing" not in source, (
-        "a docstring still equates None with the default True"
-    )
-    assert source.count("`None` is stronger than the default") == 4, (
-        "all four save_method docstrings have to describe None the same way"
-    )
+    assert (
+        "`None` is accepted and means the same thing" not in source
+    ), "a docstring still equates None with the default True"
+    assert (
+        source.count("`None` is stronger than the default") == 4
+    ), "all four save_method docstrings have to describe None the same way"
     # The behaviour the prose describes, read from the code rather than trusted.
     assert "elif safe_serialization and (n_cpus <= 2):" in source
     assert "if _force_safe_serialization:" in source
@@ -776,7 +773,8 @@ def _wrapped_model_save_pretrained(original):
     source = inspect.getsource(save_module.patch_saving_functions)
     tree = ast.parse(textwrap.dedent(source))
     node = next(
-        n for n in ast.walk(tree)
+        n
+        for n in ast.walk(tree)
         if isinstance(n, ast.FunctionDef) and n.name == "unsloth_model_save_pretrained"
     )
     module = ast.Module(body = [node], type_ignores = [])
@@ -794,7 +792,12 @@ def test_a_positional_none_is_normalised_on_a_peft_style_signature():
     keyword form and used to reach peft as a falsy value, writing adapter_model.bin."""
     seen = {}
 
-    def peft_like(save_directory, safe_serialization = True, selected_adapters = None, **kwargs):
+    def peft_like(
+        save_directory,
+        safe_serialization = True,
+        selected_adapters = None,
+        **kwargs,
+    ):
         seen["safe_serialization"] = safe_serialization
         seen["save_directory"] = save_directory
 
@@ -810,7 +813,12 @@ def test_a_positional_second_argument_that_is_not_safe_serialization_is_untouche
     rewriting index 1 would corrupt an ordinary transformers call."""
     seen = {}
 
-    def transformers_like(save_directory, is_main_process = True, state_dict = None, **kwargs):
+    def transformers_like(
+        save_directory,
+        is_main_process = True,
+        state_dict = None,
+        **kwargs,
+    ):
         seen["is_main_process"] = is_main_process
         seen["kwargs"] = kwargs
 
@@ -824,7 +832,11 @@ def test_an_explicit_positional_false_still_writes_a_pickle():
     """NEGATIVE CONTROL: only None is rewritten. False is a request, not the default."""
     seen = {}
 
-    def peft_like(save_directory, safe_serialization = True, **kwargs):
+    def peft_like(
+        save_directory,
+        safe_serialization = True,
+        **kwargs,
+    ):
         seen["safe_serialization"] = safe_serialization
 
     _wrapped_model_save_pretrained(peft_like)("out_dir", False)
