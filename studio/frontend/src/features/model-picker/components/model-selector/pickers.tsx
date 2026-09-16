@@ -2257,16 +2257,24 @@ function GgufVariantExpander({
                 }
               />
             )}
-            {(v.downloaded || v.partial === true) &&
-              (allowPin ||
+            {/* The cache/pin/update/delete actions only mean something once a variant exists on
+                disk, but Model info is exactly what a user wants *before* downloading: it is
+                where the licence verdict lives. So an undownloaded variant still gets a menu,
+                carrying info alone. Local paths are excluded — they have no Hub entry to read
+                (issue #11033 review). */}
+            {(v.downloaded || v.partial === true
+              ? allowPin ||
                 (v.update_available && onUpdateVariant) ||
                 onDeleteVariant ||
-                !isLocalPath) && (
+                !isLocalPath
+              : !isLocalPath) && (
                 <ModelRowMenu
                   ariaLabel={`More options for ${repoId} ${v.quant}`}
                   iconClassName="size-3"
                   cachePath={
-                    isLocalPath ? undefined : { repoId, variant: v.quant }
+                    isLocalPath || !(v.downloaded || v.partial === true)
+                      ? undefined
+                      : { repoId, variant: v.quant }
                   }
                   info={isLocalPath ? undefined : { repoId }}
                   pin={
@@ -2304,7 +2312,7 @@ function GgufVariantExpander({
                       : undefined
                   }
                   del={
-                    onDeleteVariant
+                    onDeleteVariant && (v.downloaded || v.partial === true)
                       ? {
                           title: deleteVariantTitle,
                           impact: { repoId, variant: v.quant },

@@ -107,3 +107,29 @@ test("the dialog renders facts rather than deriving them", () => {
     "formatting logic leaked into the dialog",
   );
 });
+
+// The licence verdict is most useful *before* a download commits several gigabytes, so the
+// menu can no longer sit entirely behind the downloaded/partial guard. An undownloaded
+// variant still gets a menu carrying info alone (issue #11033 review).
+test("an undownloaded variant still offers Model info", () => {
+  assert.match(
+    PICKERS,
+    /v\.downloaded \|\| v\.partial === true\s*\n?\s*\?[\s\S]{0,200}?:\s*!isLocalPath\)\s*&&\s*\(/,
+    "the variant row menu should fall back to an info-only menu when not downloaded",
+  );
+});
+
+// The flip side: a variant that is not on disk has nothing to reveal in a file manager and
+// nothing to delete, so those actions must not ride along with the info-only menu.
+test("disk-only actions stay behind the downloaded guard", () => {
+  assert.match(
+    PICKERS,
+    /isLocalPath \|\| !\(v\.downloaded \|\| v\.partial === true\)\s*\n?\s*\?\s*undefined/,
+    "cachePath should be withheld for a variant that is not on disk",
+  );
+  assert.match(
+    PICKERS,
+    /onDeleteVariant && \(v\.downloaded \|\| v\.partial === true\)/,
+    "delete should be withheld for a variant that is not on disk",
+  );
+});

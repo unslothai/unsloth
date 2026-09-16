@@ -57,9 +57,29 @@ test("non-commercial and research-only grants are restricted", () => {
 });
 
 test("proprietary terms do not grant redistribution", () => {
-  for (const slug of ["proprietary", "other"]) {
-    assert.equal(classifyLicense(slug).openness, "proprietary", slug);
+  assert.equal(classifyLicense("proprietary").openness, "proprietary");
+});
+
+// `unknown` and `other` name the absence of a verdict, not a refusal to share. Calling either
+// "proprietary" would tell the reader redistribution is denied when the repository said no such
+// thing — the same invention this module refuses to make for slugs it cannot parse.
+test("tags that state no terms stay unknown, never proprietary", () => {
+  for (const slug of ["unknown", "other"]) {
+    const verdict = classifyLicense(slug);
+    assert.equal(verdict.openness, "unknown", slug);
+    assert.notEqual(verdict.openness, "proprietary", slug);
+    assert.notEqual(verdict.openness, "open", slug);
+    assert.match(verdict.summary, /model card/i, slug);
   }
+});
+
+// `other` can be a custom licence that grants everything Apache does, so the copy must not
+// claim the terms withhold redistribution.
+test("a custom-terms tag does not assert that redistribution is refused", () => {
+  assert.doesNotMatch(
+    classifyLicense("other").summary,
+    /do not grant redistribution/i,
+  );
 });
 
 // Absence of a licence is not permission. Defaulting a blank to "open" would invent a

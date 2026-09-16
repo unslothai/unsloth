@@ -101,12 +101,29 @@ const RESTRICTED_LICENSES: Readonly<
   "cc-by-nd-4.0": { label: "CC BY-ND 4.0", catch: "a no-derivatives grant" },
 };
 
-// "other" is HF's catch-all for terms that did not fit its list — in practice a vendor EULA.
-// Treating it as merely unknown would understate it, since the repo did state something.
 const PROPRIETARY_LICENSES: Readonly<Record<string, string>> = {
   proprietary: "Proprietary",
-  other: "Custom terms",
-  unknown: "Not stated",
+};
+
+// HF tags that name the absence of a verdict rather than a set of terms. Neither establishes
+// that redistribution is refused: `unknown` states nothing at all, and `other` is the catch-all
+// for terms that did not fit HF's list — sometimes a vendor EULA, sometimes a custom licence
+// that grants everything Apache does. Calling either "proprietary" would assert a restriction
+// the repository never stated, which is the same invention this module avoids for slugs it does
+// not recognise, so they resolve to `unknown` and send the reader to the model card.
+const UNCLEAR_LICENSES: Readonly<
+  Record<string, { label: string; summary: string }>
+> = {
+  unknown: {
+    label: "Not stated",
+    summary:
+      "This repository tags its licence as unknown. No usage rights are granted by default — check the model card before use.",
+  },
+  other: {
+    label: "Custom terms",
+    summary:
+      "This repository uses custom licence terms that Hugging Face does not classify. Read the model card before use.",
+  },
 };
 
 export function classifyLicense(
@@ -138,6 +155,15 @@ export function classifyLicense(
       openness: "restricted",
       label: restricted.label,
       summary: `Weights are public, but ${restricted.catch} applies. Read the licence before shipping.`,
+    };
+  }
+
+  const unclear = UNCLEAR_LICENSES[slug];
+  if (unclear) {
+    return {
+      openness: "unknown",
+      label: unclear.label,
+      summary: unclear.summary,
     };
   }
 

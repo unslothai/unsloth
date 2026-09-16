@@ -241,12 +241,224 @@ export interface HfResultLike {
 
 const LANGUAGE_TAG_PREFIX = "language:";
 
+// HF emits a model's languages both ways: the dataset-style `language:en`, and — far more
+// commonly for models, since a card's `language:` frontmatter list is flattened into `tags` —
+// the bare code `en`. Reading only the prefixed form drops the languages of most model repos.
+//
+// A bare code cannot be recognised by shape: a length test would sweep in `rl`, `ai` and any
+// two-letter library name alongside the real codes. So bare codes are matched against this
+// explicit ISO 639-1 set; anything outside it stays a plain tag. Prefixed codes need no such
+// guard, as the prefix already states the intent.
+//
+// The set cannot resolve every collision: a bare `ml` is Malayalam's code and also how a repo
+// might tag "machine learning". It reads as the language, since that is what the tag means in
+// HF's language vocabulary, and the cost of being wrong is one stray chip against losing the
+// Languages row for every repo that tags bare codes.
+const ISO_639_1_CODES: ReadonlySet<string> = new Set([
+  "aa",
+  "ab",
+  "ae",
+  "af",
+  "ak",
+  "am",
+  "an",
+  "ar",
+  "as",
+  "av",
+  "ay",
+  "az",
+  "ba",
+  "be",
+  "bg",
+  "bi",
+  "bm",
+  "bn",
+  "bo",
+  "br",
+  "bs",
+  "ca",
+  "ce",
+  "ch",
+  "co",
+  "cr",
+  "cs",
+  "cu",
+  "cv",
+  "cy",
+  "da",
+  "de",
+  "dv",
+  "dz",
+  "ee",
+  "el",
+  "en",
+  "eo",
+  "es",
+  "et",
+  "eu",
+  "fa",
+  "ff",
+  "fi",
+  "fj",
+  "fo",
+  "fr",
+  "fy",
+  "ga",
+  "gd",
+  "gl",
+  "gn",
+  "gu",
+  "gv",
+  "ha",
+  "he",
+  "hi",
+  "ho",
+  "hr",
+  "ht",
+  "hu",
+  "hy",
+  "hz",
+  "ia",
+  "id",
+  "ie",
+  "ig",
+  "ii",
+  "ik",
+  "io",
+  "is",
+  "it",
+  "iu",
+  "ja",
+  "jv",
+  "ka",
+  "kg",
+  "ki",
+  "kj",
+  "kk",
+  "kl",
+  "km",
+  "kn",
+  "ko",
+  "kr",
+  "ks",
+  "ku",
+  "kv",
+  "kw",
+  "ky",
+  "la",
+  "lb",
+  "lg",
+  "li",
+  "ln",
+  "lo",
+  "lt",
+  "lu",
+  "lv",
+  "mg",
+  "mh",
+  "mi",
+  "mk",
+  "ml",
+  "mn",
+  "mr",
+  "ms",
+  "mt",
+  "my",
+  "na",
+  "nb",
+  "nd",
+  "ne",
+  "ng",
+  "nl",
+  "nn",
+  "no",
+  "nr",
+  "nv",
+  "ny",
+  "oc",
+  "oj",
+  "om",
+  "or",
+  "os",
+  "pa",
+  "pi",
+  "pl",
+  "ps",
+  "pt",
+  "qu",
+  "rm",
+  "rn",
+  "ro",
+  "ru",
+  "rw",
+  "sa",
+  "sc",
+  "sd",
+  "se",
+  "sg",
+  "si",
+  "sk",
+  "sl",
+  "sm",
+  "sn",
+  "so",
+  "sq",
+  "sr",
+  "ss",
+  "st",
+  "su",
+  "sv",
+  "sw",
+  "ta",
+  "te",
+  "tg",
+  "th",
+  "ti",
+  "tk",
+  "tl",
+  "tn",
+  "to",
+  "tr",
+  "ts",
+  "tt",
+  "tw",
+  "ty",
+  "ug",
+  "uk",
+  "ur",
+  "uz",
+  "ve",
+  "vi",
+  "vo",
+  "wa",
+  "wo",
+  "xh",
+  "yi",
+  "yo",
+  "za",
+  "zh",
+  "zu",
+]);
+
+/** `en`, `zh-CN` and `pt-br` all carry a base code; the region suffix is not a language. */
+function baseLanguageCode(tag: string): string {
+  const [base] = tag.split("-", 1);
+  return (base ?? "").toLowerCase();
+}
+
 function languagesFromTags(tags: string[] | undefined): string[] {
   const langs: string[] = [];
-  for (const tag of tags ?? []) {
-    if (!tag.startsWith(LANGUAGE_TAG_PREFIX)) continue;
-    const code = tag.slice(LANGUAGE_TAG_PREFIX.length);
+  const add = (code: string) => {
     if (code && !langs.includes(code)) langs.push(code);
+  };
+  for (const tag of tags ?? []) {
+    if (tag.startsWith(LANGUAGE_TAG_PREFIX)) {
+      add(tag.slice(LANGUAGE_TAG_PREFIX.length));
+      continue;
+    }
+    // Keep the tag's own spelling (`pt-br`, not `pt`): the region is information the reader
+    // wants, even though only the base code decides whether this is a language at all.
+    if (ISO_639_1_CODES.has(baseLanguageCode(tag))) add(tag);
   }
   return langs;
 }
