@@ -713,8 +713,13 @@ def effective_ctx_checkpoints(
     n_parallel: int = 1,
     total_host_bytes: Optional[int] = None,
     upstream_default: Optional[int] = None,
+    inherited: Optional[int] = None,
 ) -> int:
-    """Resolve the child count: extras, field, then the budgeted default."""
+    """Resolve the child count: extras, field, an inherited env value, then the budget.
+
+    ``inherited`` is llama.cpp's own LLAMA_ARG_CTX_CHECKPOINTS, which it applies before
+    argv, so argv beats it and it beats the build default.
+    """
     if not supports_flag:
         return 0
     override = resolve_ctx_checkpoints(args, requested)
@@ -722,6 +727,8 @@ def effective_ctx_checkpoints(
         return override
     if parse_ctx_checkpoints_override(args) == 0 or requested == 0:
         return 0
+    if inherited is not None:
+        return inherited
     return ctx_checkpoints_within_host_budget(
         per_checkpoint_bytes, n_parallel, total_host_bytes, upstream_default = upstream_default
     )

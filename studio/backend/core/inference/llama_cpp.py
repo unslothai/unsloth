@@ -4454,6 +4454,22 @@ def _env_asks_for_the_native_context(env: Optional[Mapping[str, str]] = None) ->
         return False
 
 
+def _env_ctx_checkpoints_override(env: Optional[Mapping[str, str]] = None) -> Optional[int]:
+    """An inherited LLAMA_ARG_CTX_CHECKPOINTS count, else None.
+
+    llama.cpp applies the variable before parsing argv (arg.cpp's env loop runs ahead of
+    the flag loop), so an emitted --ctx-checkpoints would OVERRULE it. It is as explicit
+    an instruction as a typed flag, so the automatic cap stands down for it and the
+    estimate prices it. Anything unparseable is left to llama.cpp to reject.
+    """
+    value = (os.environ if env is None else env).get("LLAMA_ARG_CTX_CHECKPOINTS")
+    try:
+        count = int(str(value).strip())
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return count if count >= 0 else None
+
+
 def _kv_offload_from_args(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> bool:
@@ -4937,6 +4953,7 @@ def effective_ctx_checkpoints_for_caps(
     per_checkpoint_bytes: int = 0,
     n_parallel: int = 1,
     total_host_bytes: Optional[int] = None,
+    env: Optional[Mapping[str, str]] = None,
 ) -> int:
     """Resolve the count from capabilities, arguments, and host budget.
 
@@ -4955,6 +4972,7 @@ def effective_ctx_checkpoints_for_caps(
         n_parallel = n_parallel,
         total_host_bytes = total_host_bytes if emittable else None,
         upstream_default = ctx_checkpoints_default_for_caps(server_caps),
+        inherited = _env_ctx_checkpoints_override(env),
     )
 
 
@@ -14578,13 +14596,17 @@ class LlamaCppBackend:
         n_parallel: int,
         server_caps: Mapping[str, object],
         extra_args: Optional[Iterable[str]] = None,
+        env: Optional[Mapping[str, str]] = None,
     ) -> Optional[int]:
         """Return an automatic recurrent-checkpoint cap, or None to preserve the argv."""
         flag = server_caps.get("ctx_checkpoints_flag")
         if not flag:
             return None
-        # Extra arguments are appended last and must remain authoritative.
+        # Extra arguments are appended last and must remain authoritative, and an
+        # inherited LLAMA_ARG_CTX_CHECKPOINTS is as explicit -- emitting would overrule it.
         if parse_ctx_checkpoints_override(extra_args) is not None:
+            return None
+        if _env_ctx_checkpoints_override(env) is not None:
             return None
         per_checkpoint = self._rollback_state_bytes(1)
         if per_checkpoint <= 0:

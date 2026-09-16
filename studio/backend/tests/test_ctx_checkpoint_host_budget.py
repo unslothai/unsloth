@@ -41,9 +41,10 @@ QWEN38_27B = {
 
 
 @pytest.fixture(autouse = True)
-def _no_cgroup_limit(monkeypatch):
-    """Keep the cases that are not about containers off the runner's own cgroup."""
+def _neutral_host(monkeypatch):
+    """Keep every case off the runner's own cgroup and inherited llama.cpp settings."""
     monkeypatch.setattr(LlamaCppBackend, "_cgroup_memory_limit_mib", staticmethod(lambda: None))
+    monkeypatch.delenv("LLAMA_ARG_CTX_CHECKPOINTS", raising = False)
 
 
 def _backend(**overrides):
@@ -732,3 +733,74 @@ class TestTheCapNeverRaisesTheBuildsOwnDefault:
         assert effective_ctx_checkpoints_for_caps(
             caps, ["--ctx-checkpoints", "64"], None, **budget
         ) == 64
+
+
+# --------------------------------------------------------------- an inherited env setting
+
+
+class TestAnInheritedEnvCountIsTheOperatorsSetting:
+    """llama.cpp applies LLAMA_ARG_CTX_CHECKPOINTS before argv, so an emitted flag overrules it."""
+
+    def _host(self, monkeypatch, gib = 94):
+        monkeypatch.setattr(
+            LlamaCppBackend, "_total_system_memory_mib", staticmethod(lambda: gib * 1024)
+        )
+
+    def test_the_launcher_stands_down_for_an_inherited_count(self, monkeypatch):
+        self._host(monkeypatch)
+        backend = _backend()
+        assert backend._bounded_ctx_checkpoints(4, _caps()) == 8
+        monkeypatch.setenv("LLAMA_ARG_CTX_CHECKPOINTS", "256")
+        assert backend._bounded_ctx_checkpoints(4, _caps()) is None
+        monkeypatch.setenv("LLAMA_ARG_CTX_CHECKPOINTS", "0")
+        assert backend._bounded_ctx_checkpoints(4, _caps()) is None
+
+    def test_an_unparseable_env_value_is_left_to_llama_cpp(self, monkeypatch):
+        self._host(monkeypatch)
+        for raw in ("", "   ", "many", "-1"):
+            monkeypatch.setenv("LLAMA_ARG_CTX_CHECKPOINTS", raw)
+            assert _backend()._bounded_ctx_checkpoints(4, _caps()) == 8, raw
+
+    def test_the_estimate_prices_the_inherited_count(self, monkeypatch):
+        backend = _backend()
+        budget = dict(
+            per_checkpoint_bytes = backend._rollback_state_bytes(1),
+            n_parallel = 4,
+            total_host_bytes = 94 * GIB,
+        )
+        monkeypatch.setenv("LLAMA_ARG_CTX_CHECKPOINTS", "256")
+        assert effective_ctx_checkpoints_for_caps(_caps(), None, None, **budget) == 256
+        monkeypatch.setenv("LLAMA_ARG_CTX_CHECKPOINTS", "0")
+        assert effective_ctx_checkpoints_for_caps(_caps(), None, None, **budget) == 0
+        monkeypatch.delenv("LLAMA_ARG_CTX_CHECKPOINTS")
+        assert effective_ctx_checkpoints_for_caps(_caps(), None, None, **budget) == 8
+
+    def test_argv_still_outranks_the_environment(self, monkeypatch):
+        """Studio appends its flag after llama.cpp has read the variable, so argv wins."""
+        monkeypatch.setenv("LLAMA_ARG_CTX_CHECKPOINTS", "256")
+        budget = dict(
+            per_checkpoint_bytes = int(149.625 * MIB), n_parallel = 4, total_host_bytes = 94 * GIB
+        )
+        assert effective_ctx_checkpoints_for_caps(_caps(), None, 4, **budget) == 4
+        assert effective_ctx_checkpoints_for_caps(
+            _caps(), ["--ctx-checkpoints", "64"], None, **budget
+        ) == 64
+        assert effective_ctx_checkpoints_for_caps(
+            _caps(), ["--ctx-checkpoints", "0"], None, **budget
+        ) == 0
+
+    def test_an_explicit_env_map_is_used_over_the_process_environment(self, monkeypatch):
+        self._host(monkeypatch)
+        monkeypatch.delenv("LLAMA_ARG_CTX_CHECKPOINTS", raising = False)
+        assert _backend()._bounded_ctx_checkpoints(
+            4, _caps(), None, {"LLAMA_ARG_CTX_CHECKPOINTS": "256"}
+        ) is None
+        assert effective_ctx_checkpoints_for_caps(
+            _caps(),
+            None,
+            None,
+            per_checkpoint_bytes = int(149.625 * MIB),
+            n_parallel = 4,
+            total_host_bytes = 94 * GIB,
+            env = {"LLAMA_ARG_CTX_CHECKPOINTS": "256"},
+        ) == 256
