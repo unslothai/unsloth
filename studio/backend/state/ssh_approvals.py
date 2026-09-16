@@ -9,6 +9,8 @@ recorded here so later terminal and python invocations can connect consistently.
 
 import ipaddress
 import threading
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Iterable, Optional
 
 from utils.account_context import current_account_id
@@ -16,6 +18,9 @@ from utils.account_context import current_account_id
 _lock = threading.Lock()
 # account and session -> approved host literals
 _approved: dict[tuple[str, str], set[str]] = {}
+_call_approved: ContextVar[tuple[str, frozenset[str]] | None] = ContextVar(
+    "ssh_call_approved", default = None
+)
 
 
 def normalize_host(host: str) -> str:
@@ -43,13 +48,26 @@ def approve_hosts(session_id: Optional[str], hosts: Iterable[str]) -> None:
 
 
 def is_host_approved(session_id: Optional[str], host: str) -> bool:
-    if not session_id:
-        return False
     key = normalize_host(host)
     if not key:
         return False
+    if not session_id:
+        approval = _call_approved.get()
+        return bool(approval and approval[0] == current_account_id() and key in approval[1])
     with _lock:
         return key in _approved.get((current_account_id(), session_id), set())
+
+
+@contextmanager
+def temporary_ssh_approval(hosts: Iterable[str]):
+    """Approve hosts only within the executing tool's context."""
+    token = _call_approved.set(
+        (current_account_id(), frozenset(normalize_host(host) for host in hosts))
+    )
+    try:
+        yield
+    finally:
+        _call_approved.reset(token)
 
 
 def approved_hosts(session_id: Optional[str]) -> frozenset[str]:

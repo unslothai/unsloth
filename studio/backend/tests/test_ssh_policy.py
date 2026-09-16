@@ -356,6 +356,24 @@ def test_equivalent_ipv6_spellings_share_approval(approved, destination):
     assert check_ssh_command_access("ssh -F none user@[2001:db8::2]", "review") is not None
 
 
+def test_temporary_ssh_approval_isolated_and_cleared_after_exception(monkeypatch):
+    from contextvars import Context
+    from state import ssh_approvals
+
+    command = "ssh -F none approved.example"
+    with pytest.raises(RuntimeError):
+        with ssh_approvals.temporary_ssh_approval(["approved.example"]):
+            assert check_ssh_command_access(command, None) is None
+            assert Context().run(check_ssh_command_access, command, None) is not None
+            with monkeypatch.context() as account_patch:
+                account_patch.setattr(
+                    ssh_approvals, "current_account_id", lambda: "another-account"
+                )
+                assert check_ssh_command_access(command, None) is not None
+            raise RuntimeError("tool failed")
+    assert check_ssh_command_access(command, None) is not None
+
+
 @pytest.mark.parametrize(
     "command",
     [

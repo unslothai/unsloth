@@ -34973,6 +34973,7 @@ class LlamaCppBackend:
                         }
                         yield start_event
 
+                        ssh_hosts = set()
                         _decision = (
                             wait_tool_decision(
                                 decision_slot,
@@ -34986,12 +34987,10 @@ class LlamaCppBackend:
                             from core.inference.ssh_policy import collect_ssh_hosts_for_approval
                             from state.ssh_approvals import approve_hosts
 
-                            approve_hosts(
-                                session_id,
-                                collect_ssh_hosts_for_approval(
-                                    decision.tool_name, decision.arguments
-                                ),
+                            ssh_hosts = collect_ssh_hosts_for_approval(
+                                decision.tool_name, decision.arguments
                             )
+                            approve_hosts(session_id, ssh_hosts)
                             yield {"type": "status", "text": decision.status_text}
                         elif _decision is not None and _decision != "deny":
                             # Approved: now it really is running.
@@ -35296,7 +35295,11 @@ class LlamaCppBackend:
                         # outlives the closure.
                         _last_result_budget: list = ["<not passed>"]
 
-                        def _invoke_tool(_output_callback, _decision = decision):
+                        def _invoke_tool(
+                            _output_callback,
+                            _decision = decision,
+                            approved_ssh_hosts = ssh_hosts,
+                        ):
                             # execute_tool is injectable and may be monkey-patched with the
                             # pre-PR signature; forward output_callback only if it's accepted.
                             kwargs = dict(
@@ -35575,11 +35578,14 @@ class LlamaCppBackend:
                             if accepts_output_callback(execute_tool):
                                 kwargs["output_callback"] = _output_callback
                             kwargs.update(search_images_kwargs(execute_tool, _decision.tool_name))
-                            return execute_tool(
-                                _decision.tool_name,
-                                _decision.arguments,
-                                **kwargs,
-                            )
+                            from state.ssh_approvals import temporary_ssh_approval
+
+                            with temporary_ssh_approval(approved_ssh_hosts):
+                                return execute_tool(
+                                    _decision.tool_name,
+                                    _decision.arguments,
+                                    **kwargs,
+                                )
 
                         # Without this the handler below re-raises and a bad
                         # argument kills the whole answer. A raising tool is the

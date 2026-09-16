@@ -71,7 +71,7 @@ from core.inference.tool_stream_exec import (
 )
 from core.inference.ssh_policy import collect_ssh_hosts_for_approval
 from core.inference.tools import build_rag_autoinject, execute_tool, is_high_risk_tool_call
-from state.ssh_approvals import approve_hosts
+from state.ssh_approvals import approve_hosts, temporary_ssh_approval
 from state.tool_approvals import (
     TOOL_REJECTED_MESSAGE,
     abort_tool_decision,
@@ -1637,6 +1637,7 @@ async def stream_with_studio_tools(
             start_event["approval_id"] = approval_id
             start_event["awaiting_confirmation"] = needs_confirmation
             denied = False
+            ssh_hosts = set()
             try:
                 # A gated call has not started, so it must not read as running.
                 yield _status_sse(
@@ -1669,7 +1670,8 @@ async def stream_with_studio_tools(
                     decision_slot = None
                     denied = True
                 elif verdict == "allow":
-                    approve_hosts(session_id, collect_ssh_hosts_for_approval(name, arguments))
+                    ssh_hosts = collect_ssh_hosts_for_approval(name, arguments)
+                    approve_hosts(session_id, ssh_hosts)
                     yield _status_sse(decision.status_text)
                 elif verdict is not None:
                     yield _status_sse(decision.status_text)
@@ -1701,7 +1703,11 @@ async def stream_with_studio_tools(
                 reprompts = max_reprompts
                 continue
 
-            def _invoke(output_callback: Any, call = decision) -> str:
+            def _invoke(
+                output_callback: Any,
+                call = decision,
+                approved_ssh_hosts = ssh_hosts,
+            ) -> str:
                 kwargs: dict[str, Any] = {
                     "cancel_event": cancel_event,
                     "timeout": None if tool_call_timeout >= 9999 else tool_call_timeout,
@@ -1733,7 +1739,8 @@ async def stream_with_studio_tools(
                 if accepts_output_callback(execute_tool):
                     kwargs["output_callback"] = output_callback
                 kwargs.update(search_images_kwargs(execute_tool, call.tool_name))
-                return execute_tool(call.tool_name, call.arguments, **kwargs)
+                with temporary_ssh_approval(approved_ssh_hosts):
+                    return execute_tool(call.tool_name, call.arguments, **kwargs)
 
             # The same wrapper the local loops run tools through: live stdout for the card, and a heartbeat so a long
             # call cannot idle the stream out.
