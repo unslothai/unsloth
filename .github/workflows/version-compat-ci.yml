@@ -20,6 +20,7 @@ on:
       # another workflow never starts the job that exists to catch that drift.
       - '.github/workflows/**'
       - 'tests/test_transformers_cap_sites.py'
+      - 'tests/test_trl_cap_sites.py'
   schedule:
     # Off the :00 / :30 fleet-collision spots.
     - cron: '43 6 * * *'
@@ -106,7 +107,11 @@ jobs:
           pip install 'pytest>=8' packaging pyyaml
       - name: Assert every site declares the same window
         # rootdir has to be the repo so the suite's relative paths resolve.
-        run: python -m pytest tests/test_transformers_cap_sites.py -v --tb=short
+        # Both cap suites in one step: they read the same files and cost seconds, and a
+        # separate step would double the OS-axis admission cost for no extra coverage.
+        run: |
+          python -m pytest tests/test_transformers_cap_sites.py \
+            tests/test_trl_cap_sites.py -v --tb=short
 
   # Catches what the static symbol check cannot (import-time side effects). Two lanes,
   # since one pinned set proves one point of the range and nothing about either end.

@@ -214,7 +214,7 @@ huggingfacenotorch = [
     # (mlx-vlm >= 0.6.5 wants transformers >= 5.14.0); every extra naming transformers here
     # also names unsloth_zoo, so that lower cap applies without being repeated.
     "transformers>=4.52.4,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.17.0",
-    "trl>=0.18.2,!=0.19.0,<=0.24.0",
+    "trl>=0.18.2,!=0.19.0,<=1.13.0",
     "sentence-transformers",
 ]
 # torchcodec backend for Gemma audio / datasets>=4 (#7225).
@@ -876,7 +876,7 @@ colab-new = [
 ]
 colab-no-deps = [
     "accelerate>=0.34.1",
-    "trl>=0.18.2,!=0.19.0,<=0.24.0",
+    "trl>=0.18.2,!=0.19.0,<=1.13.0",
     "peft>=0.18.0",
     "xformers ; ('linux' in sys_platform or sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
     "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
