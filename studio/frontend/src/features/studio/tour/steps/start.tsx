@@ -9,9 +9,9 @@ export const studioStartStep: TourStep = {
   title: "Start training",
   body: (
     <>
-      Kick off training. If it errors immediately, check HF token / local paths
-      / dataset access first. Start with a small run to sanity-check loss + sample
-      outputs before burning hours.
+      The run opens in Current Run and keeps going if you switch pages. Do a
+      short run first to check the loss curve and a few sample outputs. If it
+      fails right away, look at your HF token, local paths and dataset access.
     </>
   ),
 };

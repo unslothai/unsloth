@@ -205,6 +205,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
       className="flex min-w-0 flex-col gap-2 lg:flex-row lg:flex-wrap lg:items-center"
     >
       <div
+        data-tour="hub-tabs"
         className={cn(
           "hub-menu-trigger hub-tab-toggle relative inline-flex h-9 w-full shrink-0 items-center rounded-full lg:w-[280px]",
         )}
@@ -251,6 +252,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
 
       <div
         ref={searchWrapRef}
+        data-tour="hub-search"
         className="relative min-w-0 flex-1 lg:min-w-[220px] lg:flex-[1_1_220px]"
       >
         <HugeiconsIcon
@@ -332,7 +334,10 @@ export const ModelsToolbar = memo(function ModelsToolbar({
         )}
       </div>
 
-      <div className="flex min-w-0 flex-wrap items-center gap-2 lg:flex-[0_0_auto] lg:flex-nowrap lg:justify-end">
+      <div
+        data-tour="hub-filters"
+        className="flex min-w-0 flex-wrap items-center gap-2 lg:flex-[0_0_auto] lg:flex-nowrap lg:justify-end"
+      >
         {tab === "downloaded" && !isDataset && (
           <Tooltip>
             <TooltipTrigger asChild={true}>

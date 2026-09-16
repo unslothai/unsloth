@@ -28,6 +28,8 @@ import {
 import { useShallow } from "zustand/react/shallow";
 import "@xyflow/react/dist/style.css";
 import { Button } from "@/components/ui/button";
+import { GuidedTour, useGuidedTourController } from "@/features/tour";
+import { buildRecipeEditorTourSteps } from "./tour";
 import { BlockSheet } from "./components/block-sheet";
 import { LayoutControls } from "./components/controls/layout-controls";
 import { RunValidateFloatingControls } from "./components/controls/run-validate-floating-controls";
@@ -226,6 +228,14 @@ export function RecipeStudioPage({
     },
     [viewModeStorageKey],
   );
+  const tourSteps = useMemo(
+    () => buildRecipeEditorTourSteps({ isGraphView: activeView === "editor" }),
+    [activeView],
+  );
+  const tour = useGuidedTourController({
+    id: "recipe-editor",
+    steps: tourSteps,
+  });
   // Easy mode has no canvas overlay/progress island, so a started run would leave the Run button
   // stuck on "Running..." with nothing else changing. Flip to the Runs pane where progress is
   // rendered. Advanced (editor) keeps its island and stays put.
@@ -723,7 +733,7 @@ export function RecipeStudioPage({
             </div>
           </div>
         )}
-        <Panel position="top-right" className="m-3">
+        <Panel position="top-right" className="m-3" data-tour="recipe-add-step">
           <BlockSheet
             container={sheetContainer}
             sheetView={sheetView}
@@ -809,6 +819,7 @@ export function RecipeStudioPage({
       }
     >
       <main className="flex min-h-0 w-full flex-1 flex-col">
+        <GuidedTour {...tour.tourProps} />
         <div
           className="relative flex min-h-0 w-full flex-1 flex-col overflow-hidden border"
           ref={setSheetContainer}
@@ -828,6 +839,7 @@ export function RecipeStudioPage({
             }}
           />
           <div
+            data-tour="recipe-canvas"
             className="flex min-h-0 w-full flex-1 rounded-t-none"
             ref={flowContainerRef}
           >

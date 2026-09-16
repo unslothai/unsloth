@@ -28,6 +28,8 @@ import {
 } from "react";
 
 import { AdvancedDisclosure } from "@/components/advanced-disclosure";
+import { GuidedTour, useGuidedTourController } from "@/features/tour";
+import { buildAudioTourSteps } from "./tour";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -325,6 +327,8 @@ export function AudioPage({
 }) {
   const initialReadySent = useRef(false);
   const [mode, setMode] = useState<CreateMode>("speak");
+  const tourSteps = useMemo(() => buildAudioTourSteps({ mode }), [mode]);
+  const tour = useGuidedTourController({ id: "audio", steps: tourSteps });
   const [selectorOpen, setSelectorOpen] = useState(false);
   const [busy, setBusy] = useState<AudioBusy>(null);
   const busyRef = useRef<AudioBusy>(busy);
@@ -2416,6 +2420,7 @@ export function AudioPage({
 
   return (
     <div className="@container flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]">
+      <GuidedTour {...tour.tourProps} />
       {/* Keep the tabs centered over the preview at every width. The model rail holds at 408px when
           space permits and shrinks only to preserve the controls. */}
       <div className="pointer-events-none relative z-40 grid h-[48px] shrink-0 grid-cols-[minmax(0,408px)_minmax(13rem,1fr)]">
@@ -2423,6 +2428,7 @@ export function AudioPage({
           {/* A long resident model name must yield to the mode pill instead of painting over it. */}
           <div className="pointer-events-auto flex min-w-0 max-w-full items-center gap-2 overflow-hidden pt-[var(--studio-chat-header-padding-top,11px)]">
             <ModelSelector
+              triggerDataTour="audio-model"
               models={selectorModels}
               additionalOnDeviceModels={
                 mode === "transcribe" ? sttOnDeviceModels : trainedTtsModels
@@ -2492,7 +2498,10 @@ export function AudioPage({
       {/* Below 50rem the panes stack and the page scrolls as one column, matching Images and Video:
           side by side, the 408px rail plus a usable preview needs more width. */}
       <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden @[50rem]:flex-row @[50rem]:overflow-hidden">
-        <div className="flex w-full shrink-0 flex-col border-b border-border/60 @[50rem]:w-[408px] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0">
+        <div
+          data-tour="audio-settings"
+          className="flex w-full shrink-0 flex-col border-b border-border/60 @[50rem]:w-[408px] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0"
+        >
           <div
             ref={attachSettingsScroll}
             onScroll={onSettingsScroll}
@@ -2520,6 +2529,7 @@ export function AudioPage({
             </div>
 
             <PillTabs
+              dataTour="audio-mode"
               ariaLabel="Create mode"
               value={mode}
               onValueChange={(v) => transitionMode(v as CreateMode)}
@@ -2543,6 +2553,7 @@ export function AudioPage({
                   }
                 >
                   <Textarea
+                    data-tour="audio-prompt"
                     id="audio-prompt"
                     value={prompt}
                     onChange={(event) => setPrompt(event.target.value)}
@@ -2709,6 +2720,7 @@ export function AudioPage({
                   }
                 >
                   <Button
+                    data-tour="audio-record"
                     id="audio-record"
                     variant={isRecording ? "destructive" : "secondary"}
                     disabled={
@@ -2762,7 +2774,10 @@ export function AudioPage({
           </div>
           {mode === "speak" ? (
             /* The scroll mask provides the fade; leave the footer unpainted to avoid dark-mode banding. */
-            <div className="relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-4">
+            <div
+              data-tour="audio-generate"
+              className="relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-4"
+            >
               <div className="flex w-full max-w-sm flex-col gap-2">
                 {busy === "generating" && generationPresentation ? (
                   <>
@@ -2813,7 +2828,10 @@ export function AudioPage({
           ) : null}
         </div>
 
-        <div className="relative flex min-h-[60dvh] min-w-0 flex-1 flex-col overflow-hidden @[50rem]:min-h-0">
+        <div
+          data-tour="audio-output"
+          className="relative flex min-h-[60dvh] min-w-0 flex-1 flex-col overflow-hidden @[50rem]:min-h-0"
+        >
           {mode === "transcribe" ? (
             <div
               data-reload-snapshot-sensitive={

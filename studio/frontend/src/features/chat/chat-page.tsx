@@ -3574,7 +3574,9 @@ export function ChatPage({
     },
     { enabled: active && fastModeSupported },
   );
-  const { isMobile, pinned } = useSidebar();
+  const { isMobile, pinned, setPinned } = useSidebar();
+  // The tour's orientation step spotlights the nav, so it has to be showing.
+  const pinSidebar = useCallback(() => setPinned(true), [setPinned]);
 
   const enterCompare = useCallback(() => {
     viewBeforeCompareRef.current = { ...search };
@@ -3913,7 +3915,9 @@ export function ChatPage({
         closeSettings,
         enterCompare,
         exitCompare,
-      }),
+      }).map((step) =>
+        step.target === "navbar" ? { ...step, onEnter: pinSidebar } : step,
+      ),
     [
       canCompare,
       closeModelSelector,
@@ -3922,6 +3926,7 @@ export function ChatPage({
       exitCompare,
       openModelSelector,
       openSettings,
+      pinSidebar,
     ],
   );
 
