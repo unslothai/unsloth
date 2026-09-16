@@ -1520,7 +1520,7 @@ export const ko = {
         title: "웹 검색",
         images: "웹 검색 이미지 표시",
         imagesDescription:
-          "웹 검색이 이미지를 반환하고, 답변에 나열된 항목마다 하나씩 가져옵니다. 썸네일은 Studio가 가져와 축소하므로 브라우저가 이미지 호스트에 접속하지 않습니다.",
+          "검색 결과에 이미지를 포함합니다.",
       },
       artifacts: {
         title: "Canvas",

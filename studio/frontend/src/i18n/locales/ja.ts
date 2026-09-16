@@ -1509,7 +1509,7 @@ export const ja = {
         title: "ウェブ検索",
         images: "ウェブ検索の画像を表示",
         imagesDescription:
-          "ウェブ検索で画像も取得し、回答に列挙された項目ごとに1枚ずつ探します。サムネイルは Unsloth が取得して縮小するため、ブラウザが画像ホストに接続することはありません。",
+          "検索結果に画像を含めます。",
       },
       artifacts: {
         title: "Canvas",

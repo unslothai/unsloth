@@ -1516,7 +1516,7 @@ export const en = {
         title: "Web search",
         images: "Show images from web search",
         imagesDescription:
-          "Include image results. Unsloth downloads thumbnails without connecting your browser to image hosts.",
+          "Include images in search results.",
       },
       artifacts: {
         title: "Canvas",
