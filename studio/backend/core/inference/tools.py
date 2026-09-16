@@ -2018,6 +2018,9 @@ _AUTO_SENSITIVE_MCP_NOUN_RE = re.compile(
 # Split a camelCase boundary with an underscore (runCommand -> run_Command) so the term-boundary MCP regexes match
 # camelCase tool names too.
 _CAMEL_CASE_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+# The term-boundary regexes above recognise only `_` and `-`, but MCP names may separate terms with anything the
+# spec allows (catalog.get-catalog-entity). Fold the rest to `_` so a verb behind a dot is still its own term.
+_MCP_TERM_SEPARATOR_RE = re.compile(r"[^A-Za-z0-9_\-]+")
 # A name that reads (get_release, search_code) names its SUBJECT, not the action, so the impact and runtime-noun
 # patterns below must not fire on it, or the everyday read tools of every server would prompt.
 _AUTO_READ_MCP_VERB_RE = re.compile(
@@ -6591,6 +6594,7 @@ def is_potentially_unsafe_tool_call(name: str, arguments: dict) -> bool:
         tool_name = _mcp_raw_tool_name(name)
         if tool_name in _BLENDER_CLI_SUMMARY_TOOLS:
             return True
+        tool_name = _MCP_TERM_SEPARATOR_RE.sub("_", tool_name)
         # A mutating verb anywhere (get_or_create_issue, read_and_delete)
         # overrides a read-only prefix.
         if _AUTO_UNSAFE_MCP_VERB_RE.search(tool_name):
@@ -8692,9 +8696,9 @@ def is_high_risk_tool_call(name: str, arguments: dict) -> bool:
         tool_name = _mcp_raw_tool_name(name)
         if tool_name in _BLENDER_CLI_SUMMARY_TOOLS:
             return True
-        # Split camelCase into `_`-delimited terms so the term-boundary regexes
-        # below match camelCase names too.
-        tool_name = _CAMEL_CASE_RE.sub("_", tool_name)
+        # Reduce every separator the name uses to `_`, camelCase boundaries included, so the
+        # term-boundary regexes below see one vocabulary.
+        tool_name = _CAMEL_CASE_RE.sub("_", _MCP_TERM_SEPARATOR_RE.sub("_", tool_name))
         # An execution tool runs arbitrary commands on the MCP server, outside the terminal sandbox; a credential noun
         # discloses secrets; a read/write pointed at a sensitive path is a sensitive access. All prompt, while
         # ordinary create/update/delete MCP calls run.
