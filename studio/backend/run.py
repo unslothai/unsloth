@@ -2672,6 +2672,11 @@ def run_server(
     # gate and socket bind (direct `python run.py`; the CLI applies it in its own parent).
     _apply_supplied_password(password)
 
+    # Per launch, not per process: an embedded host may call run_server() again with different
+    # flags, and UNSLOTH_API_ONLY above is never cleared once set.
+    app.state.api_only = api_only
+    app.state.suppress_bootstrap_injection = False
+
     # Never publish with the seeded default password active: prompt first (or warn / fail closed headless; see
     # _terminal_password_gate). Runs BEFORE the socket binds so a pre-gate listener cannot hand out the
     # injected credential.
