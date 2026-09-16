@@ -2784,7 +2784,14 @@ exit 1
             # property does not exist, so .Add() throws, the catch below returns null and every
             # candidate is rejected: the rung would never work on the primary Windows host while
             # looking perfectly healthy. Branch on the property rather than assume it.
-            $argv = @("-I", "-c", $script, $Path)
+            # -S as well as -I. Isolated mode implies -E, -P and -s, but NOT -S, so site is still
+            # imported and a system-level sitecustomize still runs before this script. On a
+            # corporate host that is instrumentation: it can print to stdout, which corrupts the
+            # one line this rung reads back, it can hang, which burns the timeout and rejects a
+            # perfectly good interpreter, and it can patch pathlib, which would let this mark an
+            # influenced answer as exact. Measured, not assumed: under -I alone sys.flags.no_site
+            # is 0. Nothing here needs site-packages; the probe is three stdlib imports.
+            $argv = @("-I", "-S", "-c", $script, $Path)
             if ($null -ne $psi.PSObject.Properties["ArgumentList"]) {
                 foreach ($a in $argv) { $null = $psi.ArgumentList.Add($a) }
             } else {

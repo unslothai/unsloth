@@ -212,6 +212,30 @@ try {
     $null = Get-StudioEarlyPython
     $after = @(Get-ChildItem -LiteralPath $tmp -Recurse -Force).Count
     Check "finding an interpreter writes nothing" ($after -eq $before)
+
+    # site stays out of the probe, and the reason is measured rather than quoted.
+    #
+    # Isolated mode implies -E, -P and -s, but NOT -S, so site is still imported and a
+    # system-level sitecustomize still runs. On a corporate host that is instrumentation: it can
+    # print to stdout and corrupt the single line this rung reads back, it can hang and burn the
+    # timeout on a good interpreter, and it can patch pathlib, which would let an influenced
+    # answer be marked exact. The first check asks the real interpreter under test, so a Python
+    # that ever does imply -S would show up here as a stale justification rather than pass.
+    $exe = Get-StudioEarlyPython
+    $isoOnly = (& $exe -I -c "import sys;print(sys.flags.no_site)" 2>$null | Select-Object -First 1)
+    $isoPlus = (& $exe -I -S -c "import sys;print(sys.flags.no_site)" 2>$null | Select-Object -First 1)
+    Check "-I alone leaves site imported on this interpreter" ("$isoOnly".Trim() -eq "0")
+    Check "-S is what turns site off" ("$isoPlus".Trim() -eq "1")
+
+    # And the resolver passes it. Read out of the launcher, because the end-to-end drive is not
+    # available here: sitecustomize is resolved on sys.path and the stdlib directory precedes
+    # site-packages, so a planted copy is shadowed by the host's own on any machine that has one.
+    $resolverFn = @($ast.FindAll({ param($n)
+        $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $n.Name -eq "Invoke-StudioEarlyPython"
+    }, $true))[0].Extent.Text
+    Check "the resolver runs the probe with -S as well as -I" (
+        $resolverFn -match '@\("-I",\s*"-S",\s*"-c"')
 } finally {
     Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }
