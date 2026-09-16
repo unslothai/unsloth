@@ -92,6 +92,28 @@ test("developer and assistant array content survive message JSONL import", () =>
   ]);
 });
 
+test("ShareGPT import maps role aliases regardless of case and whitespace", () => {
+  const [conversation] = parseImportText(
+    JSON.stringify({
+      conversations: [
+        { from: "system", value: "Be brief" },
+        { from: "user", value: "Hi" },
+        { from: "assistant", value: "Hello" },
+        { from: "Human", value: "Again" },
+        { from: " GPT ", value: "Sure" },
+        { from: "HUMAN", value: "Bye" },
+        { from: "constructor", value: "Unknown" },
+      ],
+    }),
+    "sharegpt.jsonl",
+  );
+
+  assert.deepEqual(
+    conversation.messages.map(({ role }) => role),
+    ["system", "user", "assistant", "user", "assistant", "user", "assistant"],
+  );
+});
+
 test("assistant images are represented explicitly in JSONL exports", () => {
   const exported = structuredClone(
     messageToOpenAI({

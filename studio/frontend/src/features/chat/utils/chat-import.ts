@@ -206,6 +206,14 @@ function oaiMessagesToRecords(
   return records;
 }
 
+const SHAREGPT_ROLES = new Map<string, MessageRecord["role"]>([
+  ["human", "user"],
+  ["user", "user"],
+  ["gpt", "assistant"],
+  ["assistant", "assistant"],
+  ["system", "system"],
+]);
+
 function sharegptToRecords(
   conversations: unknown[],
   threadId: string,
@@ -219,7 +227,7 @@ function sharegptToRecords(
     const from = typeof conv.from === "string" ? conv.from : "";
     const value = typeof conv.value === "string" ? conv.value : "";
     if (!value.trim()) continue;
-    const role: MessageRecord["role"] = from === "human" ? "user" : from === "system" ? "system" : "assistant";
+    const role = SHAREGPT_ROLES.get(from.trim().toLowerCase()) ?? "assistant";
     const id = crypto.randomUUID();
     records.push({
       id,
