@@ -150,7 +150,9 @@ def test_a_positive_exit_carries_the_worker_stderr_tail(tmp_path):
         b"RuntimeError: CUDA out of memory. Tried to allocate 2.00 GiB\r\n",
     )
 
-    message = _orchestrator_with(1, capture)._subprocess_crash_message("generation")
+    message = _orchestrator_with(1, capture)._subprocess_crash_message(
+        "generation", with_worker_output = True
+    )
 
     assert message.startswith(
         "The inference worker stopped unexpectedly while generating a response.",
@@ -166,7 +168,9 @@ def test_a_signalled_exit_keeps_its_hint_and_gains_the_tail(tmp_path):
     capture = WorkerStderrCapture(directory = str(tmp_path), prefix = "unsloth-test-")
     Path(capture.path).write_bytes(b"terminate called after throwing an instance of 'c10::Error'\n")
 
-    message = _orchestrator_with(-9, capture)._subprocess_crash_message("wait")
+    message = _orchestrator_with(-9, capture)._subprocess_crash_message(
+        "wait", with_worker_output = True
+    )
 
     # The part this change is responsible for, on every platform: the negative exit code is
     # still reported as a signal and the memory-pressure hint is still there, and the worker's
@@ -188,7 +192,9 @@ def test_a_signalled_exit_keeps_its_hint_and_gains_the_tail(tmp_path):
 def test_nothing_captured_leaves_the_message_exactly_as_it_was(tmp_path):
     empty = WorkerStderrCapture(directory = str(tmp_path), prefix = "unsloth-test-")
     for capture in (None, empty):
-        message = _orchestrator_with(1, capture)._subprocess_crash_message("generation")
+        message = _orchestrator_with(1, capture)._subprocess_crash_message(
+        "generation", with_worker_output = True
+    )
         assert message == (
             "The inference worker stopped unexpectedly while generating a response. "
             "Details: pid=6145, exitcode=1."
@@ -198,7 +204,9 @@ def test_nothing_captured_leaves_the_message_exactly_as_it_was(tmp_path):
 def test_a_worker_still_running_is_not_given_a_tail(tmp_path):
     capture = WorkerStderrCapture(directory = str(tmp_path), prefix = "unsloth-test-")
     Path(capture.path).write_bytes(b"still going\n")
-    message = _orchestrator_with(None, capture)._subprocess_crash_message("generation")
+    message = _orchestrator_with(None, capture)._subprocess_crash_message(
+        "generation", with_worker_output = True
+    )
     assert message.endswith("Details: pid=6145.")
 
 
@@ -262,7 +270,9 @@ def test_a_worker_that_exits_one_after_writing_to_stderr_keeps_its_traceback(tmp
     assert process.exitcode == 1
 
     orchestrator = _orchestrator_with(process.exitcode, capture, pid = process.pid)
-    message = orchestrator._subprocess_crash_message("generation")
+    message = orchestrator._subprocess_crash_message(
+        "generation", with_worker_output = True
+    )
 
     assert "RuntimeError: CUDA out of memory. Tried to allocate 2.00 GiB" in message
     assert "Traceback (most recent call last)" in message
@@ -509,7 +519,7 @@ def test_the_sink_works_on_every_install_path_shape(tmp_path, shape):
         process.exitcode,
         capture,
         pid = process.pid,
-    )._subprocess_crash_message("generation")
+    )._subprocess_crash_message("generation", with_worker_output = True)
     assert "RuntimeError: CUDA out of memory. Tried to allocate 2.00 GiB" in message
 
     capture.close()
@@ -841,7 +851,7 @@ def test_the_operator_still_gets_the_last_words_in_the_server_log(monkeypatch):
     )
     instance = _orchestrator_with_capture(abort)
     instance._proc = SimpleNamespace(exitcode = -6, pid = 4242, is_alive = lambda: False)
-    message = instance._subprocess_crash_message("generation")
+    message = instance._subprocess_crash_message("generation", with_worker_output = True)
 
     logged = "\n".join(written)
     assert "terminate called" in logged, logged
@@ -878,7 +888,7 @@ def test_a_teardown_that_clears_the_handle_first_still_logs_the_tail(monkeypatch
         "terminate called after throwing an instance of 'c10::Error'\n"
     )
     instance._proc = None
-    message = instance._subprocess_crash_message("generation")
+    message = instance._subprocess_crash_message("generation", with_worker_output = True)
     assert "process missing" in message
     assert any("terminate called" in line for line in written), written
 
@@ -1110,7 +1120,9 @@ def test_a_request_queued_behind_the_crash_is_not_given_its_last_words(monkeypat
         raising = False,
     )
 
-    executing = orchestrator._subprocess_crash_message("generation")
+    executing = orchestrator._subprocess_crash_message(
+        "generation", with_worker_output = True
+    )
     assert "Worker error output:" in executing
     assert "RuntimeError: another account" in executing
 
@@ -1155,3 +1167,52 @@ def test_a_queued_compare_request_does_not_own_the_worker():
     orchestrator._executing_cancel_events = [first]
     assert orchestrator._owns_worker(first) is True
     assert orchestrator._owns_worker(second) is False
+
+
+def test_the_public_tail_redacts_the_credentials_a_crash_actually_carries():
+    """`scrub_secrets` knows an HF token and a bearer value, which is what a DOWNLOAD carries.
+
+    A crash diagnostic carries whatever the process had in scope, and this string is returned
+    to the client verbatim on a managed install, so the gap between what a log may hold and
+    what a client may see had to be closed with the reader this repository already has for
+    the rest of them.
+    """
+    from core.inference.orchestrator import _redact_worker_output
+
+    text = (
+        "Traceback (most recent call last):\n"
+        '  File "/home/alice/.unsloth/studio/worker.py", line 42, in run\n'
+        "    client = OpenAI()  # OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz0123456789\n"
+        "    aws = 'AKIAIOSFODNN7EXAMPLE'\n"
+        "    gh = 'ghp_abcdefghijklmnopqrstuvwxyz0123456789'\n"
+        "    password=hunter2seventeen\n"
+        "RuntimeError: refused\n"
+    )
+    public = _redact_worker_output(text)
+    for secret in (
+        "sk-proj-abcdefghijklmnopqrstuvwxyz0123456789",
+        "AKIAIOSFODNN7EXAMPLE",
+        "ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+        "hunter2seventeen",
+    ):
+        assert secret not in public, (secret, public)
+    # And the diagnosis survives it, which is the whole reason the tail is returned.
+    assert "RuntimeError: refused" in public, public
+    assert "worker.py" in public, public
+
+
+def test_the_worker_output_is_opt_in_at_every_call_site():
+    """A default of True gave the tail to call sites that take no part in the claim
+    bookkeeping -- `count_chat_tokens` uses an addressed mailbox alongside compare-mode
+    generations -- so a count queued behind another account's generation was handed that
+    generation's traceback. Opting in is the only safe direction: forgetting it costs a
+    diagnostic, forgetting the other one discloses somebody else's."""
+    import inspect
+    from core.inference import orchestrator as orchestrator_module
+
+    source = inspect.getsource(orchestrator_module)
+    assert "with_worker_output: bool = False" in source
+    # Every call site decides from ownership rather than from a constant.
+    calls = source.count("self._subprocess_crash_message(")
+    owned = source.count("with_worker_output = self._owns_worker(")
+    assert calls == owned, (calls, owned)

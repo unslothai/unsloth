@@ -254,6 +254,17 @@ def _redact_worker_output(text: str) -> str:
         redacted = scrub_secrets(redacted)
     except Exception:  # noqa: BLE001
         pass
+    try:
+        # And the rest of them. `scrub_secrets` knows an HF token and a bearer value, which
+        # is what a download carries; a crash diagnostic carries whatever the process had in
+        # scope -- `OPENAI_API_KEY=sk-...`, a JWT, an AWS or GitHub key, a password
+        # assignment, a cookie, a signed URL. `redact_log_text` is this repository's own
+        # reader for those and is idempotent, so running it after the narrower one costs
+        # nothing and closes the gap between what a log may hold and what a client may see.
+        from utils.log_redaction import redact_log_text
+        redacted = redact_log_text(redacted)
+    except Exception:  # noqa: BLE001
+        pass
     return _ABSOLUTE_PATH_RE.sub(_shorten_path, redacted)
 
 
@@ -1078,11 +1089,18 @@ class InferenceOrchestrator:
     def _ensure_subprocess_alive(self) -> bool:
         return self._proc is not None and self._proc.is_alive()
 
-    def _subprocess_crash_message(self, context: str, *, with_worker_output: bool = True) -> str:
+    def _subprocess_crash_message(self, context: str, *, with_worker_output: bool = False) -> str:
         """Return a user-facing crash message with the worker exit status.
 
-        ``with_worker_output`` is False for a request that was QUEUED behind the one the
-        worker died in. Compare mode keeps several mailboxes in flight while the subprocess
+        ``with_worker_output`` defaults to FALSE, and every caller passes an ownership test
+        rather than a constant. A default of True gave the tail to call sites that take no
+        part in the claim bookkeeping at all -- `count_chat_tokens` uses an addressed mailbox
+        alongside compare-mode generations, so a count queued behind another account's
+        generation was handed that generation's traceback when it crashed. Opting in is the
+        only safe direction for this flag: a caller that forgets it loses a diagnostic, a
+        caller that forgets the other one discloses somebody else's.
+
+        It is False for a request that was QUEUED behind the one the worker died in. Compare mode keeps several mailboxes in flight while the subprocess
         runs the commands one at a time, so when it dies every waiting stream reaches this
         method and used to be handed the same tail -- and that tail is the executing
         request's traceback and exception message, which on a shared install belongs to
@@ -1200,7 +1218,11 @@ class InferenceOrchestrator:
 
             if resp is None:
                 if not self._ensure_subprocess_alive():
-                    raise RuntimeError(self._subprocess_crash_message("wait"))
+                    raise RuntimeError(
+                        self._subprocess_crash_message(
+                            "wait", with_worker_output = self._owns_worker(cancel_event)
+                        )
+                    )
                 continue
 
             rtype = resp.get("type", "")
@@ -1823,7 +1845,12 @@ class InferenceOrchestrator:
                 resp = self._read_resp(timeout = min(remaining, 1.0))
                 if resp is None:
                     if not self._ensure_subprocess_alive():
-                        raise RuntimeError(self._subprocess_crash_message("sharing chat turn"))
+                        raise RuntimeError(
+                            self._subprocess_crash_message(
+                                "sharing chat turn",
+                                with_worker_output = self._owns_worker(None),
+                            )
+                        )
                     continue
 
                 rtype = resp.get("type", "")
@@ -2379,7 +2406,14 @@ class InferenceOrchestrator:
                 candidate = read_one(timeout = min(1.0, deadline - time.monotonic()))
                 if candidate is None:
                     if not self._ensure_subprocess_alive():
-                        raise RuntimeError(self._subprocess_crash_message("count"))
+                        # A count takes no part in the claim bookkeeping, so it owns the
+                        # worker only when nothing else is in flight. Queued behind a
+                        # compare-mode generation it gets the exit status and nothing else.
+                        raise RuntimeError(
+                            self._subprocess_crash_message(
+                                "count", with_worker_output = self._owns_worker(None)
+                            )
+                        )
                     continue
                 # _direct_reader already drops a reply whose mailbox is gone; this is the backstop.
                 if (
@@ -2941,7 +2975,10 @@ class InferenceOrchestrator:
                         if resp is None:
                             if not self._ensure_subprocess_alive():
                                 raise RuntimeError(
-                                    self._subprocess_crash_message("audio generation")
+                                    self._subprocess_crash_message(
+                                        "audio generation",
+                                        with_worker_output = self._owns_worker(cancel_event),
+                                    )
                                 )
                             continue
 
