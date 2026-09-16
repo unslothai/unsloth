@@ -1579,7 +1579,10 @@ def test_the_deferred_five_hundred_restores_the_handle_too():
 
     body = inspect.getsource(inference_routes._tunnel_safe_json)
     generic = body.index("failed after the response was committed")
-    tail = body[generic:generic + 800]
+    # Up to the success branch, so the restoration that belongs to THAT one cannot satisfy
+    # this assertion: the window is the generic-exception branch and nothing else.
+    tail = body[generic:body.index("else:", generic)]
+    assert "_deferred_error_body(" in tail, tail
     assert "restore_inventory_handles(" in tail, tail
 
     # And the restoration itself does the work on that exact shape of string.
