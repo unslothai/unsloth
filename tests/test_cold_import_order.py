@@ -170,20 +170,6 @@ def test_the_deferred_names_are_still_exported_by_unsloth_save():
 # Behavioural: the original ordering, in a child interpreter
 # ---------------------------------------------------------------------------
 
-
-def _has_torch():
-    import importlib.util
-    return all(
-        importlib.util.find_spec(name) is not None for name in ("torch", "transformers", "peft")
-    )
-
-
-_needs_torch = pytest.mark.skipif(
-    not _has_torch(),
-    reason = "importing unsloth.models needs torch, transformers and peft",
-)
-
-
 def _run(code):
     """Fresh interpreter with this checkout first on the path."""
     path = [str(_ROOT)]
@@ -196,6 +182,36 @@ def _run(code):
         env = dict(os.environ, PYTHONPATH = os.pathsep.join(path)),
         timeout = 900,
     )
+
+
+def _models_importable():
+    """Whether `import unsloth.models` completes at all in a child interpreter.
+
+    Probing the behaviour, not the dependency list. `find_spec("torch")` is not the
+    question: a host can have torch, transformers and peft installed and still be unable
+    to import `unsloth.models`, because `unsloth_zoo.device_type` raises
+    NotImplementedError when it recognises no accelerator. A GitHub macOS runner is exactly
+    that host, and gating on the spec list turned "cannot run here" into a red test rather
+    than a skip.
+
+    One subprocess, at collection, reused by every case below.
+    """
+    result = _run(
+        """
+        import unsloth.models  # noqa: F401
+        print("MODELS_OK")
+        """
+    )
+    return "MODELS_OK" in result.stdout
+
+
+_needs_torch = pytest.mark.skipif(
+    not _models_importable(),
+    reason = (
+        "importing unsloth.models does not complete in this environment (no torch, or no "
+        "accelerator unsloth_zoo recognises)"
+    ),
+)
 
 
 # The MLX ordering without MLX: put a bare `unsloth` package object in sys.modules, which
