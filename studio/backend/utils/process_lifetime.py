@@ -657,6 +657,59 @@ def _windows_identity_of_handle(kernel32, handle) -> "Optional[str]":
         return None
 
 
+def _windows_terminate_through_a_handle(
+    pid: int, identity: "Optional[str]"
+) -> "Optional[bool]":
+    """Kill *pid* through a handle that was proved to be the right process, or say why not.
+
+    ``True`` the process was signalled, ``False`` the handle is provably somebody else (or
+    cannot be identified while an identity was supplied), ``None`` no handle could be had at
+    all and the caller has to fall back.
+
+    A pid is a NAME, and Windows frees it the moment the process exits; ``taskkill /PID`` and
+    ``os.kill`` both resolve that name inside themselves, so anything they are told is
+    re-looked-up after the caller's check and can land on a replacement. A handle is the
+    process, not its name: once opened it refers to the same object until it is closed, so a
+    creation time read through it describes exactly what ``TerminateProcess`` on it will end.
+
+    Nothing is killed without proof. No identity to compare against means this stands down
+    and lets the caller decide, because the alternative is signalling a number.
+    """
+    if identity is None:
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        PROCESS_TERMINATE = 0x0001
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        kernel32.TerminateProcess.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        handle = kernel32.OpenProcess(
+            PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION, False, pid
+        )
+        if not handle:
+            # Gone, protected, or denied. All three are "this cannot answer", not "this is
+            # the wrong process", so the caller keeps its own ladder.
+            return None
+        try:
+            opened = _windows_identity_of_handle(kernel32, handle)
+            if opened is None or opened != identity:
+                # Either the number now belongs to something else, or it cannot be shown to
+                # belong to the recorded process. Neither is a licence to kill.
+                return False
+            return bool(kernel32.TerminateProcess(handle, 1))
+        finally:
+            kernel32.CloseHandle(handle)
+    except Exception:  # noqa: BLE001 -- no ctypes, no kernel32: the caller falls back
+        return None
+
+
 def _windows_filetime_now() -> "Optional[int]":
     """The wall clock as one 64-bit FILETIME, comparable with a process creation time.
 
@@ -2048,6 +2101,15 @@ def _windows_terminate_pid(pid: int, identity: "Optional[str]" = None) -> bool:
     process is not recoverable.
     """
     import subprocess
+
+    # The handle first, because it is the only spelling of this that cannot be redirected.
+    # `taskkill /PID` resolves the number inside itself, after the caller's check and after
+    # this process has spent time getting here, so a pid that was freed in between takes the
+    # kill with it onto whatever inherited the number. Through a handle there is no second
+    # lookup: the creation time is read from the same object the terminate acts on.
+    through_handle = _windows_terminate_through_a_handle(pid, identity)
+    if through_handle is not None:
+        return through_handle
 
     try:
         completed = subprocess.run(

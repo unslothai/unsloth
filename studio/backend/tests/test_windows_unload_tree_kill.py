@@ -1148,6 +1148,71 @@ def test_a_pid_recycled_before_the_job_assignment_is_not_assigned(monkeypatch):
     assert all(rights & 0x1000 for rights in opened_rights), opened_rights
 
 
+def test_the_forced_kill_goes_through_the_handle_it_verified(monkeypatch):
+    """A pid is a NAME, and `taskkill /PID` resolves it inside itself.
+
+    That lookup happens after the caller's identity check and after this process has spent
+    time getting to the call, so a number freed in between carries the kill onto whatever
+    inherited it. A handle is the process rather than its name: the creation time is read
+    from the same object TerminateProcess then ends.
+    """
+    import ctypes
+    import subprocess
+
+    terminated: "list[int]" = []
+    closed: "list[int]" = []
+    handle_identity = {"value": "0:4242"}
+    spawned: "list[list]" = []
+
+    def _times(handle, created_ptr, *rest):
+        spelling = handle_identity["value"]
+        if spelling is None:
+            return 0
+        high, low = spelling.split(":")
+        created_ptr._obj.dwHighDateTime = int(high)
+        created_ptr._obj.dwLowDateTime = int(low)
+        return 1
+
+    kernel32 = _FakeKernel32(
+        OpenProcess = lambda rights, inherit, pid: 91,
+        GetProcessTimes = _times,
+        TerminateProcess = lambda handle, code: terminated.append(handle) or 1,
+        CloseHandle = lambda handle: closed.append(handle) or 1,
+    )
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *a, **k: kernel32, raising = False)
+    monkeypatch.setattr(
+        subprocess, "run", lambda *a, **k: spawned.append(a) or (_ for _ in ()).throw(
+            AssertionError("taskkill was spawned for a pid a handle could answer for")
+        )
+    )
+
+    assert pl._windows_terminate_pid(4242, "0:4242") is True
+    assert terminated == [91], terminated
+    assert closed == [91], "the handle was leaked"
+
+    # The number now belongs to something that started later: refused, and nothing is
+    # signalled by any route.
+    terminated.clear()
+    handle_identity["value"] = "9:9999"
+    assert pl._windows_terminate_pid(4242, "0:4242") is False
+    assert terminated == []
+
+    # Unreadable is not a match either.
+    handle_identity["value"] = None
+    assert pl._windows_terminate_pid(4242, "0:4242") is False
+    assert terminated == []
+
+    # A handle that cannot be opened at all is "cannot answer", not "wrong process", so the
+    # old ladder still runs.
+    kernel32._stubs["OpenProcess"] = lambda rights, inherit, pid: 0
+    monkeypatch.setattr(
+        subprocess, "run",
+        lambda *a, **k: spawned.append(a[0]) or _types.SimpleNamespace(returncode = 0),
+    )
+    assert pl._windows_terminate_pid(4242, "0:4242") is True
+    assert spawned and spawned[-1][0] == "taskkill", spawned
+
+
 def test_no_windows_kill_path_calls_taskkill_slash_t_any_more():
     """The validated collector is only a filter while every forced kill goes through it.
 
