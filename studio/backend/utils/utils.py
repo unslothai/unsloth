@@ -146,9 +146,14 @@ class AuthSafeRedirectHandler(urllib.request.HTTPRedirectHandler):
         new = self._origin(newurl)
         if old[0] == "https" and new[0] == "http":
             return None  # no TLS downgrade, whatever the target is
-        if new != old:
-            req.headers.pop("Authorization", None)
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
+        result = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if result is not None and new != old:
+            # Strip from the redirected request, not the caller's. urllib
+            # builds the new Request's headers as a fresh dict, so this drops
+            # the token for the cross-origin hop while the original request
+            # stays reusable with its Authorization intact.
+            result.headers.pop("Authorization", None)
+        return result
 
 
 def auth_safe_open(req, timeout):
