@@ -742,15 +742,26 @@ def _child_pid_map() -> "Optional[dict[int, list[int]]]":
     return None
 
 
-def collect_descendants(pid: "Optional[int]") -> "list[tuple[int, Optional[str]]]":
-    """A pid's descendants and their start-time identities.
+def collect_descendants_known(
+    pid: "Optional[int]",
+) -> "tuple[list[tuple[int, Optional[str]]], bool]":
+    """`(descendants, known)`, where `known` is False when the walk could not be made.
 
-    Read this BEFORE signalling the parent: its children are reparented the
-    moment it exits, and nothing then ties them back to it. The identities let
-    the kill below skip a number that has since moved on to something else.
+    An empty list has two very different meanings and collapsing them is a leak.
+    `_windows_child_pid_map` returns None when the Toolhelp snapshot cannot be taken or
+    the walk fails partway, and the root's own identity can be unreadable too; either way
+    the answer is "this process's children are not enumerable right now", not "it has
+    none". Read as "none", the unload terminates the leader, sees no survivors, and
+    deletes the record and the pidfile -- which is the exact leak this collector exists to
+    prevent, arrived at through a failed snapshot instead of through a reparent.
+
+    `collect_descendants` keeps returning the list alone, because the callers that only
+    want something to signal are right not to care. The unload does care: it is about to
+    drop the last handle on whatever it did not see.
     """
     if not pid:
-        return []
+        # Not a question about a process, so there is nothing indeterminate about it.
+        return [], True
     # Windows records the creating pid on a process and never clears it, not even when
     # that parent exits and its number is handed to something else, so the raw table
     # lists strangers created by an earlier holder of this pid as children of it. A real
@@ -769,7 +780,7 @@ def collect_descendants(pid: "Optional[int]") -> "list[tuple[int, Optional[str]]
     # Without a readable floor this claims nothing at all, and an unreadable candidate
     # is skipped rather than assumed to be ours: a tree kill is not a place to guess.
     if _is_windows():
-        return _windows_collect_descendants(pid)
+        return _windows_collect_descendants_known(pid)
     # The POSIX walk, unchanged: /proc and the BSD table record a parent link the kernel
     # rewrites on reparent, so there is no stale creator to order against and no floor to
     # carry. Kept as its own loop rather than a flag inside the Windows one so this path
@@ -777,7 +788,7 @@ def collect_descendants(pid: "Optional[int]") -> "list[tuple[int, Optional[str]]
     # per unload on a 200 process table for a check POSIX does not use.
     table = _child_pid_map()
     if not table:
-        return []
+        return [], False
     found: "list[tuple[int, Optional[str]]]" = []
     seen = {pid}
     queue = list(table.get(pid, ()))
@@ -788,10 +799,30 @@ def collect_descendants(pid: "Optional[int]") -> "list[tuple[int, Optional[str]]
         seen.add(child)
         found.append((child, _pid_identity(child)))
         queue.extend(table.get(child, ()))
-    return found
+    return found, True
+
+
+def collect_descendants(pid: "Optional[int]") -> "list[tuple[int, Optional[str]]]":
+    """A pid's descendants and their start-time identities.
+
+    Read this BEFORE signalling the parent: its children are reparented the
+    moment it exits, and nothing then ties them back to it. The identities let
+    the kill below skip a number that has since moved on to something else.
+
+    See `collect_descendants_known` for the caller that also needs to know whether the
+    walk could be made at all.
+    """
+    return collect_descendants_known(pid)[0]
 
 
 def _windows_collect_descendants(pid: int) -> "list[tuple[int, Optional[str]]]":
+    """The list alone. See `_windows_collect_descendants_known`."""
+    return _windows_collect_descendants_known(pid)[0]
+
+
+def _windows_collect_descendants_known(
+    pid: int,
+) -> "tuple[list[tuple[int, Optional[str]]], bool]":
     """`collect_descendants` for the Toolhelp table, which needs an ancestry proof.
 
     Each candidate is ordered against ITS OWN immediate parent's creation time, carried
@@ -810,10 +841,12 @@ def _windows_collect_descendants(pid: int) -> "list[tuple[int, Optional[str]]]":
     """
     root_floor = _windows_creation_time(_pid_identity(pid))
     if root_floor is None:
-        return []
+        # No floor means no ancestry proof for anything, so this claims nothing at all --
+        # and "nothing" here is indeterminate, not empty.
+        return [], False
     table = _child_pid_map()
     if not table:
-        return []
+        return [], False
     found: "list[tuple[int, Optional[str]]]" = []
     seen = {pid}
     # (candidate pid, creation time of the parent that listed it)
@@ -829,7 +862,7 @@ def _windows_collect_descendants(pid: int) -> "list[tuple[int, Optional[str]]]":
             continue
         found.append((child, identity))
         queue.extend((grandchild, created) for grandchild in table.get(child, ()))
-    return found
+    return found, True
 
 
 def terminate_descendants(
@@ -919,10 +952,22 @@ def _windows_terminate_collected(
     the pidfile that are the only remaining handles on it.
     """
     attempted: "list[tuple[int, Optional[str]]]" = []
+    unresolved: "list[int]" = []
     for pid, identity in reversed(collected):
         if not _signalable(pid) or not _pid_alive(pid):
             continue
         if not _provably_the_same(pid, identity):
+            # Three outcomes here, not two, and the middle one used to vanish. A pid that
+            # is PROVABLY somebody else is not ours and is simply dropped. A pid whose
+            # identity cannot be read on either side is unknown: refusing to signal it is
+            # right, but reporting nothing about it told the caller the sweep was complete,
+            # so the record and the pidfile went and a live worker was left with nothing
+            # naming it. Unknown is carried out as an unresolved survivor instead: never
+            # signalled, always reported.
+            if _pid_alive(pid) and not _pid_is_zombie(pid) and not _provably_different(
+                pid, identity
+            ):
+                unresolved.append(pid)
             continue
         # Started after the snapshot, and validated the same way rather than inherited
         # from a parent-pid link. Deepest first, as above.
@@ -941,11 +986,14 @@ def _windows_terminate_collected(
         except Exception:  # noqa: BLE001 - best effort, like the rest of this
             pass
         attempted.append((pid, identity))
-    return [
+    survivors = [
         pid
         for pid, identity in attempted
         if _pid_alive(pid) and not _pid_is_zombie(pid) and _provably_the_same(pid, identity)
     ]
+    # Deepest first throughout, and without duplicates: a pid cannot be both killed and
+    # skipped, so the two lists are disjoint by construction.
+    return unresolved + survivors
 
 
 def _windows_terminate_validated_tree(pid: int) -> bool:
@@ -1000,6 +1048,22 @@ def _still_the_same(pid: int, identity: "Optional[str]") -> bool:
     if identity is None or current is None:
         return True
     return _same_identity(identity, current)
+
+
+def _provably_different(pid: int, identity: "Optional[str]") -> bool:
+    """True only when the pid is provably a DIFFERENT process than it was.
+
+    The third answer `_provably_the_same` cannot give. That one folds "somebody else" and
+    "cannot tell" into the same False, which is right for deciding whether to signal and
+    wrong for deciding whether to report: a number that has moved on to a stranger is not
+    our leaked worker and must not be adopted, while one we merely cannot read might be.
+    """
+    if identity is None:
+        return False
+    current = _pid_identity(pid)
+    if current is None:
+        return False
+    return not _same_identity(identity, current)
 
 
 def _provably_the_same(pid: int, identity: "Optional[str]") -> bool:

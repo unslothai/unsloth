@@ -432,7 +432,7 @@ def _make_backend():
     b._stop_mtp_crash_watchdog = lambda *a, **kw: None
     b._reset_effective_parallel_slots = lambda *a, **kw: None
     b._leading_process_group = lambda *a, **kw: None
-    b._collect_descendants = lambda *a, **kw: []
+    b._collect_descendants = lambda *a, **kw: ([], True)
     b._kill_process_group = lambda *a, **kw: None
     b._terminate_descendants = lambda *a, **kw: []
     return b
@@ -760,3 +760,102 @@ def test_a_sweep_that_raised_names_every_pid_it_had(monkeypatch):
 
     monkeypatch.setattr(pl, "terminate_descendants", _raises)
     assert LlamaCppBackend._terminate_descendants([(777, "0:777"), (778, None)]) == [777, 778]
+
+
+# ── an answer that could not be obtained is not an answer of "none" ──
+
+
+def test_an_unreadable_process_table_is_indeterminate_not_empty(monkeypatch):
+    """`[]` has two meanings and only one of them is safe to act on.
+
+    The Toolhelp snapshot can fail outright, and the walk can fail partway. Reported as an
+    empty tree, the unload terminates the leader, finds no survivors, and deletes the
+    record and the pidfile -- so the workers the failed snapshot never listed are left
+    running with nothing naming them, which is the leak this collector was added to close,
+    reached through a failed snapshot instead of through a reparent.
+    """
+    monkeypatch.setattr(pl, "_is_windows", lambda: True)
+    monkeypatch.setattr(pl, "_pid_identity", lambda pid: "0:500")
+    monkeypatch.setattr(pl, "_child_pid_map", lambda: None)
+    assert pl.collect_descendants_known(500) == ([], False)
+    # The old spelling still answers with the list alone, so callers that only want
+    # something to signal are unaffected.
+    assert pl.collect_descendants(500) == []
+
+    # A readable table with no children is the other meaning, and it must stay knowable.
+    monkeypatch.setattr(pl, "_child_pid_map", lambda: {999: [1000]})
+    assert pl.collect_descendants_known(500) == ([], True)
+
+
+def test_a_root_with_no_readable_identity_is_indeterminate(monkeypatch):
+    """The root's creation time is the ancestry floor, so without it the walk can prove
+    nothing about anything -- which is not the same as proving there is nothing."""
+    monkeypatch.setattr(pl, "_is_windows", lambda: True)
+    monkeypatch.setattr(pl, "_pid_identity", lambda pid: None)
+    monkeypatch.setattr(pl, "_child_pid_map", lambda: {500: [600]})
+    assert pl.collect_descendants_known(500) == ([], False)
+
+
+def test_an_unenumerable_tree_keeps_the_pidfile(monkeypatch):
+    """The leader exited cleanly and the sweep found nothing, but the sweep ran over a list
+    that was never built. Keeping the record costs a stale pidfile; dropping it costs the
+    only name anything has for a process that may still hold the GPU."""
+    b = _make_backend()
+    b._process.pid = 4242
+    b._process.poll.return_value = 0
+    b._collect_descendants = lambda *a, **kw: ([], False)
+    b._terminate_descendants = lambda *a, **kw: []
+    cleared, _killed = _instrument(monkeypatch, gone = True)
+    b._kill_process()
+    assert cleared == [], "dropped the pidfile after a walk that could not be made"
+
+
+def test_a_live_but_unverifiable_descendant_is_reported_not_signalled(monkeypatch):
+    """Refusing to kill it is right. Saying nothing about it is not.
+
+    An identity that cannot be read on either side is exactly what a recycled pid looks
+    like, so it must not be signalled. It is also what a live worker under momentary
+    handle pressure looks like, and omitting it from the survivor list told the caller the
+    sweep was complete.
+    """
+    monkeypatch.setattr(pl, "_is_linux", lambda: False)
+    monkeypatch.setattr(pl, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(pl, "_pid_is_zombie", lambda pid: False)
+    monkeypatch.setattr(pl, "_pid_identity", lambda pid: None)  # unreadable NOW
+    monkeypatch.setattr(pl, "_windows_collect_descendants", lambda pid: [])
+    killed = []
+    monkeypatch.setattr(pl, "_windows_terminate_pid", lambda pid: killed.append(pid))
+    assert pl._windows_terminate_collected([(11, "0:11")]) == [11]
+    assert killed == [], "an unverifiable pid must never be signalled"
+
+
+def test_a_pid_that_provably_moved_on_is_neither_killed_nor_adopted(monkeypatch):
+    """The boundary. A number that now belongs to a stranger is not our leaked worker, so
+    adopting it would put someone else's process into our lifetime record."""
+    monkeypatch.setattr(pl, "_is_linux", lambda: False)
+    monkeypatch.setattr(pl, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(pl, "_pid_is_zombie", lambda pid: False)
+    monkeypatch.setattr(pl, "_pid_identity", lambda pid: "0:999")  # somebody else
+    monkeypatch.setattr(pl, "_windows_collect_descendants", lambda pid: [])
+    killed = []
+    monkeypatch.setattr(pl, "_windows_terminate_pid", lambda pid: killed.append(pid))
+    assert pl._windows_terminate_collected([(11, "0:11")]) == []
+    assert killed == []
+
+
+def test_the_two_provable_questions_are_asked_separately(monkeypatch):
+    """`_provably_the_same` folds "somebody else" and "cannot tell" into one False, which
+    is right for deciding whether to signal and wrong for deciding whether to report."""
+    monkeypatch.setattr(pl, "_is_linux", lambda: False)
+    monkeypatch.setattr(pl, "_pid_identity", lambda pid: "0:11")
+    assert pl._provably_the_same(11, "0:11") is True
+    assert pl._provably_different(11, "0:11") is False
+    assert pl._provably_the_same(11, "0:99") is False
+    assert pl._provably_different(11, "0:99") is True
+
+    monkeypatch.setattr(pl, "_pid_identity", lambda pid: None)
+    # Unknown on one side: neither question can be answered yes.
+    assert pl._provably_the_same(11, "0:11") is False
+    assert pl._provably_different(11, "0:11") is False
+    assert pl._provably_the_same(11, None) is False
+    assert pl._provably_different(11, None) is False

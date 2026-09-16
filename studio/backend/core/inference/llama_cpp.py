@@ -29333,12 +29333,20 @@ class LlamaCppBackend:
 
     @staticmethod
     def _collect_descendants(pid):
-        """The server's own children, for the kill below. Empty when unreadable."""
+        """`(children, known)` for the kill below.
+
+        `known` is False when the walk could not be made at all: no Toolhelp snapshot, or
+        a root whose own identity cannot be read. An empty list then means "not
+        enumerable", not "none", and the difference decides whether this unload may drop
+        the record and the pidfile. Treating it as "none" terminates the leader, finds no
+        survivors and deletes the only handles on whatever the failed walk did not list.
+        """
         try:
-            from utils.process_lifetime import collect_descendants
-            return collect_descendants(pid)
+            from utils.process_lifetime import collect_descendants_known
+            return collect_descendants_known(pid)
         except Exception:
-            return []
+            # The import or the walk itself failed, which says nothing about the tree.
+            return [], False
 
     @staticmethod
     def _tree_kill_surviving_process(pid) -> bool:
@@ -29520,7 +29528,7 @@ class LlamaCppBackend:
         # so the visual server has to be named while that link still exists.
         _pid = getattr(self._process, "pid", None)
         _pgid = self._leading_process_group(_pid)
-        _descendants = self._collect_descendants(_pid)
+        _descendants, _descendants_known = self._collect_descendants(_pid)
         if teardown:
             # Before the signal, and as the process itself: the reference stays set
             # across the waits below, and only identity says which child a teardown
@@ -29580,6 +29588,17 @@ class LlamaCppBackend:
             # server is still running is the state that leaves a worker on the GPU with
             # nothing naming it.
             if _surviving_descendants:
+                _exited = False
+            # And a tree that could not be enumerated is not a tree with nothing in it.
+            # The sweep above ran over whatever the failed walk returned, so "no survivors"
+            # here is a statement about a list that was never built. Keep the record: a
+            # leaked worker the next launch can reap costs a stale pidfile, and dropping it
+            # costs the only name anything has for a process still holding the GPU.
+            if not _descendants_known and _pid is not None:
+                logger.warning(
+                    "llama-server descendants could not be enumerated before the kill; "
+                    "keeping its record so the next launch can reap anything left"
+                )
                 _exited = False
             if _killed_pid is not None and _exited:
                 try:
