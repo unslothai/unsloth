@@ -121,7 +121,10 @@ run_login 'export PATH="$PATH:$HOME/.local/bin"' ""
 assert_not_contains "append already there: no prepend added" "$RC_CONTENTS" 'export PATH="$HOME/.local/bin:$PATH"'
 assert_eq "append already there: exactly one PATH line" "1" "$(printf '%s\n' "$RC_CONTENTS" | grep -c 'local/bin')"
 
-run_login 'export PATH="$HOME/.local/bin:$PATH"' "/opt/anaconda3"
+# Seeded WITH the marker the installer writes above its own line: that comment is the
+# ownership record, and the migration only ever touches the line directly under it.
+run_login '# Added by Unsloth installer
+export PATH="$HOME/.local/bin:$PATH"' "/opt/anaconda3"
 assert_eq "prepend already there: exactly one PATH line" "1" "$(printf '%s\n' "$RC_CONTENTS" | grep -c 'local/bin')"
 # And that one line is the APPEND. Counting lines alone passes whether the stale prepend
 # was repointed or simply accepted as present, which is the defect #5871 reports: the
@@ -131,9 +134,19 @@ assert_contains "stale prepend inside conda: rewritten as the append" "$RC_CONTE
 assert_not_contains "stale prepend inside conda: the prepend is gone" "$RC_CONTENTS" \
     'export PATH="$HOME/.local/bin:$PATH"'
 
+# An identical line the USER wrote, with no marker above it, is not ours to move. It is a
+# line people write by hand all the time, and rewriting one moves every executable in that
+# directory behind the rest of PATH for good, in every later shell, conda or not.
+run_login 'export PATH="$HOME/.local/bin:$PATH"' "/opt/anaconda3"
+assert_contains "unmarked user line inside conda: left alone" "$RC_CONTENTS" \
+    'export PATH="$HOME/.local/bin:$PATH"'
+assert_eq "unmarked user line inside conda: no second line added" "1" \
+    "$(printf '%s\n' "$RC_CONTENTS" | grep -c 'local/bin')"
+
 # The same stale prepend OUTSIDE conda is left exactly as it is: repointing there would
 # reorder a line for a user who never had a conda ordering problem.
-run_login 'export PATH="$HOME/.local/bin:$PATH"' ""
+run_login '# Added by Unsloth installer
+export PATH="$HOME/.local/bin:$PATH"' ""
 assert_contains "stale prepend outside conda: left alone" "$RC_CONTENTS" \
     'export PATH="$HOME/.local/bin:$PATH"'
 assert_eq "stale prepend outside conda: still one PATH line" "1" \
@@ -236,7 +249,11 @@ for _stale in "fish_add_path '%s/.local/bin'" "fish_add_path -a '%s/.local/bin'"
     WORK=$(mktemp -d)
     mkdir -p "$WORK/.config/fish/conf.d"
     # shellcheck disable=SC2059
-    printf "$_stale\n" "$WORK" > "$WORK/.config/fish/conf.d/unsloth.fish"
+    {
+        echo "# Added by Unsloth installer"
+        # shellcheck disable=SC2059
+        printf "$_stale\n" "$WORK"
+    } > "$WORK/.config/fish/conf.d/unsloth.fish"
     _stale_line=$(printf "$_stale" "$WORK")
     (
         eval "$HARNESS"
@@ -308,7 +325,11 @@ run_setup() {
     WORK=$(mktemp -d)
     if [ -n "${SETUP_RC_SEED:-}" ]; then
         # shellcheck disable=SC2059
-        printf "$SETUP_RC_SEED\n" "$WORK" > "$WORK/.bashrc"
+        {
+            echo "# Added by Unsloth setup"
+            # shellcheck disable=SC2059
+            printf "$SETUP_RC_SEED\n" "$WORK"
+        } > "$WORK/.bashrc"
     else
         : > "$WORK/.bashrc"
     fi

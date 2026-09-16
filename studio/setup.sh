@@ -2191,7 +2191,18 @@ _setup_path_has_dir() {
 # copied back into the ORIGINAL file so a symlinked rc keeps its link, mode and owner.
 _unsloth_repoint_rc_line() {
     [ -f "$1" ] || return 1
-    grep -qxF "$2" "$1" 2>/dev/null || return 1
+    # OURS, not merely matching. `export PATH="$HOME/.local/bin:$PATH"` and
+    # `fish_add_path '$HOME/.local/bin'` are lines a user writes by hand all the time, and
+    # rewriting one of those moves every executable in that directory behind the rest of PATH
+    # for good, in every later shell, conda or not. Both installers write a
+    # `# Added by Unsloth ...` comment immediately above the line they add, so that marker is
+    # the ownership record and the line directly under it is the only one this touches. A line
+    # with no marker above it is the user's and is left exactly as it is.
+    _URRL_OLD="$2" awk '
+        $0 == ENVIRON["_URRL_OLD"] && prev ~ /^# Added by Unsloth/ { found = 1 }
+        { prev = $0 }
+        END { exit(found ? 0 : 1) }
+    ' "$1" 2>/dev/null || return 1
     # Stage beside the real file, then rename onto it. `cat tmp > file` truncated the user's
     # profile first and wrote it back afterwards: an interrupt or an I/O error anywhere in
     # between left a half-written rc file, the failure branch then deleted the only complete
@@ -2229,7 +2240,10 @@ _unsloth_repoint_rc_line() {
     # reported the stale prepend as moved with conda still in front of it. ENVIRON is the
     # spelling that hands the value over untouched.
     if cp -- "$_urrl_real" "$_urrl_tmp" 2>/dev/null \
-        && _URRL_OLD="$2" _URRL_NEW="$3" awk '$0 == ENVIRON["_URRL_OLD"] { print ENVIRON["_URRL_NEW"]; next } { print }' "$_urrl_real" > "$_urrl_tmp" 2>/dev/null \
+        && _URRL_OLD="$2" _URRL_NEW="$3" awk '
+            $0 == ENVIRON["_URRL_OLD"] && prev ~ /^# Added by Unsloth/ { print ENVIRON["_URRL_NEW"]; prev = $0; next }
+            { print; prev = $0 }
+        ' "$_urrl_real" > "$_urrl_tmp" 2>/dev/null \
         && mv -f -- "$_urrl_tmp" "$_urrl_real" 2>/dev/null; then
         return 0
     fi
