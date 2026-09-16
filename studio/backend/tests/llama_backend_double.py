@@ -72,6 +72,7 @@ class FakeLlamaCppBackend:
     requested_extra_args = None
     spec_fallback_reason = None
     spec_drafter_kind = None
+    last_load_warning = None
 
     def __getattr__(self, name):
         """Runtime fields answer as the real backend does; anything else raises.
