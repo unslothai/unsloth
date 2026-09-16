@@ -639,7 +639,7 @@ class TestTheCapSurvivesAWindowsDeviceRetry:
         import inspect
 
         source = inspect.getsource(LlamaCppBackend.load_model)
-        clamp = source.index('n_parallel = 1  # allow-slot-clamp: llama-server refused more')
+        clamp = source.index("n_parallel = 1  # allow-slot-clamp: llama-server refused more")
         strip = source.index("self._without_flag_pairs(cmd, _auto_ckpt_emitted)", clamp)
         decide = source.index("_auto_ctx_checkpoints = _decide_auto_ctx_checkpoints()", clamp)
         emit = source.index("_emit_auto_ctx_checkpoints(cmd)", clamp)
