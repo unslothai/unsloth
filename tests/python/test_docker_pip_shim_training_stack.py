@@ -392,3 +392,9 @@ def test_pip_uninstall_ignores_install_destination_variables(shim, monkeypatch, 
     monkeypatch.setenv(var, str(tmp_path / "outside"))
     assert _run(shim, ["-y", "torch"], sub = "uninstall") is None
     assert _run(shim, ["-y", UNBAKED], sub = "uninstall") == ["-y", UNBAKED]
+
+
+@pytest.mark.parametrize("tool", ["pip", "uv"])
+def test_targetless_uninstall_reaches_the_real_cli(shim, tool):
+    assert _run(shim, ["--help"], tool = tool, sub = "uninstall") == ["--help"]
+    assert _run(shim, ["-y"], tool = tool, sub = "uninstall") == ["-y"]

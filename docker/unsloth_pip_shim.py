@@ -936,7 +936,7 @@ def _uninstall(tool, argv, i):
         has_target = True
     if dropped:
         print("[unsloth-nb] kept baked versions, skipped: " + " ".join(dropped))
-    if not has_target:
+    if not has_target and dropped:
         print("[unsloth-nb] nothing to uninstall after keeping the baked stack; ok.")
         return
     cmd = [REAL[tool]] + head + keep
