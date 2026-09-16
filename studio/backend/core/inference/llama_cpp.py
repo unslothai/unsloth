@@ -14724,9 +14724,7 @@ class LlamaCppBackend:
 
         # Hybrid checkpoints contain the full recurrent state per slot, not a context-scaled
         # window. This covers both Mamba and KDA paths and remains host-resident.
-        recurrent_checkpoints = (
-            slots * max(0, ctx_checkpoints) * self._rollback_state_bytes(1)
-        )
+        recurrent_checkpoints = slots * max(0, ctx_checkpoints) * self._rollback_state_bytes(1)
 
         # Path 1: MLA (DeepSeek-V2/V3, GLM-4.7, GLM-5, Kimi-K2.5)
         # One compressed KV latent per token/layer (shared across heads); V is
@@ -21837,9 +21835,7 @@ class LlamaCppBackend:
                     ctx_checkpoints,
                     per_checkpoint_bytes = self._rollback_state_bytes(1),
                     n_parallel = n_parallel,
-                    total_host_bytes = (
-                        (self._total_system_memory_mib() or 0) * 1024 * 1024
-                    ) or None,
+                    total_host_bytes = ((self._total_system_memory_mib() or 0) * 1024 * 1024) or None,
                 )
                 # Preserve the existing SWA fit policy, which charges only explicit counts.
                 _requested_ctx_checkpoints = (

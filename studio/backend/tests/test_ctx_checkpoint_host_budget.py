@@ -119,21 +119,27 @@ def _caps(flag = "--ctx-checkpoints"):
 
 def test_the_launcher_bounds_a_hybrid_recurrent_load(monkeypatch):
     b = _backend()
-    monkeypatch.setattr(LlamaCppBackend, "_total_system_memory_mib", staticmethod(lambda: 94 * 1024))
+    monkeypatch.setattr(
+        LlamaCppBackend, "_total_system_memory_mib", staticmethod(lambda: 94 * 1024)
+    )
     assert b._bounded_ctx_checkpoints(4, _caps()) == 8
 
 
 def test_the_launcher_leaves_every_other_load_alone(monkeypatch):
-    monkeypatch.setattr(LlamaCppBackend, "_total_system_memory_mib", staticmethod(lambda: 94 * 1024))
-    assert _plain_attention_backend()._bounded_ctx_checkpoints(4, _caps()) is None
-    assert _backend()._bounded_ctx_checkpoints(4, {"found": True, "ctx_checkpoints_flag": None}) is (
-        None
+    monkeypatch.setattr(
+        LlamaCppBackend, "_total_system_memory_mib", staticmethod(lambda: 94 * 1024)
     )
+    assert _plain_attention_backend()._bounded_ctx_checkpoints(4, _caps()) is None
+    assert _backend()._bounded_ctx_checkpoints(
+        4, {"found": True, "ctx_checkpoints_flag": None}
+    ) is (None)
     assert _backend()._bounded_ctx_checkpoints(1, _caps()) is None
 
 
 def test_the_launcher_reads_the_older_flag_spelling(monkeypatch):
-    monkeypatch.setattr(LlamaCppBackend, "_total_system_memory_mib", staticmethod(lambda: 94 * 1024))
+    monkeypatch.setattr(
+        LlamaCppBackend, "_total_system_memory_mib", staticmethod(lambda: 94 * 1024)
+    )
     assert _backend()._bounded_ctx_checkpoints(4, _caps("--swa-checkpoints")) == 8
 
 
@@ -236,9 +242,12 @@ class TestAnInconclusiveProbeIsNotProofOfAbsence:
         assert ctx_checkpoints_allocated({"found": True, "help_probe_ok": True}) is False
 
     def test_a_named_flag_is_priced(self):
-        assert ctx_checkpoints_allocated(
-            {"found": True, "help_probe_ok": True, "ctx_checkpoints_flag": "--ctx-checkpoints"}
-        ) is True
+        assert (
+            ctx_checkpoints_allocated(
+                {"found": True, "help_probe_ok": True, "ctx_checkpoints_flag": "--ctx-checkpoints"}
+            )
+            is True
+        )
 
     @pytest.mark.parametrize(
         "caps",
@@ -314,9 +323,7 @@ class TestAnInconclusiveProbeIsNotProofOfAbsence:
             elif not caps.get("ctx_checkpoints_flag") and caps.get("found"):
                 expected = LLAMA_CTX_CHECKPOINTS_DEFAULT
             elif not caps.get("ctx_checkpoints_flag"):
-                expected = (
-                    requested if requested is not None else LLAMA_CTX_CHECKPOINTS_DEFAULT
-                )
+                expected = requested if requested is not None else LLAMA_CTX_CHECKPOINTS_DEFAULT
             elif requested is not None:
                 expected = requested
             else:
@@ -329,15 +336,17 @@ class TestAnInconclusiveProbeIsNotProofOfAbsence:
         budget = dict(
             per_checkpoint_bytes = int(149.625 * MIB), n_parallel = 4, total_host_bytes = 94 * GIB
         )
-        assert effective_ctx_checkpoints_for_caps(
-            caps, ["--ctx-checkpoints", "64"], None, **budget
-        ) == 64
-        assert effective_ctx_checkpoints_for_caps(
-            caps, ["--ctx-checkpoints", "0"], None, **budget
-        ) == 0
-        assert effective_ctx_checkpoints_for_caps(
-            caps, ["--ctx-checkpoints", "64"], 4, **budget
-        ) == 64
+        assert (
+            effective_ctx_checkpoints_for_caps(caps, ["--ctx-checkpoints", "64"], None, **budget)
+            == 64
+        )
+        assert (
+            effective_ctx_checkpoints_for_caps(caps, ["--ctx-checkpoints", "0"], None, **budget)
+            == 0
+        )
+        assert (
+            effective_ctx_checkpoints_for_caps(caps, ["--ctx-checkpoints", "64"], 4, **budget) == 64
+        )
 
     def test_the_launcher_still_will_not_name_a_flag_it_cannot_confirm(self, monkeypatch):
         monkeypatch.setattr(
@@ -391,7 +400,9 @@ class TestCheckpointsNeverReachAVramFigure:
 
         source = inspect.getsource(LlamaCppBackend.load_model)
         emit = source.index("str(_auto_ctx_checkpoints)")
-        tuning = source.index('_cache_flags_emitted.extend([str(server_caps["ctx_checkpoints_flag"]), "0"])')
+        tuning = source.index(
+            '_cache_flags_emitted.extend([str(server_caps["ctx_checkpoints_flag"]), "0"])'
+        )
         assert emit > tuning, "the automatic cap must be emitted after the Windows tuning"
         assert "_flag_name(str(token)) in _CTX_CHECKPOINTS_FLAGS" in source
 
@@ -406,13 +417,11 @@ class TestCheckpointsNeverReachAVramFigure:
     def test_the_fit_is_unmoved_by_the_new_term(self):
         b = _backend()
         assert (
-            b._fit_context_to_vram(262144, 24 * 1024, 16 * 1024**3, "q4_0", n_parallel = 4)
-            == 262144
+            b._fit_context_to_vram(262144, 24 * 1024, 16 * 1024**3, "q4_0", n_parallel = 4) == 262144
         )
-        assert (
-            b._estimate_kv_cache_bytes(262144, "q4_0", n_parallel = 4, ctx_checkpoints = 32)
-            > b._estimate_kv_cache_bytes(262144, "q4_0", n_parallel = 4, ctx_checkpoints = 0)
-        )
+        assert b._estimate_kv_cache_bytes(
+            262144, "q4_0", n_parallel = 4, ctx_checkpoints = 32
+        ) > b._estimate_kv_cache_bytes(262144, "q4_0", n_parallel = 4, ctx_checkpoints = 0)
 
     def test_the_training_guard_nets_them_out(self):
         import inspect
@@ -425,7 +434,9 @@ class TestCheckpointsNeverReachAVramFigure:
 
 
 def test_the_launcher_stands_down_for_a_typed_count(monkeypatch):
-    monkeypatch.setattr(LlamaCppBackend, "_total_system_memory_mib", staticmethod(lambda: 94 * 1024))
+    monkeypatch.setattr(
+        LlamaCppBackend, "_total_system_memory_mib", staticmethod(lambda: 94 * 1024)
+    )
     b = _backend()
     assert b._bounded_ctx_checkpoints(4, _caps(), ["--ctx-checkpoints", "64"]) is None
     assert b._bounded_ctx_checkpoints(4, _caps(), ["--swa-checkpoints=0"]) is None

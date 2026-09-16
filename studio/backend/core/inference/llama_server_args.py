@@ -677,9 +677,7 @@ def resolve_ctx_checkpoints(args: Optional[Iterable[str]], requested: Optional[i
 
 
 def ctx_checkpoints_within_host_budget(
-    per_checkpoint_bytes: int,
-    n_parallel: int,
-    total_host_bytes: Optional[int],
+    per_checkpoint_bytes: int, n_parallel: int, total_host_bytes: Optional[int]
 ) -> int:
     """Fit checkpoints per slot within the host budget and upstream default.
 
@@ -715,9 +713,7 @@ def effective_ctx_checkpoints(
         return override
     if parse_ctx_checkpoints_override(args) == 0 or requested == 0:
         return 0
-    return ctx_checkpoints_within_host_budget(
-        per_checkpoint_bytes, n_parallel, total_host_bytes
-    )
+    return ctx_checkpoints_within_host_budget(per_checkpoint_bytes, n_parallel, total_host_bytes)
 
 
 def resolve_requested_ctx(args: Optional[Iterable[str]], fallback_n_ctx: int) -> int:

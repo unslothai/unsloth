@@ -687,12 +687,12 @@ class TestHostMemoryIsNotChargedToTheCard:
         out = _call_std_route(monkeypatch, path = gguf, repo_id = "org/swa", ctx_checkpoints = 0)
         assert out["kv_checkpoint_bytes"] is None
 
-    def test_a_blank_field_reports_the_share_llama_cpp_allocates_anyway(self, monkeypatch, tmp_path):
+    def test_a_blank_field_reports_the_share_llama_cpp_allocates_anyway(
+        self, monkeypatch, tmp_path
+    ):
         gguf = _write_gguf(tmp_path / "swa-model-Q4_K_M.gguf", _SWA_MODEL)
         blank = _call_std_route(monkeypatch, path = gguf, repo_id = "org/swa", ctx_checkpoints = None)
-        explicit = _call_std_route(
-            monkeypatch, path = gguf, repo_id = "org/swa", ctx_checkpoints = 32
-        )
+        explicit = _call_std_route(monkeypatch, path = gguf, repo_id = "org/swa", ctx_checkpoints = 32)
         assert blank["kv_checkpoint_bytes"], "a blank field reported no checkpoint host RAM"
         assert blank["kv_checkpoint_bytes"] == explicit["kv_checkpoint_bytes"]
         assert blank["kv_bytes"] == explicit["kv_bytes"]
