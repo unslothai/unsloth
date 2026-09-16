@@ -351,9 +351,7 @@ def test_every_resolver_variable_in_shipped_powershell_goes_through_a_reader(pat
 
 
 @requires_pwsh
-@pytest.mark.parametrize(
-    "name", ["Test-UvEnvFlag", "Test-PipEnvFlag", "Test-NoIndexRequested"]
-)
+@pytest.mark.parametrize("name", ["Test-UvEnvFlag", "Test-PipEnvFlag", "Test-NoIndexRequested"])
 def test_the_two_powershell_copies_are_identical(name):
     """install.ps1 and setup.ps1 cannot share code, so the parity is the assertion."""
     install, setup = _ps_copies(name)
@@ -385,14 +383,12 @@ def test_uv_no_index_is_not_a_uv_environment_variable():
         # Comment markers stripped and whitespace collapsed before matching: the sentence
         # is wrapped across lines, and an assertion that a reflow can break is an assertion
         # that will be deleted rather than fixed.
-        prose = " ".join(
-            line.lstrip().lstrip("#").strip() for line in window.splitlines()
-        )
+        prose = " ".join(line.lstrip().lstrip("#").strip() for line in window.splitlines())
         prose = " ".join(prose.split())
         assert "defines no such environment variable" in prose, reader
-        assert "--no-index" in prose, (
-            f"{reader} must say that uv's --no-index is a command-line flag only"
-        )
+        assert (
+            "--no-index" in prose
+        ), f"{reader} must say that uv's --no-index is a command-line flag only"
 
     # And no OTHER site reads the raw variable for its truth: one convention, one place.
     for source, reader in ((INSTALL_SRC, "Test-UvEnvFlag"), (SETUP_SRC, "Test-UvEnvFlag")):
