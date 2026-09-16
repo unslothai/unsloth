@@ -565,15 +565,32 @@ def _ssh_import_bindings(tree: ast.AST) -> dict[str, str]:
 
 def _assignment_pairs(tree: ast.AST):
     """Yield individual assignment targets, including chained and unpacked forms."""
+    method_receivers: dict[int, tuple[str, str]] = {}
 
-    def scoped_nodes(node: ast.AST, scope: str = ""):
+    def scoped_nodes(
+        node: ast.AST,
+        scope: str = "",
+        receiver: Optional[tuple[str, str]] = None,
+    ):
+        if receiver:
+            method_receivers[id(node)] = receiver
         yield node, scope
         if isinstance(node, ast.ClassDef):
             scope = f"{scope}.{node.name}" if scope else node.name
+            receiver = None
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            arguments = node.args.posonlyargs + node.args.args
+            if (
+                scope
+                and arguments
+                and not any(
+                    _fq_name(item) == "staticmethod" for item in getattr(node, "decorator_list", ())
+                )
+            ):
+                receiver = arguments[0].arg, scope
             scope = ""
         for child in ast.iter_child_nodes(node):
-            yield from scoped_nodes(child, scope)
+            yield from scoped_nodes(child, scope, receiver)
 
     nodes = list(scoped_nodes(tree))
     functions = {
@@ -647,7 +664,7 @@ def _assignment_pairs(tree: ast.AST):
                     if (
                         "classmethod" in decorators
                         or "staticmethod" not in decorators
-                        and _fq_name(receiver) not in classes
+                        and (isinstance(receiver, ast.Call) or _fq_name(receiver) not in classes)
                     ):
                         call_args.insert(0, receiver)
         if function is not None:
@@ -698,6 +715,15 @@ def _assignment_pairs(tree: ast.AST):
             if isinstance(value, ast.BoolOp):
                 pending.extend((target, branch) for branch in value.values)
                 continue
+            receiver = method_receivers.get(id(node))
+            name = _fq_name(target)
+            if receiver and name.startswith(receiver[0] + "."):
+                suffix = name[len(receiver[0]) :]
+                owners = [
+                    receiver[1],
+                    *(key for key, owner in instances.items() if owner == receiver[1]),
+                ]
+                pending.extend((ast.Name(id = owner + suffix), value) for owner in owners)
             if scope and isinstance(target, ast.Name):
                 pending.append((ast.Attribute(value = ast.Name(id = scope), attr = target.id), value))
             if isinstance(target, (ast.Tuple, ast.List)) and isinstance(
@@ -773,6 +799,8 @@ def _fq_name(node: Optional[ast.AST]) -> str:
         cur = cur.value
     if isinstance(cur, ast.Name):
         parts.insert(0, cur.id)
+    elif isinstance(cur, ast.Call):
+        parts.insert(0, _fq_name(cur.func))
     return ".".join(parts)
 
 
