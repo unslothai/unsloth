@@ -34,7 +34,7 @@ on:
         default: "v0.1.9"
       release_tag:
         description: "release tag to publish under"
-        default: "woa-wheelhouse-v1"
+        default: "Windows-ARM64"
       publish:
         description: "upload to the release (otherwise artifacts only)"
         type: boolean
