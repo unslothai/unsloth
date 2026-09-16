@@ -4683,9 +4683,7 @@ def _planned_flash_attn_state(
 
 
 def _asked_for_auto_flash_attn(
-    extra_args: Optional[Iterable[str]] = None,
-    *,
-    env: Optional[Mapping[str, str]] = None,
+    extra_args: Optional[Iterable[str]] = None, *, env: Optional[Mapping[str, str]] = None
 ) -> bool:
     """Whether the resolved flash-attention setting is llama.cpp's ``auto``, not on or off.
 

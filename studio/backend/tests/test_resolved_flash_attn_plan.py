@@ -301,12 +301,12 @@ class TestAutoIsNotAnAnswer:
     def test_the_environment_spelling_is_read_too(self):
         assert _planned_flash_attn_state(None, env = {"LLAMA_ARG_FLASH_ATTN": "auto"}) is False
         # And the extras still beat the environment, in both directions.
-        assert _planned_flash_attn_state(
-            ["-fa", "on"], env = {"LLAMA_ARG_FLASH_ATTN": "auto"}
-        ) is True
-        assert _planned_flash_attn_state(
-            ["-fa", "auto"], env = {"LLAMA_ARG_FLASH_ATTN": "1"}
-        ) is False
+        assert (
+            _planned_flash_attn_state(["-fa", "on"], env = {"LLAMA_ARG_FLASH_ATTN": "auto"}) is True
+        )
+        assert (
+            _planned_flash_attn_state(["-fa", "auto"], env = {"LLAMA_ARG_FLASH_ATTN": "1"}) is False
+        )
 
     def test_the_last_flag_still_wins(self):
         assert _planned_flash_attn_state(["-fa", "auto", "-fa", "on"]) is True
@@ -315,9 +315,9 @@ class TestAutoIsNotAnAnswer:
     def test_a_quantized_v_cache_still_forces_it_on(self):
         """The one thing auto cannot undo: llama.cpp turns flash attention on itself for a
         quantized V cache rather than refusing the load, so that is what the launch runs."""
-        assert _planned_flash_attn_state(
-            ["-fa", "auto"], planned_cache_types = ("q8_0", "q4_0")
-        ) is True
+        assert (
+            _planned_flash_attn_state(["-fa", "auto"], planned_cache_types = ("q8_0", "q4_0")) is True
+        )
 
     def test_the_managed_launch_is_unaffected(self):
         """Studio emits ``--flash-attn on``; nothing here changes the default path."""
