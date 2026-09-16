@@ -61,9 +61,15 @@ import {
 } from "../api/chat-api";
 import { formatEta, formatRate } from "../utils/format-transfer";
 import { confirmStopRunningChatsIfNeeded } from "../utils/confirm-stop-running-chats";
-import { requestLocalPromptQueueStop } from "../utils/prompt-queue-boundary";
+import {
+  requestLocalPromptQueueStop,
+  notifyLocalPromptQueueLoadFailed,
+} from "../utils/prompt-queue-boundary";
 import { cancelPreStreamRunReservations } from "../utils/pre-stream-run-reservation";
-import type { ModelLifecycleLease } from "../utils/model-lifecycle-gate";
+import {
+  chatModelLifecycleGate,
+  type ModelLifecycleLease,
+} from "../utils/model-lifecycle-gate";
 import {
   GPU_LAYERS_AUTO,
   isLocalModelPath,
@@ -792,6 +798,7 @@ export function useChatModelRuntime() {
   const cancelLoading = useCallback(() => {
     const model = loadingModelRef.current;
     if (!model) return;
+    notifyLocalPromptQueueLoadFailed(loadLifecycleLeaseRef.current);
     loadAbortRef.current?.abort();
     loadAbortRef.current = null;
     loadingModelRef.current = null;
@@ -1095,11 +1102,10 @@ export function useChatModelRuntime() {
         }
       }
 
-      // Block queue materialization before taking the cancellation snapshot: a queue that appears while
-      // the dialog is open must not be stopped without having been included in the confirmation.
+      // Hold the lifecycle lease through confirmation and loading.
       const lifecycleLease = useChatRuntimeStore
         .getState()
-        .beginModelLoading();
+        .beginModelLoading("preparing");
       if (lifecycleLease === null) {
         restorePreviousConfig();
         toast.info("A model is loading", {
@@ -1252,6 +1258,14 @@ export function useChatModelRuntime() {
             typeof selection !== "string" && selection.previousConfig
               ? (selection.previousConfig.nParallel ?? null)
               : useChatRuntimeStore.getState().nParallel;
+          const previousReasoningBudget =
+            typeof selection !== "string" && selection.previousConfig
+              ? selection.previousConfig.reasoningBudget
+              : useChatRuntimeStore.getState().reasoningBudget;
+          const previousReasoningBudgetMessage =
+            typeof selection !== "string" && selection.previousConfig
+              ? selection.previousConfig.reasoningBudgetMessage
+              : useChatRuntimeStore.getState().reasoningBudgetMessage;
           const previousNBatch =
             typeof selection !== "string" && selection.previousConfig
               ? (selection.previousConfig.nBatch ?? null)
@@ -1429,6 +1443,12 @@ export function useChatModelRuntime() {
             pendingLoadConfig?.specDraftNMax ?? stateBeforeUnload.specDraftNMax;
           let loadNParallel =
             pendingLoadConfig?.nParallel ?? stateBeforeUnload.nParallel;
+          let loadReasoningBudget =
+            pendingLoadConfig?.reasoningBudget ??
+            stateBeforeUnload.reasoningBudget;
+          let loadReasoningBudgetMessage =
+            pendingLoadConfig?.reasoningBudgetMessage ??
+            stateBeforeUnload.reasoningBudgetMessage;
           // No store fallback and no reset with the rest below: undefined means "this config never read
           // them", and the route preserves the stored flags when the field is omitted, so a fallback
           // would clear flags the user set elsewhere.
@@ -1476,6 +1496,12 @@ export function useChatModelRuntime() {
             const validateNParallel = resetsPerModelSettings
               ? (pendingLoadConfig?.nParallel ?? null)
               : loadNParallel;
+            const validateReasoningBudget = resetsPerModelSettings
+              ? (pendingLoadConfig?.reasoningBudget ?? -1)
+              : loadReasoningBudget;
+            const validateReasoningBudgetMessage = resetsPerModelSettings
+              ? (pendingLoadConfig?.reasoningBudgetMessage ?? "")
+              : loadReasoningBudgetMessage;
             const validateNBatch = resetsPerModelSettings
               ? (pendingLoadConfig?.nBatch ?? null)
               : loadNBatch;
@@ -1534,6 +1560,12 @@ export function useChatModelRuntime() {
                     // when it fits.
                     gpu_layers: validateGpuLayers,
                     n_parallel: validateNParallel,
+                    reasoning_budget: targetIsDiffusion
+                      ? -1
+                      : validateReasoningBudget,
+                    reasoning_budget_message: targetIsDiffusion
+                      ? ""
+                      : validateReasoningBudgetMessage,
                     // omitted when blank, like the load payload below
                     ...(validateNBatch != null
                       ? { n_batch: validateNBatch }
@@ -1633,6 +1665,12 @@ export function useChatModelRuntime() {
                 // Per-model too: a different model follows the server default unless its staged config overrides it.
                 nParallel: null,
                 loadedNParallel: null,
+                reasoningBudget: -1,
+                loadedReasoningBudget: null,
+                loadedReasoningBudgetRequested: null,
+                reasoningBudgetMessage: "",
+                loadedReasoningBudgetMessage: null,
+                loadedReasoningBudgetMessageRequested: null,
                 nBatch: null,
                 loadedNBatch: null,
                 nUbatch: null,
@@ -1655,6 +1693,9 @@ export function useChatModelRuntime() {
                   : persistedSpeculativeType;
               loadSpecDraftNMax = pendingLoadConfig?.specDraftNMax ?? null;
               loadNParallel = pendingLoadConfig?.nParallel ?? null;
+              loadReasoningBudget = pendingLoadConfig?.reasoningBudget ?? -1;
+              loadReasoningBudgetMessage =
+                pendingLoadConfig?.reasoningBudgetMessage ?? "";
               loadNBatch = pendingLoadConfig?.nBatch ?? null;
               loadNUbatch = pendingLoadConfig?.nUbatch ?? null;
               loadServerTuning = {
@@ -1741,9 +1782,11 @@ export function useChatModelRuntime() {
             );
             const effectiveChatTemplateOverride =
               loadChatTemplateOverride?.trim() ? loadChatTemplateOverride : null;
-            // A queue can be created while the preliminary unload is pending, so stop a second time at the
-            // final boundary.
+            // Invalidate factories started before the final loading boundary.
             requestLocalPromptQueueStop();
+            if (lifecycleLease !== null) {
+              chatModelLifecycleGate.markLoading(lifecycleLease);
+            }
             const loadResponse = await loadModel({
               model_path: loadPath,
               nativePathLease: loadNativePathLease,
@@ -1761,6 +1804,10 @@ export function useChatModelRuntime() {
               spec_draft_n_max: loadSpecDraftNMax,
               // GGUF-only: slots mean nothing for a transformers load.
               n_parallel: isGguf ? loadNParallel : null,
+              reasoning_budget:
+                isGguf && !targetIsDiffusion ? loadReasoningBudget : -1,
+              reasoning_budget_message:
+                isGguf && !targetIsDiffusion ? loadReasoningBudgetMessage : "",
               // Sent only once known, and [] is the explicit "launch with none": the flags are llama-server's,
               // so neither a transformers load nor a diffusion GGUF carries them.
               ...(isGguf && !targetIsDiffusion && loadLlamaExtraArgs !== undefined
@@ -1972,6 +2019,36 @@ export function useChatModelRuntime() {
               // "server default" control.
               nParallel: committedSlots,
               loadedNParallel: committedSlots,
+              reasoningBudget:
+                (loadResponse.is_gguf ?? false) &&
+                !(loadResponse.is_diffusion ?? false)
+                  ? (loadResponse.reasoning_budget ?? loadReasoningBudget)
+                  : -1,
+              loadedReasoningBudget:
+                (loadResponse.is_gguf ?? false) &&
+                !(loadResponse.is_diffusion ?? false)
+                  ? (loadResponse.reasoning_budget ?? loadReasoningBudget)
+                  : -1,
+              reasoningBudgetMessage:
+                (loadResponse.is_gguf ?? false) &&
+                !(loadResponse.is_diffusion ?? false)
+                  ? (loadResponse.reasoning_budget_message ??
+                    loadReasoningBudgetMessage)
+                  : "",
+              loadedReasoningBudgetMessage:
+                (loadResponse.is_gguf ?? false) &&
+                !(loadResponse.is_diffusion ?? false)
+                  ? (loadResponse.reasoning_budget_message ??
+                    loadReasoningBudgetMessage)
+                  : "",
+              loadedReasoningBudgetRequested:
+                loadResponse.is_gguf && !loadResponse.is_diffusion
+                  ? (loadResponse.requested_reasoning_budget ?? loadReasoningBudget)
+                  : -1,
+              loadedReasoningBudgetMessageRequested:
+                loadResponse.is_gguf && !loadResponse.is_diffusion
+                  ? (loadResponse.requested_reasoning_budget_message ?? loadReasoningBudgetMessage)
+                  : "",
               nBatch: committedNBatch,
               loadedNBatch: committedNBatch,
               ...committedServerTuning,
@@ -2053,7 +2130,8 @@ export function useChatModelRuntime() {
               });
             }
           } catch (error) {
-            // Skip rollback if the user cancelled: the model is already being unloaded.
+            notifyLocalPromptQueueLoadFailed(lifecycleLease);
+            // Cancellation already handles unloading.
             if (abortCtrl.signal.aborted) throw error;
             if (previousWasUnloaded && previousCheckpoint) {
               let rollbackNativePathLease: string | undefined;
@@ -2092,6 +2170,10 @@ export function useChatModelRuntime() {
                   spec_draft_n_max:
                     stateBeforeUnload.loadedSpecDraftNMax,
                   n_parallel: stateBeforeUnload.loadedNParallel,
+                  reasoning_budget:
+                    stateBeforeUnload.loadedReasoningBudgetRequested ?? -1,
+                  reasoning_budget_message:
+                    stateBeforeUnload.loadedReasoningBudgetMessageRequested ?? "",
                   // omit unset fields: a null counts as set and would strip the previous server's extras
                   ...(stateBeforeUnload.loadedNBatch != null
                     ? { n_batch: stateBeforeUnload.loadedNBatch }
@@ -2148,6 +2230,20 @@ export function useChatModelRuntime() {
                   // Control keeps its intent; only the baseline takes the echo.
                   nParallel: previousNParallel,
                   loadedNParallel: stateBeforeUnload.loadedNParallel ?? null,
+                  reasoningBudget: previousReasoningBudget,
+                  loadedReasoningBudget:
+                    rollbackResponse.reasoning_budget ?? -1,
+                  reasoningBudgetMessage: previousReasoningBudgetMessage,
+                  loadedReasoningBudgetMessage:
+                    rollbackResponse.reasoning_budget_message ?? "",
+                  loadedReasoningBudgetRequested:
+                    rollbackResponse.requested_reasoning_budget ??
+                    stateBeforeUnload.loadedReasoningBudgetRequested ??
+                    -1,
+                  loadedReasoningBudgetMessageRequested:
+                    rollbackResponse.requested_reasoning_budget_message ??
+                    stateBeforeUnload.loadedReasoningBudgetMessageRequested ??
+                    "",
                   nBatch: previousNBatch,
                   loadedNBatch: stateBeforeUnload.loadedNBatch ?? null,
                   nUbatch: previousNUbatch,
@@ -2549,9 +2645,10 @@ export function useChatModelRuntime() {
     }
     let lifecycleLease: ModelLifecycleLease | null = null;
     try {
-      // Block queue materialization before taking the confirmation snapshot, or a queue can appear
-      // while the dialog is open and be stopped without the user confirming it.
-      lifecycleLease = useChatRuntimeStore.getState().beginModelLoading();
+      // Hold the lifecycle lease through confirmation and unloading.
+      lifecycleLease = useChatRuntimeStore
+        .getState()
+        .beginModelLoading("unloading");
       if (lifecycleLease === null) {
         return false;
       }

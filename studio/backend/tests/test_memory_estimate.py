@@ -1880,14 +1880,21 @@ class TestLaunchShapedPricing:
         full = ri._gguf_memory_breakdown(
             spec_config, swa, n_ctx = 131072, llama_extra_args = ["--swa-full"]
         )
-        assert full.kv_bytes > windowed.kv_bytes
-        # Same header on both sides, so the drafter's cache moves exactly as the
-        # target's does rather than staying at the windowed figure. By difference: the
-        # draft context's compute buffers ride on top and do not follow --swa-full.
-        assert full.drafter_runtime_bytes - windowed.drafter_runtime_bytes == (
-            full.kv_bytes - windowed.kv_bytes
+        # Compare GPU cache bytes; checkpoints are host-only and absent under --swa-full.
+        assert full.kv_bytes - full.kv_checkpoint_bytes > (
+            windowed.kv_bytes - windowed.kv_checkpoint_bytes
         )
-        assert windowed.drafter_runtime_bytes > windowed.kv_bytes
+        assert full.kv_checkpoint_bytes == 0
+        assert windowed.kv_checkpoint_bytes > 0
+        # Same header on both sides, so the drafter's cache moves exactly as the target's
+        # GPU cache does. By DIFFERENCE, not equality: the draft decode graph's floor
+        # (_MTP_DRAFT_COMPUTE_BYTES) now rides on top of this figure and does not follow
+        # --swa-full, so the two sides no longer match outright.
+        assert full.drafter_runtime_bytes - windowed.drafter_runtime_bytes == (
+            (full.kv_bytes - full.kv_checkpoint_bytes)
+            - (windowed.kv_bytes - windowed.kv_checkpoint_bytes)
+        )
+        assert windowed.drafter_runtime_bytes > windowed.kv_bytes - windowed.kv_checkpoint_bytes
 
     def test_a_cpu_device_selection_takes_the_weights_off_the_gpu(self, spec_config, swa):
         """``--device none`` runs on the CPU whatever the layer count says.
