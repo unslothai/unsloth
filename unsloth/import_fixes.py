@@ -1055,6 +1055,15 @@ def _carry_rope_theta_across_assignment(config, carried):
         restored = _carry_per_layer_rope_theta(config, parameters, carried)
         if restored is not None:
             return restored
+    elif isinstance(carried, dict):
+        # Per-layer parameters replaced by a FLAT dict. The snapshot is a mapping and every
+        # slot below this point holds a number, so passing it through would write a dict
+        # into `rope_parameters["rope_theta"]` and the first RoPE arithmetic on it would
+        # raise. One base can stand for the mapping only when every layer type agreed on
+        # it; when they did not there is no scalar that is true, and inventing one is worse
+        # than carrying nothing.
+        bases = set(carried.values())
+        carried = bases.pop() if len(bases) == 1 else None
     is_flat_dict = isinstance(parameters, dict) and not per_layer
     current = parameters.get("rope_theta", None) if is_flat_dict else None
     stated = getattr(config, "rope_theta", None)

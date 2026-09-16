@@ -1357,3 +1357,40 @@ def test_rope_theta_snapshot_still_reads_a_flat_base():
             layer_types = ["full_attention"],
         )
     ) is None
+
+
+def test_a_per_layer_snapshot_never_becomes_a_scalar_rope_theta():
+    """Per-layer parameters replaced by a FLAT dict.
+
+    The snapshot is a {layer_type: base} mapping and every slot below the per-layer branch
+    holds a number, so passing the mapping through wrote a dict into
+    `rope_parameters["rope_theta"]` and the first RoPE arithmetic on it would raise. One
+    base can stand for the mapping only when every layer type agreed on it.
+    """
+    from types import SimpleNamespace
+
+    from unsloth.import_fixes import _carry_rope_theta_across_assignment as carry
+
+    # Disagreeing bases: there is no scalar that is true, so nothing is carried.
+    flat = {"rope_type": "linear", "factor": 4.0}
+    config = SimpleNamespace(rope_parameters = flat)
+    assert carry(config, {"sliding_attention": 10000.0, "full_attention": 1000000.0}) is None
+    assert config.rope_parameters == {"rope_type": "linear", "factor": 4.0}
+    assert not hasattr(config, "rope_theta")
+
+    # Agreeing bases: the one they agree on is a true answer, so it is carried as a number.
+    config = SimpleNamespace(rope_parameters = {"rope_type": "linear", "factor": 4.0})
+    assert carry(config, {"sliding_attention": 10000.0, "full_attention": 10000.0}) == 10000.0
+    assert config.rope_parameters["rope_theta"] == 10000.0
+
+    # And whatever is carried, it is never a dict.
+    for snapshot in (
+        {"a": 1.0, "b": 2.0},
+        {"a": 10000.0, "b": 10000.0},
+        {},
+    ):
+        config = SimpleNamespace(rope_parameters = {"rope_type": "linear"})
+        carry(config, snapshot)
+        written = config.rope_parameters.get("rope_theta", None)
+        assert not isinstance(written, dict), written
+        assert not isinstance(getattr(config, "rope_theta", None), dict)
