@@ -3332,14 +3332,11 @@ def published_windows_cuda_attempts(
     else:
         detected, _ = detected_windows_runtime_lines()
         compatible = compatible_windows_runtime_lines(host)
-        # Prefer lines whose runtime DLLs are on disk, but fall back to the
-        # driver-derived order when none are detected (Windows torch bundles
-        # cudart in torch/lib, which probing misses) or when detected DLLs are
-        # incompatible with the driver. The app bundle ships its own runtime, so
-        # the driver major is the real constraint. Mirrors the legacy
-        # windows_cuda_attempts fallback; without it a torch-only host gets no
-        # fork attempt and silently drops to the upstream build.
-        ordered_lines = [line for line in compatible if line in detected] or list(compatible)
+        # Detected runtime lines first, then the rest the driver runs: the bundle ships its own
+        # runtime, and a Pascal card beside CUDA 13 DLLs still needs cuda12-legacy.
+        ordered_lines = [line for line in compatible if line in detected] + [
+            line for line in compatible if line not in detected
+        ]
         if preferred_runtime_line and preferred_runtime_line in ordered_lines:
             ordered_lines = [preferred_runtime_line] + [
                 line for line in ordered_lines if line != preferred_runtime_line
@@ -3392,58 +3389,59 @@ def published_windows_cuda_attempts(
                 portable = (artifact, asset_url, am)
             else:
                 targeted.append((artifact, asset_url, am))
-        chosen: tuple[PublishedLlamaArtifact, str, re.Match[str] | None] | None = None
+        picks: list[tuple[PublishedLlamaArtifact, str, re.Match[str] | None]] = []
         if targeted:
-            chosen = sorted(
-                targeted,
-                key = lambda item: (
-                    _sm_range(item[0]),
-                    item[0].rank,
-                    item[0].max_sm or 0,
-                ),
-            )[0]
-        elif portable is not None:
-            chosen = portable
-        if chosen is None:
-            continue
-        artifact, asset_url, am = chosen
-        # See windows_cuda_attempts: pair the cudart bundle for the real minor.
-        runtime_archive_name: str | None = None
-        runtime_archive_url: str | None = None
-        if am is not None and artifact.asset_name.startswith("llama-"):
-            runtime = f"{am.group(1)}.{am.group(2)}"
-            cudart_name = f"cudart-llama-bin-win-cuda-{runtime}-x64.zip"
-            cudart_url = release.assets.get(cudart_name)
-            if cudart_url and cudart_url != asset_url:
-                runtime_archive_name = cudart_name
-                runtime_archive_url = cudart_url
-        attempt_log = list(selection_log) + [
-            "windows_cuda_selection: selected published asset "
-            f"{artifact.asset_name} for runtime_line={runtime_line}"
-        ]
-        if runtime_archive_name:
-            attempt_log.append(
-                f"windows_cuda_selection: paired published runtime archive {runtime_archive_name}"
+            picks.append(
+                sorted(
+                    targeted,
+                    key = lambda item: (
+                        _sm_range(item[0]),
+                        item[0].rank,
+                        item[0].max_sm or 0,
+                    ),
+                )[0]
             )
-        attempts.append(
-            AssetChoice(
-                repo = release.repo,
-                tag = release.release_tag,
-                name = artifact.asset_name,
-                url = asset_url,
-                source_label = "published",
-                install_kind = "windows-cuda",
-                runtime_line = runtime_line,
-                runtime_name = runtime_archive_name,
-                runtime_url = runtime_archive_url,
-                bundle_profile = artifact.bundle_profile,
-                coverage_class = artifact.coverage_class,
-                supported_sms = artifact.supported_sms,
-                min_sm = artifact.min_sm,
-                max_sm = artifact.max_sm,
-                selection_log = attempt_log,
+        # The portable bundle follows the targeted one as its fallback attempt, as on Linux.
+        if portable is not None:
+            picks.append(portable)
+        for artifact, asset_url, am in picks:
+            # See windows_cuda_attempts: pair the cudart bundle for the real minor.
+            runtime_archive_name: str | None = None
+            runtime_archive_url: str | None = None
+            if am is not None and artifact.asset_name.startswith("llama-"):
+                runtime = f"{am.group(1)}.{am.group(2)}"
+                cudart_name = f"cudart-llama-bin-win-cuda-{runtime}-x64.zip"
+                cudart_url = release.assets.get(cudart_name)
+                if cudart_url and cudart_url != asset_url:
+                    runtime_archive_name = cudart_name
+                    runtime_archive_url = cudart_url
+            attempt_log = list(selection_log) + [
+                "windows_cuda_selection: selected published asset "
+                f"{artifact.asset_name} for runtime_line={runtime_line}"
+            ]
+            if runtime_archive_name:
+                attempt_log.append(
+                    f"windows_cuda_selection: paired published runtime archive {runtime_archive_name}"
+                )
+            attempts.append(
+                AssetChoice(
+                    repo = release.repo,
+                    tag = release.release_tag,
+                    name = artifact.asset_name,
+                    url = asset_url,
+                    source_label = "published",
+                    install_kind = "windows-cuda",
+                    runtime_line = runtime_line,
+                    runtime_name = runtime_archive_name,
+                    runtime_url = runtime_archive_url,
+                    bundle_profile = artifact.bundle_profile,
+                    coverage_class = artifact.coverage_class,
+                    supported_sms = artifact.supported_sms,
+                    min_sm = artifact.min_sm,
+                    max_sm = artifact.max_sm,
+                    selection_log = attempt_log,
+                )
             )
-        )
     return attempts
 
 
@@ -7785,22 +7783,16 @@ def _torch_runtime_preference_for_marker(host: "HostInfo | None") -> "str | None
 
 
 def _runtime_line_selectable(host: HostInfo, line: str) -> bool:
-    """Whether the CUDA selectors could pick *line* here: its runtime is on disk and the
-    driver can run it, the two filters they apply before ordering. The Windows selector
-    falls back to every driver-compatible line when no runtime DLL is found at all
-    (a bundle carries its own), so an empty detected set does not veto there."""
+    """Whether the CUDA selectors could pick *line* here. Linux filters on the runtime being
+    on disk and the driver running it; the Windows selector only orders by detected DLLs (a
+    bundle carries its own runtime), so every driver-compatible line is selectable there."""
     try:
         if host.is_linux:
             detected = detected_linux_runtime_lines()[0]
-            compatible = compatible_linux_runtime_lines(host)
-        else:
-            detected = detected_windows_runtime_lines()[0]
-            compatible = compatible_windows_runtime_lines(host)
-            if not detected:
-                detected = list(compatible)
+            return line in detected and line in compatible_linux_runtime_lines(host)
+        return line in compatible_windows_runtime_lines(host)
     except Exception:  # noqa: BLE001 - an unreadable host answers "cannot tell", which is not movement
         return False
-    return line in detected and line in compatible
 
 
 def _expected_release_tag_without_plan(
@@ -8048,6 +8040,10 @@ def existing_install_current_without_plan(
         return False
     if recorded_profile != host_profile(host):
         log("kept install rejected: this host no longer matches the one it was installed for")
+        return False
+    # The profile omits the physical caps: a card swapped under a mask changes only those.
+    if not _kept_install_covers_host(marker, host):
+        log("kept install rejected: the bundle no longer covers this card or driver")
         return False
     if _runtime_preference_moved(marker, host):
         return False
@@ -10133,6 +10129,8 @@ def install_prebuilt(
             and not isinstance(exc, _core.ReleaseIntegrityError)
             and host is not None
             and _existing_install_runs(install_dir, host)
+            # Starting the binaries proves nothing about SM coverage after a card swap.
+            and _kept_install_covers_host(load_prebuilt_metadata(install_dir), host)
         ):
             log("prebuilt update unavailable; keeping the existing complete install")
             log(f"prebuilt update reason: {exc}")

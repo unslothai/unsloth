@@ -48,6 +48,7 @@ import {
   updateCurrentDatePrompt,
 } from "../api/current-date-prompt";
 import { SettingsRow } from "../components/settings-row";
+import { ComposerSettings } from "../components/composer-settings";
 import { SettingsSection } from "../components/settings-section";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
@@ -352,6 +353,7 @@ export function ChatTab() {
         </p>
       </header>
 
+      <ComposerSettings />
       <SettingsSection title={t("settings.chat.modelSelection.title")}>
         <SettingsRow
           label={t("settings.chat.modelSelection.expandQuantizations")}
