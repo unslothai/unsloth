@@ -110,6 +110,7 @@ def _open_quant(page, *, navigate: bool) -> None:
         });
     }""")
     menu = page.locator(".unsloth-model-selector-menu")
+
     # The picker dismisses on scroll, and in the download-only pass it is opened with the Advanced
     # panel expanded and two fields just filled, so a late re-render can close it in the frame
     # after it opened. Waiting on the row alone then burns the whole timeout against a menu that

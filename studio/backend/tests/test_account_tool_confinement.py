@@ -431,7 +431,10 @@ def test_a_rule_path_removed_before_the_child_opens_it_does_not_kill_the_call(tm
     """
     gone = tmp_path / "granted-then-removed"
     gone.mkdir()
-    rules = [(str(tmp_path), tool_confinement._FS_READ_DIR), (str(gone), tool_confinement._FS_READ_DIR)]
+    rules = [
+        (str(tmp_path), tool_confinement._FS_READ_DIR),
+        (str(gone), tool_confinement._FS_READ_DIR),
+    ]
     handled = tool_confinement._handled_mask(tool_confinement.landlock_abi())
     gone.rmdir()
 
