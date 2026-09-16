@@ -174,7 +174,7 @@ _CMD_KWARGS = frozenset(
 )
 
 
-def _extract_host_from_endpoint(token: str) -> Optional[str]:
+def _extract_host_from_endpoint(token: str, *, remote_path: bool = False) -> Optional[str]:
     """Parse a user@host, host:port, host:path, or bracketed IPv6 operand."""
     token = token.strip().strip("'\"")
     if not token or token.startswith("-") or any(c in token for c in "$`%"):
@@ -190,6 +190,16 @@ def _extract_host_from_endpoint(token: str) -> Optional[str]:
             return normalize_host(urlsplit(token).hostname or "") or None
         except ValueError:
             return None
+    if remote_path:
+        bracketed = False
+        for index, char in enumerate(token):
+            if char == "[":
+                bracketed = True
+            elif char == "]":
+                bracketed = False
+            elif char == ":" and not bracketed:
+                token = token[:index]
+                break
     if "@" in token and any(c in token.rsplit("@", 1)[0] for c in "*?[]{}~"):
         return None
     host_part = token.rsplit("@", 1)[-1]
@@ -312,9 +322,6 @@ def _scp_remote_candidates(tokens: list[str]) -> list[str]:
     """Return scp/sftp operands that name a remote host."""
     candidates: list[str] = []
     for tok in tokens:
-        if "@" in tok:
-            candidates.append(tok)
-            continue
         if ":" in tok:
             left, right = tok.split(":", 1)
             if left and "/" not in left and not re.fullmatch(r"[A-Za-z]:", left):
@@ -337,7 +344,7 @@ def _hosts_from_ssh_segment(name: str, tokens: list[str]) -> tuple[set[str], boo
     if not candidates:
         return literal_hosts, True
     for cand in candidates:
-        host = _extract_host_from_endpoint(cand)
+        host = _extract_host_from_endpoint(cand, remote_path = cmd in {"scp", "sftp"})
         if host:
             literal_hosts.add(host)
         else:
