@@ -156,13 +156,14 @@ Use our [Docker image](https://hub.docker.com/r/unsloth/unsloth) ```unsloth/unsl
 **Linux / WSL (Bash):**
 ```bash
 docker run -d --name unsloth --gpus all --ipc=host \
-  -p 8000:8000 -p 8888:8888 \
+  -e UNSLOTH_STUDIO_SECURE=1 \
+  -p 127.0.0.1:8888:8888 \
   -v "$PWD":/workspace/host \
   -v "$HOME/.cache/huggingface":/workspace/.cache/huggingface \
   -v unsloth-studio:/opt/unsloth-studio \
   unsloth/unsloth && docker logs -f unsloth
 ```
-The log ends with your links and the passwords generated for this container. Sign in with those, and change the Studio one on first sign-in or Studio stops after an hour. Ctrl-C stops following the log, not the container; `docker rm -f unsloth` deletes it. The Hugging Face cache keeps your models and the `unsloth-studio` volume keeps your accounts, chats and trained models, both across `docker rm`; a volume from an older image is migrated on first start, its old code kept under `.unsloth-studio-legacy/`. These ports publish on every interface, so on a cloud host use `-p 127.0.0.1:8000:8000 -p 127.0.0.1:8888:8888` and an SSH tunnel. Tags (`unsloth/unsloth:core` for notebooks only), GPU support and options: [Docker Hub](https://hub.docker.com/r/unsloth/unsloth).
+The log ends with your links and the passwords generated for this container. Sign in with those, and change the Studio one on first sign-in or Studio stops after an hour. Ctrl-C stops following the log, not the container; `docker rm -f unsloth` deletes it. The Hugging Face cache keeps your models and the `unsloth-studio` volume keeps your accounts, chats and trained models, both across `docker rm`; a volume from an older image is migrated on first start, its old code kept under `.unsloth-studio-legacy/`. `UNSLOTH_STUDIO_SECURE=1` serves Studio over a Cloudflare HTTPS link printed in that log and publishes no raw port; drop it and add `-p 8000:8000` for a plain `http://localhost:8000` on a laptop. Tags (`unsloth/unsloth:core` for notebooks only), GPU support and options: [Docker Hub](https://hub.docker.com/r/unsloth/unsloth).
 
 On AMD there is a separate image, [`unsloth/unsloth-rocm`](https://hub.docker.com/r/unsloth/unsloth-rocm), with the run command and the supported cards on its [Docker Hub page](https://hub.docker.com/r/unsloth/unsloth-rocm). It carries the training stack only, so there is no Studio or JupyterLab in it, and it needs native Linux: WSL exposes `/dev/dxg` rather than the `/dev/kfd` that ROCm needs.
 
