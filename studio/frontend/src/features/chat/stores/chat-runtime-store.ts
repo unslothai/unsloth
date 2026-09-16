@@ -99,6 +99,7 @@ import {
 import {
   chatModelLifecycleGate,
   type ModelLifecycleLease,
+  type ModelLifecyclePhase,
 } from "../utils/model-lifecycle-gate";
 import { shouldAdvanceQueuedSettingsEpoch } from "../utils/queued-settings-epoch";
 import type { MmprojFallbackReason } from "../types/api";
@@ -2341,6 +2342,13 @@ type ChatRuntimeStore = {
   /** Slots the last successful load sent (null = default); a rollback re-sends them so a failed
    *  switch cannot lose the override. */
   loadedNParallel: number | null;
+  reasoningBudget: number;
+  loadedReasoningBudget: number | null;
+  /** Request baseline for rollback; effective values can include server environment defaults. */
+  loadedReasoningBudgetRequested: number | null;
+  reasoningBudgetMessage: string;
+  loadedReasoningBudgetMessage: string | null;
+  loadedReasoningBudgetMessageRequested: string | null;
   /** user --batch-size override for gguf loads (null = llama.cpp default 2048) */
   nBatch: number | null;
   loadedNBatch: number | null;
@@ -2436,7 +2444,7 @@ type ChatRuntimeStore = {
    *  conversation's, and a background run may not write it. */
   contextUsageByThreadId: Record<string, ContextUsageSnapshot>;
   modelLoading: boolean;
-  loadingModelPick: LoadingModelPick | null;
+  loadingModelPick: (LoadingModelPick & { selectionSuperseded: boolean }) | null;
   // What the resident model loaded from, when that is not its id: a reload rebuilds its target
   // from the checkpoint, so without this it goes back down the ref the pin avoided.
   activeLoadId: string | null;
@@ -2445,7 +2453,7 @@ type ChatRuntimeStore = {
   // so a reload prompts re-selection instead of reusing a dead token.
   activeNativePathExpiresAtMs: number | null;
   hydratePersistedSettings: () => Promise<void>;
-  beginModelLoading: () => ModelLifecycleLease | null;
+  beginModelLoading: (phase?: ModelLifecyclePhase) => ModelLifecycleLease | null;
   endModelLoading: (lease: ModelLifecycleLease) => void;
   setLoadingModelPick: (pick: LoadingModelPick | null) => void;
   clearLoadingModelPick: (expected: LoadingModelPick) => void;
@@ -4014,6 +4022,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedSpecDraftNMax: null,
   nParallel: null,
   loadedNParallel: null,
+  reasoningBudget: -1,
+  loadedReasoningBudget: null,
+  loadedReasoningBudgetRequested: null,
+  reasoningBudgetMessage: "",
+  loadedReasoningBudgetMessage: null,
+  loadedReasoningBudgetMessageRequested: null,
   nBatch: null,
   loadedNBatch: null,
   loadedLlamaExtraArgs: null,
@@ -4259,8 +4273,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     })();
     return settingsHydrationPromise;
   },
-  beginModelLoading: () => {
-    const lease = chatModelLifecycleGate.tryAcquire();
+  beginModelLoading: (phase) => {
+    const lease = chatModelLifecycleGate.tryAcquire(phase);
     if (lease !== null) {
       set({ modelLoading: true });
     }
@@ -4271,7 +4285,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       set({ modelLoading: false });
     }
   },
-  setLoadingModelPick: (pick) => set({ loadingModelPick: pick }),
+  setLoadingModelPick: (pick) =>
+    set({
+      loadingModelPick: pick
+        ? { ...pick, selectionSuperseded: false }
+        : null,
+    }),
   clearLoadingModelPick: (expected) =>
     set((state) => {
       const current = state.loadingModelPick;
@@ -4642,6 +4661,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         : nextParams;
       return {
         params: restoredParams,
+        loadingModelPick:
+          checkpointChanged && state.loadingModelPick
+            ? { ...state.loadingModelPick, selectionSuperseded: true }
+            : state.loadingModelPick,
         ...getReplayStatePatch(state, nextParams, outgoing, baseParams),
         activeGgufVariant: nextGgufVariant,
         ...(queuedSettingsChanged
@@ -4911,6 +4934,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       loadedSpecDraftNMax: null,
       nParallel: null,
       loadedNParallel: null,
+      reasoningBudget: -1,
+      loadedReasoningBudget: null,
+      loadedReasoningBudgetRequested: null,
+      reasoningBudgetMessage: "",
+      loadedReasoningBudgetMessage: null,
+      loadedReasoningBudgetMessageRequested: null,
       nBatch: null,
       loadedNBatch: null,
       loadedLlamaExtraArgs: null,
