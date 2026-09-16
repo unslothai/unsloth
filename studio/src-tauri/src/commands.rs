@@ -1484,8 +1484,20 @@ mod tests {
             super::check_health_inner(port, super::HEALTH_PROBE_TIMEOUT)
                 .await
                 .unwrap(),
-            super::BackendLiveness::default()
+            super::BackendLiveness {
+                // It answered -- that is what `answered` says, and all it says. Not OUR
+                // backend, so nothing else is set and presence still refuses it on a port
+                // this app does not manage.
+                answered: true,
+                ..super::BackendLiveness::default()
+            }
         );
+        assert!(!super::backend_is_present(
+            &super::check_health_inner(port, super::HEALTH_PROBE_TIMEOUT)
+                .await
+                .unwrap(),
+            false
+        ));
     }
 
     #[test]
