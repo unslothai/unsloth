@@ -4318,6 +4318,8 @@ def runtime_patterns_for_install_kind(
             "llama-server",
             "llama-quantize",
             "llama-diffusion-gemma-visual-server",
+            # Optional Metal memory probe; missing bundles keep the conservative estimate.
+            "llama-fit-params",
             "lib*.dylib",
         ]
     if install_kind in {
