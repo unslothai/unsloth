@@ -371,7 +371,6 @@ def test_the_two_wrappers_never_stack():
 
 
 def test_the_guard_list_is_read_with_the_same_substring_rule():
-
     class _Projection(nn.Module):
         def __init__(self):
             super().__init__()
