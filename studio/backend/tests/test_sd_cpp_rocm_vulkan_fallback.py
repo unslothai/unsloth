@@ -652,6 +652,17 @@ def test_a_second_ambiguous_failure_does_divert(fake_settings, monkeypatch):
         ("ggml_cuda_mul_mat_q: unspecified launch failure at mmq.cu:145", False),
         ("HIP error: out of memory", False),
         ("ROCm error: something went wrong", False),
+        # The same defect class as the decisive list, printed by a layer that does not name the
+        # build: rocBLAS finding no Tensile kernels for this gfx target, and the HSA runtime abort
+        # the same situation ends in once it reaches a kernel launch. Both have mundane causes too
+        # (/dev/kfd missing inside a container; flash attention or multi-GPU P2P on a host whose
+        # ROCm is otherwise fine), so both are counted rather than acted on.
+        ("rocBLAS error: Could not initialize Tensile host: No devices found", False),
+        (
+            "Memory access fault by GPU node-1 (Agent handle: 0x55d) on address 0x7f18. "
+            "Reason: Page not present or supervisor privilege.",
+            False,
+        ),
     ],
 )
 def test_the_marker_tiers_split_evidence_from_suspicion(output, decisive):
@@ -664,6 +675,38 @@ def test_the_marker_tiers_split_evidence_from_suspicion(output, decisive):
 
     assert output_shows_accelerator_failure(output) is True
     assert output_shows_decisive_accelerator_failure(output) is decisive
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        "sd-cli exited 1. Last output:\nrocBLAS error: Could not initialize Tensile host: No devices found",
+        "sd-cli exited 134. Last output:\nMemory access fault by GPU node-1 (Agent handle: 0x55d) "
+        "on address 0x7f18. Reason: Page not present or supervisor privilege.",
+    ],
+)
+def test_the_rocm_failures_that_name_no_build_are_counted_not_ignored(
+    fake_settings, monkeypatch, output
+):
+    """The gap this closes. These are the two shapes a generic ROCm build most often fails in on a
+    card it carries no kernels for, and neither of them names the build, so neither matched any
+    marker: the host was left failing on ROCm with no rung taken and nothing counted.
+
+    They are AMBIGUOUS, not decisive, because both also come out of hosts whose ROCm is fine (a
+    container without /dev/kfd for the first, flash attention or multi-GPU P2P for the second), so
+    one occurrence must still leave a working host exactly where it was.
+    """
+    from core.inference import sd_cpp_backend
+    from core.inference import video as video_mod
+
+    monkeypatch.setattr(sd_cpp_backend, "_installed_accelerator_of", lambda _b: "rocm")
+    video_mod._note_sd_cpp_accelerator_failure("/opt/sd/rocm/sd-cli", output)
+    assert sd_cpp_backend.accelerator_runtime_failed("rocm") is False
+    assert sd_cpp_backend.preferred_accelerator("rocm") == "rocm"
+
+    video_mod._note_sd_cpp_accelerator_failure("/opt/sd/rocm/sd-cli", output)
+    assert sd_cpp_backend.accelerator_runtime_failed("rocm") is True
+    assert sd_cpp_backend.preferred_accelerator("rocm") == "vulkan"
 
 
 def test_one_decisive_failure_is_enough(fake_settings, monkeypatch):
@@ -685,7 +728,10 @@ def test_one_decisive_failure_is_enough(fake_settings, monkeypatch):
     [
         # Nothing moved: the record still describes this host.
         ({}, True),
-        # A ROCm upgrade is the single most likely way a previously unusable card becomes usable.
+        # torch.version.hip is the ROCm version the torch WHEEL was built against, so this moves
+        # when the user reinstalls torch from a different ROCm index. A driver-only upgrade under
+        # the same wheel does NOT move it, which is why the cards and the reset route carry the
+        # rest of the retirement story.
         ({"runtime": "7.0.0"}, False),
         # A new sd.cpp bundle is a new build, and a new build can carry the missing kernels.
         ({"bundle": "master-b9999"}, False),
@@ -891,10 +937,12 @@ _ROUTING = {
     # The host's own build cannot be asked: #8814 and #9278. main kept the GPU on a build that
     # cannot start, which is the defect.
     (_N, _T): (["rocm", "vulkan"], "cuda", "cuda", "upgraded on positive evidence"),
-    # The one corner whose committed DEVICE moves down. main committed the GPU with a CPU-only
-    # binary attached and the claimed re-vet then rejected it, so this input previously reached a
-    # terminal failure, which is the only thing a new branch is allowed to capture.
-    (_N, _F): (["rocm", "vulkan", "cpu"], "cpu", "cuda then a failed re-vet", "was a failed load"),
+    # The one corner whose committed DEVICE moves down. main committed the GPU -- it never installs
+    # the fallback build at all here, so its answer depends only on the ROCm column -- but it
+    # committed it on an sd-cli that could not be asked for its devices, which is an sd-cli that
+    # dies during backend init. That load fails at generation time, minutes in. A load that was
+    # already going to fail is the only thing a new branch is allowed to capture.
+    (_N, _F): (["rocm", "vulkan", "cpu"], "cpu", "cuda", "was a failed load"),
     (_N, _N): (["rocm", "vulkan"], "cuda", "cuda", "same"),
     (_N, _X): (["rocm", "vulkan"], "cuda", "cuda", "same"),
     # No ROCm asset for this host at all.
@@ -936,12 +984,39 @@ def test_the_whole_load_routing_space_is_enumerated(h3_amd_host, fake_settings, 
     )
 
 
+def _main_would_commit(rocm_answer: str) -> str:
+    """The device the UNMODIFIED code commits for a corner, from main's own two rules.
+
+    main never installs the fallback build, so its answer is a function of the ROCm column alone:
+    ``listed = sd_cpp_lists_accelerator_device(binary)``, which collapses "could not be asked" to
+    True, and the CPU rung is taken exactly when ``listed`` is false. A MISSING build means no
+    binary at all, which is not listed either.
+
+    Written out so the `main` column of ``_ROUTING`` is DERIVED rather than asserted by hand. The
+    two properties below read that column, so a wrong entry in it would have silently licensed a
+    device downgrade; one was found there (the unreadable / CPU-only corner had been annotated with
+    a failure mode that belongs to an intermediate state of this branch, not to main).
+    """
+    if rocm_answer == _X:
+        return "cpu"
+    verdict = {_T: True, _F: False, _N: None}[rocm_answer]
+    return "cuda" if (True if verdict is None else verdict) else "cpu"
+
+
+def test_the_main_column_is_what_main_actually_commits():
+    """The column the two properties below rest on, checked against main's rules rather than
+    trusted. Verified once against a real run of 2ab07c9c4 with the same harness, corner by
+    corner; this keeps it true as the table is edited."""
+    for (rocm_answer, _vulkan), (_ensured, _device, main_device, _why) in _ROUTING.items():
+        assert main_device == _main_would_commit(rocm_answer), (rocm_answer, main_device)
+
+
 def test_no_corner_loses_a_gpu_it_previously_kept():
     """The enumeration read as a property rather than as a table, so a future edit to _ROUTING
     cannot quietly encode a regression: a corner may only move off the GPU if what main did there
     was already a failed load."""
     for corner, (_ensured, device, main_device, why) in _ROUTING.items():
-        if main_device.startswith("cuda") and device != "cuda":
+        if main_device == "cuda" and device != "cuda":
             assert why == "was a failed load", corner
 
 
@@ -951,3 +1026,104 @@ def test_every_upgrade_required_positive_fallback_evidence():
     for (_rocm, vulkan), (_ensured, _device, _main, why) in _ROUTING.items():
         if why == "upgraded on positive evidence":
             assert vulkan == _T, (_rocm, vulkan)
+
+
+# ---------------------------------------------------------------------------
+# The cards half of the fingerprint, against the REAL _host_fingerprint rather than the pinned memo
+# the tests above use. The whole point of that component is that a card change retires the record,
+# and it can only do that if it is actually read.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def unpinned_fingerprint(monkeypatch):
+    """Undo the autouse memo pin, so _host_fingerprint runs for real, and give the runtime half a
+    known value so only the cards vary."""
+    from core.inference import sd_cpp_backend
+
+    monkeypatch.setattr(sd_cpp_backend, "_HOST_FINGERPRINT_MEMO", None, raising = False)
+    monkeypatch.setattr(
+        sd_cpp_backend, "_RUNTIME_FINGERPRINT_MEMO", {"runtime": "6.4.0"}, raising = False
+    )
+    return sd_cpp_backend
+
+
+def _inventory(*names):
+    return {
+        "available": bool(names),
+        "devices": [{"name": n} for n in names],
+        "sources": ["test"],
+        "unknown": False,
+    }
+
+
+_UNKNOWN_INVENTORY = {"available": False, "devices": [], "sources": [], "unknown": True}
+
+
+def test_a_cold_inventory_read_is_not_frozen_for_the_process(unpinned_fingerprint, monkeypatch):
+    """Measured on a real host before this was fixed: ``get_physical_gpu_inventory(block = False)``
+    on a COLD cache returns the unknown sentinel and only schedules the probe, so the first call in
+    a process sees no cards at all. Memoising the whole host half then carried that ``None`` for the
+    life of the process -- past the refresh landing a second later, and past any card added or
+    removed while Studio runs.
+
+    That is the component the record's retirement is supposed to rest on, and the note is written by
+    a LOAD, so the record a card change should retire is exactly the one most likely to have been
+    written with no cards in it. The runtime half is still memoised; it is a string baked into the
+    torch wheel and genuinely cannot move inside one process.
+    """
+    from utils.hardware import hardware
+
+    answers = [_UNKNOWN_INVENTORY, _inventory("AMD Radeon RX 7900 XTX")]
+    monkeypatch.setattr(
+        hardware,
+        "get_physical_gpu_inventory",
+        lambda *, block = True: answers.pop(0) if answers else _inventory("AMD Radeon RX 7900 XTX"),
+    )
+
+    cold = unpinned_fingerprint._host_fingerprint()
+    assert cold == {"runtime": "6.4.0", "gpus": None}
+    warm = unpinned_fingerprint._host_fingerprint()
+    assert warm == {"runtime": "6.4.0", "gpus": ["AMD Radeon RX 7900 XTX"]}
+
+
+def test_a_card_added_while_studio_runs_retires_the_record(
+    unpinned_fingerprint, fake_settings, monkeypatch
+):
+    """An eGPU plugged in, or a second card added, inside the life of one process. Before the memo
+    was narrowed this could not retire anything until Studio was restarted, and the settings route
+    reported the note as live rather than stale."""
+    from routes import settings as settings_routes
+    from utils.hardware import hardware
+
+    cards = [_inventory("AMD Radeon RX 7900 XTX")]
+    monkeypatch.setattr(hardware, "get_physical_gpu_inventory", lambda *, block = True: cards[0])
+
+    unpinned_fingerprint.note_accelerator_runtime_failure("rocm")
+    assert unpinned_fingerprint.preferred_accelerator("rocm") == "vulkan"
+
+    cards[0] = _inventory("AMD Radeon RX 7900 XTX", "AMD Radeon RX 9070 XT")
+    assert unpinned_fingerprint.accelerator_runtime_failed("rocm") is False
+    assert unpinned_fingerprint.preferred_accelerator("rocm") == "rocm"
+    assert settings_routes._diffusion_accelerator_fallback_response().records[0].stale is True
+
+
+def test_the_runtime_half_is_still_read_once(unpinned_fingerprint, monkeypatch):
+    """The cards are re-read per call; the wheel label is not. Both matter: re-reading the cards is
+    what the test above needs, and not paying for the torch attribute read on every load is what
+    keeps this off the load path's cost."""
+    import torch
+
+    from utils.hardware import hardware
+
+    cards = [_inventory("first")]
+    monkeypatch.setattr(hardware, "get_physical_gpu_inventory", lambda *, block = True: cards[0])
+    monkeypatch.setattr(unpinned_fingerprint, "_RUNTIME_FINGERPRINT_MEMO", None, raising = False)
+    monkeypatch.setattr(torch.version, "hip", "6.4.0", raising = False)
+
+    first = unpinned_fingerprint._host_fingerprint()
+    assert first == {"runtime": "6.4.0", "gpus": ["first"]}
+    # A wheel label cannot actually change inside a process, so a later read of it is not taken.
+    monkeypatch.setattr(torch.version, "hip", "7.0.0", raising = False)
+    cards[0] = _inventory("second")
+    assert unpinned_fingerprint._host_fingerprint() == {"runtime": "6.4.0", "gpus": ["second"]}

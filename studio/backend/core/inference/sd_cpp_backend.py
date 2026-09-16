@@ -652,35 +652,64 @@ def _accelerator_fingerprint() -> dict:
     return fp
 
 
-# The half of the fingerprint that cannot change inside one process: the GPU runtime this
-# interpreter is bound to and the cards the OS enumerates. Memoised because the fingerprint is
-# consulted on EVERY load through accelerator_runtime_failed, and the inventory read behind it is
-# the one that can schedule a background probe. Cleared by _reset_host_fingerprint for tests.
+# The GPU runtime this interpreter is bound to. Memoised because it genuinely cannot change inside
+# one process: it is a string baked into the torch wheel at build time, and the fingerprint is
+# consulted on EVERY load through accelerator_runtime_failed. Cleared by _reset_host_fingerprint.
+#
+# The CARDS are deliberately NOT memoised beside it; see _host_fingerprint.
+_RUNTIME_FINGERPRINT_MEMO: Optional[dict] = None
+# Retained under its old name so a caller (or a test) that pinned the whole host half still works:
+# when it is set, it wins, exactly as it used to.
 _HOST_FINGERPRINT_MEMO: Optional[dict] = None
 
 
 def _reset_host_fingerprint() -> None:
     """Drop the memoised host half. For tests, and for anything that knows the host changed."""
-    global _HOST_FINGERPRINT_MEMO
+    global _HOST_FINGERPRINT_MEMO, _RUNTIME_FINGERPRINT_MEMO
     _HOST_FINGERPRINT_MEMO = None
+    _RUNTIME_FINGERPRINT_MEMO = None
 
 
-def _host_fingerprint() -> dict:
-    """``{"runtime": ..., "gpus": ...}``, computed once per process. Never raises."""
-    global _HOST_FINGERPRINT_MEMO
-    if _HOST_FINGERPRINT_MEMO is not None:
-        return dict(_HOST_FINGERPRINT_MEMO)
-    fp: dict = {"runtime": None, "gpus": None}
+def _runtime_fingerprint() -> dict:
+    """``{"runtime": ...}``, computed once per process. Never raises."""
+    global _RUNTIME_FINGERPRINT_MEMO
+    if _RUNTIME_FINGERPRINT_MEMO is not None:
+        return dict(_RUNTIME_FINGERPRINT_MEMO)
+    fp: dict = {"runtime": None}
     try:
         import torch  # noqa: PLC0415 -- already imported by the backend; local to keep this cheap
 
-        # torch.version.hip is the ROCm userspace/runtime this process is bound to. It moves when
-        # the user upgrades ROCm, which is the single most likely way a previously unusable card
-        # becomes usable, and it needs no subprocess and no driver call to read.
+        # torch.version.hip is the ROCm version the torch WHEEL was built against, written into
+        # torch/version.py at build time. Read for what it is: it moves when the user reinstalls
+        # torch from a different ROCm index, and it does NOT move when only the driver or /opt/rocm
+        # is upgraded underneath the same wheel. So it retires a record on a torch swap and it is
+        # not the component that answers a driver-only fix; the cards below, and failing those the
+        # DELETE route, are. It needs no subprocess and no driver call to read.
         runtime = getattr(torch.version, "hip", None) or getattr(torch.version, "cuda", None)
         fp["runtime"] = str(runtime) if runtime else None
     except Exception:  # noqa: BLE001
         pass
+    _RUNTIME_FINGERPRINT_MEMO = dict(fp)
+    return fp
+
+
+def _host_fingerprint() -> dict:
+    """``{"runtime": ..., "gpus": ...}``. Never raises.
+
+    The cards are re-read on every call rather than memoised with the runtime. Memoising them was
+    measured to freeze the wrong answer: ``get_physical_gpu_inventory(block = False)`` on a COLD
+    cache returns the unknown sentinel and only schedules the probe, so the first call in a process
+    yields ``gpus = None`` even on a host with cards, and a memo then carried that None for the
+    life of the process -- past the refresh landing a second later, and past any card added or
+    removed while Studio runs. Since the note is written by a load, the record that a card change
+    is supposed to retire is exactly the one most likely to have been written with no cards in it.
+    Re-reading costs a monotonic compare and a dict return once the cache is warm, and the call is
+    still non-blocking, so a wedged driver still cannot stall the load path.
+    """
+    if _HOST_FINGERPRINT_MEMO is not None:
+        return dict(_HOST_FINGERPRINT_MEMO)
+    fp: dict = {"gpus": None}
+    fp.update(_runtime_fingerprint())
     try:
         from utils.hardware.hardware import get_physical_gpu_inventory
 
@@ -698,8 +727,7 @@ def _host_fingerprint() -> dict:
             fp["gpus"] = names or None
     except Exception:  # noqa: BLE001
         pass
-    _HOST_FINGERPRINT_MEMO = dict(fp)
-    return fp
+    return {"runtime": fp.get("runtime"), "gpus": fp.get("gpus")}
 
 
 def _fingerprint_still_applies(stored: Optional[dict], current: Optional[dict]) -> bool:
@@ -916,10 +944,23 @@ _ACCELERATOR_DECISIVE_FAILURE_MARKERS: tuple[str, ...] = (
 # belong here, but the same strings come out of a wedged queue, a driver reset, a VRAM exhaustion
 # mid-render and a card another process is mistreating. They are counted, not acted on, and it takes
 # _AMBIGUOUS_FAILURE_STRIKES of them under ONE fingerprint before a host is moved.
+#
+# The last two are the same defect class as the decisive list -- ROCm libraries that ship no kernels
+# for this card's gfx target -- printed by a layer that does not say so. "rocBLAS error: Could not
+# initialize Tensile host: No devices found" is what rocBLAS prints when the installed Tensile
+# library carries nothing for the target (ROCm/hipBLASLt#831 for gfx1100; the same line is the
+# standing report for gfx803 and for MI300X inside a container), and the HSA runtime's "Memory
+# access fault by GPU node-N ... Reason: Page not present or supervisor privilege" is how the same
+# situation ends when it reaches a kernel launch. Ambiguous rather than decisive because both also
+# have mundane causes: the rocBLAS line appears when /dev/kfd is simply not passed into a container,
+# and the HSA fault appears from flash attention, from multi-GPU P2P and from a kernel/firmware
+# mismatch on hosts whose ROCm is otherwise fine. Two strikes is the right bar for both.
 _ACCELERATOR_AMBIGUOUS_FAILURE_MARKERS: tuple[str, ...] = (
     "unspecified launch failure",
     "hip error",
     "rocm error",
+    "rocblas error",
+    "memory access fault by gpu node",
 )
 
 # Deliberately in neither list: sd.cpp's "Cannot set backend to CK" warning, which is printed by
