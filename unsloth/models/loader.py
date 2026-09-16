@@ -441,10 +441,9 @@ class FastLanguageModel(FastLlamaModel):
             if isinstance(bnb_compute_dtype, torch.dtype):
                 dtype = bnb_compute_dtype
 
-        # Distributed-safe placement for quantized models: under torchrun each rank must load on its own device, else Accelerate raises device relocation errors on quantized weights.
-        is_quantized = load_in_4bit or load_in_8bit or load_in_fp8
+        # Distributed-safe placement: under torchrun / accelerate launch each rank must load on its own device. Quantized weights make it mandatory, since Accelerate raises device relocation errors on them, but a 16-bit load needs it just as much: every string device_map ends up dispatching to cuda:0, so all the ranks land on card 0 and contend for it while the rest of the cards stay empty (#3459).
         device_map = requested_device_map(device_map)
-        if is_quantized and isinstance(device_map, str):
+        if isinstance(device_map, str):
             distributed_device_map, is_dist = prepare_device_map()
             if is_dist:
                 # One whole model per rank; sharding one across the ranks' GPUs too would have every rank fighting for the same cards.
@@ -1300,10 +1299,9 @@ class FastModel(FastBaseModel):
         if qat_scheme == "phone-deployment":
             qat_scheme = "int8-int4"
 
-        # Distributed-safe placement for quantized models: under torchrun each rank must load on its own device, else Accelerate raises device relocation errors.
-        is_quantized = load_in_4bit or load_in_8bit or load_in_fp8
+        # Distributed-safe placement: under torchrun / accelerate launch each rank must load on its own device. Quantized weights make it mandatory, since Accelerate raises device relocation errors on them, but a 16-bit load needs it just as much: every string device_map ends up dispatching to cuda:0, so all the ranks land on card 0 and contend for it while the rest of the cards stay empty (#3459).
         device_map = requested_device_map(device_map)
-        if is_quantized and isinstance(device_map, str):
+        if isinstance(device_map, str):
             distributed_device_map, is_dist = prepare_device_map()
             if is_dist:
                 # One whole model per rank; sharding one across the ranks' GPUs too would have every rank fighting for the same cards.

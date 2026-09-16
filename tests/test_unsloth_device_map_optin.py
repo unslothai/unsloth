@@ -320,9 +320,9 @@ def test_a_distributed_launch_never_gets_an_intra_model_split():
     """torchrun/DDP/FSDP already put one whole model per rank; splitting a model across the
     cards on top of that puts every rank on every card, which OOMs rather than fits.
 
-    prepare_device_map() in loader.py converts the string to a rank-local dict first, but
-    only when the load is quantized, so a 16-bit distributed run still arrives here holding
-    "unsloth". Hence the gate lives here too.
+    prepare_device_map() in loader.py converts the string to a rank-local dict first, at
+    every precision since #3459. The gate still lives here too: loader.py is not the only
+    caller, and a rank-local dict is not a string, so the two never disagree.
     """
     ns = _load(
         distributed = True, planner = lambda *a, **k: pytest.fail("planned inside a distributed launch")
@@ -984,3 +984,58 @@ def test_an_auto_class_still_plans():
     idx = vision.index("an explicit model class has no auto mapping")
     guard = vision[vision.rindex("if (", 0, idx) : idx]
     assert "_model_mapping" in guard, "the veto is not keyed on the class being concrete"
+
+
+LOADER = os.path.join(MODELS, "loader.py")
+_QUANT_NAMES = ("is_quantized", "load_in_4bit", "load_in_8bit", "load_in_fp8")
+
+
+def _prepare_device_map_guards():
+    """Every `prepare_device_map()` call in loader.py, with the `if` tests enclosing it."""
+    source = open(LOADER, encoding = "utf-8").read()
+    tree = ast.parse(source)
+    found = []
+
+    def walk(node, guards):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.Call) and getattr(child.func, "id", None) == "prepare_device_map":
+                found.append((child.lineno, list(guards)))
+            if isinstance(child, ast.If):
+                walk_body(child.body, guards + [ast.unparse(child.test)])
+                walk_body(child.orelse, guards)
+            else:
+                walk(child, guards)
+
+    def walk_body(body, guards):
+        for stmt in body:
+            walk(stmt, guards)
+
+    walk_body(tree.body, [])
+    return found
+
+
+def test_every_rank_of_a_16bit_distributed_launch_still_gets_its_own_device():
+    """A distributed load must be pinned to the rank's card whatever its precision.
+
+    `prepare_device_map()` rewrites the string device_map into `{"": "cuda:<local_rank>"}`.
+    Gating that on the load being quantized left a 16-bit `accelerate launch` holding a
+    string, which `resolve_unsloth_device_map` turns into "sequential" -- and sequential
+    dispatch fills cuda:0 first, on every rank. Measured on 2 GPUs before the gate came
+    off: rank 0 and rank 1 both reported `param_devices=['cuda:0']` with 4245 MiB on card
+    0 and 0 MiB on card 1, for both FastLanguageModel and FastVisionModel. That is
+    unsloth#3459's "100% GPU utilisation, 0 VRAM, then it suddenly loads": the ranks are
+    queueing for one card.
+
+    Static, because the failure needs two real GPUs and a launcher. Re-adding a
+    quantization term to the guard turns this red.
+    """
+    calls = _prepare_device_map_guards()
+    assert calls, "loader.py no longer pins a distributed rank to its own device"
+    for lineno, guards in calls:
+        for guard in guards:
+            offending = [name for name in _QUANT_NAMES if name in guard]
+            assert not offending, (
+                f"loader.py:{lineno}: prepare_device_map() is gated on {offending} "
+                f"({guard!r}), so a 16-bit distributed load keeps a string device_map "
+                f"and every rank dispatches onto cuda:0"
+            )
