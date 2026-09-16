@@ -55,7 +55,9 @@ Write-Host "  lock file name: $lockFileName"
 function Enter-StudioInstallMutex { param([string]$Path) return "stub-mutex" }
 function Exit-StudioInstallMutex { param($Mutex) }
 
-foreach ($src in (Get-HelperSources $installPs1 @("Enter-StudioInstallLock", "Exit-StudioInstallLock"))) {
+foreach ($src in (Get-HelperSources $installPs1 @(
+    "Enter-StudioInstallLock", "Exit-StudioInstallLock",
+    "Test-StudioPlainFile", "Write-StudioRootOwnerMarker"))) {
     Invoke-Expression $src
 }
 $script:StudioInstallLockFileName = $lockFileName
@@ -337,6 +339,36 @@ try {
     }
     Check "a killed holder leaves no stale lock" ($null -ne $afterCrash)
     if ($afterCrash) { Exit-StudioInstallLock -Lock $afterCrash }
+
+    # The lock file must not make a fresh root look like somebody else's directory.
+    #
+    # Enter-StudioInstallLock creates the lock inside $StudioHome before anything else runs, and
+    # in env mode Write-StudioRootOwnerMarker refuses to claim a root that is not empty. Counting
+    # the lock as occupancy would mean a fresh UNSLOTH_STUDIO_HOME never gets its owner marker,
+    # and an install that then died before the venv marker was written would leave a root the
+    # uninstaller does not recognise and will not remove. Nothing else pins this, so removing the
+    # exclusion from the occupancy test would otherwise pass silently.
+    $StudioRedirectMode = 'env'
+    $freshRoot = Join-Path $tmp "fresh-env-root"
+    New-Item -ItemType Directory -Force -Path $freshRoot | Out-Null
+    $freshLock = Enter-StudioInstallLock -Path $freshRoot
+    Check "the fresh root took its lock" ($null -ne $freshLock)
+    Write-StudioRootOwnerMarker -Root $freshRoot
+    Check "a fresh env-mode root carrying only the lock file is still claimed" (
+        Test-Path -LiteralPath (Join-Path $freshRoot ".unsloth-studio-owned") -PathType Leaf)
+    if ($freshLock) { Exit-StudioInstallLock -Lock $freshLock }
+
+    # Bites control for the same code path: a root holding somebody else's file is NOT claimed,
+    # so the check above is about the lock file specifically and not about env mode claiming
+    # everything it is pointed at.
+    $occupiedRoot = Join-Path $tmp "occupied-env-root"
+    New-Item -ItemType Directory -Force -Path $occupiedRoot | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $occupiedRoot "someone-elses-notes.txt"), "mine")
+    $occupiedLock = Enter-StudioInstallLock -Path $occupiedRoot
+    Write-StudioRootOwnerMarker -Root $occupiedRoot
+    Check "control: an env-mode root holding another file is NOT claimed" (
+        -not (Test-Path -LiteralPath (Join-Path $occupiedRoot ".unsloth-studio-owned")))
+    if ($occupiedLock) { Exit-StudioInstallLock -Lock $occupiedLock }
 } finally {
     Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }
