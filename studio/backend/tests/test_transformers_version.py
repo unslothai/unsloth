@@ -3061,7 +3061,7 @@ class TestHfEndpointUnreachable:
             def __exit__(self, *a):
                 return False
 
-        monkeypatch.setattr("utils.utils.auth_safe_open", lambda *a, **k: _Resp())
+        monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: _Resp())
         assert hf_endpoint_unreachable(timeout = 2) is False
 
     def test_gateway_error_is_unreachable(self, monkeypatch):
@@ -3070,7 +3070,7 @@ class TestHfEndpointUnreachable:
         def _gw(*a, **k):
             raise urllib.error.HTTPError("http://x", 504, "Gateway Timeout", {}, None)
 
-        monkeypatch.setattr("utils.utils.auth_safe_open", _gw)
+        monkeypatch.setattr("urllib.request.urlopen", _gw)
         assert hf_endpoint_unreachable(timeout = 2) is True
 
     def test_other_http_status_is_reachable(self, monkeypatch):
@@ -3079,7 +3079,7 @@ class TestHfEndpointUnreachable:
         def _405(*a, **k):
             raise urllib.error.HTTPError("http://x", 405, "Method Not Allowed", {}, None)
 
-        monkeypatch.setattr("utils.utils.auth_safe_open", _405)
+        monkeypatch.setattr("urllib.request.urlopen", _405)
         assert hf_endpoint_unreachable(timeout = 2) is False
 
     def test_tls_failure_is_reachable(self, monkeypatch):
@@ -3089,7 +3089,7 @@ class TestHfEndpointUnreachable:
         def _tls(*a, **k):
             raise urllib.error.URLError(ssl.SSLCertVerificationError("self-signed"))
 
-        monkeypatch.setattr("utils.utils.auth_safe_open", _tls)
+        monkeypatch.setattr("urllib.request.urlopen", _tls)
         # TLS reached the server: treat as reachable so the load surfaces the cert error.
         assert hf_endpoint_unreachable(timeout = 2) is False
 
@@ -3099,7 +3099,7 @@ class TestHfEndpointUnreachable:
         def _refused(*a, **k):
             raise urllib.error.URLError(ConnectionRefusedError("refused"))
 
-        monkeypatch.setattr("utils.utils.auth_safe_open", _refused)
+        monkeypatch.setattr("urllib.request.urlopen", _refused)
         assert hf_endpoint_unreachable(timeout = 2) is False
 
     def test_connection_reset_is_reachable(self, monkeypatch):
@@ -3112,7 +3112,7 @@ class TestHfEndpointUnreachable:
         def _reset(*a, **k):
             raise urllib.error.URLError(ConnectionResetError(104, "Connection reset by peer"))
 
-        monkeypatch.setattr("utils.utils.auth_safe_open", _reset)
+        monkeypatch.setattr("urllib.request.urlopen", _reset)
         assert hf_endpoint_unreachable(timeout = 2) is False
 
     def test_remote_disconnect_is_reachable(self, monkeypatch):
@@ -3124,7 +3124,7 @@ class TestHfEndpointUnreachable:
         def _disconnect(*a, **k):
             raise http.client.RemoteDisconnected("Remote end closed connection without response")
 
-        monkeypatch.setattr("utils.utils.auth_safe_open", _disconnect)
+        monkeypatch.setattr("urllib.request.urlopen", _disconnect)
         assert hf_endpoint_unreachable(timeout = 2) is False
 
     def test_real_server_that_accepts_then_closes_is_reachable(self, monkeypatch):
@@ -3164,7 +3164,7 @@ class TestHfEndpointUnreachable:
         def _dns(*a, **k):
             raise urllib.error.URLError(socket.gaierror(-2, "Name or service not known"))
 
-        monkeypatch.setattr("utils.utils.auth_safe_open", _dns)
+        monkeypatch.setattr("urllib.request.urlopen", _dns)
         assert hf_endpoint_unreachable(timeout = 2) is True
 
     def test_hung_probe_is_bounded(self, monkeypatch):
@@ -3173,7 +3173,7 @@ class TestHfEndpointUnreachable:
         def _hang(*a, **k):
             time.sleep(30)
 
-        monkeypatch.setattr("utils.utils.auth_safe_open", _hang)
+        monkeypatch.setattr("urllib.request.urlopen", _hang)
         t0 = time.time()
         result = hf_endpoint_unreachable(timeout = 2)
         assert result is True and (time.time() - t0) < 6.0
