@@ -955,6 +955,59 @@ def _rope_parameters_are_per_layer(config, parameters):
         return False
 
 
+def _rope_theta_snapshot(config):
+    """The base(s) ``rope_parameters`` holds right now, in the shape it holds them.
+
+    A flat dict has one base and this returns it. A PER-LAYER dict has one per layer type
+    (transformers 5.5's ``T5Gemma2DecoderConfig`` starts at 10000.0 for sliding attention
+    and 1000000.0 for full attention) and this returns ``{layer_type: base}``, because a
+    single scalar cannot describe them and reading ``parameters["rope_theta"]`` off the
+    outer dict finds nothing at all -- which is how both bases used to be lost.
+    """
+    parameters = getattr(config, "rope_parameters", None)
+    if not isinstance(parameters, dict):
+        return None
+    if not _rope_parameters_are_per_layer(config, parameters):
+        return parameters.get("rope_theta", None)
+    snapshot = {}
+    for layer_type, entry in parameters.items():
+        if isinstance(entry, dict) and entry.get("rope_theta", None) is not None:
+            snapshot[layer_type] = entry["rope_theta"]
+    return snapshot or None
+
+
+def _carry_per_layer_rope_theta(config, parameters, carried):
+    """Put each layer type's base back into a per-layer replacement that lost it.
+
+    The global path cannot serve this shape: a top-level ``rope_theta`` in a per-layer dict
+    makes ``standardize_rope_params`` read the whole thing as one flat dict, so the base has
+    to go back into each nested entry. Copies throughout, never the caller's dicts in place,
+    for the same reason the flat path copies. An entry that names its own base is left
+    exactly as the caller wrote it.
+    """
+    if not isinstance(carried, dict) or not carried:
+        return None
+    replacement = {}
+    changed = False
+    for layer_type, entry in parameters.items():
+        if (
+            isinstance(entry, dict)
+            and entry.get("rope_theta", None) is None
+            and carried.get(layer_type, None) is not None
+        ):
+            entry = dict(entry)
+            entry["rope_theta"] = carried[layer_type]
+            changed = True
+        replacement[layer_type] = entry
+    if not changed:
+        return None
+    try:
+        config.rope_parameters = replacement
+    except Exception:
+        return None
+    return carried
+
+
 def _carry_rope_theta_across_assignment(config, carried):
     """Keep the RoPE base frequency across a ``rope_scaling`` replacement.
 
@@ -993,6 +1046,15 @@ def _carry_rope_theta_across_assignment(config, carried):
     """
     parameters = getattr(config, "rope_parameters", None)
     per_layer = _rope_parameters_are_per_layer(config, parameters)
+    if per_layer:
+        # Per-layer bases go back one level down, in their own shape: a top-level
+        # `rope_theta` would make `standardize_rope_params` read the whole dict as one flat
+        # one, and a single scalar cannot describe two layer types that started at
+        # different bases. Only when there is no nested snapshot to restore does this fall
+        # through to the global attribute below, which is the one slot a per-layer dict has.
+        restored = _carry_per_layer_rope_theta(config, parameters, carried)
+        if restored is not None:
+            return restored
     is_flat_dict = isinstance(parameters, dict) and not per_layer
     current = parameters.get("rope_theta", None) if is_flat_dict else None
     stated = getattr(config, "rope_theta", None)
@@ -1166,8 +1228,7 @@ def fix_transformers_rope_scaling_drops_theta():
         # traceback. The assignment itself is never guarded, since swallowing THAT would
         # be a silent behaviour change.
         try:
-            parameters = getattr(self, "rope_parameters", None)
-            carried = parameters.get("rope_theta", None) if isinstance(parameters, dict) else None
+            carried = _rope_theta_snapshot(self)
         except Exception:
             carried = None
         result = original(self, value)

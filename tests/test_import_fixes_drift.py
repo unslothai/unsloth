@@ -1266,3 +1266,94 @@ def test_the_reload_check_rejects_a_non_class_owner():
 
     for not_a_class in (None, object(), "PreTrainedConfig", 7):
         assert _rope_probe_inherits(not_a_class) is False
+
+
+def test_rope_theta_carry_restores_each_layer_types_own_base():
+    """Per-layer parameters hold one base PER LAYER TYPE, and a single scalar cannot
+    describe them.
+
+    transformers 5.5's T5Gemma2DecoderConfig starts at 10000.0 for sliding attention and
+    1000000.0 for full attention. Reading `parameters["rope_theta"]` off the OUTER dict
+    finds nothing, so the snapshot was None, the carry declined, and a later
+    standardize_rope_params filled both nested bases with None: invalid RoPE
+    initialisation with nothing raised.
+    """
+    from types import SimpleNamespace
+
+    from unsloth.import_fixes import (
+        _carry_rope_theta_across_assignment as carry,
+        _rope_theta_snapshot,
+    )
+
+    before = SimpleNamespace(
+        rope_parameters = {
+            "sliding_attention": {"rope_type": "default", "rope_theta": 10000.0},
+            "full_attention": {"rope_type": "default", "rope_theta": 1000000.0},
+        },
+        layer_types = ["sliding_attention", "full_attention"],
+    )
+    carried = _rope_theta_snapshot(before)
+    assert carried == {"sliding_attention": 10000.0, "full_attention": 1000000.0}
+
+    # The replacement a caller assigns: per-layer scaling with no bases in it.
+    replacement = {
+        "sliding_attention": {"rope_type": "linear", "factor": 4.0},
+        "full_attention": {"rope_type": "linear", "factor": 4.0},
+    }
+    config = SimpleNamespace(
+        rope_parameters = replacement,
+        layer_types = ["sliding_attention", "full_attention"],
+    )
+    assert carry(config, carried) == carried
+
+    assert config.rope_parameters["sliding_attention"]["rope_theta"] == 10000.0
+    assert config.rope_parameters["full_attention"]["rope_theta"] == 1000000.0
+    # No global key: it would make standardize_rope_params read the whole dict as flat.
+    assert "rope_theta" not in config.rope_parameters
+    assert not hasattr(config, "rope_theta")
+    # The caller's dicts are never written to, inner ones included.
+    assert replacement["sliding_attention"] == {"rope_type": "linear", "factor": 4.0}
+    assert replacement["full_attention"] == {"rope_type": "linear", "factor": 4.0}
+
+
+def test_rope_theta_carry_leaves_a_per_layer_base_the_caller_stated():
+    """NEGATIVE CONTROL: an entry that names its own base is a deliberate statement and
+    must survive, exactly as the flat path leaves a stated base alone."""
+    from types import SimpleNamespace
+
+    from unsloth.import_fixes import _carry_rope_theta_across_assignment as carry
+
+    config = SimpleNamespace(
+        rope_parameters = {
+            "sliding_attention": {"rope_type": "linear", "rope_theta": 50.0},
+            "full_attention": {"rope_type": "linear"},
+        },
+        layer_types = ["sliding_attention", "full_attention"],
+    )
+    carry(config, {"sliding_attention": 10000.0, "full_attention": 1000000.0})
+
+    assert config.rope_parameters["sliding_attention"]["rope_theta"] == 50.0
+    assert config.rope_parameters["full_attention"]["rope_theta"] == 1000000.0
+
+
+def test_rope_theta_snapshot_still_reads_a_flat_base():
+    """The control that the snapshot did not change the ordinary shape: a flat dict has
+    one base and the snapshot is that scalar, which is what every other case expects."""
+    from types import SimpleNamespace
+
+    from unsloth.import_fixes import _rope_theta_snapshot
+
+    assert _rope_theta_snapshot(
+        SimpleNamespace(rope_parameters = {"rope_type": "linear", "rope_theta": 500000.0})
+    ) == 500000.0
+    assert _rope_theta_snapshot(SimpleNamespace(rope_parameters = {"rope_type": "linear"})) is None
+    assert _rope_theta_snapshot(SimpleNamespace(rope_parameters = object())) is None
+    assert _rope_theta_snapshot(SimpleNamespace()) is None
+    # Per-layer with no bases anywhere is None, not an empty dict, so the global
+    # attribute path below it still runs.
+    assert _rope_theta_snapshot(
+        SimpleNamespace(
+            rope_parameters = {"full_attention": {"rope_type": "linear"}},
+            layer_types = ["full_attention"],
+        )
+    ) is None
