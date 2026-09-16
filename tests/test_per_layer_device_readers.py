@@ -35,6 +35,9 @@ import pathlib
 import re
 
 import pytest
+from real_accelerator import (
+    has_real_cuda,
+)  # tests/_shared, on sys.path via tests/conftest.py
 import torch
 
 
@@ -291,7 +294,7 @@ def test_unsloth_zoo_setter_and_reader_agree():
 @pytest.mark.parametrize("path", sorted(READERS))
 def test_every_reader_goes_through_the_helper(path):
     """Wiring check: no reader may index with the raw attribute again."""
-    source = (REPOSITORY_ROOT / path).read_text()
+    source = (REPOSITORY_ROOT / path).read_text(encoding = "utf-8")
     assert (
         'getattr(decoder_layer, "_per_layer_device_index"' not in source
     ), f"{path} reads the raw index again; a None there is #3538"
@@ -306,7 +309,7 @@ def test_every_reader_goes_through_the_helper(path):
 @pytest.mark.parametrize("path", sorted(READERS))
 def test_every_reader_imports_the_helper_explicitly(path):
     """Do not rely on `from .llama import *` to carry the name across."""
-    source = (REPOSITORY_ROOT / path).read_text()
+    source = (REPOSITORY_ROOT / path).read_text(encoding = "utf-8")
     assert re.search(
         r"^from \._utils import .*per_layer_device", source, re.MULTILINE
     ), f"{path} must import per_layer_device from ._utils explicitly"
@@ -355,7 +358,7 @@ def test_no_reader_reads_a_name_it_never_binds(path):
     import symtable
 
     module = importlib.import_module("unsloth.models." + pathlib.Path(path).stem)
-    source = (REPOSITORY_ROOT / path).read_text()
+    source = (REPOSITORY_ROOT / path).read_text(encoding = "utf-8")
     wanted = _reader_scopes(source, path)
     assert wanted, f"{path}: no per_layer_device call found"
 
@@ -392,7 +395,7 @@ def test_no_reader_reads_a_name_it_never_binds(path):
 @pytest.mark.parametrize("path", sorted(READERS))
 def test_per_accelerator_tuples_are_still_subscripted_by_an_int(path):
     """A reader that uses a per-accelerator tuple must keep the buffer index."""
-    source = (REPOSITORY_ROOT / path).read_text()
+    source = (REPOSITORY_ROOT / path).read_text(encoding = "utf-8")
     for tuple_name in READERS[path]:
         assert f"{tuple_name}[device_index]" in source, (
             f"{path} subscripts {tuple_name} with something other than the "
@@ -401,7 +404,7 @@ def test_per_accelerator_tuples_are_still_subscripted_by_an_int(path):
         assert "layer_device, device_index = per_layer_device(decoder_layer)" in source
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a real GPU")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs a real GPU")
 def test_cuda_layer_path_is_unchanged():
     from unsloth.models._utils import move_to_device, per_layer_device
 
