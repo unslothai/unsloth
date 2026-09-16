@@ -29405,7 +29405,13 @@ class LlamaCppBackend:
             return list(collected)
         for pid, identity in survivors:
             try:
-                adopt_pid(pid, identity)
+                # from_snapshot: these pids came out of a walk, so a None identity here means
+                # the collector could not READ one, not that this process has just spawned
+                # the child. Capturing one now would record whatever holds the number at this
+                # moment, which is the recycled stranger the identity check exists to keep
+                # out -- and where a job object is active, put it in a job that kills its
+                # members when the app closes.
+                adopt_pid(pid, identity, from_snapshot = True)
             except Exception:
                 pass
         if survivors:

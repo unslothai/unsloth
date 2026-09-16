@@ -942,7 +942,9 @@ def _windows_collect_descendants(pid: int) -> "list[tuple[int, Optional[str]]]":
     return _windows_collect_descendants_known(pid)[0]
 
 
-def _windows_collect_descendants_known(pid: int) -> "tuple[list[tuple[int, Optional[str]]], bool]":
+def _windows_collect_descendants_known(
+    pid: int, identity: "Optional[str]" = None
+) -> "tuple[list[tuple[int, Optional[str]]], bool]":
     """`collect_descendants` for the Toolhelp table, which needs an ancestry proof.
 
     Each candidate is ordered against ITS OWN immediate parent's creation time, carried
@@ -963,7 +965,15 @@ def _windows_collect_descendants_known(pid: int) -> "tuple[list[tuple[int, Optio
     record and the pidfile while that child was still running. Not signalled either way --
     unknown is not a licence to kill -- but never silently dropped.
     """
-    root_floor = _windows_creation_time(_pid_identity(pid))
+    # The caller's identity when it has one, never a fresh read of the number. The root can
+    # exit and its pid be reused between the caller's own check and this line, and reading the
+    # floor off the replacement roots the whole walk at a STRANGER: its children are all later
+    # than it, they pass the ancestry test with identities that are perfectly valid, and the
+    # sweep goes on to terminate them as if they were ours. The root kill itself is protected
+    # by the identity it was given; this is the other half of the same guard.
+    if identity is not None and not _provably_the_same(pid, identity):
+        return [], False
+    root_floor = _windows_creation_time(identity if identity is not None else _pid_identity(pid))
     if root_floor is None:
         # No floor means no ancestry proof for anything, so this claims nothing at all --
         # and "nothing" here is indeterminate, not empty.
@@ -1114,6 +1124,7 @@ def _windows_kill_below(
     unresolved: "list[tuple[int, Optional[str]]]",
     killed: "set[int]",
     depth: int,
+    anchor_identity: "Optional[str]" = None,
 ) -> "Optional[bool]":
     """Kill everything under *anchor*, capturing each subtree before removing its root.
 
@@ -1136,7 +1147,9 @@ def _windows_kill_below(
         # severs the only traversable link to whatever is below it, and the sweep would go
         # on to delete the lifetime record and the pidfile while that descendant runs.
         return None
-    found, known = _windows_collect_descendants_known(anchor)
+    # With the anchor's own identity, so a number that moved on between the caller's check
+    # and this walk cannot root the snapshot at a stranger's tree.
+    found, known = _windows_collect_descendants_known(anchor, anchor_identity)
     if not known:
         return None
     progressed = False
@@ -1161,7 +1174,9 @@ def _windows_kill_below(
             continue
         # Below it first. It is about to stop existing, and with it every way of finding
         # what it started since the walk above returned.
-        below = _windows_kill_below(child_pid, attempted, unresolved, killed, depth - 1)
+        below = _windows_kill_below(
+            child_pid, attempted, unresolved, killed, depth - 1, child_identity
+        )
         if below is None:
             unresolved.append((child_pid, child_identity))
         try:
@@ -1246,7 +1261,7 @@ def _windows_terminate_collected(
         still_growing = True
         for _round in range(_LATE_WALK_ROUNDS):
             progressed = _windows_kill_below(
-                pid, attempted, unresolved, killed_below, _SUBTREE_CAPTURE_DEPTH
+                pid, attempted, unresolved, killed_below, _SUBTREE_CAPTURE_DEPTH, identity
             )
             if progressed is None:
                 # This walk is what covers anything the survivor started AFTER the snapshot.
@@ -1331,7 +1346,7 @@ def _windows_terminate_validated_tree(pid: int, identity: "Optional[str]" = None
     # False keeps the record, which is the same direction every other failure here fails.
     if identity is not None and not _provably_the_same(pid, identity):
         return False
-    descendants, known = _windows_collect_descendants_known(pid)
+    descendants, known = _windows_collect_descendants_known(pid, identity)
     # The root goes FIRST, the moment the snapshot exists. Killing the snapshot first spends
     # one `taskkill` per descendant, each with a 15 second ceiling, and the root is still
     # running for all of it: anything it starts in that window is in no snapshot, the
@@ -1659,7 +1674,9 @@ def _identity_for_record(pid: int, attempts: int = 3) -> Optional[str]:
     return None
 
 
-def adopt_pid(pid: Optional[int], identity: "Optional[str]" = None) -> None:
+def adopt_pid(
+    pid: Optional[int], identity: "Optional[str]" = None, *, from_snapshot: bool = False
+) -> None:
     """Track a child (e.g. a multiprocessing worker started after the parent job
     was set up) and, on Windows, assign it to the job as belt-and-suspenders.
     Tolerates a None or already-exited pid.
@@ -1671,10 +1688,21 @@ def adopt_pid(pid: Optional[int], identity: "Optional[str]" = None) -> None:
     child and, where a job object is active, assigned to a job that kills its members when
     the app closes. Given one, this adopts only a pid that is PROVABLY still the same
     process, and records the identity that was verified rather than re-reading it.
+
+    ``from_snapshot`` is how a caller says that its None means "this pid's identity could not
+    be READ", which is not the same claim as omitting the argument for a child this process
+    has just spawned. The POSIX collector returns ``(pid, None)`` for a survivor it could not
+    classify, and capturing an identity now would record whatever holds the number at this
+    moment -- exactly the recycled stranger the identity check exists to keep out. A caller
+    passing pids from an earlier snapshot sets it, and an unreadable one is then not adopted
+    at all.
     """
     # `not pid` already rejected None and 0. pid 1 is init, and recording it is
     # what turns the sweep into a kill of everything the user owns.
     if not _signalable(pid):
+        return
+    if identity is None and from_snapshot:
+        # Unknown from a snapshot adopts nobody either: see `from_snapshot` above.
         return
     if identity is not None and not _provably_the_same(pid, identity):
         # Unknown adopts nobody: a pid whose identity cannot be confirmed may already be a
