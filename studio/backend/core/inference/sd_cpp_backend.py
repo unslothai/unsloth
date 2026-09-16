@@ -348,7 +348,17 @@ def sd_cpp_lists_accelerator_device(binary: Optional[str]) -> bool:
     """
     if not binary:
         return False
-    verdict = sd_cpp_accelerator_device_verdict(binary)
+    return accelerator_verdict_keeps_gpu(sd_cpp_accelerator_device_verdict(binary))
+
+
+def accelerator_verdict_keeps_gpu(verdict: Optional[bool]) -> bool:
+    """The conservative collapse ``sd_cpp_lists_accelerator_device`` applies, as a function of a
+    verdict already in hand: "could not tell" keeps the GPU, because an unreadable probe is not
+    evidence that the accelerator is missing.
+
+    Split out so the rule lives in ONE place. A caller that needs the raw verdict for a second
+    question (the H3 load needs it to tell "enumerates the CPU only" from "could not be asked at
+    all") would otherwise re-implement the collapse beside it and the two could drift."""
     return True if verdict is None else verdict
 
 
@@ -547,6 +557,176 @@ def _note_failed_upgrade(accelerator: str) -> None:
         _failed_accelerator_upgrades.add(_installer_module().accelerator_class(accelerator))
     except Exception:  # noqa: BLE001
         pass
+
+
+# The accelerator to try when the one a host asks for cannot be made to run there, and nothing else.
+#
+# A ROCm sd.cpp prebuilt is published for one generic ROCm target, not per gfx arch, so a card whose
+# hipBLAS that build carries no kernels for cannot start it at all: sd-cli dies in hipblasSetStream
+# with CUBLAS_STATUS_INVALID_VALUE on gfx1201 (#9278) and never gets past tensor loading on gfx1100
+# (#8814). Vulkan runs on both of those cards, the installer already resolves a "vulkan" asset for
+# Linux and Windows alike, and the alternative on this path is the CPU build. So Vulkan is the rung
+# between "the ROCm build does not work here" and "give up on the GPU".
+#
+# One-way and one-deep on purpose: nothing falls back FROM Vulkan (the CPU rung below it already
+# exists), and no other accelerator has a broken-per-arch story to fall back from. CUDA either
+# works or the host has no CUDA asset at all, which the CPU rung has always handled.
+_ACCELERATOR_FALLBACK: dict[str, str] = {"rocm": "vulkan"}
+
+
+def sd_cpp_vulkan_fallback_enabled() -> bool:
+    """Whether the ROCm -> Vulkan rung may be taken. ``UNSLOTH_DIFFUSION_SD_CPP_VULKAN_FALLBACK=0``
+    turns it off for a host that would rather see the ROCm failure than be moved to Vulkan."""
+    raw = (os.environ.get("UNSLOTH_DIFFUSION_SD_CPP_VULKAN_FALLBACK", "auto") or "").strip().lower()
+    return raw not in ("0", "off", "false", "no")
+
+
+def fallback_accelerator_for(accelerator: Optional[str]) -> Optional[str]:
+    """The accelerator to try after ``accelerator`` could not be made to run, or None.
+
+    None whenever there is no next rung, the knob is off, or the answer would be the accelerator
+    that was already asked for, so a caller can ladder on this without special-casing any of them.
+    """
+    if not sd_cpp_vulkan_fallback_enabled():
+        return None
+    try:
+        want = _installer_module().accelerator_class(accelerator)
+    except Exception:  # noqa: BLE001 -- cannot classify it, so there is no rung to take
+        want = (accelerator or "").strip().lower()
+    nxt = _ACCELERATOR_FALLBACK.get(want)
+    return nxt if nxt and nxt != want else None
+
+
+# Accelerators whose BUILD could not be run on this host, as distinct from _failed_accelerator_upgrades
+# above, which is about an install that could not be fetched. Persisted as well as memoised: a ROCm
+# build that crashes mid-render (#9278 crashes after tensor loading, minutes in) would otherwise be
+# selected again by the very next load, and again after a restart, because nothing about the install
+# is wrong -- the asset is present, correct for "rocm", and simply does not run on this card.
+_ACCELERATOR_RUNTIME_FAILURES_KEY = "sd_cpp_accelerator_runtime_failures"
+_accelerator_runtime_failures: set[str] = set()
+
+
+def _accelerator_class_of(accelerator: Optional[str]) -> str:
+    try:
+        return _installer_module().accelerator_class(accelerator)
+    except Exception:  # noqa: BLE001 -- the raw string is close enough for a preference note
+        return (accelerator or "").strip().lower()
+
+
+def _stored_accelerator_runtime_failures() -> set[str]:
+    """The persisted set, or an empty one. Never raises: a store this cannot read only costs the
+    preference, and refusing the load over it would be worse than the failure it is avoiding."""
+    try:
+        from storage.studio_db import get_app_setting
+        from utils.account_context import OWNER, run_as
+        # Owner-scoped, like every other host-level preference: which sd.cpp build runs on this
+        # machine is a fact about the machine, not about whoever happens to be generating.
+        stored = run_as(OWNER, get_app_setting, _ACCELERATOR_RUNTIME_FAILURES_KEY, None)
+    except Exception:  # noqa: BLE001
+        return set()
+    if isinstance(stored, str):
+        # A string is tolerated because the value is written through a JSON column: a row saved by
+        # a caller that pre-serialised it reads back as the text of a list, not a list.
+        try:
+            import json
+            stored = json.loads(stored)
+        except ValueError:
+            return set()
+    if not isinstance(stored, (list, tuple, set)):
+        return set()
+    return {str(item).strip().lower() for item in stored if str(item).strip()}
+
+
+def note_accelerator_runtime_failure(accelerator: Optional[str]) -> None:
+    """Record that the ``accelerator`` sd.cpp build could not be run on this host.
+
+    Only ever ADDS, and only for an accelerator that has a rung below it: noting one with no
+    fallback would persist a row nothing reads, and noting "cpu" would be a claim that the host
+    cannot run stable-diffusion.cpp at all, which no failure here establishes."""
+    klass = _accelerator_class_of(accelerator)
+    if not klass or klass not in _ACCELERATOR_FALLBACK:
+        return
+    _accelerator_runtime_failures.add(klass)
+    current = _stored_accelerator_runtime_failures()
+    if klass in current:
+        return
+    try:
+        from storage.studio_db import upsert_app_settings
+        from utils.account_context import OWNER, run_as
+        run_as(
+            OWNER,
+            upsert_app_settings,
+            {_ACCELERATOR_RUNTIME_FAILURES_KEY: sorted(current | {klass})},
+        )
+    except Exception as exc:  # noqa: BLE001 -- the in-process note still holds for this run
+        logger.debug("could not persist the sd.cpp accelerator failure note: %s", exc)
+
+
+def accelerator_runtime_failed(accelerator: Optional[str]) -> bool:
+    """Whether the ``accelerator`` build is already known not to run on this host."""
+    klass = _accelerator_class_of(accelerator)
+    if not klass:
+        return False
+    return klass in _accelerator_runtime_failures or klass in _stored_accelerator_runtime_failures()
+
+
+def clear_accelerator_runtime_failures() -> None:
+    """Forget every note, so the next load tries the host's own accelerator again. This is what a
+    driver update or a new card is: the note is about a build on a host, and both of those change
+    the host. Exposed for the settings route rather than only for tests."""
+    _accelerator_runtime_failures.clear()
+    try:
+        from storage.studio_db import upsert_app_settings
+        from utils.account_context import OWNER, run_as
+        run_as(OWNER, upsert_app_settings, {_ACCELERATOR_RUNTIME_FAILURES_KEY: []})
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("could not clear the sd.cpp accelerator failure notes: %s", exc)
+
+
+# What sd-cli prints when the GPU BACKEND it was built against cannot serve this card, as opposed to
+# the ordinary run-time failures (a bad prompt, a missing file, an out-of-memory) that say nothing
+# about the build. Lower-cased substrings, matched against the tail of the output sd-cli exited on,
+# which ``SdCppEngine._run`` puts in the RuntimeError it raises.
+#
+# The first two are #9278 verbatim ("CUBLAS_STATUS_INVALID_VALUE at hipblasSetStream", and with
+# offload enabled "unspecified launch failure" out of ggml_cuda_mul_mat_q); the kernel-image ones are
+# what a generic ROCm build does on a gfx target it carries no code objects for, which is the same
+# defect one layer up. Deliberately not matching sd.cpp's "Cannot set backend to CK" warning: that
+# line is printed by builds that then go on to render perfectly well.
+_ACCELERATOR_RUNTIME_FAILURE_MARKERS: tuple[str, ...] = (
+    "hipblassetstream",
+    "cublas_status_invalid_value",
+    "hiperrornobinaryforgpu",
+    "no kernel image is available",
+    "invalid device function",
+    "unspecified launch failure",
+    "hip error",
+    "rocm error",
+)
+
+
+def output_shows_accelerator_failure(text: Optional[str]) -> bool:
+    """True when sd-cli output names a failure of the GPU BUILD rather than of the request.
+
+    Conservative: an unrecognised failure returns False, so a transient error, a bad argument or an
+    out-of-memory never persists a preference away from the host's own accelerator."""
+    if not text:
+        return False
+    lowered = str(text).lower()
+    return any(marker in lowered for marker in _ACCELERATOR_RUNTIME_FAILURE_MARKERS)
+
+
+def preferred_accelerator(accelerator: Optional[str]) -> str:
+    """``accelerator``, or its fallback when this host has already been shown it cannot run it.
+
+    Applied at the TOP of an ensure ladder, so a host that has seen the ROCm build crash does not
+    pay for installing and probing it again on every later load. Returns the input unchanged
+    whenever there is no note, no rung, or the knob is off."""
+    klass = _accelerator_class_of(accelerator) or (accelerator or "auto")
+    nxt = fallback_accelerator_for(klass)
+    if nxt and accelerator_runtime_failed(klass):
+        return nxt
+    return accelerator or "auto"
 
 
 def _incomplete_tree_replacement(exc: BaseException) -> bool:
@@ -1076,10 +1256,21 @@ class SdCppDiffusionBackend:
     @staticmethod
     def _resolved_accelerator() -> str:
         """The installer accelerator this host's device target resolves to (cpu / cuda / rocm /
-        vulkan). Lazy import avoids an import cycle with the engine router."""
+        vulkan). Lazy import avoids an import cycle with the engine router.
+
+        Through ``preferred_accelerator``, so a host already shown it cannot run the build for its
+        own accelerator is not handed it again. HERE rather than at the four call sites below
+        (``_resolve_engine``, ``_resolve_backend``, ``_upgrade_server_after_teardown`` and the
+        mid-load re-resolve), because those four have to agree: ``_accelerator_changed`` in the
+        deferred upgrade compares the
+        installed tree against this answer, so a call site that skipped the preference would read
+        the Vulkan tree the other two installed as the wrong accelerator and reinstall ROCm over it
+        on every load."""
         from core.inference.diffusion_engine_router import _install_accelerator_for
-        return _install_accelerator_for(
-            getattr(resolve_diffusion_device_target(), "backend", "cpu")
+        return preferred_accelerator(
+            _install_accelerator_for(
+                getattr(resolve_diffusion_device_target(), "backend", "cpu")
+            )
         )
 
     def _resolve_engine(self) -> SdCppEngine:

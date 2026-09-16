@@ -605,6 +605,41 @@ def _sd_cli_identity(binary: Optional[str]) -> Optional[tuple[int, int]]:
     return (stat.st_size, stat.st_mtime_ns)
 
 
+def _note_sd_cpp_accelerator_failure(binary: Optional[str], output: str) -> None:
+    """Record that the sd.cpp build ``binary`` came from cannot run on this host, when its own
+    output says so.
+
+    Two gates, because a render can fail for reasons that have nothing to do with the build: the
+    output has to name a GPU-backend failure (``output_shows_accelerator_failure``), and the build
+    has to be one with a rung below it to fall back to. Anything else is left alone, so an ordinary
+    failure never moves a working host off its own accelerator. Never raises: this is a preference,
+    and the caller is on its way to re-raising the real error."""
+    if not binary or not output:
+        return
+    try:
+        from .sd_cpp_backend import (
+            _installed_accelerator_of,
+            fallback_accelerator_for,
+            note_accelerator_runtime_failure,
+            output_shows_accelerator_failure,
+        )
+
+        if not output_shows_accelerator_failure(output):
+            return
+        accelerator = _installed_accelerator_of(binary)
+        if not accelerator or not fallback_accelerator_for(accelerator):
+            return
+        logger.warning(
+            "video.sd_cpp_accelerator_runtime_failure: the %s stable-diffusion.cpp build failed "
+            "on this host mid-generation; later loads will use the %s build",
+            accelerator,
+            fallback_accelerator_for(accelerator),
+        )
+        note_accelerator_runtime_failure(accelerator)
+    except Exception as exc:  # noqa: BLE001 -- a preference, never a reason to mask the real error
+        logger.debug("could not record the sd.cpp accelerator failure: %s", exc)
+
+
 def _h3_te_canonical(repo_id: Optional[str]) -> str:
     """A repo id normalised for an EXACT identity compare: mirrors folded onto the id they copy,
     then trimmed and lowercased. Deliberately no tail-segment tolerance -- ``someone/MiniMax-H3``
@@ -1705,9 +1740,13 @@ class VideoBackend:
         from .diffusion_engine_router import _install_accelerator_for
         from .sd_cpp_backend import (
             _install_allowed,
+            accelerator_verdict_keeps_gpu,
             ensure_h3_sd_cpp_binary,
+            fallback_accelerator_for,
+            note_accelerator_runtime_failure,
+            preferred_accelerator,
+            sd_cpp_accelerator_device_verdict,
             sd_cpp_device_name_for_ordinal,
-            sd_cpp_lists_accelerator_device,
             sd_cpp_supports_graph_cut,
         )
         from .sd_cpp_engine import SdCppEngine
@@ -1749,9 +1788,13 @@ class VideoBackend:
         # on disk (managed or user-supplied) is still discovered and used; when there is none, the ensure returns None
         # and the refusal below names it, which is the honest answer for a load that was told not to fetch anything.
         allow_install = _install_allowed() and not local_files_only
+        # The accelerator this host's backend asks for, already moved down a rung when an earlier run of this host
+        # showed that build cannot be run here (see preferred_accelerator). Kept as a variable because the rung that is
+        # finally committed is what the fallback below reports and what the failure note is keyed on.
+        accelerator = preferred_accelerator(_install_accelerator_for(target.backend))
         binary = ensure_h3_sd_cpp_binary(
             allow_install = allow_install,
-            accelerator = _install_accelerator_for(target.backend),
+            accelerator = accelerator,
         )
         native_device = target.device
         # What the accelerator decision below was made on, or None when it was never asked (a CPU or MPS target never
@@ -1765,7 +1808,56 @@ class VideoBackend:
             # damage this first probe already allowed.
             from .sd_cpp_backend import _tree_reader as _claim_tree
             with _claim_tree(binary, cancel_event, VIDEO_CANCELLED_MSG):
-                listed_accelerator = sd_cpp_lists_accelerator_device(binary)
+                # The VERDICT, not the collapsed reading, because the two failures this has to separate are not the
+                # same: False is a build that enumerates the CPU ggml device and nothing else, while None is a build
+                # that could not be asked at all -- an sd-cli that dies before it can answer --list-devices, which is
+                # what a generic ROCm prebuilt does on a card it has no hipBLAS kernels for (#8814, #9278). Collapsing
+                # None into True, which is right for the decision below, hid exactly that case.
+                accelerator_verdict = (
+                    sd_cpp_accelerator_device_verdict(binary) if binary else False
+                )
+            # Unchanged from the collapsed reading this replaces, and through the same rule rather than a second
+            # copy of it: "could not tell" keeps the GPU, since an unreadable probe is not evidence that the
+            # accelerator is missing.
+            listed_accelerator = accelerator_verdict_keeps_gpu(accelerator_verdict)
+            if not accelerator_verdict:
+                # The Vulkan rung, between "the build for this host's accelerator does not run here" and the CPU build.
+                # A ROCm sd.cpp prebuilt is one generic build, so a card whose hipBLAS it carries no kernels for cannot
+                # start it: #9278 (gfx1201) dies in hipblasSetStream and #8814 (gfx1100) never gets past tensor
+                # loading, and both currently end at the CPU build or at the flat "could not be installed or started".
+                # Vulkan runs on both of those cards and the installer already resolves a vulkan asset for Linux and
+                # for Windows, so it is tried before the GPU is given up on.
+                fallback = fallback_accelerator_for(accelerator)
+                if fallback:
+                    fallback_binary = ensure_h3_sd_cpp_binary(
+                        allow_install = allow_install, accelerator = fallback
+                    )
+                    fallback_verdict: Optional[bool] = None
+                    if fallback_binary:
+                        with _claim_tree(fallback_binary, cancel_event, VIDEO_CANCELLED_MSG):
+                            fallback_verdict = sd_cpp_accelerator_device_verdict(fallback_binary)
+                    if fallback_verdict:
+                        # Taken only on POSITIVE evidence -- the fallback build enumerates an accelerator device of its
+                        # own -- so a host where this rung cannot be fetched or cannot run either behaves exactly as it
+                        # did before, right down to which rung the CPU fallback below is reached from.
+                        logger.warning(
+                            "video.sd_cpp_accelerator_fallback: the %s stable-diffusion.cpp build "
+                            "does not run on this host, using the %s build instead",
+                            accelerator,
+                            fallback,
+                        )
+                        # Only now, so the preference that survives this process is one we have SHOWN to be better.
+                        # Noting it on the failure alone would move every later load onto a rung that may not exist on
+                        # this host, for no gain.
+                        note_accelerator_runtime_failure(accelerator)
+                        binary = fallback_binary
+                        accelerator = fallback
+                        listed_accelerator = True
+                    elif fallback_binary:
+                        # The fallback install can have REPLACED the managed tree, in which case the path resolved
+                        # above is gone. Carry the binary that is actually there; the decision itself is untouched, so
+                        # the CPU rung below and the refusal after it are reached exactly as they were.
+                        binary = fallback_binary
         if target.backend not in ("cpu", "mps") and not listed_accelerator:
             # Upstream currently publishes no Linux CUDA archive. Keep the picker functional with the CPU prebuilt when
             # the user has not supplied a locally compiled CUDA binary through the normal sd.cpp discovery path. The
@@ -6141,6 +6233,13 @@ class VideoBackend:
                         )
                 except SdCppCancelled:
                     raise RuntimeError(VIDEO_CANCELLED_MSG) from None
+                except RuntimeError as exc:
+                    # The other half of #9278: the ROCm build starts, loads the tensors, and dies in hipBLAS minutes
+                    # into the render. Nothing about the install is wrong, so the next load would pick the same build
+                    # again. Record it instead, so the fallback rung in the load path is taken from here on.
+                    if not cancel.is_set() and VIDEO_CANCELLED_MSG not in str(exc):
+                        _note_sd_cpp_accelerator_failure(binary, str(exc))
+                    raise
                 if cancel.is_set():
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
                 self._gen.update(phase = "export", eta_seconds = None)

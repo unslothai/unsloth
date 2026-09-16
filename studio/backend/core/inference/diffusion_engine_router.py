@@ -36,6 +36,7 @@ from core.inference.sd_cpp_backend import (
     _server_binary_runnable,
     ensure_sd_cpp_binary,
     ensure_sd_server_binary,
+    preferred_accelerator,
 )
 from core.inference.sd_cpp_engine import (
     ENGINE_DIFFUSERS,
@@ -223,12 +224,17 @@ def select_and_activate_engine(
     binary = None
     server_binary = None
     if policy_eligible and fam_ok:
+        # One accelerator for both ensures, and the PREFERRED one: a host that has already been shown it cannot run
+        # the build for its own accelerator (a generic ROCm prebuilt against a card whose hipBLAS kernels it does not
+        # carry, #9278 and #8814) would otherwise install and probe that same build on every selection, then decline
+        # native because the binary will not start. Resolved once so the server and the CLI cannot disagree.
+        install_accelerator = preferred_accelerator(_install_accelerator_for(backend))
         # Probe the resident sd-server FIRST (the backend prefers it): a server-only install must still route to
         # native and should not pay an sd-cli download. Install the accelerator-matched build so a forced-native GPU
         # load gets the GPU server.
         server_binary = ensure_sd_server_binary(
             allow_install = _install_allowed(),
-            accelerator = _install_accelerator_for(backend),
+            accelerator = install_accelerator,
         )
         if server_binary and not _server_binary_runnable(server_binary):
             logger.warning(
@@ -240,7 +246,7 @@ def select_and_activate_engine(
         # inside the background load.
         binary = ensure_sd_cpp_binary(
             allow_install = _install_allowed() and server_binary is None,
-            accelerator = _install_accelerator_for(backend),
+            accelerator = install_accelerator,
         )
         if binary and SdCppEngine(binary = binary).version() is None:
             logger.warning("sd-cli at %s is present but not runnable; not using it", binary)
