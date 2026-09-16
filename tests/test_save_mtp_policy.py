@@ -366,9 +366,7 @@ def test_a_local_save_does_not_collect_the_resident_state_dict(
 
     from unsloth_zoo import saving_utils
 
-    monkeypatch.setattr(
-        saving_utils, "reconcile_mtp_config", lambda *_a, **_k: None, raising = False
-    )
+    monkeypatch.setattr(saving_utils, "reconcile_mtp_config", lambda *_a, **_k: None, raising = False)
     for method in ("lora", "merged_4bit_forced"):
         collected.clear()
         save_module_any.unsloth_generic_save(
@@ -404,10 +402,7 @@ def test_the_resident_tensor_names_are_read_only_on_the_push_branch(tree):
     ]
     assert pushes, "unsloth_generic_save no longer branches on push_to_hub"
     inside = {
-        id(node)
-        for push in pushes
-        for statement in push.body
-        for node in ast.walk(statement)
+        id(node) for push in pushes for statement in push.body for node in ast.walk(statement)
     }
     for node in ast.walk(func):
         if isinstance(node, ast.Assign) and any(
