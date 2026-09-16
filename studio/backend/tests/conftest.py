@@ -1061,3 +1061,27 @@ def _process_shutdown_latch_is_clear():
         yield
     finally:
         _reopen()
+
+
+@pytest.fixture(autouse = True)
+def _no_leaked_inventory_handles():
+    """Start every test with an empty per-request handle table.
+
+    ``host_paths.note_resolved_handle`` records the path a ``ref:`` handle stood for in a
+    ContextVar a REQUEST owns, and ``restore_inventory_handles`` swaps those paths back out
+    of whatever the route answers. Nothing resets it between tests, so one test that resolves
+    a handle leaves the table populated for every test after it in the same worker -- and a
+    route that answers a response MODEL then answers a restored dict instead, which is how
+    `test_get_model_config_resolves_cached_case_before_model_checks` came to fail on
+    `result.model_name` in a full run while passing alone.
+    """
+    try:
+        from hub.utils import host_paths
+    except Exception:  # optional deps absent on some CI legs
+        yield
+        return
+    token = host_paths._request_handles.set(None)
+    try:
+        yield
+    finally:
+        host_paths._request_handles.reset(token)
