@@ -49,8 +49,23 @@ logger = get_logger(__name__)
 # An absolute path in any of its three spellings: POSIX, a Windows drive, and a UNC share.
 # Not preceded by a word character, a colon or a slash, so a URL and a ratio like 3/4 are
 # left as they were written.
+#
+# A component is delimited rather than spelled out. A whitelist of the characters a
+# filename usually has is a whitelist of the characters it usually has: an apostrophe, a
+# colon, a bracket and every other legal punctuation mark stopped the match partway, so
+# `/home/o'connor/private/model.py` was shortened to `.../o` and the rest of it -- the
+# account name included -- stayed in a message that leaves the host. Anything that is not
+# whitespace or a separator is part of the component instead. Spaces are allowed INSIDE a
+# component that is followed by a separator, which is what `C:\Program Files\...` needs,
+# and never in the last one, so a path mentioned mid-sentence does not swallow the words
+# after it. A quote, a comma or a semicolon ends a component with a space in it as well:
+# `File "/a/b.py", line 1` and a second path later on the same line are two matches, not
+# one match over the sentence between them. An apostrophe is NOT one of those: it is a
+# legal filename character and excluding it is the bug this replaced.
+_PATH_COMPONENT = r"[^\s\\/](?:[^\\/\n\",;]*[^\s\\/])?"
 _ABSOLUTE_PATH_RE = re.compile(
-    r"(?<![\w:/])(?:\\\\[^\\/\s]+[\\/]|[A-Za-z]:[\\/]|/)(?:[\w.\-+@ ]+[\\/])+[\w.\-+@]*"
+    r"(?<![\w:/])(?:\\\\[^\\/\s]+[\\/]|[A-Za-z]:[\\/]|/)"
+    r"(?:" + _PATH_COMPONENT + r"[\\/])+[^\s\\/]*"
 )
 
 
@@ -116,6 +131,13 @@ _DIAGNOSTIC_START_RE = re.compile(
 )
 
 
+_TRACEBACK_HEADER = "Traceback (most recent call last):"
+# The lines Python's own traceback formatter writes at column 0 inside one record: the
+# header of a chained traceback, the sentence that introduces it, and the exception line
+# that ends it. Inside a LOGGED traceback these continue the record rather than start a
+# crash, so they are what the swallow below has to recognise.
+
+
 def _starts_a_new_diagnostic(line: str) -> bool:
     """Whether this line begins something a crashing runtime wrote, rather than content."""
     return bool(_DIAGNOSTIC_START_RE.match(line))
@@ -131,6 +153,11 @@ def _diagnostic_lines_only(lines: "list[str]") -> "list[str]":
     abort, while the second line of a logged prompt belongs to the logger and goes nowhere.
     Anything unrecognised outside a diagnostic is dropped, so a continuation whose record
     was rejected cannot survive its parent.
+
+    A traceback this keeps is not necessarily a crash: `logger.exception` and
+    `exc_info = True` write the record and then the traceback at column 0, so a recovered
+    request failure logged by `core/inference/worker.py` leaves one here too. Which of them
+    is the crash is decided by `_crash_lines`, not here.
     """
     kept: "list[str]" = []
     inside_a_diagnostic = False
@@ -147,6 +174,42 @@ def _diagnostic_lines_only(lines: "list[str]") -> "list[str]":
             continue
         inside_a_diagnostic = False
     return kept
+
+
+def _crash_lines(lines: "list[str]") -> "list[str]":
+    """Which of the diagnostics in a filtered capture is the crash being reported.
+
+    The last traceback, when there IS one, for the reason the caller documents: everything
+    before it belongs to earlier work, possibly another account's.
+
+    Unless something else was written after it. A traceback in this capture is not always a
+    crash -- `logger.exception` and `exc_info = True` write the record and then the
+    traceback at column 0, and `core/inference/worker.py` logs a recovered request failure
+    exactly that way -- and a native abort or a fatal signal writes no traceback at all. So
+    when the worker went on to write a diagnostic AFTER the last traceback finished, that
+    later diagnostic is the crash and the traceback was somebody else's recovered failure:
+    returning it disclosed its frames and its exception message. The traceback is the crash
+    only when it is the last thing the worker wrote.
+
+    A traceback ends at its exception line, which is the first line after the header that
+    is neither indented nor blank. A capture cut off mid-traceback has no such line, so
+    nothing follows it and it is the crash, which is the right answer for a worker that
+    died in the middle of writing one.
+    """
+    starts = [
+        index for index, line in enumerate(lines) if line.lstrip().startswith(_TRACEBACK_HEADER)
+    ]
+    if not starts:
+        return lines
+    header = starts[-1]
+    end = len(lines)
+    for index in range(header + 1, len(lines)):
+        line = lines[index]
+        if line.strip() and line[:1] not in (" ", "\t"):
+            end = index + 1
+            break
+    after = lines[end:]
+    return after if after else lines[header:]
 
 
 def _redact_worker_output(text: str) -> str:
@@ -923,7 +986,9 @@ class InferenceOrchestrator:
         Two narrowings, and the first is the one that matters. When the capture holds a
         traceback, only the LAST one is kept, from its `Traceback (most recent call last):`
         header to the end: that is the crash being reported, and everything before it
-        belongs to earlier work, possibly another account's.
+        belongs to earlier work, possibly another account's. Only when nothing follows it,
+        though -- a traceback with a diagnostic written after it was logged by a recovered
+        request rather than written by the crash, and `_crash_lines` says which.
 
         A native abort writes no traceback at all -- `terminate called after throwing an
         instance of 'c10::Error'` is the common one and it is the whole diagnosis -- so
@@ -946,16 +1011,12 @@ class InferenceOrchestrator:
         raw = self._worker_stderr_tail()
         if not raw:
             return ""
-        lines = raw.splitlines()
-        starts = [
-            index
-            for index, line in enumerate(lines)
-            if line.lstrip().startswith("Traceback (most recent call last):")
-        ]
-        if starts:
-            kept = lines[starts[-1] :]
-        else:
-            kept = _diagnostic_lines_only(lines)
+        # Filtered FIRST, then searched. Searching the raw capture for a traceback header
+        # found the ones a logger wrote too: a recovered request failure logged with
+        # `exc_info = True` leaves a header at column 0, and a later native abort or fatal
+        # signal writes no traceback of its own, so that logged one was selected and
+        # returned as this crash -- another account's exception, on a shared worker.
+        kept = _crash_lines(_diagnostic_lines_only(raw.splitlines()))
         block = "\n".join(kept).strip()
         if not block:
             return ""

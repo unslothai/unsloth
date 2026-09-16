@@ -888,3 +888,74 @@ def test_a_teardown_that_clears_the_handle_first_still_logs_the_tail(monkeypatch
     other._proc = SimpleNamespace(exitcode = None, pid = 99, is_alive = lambda: True)
     other._subprocess_crash_message("wait")
     assert any("Segmentation fault" in line for line in written), written
+
+
+def test_a_logged_traceback_is_not_mistaken_for_the_crash():
+    """`exc_info = True` writes the record and then the traceback, at column 0.
+
+    `core/inference/worker.py` logs a recovered request failure that way, so the capture
+    holds a `Traceback (most recent call last):` that no crash wrote. A later native abort
+    or fatal signal writes no traceback of its own, and selecting the LAST header in the
+    raw capture then returned the logged one as this crash: another account's exception,
+    with its own frames and its own message.
+    """
+    logged = (
+        "2026-09-16 10:00:03 worker: request 41 failed, retrying\n"
+        "Traceback (most recent call last):\n"
+        '  File "/home/alice/.unsloth/studio/worker.py", line 9, in handle\n'
+        '    raise ValueError("another account\'s prompt was rejected")\n'
+        "ValueError: another account's prompt was rejected\n"
+    )
+    abort = "Fatal Python error: Aborted\n\nCurrent thread 0x00007f1a (most recent call first):\n"
+    public = _orchestrator_with_capture(logged + abort)._public_worker_stderr_tail()
+    assert "another account" not in public, public
+    assert "ValueError" not in public, public
+    # And the crash that did happen is still the message.
+    assert "Fatal Python error: Aborted" in public, public
+
+
+def test_a_runtimes_own_traceback_after_a_log_line_is_still_reported():
+    """The other direction. Only a header DIRECTLY under a log record is that record's;
+    one the runtime wrote after the logging stack had finished a line is the crash, and
+    dropping it would cost the report its only explanation."""
+    text = (
+        "2026-09-16 10:00:02 worker: request 41 finished\n"
+        "\n"
+        + TRACEBACK
+    )
+    public = _orchestrator_with_capture(text)._public_worker_stderr_tail()
+    assert "RuntimeError: boom" in public, public
+    assert "request 41 finished" not in public, public
+
+
+def test_a_path_component_with_punctuation_in_it_is_still_redacted():
+    """The component list was a whitelist of the characters a filename usually has, so an
+    apostrophe, a colon or a bracket stopped the match partway and left the rest of the
+    path -- the account name with it -- in a message that leaves the host."""
+    from core.inference.orchestrator import _redact_worker_output
+
+    for path in (
+        "/home/o'connor/private/model.py",
+        "/home/a(1)/private/model.py",
+        "/srv/models/llama:8b/weights.gguf",
+        "C:\\Users\\O'Brien\\models\\weights.gguf",
+        "\\\\share\\team\\o'brien\\model.gguf",
+    ):
+        public = _redact_worker_output(f'  File "{path}", line 1, in run\n')
+        assert "private" not in public, public
+        assert "o'connor" not in public.lower(), public
+        assert "o'brien" not in public.lower(), public
+        assert "llama:8b" not in public, public
+        assert public.strip().startswith('File ".../'), public
+
+    # A path with a space in it keeps working, and a path mid-sentence does not swallow
+    # the words after it or the second path on the same line.
+    spaced = _redact_worker_output("C:\\Program Files\\unsloth\\weights.gguf failed\n")
+    assert spaced.strip() == ".../weights.gguf failed", spaced
+    two = _redact_worker_output('  File "/a/b.py", line 1, then /etc/passwd here\n')
+    assert "/etc/passwd" not in two, two
+    assert "line 1, then" in two, two
+    # And what was never a path is left as it was written.
+    assert _redact_worker_output("a ratio of 3/4 at https://host/path/x\n").strip() == (
+        "a ratio of 3/4 at https://host/path/x"
+    )
