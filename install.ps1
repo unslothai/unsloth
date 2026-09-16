@@ -2733,69 +2733,36 @@ exit 1
         return $null
     }
 
-    # os.path.realpath in a bounded child. Null on anything other than a clean answer, because
-    # every caller already treats "no exact answer" as "use the lexical one".
-    function Invoke-StudioEarlyPython {
+    # Run a script in a bounded child and return its stdout, or $null on anything other than a
+    # clean exit. The generic half, shared by every early-Python rung.
+    function Invoke-StudioEarlyPythonScript {
         param(
             [Parameter(Mandatory = $true)][string]$Exe,
-            [Parameter(Mandatory = $true)][string]$Path,
+            [Parameter(Mandatory = $true)][string]$Script,
+            [string[]]$ScriptArgs = @(),
             [int]$TimeoutMs = 10000
         )
-        # -I isolates the run from PYTHONPATH, a sitecustomize and the user site directory, so a
-        # broken environment cannot change the answer. studio/setup.sh runs nvidia_probe.py the
-        # same way.
-        # Deliberately the SAME expression unsloth_cli/_studio_runtime_gate.py's
-        # _resolved_windows_path uses, Path(...).resolve(strict = False), not os.path.realpath.
-        # The two agree today, but this string is hashed into a lock name that the running
-        # Unsloth derives from that function, so matching the expression removes a whole class of
-        # divergence rather than relying on two spellings staying equivalent.
-        #
-        # Written as UTF-8 bytes rather than through print, and read back as UTF-8 below. Windows
-        # PowerShell 5.1 decodes a child's stdout with the console codepage, which mangles every
-        # non-ASCII character in a path and would silently produce a different hash from the one
-        # the Python side computes.
-        # strict=True, unlike the gate's strict=False, and the difference is deliberate. For any
-        # path that genuinely resolves the two return the same string, so the byte-identity above
-        # holds for every valid input. They part company on a symlink loop or a dangling
-        # component, where strict=False returns the path UNRESOLVED rather than raising. That
-        # string is not an identity, and this rung's whole contract is that an answer is exact, so
-        # handing one back would let a caller treat an unresolved path as vouched for and decide
-        # two paths are different when it cannot know. Raising means null here and the lexical
-        # fallback with Exact = $false, which fails closed.
-        #
-        # Test-Path is not enough on its own: it returns true for the loop's own symlink.
-        # The version gate is load-bearing, not hygiene. Before 3.8, Windows path resolution did
-        # not follow junctions or symlinks, so an older interpreter would hand back the ALIAS
-        # spelling and this rung would mark it exact. Test-StudioPathEqual would then read an
-        # alias and its target as definitively different instead of taking both runtime locks,
-        # which is permission to install over a live managed environment. The probe cannot catch
-        # it either, since it only resolves the interpreter's own ordinary directory. Refusing
-        # the interpreter outright is the honest answer: the ladder falls through to lexical and
-        # Exact stays false.
-        $script = "import pathlib,sys" + [char]10 +
-                  "sys.exit(2) if sys.version_info < (3,8) else None" + [char]10 +
-                  "sys.stdout.buffer.write(str(pathlib.Path(sys.argv[1]).resolve(strict=True)).encode('utf-8'))"
         $proc = $null
         try {
             $psi = New-Object System.Diagnostics.ProcessStartInfo
             $psi.FileName = $Exe
-            # ArgumentList is .NET Core only. Windows PowerShell 5.1, which is the host the
-            # desktop installer launches, gets ProcessStartInfo from .NET Framework where the
-            # property does not exist, so .Add() throws, the catch below returns null and every
-            # candidate is rejected: the rung would never work on the primary Windows host while
-            # looking perfectly healthy. Branch on the property rather than assume it.
-            # -S as well as -I. Isolated mode implies -E, -P and -s, but NOT -S, so site is still
-            # imported and a system-level sitecustomize still runs before this script. On a
-            # corporate host that is instrumentation: it can print to stdout, which corrupts the
-            # one line this rung reads back, it can hang, which burns the timeout and rejects a
-            # perfectly good interpreter, and it can patch pathlib, which would let this mark an
-            # influenced answer as exact. Measured, not assumed: under -I alone sys.flags.no_site
-            # is 0. Nothing here needs site-packages; the probe is three stdlib imports.
-            $argv = @("-I", "-S", "-c", $script, $Path)
+            # -I and -S. Isolated mode covers PYTHONPATH and the user site directory, but it
+            # implies -E, -P and -s and NOT -S, so site is still imported and a system-level
+            # sitecustomize still runs before the script below. Measured rather than assumed:
+            # under -I alone sys.flags.no_site is 0. On a corporate host that sitecustomize is
+            # instrumentation, and each thing it can do breaks a different caller of this runner:
+            # printing to stdout corrupts the single line read back, hanging burns the timeout on
+            # a working interpreter, and patching a stdlib module would let an influenced answer
+            # be taken as authoritative. Nothing routed through here needs site-packages.
+            $argv = @("-I", "-S", "-c", $Script) + $ScriptArgs
+            # ArgumentList is .NET Core only. Windows PowerShell 5.1, the host the desktop
+            # installer launches, gets ProcessStartInfo from .NET Framework where the property
+            # does not exist, so .Add() would throw and the catch below would reject every
+            # candidate while looking perfectly healthy.
             if ($null -ne $psi.PSObject.Properties["ArgumentList"]) {
                 foreach ($a in $argv) { $null = $psi.ArgumentList.Add($a) }
             } else {
-                # Quote for CommandLineToArgvW. The script carries no double quote by
+                # Quote for CommandLineToArgvW. The scripts here carry no double quote by
                 # construction and a Windows path cannot contain one, so only two things matter:
                 # wrap each argument, and double any run of trailing backslashes, since
                 # "C:\dir\" would otherwise escape its own closing quote.
@@ -2806,31 +2773,67 @@ exit 1
             $psi.UseShellExecute = $false
             $psi.RedirectStandardOutput = $true
             $psi.RedirectStandardError = $true
-            # Without this, 5.1 decodes the child's bytes with the console codepage and a path
-            # containing any non-ASCII character comes back corrupted. The corruption is silent:
-            # the string still looks like a path, and it is what gets hashed into a lock name.
+            # Without this, 5.1 decodes the child's bytes with the console codepage and any
+            # non-ASCII character comes back corrupted. The corruption is silent: a path still
+            # looks like a path, and it is what gets hashed into a lock name.
             $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
             $psi.CreateNoWindow = $true
             $proc = [System.Diagnostics.Process]::Start($psi)
             $stdout = $proc.StandardOutput.ReadToEndAsync()
             $null = $proc.StandardError.ReadToEndAsync()
+            # A wedged interpreter must not wedge an installer that has not taken its lock yet.
             if (-not $proc.WaitForExit($TimeoutMs)) {
                 try { $proc.Kill() } catch {}
                 return $null
             }
             if ($proc.ExitCode -ne 0) { return $null }
-            $answer = "$($stdout.Result)".Trim()
-            if ([string]::IsNullOrWhiteSpace($answer)) { return $null }
-            # A relative answer is not an identity, and a path that does not exist cannot be the
-            # resolution of one that does.
-            if (-not [System.IO.Path]::IsPathRooted($answer)) { return $null }
-            if (-not (Test-Path -LiteralPath $answer)) { return $null }
-            return $answer
+            return "$($stdout.Result)"
         } catch {
             return $null
         } finally {
             if ($proc) { try { $proc.Dispose() } catch {} }
         }
+    }
+
+    # A path resolved in a bounded child. Null on anything other than a clean answer, because
+    # every caller already treats "no exact answer" as "use the lexical one".
+    function Invoke-StudioEarlyPython {
+        param(
+            [Parameter(Mandatory = $true)][string]$Exe,
+            [Parameter(Mandatory = $true)][string]$Path,
+            [int]$TimeoutMs = 10000
+        )
+        # Deliberately the same expression unsloth_cli/_studio_runtime_gate.py's
+        # _resolved_windows_path uses, Path(...).resolve(...), not os.path.realpath. The two agree
+        # today, but this string is hashed into a lock name the running Unsloth derives from that
+        # function, so matching the expression removes a class of divergence rather than relying
+        # on two spellings staying equivalent.
+        #
+        # strict=True, unlike the gate's strict=False, and the difference is deliberate. For any
+        # path that genuinely resolves the two return the same string, so that byte-identity
+        # holds for every valid input. They part company on a symlink loop or a dangling
+        # component, where strict=False returns the path UNRESOLVED rather than raising. That is
+        # not an identity, and this rung's contract is that an answer is exact, so returning one
+        # would let a caller decide two paths are different when it cannot know. Raising means
+        # the lexical fallback with Exact = $false, which fails closed. Test-Path alone is not
+        # enough: it is true for the loop's own symlink.
+        #
+        # The version gate is load-bearing. Before 3.8, Windows path resolution did not follow
+        # junctions or symlinks, so an older interpreter would return the ALIAS spelling and this
+        # rung would mark it exact. Test-StudioPathEqual would then read an alias and its target
+        # as definitively different instead of taking both runtime locks, which is permission to
+        # install over a live managed environment. The probe cannot catch it, since it only
+        # resolves the interpreter's own ordinary directory, so the interpreter is refused here.
+        $script = "import pathlib,sys" + [char]10 +
+                  "sys.exit(2) if sys.version_info < (3,8) else None" + [char]10 +
+                  "sys.stdout.buffer.write(str(pathlib.Path(sys.argv[1]).resolve(strict=True)).encode('utf-8'))"
+        $answer = "$(Invoke-StudioEarlyPythonScript -Exe $Exe -Script $script -ScriptArgs @($Path) -TimeoutMs $TimeoutMs)".Trim()
+        if ([string]::IsNullOrWhiteSpace($answer)) { return $null }
+        # A relative answer is not an identity, and a path that does not exist cannot be the
+        # resolution of one that does.
+        if (-not [System.IO.Path]::IsPathRooted($answer)) { return $null }
+        if (-not (Test-Path -LiteralPath $answer)) { return $null }
+        return $answer
     }
 
     function Get-StudioPythonFinalPath {
@@ -5711,6 +5714,64 @@ exit 0
 
     $script:StudioProcessImageTable = $null
     $script:StudioProcessImageWarned = $false
+    # PID to image path for every process this session can see, read once through ctypes in a
+    # bounded child. $null when there is no usable interpreter or the child cannot answer, which
+    # leaves the WMI rung below exactly as it was.
+    #
+    # ctypes rather than defining the type in PowerShell: the Windows call is identical, but the
+    # work happens in a child interpreter, outside the script text that is classified in full
+    # before it runs.
+    $script:StudioPythonProcessImageTable = $null
+    $script:StudioPythonProcessImageProbed = $false
+
+    function Get-StudioPythonProcessImageTable {
+        $exe = Get-StudioEarlyPython
+        if (-not $exe) { return $null }
+        # Only Windows has QueryFullProcessImageNameW. Elsewhere this rung has nothing to add over
+        # Get-Process, so it declines rather than pretending.
+        if (-not ($env:OS -eq "Windows_NT")) { return $null }
+        $probe = "import ctypes,sys" + [char]10 +
+            "from ctypes import wintypes" + [char]10 +
+            "k32=ctypes.WinDLL('kernel32',use_last_error=True)" + [char]10 +
+            "psapi=ctypes.WinDLL('psapi',use_last_error=True)" + [char]10 +
+            "k32.OpenProcess.restype=wintypes.HANDLE" + [char]10 +
+            "k32.OpenProcess.argtypes=[wintypes.DWORD,wintypes.BOOL,wintypes.DWORD]" + [char]10 +
+            "k32.CloseHandle.argtypes=[wintypes.HANDLE]" + [char]10 +
+            "k32.QueryFullProcessImageNameW.argtypes=[wintypes.HANDLE,wintypes.DWORD,wintypes.LPWSTR,ctypes.POINTER(wintypes.DWORD)]" + [char]10 +
+            "n=1024" + [char]10 +
+            "while True:" + [char]10 +
+            "    a=(wintypes.DWORD*n)();b=wintypes.DWORD()" + [char]10 +
+            "    if not psapi.EnumProcesses(ctypes.byref(a),ctypes.sizeof(a),ctypes.byref(b)): sys.exit(3)" + [char]10 +
+            "    if b.value < ctypes.sizeof(a): break" + [char]10 +
+            "    n*=2" + [char]10 +
+            "out=[]" + [char]10 +
+            "for pid in a[:b.value//ctypes.sizeof(wintypes.DWORD)]:" + [char]10 +
+            "    if not pid: continue" + [char]10 +
+            "    h=k32.OpenProcess(0x1000,False,pid)" + [char]10 +
+            "    if not h: continue" + [char]10 +
+            "    try:" + [char]10 +
+            "        buf=ctypes.create_unicode_buffer(32768);sz=wintypes.DWORD(32768)" + [char]10 +
+            "        if k32.QueryFullProcessImageNameW(h,0,buf,ctypes.byref(sz)): out.append(str(pid)+'|'+buf.value)" + [char]10 +
+            "    finally:" + [char]10 +
+            "        k32.CloseHandle(h)" + [char]10 +
+            "sys.stdout.buffer.write('\n'.join(out).encode('utf-8'))"
+        $raw = Invoke-StudioEarlyPythonScript -Exe $exe -Script $probe -TimeoutMs 20000
+        if ([string]::IsNullOrWhiteSpace($raw)) { return $null }
+        $table = @{}
+        foreach ($line in ($raw -split "`r?`n")) {
+            if ([string]::IsNullOrWhiteSpace($line)) { continue }
+            $split = $line.IndexOf('|')
+            if ($split -lt 1) { continue }
+            $pidText = $line.Substring(0, $split)
+            $path = $line.Substring($split + 1)
+            $parsed = 0
+            if (-not [int]::TryParse($pidText, [ref]$parsed)) { continue }
+            if (-not [string]::IsNullOrWhiteSpace($path)) { $table[$parsed] = $path }
+        }
+        if ($table.Count -eq 0) { return $null }
+        return $table
+    }
+
     function Get-StudioProcessImagePath {
         param([Parameter(Mandatory = $true)][int]$ProcessId)
         if (Initialize-StudioProcessImageNativeType) {
@@ -5730,6 +5791,24 @@ exit 0
             try {
                 if (-not [string]::IsNullOrWhiteSpace($process.Path)) { return $process.Path }
             } catch {}
+        }
+        # Python, before WMI, and for the reason the native rung exists at all: ctypes can call
+        # QueryFullProcessImageNameW with PROCESS_QUERY_LIMITED_INFORMATION, which is granted
+        # where the PROCESS_VM_READ that MainModule needs is refused, and it does not need WMI.
+        # Without something in this slot a host with a broken WMI repository finds NO running
+        # processes and overwrites a venv Unsloth has open, which is the failure the comment above
+        # this ladder describes.
+        #
+        # Batched, one child for the whole run, because Get-RunningStudioVenvProcesses calls this
+        # once per process on the machine and a child process each time would be far slower than
+        # the WMI rung it sits in front of.
+        if (-not $script:StudioPythonProcessImageProbed) {
+            $script:StudioPythonProcessImageProbed = $true
+            $script:StudioPythonProcessImageTable = Get-StudioPythonProcessImageTable
+        }
+        if ($script:StudioPythonProcessImageTable -and
+            $script:StudioPythonProcessImageTable.ContainsKey($ProcessId)) {
+            return $script:StudioPythonProcessImageTable[$ProcessId]
         }
         # Queried once per run, not once per process: this is the slow rung.
         if ($null -eq $script:StudioProcessImageTable) {
