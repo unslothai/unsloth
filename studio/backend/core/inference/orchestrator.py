@@ -1440,9 +1440,15 @@ class InferenceOrchestrator:
         initial_resp_queue = self._resp_queue
         while True:
             if self._proc is not initial_proc or self._resp_queue is not initial_resp_queue:
-                detail = self._subprocess_crash_message(
-                    crash_context, with_worker_output = self._owns_worker(cancel_event)
-                )
+                # No tail on this branch, whatever the ownership lists say. The worker this
+                # stream was latched to is gone; `_subprocess_crash_message` would read the
+                # REPLACEMENT's process and the REPLACEMENT's capture, and a shutdown clears
+                # the ownership lists, which makes `_owns_worker` answer True for a request
+                # that owns nothing. A stale reader would then be handed the traceback of a
+                # generation that started after it, belonging on a shared install to somebody
+                # else. The exit status of a worker that was swapped out from under this
+                # stream is what there is to report.
+                detail = self._subprocess_crash_message(crash_context)
                 yield GenStreamError(f"Error: {detail}", public = True)
                 return
             resp = read_one(read_timeout)

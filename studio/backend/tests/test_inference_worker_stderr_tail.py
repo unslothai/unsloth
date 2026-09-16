@@ -1146,7 +1146,9 @@ def test_the_stream_asks_who_owned_the_worker_before_handing_over_the_tail():
     from core.inference import orchestrator as orchestrator_module
 
     body = inspect.getsource(orchestrator_module.InferenceOrchestrator._consume_token_stream)
-    assert body.count("with_worker_output = self._owns_worker(cancel_event)") == 2, body
+    # One of the two crash exits. The other, the branch that fires when the worker was
+    # SWAPPED under this stream, passes no tail at all: see the test below.
+    assert body.count("with_worker_output = self._owns_worker(cancel_event)") == 1, body
 
 
 def test_a_queued_compare_request_does_not_own_the_worker():
@@ -1215,4 +1217,26 @@ def test_the_worker_output_is_opt_in_at_every_call_site():
     # Every call site decides from ownership rather than from a constant.
     calls = source.count("self._subprocess_crash_message(")
     owned = source.count("with_worker_output = self._owns_worker(")
-    assert calls == owned, (calls, owned)
+    # Every call site but one asks ownership; the exception is the swapped-worker branch,
+    # which asks for no tail at all because the worker it would read is not the one this
+    # stream was latched to.
+    assert calls == owned + 1, (calls, owned)
+
+
+def test_a_stream_whose_worker_was_swapped_gets_no_tail_at_all():
+    """`initial_proc` is latched for a reason: this branch fires when the worker underneath
+    the stream has been replaced.
+
+    `_subprocess_crash_message` reads `self._proc` and `self._stderr_capture`, which are the
+    REPLACEMENT's, and a shutdown clears the ownership lists, so `_owns_worker` answers True
+    for a request that owns nothing. A stale reader would be handed the traceback of a
+    generation that started after it -- on a shared install, somebody else's.
+    """
+    import inspect
+    from core.inference import orchestrator as orchestrator_module
+
+    body = inspect.getsource(orchestrator_module.InferenceOrchestrator._consume_token_stream)
+    swap = body.index("initial_proc or self._resp_queue is not initial_resp_queue")
+    following = body[swap : body.index("resp = read_one(read_timeout)", swap)]
+    assert "_subprocess_crash_message(crash_context)" in following, following
+    assert "with_worker_output" not in following, following
