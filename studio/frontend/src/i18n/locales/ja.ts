@@ -545,6 +545,8 @@ export const ja = {
           "音声設定でローカル音声認識モデルを選択してください。",
         audioUploadEmpty: "選択した録音は空です。",
         audioUploadTooLarge: "{size} 未満の録音を選択してください。",
+        audioUploadVideoUnsupported:
+          "動画ではなく、音声録音を選択してください。",
         audioUploadNoSpeech: "この録音から音声を検出できませんでした。",
         audioUploadFailed: "録音を文字起こしできませんでした。",
         audioUploadCancel: "文字起こしをキャンセル",

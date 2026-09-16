@@ -546,6 +546,8 @@ export const hi = {
           "आवाज़ की सेटिंग में कोई स्थानीय स्पीच-रिकग्निशन मॉडल चुनें।",
         audioUploadEmpty: "चुनी गई रिकॉर्डिंग खाली है।",
         audioUploadTooLarge: "{size} से छोटी रिकॉर्डिंग चुनें।",
+        audioUploadVideoUnsupported:
+          "वीडियो के बजाय कोई ऑडियो रिकॉर्डिंग चुनें।",
         audioUploadNoSpeech: "मॉडल को उस रिकॉर्डिंग में कोई आवाज़ सुनाई नहीं दी।",
         audioUploadFailed: "रिकॉर्डिंग को टेक्स्ट में नहीं बदला जा सका।",
         audioUploadCancel: "ट्रांसक्रिप्शन रद्द करें",

@@ -545,6 +545,7 @@ export const ru = {
           "Выберите локальную модель распознавания речи в настройках голоса.",
         audioUploadEmpty: "Выбранная запись пуста.",
         audioUploadTooLarge: "Выберите запись размером менее {size}.",
+        audioUploadVideoUnsupported: "Выберите аудиозапись, а не видео.",
         audioUploadNoSpeech: "Модель не обнаружила речь в этой записи.",
         audioUploadFailed: "Не удалось расшифровать запись.",
         audioUploadCancel: "Отменить расшифровку",

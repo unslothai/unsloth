@@ -547,6 +547,8 @@ export const fr = {
           "Choisissez un modèle local de reconnaissance vocale dans les paramètres Voix.",
         audioUploadEmpty: "L'enregistrement sélectionné est vide.",
         audioUploadTooLarge: "Choisissez un enregistrement de moins de {size}.",
+        audioUploadVideoUnsupported:
+          "Choisissez un enregistrement audio, pas une vidéo.",
         audioUploadNoSpeech: "Le modèle n'a détecté aucune parole dans cet enregistrement.",
         audioUploadFailed: "Impossible de transcrire l'enregistrement.",
         audioUploadCancel: "Annuler la transcription",

@@ -543,6 +543,8 @@ export const ko = {
           "음성 설정에서 로컬 음성 인식 모델을 선택하세요.",
         audioUploadEmpty: "선택한 녹음이 비어 있습니다.",
         audioUploadTooLarge: "{size}보다 작은 녹음을 선택하세요.",
+        audioUploadVideoUnsupported:
+          "동영상이 아닌 오디오 녹음을 선택하세요.",
         audioUploadNoSpeech: "모델이 해당 녹음에서 음성을 감지하지 못했습니다.",
         audioUploadFailed: "녹음을 전사하지 못했습니다.",
         audioUploadCancel: "전사 취소",

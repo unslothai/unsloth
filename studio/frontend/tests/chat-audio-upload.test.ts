@@ -31,6 +31,26 @@ test("audio upload rejects empty and oversized files", () => {
   );
 });
 
+test("audio upload classifies ambiguous 3GP files and refuses video", () => {
+  const selectFileStart = hookSource.indexOf("const selectFile = useCallback(");
+  const selectFile = hookSource.slice(
+    selectFileStart,
+    hookSource.indexOf("  const retry = useCallback", selectFileStart),
+  );
+  const classified = selectFile.indexOf(
+    "const classifiedFile = await classifiedAttachmentFile(file);",
+  );
+  const refused = selectFile.indexOf("if (isVideoFile(classifiedFile))");
+  const transcribed = selectFile.indexOf(
+    "void runTranscription(classifiedFile, snapshot);",
+  );
+  assert.ok(classified >= 0 && classified < refused && refused < transcribed);
+  assert.match(selectFile, /audioUploadVideoUnsupported[\s\S]*?return;/);
+  const staleClassification = selectFile.slice(classified, refused);
+  assert.match(staleClassification, /chatAudioUploadFenceMatches/);
+  assert.doesNotMatch(staleClassification, /clearOperation\(\)/);
+});
+
 test("audio upload accepts only its current owner, generation and auth session", () => {
   const started = { generation: 3, owner: "thread-a", authSessionEpoch: 7 };
   assert.equal(chatAudioUploadFenceMatches(started, { ...started }), true);

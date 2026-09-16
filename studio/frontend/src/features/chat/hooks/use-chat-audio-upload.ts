@@ -16,6 +16,7 @@ import {
 import { useT } from "@/i18n";
 import { accountTransitionPending } from "@/lib/account-transition";
 import { toast } from "@/lib/toast";
+import { classifiedAttachmentFile, isVideoFile } from "@/lib/video-utils";
 import {
   useCallback,
   useEffect,
@@ -394,7 +395,7 @@ export function useChatAudioUpload({
   );
 
   const selectFile = useCallback(
-    (file: File) => {
+    async (file: File) => {
       const snapshot = pickerSnapshotRef.current;
       pickerSnapshotRef.current = null;
       if (!snapshot) return;
@@ -409,9 +410,24 @@ export function useChatAudioUpload({
         );
         return;
       }
+      const classifiedFile = await classifiedAttachmentFile(file);
+      if (
+        !chatAudioUploadFenceMatches(snapshot, {
+          generation: generationRef.current,
+          owner: ownerRef.current,
+          authSessionEpoch: getAuthSessionEpoch(),
+        }) ||
+        accountTransitionPending()
+      ) {
+        return;
+      }
+      if (isVideoFile(classifiedFile)) {
+        toast.error(t("settings.voice.dictation.audioUploadVideoUnsupported"));
+        return;
+      }
       retainedRef.current = null;
       setRetained(null);
-      void runTranscription(file, snapshot);
+      void runTranscription(classifiedFile, snapshot);
     },
     [runTranscription, t],
   );

@@ -544,6 +544,8 @@ export const en = {
           "Choose a local speech-recognition model in Voice settings.",
         audioUploadEmpty: "The selected recording is empty.",
         audioUploadTooLarge: "Choose a recording smaller than {size}.",
+        audioUploadVideoUnsupported:
+          "Choose an audio recording, not a video.",
         audioUploadNoSpeech: "The model heard no speech in that recording.",
         audioUploadFailed: "The recording could not be transcribed.",
         audioUploadCancel: "Cancel transcription",

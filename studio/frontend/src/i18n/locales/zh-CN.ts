@@ -541,6 +541,7 @@ export const zhCN = {
           "请在“语音”设置中选择本地语音识别模型。",
         audioUploadEmpty: "所选录音为空。",
         audioUploadTooLarge: "请选择小于 {size} 的录音。",
+        audioUploadVideoUnsupported: "请选择录音文件，而不是视频。",
         audioUploadNoSpeech: "模型未在该录音中检测到语音。",
         audioUploadFailed: "无法转写该录音。",
         audioUploadCancel: "取消转录",

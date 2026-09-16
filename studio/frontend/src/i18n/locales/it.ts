@@ -512,6 +512,8 @@ export const it = {
           "Scegli un modello locale di riconoscimento vocale nelle impostazioni Voce.",
         audioUploadEmpty: "La registrazione selezionata è vuota.",
         audioUploadTooLarge: "Scegli una registrazione più piccola di {size}.",
+        audioUploadVideoUnsupported:
+          "Scegli una registrazione audio, non un video.",
         audioUploadNoSpeech: "Il modello non ha rilevato alcuna voce nella registrazione.",
         audioUploadFailed: "Non è stato possibile trascrivere la registrazione.",
         audioUploadCancel: "Annulla trascrizione",

@@ -543,6 +543,8 @@ export const ar = {
           "اختر نموذجًا محليًا للتعرّف على الكلام في إعدادات الصوت.",
         audioUploadEmpty: "التسجيل المحدد فارغ.",
         audioUploadTooLarge: "اختر تسجيلاً أصغر من {size}.",
+        audioUploadVideoUnsupported:
+          "اختر تسجيلاً صوتياً، وليس مقطع فيديو.",
         audioUploadNoSpeech: "لم يسمع النموذج أي كلام في ذلك التسجيل.",
         audioUploadFailed: "تعذّر نسخ التسجيل.",
         audioUploadCancel: "إلغاء النسخ",

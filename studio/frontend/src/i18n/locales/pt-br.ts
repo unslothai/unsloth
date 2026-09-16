@@ -545,6 +545,8 @@ export const ptBR = {
           "Escolha um modelo local de reconhecimento de fala nas configurações de Voz.",
         audioUploadEmpty: "A gravação selecionada está vazia.",
         audioUploadTooLarge: "Escolha uma gravação menor que {size}.",
+        audioUploadVideoUnsupported:
+          "Escolha uma gravação de áudio, não um vídeo.",
         audioUploadNoSpeech: "O modelo não detectou fala nessa gravação.",
         audioUploadFailed: "Não foi possível transcrever a gravação.",
         audioUploadCancel: "Cancelar transcrição",

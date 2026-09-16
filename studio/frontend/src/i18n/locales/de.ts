@@ -547,6 +547,8 @@ export const de = {
           "Wählen Sie in den Spracheinstellungen ein lokales Spracherkennungsmodell aus.",
         audioUploadEmpty: "Die ausgewählte Aufnahme ist leer.",
         audioUploadTooLarge: "Wählen Sie eine Aufnahme, die kleiner als {size} ist.",
+        audioUploadVideoUnsupported:
+          "Wählen Sie eine Audioaufnahme und kein Video aus.",
         audioUploadNoSpeech: "Das Modell hat in dieser Aufnahme keine Sprache erkannt.",
         audioUploadFailed: "Die Aufnahme konnte nicht transkribiert werden.",
         audioUploadCancel: "Transkription abbrechen",
