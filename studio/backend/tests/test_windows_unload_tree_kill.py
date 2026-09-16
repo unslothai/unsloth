@@ -1203,14 +1203,29 @@ def test_the_forced_kill_goes_through_the_handle_it_verified(monkeypatch):
     assert terminated == []
 
     # A handle that cannot be opened at all is "cannot answer", not "wrong process", so the
-    # old ladder still runs.
+    # old ladder still runs -- but only once ownership has been re-established on the number,
+    # immediately before the spawn. `taskkill /PID` resolves that number itself, which is the
+    # race the handle route exists to close.
     kernel32._stubs["OpenProcess"] = lambda rights, inherit, pid: 0
     monkeypatch.setattr(
         subprocess, "run",
         lambda *a, **k: spawned.append(a[0]) or _types.SimpleNamespace(returncode = 0),
     )
+    monkeypatch.setattr(pl, "_provably_the_same", lambda pid, identity: True)
     assert pl._windows_terminate_pid(4242, "0:4242") is True
     assert spawned and spawned[-1][0] == "taskkill", spawned
+
+    # And when it cannot be established, nothing is spawned at all: the old code ran taskkill
+    # first and only checked afterwards, so the one signal that could hit a stranger was the
+    # one nothing had vouched for.
+    spawned.clear()
+    monkeypatch.setattr(pl, "_provably_the_same", lambda pid, identity: False)
+    assert pl._windows_terminate_pid(4242, "0:4242") is False
+    assert spawned == [], spawned
+    # With no identity there is nothing to establish, so the same refusal applies.
+    monkeypatch.setattr(pl, "_provably_the_same", lambda pid, identity: identity is not None)
+    assert pl._windows_terminate_pid(4242) is False
+    assert spawned == [], spawned
 
 
 def test_no_windows_kill_path_calls_taskkill_slash_t_any_more():

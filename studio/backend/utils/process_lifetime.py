@@ -2111,6 +2111,17 @@ def _windows_terminate_pid(pid: int, identity: "Optional[str]" = None) -> bool:
     if through_handle is not None:
         return through_handle
 
+    # The handle could not be opened at all, so the only thing left is the number -- and
+    # `taskkill /PID` resolves that number itself, which is the very race the handle route
+    # exists to close. Ownership is therefore re-established HERE, immediately before the
+    # spawn, rather than after it: the caller's own check happened before the collection, a
+    # descendant can have exited since, and signalling on a number nothing can vouch for is
+    # how an unrelated process gets killed. With no identity to check against there is
+    # nothing to establish, and a leaked worker is caught by the next sweep while somebody
+    # else's process is not recoverable.
+    if not _provably_the_same(pid, identity):
+        return False
+
     try:
         completed = subprocess.run(
             ["taskkill", "/PID", str(pid), "/F"],
@@ -2123,6 +2134,8 @@ def _windows_terminate_pid(pid: int, identity: "Optional[str]" = None) -> bool:
             return True
     except (OSError, subprocess.SubprocessError):
         pass
+    # Asked again, because `taskkill` has a fifteen second ceiling and the process can exit
+    # inside it -- which is the case this fallback exists for -- leaving the number free.
     if not _provably_the_same(pid, identity):
         return False
     try:
