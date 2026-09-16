@@ -7088,12 +7088,31 @@ def patch_saving_functions(model, vision = False):
         did not wrap, so `None` reached peft, which read it as falsy and wrote
         `adapter_model.bin`: the advice produced the file it exists to avoid
         (unsloth#1792). Only that one value is rewritten, so an explicit
-        `safe_serialization = False` still writes a pickle, and everything else, including
-        every positional argument, is forwarded untouched.
+        `safe_serialization = False` still writes a pickle and every other argument is
+        forwarded untouched.
+
+        Positional too, because `PeftModel.save_pretrained` takes `safe_serialization` as
+        its SECOND positional parameter, so `model.save_pretrained(directory, None)` is a
+        supported spelling of the same request. Which position that is cannot be assumed:
+        `PreTrainedModel.save_pretrained`'s second parameter is `is_main_process`, and
+        rewriting that would be a different bug. So the value is located by binding the
+        ORIGINAL callable's own signature, and a signature that cannot be read or bound
+        leaves the call exactly as it arrived.
         """
+        import inspect
+
+        original = self.original_model_save_pretrained
         if kwargs.get("safe_serialization", True) is None:
             kwargs["safe_serialization"] = _normalize_safe_serialization(None)
-        return self.original_model_save_pretrained(*args, **kwargs)
+        elif args:
+            try:
+                bound = inspect.signature(original).bind_partial(*args, **kwargs)
+            except (TypeError, ValueError):
+                bound = None
+            if bound is not None and bound.arguments.get("safe_serialization", True) is None:
+                bound.arguments["safe_serialization"] = _normalize_safe_serialization(None)
+                return original(*bound.args, **bound.kwargs)
+        return original(*args, **kwargs)
 
     if (
         isinstance(model, PreTrainedTokenizerBase)

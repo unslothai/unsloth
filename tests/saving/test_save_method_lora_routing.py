@@ -761,3 +761,84 @@ def test_the_docstrings_describe_none_as_the_stronger_safetensors_request():
     # The behaviour the prose describes, read from the code rather than trusted.
     assert "elif safe_serialization and (n_cpus <= 2):" in source
     assert "if _force_safe_serialization:" in source
+
+
+def _wrapped_model_save_pretrained(original):
+    """The shipped `unsloth_model_save_pretrained`, bound to a stub whose
+    `original_model_save_pretrained` is `original`. Executed, not read."""
+    import ast
+    import inspect
+    import textwrap
+    import types as _types
+
+    from unsloth import save as save_module
+
+    source = inspect.getsource(save_module.patch_saving_functions)
+    tree = ast.parse(textwrap.dedent(source))
+    node = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "unsloth_model_save_pretrained"
+    )
+    module = ast.Module(body = [node], type_ignores = [])
+    ast.fix_missing_locations(module)
+    namespace = dict(vars(save_module))
+    exec(compile(module, "<unsloth_model_save_pretrained>", "exec"), namespace)
+
+    stub = _types.SimpleNamespace(original_model_save_pretrained = original)
+    return _types.MethodType(namespace["unsloth_model_save_pretrained"], stub)
+
+
+def test_a_positional_none_is_normalised_on_a_peft_style_signature():
+    """`PeftModel.save_pretrained` takes safe_serialization as its SECOND positional
+    parameter, so `model.save_pretrained(directory, None)` is the same request as the
+    keyword form and used to reach peft as a falsy value, writing adapter_model.bin."""
+    seen = {}
+
+    def peft_like(save_directory, safe_serialization = True, selected_adapters = None, **kwargs):
+        seen["safe_serialization"] = safe_serialization
+        seen["save_directory"] = save_directory
+
+    _wrapped_model_save_pretrained(peft_like)("out_dir", None)
+
+    assert seen["save_directory"] == "out_dir"
+    assert seen["safe_serialization"] is True
+
+
+def test_a_positional_second_argument_that_is_not_safe_serialization_is_untouched():
+    """NEGATIVE CONTROL, and the reason the position cannot be assumed:
+    `PreTrainedModel.save_pretrained`'s second parameter is `is_main_process`, so
+    rewriting index 1 would corrupt an ordinary transformers call."""
+    seen = {}
+
+    def transformers_like(save_directory, is_main_process = True, state_dict = None, **kwargs):
+        seen["is_main_process"] = is_main_process
+        seen["kwargs"] = kwargs
+
+    _wrapped_model_save_pretrained(transformers_like)("out_dir", None)
+
+    assert seen["is_main_process"] is None, "an unrelated positional argument was rewritten"
+    assert "safe_serialization" not in seen["kwargs"]
+
+
+def test_an_explicit_positional_false_still_writes_a_pickle():
+    """NEGATIVE CONTROL: only None is rewritten. False is a request, not the default."""
+    seen = {}
+
+    def peft_like(save_directory, safe_serialization = True, **kwargs):
+        seen["safe_serialization"] = safe_serialization
+
+    _wrapped_model_save_pretrained(peft_like)("out_dir", False)
+    assert seen["safe_serialization"] is False
+
+
+def test_an_unreadable_signature_forwards_the_call_unchanged():
+    """A builtin or C callable has no readable signature; that must not break the save."""
+    seen = {}
+
+    class _NoSignature:
+        def __call__(self, *args, **kwargs):
+            seen["args"] = args
+            seen["kwargs"] = kwargs
+
+    _wrapped_model_save_pretrained(_NoSignature())("out_dir", None)
+    assert seen["args"] == ("out_dir", None)
