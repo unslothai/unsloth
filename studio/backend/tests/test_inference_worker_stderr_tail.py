@@ -724,3 +724,73 @@ def test_the_mirror_puts_the_sink_on_fd_two_rather_than_a_pipe():
     # fd 2 still points at it, and a fixed offset would overwrite or leave a hole.
     append = source.split("def _open_sink_for_append(", 1)[1].split("\ndef ", 1)[0]
     assert "os.O_APPEND" in append
+
+
+MULTILINE_CROSS_ACCOUNT = (
+    "2026-09-16 10:00:01 audio_codecs.decode_bicodec: generated text: the first line\n"
+    "another account's second line\n"
+    "and a third line of the same prompt\n"
+)
+
+
+def test_a_logged_message_cannot_leak_through_its_own_continuation_lines():
+    """A log record is not always one line.
+
+    `logger.info("generated text: %s", text)` puts the timestamp and the logger name on the
+    FIRST line only, so a filter that rejects lines one at a time drops the prefix and keeps
+    everything the message actually contained. The continuations have to go with the record
+    they belong to.
+    """
+    abort = (
+        "terminate called after throwing an instance of 'c10::Error'\n"
+        "  what():  CUDA error: device-side assert triggered\n"
+    )
+    public = _orchestrator_with_capture(
+        MULTILINE_CROSS_ACCOUNT + abort
+    )._public_worker_stderr_tail()
+    assert "c10::Error" in public, public
+    assert "device-side assert" in public, public
+    assert "another account" not in public, public
+    assert "third line" not in public, public
+
+
+def test_compaction_never_deletes_what_a_racing_writer_appended(tmp_path):
+    """fd 2 stays O_APPEND on the file the compactor rewrites.
+
+    Anything the worker appends after the compactor has read the tail lies beyond the offset
+    it is about to truncate to, and the pump has not forwarded it either, so a plain
+    read-rewrite-truncate loses a fatal diagnostic from the capture and from the console
+    both. The write here goes through a real O_APPEND descriptor, from inside the
+    compactor's own read, which is the window.
+    """
+    from utils.worker_stderr import _compact_sink
+
+    path = tmp_path / "sink"
+    path.write_bytes(b"x" * 4096)
+    appender = os.open(str(path), os.O_WRONLY | os.O_APPEND)
+    handle = open(path, "r+b", buffering = 0)
+
+    class _WriterRacesTheRead:
+        def __init__(self, inner):
+            self._inner = inner
+            self._raced = False
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+        def read(self, *args):
+            data = self._inner.read(*args)
+            if not self._raced:
+                self._raced = True
+                os.write(appender, b"terminate called after throwing an instance of 'c10::Error'\n")
+            return data
+
+    try:
+        _compact_sink(_WriterRacesTheRead(handle), 1024)
+    finally:
+        handle.close()
+        os.close(appender)
+
+    kept = path.read_bytes()
+    assert b"terminate called" in kept, kept[-200:]
+    assert len(kept) <= 1024 + 128, len(kept)

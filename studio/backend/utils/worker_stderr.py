@@ -307,12 +307,70 @@ def _open_sink_for_reading(path: str):
         return None
 
 
-def _compact_sink(sink, cap_bytes: int) -> int:
-    """Rewrite *sink* so it holds only its last *cap_bytes* bytes. Returns the new size."""
+# How many times the compactor re-reads the end of the sink before it truncates. The
+# writer is fd 2 in this same process and each round only has to catch up with what was
+# appended during the previous one, so this converges immediately in practice; the bound is
+# there so a worker flooding stderr cannot hold the compactor in the loop for ever.
+_COMPACT_CATCH_UP_ROUNDS = 8
+
+
+def _compact_sink(
+    sink,
+    cap_bytes: int,
+    reader = None,
+    inherited_fd: "int | None" = None,
+) -> int:
+    """Rewrite *sink* so it holds roughly its last *cap_bytes* bytes. Returns the new size.
+
+    The subtlety is that fd 2 is open ``O_APPEND`` on this same file and the worker can
+    write at any point during this function. A plain read-rewrite-truncate deletes anything
+    that lands after the read: it is beyond the offset the compactor is about to truncate
+    to, and the reader has not forwarded it either, so a fatal diagnostic written in that
+    window disappears from the capture AND from the inherited stderr. Two things narrow it:
+
+    * *reader* and *inherited_fd*, when given, are drained to the console FIRST, so nothing
+      still unforwarded can be deleted without having been seen.
+    * After the rewrite the file is read again from the old end, and whatever arrived in
+      the meantime is appended to the retained text instead of being truncated away. That
+      covers the wide part of the window, which is the read and the rewrite of a quarter of
+      a megabyte.
+
+    What remains is the gap between the last read that came back empty and the ``truncate``
+    itself, a single syscall apart. It cannot be closed portably: an ``O_APPEND`` write and
+    a truncate cannot be ordered against each other without cooperation from the writer,
+    and rotating the sink instead would need a rename over a file that fd 2 still holds
+    open, which Windows refuses.
+    """
+    if reader is not None and inherited_fd is not None:
+        # Forward the unread tail before touching the file, so the bytes at risk below are
+        # at least already on the server's own stderr.
+        while True:
+            try:
+                pending = reader.read(65536)
+            except (OSError, ValueError):
+                break
+            if not pending:
+                break
+            try:
+                os.write(inherited_fd, pending)
+            except OSError:
+                pass
     size = sink.seek(0, os.SEEK_END)
     keep = min(size, cap_bytes)
     sink.seek(size - keep)
     data = sink.read(keep)
+    for _ in range(_COMPACT_CATCH_UP_ROUNDS):
+        # Continues from the old end of the file, so this is exactly what was appended
+        # while the read above was in flight, with nothing counted twice.
+        appended = sink.read()
+        if not appended:
+            break
+        if inherited_fd is not None:
+            try:
+                os.write(inherited_fd, appended)
+            except OSError:
+                pass
+        data += appended
     sink.seek(0)
     sink.write(data)
     sink.truncate()
@@ -334,7 +392,9 @@ def _tail_sink_to_stderr(
     capture would then have made the crash LESS visible than it was before it existed.
 
     Compaction rewrites the file from the front; fd 2 is opened ``O_APPEND``, so the
-    writer's next write still lands at the (new) end rather than at a stale offset.
+    writer's next write still lands at the (new) end rather than at a stale offset. The
+    reader is handed to the compactor so that everything it has not forwarded yet goes to
+    the console before any of it can be rewritten away: see `_compact_sink`.
     """
     forwarded = 0
     while True:
@@ -355,7 +415,7 @@ def _tail_sink_to_stderr(
         forwarded += len(chunk)
         if cap_bytes > 0 and forwarded > 2 * cap_bytes:
             try:
-                _compact_sink(sink, cap_bytes)
+                _compact_sink(sink, cap_bytes, reader = reader, inherited_fd = inherited_fd)
                 # Everything up to here has already been forwarded, and the file has just
                 # been rewritten from the front, so the reader's old offset points into the
                 # middle of retained text. The end is the only meaningful place to resume.

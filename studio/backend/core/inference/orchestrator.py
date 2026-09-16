@@ -86,6 +86,69 @@ def _looks_like_a_log_record(line: str) -> bool:
     return bool(_LOG_RECORD_RE.match(line))
 
 
+# A line a crashing runtime writes. Rejecting log records one line at a time is not enough:
+# a logged message that contains a newline carries the timestamp and logger name on its
+# FIRST line only, so dropping that line leaves its unprefixed continuations behind, and
+# those continuations are the content itself. Generated text logged by
+# `audio_codecs.decode_bicodec` is exactly that shape. So a line is kept only when it
+# starts something a crashing runtime writes, or continues one that did.
+#
+# Shaped rather than exhaustive, and erring towards dropping: a diagnostic this misses
+# degrades the message to the exit status, which is what it was before the capture existed,
+# while a content line this keeps leaves the host.
+_DIAGNOSTIC_START_RE = re.compile(
+    r"""^(?:
+        Traceback\ \(most\ recent\ call\ last\):
+      | terminate\ called
+      | what\(\):
+      | Fatal\ Python\ error:
+      | (?:Current\ )?[Tt]hread\ 0x
+      | Stack\ \(most\ recent\ call\ first\):
+      | Segmentation\ fault | Bus\ error | Illegal\ instruction
+      | Floating\ point\ exception | Aborted | Killed | Trace/breakpoint\ trap
+      | \*\*\*                                     # *** stack smashing detected ***
+      | double\ free | free\(\) | malloc\(\) | munmap_chunk | corrupted\ (?:size|double-linked)
+      | std::(?:bad_alloc|terminate) | libc\+\+abi
+      | GGML_ASSERT | CUDA\ error | HIP\ error | cudaError
+      | [A-Za-z_][\w.]*(?:Error|Exception|Exit|Interrupt|Abort|Fault|Signal)\s*:
+    )""",
+    re.VERBOSE,
+)
+
+
+def _starts_a_new_diagnostic(line: str) -> bool:
+    """Whether this line begins something a crashing runtime wrote, rather than content."""
+    return bool(_DIAGNOSTIC_START_RE.match(line))
+
+
+def _diagnostic_lines_only(lines: "list[str]") -> "list[str]":
+    """Keep the crash diagnostic out of a capture that holds no traceback.
+
+    Line by line is not a filter, because a log record is not always one line. What is
+    tracked instead is whether the CURRENT record is a diagnostic: a recognised start opens
+    one, a log-record prefix closes it, and an indented or blank line continues whatever it
+    is inside -- `  what():  CUDA error: ...` under `terminate called ...` belongs to the
+    abort, while the second line of a logged prompt belongs to the logger and goes nowhere.
+    Anything unrecognised outside a diagnostic is dropped, so a continuation whose record
+    was rejected cannot survive its parent.
+    """
+    kept: "list[str]" = []
+    inside_a_diagnostic = False
+    for line in lines:
+        if _looks_like_a_log_record(line):
+            inside_a_diagnostic = False
+            continue
+        if _starts_a_new_diagnostic(line):
+            inside_a_diagnostic = True
+            kept.append(line)
+            continue
+        if inside_a_diagnostic and (not line.strip() or line[:1] in (" ", "\t")):
+            kept.append(line)
+            continue
+        inside_a_diagnostic = False
+    return kept
+
+
 def _redact_worker_output(text: str) -> str:
     """Native paths, credentials and absolute paths out of text that leaves this host.
 
@@ -864,12 +927,13 @@ class InferenceOrchestrator:
 
         A native abort writes no traceback at all -- `terminate called after throwing an
         instance of 'c10::Error'` is the common one and it is the whole diagnosis -- so
-        those lines cannot simply be dropped. What is dropped instead is every line shaped
-        like a LOGGING RECORD: a leading timestamp, a level word, or a dotted logger name
-        before the colon. That is the shape content takes on its way to stderr, because
-        application code prints through the logger, while a native abort and a fatal signal
-        write bare lines. When nothing survives, the message degrades to the exit status
-        alone, which is what it was before this capture existed.
+        those lines cannot simply be dropped. What is kept instead is the DIAGNOSTIC: a
+        line shaped like something a crashing runtime writes, plus the indented and blank
+        lines that continue it. Rejecting log records one at a time is not enough, because
+        a logged message that contains a newline is prefixed on its first line only, so
+        dropping that line would leave its continuations -- the content itself -- behind.
+        When nothing survives, the message degrades to the exit status alone, which is what
+        it was before this capture existed.
 
         What survives is then redacted: registered native paths, bearer and HF tokens, and
         absolute paths shortened to their last component. A traceback's file names are
@@ -891,7 +955,7 @@ class InferenceOrchestrator:
         if starts:
             kept = lines[starts[-1] :]
         else:
-            kept = [line for line in lines if not _looks_like_a_log_record(line)]
+            kept = _diagnostic_lines_only(lines)
         block = "\n".join(kept).strip()
         if not block:
             return ""
