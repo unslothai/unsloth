@@ -213,7 +213,10 @@ def resolve_effective_use_xet(use_xet: bool) -> bool:
 
 
 def resolve_requested_use_xet(
-    transport_mode: Optional[str], use_xet: bool, *, largest_file_bytes: Optional[int] = None
+    transport_mode: Optional[str],
+    use_xet: bool,
+    *,
+    largest_file_bytes: Optional[int] = None,
 ) -> tuple[bool, str]:
     """Resolve the current transport mode, falling back to the legacy ``use_xet`` flag."""
     mode = (transport_mode or "").strip().lower()

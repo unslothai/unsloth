@@ -128,7 +128,10 @@ class DownloadTransportCapabilities:
 
 
 def get_download_transport_capabilities(
-    *, probe: bool = False, ram_gate: bool = False, largest_file_bytes: Optional[int] = None
+    *,
+    probe: bool = False,
+    ram_gate: bool = False,
+    largest_file_bytes: Optional[int] = None,
 ) -> DownloadTransportCapabilities:
     """Return transport availability and the current Auto choice.
 
@@ -179,9 +182,7 @@ def get_download_transport_capabilities(
         auto_transport = TRANSPORT_XET
         auto_reason = "Xet (HTTPS cannot fetch a file this large)"
     return DownloadTransportCapabilities(
-        http = DownloadTransportCapability(
-            available = http_reason is None, reason = http_reason
-        ),
+        http = DownloadTransportCapability(available = http_reason is None, reason = http_reason),
         xet = DownloadTransportCapability(
             available = xet_available,
             reason = None

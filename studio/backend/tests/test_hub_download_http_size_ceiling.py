@@ -69,9 +69,7 @@ def test_the_refusal_names_the_size_and_the_limit():
 
 def test_transport_unavailable_reason_is_size_aware():
     assert (
-        download_registry.download_transport_unavailable_reason(
-            download_registry.TRANSPORT_HTTP
-        )
+        download_registry.download_transport_unavailable_reason(download_registry.TRANSPORT_HTTP)
         is None
     )
     assert (
@@ -130,9 +128,7 @@ def test_an_ignored_oversized_export_does_not_decide_the_transport(monkeypatch):
 
 
 def test_a_dataset_is_measured_unfiltered(monkeypatch):
-    monkeypatch.setattr(
-        dl, "_repo_siblings", lambda *a, **k: (_Sibling("shard.onnx", _OVERSIZED),)
-    )
+    monkeypatch.setattr(dl, "_repo_siblings", lambda *a, **k: (_Sibling("shard.onnx", _OVERSIZED),))
     assert dl.largest_download_file_bytes("dataset", "org/Data") == _OVERSIZED
 
 
@@ -242,7 +238,9 @@ def test_an_explicit_https_request_is_rejected_by_name(monkeypatch):
 def test_an_install_without_hf_xet_is_told_that_too(monkeypatch):
     """Report when the only suitable transport is also unavailable."""
     monkeypatch.setattr(
-        download_registry.importlib.util, "find_spec", lambda name: None if name == "hf_xet" else object()
+        download_registry.importlib.util,
+        "find_spec",
+        lambda name: None if name == "hf_xet" else object(),
     )
     use_xet, _ = dl.resolve_requested_use_xet("auto", True, largest_file_bytes = _OVERSIZED)
     assert use_xet is False
@@ -254,9 +252,7 @@ def test_an_install_without_hf_xet_is_told_that_too(monkeypatch):
 
 def test_capabilities_mark_http_unavailable_for_an_oversized_download(monkeypatch):
     monkeypatch.setattr(download_registry.importlib.util, "find_spec", lambda name: object())
-    caps = download_registry.get_download_transport_capabilities(
-        largest_file_bytes = _OVERSIZED
-    )
+    caps = download_registry.get_download_transport_capabilities(largest_file_bytes = _OVERSIZED)
     assert caps.http.available is False
     assert "HTTPS cannot fetch" in caps.http.reason
     assert caps.auto_resolves_to == download_registry.TRANSPORT_XET
@@ -286,9 +282,7 @@ def test_the_hub_refusal_is_rewritten_into_what_happened():
 
 
 def test_a_known_size_makes_the_rewrite_specific():
-    rewritten = download_registry.humanize_worker_error(
-        _HUB_REFUSAL, largest_file_bytes = _OVERSIZED
-    )
+    rewritten = download_registry.humanize_worker_error(_HUB_REFUSAL, largest_file_bytes = _OVERSIZED)
     assert "54.4GB" in rewritten
 
 
@@ -305,7 +299,11 @@ def test_every_other_failure_is_passed_through():
 class _Proc:
     pid = 4242
 
-    def __init__(self, rc, stderr = b""):
+    def __init__(
+        self,
+        rc,
+        stderr = b"",
+    ):
         import io
 
         self.rc = rc
@@ -324,7 +322,14 @@ class _Proc:
 
 
 class _ImmediateThread:
-    def __init__(self, *, target, args = (), kwargs = None, **_kwargs):
+    def __init__(
+        self,
+        *,
+        target,
+        args = (),
+        kwargs = None,
+        **_kwargs,
+    ):
         self.target, self.args, self.kwargs = target, args, kwargs or {}
 
     def start(self):
@@ -349,7 +354,12 @@ _WATCHDOG_STARTS: list = []
 
 
 def _ladder_setup(
-    monkeypatch, tmp_path, *, largest_file_bytes, stall_message = None, probe = True
+    monkeypatch,
+    tmp_path,
+    *,
+    largest_file_bytes,
+    stall_message = None,
+    probe = True,
 ):
     """Set up the recovery ladder without a real worker."""
     from hub.utils import state_dir
@@ -509,9 +519,9 @@ def test_the_rung_is_judged_on_the_cache_the_worker_leaves_behind(monkeypatch, t
     )
     key, registry = _claimed_registry()
 
-    assert dl._largest_file_bytes_for_job("model", "unsloth/M-GGUF", _metadata_of(registry, key)) == (
-        _OVERSIZED
-    )
+    assert dl._largest_file_bytes_for_job(
+        "model", "unsloth/M-GGUF", _metadata_of(registry, key)
+    ) == (_OVERSIZED)
 
     class _LandsTheBigShard(_Proc):
         def wait(self, timeout = None):
@@ -520,9 +530,9 @@ def test_the_rung_is_judged_on_the_cache_the_worker_leaves_behind(monkeypatch, t
 
     assert _run_worker(registry, key, _LandsTheBigShard(1, b"xet failed on the second shard"))
 
-    assert rungs == [download_registry.TRANSPORT_HTTP], (
-        "the HTTP rung stayed closed on a measurement the worker had already invalidated"
-    )
+    assert rungs == [
+        download_registry.TRANSPORT_HTTP
+    ], "the HTTP rung stayed closed on a measurement the worker had already invalidated"
 
 
 def test_a_final_xet_attempt_with_no_http_rung_is_still_watched(monkeypatch, tmp_path):

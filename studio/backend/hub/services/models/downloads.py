@@ -229,9 +229,7 @@ async def download_model_response(
         body.use_xet,
         largest_file_bytes = largest_file_bytes,
     )
-    transport = download_lifecycle.resolve_transport(
-        use_xet, largest_file_bytes = largest_file_bytes
-    )
+    transport = download_lifecycle.resolve_transport(use_xet, largest_file_bytes = largest_file_bytes)
     logger.info("Download transport for %s: %s (%s)", repo_id, transport, transport_reason)
     from utils.hf_cache_settings import get_hf_cache_paths
 
