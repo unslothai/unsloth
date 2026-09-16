@@ -24290,9 +24290,22 @@ class LlamaCppBackend:
                         # A fit narrowed the pool. Only the survivors remain, but their
                         # relative order is still the one the user dragged them into.
                         _kept = {int(i) for i in gpu_indices}
-                        gpu_indices = [i for i in _picked_order if i in _kept] + [
+                        _before_reorder = [int(i) for i in gpu_indices]
+                        _reordered = [i for i in _picked_order if i in _kept] + [
                             int(i) for i in gpu_indices if int(i) not in set(_picked_order)
                         ]
+                        # _plan_tensor_parallel returned the shares positional over the
+                        # ascending gpu_indices, so reordering the devices without moving
+                        # the shares hands the roomier card's share to the smaller one --
+                        # exactly when a weighted split was needed. Veto rather than
+                        # half-apply, as _repoint_emitted_tensor_split does for the mask.
+                        if tp_tensor_split and len(tp_tensor_split) == len(_before_reorder):
+                            _share_by_id = dict(zip(_before_reorder, tp_tensor_split))
+                            if all(i in _share_by_id for i in _reordered):
+                                tp_tensor_split = [_share_by_id[i] for i in _reordered]
+                                gpu_indices = _reordered
+                        elif not tp_tensor_split:
+                            gpu_indices = _reordered
                 # Auto Vulkan fit prefers discrete GPUs and keeps that pool pinned.
                 elif (
                     is_vulkan_backend
@@ -24313,7 +24326,11 @@ class LlamaCppBackend:
                 # pick, so repeating it keeps matching.
                 if gpu_ids and not _paravirtual_cpu_forced:
                     effective_pin = gpu_indices if gpu_indices is not None else gpu_ids
-                    self._gpu_ids = sorted(int(idx) for idx in effective_pin)
+                    # Survivor order, not sorted: the block above put gpu_indices in the
+                    # order the user picked, and _runtime_matches_intent compares this
+                    # value positionally. Sorting here reports an effective pin that a
+                    # client round-tripping it would match against the opposite order.
+                    self._gpu_ids = [int(idx) for idx in effective_pin]
                 else:
                     self._gpu_ids = None
 
