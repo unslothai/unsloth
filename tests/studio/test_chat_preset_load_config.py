@@ -372,6 +372,25 @@ def _consume_statement(block: str, index: int):
     return block[index:], len(block)
 
 
+def _labels_at_top_level(body: str) -> list:
+    """Where each `case`/`default` arm of this switch body starts.
+
+    Only labels at the body's own bracket depth. A nested switch has labels of its own, and
+    counting them splits the outer arms mid-brace, which leaves slices `_balanced` cannot read.
+    """
+    scan = _outside_literals(body)
+    depth, ends = 0, []
+    for match in re.finditer(r"[(\[{}\])]|\b(?:case\b[^:]*|default\s*):", scan):
+        token = match.group(0)
+        if token in "([{":
+            depth += 1
+        elif token in ")]}":
+            depth -= 1
+        elif depth == 0:
+            ends.append(match.end())
+    return ends
+
+
 def _switch_always_returns(statement: str) -> bool:
     """An exhaustive `switch` whose every case returns.
 
@@ -386,9 +405,7 @@ def _switch_always_returns(statement: str) -> bool:
     body = _balanced(body, 0, "{", "}")
     if not re.search(r"\bdefault\s*:", _outside_literals(body)):
         return False
-    labels = [
-        m.end() for m in re.finditer(r"\b(?:case\b[^:]*|default\s*):", _outside_literals(body))
-    ]
+    labels = _labels_at_top_level(body)
     if not labels:
         return False
     for position, start in enumerate(labels):
@@ -468,7 +485,9 @@ def _own_scope_returns(block: str) -> list:
     return out
 
 
-_STRING_LITERAL = re.compile(r"'[^']*'|\"[^\"]*\"")
+# A backslash escapes the next character, so a quote carrying one is not the end of the token.
+_STRING_BODY = r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\""
+_STRING_LITERAL = re.compile(_STRING_BODY)
 
 
 def _normalised(expression: str) -> str:
@@ -519,7 +538,7 @@ def _selector_signature(selector: str, field: str):
 _NUMBER = r"-?(?:0[xXbBoO][\da-fA-F]+|\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)"
 # The trailing guard matters as much as the pattern: without it `1e3` matches as `1`, and a
 # pin to 1000 reads as a pin to 1.
-_LITERAL = rf"(?:null|undefined|true|false|{_NUMBER}|'[^']*'|\"[^\"]*\")(?![\w$.])"
+_LITERAL = rf"(?:null|undefined|true|false|{_NUMBER}|{_STRING_BODY})(?![\w$.])"
 
 
 def _outside_literals(expression: str) -> str:
@@ -629,6 +648,17 @@ def _pinned_literal(guard: str, taken: bool, access: str, field: str):
     # A disjunction does not imply its parts, either way round.
     if "||" in operators:
         return None
+    def _separates(literal: str) -> bool:
+        """`===` tells this literal apart from every other value.
+
+        Zero is the exception: `budget === 0` is satisfied by -0 as well, so the branch holds
+        two values. zustand compares with Object.is, which does tell them apart, so an arm
+        returning 0 there is stale for a -0 to 0 change. The preset normaliser reaches -0
+        through Math.trunc, so this is a value the store really can hold.
+        """
+        value = _literal_value(literal)
+        return not (isinstance(value, float) and value == 0.0)
+
     if taken:
         # The comparison has to BE a conjunct, not merely occur inside one: an inner equality can
         # be fed to another operator, and `(budget === -1) === false` is taken for every value
@@ -636,11 +666,15 @@ def _pinned_literal(guard: str, taken: bool, access: str, field: str):
         for conjunct in _top_level_conjuncts(guard):
             match = re.fullmatch(equal, _unwrapped(conjunct))
             if match is not None:
-                return match.group(1) or match.group(2)
+                found = match.group(1) or match.group(2)
+                return found if _separates(found) else None
         return None
     # Negating the guard only pins the field when the guard is that comparison and nothing else.
     match = re.fullmatch(unequal, _unwrapped(guard))
-    return None if match is None else (match.group(1) or match.group(2))
+    if match is None:
+        return None
+    found = match.group(1) or match.group(2)
+    return found if _separates(found) else None
 
 
 def _selector_reads(selector: str, field: str) -> bool:
@@ -760,6 +794,12 @@ SELECTOR_CASES = [
     ("(s) => s.reasoningBudget === 0x10 ? 16 : s.reasoningBudget", True),
     ("(s) => s.reasoningBudget === 1e3 ? 1000 : s.reasoningBudget", True),
     ("(s) => s.reasoningBudget === 'x' ? \"x\" : s.reasoningBudget", True),
+    # `===` cannot separate -0 from 0, but zustand's Object.is can, so zero pins nothing.
+    ("(s) => s.reasoningBudget === -0 ? 0 : s.reasoningBudget", False),
+    ("(s) => s.reasoningBudget === 0 ? 0 : s.reasoningBudget", False),
+    # An escaped quote is a character in the message, not the end of the literal.
+    ('(s) => s.reasoningBudget === "a\\"b" ? "a\\"b" : s.reasoningBudget', True),
+    ('(s) => s.reasoningBudget === "a\\"b" ? "ab" : s.reasoningBudget', False),
     # Distinct values stay distinct, whatever they are spelled with.
     ("(s) => s.reasoningBudget === null ? undefined : s.reasoningBudget", False),
     ("(s) => s.reasoningBudget === true ? 1 : s.reasoningBudget", False),
@@ -839,6 +879,12 @@ SELECTOR_CASES = [
         True,
     ),
     ('(s) => { switch (s.mode) { case "x": default: return s.reasoningBudget; } }', True),
+    # A nested switch has labels of its own; they belong to it, not to the outer arm list.
+    (
+        '(s) => { switch (s.mode) { case "x": switch (s.sub) { default: return s.reasoningBudget; } '
+        "default: return s.reasoningBudget; } }",
+        True,
+    ),
     # An empty LAST label has nothing to fall into, so that value leaves the switch.
     ('(s) => { switch (s.mode) { default: return s.reasoningBudget; case "x": } }', False),
     # Undefaulted: a mode matching nothing falls past the switch and returns undefined.
