@@ -436,6 +436,28 @@ _NUMBER = r"-?(?:0[xXbBoO][\da-fA-F]+|\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)"
 _LITERAL = rf"(?:null|undefined|true|false|{_NUMBER}|'[^']*'|\"[^\"]*\")(?![\w$.])"
 
 
+def _unwrapped(expression: str) -> str:
+    """`expression` with redundant outer parentheses removed.
+
+    Parenthesising a comparison does not change it, and a contract test a legal reformatting
+    breaks says nothing about what it guards. Only a pair wrapping the whole expression goes:
+    the outer `(` of `(budget === -1) === false` does not close at the end, so it stays.
+    """
+    while expression.startswith("(") and expression.endswith(")"):
+        depth = 0
+        for index, char in enumerate(expression):
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+                if depth == 0:
+                    break
+        if index != len(expression) - 1:
+            break
+        expression = expression[1:-1].strip()
+    return expression
+
+
 def _top_level_conjuncts(guard: str) -> list:
     """`guard` split on the `&&` operators that are not inside brackets."""
     parts, depth, start = [], 0, 0
@@ -487,12 +509,12 @@ def _pinned_literal(guard: str, taken: bool, access: str, field: str):
         # be fed to another operator, and `(budget === -1) === false` is taken for every value
         # except -1.
         for conjunct in _top_level_conjuncts(guard):
-            match = re.fullmatch(equal, conjunct)
+            match = re.fullmatch(equal, _unwrapped(conjunct))
             if match is not None:
                 return match.group(1) or match.group(2)
         return None
     # Negating the guard only pins the field when the guard is that comparison and nothing else.
-    match = re.fullmatch(unequal, guard)
+    match = re.fullmatch(unequal, _unwrapped(guard))
     return None if match is None else (match.group(1) or match.group(2))
 
 
@@ -599,9 +621,6 @@ SELECTOR_CASES = [
     ("(s) => -1 === s.reasoningBudget ? -1 : s.reasoningBudget", True),
     # A comparison under `!` says the opposite of what it reads.
     ("(s) => !(s.reasoningBudget === -1) ? -1 : s.reasoningBudget", False),
-    # Nor when the negation is spelled as a second comparison: this arm is taken for every
-    # budget except -1, so it pins nothing.
-    ("(s) => (s.reasoningBudget === -1) === false ? -1 : s.reasoningBudget", False),
     # The literal has to be read whole. Half of `1e3` is `1`, and a pin to 1000 that reads as
     # a pin to 1 accepts an arm returning 1 for a budget of 1000.
     ("(s) => s.reasoningBudget === 1e3 ? 1 : s.reasoningBudget", False),
@@ -617,6 +636,13 @@ SELECTOR_CASES = [
     ("(s) => { if (s.enabled) return s.reasoningBudget; }", False),
     ("(s) => { if (s.enabled) { return s.reasoningBudget; } return s.reasoningBudget; }", True),
     ("(s) => s.reasoningBudget === -1 ? -1 : s.reasoningBudget", True),
+    # Parenthesising a comparison, or the value it pins to, is a reformatting and nothing more.
+    ("(s) => (s.reasoningBudget === -1) ? -1 : s.reasoningBudget", True),
+    ("(s) => s.reasoningBudget === -1 ? (-1) : s.reasoningBudget", True),
+    ("(s) => ((s.reasoningBudget === -1)) ? -1 : s.reasoningBudget", True),
+    # Nor when the negation is spelled as a second comparison: this arm is taken for every
+    # budget except -1, so it pins nothing, and the outer pair is not redundant.
+    ("(s) => (s.reasoningBudget === -1) === false ? -1 : s.reasoningBudget", False),
     # Read but not returned: zustand compares results, so these subscribe to something else.
     ("(s) => s.enabled ? s.reasoningBudget : s.fallback", False),
     ("(s) => s.mode === 'x' ? (s.on ? s.reasoningBudget : s.q) : s.reasoningBudget", False),
