@@ -39,6 +39,12 @@ QWEN38_27B = {
 }
 
 
+@pytest.fixture(autouse = True)
+def _no_cgroup_limit(monkeypatch):
+    """Keep the cases that are not about containers off the runner's own cgroup."""
+    monkeypatch.setattr(LlamaCppBackend, "_cgroup_memory_limit_mib", staticmethod(lambda: None))
+
+
 def _backend(**overrides):
     b = LlamaCppBackend()
     for key, value in {**QWEN38_27B, **overrides}.items():
@@ -460,3 +466,122 @@ def test_a_kda_hybrid_is_priced_wherever_it_is_bounded():
     without = b._estimate_kv_cache_bytes(8192, "f16", n_parallel = 2, ctx_checkpoints = 0)
     with_8 = b._estimate_kv_cache_bytes(8192, "f16", n_parallel = 2, ctx_checkpoints = 8)
     assert with_8 - without == 2 * 8 * b._rollback_state_bytes(1)
+
+
+# --------------------------------------------------------------- inside a memory-limited container
+
+
+class TestTheBudgetIsWhatThisProcessMayCharge:
+    """MemTotal is the host's; a cgroup limit is what the child may actually allocate."""
+
+    def _container(self, monkeypatch, host_gib, cgroup_gib):
+        monkeypatch.setattr(
+            LlamaCppBackend, "_total_system_memory_mib", staticmethod(lambda: host_gib * 1024)
+        )
+        monkeypatch.setattr(
+            LlamaCppBackend,
+            "_cgroup_memory_limit_mib",
+            staticmethod(lambda: None if cgroup_gib is None else cgroup_gib * 1024),
+        )
+
+    def test_the_capacity_is_the_tighter_of_the_two(self, monkeypatch):
+        self._container(monkeypatch, 256, 8)
+        assert LlamaCppBackend._host_memory_capacity_mib() == 8 * 1024
+        self._container(monkeypatch, 8, 256)
+        assert LlamaCppBackend._host_memory_capacity_mib() == 8 * 1024
+
+    def test_an_uncapped_host_keeps_its_own_total(self, monkeypatch):
+        self._container(monkeypatch, 94, None)
+        assert LlamaCppBackend._host_memory_capacity_mib() == 94 * 1024
+
+    def test_an_unreadable_host_falls_back_to_the_limit(self, monkeypatch):
+        monkeypatch.setattr(
+            LlamaCppBackend, "_total_system_memory_mib", staticmethod(lambda: None)
+        )
+        monkeypatch.setattr(
+            LlamaCppBackend, "_cgroup_memory_limit_mib", staticmethod(lambda: 8 * 1024)
+        )
+        assert LlamaCppBackend._host_memory_capacity_mib() == 8 * 1024
+        monkeypatch.setattr(
+            LlamaCppBackend, "_cgroup_memory_limit_mib", staticmethod(lambda: None)
+        )
+        assert LlamaCppBackend._host_memory_capacity_mib() is None
+
+    def test_the_cap_fits_the_container_not_the_host(self, monkeypatch):
+        """A 256 GiB host with an 8 GiB cgroup must not be given the host's 5%."""
+        backend = _backend()
+        per_slot_round = backend._rollback_state_bytes(1) * 4
+        self._container(monkeypatch, 256, None)
+        uncapped = backend._bounded_ctx_checkpoints(4, _caps())
+        assert uncapped * per_slot_round > 8 * GIB, "the host-wide budget overruns the container"
+        self._container(monkeypatch, 256, 8)
+        bounded = backend._bounded_ctx_checkpoints(4, _caps())
+        assert bounded == CTX_CHECKPOINTS_MIN_USEFUL
+        assert bounded * per_slot_round < 8 * GIB
+
+    def test_the_priced_count_is_still_the_emitted_one(self, monkeypatch):
+        """The container must not split the planner's figure from the launched argv."""
+        self._container(monkeypatch, 256, 8)
+        backend = _backend()
+        capacity = LlamaCppBackend._host_memory_capacity_mib()
+        assert effective_ctx_checkpoints_for_caps(
+            _caps(),
+            None,
+            None,
+            per_checkpoint_bytes = backend._rollback_state_bytes(1),
+            n_parallel = 4,
+            total_host_bytes = capacity * MIB,
+        ) == backend._bounded_ctx_checkpoints(4, _caps())
+
+    def test_every_budget_site_reads_the_capacity(self):
+        import inspect
+
+        from routes import inference as inference_routes
+        from routes import models as models_routes
+
+        for source in (
+            inspect.getsource(inference_routes._gguf_runtime_bytes),
+            inspect.getsource(models_routes.get_kv_cache_estimate),
+            inspect.getsource(LlamaCppBackend.load_model),
+            inspect.getsource(LlamaCppBackend._bounded_ctx_checkpoints),
+        ):
+            assert "_host_memory_capacity_mib" in source
+            assert "_total_system_memory_mib" not in source
+
+
+# --------------------------------------------------------------- across the arch-crash retry
+
+
+class TestTheCapSurvivesAWindowsDeviceRetry:
+    """The retry re-decides the Windows cache tuning; the automatic cap must follow it."""
+
+    def test_a_stated_cap_would_swallow_the_windows_zero(self):
+        """Why the retry strips the pair first: the skip means 'the user typed one'."""
+        caps = {"supports_cache_ram": True, "ctx_checkpoints_flag": "--ctx-checkpoints"}
+        with_cap = ["llama-server", "-m", "x.gguf", "--ctx-checkpoints", "8"]
+        assert LlamaCppBackend._retry_cache_tuning_flags(
+            with_cap, cache_ram = None, ctx_checkpoints = None, server_caps = caps
+        ) == ["--cache-ram", "0"]
+        stripped = LlamaCppBackend._without_flag_pairs(with_cap, ["--ctx-checkpoints", "8"])
+        assert LlamaCppBackend._retry_cache_tuning_flags(
+            stripped, cache_ram = None, ctx_checkpoints = None, server_caps = caps
+        ) == ["--cache-ram", "0", "--ctx-checkpoints", "0"]
+
+    def test_a_typed_count_still_outranks_the_retry(self):
+        caps = {"supports_cache_ram": True, "ctx_checkpoints_flag": "--ctx-checkpoints"}
+        typed = ["llama-server", "--ctx-checkpoints", "64"]
+        assert LlamaCppBackend._retry_cache_tuning_flags(
+            typed, cache_ram = None, ctx_checkpoints = None, server_caps = caps
+        ) == ["--cache-ram", "0"]
+
+    def test_the_retry_strips_the_cap_then_re_emits_it(self):
+        import inspect
+
+        source = inspect.getsource(LlamaCppBackend.load_model)
+        # One emission rule for the launch and the respawn, not two spellings of it.
+        assert source.count("def _emit_auto_ctx_checkpoints(") == 1
+        assert source.count("_emit_auto_ctx_checkpoints(cmd)") == 2
+        strip = source.index("self._without_flag_pairs(cmd, _auto_ckpt_emitted)")
+        tuning = source.index("_retry_cache_tuning_flags(")
+        re_emit = source.rindex("_emit_auto_ctx_checkpoints(cmd)")
+        assert strip < tuning < re_emit, "strip, re-decide the tuning, then re-apply the cap"

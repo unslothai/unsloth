@@ -10764,7 +10764,7 @@ def _gguf_runtime_bytes(
             logger.debug("ctx-checkpoints capability probe failed: %s", _cc_exc)
         # Older lightweight probes may not provide the new sizing helpers.
         _per_checkpoint = getattr(probe, "_rollback_state_bytes", lambda _n: 0)(1)
-        _host_mib = getattr(probe, "_total_system_memory_mib", lambda: None)()
+        _host_mib = getattr(probe, "_host_memory_capacity_mib", lambda: None)()
         _resolved_checkpoints = effective_ctx_checkpoints_for_caps(
             _cc_caps,
             llama_extra_args,

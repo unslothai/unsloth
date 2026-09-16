@@ -12455,6 +12455,20 @@ class LlamaCppBackend:
             pass
         return None
 
+    @staticmethod
+    def _host_memory_capacity_mib() -> Optional[int]:
+        """Host RAM this process may actually charge, in MiB.
+
+        MemTotal narrowed by an enforcing cgroup, whose limit a container's own
+        /proc/meminfo does not show. The LIMIT, never the remainder, which shrinks as
+        the container fills and would price against memory that is merely busy.
+        """
+        total = LlamaCppBackend._total_system_memory_mib()
+        limit = LlamaCppBackend._cgroup_memory_limit_mib()
+        if total is None:
+            return limit
+        return min(total, limit) if limit is not None else total
+
     _ARGV_MODEL = frozenset({"-m", "--model"})
     _ARGV_RPC = frozenset({"--rpc"})
 
@@ -14533,7 +14547,7 @@ class LlamaCppBackend:
         per_checkpoint = self._rollback_state_bytes(1)
         if per_checkpoint <= 0:
             return None
-        total_ram_mib = self._total_system_memory_mib()
+        total_ram_mib = self._host_memory_capacity_mib()
         bounded = ctx_checkpoints_within_host_budget(
             per_checkpoint,
             n_parallel,
@@ -21835,7 +21849,7 @@ class LlamaCppBackend:
                     ctx_checkpoints,
                     per_checkpoint_bytes = self._rollback_state_bytes(1),
                     n_parallel = n_parallel,
-                    total_host_bytes = ((self._total_system_memory_mib() or 0) * 1024 * 1024) or None,
+                    total_host_bytes = ((self._host_memory_capacity_mib() or 0) * 1024 * 1024) or None,
                 )
                 # Preserve the existing SWA fit policy, which charges only explicit counts.
                 _requested_ctx_checkpoints = (
@@ -25565,14 +25579,29 @@ class LlamaCppBackend:
                             ", ".join(unsupported_cache_flags),
                         )
 
-                # Do not override the Windows full-offload zero.
-                if _auto_ctx_checkpoints is not None and not any(
-                    _flag_name(str(token)) in _CTX_CHECKPOINTS_FLAGS
-                    for token in _cache_flags_emitted
-                ):
-                    cmd.extend(
-                        [str(server_caps["ctx_checkpoints_flag"]), str(_auto_ctx_checkpoints)]
-                    )
+                # The tokens the automatic cap appended, kept so the arch-crash respawn can
+                # take them back off when it lands on a different device class -- the
+                # Windows tuning's own list is the wrong home for them, since that list is
+                # what "the platform tuning ran" means to the retry.
+                _auto_ckpt_emitted: list[str] = []
+
+                def _emit_auto_ctx_checkpoints(command: list[str]) -> list[str]:
+                    """Append the automatic cap unless the Windows tuning already zeroed it."""
+                    if _auto_ctx_checkpoints is None:
+                        return []
+                    if any(
+                        _flag_name(str(token)) in _CTX_CHECKPOINTS_FLAGS
+                        for token in _cache_flags_emitted
+                    ):
+                        return []
+                    pair = [
+                        str(server_caps["ctx_checkpoints_flag"]),
+                        str(_auto_ctx_checkpoints),
+                    ]
+                    command.extend(pair)
+                    return pair
+
+                _auto_ckpt_emitted = _emit_auto_ctx_checkpoints(cmd)
 
                 # Record the pin actually applied (fit-narrowed gpu_indices, else the raw
                 # request) for the keep-warm loop, dedupe, and /status, so an explicit
@@ -27667,6 +27696,13 @@ class LlamaCppBackend:
                                     gpu_indices = _remaining,
                                 )
                             )
+                            # The cap was decided for the crashed device class too, and
+                            # _retry_cache_tuning_flags skips a flag `cmd` already states.
+                            # Take it off first so that skip keeps meaning "the user typed
+                            # one", then re-apply under the retry's own verdict below.
+                            if _auto_ckpt_emitted:
+                                cmd = self._without_flag_pairs(cmd, _auto_ckpt_emitted)
+                                _auto_ckpt_emitted = []
                             if _retry_shared and _cache_flags_emitted:
                                 # Exactly the tokens this policy appended, each a flag
                                 # with its value, so the strip cannot eat a user extra.
@@ -27691,6 +27727,7 @@ class LlamaCppBackend:
                                         "Retry lands on a GPU with its own memory: applied the "
                                         "Windows full-offload cache tuning."
                                     )
+                            _auto_ckpt_emitted = _emit_auto_ctx_checkpoints(cmd)
                         # GGML_CUDA_ENABLE_UNIFIED_MEMORY was decided for the CRASHED
                         # set. The canonical #7624 shape crashes on the APU and retries
                         # on the dGPU, where it is harmful, so withdraw it, but only

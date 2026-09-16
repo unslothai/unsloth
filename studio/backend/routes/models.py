@@ -3893,7 +3893,7 @@ async def get_kv_cache_estimate(
             _total_ram_mib: Optional[int] = None
             try:
                 _cc_caps = be.probe_server_capabilities() or {}
-                _total_ram_mib = getattr(be, "_total_system_memory_mib", lambda: None)()
+                _total_ram_mib = getattr(be, "_host_memory_capacity_mib", lambda: None)()
             except Exception as e:
                 logger.debug(f"checkpoint budget inputs unavailable for '{repo_id}': {e}")
 
