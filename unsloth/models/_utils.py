@@ -2600,6 +2600,37 @@ def _device_of_parameters(module):
     return None
 
 
+def _non_meta_device_of_parameters(module):
+    """`_device_of_parameters`, except meta never answers.
+
+    Activations cannot go to meta (see `per_layer_device`), so a layer whose weights
+    are still there has to be answered from somewhere else.
+    """
+    device = _device_of_parameters(module)
+    if device is not None and device.type == "meta":
+        return None
+    return device
+
+
+def _accelerate_execution_device(module):
+    """Where accelerate will run this layer, for a layer parked on meta, or None.
+
+    accelerate's `AlignDevicesHook` publishes itself as `module._hf_hook` and moves the
+    layer's own inputs with `send_to_device(args, self.execution_device)` in
+    `pre_forward`, so that attribute is the one authority on where an offloaded or
+    not-yet-materialised layer's activations belong. Guarded end to end because the
+    hook is optional, its field is typed `int | str | torch.device | None`, and it can
+    itself say "meta" (accelerate checks for exactly that in `init_hook`).
+    """
+    execution_device = getattr(getattr(module, "_hf_hook", None), "execution_device", None)
+    if execution_device is None:
+        return None
+    device = _as_torch_device(execution_device)
+    if device is None or device.type == "meta":
+        return None
+    return device
+
+
 def per_layer_device(module, default = 0):
     """Where this decoder layer lives, as (device, buffer_index).
 
@@ -2618,10 +2649,23 @@ def per_layer_device(module, default = 0):
     * Only the index, which is any unsloth_zoo old enough to predate this. An int
       or a device type resolves straight to a device.
     * Only the index, and it is None, which is that same older unsloth_zoo on a
-      CPU-offloaded or not-yet-materialised layer. `move_to_device` rejects None,
-      which is how a sampling callback inside a trainer ended up with
-      "ValueError: Invalid target device: None" (unslothai/unsloth#3538). Read the
-      placement off the layer instead.
+      CPU-offloaded or not-yet-materialised layer -- and also on an accelerator
+      layer it named without an index. `move_to_device` rejects None, which is how a
+      sampling callback inside a trainer ended up with "ValueError: Invalid target
+      device: None" (unslothai/unsloth#3538). Read the placement off the layer
+      instead.
+
+    meta is excluded from every one of those routes, because moving an activation
+    there destroys it silently rather than raising. A layer parked on meta is
+    answered from accelerate's `_hf_hook.execution_device` when it has one and from
+    `default` otherwise.
+
+    What this does NOT do is make inference work on a layer that really is on CPU
+    while the callers' scratch buffers are on an accelerator: llama.py's `temp_gates`
+    and gemma's `out_weights` are allocated per accelerator, so that combination still
+    ends in a loud cross-device RuntimeError. A CPU-offloaded inference path is a
+    separate piece of work; what is fixed here is the accelerator-resident layer whose
+    index was never recorded, which is what #3538 actually reported.
 
     A layer with neither attribute keeps the historical behaviour and resolves to
     `default`, since that is what every reader's `getattr(layer, ..., 0)` did.
@@ -2654,12 +2698,25 @@ def per_layer_device(module, default = 0):
             device = _device_of_parameters(module)
         elif isinstance(index, (int, str)) and not isinstance(index, bool):
             device = _as_torch_device(index)
+    if device is not None and device.type == "meta":
+        # meta is where a not-yet-materialised layer parks its weights; it is never
+        # somewhere an activation may go. `tensor.to("meta")` succeeds and silently
+        # discards the data, and `torch.matmul(meta, cuda)` then returns a meta tensor
+        # rather than raising, so the whole decode would run to completion and produce
+        # nothing -- the one failure shape worse than the ValueError this reader
+        # replaces. Ask accelerate where the layer actually executes, and otherwise
+        # fall through to `default` below.
+        device = _accelerate_execution_device(module)
     if device is None:
         # Nothing usable was recorded, so keep the historical default, which is
         # what every reader's `getattr(layer, ..., 0)` resolved to. It falls back
         # to the layer itself because `torch.device(default)` is not guaranteed to
         # be constructible, and to cpu because a device is still owed.
-        device = _as_torch_device(default) or _device_of_parameters(module) or torch.device("cpu")
+        device = (
+            _as_torch_device(default)
+            or _non_meta_device_of_parameters(module)
+            or torch.device("cpu")
+        )
 
     buffer_index = device.index
     if buffer_index is None:

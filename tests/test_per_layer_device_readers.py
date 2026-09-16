@@ -515,3 +515,69 @@ def test_a_class_level_attribute_is_still_honoured():
     device, buffer_index = per_layer_device(_Property())
     assert device == torch.device("cpu")
     assert buffer_index == 0
+
+
+def test_moving_an_activation_to_meta_destroys_it_silently():
+    """The premise for every assertion below, measured rather than asserted from memory.
+
+    `tensor.to("meta")` succeeds and drops the data, and mixing the result with a real
+    tensor propagates meta instead of raising, so a decode that resolved a layer to meta
+    would run to completion and return nothing. That is strictly worse than the
+    ValueError this reader replaces, which is why meta is excluded from every route.
+    """
+    activation = torch.ones(2, 4)
+    moved = activation.to("meta")
+    assert moved.device.type == "meta"
+    assert torch.matmul(moved, torch.ones(4, 4)).device.type == "meta"
+
+
+def test_a_meta_layer_never_resolves_to_meta():
+    from unsloth.models._utils import per_layer_device
+    for layer in (
+        _Layer(parameter_device = "meta", index = None),
+        _Layer(device = torch.device("meta"), index = "meta"),
+        _Layer(parameter_device = "meta", index = "meta"),
+    ):
+        device, buffer_index = per_layer_device(layer)
+        assert device.type != "meta", device
+        assert isinstance(buffer_index, int), buffer_index
+
+
+def test_a_meta_layer_uses_the_accelerate_hook_execution_device():
+    """accelerate's AlignDevicesHook moves the layer's own inputs to
+    `execution_device` in pre_forward, so that field is where the activations belong."""
+    from types import SimpleNamespace
+
+    from unsloth.models._utils import per_layer_device
+
+    layer = _Layer(parameter_device = "meta", index = None)
+    layer._hf_hook = SimpleNamespace(execution_device = "cpu")
+    device, _buffer_index = per_layer_device(layer)
+    assert device == torch.device("cpu")
+
+
+def test_a_hook_that_itself_says_meta_is_not_believed():
+    """accelerate sets execution_device to meta while a model is still being built
+    (it checks for exactly that in init_hook), so it is not an answer either."""
+    from types import SimpleNamespace
+
+    from unsloth.models._utils import per_layer_device
+
+    for execution_device in (None, "meta", torch.device("meta")):
+        layer = _Layer(parameter_device = "meta", index = None)
+        layer._hf_hook = SimpleNamespace(execution_device = execution_device)
+        device, _buffer_index = per_layer_device(layer)
+        assert device.type != "meta", (execution_device, device)
+
+
+def test_a_non_meta_layer_is_unchanged_by_the_meta_guard():
+    """The control: nothing above may touch the ordinary resolutions."""
+    from unsloth.models._utils import per_layer_device
+
+    device, buffer_index = per_layer_device(_Layer(parameter_device = "cpu", index = None))
+    assert device == torch.device("cpu")
+    assert buffer_index == 0
+
+    device, buffer_index = per_layer_device(_Layer(device = torch.device("cuda:1"), index = 1))
+    assert device == torch.device("cuda:1")
+    assert buffer_index == 1
