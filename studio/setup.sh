@@ -2590,6 +2590,32 @@ if [ "$_SKIP_PYTHON_DEPS" = true ] && [ -x "$VENV_DIR/bin/python" ]; then
     fi
 fi
 
+# Same for an NVIDIA host left on a CPU wheel (GPU hidden or driver broken when it was
+# installed, a dependency step that resolved torch from PyPI, or a GPU added since). The
+# CUDA repair is inside the pass too, so without this the wheel survives every "up to
+# date" update. setup.ps1 heals this at its stale-venv check; this is the POSIX half.
+if [ "$_SKIP_PYTHON_DEPS" = true ] && [ -x "$VENV_DIR/bin/python" ]; then
+    _setup_cuda_torch_stale=false
+    if command -v timeout >/dev/null 2>&1; then
+        timeout -k 5 180 "$VENV_DIR/bin/python" \
+            "$SCRIPT_DIR/install_python_stack.py" --cuda-torch-needs-dependency-pass \
+            >/dev/null 2>&1 && _setup_cuda_torch_stale=true
+    elif "$VENV_DIR/bin/python" "$SCRIPT_DIR/install_python_stack.py" \
+            --cuda-torch-needs-dependency-pass >/dev/null 2>&1; then
+        _setup_cuda_torch_stale=true
+    fi
+    if [ "$_setup_cuda_torch_stale" = true ]; then
+        # Offline the pass can only fail, and failing it loses the verified install.
+        if [ "${_OFFLINE_FAST_PATH:-false}" = true ] || _uv_offline_requested; then
+            substep "installed PyTorch cannot use this NVIDIA GPU but UV_OFFLINE is set -- left for the next online update"
+        else
+            substep "installed PyTorch cannot use this NVIDIA GPU -- forcing dependency pass to repair..."
+            substep "   (set UNSLOTH_TORCH_BACKEND=cpu to keep a deliberate CPU install)"
+            _SKIP_PYTHON_DEPS=false
+        fi
+    fi
+fi
+
 if [ "$_SKIP_PYTHON_DEPS" = false ]; then
     install_python_stack
 else
