@@ -360,27 +360,29 @@ def test_the_session_refresh_keeps_an_active_conda_ahead_of_the_user_path(shell:
     session: the registry ordering is right and the live PATH is not.
     """
     script = _stub_registry(_refresh_preamble(f"{_CONDA_ENTRIES};{MACHINE}"))
-    out = _run(shell, script, env = {
-        "CONDA_PREFIX": f"{CONDA_ROOT}\\envs\\ml",
-        "CONDA_DEFAULT_ENV": "ml",
-        "CONDA_EXE": f"{CONDA_ROOT}\\Scripts\\conda.exe",
-    })
+    out = _run(
+        shell,
+        script,
+        env = {
+            "CONDA_PREFIX": f"{CONDA_ROOT}\\envs\\ml",
+            "CONDA_DEFAULT_ENV": "ml",
+            "CONDA_EXE": f"{CONDA_ROOT}\\Scripts\\conda.exe",
+        },
+    )
     assert out.startswith("PATH="), out
-    entries = out[len("PATH="):].split(";")
+    entries = out[len("PATH=") :].split(";")
     lowered = [entry.rstrip("\\").lower() for entry in entries]
 
     conda_positions = [
-        index for index, entry in enumerate(lowered)
-        if entry.startswith(CONDA_ROOT.lower())
+        index for index, entry in enumerate(lowered) if entry.startswith(CONDA_ROOT.lower())
     ]
     assert conda_positions, f"the conda entries were dropped entirely: {entries}"
     user_first = min(
-        index for index, entry in enumerate(lowered)
-        if entry.startswith("c:\\users\\me")
+        index for index, entry in enumerate(lowered) if entry.startswith("c:\\users\\me")
     )
-    assert max(conda_positions) < user_first, (
-        f"an activated conda environment was left behind the User PATH: {entries}"
-    )
+    assert (
+        max(conda_positions) < user_first
+    ), f"an activated conda environment was left behind the User PATH: {entries}"
     # Conda's own ordering inside the environment is preserved, not re-sorted.
     assert lowered[:4] == [
         f"{CONDA_ROOT}\\envs\\ml".lower(),
@@ -400,7 +402,7 @@ def test_the_session_refresh_is_unchanged_outside_conda(shell: str):
     previous = "C:\\tools\\bin"
     script = _stub_registry(_refresh_preamble(previous))
     out = _run(shell, script, env = _NO_CONDA)
-    entries = out[len("PATH="):].split(";")
+    entries = out[len("PATH=") :].split(";")
     assert entries == MACHINE.split(";") + USER_PATH.split(";") + [previous], entries
 
 
@@ -412,11 +414,15 @@ def test_a_sibling_directory_is_not_dragged_forward_with_the_prefix(shell: str):
     exists to prevent, pointed the other way."""
     sibling = f"{CONDA_ROOT}-backup\\bin"
     script = _stub_registry(_refresh_preamble(f"{sibling};{CONDA_ROOT}\\Scripts"))
-    out = _run(shell, script, env = {
-        "CONDA_PREFIX": CONDA_ROOT,
-        "CONDA_DEFAULT_ENV": "base",
-    })
-    entries = out[len("PATH="):].split(";")
+    out = _run(
+        shell,
+        script,
+        env = {
+            "CONDA_PREFIX": CONDA_ROOT,
+            "CONDA_DEFAULT_ENV": "base",
+        },
+    )
+    entries = out[len("PATH=") :].split(";")
     lowered = [entry.rstrip("\\").lower() for entry in entries]
     assert lowered[0] == f"{CONDA_ROOT}\\scripts".lower(), entries
     assert lowered.index(sibling.lower()) > lowered.index(
@@ -432,12 +438,16 @@ def test_a_stacked_conda_activation_keeps_both_prefixes_in_front(shell: str):
     outer = f"{CONDA_ROOT}\\envs\\outer\\Scripts"
     inner = f"{CONDA_ROOT}\\envs\\inner\\Scripts"
     script = _stub_registry(_refresh_preamble(f"{inner};{outer}"))
-    out = _run(shell, script, env = {
-        "CONDA_PREFIX": f"{CONDA_ROOT}\\envs\\inner",
-        "CONDA_PREFIX_1": f"{CONDA_ROOT}\\envs\\outer",
-        "CONDA_DEFAULT_ENV": "inner",
-    })
-    entries = out[len("PATH="):].split(";")
+    out = _run(
+        shell,
+        script,
+        env = {
+            "CONDA_PREFIX": f"{CONDA_ROOT}\\envs\\inner",
+            "CONDA_PREFIX_1": f"{CONDA_ROOT}\\envs\\outer",
+            "CONDA_DEFAULT_ENV": "inner",
+        },
+    )
+    entries = out[len("PATH=") :].split(";")
     lowered = [entry.rstrip("\\").lower() for entry in entries]
     assert lowered[:2] == [inner.lower(), outer.lower()], entries
 
@@ -451,6 +461,6 @@ def test_the_refresh_consults_the_conda_helper_at_all():
     assert "Get-ActiveCondaPrefixes" in body
     assert "Test-PathUnderCondaPrefix" in body
     # And the conda entries go in FRONT of the registry values, which is the whole point.
-    assert body.index("$sources += $condaFront") < body.index("$sources += @($machine"), (
-        "the conda entries are appended after the User PATH, which changes nothing"
-    )
+    assert body.index("$sources += $condaFront") < body.index(
+        "$sources += @($machine"
+    ), "the conda entries are appended after the User PATH, which changes nothing"
