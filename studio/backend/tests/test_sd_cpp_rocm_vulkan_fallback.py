@@ -1390,3 +1390,75 @@ def test_the_number_alone_is_not_enough():
     to contain the digits must not divert anything."""
     from core.inference.sd_cpp_backend import output_shows_image_load_failure
     assert output_shows_image_load_failure("seed 3221225781 produced a nice image") is False
+
+
+def test_the_vulkan_fallback_pins_the_card_that_was_selected(monkeypatch):
+    """`Vulkan0` is not the physical index the user picked.
+
+    The ordinal lookup is confined to the CUDA/ROCm namespace, so after the fallback it
+    answers None, no `--backend` is written, and sd.cpp takes its own default device --
+    normally the first card -- while the load record and the arbiter claim name the card that
+    WAS selected. The card's own name is the one thing the two namespaces agree on.
+    """
+    from core.inference import sd_cpp_backend
+
+    listing = (
+        "CPU\tAMD Ryzen 9 7950X\n"
+        "Vulkan0\tAMD Radeon RX 7600 (RADV NAVI33)\n"
+        "Vulkan1\tAMD Radeon RX 7900 XTX (RADV NAVI31)\n"
+    )
+    monkeypatch.setattr(
+        sd_cpp_backend, "_sd_cpp_probe_output",
+        lambda binary, *args: listing if args == ("--list-devices",) else None,
+    )
+    # The physical index means nothing here, which is the defect.
+    assert sd_cpp_backend.sd_cpp_device_name_for_ordinal("/opt/sd/vulkan/sd-cli", 1) is None
+    # The name does.
+    assert sd_cpp_backend.sd_cpp_device_named(
+        "/opt/sd/vulkan/sd-cli", "AMD Radeon RX 7900 XTX"
+    ) == "Vulkan1"
+    assert sd_cpp_backend.sd_cpp_device_named(
+        "/opt/sd/vulkan/sd-cli", "AMD Radeon RX 7600"
+    ) == "Vulkan0"
+    # And it becomes a real pin rather than sd.cpp's default device.
+    from core.inference.sd_cpp_args import device_backend_flags
+
+    assert device_backend_flags("Vulkan1") == [
+        "--backend", "diffusion=Vulkan1,te=Vulkan1,vae=Vulkan1"
+    ]
+
+
+def test_two_identical_cards_are_not_pinned_on_a_guess(monkeypatch):
+    """Two of the same card produce two identical descriptions. Picking either would be a
+    guess dressed as a pin, which is what this exists to stop: the load runs on sd.cpp's own
+    choice, as it does today, and says so."""
+    from core.inference import sd_cpp_backend
+
+    listing = (
+        "Vulkan0\tAMD Radeon RX 7900 XTX (RADV NAVI31)\n"
+        "Vulkan1\tAMD Radeon RX 7900 XTX (RADV NAVI31)\n"
+    )
+    monkeypatch.setattr(
+        sd_cpp_backend, "_sd_cpp_probe_output",
+        lambda binary, *args: listing if args == ("--list-devices",) else None,
+    )
+    assert sd_cpp_backend.sd_cpp_device_named(
+        "/opt/sd/vulkan/sd-cli", "AMD Radeon RX 7900 XTX"
+    ) is None
+    # An unreadable probe and a card nothing answers to are the same answer.
+    assert sd_cpp_backend.sd_cpp_device_named("/opt/sd/vulkan/sd-cli", "NVIDIA RTX 4090") is None
+    assert sd_cpp_backend.sd_cpp_device_named("/opt/sd/vulkan/sd-cli", None) is None
+
+
+def test_the_h3_load_resolves_the_pin_by_name_when_the_index_says_nothing():
+    """The matcher is only worth anything if the load reaches for it."""
+    import inspect
+    from core.inference import video as video_mod
+
+    source = inspect.getsource(video_mod)
+    assert "sd_cpp_device_named(" in source
+    ordinal_call = source.index("sd_cpp_device_name_for_ordinal(binary, native_ordinal)")
+    named_call = source.index("sd_cpp_device_named(\n", ordinal_call)
+    # Second, not instead: a build whose devices ARE in the physical namespace is unchanged.
+    assert ordinal_call < named_call
+    assert "_physical_card_name(native_ordinal)" in source

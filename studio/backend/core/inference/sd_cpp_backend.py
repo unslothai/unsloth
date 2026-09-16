@@ -411,6 +411,69 @@ def sd_cpp_device_name_for_ordinal(binary: Optional[str], ordinal: Optional[int]
     return None
 
 
+# Every namespace ggml names a device in. The physical-index list above is deliberately
+# narrower: these are the prefixes that identify a device LINE, whatever indexing scheme it
+# belongs to, which is what a match by card name needs.
+_GGML_DEVICE_PREFIXES: tuple[str, ...] = ("CUDA", "ROCM", "VULKAN", "SYCL", "METAL", "OPENCL")
+
+
+def _normalized_card_name(text: str) -> str:
+    """A card description reduced to the letters and digits in it, lowercased.
+
+    Two spellings of the same card differ in punctuation and in the parenthesised driver
+    tag a Vulkan ICD adds: `AMD Radeon RX 7900 XTX` against
+    `AMD Radeon RX 7900 XTX (RADV NAVI31)`. Comparing the reduced forms by containment is
+    what lets the second be recognised as the first.
+    """
+    return "".join(character for character in text.lower() if character.isalnum())
+
+
+def sd_cpp_device_named(binary: Optional[str], card_name: Optional[str]) -> Optional[str]:
+    """The ggml device that IS *card_name*, when exactly one of them is.
+
+    For the accelerator fallback. The Vulkan build's devices are in their own namespace, so
+    the physical ordinal the user picked names nothing in it and `--backend` went unwritten:
+    sd.cpp then chose its own default device, normally the first, while Studio recorded and
+    reserved the card that was selected. On a mixed box the card's own name is the one thing
+    both namespaces agree on, so that is what this matches.
+
+    None unless the match is UNIQUE. Two identical cards produce two identical descriptions,
+    and picking either would be a guess dressed as a pin -- exactly what this exists to stop.
+    """
+    if not binary or not card_name:
+        return None
+    wanted = _normalized_card_name(card_name)
+    if not wanted:
+        return None
+    text = _sd_cpp_probe_output(binary, "--list-devices")
+    if text is None:
+        return None
+    matches: list[str] = []
+    for line in text.splitlines():
+        parts = line.split("\t", 1)
+        if len(parts) != 2:
+            continue
+        name = parts[0].strip()
+        head = name.rstrip("0123456789")
+        if head.upper() not in _GGML_DEVICE_PREFIXES:
+            continue
+        described = _normalized_card_name(parts[1])
+        if not described:
+            continue
+        if wanted in described or described in wanted:
+            matches.append(name)
+    if len(matches) != 1:
+        if matches:
+            logger.warning(
+                "sd_cpp.device_pin_ambiguous: %s devices answer to %r, so none is pinned and "
+                "the graph runs on this build's own default device",
+                len(matches),
+                card_name,
+            )
+        return None
+    return matches[0]
+
+
 def _h3_replacement_hint(binary: str) -> str:
     """The trailing "or delete it" clause of the H3 refusal, or "" when there is nothing to delete.
 
