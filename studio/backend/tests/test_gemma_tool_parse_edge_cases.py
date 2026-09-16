@@ -527,10 +527,13 @@ def test_wrapperless_call_after_a_longer_fence_quoting_a_fence_is_still_promoted
 def test_inline_code_example_keeps_streaming_on_the_safetensors_loop():
     from core.inference.safetensors_agentic import run_safetensors_tool_loop
 
-    text = 'In Gemma syntax: `call:web_search{query:"x"}`. ' + "More explanation follows. " * 40
     en = {"web_search"}
-    for i in range(1, len(text) + 1):
-        assert promotable_gemma_call_pos(text[:i], en, streaming = True) == -1, i
+    for quoted in ('`call:web_search{query:"x"}`', '``call:web_search{query:"x"}``'):
+        prose = f"In Gemma syntax: {quoted}. " + "More explanation follows. " * 40
+        for i in range(1, len(prose) + 1):
+            assert promotable_gemma_call_pos(prose[:i], en, streaming = True) == -1, (quoted, i)
+
+    text = 'In Gemma syntax: ``call:web_search{query:"x"}``. ' + "More explanation follows. " * 40
 
     calls = []
 
@@ -551,7 +554,7 @@ def test_inline_code_example_keeps_streaming_on_the_safetensors_loop():
     contents = [e["text"] for e in events if e["type"] == "content"]
     assert calls == []
     assert contents[-1] == text
-    assert len(contents[-2]) > text.index("`.") + 1
+    assert len(contents[-2]) > text.index("``.") + 2
 
 
 def test_unclosed_inline_backtick_does_not_hide_a_call_once_its_line_ends():
@@ -559,3 +562,5 @@ def test_unclosed_inline_backtick_does_not_hide_a_call_once_its_line_ends():
     en = {"web_search"}
     assert promotable_gemma_call_pos(text[:-1], en, streaming = True) == -1
     assert promotable_gemma_call_pos(text, en, streaming = True) == text.index("call:")
+    closed = 'See `code` then call:web_search{query:"x"}'
+    assert promotable_gemma_call_pos(closed, en, streaming = True) == closed.index("call:")

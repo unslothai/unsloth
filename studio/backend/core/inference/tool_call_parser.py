@@ -3625,12 +3625,25 @@ def promotable_gemma_call_pos(
             code_spans = _tool_healing._code_spans(text)
         if _tool_healing._in_code(code_spans, m.start()):
             continue
-        if streaming and "\n" not in text[m.start() :]:
-            line_start = text.rfind("\n", 0, m.start()) + 1
-            if text.count("`", line_start, m.start()) % 2:
-                continue
+        if streaming and "\n" not in text[m.start() :] and _open_inline_code_run(text, m.start()):
+            continue
         return m.start()
     return -1
+
+
+_BACKTICK_RUN_RE = re.compile(r"`+")
+
+
+def _open_inline_code_run(text: str, pos: int) -> bool:
+    """Whether a backtick run earlier on ``pos``'s line is still waiting for its equal-length closer."""
+    open_len = 0
+    for run in _BACKTICK_RUN_RE.finditer(text, text.rfind("\n", 0, pos) + 1, pos):
+        n = len(run.group())
+        if not open_len:
+            open_len = n
+        elif n == open_len:
+            open_len = 0
+    return open_len > 0
 
 
 # ``call`` plus separators and any name worth holding; the candidate can only sit at the end.
