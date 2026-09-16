@@ -90,10 +90,17 @@ EOF
         UNSLOTH_VIEW_REL="${_view_rel}" UNSLOTH_VIEW_DIR="${_view_dir}" \
         python - >> "${JUPYTER_CONFIG_DIR}/jupyter_lab_config.py" <<'PY'
 import os
+import urllib.parse
 rel  = os.environ["UNSLOTH_VIEW_REL"]
 view = os.environ["UNSLOTH_VIEW_DIR"]
-print(f"c.ServerApp.default_url = {'/lab/tree/' + rel!r}")
-print(f"c.LabApp.default_url = {'/lab/tree/' + rel!r}")
+# default_url is a URL, not a path: the default view directory has a space in it,
+# and unencoded it lands in the banner Jupyter prints as
+# "http://host:8888/lab/tree/Unsloth Notebooks", which is not copy-pasteable and
+# is not a legal request target. Measured: curl refuses the raw form outright and
+# gets 302 from the encoded one. quote() leaves "/" alone, so subdirectories keep working.
+url = "/lab/tree/" + urllib.parse.quote(rel)
+print(f"c.ServerApp.default_url = {url!r}")
+print(f"c.LabApp.default_url = {url!r}")
 print(f"c.ServerApp.preferred_dir = {view!r}")
 PY
     fi
