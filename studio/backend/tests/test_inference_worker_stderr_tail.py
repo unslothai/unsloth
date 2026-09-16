@@ -1100,6 +1100,52 @@ def test_a_marked_record_under_a_diagnostic_is_not_adopted_by_it():
     assert "CUDA error: device-side assert triggered" in public, public
 
 
+def test_a_live_replacements_own_crash_is_still_written_to_the_log(monkeypatch):
+    """A stream whose worker was REPLACED reaches the crash message against the replacement.
+
+    That replacement is healthy, so its exitcode is None, and marking its capture as replayed
+    there spent the one replay on a live worker: when the replacement itself later died, the
+    operator's log skipped its tail as already written -- and that tail is the fatal
+    diagnostic the daemon forwarding thread may never have reached the log with, which is the
+    whole reason the capture exists.
+    """
+    import importlib.util as _ilu
+
+    spec = _ilu.spec_from_file_location(
+        "inference_orchestrator_stderr_log_once_under_test",
+        Path(_BACKEND_DIR) / "core/inference/orchestrator.py",
+    )
+    module = _ilu.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    written: "list[tuple]" = []
+    monkeypatch.setattr(
+        module.logger, "error", lambda *args, **kwargs: written.append(args), raising = False,
+    )
+
+    capture = _FixedCapture("Fatal Python error: Aborted\n")
+    orchestrator = module.InferenceOrchestrator.__new__(module.InferenceOrchestrator)
+    orchestrator._stderr_capture = capture
+
+    # The old stream, against a replacement that is running.
+    orchestrator._proc = SimpleNamespace(pid = 4242, exitcode = None)
+    orchestrator._subprocess_crash_message("generation")
+    assert len(written) == 1, written
+    # A second such call does not repeat it: this is still once per worker.
+    orchestrator._subprocess_crash_message("generation")
+    assert len(written) == 1, written
+
+    # Now the replacement itself dies, with more in its capture than before.
+    orchestrator._proc = SimpleNamespace(pid = 4242, exitcode = -6)
+    orchestrator._subprocess_crash_message("generation", with_worker_output = True)
+    assert len(written) == 2, (
+        "the replacement's own fatal output was skipped as already logged"
+    )
+    # And THAT one is final: the exit has been reported, so nothing replays it again.
+    orchestrator._subprocess_crash_message("generation", with_worker_output = True)
+    assert len(written) == 2, written
+
+
 def test_a_request_queued_behind_the_crash_is_not_given_its_last_words(monkeypatch):
     """Compare mode keeps several mailboxes in flight while the subprocess runs the commands
     one at a time.
@@ -1118,7 +1164,7 @@ def test_a_request_queued_behind_the_crash_is_not_given_its_last_words(monkeypat
     monkeypatch.setattr(
         type(orchestrator),
         "_log_worker_stderr_once",
-        lambda self, pid, exitcode: logged.append(str(pid)),
+        lambda self, pid, exitcode, **_kwargs: logged.append(str(pid)),
         raising = False,
     )
 

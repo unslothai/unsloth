@@ -1066,18 +1066,31 @@ class InferenceOrchestrator:
             return ""
         return _redact_worker_output(block)
 
-    def _log_worker_stderr_once(self, pid, exitcode) -> None:
+    def _log_worker_stderr_once(self, pid, exitcode, *, worker_exited: bool = True) -> None:
         """Write the RAW captured tail to the server log, at most once per worker.
 
         Unredacted on purpose, and the only place that is right: this is the operator's own
         log on the operator's own machine, and the redaction exists for what leaves the
         host. `_public_worker_stderr_tail` is what goes to the client.
+
+        *worker_exited* says whether this call describes a worker that is actually gone. A
+        stream that finds its worker REPLACED reaches here against the replacement's capture
+        while that replacement is healthy, and consuming the marker there spent the one
+        replay on a live worker: when the replacement itself later died, its tail -- the
+        fatal diagnostic the forwarding daemon thread may never have reached the log with --
+        was skipped as already logged. So the marker records which kind of call wrote it, and
+        a terminal one is still allowed exactly once after a non-terminal one.
         """
         capture = getattr(self, "_stderr_capture", None)
-        if capture is None or getattr(self, "_stderr_tail_logged", None) is capture:
+        if capture is None:
             return
+        logged = getattr(self, "_stderr_tail_logged", None)
+        if isinstance(logged, tuple) and logged[0] is capture:
+            # Already replayed for a real exit, or this is a second non-terminal call.
+            if logged[1] or not worker_exited:
+                return
         # Marked before the read, so a failure in here cannot turn into a log line per call.
-        self._stderr_tail_logged = capture
+        self._stderr_tail_logged = (capture, bool(worker_exited))
         raw = self._worker_stderr_tail()
         if not raw:
             return
@@ -1146,8 +1159,9 @@ class InferenceOrchestrator:
         pid = proc.pid
         if exitcode is None:
             # Same reason: the worker changed under a blocked generation, and this path
-            # has no exit status to report either.
-            self._log_worker_stderr_once(pid, None)
+            # has no exit status to report either. NOT terminal: the process this capture
+            # belongs to is the live replacement, so its own crash must still be replayable.
+            self._log_worker_stderr_once(pid, None, worker_exited = False)
             return f"{message} Details: pid={pid}."
 
         # What the worker itself said before it went. A worker that dies from an unhandled
