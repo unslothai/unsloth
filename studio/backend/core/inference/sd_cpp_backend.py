@@ -891,22 +891,27 @@ def _card_identity(device: dict) -> Optional[str]:
     written there could never be retired by a card change, which is the one component that answers
     a driver-side fix (``torch.version.hip`` is baked into the wheel and does not move).
 
-    The gfx target is the right second choice, and arguably the more honest identity for this
-    record: the claim being stored is "this sd.cpp build has no code objects for this card", which
-    is a statement about the gfx target rather than about the retail name. Vendor, index and pool
-    size are the last resort so a card that answers with none of the above still contributes
-    something that changes when the hardware does.
+    The gfx target is carried ALONGSIDE the name rather than only as its fallback, because the
+    claim being stored is "this sd.cpp build has no code objects for this card", which is a
+    statement about the gfx target rather than about the retail name -- and AMD ships a great many
+    distinct targets under one generic name. `AMD Radeon(TM) Graphics` is the name both a gfx1103
+    laptop APU and a gfx1151 Strix Halo report, so a name-only identity would let a card swap that
+    genuinely changes the answer leave the fingerprint untouched and keep diverting the new card to
+    Vulkan. Vendor, index and pool size are the last resort so a card that answers with none of the
+    above still contributes something that changes when the hardware does.
 
     Returns None only for a device that reports nothing at all, which stays filtered out.
     """
     name = device.get("name")
-    if name:
-        return str(name)
     gfx = device.get("gfx_candidates") or device.get("gfx") or device.get("arch")
     if isinstance(gfx, (list, tuple)):
         # Most specific last in the inventory's own ordering (['gfx11', 'gfx1151']), and all of it
         # is kept: a shorter family string alone would make gfx1100 and gfx1151 the same card.
         gfx = "/".join(str(g) for g in gfx if g)
+    if name and gfx:
+        return f"{name}@{gfx}"
+    if name:
+        return str(name)
     if gfx:
         return str(gfx)
     parts = [

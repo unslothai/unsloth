@@ -1316,10 +1316,10 @@ def test_a_card_the_os_cannot_name_still_reaches_the_fingerprint(unpinned_finger
     }
 
 
-def test_a_named_card_still_answers_with_its_name(unpinned_fingerprint, monkeypatch):
-    """The fallback must not change what a host that CAN name its cards records, or every existing
-    record would go stale on upgrade. The Windows gfx1151 runner names its card, so this is the
-    other half of the same measurement."""
+def test_a_named_card_carries_its_target_as_well(unpinned_fingerprint, monkeypatch):
+    """The Windows gfx1151 runner names its card, so this is the other half of the same
+    measurement. The name is kept because it is the legible half, and the gfx target is kept
+    beside it because it is the half the stored claim is actually about."""
     from utils.hardware import hardware
 
     named = dict(_UNNAMED_GFX1151, name = "AMD Radeon(TM) 8060S Graphics")
@@ -1328,8 +1328,35 @@ def test_a_named_card_still_answers_with_its_name(unpinned_fingerprint, monkeypa
     )
     assert unpinned_fingerprint._host_fingerprint() == {
         "runtime": "6.4.0",
-        "gpus": ["AMD Radeon(TM) 8060S Graphics"],
+        "gpus": ["AMD Radeon(TM) 8060S Graphics@gfx11/gfx1151"],
     }
+
+
+def test_two_cards_sharing_a_generic_name_are_not_one_card(unpinned_fingerprint, monkeypatch):
+    """AMD reports a great many distinct targets under one generic marketing name: a gfx1103
+    laptop APU and a gfx1151 Strix Halo both answer `AMD Radeon(TM) Graphics`. Keying on the name
+    alone left the fingerprint unchanged across that swap, so a `no code objects for this card`
+    record written on the first host kept diverting the second to Vulkan even though its build
+    has the code objects."""
+    from utils.hardware import hardware
+
+    first = dict(
+        _UNNAMED_GFX1151,
+        name = "AMD Radeon(TM) Graphics",
+        gfx_candidates = ["gfx11", "gfx1103"],
+    )
+    second = dict(
+        _UNNAMED_GFX1151,
+        name = "AMD Radeon(TM) Graphics",
+        gfx_candidates = ["gfx11", "gfx1151"],
+    )
+    cards = [_raw_inventory(first)]
+    monkeypatch.setattr(hardware, "get_physical_gpu_inventory", lambda *, block = True: cards[0])
+
+    unpinned_fingerprint.note_accelerator_runtime_failure("rocm")
+    assert unpinned_fingerprint.preferred_accelerator("rocm") == "vulkan"
+    cards[0] = _raw_inventory(second)
+    assert unpinned_fingerprint.accelerator_runtime_failed("rocm") is False
 
 
 def test_two_unnamed_cards_of_different_targets_are_not_one_card(unpinned_fingerprint, monkeypatch):
