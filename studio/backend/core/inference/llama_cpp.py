@@ -14736,8 +14736,7 @@ class LlamaCppBackend:
             int(self._DEFAULT_N_UBATCH if n_ubatch is None else n_ubatch),
         )
 
-        # Hybrid checkpoints contain the full recurrent state per slot, not a context-scaled
-        # window. This covers both Mamba and KDA paths and remains host-resident.
+        # A hybrid snapshot is the whole recurrent state, not a context-scaled window.
         recurrent_checkpoints = slots * max(0, ctx_checkpoints) * self._rollback_state_bytes(1)
 
         # Path 1: MLA (DeepSeek-V2/V3, GLM-4.7, GLM-5, Kimi-K2.5)
@@ -21851,13 +21850,12 @@ class LlamaCppBackend:
                     n_parallel = n_parallel,
                     total_host_bytes = ((self._host_memory_capacity_mib() or 0) * 1024 * 1024) or None,
                 )
-                # Preserve the existing SWA fit policy, which charges only explicit counts.
                 _requested_ctx_checkpoints = (
                     resolve_ctx_checkpoints(extra_args, ctx_checkpoints)
                     if server_caps.get("ctx_checkpoints_flag")
                     else 0
                 )
-                # Recurrent snapshots are host-only. Keep SWA's existing VRAM fit policy.
+                # Recurrent snapshots are host-only; SWA keeps its existing VRAM fit policy.
                 _fit_ctx_checkpoints = (
                     0 if self._rollback_state_bytes(1) > 0 else _requested_ctx_checkpoints
                 )
@@ -24814,7 +24812,6 @@ class LlamaCppBackend:
                             "llama-server has no --ctx-checkpoints; skipping the requested %s.",
                             ctx_checkpoints,
                         )
-                # Emit the automatic cap after Windows tuning, which may set the count to zero.
                 if cache_ram is not None:
                     if server_caps.get("supports_cache_ram"):
                         cmd.extend(["--cache-ram", str(int(cache_ram))])
@@ -25579,10 +25576,8 @@ class LlamaCppBackend:
                             ", ".join(unsupported_cache_flags),
                         )
 
-                # The tokens the automatic cap appended, kept so the arch-crash respawn can
-                # take them back off when it lands on a different device class -- the
-                # Windows tuning's own list is the wrong home for them, since that list is
-                # what "the platform tuning ran" means to the retry.
+                # Tracked apart from _cache_flags_emitted, which means "the Windows tuning
+                # ran", so the arch-crash respawn can re-decide each one on its own.
                 _auto_ckpt_emitted: list[str] = []
 
                 def _emit_auto_ctx_checkpoints(command: list[str]) -> list[str]:
@@ -27696,10 +27691,8 @@ class LlamaCppBackend:
                                     gpu_indices = _remaining,
                                 )
                             )
-                            # The cap was decided for the crashed device class too, and
-                            # _retry_cache_tuning_flags skips a flag `cmd` already states.
-                            # Take it off first so that skip keeps meaning "the user typed
-                            # one", then re-apply under the retry's own verdict below.
+                            # Off first, or _retry_cache_tuning_flags reads the cap as a
+                            # count the user typed and declines to zero it.
                             if _auto_ckpt_emitted:
                                 cmd = self._without_flag_pairs(cmd, _auto_ckpt_emitted)
                                 _auto_ckpt_emitted = []
