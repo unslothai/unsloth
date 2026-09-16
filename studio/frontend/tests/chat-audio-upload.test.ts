@@ -349,7 +349,23 @@ test("a hung readiness refresh times out and releases the queue", async () => {
     });
   });
 
-  assert.equal(await first, "ran");
+  let guard: ReturnType<typeof setTimeout> | undefined;
+  try {
+    assert.equal(
+      await Promise.race([
+        first,
+        new Promise<never>((_resolve, reject) => {
+          guard = setTimeout(
+            () => reject(new Error("readiness timeout did not fire")),
+            250,
+          );
+        }),
+      ]),
+      "ran",
+    );
+  } finally {
+    if (guard !== undefined) clearTimeout(guard);
+  }
   assert.equal(timedOut, true);
   assert.equal(await queue.run(false, async () => {}), "ran");
 });
