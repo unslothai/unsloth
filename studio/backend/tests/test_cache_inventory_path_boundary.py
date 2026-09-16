@@ -681,3 +681,120 @@ def test_the_leak_finder_knows_a_local_base_model_is_a_path():
         ]
     }
     assert response_leaks_host_path(clean, ["/home/op"]) is None
+
+
+# --------------------------------------------------------------------------------------
+# The compatibility router answers the same questions
+# --------------------------------------------------------------------------------------
+# /api/models is the OpenAI-compatible mirror of /api/hub, mounted in the same app and
+# reachable with the same key. A boundary drawn on one router only is not a boundary: the
+# caller simply asks the other one.
+
+
+def test_the_compat_scan_folder_list_is_not_disclosed(monkeypatch):
+    monkeypatch.setattr(
+        models_routes,
+        "annotate_scan_folders",
+        lambda folders: [{"id": 1, "path": f"{HOST_ROOT}/extra", "created_at": "2026-09-01"}],
+    )
+    monkeypatch.setattr(models_routes, "refresh_failed_scan_folders", lambda folders: None)
+    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [{"id": 1}])
+
+    payload = _models(via_api_key = True).get("/api/models/scan-folders").json()
+    assert payload["folders"], "the folder is still listed, by id"
+    assert response_leaks_host_path(payload, [HOST_ROOT]) is None
+    ui = _models(via_api_key = False).get("/api/models/scan-folders").json()
+    assert ui["folders"][0]["path"] == f"{HOST_ROOT}/extra"
+
+
+def test_the_compat_download_progress_hides_the_cache_dir(monkeypatch):
+    async def _progress(
+        repo_id,
+        expected_bytes = 0,
+        hf_token = None,
+    ):
+        return {
+            "repo_id": repo_id,
+            "downloaded_bytes": 10,
+            "expected_bytes": 100,
+            "progress": 0.1,
+            "complete": False,
+            "cache_path": REPO_DIR,
+        }
+
+    from hub.services.models import downloads
+
+    monkeypatch.setattr(downloads, "get_download_progress_response", _progress)
+    payload = (
+        _models(via_api_key = True)
+        .get("/api/models/download-progress", params = {"repo_id": "org/repo"})
+        .json()
+    )
+    assert payload["cache_path"] == ""
+    assert response_leaks_host_path(payload, [HOST_ROOT]) is None
+
+
+def test_the_compat_gguf_download_progress_hides_the_cache_dir(monkeypatch):
+    async def _progress(
+        repo_id,
+        variant = "",
+        expected_bytes = 0,
+        hf_token = None,
+    ):
+        return {"repo_id": repo_id, "progress": 0.5, "cache_path": REPO_DIR}
+
+    from hub.services.models import downloads
+
+    monkeypatch.setattr(downloads, "get_gguf_download_progress_response", _progress)
+    payload = (
+        _models(via_api_key = True)
+        .get("/api/models/gguf-download-progress", params = {"repo_id": "org/repo"})
+        .json()
+    )
+    assert payload["cache_path"] == ""
+    assert response_leaks_host_path(payload, [HOST_ROOT]) is None
+
+
+def test_the_compat_local_scan_is_not_disclosed(monkeypatch):
+    async def _scan(models_root, sources):
+        return []
+
+    monkeypatch.setattr(models_routes, "_shared_compat_local_inventory_scan", _scan)
+    payload = (
+        _models(via_api_key = True).get("/api/models/local", params = {"models_dir": "./models"}).json()
+    )
+    assert payload["hf_cache_dir"] == ""
+    assert payload["lmstudio_dirs"] == []
+    assert payload["models_dir"] == ""
+
+
+# The drift gate, for the compatibility mirror. Named rather than derived: /api/models
+# carries a hundred routes that have nothing to do with the inventory, and a gate over all
+# of them would be noise. These are the ones that answer what /api/hub answers.
+_COMPAT_INVENTORY_ROUTES = (
+    "list_local_models",
+    "get_scan_folders",
+    "get_download_progress",
+    "get_gguf_download_progress",
+    "list_cached_gguf",
+    "list_cached_models",
+)
+
+
+def test_every_compat_mirror_of_an_inventory_route_takes_the_caller_class():
+    source = Path(models_routes.__file__).read_text()
+    tree = ast.parse(source)
+    found = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if node.name not in _COMPAT_INVENTORY_ROUTES:
+            continue
+        found[node.name] = {arg.arg for arg in node.args.args + node.args.kwonlyargs}
+    missing_routes = [name for name in _COMPAT_INVENTORY_ROUTES if name not in found]
+    assert not missing_routes, f"these routes were renamed or removed: {missing_routes}"
+    without = [name for name, args in found.items() if "via_api_key" not in args]
+    assert not without, (
+        "these compatibility routes answer inventory data without taking the caller class: "
+        f"{without}"
+    )

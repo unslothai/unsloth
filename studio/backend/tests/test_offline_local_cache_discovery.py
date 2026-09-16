@@ -510,19 +510,25 @@ def test_the_ui_token_that_filled_the_cache_is_authorized_without_a_global_token
 
 
 def test_either_store_answers_for_the_host(monkeypatch, tmp_path):
-    """Both credentials are the operator's, so both authorize.
+    """Either STORE answers, as long as the host holds one credential.
 
-    A host can hold one, the other, or both: the CLI writes the token file, Settings writes
-    the credential store, and a machine used both ways has two. Whichever of them the caller
-    presents, it is a credential this host downloads with.
+    A host can hold its credential in the token file, in Studio's credential store, or in
+    both: the CLI writes one, Settings writes the other, and which store it came out of says
+    nothing about who the caller is. What does say something is whether the two DIFFER, and
+    that case is `test_two_different_host_credentials_authorize_neither_of_them`.
     """
     root = _cache_root(monkeypatch, tmp_path)
     _materialize_repo(root, ON_DISK)
-    _saved_ui_credential(monkeypatch)
+    _saved_ui_credential(monkeypatch, OPERATOR_TOKEN)
     _counting_probe(monkeypatch, True, offline = True)
 
     # `_host_credential` leaves the ambient one set to OPERATOR_TOKEN.
     assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is True
+    assert cache_reads_authorized(FOREIGN_TOKEN, repo_id = ON_DISK) is False
+
+    # The saved store alone, with nothing ambient, is the ordinary UI case and still works.
+    _no_host_credential(monkeypatch)
+    _saved_ui_credential(monkeypatch)
     assert cache_reads_authorized(STUDIO_UI_TOKEN, repo_id = ON_DISK) is True
     assert cache_reads_authorized(FOREIGN_TOKEN, repo_id = ON_DISK) is False
 
@@ -960,3 +966,25 @@ def test_the_route_entry_guard_leaves_online_behaviour_exactly_as_it_was(monkeyp
     probes = _counting_probe(monkeypatch, False)
     assert utils_module.anonymous_and_offline(False, repo_id = ON_DISK) is False
     assert probes["n"] == 0
+
+
+def test_two_different_host_credentials_authorize_neither_of_them(monkeypatch, tmp_path):
+    """One host, two principals.
+
+    An ambient token the operator uses from the CLI and a DIFFERENT token saved in Studio
+    Settings by whoever is using the UI are not interchangeable: either could have filled
+    the cache and nothing on disk records which. Matching one of them would hand its holder
+    the repos the other downloaded, which on a managed install is another account's private
+    model. Unknown authorizes nobody.
+    """
+    root = _cache_root(monkeypatch, tmp_path)
+    _materialize_repo(root, ON_DISK)
+    _counting_probe(monkeypatch, True, offline = True)
+    _saved_ui_credential(monkeypatch)  # STUDIO_UI_TOKEN, alongside the ambient OPERATOR_TOKEN
+
+    assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is False
+    assert cache_reads_authorized(STUDIO_UI_TOKEN, repo_id = ON_DISK) is False
+
+    # The same credential in both stores is one credential, and is unaffected.
+    _saved_ui_credential(monkeypatch, OPERATOR_TOKEN)
+    assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is True

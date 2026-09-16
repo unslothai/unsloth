@@ -193,7 +193,11 @@ from hub.utils.hf_tokens import (
     is_anonymous,
     normalize_token,
 )
-from hub.utils.host_paths import redact_host_paths, scrub_paths
+from hub.utils.host_paths import (
+    redact_host_paths,
+    redact_inventory_host_paths,
+    scrub_paths,
+)
 from utils.utils import anonymous_and_offline
 
 
@@ -1160,8 +1164,14 @@ async def list_local_models(
         default = "./models", description = "Directory to scan for local model folders"
     ),
     current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    """List local model candidates from the models dir, HF caches, LM Studio, Hermes, Ollama."""
+    """List local model candidates from the models dir, HF caches, LM Studio, Hermes, Ollama.
+
+    Redacted for an API-key caller exactly as ``/api/hub/local`` is. This router is the
+    compatibility mirror of that one and answers the same scan roots, so leaving it alone
+    would let a caller recover from here the layout the other route hides.
+    """
     # Resolve all scan directories up front.
     sources = _compat_local_inventory_sources()
     hf_cache_dir = sources.hf_cache_dir
@@ -1199,12 +1209,15 @@ async def list_local_models(
         models = await _shared_compat_local_inventory_scan(models_root, sources)
         if account_access.managed_account():
             models = await asyncio.to_thread(account_access.filter_model_rows, models)
-        return LocalModelListResponse(
-            models_dir = str(models_root),
-            hf_cache_dir = str(hf_cache_dir),
-            lmstudio_dirs = [str(d) for d in lm_dirs],
-            hermes_dirs = [str(d) for d in sources.hermes_dirs],
-            models = models,
+        return redact_inventory_host_paths(
+            LocalModelListResponse(
+                models_dir = str(models_root),
+                hf_cache_dir = str(hf_cache_dir),
+                lmstudio_dirs = [str(d) for d in lm_dirs],
+                hermes_dirs = [str(d) for d in sources.hermes_dirs],
+                models = models,
+            ),
+            via_api_key = via_api_key,
         )
     except Exception as e:
         raise log_and_http_error(
@@ -1217,14 +1230,19 @@ async def list_local_models(
 
 
 @router.get("/scan-folders")
-async def get_scan_folders(current_subject: str = Depends(get_current_subject)):
-    """List all registered custom model scan folders."""
+async def get_scan_folders(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
+    """List all registered custom model scan folders. Redacted like ``/api/hub/scan-folders``."""
     from storage.studio_db import list_scan_folders
 
     folders = list_scan_folders()
     # Opening the dialog is how a fixed folder clears, so recheck the bad ones.
     await asyncio.to_thread(refresh_failed_scan_folders, folders)
-    return {"folders": annotate_scan_folders(folders)}
+    return redact_inventory_host_paths(
+        {"folders": annotate_scan_folders(folders)}, via_api_key = via_api_key
+    )
 
 
 @router.post("/scan-folders", response_model = ScanFolderInfo, status_code = 201)
@@ -4342,14 +4360,18 @@ async def get_gguf_download_progress(
     expected_bytes: int = Query(0, description = "Expected total download size in bytes"),
     hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     """Compatibility route backed by the shared multi-cache progress service."""
     from hub.services.models import downloads
-    return await downloads.get_gguf_download_progress_response(
-        repo_id,
-        variant = variant,
-        expected_bytes = expected_bytes,
-        hf_token = hf_token,
+    return redact_host_paths(
+        await downloads.get_gguf_download_progress_response(
+            repo_id,
+            variant = variant,
+            expected_bytes = expected_bytes,
+            hf_token = hf_token,
+        ),
+        via_api_key = via_api_key,
     )
 
 
@@ -4366,10 +4388,18 @@ async def get_download_progress(
     repo_id: str = Query(..., description = "HuggingFace repo ID"),
     hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    """Compatibility route backed by the shared multi-cache progress service."""
+    """Compatibility route backed by the shared multi-cache progress service.
+
+    The progress payload names the cache directory it measured, so it takes the caller class
+    like its ``/api/hub`` twin.
+    """
     from hub.services.models import downloads
-    return await downloads.get_download_progress_response(repo_id, hf_token = hf_token)
+    return redact_host_paths(
+        await downloads.get_download_progress_response(repo_id, hf_token = hf_token),
+        via_api_key = via_api_key,
+    )
 
 
 def _repo_in_any_hf_cache(model_name: str) -> bool:

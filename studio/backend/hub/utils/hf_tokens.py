@@ -503,6 +503,12 @@ def _caller_populated_the_cache(token: Optional[str]) -> bool:
     this PR exists for. On a host that DOES hold one, a credential-less caller is refused,
     because a private repo could be sitting in that cache.
 
+    Two DIFFERENT held credentials refuse everyone. "One of the host's credentials" is only
+    a stand-in for "the credential the bytes were fetched with" while there is one of them;
+    with an ambient token and a different saved token, either could have filled the cache,
+    and on a managed install the two are different principals. Rather than authorize the
+    holder of one for repos the other downloaded, the fallback shuts.
+
     What this still cannot see is history. The HF cache records no provenance per blob, so
     "the host holds this credential now" is the closest available stand-in for "the bytes
     were fetched under it". An operator who downloads a private repo and then DELETES every
@@ -525,6 +531,15 @@ def _caller_populated_the_cache(token: Optional[str]) -> bool:
     if token is None:
         return not host_tokens
     if not isinstance(token, str) or not token or not host_tokens:
+        return False
+    if len({held for held in host_tokens}) > 1:
+        # Two DIFFERENT credentials on one host: an ambient one the operator uses from the
+        # CLI and a different one saved in Studio's settings by whoever is using the UI.
+        # Either could have filled the cache and nothing here can tell which, so matching
+        # one of them says nothing about the repo on disk -- and on a managed install the
+        # two belong to different principals, which is exactly when saying otherwise hands
+        # one of them the other's private downloads. Unknown authorizes nobody. The host
+        # that holds a single credential, which is every ordinary install, is unaffected.
         return False
     import hmac
 
