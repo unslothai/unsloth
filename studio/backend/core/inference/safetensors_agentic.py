@@ -1421,6 +1421,7 @@ def run_safetensors_tool_loop(
                 }
                 yield start_event
 
+                ssh_hosts = set()
                 _decision = (
                     wait_tool_decision(
                         decision_slot,
@@ -1430,6 +1431,14 @@ def run_safetensors_tool_loop(
                     if decision_slot is not None
                     else None
                 )
+                if _decision == "allow":
+                    from core.inference.ssh_policy import collect_ssh_hosts_for_approval
+                    from state.ssh_approvals import approve_hosts
+
+                    ssh_hosts = collect_ssh_hosts_for_approval(
+                        decision.tool_name, decision.arguments
+                    )
+                    approve_hosts(session_id, ssh_hosts)
                 if _decision is not None and _decision != "deny":
                     yield {"type": "status", "text": decision.status_text}
                 if _decision == "deny":
@@ -1470,7 +1479,11 @@ def run_safetensors_tool_loop(
                 # stream while the tool blocks (the SSE route turns heartbeats into
                 # keepalives). execute_tool is injectable; pass output_callback
                 # only when it accepts it.
-                def _invoke_tool(_output_callback, _decision = decision):
+                def _invoke_tool(
+                    _output_callback,
+                    _decision = decision,
+                    approved_ssh_hosts = ssh_hosts,
+                ):
                     kwargs = dict(
                         cancel_event = cancel_event,
                         timeout = eff_timeout,
@@ -1570,7 +1583,10 @@ def run_safetensors_tool_loop(
                     if _accepts_output_callback(execute_tool):
                         kwargs["output_callback"] = _output_callback
                     kwargs.update(_search_images_kwargs(execute_tool, _decision.tool_name))
-                    return execute_tool(_decision.tool_name, _decision.arguments, **kwargs)
+                    from state.ssh_approvals import temporary_ssh_approval
+
+                    with temporary_ssh_approval(approved_ssh_hosts):
+                        return execute_tool(_decision.tool_name, _decision.arguments, **kwargs)
 
                 try:
                     result = yield from stream_tool_execution(

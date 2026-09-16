@@ -1200,8 +1200,8 @@ class TestBashBlocklistPosition:
                 ".", ". ./script.sh", ".", "cat x && . ./payload", id = "dot_source_blocked"
             ),
             pytest.param(
-                "ssh",
-                "$'ssh' user@host",
+                "rm",
+                "$'rm' -rf /tmp/x",
                 "source",
                 "$'source' ./payload",
                 id = "ansi_c_quoted_command_blocked",
@@ -1904,6 +1904,10 @@ class TestBashBlocklistPosition:
         assert self._find()("cd .") == set()
 
     # ---- ANSI-C quoting must not hide a blocked command name ----
+    def test_ansi_c_quoted_command_blocked(self):
+        from core.inference.ssh_policy import check_ssh_command_access
+        assert check_ssh_command_access("$'ssh' user@host", "sess-1") is not None
+        assert "source" in self._find()("$'source' ./payload")
 
     def test_ansi_c_data_with_newline_is_not_a_command(self):
         # $'...' expands to a single word, so a newline inside it is data for
