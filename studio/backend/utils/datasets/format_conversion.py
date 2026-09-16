@@ -147,7 +147,14 @@ def standardize_chat_format(
                 # Use the inferred keys first, falling back per-message so mixed ShareGPT/ChatML rows keep valid turns.
                 original_role = message.get(role_key)
                 original_content = message.get(content_key)
-                if original_role is None:
+                # Blank counts as absent for the ROLE, so the fallback key is consulted for
+                # {"role": "", "from": "gpt"} exactly as the preview's
+                # `message.get("role") or message.get("from")` consults it. Keying this on
+                # `is None` instead labelled that turn "user" and trained an assistant
+                # response as a user one, while the preview showed it correctly. Content is
+                # deliberately left on `is None`: an empty message is a legitimate value,
+                # not a missing one.
+                if not _normalize_role_alias(original_role):
                     original_role = message.get("role") or message.get("from") or ""
                 if original_content is None:
                     original_content = message.get("content") or message.get("value") or ""

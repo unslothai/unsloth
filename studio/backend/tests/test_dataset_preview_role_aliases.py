@@ -283,3 +283,32 @@ def test_the_training_path_defaults_a_blank_role_like_the_preview(role):
 
     assert trained[0]["role"] == "user"
     assert [m["role"] for m in trained] == [m["role"] for m in previewed]
+
+
+@pytest.mark.parametrize(
+    "message, expected",
+    [
+        # The mixed-key record: the inferred role key is blank, but the SAME message
+        # carries a usable fallback role. The preview reads it; training used to skip it
+        # because the check was `is None`, labelling an assistant turn as user.
+        ({"role": "", "from": "gpt", "content": "answer"}, "assistant"),
+        ({"role": "   ", "from": "Human", "content": "q"}, "user"),
+        ({"role": None, "from": "gpt", "content": "answer"}, "assistant"),
+        # NEGATIVE CONTROLS: a blank role with no fallback is still "user", and a role
+        # that is present wins over any fallback rather than being second-guessed.
+        ({"role": "", "content": "answer"}, "user"),
+        ({"role": "gpt", "from": "human", "content": "answer"}, "assistant"),
+    ],
+)
+def test_a_blank_inferred_role_consults_the_same_fallback_the_preview_does(message, expected):
+    datasets = pytest.importorskip("datasets")
+    from utils.datasets.format_conversion import standardize_chat_format
+
+    rows = [{"conversations": [dict(message), {"role": "user", "content": "x"}]}] * 4
+    trained = standardize_chat_format(datasets.Dataset.from_list(rows), num_proc = 1)
+    assert trained[0]["conversations"][0]["role"] == expected
+
+    previewed = _standardize_sharegpt_row({"conversations": [dict(message)]}, "conversations")
+    assert previewed["conversations"][0]["role"] == expected, (
+        "the preview and the training path disagree on this message"
+    )
