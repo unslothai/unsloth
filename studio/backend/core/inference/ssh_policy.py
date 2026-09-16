@@ -389,6 +389,15 @@ def _ssh_import_bindings(tree: ast.AST) -> dict[str, str]:
         symbol = _bound_name(value, bindings)
         if name and symbol.split(".", 1)[0] in _SSH_PY_ROOT_MODULES:
             bindings[name] = symbol
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            for base in node.bases:
+                factory = _bound_name(base, bindings)
+                if factory.split(".", 1)[0] in _SSH_PY_ROOT_MODULES and factory.endswith(
+                    (".SSHClient", ".Transport", ".Connection")
+                ):
+                    bindings[node.name] = factory
+                    break
     clients = _ssh_client_bindings(tree, bindings)
     for target, value in _assignment_pairs(tree):
         name = _fq_name(target)
@@ -500,7 +509,10 @@ def _ssh_factory_helpers(tree: ast.AST, bindings: dict[str, str]) -> None:
 
 
 def _resolve_ssh_call(
-    func: ast.AST, bindings: dict[str, str], clients: dict[str, str]
+    func: ast.AST,
+    bindings: dict[str, str],
+    clients: dict[str, str],
+    client_context: Optional[str] = None,
 ) -> Optional[str]:
     """Return a canonical SSH call name when ``func`` is an SSH connect/factory."""
     if isinstance(func, ast.Name):
@@ -517,6 +529,12 @@ def _resolve_ssh_call(
 
     if not isinstance(func, ast.Attribute):
         return None
+
+    if client_context and isinstance(func.value, ast.Call) and _fq_name(func.value.func) == "super":
+        if func.attr == "__init__" and client_context in _SSH_PY_CONNECT_FQ:
+            return client_context
+        if func.attr == "connect" and client_context != "paramiko.Transport":
+            return f"{client_context.split('.', 1)[0]}.connect"
 
     fq = _bound_name(func, bindings)
     if fq in _SSH_PY_CONNECT_FQ or fq.endswith(".Connection"):
@@ -765,9 +783,17 @@ def _scan_ssh_python_usage(
     connect_spans: list[tuple[int, int, int, int]] = []
 
     class _Visitor(ast.NodeVisitor):
+        client_context: Optional[str] = None
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            previous = self.client_context
+            self.client_context = bindings.get(node.name)
+            self.generic_visit(node)
+            self.client_context = previous
+
         def visit_Call(self, node: ast.Call) -> None:
             nonlocal dynamic, uses_ssh
-            ssh_call = _resolve_ssh_call(node.func, bindings, clients)
+            ssh_call = _resolve_ssh_call(node.func, bindings, clients, self.client_context)
             if ssh_call:
                 uses_ssh = True
                 dynamic |= not _ssh_python_configuration_is_explicit(node, ssh_call, bindings)

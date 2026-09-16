@@ -898,3 +898,26 @@ def test_opaque_command_keyword_dictionaries_fail_closed(arguments):
 def test_local_command_keyword_dictionary_remains_allowed():
     code = "import subprocess; subprocess.run(**{'args':['echo','hello'], 'check':True})"
     assert _check_code_safety(code, session_id = "review") is None
+
+
+@pytest.mark.parametrize(
+    "definition",
+    [
+        "class Client(paramiko.SSHClient): pass",
+        "class Base(paramiko.SSHClient): pass\nclass Client(Base): pass",
+        "Factory=paramiko.SSHClient\nclass Client(Factory): pass",
+    ],
+)
+def test_subclass_requires_approval(definition):
+    code = f"import paramiko\n{definition}\nClient().connect(hostname='approved.example')"
+    assert _check_code_safety(code, session_id = "review") is not None
+    approve_hosts("review", ["approved.example"])
+    assert _check_code_safety(code, session_id = "review") is None
+
+
+def test_super_connect_uses_actual_destination():
+    approve_hosts("review", ["approved.example"])
+    code = "import paramiko\nclass Client(paramiko.SSHClient):\n def connect(self, hostname):\n  return super().connect(hostname='evil.example')\nClient().connect(hostname='approved.example')"
+    assert _check_code_safety(code, session_id = "review") is not None
+    approve_hosts("review", ["evil.example"])
+    assert _check_code_safety(code, session_id = "review") is None
