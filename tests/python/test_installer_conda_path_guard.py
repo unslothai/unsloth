@@ -883,3 +883,21 @@ def test_the_uv_repoint_pass_moves_the_home_relative_spelling_too():
     assert block.count("_persist_login_path_dir") == 2, block
     # $HOME stays unexpanded; only the rest of the path is escaped.
     assert '${_UNSLOTH_UV_BIN_DIR#$HOME}' in block, block
+
+
+def test_the_standalone_setup_repoints_the_home_relative_prepend_too():
+    """`studio/setup.sh` runs on its own during an update, after install.sh wrote the shim
+    line as `export PATH="$HOME/.local/bin:$PATH"`.
+
+    `_SETUP_LOGIN_PATH` holds the EXPANDED directory, which is what selects the repoint-only
+    branch, while the line in the profile says `$HOME`. Matching only the expanded form meant
+    the rewrite never fired and the stale prepend stayed ahead of the active conda
+    environment -- the whole thing that branch exists to fix.
+    """
+    body = _shell_function(SETUP_SH_POSIX, "_setup_persist_uv_path")
+    assert "_supp_export_home_prepend" in body, body
+    assert "'$HOME'" in body, body
+    assert '${_supp_dir#$HOME}' in body, body
+    # In the repoint-only branch AND in the present-already branch, which are the two places
+    # a stale prepend is reachable.
+    assert body.count("_supp_export_home_prepend\"") >= 2, body

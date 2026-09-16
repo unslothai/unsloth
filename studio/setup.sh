@@ -2313,6 +2313,19 @@ _setup_persist_uv_path() {
     # add a second line for the same directory.
     _supp_export_line="export PATH=\"$_supp_literal:\$PATH\""
     _supp_export_prepend="$_supp_export_line"
+    # And the $HOME-relative spelling of the same prepend, because install.sh writes the shim
+    # line that way and this script runs standalone on an update: _SETUP_LOGIN_PATH holds the
+    # EXPANDED directory, which is what selects the repoint-only branch below, while the line
+    # sitting in the profile says $HOME. Matching only the expanded form meant the rewrite
+    # never fired and the stale prepend stayed ahead of the active conda environment. $HOME is
+    # left unexpanded on purpose; only the rest of the path is escaped.
+    _supp_export_home_prepend=""
+    case "$_supp_dir" in
+        "$HOME"/*)
+            _supp_home_literal='$HOME'$(printf '%s' "${_supp_dir#$HOME}" | sed 's/[\\"$`]/\\&/g')
+            _supp_export_home_prepend="export PATH=\"$_supp_home_literal:\$PATH\""
+            ;;
+    esac
     if _unsloth_conda_env_active; then
         _supp_export_line="export PATH=\"\$PATH:$_supp_literal\""
     fi
@@ -2324,6 +2337,10 @@ _setup_persist_uv_path() {
             [ -f "$_supp_profile" ] || continue
             _unsloth_repoint_rc_line "$_supp_profile" "$_supp_export_prepend" \
                 "$_supp_export_line" || true
+            if [ -n "$_supp_export_home_prepend" ]; then
+                _unsloth_repoint_rc_line "$_supp_profile" "$_supp_export_home_prepend" \
+                    "$_supp_export_line" || true
+            fi
         done
         return 0
     fi
@@ -2345,6 +2362,10 @@ _setup_persist_uv_path() {
             if _unsloth_conda_env_active; then
                 _unsloth_repoint_rc_line "$_supp_profile" "$_supp_export_prepend" \
                     "$_supp_export_line" || true
+                if [ -n "$_supp_export_home_prepend" ]; then
+                    _unsloth_repoint_rc_line "$_supp_profile" "$_supp_export_home_prepend" \
+                        "$_supp_export_line" || true
+                fi
             fi
             continue
         fi
