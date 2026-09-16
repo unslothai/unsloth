@@ -899,6 +899,62 @@ def _ssh_python_configuration_is_explicit(
     )
 
 
+def _expand_partial_calls(tree: ast.AST) -> ast.AST:
+    """Analyze partial invocations with their effective arguments and original call spans."""
+    aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for name in node.names:
+                if name.name == "functools":
+                    aliases[name.asname or name.name] = name.name
+        elif isinstance(node, ast.ImportFrom) and node.module == "functools":
+            for name in node.names:
+                if name.name in {"partial", "*"}:
+                    aliases[name.asname or "partial"] = "functools.partial"
+    partials: dict[str, ast.Call] = {}
+
+    def template(node: ast.AST) -> Optional[ast.Call]:
+        if (
+            isinstance(node, ast.Call)
+            and _bound_name(node.func, aliases) == "functools.partial"
+            and node.args
+        ):
+            return node
+        return partials.get(_fq_name(node))
+
+    for target, value in _assignment_pairs(tree):
+        name = _fq_name(target)
+        if _bound_name(value, aliases) in {"functools", "functools.partial"}:
+            aliases[name] = _bound_name(value, aliases)
+        saved = template(value)
+        if saved is not None:
+            partials[name] = saved
+
+    class _Expand(ast.NodeTransformer):
+        def visit_Call(self, node: ast.Call) -> ast.AST:
+            node = self.generic_visit(node)
+            seen: set[int] = set()
+            while (saved := template(node.func)) is not None and id(saved) not in seen:
+                seen.add(id(saved))
+                old_kwargs, old_opaque = _call_keyword_values(saved)
+                new_kwargs, new_opaque = _call_keyword_values(node)
+                keywords = [
+                    ast.keyword(arg = key, value = value)
+                    for key, value in (old_kwargs | new_kwargs).items()
+                ]
+                if old_opaque or new_opaque:
+                    keywords.extend(kw for kw in saved.keywords + node.keywords if kw.arg is None)
+                node = ast.copy_location(
+                    ast.Call(
+                        func = saved.args[0], args = saved.args[1:] + node.args, keywords = keywords
+                    ),
+                    node,
+                )
+            return node
+
+    return _Expand().visit(tree)
+
+
 def _scan_ssh_python_usage(
     code: str,
 ) -> tuple[set[str], bool, bool, list[tuple[int, int, int, int]]]:
@@ -909,6 +965,7 @@ def _scan_ssh_python_usage(
         tree = ast.parse(code)
     except SyntaxError:
         return set(), True, bool(re.search(r"\b(?:paramiko|asyncssh|fabric)\b", code)), []
+    tree = _expand_partial_calls(tree)
     bindings = _ssh_import_bindings(tree)
     _ssh_factory_helpers(tree, bindings)
     clients = _ssh_client_bindings(tree, bindings)

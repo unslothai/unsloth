@@ -1160,3 +1160,37 @@ def test_unrelated_import_remains_allowed():
         )
         is None
     )
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "import functools,paramiko; make=functools.partial(paramiko.SSHClient); make().connect(hostname='evil.example')",
+        "from functools import partial as bind; import paramiko; make=bind(paramiko.SSHClient); c=make(); c.connect(hostname='evil.example')",
+        "import functools,asyncssh; connect=functools.partial(asyncssh.connect,'evil.example',config=None); connect()",
+        "import functools,paramiko; c=paramiko.SSHClient(); connect=functools.partial(c.connect,hostname='evil.example'); connect()",
+        "import functools,paramiko; c=paramiko.SSHClient(); connect=functools.partial(c.connect,hostname='approved.example'); connect(hostname='evil.example')",
+        "import functools,paramiko; functools.partial(paramiko.SSHClient)().connect(hostname='evil.example')",
+        "import functools,fabric; connect=functools.partial(fabric.Connection,'evil.example',config=fabric.Config(lazy=True)); connect()",
+    ],
+)
+def test_partial_ssh_requires_approval(code):
+    approve_hosts("review", ["approved.example"])
+    assert _check_code_safety(code, session_id = "review") is not None
+    approve_hosts("review", ["evil.example"])
+    assert _check_code_safety(code, session_id = "review") is None
+
+
+def test_partial_keyword_override_uses_actual_host():
+    approve_hosts("review", ["approved.example"])
+    code = "import functools,paramiko; c=paramiko.SSHClient(); connect=functools.partial(c.connect,hostname='evil.example'); connect(hostname='approved.example')"
+    assert _check_code_safety(code, session_id = "review") is None
+
+
+def test_unrelated_partial_remains_allowed():
+    assert (
+        _check_code_safety(
+            "import functools; print(functools.partial(pow,2)(3))", session_id = "review"
+        )
+        is None
+    )
