@@ -861,6 +861,47 @@ def test_the_settings_route_reports_and_clears_the_record(fake_settings, monkeyp
     assert _noted_accelerators(fake_settings) == []
 
 
+def test_the_report_does_not_claim_a_diversion_the_switch_turned_off(fake_settings, monkeypatch):
+    """`enabled: false, diverting: true` is a contradiction, and the wrong half is the one the
+    operator acts on.
+
+    With UNSLOTH_DIFFUSION_SD_CPP_VULKAN_FALLBACK=0, `fallback_accelerator_for` returns None and
+    `preferred_accelerator` leaves ROCm selected however many strikes the record holds. The
+    settings route was reporting the record's own verdict, so the one host that explicitly asked
+    not to be moved off its accelerator was told its loads were being redirected.
+    """
+    from core.inference import sd_cpp_backend
+    from routes import settings as settings_routes
+
+    sd_cpp_backend.note_accelerator_runtime_failure("rocm")
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP_VULKAN_FALLBACK", "0")
+
+    # The premise, measured rather than assumed: nothing is actually being diverted.
+    assert sd_cpp_backend.preferred_accelerator("rocm") == "rocm"
+    assert sd_cpp_backend.fallback_accelerator_for("rocm") is None
+
+    state = settings_routes._diffusion_accelerator_fallback_response()
+    assert state.enabled is False
+    assert state.diverting is False, "reported a diversion the switch had turned off"
+    assert state.records[0].diverting is False
+    # Nothing is hidden: the record itself is still fully visible next to `enabled: false`, so
+    # an operator can see what WOULD happen if they turned the rung back on.
+    assert state.records[0].accelerator == "rocm"
+    assert state.records[0].proven is True
+    assert state.records[0].stale is False
+    # And the record's own verdict is untouched, because it is a fact about the host rather
+    # than about the switch. `preferred_accelerator` is what consults the switch.
+    assert sd_cpp_backend.accelerator_runtime_failed("rocm") is True
+
+    # Turn it back on and the same record diverts again, so this gates on the switch and not on
+    # something the test did to the record.
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_SD_CPP_VULKAN_FALLBACK", raising = False)
+    back = settings_routes._diffusion_accelerator_fallback_response()
+    assert back.enabled is True
+    assert back.diverting is True
+    assert back.records[0].diverting is True
+
+
 def test_a_stale_record_is_reported_as_stale_rather_than_hidden(fake_settings, monkeypatch):
     """A user looking at the setting should be able to see that the note is already inert."""
     from core.inference import sd_cpp_backend

@@ -889,6 +889,20 @@ def accelerator_runtime_failure_state() -> dict:
     fingerprint = _accelerator_fingerprint()
     records = _stored_accelerator_runtime_failures()
     records.update(_accelerator_runtime_failures)
+    # "Diverting" is a claim about what loads are doing right now, and with the knob off they
+    # are not: `fallback_accelerator_for` returns None, so `preferred_accelerator` leaves the
+    # host's own accelerator selected however many strikes the record holds. Reporting the
+    # record's own verdict here produced `enabled: false, diverting: true`, which tells an
+    # operator their loads are being redirected on the one host where they have explicitly
+    # asked that they not be.
+    #
+    # Only the report is gated. `_record_diverts` still answers for the record alone, which is
+    # what `accelerator_runtime_failed` wants: whether this build is known not to run here is a
+    # fact about the host, not about the switch.
+    #
+    # Nothing is hidden by this: `strikes`, `proven` and `stale` are unchanged, so a record
+    # that WOULD divert is still fully visible next to `enabled: false`.
+    enabled = sd_cpp_vulkan_fallback_enabled()
     out = []
     for klass in sorted(records):
         record = records[klass]
@@ -898,13 +912,13 @@ def accelerator_runtime_failure_state() -> dict:
                 "fallback": _ACCELERATOR_FALLBACK.get(klass),
                 "strikes": int(record.get("strikes", 0) or 0),
                 "proven": bool(record.get("proven", False)),
-                "diverting": _record_diverts(record, fingerprint),
+                "diverting": enabled and _record_diverts(record, fingerprint),
                 "stale": not _fingerprint_still_applies(record.get("fingerprint"), fingerprint),
             }
         )
     return {
         "records": out,
-        "enabled": sd_cpp_vulkan_fallback_enabled(),
+        "enabled": enabled,
         "diverting": any(r["diverting"] for r in out),
     }
 
