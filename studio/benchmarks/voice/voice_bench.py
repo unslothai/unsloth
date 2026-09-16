@@ -859,6 +859,19 @@ def positive_int(value: str) -> int:
     return n
 
 
+def temperature_in_range(value: str) -> float:
+    """argparse type for --temperature: the server's ChatCompletionRequest bounds it to
+    0..2, and a value outside that is only discovered on the first measured pass, after
+    warmup and fixture synthesis have already run."""
+    try:
+        parsed = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected a number, got {value!r}")
+    if not 0.0 <= parsed <= 2.0:
+        raise argparse.ArgumentTypeError(f"must be between 0 and 2 (got {value})")
+    return parsed
+
+
 def validate_conversation(convo: object) -> None:
     """Refuse a conversation the run could not measure, before any model request.
 
@@ -965,8 +978,13 @@ def main() -> int:
     ap.add_argument("--tts-model", default = None, help = "model id for --tts-provider-id")
     ap.add_argument("--tts-voice", default = None, help = "voice name for --tts-provider-id")
     ap.add_argument("--seed", type = int, default = 42)
-    ap.add_argument("--temperature", type = float, default = 0.0)
-    ap.add_argument("--max-tokens", type = int, default = 200)
+    # Both bounded here, as --repeats is, rather than by the server: it rejects them
+    # per request, so they would surface only on the first measured pass, after the
+    # warmup and fixture synthesis, as an incomplete report instead of a setup error.
+    ap.add_argument(
+        "--temperature", type = temperature_in_range, default = 0.0, help = "0..2, server bound"
+    )
+    ap.add_argument("--max-tokens", type = positive_int, default = 200, help = ">= 1, server bound")
     ap.add_argument(
         "--think",
         action = "store_true",

@@ -193,6 +193,26 @@ class ArgTests(unittest.TestCase):
                     ap.parse_args(["--repeats", bad])
                 self.assertEqual(cm.exception.code, 2)
 
+    def test_llm_options_are_bounded_at_parse_time(self):
+        # The same bounds ChatCompletionRequest applies (temperature 0..2, max_tokens >= 1),
+        # so a bad value is a setup failure and not an incomplete report after warmup.
+        ap = argparse.ArgumentParser()
+        ap.add_argument("--temperature", type = vb.temperature_in_range, default = 0.0)
+        ap.add_argument("--max-tokens", type = vb.positive_int, default = 200)
+        args = ap.parse_args(["--temperature", "2", "--max-tokens", "1"])
+        self.assertEqual((args.temperature, args.max_tokens), (2.0, 1))
+        for argv in (
+            ["--temperature", "2.1"],
+            ["--temperature", "-0.1"],
+            ["--temperature", "warm"],
+            ["--max-tokens", "0"],
+            ["--max-tokens", "-5"],
+        ):
+            with self.subTest(argv = argv):
+                with self.assertRaises(SystemExit) as cm:
+                    ap.parse_args(argv)
+                self.assertEqual(cm.exception.code, 2)
+
 
 class TokenTests(unittest.TestCase):
     def test_loopback_detection(self):
