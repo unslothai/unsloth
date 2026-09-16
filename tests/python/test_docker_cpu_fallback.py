@@ -284,9 +284,9 @@ class TestStudioImageAllowsCpu:
         dest = re.findall(r"^COPY\s+entrypoint\.sh\s+(\S+)\s*$", base, re.M)
         assert dest == ["/usr/local/bin/unsloth-entrypoint"], dest
         assert re.findall(r"^COPY\s+entrypoint\.sh\s+(\S+)\s*$", studio, re.M) == dest
-        assert not re.search(r"^\s*ENTRYPOINT\b", studio, re.M), (
-            "Dockerfile.studio must inherit the base ENTRYPOINT, not declare its own"
-        )
+        assert not re.search(
+            r"^\s*ENTRYPOINT\b", studio, re.M
+        ), "Dockerfile.studio must inherit the base ENTRYPOINT, not declare its own"
 
     def test_the_base_training_image_keeps_the_strict_check(self):
         """FastLanguageModel genuinely needs a GPU, so :core must NOT default it."""
