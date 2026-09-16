@@ -1,12 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The pipeline-parallel inference readers must survive a layer with no device index.
-
-`verify_and_set_device` used to record `device.index` verbatim, and
-`torch.device("cpu").index` is None, so a CPU-offloaded or not-yet-materialised layer ended
-`move_to_device` with "ValueError: Invalid target device: None" (#3538). The five readers
-now go through `unsloth.models._utils.per_layer_device`.
+"""`verify_and_set_device` recorded `device.index` verbatim and `torch.device("cpu").index`
+is None, so an offloaded layer ended `move_to_device` with "Invalid target device: None"
+(#3538). The five readers now go through `unsloth.models._utils.per_layer_device`.
 """
 
 from __future__ import annotations
@@ -22,7 +19,6 @@ from real_accelerator import (
 import torch
 
 
-# Each reader file, with the per-accelerator tuples it subscripts with the buffer index.
 # Keep in step with a grep for `_per_layer_device` across the repository (#3538).
 READERS = {
     # llama's reader is nested, which is why the scope is located from the call site.
@@ -37,7 +33,6 @@ REPOSITORY_ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 def _device_or_none(value):
-    """`torch.device(value)`, or None when this build cannot name that device."""
     try:
         return torch.device(value)
     except (RuntimeError, TypeError, ValueError):
@@ -46,11 +41,8 @@ def _device_or_none(value):
 
 @functools.lru_cache(maxsize = 1)
 def default_device_is_usable() -> bool:
-    """Can `torch.device(0)`, the historical default, actually hold a tensor here.
-
-    torch 2.6 raises from the bare `torch.device(0)` on an accelerator-less host while
-    torch 2.11 returns `cuda:0` and only fails at the move, so the expectations below
-    follow a real allocation rather than either torch version's answer.
+    """Measured, not asked: torch 2.6 raises from `torch.device(0)` with no accelerator
+    while torch 2.11 returns `cuda:0` and only fails at the move.
     """
     try:
         torch.zeros(1, device = torch.device(0))
@@ -60,8 +52,6 @@ def default_device_is_usable() -> bool:
 
 
 class _Layer(torch.nn.Module):
-    """A decoder layer stand-in carrying whatever unsloth_zoo published."""
-
     def __init__(
         self,
         device = None,
@@ -89,7 +79,6 @@ def test_current_unsloth_zoo_device_wins():
 
 
 def test_cpu_offloaded_layer_resolves_to_cpu_not_cuda_zero():
-    """The #3538 case as current unsloth_zoo publishes it."""
     from unsloth.models._utils import per_layer_device
 
     layer = _Layer(device = torch.device("cpu"), index = "cpu")
@@ -101,7 +90,6 @@ def test_cpu_offloaded_layer_resolves_to_cpu_not_cuda_zero():
 
 
 def test_older_unsloth_zoo_integer_index_is_unchanged():
-    """An unsloth_zoo that publishes only the index still works."""
     from unsloth.models._utils import per_layer_device
 
     layer = _Layer(index = 1, parameter_device = "cpu")
@@ -114,7 +102,6 @@ def test_older_unsloth_zoo_integer_index_is_unchanged():
 
 
 def test_older_unsloth_zoo_none_index_reads_the_layer_instead():
-    """The exact #3538 state: `_per_layer_device_index = None` and nothing else."""
     from unsloth.models._utils import per_layer_device
 
     layer = _Layer(index = None, parameter_device = "cpu")
@@ -140,9 +127,6 @@ def test_a_layer_with_no_attributes_keeps_the_historical_default():
 
 
 def test_an_unavailable_accelerator_is_not_a_usable_device():
-    """`torch.device(0)` succeeding is not the same as the device existing: torch 2.11
-    builds `cuda:0` on a host with no CUDA and only fails at the move, which turned the
-    "fall back to the layer" branch into "RuntimeError: No CUDA GPUs are available"."""
     from unsloth.models import _utils
 
     assert _utils._device_type_is_usable("cpu")
@@ -156,8 +140,7 @@ def test_an_unavailable_accelerator_is_not_a_usable_device():
 
 
 def test_a_default_pointing_at_a_missing_accelerator_reads_the_layer(monkeypatch):
-    """The CPU-only half of #3538: no attributes, no accelerator, still a device.
-    Spoofed rather than measured, so the assertion is the same on the GPU legs."""
+    """Spoofed rather than measured, so the assertion is the same on the GPU legs."""
     from unsloth.models import _utils
 
     monkeypatch.setattr(_utils, "_device_type_is_usable", lambda device_type: device_type == "cpu")
@@ -173,7 +156,6 @@ def test_a_default_pointing_at_a_missing_accelerator_reads_the_layer(monkeypatch
 
 
 def test_an_available_accelerator_still_wins_the_default(monkeypatch):
-    """The control: the probe must not steal the historical default on a real GPU."""
     from unsloth.models import _utils
 
     monkeypatch.setattr(_utils, "_device_type_is_usable", lambda device_type: True)
@@ -226,7 +208,6 @@ def test_move_to_device_accepts_every_resolution(device, index):
 
 
 def test_cpu_offloaded_layer_no_longer_raises_invalid_target_device():
-    """The verbatim #3538 failure, driven through move_to_device."""
     from unsloth.models._utils import move_to_device, per_layer_device
 
     layer = _Layer(device = torch.device("cpu"), index = "cpu")
@@ -243,7 +224,6 @@ def test_cpu_offloaded_layer_no_longer_raises_invalid_target_device():
 
 
 def test_unsloth_zoo_setter_and_reader_agree():
-    """Round trip through the writer that publishes the attributes."""
     from unsloth.models._utils import per_layer_device
 
     try:
@@ -260,7 +240,6 @@ def test_unsloth_zoo_setter_and_reader_agree():
 
 @pytest.mark.parametrize("path", sorted(READERS))
 def test_every_reader_goes_through_the_helper(path):
-    """Wiring check: no reader may index with the raw attribute again."""
     source = (REPOSITORY_ROOT / path).read_text(encoding = "utf-8")
     assert (
         'getattr(decoder_layer, "_per_layer_device_index"' not in source
@@ -283,7 +262,6 @@ def test_every_reader_imports_the_helper_explicitly(path):
 
 
 def _reader_scopes(source: str, path: str):
-    """(name, lineno) of the innermost function around each per_layer_device call."""
     import ast
 
     tree = ast.parse(source)
@@ -309,12 +287,8 @@ def _reader_scopes(source: str, path: str):
 
 @pytest.mark.parametrize("path", sorted(READERS))
 def test_no_reader_reads_a_name_it_never_binds(path):
-    """The reader functions must not reference an unbound local.
-
-    Binding only the device and discarding the index leaves the per-accelerator tuple
-    subscripts reading a name that no longer exists, which Python reports only at the first
-    decode step. symtable classifies such a name as an implicit global, so checking it
-    against the module's real attributes catches it statically, star imports and all.
+    """Dropping the index leaves the tuple subscripts on a name Python only reports at the
+    first decode step; symtable calls it an implicit global, so this catches it statically.
     """
     import builtins
     import importlib
@@ -357,7 +331,6 @@ def test_no_reader_reads_a_name_it_never_binds(path):
 
 @pytest.mark.parametrize("path", sorted(READERS))
 def test_per_accelerator_tuples_are_still_subscripted_by_an_int(path):
-    """A reader that uses a per-accelerator tuple must keep the buffer index."""
     source = (REPOSITORY_ROOT / path).read_text(encoding = "utf-8")
     for tuple_name in READERS[path]:
         assert f"{tuple_name}[device_index]" in source, (
@@ -387,9 +360,7 @@ def test_cuda_layer_path_is_unchanged():
 
 
 def test_the_backend_probe_is_asked_once_per_device_type():
-    """The reader reaches `torch.cuda.is_available()` on every layer of every token
-    wherever unsloth_zoo publishes only the index, and the answer cannot change inside a
-    process, so it is memoised."""
+    """Reached per layer per token on an index-only zoo, and constant, so memoised."""
     from unsloth.models import _utils
 
     assert hasattr(
@@ -420,9 +391,8 @@ def test_the_backend_probe_is_asked_once_per_device_type():
 
 
 def test_the_published_attributes_are_read_without_a_failed_getattr():
-    """`nn.Module.__getattr__` searches _parameters, _buffers and _modules and then
-    raises, and an unsloth_zoo publishing only the index leaves `_per_layer_device` missing
-    on every layer, so the reader must not discover that through getattr."""
+    """An index-only zoo leaves `_per_layer_device` missing on every layer, and
+    `nn.Module.__getattr__` scans _parameters, _buffers and _modules before raising."""
     from unsloth.models._utils import per_layer_device
 
     class _Counting(_Layer):
@@ -450,8 +420,7 @@ def test_the_published_attributes_are_read_without_a_failed_getattr():
 
 
 def test_a_class_level_attribute_is_still_honoured():
-    """Reading the instance dictionary must not lose a layer that publishes the placement
-    on its class or through a property, which is what the getattr fallback is for."""
+    """What the getattr fallback is for: a class attribute or a property."""
     from unsloth.models._utils import per_layer_device
 
     class _ClassAttribute(_Layer):
@@ -473,9 +442,8 @@ def test_a_class_level_attribute_is_still_honoured():
 
 
 def test_moving_an_activation_to_meta_destroys_it_silently():
-    """`tensor.to("meta")` succeeds and drops the data, and mixing the result with a real
-    tensor propagates meta instead of raising, so a decode that resolved a layer to meta
-    would run to completion and return nothing. That is why meta is excluded everywhere."""
+    """meta propagates through matmul instead of raising, so a decode that resolved to
+    meta runs to completion and returns nothing. Hence meta is excluded everywhere."""
     activation = torch.ones(2, 4)
     moved = activation.to("meta")
     assert moved.device.type == "meta"
@@ -495,7 +463,6 @@ def test_a_meta_layer_never_resolves_to_meta():
 
 
 def test_a_meta_layer_uses_the_accelerate_hook_execution_device():
-    """AlignDevicesHook.pre_forward moves the layer's inputs to `execution_device`."""
     from types import SimpleNamespace
 
     from unsloth.models._utils import per_layer_device
@@ -520,7 +487,6 @@ def test_a_hook_that_itself_says_meta_is_not_believed():
 
 
 def test_a_non_meta_layer_is_unchanged_by_the_meta_guard():
-    """The control: nothing above may touch the ordinary resolutions."""
     from unsloth.models._utils import per_layer_device
 
     device, buffer_index = per_layer_device(_Layer(parameter_device = "cpu", index = None))

@@ -2541,19 +2541,14 @@ if DEVICE_COUNT == 1 and int(os.environ.get("WORLD_SIZE", "1")) <= 1:
 
 _PER_LAYER_DEVICE_MISSING = object()
 
-# Stand-in for an object with no instance dictionary, so the reader never builds one.
+# Shared: `getattr(module, "__dict__", {})` would allocate a dict per layer per token.
 _NO_INSTANCE_DICT = {}
 
 
 @functools.lru_cache(maxsize = None)
 def _device_type_is_usable(device_type: str) -> bool:
-    """Whether tensors can actually be placed on this device type right now.
-
-    Only backends torch publishes as `torch.<type>.is_available` are probed; an unknown
-    type (`meta` among them) is taken at its word. Memoised because `per_layer_device`
-    runs once per decoder layer per generated token and `is_available()` is not free, and
-    the set of usable device types cannot change inside a process.
-    """
+    """No `torch.<type>.is_available` (`meta` included) means taken at its word; memoisable
+    because the usable set cannot change in-process."""
     if device_type == "cpu":
         return True
     is_available = getattr(getattr(torch, device_type, None), "is_available", None)
@@ -2566,13 +2561,8 @@ def _device_type_is_usable(device_type: str) -> bool:
 
 
 def _as_torch_device(value):
-    """`torch.device(value)`, or None when that value cannot name a usable device.
-
-    Never a bare `torch.device(value)`: on a host with no visible accelerator torch 2.6
-    raises from `torch.device(0)` while torch 2.11 returns `cuda:0`, and the caller then
-    only finds out on the first tensor move. Probing the backend makes both answer the
-    same, so a CPU-only host falls through to the layer's own parameters.
-    """
+    """A bare `torch.device(0)` is WRONG: with no accelerator torch 2.6 raises and torch
+    2.11 returns `cuda:0`. Probing the backend makes both return None here."""
     try:
         device = torch.device(value)
     except (RuntimeError, TypeError, ValueError):
@@ -2583,14 +2573,12 @@ def _as_torch_device(value):
 
 
 def _device_of_parameters(module):
-    """The device this module's parameters actually sit on, or None."""
     for parameter in module.parameters():
         return parameter.device
     return None
 
 
 def _non_meta_device_of_parameters(module):
-    """`_device_of_parameters`, except meta never answers: activations cannot go there."""
     device = _device_of_parameters(module)
     if device is not None and device.type == "meta":
         return None
@@ -2598,14 +2586,8 @@ def _non_meta_device_of_parameters(module):
 
 
 def _accelerate_execution_device(module):
-    """Where accelerate will run this layer, for a layer parked on meta, or None.
-
-    `AlignDevicesHook.pre_forward` moves the layer's inputs with
-    `send_to_device(args, self.execution_device)`, so `module._hf_hook.execution_device` is
-    the one authority for an offloaded or not-yet-materialised layer. Guarded end to end:
-    the hook is optional, the field is `int | str | torch.device | None`, and it can itself
-    say "meta".
-    """
+    """`AlignDevicesHook.pre_forward` does `send_to_device(args, self.execution_device)`, so
+    for an offloaded or meta layer that field, not its parameters, says where it runs."""
     execution_device = getattr(getattr(module, "_hf_hook", None), "execution_device", None)
     if execution_device is None:
         return None
@@ -2616,37 +2598,17 @@ def _accelerate_execution_device(module):
 
 
 def per_layer_device(module, default = 0):
-    """Where this decoder layer lives, as (device, buffer_index).
-
-    `unsloth_zoo.patching_utils.verify_and_set_device` publishes `_per_layer_device` (a
-    `torch.device`) and `_per_layer_device_index` (an int for an indexed accelerator, the
-    device type otherwise). Both are needed: gemma, gemma2 and cohere subscript a
-    per-device tuple of float32 layernorm buffers with the index, which a `torch.device`
-    cannot do.
-
-    Resolution probes what is on the module rather than checking a version, because an
-    older unsloth_zoo publishes only the index, and that index is None on a CPU-offloaded
-    or not-yet-materialised layer AND on an accelerator layer it named without one.
-    `move_to_device` rejects None, which is the "ValueError: Invalid target device: None"
-    of unslothai/unsloth#3538; read the placement off the layer instead.
-
-    meta is excluded from every route, because moving an activation there destroys it
-    silently rather than raising. A layer parked on meta is answered from accelerate's
-    `_hf_hook.execution_device`, else from `default`, as is a layer with neither attribute
-    (which is what every reader's `getattr(layer, ..., 0)` used to give).
-
-    This does NOT make inference work on a layer that really is on CPU while the callers'
-    scratch buffers are on an accelerator: llama.py's `temp_gates` and gemma's
-    `out_weights` are allocated per accelerator, so that combination still ends in a loud
-    cross-device RuntimeError. What is fixed is the accelerator-resident layer whose index
-    was never recorded, which is what #3538 reported.
-    """
-    # Instance dictionary rather than getattr: this runs once per decoder layer per
-    # generated token, and `nn.Module.__getattr__` searches _parameters, _buffers and
-    # _modules before raising the AttributeError getattr swallows, which it does on every
-    # layer wherever unsloth_zoo publishes only the index. `verify_and_set_device` assigns
-    # plain non-tensor values, so `nn.Module.__setattr__` puts them here. Fall back to
-    # getattr only when neither name is present, so a class attribute or property still works.
+    """Where this decoder layer lives, as (device, buffer_index). Both halves: gemma,
+    gemma2 and cohere subscript a per-device tuple with the index, which a device cannot do.
+    Probed, not version-gated: an older unsloth_zoo publishes only the index and that index
+    is None on an accelerator layer it named without one, which is the "Invalid target
+    device: None" of unslothai/unsloth#3538. meta is excluded from every route because
+    moving an activation there destroys it silently. Does NOT fix a layer genuinely on CPU
+    while `temp_gates` / `out_weights` sit on an accelerator; that still ends in a loud
+    cross-device RuntimeError."""
+    # Instance dictionary, not getattr: `nn.Module.__getattr__` scans _parameters, _buffers
+    # and _modules before raising, on a path run per layer per token. getattr fallback only
+    # when neither name is present, so a class attribute or property still works.
     published = getattr(module, "__dict__", _NO_INSTANCE_DICT)
     device = published.get("_per_layer_device")
     index = published.get("_per_layer_device_index", _PER_LAYER_DEVICE_MISSING)
@@ -2662,9 +2624,7 @@ def per_layer_device(module, default = 0):
         elif isinstance(index, (int, str)) and not isinstance(index, bool):
             device = _as_torch_device(index)
     if device is None:
-        # Nothing usable was recorded, so keep the historical default. It falls back to
-        # the layer itself because `torch.device(default)` may not be constructible, and
-        # to cpu because a device is still owed.
+        # `torch.device(default)` may not be constructible, and a device is still owed.
         device = (
             _as_torch_device(default)
             or _non_meta_device_of_parameters(module)
@@ -2673,20 +2633,15 @@ def per_layer_device(module, default = 0):
 
     buffer_index = device.index
     if buffer_index is None and device.type == "meta":
-        # An activation may never go to meta: `tensor.to("meta")` succeeds and silently
-        # discards the data, and `torch.matmul(meta, cuda)` returns a meta tensor rather
-        # than raising, so the decode runs to completion and produces nothing, which is
-        # worse than the ValueError this reader replaces.
-        # Behind `buffer_index is None` deliberately: an indexed accelerator device can
-        # never be meta, so only a layer already off an indexed device pays for the
-        # `.type` read, on a path taken once per layer per token.
+        # Behind `buffer_index is None` deliberately: an indexed device can never be meta,
+        # so only an unindexed layer pays the `.type` read once per layer per token.
         device = (
             _accelerate_execution_device(module) or _as_torch_device(default) or torch.device("cpu")
         )
         buffer_index = device.index
     if buffer_index is None:
-        # No indexed accelerator means no buffer of its own; keep the historical
-        # subscript so the per-device tuples stay in range.
+        # No indexed accelerator, so no buffer of its own: the historical subscript keeps
+        # the per-device tuples in range.
         buffer_index = index if isinstance(index, int) and not isinstance(index, bool) else default
     return device, buffer_index
 
