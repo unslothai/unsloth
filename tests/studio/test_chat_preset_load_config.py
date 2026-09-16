@@ -372,6 +372,34 @@ def _consume_statement(block: str, index: int):
     return block[index:], len(block)
 
 
+def _switch_always_returns(statement: str) -> bool:
+    """An exhaustive `switch` whose every case returns.
+
+    Without a `default:` the switch can match nothing and fall past its own closing brace, so
+    only a defaulted one can carry every path. A case that does not return falls through to the
+    next, which is why an empty one is allowed and a `break` is not: `break` leaves the switch
+    with no value.
+    """
+    body = statement[statement.index("{") :] if "{" in statement else ""
+    if not body:
+        return False
+    body = _balanced(body, 0, "{", "}")
+    if not re.search(r"\bdefault\s*:", _outside_literals(body)):
+        return False
+    labels = [m.end() for m in re.finditer(r"\b(?:case\b[^:]*|default\s*):", _outside_literals(body))]
+    if not labels:
+        return False
+    for position, start in enumerate(labels):
+        end = labels[position + 1] if position + 1 < len(labels) else len(body)
+        arm = re.sub(r"\b(?:case\b[^:]*|default\s*):\s*$", "", body[start:end]).strip()
+        if not arm:
+            # Empty: control falls into the next case, which is the one that has to return.
+            continue
+        if not _block_always_returns(arm):
+            return False
+    return True
+
+
 def _block_always_returns(block: str) -> bool:
     """Does every path out of this block go through a `return`?
 
@@ -391,6 +419,8 @@ def _block_always_returns(block: str) -> bool:
         if re.match(r"\breturn\b", stripped):
             return True
         if stripped.startswith("{") and _block_always_returns(_balanced(stripped, 0, "{", "}")):
+            return True
+        if re.match(r"\bswitch\b", stripped) and _switch_always_returns(stripped):
             return True
         branch = re.match(r"\bif\b\s*", stripped)
         if branch is None:
@@ -487,6 +517,22 @@ _NUMBER = r"-?(?:0[xXbBoO][\da-fA-F]+|\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)"
 _LITERAL = rf"(?:null|undefined|true|false|{_NUMBER}|'[^']*'|\"[^\"]*\")(?![\w$.])"
 
 
+def _outside_literals(expression: str) -> str:
+    """`expression` with the contents of quoted literals blanked out.
+
+    Operators are read by searching the text, and a message is text too: `msg === "a!b"` carries
+    a `!` that is part of a value, not a negation, and a selector returning the field unchanged
+    must not be refused for what its strings happen to spell.
+    """
+    out, last = [], 0
+    for match in _STRING_LITERAL.finditer(expression):
+        out.append(expression[last : match.start()])
+        out.append(match.group(0)[0] + " " * (len(match.group(0)) - 2) + match.group(0)[-1])
+        last = match.end()
+    out.append(expression[last:])
+    return "".join(out)
+
+
 def _unwrapped(expression: str) -> str:
     """`expression` with redundant outer parentheses removed.
 
@@ -512,14 +558,17 @@ def _unwrapped(expression: str) -> str:
 def _top_level_conjuncts(guard: str) -> list:
     """`guard` split on the `&&` operators that are not inside brackets."""
     parts, depth, start = [], 0, 0
+    # Bracket and `&&` positions are read off the blanked copy, for the same reason `!` and `||`
+    # are: a quoted literal can spell any of them without being one.
+    scan = _outside_literals(guard)
     index = 0
     while index < len(guard):
-        char = guard[index]
+        char = scan[index]
         if char in "([{":
             depth += 1
         elif char in ")]}":
             depth -= 1
-        elif depth == 0 and guard.startswith("&&", index):
+        elif depth == 0 and scan.startswith("&&", index):
             parts.append(guard[start:index])
             index += 2
             start = index
@@ -550,10 +599,11 @@ def _pinned_literal(guard: str, taken: bool, access: str, field: str):
     unequal = rf"(?:{bound}!==({_LITERAL})|({_LITERAL})!=={bound})"
     # Under `!` a comparison says the opposite of what it reads, so a logical not is refused
     # rather than interpreted.
-    if re.search(r"!(?![=])", re.sub(r"!==", "", guard)):
+    operators = _outside_literals(guard)
+    if re.search(r"!(?![=])", re.sub(r"!==", "", operators)):
         return None
     # A disjunction does not imply its parts, either way round.
-    if "||" in guard:
+    if "||" in operators:
         return None
     if taken:
         # The comparison has to BE a conjunct, not merely occur inside one: an inner equality can
@@ -709,6 +759,10 @@ SELECTOR_CASES = [
     ("(s) => { { return s.reasoningBudget; } }", True),
     ("(s) => { if (s.enabled) { return s.reasoningBudget; } return s.reasoningBudget; }", True),
     ("(s) => s.reasoningBudget === -1 ? -1 : s.reasoningBudget", True),
+    # An operator inside a literal is part of a value: a message may spell `!` or `||`.
+    ('(s) => s.reasoningBudget === "a!b" ? "a!b" : s.reasoningBudget', True),
+    ('(s) => s.reasoningBudget === "a||b" ? "a||b" : s.reasoningBudget', True),
+    ('(s) => s.reasoningBudget === "a&&b" ? "x" : s.reasoningBudget', False),
     # Parenthesising a comparison, or the value it pins to, is a reformatting and nothing more.
     ("(s) => (s.reasoningBudget === -1) ? -1 : s.reasoningBudget", True),
     ("(s) => s.reasoningBudget === -1 ? (-1) : s.reasoningBudget", True),
@@ -742,6 +796,18 @@ SELECTOR_CASES = [
     ("(s) => { if (s.enabled) { return s.other; } return s.reasoningBudget; }", False),
     ("(s) => { if (s.enabled) { return s.reasoningBudget; } return s.reasoningBudget; }", True),
     ("(s) => { for (const x of s.list) { return s.other; } return s.reasoningBudget; }", False),
+    # A defaulted switch whose every arm returns the field leaves no path to undefined.
+    (
+        '(s) => { switch (s.mode) { case "x": return s.reasoningBudget; '
+        "default: return s.reasoningBudget; } }",
+        True,
+    ),
+    ('(s) => { switch (s.mode) { case "x": default: return s.reasoningBudget; } }', True),
+    # Undefaulted: a mode matching nothing falls past the switch and returns undefined.
+    ('(s) => { switch (s.mode) { case "x": return s.reasoningBudget; } }', False),
+    # `break` leaves the switch with no value, which is the fall-through again.
+    ('(s) => { switch (s.mode) { case "x": break; default: return s.reasoningBudget; } }', False),
+    ('(s) => { switch (s.mode) { case "x": return s.other; default: return s.reasoningBudget; } }', False),
     # A loop header's own semicolons do not end a statement: an empty list falls through to
     # undefined, so the loop body is not an unconditional return.
     ("(s) => { for (let i = 0; i < s.list.length; i++) return s.reasoningBudget; }", False),
