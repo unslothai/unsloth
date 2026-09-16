@@ -2572,6 +2572,28 @@ def _as_torch_device(value):
     return device
 
 
+@functools.lru_cache(maxsize = None)
+def _resolved_published_index(index, default):
+    """The half of `per_layer_device` that depends only on the published value, memoised
+    because it runs once per layer per generated token and `torch.device(...)` plus the
+    `.type` probe behind it cost ~330 ns against a ~37 ns attribute read. Memoisable for the
+    same reason `_device_type_is_usable` is: the usable set cannot change in-process.
+    None means "needs the module", so the caller falls through to the unmemoised routes."""
+    if index.__class__ is bool or not isinstance(index, (int, str)):
+        return None
+    device = _as_torch_device(index)
+    if device is None:
+        return None
+    buffer_index = device.index
+    if buffer_index is None:
+        if device.type == "meta":
+            return None
+        # No indexed accelerator, so no buffer of its own: the historical subscript keeps
+        # the per-device tuples in range.
+        buffer_index = index if index.__class__ is int else default
+    return device, buffer_index
+
+
 def _device_of_parameters(module):
     for parameter in module.parameters():
         return parameter.device
@@ -2615,6 +2637,15 @@ def per_layer_device(module, default = 0):
     if device is None and index is _PER_LAYER_DEVICE_MISSING:
         device = getattr(module, "_per_layer_device", None)
         index = getattr(module, "_per_layer_device_index", _PER_LAYER_DEVICE_MISSING)
+
+    if device is None and (index.__class__ is int or index.__class__ is str):
+        # The shape every published unsloth_zoo writes, and the one this reader is slowest
+        # on. Everything below it needs the module; this branch does not, so it is answered
+        # from the memo. Exact class, not isinstance: bool must not key the memo (False
+        # hashes equal to 0), and an unhashable value must fall through, not raise.
+        resolved = _resolved_published_index(index, default)
+        if resolved is not None:
+            return resolved
 
     if not isinstance(device, torch.device):
         device = None

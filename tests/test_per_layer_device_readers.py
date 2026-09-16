@@ -101,6 +101,63 @@ def test_older_unsloth_zoo_integer_index_is_unchanged():
     assert buffer_index == 1, "the buffer subscript must survive either way"
 
 
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs two orderable accelerator ordinals")
+def test_a_boolean_index_is_not_an_accelerator_ordinal():
+    """`False` is not device 0: it takes the `default` route, like any value that is not an
+    index. A non-zero default is what makes this visible, since `int(False)` is 0 and the
+    two routes agree on the default of 0. `False` also hashes equal to 0, so admitting it
+    would key the published-index memo with an answer meant for a different value."""
+    from unsloth.models._utils import per_layer_device
+
+    layer = _Layer(index = False, parameter_device = "cpu")
+    device, buffer_index = per_layer_device(layer, default = 1)
+    assert device == torch.device(1), "a bool index resolved as the ordinal 0"
+    assert buffer_index == 1
+
+
+def test_a_boolean_index_does_not_poison_the_memo_for_zero():
+    """The order matters: resolve the bool first, then 0, and assert 0 still answers for
+    itself. Reversed, a shared memo entry would be masked by the correct value arriving
+    first."""
+    from unsloth.models._utils import per_layer_device
+
+    per_layer_device(_Layer(index = False, parameter_device = "cpu"))
+    device, buffer_index = per_layer_device(_Layer(index = 0, parameter_device = "cpu"))
+    if default_device_is_usable():
+        assert device == torch.device(0)
+    else:
+        assert device == torch.device("cpu")
+    assert buffer_index == 0
+
+
+def test_the_memo_is_keyed_on_the_default_as_well_as_the_index():
+    """An unindexed device takes its buffer subscript from `default`, so the memo has to key
+    on both. Keyed on the index alone, the second call here answers with the first call's
+    subscript and a per-device tuple is read at the wrong offset."""
+    from unsloth.models._utils import per_layer_device
+
+    layer = _Layer(index = "cpu", parameter_device = "cpu")
+    first_device, first_index = per_layer_device(layer, default = 0)
+    second_device, second_index = per_layer_device(layer, default = 1)
+    assert first_device == torch.device("cpu")
+    assert second_device == torch.device("cpu")
+    assert first_index == 0
+    assert second_index == 1, "the memo returned the subscript for a different default"
+
+
+def test_two_layers_on_different_devices_do_not_share_a_memo_entry():
+    """The memo is keyed on the published value, so a pipeline-parallel model must not have
+    every layer answer with whichever device was resolved first."""
+    from unsloth.models._utils import per_layer_device
+
+    first, _ = per_layer_device(_Layer(index = 0, parameter_device = "cpu"))
+    second, second_index = per_layer_device(_Layer(index = 1, parameter_device = "cpu"))
+    if default_device_is_usable():
+        assert first == torch.device(0)
+        assert second == torch.device(1)
+    assert second_index == 1
+
+
 def test_older_unsloth_zoo_none_index_reads_the_layer_instead():
     from unsloth.models._utils import per_layer_device
 
