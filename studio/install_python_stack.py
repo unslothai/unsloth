@@ -8421,7 +8421,12 @@ def _mlx_stack_is_current() -> bool:
         return False
     try:
         from packaging.requirements import Requirement
-        if not Requirement(_MLX_VLM_SPEC).specifier.contains(installed, prereleases = True):
+        # The narrowed spec, not the static one: with an older zoo beside an already-installed
+        # 0.7.1 the static range reads as satisfied and the step skips the very install that
+        # would put mlx-vlm back where the zoo can drive it.
+        if not Requirement(_mlx_vlm_spec_for_installed_zoo()).specifier.contains(
+            installed, prereleases = True,
+        ):
             return False
     except Exception:  # noqa: BLE001 - no packaging, or a version it cannot parse
         return False
@@ -8459,7 +8464,10 @@ def _mlx_closure_unmet() -> bool:
         _fd, _name = _tempfile.mkstemp(prefix = "unsloth-mlx-", suffix = ".txt", text = True)
         os.close(_fd)
         handle = Path(_name)
-        handle.write_text("\n".join([*_MLX_PINS, _MLX_VLM_SPEC]) + "\n", encoding = "utf-8")
+        handle.write_text(
+            "\n".join([*_MLX_PINS, _mlx_vlm_spec_for_installed_zoo()]) + "\n",
+            encoding = "utf-8",
+        )
         unmet = install_manifest.closure_unmet_requirements(handle, _installed_index())
         # An override REPLACES every requirement on the package it names, so the installed
         # version is the override's, not the one mlx-vlm's metadata asks for. Read raw, that
@@ -8511,7 +8519,8 @@ _MLX_IMPORTED_DEPENDENCIES = (
 def _mlx_health_fingerprint() -> dict:
     """What a recorded MLX verdict is only valid for."""
     return {
-        "pins": list(_MLX_PINS) + [_MLX_VLM_SPEC],
+        # The narrowed spec, so installing a different zoo invalidates a recorded verdict.
+        "pins": list(_MLX_PINS) + [_mlx_vlm_spec_for_installed_zoo()],
         "python": _installer_python_tag(),
         "mlx_vlm": _installed_distribution_version("mlx-vlm") or "",
         # Versions as installed; an older record without this key is probed once and rewritten.

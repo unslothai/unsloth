@@ -318,3 +318,19 @@ def test_mlx_vlm_spec_is_unchanged_without_an_installed_zoo(monkeypatch):
 
     monkeypatch.setattr(importlib.metadata, "requires", _raise)
     assert stack._mlx_vlm_spec_for_installed_zoo() == stack._MLX_VLM_SPEC
+
+
+def test_the_skip_predicate_uses_the_narrowed_range(monkeypatch):
+    """0.7.1 already installed beside a zoo declaring <0.7.0 must NOT read as current, or the
+    step skips the install that would put mlx-vlm back where the zoo can drive it."""
+    monkeypatch.setattr(stack, "_exact_distribution_spec_is_installed", lambda _spec: True)
+    monkeypatch.setattr(stack, "_installed_distribution_version", lambda _name: "0.7.1")
+    monkeypatch.setattr(stack, "_mlx_closure_unmet", lambda: [])
+
+    monkeypatch.setattr(stack, "_mlx_vlm_spec_for_installed_zoo", lambda: stack._MLX_VLM_SPEC)
+    assert stack._mlx_stack_is_current() is True
+
+    monkeypatch.setattr(
+        stack, "_mlx_vlm_spec_for_installed_zoo", lambda: f"{stack._MLX_VLM_SPEC},<0.7.0"
+    )
+    assert stack._mlx_stack_is_current() is False
