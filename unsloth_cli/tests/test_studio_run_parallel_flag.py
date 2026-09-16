@@ -353,7 +353,7 @@ def test_in_venv_child_reports_bound_port_before_start_api_key(
         catch_exceptions = True,
     )
 
-    assert "UNSLOTH_START_PORT: 8889\nUNSLOTH_START_API_KEY: «redacted:sk-…»\n" in result.output
+    assert "UNSLOTH_START_PORT: 8889\nUNSLOTH_START_API_KEY: sk-unsloth-test\n" in result.output
 
 
 def test_run_api_max_concurrency_rides_the_env_across_the_reexec(monkeypatch):
