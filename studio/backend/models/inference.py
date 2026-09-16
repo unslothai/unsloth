@@ -33,6 +33,28 @@ from core.inference.video_families import MAX_VIDEO_NUM_FRAMES
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
 
 
+def resolve_inventory_handle(value: str) -> str:
+    """Turn a `ref:...` identity from an inventory listing back into the path it stands for.
+
+    A caller that may not see host paths is shown filesystem-backed local models under an
+    opaque reference, and hands that reference straight back when it asks to load, validate
+    or train one. Every request model that consumes an inventory identity therefore resolves
+    it, or the row is advertised as actionable and is not.
+
+    A reference this process did not issue, or one that has aged out of the table, is left
+    exactly as it arrived and fails the way an unknown model would. Nothing about
+    authorization is decided here: the resolved path goes through every check a path a caller
+    named directly goes through.
+    """
+    if not isinstance(value, str) or not value.startswith("ref:"):
+        return value
+    try:
+        from hub.utils.host_paths import resolve_host_path_reference
+    except Exception:  # noqa: BLE001 -- a resolver that cannot import must not fail loads
+        return value
+    return resolve_host_path_reference(value) or value
+
+
 class LoadRequest(BaseModel):
     """Request to load a model for inference"""
 
@@ -81,28 +103,7 @@ class LoadRequest(BaseModel):
         description = "Custom Jinja2 chat template to use instead of the model's default",
     )
 
-    @field_validator("model_path")
-    @classmethod
-    def resolve_a_redacted_local_handle(cls, value: str) -> str:
-        """Turn a `ref:...` identity back into the path it stands for.
-
-        A caller that may not see host paths is shown filesystem-backed local models under
-        an opaque reference, and hands that reference straight back when it asks to load
-        one. Resolving it here, on the single field every load goes through, is what keeps
-        such a row actionable; see `hub.utils.host_paths.resolve_host_path_reference`.
-
-        A reference this process did not issue, or one that has aged out of the table, is
-        left exactly as it arrived and fails as an unknown model would. Nothing about
-        authorization is decided here: the resolved path goes through every check a path a
-        caller named directly goes through.
-        """
-        if not isinstance(value, str) or not value.startswith("ref:"):
-            return value
-        try:
-            from hub.utils.host_paths import resolve_host_path_reference
-        except Exception:  # noqa: BLE001 -- a resolver that cannot import must not fail loads
-            return value
-        return resolve_host_path_reference(value) or value
+    _resolve_the_handle = field_validator("model_path")(resolve_inventory_handle)
 
     @field_validator("chat_template_override")
     @classmethod
@@ -472,6 +473,8 @@ class ValidateModelRequest(BaseModel):
     """Check whether an identifier resolves to a ModelConfig; does NOT load weights."""
 
     model_path: str = Field(..., description = "Model identifier or local path")
+    # The same inventory handle the picker was shown; see `resolve_inventory_handle`.
+    _resolve_the_handle = field_validator("model_path")(resolve_inventory_handle)
     native_path_lease: Optional[str] = Field(
         None, description = "Frontend-visible signed native path grant"
     )
@@ -3589,6 +3592,8 @@ class DiffusionLoadRequest(BaseModel):
     """Request to load a local diffusion (text-to-image) checkpoint."""
 
     model_path: str = Field(..., description = "Diffusion repo id or local path")
+    # The same inventory handle the picker was shown; see `resolve_inventory_handle`.
+    _resolve_the_handle = field_validator("model_path")(resolve_inventory_handle)
     gguf_filename: Optional[str] = Field(
         None,
         description = "The chosen single-file checkpoint (GGUF or safetensors) inside "
@@ -4495,6 +4500,8 @@ class VideoLoadRequest(BaseModel):
     """Request to load a local text-to-video checkpoint."""
 
     model_path: str = Field(..., description = "Video repo id or local path")
+    # The same inventory handle the picker was shown; see `resolve_inventory_handle`.
+    _resolve_the_handle = field_validator("model_path")(resolve_inventory_handle)
     gguf_filename: Optional[str] = Field(
         None,
         description = "The chosen single-file checkpoint (GGUF or safetensors) inside "

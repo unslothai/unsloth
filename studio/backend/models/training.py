@@ -97,12 +97,30 @@ def _parse_lr(v: Any) -> float:
     return lr
 
 
+def _resolve_inventory_handle(value: str) -> str:
+    """`models.inference.resolve_inventory_handle`, imported lazily.
+
+    Imported inside the function rather than at module scope because `models.inference` is a
+    large module and this one is imported by the CLI, where the loader schemas are not
+    needed.
+    """
+    try:
+        from models.inference import resolve_inventory_handle
+    except Exception:  # noqa: BLE001 -- a resolver that cannot import must not fail a run
+        return value
+    return resolve_inventory_handle(value)
+
+
 class TrainingStartRequest(BaseModel):
     """Request schema for starting training"""
 
     model_name: str = Field(
         ..., description = "Model identifier (e.g., 'unsloth/llama-3-8b-bnb-4bit')"
     )
+    # A filesystem-backed row from the inventory is advertised to an API-key caller under an
+    # opaque handle; training consumes the same identity the picker was shown, so it resolves
+    # it too. See `models.inference.resolve_inventory_handle`.
+    _resolve_the_handle = field_validator("model_name")(_resolve_inventory_handle)
     project_name: Optional[str] = Field(
         None,
         max_length = 80,

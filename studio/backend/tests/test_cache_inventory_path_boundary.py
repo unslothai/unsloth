@@ -924,3 +924,70 @@ def test_a_reference_table_that_fills_up_drops_the_oldest(monkeypatch):
     assert host_paths.resolve_host_path_reference(first) is None
     newest = host_paths.cache_reference("/host/newest")
     assert host_paths.resolve_host_path_reference(newest) == "/host/newest"
+
+
+def test_every_request_that_consumes_an_inventory_identity_resolves_the_handle():
+    """One endpoint resolving the handle is not enough: the picker's identity is passed to
+    validation, diffusion, video and training too, and `is_local_path` reads the colon in
+    `ref:` as local syntax, so those calls failed as a nonexistent path."""
+    from models.inference import (
+        DiffusionLoadRequest,
+        LoadRequest,
+        ValidateModelRequest,
+        VideoLoadRequest,
+    )
+    from models.training import TrainingStartRequest
+
+    reference = host_paths.cache_reference(f"{HOST_ROOT}/my models/Llama-3.2-1B")
+    resolved = f"{HOST_ROOT}/my models/Llama-3.2-1B"
+
+    for request_model in (
+        LoadRequest,
+        ValidateModelRequest,
+        DiffusionLoadRequest,
+        VideoLoadRequest,
+    ):
+        assert request_model(model_path = reference).model_path == resolved, request_model
+        # And an ordinary repo id is untouched everywhere.
+        assert request_model(model_path = "unsloth/Llama-3.2-1B").model_path == (
+            "unsloth/Llama-3.2-1B"
+        ), request_model
+
+    training = TrainingStartRequest(
+        model_name = reference,
+        training_type = "LoRA/QLoRA",
+        format_type = "chat",
+    )
+    assert training.model_name == resolved
+
+
+def test_a_cache_reference_can_delete_the_copy_it_names(monkeypatch):
+    """An API-key caller is given `cache_ref` instead of `cache_path`, so the reference is
+    the only identifier it has for a specific non-active copy. Sending it produced "Invalid
+    cache_path", and omitting it acted on the active root, which is a different copy."""
+    seen = {}
+
+    async def _delete(repo_id, variant, hf_token, cache_path, only_if_orphan):
+        seen["cache_path"] = cache_path
+        return {"status": "deleted", "repo_id": repo_id}
+
+    from hub.services.models import deletion
+
+    monkeypatch.setattr(deletion, "delete_cached_model_response", _delete)
+    reference = host_paths.cache_reference(REPO_DIR)
+    body = {"repo_id": "unsloth/Llama-3.2-1B", "cache_path": reference}
+    response = _hub(via_api_key = True).request(
+        "DELETE",
+        "/api/hub/delete-cached",
+        json = body,
+    )
+    assert response.status_code == 200, response.text
+    assert seen["cache_path"] == REPO_DIR
+
+    # A literal path from a browser session still goes through untouched.
+    _hub(via_api_key = False).request(
+        "DELETE",
+        "/api/hub/delete-cached",
+        json = {"repo_id": "unsloth/Llama-3.2-1B", "cache_path": REPO_DIR},
+    )
+    assert seen["cache_path"] == REPO_DIR

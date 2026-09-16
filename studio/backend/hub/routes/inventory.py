@@ -19,6 +19,7 @@ from hub.utils.host_paths import (
     redact_host_paths,
     redact_inventory_error_detail,
     redact_inventory_host_paths,
+    resolve_host_path_reference,
 )
 from hub.schemas.downloads import (
     ActiveDownloadsResponse,
@@ -337,6 +338,14 @@ async def delete_cached_model(
     hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
+    # The listing answers an API-key caller with `cache_ref` where the browser session gets
+    # `cache_path`, so the one identifier such a caller HAS for a specific copy is the
+    # reference. Without this, naming the row it was shown produced "Invalid cache_path" and
+    # omitting it silently acted on the active root instead, which is a different copy.
     return await deletion.delete_cached_model_response(
-        repo_id, variant, hf_token, cache_path, only_if_orphan
+        repo_id,
+        variant,
+        hf_token,
+        resolve_host_path_reference(cache_path) or cache_path,
+        only_if_orphan,
     )
