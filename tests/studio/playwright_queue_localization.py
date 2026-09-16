@@ -161,6 +161,45 @@ def check_candidate_confirming_enter(page, base):
     print("PASS: a candidate-confirming Enter does not save the edit", flush = True)
 
 
+def start_composition(page):
+    page.evaluate(
+        """() => {
+            const ta = document.querySelector('textarea[aria-label^="Edit queued prompt"]');
+            ta.dispatchEvent(new CompositionEvent('compositionstart', {bubbles: true}));
+        }"""
+    )
+
+
+def check_stuck_composition_recovers(page, base):
+    # Some IMEs never send compositionend. The gate must not wedge Enter.
+    seed(page, base, shortcut = "enter")
+    editor = open_editor(page, "More options for queued prompt 1", "Edit message")
+    editor.fill("recovers-after-timeout")
+    start_composition(page)
+    editor.press("Enter")
+    expect(editor).to_be_visible()
+    # The watchdog drops the flag, so the next Enter saves.
+    page.wait_for_timeout(2800)
+    editor.press("Enter")
+    expect(editor).to_have_count(0)
+    expect(page.locator("[data-queue-item-id]").first).to_contain_text(
+        "recovers-after-timeout"
+    )
+
+    # Blur is the other reset point.
+    editor = open_editor(page, "More options for queued prompt 2", "Edit message")
+    editor.fill("recovers-after-blur")
+    start_composition(page)
+    editor.blur()
+    editor.focus()
+    editor.press("Enter")
+    expect(editor).to_have_count(0)
+    expect(page.locator("[data-queue-item-id]").nth(1)).to_contain_text(
+        "recovers-after-blur"
+    )
+    print("PASS: a stuck composition recovers on timeout and on blur", flush = True)
+
+
 def main():
     server = None
     try:
@@ -189,6 +228,7 @@ def main():
                 check_editor_shortcut(page, base)
                 check_escape_during_ime(page, base)
                 check_candidate_confirming_enter(page, base)
+                check_stuck_composition_recovers(page, base)
                 assert not errors, errors
             finally:
                 browser.close()

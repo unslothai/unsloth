@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import {
   CornerDownRightIcon,
   GripVerticalIcon,
@@ -38,6 +38,9 @@ import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 
+// Matches the composer's IME watchdog.
+const IME_STUCK_TIMEOUT_MS = 2500;
+
 type PromptQueueListProps = {
   entry: PromptQueueUIEntry;
   items: PromptQueueUIItem[];
@@ -67,6 +70,7 @@ export function PromptQueueList({
   const [announcement, setAnnouncement] = useState("");
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const composingRef = useRef(false);
+  const composingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const editFromMenuRef = useRef(false);
   const instructionsId = useId();
   const editingItem = items.find(
@@ -95,8 +99,28 @@ export function PromptQueueList({
     inputRef.current?.select();
   }, [activeEditingId]);
 
+  // Some IMEs never send compositionend, which would wedge the Enter gate
+  // below. Drop the flag after a quiet spell, as the composer's watchdog does.
+  const setComposing = useCallback((next: boolean) => {
+    composingRef.current = next;
+    if (composingTimerRef.current) clearTimeout(composingTimerRef.current);
+    composingTimerRef.current = next
+      ? setTimeout(() => {
+          composingTimerRef.current = null;
+          composingRef.current = false;
+        }, IME_STUCK_TIMEOUT_MS)
+      : null;
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (composingTimerRef.current) clearTimeout(composingTimerRef.current);
+    },
+    [],
+  );
+
   function startEditing(item: PromptQueueUIItem) {
-    composingRef.current = false;
+    setComposing(false);
     setDraft(item.prompt);
     setEditingId(item.id);
   }
@@ -177,12 +201,12 @@ export function PromptQueueList({
                       value={draft}
                       rows={2}
                       onChange={(event) => setDraft(event.currentTarget.value)}
-                      onCompositionStart={() => {
-                        composingRef.current = true;
-                      }}
-                      onCompositionEnd={() => {
-                        composingRef.current = false;
-                      }}
+                      onCompositionStart={() => setComposing(true)}
+                      onCompositionUpdate={() => setComposing(true)}
+                      onCompositionEnd={() => setComposing(false)}
+                      // Blur commits or cancels any composition first, so it is
+                      // a safe unconditional reset.
+                      onBlur={() => setComposing(false)}
                       onKeyDown={(event) => {
                         // The candidate window owns this key, Escape included:
                         // cancelling here would discard the draft instead.
@@ -190,18 +214,20 @@ export function PromptQueueList({
                           event.nativeEvent.isComposing ||
                           event.nativeEvent.keyCode === 229
                         ) {
-                          composingRef.current = true;
+                          setComposing(true);
                           return;
                         }
                         if (composingRef.current) {
                           // Candidate-confirming Enter can arrive as
-                          // non-composing; keep it gated.
+                          // non-composing; keep it gated. It follows the
+                          // composition immediately, so the gate is not
+                          // re-armed here and a stuck flag times out.
                           if (event.key === "Enter") {
                             if (!event.shiftKey) event.preventDefault();
                             return;
                           }
                           // Any other key means the composition really ended.
-                          composingRef.current = false;
+                          setComposing(false);
                         }
                         if (event.key === "Escape") {
                           event.preventDefault();
