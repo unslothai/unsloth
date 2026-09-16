@@ -624,6 +624,29 @@ def _modeling_module_is_interface_based(model_class):
     return all(marker in source for marker in _FLEX_INTERFACE_MARKERS)
 
 
+def _declares_flex_support(model_class):
+    """The architecture's OWN `_supports_flex_attn`, or None when it only inherits one.
+
+    Read off `vars(klass)` rather than `getattr`, walking the MRO and stopping at
+    Transformers' generic `PreTrainedModel`, because that base declares
+    `_supports_flex_attn = False` for every model in the library. `getattr` therefore
+    reports False for an architecture that simply never mentioned the flag, which is
+    indistinguishable from one that deliberately turned it off.
+    """
+    try:
+        from transformers.modeling_utils import PreTrainedModel
+    except Exception:
+        return None
+    for klass in getattr(model_class, "__mro__", ()):
+        if klass is PreTrainedModel:
+            break
+        if not isinstance(klass, type):
+            continue
+        if "_supports_flex_attn" in vars(klass):
+            return vars(klass)["_supports_flex_attn"]
+    return None
+
+
 def _enable_flex_attention_support(model_class, model_type = ""):
     """Opt a brand-new architecture into flex_attention that Transformers has not blessed yet.
 
@@ -640,6 +663,15 @@ def _enable_flex_attention_support(model_class, model_type = ""):
     if _is_flex_excluded(str(model_type).lower()):
         return False
     if not _modeling_module_is_interface_based(model_class):
+        return False
+    if _declares_flex_support(model_class) is False:
+        # The architecture opted out on purpose. Transformers' generic PreTrainedModel sets
+        # _supports_flex_attn = False for everyone, so "False" alone means nothing; what
+        # counts is whether one of the architecture's OWN classes restates it. qwen3_5 and
+        # qwen3_5_moe never do, they just inherit the base default, which is the unset case
+        # this function exists to fix. T5Gemma2 does restate it, because its custom masks
+        # cannot be merged safely under flex, and forcing it there would pick an attention
+        # backend its own authors ruled out.
         return False
     anchor = _flex_support_anchor_class(model_class)
     key = f"{getattr(anchor, '__module__', '')}.{getattr(anchor, '__name__', '')}"

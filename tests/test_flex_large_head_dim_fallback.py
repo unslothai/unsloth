@@ -57,3 +57,52 @@ def test_mapping_support_scopes_flex_to_the_decoder():
 def test_mapping_support_text_only_is_a_plain_string():
     u._ATTN_IMPL_MAPPING_SUPPORTED.append(True)
     assert u._flex_attn_impl_for(_text_only(), "sdpa") == "flex_attention"
+
+
+# --- explicit architecture opt-outs must survive the force-enable path -----------------
+#
+# Transformers' generic PreTrainedModel sets _supports_flex_attn = False for every model, so
+# getattr() cannot tell "never mentioned it" from "deliberately turned it off". qwen3_5 is the
+# first; T5Gemma2 is the second, and its own base class documents that flex is disabled because
+# its custom masks cannot be merged safely. Forcing it there would select a backend its authors
+# ruled out, so the read has to come off vars() with the MRO walk stopping at the generic base.
+
+def _real_model_class(module_path, class_name):
+    pytest.importorskip("transformers")
+    import importlib
+    try:
+        mod = importlib.import_module(module_path)
+    except Exception:
+        pytest.skip(f"{module_path} not available in this transformers")
+    cls = getattr(mod, class_name, None)
+    if cls is None:
+        pytest.skip(f"{class_name} not available in this transformers")
+    return cls
+
+
+def test_qwen3_5_only_inherits_the_base_default():
+    cls = _real_model_class("transformers.models.qwen3_5.modeling_qwen3_5",
+                            "Qwen3_5ForConditionalGeneration")
+    assert u._declares_flex_support(cls) is None
+
+
+def test_t5gemma2_declares_its_own_opt_out():
+    cls = _real_model_class("transformers.models.t5gemma2.modeling_t5gemma2",
+                            "T5Gemma2ForConditionalGeneration")
+    assert u._declares_flex_support(cls) is False
+
+
+def test_force_enable_refuses_an_explicit_opt_out():
+    cls = _real_model_class("transformers.models.t5gemma2.modeling_t5gemma2",
+                            "T5Gemma2ForConditionalGeneration")
+    u._FLEX_SUPPORT_FORCED.clear()
+    assert u._enable_flex_attention_support(cls, "t5gemma2") is False
+    # and it must not have mutated the class on the way out
+    assert u._declares_flex_support(cls) is False
+
+
+def test_force_enable_still_opts_in_qwen3_5():
+    cls = _real_model_class("transformers.models.qwen3_5.modeling_qwen3_5",
+                            "Qwen3_5ForConditionalGeneration")
+    u._FLEX_SUPPORT_FORCED.clear()
+    assert u._enable_flex_attention_support(cls, "qwen3_5") is True
