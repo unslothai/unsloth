@@ -278,3 +278,48 @@ def test_the_state_is_still_named_planned_flash_attn():
     source = inspect.getsource(inspect.unwrap(LlamaCppBackend.load_model))
     assert "planned_flash_attn = _planned_flash_attn_state(" in source
     assert "planned_flash_attn = False" not in source
+
+
+class TestAutoIsNotAnAnswer:
+    """``auto`` is llama.cpp saying it will decide at load time.
+
+    It decides against flash attention whenever the backend, the model or the cache pair
+    cannot take it (ROCm on several quantized caches, Metal on a mixed quantized pair, Vulkan),
+    silently: no error, no log line. Sizing that reads auto as "on" therefore prices a cache
+    that can turn out 1.44x at q8_0 and 2.28x at q4_0 larger than planned, on exactly the hosts
+    least able to absorb it. Studio's own launch emits ``on``, never ``auto``, so this is only
+    reached from a user's extra arguments or an inherited LLAMA_ARG_FLASH_ATTN.
+    """
+
+    def test_an_explicit_auto_prices_the_padded_cache(self):
+        assert _planned_flash_attn_state(["--flash-attn", "auto"]) is False
+        assert _planned_flash_attn_state(["-fa", "auto"]) is False
+        assert _planned_flash_attn_state(["-fa=auto"]) is False
+        # llama.cpp's numeric spelling of the same value.
+        assert _planned_flash_attn_state(["-fa", "-1"]) is False
+
+    def test_the_environment_spelling_is_read_too(self):
+        assert _planned_flash_attn_state(None, env = {"LLAMA_ARG_FLASH_ATTN": "auto"}) is False
+        # And the extras still beat the environment, in both directions.
+        assert _planned_flash_attn_state(
+            ["-fa", "on"], env = {"LLAMA_ARG_FLASH_ATTN": "auto"}
+        ) is True
+        assert _planned_flash_attn_state(
+            ["-fa", "auto"], env = {"LLAMA_ARG_FLASH_ATTN": "1"}
+        ) is False
+
+    def test_the_last_flag_still_wins(self):
+        assert _planned_flash_attn_state(["-fa", "auto", "-fa", "on"]) is True
+        assert _planned_flash_attn_state(["-fa", "on", "-fa", "auto"]) is False
+
+    def test_a_quantized_v_cache_still_forces_it_on(self):
+        """The one thing auto cannot undo: llama.cpp turns flash attention on itself for a
+        quantized V cache rather than refusing the load, so that is what the launch runs."""
+        assert _planned_flash_attn_state(
+            ["-fa", "auto"], planned_cache_types = ("q8_0", "q4_0")
+        ) is True
+
+    def test_the_managed_launch_is_unaffected(self):
+        """Studio emits ``--flash-attn on``; nothing here changes the default path."""
+        assert _planned_flash_attn_state(None) is True
+        assert _planned_flash_attn_state([]) is True

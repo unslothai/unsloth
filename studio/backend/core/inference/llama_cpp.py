@@ -4665,10 +4665,48 @@ def _planned_flash_attn_state(
     """
     if not supports_flash_attn:
         return False
-    if _flash_attn_enabled_from_args(extra_args, default = True, env = env):
-        return True
     v_type = (planned_cache_types[1] if planned_cache_types else "f16") or "f16"
-    return str(v_type).strip().lower() not in {"f16", "bf16", "f32"}
+    quantized_v = str(v_type).strip().lower() not in {"f16", "bf16", "f32"}
+    if quantized_v:
+        # Not a choice: llama.cpp turns it on itself rather than refusing the load.
+        return True
+    if _asked_for_auto_flash_attn(extra_args, env = env):
+        # ``auto`` is llama.cpp saying it will decide at load time, and it decides against
+        # flash attention whenever the backend, the model or the cache pair cannot take it
+        # (ROCm on several quantized caches, Metal on a mixed quantized pair, Vulkan), with
+        # no error and no log line. Studio's own launch emits ``on``, never ``auto``, so this
+        # is only reached from a user's extra arguments or an inherited LLAMA_ARG_FLASH_ATTN,
+        # and there the honest sizing is the one that also survives the answer being no: the
+        # padded, f16-floored cache is the larger of the two.
+        return False
+    return _flash_attn_enabled_from_args(extra_args, default = True, env = env)
+
+
+def _asked_for_auto_flash_attn(
+    extra_args: Optional[Iterable[str]] = None,
+    *,
+    env: Optional[Mapping[str, str]] = None,
+) -> bool:
+    """Whether the resolved flash-attention setting is llama.cpp's ``auto``, not on or off.
+
+    Last-wins over the same two inputs ``_flash_attn_enabled_from_args`` reads, because that
+    helper folds auto into True: it answers what the argv will SAY, which is what an argv
+    rewrite needs, while sizing needs to know that nobody has decided yet.
+    """
+    asked: Optional[str] = None
+    value = (os.environ if env is None else env).get("LLAMA_ARG_FLASH_ATTN")
+    if value in _LLAMA_ARG_TRUE_FALSE_AUTO_VALUES:
+        asked = value
+    values = [str(arg) for arg in extra_args] if extra_args else []
+    for i, raw in enumerate(values):
+        if _flag_name(raw) not in {"-fa", "--flash-attn"}:
+            continue
+        _, eq, inline = raw.partition("=")
+        value = inline if eq else "on"
+        if not eq and i + 1 < len(values) and values[i + 1] in _LLAMA_ARG_TRUE_FALSE_AUTO_VALUES:
+            value = values[i + 1]
+        asked = value
+    return asked in _LLAMA_ARG_AUTO_VALUES
 
 
 def _flash_attn_enabled_from_args(
