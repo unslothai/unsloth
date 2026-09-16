@@ -4390,13 +4390,20 @@ def test_planner_opt_out_is_only_sent_where_the_model_has_one(research_home, mon
             return FakeResponse()
 
     monkeypatch.setattr(worker.httpx, "AsyncClient", FakeClient)
-    monkeypatch.setattr(worker.auth_storage, "create_api_key", lambda **kwargs: ("token", {"id": 1}))
+    monkeypatch.setattr(
+        worker.auth_storage, "create_api_key", lambda **kwargs: ("token", {"id": 1})
+    )
     monkeypatch.setattr(worker.auth_storage, "revoke_internal_api_key", lambda key_id: None)
     monkeypatch.setattr(
         worker.db, "append_worker_event", lambda run_id, worker_id, event_type, data: 1
     )
     supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
-    external = {"model": "m", "providerId": "p1", "providerType": "huggingface", "externalModel": "m"}
+    external = {
+        "model": "m",
+        "providerId": "p1",
+        "providerType": "huggingface",
+        "externalModel": "m",
+    }
 
     def planner_payload(**inference):
         run["config"]["inferenceRequest"] = {**external, **inference}
@@ -4413,11 +4420,17 @@ def test_planner_opt_out_is_only_sent_where_the_model_has_one(research_home, mon
         return payloads[0]
 
     # gpt-oss has no "none" effort, so the planner keeps the chat's effort instead.
-    no_off = planner_payload(supportsReasoning = True, supportsReasoningOff = False, reasoningEffort = "high")
+    no_off = planner_payload(
+        supportsReasoning = True, supportsReasoningOff = False, reasoningEffort = "high"
+    )
     assert "enable_thinking" not in no_off and no_off["reasoning_effort"] == "high"
-    plain = planner_payload(supportsReasoning = False, supportsReasoningOff = False, enableThinking = True)
+    plain = planner_payload(
+        supportsReasoning = False, supportsReasoningOff = False, enableThinking = True
+    )
     assert "enable_thinking" not in plain and "reasoning_effort" not in plain
-    with_off = planner_payload(supportsReasoning = True, supportsReasoningOff = True, reasoningEffort = "high")
+    with_off = planner_payload(
+        supportsReasoning = True, supportsReasoningOff = True, reasoningEffort = "high"
+    )
     assert with_off["enable_thinking"] is False and with_off["reasoning_effort"] == "none"
     # A run queued or retried from before these flags existed carries neither, so the gate has
     # to treat unknown like non-reasoning: a resumed legacy run must not be the one request that
