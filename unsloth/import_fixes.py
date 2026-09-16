@@ -1512,6 +1512,12 @@ def _is_broken_torchvision_error(error) -> bool:
 # unqualified pin swaps a working wheel for PyPI's and raises the very
 # "operator torchvision::nms does not exist" it was handed out to clear.
 _TORCH_BACKEND_INDEX = re.compile(r"cpu|xpu|cu\d+|rocm\d+(?:\.\d+)*", re.IGNORECASE)
+# The same families, matched as a PREFIX. A vendor build carries more than the family in its
+# local tag: this repo's AMD extras install torch-2.10.0+rocm7.2.0.lw.gitb6ee5fde and
+# triton-3.6.0+rocm7.2.0.gitba5c1517 straight from repo.radeon.com, and neither tag is an
+# index name. Those are not PyPI builds, so advice that treats them as PyPI ones would swap a
+# working Radeon wheel for the default CUDA build.
+_TORCH_BACKEND_FAMILY = re.compile(r"(cpu|xpu|cu\d+|rocm[\d.]*)", re.IGNORECASE)
 # conda keeps the backend in the build string (py3.12_cuda12.4_cudnn9_0) and leaves the version
 # plain, so a conda torch looks like a PyPI one by version alone; its
 # conda-meta/<name>-<version>-<build>.json tells them apart.
@@ -1616,7 +1622,19 @@ def _torch_accelerator_note(torch_version_raw):
             )
         return ""
     if not _TORCH_BACKEND_INDEX.fullmatch(local):
-        return ""
+        vendor = _TORCH_BACKEND_FAMILY.match(local)
+        if vendor is None:
+            return ""
+        # A tag that names a family but is not an index name is a vendor build, which is
+        # what this repo's own AMD extras install. PyPI has no such version, and neither
+        # does download.pytorch.org, so the only advice that keeps the accelerator is to
+        # go back to the source the wheel came from.
+        return (
+            f"    That takes the default build from PyPI. This torch is a {local} build, "
+            f"which no public index carries, so upgrade it from wherever it came from "
+            f"(the ROCm builds unsloth's AMD extras install come from repo.radeon.com). "
+            f"An unqualified pip upgrade replaces it with the default build."
+        )
     family = local.rstrip("0123456789.").lower()
     family = {"cu": "CUDA", "rocm": "ROCm", "xpu": "XPU", "cpu": "CPU"}.get(family, local)
     return (
@@ -2138,6 +2156,31 @@ def _blank_c_spans(source: str, keep_strings: bool = False) -> str:
     return _C_COMMENT_OR_STRING.sub(blank, source)
 
 
+_PYARG_CALL = re.compile(r"PyArg_Parse\w*\(")
+_HASH_FORMAT = re.compile(r"\"[^\"]*#")
+
+
+def _parses_a_hash_format(source: str) -> bool:
+    """Does a call the compiler still sees parse a '#' format?
+
+    Two masked copies of the same offsets, because the two halves of the question need
+    opposite things. The CALL has to be real code, so it is located in the copy with both
+    comments and string literals blanked: a documentation string quoting an example
+    `PyArg_ParseTuple(args, "ss#ii", ...)` is not a call, and a commented-out one is not
+    either. The FORMAT then has to be readable, so the argument list is read from the copy
+    that blanks comments only. Blanking preserves length, so one offset serves both.
+    """
+    code_only = _blank_c_spans(source)
+    with_literals = _blank_c_spans(source, keep_strings = True)
+    for call in _PYARG_CALL.finditer(code_only):
+        end = with_literals.find(";", call.end())
+        if end == -1:
+            end = len(with_literals)
+        if _HASH_FORMAT.search(with_literals, call.end(), end):
+            return True
+    return False
+
+
 def _defines_py_ssize_t_clean_before_python_h(source: str) -> bool:
     """Is the macro in effect where CPython needs it: defined, and still defined, at the
     point Python.h is included.
@@ -2301,6 +2344,27 @@ def _triton_reinstall_command(distribution, triton_version):
     return f"pip install --force-reinstall --no-cache-dir{index} {spec}"
 
 
+def _triton_repair_advice(distribution, triton_version):
+    """How to repair this Triton, as one line, or two when no index can serve it.
+
+    A pip command only helps when some index publishes the pinned version. The AMD extras
+    install `triton==3.6.0+rocm7.2.0.gitba5c1517` from a repo.radeon.com URL under the
+    plain `triton` name, and neither PyPI nor download.pytorch.org has that version at
+    all, so a pinned command there resolves to nothing. Name the source instead, the same
+    way the torchvision advice does for a torch with no public wheel.
+    """
+    command = _triton_reinstall_command(distribution, triton_version)
+    local = (triton_version or "").split("+", 1)[1] if "+" in (triton_version or "") else ""
+    if local and "--index-url" not in command:
+        return (
+            f"Reinstall the Triton your torch pins from wherever this one came from: the "
+            f"+{local} tag marks a vendor build that no public index publishes (unsloth's "
+            f"AMD extras take theirs from repo.radeon.com), so a pinned pip command "
+            f"resolves to nothing:\n    {command}"
+        )
+    return f"Reinstall the Triton your torch pins:\n    {command}"
+
+
 def _triton_driver_shims_missing_py_ssize_t_clean():
     """Installed triton backend driver shims that cannot parse their own
     arguments on this interpreter, as [(backend, path), ...].
@@ -2333,15 +2397,7 @@ def _triton_driver_shims_missing_py_ssize_t_clean():
                 continue
             if _defines_py_ssize_t_clean_before_python_h(source):
                 continue
-            # Only a '#' in a PyArg_Parse format needs the macro, and only in a call the
-            # compiler still sees: a repackaged shim can carry an old commented-out call
-            # whose format is no longer what the active parser uses. The literals stay,
-            # since the format argument is exactly what this reads.
-            if not re.search(
-                r"PyArg_Parse\w*\([^;]*?\"[^\"]*#",
-                _blank_c_spans(source, keep_strings = True),
-                re.S,
-            ):
+            if not _parses_a_hash_format(source):
                 continue
             offenders.append((driver.parent.name, str(driver)))
     return offenders
@@ -2376,7 +2432,7 @@ def check_triton_py_ssize_t_clean():
 
     distribution, triton_version = _triton_distribution(offenders[0][1] if offenders else None)
     python_version = ".".join(str(part) for part in sys.version_info[:3])
-    reinstall = _triton_reinstall_command(distribution, triton_version)
+    reinstall = _triton_repair_advice(distribution, triton_version)
 
     logger.warning(
         f"Unsloth: {distribution}=={triton_version} ships a "
@@ -2386,8 +2442,7 @@ def check_triton_py_ssize_t_clean():
         f"Triton kernel launch in this process will fail with\n"
         f"    SystemError: {_PY_SSIZE_T_CLEAN} macro must be defined for '#' formats\n"
         f"Every published Triton build defines it, so this is a rebuilt or repackaged one. "
-        f"Reinstall the Triton your torch pins:\n"
-        f"    {reinstall}\n"
+        f"{reinstall}\n"
         f"Python 3.13 and later do not need the macro, so moving to a newer Python "
         f"also clears it. Affected file(s): "
         f"{', '.join(path for _, path in offenders)}. Set "

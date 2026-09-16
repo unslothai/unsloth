@@ -157,6 +157,43 @@ def test_the_upgrade_names_the_accelerator_it_found(
     assert "https://pytorch.org/get-started/locally/" in message
 
 
+@pytest.mark.parametrize(
+    "torch_version",
+    ["2.10.0+rocm7.2.0.lw.gitb6ee5fde", "2.10.0+rocm7.2.0.gitba5c1517"],
+)
+def test_a_vendor_rocm_torch_is_sent_back_to_its_own_source(
+    patched_torch, monkeypatch, torch_version
+):
+    """unsloth's own AMD extras install torch-2.10.0+rocm7.2.0.lw.gitb6ee5fde straight from
+    repo.radeon.com. That tag is no index name, so there is no --index-url that would keep
+    the accelerator, and an unqualified upgrade would put the default CUDA build over a
+    working Radeon one. Naming the source is the only advice that holds."""
+    monkeypatch.setattr(patched_torch, "__version__", torch_version)
+
+    with pytest.raises(import_fixes.UnslothTorchTooOldError) as raised:
+        _access_from("transformers.integrations.finegrained_fp8", "unsloth_probe_dtype")
+
+    message = str(raised.value)
+    assert f"This torch is a {torch_version.split('+')[1]} build" in message
+    assert "no public index carries" in message
+    assert "repo.radeon.com" in message
+    assert "--index-url" not in message
+
+
+def test_an_unrecognisable_local_tag_gets_no_accelerator_note(patched_torch, monkeypatch):
+    """NEGATIVE CONTROL: a local tag naming no known family says nothing about the
+    accelerator, so inventing a source for it would be worse than silence."""
+    monkeypatch.setattr(patched_torch, "__version__", "2.10.0+localbuild1")
+
+    with pytest.raises(import_fixes.UnslothTorchTooOldError) as raised:
+        _access_from("transformers.integrations.finegrained_fp8", "unsloth_probe_dtype")
+
+    message = str(raised.value)
+    assert "This torch is a" not in message
+    assert "no public index carries" not in message
+    assert "repo.radeon.com" not in message
+
+
 def test_a_conda_torch_is_pointed_at_conda_not_pip(patched_torch, monkeypatch, tmp_path):
     """conda writes no local tag, so a conda torch reads like a PyPI one by version alone.
     `pip install --upgrade torch` there overlays the conda-managed files with a PyPI wheel
@@ -409,6 +446,72 @@ def test_a_live_hash_format_beside_a_comment_is_still_a_finding(monkeypatch, tmp
     assert import_fixes._triton_driver_shims_missing_py_ssize_t_clean() == [
         ("nvidia", str(driver)),
     ]
+
+
+def test_a_hash_format_only_inside_a_string_literal_is_not_a_finding(monkeypatch, tmp_path):
+    """A documentation string quoting an example call is not a call. The format has to be
+    readable, so literals are kept, but the CALL has to be located in code."""
+    source = (
+        'static const char *kUsage =\n'
+        '    "example: PyArg_ParseTuple(args, \\"ss#ii\\", &name, &data, &size, &shared)";\n'
+        + _UNGUARDED_SHIM.replace('"ss#ii"', '"sslii"')
+    )
+    spec, _ = _fake_triton(tmp_path, source)
+    monkeypatch.setattr(sys, "version_info", (3, 12, 3))
+    monkeypatch.setattr(import_fixes.importlib.util, "find_spec", lambda name: spec)
+
+    assert import_fixes._triton_driver_shims_missing_py_ssize_t_clean() == []
+
+
+def test_a_vendor_tagged_triton_is_sent_back_to_its_own_source(monkeypatch, tmp_path):
+    """The AMD extras install triton==3.6.0+rocm7.2.0.gitba5c1517 from a repo.radeon.com
+    URL under the plain `triton` name. No public index publishes that version, so a pinned
+    pip command resolves to nothing and the advice has to name the source instead."""
+    spec, _driver = _fake_triton(tmp_path, _UNGUARDED_SHIM, backend = "amd")
+    monkeypatch.setattr(sys, "version_info", (3, 12, 3))
+    monkeypatch.setattr(import_fixes.importlib.util, "find_spec", lambda name: spec)
+
+    import importlib.metadata as metadata
+
+    monkeypatch.setattr(metadata, "packages_distributions", lambda: {"triton": ["triton"]})
+    monkeypatch.setattr(
+        import_fixes,
+        "importlib_version",
+        lambda name: "3.6.0+rocm7.2.0.gitba5c1517" if name == "triton" else _raise_missing(name),
+    )
+
+    logger = _CollectingLogger()
+    monkeypatch.setattr(import_fixes, "logger", logger)
+    import_fixes.check_triton_py_ssize_t_clean()
+
+    assert len(logger.warnings) == 1, logger.warnings
+    message = logger.warnings[0]
+    assert "+rocm7.2.0.gitba5c1517 tag marks a vendor build" in message
+    assert "repo.radeon.com" in message
+
+
+def test_a_public_triton_still_gets_the_plain_reinstall_line(monkeypatch, tmp_path):
+    """NEGATIVE CONTROL: a version PyPI does publish keeps the command as the advice."""
+    spec, _driver = _fake_triton(tmp_path, _UNGUARDED_SHIM)
+    monkeypatch.setattr(sys, "version_info", (3, 12, 3))
+    monkeypatch.setattr(import_fixes.importlib.util, "find_spec", lambda name: spec)
+
+    import importlib.metadata as metadata
+
+    monkeypatch.setattr(metadata, "packages_distributions", lambda: {"triton": ["triton"]})
+    monkeypatch.setattr(
+        import_fixes,
+        "importlib_version",
+        lambda name: "3.6.0" if name == "triton" else _raise_missing(name),
+    )
+
+    logger = _CollectingLogger()
+    monkeypatch.setattr(import_fixes, "logger", logger)
+    import_fixes.check_triton_py_ssize_t_clean()
+
+    message = logger.warnings[0]
+    assert "vendor build" not in message
+    assert '--force-reinstall --no-cache-dir "triton==3.6.0"' in message
 
 
 def test_python_313_and_later_do_not_pay_for_the_probe(monkeypatch, tmp_path):
