@@ -1065,11 +1065,15 @@ def test_rope_scaling_replacement_keeps_the_base_frequency():
             "the rope_scaling setter is reported patched on a build that has no "
             "rope_scaling property to patch"
         )
-    else:
-        assert _rope_scaling_setter_is_patched(owner), (
-            "DRIFT DETECTED: the rope_scaling alias setter is unpatched yet the probe "
-            "reports the base frequency survives; one of the two is wrong."
-        )
+    elif not _rope_scaling_setter_is_patched(owner):
+        # An unpatched setter on a build that HAS the alias property is the healthy
+        # case, not a drift: `fix_transformers_rope_scaling_drops_theta` returns before
+        # installing anything when the probe finds no loss, so a future transformers
+        # that keeps the alias and fixes the base frequency lands exactly here. Nothing
+        # was installed, so the live build IS the unpatched one and the assertion above
+        # has already answered for it. Requiring the wrapper here would fail this
+        # hard-gated suite on the release that makes the fix unnecessary.
+        assert not _transformers_rope_scaling_assignment_drops_theta()
 
 
 def test_rope_scaling_setter_patch_is_idempotent():
@@ -1078,6 +1082,7 @@ def test_rope_scaling_setter_patch_is_idempotent():
     from unsloth.import_fixes import (
         _ROPE_SCALING_PATCH_FLAG,
         _rope_scaling_property_owner,
+        _rope_scaling_setter_is_patched,
         fix_transformers_rope_scaling_drops_theta,
     )
 
@@ -1087,6 +1092,12 @@ def test_rope_scaling_setter_patch_is_idempotent():
         assert (
             _rope_scaling_property_owner() is None
         ), "the fix created a rope_scaling property on a build that had none"
+        return
+    if not _rope_scaling_setter_is_patched(owner):
+        # Same healthy case as above: no wrapper was installed, so there is no stacking
+        # to check. Idempotence of a no-op is that it stays a no-op.
+        fix_transformers_rope_scaling_drops_theta()
+        assert not _rope_scaling_setter_is_patched(owner)
         return
     before = owner.__dict__["rope_scaling"]
     fix_transformers_rope_scaling_drops_theta()

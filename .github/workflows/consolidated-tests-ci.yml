@@ -335,6 +335,16 @@ jobs:
         run: |
           python -m pytest -v --tb=short tests/test_import_fixes_drift.py
 
+      - name: triton-absent import guard (HARD GATE)
+        # PyPI ships no Windows `triton` wheel, so a CPU-only Windows install has
+        # none at all and the unconditional module-level import in _gpu_init.py
+        # killed `import unsloth` outright. The guard that replaced it is only as
+        # good as something running this file: nothing else in this repo collects
+        # it (testpaths is tests/security, and every other lane names its files),
+        # so deleting the guard would leave CI green.
+        run: |
+          python -m pytest -v --tb=short tests/test_triton_optional_import.py
+
       - name: public-api surface drift detectors (9 tests, HARD GATE)
         # Companion to test_import_fixes_drift.py: that file catches
         # third-party drift; this one catches drift in unsloth's OWN
