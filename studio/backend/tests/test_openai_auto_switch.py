@@ -6013,6 +6013,19 @@ def test_chat_withheld_model_is_not_offered_back_as_available(monkeypatch):
     assert detail.count("openai/whisper-large-v3") == 1
 
 
+def test_chat_absent_model_with_only_task_rows_says_no_chat_model_is_here(monkeypatch):
+    # Whisper is downloaded, so "no models are downloaded yet" would contradict GET /v1/models.
+    _wire_withheld_chat(
+        monkeypatch,
+        objects = [{"id": "openai/whisper-large-v3", "task": "automatic-speech-recognition"}],
+        downloaded = ("openai/whisper-large-v3",),
+    )
+    status, detail = _chat_error(_chat_request(model = "org/nope-GGUF"))
+    assert status == 404
+    assert "none of the downloaded models is a chat model" in detail
+    assert "no models are downloaded yet" not in detail
+
+
 def test_chat_withheld_model_with_no_chat_rows_offers_nothing(monkeypatch):
     # Every row is task-specific, so there is no chat model to offer at all.
     _wire_withheld_chat(

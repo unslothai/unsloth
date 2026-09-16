@@ -8331,6 +8331,14 @@ async def _unavailable_model_message(requested_model: str) -> str:
         )
         return f"{message} Available models: {available}." if available else message
     if not available:
+        if catalog_objects:
+            # Downloaded, but none of it is a chat model. Saying "nothing is downloaded"
+            # here would contradict GET /v1/models, which lists the task rows.
+            return (
+                f"The model '{requested_model}' is not downloaded on this server, and none of "
+                "the downloaded models is a chat model. Download one in Unsloth Studio, "
+                "or list what is here with GET /v1/models."
+            )
         return (
             f"The model '{requested_model}' is not downloaded on this server, and no "
             "models are downloaded yet. Download one in Unsloth Studio."
