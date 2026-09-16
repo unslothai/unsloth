@@ -6885,20 +6885,12 @@ exit 0
     # unsloth==2024.8, so install torch from the explicit index first. --upgrade-package (not
     # --upgrade) so upgrading unsloth cannot re-resolve torch from PyPI and strip the +cuXXX.
     # ── Helper: find no-torch-runtime.txt ──
-    # uv splits -r, -c and --overrides on whitespace and gives no way to quote around it, so any
-    # path handed to one of those flags has to be space-free (#6503, #10722, #11012). The fix for
-    # --overrides landed with the file it writes; this is the same problem on a path the user
-    # chooses, since a requirements file resolves under $RepoRoot or $VenvDir.
-    #
-    # Requirements only, and the name says so on purpose. A copy is safe here because
-    # no-torch-runtime.txt is a flat list with no relative -r/-c includes, whereas uv resolves an
-    # override's relative references against that file's own directory, so relocating an override
-    # would change what it means. New-UnslothTorchOverridesFile keeps its own handling for that
-    # reason rather than calling this.
-    #
-    # Mirrors uv_safe_path in studio/backend/utils/uv_path_safety.py, with a copy as a second
-    # chance before giving up. Returns a hashtable so the caller can delete a copy it made
-    # without ever deleting the user's own file.
+    # uv splits -r/-c/--overrides on whitespace with no way to quote, so the path must be
+    # space-free (#6503, #10722, #11012). Requirements only: relocating is safe because
+    # no-torch-runtime.txt has no relative includes, while uv resolves an override's relative
+    # references against its own directory, so New-UnslothTorchOverridesFile keeps its own
+    # handling. Mirrors uv_safe_path in studio/backend/utils/uv_path_safety.py. Returns whether
+    # it made a copy, so the caller never deletes the user's own file.
     function Get-UvSafeRequirementsPath {
         param([Parameter(Mandatory = $true)][string]$Path)
         if (-not $Path.Contains(" ")) { return @{ Path = $Path; Temporary = $false } }
@@ -6906,11 +6898,9 @@ exit 0
         try { $short = (New-Object -ComObject Scripting.FileSystemObject).GetFile($Path).ShortPath } catch { }
         if ($short -and -not $short.Contains(" ")) { return @{ Path = $short; Temporary = $false } }
 
-        # No 8.3 name for the file: copy the list to a space-free directory instead. More than one
-        # candidate, because %TEMP% can carry the space itself, which is the #11012 case exactly,
-        # and 8.3 creation is commonly disabled on non-system volumes so its short name may not
-        # exist either. Each candidate is accepted only once it is confirmed space-free and
-        # writable, so a directory we cannot actually use is never selected.
+        # No 8.3 name: copy to a space-free directory instead. Several candidates, because %TEMP%
+        # can carry the space itself (the #11012 case) and 8.3 creation is commonly disabled on
+        # non-system volumes. Each is used only once confirmed space-free and writable.
         $candidates = @(
             [System.IO.Path]::GetTempPath()
             $env:TEMP
@@ -6938,10 +6928,9 @@ exit 0
             } catch { continue }
         }
 
-        # Nowhere space-free and writable was found. Say so: uv's own message for the split path
-        # names a fragment of the install root and reads as a missing or malformed requirements
-        # file, which is what made #11012 expensive to diagnose. The original is still returned so
-        # the install behaves exactly as it does today rather than failing somewhere new.
+        # Nowhere usable. Say so, because uv's message for a split path names a fragment of the
+        # install root and reads as a missing requirements file (#11012). The original is still
+        # returned, so the install behaves as it does today rather than failing somewhere new.
         substep "[WARN] the requirements path contains a space and no space-free location was" "Yellow"
         substep "available; uv splits such a path, so this install may fail. Set TMP and TEMP" "Yellow"
         substep "to a path without spaces and run the installer again." "Yellow"
