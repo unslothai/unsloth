@@ -455,6 +455,7 @@ def test_the_ambient_token_reader_prefers_the_hub_and_falls_back_to_the_env(monk
     # credential" is a fail-open: the token file could hold one this process cannot read.
     def _raises():
         raise OSError("token file unreadable")
+
     monkeypatch.setattr("huggingface_hub.get_token", _raises)
     assert read() == (False, None)
     assert hf_tokens._caller_populated_the_cache(None) is False

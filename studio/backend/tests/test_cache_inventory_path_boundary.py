@@ -484,6 +484,7 @@ def test_a_named_tuple_in_a_payload_is_rebuilt_rather_than_raising():
     out = redact_host_paths(payload, via_api_key = True)
     assert out["rows"][0] == Row("acme/x", 5)
 
+
 # ------------------------------------------------------------ what a client can still tell apart
 #
 # A redacted scalar is the empty string, not None, and the difference is load bearing: a client
@@ -504,9 +505,9 @@ def test_a_redacted_row_is_still_distinguishable_from_one_with_no_path_at_all():
     assert red_cached["cache_path"] == ""
     assert red_uncached["cache_path"] is None
     assert red_cached[host_paths.CACHE_REFERENCE_FIELD].startswith("ref:")
-    assert host_paths.CACHE_REFERENCE_FIELD not in red_uncached, (
-        "a row with no path must not gain a reference, or the discriminator says nothing"
-    )
+    assert (
+        host_paths.CACHE_REFERENCE_FIELD not in red_uncached
+    ), "a row with no path must not gain a reference, or the discriminator says nothing"
 
 
 def test_the_reference_is_stable_within_the_process_and_differs_per_path():
@@ -529,4 +530,3 @@ def test_a_browser_session_keeps_every_path_and_gains_nothing():
     same = host_paths.redact_host_paths(row, via_api_key = False)
     assert same is row
     assert host_paths.CACHE_REFERENCE_FIELD not in same
-
