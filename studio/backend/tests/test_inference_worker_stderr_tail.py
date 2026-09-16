@@ -1363,3 +1363,27 @@ def test_a_root_level_path_is_redacted_too():
         "use / to split and/or join",
     ):
         assert _redact_worker_output(text + "\n").strip() == text, text
+
+
+def test_two_paths_on_one_line_are_two_matches():
+    """A component may hold a space, and it must not spend that on the next path's root.
+
+    `copy C:\\x\\old to C:\\y\\new` let one component be `old to C:` -- a space and a colon are
+    both legal in a filename -- so the pair matched as ONE path and the message came out as
+    `copy .../new`, with the source file and the operation deleted from a crash diagnostic
+    that had just been made visible. Copy, move and cache-resolution failures name two paths
+    like this routinely.
+    """
+    from core.inference.orchestrator import _redact_worker_output
+
+    windows = _redact_worker_output("copy C:\\Users\\ann\\old.gguf to C:\\tmp\\new.gguf\n")
+    assert windows.strip() == "copy .../old.gguf to .../new.gguf", windows
+    posix = _redact_worker_output("cannot copy /home/ann/old.gguf to /tmp/new.gguf\n")
+    assert posix.strip() == "cannot copy .../old.gguf to .../new.gguf", posix
+    unc = _redact_worker_output("copy \\\\share\\team\\old.gguf to \\\\other\\team\\new.gguf\n")
+    assert unc.strip() == "copy .../old.gguf to .../new.gguf", unc
+
+    # And a single path with spaces in it is still ONE match, which is what the space in a
+    # component is for.
+    spaced = _redact_worker_output("C:\\Program Files\\unsloth\\weights.gguf failed\n")
+    assert spaced.strip() == ".../weights.gguf failed", spaced

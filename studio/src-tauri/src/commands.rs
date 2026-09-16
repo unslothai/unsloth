@@ -443,6 +443,12 @@ struct BackendLiveness {
     /// holding the port. Silence from a closed port is death; silence from an accepted
     /// connection is a stall.
     probe_timed_out: bool,
+    /// The port produced an HTTP RESPONSE, whatever its status and whatever its body said.
+    /// Weaker than `alive`, which additionally requires the payload to name this service and
+    /// report itself up: a 503 from a backend still building its app, or a reply this build
+    /// cannot parse, leaves `alive` false while proving that something is on the port. Only
+    /// presence reads it, and only for a port this app manages.
+    answered: bool,
 }
 
 /// Check if an Unsloth backend is running on the given port.
@@ -527,9 +533,12 @@ fn we_manage_a_backend_on(state: &BackendState, port: u16) -> bool {
 /// probe, so a test that re-spells `alive || probe_timed_out` over hand-built structs asserts
 /// its own arithmetic and goes on passing no matter what the command does.
 fn backend_is_present(liveness: &BackendLiveness, we_manage_it: bool) -> bool {
-    // An answer is an answer whoever owns the port. A TIMEOUT is not, so it only counts as
-    // presence for a backend this app is managing.
-    liveness.alive || (liveness.probe_timed_out && we_manage_it)
+    // A healthy Unsloth answer is presence whoever owns the port. The two weaker readings --
+    // a TIMEOUT, and a reply that arrived but was not a healthy Unsloth one -- only count for
+    // a backend this app is managing, where they can only be our own process: a 503 while the
+    // app is still being built, or a payload a downgraded build cannot parse, both used to
+    // read as "nothing is there" and sent the user to relaunch a backend that was running.
+    liveness.alive || ((liveness.probe_timed_out || liveness.answered) && we_manage_it)
 }
 
 /// Probe the backend for process liveness.
@@ -560,13 +569,33 @@ async fn check_health_inner(
             continue;
         }
         if !resp.status().is_success() {
-            return Ok(BackendLiveness::default());
+            // Not healthy, but not silence either: something answered on that port.
+            return Ok(BackendLiveness {
+                answered: true,
+                ..BackendLiveness::default()
+            });
         }
-        json = Some(resp.json::<serde_json::Value>().await?);
+        json = match resp.json::<serde_json::Value>().await {
+            Ok(value) => Some(value),
+            Err(error) => {
+                // Same reading as a non-2xx: the reply arrived and this build could not make
+                // sense of it. Propagating the error here made presence indistinguishable
+                // from a refused connection.
+                info!("Backend on port {} answered unparseable JSON: {}", port, error);
+                return Ok(BackendLiveness {
+                    answered: true,
+                    ..BackendLiveness::default()
+                });
+            }
+        };
         break;
     }
     let Some(json) = json else {
-        return Ok(BackendLiveness::default());
+        // Every path answered 404, which is still an answer.
+        return Ok(BackendLiveness {
+            answered: true,
+            ..BackendLiveness::default()
+        });
     };
 
     // Liveness answers "alive" and health answers "healthy". Accept either, so the fallback
@@ -619,6 +648,7 @@ async fn check_health_inner(
         warming_up: alive && (warming || (detecting && !deferred)),
         inference_active: alive && inference_active,
         probe_timed_out: false,
+        answered: true,
     })
 }
 
@@ -728,6 +758,8 @@ fn adopted_backend_liveness(
         // port a different Unsloth backend has taken over is excluded by `different_owner`,
         // since that one answered rather than fell silent.
         probe_timed_out: adopted_failure_is_a_stall(verified, served.alive, different_owner),
+        // The pre-probe got a reply out of this port, whatever the re-check then did.
+        answered: served.answered || served.alive,
     }
 }
 
@@ -1701,6 +1733,68 @@ mod tests {
         port
     }
 
+    /// A port that answers every request with *status* and *body*, which is what a backend
+    /// that is up but not healthy looks like from here.
+    async fn answering_test_backend(status: &'static str, body: &'static str) -> u16 {
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("probe test needs a loopback port");
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let mut buffer = [0; 2048];
+                let Ok(_) = stream.read(&mut buffer).await else {
+                    return;
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+            }
+        });
+        port
+    }
+
+    #[tokio::test]
+    async fn a_managed_backend_that_answers_unhealthily_is_still_present() {
+        // A backend that is up but not serving liveness yet -- still building its app, or
+        // shedding load -- answers a non-2xx, and the probe collapsed that onto the same
+        // default as a refused connection. With the webview request failing at the same
+        // moment, the user was told the backend is not running and to relaunch it, which
+        // kills the process that was answering.
+        let port = answering_test_backend("503 Service Unavailable", "").await;
+        assert_eq!(
+            super::backend_presence(port, true).await,
+            Ok(true),
+            "a managed backend answering 503 was reported absent"
+        );
+        // Not ours and not a healthy Unsloth reply: that says nothing about our backend, so
+        // the relaunch verdict stands, exactly as before.
+        assert_eq!(super::backend_presence(port, false).await, Ok(false));
+    }
+
+    #[tokio::test]
+    async fn a_reply_this_build_cannot_parse_is_still_an_answer() {
+        // The other half: a 200 whose body is not JSON this build understands. Propagating
+        // the parse error made presence indistinguishable from a refused connection.
+        let port = answering_test_backend("200 OK", "not json at all").await;
+        assert_eq!(
+            super::backend_presence(port, true).await,
+            Ok(true),
+            "a managed backend answering an unparseable body was reported absent"
+        );
+        assert_eq!(super::backend_presence(port, false).await, Ok(false));
+
+        // And it is not reported as ALIVE: presence is the weaker question, and a caller
+        // asking "may I use this backend" must still get no.
+        let liveness = super::check_health_inner(port, super::HEALTH_PROBE_TIMEOUT)
+            .await
+            .expect("an answered probe is not a transport error");
+        assert!(!liveness.alive, "an unparseable reply is not a healthy backend");
+        assert!(liveness.answered, "the reply arrived, so the port is not silent");
+    }
+
     #[tokio::test]
     async fn a_port_that_accepts_and_never_answers_reads_as_a_stall() {
         // The premise of the busy budget: a saturated backend still holds its port open, so
@@ -1893,6 +1987,7 @@ mod tests {
             warming_up: false,
             inference_active: true,
             probe_timed_out: false,
+            answered: true,
         };
         let confirmed = super::adopted_backend_liveness(false, &served, false);
         assert!(
@@ -1914,6 +2009,7 @@ mod tests {
                 warming_up: false,
                 inference_active: false,
                 probe_timed_out: false,
+                answered: true,
             },
             false,
         );
@@ -2038,6 +2134,7 @@ mod tests {
                     warming_up: warming,
                     inference_active: busy,
                     probe_timed_out: false,
+                    answered: true,
                 },
                 Probe::TimedOut => {
                     elapsed += probe_budget;

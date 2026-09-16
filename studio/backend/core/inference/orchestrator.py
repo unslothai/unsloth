@@ -62,7 +62,13 @@ logger = get_logger(__name__)
 # `File "/a/b.py", line 1` and a second path later on the same line are two matches, not
 # one match over the sentence between them. An apostrophe is NOT one of those: it is a
 # legal filename character and excluding it is the bug this replaced.
-_PATH_COMPONENT = r"[^\s\\/](?:[^\\/\n\",;]*[^\s\\/])?"
+# The tempered interior is the one place a component is allowed to contain a space, and it
+# must not spend that on the START OF THE NEXT PATH: `copy C:\x\old to C:\y\new` let one
+# component be `old to C:` -- a space and a colon are both legal in a filename -- so the two
+# paths matched as one and the message was shortened to `copy .../new`, losing the source and
+# the operation. A POSIX root cannot be swallowed the same way, since a component may not
+# contain a separator at all; a drive root can, because its separator comes after the colon.
+_PATH_COMPONENT = r"[^\s\\/](?:(?:(?![A-Za-z]:[\\/])[^\\/\n\",;])*[^\s\\/])?"
 # A root-level path is a path too. The repeated group needs a separator AFTER its component,
 # so `/model.gguf`, `C:\model.gguf` and `\\server\share` -- one component and no trailing
 # separator -- fell through the whole expression and left the host's filesystem location in a
