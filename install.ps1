@@ -6885,6 +6885,48 @@ exit 0
     # unsloth==2024.8, so install torch from the explicit index first. --upgrade-package (not
     # --upgrade) so upgrading unsloth cannot re-resolve torch from PyPI and strip the +cuXXX.
     # ── Helper: find no-torch-runtime.txt ──
+    # uv splits -r, -c and --overrides on whitespace and gives no way to quote around it, so any
+    # path handed to one of those flags has to be space-free (#6503, #10722, #11012). The fix for
+    # --overrides landed with the file it writes; this is the same problem on a path the user
+    # chooses, since a requirements file resolves under $RepoRoot or $VenvDir.
+    #
+    # Requirements only, and the name says so on purpose. A copy is safe here because
+    # no-torch-runtime.txt is a flat list with no relative -r/-c includes, whereas uv resolves an
+    # override's relative references against that file's own directory, so relocating an override
+    # would change what it means. New-UnslothTorchOverridesFile keeps its own handling for that
+    # reason rather than calling this.
+    #
+    # Mirrors uv_safe_path in studio/backend/utils/uv_path_safety.py, with a copy as a second
+    # chance before giving up. Returns a hashtable so the caller can delete a copy it made
+    # without ever deleting the user's own file.
+    function Get-UvSafeRequirementsPath {
+        param([Parameter(Mandatory = $true)][string]$Path)
+        if (-not $Path.Contains(" ")) { return @{ Path = $Path; Temporary = $false } }
+        $short = $null
+        try { $short = (New-Object -ComObject Scripting.FileSystemObject).GetFile($Path).ShortPath } catch { }
+        if ($short -and -not $short.Contains(" ")) { return @{ Path = $short; Temporary = $false } }
+        # No 8.3 name on this volume: copy the list somewhere space-free instead. %TEMP% can carry
+        # the space itself, which is the #11012 case exactly, so the copy is verified too.
+        try {
+            $tmp = [System.IO.Path]::GetTempFileName()
+            if ($tmp.Contains(" ")) {
+                $tmpShort = $null
+                try { $tmpShort = (New-Object -ComObject Scripting.FileSystemObject).GetFile($tmp).ShortPath } catch { }
+                if (-not $tmpShort -or $tmpShort.Contains(" ")) {
+                    Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+                    return @{ Path = $Path; Temporary = $false }
+                }
+                $tmp = $tmpShort
+            }
+            Copy-Item -LiteralPath $Path -Destination $tmp -Force -ErrorAction Stop
+            return @{ Path = $tmp; Temporary = $true }
+        } catch {
+            # Hand back the original rather than inventing a new failure: uv then reports the
+            # split path as it does today, instead of this helper swallowing the install.
+            return @{ Path = $Path; Temporary = $false }
+        }
+    }
+
     function Find-NoTorchRuntimeFile {
         if ($StudioLocalInstall -and (Test-Path (Join-Path $RepoRoot "studio\backend\requirements\no-torch-runtime.txt"))) {
             return Join-Path $RepoRoot "studio\backend\requirements\no-torch-runtime.txt"
@@ -6987,7 +7029,12 @@ exit 0
             if ($baseInstallExit -eq 0) {
                 $NoTorchReq = Find-NoTorchRuntimeFile
                 if ($NoTorchReq) {
-                    $baseInstallExit = Invoke-InstallCommandRetry -Label "install no-torch runtime deps" { & $script:UvExe pip install --python $VenvPython --no-deps -r $NoTorchReq }
+                    $NoTorchReqSafe = Get-UvSafeRequirementsPath -Path $NoTorchReq
+                    $NoTorchReqArg = $NoTorchReqSafe.Path
+                    $baseInstallExit = Invoke-InstallCommandRetry -Label "install no-torch runtime deps" { & $script:UvExe pip install --python $VenvPython --no-deps -r $NoTorchReqArg }
+                    if ($NoTorchReqSafe.Temporary) {
+                        Remove-Item -LiteralPath $NoTorchReqArg -Force -ErrorAction SilentlyContinue
+                    }
                 }
             }
         } else {
@@ -7179,7 +7226,12 @@ exit 0
             if ($baseInstallExit -eq 0) {
                 $NoTorchReq = Find-NoTorchRuntimeFile
                 if ($NoTorchReq) {
-                    $baseInstallExit = Invoke-InstallCommandRetry -Label "install no-torch runtime deps" { & $script:UvExe pip install --python $VenvPython --no-deps -r $NoTorchReq }
+                    $NoTorchReqSafe = Get-UvSafeRequirementsPath -Path $NoTorchReq
+                    $NoTorchReqArg = $NoTorchReqSafe.Path
+                    $baseInstallExit = Invoke-InstallCommandRetry -Label "install no-torch runtime deps" { & $script:UvExe pip install --python $VenvPython --no-deps -r $NoTorchReqArg }
+                    if ($NoTorchReqSafe.Temporary) {
+                        Remove-Item -LiteralPath $NoTorchReqArg -Force -ErrorAction SilentlyContinue
+                    }
                 }
             }
         } elseif ($StudioLocalInstall) {
