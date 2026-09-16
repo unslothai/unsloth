@@ -37,6 +37,8 @@ import hmac
 import os
 import re
 import secrets
+import threading
+from collections import OrderedDict
 from hashlib import sha256
 from typing import Any, Iterable, Mapping, Optional
 
@@ -160,13 +162,49 @@ def host_paths_visible(via_api_key: Any) -> bool:
     return not via_api_key
 
 
+# References this process has handed out, so a caller can ACT on a row it was shown without
+# being told where the file is. Only references issued by this process are in here, so
+# resolving one can never name a path that was not already listed to somebody; the key is
+# per-process, so a reference cannot be forged or carried in from anywhere else. Bounded and
+# oldest-first, because a long-lived server lists a great many rows; a reference that has
+# aged out simply does not resolve, and the load fails the way an unknown model does.
+_REFERENCE_LIMIT = 8192
+_reference_paths: "OrderedDict[str, str]" = OrderedDict()
+_reference_lock = threading.Lock()
+
+
 def cache_reference(value: Any) -> Optional[str]:
-    """An opaque, stable, non-reversible stand-in for one host path."""
+    """An opaque, stable stand-in for one host path, resolvable only in this process."""
     text = _as_text(value)
     if not text:
         return None
     digest = hmac.new(_REFERENCE_KEY, os.fsencode(text), sha256).hexdigest()
-    return f"{_REFERENCE_PREFIX}{digest[:32]}"
+    reference = f"{_REFERENCE_PREFIX}{digest[:32]}"
+    with _reference_lock:
+        _reference_paths[reference] = text
+        _reference_paths.move_to_end(reference)
+        while len(_reference_paths) > _REFERENCE_LIMIT:
+            _reference_paths.popitem(last = False)
+    return reference
+
+
+def resolve_host_path_reference(value: Any) -> Optional[str]:
+    """The path a reference stands for, or None for anything that is not one of ours.
+
+    The counterpart of `cache_reference`, and the reason a redacted row is still ACTIONABLE:
+    an API-key caller is shown `ref:...` as a local model's identity and hands it straight
+    back when it asks to load that model. Without this the load would fail on a row the
+    caller was invited to pick.
+
+    Not an authorization decision. It answers only "which path did this process already
+    list under this name", and every caller of it stays subject to whatever it applies to a
+    path a caller names directly.
+    """
+    text = _as_text(value)
+    if not text or not text.startswith(_REFERENCE_PREFIX):
+        return None
+    with _reference_lock:
+        return _reference_paths.get(text)
 
 
 def redact_host_paths(payload: Any, *, via_api_key: bool) -> Any:

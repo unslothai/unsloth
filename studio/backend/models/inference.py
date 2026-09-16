@@ -81,6 +81,29 @@ class LoadRequest(BaseModel):
         description = "Custom Jinja2 chat template to use instead of the model's default",
     )
 
+    @field_validator("model_path")
+    @classmethod
+    def resolve_a_redacted_local_handle(cls, value: str) -> str:
+        """Turn a `ref:...` identity back into the path it stands for.
+
+        A caller that may not see host paths is shown filesystem-backed local models under
+        an opaque reference, and hands that reference straight back when it asks to load
+        one. Resolving it here, on the single field every load goes through, is what keeps
+        such a row actionable; see `hub.utils.host_paths.resolve_host_path_reference`.
+
+        A reference this process did not issue, or one that has aged out of the table, is
+        left exactly as it arrived and fails as an unknown model would. Nothing about
+        authorization is decided here: the resolved path goes through every check a path a
+        caller named directly goes through.
+        """
+        if not isinstance(value, str) or not value.startswith("ref:"):
+            return value
+        try:
+            from hub.utils.host_paths import resolve_host_path_reference
+        except Exception:  # noqa: BLE001 -- a resolver that cannot import must not fail loads
+            return value
+        return resolve_host_path_reference(value) or value
+
     @field_validator("chat_template_override")
     @classmethod
     def normalize_blank_chat_template_override(cls, value: Optional[str]) -> Optional[str]:

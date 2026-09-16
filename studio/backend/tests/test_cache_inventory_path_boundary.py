@@ -879,3 +879,48 @@ def test_a_local_scan_failure_is_redacted_like_its_payload(monkeypatch):
     assert "unable to open database file" in str(detail), detail
     ui = _hub(via_api_key = False).get("/api/hub/local").json()["detail"]
     assert HOST_ROOT in str(ui), ui
+
+
+def test_a_referenced_local_row_is_still_loadable(monkeypatch):
+    """A redacted identity that nothing can act on is not a redaction, it is a broken row.
+
+    The picker hands `load_id` straight back when it loads, so the reference the listing
+    answered with has to resolve to the path it stands for on the way in.
+    """
+    from models.inference import LoadRequest
+
+    async def _response(models_dir = "./models"):
+        return LocalModelListResponse(
+            models_dir = f"{HOST_ROOT}/models",
+            hf_cache_dir = HOST_ROOT,
+            lmstudio_dirs = [],
+            ollama_dirs = [],
+            hermes_dirs = [],
+            models = [_local_row()],
+        )
+
+    monkeypatch.setattr(local_inventory, "list_local_models_response", _response)
+    row = _hub(via_api_key = True).get("/api/hub/local").json()["models"][0]
+    assert row["load_id"].startswith("ref:")
+
+    loaded = LoadRequest(model_path = row["load_id"])
+    assert loaded.model_path == str(Path(HOST_ROOT) / "my models" / "Llama-3.2-1B")
+
+    # A reference this process never issued is left exactly as it arrived, so it fails the
+    # way an unknown model does rather than resolving to somebody else's row.
+    stranger = "ref:" + "0" * 32
+    assert LoadRequest(model_path = stranger).model_path == stranger
+    # And an ordinary repo id is untouched.
+    assert LoadRequest(model_path = "unsloth/Llama-3.2-1B").model_path == "unsloth/Llama-3.2-1B"
+
+
+def test_a_reference_table_that_fills_up_drops_the_oldest(monkeypatch):
+    """A long-lived server lists a great many rows. The table is bounded, and a reference
+    that has aged out does not resolve rather than resolving to the wrong thing."""
+    monkeypatch.setattr(host_paths, "_REFERENCE_LIMIT", 4)
+    first = host_paths.cache_reference("/host/first")
+    for index in range(6):
+        host_paths.cache_reference(f"/host/filler-{index}")
+    assert host_paths.resolve_host_path_reference(first) is None
+    newest = host_paths.cache_reference("/host/newest")
+    assert host_paths.resolve_host_path_reference(newest) == "/host/newest"
