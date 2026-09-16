@@ -2059,6 +2059,23 @@ _setup_path_has_dir() {
 # exports only that one still leaves the caller inside conda's PATH ordering. Reading one
 # variable on POSIX and two on Windows would give the same user two different answers on
 # two machines. Parity is asserted in tests/python/test_installer_conda_path_guard.py.
+# See install.sh: a prepend line a previous run persisted has to be repositioned, not accepted,
+# or a rerun from inside a conda environment leaves our directory ahead of it for ever (#5871).
+# Only an exact whole-line match on what this writer writes is touched, and the content is
+# copied back into the ORIGINAL file so a symlinked rc keeps its link, mode and owner.
+_unsloth_repoint_rc_line() {
+    [ -f "$1" ] || return 1
+    grep -qxF "$2" "$1" 2>/dev/null || return 1
+    _urrl_tmp="$1.unsloth-tmp.$$"
+    if awk -v old="$2" -v new="$3" '$0 == old { print new; next } { print }' "$1" > "$_urrl_tmp" 2>/dev/null \
+        && cat "$_urrl_tmp" > "$1" 2>/dev/null; then
+        rm -f "$_urrl_tmp" 2>/dev/null
+        return 0
+    fi
+    rm -f "$_urrl_tmp" 2>/dev/null
+    return 1
+}
+
 _unsloth_conda_env_active() {
     [ -n "${CONDA_PREFIX:-}" ] || [ -n "${CONDA_DEFAULT_ENV:-}" ]
 }
@@ -2093,6 +2110,12 @@ _setup_persist_uv_path() {
         _supp_fish_line="fish_add_path '$_supp_quoted'"
         if _unsloth_conda_env_active; then
             _supp_fish_line="fish_add_path -a -P '$_supp_quoted'"
+            # Both earlier spellings put the directory in front of PATH, the bare -a by way of
+            # $fish_user_paths, so either one left by a previous run is repointed rather than
+            # accepted as present by the check below.
+            for _supp_stale in "fish_add_path '$_supp_quoted'" "fish_add_path -a '$_supp_quoted'"; do
+                _unsloth_repoint_rc_line "$_supp_fish" "$_supp_stale" "$_supp_fish_line" || true
+            done
         fi
         # The exact line, not any occurrence: /opt/uv-old must not pass for /opt/uv. EVERY
         # spelling counts as present, or a run outside conda adds a second line for a
@@ -2118,6 +2141,7 @@ _setup_persist_uv_path() {
     # same line as an APPEND; the grep below matches either spelling, so a later run does not
     # add a second line for the same directory.
     _supp_export_line="export PATH=\"$_supp_literal:\$PATH\""
+    _supp_export_prepend="$_supp_export_line"
     if _unsloth_conda_env_active; then
         _supp_export_line="export PATH=\"\$PATH:$_supp_literal\""
     fi
@@ -2132,7 +2156,16 @@ _setup_persist_uv_path() {
         # are not PATH entries, and taking one for an entry leaves the next shell without uv.
         if grep -v '^[[:space:]]*#' "$_supp_profile" 2>/dev/null \
             | grep -E "$_supp_path_line" \
-            | grep -qE "(^|[^[:alnum:]_.~/-])$_supp_grep([^[:alnum:]_.~/-]|\$)"; then continue; fi
+            | grep -qE "(^|[^[:alnum:]_.~/-])$_supp_grep([^[:alnum:]_.~/-]|\$)"; then
+            # Present, so nothing is appended. Inside conda that is only right if the line
+            # that is present is the append: a prepend a previous run wrote would otherwise
+            # keep this directory ahead of the environment in every later shell.
+            if _unsloth_conda_env_active; then
+                _unsloth_repoint_rc_line "$_supp_profile" "$_supp_export_prepend" \
+                    "$_supp_export_line" || true
+            fi
+            continue
+        fi
         echo '' >> "$_supp_profile"
         echo '# Added by Unsloth setup' >> "$_supp_profile"
         echo "$_supp_export_line" >> "$_supp_profile"

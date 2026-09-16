@@ -670,3 +670,80 @@ def test_the_preserved_tree_leaves_the_swept_rollback_namespace():
         "'unsloth_studio.rollback.*'" in sweep_block
     ), "the sweep no longer matches what this test reasons about"
     assert "unsloth_studio.arm64" not in sweep_block
+
+
+# ── the interpreter is gone by the time the re-check runs ──
+# An ordinary reinstall moves the whole environment to its rollback path, and that move
+# happens BEFORE the x64 interpreter is chosen. Probing $VenvPython after it answers "no
+# mismatch" for every existing install, so the rebuild proceeds on ARM64 and the tree is
+# deleted with the ordinary rollback instead of being preserved.
+
+
+def test_the_platform_tag_is_read_before_the_rollback_move():
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    record = source.find("$script:PrevVenvPlatformTag = Get-PythonPlatformTag")
+    move = source.find("Start-StudioVenvRollback -ExistingDir $VenvDir")
+    recheck = source.find("Test-StudioVenvArchMismatch -VenvPython")
+    assert record != -1, "install.ps1 no longer records the existing interpreter's tag"
+    assert record < move, "the tag is read after the move that takes the interpreter away"
+    assert "-RecordedTag $script:PrevVenvPlatformTag" in source[recheck : recheck + 400], (
+        "the re-check does not use the recorded tag, so it cannot see a moved environment"
+    )
+
+
+def _arch_mismatch_preamble(
+    host_arch: str, opt_out: bool, venv_python_exists: bool, live_tag: str, recorded_tag: str
+) -> str:
+    selected = '@{ Version = "3.13"; Arch = "x86_64" }'
+    exists = "$true" if venv_python_exists else "$false"
+    recorded = f'"{recorded_tag}"' if recorded_tag else "$null"
+    return f"""
+$ErrorActionPreference = "Stop"
+function substep {{ param([string]$Message = "", [string]$Color) Write-Host "SUBSTEP $Message" }}
+function Get-HostMachineArch {{ return "{host_arch}" }}
+function Test-Arm64PythonOptOut {{ return ${str(opt_out).lower()} }}
+function Get-PythonPlatformTag {{ param($Exe) return "{live_tag}" }}
+function Test-Path {{ param([Parameter(ValueFromRemainingArguments = $true)]$Rest) return {exists} }}
+{_function("Test-StudioVenvArchMismatch")}
+$answer = Test-StudioVenvArchMismatch -VenvPython "C:\\venv\\Scripts\\python.exe" `
+    -SelectedPython {selected} -RecordedTag {recorded}
+Write-Host ("ANSWER=" + $answer)
+"""
+
+
+@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.parametrize("shell", POWERSHELLS)
+def test_a_moved_arm64_environment_is_still_detected(shell: str):
+    """The case the reinstall actually takes: the interpreter has been moved aside already."""
+    out = _run(
+        shell,
+        _arch_mismatch_preamble("arm64", False, False, "win-amd64", "win-arm64"),
+    )
+    assert out.splitlines()[-1] == "ANSWER=True", out
+
+
+@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.parametrize("shell", POWERSHELLS)
+def test_a_moved_x64_environment_is_not_mistaken_for_one(shell: str):
+    """The other half. A recorded tag that is not win-arm64 answers no, and so does no
+    recorded tag at all, which is the fresh-install case."""
+    out = _run(shell, _arch_mismatch_preamble("arm64", False, False, "win-arm64", "win-amd64"))
+    assert out.splitlines()[-1] == "ANSWER=False", out
+    out = _run(shell, _arch_mismatch_preamble("arm64", False, False, "win-arm64", ""))
+    assert out.splitlines()[-1] == "ANSWER=False", out
+
+
+@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.parametrize("shell", POWERSHELLS)
+def test_the_opt_out_message_is_only_printed_for_an_arm64_environment(shell: str):
+    """`UNSLOTH_ALLOW_ARM64_PYTHON=1` on an x64 environment used to announce that a native
+    ARM64 environment was being kept, which was true of nothing on the machine."""
+    out = _run(shell, _arch_mismatch_preamble("arm64", True, False, "win-amd64", "win-amd64"))
+    assert "SUBSTEP" not in out, out
+    assert out.splitlines()[-1] == "ANSWER=False", out
+
+    # With a real ARM64 environment the opt-out still says what it is doing, and still
+    # answers no.
+    out = _run(shell, _arch_mismatch_preamble("arm64", True, True, "win-arm64", "win-arm64"))
+    assert "UNSLOTH_ALLOW_ARM64_PYTHON" in out, out
+    assert out.splitlines()[-1] == "ANSWER=False", out

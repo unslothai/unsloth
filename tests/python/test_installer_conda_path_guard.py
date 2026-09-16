@@ -24,6 +24,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -599,3 +600,87 @@ def test_the_setup_refresh_consults_the_conda_helper_at_all():
     assert "Test-ActiveCondaEnvironment" in body, body
     assert "Get-ActiveCondaPrefixes" in body, body
     assert "Test-PathUnderCondaPrefix" in body, body
+
+
+# ── a prepend a previous run persisted has to be REPOSITIONED, not accepted ──
+# The presence checks accept any spelling, so they never add a second line. That is right for
+# the duplicate it prevents and wrong for the one it hides: a run from outside conda writes the
+# prepend, and a later run from inside one then finds "the directory is already there" and
+# leaves our entry ahead of the environment in every shell from then on.
+
+
+def _shell_function(path: Path, name: str) -> str:
+    source = path.read_text(encoding = "utf-8")
+    match = re.search(rf"^{re.escape(name)}\(\) \{{.*?^\}}\n", source, flags = re.DOTALL | re.M)
+    assert match is not None, f"{path.name} no longer defines {name}"
+    return match.group(0)
+
+
+@pytest.mark.parametrize("path", [INSTALL_SH, SETUP_SH_POSIX], ids = ["install.sh", "setup.sh"])
+def test_the_rc_repointer_rewrites_only_the_line_it_wrote(path: Path, tmp_path: Path):
+    rc = tmp_path / "rc"
+    rc.write_text(
+        'export PATH="$HOME/.local/bin:$PATH"\n'
+        "# a comment\n"
+        'export PATH="/opt/mine:$PATH"\n'
+        "alias ll='ls -l'\n",
+        encoding = "utf-8",
+    )
+    script = (
+        _shell_function(path, "_unsloth_repoint_rc_line")
+        + f'_unsloth_repoint_rc_line "{rc}"'
+        + ' \'export PATH="$HOME/.local/bin:$PATH"\''
+        + ' \'export PATH="$PATH:$HOME/.local/bin"\'\n'
+        + 'echo "status=$?"\n'
+    )
+    out = subprocess.run(
+        ["sh", "-c", script], capture_output = True, text = True, timeout = 60,
+    )
+    assert "status=0" in out.stdout, (out.stdout, out.stderr)
+    assert rc.read_text(encoding = "utf-8") == (
+        'export PATH="$PATH:$HOME/.local/bin"\n'
+        "# a comment\n"
+        # The user's own line is untouched: only an exact match on what we write is ours.
+        'export PATH="/opt/mine:$PATH"\n'
+        "alias ll='ls -l'\n"
+    )
+    # And no staging file is left in the user's home.
+    assert [p.name for p in tmp_path.iterdir()] == ["rc"]
+
+
+def test_the_rc_repointer_keeps_a_symlinked_rc_a_symlink(tmp_path: Path):
+    """An rc file managed by chezmoi or home-manager is a symlink into a repo. Replacing it
+    with a fresh file would detach it from the thing that manages it."""
+    real = tmp_path / "dotfiles" / "bashrc"
+    real.parent.mkdir()
+    real.write_text('export PATH="$HOME/.local/bin:$PATH"\n', encoding = "utf-8")
+    link = tmp_path / ".bashrc"
+    link.symlink_to(real)
+
+    script = (
+        _shell_function(INSTALL_SH, "_unsloth_repoint_rc_line")
+        + f'_unsloth_repoint_rc_line "{link}"'
+        + ' \'export PATH="$HOME/.local/bin:$PATH"\''
+        + ' \'export PATH="$PATH:$HOME/.local/bin"\'\n'
+    )
+    subprocess.run(["sh", "-c", script], capture_output = True, text = True, timeout = 60)
+    assert link.is_symlink(), "the rc file was replaced instead of rewritten"
+    assert real.read_text(encoding = "utf-8") == 'export PATH="$PATH:$HOME/.local/bin"\n'
+
+
+@pytest.mark.parametrize(
+    "path,arms",
+    [
+        (INSTALL_SH, ("_persist_login_path_dir", "_persist_fish_path_dir")),
+        (SETUP_SH_POSIX, ("_setup_persist_uv_path",)),
+    ],
+    ids = ["install.sh", "studio/setup.sh"],
+)
+def test_every_posix_writer_repositions_a_stale_prepend(path: Path, arms: tuple[str, ...]):
+    """A guard that only applies to a FIRST run is not a guard: every one of these writers is
+    reached again by the next `irm | iex`."""
+    for name in arms:
+        body = _shell_function(path, name)
+        assert "_unsloth_repoint_rc_line" in body, (
+            f"{path.name}:{name} accepts a stale prepend as present instead of moving it"
+        )

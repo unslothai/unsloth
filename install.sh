@@ -6172,6 +6172,27 @@ _path_has_dir() {
 # exports only that one still leaves the caller inside conda's PATH ordering. Reading one
 # variable on POSIX and two on Windows would give the same user two different answers on
 # two machines. Parity is asserted in tests/python/test_installer_conda_path_guard.py.
+# Replace a line THIS installer wrote with the form the current run needs, in place.
+# A previous run outside conda persisted the PREPEND spelling, and the presence checks below
+# accept any spelling so a second line is never added, which means a rerun from inside a conda
+# environment would leave that prepend in the rc file for ever: exactly the ordering the append
+# exists to prevent (#5871). Only an exact whole-line match on what we write is touched; a PATH
+# line the user wrote is theirs. The content is copied back into the ORIGINAL file rather than
+# moved over it, so an rc file that is a symlink into a dotfiles repo keeps its link, and its
+# mode and owner are untouched. A file that cannot be rewritten is a warning, never a failure.
+_unsloth_repoint_rc_line() {
+    [ -f "$1" ] || return 1
+    grep -qxF "$2" "$1" 2>/dev/null || return 1
+    _urrl_tmp="$1.unsloth-tmp.$$"
+    if awk -v old="$2" -v new="$3" '$0 == old { print new; next } { print }' "$1" > "$_urrl_tmp" 2>/dev/null \
+        && cat "$_urrl_tmp" > "$1" 2>/dev/null; then
+        rm -f "$_urrl_tmp" 2>/dev/null
+        return 0
+    fi
+    rm -f "$_urrl_tmp" 2>/dev/null
+    return 1
+}
+
 _unsloth_conda_env_active() {
     [ -n "${CONDA_PREFIX:-}" ] || [ -n "${CONDA_DEFAULT_ENV:-}" ]
 }
@@ -6190,6 +6211,14 @@ _persist_fish_path_dir() {
     _pfp_line="fish_add_path '$_pfp_quoted'"
     if _unsloth_conda_env_active; then
         _pfp_line="fish_add_path -a -P '$_pfp_quoted'"
+        # Both earlier spellings are a prepend as far as PATH is concerned -- the bare -a
+        # appends to $fish_user_paths, which fish itself puts in front of PATH -- so a line
+        # left by any previous run is repointed rather than accepted by the check below.
+        for _pfp_stale in "fish_add_path '$_pfp_quoted'" "fish_add_path -a '$_pfp_quoted'"; do
+            if _unsloth_repoint_rc_line "$_pfp_file" "$_pfp_stale" "$_pfp_line"; then
+                step "path" "moved $_pfp_label after the active conda environment in $_pfp_file"
+            fi
+        done
     fi
     # The exact line we would write, not any occurrence of the directory: /opt/uv-old must not pass for /opt/uv, and fish reads none of the POSIX files that would otherwise cover it. EVERY spelling counts as present, or a run outside conda would add a second line for a directory a run inside it already registered. The bare -a spelling is kept in the list because an install from before this fix wrote one, and a second line would not repair it anyway.
     if ! grep -v '^[[:space:]]*#' "$_pfp_file" 2>/dev/null \
@@ -6238,7 +6267,21 @@ _persist_login_path_dir() {
     # A persisted PREPEND jumps ahead of an active conda environment's own entries in every later shell, and that ordering outlives the activation, so conda ends up resolving binaries and DLLs out of our directory (#5871). Inside one, write the same line as an APPEND: the grep below matches either spelling, so a later run does not add a second line for the same directory. install.ps1 makes the same choice for the Windows registry.
     _plp_line="export PATH=\"$_plp_literal:\$PATH\""
     if _unsloth_conda_env_active; then
+        _plp_prepend="$_plp_line"
         _plp_line="export PATH=\"\$PATH:$_plp_literal\""
+        # A prepend a previous run left behind is repositioned rather than accepted: the check
+        # below treats it as present and would add nothing, leaving our directory ahead of the
+        # active conda environment in every later shell.
+        if grep -qxF "$_plp_prepend" "$_SHELL_PROFILE" 2>/dev/null; then
+            if _unsloth_repoint_rc_line "$_SHELL_PROFILE" "$_plp_prepend" "$_plp_line"; then
+                step "path" "moved $_plp_label after the active conda environment in $_SHELL_PROFILE"
+            else
+                step "path" "could not reposition $_plp_label in $_SHELL_PROFILE" "$C_WARN"
+                substep "It is listed before conda, so conda resolves binaries out of it."
+                substep "Replace that line with:"
+                substep "  $_plp_line"
+            fi
+        fi
     fi
     # Comments stripped first, then only lines that actually set PATH: a commented-out old export is not an active entry, and neither is `UV_CACHE=/opt/uv` or `PYTHONPATH=/opt/uv`. The name boundary is what keeps PYTHONPATH out. Taking any of them for a PATH entry leaves the next shell with no uv at all.
     if ! grep -v '^[[:space:]]*#' "$_SHELL_PROFILE" 2>/dev/null \

@@ -4608,21 +4608,36 @@ exit 0
     function Test-StudioVenvArchMismatch {
         param(
             [Parameter(Mandatory = $true)][string]$VenvPython,
-            $SelectedPython
+            $SelectedPython,
+            [string]$RecordedTag = $null
         )
         if ((Get-HostMachineArch) -ne "arm64") { return $false }
+        # The interpreter may be gone by the time this runs. An ordinary reinstall moves the
+        # whole environment to its rollback path BEFORE the x64 Python is chosen, so
+        # $VenvPython no longer exists here and probing it would answer "no mismatch" for
+        # every existing install: the rebuild would then go ahead on ARM64 and the tree would
+        # be deleted with the ordinary rollback instead of preserved. $RecordedTag is the tag
+        # read before that move.
+        $tag = $null
+        if (Test-Path -LiteralPath $VenvPython -PathType Leaf) {
+            $tag = Get-PythonPlatformTag $VenvPython
+        } elseif ($RecordedTag) {
+            $tag = $RecordedTag
+        }
+        # Asked before the opt-out, so the message below is only printed when there really is
+        # a native ARM64 environment to keep.
+        if ($tag -ne "win-arm64") { return $false }
         # The opt-out has to be honoured HERE too, not only where a fresh interpreter is
         # chosen. Resolve-WindowsOnArmX64Python never runs when the ordinary probe already
         # found an x64 Python on the machine, so on a host that has both interpreters the
         # variable would never be read and this branch would replace the very ARM64
         # environment the user asked to keep, discarding whatever they installed into it.
         if (Test-Arm64PythonOptOut) {
-            substep "windows on arm: UNSLOTH_ALLOW_ARM64_PYTHON is set, keeping the existing native ARM64 environment." "Yellow"
+            substep "windows on arm: UNSLOTH_ALLOW_ARM64_PYTHON is set, so the environment is not rebuilt on x64." "Yellow"
             return $false
         }
         if (-not $SelectedPython -or $SelectedPython.Arch -ne "x86_64") { return $false }
-        if (-not (Test-Path -LiteralPath $VenvPython -PathType Leaf)) { return $false }
-        return ((Get-PythonPlatformTag $VenvPython) -eq "win-arm64")
+        return $true
     }
 
     # ── Install Python if no compatible version (3.11-3.13) found ──
@@ -5074,6 +5089,8 @@ exit 0
     # environment survives the run. Every other rollback is deleted once the replacement
     # commits, which is right: it is the same architecture and the same packages.
     $script:StudioVenvRollbackPreserve = $false
+    # The existing interpreter's platform tag, read before any rollback move takes it away.
+    $script:PrevVenvPlatformTag = $null
     $script:StudioVenvRollbackActive = $false
     $script:StudioVenvRollbackPartial = $false
     # Reset per run: under `irm | iex` the script scope IS the caller's session.
@@ -5488,6 +5505,12 @@ exit 0
         if (-not $SkipTorch) {
             $script:PrevTorchVer = Get-InstalledTorchVersionRaw -PythonExe $VenvPython
         }
+        # And the interpreter's architecture, for the same reason and while it can still be
+        # read: the move below takes $VenvPython with it, and the Windows-on-ARM rebuild
+        # decision is made after the x64 Python is chosen, which is after that point.
+        if ((Get-HostMachineArch) -eq "arm64" -and (Test-Path -LiteralPath $VenvPython -PathType Leaf)) {
+            $script:PrevVenvPlatformTag = Get-PythonPlatformTag $VenvPython
+        }
         # New layout already exists -- replace only after preserving rollback copy.
         substep "preserving existing environment for rollback..."
         try {
@@ -5556,7 +5579,8 @@ exit 0
     # Test-StudioVenvArchMismatch. Preserved through the ordinary rollback helper, so the
     # previous environment is restored if anything later in this run fails, and cleared from
     # $VenvDir so the branch below creates a fresh one on the x64 interpreter.
-    if (Test-StudioVenvArchMismatch -VenvPython $VenvPython -SelectedPython $DetectedPython) {
+    if (Test-StudioVenvArchMismatch -VenvPython $VenvPython -SelectedPython $DetectedPython `
+            -RecordedTag $script:PrevVenvPlatformTag) {
         substep "windows on arm: the existing environment runs native ARM64 Python, which cannot" "Yellow"
         substep "resolve pyarrow or hf-transfer -- rebuilding it on x64 Python $($DetectedPython.Version)." "Yellow"
         # Stated, not implied: the new environment is built from scratch on a different
