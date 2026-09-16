@@ -22624,6 +22624,9 @@ class LlamaCppBackend:
                         )
                     tensor_parallel = False
                     tensor_split = None
+                    # Same rule as the later drops: the plan was made while the toggle still
+                    # said tensor, which is the one state that forces AUTO attention on.
+                    planned_flash_attn = _replanned_flash_attn(tensor_parallel)
                 # Record the requested strategy for /status and the load
                 # response. 'manual' has no fallback, so the request value is the
                 # value actually applied.
@@ -22665,6 +22668,7 @@ class LlamaCppBackend:
                         "than 2 GPUs are in use; ignoring (needs >= 2)."
                     )
                     tensor_parallel = False
+                    planned_flash_attn = _replanned_flash_attn(tensor_parallel)
                 if tensor_parallel and gpu_memory_mode == "manual" and gpu_layers < 0:
                     logger.info(
                         "Manual mode with Auto layers hands memory management to "
@@ -22672,6 +22676,7 @@ class LlamaCppBackend:
                         "parallelism; ignoring the tensor split."
                     )
                     tensor_parallel = False
+                    planned_flash_attn = _replanned_flash_attn(tensor_parallel)
                 if ctx_override is not None and ctx_override > 0:
                     logger.info(f"User --ctx-size {ctx_override} honored; skipping auto-reduce")
                 if cache_override is not None:

@@ -346,6 +346,54 @@ class TestTheDowngradesRePlanTheAttention:
         source = inspect.getsource(module.LlamaCppBackend.load_model)
         return ast.parse(textwrap.dedent(source)).body[0]
 
+    def test_every_tensor_downgrade_re_plans_the_attention(self):
+        """Not only the ones that strip the extras.
+
+        The three manual guards (gpu_layers=0 with nothing to split, fewer than two GPUs in
+        use, and Auto layers handing placement to --fit) set the toggle to False on their own.
+        Manual placement runs with --fit off, so a plan that still says flash attention is on
+        under-prices the V layout of a model that grows without it and the child can OOM at
+        startup on a total the estimate called safe.
+        """
+        import ast
+
+        func = self._load_model_body()
+        # Only the downgrades that happen AFTER the plan is made. The virtualised-Metal
+        # placement drops the toggle before it, where there is nothing to re-plan yet.
+        planned_at = min(
+            node.lineno
+            for node in ast.walk(func)
+            if isinstance(node, ast.Call)
+            and getattr(node.func, "id", None) == "_planned_flash_attn_state"
+        )
+        checked = 0
+        for node in ast.walk(func):
+            for attr in ("body", "orelse", "finalbody"):
+                block = getattr(node, attr, None)
+                if not isinstance(block, list):
+                    continue
+                for index, statement in enumerate(block):
+                    if not (
+                        isinstance(statement, ast.Assign)
+                        and getattr(statement.targets[0], "id", None) == "tensor_parallel"
+                        and isinstance(statement.value, ast.Constant)
+                        and statement.value.value is False
+                        and statement.lineno > planned_at
+                    ):
+                        continue
+                    checked += 1
+                    following = [
+                        getattr(getattr(later, "targets", [None])[0], "id", None)
+                        for later in block[index + 1:index + 4]
+                        if isinstance(later, ast.Assign)
+                    ]
+                    assert "planned_flash_attn" in following, (
+                        "a tensor downgrade at line "
+                        f"{statement.lineno} does not re-plan the attention"
+                    )
+        # And there are several of them, so a walk that found none cannot pass.
+        assert checked >= 6, checked
+
     def test_every_split_mode_strip_re_plans_the_attention(self):
         import ast
 
