@@ -968,7 +968,7 @@ def _backend_with_embeddings(
 ):
     """Build a backend with controlled tensor layout and probe results.
 
-    The default result maps everything except the input embeddings into Metal.
+    The default result maps everything loadable except the input embeddings into Metal.
     """
     from core.inference.llama_server_args import MEMORY_ENV_VARS
     from core.inference.offload_layout import ModelLayout
@@ -988,7 +988,9 @@ def _backend_with_embeddings(
     if layout is None:
         layout = ModelLayout(complete = True, token_embd_bytes = embd, tensor_bytes = tensors)
     if measured == "mapped as designed":
-        measured = ((layout.tensor_bytes - embd) // _MIB, embd // _MIB, 2)
+        # Blocks the loader skips are in no buffer, so they are in no row of the table either.
+        metal = layout.tensor_bytes - embd - layout.excluded_block_bytes
+        measured = (metal // _MIB, embd // _MIB, 2)
     backend = LlamaCppBackend()
     backend._tensor_spill_layout = lambda _path, **_kw: layout
     backend._metal_measured_model_mib = lambda _binary, _path: measured
@@ -1294,6 +1296,15 @@ class TestWhichLoadsLeaveTheEmbeddingsInTheMapping:
         layout = self._layout_with_nextn(has_nextn)
         unmapped = self._bytes(monkeypatch, layout = layout, mtp_may_engage = mtp_may_engage)
         assert unmapped == self.DISCOUNT
+
+    def test_skipped_mtp_bytes_are_not_read_as_unmapped_embeddings(self, monkeypatch):
+        """TENSOR_SKIP keeps the trailing blocks out of every buffer AND every table row."""
+        layout = self._layout_with_nextn(True)
+        # 12 GiB file = 7 GiB trunk + 3 GiB embeddings + 2 GiB skipped MTP. The Metal span
+        # collapses over the embeddings, so nothing is demand-paged: 10 GiB Metal, the
+        # embeddings again in the host row, and no sign of the 2 GiB llama.cpp never created.
+        measured = (10 * 1024, 3 * 1024, 2)
+        assert self._bytes(monkeypatch, layout = layout, measured = measured) == 0
 
     @pytest.mark.parametrize("load_mode", ["none", "mlock", "mmap+mlock", "dio"])
     def test_a_holding_per_model_mode_drops_it(self, monkeypatch, load_mode):

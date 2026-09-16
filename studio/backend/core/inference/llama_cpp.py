@@ -11477,7 +11477,11 @@ class LlamaCppBackend:
         metal_mib, host_mib, rows = measured
         mib = 1024 * 1024
         charged = (metal_mib + rows) * mib + max(0, host_mib * mib - embeddings)
-        unmapped = min(embeddings, max(0, int(layout.tensor_bytes) - charged))
+        # TENSOR_SKIP returns before the tensor exists (llama-model-loader.cpp:1125-1131), so a
+        # skipped block reaches no buffer and no table row. Those bytes are in the file and not
+        # in the probe, which is the signature the embeddings are being recognised by.
+        mapped = int(layout.tensor_bytes) - int(layout.excluded_block_bytes)
+        unmapped = min(embeddings, max(0, mapped - charged))
         if not unmapped:
             logger.info(
                 "Metal fit: llama.cpp maps this model's %.2f GB of input embeddings into Metal, "
