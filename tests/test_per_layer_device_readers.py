@@ -418,3 +418,97 @@ def test_cuda_layer_path_is_unchanged():
     assert buffer_index == torch.cuda.current_device()
     moved = move_to_device(device, torch.zeros(2))
     assert moved.device == next(layer.parameters()).device
+
+
+# ---------------------------------------------------------------------------
+# The reader runs once per decoder layer per generated token, so two costs that
+# do not show up in any correctness assertion are pinned here instead.
+# ---------------------------------------------------------------------------
+
+
+def test_the_backend_probe_is_asked_once_per_device_type():
+    """`torch.cuda.is_available()` costs about 700ns, and the reader reaches it on
+    every layer of every token on any install whose unsloth_zoo publishes only the
+    index. The answer cannot change inside a process, so it is memoised."""
+    from unsloth.models import _utils
+
+    assert hasattr(_utils._device_type_is_usable, "cache_clear"), (
+        "_device_type_is_usable must stay memoised; it is on the per-token path"
+    )
+
+    _utils._device_type_is_usable.cache_clear()
+    calls = []
+    real = torch.cuda.is_available
+
+    def counted():
+        calls.append(1)
+        return real()
+
+    try:
+        torch.cuda.is_available = counted
+        first = _utils._device_type_is_usable("cuda")
+        for _ in range(50):
+            assert _utils._device_type_is_usable("cuda") == first
+    finally:
+        torch.cuda.is_available = real
+        _utils._device_type_is_usable.cache_clear()
+
+    assert len(calls) <= 1, (
+        f"the backend was probed {len(calls)} times for one device type; "
+        "that is a per-layer per-token cost"
+    )
+
+
+def test_the_published_attributes_are_read_without_a_failed_getattr():
+    """`nn.Module.__getattr__` costs about 470ns to report a missing attribute,
+    because it searches _parameters, _buffers and _modules and then raises. An
+    unsloth_zoo that publishes only the index leaves `_per_layer_device` missing on
+    every layer, so the reader must not discover that through getattr."""
+    from unsloth.models._utils import per_layer_device
+
+    class _Counting(_Layer):
+        misses = 0
+
+        def __getattr__(self, name):
+            if name in ("_per_layer_device", "_per_layer_device_index"):
+                type(self).misses += 1
+            return super().__getattr__(name)
+
+    # Current unsloth_zoo: both names published.
+    layer = _Counting(device = torch.device("cpu"), index = "cpu")
+    _Counting.misses = 0
+    per_layer_device(layer)
+    assert _Counting.misses == 0
+
+    # unsloth_zoo from before the device attribute existed: the index alone.
+    layer = _Counting(index = 0)
+    _Counting.misses = 0
+    per_layer_device(layer)
+    assert _Counting.misses == 0, (
+        "the missing device attribute must not be discovered through "
+        "nn.Module.__getattr__ on every layer of every token"
+    )
+
+
+def test_a_class_level_attribute_is_still_honoured():
+    """Reading the instance dictionary must not lose a layer that publishes the
+    placement on its class or through a property, which is what the getattr
+    fallback is kept for."""
+    from unsloth.models._utils import per_layer_device
+
+    class _ClassAttribute(_Layer):
+        _per_layer_device = torch.device("cpu")
+        _per_layer_device_index = "cpu"
+
+    device, buffer_index = per_layer_device(_ClassAttribute())
+    assert device == torch.device("cpu")
+    assert buffer_index == 0
+
+    class _Property(_Layer):
+        @property
+        def _per_layer_device_index(self):
+            return "cpu"
+
+    device, buffer_index = per_layer_device(_Property())
+    assert device == torch.device("cpu")
+    assert buffer_index == 0

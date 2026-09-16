@@ -2541,13 +2541,25 @@ if DEVICE_COUNT == 1 and int(os.environ.get("WORLD_SIZE", "1")) <= 1:
 
 _PER_LAYER_DEVICE_MISSING = object()
 
+# Stand-in for an object with no instance dictionary, so the reader below never has
+# to build one per call.
+_NO_INSTANCE_DICT = {}
 
+
+@functools.lru_cache(maxsize = None)
 def _device_type_is_usable(device_type: str) -> bool:
     """Whether tensors can actually be placed on this device type right now.
 
     Only the backends torch publishes as `torch.<type>.is_available` are probed.
     An unknown type (`meta` among them) is taken at its word, because there is
     nothing to ask and refusing it would be worse than accepting it.
+
+    Memoised because `per_layer_device` below runs once per decoder layer per
+    generated token, and `torch.cuda.is_available()` costs about 700ns a call on
+    torch 2.14, which is most of that reader's cost on any install whose
+    unsloth_zoo publishes only the index. The set of usable device types does not
+    change inside a process; a host where an accelerator appears or disappears
+    mid-run was already answered from torch's own cached device count.
     """
     if device_type == "cpu":
         return True
@@ -2618,8 +2630,22 @@ def per_layer_device(module, default = 0):
     with one entry per accelerator. The two disagree only for a layer that is not
     on an indexed accelerator, which has no per-device buffer of its own.
     """
-    device = getattr(module, "_per_layer_device", None)
-    index = getattr(module, "_per_layer_device_index", _PER_LAYER_DEVICE_MISSING)
+    # Read the instance dictionary rather than going through getattr. This runs once
+    # per decoder layer per generated token, and `nn.Module.__getattr__` costs about
+    # 470ns to report a missing attribute, because it searches _parameters, _buffers
+    # and _modules and then raises an AttributeError for getattr to swallow. On any
+    # install whose unsloth_zoo publishes only the index, `_per_layer_device` is
+    # missing on every layer, so that was most of this function's cost.
+    # `verify_and_set_device` assigns both names a plain non-tensor value, which
+    # `nn.Module.__setattr__` puts in the instance dictionary, so it is where they
+    # are. Fall back to getattr only when neither name is there, which keeps a class
+    # attribute or a property working exactly as it did.
+    published = getattr(module, "__dict__", _NO_INSTANCE_DICT)
+    device = published.get("_per_layer_device")
+    index = published.get("_per_layer_device_index", _PER_LAYER_DEVICE_MISSING)
+    if device is None and index is _PER_LAYER_DEVICE_MISSING:
+        device = getattr(module, "_per_layer_device", None)
+        index = getattr(module, "_per_layer_device_index", _PER_LAYER_DEVICE_MISSING)
 
     if not isinstance(device, torch.device):
         device = None
