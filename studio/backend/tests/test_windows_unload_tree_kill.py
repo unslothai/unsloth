@@ -1162,3 +1162,74 @@ def test_the_root_is_stopped_before_its_snapshot_is_worked_through(monkeypatch):
     assert (
         spawned_during_teardown == []
     ), "the root was still running while its snapshot was being killed"
+
+
+def test_a_child_started_after_the_snapshot_is_still_reached(monkeypatch):
+    """The snapshot is taken once, and each `taskkill` after it can take 15 seconds.
+
+    A descendant therefore has a long window in which to start a child of its own before
+    its own turn comes. That child is in no snapshot, so a read-back over the snapshot
+    alone reports the tree gone, `terminate_pid` drops the record and the pidfile, and the
+    late child keeps its GPU memory and its port with nothing left naming it. Each
+    descendant is re-collected immediately before it is killed, through the same
+    creation-time validation, so the late child is reached instead.
+    """
+    root, child, late = 800, 801, 802
+    monkeypatch.setattr(pl, "_is_windows", lambda: True)
+    monkeypatch.setattr(pl, "_signalable", lambda pid: True)
+    monkeypatch.setattr(pl, "_pid_is_zombie", lambda pid: False)
+    identities = {root: "0:800", child: "0:801", late: "0:802"}
+    monkeypatch.setattr(pl, "_pid_identity", identities.get)
+    snapshot_taken: "list[int]" = []
+
+    def _collect(pid):
+        if pid == root:
+            snapshot_taken.append(pid)
+            # The late child does not exist yet: it is started while the root is being
+            # killed, which is after this walk has already returned.
+            return [(child, "0:801")], True
+        if pid == child:
+            # The re-collect at kill time, which is the only walk that can see it.
+            return [(late, "0:802")], True
+        return [], True
+
+    monkeypatch.setattr(pl, "_windows_collect_descendants_known", _collect)
+    dead: "set[int]" = set()
+    order: "list[int]" = []
+
+    def _kill(pid):
+        order.append(pid)
+        dead.add(pid)
+        return True
+
+    monkeypatch.setattr(pl, "_windows_terminate_pid", _kill)
+    monkeypatch.setattr(pl, "_pid_alive", lambda pid: pid not in dead)
+
+    assert pl._windows_terminate_validated_tree(root) is True
+    assert late in order, "a child started after the snapshot was never signalled"
+    assert order.index(late) < order.index(child), order
+    assert order[0] == root, order
+
+
+def test_an_unaccounted_late_child_keeps_the_record(monkeypatch):
+    """And when that re-collect cannot be done, the answer is not "the tree is gone".
+
+    True here is what makes `terminate_pid` call `forget_pid`. A walk that failed below a
+    descendant has not shown there is nothing under it, so the tree stands and the record
+    that names it outlives the call.
+    """
+    root, child = 900, 901
+    monkeypatch.setattr(pl, "_is_windows", lambda: True)
+    monkeypatch.setattr(pl, "_signalable", lambda pid: True)
+    monkeypatch.setattr(pl, "_pid_is_zombie", lambda pid: False)
+    monkeypatch.setattr(pl, "_pid_identity", {root: "0:900", child: "0:901"}.get)
+    monkeypatch.setattr(
+        pl,
+        "_windows_collect_descendants_known",
+        lambda pid: ([(child, "0:901")], True) if pid == root else ([], False),
+    )
+    dead: "set[int]" = set()
+    monkeypatch.setattr(pl, "_windows_terminate_pid", lambda pid: dead.add(pid) or True)
+    monkeypatch.setattr(pl, "_pid_alive", lambda pid: pid not in dead)
+
+    assert pl._windows_terminate_validated_tree(root) is False

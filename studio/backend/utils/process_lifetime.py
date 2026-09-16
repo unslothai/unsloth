@@ -1092,37 +1092,26 @@ def _windows_terminate_validated_tree(pid: int) -> bool:
             _windows_terminate_pid(pid)
         except Exception:  # noqa: BLE001 - best effort, like the rest of this
             pass
-    for child, child_identity in reversed(descendants):
-        if not _signalable(child) or not _pid_alive(child):
-            continue
-        if not _provably_the_same(child, child_identity):
-            continue
-        try:
-            _windows_terminate_pid(child)
-        except Exception:  # noqa: BLE001 - best effort, like the rest of this
-            pass
+    # And the descendants go through the survivor sweep's own terminator rather than a
+    # plain loop over the snapshot. The same 15 second ceiling applies to each `taskkill`
+    # here, so a snapshotted descendant has a long window in which to start a child of its
+    # own before its turn comes; that child is in no snapshot, and a read-back over the
+    # snapshot alone cannot see it. `_windows_terminate_collected` re-collects each
+    # survivor through the SAME creation-time validation immediately before killing it, so
+    # a late child is reached, a stranger on a recycled number still is not, and anything
+    # it cannot account for comes back as a survivor instead of as silence.
+    survivors = _windows_terminate_collected(descendants)
     # An unenumerable tree is not an empty one, so the root-only kill above is all that
     # happened and this cannot answer True. Same rule as the collector it calls: killing
     # fewer processes and keeping the record beats deleting the only handle on a worker
     # the walk could not see.
     if not known:
         return False
-    # Read back, on the root and on every descendant: a taskkill that reported success
-    # still has to have taken effect, and "the leader is gone" was never the question.
+    # Read back on the root too: a taskkill that reported success still has to have taken
+    # effect, and "the leader is gone" was never the question.
     if _pid_alive(pid) and not _pid_is_zombie(pid):
         return False
-    for child, child_identity in descendants:
-        if not _pid_alive(child) or _pid_is_zombie(child):
-            continue
-        # The same three-way test the survivor sweep uses, and for the same reason. A
-        # descendant that is still alive and whose identity cannot be read right now --
-        # handle pressure, access denied -- is not proof of a recycled pid, and answering
-        # True here makes `terminate_pid` call `forget_pid`, dropping the last persistent
-        # handle to a worker that was neither confirmed dead nor shown to be somebody else.
-        # Only a pid that PROVABLY belongs to a different process now is ignored.
-        if not _provably_different(child, child_identity):
-            return False
-    return True
+    return not survivors
 
 
 def _still_the_same(pid: int, identity: "Optional[str]") -> bool:
