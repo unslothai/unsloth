@@ -985,9 +985,12 @@ def test_the_worker_marks_every_continuation_line_of_a_record():
     handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
     logger_object.addHandler(handler)
 
-    assert mark_log_record_continuations(logger_object) == 1
+    # cover_later_handlers off: the process-wide half is exercised on its own below, and
+    # leaving it off here keeps this case from editing the interpreter's logging for the
+    # rest of the session.
+    assert mark_log_record_continuations(logger_object, cover_later_handlers = False) == 1
     # Idempotent: a second call after a reconfiguration must not double the prefix.
-    assert mark_log_record_continuations(logger_object) == 0
+    assert mark_log_record_continuations(logger_object, cover_later_handlers = False) == 0
 
     record = logger_object.makeRecord(
         "unsloth-test-marking",
@@ -1245,3 +1248,86 @@ def test_a_stream_whose_worker_was_swapped_gets_no_tail_at_all():
     following = body[swap : body.index("resp = read_one(read_timeout)", swap)]
     assert "_subprocess_crash_message(crash_context)" in following, following
     assert "with_worker_output" not in following, following
+
+
+@pytest.fixture
+def _logging_restored():
+    """Undo the process-wide half of the marking, whatever the case below does with it.
+
+    It patches `logging.Handler.setFormatter`, `logging.Logger.addHandler` and the formatter
+    on the interpreter's shared `lastResort` handler, none of which belong to one test.
+    """
+    import logging
+
+    from utils import worker_stderr
+
+    # Read with getattr so a build without the hook restores what it can and the CASE is
+    # what reports the gap, rather than this fixture erroring before the assertions run.
+    saved = (
+        logging.Handler.setFormatter,
+        logging.Logger.addHandler,
+        getattr(logging.lastResort, "formatter", None),
+        getattr(worker_stderr, "_UNHOOKED_SET_FORMATTER", None),
+        getattr(worker_stderr, "_UNHOOKED_ADD_HANDLER", None),
+    )
+    try:
+        yield
+    finally:
+        logging.Handler.setFormatter = saved[0]
+        logging.Logger.addHandler = saved[1]
+        logging.lastResort.formatter = saved[2]
+        if hasattr(worker_stderr, "_UNHOOKED_SET_FORMATTER"):
+            worker_stderr._UNHOOKED_SET_FORMATTER = saved[3]
+            worker_stderr._UNHOOKED_ADD_HANDLER = saved[4]
+
+
+def test_the_marking_covers_the_last_resort_handler(_logging_restored):
+    """The worker's structlog setup adds no root handler, so ordinary stdlib logging lands on
+    `logging.lastResort` -- which is not in anyone's `handlers` list and was therefore never
+    marked. A library's recovered traceback went out bare at column 0 through it, which is
+    exactly what the tail filter reads as a crash."""
+    import logging
+
+    from utils.worker_stderr import mark_log_record_continuations
+
+    logging.lastResort.setFormatter(logging.Formatter("%(message)s"))
+    mark_log_record_continuations(logging.getLogger("unsloth-test-lastresort"))
+
+    record = logging.LogRecord(
+        "unsloth-test-lastresort", logging.ERROR, __file__, 1, "one\ntwo\nthree", (), None
+    )
+    lines = logging.lastResort.format(record).split("\n")
+    assert lines[0] == "one", lines
+    assert all(line.startswith(MARK) for line in lines[1:]), lines
+
+
+def test_a_handler_installed_after_startup_is_marked_too(_logging_restored):
+    """The worker configures logging and then imports the ML stack, which adds handlers of
+    its own on import. Marking only what existed at that instant left those unmarked."""
+    import logging
+
+    from utils.worker_stderr import mark_log_record_continuations
+
+    mark_log_record_continuations(logging.getLogger("unsloth-test-late"))
+
+    late = logging.getLogger("unsloth-test-late-library")
+    late.handlers = []
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    late.addHandler(handler)
+
+    record = logging.LogRecord(
+        "unsloth-test-late-library", logging.ERROR, __file__, 1, "one\ntwo", (), None
+    )
+    assert handler.format(record).split("\n")[1].startswith(MARK), handler.format(record)
+
+    # And a library that sets its formatter AFTER the handler is installed does not undo it.
+    handler.setFormatter(logging.Formatter("%(levelname)s %(message)s"))
+    formatted = handler.format(record)
+    assert formatted.split("\n")[0] == "ERROR one", formatted
+    assert formatted.split("\n")[1].startswith(MARK), formatted
+
+    # Clearing the formatter falls back to logging's default, which marks nothing, so that
+    # is the one case the hook cannot wrap -- and it must not crash on it either.
+    handler.setFormatter(None)
+    assert handler.formatter is None

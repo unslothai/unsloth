@@ -608,20 +608,90 @@ class _EveryLineCarriesThePrefix(logging.Formatter):
         return getattr(self._inner, name)
 
 
-def mark_log_record_continuations(logger_object = None) -> int:
+# The unpatched methods, kept so the hook below is installed exactly once and can be lifted
+# again by a test. None until `mark_log_record_continuations` installs it.
+_UNHOOKED_SET_FORMATTER = None
+_UNHOOKED_ADD_HANDLER = None
+
+
+def _mark_handler(handler) -> bool:
+    """Wrap one handler's formatter, whatever it is or is not. True when this call did it."""
+    formatter = getattr(handler, "formatter", None)
+    if isinstance(formatter, _EveryLineCarriesThePrefix):
+        return False
+    setter = _UNHOOKED_SET_FORMATTER or type(handler).setFormatter
+    # A handler with no formatter of its own still writes multi-line records: logging falls
+    # back to its module-level default, which marks nothing.
+    setter(handler, _EveryLineCarriesThePrefix(formatter or logging.Formatter()))
+    return True
+
+
+def _install_continuation_hook() -> bool:
+    """Make the marking outlive the moment it was asked for. True when installed here.
+
+    The worker configures logging and then imports the ML stack, and libraries add their own
+    handlers on import -- and a later `setFormatter` on an already-marked handler would drop
+    the wrapper again. Both are patched on the CLASS, so they cover every logger in the
+    process and not just the one that existed at startup.
+    """
+    global _UNHOOKED_SET_FORMATTER, _UNHOOKED_ADD_HANDLER
+    if _UNHOOKED_SET_FORMATTER is not None:
+        return False
+    unhooked_set = logging.Handler.setFormatter
+    unhooked_add = logging.Logger.addHandler
+
+    def setFormatter(self, fmt):  # noqa: N802 -- matches logging's own spelling
+        if fmt is not None and not isinstance(fmt, _EveryLineCarriesThePrefix):
+            fmt = _EveryLineCarriesThePrefix(fmt)
+        unhooked_set(self, fmt)
+
+    def addHandler(self, hdlr):  # noqa: N802 -- matches logging's own spelling
+        unhooked_add(self, hdlr)
+        try:
+            _mark_handler(hdlr)
+        except Exception:  # noqa: BLE001 -- marking must never break someone's logging
+            pass
+
+    _UNHOOKED_SET_FORMATTER = unhooked_set
+    _UNHOOKED_ADD_HANDLER = unhooked_add
+    logging.Handler.setFormatter = setFormatter
+    logging.Logger.addHandler = addHandler
+    return True
+
+
+def mark_log_record_continuations(logger_object = None, *, cover_later_handlers = True) -> int:
     """Mark every continuation line written by the handlers on *logger_object*.
 
     Called by the worker right after its logging is configured, so the parent reading its
     stderr can tell a logged traceback from a crash. Returns how many handlers were wrapped,
     which is what a test can assert on; wrapping twice is a no-op, so calling it again after
     a reconfiguration is safe.
+
+    The handlers present at the instant of the call are not the whole of it, and a miss here
+    is not cosmetic: an unmarked traceback belonging to a request this worker RECOVERED from
+    looks exactly like the traceback of a process that died, and on a shared worker the tail
+    is handed to the next caller as their crash. So this also covers
+
+    * ``logging.lastResort``, which is what stdlib logging writes through when a record
+      reaches a logger with no handler at all -- the worker's own structlog setup adds no
+      root handler, so ordinary library logging lands there;
+    * every handler added AFTER this call, and every later ``setFormatter`` on one already
+      marked, through a class-level hook (the worker imports the whole ML stack after
+      configuring its logging).
+
+    Both of those are process-wide rather than about one logger, so ``cover_later_handlers``
+    turns them off together for a caller that wants only the handlers it named.
     """
     root = logger_object if logger_object is not None else logging.getLogger()
     wrapped = 0
     for handler in list(getattr(root, "handlers", ())):
-        formatter = handler.formatter
-        if isinstance(formatter, _EveryLineCarriesThePrefix):
-            continue
-        handler.setFormatter(_EveryLineCarriesThePrefix(formatter or logging.Formatter()))
-        wrapped += 1
+        if _mark_handler(handler):
+            wrapped += 1
+    if cover_later_handlers:
+        # Process-wide, so it is one flag: a caller that only wants THIS logger's handlers
+        # marked (a test, mainly) gets exactly that and leaves the interpreter as it found it.
+        last_resort = getattr(logging, "lastResort", None)
+        if last_resort is not None and _mark_handler(last_resort):
+            wrapped += 1
+        _install_continuation_hook()
     return wrapped
