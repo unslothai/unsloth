@@ -164,7 +164,9 @@ function ChatSettingsGroup({
 }) {
   return (
     <section data-settings-label={title} className="mt-6 first-of-type:mt-0">
-      <h2 className="mb-2 font-heading text-lg font-semibold">{title}</h2>
+      <h2 className="mb-2 text-base font-semibold font-heading text-foreground">
+        {title}
+      </h2>
       <div className="flex flex-col gap-0 pb-2">{children}</div>
     </section>
   );
@@ -356,7 +358,7 @@ export function ChatTab() {
   };
 
   return (
-    <div className="flex flex-col gap-0 [&_[data-slot=settings-row]]:py-2 [&_[data-slot=settings-row-label]]:text-base [&_[data-slot=settings-row-label]]:font-[550] [&_[data-slot=settings-row-description]]:text-sm">
+    <div className="flex flex-col gap-0 [&_[data-slot=settings-row]]:py-2">
       <header className="mb-2 flex flex-col gap-1">
         <h1 className="text-xl font-semibold font-heading">
           {t("settings.chat.title")}
