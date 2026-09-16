@@ -421,7 +421,7 @@ class TestCheckTokenizerConfigNeedsV5:
                 return _Resp(json.dumps({"tokenizer_class": "TokenizersBackend"}))
             raise OSError("HTTP 401")
 
-        monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+        monkeypatch.setattr("utils.utils.auth_safe_open", fake_urlopen)
         assert _check_tokenizer_config_needs_v5("org/gated") is False  # unauth miss
         assert _check_tokenizer_config_needs_v5("org/gated", "tok") is True  # authed hit
         assert seen_auth == [None, "Bearer tok"]
@@ -448,7 +448,7 @@ class TestCheckTokenizerConfigNeedsV5:
             seen["url"] = req.full_url
             return _Resp()
 
-        monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+        monkeypatch.setattr("utils.utils.auth_safe_open", fake_urlopen)
         assert _check_tokenizer_config_needs_v5("org/model") is True
         assert seen["url"] == (
             "https://hf.mirror.internal/org/model/resolve/main/tokenizer_config.json"
@@ -1705,7 +1705,7 @@ class TestLocalCheckpointFilesAppear:
         def boom(*a, **k):
             raise AssertionError("a local checkpoint must not be fetched from the Hub")
 
-        monkeypatch.setattr("urllib.request.urlopen", boom)
+        monkeypatch.setattr("utils.utils.auth_safe_open", boom)
         # Before the file exists: not 5.x, no network, and the miss must not be pinned.
         assert _check_tokenizer_config_needs_v5(local) is False
         # The file appears with a 5.x-only tokenizer -> the next call must read it.
@@ -1720,7 +1720,7 @@ class TestLocalCheckpointFilesAppear:
         def boom(*a, **k):
             raise AssertionError("a local checkpoint must not be fetched from the Hub")
 
-        monkeypatch.setattr("urllib.request.urlopen", boom)
+        monkeypatch.setattr("utils.utils.auth_safe_open", boom)
         assert _load_config_json(local) is None
         (tmp_path / "config.json").write_text(json.dumps({"model_type": "gemma4"}))
         assert _load_config_json(local) == {"model_type": "gemma4"}
@@ -3033,7 +3033,7 @@ class TestOfflineCacheNotPoisoned:
             def __exit__(self, *a):
                 return False
 
-        monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout = 10: _Resp())
+        monkeypatch.setattr("utils.utils.auth_safe_open", lambda req, timeout = 10: _Resp())
         assert _check_tokenizer_config_needs_v5("org/needs5") is True
 
     def test_offline_config_miss_not_cached(self, monkeypatch):
@@ -3061,7 +3061,7 @@ class TestHfEndpointUnreachable:
             def __exit__(self, *a):
                 return False
 
-        monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: _Resp())
+        monkeypatch.setattr("utils.utils.auth_safe_open", lambda *a, **k: _Resp())
         assert hf_endpoint_unreachable(timeout = 2) is False
 
     def test_gateway_error_is_unreachable(self, monkeypatch):
@@ -3070,7 +3070,7 @@ class TestHfEndpointUnreachable:
         def _gw(*a, **k):
             raise urllib.error.HTTPError("http://x", 504, "Gateway Timeout", {}, None)
 
-        monkeypatch.setattr("urllib.request.urlopen", _gw)
+        monkeypatch.setattr("utils.utils.auth_safe_open", _gw)
         assert hf_endpoint_unreachable(timeout = 2) is True
 
     def test_other_http_status_is_reachable(self, monkeypatch):
@@ -3079,7 +3079,7 @@ class TestHfEndpointUnreachable:
         def _405(*a, **k):
             raise urllib.error.HTTPError("http://x", 405, "Method Not Allowed", {}, None)
 
-        monkeypatch.setattr("urllib.request.urlopen", _405)
+        monkeypatch.setattr("utils.utils.auth_safe_open", _405)
         assert hf_endpoint_unreachable(timeout = 2) is False
 
     def test_tls_failure_is_reachable(self, monkeypatch):
@@ -3089,7 +3089,7 @@ class TestHfEndpointUnreachable:
         def _tls(*a, **k):
             raise urllib.error.URLError(ssl.SSLCertVerificationError("self-signed"))
 
-        monkeypatch.setattr("urllib.request.urlopen", _tls)
+        monkeypatch.setattr("utils.utils.auth_safe_open", _tls)
         # TLS reached the server: treat as reachable so the load surfaces the cert error.
         assert hf_endpoint_unreachable(timeout = 2) is False
 
@@ -3099,7 +3099,7 @@ class TestHfEndpointUnreachable:
         def _refused(*a, **k):
             raise urllib.error.URLError(ConnectionRefusedError("refused"))
 
-        monkeypatch.setattr("urllib.request.urlopen", _refused)
+        monkeypatch.setattr("utils.utils.auth_safe_open", _refused)
         assert hf_endpoint_unreachable(timeout = 2) is False
 
     def test_connection_reset_is_reachable(self, monkeypatch):
@@ -3112,7 +3112,7 @@ class TestHfEndpointUnreachable:
         def _reset(*a, **k):
             raise urllib.error.URLError(ConnectionResetError(104, "Connection reset by peer"))
 
-        monkeypatch.setattr("urllib.request.urlopen", _reset)
+        monkeypatch.setattr("utils.utils.auth_safe_open", _reset)
         assert hf_endpoint_unreachable(timeout = 2) is False
 
     def test_remote_disconnect_is_reachable(self, monkeypatch):
@@ -3124,7 +3124,7 @@ class TestHfEndpointUnreachable:
         def _disconnect(*a, **k):
             raise http.client.RemoteDisconnected("Remote end closed connection without response")
 
-        monkeypatch.setattr("urllib.request.urlopen", _disconnect)
+        monkeypatch.setattr("utils.utils.auth_safe_open", _disconnect)
         assert hf_endpoint_unreachable(timeout = 2) is False
 
     def test_real_server_that_accepts_then_closes_is_reachable(self, monkeypatch):
@@ -3164,7 +3164,7 @@ class TestHfEndpointUnreachable:
         def _dns(*a, **k):
             raise urllib.error.URLError(socket.gaierror(-2, "Name or service not known"))
 
-        monkeypatch.setattr("urllib.request.urlopen", _dns)
+        monkeypatch.setattr("utils.utils.auth_safe_open", _dns)
         assert hf_endpoint_unreachable(timeout = 2) is True
 
     def test_hung_probe_is_bounded(self, monkeypatch):
@@ -3173,7 +3173,7 @@ class TestHfEndpointUnreachable:
         def _hang(*a, **k):
             time.sleep(30)
 
-        monkeypatch.setattr("urllib.request.urlopen", _hang)
+        monkeypatch.setattr("utils.utils.auth_safe_open", _hang)
         t0 = time.time()
         result = hf_endpoint_unreachable(timeout = 2)
         assert result is True and (time.time() - t0) < 6.0
