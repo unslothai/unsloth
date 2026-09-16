@@ -45,7 +45,7 @@ import { FreeUpSpaceDialog } from "./catalog/free-up-space-dialog";
 import { HubDetailView } from "./catalog/hub-detail-view";
 import { HubFeed } from "./catalog/hub-feed";
 import { HubTopBar } from "./catalog/hub-top-bar";
-import { hubTourSteps } from "./tour";
+import { buildHubTourSteps } from "./tour";
 import {
   ModelsCatalog,
   type ModelsCatalogHandlers,
@@ -1773,7 +1773,10 @@ export function ModelsPage() {
   // Unreachable under the full-page detail overlay.
   const catalogCovered = detailOpen && !splitMode;
 
-  const tour = useGuidedTourController({ id: "hub", steps: hubTourSteps });
+  const tour = useGuidedTourController({
+    id: "hub",
+    steps: useMemo(() => buildHubTourSteps({ catalogCovered }), [catalogCovered]),
+  });
 
   return (
     <div className="hub-page flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden bg-background">
@@ -1874,6 +1877,7 @@ export function ModelsPage() {
         ) : (
           detailOpen && (
             <div
+              data-tour="hub-detail"
               className="hub-canvas absolute inset-0 z-20 flex min-h-0 flex-col"
             >
               <HubDetailView

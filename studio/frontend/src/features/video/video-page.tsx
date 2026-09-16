@@ -3353,7 +3353,8 @@ function VideoGenerator({
     // The chat-style layout gives this page no outer top inset, so clear the custom titlebar here as chat does.
     // 34px on win/linux, 0 under macOS's native one.
     <div className="diffusion-surface flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]">
-      <GuidedTour {...tour.tourProps} />
+      {/* Portals to body, and this page stays mounted off-route, so gate it like the composer. */}
+      {active && <GuidedTour {...tour.tourProps} />}
       <AlertDialog
         open={active && clearConfirmOpen}
         onOpenChange={(open) => {

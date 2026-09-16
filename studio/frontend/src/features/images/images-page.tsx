@@ -3754,7 +3754,8 @@ export function ImagesPage({
     // The chat-style layout gives this page no outer top inset, so clear the custom titlebar here as chat does.
     // 34px on win/linux, 0 under macOS's native one.
     <div className="diffusion-surface @container flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]">
-      <GuidedTour {...tour.tourProps} />
+      {/* Portals to body, and this page stays mounted off-route, so gate it like the composer. */}
+      {active && <GuidedTour {...tour.tourProps} />}
       {/* Keep the tabs centered over the preview at every width: the model rail holds at 408px when
           space permits and shrinks only to preserve the controls. */}
       <div className="pointer-events-none relative z-40 grid h-[48px] shrink-0 grid-cols-[minmax(0,408px)_minmax(13rem,1fr)]">

@@ -85,6 +85,24 @@ test("every routed tour is mounted by its page", () => {
   }
 });
 
+// Mounted by RootLayout, not by their route, so they outlive a navigation away.
+const PERSISTENT_PAGES = [
+  "features/chat/chat-page.tsx",
+  "features/images/images-page.tsx",
+  "features/video/video-page.tsx",
+  "features/audio/audio-page.tsx",
+];
+
+test("a persistently mounted page hides its tour when its route goes", () => {
+  for (const page of PERSISTENT_PAGES) {
+    assert.match(
+      readSrc(page),
+      /\{active && <GuidedTour /,
+      `${page} renders GuidedTour unconditionally; it portals to body, so the tour would stay modal over the next page`,
+    );
+  }
+});
+
 const EM_DASH = "\u2014";
 
 test("tour copy avoids em dashes", () => {
