@@ -96,7 +96,7 @@ def test_auto_blackwell_prefers_int8_then_walks_the_ladder(monkeypatch):
     assert select_transformer_quant_scheme(_target(), "auto") == TQ_INT8
     _allow(monkeypatch, {TQ_NVFP4, TQ_MXFP8, TQ_FP8})
     assert select_transformer_quant_scheme(_target(), "auto") == TQ_FP8
-    # auto skips nvfp4 even though the hardware runs it: opt-in only.
+    # nvfp4 is opt-in only, so auto skips it even though the hardware runs it.
     _allow(monkeypatch, {TQ_NVFP4, TQ_MXFP8})
     assert select_transformer_quant_scheme(_target(), "auto") == TQ_MXFP8
     _allow(monkeypatch, {TQ_NVFP4})
@@ -107,7 +107,6 @@ def test_auto_consumer_blackwell_prefers_int8(monkeypatch):
     _stub_torch(monkeypatch, cc = (10, 0), device_name = "NVIDIA GeForce RTX 5090")
     _allow(monkeypatch, {TQ_NVFP4, TQ_MXFP8, TQ_FP8, TQ_INT8})
     assert select_transformer_quant_scheme(_target(), "auto") == TQ_INT8
-    # int8 unavailable, so it falls back to the rest of the tier (fp8 next).
     _allow(monkeypatch, {TQ_NVFP4, TQ_MXFP8, TQ_FP8})
     assert select_transformer_quant_scheme(_target(), "auto") == TQ_FP8
 
@@ -126,7 +125,7 @@ def test_auto_workstation_unknown_prefers_int8(monkeypatch):
 
 
 def test_auto_professional_rtx_prefers_int8(monkeypatch):
-    # The accumulate gate still calls these data-center; the ladder order does not depend on it.
+    # Still data-center to the accumulate gate, but ladder order does not depend on that.
     for device_name, cc in (
         ("NVIDIA RTX PRO 6000 Blackwell Server Edition", (10, 0)),
         ("NVIDIA RTX 6000 Ada Generation", (8, 9)),
@@ -1400,19 +1399,18 @@ def test_the_training_deny_is_a_superset_of_the_inference_deny():
 
 
 def test_auto_scheme_candidates_lists_the_whole_ladder_not_just_the_winner(monkeypatch):
-    # select_transformer_quant_scheme returns one winner. When that winner has no hosted prequant
-    # AND cannot fit dense, the loader needs to know what auto would have picked NEXT, or the pick
-    # drops to GGUF even though a lower rung would have loaded. Same ladder, deny list and probe.
+    # The winner may have no hosted prequant and not fit dense, so the loader needs auto's NEXT pick
+    # too, or it drops to GGUF when a lower rung would have loaded. Same ladder, deny list and probe.
     from core.inference.diffusion_transformer_quant import auto_scheme_candidates
 
     _stub_torch(monkeypatch, cc = (10, 0))
     _allow(monkeypatch, {TQ_FP8, TQ_MXFP8, TQ_INT8})
     assert auto_scheme_candidates(_target()) == (TQ_INT8, TQ_FP8, TQ_MXFP8)
     assert auto_scheme_candidates(_target(), "qwen-image") == (TQ_INT8, TQ_FP8)
-    # Whatever the probe refuses is absent, so the list can never offer an unusable scheme.
+    # Whatever the probe refuses is absent, so the list never offers an unusable scheme.
     _allow(monkeypatch, {TQ_INT8})
     assert auto_scheme_candidates(_target(), "qwen-image") == (TQ_INT8,)
-    # A target the dense path cannot use has no candidates at all.
+    # A target the dense path cannot use has no candidates.
     assert auto_scheme_candidates(_target(device = "cpu")) == ()
 
 

@@ -11,9 +11,8 @@ runs on low-precision tensor cores. Measured on B200 (Z-Image-Turbo, 1024px/8 st
 faster and slightly more accurate, at a higher-memory dense load. Strictly opt-in; GGUF stays the
 low-memory default and fallback.
 
-Scheme by architecture (``auto`` picks the best supported, best first): int8 leads every tier, then
-fp8 on Ada / Hopper / Blackwell (sm_89+) and mxfp8 on Blackwell (sm_100+); Ampere (sm_80+) has int8
-alone. nvfp4 is an explicit opt-in and is not in the auto ladder.
+``auto`` walks a per-arch ladder, best first: int8 everywhere (sm_80+), then fp8 (sm_89+), then
+mxfp8 (sm_100+). nvfp4 is explicit opt-in only, never in the ladder.
 
 Every scheme needs ``torch.compile`` for the speedup (dynamic quant is ~30x slower eager); the
 loader compiles the repeated block after this. torch / torchao imported lazily; every probe is
@@ -205,10 +204,10 @@ def exclude_tokens_for_scheme(scheme: str, family: Optional[str] = None) -> tupl
     return ()
 
 
-# int8 leads every tier: full-rate on consumer and workstation cards (which halve fp8 FP32 accumulate) and within a
-# few percent of fp8 on data-center parts. nvfp4 is kept OUT: slower AND less accurate at DiT shapes.
+# int8 leads every tier: full-rate on consumer and workstation cards (which halve fp8 FP32 accumulate), within a few
+# percent of fp8 on data-center parts. nvfp4 stays out of auto: slower AND less accurate at DiT shapes.
 _AUTO_LADDER: tuple[tuple[tuple[int, int], tuple[str, ...]], ...] = (
-    ((10, 0), (TQ_INT8, TQ_FP8, TQ_MXFP8)),  # Blackwell sm_100+ (nvfp4 is explicit opt-in only)
+    ((10, 0), (TQ_INT8, TQ_FP8, TQ_MXFP8)),  # Blackwell sm_100+
     # ((10, 0), (TQ_INT8, TQ_FP8, TQ_NVFP4, TQ_MXFP8)),  # restore to re-enable nvfp4 under auto
     ((8, 9), (TQ_INT8, TQ_FP8)),  # Ada sm_89 / Hopper sm_90
     ((8, 0), (TQ_INT8,)),  # Ampere sm_80 / sm_86
@@ -390,10 +389,9 @@ _PROFESSIONAL_GPU_MARKERS = ("RTX PRO 6000", "RTX 6000 ADA")
 
 def _is_consumer_gpu(device: Any = None) -> bool:
     """Whether the active GPU is consumer-class (GDDR), where fp8 FP32 accumulate is halved so fast
-    (FP16) accumulate is a ~2x win. Data-center HBM and professional parts are not nerfed (return
-    False -> precise accumulate). Heuristic on the device name: GeForce / TITAN ->
-    consumer; a data-center token or professional marker -> not; anything else defaults to
-    consumer (fast accumulate is free on data-center, a win on consumer). True on any failure."""
+    (FP16) accumulate is a ~2x win. By device name: GeForce / TITAN -> consumer, a data-center token
+    or professional marker -> not, anything else -> consumer (fast accumulate is free on data-center,
+    a win on consumer). True on any failure."""
     try:
         import re
 
@@ -472,11 +470,11 @@ def select_transformer_quant_scheme(
     measured deny list (``_FAMILY_SCHEME_DENY``): schemes that produce black frames / out-of-bar
     drift are skipped by ``auto`` and refused when explicit.
 
-    ``unproven_ok`` is for the PRE-EVICTION route gate. The smoke test allocates, so a resident
-    chat/image/video model can make it fail for want of VRAM rather than for want of a kernel; the
-    gate runs before the arbiter has evicted that model, so treating "could not tell" as "not
-    supported" refuses a load the very next moment would have run. It answers "is this scheme
-    provably unusable here", and the real selection still happens after the handoff.
+    ``unproven_ok`` is for the PRE-EVICTION route gate, which runs before the arbiter has evicted a
+    resident model: the smoke test allocates, so it can fail for want of VRAM rather than of a
+    kernel, and treating "could not tell" as "not supported" would refuse a load the very next
+    moment would have run. It answers "is this scheme provably unusable here"; the real selection
+    still happens after the handoff.
     """
     requested = normalize_transformer_quant(requested)
     if requested is None or not dense_transformer_supported(target):
@@ -502,11 +500,10 @@ def select_transformer_quant_scheme(
 
 def auto_scheme_candidates(target: Any, family: Optional[str] = None) -> tuple[str, ...]:
     """Every scheme ``auto`` would accept on this device, best first.
-    ``select_transformer_quant_scheme`` returns only the winner, which is all the load needs
-    until the winner turns out to have no hosted prequant AND not to fit dense. The caller then
-    needs to know what auto would have picked NEXT, so it can reach a scheme that does have a
-    checkpoint instead of dropping to GGUF. Same ladder, same deny list, same smoke probe as the
-    auto branch of the selector, so the two can never disagree about what is allowed."""
+    The selector returns only the winner, which is all the load needs until that winner has no hosted
+    prequant AND does not fit dense; the caller then needs auto's NEXT pick to reach a scheme that
+    does have a checkpoint instead of dropping to GGUF. Same ladder, deny list and smoke probe as the
+    selector's auto branch, so the two can never disagree about what is allowed."""
     if not dense_transformer_supported(target):
         return ()
     device = str(getattr(target, "device", "cuda"))
