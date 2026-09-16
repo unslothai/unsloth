@@ -136,9 +136,7 @@ def _clean_process_state(monkeypatch):
     every one of them erroring in setup, on a tree that does not carry the note at all."""
     from core.inference import sd_cpp_backend
 
-    monkeypatch.setattr(
-        sd_cpp_backend, "_accelerator_runtime_failures", set(), raising = False
-    )
+    monkeypatch.setattr(sd_cpp_backend, "_accelerator_runtime_failures", set(), raising = False)
     monkeypatch.delenv("UNSLOTH_DIFFUSION_SD_CPP_VULKAN_FALLBACK", raising = False)
 
 
@@ -241,9 +239,7 @@ _CPU_ONLY = {"rocm": MISSING, "vulkan": MISSING, "cpu": _DEVICES_CPU_ONLY}
 def test_a_working_rocm_build_is_left_alone(h3_amd_host, fake_settings, platform):
     """The negative control, and the one that matters most: a host where ROCm works must not be
     moved to Vulkan, must not install it, and must not record anything."""
-    host = h3_amd_host(
-        platform = platform, backend = "rocm", device = "cuda", devices = _ROCM_WORKS
-    )
+    host = h3_amd_host(platform = platform, backend = "rocm", device = "cuda", devices = _ROCM_WORKS)
     backend_obj = host.run()
     assert host.ensured == ["rocm"]
     assert backend_obj._state.device == "cuda"
@@ -253,7 +249,11 @@ def test_a_working_rocm_build_is_left_alone(h3_amd_host, fake_settings, platform
 @pytest.mark.parametrize("platform", PLATFORMS)
 @pytest.mark.parametrize(
     "state,devices",
-    [("rocm_unrunnable", _ROCM_BROKEN), ("rocm_cpu_only", _ROCM_CPU_ONLY), ("no_rocm_asset", _VULKAN_ONLY)],
+    [
+        ("rocm_unrunnable", _ROCM_BROKEN),
+        ("rocm_cpu_only", _ROCM_CPU_ONLY),
+        ("no_rocm_asset", _VULKAN_ONLY),
+    ],
 )
 def test_a_rocm_build_that_cannot_run_falls_back_to_vulkan(
     h3_amd_host, fake_settings, platform, state, devices
@@ -303,9 +303,7 @@ def test_a_cuda_host_never_takes_the_vulkan_rung(h3_amd_host, fake_settings, pla
 def test_the_fallback_can_be_switched_off(h3_amd_host, fake_settings, monkeypatch, platform):
     """An operator who would rather see the ROCm failure than be moved to Vulkan keeps that."""
     monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP_VULKAN_FALLBACK", "0")
-    host = h3_amd_host(
-        platform = platform, backend = "rocm", device = "cuda", devices = _ROCM_BROKEN
-    )
+    host = h3_amd_host(platform = platform, backend = "rocm", device = "cuda", devices = _ROCM_BROKEN)
     backend_obj = host.run()
     assert "vulkan" not in host.ensured
     assert backend_obj._state.device == "cuda"  # unchanged from main: the unreadable probe keeps it
@@ -319,9 +317,7 @@ def test_a_recorded_failure_skips_the_rocm_build_on_the_next_load(
     """The persisted half. Once this host has been shown the ROCm build does not run, the NEXT
     load must not install and probe it again: it asks for Vulkan first."""
     fake_settings["sd_cpp_accelerator_runtime_failures"] = ["rocm"]
-    host = h3_amd_host(
-        platform = platform, backend = "rocm", device = "cuda", devices = _ROCM_WORKS
-    )
+    host = h3_amd_host(platform = platform, backend = "rocm", device = "cuda", devices = _ROCM_WORKS)
     backend_obj = host.run()
     assert host.ensured == ["vulkan"], host.ensured
     assert backend_obj._state.device == "cuda"
@@ -347,7 +343,6 @@ def test_only_rocm_has_a_rung_below_it(accelerator, expected):
     """One-way and one-deep: nothing falls back FROM Vulkan, and CUDA either works or the host has
     no CUDA asset at all, which the CPU rung has always covered."""
     from core.inference.sd_cpp_backend import fallback_accelerator_for
-
     assert fallback_accelerator_for(accelerator) == expected
 
 
@@ -369,7 +364,6 @@ def test_only_a_gpu_backend_failure_moves_the_preference(output, expected):
     """A render fails for all sorts of reasons. Only the ones that name the GPU build may persist a
     preference away from this host's own accelerator."""
     from core.inference.sd_cpp_backend import output_shows_accelerator_failure
-
     assert output_shows_accelerator_failure(output) is expected
 
 

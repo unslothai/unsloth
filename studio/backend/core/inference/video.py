@@ -1807,15 +1807,14 @@ class VideoBackend:
             # locked file, on Linux it can leave the replacement half-written. The later claimed recheck cannot undo
             # damage this first probe already allowed.
             from .sd_cpp_backend import _tree_reader as _claim_tree
+
             with _claim_tree(binary, cancel_event, VIDEO_CANCELLED_MSG):
                 # The VERDICT, not the collapsed reading, because the two failures this has to separate are not the
                 # same: False is a build that enumerates the CPU ggml device and nothing else, while None is a build
                 # that could not be asked at all -- an sd-cli that dies before it can answer --list-devices, which is
                 # what a generic ROCm prebuilt does on a card it has no hipBLAS kernels for (#8814, #9278). Collapsing
                 # None into True, which is right for the decision below, hid exactly that case.
-                accelerator_verdict = (
-                    sd_cpp_accelerator_device_verdict(binary) if binary else False
-                )
+                accelerator_verdict = sd_cpp_accelerator_device_verdict(binary) if binary else False
             # Unchanged from the collapsed reading this replaces, and through the same rule rather than a second
             # copy of it: "could not tell" keeps the GPU, since an unreadable probe is not evidence that the
             # accelerator is missing.

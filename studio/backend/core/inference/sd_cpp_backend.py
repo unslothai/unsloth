@@ -619,6 +619,7 @@ def _stored_accelerator_runtime_failures() -> set[str]:
     try:
         from storage.studio_db import get_app_setting
         from utils.account_context import OWNER, run_as
+
         # Owner-scoped, like every other host-level preference: which sd.cpp build runs on this
         # machine is a fact about the machine, not about whoever happens to be generating.
         stored = run_as(OWNER, get_app_setting, _ACCELERATOR_RUNTIME_FAILURES_KEY, None)
@@ -1268,9 +1269,7 @@ class SdCppDiffusionBackend:
         on every load."""
         from core.inference.diffusion_engine_router import _install_accelerator_for
         return preferred_accelerator(
-            _install_accelerator_for(
-                getattr(resolve_diffusion_device_target(), "backend", "cpu")
-            )
+            _install_accelerator_for(getattr(resolve_diffusion_device_target(), "backend", "cpu"))
         )
 
     def _resolve_engine(self) -> SdCppEngine:
