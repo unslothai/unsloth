@@ -428,6 +428,24 @@ def test_start_update_no_marker_no_prebuilt_refuses(monkeypatch, tmp_path):
     assert res["reason"] == "no_prebuilt_available"
 
 
+def test_start_update_refuses_when_update_checks_disabled(monkeypatch, tmp_path):
+    install_dir = tmp_path / "llama.cpp"
+    binary = _write_install(install_dir, "b9493")
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+
+    def _network(*args, **kwargs):
+        raise AssertionError("planned an update despite UNSLOTH_DISABLE_UPDATE_CHECK=1")
+
+    monkeypatch.setattr(upd, "_plan_llama_phase", _network)
+    monkeypatch.setattr(upd, "_pending_backend_migration", _network)
+    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", _network)
+    monkeypatch.setenv("UNSLOTH_DISABLE_UPDATE_CHECK", "1")
+    res = upd.start_update()
+    assert res["started"] is False
+    assert res["reason"] == "update_checks_disabled"
+
+
 def test_start_update_source_build_installs_prebuilt(monkeypatch, tmp_path):
     # Markerless install + available prebuilt: install in place into the resolved
     # root, with the asset-derived ROCm forwarding and the resolved repo.

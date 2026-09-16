@@ -1013,6 +1013,18 @@ def _plan_llama_phase(backend_request: Optional[str] = None) -> dict:
 
 def start_update() -> dict:
     """Kick off a background update job chaining the llama phase with a whisper phase that runs only when whisper is behind; either phase no-ops cleanly when its component is current or unmanaged. Idempotent: a second call while one is running returns the in-flight job."""
+    if update_checks_disabled():
+        with _job_lock:
+            job = dict(_job)
+        return {
+            "started": False,
+            "reason": "update_checks_disabled",
+            "message": (
+                "Update checks are disabled (UNSLOTH_DISABLE_UPDATE_CHECK=1). "
+                "Unset it and restart Unsloth to update llama.cpp from here."
+            ),
+            "job": job,
+        }
     return _start_llama_job()
 
 
