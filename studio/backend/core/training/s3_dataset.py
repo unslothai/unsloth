@@ -106,15 +106,14 @@ def _build_s3_client(s3_config: dict):
     return boto3.client("s3", region_name = region)
 
 
-def _list_dataset_keys(client, bucket: str, prefix: Optional[str]) -> tuple[list[str], list[str]]:
-    """Supported dataset keys under ``prefix``, as (manifest keys, audio keys)."""
+def _list_dataset_keys(client, bucket: str, prefix: Optional[str]) -> list[str]:
+    """Supported dataset keys under ``prefix``: manifests and the audio files beside them."""
     paginator = client.get_paginator("list_objects_v2")
     list_kwargs = {"Bucket": bucket}
     if prefix:
         list_kwargs["Prefix"] = prefix
 
     keys: list[str] = []
-    audio_keys: list[str] = []
     for page in paginator.paginate(**list_kwargs):
         for obj in page.get("Contents", []):
             key = obj["Key"]
@@ -122,17 +121,16 @@ def _list_dataset_keys(client, bucket: str, prefix: Optional[str]) -> tuple[list
                 continue
             if os.path.basename(key).lower() in _IGNORED_METADATA_FILENAMES:
                 continue
-            if key.lower().endswith(SUPPORTED_EXTENSIONS):
+            if key.lower().endswith(SUPPORTED_EXTENSIONS + _AUDIO_EXTENSIONS):
                 keys.append(key)
-            elif key.lower().endswith(_AUDIO_EXTENSIONS):
-                audio_keys.append(key)
     # A Mac sync uploads Finder metadata under the shard's own extension and
     # _validate_single_extension_family cannot see it, so a key is dropped only when the object it
     # would describe is in the same listing.
-    return (
-        drop_shadowed_appledouble_names(keys),
-        drop_shadowed_appledouble_names(audio_keys),
-    )
+    return drop_shadowed_appledouble_names(keys)
+
+
+def _is_audio_key(key: str) -> bool:
+    return key.lower().endswith(_AUDIO_EXTENSIONS)
 
 
 def _extension_family(key: str) -> str:
@@ -326,7 +324,9 @@ def prepare_s3_dataset_download(
     _raise_if_cancelled(cancel_callback)
     client = _build_s3_client(s3_config)
 
-    keys, audio_keys = _list_dataset_keys(client, bucket, prefix)
+    listed = _list_dataset_keys(client, bucket, prefix)
+    keys = [key for key in listed if not _is_audio_key(key)]
+    audio_keys = [key for key in listed if _is_audio_key(key)]
     _raise_if_cancelled(cancel_callback)
     where = f"s3://{bucket}/{prefix}" if prefix else f"s3://{bucket}"
     if not keys:
