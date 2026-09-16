@@ -588,6 +588,7 @@ def _assignment_pairs(tree: ast.AST):
     }
     instances: dict[str, str] = {}
     callable_refs: dict[str, ast.AST] = {}
+    assigned_values: dict[str, list[ast.AST]] = {}
     for node, scope in nodes:
         if isinstance(node, ast.Assign):
             targets = node.targets
@@ -603,10 +604,22 @@ def _assignment_pairs(tree: ast.AST):
         )
         for target in targets:
             name = _fq_name(target)
+            if name:
+                assigned_values.setdefault(name, []).append(value)
             if owner in classes:
                 instances[name] = owner
             if isinstance(value, (ast.Name, ast.Attribute)):
                 callable_refs[name] = value
+
+    def iterated_values(value: ast.AST, seen: frozenset[str] = frozenset()):
+        name = _fq_name(value)
+        if name in assigned_values and name not in seen:
+            for assigned in assigned_values[name]:
+                yield from iterated_values(assigned, seen | {name})
+        elif isinstance(value, (ast.List, ast.Tuple, ast.Set)):
+            yield from value.elts
+        else:
+            yield ast.Subscript(value = value, slice = ast.Constant("*"))
 
     for node, scope in nodes:
         function = None
@@ -667,13 +680,16 @@ def _assignment_pairs(tree: ast.AST):
                 if item.optional_vars is not None:
                     yield item.optional_vars, item.context_expr
             continue
-        if isinstance(node, (ast.AnnAssign, ast.NamedExpr)):
+        if isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
+            pending = [(node.target, item) for item in iterated_values(node.iter)]
+        elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)):
             targets = [node.target]
+            pending = [(target, node.value) for target in targets]
         elif isinstance(node, ast.Assign):
             targets = node.targets
+            pending = [(target, node.value) for target in targets]
         else:
             continue
-        pending = [(target, node.value) for target in targets]
         while pending:
             target, value = pending.pop()
             if scope and isinstance(target, ast.Name):
