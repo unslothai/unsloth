@@ -85,6 +85,21 @@ try {
     $script:StudioEarlyPython = $null
     $exe = Get-StudioEarlyPython
     if (-not $exe) {
+        # "No interpreter" is a real and supported state, so it is a skip and not a failure. But
+        # it is also what a BROKEN EXTRACTION looks like from here: a helper this file forgot to
+        # pull out of install.ps1 makes Get-StudioEarlyPython fail, the probe finds nothing, and
+        # the suite exits 0 having tested nothing. That happened, and CI recorded it as a pass.
+        # So the two are told apart before deciding: if this host has a python on PATH, the
+        # extraction is at fault, not the host.
+        $onPath = $null
+        foreach ($n in @("python3", "python")) {
+            if (-not $onPath) { $onPath = (Get-Command $n -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1) }
+        }
+        if ($onPath) {
+            Write-Host "  FAIL  Get-StudioEarlyPython found nothing, yet $($onPath.Source) is on PATH." -ForegroundColor Red
+            Write-Host "        That is a broken extraction in this file, not a host without Python." -ForegroundColor Red
+            exit 1
+        }
         Write-Host "  SKIP  no Python on this host, which is the fallback case and not a failure" -ForegroundColor Yellow
         exit 0
     }
