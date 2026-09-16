@@ -1558,19 +1558,34 @@ mod tests {
     async fn a_port_with_nothing_on_it_reads_as_death_not_a_stall() {
         // The other half: a backend that really exited leaves a closed port, and that must
         // still be declared dead at three strikes.
-        let port = {
-            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
-            let port = listener.local_addr().unwrap().port();
-            drop(listener);
-            port
-        };
         let client = crate::loopback_http::client(Duration::from_secs(5)).unwrap();
 
-        let error = client
-            .get(format!("http://127.0.0.1:{port}/api/liveness"))
-            .send()
-            .await
-            .expect_err("nothing is listening on this port");
+        // Binding port 0 and dropping the listener frees the port, it does not reserve it. The
+        // tests in this binary run concurrently and several of them bind ephemeral ports, so the
+        // OS can hand this one straight to one of those before the probe runs, and the request
+        // is answered instead of refused. Getting a genuinely closed port is setup, not the
+        // property under test, so re-draw rather than fail on a port somebody else took.
+        let mut error = None;
+        for _ in 0..16 {
+            let port = {
+                let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+                let port = listener.local_addr().unwrap().port();
+                drop(listener);
+                port
+            };
+            match client
+                .get(format!("http://127.0.0.1:{port}/api/liveness"))
+                .send()
+                .await
+            {
+                Err(refused) => {
+                    error = Some(refused);
+                    break;
+                }
+                Ok(_) => continue,
+            }
+        }
+        let error = error.expect("every port drawn here had a listener on it within 16 tries");
 
         let liveness = super::liveness_from_probe_error(&error);
         assert!(!liveness.probe_timed_out, "a refused port read as a stall");
