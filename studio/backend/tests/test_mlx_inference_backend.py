@@ -4191,6 +4191,18 @@ def test_the_load_policy_bounds_a_pin_only_where_the_bound_can_be_enforced(monke
     unreadable = SimpleNamespace(layers = [object()], make_cache = lambda: None)
     assert policy(unreadable, None, 8192) == (None, None, None, None)
 
+    # A budget caps every request, so on a vision model mlx-vlm's own later start is never reached:
+    # quantization starts at the first token, and the load does not claim the later start.
+    backend = MLXInferenceBackend()
+    backend._model = honours
+    budgeted, _, _, budget = backend._resolve_kv_policy(True, 4, 4096, 4096)
+    unpinned, _, _, _ = backend._resolve_kv_policy(True, 4, 0, 262144)
+    assert budget == 4096 and budgeted["note"] == "" and unpinned["note"]
+    backend._kv_quant, backend._kv_context_budget = budgeted, budget
+    assert backend._kv_quant_generate_kwargs() == {"kv_bits": 4, "quantized_kv_start": 0}
+    backend._kv_context_budget = None
+    assert backend._kv_quant_generate_kwargs() == {"kv_bits": 4}
+
 
 def _drive_vlm_generation(
     backend,

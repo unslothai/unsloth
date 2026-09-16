@@ -1830,7 +1830,12 @@ def _kv_window_enforced(model, is_vlm, window):
         return None
 
 
-def _kv_quant_status(requested_bits, model, is_vlm):
+def _kv_quant_status(
+    requested_bits,
+    model,
+    is_vlm,
+    starts_at_first_token = False,
+):
     """Resolve a requested bit width against this model into a status dict."""
     status = {
         "requested_kv_bits": requested_bits,
@@ -1847,7 +1852,7 @@ def _kv_quant_status(requested_bits, model, is_vlm):
     if verdict in ("full", "partial"):
         status["kv_bits"] = requested_bits
         notes = []
-        if is_vlm:
+        if is_vlm and not starts_at_first_token:
             notes.append(MLX_KV_QUANT_VLM_CACHE_NOTE.format(start = _vlm_quantized_kv_start()))
         if not retainable:
             notes.append(MLX_KV_QUANT_NO_REUSE)
@@ -2532,10 +2537,14 @@ class MLXInferenceBackend:
 
     def _kv_quant_generate_kwargs(self):
         """Load-time runtime knobs for a generate call, empty when unset. quantized_kv_start is
-        deliberately not passed: mlx-lm and mlx-vlm ship different defaults (0 and 5000) and each
-        runtime keeps its own."""
+        otherwise left to each runtime, whose defaults differ (0 and 5000); under a budget
+        mlx-vlm's could sit above every request the budget admits, and would never be reached."""
         kv_bits = (getattr(self, "_kv_quant", None) or {}).get("kv_bits")
-        return {} if kv_bits is None else {"kv_bits": kv_bits}
+        if kv_bits is None:
+            return {}
+        if getattr(self, "_kv_context_budget", None):
+            return {"kv_bits": kv_bits, "quantized_kv_start": 0}
+        return {"kv_bits": kv_bits}
 
     def _check_context_budget(
         self,
@@ -2725,7 +2734,13 @@ class MLXInferenceBackend:
         # two stay apart so a client can tell them apart.
         confirmed = self._kv_cache_window_enforceable(served)
         enforceable = confirmed is True
-        quant = _kv_quant_status(_normalize_mlx_kv_bits(kv_bits), self._model, is_vlm)
+        # A width granted here becomes a budget, which starts quantizing at the first token.
+        quant = _kv_quant_status(
+            _normalize_mlx_kv_bits(kv_bits),
+            self._model,
+            is_vlm,
+            starts_at_first_token = pinned and enforceable,
+        )
         if quant["kv_bits"] is None and enforceable:
             logger.info("MLX KV cache limited to %d tokens", int(served))
             return quant, int(served), True, None
