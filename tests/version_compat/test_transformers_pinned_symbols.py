@@ -10,50 +10,89 @@ CPU-only, no install. Anchors: transformers 4.57.6 (floor), 5.17.0 (ceiling) and
 
 from __future__ import annotations
 
+import json
 import re
+import urllib.error
+import urllib.request
 
 import pytest
 
 from tests.version_compat._fetch import fetch_text, first_match, has_def
 
 
-# 4.57.6 floor + every 5.x minor since 5.0.0, up to the current PyPI latest, + main.
-TRANSFORMERS_TAGS = [
-    "v4.57.6",  # anchor (must work)
-    "v5.0.0",
-    "v5.1.0",
-    "v5.2.0",
-    "v5.3.0",
-    "v5.4.0",
-    "v5.5.0",  # anchor (must work)
-    "v5.5.4",
-    "v5.6.2",
-    "v5.7.0",
-    "v5.8.0",
-    "v5.8.1",
-    "v5.9.0",
-    "v5.10.0",
-    "v5.10.1",
-    "v5.10.2",
-    # Upstream tagged PyPI 5.10.4 as v5.10.3 (the tag's __init__ says 5.10.4); there is no v5.10.4 tag and no 5.10.3 on
-    # PyPI, so fetch by the tag name.
-    "v5.10.3",
-    "v5.11.0",
-    "v5.12.0",
-    "v5.12.1",
-    "v5.13.0",
-    "v5.13.1",
-    "v5.14.0",
-    "v5.14.1",
-    # 5.16.0 first required tokenizers>=0.23.1, which broke the Apple Silicon install when
-    # an unbounded override let it in (tests/studio/install/test_transformers_tokenizers_pair.py).
-    "v5.15.0",
-    "v5.15.1",
-    "v5.16.0",
-    "v5.16.1",
-    "v5.17.0",  # the declared ceiling
-    "main",
-]
+# The floor we owe compatibility to. Below it there is no claim to check.
+_FLOOR = (4, 57, 6)
+
+# Always present whatever PyPI says, because each one is load-bearing somewhere else:
+# 4.57.6 is the floor, 5.5.0 is the old ceiling and still the Apple Silicon cap, and 5.16.0
+# first required tokenizers>=0.23.1, which broke the Apple Silicon install when an unbounded
+# override let it in (tests/studio/install/test_transformers_tokenizers_pair.py).
+_ALWAYS = ("v4.57.6", "v5.5.0", "v5.16.0")
+
+# PyPI version -> the tag that actually carries it, where upstream disagrees with itself.
+# Upstream tagged PyPI 5.10.4 as v5.10.3 (that tag's __init__ says 5.10.4); there is no
+# v5.10.4 tag and no 5.10.3 on PyPI, so the tag name is not "v" + the release name.
+_TAG_OVERRIDES = {"5.10.4": "v5.10.3"}
+
+# Used when PyPI cannot be reached. A frozen list is the point: a network failure must not
+# quietly shrink the matrix to nothing and report green.
+_TAGS_FALLBACK = (
+    "v4.57.6", "v5.0.0", "v5.1.0", "v5.2.0", "v5.3.0", "v5.4.0", "v5.5.4", "v5.6.2",
+    "v5.7.0", "v5.8.1", "v5.9.0", "v5.10.2", "v5.10.3", "v5.11.0", "v5.12.1", "v5.13.1",
+    "v5.14.1", "v5.15.1", "v5.16.1", "v5.17.0",
+)
+
+
+def _release_tags() -> list[str]:
+    """Every transformers minor at or above the floor, latest patch of each, oldest first.
+
+    Read from PyPI rather than pinned, because this suite exists to say which versions the
+    cap may be lifted to, and a hand-maintained list answers for the day it was edited. One
+    tag per minor keeps the matrix bounded as upstream keeps releasing; a patch that broke
+    something specific earns its place in `_ALWAYS`, not a blanket every-patch sweep.
+
+    Yanked releases are skipped: pip will not install them, so we owe them nothing. So are
+    rc/dev/post builds, for the same reason.
+    """
+    try:
+        with urllib.request.urlopen(
+            "https://pypi.org/pypi/transformers/json", timeout = 20,
+        ) as response:
+            releases = json.loads(response.read().decode("utf-8"))["releases"]
+    except (urllib.error.URLError, TimeoutError, ValueError, KeyError):
+        return list(_TAGS_FALLBACK)
+
+    latest_by_minor: dict[tuple[int, int], tuple[int, ...]] = {}
+    for version, files in releases.items():
+        if not files or all(f.get("yanked") for f in files):
+            continue
+        if re.fullmatch(r"\d+(?:\.\d+){2,}", version) is None:
+            continue
+        parts = tuple(int(g) for g in version.split("."))
+        if parts < _FLOOR:
+            continue
+        minor = parts[:2]
+        if parts > latest_by_minor.get(minor, ()):
+            latest_by_minor[minor] = parts
+    if not latest_by_minor:
+        return list(_TAGS_FALLBACK)
+
+    tags = []
+    for parts in sorted(latest_by_minor.values()):
+        name = ".".join(str(p) for p in parts)
+        tags.append(_TAG_OVERRIDES.get(name, "v" + name))
+    for tag in _ALWAYS:
+        if tag not in tags:
+            tags.append(tag)
+    return sorted(set(tags), key = _sort_key)
+
+
+def _sort_key(tag: str) -> tuple[int, ...]:
+    return tuple(int(g) for g in tag.lstrip("v").split("."))
+
+
+# `main` catches drift before it ships to PyPI.
+TRANSFORMERS_TAGS = _release_tags() + ["main"]
 
 # Every check runs once per tag; one that cannot skips from inside so the tag stays in the report.
 pytestmark = pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
