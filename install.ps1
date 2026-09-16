@@ -1073,17 +1073,73 @@ function Install-UnslothStudio {
         }
     }
 
+    # ── BEGIN SHARED WITH studio/setup.ps1 (Get-NvidiaSmiCandidatePaths) ──
+    # Every directory nvidia-smi might be in, in the order worth trying, filtered to the ones that
+    # actually hold the binary. Callers still run their own Test-NvidiaSmiHasGpu over the result:
+    # existing is not the same as answering.
+    #
+    # Only two locations were searched before, and each addition below is a host where a real NVIDIA
+    # GPU was reported absent, which sends the installer to CPU-only PyTorch:
+    #
+    #   SysNative       From a 32-bit process "System32" is redirected to SysWOW64, which has no
+    #                   nvidia-smi. SysNative is the alias that reaches the real System32.
+    #   ProgramW64      In that same process $env:ProgramFiles is "Program Files (x86)".
+    #                   ProgramW6432 is the 64-bit Program Files whatever the process bitness.
+    #   x86             Not the driver's own location, but a machine that once had a 32-bit
+    #                   toolkit can carry a working copy there.
+    #   DriverStore     Where the driver package itself lives. Present on hosts where the copy
+    #                   into System32 did not happen, which is the #9255 population.
+    #
+    # Nothing is removed. One ordering does change, and deliberately: the two call sites disagreed
+    # with each other before, one trying System32 first and the other the NVSMI directory first, and
+    # a single list cannot keep both. System32 wins, because that is where the current driver puts
+    # its copy; NVSMI is the legacy location and a machine carrying both can have an older binary
+    # there reporting an older CUDA version. This only affects a host that has both, and only in
+    # which of two working binaries answers.
+    function Get-NvidiaSmiCandidatePaths {
+        $dirs = @()
+        if ($env:SystemRoot) { $dirs += (Join-Path $env:SystemRoot "System32") }
+        if ($env:ProgramFiles) { $dirs += (Join-Path $env:ProgramFiles "NVIDIA Corporation\NVSMI") }
+        if ($env:SystemRoot) { $dirs += (Join-Path $env:SystemRoot "SysNative") }
+        if ($env:ProgramW6432) { $dirs += (Join-Path $env:ProgramW6432 "NVIDIA Corporation\NVSMI") }
+        $pfx86 = ${env:ProgramFiles(x86)}
+        if ($pfx86) { $dirs += (Join-Path $pfx86 "NVIDIA Corporation\NVSMI") }
+        # Bounded on purpose. FileRepository holds every driver package the machine has ever had, so
+        # it is filtered to NVIDIA's own prefix and the newest few by write time, never walked whole.
+        try {
+            if ($env:SystemRoot) {
+                $repo = Join-Path $env:SystemRoot "System32\DriverStore\FileRepository"
+                if (Test-Path -LiteralPath $repo -PathType Container) {
+                    foreach ($dir in @(Get-ChildItem -LiteralPath $repo -Directory -Filter "nv*" -ErrorAction SilentlyContinue |
+                        Sort-Object LastWriteTime -Descending | Select-Object -First 8)) {
+                        $dirs += $dir.FullName
+                    }
+                }
+            }
+        } catch {}
+        $paths = @()
+        $seen = @{}
+        foreach ($dir in $dirs) {
+            if ([string]::IsNullOrWhiteSpace($dir)) { continue }
+            $candidate = Join-Path $dir "nvidia-smi.exe"
+            # Case-insensitive, because the same directory reached two ways must not be probed twice:
+            # each probe is a bounded process spawn with a wall-clock timeout behind it.
+            $key = $candidate.ToLowerInvariant()
+            if ($seen.ContainsKey($key)) { continue }
+            $seen[$key] = $true
+            if (Test-Path -LiteralPath $candidate -PathType Leaf) { $paths += $candidate }
+        }
+        return $paths
+    }
+    # ── END SHARED WITH studio/setup.ps1 (Get-NvidiaSmiCandidatePaths) ──
+
     # One list, because the presence probe and the driver-version probe must agree: a host only the first finds reports a GPU with no driver version, and the CUDA-major guard is then skipped.
     function Get-WoaNvidiaSmiPath {
         $exe = $null
         try { $exe = (Get-Command nvidia-smi -ErrorAction SilentlyContinue).Source } catch { $exe = $null }
         if ($exe) { return $exe }
-        foreach ($candidate in @(
-            "$env:SystemRoot\System32\nvidia-smi.exe",
-            "$env:ProgramFiles\NVIDIA Corporation\NVSMI\nvidia-smi.exe"
-        )) {
-            if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
-        }
+        $found = @(Get-NvidiaSmiCandidatePaths)
+        if ($found.Count -gt 0) { return $found[0] }
         return $null
     }
 
@@ -7067,15 +7123,10 @@ exit 0
         }
     } catch {}
     if (-not $HasNvidiaSmi) {
-        foreach ($p in @(
-            "$env:ProgramFiles\NVIDIA Corporation\NVSMI\nvidia-smi.exe",
-            "$env:SystemRoot\System32\nvidia-smi.exe"
-        )) {
-            if (Test-Path $p) {
-                try {
-                    if (Test-NvidiaSmiHasGpu $p) { $HasNvidiaSmi = $true; $NvidiaSmiExe = $p; break }
-                } catch {}
-            }
+        foreach ($p in @(Get-NvidiaSmiCandidatePaths)) {
+            try {
+                if (Test-NvidiaSmiHasGpu $p) { $HasNvidiaSmi = $true; $NvidiaSmiExe = $p; break }
+            } catch {}
         }
     }
     if (-not $HasNvidiaSmi -and (Get-NvidiaLibraryInventory)) {
