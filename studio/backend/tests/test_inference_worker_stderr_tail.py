@@ -522,3 +522,143 @@ def test_the_mirror_writes_through_to_the_inherited_stderr(tmp_path, capfd):
     captured = capfd.readouterr()
     assert "Starting text generation" in captured.err
     assert "CUDA out of memory" in captured.err
+
+
+# ---------------------------------------------------------------------------
+# What leaves the host is not what goes in the log
+# ---------------------------------------------------------------------------
+
+
+class _FixedCapture:
+    def __init__(self, text):
+        self._text = text
+
+    def tail(self):
+        return self._text
+
+
+def _orchestrator_with_capture(text):
+    from core.inference.orchestrator import InferenceOrchestrator
+
+    instance = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    instance._stderr_capture = _FixedCapture(text)
+    return instance
+
+
+CROSS_ACCOUNT = (
+    "2026-09-16 10:00:01 audio_codecs.decode_bicodec: generated text: "
+    "another account's private prompt\n"
+    "2026-09-16 10:00:02 worker: request 41 finished\n"
+)
+TRACEBACK = (
+    "Traceback (most recent call last):\n"
+    '  File "/home/alice/.unsloth/studio/worker.py", line 42, in run\n'
+    '    raise RuntimeError("boom")\n'
+    "RuntimeError: boom\n"
+)
+
+
+def test_the_public_tail_drops_everything_before_the_traceback():
+    """The capture is the worker's whole lifetime, not this request.
+
+    On a managed multi-user install this string goes out through
+    `GenStreamError(public = True)`, which returns it verbatim rather than reducing it
+    through `safe_error_detail`. Anything another account's request logged in those lines
+    went out with it, and `audio_codecs.decode_bicodec` logs the first 500 characters of
+    generated text.
+    """
+    public = _orchestrator_with_capture(CROSS_ACCOUNT + TRACEBACK)._public_worker_stderr_tail()
+    assert "another account" not in public, public
+    assert "request 41 finished" not in public, public
+    # And the crash itself is still reported, or the redaction has cost the user #7843.
+    assert public.startswith("Traceback (most recent call last):"), public
+    assert "RuntimeError: boom" in public
+
+
+def test_the_public_tail_keeps_only_the_last_traceback():
+    """An earlier, recovered-from traceback belonged to someone else's request too."""
+    earlier = TRACEBACK.replace("boom", "an earlier unrelated failure")
+    public = _orchestrator_with_capture(
+        earlier + CROSS_ACCOUNT + TRACEBACK
+    )._public_worker_stderr_tail()
+    assert "an earlier unrelated failure" not in public, public
+    assert "RuntimeError: boom" in public
+
+
+def test_a_capture_of_nothing_but_logging_is_dropped_entirely():
+    """With no traceback, what is left is ordinary logging, which is exactly the
+    cross-account content. The message degrades to the exit status, which is what it was
+    before this capture existed."""
+    assert _orchestrator_with_capture(CROSS_ACCOUNT)._public_worker_stderr_tail() == ""
+    assert _orchestrator_with_capture("")._public_worker_stderr_tail() == ""
+
+
+def test_a_native_abort_with_no_traceback_is_still_reported():
+    """`terminate called after throwing an instance of 'c10::Error'` IS the diagnosis, and
+    it arrives with no traceback at all. Dropping every capture that lacks one would cost
+    the most common native crash its only explanation, so the filter is on the shape of a
+    log record rather than on the absence of a traceback.
+
+    The distinction is real rather than convenient: application code prints content through
+    the logger, and a native abort or a fatal signal writes a bare line.
+    """
+    abort = "terminate called after throwing an instance of 'c10::Error'\n"
+    public = _orchestrator_with_capture(CROSS_ACCOUNT + abort)._public_worker_stderr_tail()
+    assert "c10::Error" in public, public
+    assert "another account" not in public, public
+
+
+def test_the_log_record_shapes_are_the_ones_content_arrives_in():
+    """Wrong in one direction this drops a diagnostic line; in the other it forwards
+    someone else's logged content to a client."""
+    from core.inference.orchestrator import _looks_like_a_log_record
+
+    for record in (
+        "2026-09-16 10:00:01 audio_codecs.decode_bicodec: generated text: hello",
+        "2026-09-16T10:00:01 worker: started",
+        "INFO: loaded the model",
+        "[WARNING] falling back to CPU",
+        "audio_codecs.decode_bicodec: generated text: hello",
+    ):
+        assert _looks_like_a_log_record(record) is True, record
+
+    for kept in (
+        "terminate called after throwing an instance of 'c10::Error'",
+        "Traceback (most recent call last):",
+        "RuntimeError: boom",
+        '  File "/x/worker.py", line 42, in run',
+        "Segmentation fault (core dumped)",
+    ):
+        assert _looks_like_a_log_record(kept) is False, kept
+
+
+def test_the_public_tail_redacts_paths_and_credentials():
+    """Ordinary tracebacks carry the operator's filesystem layout, and an exception message
+    can carry a token. The file NAME survives, because that is what makes the report
+    useful and it is Unsloth's own module rather than the user's data."""
+    from core.inference.orchestrator import _redact_worker_output
+
+    text = (
+        "Traceback (most recent call last):\n"
+        '  File "/home/alice/.unsloth/studio/worker.py", line 42, in run\n'
+        '    login(token="hf_abcdefghijklmnopqrstuvwxyz012345")\n'
+        "RuntimeError: refused, Authorization: Bearer sk-secret-value\n"
+    )
+    public = _redact_worker_output(text)
+    assert "/home/alice" not in public, public
+    assert "worker.py" in public, public
+    assert "hf_abcdefghijklmnopqrstuvwxyz012345" not in public, public
+    assert "sk-secret-value" not in public, public
+    assert "RuntimeError: refused" in public, public
+
+
+def test_the_crash_message_uses_the_public_tail():
+    """The narrowing is only worth anything if the message-building call site uses it. A
+    call site still reading the raw capture would leave every case above passing."""
+    import inspect
+
+    from core.inference.orchestrator import InferenceOrchestrator
+
+    source = inspect.getsource(InferenceOrchestrator._subprocess_crash_message)
+    assert "_public_worker_stderr_tail()" in source
+    assert "= self._worker_stderr_tail()" not in source
