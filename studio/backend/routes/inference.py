@@ -2812,7 +2812,14 @@ async def _tunnel_safe_json(coro, *, label: str):
                 )
             except Exception as exc:
                 logger.exception(f"{label} failed after the response was committed")
-                yield _deferred_error_body(500, f"{type(exc).__name__}: {exc}")
+                # Through the same restoration as the HTTPException above. A filesystem
+                # failure quotes the path it failed on, and for a load started from an
+                # inventory reference that path is the one this caller was never shown: an
+                # OSError or a RuntimeError arriving after the fifteen second mark handed it
+                # back in the 500 detail.
+                yield _deferred_error_body(
+                    500, restore_inventory_handles(f"{type(exc).__name__}: {exc}")
+                )
             else:
                 yield json.dumps(
                     jsonable_encoder(restore_inventory_handles(payload))

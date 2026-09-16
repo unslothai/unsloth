@@ -1564,3 +1564,33 @@ def test_a_training_run_does_not_carry_the_output_layout():
     assert redacted["dataset_name"] == "acme/dataset"
     # And the browser session sees its own machine, exactly as before.
     assert host_paths.redact_host_paths(row, via_api_key = False) == row
+
+
+def test_the_deferred_five_hundred_restores_the_handle_too():
+    """A load slower than the keepalive threshold answers from a committed stream.
+
+    The HTTPException branch restored the handle and the generic branch serialized str(exc)
+    straight through, so a filesystem failure -- which quotes the path it failed on -- handed
+    an API-key caller the absolute path the reference existed to hide.
+    """
+    import inspect
+
+    from routes import inference as inference_routes
+
+    body = inspect.getsource(inference_routes._tunnel_safe_json)
+    generic = body.index("failed after the response was committed")
+    tail = body[generic:generic + 800]
+    assert "restore_inventory_handles(" in tail, tail
+
+    # And the restoration itself does the work on that exact shape of string.
+    path = f"{HOST_ROOT}/my models/Local-Model"
+    reference = host_paths.cache_reference(path)
+    token = host_paths._request_handles.set({path: reference})
+    try:
+        restored = host_paths.restore_inventory_handles(
+            f"OSError: [Errno 13] Permission denied: '{path}/model.safetensors'"
+        )
+        assert HOST_ROOT not in restored, restored
+        assert reference in restored, restored
+    finally:
+        host_paths._request_handles.reset(token)
