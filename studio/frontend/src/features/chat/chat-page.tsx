@@ -3950,6 +3950,7 @@ export function ChatPage({
   const tour = useGuidedTourController({
     id: "chat",
     steps: tourSteps,
+    enabled: active,
   });
 
   useEffect(() => {

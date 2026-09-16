@@ -1252,7 +1252,11 @@ export function ImagesPage({
     () => buildImagesTourSteps({ pageMode }),
     [pageMode],
   );
-  const tour = useGuidedTourController({ id: "images", steps: tourSteps });
+  const tour = useGuidedTourController({
+    id: "images",
+    steps: tourSteps,
+    enabled: active,
+  });
   // Train family + base live here so the top bar can pick them, replacing the generation model selector on Train.
   const [trainFamilies, setTrainFamilies] = useState<TrainFamilyOption[]>([]);
   const [trainFamilyName, setTrainFamilyName] = useState("flux.1");

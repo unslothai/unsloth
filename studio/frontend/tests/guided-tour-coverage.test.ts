@@ -111,6 +111,19 @@ test("a step is left when the tour unmounts, not only when it advances", () => {
   );
 });
 
+test("the menu offers a tour only when one is listening", () => {
+  assert.match(
+    readSrc("components/app-sidebar.tsx"),
+    /useTourAvailable\(/,
+    "the Guided Tour entry must consult useTourAvailable; route alone offers it on pages that mount their tour behind a capability gate, where clicking it does nothing",
+  );
+  assert.match(
+    readSrc("features/tour/hooks/use-guided-tour-controller.ts"),
+    /registerTour\(id\)/,
+    "the controller must register itself while it listens, or useTourAvailable cannot answer",
+  );
+});
+
 const EM_DASH = "\u2014";
 
 test("tour copy avoids em dashes", () => {

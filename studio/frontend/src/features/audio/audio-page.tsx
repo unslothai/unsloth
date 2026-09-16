@@ -328,7 +328,11 @@ export function AudioPage({
   const initialReadySent = useRef(false);
   const [mode, setMode] = useState<CreateMode>("speak");
   const tourSteps = useMemo(() => buildAudioTourSteps({ mode }), [mode]);
-  const tour = useGuidedTourController({ id: "audio", steps: tourSteps });
+  const tour = useGuidedTourController({
+    id: "audio",
+    steps: tourSteps,
+    enabled: active,
+  });
   const [selectorOpen, setSelectorOpen] = useState(false);
   const [busy, setBusy] = useState<AudioBusy>(null);
   const busyRef = useRef<AudioBusy>(busy);
