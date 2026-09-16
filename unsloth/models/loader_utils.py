@@ -92,6 +92,52 @@ def is_distributed():
     return (world_size or 1) > 1 or (rank is not None and rank > 0)
 
 
+_TRUTHY = ("1", "true", "yes", "on")
+
+
+def fsdp_will_wrap():
+    """True when this process is going to hand the model to FSDP.
+
+    Unsloth's fused LoRA kernels read `.weight` off the projection modules and
+    matmul it themselves, so they never go through the module call FSDP hooks
+    its unshard onto. Under FSDP those weights are shard views: a LoRA A of
+    shape (8, 896) arrives as a 1-D tensor of 3584 elements on a 2-rank
+    FULL_SHARD run, and `matmul_lora` dies (`RuntimeError: size mismatch, got
+    input (20), mat (20x896), vec (3584)` on torch 2.14, `setStorage ... out of
+    bounds for storage of size 0` on the torch of unsloth#409). So the fused
+    path has to be declined before the adapters are patched in.
+
+    Probed, not inferred from a version: `patch_peft_model` runs before the
+    Trainer builds its Accelerator, so the live state is usually not there yet
+    and the launcher's env contract is what there is. `accelerate launch` with
+    an FSDP config exports ACCELERATE_USE_FSDP and FSDP_VERSION and a plain DDP
+    launch exports neither, and torchrun users set them by hand for the same
+    reason. The live state is still consulted first, for a caller who built an
+    Accelerator themselves.
+
+    `UNSLOTH_FORCE_FUSED_LORA=1` opts back in, for measuring what the fallback
+    costs or for an FSDP configuration that leaves the weights alone.
+    """
+    if os.environ.get("UNSLOTH_FORCE_FUSED_LORA", "0") == "1":
+        return False
+    try:
+        from accelerate.state import AcceleratorState
+        distributed_type = AcceleratorState._shared_state.get("distributed_type", None)
+        if distributed_type is not None and "FSDP" in str(distributed_type).upper():
+            return True
+    except Exception:
+        # No accelerate, or a version without the shared state: the env below is
+        # the contract every launcher honours, so this is a hint, not the answer.
+        pass
+    if str(os.environ.get("ACCELERATE_USE_FSDP", "")).strip().lower() in _TRUTHY:
+        return True
+    # Set alongside it by `accelerate launch`, and the one a torchrun user is
+    # most likely to set alone. "0" is how a config says "not FSDP".
+    if str(os.environ.get("FSDP_VERSION", "")).strip() not in ("", "0"):
+        return True
+    return False
+
+
 def prepare_device_map():
     rank, world_size = _infer_distributed_ranks()
     distributed = (world_size or 1) > 1 or (rank is not None and rank > 0)
