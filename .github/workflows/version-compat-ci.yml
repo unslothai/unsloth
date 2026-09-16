@@ -176,11 +176,16 @@ jobs:
   # transformers 4.51.3 through 5.17.0 and TRL 0.18.2 through 0.24.0 can have a
   # green matrix and still not import on the floor or the ceiling.
   #
-  # floor:  the oldest combination pyproject still admits, on the oldest Python it
-  #         supports. torch 2.6.0 is the last minor before the ABI window the other
-  #         jobs here use, transformers 4.57.6 is the last 4.x (and needs
-  #         huggingface_hub < 1.0, which is why it can never share a venv with a
-  #         5.x lane), TRL 0.22.2 and PEFT 0.18.0 are the declared floors.
+  # floor:  the declared minima themselves, not a convenient set near them: a lane
+  #         that pins above the floor leaves the advertised low end untested and
+  #         green. transformers 4.51.3, TRL 0.18.2 and PEFT 0.18.0 are what
+  #         pyproject.toml actually admits at the bottom. transformers 4.51.3 needs
+  #         huggingface_hub < 1.0, which is why this lane can never share a venv
+  #         with a 5.x one. Python 3.10 rather than the 3.9 in requires-python
+  #         because PEFT 0.18.0 declares Requires-Python >= 3.10, so 3.9 cannot
+  #         reach this stack at all and pinning it here would only pin a resolver
+  #         error. torch 2.6.0 is the last minor before the ABI window the other
+  #         jobs here use.
   #         torchcodec 0.2 is the row this table pairs with torch 2.6 (see
   #         TORCH_TORCHCODEC in scripts/notebook_validator.py); triton 3.2.0 is the
   #         one torch 2.6.0 itself pins.
@@ -220,7 +225,7 @@ jobs:
             torch_pins: >-
               'torch==2.6.0' 'torchvision==0.21.0' 'torchcodec>=0.2,<0.3'
             pkg_pins: >-
-              'transformers==4.57.6' 'trl==0.22.2'
+              'transformers==4.51.3' 'trl==0.18.2'
               'peft==0.18.0' 'sentence-transformers>=5.0,<6' 'accelerate>=1.0'
               'datasets>=3.4,<4.4' 'bitsandbytes>=0.45.5' 'triton==3.2.0'
               hf_transfer

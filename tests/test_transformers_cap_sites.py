@@ -66,10 +66,14 @@ NEWLY_ADMITTED = ("5.6.0", "5.10.1", "5.14.1", "5.15.1", "5.16.1", "5.17.0")
 # Workflow lanes whose transformers requirement is deliberately NOT the published cap.
 # Each needs a reason, because "it is lower" is otherwise indistinguishable from "it was
 # forgotten", which is the whole bug this file is about.
+# Keyed on (workflow, the exact requirement string), never on the workflow alone. A
+# filename-level exemption blinds the scan to every OTHER transformers requirement in that
+# same file, including one that goes stale later, and the file it was granted for is the
+# one this gate most needs to read.
 PINNED_BY_DESIGN = {
-    "version-compat-ci.yml": (
-        "the floor lane pins transformers==4.57.6 on purpose: it is the oldest release "
-        "the cap admits and the last 4.x, and it needs huggingface_hub < 1.0"
+    ("version-compat-ci.yml", "transformers<=5.5.0"): (
+        "example only: no lane spells this today. The entry keeps the shape honest and is "
+        "what a future deliberate range cap would look like"
     ),
 }
 
@@ -186,8 +190,10 @@ def test_no_workflow_lane_sits_below_the_declared_ceiling() -> None:
                 continue
             if ceiling in req.specifier:
                 continue
+            if (path.name, raw.strip()) in PINNED_BY_DESIGN:
+                continue
             offenders.setdefault(path.name, []).append(raw)
-    unexplained = {k: v for k, v in offenders.items() if k not in PINNED_BY_DESIGN}
+    unexplained = offenders
     assert not unexplained, (
         f"these workflow lanes cap transformers below the {ceiling} the package publishes, "
         f"so they test a range users do not get: {unexplained}. Either widen the lane or "
@@ -250,3 +256,29 @@ def test_this_file_is_triggered_by_everything_it_scans() -> None:
         f"touching only those files never starts the cap-site-consistency job that reads "
         f"them. Current filter: {paths}"
     )
+
+
+def test_a_stale_range_cap_is_caught_even_in_an_allowlisted_workflow(tmp_path, monkeypatch) -> None:
+    """NEGATIVE CONTROL for the exemption itself.
+
+    The exemption used to be keyed on the filename, so one intentional pin in
+    version-compat-ci.yml exempted every other transformers requirement in it, and the
+    gate could not see a range cap that went stale in the very workflow it scans. Prove
+    the scan still fires there by writing one and reading the failure.
+    """
+    workflows = tmp_path / "workflows"
+    workflows.mkdir()
+    (workflows / "version-compat-ci.yml").write_text(
+        "run: |\n"
+        "  pip install 'transformers==4.51.3'\n"        # exact pin: a point, not a cap
+        "  pip install 'transformers>=4.51.3,<=5.5.0'\n",  # stale range cap: must be caught
+        encoding = "utf-8",
+    )
+    monkeypatch.setattr(sys.modules[__name__], "WORKFLOWS", workflows)
+
+    with pytest.raises(AssertionError) as raised:
+        test_no_workflow_lane_sits_below_the_declared_ceiling()
+
+    assert "version-compat-ci.yml" in str(raised.value)
+    assert "<=5.5.0" in str(raised.value)
+    assert "==4.51.3" not in str(raised.value), "an exact pin is a point in the range, not a cap"
