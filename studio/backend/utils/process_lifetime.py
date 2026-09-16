@@ -624,6 +624,32 @@ def _windows_creation_time(identity: "Optional[str]") -> "Optional[int]":
         return None
 
 
+def _windows_filetime_now() -> "Optional[int]":
+    """The wall clock as one 64-bit FILETIME, comparable with a process creation time.
+
+    `GetProcessTimes` reports creation as a UTC FILETIME and `GetSystemTimeAsFileTime`
+    reads the same clock, so a candidate whose creation time is LATER than a reading taken
+    before a snapshot cannot be a process that snapshot listed. That is the only way to
+    reject a number recycled between the snapshot and the identity read, where the identity
+    describes the replacement rather than the entry. None when it cannot be read, which
+    leaves the walk exactly as it was.
+    """
+    if not _is_windows():
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+        kernel32.GetSystemTimeAsFileTime.argtypes = [ctypes.POINTER(wintypes.FILETIME)]
+        kernel32.GetSystemTimeAsFileTime.restype = None
+        stamp = wintypes.FILETIME()
+        kernel32.GetSystemTimeAsFileTime(ctypes.byref(stamp))
+        return (int(stamp.dwHighDateTime) << 32) | int(stamp.dwLowDateTime)
+    except Exception:  # noqa: BLE001 -- cannot tell; the walk keeps its old behaviour
+        return None
+
+
 def _windows_child_pid_map() -> "Optional[dict[int, list[int]]]":
     """Parent pid -> its children, from a Toolhelp snapshot. None when unreadable.
 
@@ -856,6 +882,14 @@ def _windows_collect_descendants_known(pid: int) -> "tuple[list[tuple[int, Optio
         # No floor means no ancestry proof for anything, so this claims nothing at all --
         # and "nothing" here is indeterminate, not empty.
         return [], False
+    # Read BEFORE the snapshot, and used as a ceiling. The identity of each candidate is
+    # read after the table, and a child that exits in between frees its number immediately:
+    # the identity then describes whatever took it, which -- being newer than the parent
+    # floor -- the ancestry test admits, and every later check happily re-verifies that
+    # stranger right up to the forced kill. A process created after this reading cannot be
+    # one the snapshot listed, so that is the test. Strictly later, since the clock is
+    # coarse enough for a genuine child to share the tick.
+    snapshot_ceiling = _windows_filetime_now()
     table = _child_pid_map()
     if not table:
         return [], False
@@ -882,6 +916,12 @@ def _windows_collect_descendants_known(pid: int) -> "tuple[list[tuple[int, Optio
             # Provably not a descendant: it predates the process that lists it as its
             # creator, which is the recycled-number case this floor exists for. Rejecting
             # it is an ANSWER, so the walk stays complete.
+            continue
+        if snapshot_ceiling is not None and created > snapshot_ceiling:
+            # Provably not the process the snapshot listed: it did not exist when the
+            # snapshot was taken. The entry's own process has therefore exited and its
+            # number been reused, so nothing of this tree is lost and the walk stays
+            # complete -- the subtree under a stranger is the stranger's, not ours.
             continue
         found.append((child, identity))
         queue.extend((grandchild, created) for grandchild in table.get(child, ()))
@@ -946,6 +986,13 @@ def terminate_descendants(
     ]
 
 
+# How many times a survivor's subtree is re-walked before the sweep gives up and says so.
+# Each pass is one Toolhelp snapshot plus one identity read per candidate, so a handful is
+# cheap; what it buys is the child a late descendant starts while the taskkill before it
+# spends its fifteen seconds.
+_LATE_WALK_ROUNDS = 4
+
+
 def _windows_terminate_collected(
     collected: "list[tuple[int, Optional[str]]]",
 ) -> "list[tuple[int, Optional[str]]]":
@@ -999,42 +1046,63 @@ def _windows_terminate_collected(
             continue
         # Started after the snapshot, and validated the same way rather than inherited
         # from a parent-pid link. Deepest first, as above.
-        late, late_known = _windows_collect_descendants_known(pid)
-        if not late_known:
-            # This second walk is what covers anything the survivor started AFTER the
-            # snapshot. Failing it and carrying on used to kill the survivor and then
-            # report nothing, so a grandchild only this walk could have named was left
-            # with the record and the pidfile deleted out from under it.
-            #
-            # The survivor itself is still killed: it is collected and identity-verified,
-            # and refusing to kill it because a walk BELOW it failed would leave the very
-            # process this sweep exists for running. What changes is the report: the pid
-            # is carried out as unresolved, which keeps the record, and the next sweep
-            # gets another walk at whatever is under it.
+        #
+        # Repeated, not done once. Each `taskkill` in the loop below has the same fifteen
+        # second ceiling, so a late descendant has a long window of its own in which to
+        # start a child before the loop reaches the end -- and a child of a late child was
+        # in neither walk, so the sweep reported nothing about it and the caller deleted
+        # the record and the pidfile while it held a GPU. The walk is re-run until it stops
+        # producing live pids this pass has not already dealt with. Bounded rather than
+        # unbounded: a process that respawns faster than it can be killed is not something
+        # a loop wins, and the answer for it is the honest one below -- unresolved, which
+        # keeps the record for the next sweep.
+        late_handled: "set[int]" = set()
+        for round_index in range(_LATE_WALK_ROUNDS):
+            late, late_known = _windows_collect_descendants_known(pid)
+            if not late_known:
+                # This second walk is what covers anything the survivor started AFTER the
+                # snapshot. Failing it and carrying on used to kill the survivor and then
+                # report nothing, so a grandchild only this walk could have named was left
+                # with the record and the pidfile deleted out from under it.
+                #
+                # The survivor itself is still killed: it is collected and identity-verified,
+                # and refusing to kill it because a walk BELOW it failed would leave the very
+                # process this sweep exists for running. What changes is the report: the pid
+                # is carried out as unresolved, which keeps the record, and the next sweep
+                # gets another walk at whatever is under it.
+                unresolved.append((pid, identity))
+                break
+            fresh = [item for item in late if item[0] not in late_handled]
+            if not fresh:
+                break
+            for late_pid, late_identity in reversed(fresh):
+                late_handled.add(late_pid)
+                if not _signalable(late_pid) or not _pid_alive(late_pid):
+                    continue
+                if not _provably_the_same(late_pid, late_identity):
+                    # The same three outcomes as the outer loop, which this used to collapse
+                    # into two. Provably somebody else is dropped; unreadable is a live pid
+                    # this sweep cannot account for, so it is reported rather than silently
+                    # discarded, and the record that names it outlives the call.
+                    if (
+                        _pid_alive(late_pid)
+                        and not _pid_is_zombie(late_pid)
+                        and not _provably_different(late_pid, late_identity)
+                    ):
+                        unresolved.append((late_pid, late_identity))
+                    continue
+                try:
+                    _windows_terminate_pid(late_pid, late_identity)
+                except Exception:  # noqa: BLE001 - best effort, like the rest of this
+                    pass
+                attempted.append((late_pid, late_identity))
+        else:
+            # The rounds ran out with the walk still producing new pids. Whatever is under
+            # this survivor has not been accounted for, so it is reported rather than
+            # reported gone.
             unresolved.append((pid, identity))
-            late = []
-        for late_pid, late_identity in reversed(late):
-            if not _signalable(late_pid) or not _pid_alive(late_pid):
-                continue
-            if not _provably_the_same(late_pid, late_identity):
-                # The same three outcomes as the outer loop, which this used to collapse
-                # into two. Provably somebody else is dropped; unreadable is a live pid
-                # this sweep cannot account for, so it is reported rather than silently
-                # discarded, and the record that names it outlives the call.
-                if (
-                    _pid_alive(late_pid)
-                    and not _pid_is_zombie(late_pid)
-                    and not _provably_different(late_pid, late_identity)
-                ):
-                    unresolved.append((late_pid, late_identity))
-                continue
-            try:
-                _windows_terminate_pid(late_pid)
-            except Exception:  # noqa: BLE001 - best effort, like the rest of this
-                pass
-            attempted.append((late_pid, late_identity))
         try:
-            _windows_terminate_pid(pid)
+            _windows_terminate_pid(pid, identity)
         except Exception:  # noqa: BLE001 - best effort, like the rest of this
             pass
         attempted.append((pid, identity))
@@ -1089,7 +1157,7 @@ def _windows_terminate_validated_tree(pid: int) -> bool:
     # taken before anything is signalled.
     if _signalable(pid) and _pid_alive(pid):
         try:
-            _windows_terminate_pid(pid)
+            _windows_terminate_pid(pid, _pid_identity(pid))
         except Exception:  # noqa: BLE001 - best effort, like the rest of this
             pass
     # And the descendants go through the survivor sweep's own terminator rather than a
@@ -1827,12 +1895,20 @@ def _reap_orphaned_group(pgid: object, pid: int, timeout: float) -> bool:
         return True
 
 
-def _windows_terminate_pid(pid: int) -> bool:
+def _windows_terminate_pid(pid: int, identity: "Optional[str]" = None) -> bool:
     """``taskkill /F`` for ONE pid. No ``/T``, so no tree expansion.
 
     The counterpart of `_windows_terminate_tree` for a caller that has already
     established which pids it is entitled to kill and must not have Windows add to that
     set from the live parent-pid links. Caller has verified the identity.
+
+    `identity` is that verification, carried in so the FALLBACK below can repeat it. The
+    caller's check happened before the `taskkill`, and that call has a fifteen second
+    ceiling: the process can exit inside it -- which is the case the fallback exists for --
+    and Windows is then free to hand its number to something else. Signalling on the number
+    alone at that point kills a stranger. Without an identity the fallback is skipped
+    rather than guessed at: a leaked worker is caught by the next sweep, somebody else's
+    process is not recoverable.
     """
     import subprocess
 
@@ -1848,6 +1924,8 @@ def _windows_terminate_pid(pid: int) -> bool:
             return True
     except (OSError, subprocess.SubprocessError):
         pass
+    if not _provably_the_same(pid, identity):
+        return False
     try:
         os.kill(pid, signal.SIGTERM)
     except OSError:
