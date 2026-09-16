@@ -634,6 +634,22 @@ def clear_compiled_cache_unless_shared(app: FastAPI) -> None:
     _clear_compiled_cache_unless_shared(getattr(app.state, "live_sibling_backend", None))
 
 
+def banner_autofill_available(app_state, environ) -> bool:
+    """Whether _inject_bootstrap will hand the login page the credential.
+
+    Read from the launch, not the environment: run_server sets UNSLOTH_API_ONLY and never
+    clears it, and an embedded host may call run_server() again in the same process with
+    different flags, so the variable outlives the launch that set it. The environment is
+    only the fallback for a direct uvicorn launch that never went through run_server.
+    """
+    if getattr(app_state, "suppress_bootstrap_injection", False):
+        return False
+    api_only = getattr(app_state, "api_only", None)
+    if api_only is None:
+        api_only = environ.get("UNSLOTH_API_ONLY") == "1"
+    return not api_only
+
+
 def bootstrap_banner_lines(
     username: str,
     bootstrap_path,
@@ -813,10 +829,7 @@ async def lifespan(app: FastAPI):
         storage.DEFAULT_ADMIN_USERNAME
     ):
         bootstrap_path = storage.DB_PATH.parent / ".bootstrap_password"
-        # No injection to rely on: a public URL withholds it, api-only serves no page.
-        _autofill = not (
-            _suppress_bootstrap or os.environ.get("UNSLOTH_API_ONLY") == "1"
-        )
+        _autofill = banner_autofill_available(app.state, os.environ)
         print(
             "\n"
             + "\n".join(

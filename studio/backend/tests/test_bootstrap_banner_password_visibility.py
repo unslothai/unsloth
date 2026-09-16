@@ -91,3 +91,71 @@ def test_the_creation_flag_survives_a_later_call_that_creates_nothing(monkeypatc
 
     assert storage.ensure_default_admin() is False
     assert storage.admin_created_this_process() is True
+
+
+class _State:
+    """Stands in for app.state, which is a plain namespace."""
+
+
+def test_the_launch_wins_over_a_stale_api_only_environment_variable():
+    """run_server sets UNSLOTH_API_ONLY and never clears it, and an embedded host may call
+    run_server() again in the same process. Reading the variable would treat that second,
+    normal UI launch as having no autofill and print the password into its log."""
+    from main import banner_autofill_available
+
+    state = _State()
+    state.api_only = False
+
+    assert banner_autofill_available(state, {"UNSLOTH_API_ONLY": "1"}) is True
+
+
+def test_an_api_only_launch_has_no_autofill():
+    from main import banner_autofill_available
+
+    state = _State()
+    state.api_only = True
+
+    assert banner_autofill_available(state, {}) is False
+
+
+def test_a_suppressed_injection_has_no_autofill():
+    from main import banner_autofill_available
+
+    state = _State()
+    state.api_only = False
+    state.suppress_bootstrap_injection = True
+
+    assert banner_autofill_available(state, {}) is False
+
+
+def test_a_direct_uvicorn_launch_falls_back_to_the_environment():
+    """Nothing set app.state here, so the variable is all there is."""
+    from main import banner_autofill_available
+
+    assert banner_autofill_available(_State(), {"UNSLOTH_API_ONLY": "1"}) is False
+    assert banner_autofill_available(_State(), {}) is True
+
+
+def test_run_server_resets_the_per_launch_flags_before_the_gate():
+    import ast
+    from pathlib import Path
+
+    import run as run_mod
+
+    source = Path(run_mod.__file__).read_text(encoding = "utf-8")
+    tree = ast.parse(source)
+    fn = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "run_server"
+    )
+    assigns = [
+        ast.unparse(node)
+        for node in ast.walk(fn)
+        if isinstance(node, ast.Assign) and "app.state" in ast.unparse(node)
+    ]
+
+    assert "app.state.api_only = api_only" in assigns
+    assert "app.state.suppress_bootstrap_injection = False" in assigns, (
+        "a sticky True from an earlier launch withholds the autofill that is available"
+    )
