@@ -151,16 +151,19 @@ unsloth studio --secure
 ```
 
 #### Docker
-Use our [Docker image](https://hub.docker.com/r/unsloth/unsloth) ```unsloth/unsloth```. On Linux, set up GPU access once with `curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/docker/install_nvidia_toolkit.sh -o install_nvidia_toolkit.sh && sudo -E bash install_nvidia_toolkit.sh` (Windows: Docker Desktop with WSL 2). Run:
+Use our [Docker image](https://hub.docker.com/r/unsloth/unsloth) ```unsloth/unsloth```. On Linux, set up GPU access once with `curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/docker/install_nvidia_toolkit.sh -o install_nvidia_toolkit.sh && sudo -E bash install_nvidia_toolkit.sh` (Windows: [Docker Desktop with WSL 2](https://unsloth.ai/docs/get-started/install/docker)).
+
+**Linux / WSL (Bash):**
 ```bash
 docker run -d --gpus all --ipc=host \
   -p 8000:8000 -p 8888:8888 \
   -e UNSLOTH_STUDIO_PASSWORD="mypassword" -e JUPYTER_PASSWORD="mypassword" \
   -v "$PWD":/workspace/host \
+  -v "$HOME/.cache/huggingface":/workspace/.cache/huggingface \
   -v unsloth-studio:/opt/unsloth-studio \
   unsloth/unsloth
 ```
-Follow startup with `docker logs -f`. Studio is at `http://localhost:8000` (user `unsloth`), JupyterLab at `http://localhost:8888`. The `unsloth-studio` volume keeps your accounts, chats and trained models across `docker rm`; each image brings its own Studio code, and a volume from an older image is migrated on the first start (its old code is kept under `.unsloth-studio-legacy/`). Tags (`unsloth/unsloth:core` for notebooks only), GPU support and options: [Docker Hub](https://hub.docker.com/r/unsloth/unsloth).
+Follow startup with `docker logs -f <container>`, where `<container>` is the ID printed by `docker run -d` or a name from `docker ps`. Studio is at `http://localhost:8000` (user `unsloth`), JupyterLab at `http://localhost:8888`. The two mounts keep different things across `docker rm`: the Hugging Face cache holds models you download (mounting your host cache also reuses what you already have), and the `unsloth-studio` volume holds your accounts, chats and trained models; each image brings its own Studio code, and a volume from an older image is migrated on the first start (its old code is kept under `.unsloth-studio-legacy/`). Tags (`unsloth/unsloth:core` for notebooks only), GPU support and options: [Docker Hub](https://hub.docker.com/r/unsloth/unsloth).
 
 #### Remote HTTPS & LAN Access
 Server-side tools are on by default - so **be careful**! Keep your password safe, or use `--disable-tools` when exposing Unsloth.
@@ -288,7 +291,7 @@ The developer install builds from the `main` branch, which is the latest (nightl
 ```powershell
 git clone https://github.com/unslothai/unsloth.git
 cd unsloth
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
 .\install.ps1 --local
 unsloth studio -p 8888
 ```
