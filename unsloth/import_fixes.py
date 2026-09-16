@@ -2990,8 +2990,15 @@ def patch_datasets_audio_decoding_without_torchcodec():
         if isinstance(value, (bytes, bytearray)):
             return {"bytes": bytes(value), "path": None}
         if isinstance(value, dict) and value.get("array") is not None:
+            import numpy as np
+
+            array = np.asarray(value["array"])
+            if array.dtype == object:
+                array = np.asarray(array.tolist(), dtype = "float32")  # a nested list back from Arrow arrives as an object array
+            if array.ndim == 2 and array.shape[0] < array.shape[1]:
+                array = array.T  # torchcodec hands out (channels, samples); libsndfile writes (frames, channels)
             buf = io.BytesIO()
-            sf.write(buf, value["array"], value["sampling_rate"], format = "WAV")
+            sf.write(buf, array, value["sampling_rate"], format = "WAV")
             return {"bytes": buf.getvalue(), "path": value.get("path")}
         if isinstance(value, dict) and ("bytes" in value or "path" in value):
             return {"bytes": value.get("bytes"), "path": value.get("path")}

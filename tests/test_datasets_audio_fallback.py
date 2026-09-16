@@ -306,6 +306,19 @@ def test_a_missing_index_picks_the_default_track_not_the_first(broken_torchcodec
     assert abs(_dominant_hz(array, rate) - 440) < 20
 
 
+def test_a_channel_first_array_round_trips_through_the_encoder(broken_torchcodec):
+    # torchcodec hands decoded audio out as (channels, samples); libsndfile writes (frames, channels).
+    # Written as is, a (2, 1600) clip became two frames of 1600 channels, or failed outright.
+    from datasets import Audio, Dataset
+
+    assert import_fixes.patch_datasets_audio_decoding_without_torchcodec() is True
+    stereo = np.stack([np.linspace(-0.5, 0.5, 1600, dtype = "float32")] * 2)
+    assert stereo.shape == (2, 1600)
+    ds = Dataset.from_dict({"audio": [{"array": stereo, "sampling_rate": 16000, "path": "s.wav"}]})
+    decoded = ds.cast_column("audio", Audio(sampling_rate = 16000))[0]["audio"]
+    assert len(decoded["array"]) == 1600 and decoded["sampling_rate"] == 16000
+
+
 def _normalized(path: Path, name: str, rename: dict) -> str:
     tree = ast.parse(path.read_text(encoding = "utf-8"))
     fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == name)
