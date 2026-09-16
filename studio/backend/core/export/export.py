@@ -987,62 +987,73 @@ class ExportBackend:
                                 token = hf_token,
                                 private = private,
                             )
-                # No weights means the save never landed here, so merge straight to the Hub
-                # rather than publish an empty repo.
-                elif output_path and _holds_checkpoint_weights(output_path):
-                    # Upload the artifact already built in output_path; push_to_hub_merged(save_method=...) would
-                    # redo the expensive merge and quantization.
-                    with contextlib.ExitStack() as stack:
-                        upload_dir = output_path
-                        if not (is_compressed or is_torchao or save_dir_was_empty):
-                            # A reused folder can hold leftovers, so upload a clean second save
-                            # instead.
-                            upload_dir = stack.enter_context(_staging_dir(Path(output_path).parent))
-                            self.current_model.save_pretrained_merged(
-                                upload_dir,
-                                self.current_tokenizer,
-                                save_method = save_method,
-                                **merged_token_kw,
-                            )
-                        hf_api = HfApi(token = hf_token)
-                        repo_url = hf_api.create_repo(repo_id, private = private, exist_ok = True)
-                        repo_id = getattr(repo_url, "repo_id", repo_id)
-                        if private:
-                            _ensure_hub_repo_private(hf_api, repo_id)
-                        hf_api.upload_folder(
-                            folder_path = upload_dir,
-                            repo_id = repo_id,
-                            repo_type = "model",
-                            ignore_patterns = _HUB_UPLOAD_IGNORE,
-                        )
-                    # Last and best-effort like the GGUF card; an existing card is kept, as
-                    # push_to_hub_merged does.
-                    try:
-                        if not hf_api.file_exists(repo_id, "README.md", repo_type = "model"):
-                            base_model = getattr(
-                                self.current_model.config, "_name_or_path", "unknown"
-                            )
-                            content = MODEL_CARD.format(
-                                username = repo_id.split("/")[0],
-                                base_model = repo_id if os.path.isdir(base_model) else base_model,
-                                model_type = getattr(self.current_model.config, "model_type", "llm"),
-                                method = compressed_alias or format_type,
-                                extra = "unsloth",
-                            )
-                            ModelCard(content).push_to_hub(
-                                repo_id, token = hf_token, commit_message = "Unsloth Model Card"
-                            )
-                    except Exception as exception:
-                        logger.warning(f"Could not publish the model card: {exception}")
                 else:
-                    hub_save_method = save_method if save_method is not None else "merged_16bit"
-                    self.current_model.push_to_hub_merged(
-                        repo_id,
-                        self.current_tokenizer,
-                        save_method = hub_save_method,
-                        token = hf_token,
-                        private = private,
-                    )
+                    uploaded = False
+                    if output_path and Path(output_path).is_dir():
+                        # Upload the artifact already built in output_path; push_to_hub_merged(save_method=...) would
+                        # redo the expensive merge and quantization.
+                        with contextlib.ExitStack() as stack:
+                            upload_dir = output_path
+                            if not (is_compressed or is_torchao or save_dir_was_empty):
+                                # A reused folder can hold leftovers, so upload a clean second save
+                                # instead.
+                                upload_dir = stack.enter_context(
+                                    _staging_dir(Path(output_path).parent)
+                                )
+                                self.current_model.save_pretrained_merged(
+                                    upload_dir,
+                                    self.current_tokenizer,
+                                    save_method = save_method,
+                                    **merged_token_kw,
+                                )
+                            # Whatever was built, only weights are worth a repo; without them the
+                            # merging push below runs instead, as it did before this was uploaded.
+                            if _holds_checkpoint_weights(upload_dir):
+                                hf_api = HfApi(token = hf_token)
+                                repo_url = hf_api.create_repo(
+                                    repo_id, private = private, exist_ok = True
+                                )
+                                repo_id = getattr(repo_url, "repo_id", repo_id)
+                                if private:
+                                    _ensure_hub_repo_private(hf_api, repo_id)
+                                hf_api.upload_folder(
+                                    folder_path = upload_dir,
+                                    repo_id = repo_id,
+                                    repo_type = "model",
+                                    ignore_patterns = _HUB_UPLOAD_IGNORE,
+                                )
+                                uploaded = True
+                    if uploaded:
+                        # Last and best-effort like the GGUF card; an existing card is kept, as
+                        # push_to_hub_merged does.
+                        try:
+                            if not hf_api.file_exists(repo_id, "README.md", repo_type = "model"):
+                                base_model = getattr(
+                                    self.current_model.config, "_name_or_path", "unknown"
+                                )
+                                content = MODEL_CARD.format(
+                                    username = repo_id.split("/")[0],
+                                    base_model = repo_id if os.path.isdir(base_model) else base_model,
+                                    model_type = getattr(
+                                        self.current_model.config, "model_type", "llm"
+                                    ),
+                                    method = compressed_alias or format_type,
+                                    extra = "unsloth",
+                                )
+                                ModelCard(content).push_to_hub(
+                                    repo_id, token = hf_token, commit_message = "Unsloth Model Card"
+                                )
+                        except Exception as exception:
+                            logger.warning(f"Could not publish the model card: {exception}")
+                    else:
+                        hub_save_method = save_method if save_method is not None else "merged_16bit"
+                        self.current_model.push_to_hub_merged(
+                            repo_id,
+                            self.current_tokenizer,
+                            save_method = hub_save_method,
+                            token = hf_token,
+                            private = private,
+                        )
                 logger.info(f"Model pushed successfully to {repo_id}")
 
             return True, "Model exported successfully", output_path

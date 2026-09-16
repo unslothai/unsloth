@@ -319,10 +319,19 @@ def test_merged_export_push_still_uploads_when_the_card_fails(tmp_path, monkeypa
     assert seen["uploaded"] == ["model.safetensors"]
 
 
-def test_merged_export_push_merges_again_when_the_save_left_no_weights(tmp_path, monkeypatch):
+# A stale weight file makes the folder look reused, so the emptiness is only visible on the staging
+# copy; a fresh folder shows it on the export directory itself.
+@pytest.mark.parametrize("stale_weights", [False, True])
+def test_merged_export_push_merges_again_when_the_save_left_no_weights(
+    tmp_path, monkeypatch, stale_weights
+):
     calls: list[str] = []
     seen: dict = {}
     backend = _non_mlx_backend(monkeypatch, "test_export_hub_push_merged_backend", calls, seen)
+    export_dir = tmp_path / "export"
+    if stale_weights:
+        export_dir.mkdir()
+        (export_dir / "model.safetensors").write_bytes(b"stale")
 
     def save_nothing(
         save_directory,
@@ -335,7 +344,7 @@ def test_merged_export_push_merges_again_when_the_save_left_no_weights(tmp_path,
     backend.current_model.save_pretrained_merged = save_nothing
 
     success, message, _ = backend.export_merged_model(
-        str(tmp_path / "export"),
+        str(export_dir),
         push_to_hub = True,
         repo_id = "model",
         hf_token = "hf_fake",
