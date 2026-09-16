@@ -76,13 +76,22 @@ _REPO_SIBLINGS: "dict[tuple[str, str, str], tuple[tuple, float]]" = {}
 
 
 def _repo_siblings(repo_type: str, repo_id: str, hf_token: Optional[str]) -> tuple:
-    """Return a briefly cached file listing with sizes, or an empty tuple on failure."""
+    """Return a briefly cached file listing with sizes, or an empty tuple when none was ever read.
+
+    A failed refresh serves the last listing instead: sizes at a revision do not change, and
+    discarding them would report an oversized download as unmeasured, which reads as
+    HTTP-eligible. What the refresh is really for, whether the oversized file is now cached, is
+    decided against the local cache by ``largest_download_file_bytes``.
+    """
     key = (str(repo_type), repo_id.lower(), hf_cache_scan.token_fingerprint(hf_token))
     now = time.monotonic()
     with _repo_siblings_lock:
-        cached = _REPO_SIBLINGS.get(key)
-        if cached is not None and (now - cached[1]) < _REPO_SIBLINGS_TTL_SECONDS:
-            return cached[0]
+        cached = _REPO_SIBLINGS.pop(key, None)
+        if cached is not None:
+            # Re-insert so the dict stays in least-recently-used order for eviction.
+            _REPO_SIBLINGS[key] = cached
+            if (now - cached[1]) < _REPO_SIBLINGS_TTL_SECONDS:
+                return cached[0]
     try:
         from huggingface_hub import HfApi
         info = HfApi(token = hf_token).repo_info(
@@ -99,10 +108,12 @@ def _repo_siblings(repo_type: str, repo_id: str, hf_token: Optional[str]) -> tup
             repo_id,
             download_registry.scrub_secrets(str(exc), hf_token = hf_token),
         )
-        return ()
+        return cached[0] if cached is not None else ()
     with _repo_siblings_lock:
-        if len(_REPO_SIBLINGS) >= _REPO_SIBLINGS_MAX:
-            _REPO_SIBLINGS.clear()
+        if key not in _REPO_SIBLINGS and len(_REPO_SIBLINGS) >= _REPO_SIBLINGS_MAX:
+            # Evict least-recently-used, not everything: a clear drops the listings that in-flight
+            # downloads still depend on.
+            _REPO_SIBLINGS.pop(next(iter(_REPO_SIBLINGS)), None)
         _REPO_SIBLINGS[key] = (siblings, now)
     return siblings
 

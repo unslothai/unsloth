@@ -563,3 +563,130 @@ def test_a_final_xet_attempt_with_no_http_rung_is_still_watched(monkeypatch, tmp
 
 def _metadata_of(registry, key):
     return registry.get_job_metadata(key)
+
+
+# --------------------------------------------------------------------------------------------
+# A metadata refresh that fails
+# --------------------------------------------------------------------------------------------
+
+
+class _OneShotHfApi:
+    """Answer ``repo_info`` once, then fail the way a dropped connection does."""
+
+    calls = 0
+
+    def __init__(self, token = None):
+        self.token = token
+
+    def repo_info(self, *_args, **_kwargs):
+        type(self).calls += 1
+        if type(self).calls > 1:
+            raise RuntimeError("connection reset by peer")
+        return _types.SimpleNamespace(siblings = _flash_next_siblings())
+
+
+def _hub_answers_once(monkeypatch):
+    """Install a hub whose second listing fails, with the sibling TTL already elapsed."""
+    import time as _time
+    import huggingface_hub
+
+    _OneShotHfApi.calls = 0
+    dl._REPO_SIBLINGS.clear()
+    monkeypatch.setattr(huggingface_hub, "HfApi", _OneShotHfApi)
+    clock = iter([0.0])
+    monkeypatch.setattr(
+        dl,
+        "time",
+        _types.SimpleNamespace(
+            monotonic = lambda: next(clock, dl._REPO_SIBLINGS_TTL_SECONDS * 100),
+            sleep = _time.sleep,
+        ),
+    )
+
+
+def test_a_failed_refresh_serves_the_listing_it_already_read(monkeypatch):
+    """A dropped refresh must not turn a measured size into an unmeasured one."""
+    _hub_answers_once(monkeypatch)
+
+    first = dl.largest_download_file_bytes("model", "unsloth/M-GGUF", variant = "ud-q5_k_xl")
+    second = dl.largest_download_file_bytes("model", "unsloth/M-GGUF", variant = "ud-q5_k_xl")
+
+    assert _OneShotHfApi.calls == 2, "the second measurement must really have gone to the hub"
+    assert first == _OVERSIZED
+    assert second == _OVERSIZED
+
+
+def test_filling_the_cache_evicts_one_entry_not_all_of_them(monkeypatch):
+    """An in-flight download's listing must survive unrelated traffic."""
+    import huggingface_hub
+
+    dl._REPO_SIBLINGS.clear()
+    monkeypatch.setattr(
+        huggingface_hub,
+        "HfApi",
+        lambda token = None: _types.SimpleNamespace(
+            repo_info = lambda *a, **k: _types.SimpleNamespace(siblings = ())
+        ),
+    )
+    for i in range(dl._REPO_SIBLINGS_MAX + 1):
+        dl._repo_siblings("model", f"org/r{i}", None)
+
+    assert len(dl._REPO_SIBLINGS) == dl._REPO_SIBLINGS_MAX
+    assert ("model", "org/r0", dl.hf_cache_scan.token_fingerprint(None)) not in dl._REPO_SIBLINGS
+
+
+def test_the_http_rung_stays_closed_when_the_refresh_fails(monkeypatch, tmp_path):
+    """The post-exit recheck must not reopen HTTP on metadata it could not refresh."""
+    _hub_answers_once(monkeypatch)
+    blobs = tmp_path / "models--unsloth--M-GGUF" / "blobs"
+    blobs.mkdir(parents = True)
+    monkeypatch.setattr(
+        download_registry,
+        "iter_active_repo_cache_dirs",
+        lambda *a, **k: iter([blobs.parent]),
+    )
+    _ladder_setup(monkeypatch, tmp_path, largest_file_bytes = None, probe = False)
+    monkeypatch.setattr(dl, "_xet_attempt_budget", lambda: 1)
+    rungs: list = []
+    monkeypatch.setattr(
+        dl, "_try_transport_retry", lambda *a, **kw: rungs.append(kw.get("retry_transport"))
+    )
+    key, registry = _claimed_registry()
+
+    assert _run_worker(registry, key, _Proc(1, b"xet transport failed"))
+
+    assert rungs == [], "a doomed HTTP retry was spent on a size the refresh could not re-read"
+    state, error, _generation = dl.idle_status(
+        registry, key, repo_type = "model", repo_id = "unsloth/M-GGUF", variant = "UD-Q5_K_XL"
+    )
+    assert state == "error"
+    assert "HTTPS cannot fetch" in error
+
+
+def test_a_finalized_shard_still_reopens_http_on_a_failed_refresh(monkeypatch, tmp_path):
+    """Whether the oversized shard landed is read from the local cache, not from the hub."""
+    _hub_answers_once(monkeypatch)
+    oversized = next(s for s in _flash_next_siblings() if s.size == _OVERSIZED)
+    blobs = tmp_path / "models--unsloth--M-GGUF" / "blobs"
+    blobs.mkdir(parents = True)
+    monkeypatch.setattr(
+        download_registry,
+        "iter_active_repo_cache_dirs",
+        lambda *a, **k: iter([blobs.parent]),
+    )
+    _ladder_setup(monkeypatch, tmp_path, largest_file_bytes = None, probe = False)
+    monkeypatch.setattr(dl, "_xet_attempt_budget", lambda: 1)
+    rungs: list = []
+    monkeypatch.setattr(
+        dl, "_try_transport_retry", lambda *a, **kw: rungs.append(kw.get("retry_transport"))
+    )
+    key, registry = _claimed_registry()
+
+    class _LandsTheBigShard(_Proc):
+        def wait(self, timeout = None):
+            (blobs / oversized.lfs["sha256"]).write_bytes(b"")
+            return super().wait(timeout)
+
+    assert _run_worker(registry, key, _LandsTheBigShard(1, b"xet failed on the second shard"))
+
+    assert rungs == [download_registry.TRANSPORT_HTTP]
