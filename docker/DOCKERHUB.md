@@ -68,10 +68,11 @@ docker run --rm --gpus all --ipc=host -v "$PWD":/workspace/host \
 
 ### CPU-only hosts
 
-Without a GPU the container refuses to start unless you opt in. Studio chat with GGUF models, JupyterLab and the GGUF tooling work; training does not.
+`latest` starts without a GPU on its own. Studio chat with GGUF models, JupyterLab and the GGUF tooling work; training does not. `core` refuses to start without a GPU unless you opt in:
 
 ```bash
-docker run -d -e UNSLOTH_ALLOW_CPU=1 -p 8000:8000 -p 8888:8888 unsloth/unsloth
+docker run -d -p 8000:8000 -p 8888:8888 unsloth/unsloth
+docker run --rm -e UNSLOTH_ALLOW_CPU=1 unsloth/unsloth:core python -c "import unsloth"
 ```
 
 ## Supported GPUs
