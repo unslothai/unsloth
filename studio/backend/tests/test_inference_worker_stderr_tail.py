@@ -1120,7 +1120,10 @@ def test_a_live_replacements_own_crash_is_still_written_to_the_log(monkeypatch):
 
     written: "list[tuple]" = []
     monkeypatch.setattr(
-        module.logger, "error", lambda *args, **kwargs: written.append(args), raising = False,
+        module.logger,
+        "error",
+        lambda *args, **kwargs: written.append(args),
+        raising = False,
     )
 
     capture = _FixedCapture("Fatal Python error: Aborted\n")
@@ -1138,9 +1141,7 @@ def test_a_live_replacements_own_crash_is_still_written_to_the_log(monkeypatch):
     # Now the replacement itself dies, with more in its capture than before.
     orchestrator._proc = SimpleNamespace(pid = 4242, exitcode = -6)
     orchestrator._subprocess_crash_message("generation", with_worker_output = True)
-    assert len(written) == 2, (
-        "the replacement's own fatal output was skipped as already logged"
-    )
+    assert len(written) == 2, "the replacement's own fatal output was skipped as already logged"
     # And THAT one is final: the exit has been reported, so nothing replays it again.
     orchestrator._subprocess_crash_message("generation", with_worker_output = True)
     assert len(written) == 2, written

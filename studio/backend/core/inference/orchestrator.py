@@ -1066,7 +1066,13 @@ class InferenceOrchestrator:
             return ""
         return _redact_worker_output(block)
 
-    def _log_worker_stderr_once(self, pid, exitcode, *, worker_exited: bool = True) -> None:
+    def _log_worker_stderr_once(
+        self,
+        pid,
+        exitcode,
+        *,
+        worker_exited: bool = True,
+    ) -> None:
         """Write the RAW captured tail to the server log, at most once per worker.
 
         Unredacted on purpose, and the only place that is right: this is the operator's own
