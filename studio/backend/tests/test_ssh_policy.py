@@ -1083,3 +1083,40 @@ def test_pty_ssh_requires_approval(code):
     assert _check_code_safety(code, session_id = "review") is not None
     approve_hosts("review", ["evil.example"])
     assert _check_code_safety(code, session_id = "review") is None
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "import paramiko; getattr(paramiko,'SSHClient')().connect(hostname='evil.example')",
+        "import paramiko; factory=getattr(paramiko,'SSHClient'); client=factory(); client.connect(hostname='evil.example')",
+        "import paramiko; client=paramiko.SSHClient(); getattr(client,'connect')(hostname='evil.example')",
+        "import paramiko; client=paramiko.SSHClient(); connect=getattr(client,'connect'); connect(hostname='evil.example')",
+        "import asyncssh; getattr(asyncssh,'connect')('evil.example',config=None)",
+    ],
+)
+def test_reflective_ssh_requires_approval(code):
+    assert _check_code_safety(code, session_id = "review") is not None
+    approve_hosts("review", ["evil.example"])
+    assert _check_code_safety(code, session_id = "review") is None
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "import paramiko; name='SSHClient'; getattr(paramiko,name)().connect(hostname='evil.example')",
+        "import paramiko; client=paramiko.SSHClient(); name='connect'; getattr(client,name)(hostname='evil.example')",
+    ],
+)
+def test_dynamic_ssh_reflection_fails_closed(code):
+    approve_hosts("review", ["evil.example"])
+    assert _check_code_safety(code, session_id = "review") is not None
+
+
+def test_unrelated_reflection_remains_allowed():
+    assert (
+        _check_code_safety(
+            "import paramiko; print(getattr(paramiko,'__version__'))", session_id = "review"
+        )
+        is None
+    )

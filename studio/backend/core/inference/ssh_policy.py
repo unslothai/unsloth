@@ -514,10 +514,25 @@ def _fq_name(node: Optional[ast.AST]) -> str:
     return ".".join(parts)
 
 
+def _literal_getattr(node: Optional[ast.AST]) -> Optional[ast.Attribute]:
+    if (
+        isinstance(node, ast.Call)
+        and _fq_name(node.func) in {"getattr", "builtins.getattr"}
+        and len(node.args) >= 2
+        and isinstance(node.args[1], ast.Constant)
+        and isinstance(node.args[1].value, str)
+    ):
+        return ast.Attribute(value = node.args[0], attr = node.args[1].value)
+    return None
+
+
 def _bound_name(node: Optional[ast.AST], bindings: dict[str, str]) -> str:
     """Resolve imported or assigned symbols to the public SSH API names."""
     if isinstance(node, ast.Lambda) and isinstance(node.body, ast.Call):
         return _bound_name(node.body.func, bindings)
+    reflected = _literal_getattr(node)
+    if reflected is not None:
+        node = reflected
     name = _fq_name(node)
     root, sep, rest = name.partition(".")
     name = bindings.get(name, bindings.get(root, root) + (sep + rest if sep else ""))
@@ -581,6 +596,9 @@ def _resolve_ssh_call(
     client_context: Optional[str] = None,
 ) -> Optional[str]:
     """Return a canonical SSH call name when ``func`` is an SSH connect/factory."""
+    reflected = _literal_getattr(func)
+    if reflected is not None:
+        func = reflected
     if isinstance(func, ast.Name):
         bound = _bound_name(func, bindings)
         if bound in _SSH_PY_CONNECT_FQ:
@@ -873,6 +891,17 @@ def _scan_ssh_python_usage(
 
         def visit_Call(self, node: ast.Call) -> None:
             nonlocal dynamic, uses_ssh
+            if (
+                _fq_name(node.func) in {"getattr", "builtins.getattr"}
+                and len(node.args) >= 2
+                and _literal_getattr(node) is None
+            ):
+                receiver = node.args[0]
+                owner = clients.get(_fq_name(receiver), "") or _bound_name(
+                    receiver.func if isinstance(receiver, ast.Call) else receiver, bindings
+                )
+                if owner.split(".", 1)[0] in _SSH_PY_ROOT_MODULES:
+                    uses_ssh = dynamic = True
             ssh_call = _resolve_ssh_call(node.func, bindings, clients, self.client_context)
             if ssh_call:
                 uses_ssh = True
