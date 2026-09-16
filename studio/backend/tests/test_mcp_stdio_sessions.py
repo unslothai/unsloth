@@ -663,10 +663,25 @@ def test_config_check_blocks_stale_publish(fake_clients):
 
 def test_close_generation_keys_hold_no_secrets(fake_clients):
     secret_url = "npx server --token sk-url-secret"
-    close_mcp_sessions(secret_url, {"API_KEY": "sk-env-secret"})
+    secret_env = {"API_KEY": "sk-env-secret"}
+    # A close records a generation only when it closed something, so each half needs its own live
+    # session. Reading whatever the maps already held made the non-vacuity check depend on earlier
+    # tests in this file: these maps are module-level and never pruned, so under `--dist load`,
+    # which spreads one file across workers, this test could run on a worker that left them empty.
+    before = set(mcp_client._mcp_cfg_close_gen) | set(mcp_client._mcp_url_close_gen)
+
+    call_tool_sync(secret_url, secret_env, "t", {}, scope = "chat")
+    close_mcp_sessions(secret_url, secret_env)
+    call_tool_sync(secret_url, secret_env, "t", {}, scope = "chat")
     close_mcp_sessions(secret_url)
+
     gen_keys = list(mcp_client._mcp_cfg_close_gen) + list(mcp_client._mcp_url_close_gen)
-    assert gen_keys
+    recorded = set(gen_keys) - before
+    assert recorded, (
+        "closing a live session recorded no close generation, so the secret check below would "
+        f"pass over an empty map: cfg={mcp_client._mcp_cfg_close_gen}, "
+        f"url={mcp_client._mcp_url_close_gen}"
+    )
     # These maps are never pruned: neither command/URL nor env may persist.
     assert all("sk-url-secret" not in repr(k) and "sk-env-secret" not in repr(k) for k in gen_keys)
 

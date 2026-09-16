@@ -104,6 +104,10 @@ def _run(
         UNSLOTH_STUDIO_HOME = str(home),
         UNSLOTH_STUDIO_PASSWORD_WAIT = wait,
         UNSLOTH_STUDIO_READY_WAIT = "2",
+        # The summary is coloured, which splits the lines these tests match on.
+        # Assert the text here and the colour in its own test below, so a change
+        # to either one fails for the right reason.
+        NO_COLOR = "1",
     )
     e.update(env or {})
     return subprocess.run(["bash", str(SCRIPT)], capture_output = True, text = True, env = e, timeout = 60)
@@ -469,3 +473,17 @@ def test_the_image_wires_the_scripts_in():
         "first-boot password below" not in launch
     ), "the banner promises what Studio no longer prints"
     assert "unset UNSLOTH_STUDIO_PASSWORD" in launch
+
+
+def test_the_summary_is_coloured_unless_no_color_is_set(tmp_path: Path):
+    """The block is the one thing worth reading in a long startup log; plain text
+    left it indistinguishable from the supervisord and Jupyter lines around it.
+    NO_COLOR (no-color.org) is the documented way off, for log collectors."""
+    env = {"UNSLOTH_STUDIO_PASSWORD_STATE": "generated"}
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    coloured = _run(a, env = {**env, "NO_COLOR": ""})
+    plain = _run(b, env = env)
+    assert "\033[1;32m" in coloured.stdout.replace("\x1b", "\033"), coloured.stdout
+    assert "\x1b[" not in plain.stdout, plain.stdout

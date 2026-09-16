@@ -18,6 +18,10 @@ os.environ["PYTHONWARNINGS"] = "ignore"
 # from nvidia-smi can resolve to a different card. setdefault so an override wins; see utils/hardware/hardware.py.
 os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
 
+# Same ROCm AOTriton opt-in as unsloth/__init__.py, for a backend that defers importing torch;
+# spawned workers inherit it. `setdefault` preserves an explicit override, including "0".
+os.environ.setdefault("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")
+
 # Windows terminals default to the active system code page. Reconfigure stdout/stderr
 # before the startup banner so non-ASCII output cannot crash the backend process.
 if sys.platform == "win32":
