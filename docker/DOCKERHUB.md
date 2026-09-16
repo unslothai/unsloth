@@ -75,7 +75,7 @@ To discard the Studio data too, which cannot be undone:
 docker volume rm unsloth-studio
 ```
 
-Without `--name unsloth`, Docker assigns a random name; `docker ps` lists it, and the container id from `docker run -d` works anywhere a name does.
+These take a container, not an image, so `docker stop unsloth/unsloth` fails with "No such container": that is the image the container was made from. Use the `NAMES` or `CONTAINER ID` column of `docker ps -a`. Without `--name unsloth`, Docker assigns a random name like `adoring_albattani`, and the id from `docker run -d` works anywhere a name does.
 
 ### Notebooks only (`core`)
 
