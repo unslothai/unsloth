@@ -17,6 +17,12 @@ from __future__ import annotations
 
 from typing import Optional
 
+from models.inference import _InferenceRuntimeFields
+
+# The names /status mirrors off the backend. Taken from the model rather than listed, so an
+# Optional field added there needs no edit here and a required one is named by the canary.
+_RUNTIME_FIELDS = frozenset(_InferenceRuntimeFields.model_fields)
+
 
 class FakeLlamaCppBackend:
     """The attributes ``routes/inference.py`` reads off a loaded GGUF backend.
@@ -61,20 +67,31 @@ class FakeLlamaCppBackend:
     _vision_disabled_by_user = False
     _requested_reasoning_budget = -1
     _requested_reasoning_budget_message = ""
+    # Read straight off the backend by _llama_runtime_fields rather than through the model-field
+    # loop, so an absent one is an AttributeError before the drift check can name it.
+    requested_spec_mode = None
+    requested_parallel_slots = 1
+    effective_parallel_slots = 1
+    requested_n_ctx = 0
+    requested_extra_args = None
+    spec_fallback_reason = None
+    spec_drafter_kind = None
 
     def __getattr__(self, name):
-        """Anything unset reads as the real backend's None, except where a private slot holds it.
+        """Runtime fields /status mirrors answer as the real backend does; anything else raises.
 
-        Several doubles carried a blanket None for this, which reads right until a runtime field
-        lives only under ``_name`` on the real backend: ``_llama_runtime_fields`` looks up the
-        public name first and falls back to the private one, so answering None publicly hides the
-        slot that has the value, and /status is handed a None its response model rejects.
+        Scoped to those names on purpose. Several fakes carried a blanket None, which reads
+        right until a caller defaults an absent capability to something other than None: the
+        route falls back to ``supports_tools`` for ``supports_tool_passthrough``, and None is
+        not absent, so the default never runs.
+
+        Within that set, the private slot comes first. ``_llama_runtime_fields`` looks up the
+        public name and falls back to ``_name``, so answering None publicly hides the slot
+        holding the value and hands /status a None its response model rejects.
         """
-        if name.startswith("__"):
+        if name not in _RUNTIME_FIELDS:
             raise AttributeError(name)
-        if not name.startswith("_"):
-            try:
-                return object.__getattribute__(self, f"_{name}")
-            except AttributeError:
-                pass
-        return None
+        try:
+            return object.__getattribute__(self, f"_{name}")
+        except AttributeError:
+            return None
