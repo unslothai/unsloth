@@ -703,7 +703,12 @@ def test_local_inventory_prefers_active_cache_when_copies_are_equally_complete(t
     assert local_inventory._dedupe_local_models([previous, active]) == [active]
 
 
-def _custom_gguf_row(tmp_path: Path, *, load_path: Path, size_bytes: int = 10):
+def _custom_gguf_row(
+    tmp_path: Path,
+    *,
+    load_path: Path,
+    size_bytes: int = 10,
+):
     return model_common._local_model_info(
         scan_path = load_path,
         load_path = load_path,
