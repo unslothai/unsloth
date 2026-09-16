@@ -918,11 +918,7 @@ def test_a_runtimes_own_traceback_after_a_log_line_is_still_reported():
     """The other direction. Only a header DIRECTLY under a log record is that record's;
     one the runtime wrote after the logging stack had finished a line is the crash, and
     dropping it would cost the report its only explanation."""
-    text = (
-        "2026-09-16 10:00:02 worker: request 41 finished\n"
-        "\n"
-        + TRACEBACK
-    )
+    text = "2026-09-16 10:00:02 worker: request 41 finished\n\n" + TRACEBACK
     public = _orchestrator_with_capture(text)._public_worker_stderr_tail()
     assert "RuntimeError: boom" in public, public
     assert "request 41 finished" not in public, public
