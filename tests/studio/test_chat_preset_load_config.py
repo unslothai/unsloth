@@ -293,7 +293,7 @@ def _selector_reads(selector: str, field: str) -> bool:
     signature, read = _selector_signature(selector, field)
     if read is None:
         return False
-    body = selector[signature :].strip()
+    body = selector[signature:].strip()
     if body.startswith("{"):
         # A block body returns what it returns; a statement that reads the field and drops it
         # hands zustand the same value every time. Nothing to return is nothing to compare, so
