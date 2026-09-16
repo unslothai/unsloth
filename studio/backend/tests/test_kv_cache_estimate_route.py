@@ -17,6 +17,7 @@ classes of defect:
 from __future__ import annotations
 
 import asyncio
+import importlib.machinery
 import sys
 from pathlib import Path
 
@@ -31,6 +32,7 @@ if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
 # Installs the process-wide loggers/structlog/httpx stubs and the GGUF builder.
+import test_kv_cache_estimation  # noqa: E402
 from test_kv_cache_estimation import _backend_from_gguf, _make_gguf_bytes  # noqa: E402
 
 import routes.models as models_routes  # noqa: E402
@@ -109,6 +111,10 @@ def _call_route(
     ctx_checkpoints: int | None = None,
     disable_vision: bool = False,
     n_ctx: int | None = 32768,
+    flash_attn: bool | None = None,
+    kv_unified: bool | None = None,
+    swa_full: bool | None = None,
+    no_mmproj_offload: bool | None = None,
 ):
     """Drive the real handler with the quant already resolved to *path*."""
     monkeypatch.setattr(
@@ -139,6 +145,15 @@ def _call_route(
             n_batch = None,
             n_ubatch = None,
             tensor_parallel = False,
+            # The four launch knobs the route resolves itself when omitted. Passed
+            # explicitly, and as real None rather than left out, because a direct call
+            # leaves an omitted parameter holding its fastapi Query sentinel; the route
+            # only survives that because of an isinstance(..., bool) guard, and a helper
+            # that never names the argument cannot notice when one is added.
+            flash_attn = flash_attn,
+            kv_unified = kv_unified,
+            swa_full = swa_full,
+            no_mmproj_offload = no_mmproj_offload,
             request = None,
             current_subject = "test",
         )
@@ -928,3 +943,36 @@ class TestTheInheritedEnvironmentIsPriced:
         gguf = _write_gguf(tmp_path / "model-Q4_K_M.gguf", _PLAIN_GQA)
         monkeypatch.setenv("LLAMA_ARG_DEVICE", value)
         assert _call_std_route(monkeypatch, path = gguf)["inherited_device_pin"] is False
+
+
+def test_the_shared_loggers_stub_is_still_a_package():
+    """This module's own import block is the only reason its collection needs an ordering.
+
+    ``routes.models`` reaches ``routes.inference``, which does
+    ``from loggers.media_progress import ...`` at module level, and importing
+    ``test_kv_cache_estimation`` first installs a ``loggers`` stub into ``sys.modules``. A
+    bare ``ModuleType`` shadows the whole package instead of just its ``__init__``, so
+    without ``__path__`` that submodule import dies with "'loggers' is not a package" and
+    this module cannot be collected at all -- measured on 205771c44, before
+    ``tests/conftest.py`` grew the same guard (#11028).
+
+    Asserted against the stub object rather than the ``sys.modules`` slot on purpose. The
+    conftest guard usually wins the slot with the real package, so a check on the slot would
+    pass with the stub broken, and it skips itself whenever ``import loggers`` raises (its
+    handlers need structlog, which several test modules stub away). This is the assertion
+    that fails the moment the stub stops carrying a resolvable ``__path__``, in every
+    ordering and with or without that guard.
+    """
+    stub = test_kv_cache_estimation._loggers_stub
+    search_path = list(getattr(stub, "__path__", ()) or ())
+    assert search_path, (
+        "the shared 'loggers' stub has no __path__, so it is a module and not a package: "
+        "whichever test module installs it first makes every importer of "
+        "loggers.media_progress uncollectable"
+    )
+    # __path__ existing is not enough; it has to actually resolve the submodule.
+    spec = importlib.machinery.PathFinder.find_spec("media_progress", search_path)
+    assert spec is not None, (
+        f"the stub's __path__ {search_path} does not contain media_progress; "
+        "it must point at the real studio/backend/loggers directory"
+    )

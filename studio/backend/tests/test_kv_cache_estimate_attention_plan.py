@@ -23,13 +23,6 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# The real loggers package FIRST: the GGUF builder below installs a `loggers` stub that is a
-# module, not a package, so routes.models cannot reach loggers.media_progress through it.
-try:
-    import loggers.media_progress  # noqa: F401,E402
-except Exception:  # pragma: no cover - a stub already won, as in a shared shard
-    pass
-
 from test_kv_cache_estimation import _make_gguf_bytes  # noqa: E402
 
 import routes.models as models_routes  # noqa: E402
