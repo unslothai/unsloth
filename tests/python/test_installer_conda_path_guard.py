@@ -157,18 +157,16 @@ def test_a_downgraded_prepend_still_repositions_an_existing_front_entry(path_lab
     """
     path, indent = _PS_FILES[path_label]
     body = _function(path, indent, "Add-ToUserPath")
-    match = re.search(
-        r"\$alreadyPresent -and \$Position -eq 'Append'([^\)]*)\)", body
-    )
+    match = re.search(r"\$alreadyPresent -and \$Position -eq 'Append'([^\)]*)\)", body)
     assert match is not None, f"{path_label}: no append early-return found in Add-ToUserPath"
     assert "-not $positionDowngraded" in match.group(1), (
         f"{path_label}: the append early-return must not fire for a prepend that conda "
         f"downgraded, or an existing front entry is never moved to the back"
     )
     # The flag has to be derived from the guard's own answer, not hardcoded.
-    assert re.search(r"\$positionDowngraded\s*=\s*\(", body), (
-        f"{path_label}: $positionDowngraded must be computed from Resolve-UserPathPosition"
-    )
+    assert re.search(
+        r"\$positionDowngraded\s*=\s*\(", body
+    ), f"{path_label}: $positionDowngraded must be computed from Resolve-UserPathPosition"
 
 
 @pytest.mark.parametrize("path_label", sorted(_PS_FILES))
