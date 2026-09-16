@@ -14323,10 +14323,18 @@ _NVFP4_INFERENCE_UNSUPPORTED_MESSAGE = (
 # Said instead of transformers' own "pip install compressed-tensors", which is advice
 # no user can act on: Studio runs from its own environment, and installing the library
 # into it does not make the checkpoint load correctly either. See #8246.
+# Names no scheme, because the errors this fires on carry none. Both shapes are raised before
+# transformers reads the compression config -- CompressedTensorsConfig.__init__ and
+# CompressedTensorsHfQuantizer.validate_environment both test only whether the library imports --
+# so W4A16, W8A8, INT8 and MXFP4 checkpoints reach this text identically to NVFP4 and FP8, and
+# naming the latter two told most of those users the wrong thing about their own model. It also
+# stops short of advising "a 4-bit build" unqualified, which reads as a no-op to someone who
+# already selected W4A16. The scheme IS known on the MLX path, and that one keeps its specific
+# wording in _NVFP4_INFERENCE_UNSUPPORTED_MESSAGE.
 _COMPRESSED_TENSORS_INFERENCE_UNSUPPORTED_MESSAGE = (
-    "This model is quantized with compressed-tensors (NVFP4 or FP8), which Unsloth "
-    "cannot run yet. Installing compressed-tensors will not help. Try a GGUF or a "
-    "4-bit build of this model instead."
+    "This model is quantized with compressed-tensors, which Unsloth cannot run yet. "
+    "Installing compressed-tensors will not help. Try a GGUF or a bitsandbytes 4-bit "
+    "build of this model instead."
 )
 
 
@@ -14392,7 +14400,7 @@ def _is_missing_compressed_tensors_error(msg: str) -> bool:
 
     The refusal above only fires on the MLX loader's own metadata error
     (unsloth_zoo/mlx/loader.py), so it never reaches a CUDA, ROCm or CPU host.
-    There, an NVFP4 or FP8 compressed-tensors checkpoint fails inside transformers
+    There, a compressed-tensors checkpoint of ANY scheme fails inside transformers
     instead, and the message it fails with tells the user to run
     ``pip install compressed-tensors``. Studio runs from its own environment, so
     that instruction cannot succeed from a shell prompt, and following it moves the

@@ -33,9 +33,9 @@ from models.inference import LoadRequest, ValidateModelRequest
 _BACKEND_ROOT = Path(__file__).resolve().parent.parent
 
 EXPECTED = (
-    "This model is quantized with compressed-tensors (NVFP4 or FP8), which Unsloth "
-    "cannot run yet. Installing compressed-tensors will not help. Try a GGUF or a "
-    "4-bit build of this model instead."
+    "This model is quantized with compressed-tensors, which Unsloth cannot run yet. "
+    "Installing compressed-tensors will not help. Try a GGUF or a bitsandbytes 4-bit "
+    "build of this model instead."
 )
 
 # transformers/utils/quantization_config.py, CompressedTensorsConfig.__init__.
@@ -331,3 +331,31 @@ def test_the_child_process_diagnostics_block_is_not_matched():
     )
 
     assert inference_route._unsupported_quantization_detail(msg) is None
+
+
+def test_the_refusal_names_no_quantization_scheme():
+    """The errors it fires on carry no scheme, so the text may not claim one.
+
+    Both wordings this matcher accepts are raised before transformers looks at the
+    compression config -- CompressedTensorsConfig.__init__ and
+    CompressedTensorsHfQuantizer.validate_environment each test only whether the library
+    imports -- so a W4A16, W8A8, INT8 or MXFP4 checkpoint lands here with exactly the
+    message an NVFP4 one does. Naming NVFP4 or FP8 therefore told most affected users the
+    wrong thing about their own model, and told a W4A16 user to go find a 4-bit build.
+    """
+    inference_route = _load_route_module()
+    refusal = inference_route._COMPRESSED_TENSORS_INFERENCE_UNSUPPORTED_MESSAGE
+
+    for scheme in ("NVFP4", "FP8", "W4A16", "W8A8", "INT8", "MXFP4"):
+        assert scheme.lower() not in refusal.lower(), (
+            f"the compressed-tensors refusal names {scheme}, but the errors it matches "
+            f"do not identify the scheme"
+        )
+    # Still says what it is and what to do instead.
+    assert "compressed-tensors" in refusal
+    assert "GGUF" in refusal
+    # Unqualified "4-bit" reads as a no-op to someone who already picked W4A16.
+    assert "bitsandbytes 4-bit" in refusal
+
+    # The scheme IS identified on the MLX path, so that refusal keeps naming it.
+    assert "NVFP4" in inference_route._NVFP4_INFERENCE_UNSUPPORTED_MESSAGE
