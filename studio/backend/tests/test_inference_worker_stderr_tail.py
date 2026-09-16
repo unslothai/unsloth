@@ -805,3 +805,44 @@ def test_compaction_never_deletes_what_a_racing_writer_appended(tmp_path):
     assert b"terminate called" in kept, kept[-300:]
     assert b"device-side assert" in kept, kept[-300:]
     assert len(kept) <= 1024 + 256, len(kept)
+
+
+def test_the_operator_still_gets_the_last_words_in_the_server_log(monkeypatch):
+    """fd 2 in the worker is the sink now, and the thread that forwards it onward to the
+    inherited stderr is a daemon a fatal signal can end before it runs.
+
+    Those lines used to reach the server log synchronously, because fd 2 WAS the server's
+    stderr. The parent replays them from the capture after the worker is gone, unredacted,
+    which is right for the operator's own log on the operator's own machine.
+    """
+    from core.inference import orchestrator as orchestrator_module
+
+    written = []
+    monkeypatch.setattr(
+        orchestrator_module.logger,
+        "error",
+        lambda message, *args, **kwargs: written.append(message % args if args else message),
+    )
+
+    abort = (
+        "2026-09-16 10:00:01 audio_codecs.decode_bicodec: generated text: private\n"
+        "terminate called after throwing an instance of 'c10::Error'\n"
+        "  what():  CUDA error at /home/alice/.unsloth/studio/worker.py\n"
+    )
+    instance = _orchestrator_with_capture(abort)
+    instance._proc = SimpleNamespace(exitcode = -6, pid = 4242, is_alive = lambda: False)
+    message = instance._subprocess_crash_message("generation")
+
+    logged = "\n".join(written)
+    assert "terminate called" in logged, logged
+    # The operator's log is not the client's message: it keeps the path and the logging.
+    assert "/home/alice" in logged, logged
+    assert "generated text: private" in logged, logged
+    # And the client's message still does not.
+    assert "/home/alice" not in message, message
+    assert "generated text" not in message, message
+
+    # Once per worker, however many paths ask for the message.
+    written.clear()
+    instance._subprocess_crash_message("wait")
+    assert written == [], written

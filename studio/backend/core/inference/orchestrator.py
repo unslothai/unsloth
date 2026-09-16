@@ -961,6 +961,28 @@ class InferenceOrchestrator:
             return ""
         return _redact_worker_output(block)
 
+    def _log_worker_stderr_once(self, pid, exitcode) -> None:
+        """Write the RAW captured tail to the server log, at most once per worker.
+
+        Unredacted on purpose, and the only place that is right: this is the operator's own
+        log on the operator's own machine, and the redaction exists for what leaves the
+        host. `_public_worker_stderr_tail` is what goes to the client.
+        """
+        capture = getattr(self, "_stderr_capture", None)
+        if capture is None or getattr(self, "_stderr_tail_logged", None) is capture:
+            return
+        # Marked before the read, so a failure in here cannot turn into a log line per call.
+        self._stderr_tail_logged = capture
+        raw = self._worker_stderr_tail()
+        if not raw:
+            return
+        logger.error(
+            "Inference worker stderr (pid=%s, exitcode=%s):\n%s",
+            pid,
+            exitcode,
+            raw,
+        )
+
     def _worker_stderr_tail(self) -> str:
         """The end of what the worker wrote to stderr, or "" when nothing was captured."""
         capture = getattr(self, "_stderr_capture", None)
@@ -1002,6 +1024,14 @@ class InferenceOrchestrator:
         # install. See _public_worker_stderr_tail for what it drops and why.
         tail = self._public_worker_stderr_tail()
         details = f"\n\nWorker error output:\n{tail}" if tail else ""
+        # And the operator's copy, unredacted, into the server log. fd 2 in the worker now
+        # points at the sink, and the thread that forwards it onward to the inherited stderr
+        # is a daemon that a SIGABRT, SIGSEGV or SIGKILL can end before it runs. Those last
+        # words used to reach the server log synchronously because fd 2 WAS the server's
+        # stderr, so without replaying them here the capture would have taken from the
+        # operator exactly the diagnostic it exists to preserve. Once per crash, not once per
+        # call: this function is reached from several paths for the same dead worker.
+        self._log_worker_stderr_once(pid, exitcode)
 
         if exitcode < 0:
             signum = -exitcode
