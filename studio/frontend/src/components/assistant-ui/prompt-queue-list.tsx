@@ -209,7 +209,7 @@ export function PromptQueueList({
                     tooltip="Drag to reorder"
                     aria-label={`Reorder queued prompt ${position} of ${items.length}`}
                     aria-describedby={instructionsId}
-                    className="h-8 w-4 shrink-0 touch-none cursor-grab text-muted-foreground/50 hover:text-muted-foreground active:cursor-grabbing pointer-coarse:h-11 pointer-coarse:w-8"
+                    className="h-8 w-4 shrink-0 touch-none cursor-grab text-muted-foreground/50 hover:bg-transparent hover:text-muted-foreground/50 active:cursor-grabbing pointer-coarse:h-11 pointer-coarse:w-8 dark:hover:bg-transparent"
                     disabled={!canMove}
                     onPointerDown={(event) => onPointerDown(event, item.id)}
                     onPointerMove={onPointerMove}
