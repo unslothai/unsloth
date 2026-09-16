@@ -670,3 +670,27 @@ def test_sentence_transformer_shares_the_router_definition_of_lora():
     source, _ = _sentence_transformer_source()
     assert "_is_adapter_save_method" in source
     assert "from ..save import" in source
+
+
+def test_the_lora_docstring_does_not_promise_an_adapter_only_directory():
+    """`save_method="lora"` with a tokenizer writes tokenizer files too.
+
+    The adapter branch of `unsloth_save_model` calls `tokenizer.save_pretrained` when the
+    documented `tokenizer` argument is supplied, so "and nothing else" was false for the
+    ordinary supported call. What the route really guarantees is that no base-model
+    weights are written, which is the claim these docstrings now make.
+    """
+    import re
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[2] / "unsloth" / "save.py").read_text(
+        encoding = "utf-8",
+    )
+    assert "and nothing else. Useful for HF inference." not in source, (
+        "a save_method='lora' docstring still promises an adapter-only directory, which a "
+        "call that passes `tokenizer` does not produce"
+    )
+    promises = re.findall(r"`adapter_model\.safetensors`,[^\n]*", source)
+    assert promises, "the save_method list no longer names adapter_model.safetensors"
+    for promise in promises:
+        assert "no base-model weights" in promise, promise
