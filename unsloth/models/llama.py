@@ -34,6 +34,7 @@ from .loader_utils import (
     _exclude_rope_inv_freq_from_ddp,
     _get_fp8_mode_and_check_settings,
     _restore_dropped_fp8_scales,
+    fsdp_will_wrap,
     planner_class_mismatch_reason,
     planner_model_class,
     planner_config_overrides,
@@ -3687,7 +3688,16 @@ class FastLlamaModel:
             else apply_lora_mlp
         )
 
-        if lora_dropout == 0 and bias == "none":
+        # Under FSDP the projections' `.weight` is a shard view, and the fused kernels below read it directly instead of calling the module, so they never see FSDP's unshard. Declining here leaves peft's own forward in place, which does go through the hooks (#409).
+        fused_lora_declined_for_fsdp = fsdp_will_wrap()
+        if fused_lora_declined_for_fsdp:
+            logger.warning_once(
+                "Unsloth: FSDP detected - using the standard LoRA forward instead of Unsloth's "
+                "fused kernels, which read sharded weights directly. Training is correct but "
+                "slower. Set UNSLOTH_FORCE_FUSED_LORA=1 to override."
+            )
+
+        if lora_dropout == 0 and bias == "none" and not fused_lora_declined_for_fsdp:
             for idx, layer in enumerate(model.model.model.layers):
                 if model_type != "falcon_h1":
                     # LoRAMLP.apply has no gate/down multiplier support yet, so falcon h1 is not patched for now.
