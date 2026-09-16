@@ -211,11 +211,11 @@ assert_contains "fish, no conda: prepends" "$FISH_CONTENTS" "fish_add_path '$FIS
 # regression back to the bare spelling fails here.
 run_fish "" "/opt/anaconda3"
 assert_contains "fish, active conda: appends to PATH itself" "$FISH_CONTENTS" \
-    "fish_add_path -a -P '$FISH_DIR'"
+    "fish_add_path -a -P -m '$FISH_DIR'"
 
 run_fish "" "myenv" CONDA_DEFAULT_ENV
 assert_contains "fish, CONDA_DEFAULT_ENV alone: appends to PATH itself" "$FISH_CONTENTS" \
-    "fish_add_path -a -P '$FISH_DIR'"
+    "fish_add_path -a -P -m '$FISH_DIR'"
 
 # A bare -a would leave the directory inside fish_user_paths, ahead of the active conda
 # environment: the exact defect #5871 reports, arriving through fish instead of an rc file.
@@ -226,7 +226,13 @@ assert_eq "fish, active conda: no bare -a line" "0" \
 # Both stale spellings, met from inside conda, are rewritten to the -a -P line rather than
 # accepted by the presence check below them. Written here rather than through run_fish
 # because the seeded line has to name the throwaway HOME the function is about to be given.
-for _stale in "fish_add_path '%s/.local/bin'" "fish_add_path -a '%s/.local/bin'"; do
+# The -a -P spelling without -m is in the list for a reason of its own: a machine that met
+# an older installer already has the directory in the universal $fish_user_paths, fish
+# expands that into the front of PATH at every startup, and fish leaves a directory that is
+# already included where it is unless --move is given. So that line appended nothing and the
+# stale prepend survived; it has to be migrated like the other two.
+for _stale in "fish_add_path '%s/.local/bin'" "fish_add_path -a '%s/.local/bin'" \
+              "fish_add_path -a -P '%s/.local/bin'"; do
     WORK=$(mktemp -d)
     mkdir -p "$WORK/.config/fish/conf.d"
     # shellcheck disable=SC2059
@@ -243,8 +249,8 @@ for _stale in "fish_add_path '%s/.local/bin'" "fish_add_path -a '%s/.local/bin'"
         _persist_fish_path_dir "$WORK/.local/bin" "~/.local/bin"
     ) >/dev/null
     _after=$(cat "$WORK/.config/fish/conf.d/unsloth.fish")
-    assert_contains "fish: stale [$_stale_line] rewritten to -a -P" "$_after" \
-        "fish_add_path -a -P '$WORK/.local/bin'"
+    assert_contains "fish: stale [$_stale_line] rewritten to -a -P -m" "$_after" \
+        "fish_add_path -a -P -m '$WORK/.local/bin'"
     assert_eq "fish: stale [$_stale_line] is gone" "0" \
         "$(printf '%s\n' "$_after" | grep -cxF "$_stale_line")"
     assert_eq "fish: stale [$_stale_line] leaves one line" "1" \
@@ -335,7 +341,7 @@ run_setup "/opt/anaconda3"
 assert_contains "setup.sh, active conda: appends" "$SETUP_RC" "export PATH=\"\$PATH:$SETUP_DIR\""
 assert_not_contains "setup.sh, active conda: does not prepend" "$SETUP_RC" "export PATH=\"$SETUP_DIR:\$PATH\""
 assert_contains "setup.sh, active conda: fish appends to PATH itself" "$SETUP_FISH" \
-    "fish_add_path -a -P '$SETUP_DIR'"
+    "fish_add_path -a -P -m '$SETUP_DIR'"
 assert_eq "setup.sh, active conda: no bare -a line" "0" \
     "$(printf '%s\n' "$SETUP_FISH" | grep -cxF "fish_add_path -a '$SETUP_DIR'")"
 

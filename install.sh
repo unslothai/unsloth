@@ -6393,14 +6393,17 @@ _persist_fish_path_dir() {
     _pfp_quoted=$(printf '%s' "$_pfp_dir" | sed "s/\\\\/\\\\\\\\/g; s/'/\\\\'/g")
     # fish_add_path PREPENDS, and that ordering outlives the conda activation it was written under, so from the next shell on this directory sits ahead of the active conda environment's own entries and conda resolves out of ours (#5871). install.ps1 makes the same choice for the Windows registry.
     # -a ALONE IS NOT AN APPEND TO PATH. Without --path, fish_add_path edits $fish_user_paths, and fish's own documentation says so: "If $fish_user_paths is used, that means they are last in $fish_user_paths, which is itself prepended to PATH, so they still stay ahead of the system paths." Its worked example for this exact case is `fish_add_path --append --path /opt/fallback/bin`, with the note that it "needs --path/-P because otherwise it appends to $fish_user_paths, which is added to the front of $PATH". So the conda arm carries -P too, or the append does nothing conda can see. https://fishshell.com/docs/current/cmds/fish_add_path.html
-    # -P edits $PATH for the session rather than a universal variable, which is right here: this file lives in conf.d and is sourced by every shell, and conf.d is read in alphabetical order, so conda.fish has already run by the time unsloth.fish does. fish_add_path leaves an already-included directory in place without -m, so re-sourcing and re-running the installer are both no-ops.
+    # -P edits $PATH for the session rather than a universal variable, which is right here: this file lives in conf.d and is sourced by every shell, and conf.d is read in alphabetical order, so conda.fish has already run by the time unsloth.fish does.
+    # -m, and this is the whole reason the append works on a machine that met an older installer. A previous run wrote the bare `fish_add_path '<dir>'`, which put the directory in the UNIVERSAL $fish_user_paths; that variable is persisted and fish expands it into the front of PATH in every later shell, so by the time this line runs the directory is already IN PATH. fish documents what happens then: "If a directory is already included, it is not added again and stays in the same place unless the --move switch" -- so without -m the append is a no-op and the stale prepend survives for ever, which is the case the repointing above exists for. -m moves it to the end instead, and since fish re-expands $fish_user_paths at every startup and this line runs afterwards, every later shell corrects itself. Erasing the universal variable is the alternative and is worse: it is the user's, and other tools write to it. https://fishshell.com/docs/current/cmds/fish_add_path.html
     _pfp_line="fish_add_path '$_pfp_quoted'"
     if _unsloth_conda_env_active; then
-        _pfp_line="fish_add_path -a -P '$_pfp_quoted'"
-        # Both earlier spellings are a prepend as far as PATH is concerned -- the bare -a
+        _pfp_line="fish_add_path -a -P -m '$_pfp_quoted'"
+        # Every earlier spelling is a prepend as far as PATH is concerned -- the bare -a
         # appends to $fish_user_paths, which fish itself puts in front of PATH -- so a line
-        # left by any previous run is repointed rather than accepted by the check below.
-        for _pfp_stale in "fish_add_path '$_pfp_quoted'" "fish_add_path -a '$_pfp_quoted'"; do
+        # left by any previous run is repointed rather than accepted by the check below, and
+        # that includes the -a -P line without -m, which cannot move an entry already in PATH.
+        for _pfp_stale in "fish_add_path '$_pfp_quoted'" "fish_add_path -a '$_pfp_quoted'" \
+                          "fish_add_path -a -P '$_pfp_quoted'"; do
             if _unsloth_repoint_rc_line "$_pfp_file" "$_pfp_stale" "$_pfp_line"; then
                 step "path" "moved $_pfp_label after the active conda environment in $_pfp_file"
             fi
@@ -6409,7 +6412,7 @@ _persist_fish_path_dir() {
     [ "$_pfp_mode" = "repoint" ] && return 0
     # The exact line we would write, not any occurrence of the directory: /opt/uv-old must not pass for /opt/uv, and fish reads none of the POSIX files that would otherwise cover it. EVERY spelling counts as present, or a run outside conda would add a second line for a directory a run inside it already registered. The bare -a spelling is kept in the list because an install from before this fix wrote one, and a second line would not repair it anyway.
     if ! grep -v '^[[:space:]]*#' "$_pfp_file" 2>/dev/null \
-        | grep -qxF -e "fish_add_path '$_pfp_quoted'" -e "fish_add_path -a '$_pfp_quoted'" -e "fish_add_path -a -P '$_pfp_quoted'"; then
+        | grep -qxF -e "fish_add_path '$_pfp_quoted'" -e "fish_add_path -a '$_pfp_quoted'" -e "fish_add_path -a -P '$_pfp_quoted'" -e "fish_add_path -a -P -m '$_pfp_quoted'"; then
         # Same single-redirect, warning-not-failure contract as the POSIX arm. 2>/dev/null comes FIRST: redirections apply left to right, so the other order prints the shell's own "Permission denied" before the redirect can silence it.
         if {
             echo "# Added by Unsloth installer"

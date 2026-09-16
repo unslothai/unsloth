@@ -2277,14 +2277,24 @@ _setup_persist_uv_path() {
         # still stay ahead of the system paths"; its own example for this case is
         # `fish_add_path --append --path /opt/fallback/bin`. -P edits $PATH directly, which
         # is right for a conf.d drop-in sourced by every shell after conda.fish.
+        #
+        # -m, because a machine that met an older installer already has the directory in the
+        # universal $fish_user_paths, which fish expands into the front of PATH at every
+        # startup: the directory is therefore already IN PATH when this line runs, and fish
+        # says "If a directory is already included, it is not added again and stays in the
+        # same place unless the --move switch". Without -m the append is a no-op and the
+        # stale prepend survives. -m moves it to the end, and since this runs after the
+        # expansion, every later shell corrects itself. Erasing the universal variable would
+        # be worse: it is the user's, and other tools write to it.
         # https://fishshell.com/docs/current/cmds/fish_add_path.html
         _supp_fish_line="fish_add_path '$_supp_quoted'"
         if _unsloth_conda_env_active; then
-            _supp_fish_line="fish_add_path -a -P '$_supp_quoted'"
-            # Both earlier spellings put the directory in front of PATH, the bare -a by way of
-            # $fish_user_paths, so either one left by a previous run is repointed rather than
-            # accepted as present by the check below.
-            for _supp_stale in "fish_add_path '$_supp_quoted'" "fish_add_path -a '$_supp_quoted'"; do
+            _supp_fish_line="fish_add_path -a -P -m '$_supp_quoted'"
+            # Every earlier spelling puts the directory in front of PATH, the bare -a by way of
+            # $fish_user_paths, and the -a -P line without -m cannot move an entry already in PATH,
+            # so any of them left by a previous run is repointed rather than accepted as present.
+            for _supp_stale in "fish_add_path '$_supp_quoted'" "fish_add_path -a '$_supp_quoted'" \
+                               "fish_add_path -a -P '$_supp_quoted'"; do
                 _unsloth_repoint_rc_line "$_supp_fish" "$_supp_stale" "$_supp_fish_line" || true
             done
         fi
@@ -2294,7 +2304,8 @@ _setup_persist_uv_path() {
         # install from before this fix wrote it.
         if [ "$_setup_repoint_only" != true ] && ! grep -v '^[[:space:]]*#' "$_supp_fish" 2>/dev/null \
             | grep -qxF -e "fish_add_path '$_supp_quoted'" -e "fish_add_path -a '$_supp_quoted'" \
-                        -e "fish_add_path -a -P '$_supp_quoted'"; then
+                        -e "fish_add_path -a -P '$_supp_quoted'" \
+                        -e "fish_add_path -a -P -m '$_supp_quoted'"; then
             echo "# Added by Unsloth setup" >> "$_supp_fish"
             echo "$_supp_fish_line" >> "$_supp_fish"
         fi
