@@ -755,6 +755,12 @@ class TestAuthSafeRedirectHandler:
                 self.send_header("Content-Length", "0")
                 self.end_headers()
 
+            # do_GET is NOT dead. Python 3.13 preserves HEAD across a redirect
+            # (`method="HEAD" if m == "HEAD" else "GET"` in redirect_request);
+            # 3.12 and earlier build the redirected Request with no method and it
+            # defaults to GET. Serving only HEAD therefore passes on 3.13 and
+            # answers 501 Unsupported method ('GET') on every 3.12 runner.
+            do_GET = _handle
             do_HEAD = _handle
 
             def log_message(self, *args):
