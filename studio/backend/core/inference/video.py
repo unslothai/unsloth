@@ -1752,6 +1752,7 @@ class VideoBackend:
         from .diffusion_engine_router import _install_accelerator_for
         from .sd_cpp_backend import (
             _install_allowed,
+            _installed_accelerator_of,
             accelerator_verdict_keeps_gpu,
             ensure_h3_sd_cpp_binary,
             fallback_accelerator_for,
@@ -1914,6 +1915,15 @@ class VideoBackend:
             raise RuntimeError(
                 "stable-diffusion.cpp could not be installed or started for MiniMax-H3."
             )
+        # The accelerator CLASS the decision was made on, alongside the boolean. The re-vet below
+        # compares "does this build enumerate an accelerator device", and two different builds
+        # answer that the same way: a Vulkan rung taken because the ROCm build does not run here
+        # can be replaced, during a multi-tens-of-GB download, by a ROCm build that DOES enumerate
+        # a device, and the boolean test then passes and commits the very build the fallback was
+        # chosen to avoid. Read here and read back the same way, so a user-supplied binary -- which
+        # has no recorded class -- compares None against None and is left to the identity and
+        # capability tests that already cover it.
+        decided_accelerator = _installed_accelerator_of(binary)
         if cancel_event.is_set():
             raise RuntimeError(VIDEO_CANCELLED_MSG)
 
@@ -2008,6 +2018,19 @@ class VideoBackend:
             # baseline to compare against. A CPU or MPS target never asked the question, so this would spawn
             # --list-devices for an answer the test below cannot use -- on every H3 load, and for the full probe timeout
             # when the build hangs on it.
+            # The class first, because it is decisive where the boolean is not. Both readable and
+            # different is a replacement of a different kind, whatever it enumerates.
+            current_accelerator = _installed_accelerator_of(binary)
+            if (
+                decided_accelerator is not None
+                and current_accelerator is not None
+                and current_accelerator != decided_accelerator
+            ):
+                raise RuntimeError(
+                    "The stable-diffusion.cpp binary changed while this model was loading, and the "
+                    "one now at that path was built for a different accelerator. Try the load "
+                    "again."
+                )
             fresh_accelerator = (
                 sd_cpp_accelerator_device_verdict(binary)
                 if listed_accelerator is not None and binary
