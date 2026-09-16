@@ -81,7 +81,7 @@ echo "Unsloth Studio login -> ${STUDIO_LINE}"
 studio_ok=""; jupyter_ok=""
 deadline=$(( $(date +%s) + READY_WAIT ))
 while :; do
-    if [[ -z "$studio_ok" ]] && curl -sf -o /dev/null --max-time 3 http://127.0.0.1:8000/api/health; then
+    if [[ -z "$studio_ok" ]] && curl -sf -o /dev/null --max-time 3 "http://127.0.0.1:${UNSLOTH_STUDIO_PORT:-8000}/api/health"; then
         studio_ok=1
     fi
     if [[ -z "$jupyter_ok" ]] && curl -sf -o /dev/null --max-time 3 "http://127.0.0.1:${JUPYTER_PORT}/login"; then
@@ -113,7 +113,7 @@ fi
 rule="$(printf '=%.0s' $(seq 1 72))"
 printf '%s\n' "${_g}${rule}${_r}"
 printf '  %s\n' "${_g}${title}${_r}"
-printf '  Studio      %s   %s\n' "${_b}http://localhost:8000${_r}" "${_y}${studio_text}${_r}"
+printf '  Studio      %s   %s\n' "${_b}http://localhost:${UNSLOTH_STUDIO_PORT:-8000}${_r}" "${_y}${studio_text}${_r}"
 printf '  JupyterLab  %s   %s\n' "${_b}http://localhost:${JUPYTER_PORT}${_r}" "${_y}${jupyter_text}${_r}"
 printf '  %s\n' "Ports are the container's: use the host side of your -p flags, or an SSH tunnel to a remote host."
 printf '%s\n' "${_g}${rule}${_r}"

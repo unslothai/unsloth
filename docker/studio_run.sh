@@ -85,13 +85,13 @@ fi
 # Mirrors UNSLOTH_JUPYTER_CLOUDFLARE, which JupyterLab has had all along. The two
 # are mutually exclusive in the CLI, so refuse the pair here rather than let
 # supervisord restart Studio forever on an argument error.
-STUDIO_ARGS=(-H 0.0.0.0 -p 8000)
+STUDIO_ARGS=(-H 0.0.0.0 -p "${UNSLOTH_STUDIO_PORT:-8000}")
 if [[ "${UNSLOTH_STUDIO_SECURE:-0}" == "1" && "${UNSLOTH_STUDIO_CLOUDFLARE:-0}" == "1" ]]; then
     echo "ERROR: set UNSLOTH_STUDIO_SECURE=1 or UNSLOTH_STUDIO_CLOUDFLARE=1, not both:" >&2
     echo "       --secure serves only the tunnel, --cloudflare serves the tunnel and the local port." >&2
     exit 2
 elif [[ "${UNSLOTH_STUDIO_SECURE:-0}" == "1" ]]; then
-    STUDIO_ARGS=(--secure -p 8000)
+    STUDIO_ARGS=(--secure -p "${UNSLOTH_STUDIO_PORT:-8000}")
 elif [[ "${UNSLOTH_STUDIO_CLOUDFLARE:-0}" == "1" ]]; then
     STUDIO_ARGS+=(--cloudflare)
 fi
