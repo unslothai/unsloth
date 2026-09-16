@@ -361,6 +361,17 @@ def _adapter_save_environment(monkeypatch):
     import huggingface_hub
 
     monkeypatch.setattr(huggingface_hub, "whoami", lambda token = None: {"name": "owner"})
+
+    # `unsloth_save_model` does `from peft import PeftModelForCausalLM` inside its body, and
+    # uses it for one isinstance check that every model here answers False to. Stubbed like
+    # every other dependency in this file, rather than importorskip'd, so the whole file
+    # stays runnable on a bare interpreter: that is what lets it gate the cross-platform
+    # runners, which ship no peft.
+    if "peft" not in sys.modules:
+        peft = types.ModuleType("peft")
+        peft.PeftModelForCausalLM = type("PeftModelForCausalLM", (), {})
+        monkeypatch.setitem(sys.modules, "peft", peft)
+
     uploads = []
 
     def upload_to_huggingface(*args, **kwargs):
