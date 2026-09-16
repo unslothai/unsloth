@@ -1533,3 +1533,34 @@ def test_every_preflight_schema_resolves_an_inventory_handle():
         "unsloth/Llama-3.2-1B"
     )
     assert EstimateMemoryRequest(model_path = "ref:nope").model_path == "ref:nope"
+
+
+def test_a_training_run_does_not_carry_the_output_layout():
+    """The model identity was only half of the run.
+
+    A run persists where it wrote and what it was given, and those fields answer from the
+    history routes for as long as the run exists, so an API-key caller could read the
+    server's home, cache and output layout out of any completed run even with `model_name`
+    referenced.
+    """
+    row = {
+        "id": "run-1",
+        "model_name": f"{HOST_ROOT}/my models/base",
+        "output_dir": f"{HOST_ROOT}/outputs/run-1",
+        "model_local_path": f"{HOST_ROOT}/cache/base",
+        "model_snapshot_path": f"{HOST_ROOT}/cache/base/snapshots/abc",
+        "dataset_local_path": f"{HOST_ROOT}/data/set",
+        "dataset_snapshot_path": f"{HOST_ROOT}/data/set/snapshots/abc",
+        "checkpoint_path": f"{HOST_ROOT}/outputs/run-1/checkpoint-10",
+        "resume_from_checkpoint": f"{HOST_ROOT}/outputs/run-1/checkpoint-10",
+        "output_dirs": [f"{HOST_ROOT}/outputs/run-1", f"{HOST_ROOT}/outputs/run-2"],
+        "dataset_name": "acme/dataset",
+    }
+    redacted = host_paths.redact_host_paths(row, via_api_key = True)
+    assert HOST_ROOT not in json.dumps(redacted), redacted
+    assert redacted["output_dirs"] == []
+    # The identity is still actionable, and a field that is not a path is untouched.
+    assert host_paths.resolve_host_path_reference(redacted["model_name"]) == row["model_name"]
+    assert redacted["dataset_name"] == "acme/dataset"
+    # And the browser session sees its own machine, exactly as before.
+    assert host_paths.redact_host_paths(row, via_api_key = False) == row

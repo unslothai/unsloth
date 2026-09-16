@@ -54,6 +54,20 @@ HOST_PATH_SCALAR_FIELDS = frozenset(
         "repo_path",
         "snapshot_path",
         "local_path",
+        # The training half. A run persists where it wrote and what it was given, and those
+        # fields answer from the history routes for as long as the run exists, so an API-key
+        # caller could read the server's home, cache and output layout out of any completed
+        # run even with the model identity referenced. `output_dir` is the one on every
+        # summary; the rest are the request fields the detail route echoes back, and they are
+        # the same four the remote-code scan takes plus the dataset pair.
+        "output_dir",
+        "model_local_path",
+        "model_snapshot_path",
+        "dataset_local_path",
+        "dataset_snapshot_path",
+        "dataset_path",
+        "checkpoint_path",
+        "resume_from_checkpoint",
     }
 )
 
@@ -66,6 +80,10 @@ HOST_PATH_LIST_FIELDS = frozenset(
         "ollama_dirs",
         "hermes_dirs",
         "scanned_dirs",
+        # The list-valued training equivalents, emptied for the same reason: a list of output
+        # directories is the host's layout however many entries it has.
+        "output_dirs",
+        "dataset_paths",
     }
 )
 
