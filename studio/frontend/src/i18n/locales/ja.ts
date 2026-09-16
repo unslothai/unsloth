@@ -1412,6 +1412,25 @@ export const ja = {
       },
     },
     chat: {
+      groups: {
+        conversations: { title: "会話" },
+        files: { title: "ファイルと貼り付け" },
+        display: { title: "表示" },
+        composer: { title: "メッセージ入力欄" },
+        menu: { title: "チャットメニュー" },
+        advanced: { title: "詳細設定" },
+        contextTitle: "コンテキスト",
+      },
+      projectAttachmentsHint: "各チャットの添付メニューで個別に変更できます。",
+      rememberParamsPerModelHint:
+        "オフの場合、すべてのモデルで同じ設定を使います。",
+      autoCompactHint: "空きVRAMではなく、設定したコンテキスト長を基準にします。",
+      pastedTextShortDescription:
+        "この長さを超える貼り付けテキストを .txt 添付ファイルにします。",
+      compactionDescriptionInherit: "サーバーのコンテキストポリシーに従います。",
+      compactionDescriptionCheckpoint: "最新のやり取りと継続的な指示を保持します。",
+      compactionDescriptionRolling:
+        "古いターンを削除し、最近の履歴と選択した余裕分の空きを確保します。",
       projectsSection: "プロジェクトセクションを表示",
       projectsSectionDescription:
         "プロジェクトのチャットを「プロジェクト」の見出しにまとめます。オフにすると「最近」に表示されます。",
@@ -1441,7 +1460,8 @@ export const ja = {
         exportChat: "チャットをエクスポート",
       },
       pastedTextThreshold: "長い貼り付けを圧縮",
-      pastedTextThresholdDescription: "この長さを超える貼り付けテキストは、入力欄を埋める代わりに .txt 添付ファイルになります。 {shortcut} を押すと、それでも入力欄に貼り付けます。",
+      pastedTextThresholdDescription:
+        "{shortcut} を押すと、入力欄に直接貼り付けられます。",
       pastedTextThresholdOff: "オフ",
       showResponseModel: "応答モデルを表示",
       showResponseModelDescription:
@@ -1450,13 +1470,13 @@ export const ja = {
       modelDisclaimerDescription: 'チャットボックスの下に "LLMs can make mistakes" と表示します。',
       projectAttachments: "プロジェクト全体でファイルを共有",
       projectAttachmentsDescription:
-        "プロジェクトに属するチャットで添付したファイルの既定の扱いです。プロジェクト全体にインデックスし、そのプロジェクト内のどのチャットからも利用できるようにします。チャットごとに添付メニューから変更できます。",
+        "新しく添付したファイルをプロジェクト内のすべてのチャットで利用できるようにします。",
       rememberParamsPerModel: "モデルごとに設定を記憶",
       rememberParamsPerModelDescription:
-        "モデルを切り替えると、そのモデルで最後に使った温度やプロンプトなどの設定が復元されます。オフの場合は、すべてのモデルで同じ設定を使います。",
+        "各モデルで最後に使ったプロンプト、温度、その他の設定を復元します。",
       autoCompact: "長いチャットを自動圧縮",
       autoCompactDescription:
-        "ローカル GGUF チャットが設定したコンテキスト長に達したら、エラーを返す代わりに古いターンを削除します。空き VRAM には基づきません。",
+        "ローカル GGUF チャットがコンテキスト上限に達したら、古いターンを削除します。",
       compactionStyle: "コンテキストが満杯になったとき",
       compactionStyleDescription:
         "サーバー既定値を使うと UNSLOTH_CONTEXT_POLICY が維持されます。会話をリセットすると最新ターンと継続指示が残ります。スライディングウィンドウは古いターンを削除し、より多くの最近の履歴を残せます。",

@@ -1439,6 +1439,27 @@ export const ptBR = {
       },
     },
     chat: {
+      groups: {
+        conversations: { title: "Conversas" },
+        files: { title: "Arquivos e colagem" },
+        display: { title: "Exibição" },
+        composer: { title: "Caixa de mensagem" },
+        menu: { title: "Menu do chat" },
+        advanced: { title: "Avançado" },
+        contextTitle: "Contexto",
+      },
+      projectAttachmentsHint:
+        "Altere esta configuração para cada chat pelo menu de anexos.",
+      rememberParamsPerModelHint:
+        "Quando desativado, todos os modelos usam as mesmas configurações.",
+      autoCompactHint: "Usa o tamanho de contexto definido, não a VRAM disponível.",
+      pastedTextShortDescription:
+        "Converte textos colados acima deste limite em anexos .txt.",
+      compactionDescriptionInherit: "Segue a política de contexto do servidor.",
+      compactionDescriptionCheckpoint:
+        "Mantém a última troca de mensagens e as instruções permanentes.",
+      compactionDescriptionRolling:
+        "Remove os turnos mais antigos para manter o histórico recente e o espaço extra selecionado.",
       projectsSection: "Mostrar a seção Projetos",
       projectsSectionDescription:
         "Agrupa as conversas de projeto sob um título Projetos. Desative para listá-las em Recentes.",
@@ -1468,7 +1489,8 @@ export const ptBR = {
         exportChat: "Exportar chat",
       },
       pastedTextThreshold: "Condensar colagens longas",
-      pastedTextThresholdDescription: "Texto colado maior que isso vira um anexo .txt em vez de encher a caixa de mensagem. Pressione {shortcut} para colar na caixa de mensagem mesmo assim.",
+      pastedTextThresholdDescription:
+        "Pressione {shortcut} para colar diretamente na caixa de mensagem.",
       pastedTextThresholdOff: "Desativado",
       showResponseModel: "Mostrar o modelo da resposta",
       showResponseModelDescription:
@@ -1478,13 +1500,13 @@ export const ptBR = {
         'Mostra "LLMs podem cometer erros" abaixo da caixa de chat.',
       projectAttachments: "Compartilhar arquivos em todo o projeto",
       projectAttachmentsDescription:
-        "Padrao para arquivos anexados em um chat que pertence a um projeto: indexa-los para o projeto inteiro para que qualquer chat possa usa-los. Cada chat pode alterar isso pelo menu de anexos.",
+        "Disponibiliza novos anexos para todos os chats do projeto.",
       rememberParamsPerModel: "Lembrar as configurações por modelo",
       rememberParamsPerModelDescription:
-        "Ao trocar de modelo, a temperatura, o prompt e as demais configurações usadas por último com aquele modelo são restauradas. Desativado, um único conjunto de configurações vale para todos os modelos.",
+        "Restaura o último prompt, a temperatura e as outras configurações usadas com cada modelo.",
       autoCompact: "Compactar automaticamente chats longos",
       autoCompactDescription:
-        "Quando um chat GGUF local atingir o tamanho de contexto definido, descarte turnos antigos em vez de retornar um erro. Isso não depende da VRAM livre.",
+        "Remove turnos antigos quando um chat GGUF local atinge o limite de contexto.",
       compactionStyle: "Quando o contexto estiver cheio",
       compactionStyleDescription:
         "Usar o padrão do servidor preserva UNSLOTH_CONTEXT_POLICY. Redefinir a conversa mantém o turno mais recente e as instruções permanentes. Uma janela deslizante descarta os turnos mais antigos e pode manter mais histórico recente.",
