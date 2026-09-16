@@ -986,6 +986,76 @@ def terminate_descendants(
     ]
 
 
+# How deep the capture-before-kill recursion goes. Each level is one more Toolhelp snapshot
+# taken immediately before a kill, which is the only moment at which a process's children
+# can still be read: killing an intermediate first removes it from the next snapshot, and a
+# grandchild that still records it as its creator can then no longer be reached by a walk
+# that starts at the root, because the walk has to pass THROUGH a process that is gone. A
+# tree deeper than this is not dropped silently -- the round loop above reports the anchor
+# as unresolved when the walks keep producing pids.
+_SUBTREE_CAPTURE_DEPTH = 8
+
+
+def _windows_kill_below(
+    anchor: int,
+    attempted: "list[tuple[int, Optional[str]]]",
+    unresolved: "list[tuple[int, Optional[str]]]",
+    killed: "set[int]",
+    depth: int,
+) -> "Optional[bool]":
+    """Kill everything under *anchor*, capturing each subtree before removing its root.
+
+    True when something was signalled, False when there was nothing left to signal, and
+    None when the walk could not be done at all -- which is not the same as an empty tree
+    and must not be reported as one.
+
+    The capture is repeated at every level rather than taken once at the top, and that is
+    the whole point: between the snapshot and the kill there is a fifteen second taskkill
+    budget per process, and a child started in it is in no snapshot. Killing its parent
+    first severs the only link a later walk could follow to it, since Windows' parent-pid
+    field still names a process that no longer exists. So the children of a process are
+    read immediately before that process is signalled, never after.
+    """
+    if depth <= 0:
+        return False
+    found, known = _windows_collect_descendants_known(anchor)
+    if not known:
+        return None
+    progressed = False
+    for child_pid, child_identity in reversed(found):
+        if child_pid in killed:
+            continue
+        if not _signalable(child_pid) or not _pid_alive(child_pid):
+            killed.add(child_pid)
+            continue
+        if not _provably_the_same(child_pid, child_identity):
+            # The same three outcomes as the caller, which this used to collapse into two.
+            # Provably somebody else is dropped; unreadable is a live pid this sweep cannot
+            # account for, so it is reported rather than silently discarded, and the record
+            # that names it outlives the call.
+            if (
+                _pid_alive(child_pid)
+                and not _pid_is_zombie(child_pid)
+                and not _provably_different(child_pid, child_identity)
+            ):
+                unresolved.append((child_pid, child_identity))
+            killed.add(child_pid)
+            continue
+        # Below it first. It is about to stop existing, and with it every way of finding
+        # what it started since the walk above returned.
+        below = _windows_kill_below(child_pid, attempted, unresolved, killed, depth - 1)
+        if below is None:
+            unresolved.append((child_pid, child_identity))
+        try:
+            _windows_terminate_pid(child_pid, child_identity)
+        except Exception:  # noqa: BLE001 - best effort, like the rest of this
+            pass
+        killed.add(child_pid)
+        attempted.append((child_pid, child_identity))
+        progressed = True
+    return progressed
+
+
 # How many times a survivor's subtree is re-walked before the sweep gives up and says so.
 # Each pass is one Toolhelp snapshot plus one identity read per candidate, so a handful is
 # cheap; what it buys is the child a late descendant starts while the taskkill before it
@@ -1047,23 +1117,24 @@ def _windows_terminate_collected(
         # Started after the snapshot, and validated the same way rather than inherited
         # from a parent-pid link. Deepest first, as above.
         #
-        # Repeated, not done once. Each `taskkill` in the loop below has the same fifteen
-        # second ceiling, so a late descendant has a long window of its own in which to
-        # start a child before the loop reaches the end -- and a child of a late child was
-        # in neither walk, so the sweep reported nothing about it and the caller deleted
-        # the record and the pidfile while it held a GPU. The walk is re-run until it stops
-        # producing live pids this pass has not already dealt with. Bounded rather than
-        # unbounded: a process that respawns faster than it can be killed is not something
-        # a loop wins, and the answer for it is the honest one below -- unresolved, which
-        # keeps the record for the next sweep.
-        late_handled: "set[int]" = set()
-        for round_index in range(_LATE_WALK_ROUNDS):
-            late, late_known = _windows_collect_descendants_known(pid)
-            if not late_known:
-                # This second walk is what covers anything the survivor started AFTER the
-                # snapshot. Failing it and carrying on used to kill the survivor and then
-                # report nothing, so a grandchild only this walk could have named was left
-                # with the record and the pidfile deleted out from under it.
+        # Repeated, not done once. Each `taskkill` below has the same fifteen second
+        # ceiling, so a late descendant has a long window of its own in which to start a
+        # child before its turn comes -- and a child of a late child was in neither walk, so
+        # the sweep reported nothing about it and the caller deleted the record and the
+        # pidfile while it held a GPU. Bounded rather than unbounded: a process that
+        # respawns faster than it can be killed is not something a loop wins, and the answer
+        # for it is the honest one below -- unresolved, which keeps the record.
+        killed_below: "set[int]" = set()
+        still_growing = True
+        for _round in range(_LATE_WALK_ROUNDS):
+            progressed = _windows_kill_below(
+                pid, attempted, unresolved, killed_below, _SUBTREE_CAPTURE_DEPTH
+            )
+            if progressed is None:
+                # This walk is what covers anything the survivor started AFTER the snapshot.
+                # Failing it and carrying on used to kill the survivor and then report
+                # nothing, so a grandchild only this walk could have named was left with the
+                # record and the pidfile deleted out from under it.
                 #
                 # The survivor itself is still killed: it is collected and identity-verified,
                 # and refusing to kill it because a walk BELOW it failed would leave the very
@@ -1071,35 +1142,15 @@ def _windows_terminate_collected(
                 # is carried out as unresolved, which keeps the record, and the next sweep
                 # gets another walk at whatever is under it.
                 unresolved.append((pid, identity))
+                still_growing = False
                 break
-            fresh = [item for item in late if item[0] not in late_handled]
-            if not fresh:
+            if not progressed:
+                still_growing = False
                 break
-            for late_pid, late_identity in reversed(fresh):
-                late_handled.add(late_pid)
-                if not _signalable(late_pid) or not _pid_alive(late_pid):
-                    continue
-                if not _provably_the_same(late_pid, late_identity):
-                    # The same three outcomes as the outer loop, which this used to collapse
-                    # into two. Provably somebody else is dropped; unreadable is a live pid
-                    # this sweep cannot account for, so it is reported rather than silently
-                    # discarded, and the record that names it outlives the call.
-                    if (
-                        _pid_alive(late_pid)
-                        and not _pid_is_zombie(late_pid)
-                        and not _provably_different(late_pid, late_identity)
-                    ):
-                        unresolved.append((late_pid, late_identity))
-                    continue
-                try:
-                    _windows_terminate_pid(late_pid, late_identity)
-                except Exception:  # noqa: BLE001 - best effort, like the rest of this
-                    pass
-                attempted.append((late_pid, late_identity))
-        else:
-            # The rounds ran out with the walk still producing new pids. Whatever is under
-            # this survivor has not been accounted for, so it is reported rather than
-            # reported gone.
+        if still_growing:
+            # The rounds ran out with the walk still producing pids. Whatever is under this
+            # survivor has not been accounted for, so it is reported rather than reported
+            # gone.
             unresolved.append((pid, identity))
         try:
             _windows_terminate_pid(pid, identity)

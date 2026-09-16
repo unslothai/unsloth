@@ -1376,3 +1376,76 @@ def test_a_subtree_that_keeps_growing_is_reported_rather_than_looped_on(monkeypa
     survivors = pl._windows_terminate_collected([(survivor, "0:500")])
     assert spawned["n"] == pl._LATE_WALK_ROUNDS, spawned
     assert (survivor, "0:500") in survivors, survivors
+
+
+def test_a_grandchild_is_captured_before_its_parent_is_removed(monkeypatch):
+    """Killing the intermediate first severs the only link to what it started.
+
+    Windows' parent-pid field still names it, but a walk from the root has to pass THROUGH
+    it, and it no longer exists -- so the grandchild is in no later snapshot either, the
+    sweep reports no survivors, and the caller discards the record and the pidfile while it
+    holds a GPU. The children of a process are therefore read immediately before that
+    process is signalled, never after.
+    """
+    survivor, middle, grandchild = 1100, 1101, 1102
+    monkeypatch.setattr(pl, "_is_windows", lambda: True)
+    monkeypatch.setattr(pl, "_signalable", lambda pid: True)
+    monkeypatch.setattr(pl, "_pid_is_zombie", lambda pid: False)
+    monkeypatch.setattr(pl, "_pid_identity", lambda pid: f"{pid}")
+    dead: "set[int]" = set()
+    killed: "list[int]" = []
+
+    def _collect(pid):
+        # The root's walk names the intermediate only: the grandchild does not exist yet.
+        if pid == survivor:
+            return [(middle, f"{middle}")], True
+        # The intermediate's own walk, taken right before it is killed, is the ONLY place
+        # the grandchild can be seen -- and once the intermediate is dead the root's walk
+        # cannot reach it at all.
+        if pid == middle and middle not in dead:
+            return [(grandchild, f"{grandchild}")], True
+        return [], True
+
+    monkeypatch.setattr(pl, "_windows_collect_descendants_known", _collect)
+    monkeypatch.setattr(
+        pl, "_windows_terminate_pid",
+        lambda pid, identity = None: (killed.append(pid), dead.add(pid), True)[-1],
+    )
+    monkeypatch.setattr(pl, "_pid_alive", lambda pid: pid not in dead)
+
+    survivors = pl._windows_terminate_collected([(survivor, f"{survivor}")])
+    assert grandchild in killed, killed
+    assert killed.index(grandchild) < killed.index(middle), killed
+    assert killed[-1] == survivor, killed
+    assert survivors == [], survivors
+
+
+def test_a_walk_that_fails_below_an_intermediate_keeps_the_record(monkeypatch):
+    """The intermediate is still killed -- refusing would leave the process the sweep exists
+    for running -- but a walk that could not say what is under it has not shown there is
+    nothing, so the pid is reported rather than dropped."""
+    survivor, middle = 1200, 1201
+    monkeypatch.setattr(pl, "_is_windows", lambda: True)
+    monkeypatch.setattr(pl, "_signalable", lambda pid: True)
+    monkeypatch.setattr(pl, "_pid_is_zombie", lambda pid: False)
+    monkeypatch.setattr(pl, "_pid_identity", lambda pid: f"{pid}")
+    dead: "set[int]" = set()
+    killed: "list[int]" = []
+
+    def _collect(pid):
+        if pid == survivor:
+            return [(middle, f"{middle}")], True
+        if pid == middle:
+            return [], False  # handle pressure, access denied: cannot tell
+        return [], True
+
+    monkeypatch.setattr(pl, "_windows_collect_descendants_known", _collect)
+    monkeypatch.setattr(
+        pl, "_windows_terminate_pid",
+        lambda pid, identity = None: (killed.append(pid), dead.add(pid), True)[-1],
+    )
+    monkeypatch.setattr(pl, "_pid_alive", lambda pid: pid not in dead)
+
+    survivors = pl._windows_terminate_collected([(survivor, f"{survivor}")])
+    assert middle in killed, killed
+    assert (middle, f"{middle}") in survivors, survivors
