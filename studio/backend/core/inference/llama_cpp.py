@@ -22652,6 +22652,27 @@ class LlamaCppBackend:
                     tensor_parallel = tensor_parallel,
                 )
 
+                def _replan_env(_current_tp: bool) -> "Optional[Mapping[str, str]]":
+                    """The environment the CHILD will see once this decision is final.
+
+                    A downgrade is authoritative: the launch clears a non-layer inherited
+                    LLAMA_ARG_SPLIT_MODE (and its paired tensor split) before spawning, so the
+                    child runs the layer plan whatever the parent's environment says. Resolving
+                    the attention against the parent's copy turned tensor mode straight back on
+                    inside the helper, and a user ``-fa auto`` then priced the unpadded V of a
+                    load that will decide the question again, on its own, under a layer split.
+                    """
+                    if _current_tp:
+                        return None
+                    inherited = (os.environ.get("LLAMA_ARG_SPLIT_MODE") or "").strip().lower()
+                    if not inherited or inherited == "layer":
+                        return None
+                    return {
+                        key: value
+                        for key, value in os.environ.items()
+                        if key not in ("LLAMA_ARG_SPLIT_MODE", "LLAMA_ARG_TENSOR_SPLIT")
+                    }
+
                 def _replanned_flash_attn(_current_tp: bool) -> bool:
                     """Re-resolve the planned attention after a tensor-mode downgrade.
 
@@ -22661,6 +22682,7 @@ class LlamaCppBackend:
                     estimates priced after one would otherwise keep budgeting for an
                     unpadded V that a layer split with AUTO attention off does not get.
                     """
+                    _env = _replan_env(_current_tp)
                     return _reserved_flash_attn_state(
                         _planned_flash_attn_state(
                             extra_args,
@@ -22669,9 +22691,11 @@ class LlamaCppBackend:
                                 server_caps.get("supports_flash_attn", True)
                             ),
                             tensor_parallel = _current_tp,
+                            env = _env,
                         ),
                         extra_args,
                         tensor_parallel = _current_tp,
+                        env = _env,
                     )
                 # A user --split-mode in extras last-wins-overrides the toggle, and
                 # an inherited tensor LLAMA_ARG_SPLIT_MODE flips it on (the child

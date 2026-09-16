@@ -513,3 +513,71 @@ class TestTheReserveWhenTheFitterIsOff:
         assert body.count("_reserved_flash_attn_state(") == 2, body.count(
             "_reserved_flash_attn_state("
         )
+
+
+class TestTheReplanIsAuthoritative:
+    """A downgrade decided by a latch or a capacity check strips the extras, never the env.
+
+    Tensor mode can arrive through an inherited LLAMA_ARG_SPLIT_MODE, and the helper resolves
+    the split from the extras, the toggle AND that variable. So a re-plan carrying the
+    downgraded False still met a tensor answer inside the helper, and a user `-fa auto` priced
+    the unpadded V of a load that will decide the question again, on its own, under the layer
+    split the launch really spawns -- the launch clears that variable for exactly this reason.
+    """
+
+    def _load_model_body(self):
+        import ast
+        import inspect
+        import textwrap
+
+        from core.inference import llama_cpp as module
+
+        source = inspect.getsource(module.LlamaCppBackend.load_model)
+        return ast.parse(textwrap.dedent(source)).body[0]
+
+    def test_the_replan_scrubs_the_inherited_split_mode(self):
+        import ast
+
+        func = self._load_model_body()
+        helper = next(
+            node
+            for node in ast.walk(func)
+            if isinstance(node, ast.FunctionDef) and node.name == "_replan_env"
+        )
+        text = ast.dump(helper)
+        assert "LLAMA_ARG_SPLIT_MODE" in text
+        assert "LLAMA_ARG_TENSOR_SPLIT" in text
+        # And the re-plan uses it, on both the plan and the reserve, or the scrub reaches
+        # neither answer.
+        replan = next(
+            node
+            for node in ast.walk(func)
+            if isinstance(node, ast.FunctionDef) and node.name == "_replanned_flash_attn"
+        )
+        calls = [
+            node
+            for node in ast.walk(replan)
+            if isinstance(node, ast.Call)
+            and getattr(node.func, "id", None)
+            in {"_planned_flash_attn_state", "_reserved_flash_attn_state"}
+        ]
+        assert len(calls) == 2, [getattr(c.func, "id", None) for c in calls]
+        for call in calls:
+            passed = {kw.arg for kw in call.keywords}
+            assert "env" in passed, ast.dump(call)
+
+    def test_the_helper_answers_layer_once_the_variable_is_gone(self):
+        """The behaviour the scrub buys, on the helper itself."""
+        from core.inference.llama_cpp import _planned_flash_attn_state
+
+        inherited = {"LLAMA_ARG_SPLIT_MODE": "tensor"}
+        # The state the re-plan used to resolve: a downgraded toggle, a tensor environment.
+        assert (
+            _planned_flash_attn_state(["-fa", "auto"], tensor_parallel = False, env = inherited)
+            is True
+        )
+        # And the one the child will really run under.
+        assert (
+            _planned_flash_attn_state(["-fa", "auto"], tensor_parallel = False, env = {})
+            is False
+        )
