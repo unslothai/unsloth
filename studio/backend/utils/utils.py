@@ -155,7 +155,7 @@ def auth_safe_open(req, timeout):
     Tests patch THIS (not ``urllib.request.urlopen``) so the redirect policy
     cannot be bypassed by a refactor that swaps the opener under them.
     """
-    return urllib.request.build_opener(AuthSafeRedirectHandler()).open(req, timeout=timeout)
+    return urllib.request.build_opener(AuthSafeRedirectHandler()).open(req, timeout = timeout)
 
 
 def call_with_deadline(
