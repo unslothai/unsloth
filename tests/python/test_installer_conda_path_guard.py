@@ -832,3 +832,54 @@ def test_every_stacked_conda_prefix_is_enumerated(path: Path, indent: str):
     # A bad or absent CONDA_SHLVL must not spin or skip the active environment.
     assert "$levels -gt 64" in body, body
     assert "$env:CONDA_PREFIX)" in body, body
+
+
+@pytest.mark.parametrize(
+    "path",
+    [INSTALL_SH, SETUP_SH_POSIX],
+    ids = ["install.sh", "studio/setup.sh"],
+)
+def test_the_rc_repointer_rewrites_a_line_holding_a_backslash(path: Path, tmp_path: Path):
+    """POSIX awk decodes backslash escapes in a `-v` assignment.
+
+    The writers escape a backslash before building the line, so the value handed to awk was
+    not the value in the file: the literal `grep -qxF` matched, awk matched nothing, and the
+    helper renamed an unchanged file and reported success -- the installer said the stale
+    prepend had been moved while conda was still in front of it.
+    """
+    rc = tmp_path / "rc"
+    old_line = 'export PATH="/opt/od\\\\d/bin:$PATH"'
+    new_line = 'export PATH="$PATH:/opt/od\\\\d/bin"'
+    rc.write_text(old_line + "\n# keep me\n", encoding = "utf-8")
+    script = (
+        _shell_function(path, "_unsloth_repoint_rc_line")
+        + "_unsloth_repoint_rc_line "
+        + f"'{rc}' '{old_line}' '{new_line}'\n"
+        + 'echo "status=$?"\n'
+    )
+    out = subprocess.run(["sh", "-c", script], capture_output = True, text = True, timeout = 60)
+    assert "status=0" in out.stdout, (out.stdout, out.stderr)
+    assert rc.read_text(encoding = "utf-8") == new_line + "\n# keep me\n", rc.read_text(
+        encoding = "utf-8"
+    )
+
+
+def test_the_uv_repoint_pass_moves_the_home_relative_spelling_too():
+    """The default uv destination IS ~/.local/bin, and the shim block writes that line
+    unexpanded as `$HOME/.local/bin`.
+
+    A repoint built only from the expanded path can never match it, so on every ordinary
+    machine the line the pass exists to move stayed in front of conda. The shim's own
+    repoint reaches one profile, whichever is selected now, which leaves a prepend a
+    previous run wrote to .profile in place for anyone who has since acquired a .bashrc or
+    changed shells -- and this loop already visits every startup file.
+    """
+    source = INSTALL_SH.read_text(encoding = "utf-8")
+    start = source.index("_uv_repoint_literal=")
+    block = source[start : source.index("_persist_fish_path_dir", start)]
+    assert "_uv_repoint_home_literal" in block, block
+    assert "'$HOME'" in block, block
+    # Both spellings inside the per-profile loop, not only the expanded one.
+    assert block.count("_persist_login_path_dir") == 2, block
+    # $HOME stays unexpanded; only the rest of the path is escaped.
+    assert '${_UNSLOTH_UV_BIN_DIR#$HOME}' in block, block

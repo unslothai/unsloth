@@ -6361,8 +6361,15 @@ _unsloth_repoint_rc_line() {
     # single line of it is rewritten: a 0600 rc file must not come back 0644 because the
     # rename handed it whatever the umask says. The `>` that follows truncates that copy and
     # leaves its mode alone.
+    #
+    # Through the environment, not `-v`. POSIX awk decodes backslash escapes in a `-v`
+    # assignment, so a path holding a backslash -- which the writers deliberately escape
+    # before building the line -- arrives at awk as something else: the literal `grep -qxF`
+    # above matched, awk then matched nothing, and this renamed an unchanged file and
+    # reported the stale prepend as moved with conda still in front of it. ENVIRON is the
+    # spelling that hands the value over untouched.
     if cp -- "$_urrl_real" "$_urrl_tmp" 2>/dev/null \
-        && awk -v old="$2" -v new="$3" '$0 == old { print new; next } { print }' "$_urrl_real" > "$_urrl_tmp" 2>/dev/null \
+        && _URRL_OLD="$2" _URRL_NEW="$3" awk '$0 == ENVIRON["_URRL_OLD"] { print ENVIRON["_URRL_NEW"]; next } { print }' "$_urrl_real" > "$_urrl_tmp" 2>/dev/null \
         && mv -f -- "$_urrl_tmp" "$_urrl_real" 2>/dev/null; then
         return 0
     fi
@@ -6517,11 +6524,30 @@ if [ -n "${_UNSLOTH_UV_BIN_DIR:-}" ] \
     # there. Computed here because the guard below owns the escaping.
     if _unsloth_conda_env_active; then
         _uv_repoint_literal=$(printf '%s' "$_UNSLOTH_UV_BIN_DIR" | sed 's/[\\"$`]/\\&/g')
+        # And the $HOME-relative spelling, because that is what the shim block above writes:
+        # the default uv destination IS ~/.local/bin, so a repoint built only from the
+        # expanded path could never match `export PATH="$HOME/.local/bin:$PATH"` and the
+        # line it was meant to move stayed in front of conda. The shim's own repoint pass
+        # reaches one profile, whichever is selected now, so a prepend a previous run left
+        # in .profile outlives a user who since acquired a .bashrc or changed shells; this
+        # loop already visits every startup file astral's installer wired, so it is where
+        # both spellings belong. $HOME is left unexpanded on purpose and only the rest of
+        # the path is escaped.
+        _uv_repoint_home_literal=""
+        case "$_UNSLOTH_UV_BIN_DIR" in
+            "$HOME"/*)
+                _uv_repoint_home_literal='$HOME'$(printf '%s' "${_UNSLOTH_UV_BIN_DIR#$HOME}" | sed 's/[\\"$`]/\\&/g')
+                ;;
+        esac
         for _uv_prof in "$HOME/.profile" "$HOME/.bashrc" "$HOME/.bash_profile" \
                         "$HOME/.bash_login" "${ZDOTDIR:-$HOME}/.zshrc" "${ZDOTDIR:-$HOME}/.zshenv"; do
             [ -f "$_uv_prof" ] || continue
             _persist_login_path_dir "$_UNSLOTH_UV_BIN_DIR" "$_uv_repoint_literal" \
                 "$_UNSLOTH_UV_BIN_DIR" "" "$_uv_prof" repoint
+            if [ -n "$_uv_repoint_home_literal" ]; then
+                _persist_login_path_dir "$_UNSLOTH_UV_BIN_DIR" "$_uv_repoint_home_literal" \
+                    "$_UNSLOTH_UV_BIN_DIR" "" "$_uv_prof" repoint
+            fi
         done
         _persist_fish_path_dir "$_UNSLOTH_UV_BIN_DIR" "" repoint
     fi

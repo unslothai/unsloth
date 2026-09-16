@@ -2221,8 +2221,15 @@ _unsloth_repoint_rc_line() {
     # single line of it is rewritten: a 0600 rc file must not come back 0644 because the
     # rename handed it whatever the umask says. The `>` that follows truncates that copy and
     # leaves its mode alone.
+    #
+    # Through the environment, not `-v`. POSIX awk decodes backslash escapes in a `-v`
+    # assignment, so a path holding a backslash -- which the writers deliberately escape
+    # before building the line -- arrives at awk as something else: the literal `grep -qxF`
+    # above matched, awk then matched nothing, and this renamed an unchanged file and
+    # reported the stale prepend as moved with conda still in front of it. ENVIRON is the
+    # spelling that hands the value over untouched.
     if cp -- "$_urrl_real" "$_urrl_tmp" 2>/dev/null \
-        && awk -v old="$2" -v new="$3" '$0 == old { print new; next } { print }' "$_urrl_real" > "$_urrl_tmp" 2>/dev/null \
+        && _URRL_OLD="$2" _URRL_NEW="$3" awk '$0 == ENVIRON["_URRL_OLD"] { print ENVIRON["_URRL_NEW"]; next } { print }' "$_urrl_real" > "$_urrl_tmp" 2>/dev/null \
         && mv -f -- "$_urrl_tmp" "$_urrl_real" 2>/dev/null; then
         return 0
     fi
