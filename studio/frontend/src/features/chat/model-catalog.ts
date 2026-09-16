@@ -178,9 +178,8 @@ function snapshotNamespace(
   const bundled = MODEL_CATALOG_SNAPSHOT[providerType];
   if (!served) return bundled;
   if (!bundled) return served;
-  // Served entries win per MODEL, not per namespace. A browser cache survives an app
-  // upgrade and the backend serves an expired disk copy while offline, so replacing the
-  // namespace wholesale hides models the newer bundled snapshot ships knowledge for.
+  // Per MODEL, not per namespace: a cache that survived an upgrade, or the expired copy served
+  // offline, would otherwise hide models the newer bundled snapshot knows.
   if (!mergedNamespaces) mergedNamespaces = new Map();
   const cached = mergedNamespaces.get(providerType);
   if (cached) return cached;
