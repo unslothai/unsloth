@@ -42,7 +42,14 @@ import re
 from transformers import AutoModel, AutoConfig
 import tempfile
 from huggingface_hub import HfApi, get_token
-from ..save import unsloth_save_pretrained_torchao, unsloth_save_pretrained_gguf
+from ..save import (
+    unsloth_save_pretrained_torchao,
+    unsloth_save_pretrained_gguf,
+    # One definition of what save_method = "lora" means, shared with save.py, so this
+    # module cannot start disagreeing with the router about which spellings are adapter
+    # saves.
+    _is_adapter_save_method,
+)
 import contextlib
 import shutil
 
@@ -1819,6 +1826,16 @@ class FastSentenceTransformer(FastModel):
                     f"for this SentenceTransformer: no modules.json was found, "
                     f"so Unsloth falls back to merge_and_unload, which can only "
                     f"produce 'merged_16bit'."
+                )
+            if _is_adapter_save_method(save_method):
+                # Refused for the same reason the branch above refuses it, and for the same reason the other definition of this method refuses everything but a merge: nothing here writes base weights. self.save_pretrained writes the sentence-transformers scaffolding and, for a PEFT auto_model, an adapter; the two lines below then delete that adapter and hand the transformer module over to save_pretrained_merged, which for this method writes the adapter back and nothing else. The result is a directory with modules.json and an adapter but no config.json and no model weights, which SentenceTransformer cannot load and _push_to_hub_merged would upload as it stands. Until unsloth#11067 "lora" reached merge_and_overwrite_lora, matched no branch there and fell through to a plain 16-bit merge, so this path happened to write something loadable; that accident is what 11067 removes, and an error is the honest replacement. Save the adapter itself with self[0].auto_model.save_pretrained(...).
+                raise NotImplementedError(
+                    f"Unsloth: save_method = {save_method!r} is not supported for a "
+                    f"SentenceTransformer: `save_pretrained_merged` writes a loadable "
+                    f"SentenceTransformer, and an adapter-only save has no base weights "
+                    f"for one. Use `save_pretrained_merged(..., save_method = "
+                    f"'merged_16bit')` for a loadable model, or save the adapter on its "
+                    f"own with `model[0].auto_model.save_pretrained(save_directory)`."
                 )
             if save_method is not None:
                 kwargs.setdefault("save_method", save_method)

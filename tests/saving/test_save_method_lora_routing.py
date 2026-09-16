@@ -583,3 +583,84 @@ def test_the_documented_advice_no_longer_tells_anyone_to_pass_none_for_a_pickle(
     """The warning used to say "to force safe_serialization, set it to None"."""
     assert "To force `safe_serialization`, set it to `None` instead." not in _SOURCE
     assert "`safe_serialization` defaults to safetensors" in _SOURCE
+
+
+# ----------------------------------------------------------------------------------
+# What the caller is left holding: the SentenceTransformer wrapper.
+# ----------------------------------------------------------------------------------
+
+
+def _sentence_transformer_source():
+    path = (
+        Path(__file__).resolve().parent.parent.parent
+        / "unsloth" / "models" / "sentence_transformer.py"
+    )
+    return path.read_text(encoding = "utf-8"), ast.parse(path.read_text(encoding = "utf-8"))
+
+
+def _modules_branch_save_pretrained_merged(tree):
+    """The second `_save_pretrained_merged`, the one that keeps `save_method`.
+
+    The first definition refuses everything but a merge outright; this is the branch that
+    forwards `save_method` on to `auto_model.save_pretrained_merged`, so it is the one
+    that inherits whatever `"lora"` now means.
+    """
+    found = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_save_pretrained_merged"
+    ]
+    assert len(found) == 2, f"expected two definitions, found {len(found)}"
+    keeps_save_method = [
+        node for node in found
+        if any(
+            isinstance(call, ast.Call)
+            and getattr(getattr(call.func, "attr", None), "__str__", lambda: "")() == "setdefault"
+            for call in ast.walk(node)
+        )
+    ]
+    assert len(keeps_save_method) == 1
+    return keeps_save_method[0]
+
+
+def test_sentence_transformer_merge_refuses_the_adapter_save_method():
+    """An adapter-only save leaves a SentenceTransformer directory with no model in it.
+
+    `self.save_pretrained(save_directory)` writes the scaffolding and, for a PEFT
+    auto_model, an adapter; the wrapper then deletes that adapter and hands the transformer
+    module to `save_pretrained_merged`. With `save_method = "lora"` that call now writes the
+    adapter back and nothing else, so the directory ends up with `modules.json` and
+    `adapter_config.json` but no `config.json` and no weights. `SentenceTransformer` cannot
+    load it, and `_push_to_hub_merged` uploads exactly that directory.
+
+    Before the routing fix, `"lora"` reached `merge_and_overwrite_lora`, matched no branch
+    and fell through to a 16-bit merge, so this path happened to write something loadable.
+    Both sibling branches in this file already refuse the method for the same reason; this
+    pins the third.
+    """
+    _, tree = _sentence_transformer_source()
+    node = _modules_branch_save_pretrained_merged(tree)
+    guards = [
+        call for call in ast.walk(node)
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Name)
+        and call.func.id == "_is_adapter_save_method"
+    ]
+    assert guards, (
+        "the modules branch of _save_pretrained_merged forwards save_method = 'lora' to "
+        "the adapter save, which writes no base weights into the SentenceTransformer "
+        "directory it is building"
+    )
+    raises = [
+        stmt for stmt in ast.walk(node)
+        if isinstance(stmt, ast.Raise)
+        and isinstance(stmt.exc, ast.Call)
+        and getattr(stmt.exc.func, "id", "") == "NotImplementedError"
+    ]
+    assert len(raises) >= 2, "the adapter method has to be refused, not warned about"
+
+
+def test_sentence_transformer_shares_the_router_definition_of_lora():
+    """One definition of the spellings, so the two files cannot drift apart."""
+    source, _ = _sentence_transformer_source()
+    assert "_is_adapter_save_method" in source
+    assert "from ..save import" in source
