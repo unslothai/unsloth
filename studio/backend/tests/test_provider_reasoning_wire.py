@@ -158,7 +158,7 @@ def test_custom_gateway_still_receives_nothing():
     )
 
 
-def test_mistral_models_outside_the_spec_take_the_two_value_form():
+def test_mistral_medium_3_5_takes_the_documented_two_value_form():
     assert (
         _body("mistral", "mistral-medium-3-5", reasoning_effort = "medium")["reasoning_effort"]
         == "high"
@@ -303,8 +303,25 @@ def test_the_4_6_xhigh_remap_reads_the_id_the_same_way_the_spec_lookup_does(mode
     assert body["output_config"] == {"effort": "max"}
 
 
-def test_a_non_reasoning_mistral_model_is_left_alone_by_an_effort_of_none():
-    """The catch-all Mistral tail writes reasoning_effort for any model; Mistral documents the
-    parameter for mistral-small-latest and mistral-medium-3-5 only."""
-    body = _body("mistral", "mistral-large-latest", enable_thinking = False, reasoning_effort = "none")
-    assert body["reasoning_effort"] == "none"
+# Mistral documents reasoning_effort for mistral-small-latest and mistral-medium-3-5 only, with
+# values "high" and "none": https://docs.mistral.ai/capabilities/reasoning/
+# mistral-large, codestral and the older mistral-medium releases are absent from that page and
+# reject the parameter, so no caller-supplied effort may reach them.
+@pytest.mark.parametrize(
+    "model", ["mistral-large-latest", "codestral-latest", "mistral-medium-2505"]
+)
+@pytest.mark.parametrize(
+    "controls",
+    [
+        {"reasoning_effort": "none"},
+        {"reasoning_effort": "high"},
+        {"reasoning_effort": "medium"},
+        {"enable_thinking": True},
+        {"enable_thinking": False},
+        {"enable_thinking": False, "reasoning_effort": "none"},
+    ],
+)
+def test_a_mistral_model_outside_the_reasoning_docs_gets_no_effort_whatever_the_caller_sends(
+    model, controls
+):
+    assert "reasoning_effort" not in _body("mistral", model, **controls)

@@ -651,7 +651,7 @@ _MISTRAL_THINKING_SPECS = (
         style = "prompt_mode",
     ),
     _MistralThinkingSpec(
-        models = ("mistral-small-latest", "mistral-vibe-cli-latest"),
+        models = ("mistral-small-latest", "mistral-vibe-cli-latest", "mistral-medium-3-5"),
         style = "reasoning_effort",
         efforts = ("none", "high"),
     ),
@@ -683,8 +683,8 @@ def _apply_mistral_reasoning_controls(
 ) -> None:
     """Translate generic reasoning controls into Mistral's model-specific shape:
     magistral-medium-latest takes baseline or `prompt_mode="reasoning"`; mistral-small-latest /
-    mistral-vibe-cli-latest take `reasoning_effort` in {"none", "high"}; all other tested Mistral
-    models take no reasoning params."""
+    mistral-vibe-cli-latest / mistral-medium-3-5 take `reasoning_effort` in {"none", "high"}; all
+    other tested Mistral models take no reasoning params."""
     model_for_matching = model.rsplit("/", 1)[-1].strip().lower()
     spec = _mistral_thinking_spec(model_for_matching)
     body.pop("prompt_mode", None)
@@ -698,19 +698,19 @@ def _apply_mistral_reasoning_controls(
         return
 
     if spec.style == "reasoning_effort":
+        # Two documented values, so the intermediate levels of the shared UI scale collapse to
+        # "high"; only an explicit opt-out sends "none".
         if reasoning_effort in spec.efforts:
             body["reasoning_effort"] = reasoning_effort
+        elif reasoning_effort in _REASONING_EFFORT_LEVELS or enable_thinking is True:
+            body["reasoning_effort"] = "high"
         elif enable_thinking is False:
             body["reasoning_effort"] = "none"
-        elif enable_thinking is True:
-            body["reasoning_effort"] = "high"
         return
 
-    # Every other model takes the documented two-value form: "none" or "high".
-    if reasoning_effort == "none" or enable_thinking is False:
-        body["reasoning_effort"] = "none"
-    elif reasoning_effort in _REASONING_EFFORT_LEVELS or enable_thinking is True:
-        body["reasoning_effort"] = "high"
+    # Nothing for the rest: mistral-large, codestral and the older mistral-medium releases are not
+    # in Mistral's reasoning docs and reject the parameter, so an effort the caller sent for a model
+    # the catalog got wrong must be dropped here rather than forwarded.
 
 
 _REASONING_EFFORT_LEVELS = frozenset({"minimal", "low", "medium", "high", "xhigh", "max"})
