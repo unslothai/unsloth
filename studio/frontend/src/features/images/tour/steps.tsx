@@ -10,7 +10,7 @@ const modeStep: TourStep = {
   body: (
     <>
       Create generates images. Train fine-tunes a diffusion LoRA on your own
-      pictures. The workflows in the sidebar, such as edit, inpaint, extend and
+      pictures. The sidebar workflows, such as edit, inpaint, extend and
       upscale, all run in Create.
     </>
   ),
@@ -32,8 +32,7 @@ export function buildImagesTourSteps({
         body: (
           <>
             Drop in a folder, pick a dataset, or start from an example. Captions
-            matter here, so use the labeling grid to fill in anything missing
-            before you train.
+            matter here, so fill gaps in the labeling grid before you train.
           </>
         ),
       },
@@ -43,9 +42,8 @@ export function buildImagesTourSteps({
         title: "Start training",
         body: (
           <>
-            Runs a LoRA on the base model above. Progress and sample images
-            appear on the right, and finished LoRAs load straight back into
-            Create.
+            Runs a LoRA on the base model above. Progress and samples appear on
+            the right, and finished LoRAs load back into Create.
           </>
         ),
       },
@@ -67,35 +65,13 @@ export function buildImagesTourSteps({
       ),
     },
     {
-      id: "prompt",
-      target: "images-prompt",
-      title: "Prompt",
-      body: (
-        <>
-          Describe what you want. In the edit and inpaint workflows this becomes
-          an instruction about the source image instead.
-        </>
-      ),
-    },
-    {
       id: "settings",
       target: "images-settings",
       title: "Settings",
       body: (
         <>
-          Aspect ratio, steps, guidance, batch size and seed. Save a setup as a
-          preset to reuse it. Reuse a seed to repeat a result exactly.
-        </>
-      ),
-    },
-    {
-      id: "generate",
-      target: "images-generate",
-      title: "Generate",
-      body: (
-        <>
-          Starts the run and turns into Stop while it works. The model loads on
-          first use, so the first image takes longer than the rest.
+          Prompt, aspect ratio, steps, guidance, batch size and seed. Save a
+          setup as a preset, and reuse a seed to repeat a result exactly.
         </>
       ),
     },
@@ -105,9 +81,8 @@ export function buildImagesTourSteps({
       title: "Results",
       body: (
         <>
-          The selected image fills this pane, and everything you make lines up
-          in the strip below. From here you can save it, or send it into another
-          workflow like upscale.
+          The selected image fills this pane and everything you make lines up
+          below. Save it here, or send it into another workflow like upscale.
         </>
       ),
     },

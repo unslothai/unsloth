@@ -3,52 +3,55 @@
 
 import type { TourStep } from "@/features/tour";
 
-const viewsStep: TourStep = {
-  id: "views",
-  target: "recipe-views",
-  title: "Three views",
-  body: (
-    <>
-      Easy is a plain form for simple recipes, where the recipe offers one.
-      Advanced is the node graph. Runs keeps every execution with a preview of
-      the dataset it produced.
-    </>
-  ),
-};
+/** Without an Easy form the tabs read Editor and Runs, so neither "three" nor "Advanced" fits. */
+function viewsStep(supportsEasyMode: boolean): TourStep {
+  return {
+    id: "views",
+    target: "recipe-views",
+    title: supportsEasyMode ? "Three views" : "Two views",
+    body: supportsEasyMode ? (
+      <>
+        Easy is a plain form, Advanced is the node graph, and Runs keeps every
+        execution with the dataset it produced.
+      </>
+    ) : (
+      <>
+        Editor is the node graph. Runs keeps every execution with the dataset it
+        produced.
+      </>
+    ),
+  };
+}
 
 const saveStep: TourStep = {
   id: "save",
   target: "recipe-save",
   title: "Save",
-  body: (
-    <>
-      Recipes are stored on this device. Save before a long run so you can come
-      back to the same graph.
-    </>
-  ),
+  body: <>Recipes are stored on this device. Save before a long run.</>,
 };
 
-/** Only the graph view mounts the canvas and its floating controls. */
+/** Only the graph view mounts the canvas and its controls, and only once the recipe has loaded. */
 export function buildRecipeEditorTourSteps({
   isGraphView,
+  supportsEasyMode,
 }: {
   isGraphView: boolean;
+  supportsEasyMode: boolean;
 }): TourStep[] {
   if (!isGraphView) {
-    return [viewsStep, saveStep];
+    return [viewsStep(supportsEasyMode), saveStep];
   }
 
   return [
-    viewsStep,
+    viewsStep(supportsEasyMode),
     {
       id: "canvas",
       target: "recipe-canvas",
       title: "The graph",
       body: (
         <>
-          Each node is one step, and the wires between them carry rows forward.
-          Data starts at a source node and comes out the other end as a dataset
-          you can train on.
+          Each node is one step, and the wires carry rows forward. A source node
+          in, a dataset you can train on out.
         </>
       ),
     },
@@ -59,8 +62,7 @@ export function buildRecipeEditorTourSteps({
       body: (
         <>
           Source data, samplers, model calls, validators and expressions. Import
-          brings in your own documents, so this is where a PDF or a folder of
-          text enters the graph.
+          is where a PDF or a folder of text enters the graph.
         </>
       ),
     },
@@ -71,11 +73,9 @@ export function buildRecipeEditorTourSteps({
       body: (
         <>
           Check reports broken wires and missing settings without spending
-          tokens. Run executes the graph, and the result lands in Runs, ready to
-          use on the Train page.
+          tokens. Run lands the result in Runs, ready for the Train page.
         </>
       ),
     },
-    saveStep,
   ];
 }

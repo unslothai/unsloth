@@ -11,19 +11,7 @@ export const videoTourSteps: TourStep[] = [
     body: (
       <>
         Video models run locally, so check the size before you download. What
-        the model supports, such as keyframes, reference images or audio,
-        decides which controls appear below.
-      </>
-    ),
-  },
-  {
-    id: "prompt",
-    target: "video-prompt",
-    title: "Prompt",
-    body: (
-      <>
-        Describe the shot and the motion, not just the subject. Add a start or
-        end frame below to drive it from an image you already have.
+        the model supports decides which controls appear below.
       </>
     ),
   },
@@ -33,19 +21,8 @@ export const videoTourSteps: TourStep[] = [
     title: "Settings",
     body: (
       <>
-        Resolution, duration in frames, steps, guidance and seed. Duration and
-        resolution drive VRAM and time more than anything else, so start small.
-      </>
-    ),
-  },
-  {
-    id: "generate",
-    target: "video-generate",
-    title: "Generate",
-    body: (
-      <>
-        Starts the run and turns into Cancel while it works. The model loads on
-        first use, so the first clip takes noticeably longer.
+        Prompt, resolution, duration in frames, steps, guidance and seed.
+        Duration and resolution drive VRAM and time most, so start small.
       </>
     ),
   },
@@ -55,8 +32,8 @@ export const videoTourSteps: TourStep[] = [
     title: "Results",
     body: (
       <>
-        The selected clip plays here and every clip lines up in the strip below.
-        Download it, or reuse its settings for the next run.
+        The selected clip plays here and every clip lines up below. Download it,
+        or reuse its settings for the next run.
       </>
     ),
   },

@@ -419,7 +419,7 @@ export function ProjectsPage() {
           Projects
         </h1>
         <div className="flex items-center gap-3">
-          <div className="relative" data-tour="projects-search">
+          <div className="relative">
             <span className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-muted-foreground">
               <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} className="size-4" />
             </span>

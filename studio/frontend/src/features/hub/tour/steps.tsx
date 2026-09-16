@@ -21,8 +21,8 @@ const detailStep: TourStep = {
   title: "Model details",
   body: (
     <>
-      Files, quant variants and sizes for this model, with its README below.
-      Download it here, run it in Chat, or use Back to return to the results.
+      Files, quant variants and sizes, with the README below. Download it here,
+      run it in Chat, or use Back to return to the results.
     </>
   ),
 };
@@ -40,9 +40,8 @@ export function buildHubTourSteps({
       title: "Discover or On Device",
       body: (
         <>
-          Discover browses Hugging Face. On Device lists what is already
-          downloaded here, including your own finetunes, with the disk each one
-          uses.
+          Discover browses Hugging Face. On Device lists what is downloaded
+          here, including your own finetunes, with the disk each one uses.
         </>
       ),
     },
@@ -53,21 +52,7 @@ export function buildHubTourSteps({
       body: (
         <>
           Search by name, or paste <span className="font-mono">org/model</span>{" "}
-          to jump straight to a repo. Unsloth's own quants and dynamic GGUFs
-          rank first.
-        </>
-      ),
-    },
-    {
-      id: "filters",
-      target: "hub-filters",
-      title: "Filters",
-      body: (
-        <>
-          Narrow by format, such as GGUF or safetensors, and by capability like
-          vision or tools. Sort by trending or recent, and switch between models
-          and datasets. Only show models that fit hides anything too big for
-          your VRAM.
+          to jump straight to a repo. Unsloth's own quants rank first.
         </>
       ),
     },
@@ -77,9 +62,8 @@ export function buildHubTourSteps({
       title: "Your hardware",
       body: (
         <>
-          VRAM, RAM and cache size, so you know what will actually run before
-          you download. Add a Hugging Face token here to reach gated or private
-          repos.
+          VRAM, RAM and cache size, so you know what will run before you
+          download. Add a Hugging Face token here for gated repos.
         </>
       ),
     },

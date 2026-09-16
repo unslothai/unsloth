@@ -46,6 +46,14 @@ export function GuidedTour({
   const rafRef = useRef<number | null>(null);
   const lastRectRef = useRef<Rect | null>(null);
 
+  // Rewound during render: an effect runs after the onEnter effect below, so reopening would fire
+  // the last step's onEnter (Chat's compare step navigates) before rewinding to the first.
+  const [wasOpen, setWasOpen] = useState(open);
+  if (open !== wasOpen) {
+    setWasOpen(open);
+    if (open) setIdx(0);
+  }
+
   const step = steps[idx] ?? null;
   const total = steps.length;
   const isLast = idx === total - 1;
@@ -69,7 +77,6 @@ export function GuidedTour({
 
   useEffect(() => {
     if (!open) return;
-    setIdx(0);
     setTargetRect(null);
     closeLockRef.current = false;
     lastRectRef.current = null;

@@ -4242,7 +4242,6 @@ export function ImagesPage({
 
             <Field label={workflow === "edit" ? "Instruction" : "Prompt"}>
               <Textarea
-                data-tour="images-prompt"
                 rows={4}
                 placeholder={
                   workflow === "edit" ? "Describe the edit, e.g. make the sky sunset orange" : undefined
@@ -4536,10 +4535,7 @@ export function ImagesPage({
 
           </div>
           {/* The scroll mask provides the fade; leave the footer unpainted to avoid dark-mode banding. */}
-          <div
-            data-tour="images-generate"
-            className="relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-4"
-          >
+          <div className="relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-4">
             {busy === "generating" ? (
               /* Replaces Generate while a run is in flight. Every workflow funnels through the same
                  handler, so one control stops all of them. */

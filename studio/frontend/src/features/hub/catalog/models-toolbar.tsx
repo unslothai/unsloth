@@ -334,10 +334,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
         )}
       </div>
 
-      <div
-        data-tour="hub-filters"
-        className="flex min-w-0 flex-wrap items-center gap-2 lg:flex-[0_0_auto] lg:flex-nowrap lg:justify-end"
-      >
+      <div className="flex min-w-0 flex-wrap items-center gap-2 lg:flex-[0_0_auto] lg:flex-nowrap lg:justify-end">
         {tab === "downloaded" && !isDataset && (
           <Tooltip>
             <TooltipTrigger asChild={true}>

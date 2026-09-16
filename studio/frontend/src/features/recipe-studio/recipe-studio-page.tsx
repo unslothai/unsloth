@@ -228,14 +228,6 @@ export function RecipeStudioPage({
     },
     [viewModeStorageKey],
   );
-  const tourSteps = useMemo(
-    () => buildRecipeEditorTourSteps({ isGraphView: activeView === "editor" }),
-    [activeView],
-  );
-  const tour = useGuidedTourController({
-    id: "recipe-editor",
-    steps: tourSteps,
-  });
   // Easy mode has no canvas overlay/progress island, so a started run would leave the Run button
   // stuck on "Running..." with nothing else changing. Flip to the Runs pane where progress is
   // rendered. Advanced (editor) keeps its island and stays put.
@@ -400,6 +392,20 @@ export function RecipeStudioPage({
     auxNodePositions,
     llmAuxVisibility,
   });
+  const tourSteps = useMemo(
+    () =>
+      buildRecipeEditorTourSteps({
+        // A placeholder stands in until the recipe loads, so the canvas steps would hit nothing.
+        isGraphView: activeView === "editor" && initialRecipeReady,
+        supportsEasyMode,
+      }),
+    [activeView, initialRecipeReady, supportsEasyMode],
+  );
+  const tour = useGuidedTourController({
+    id: "recipe-editor",
+    steps: tourSteps,
+  });
+
   const executionLocked = runtimeVisualState.executionLocked;
   const canvasInteractive = interactive && !executionLocked;
   const runBusy = previewLoading || fullLoading || executionLocked;

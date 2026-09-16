@@ -51,6 +51,13 @@ for (const file of files) {
   }
 }
 
+const targets = new Set<string>();
+for (const file of tourStepFiles) {
+  for (const target of matchAll(file.text, /target: "([\w-]+)"/g)) {
+    targets.add(target);
+  }
+}
+
 test("every tour step points at an anchor that exists", () => {
   for (const file of tourStepFiles) {
     for (const target of matchAll(file.text, /target: "([\w-]+)"/g)) {
@@ -59,6 +66,31 @@ test("every tour step points at an anchor that exists", () => {
         `${file.path} targets "${target}", which no data-tour attribute or dataTour prop provides`,
       );
     }
+  }
+});
+
+// The other direction: a dropped step must not leave a stale anchor that reads like a live one.
+test("every anchor is used by a step", () => {
+  for (const anchor of anchors) {
+    assert.ok(
+      targets.has(anchor),
+      `"${anchor}" is marked as a tour anchor but no step targets it; drop the attribute or the step`,
+    );
+  }
+});
+
+// A prop-carried anchor fails silently if the component stops forwarding it: the source still
+// spells the anchor out, so the test above stays green.
+test("a prop-carried anchor is forwarded to the DOM", () => {
+  const all = files.map((file) => file.text).join("\n");
+  for (const prop of ["dataTour", "triggerDataTour", "contentDataTour"]) {
+    if (!new RegExp(`${prop}="[\\w-]+"`).test(all)) continue;
+    assert.match(
+      all,
+      // Rendered as the attribute itself, or handed to another prop that is.
+      new RegExp(`(?:data-tour|dataTour)=\\{${prop}\\}`),
+      `${prop} is used as a tour anchor but nothing forwards it to data-tour`,
+    );
   }
 });
 

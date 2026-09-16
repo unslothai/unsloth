@@ -2697,7 +2697,6 @@ export function AudioPage({
                   }
                 >
                   <Textarea
-                    data-tour="audio-prompt"
                     id="audio-prompt"
                     value={prompt}
                     onChange={(event) => setPrompt(event.target.value)}
@@ -2918,10 +2917,7 @@ export function AudioPage({
           </div>
           {mode === "speak" ? (
             /* The scroll mask provides the fade; leave the footer unpainted to avoid dark-mode banding. */
-            <div
-              data-tour="audio-generate"
-              className="relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-4"
-            >
+            <div className="relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-4">
               <div className="flex w-full max-w-sm flex-col gap-2">
                 {busy === "generating" && generationPresentation ? (
                   <>

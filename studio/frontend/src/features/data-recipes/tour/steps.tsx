@@ -3,24 +3,31 @@
 
 import type { TourStep } from "@/features/tour";
 
-/** The list and the learning-recipe cards are two branches of the same slot, so only one exists. */
+/** The list and the learning-recipe cards are two branches of one slot; neither mounts until ready. */
 export function buildDataRecipesTourSteps({
+  ready,
   hasRecipes,
 }: {
+  ready: boolean;
   hasRecipes: boolean;
 }): TourStep[] {
-  return [
+  const steps: TourStep[] = [
     {
       id: "new",
       target: "recipes-new",
       title: "Build a dataset",
       body: (
         <>
-          A recipe turns raw documents into training data. Start empty, or start
-          from a learning recipe that is already wired up for a common job.
+          A recipe turns raw documents into training data. Start empty, or from
+          a learning recipe already wired up for a common job.
         </>
       ),
     },
+  ];
+
+  if (!ready) return steps;
+
+  steps.push(
     hasRecipes
       ? {
           id: "list",
@@ -29,8 +36,7 @@ export function buildDataRecipesTourSteps({
           body: (
             <>
               Open one to edit its steps or rerun it. Recipes are saved on this
-              device, and the dataset a run produces is ready to pick on the
-              Train page.
+              device, and a run's dataset is ready to pick on the Train page.
             </>
           ),
         }
@@ -41,9 +47,11 @@ export function buildDataRecipesTourSteps({
           body: (
             <>
               Worked examples you can open and run as they are. The fastest way
-              to see how nodes connect before you build one yourself.
+              to see how nodes connect.
             </>
           ),
         },
-  ];
+  );
+
+  return steps;
 }

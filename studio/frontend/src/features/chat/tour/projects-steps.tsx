@@ -15,20 +15,8 @@ export function buildProjectsTourSteps({
       title: "Make a project",
       body: (
         <>
-          A project keeps related chats together and gives them shared files and
-          a shared system prompt. Anything you add as a source is available to
-          every chat inside it.
-        </>
-      ),
-    },
-    {
-      id: "search",
-      target: "projects-search",
-      title: "Find one fast",
-      body: (
-        <>
-          Searches every project by name, not just the ones on screen. Sort by
-          activity to keep what you touched last on top.
+          A project keeps related chats together with shared files and a shared
+          system prompt. Sources you add reach every chat inside it.
         </>
       ),
     },
@@ -38,9 +26,8 @@ export function buildProjectsTourSteps({
       title: "Import and export",
       body: (
         <>
-          Export chats as JSONL, CSV or ShareGPT, which is a quick way to turn
-          real conversations into training data. Import brings exported chats
-          back into a project.
+          Export chats as JSONL, CSV or ShareGPT, a quick way to turn real
+          conversations into training data. Import brings them back.
         </>
       ),
     },
@@ -53,8 +40,8 @@ export function buildProjectsTourSteps({
       title: "Open a project",
       body: (
         <>
-          Click a row to open it in Chat. The menu on each row pins it to the
-          sidebar, renames it, or deletes it with its chats.
+          Click a row to open it in Chat. The row menu pins it to the sidebar,
+          renames it, or deletes it with its chats.
         </>
       ),
     });

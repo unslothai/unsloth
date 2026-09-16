@@ -3,15 +3,16 @@
 
 import type { TourStep } from "@/features/tour";
 
+/** The Start button sits inside this card, so one step covers the check and the launch. */
 export const studioPreviewStep: TourStep = {
   id: "preview",
   target: "studio-run-preview",
-  title: "Run preview",
+  title: "Check, then start",
   body: (
     <>
-      Read this before you start. It shows step count, batch size, context and
-      the hardware we detected, and it flags anything that downloads on start.
-      The Ready pill turns on once the run has everything it needs.
+      Step count, batch size, context and detected hardware, plus anything that
+      downloads on start. Once the Ready pill is on, Start opens the run in
+      Current Run and it keeps going if you switch pages. Do a short run first.
     </>
   ),
 };

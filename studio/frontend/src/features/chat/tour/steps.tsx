@@ -55,9 +55,8 @@ export function buildChatTourSteps({
       title: "Tools and attachments",
       body: (
         <>
-          Attach PDFs, images, audio and code. Switch on web search, the
-          sandboxed Bash and Python tools, MCP servers and skills. Saved prompts,
-          canvas, projects and chat export live here too.
+          Open this to attach PDFs, images, audio and code, or to switch on web
+          search, the sandboxed Bash and Python tools, MCP servers and skills.
         </>
       ),
     },

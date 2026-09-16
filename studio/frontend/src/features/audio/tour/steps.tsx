@@ -10,8 +10,8 @@ const modeStep: TourStep = {
   body: (
     <>
       Generate makes speech and music from text. Transcribe turns a recording
-      into text with a speech model. They use different models, so the picker
-      above changes with the mode.
+      into text. They use different models, so the picker above follows the
+      mode.
     </>
   ),
 };
@@ -23,7 +23,7 @@ const modelStep: TourStep = {
   body: (
     <>
       TTS and music models for Generate, speech recognition for Transcribe.
-      Voices you fine-tuned on the Train page show up here under On Device.
+      Voices you fine-tuned show up under On Device.
     </>
   ),
 };
@@ -35,13 +35,12 @@ const outputStep: TourStep = {
   body: (
     <>
       Clips play here and stay in the history list beside them, ready to
-      download. Transcripts appear here too, with copy and download buttons, but
-      they are not kept after you leave.
+      download. Transcripts appear here too, but are not kept after you leave.
     </>
   ),
 };
 
-/** The two modes swap the settings body and the footer, so each gets its own middle steps. */
+/** The two modes swap the settings body and the footer, so each gets its own middle step. */
 export function buildAudioTourSteps({
   mode,
 }: {
@@ -70,36 +69,13 @@ export function buildAudioTourSteps({
     modeStep,
     modelStep,
     {
-      id: "prompt",
-      target: "audio-prompt",
-      title: "Text or lyrics",
-      body: (
-        <>
-          What the model should say. For music models this is lyrics, and
-          section tags such as [verse] and [chorus] shape the song.
-        </>
-      ),
-    },
-    {
       id: "settings",
       target: "audio-settings",
       title: "Settings",
       body: (
         <>
-          Voice and style instructions where the model supports them, plus
-          length and temperature under Advanced. The controls follow whichever
-          model is loaded.
-        </>
-      ),
-    },
-    {
-      id: "generate",
-      target: "audio-generate",
-      title: "Generate",
-      body: (
-        <>
-          Runs on the loaded model and shows progress as it goes. Long clips can
-          be stopped part way and still keep what was generated.
+          Your text or lyrics, plus voice and style where the model supports
+          them. Length and temperature sit under Advanced.
         </>
       ),
     },

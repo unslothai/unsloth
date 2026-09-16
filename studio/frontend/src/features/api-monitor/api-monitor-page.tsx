@@ -881,10 +881,7 @@ export function ApiMonitorPage(): ReactElement {
         </div>
       ) : null}
 
-      <section
-        data-tour="api-stats"
-        className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6"
-      >
+      <section className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
         <StatCard
           label="In flight"
           value={formatCount(stats.active)}

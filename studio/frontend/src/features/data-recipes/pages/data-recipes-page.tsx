@@ -324,8 +324,8 @@ export function DataRecipesPage(): ReactElement {
   );
   const reloadReadySent = useRef(false);
   const tourSteps = useMemo(
-    () => buildDataRecipesTourSteps({ hasRecipes: recipes.length > 0 }),
-    [recipes.length],
+    () => buildDataRecipesTourSteps({ ready, hasRecipes: recipes.length > 0 }),
+    [ready, recipes.length],
   );
   const tour = useGuidedTourController({
     id: "data-recipes",

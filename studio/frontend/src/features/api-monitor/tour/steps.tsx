@@ -28,18 +28,6 @@ export const apiMonitorTourSteps: TourStep[] = [
     ),
   },
   {
-    id: "stats",
-    target: "api-stats",
-    title: "Traffic at a glance",
-    body: (
-      <>
-        Requests in flight, totals, errors, average latency and tokens per
-        second. The quickest check that a client is actually reaching the
-        server.
-      </>
-    ),
-  },
-  {
     id: "log",
     target: "api-log",
     title: "Request log",
