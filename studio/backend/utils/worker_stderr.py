@@ -29,6 +29,7 @@ import os
 import sys
 import tempfile
 import threading
+import time
 
 __all__ = [
     "STDERR_MIRROR_KWARG",
@@ -271,6 +272,41 @@ def _open_existing_sink(path: str):
         return None
 
 
+# How long the tail thread waits before asking the sink for more. The worker's stderr is a
+# diagnostic, not a stream anyone is watching character by character, and a poll this cheap
+# costs nothing next to a load.
+_TAIL_POLL_S = 0.05
+
+
+def _open_sink_for_append(path: str):
+    """The sink opened O_APPEND, as a raw fd, for fd 2 to become.
+
+    Never creates, and never follows a symlink, for the reasons in `_open_existing_sink`.
+    """
+    flags = os.O_WRONLY | os.O_APPEND | _O_NOFOLLOW | _O_BINARY
+    try:
+        return os.open(path, flags)
+    except OSError:
+        return None
+
+
+def _open_sink_for_reading(path: str):
+    """A second, independent handle on the sink for the tail thread."""
+    flags = os.O_RDONLY | _O_NOFOLLOW | _O_BINARY
+    try:
+        handle = os.open(path, flags)
+    except OSError:
+        return None
+    try:
+        return os.fdopen(handle, "rb", buffering = 0)
+    except OSError:
+        try:
+            os.close(handle)
+        except OSError:
+            pass
+        return None
+
+
 def _compact_sink(sink, cap_bytes: int) -> int:
     """Rewrite *sink* so it holds only its last *cap_bytes* bytes. Returns the new size."""
     size = sink.seek(0, os.SEEK_END)
@@ -283,40 +319,65 @@ def _compact_sink(sink, cap_bytes: int) -> int:
     return len(data)
 
 
-def _pump_stderr(read_fd: int, inherited_fd: int, sink, cap_bytes: int) -> None:
-    """Copy everything the process writes to fd 2 to both the inherited stderr and *sink*."""
-    written = 0
-    try:
-        while True:
-            chunk = os.read(read_fd, 65536)
-            if not chunk:
+def _tail_sink_to_stderr(
+    reader, inherited_fd: int, sink, cap_bytes: int, stop: "threading.Event"
+) -> None:
+    """Copy what fd 2 has written into the sink onward to the inherited stderr.
+
+    The direction is the point. fd 2 is the SINK, so every byte is in the file the moment
+    the kernel returns from the write, whatever happens to this process next; this thread
+    only forwards them to the server's own stderr so the console keeps behaving as it did.
+    An earlier shape put a pipe on fd 2 and had this thread write BOTH ends, which meant
+    anything still in the pipe buffer when a fatal signal arrived -- `SIGSEGV`, `SIGABRT`,
+    the `terminate called after throwing an instance of 'c10::Error'` that precedes an
+    abort -- died with the writer, and it never reached the inherited stderr either. The
+    capture would then have made the crash LESS visible than it was before it existed.
+
+    Compaction rewrites the file from the front; fd 2 is opened ``O_APPEND``, so the
+    writer's next write still lands at the (new) end rather than at a stale offset.
+    """
+    forwarded = 0
+    while True:
+        try:
+            chunk = reader.read(65536)
+        except (OSError, ValueError):
+            break
+        if not chunk:
+            if stop.is_set():
                 break
+            time.sleep(_TAIL_POLL_S)
+            continue
+        try:
+            os.write(inherited_fd, chunk)
+        except OSError:
+            # The server's own stderr going away must not stop the capture.
+            pass
+        forwarded += len(chunk)
+        if cap_bytes > 0 and forwarded > 2 * cap_bytes:
             try:
-                os.write(inherited_fd, chunk)
-            except OSError:
-                # The server's own stderr going away must not stop the capture.
-                pass
-            try:
-                sink.write(chunk)
-                written += len(chunk)
-                if cap_bytes > 0 and written > 2 * cap_bytes:
-                    written = _compact_sink(sink, cap_bytes)
+                _compact_sink(sink, cap_bytes)
+                # Everything up to here has already been forwarded, and the file has just
+                # been rewritten from the front, so the reader's old offset points into the
+                # middle of retained text. The end is the only meaningful place to resume.
+                reader.seek(0, os.SEEK_END)
             except (OSError, ValueError):
                 pass
+            forwarded = 0
+    try:
+        sink.close()
     except OSError:
         pass
-    finally:
-        try:
-            sink.close()
-        except OSError:
-            pass
-        try:
-            os.close(read_fd)
-        except OSError:
-            pass
+    try:
+        reader.close()
+    except (OSError, ValueError):
+        pass
 
 
-def _stop_mirror(inherited_fd: int, pump: threading.Thread) -> None:
+def _stop_mirror(
+    inherited_fd: int,
+    pump: threading.Thread,
+    stop = None,
+) -> None:
     """Restore the inherited stderr and let the pump drain what is still in the pipe.
 
     Registered with :mod:`atexit`, which is what makes this worth having: the pump has to be
@@ -334,6 +395,10 @@ def _stop_mirror(inherited_fd: int, pump: threading.Thread) -> None:
         os.dup2(inherited_fd, 2)
     except OSError:
         pass
+    if stop is not None:
+        # fd 2 no longer points at the sink, so nothing more will be appended: tell the
+        # tail thread that the next empty read is the end rather than a pause.
+        stop.set()
     pump.join(timeout = _PUMP_JOIN_TIMEOUT_S)
     if pump.is_alive():
         # The join timed out, which means something else in this process still holds a
@@ -369,9 +434,17 @@ def install_worker_stderr_mirror(
     except OSError:
         sink.close()
         return False
-    try:
-        read_fd, write_fd = os.pipe()
-    except OSError:
+    # The WRITE side of the sink, opened O_APPEND and put straight on fd 2. Append matters
+    # twice: the compaction below rewrites the file from the front, and two handles are on
+    # the same file, so a fixed offset would either overwrite or leave a hole.
+    writer_fd = _open_sink_for_append(path)
+    if writer_fd is None:
+        os.close(inherited)
+        sink.close()
+        return False
+    reader = _open_sink_for_reading(path)
+    if reader is None:
+        os.close(writer_fd)
         os.close(inherited)
         sink.close()
         return False
@@ -380,20 +453,25 @@ def install_worker_stderr_mirror(
     except Exception:
         pass
     try:
-        os.dup2(write_fd, 2)
+        reader.seek(0, os.SEEK_END)
+    except (OSError, ValueError):
+        pass
+    try:
+        os.dup2(writer_fd, 2)
     except OSError:
-        os.close(read_fd)
-        os.close(write_fd)
+        os.close(writer_fd)
+        reader.close()
         os.close(inherited)
         sink.close()
         return False
-    os.close(write_fd)
+    os.close(writer_fd)
+    stop = threading.Event()
     pump = threading.Thread(
-        target = _pump_stderr,
-        args = (read_fd, inherited, sink, cap_bytes),
+        target = _tail_sink_to_stderr,
+        args = (reader, inherited, sink, cap_bytes, stop),
         name = "unsloth-worker-stderr-mirror",
         daemon = True,
     )
     pump.start()
-    atexit.register(_stop_mirror, inherited, pump)
+    atexit.register(_stop_mirror, inherited, pump, stop)
     return True

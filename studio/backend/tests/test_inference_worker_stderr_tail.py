@@ -14,6 +14,7 @@ bytes), the tail bounds, the mirror file's size bound, the message the orchestra
 and a real spawned worker that writes to stderr and exits 1.
 """
 
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 import importlib.util
@@ -662,3 +663,64 @@ def test_the_crash_message_uses_the_public_tail():
     source = inspect.getsource(InferenceOrchestrator._subprocess_crash_message)
     assert "_public_worker_stderr_tail()" in source
     assert "= self._worker_stderr_tail()" not in source
+
+
+# ---------------------------------------------------------------------------
+# A fatal signal must not take the diagnostic with it
+# ---------------------------------------------------------------------------
+
+_FATAL_CHILD = r"""
+import os, signal, sys
+sys.path.insert(0, %(backend)r)
+from utils.worker_stderr import install_worker_stderr_mirror
+
+assert install_worker_stderr_mirror(%(path)r) is True
+os.write(2, b"terminate called after throwing an instance of 'c10::Error'\n")
+# No flush, no atexit, no interpreter shutdown: the process is gone between one
+# instruction and the next, which is what SIGSEGV and SIGABRT do.
+os.kill(os.getpid(), signal.SIGKILL)
+"""
+
+
+def test_a_worker_killed_outright_still_leaves_its_last_words(tmp_path):
+    """The case a pipe on fd 2 cannot serve.
+
+    A pipe makes this process both the writer and the only reader, so bytes still in the
+    buffer when a fatal signal arrives die with it -- and they never reach the inherited
+    stderr either, which means the capture made the crash LESS visible than it was before
+    the capture existed. Writing fd 2 straight into the sink puts every byte in the file
+    the moment the kernel returns from the write.
+
+    SIGKILL rather than SIGSEGV because it is the one signal nothing can intercept, so a
+    pass here cannot be an artefact of a handler running.
+    """
+    capture = WorkerStderrCapture(directory = str(tmp_path), prefix = "unsloth-test-")
+    backend = str(Path(__file__).resolve().parent.parent)
+    script = _FATAL_CHILD % {"backend": backend, "path": capture.path}
+
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output = True,
+        timeout = 120,
+    )
+    assert completed.returncode == -signal.SIGKILL, completed.stderr[-400:]
+    assert "c10::Error" in capture.tail(), capture.tail()
+
+
+def test_the_mirror_puts_the_sink_on_fd_two_rather_than_a_pipe():
+    """Structural, because the mechanism is the fix.
+
+    A tail thread that still owned a pipe would pass the case above whenever the buffer
+    happened to be drained in time, and fail it on a loaded machine.
+    """
+    from utils import worker_stderr
+
+    source = Path(worker_stderr.__file__).read_text(encoding = "utf-8")
+    install = source.split("def install_worker_stderr_mirror(", 1)[1]
+    assert "os.pipe()" not in install, "fd 2 is a pipe again"
+    assert "_open_sink_for_append" in install
+    assert "os.dup2(writer_fd, 2)" in install
+    # O_APPEND is not decoration: the compaction rewrites the file from the front while
+    # fd 2 still points at it, and a fixed offset would overwrite or leave a hole.
+    append = source.split("def _open_sink_for_append(", 1)[1].split("\ndef ", 1)[0]
+    assert "os.O_APPEND" in append
