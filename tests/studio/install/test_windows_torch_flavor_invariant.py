@@ -338,7 +338,8 @@ class TestStepTotals:
         [
             ({}, 17),  # Linux, torch
             ({"NO_TORCH": True}, 15),  # Linux, GGUF-only (incl. the no-torch runtime step)
-            ({"IS_MACOS": True, "IS_MAC_ARM": True}, 14),  # Apple Silicon
+            # Two MLX slots: the install step and the post-core-phase re-resolve.
+            ({"IS_MACOS": True, "IS_MAC_ARM": True}, 15),  # Apple Silicon
             ({"IS_MACOS": True}, 13),  # Intel Mac
         ],
     )

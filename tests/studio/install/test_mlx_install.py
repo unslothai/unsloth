@@ -122,9 +122,10 @@ def test_mlx_install_respects_platform_mode_and_pins(
     assert len(calls) == int(enabled)
     if platform.startswith("macos"):
         # An update without torch announces the no-torch runtime deps on their own slot.
+        # Two mac-arm slots: the MLX step, and the re-resolve after the core phase.
         assert stack._TOTAL == (
             (12 if skip_base and not shared_base else 13)
-            + int(enabled)
+            + 2 * int(enabled)
             + int(no_torch and not skip_base)
         )
     if enabled:
@@ -268,7 +269,8 @@ def test_unsupported_apple_silicon_skips_mlx_without_failing_the_install(
     assert "MLX stack (Apple Silicon)" not in steps
     assert "MLX stack (skipped, no wheel for this macOS or Python)" in steps
     # A skipped step still spends its slot.
-    assert stack._TOTAL == (12 if skip_base and not shared_base else 13) + 1
+    # Two mac-arm slots even with no wheel: the re-resolve slot is spent unconditionally.
+    assert stack._TOTAL == (12 if skip_base and not shared_base else 13) + 2
 
 
 def test_supported_and_unsupported_hosts_share_one_progress_budget(monkeypatch):
@@ -334,3 +336,38 @@ def test_the_skip_predicate_uses_the_narrowed_range(monkeypatch):
         stack, "_mlx_vlm_spec_for_installed_zoo", lambda: f"{stack._MLX_VLM_SPEC},<0.7.0"
     )
     assert stack._mlx_stack_is_current() is False
+
+
+def _zoo_spec_sequence(monkeypatch, specs):
+    """_mlx_vlm_spec_for_installed_zoo answering differently before and after the core phase."""
+    remaining = list(specs)
+
+    def spec():
+        return remaining.pop(0) if len(remaining) > 1 else remaining[0]
+
+    monkeypatch.setattr(stack, "_mlx_vlm_spec_for_installed_zoo", spec)
+
+
+def test_the_core_phase_upgrading_the_zoo_re_resolves_mlx(monkeypatch):
+    """The MLX step runs before the core phase, so it honours the OLD zoo's range. Without the
+    re-resolve an update that moves the zoo leaves the machine on the narrower mlx-vlm for good:
+    the startup self-heal will not correct it, since 0.6.x satisfies _MLX_MIN_VERSIONS."""
+    narrow = f"{stack._MLX_VLM_SPEC},<0.7.0"
+    # Twice for the install step, then the widened answer after the core phase.
+    _zoo_spec_sequence(monkeypatch, [narrow, narrow, stack._MLX_VLM_SPEC])
+    calls = _run_to_extras(
+        monkeypatch, platform = "macos_arm", skip_base = False, no_torch = False
+    )
+    assert len(calls) == 2
+    assert "MLX stack (re-resolved for the new zoo)" in _run_to_extras.steps
+    assert narrow in list(calls[0].args[1:])
+    assert stack._MLX_VLM_SPEC in list(calls[1].args[1:])
+
+
+def test_an_unchanged_zoo_does_not_re_resolve_mlx(monkeypatch):
+    _zoo_spec_sequence(monkeypatch, [stack._MLX_VLM_SPEC])
+    calls = _run_to_extras(
+        monkeypatch, platform = "macos_arm", skip_base = False, no_torch = False
+    )
+    assert len(calls) == 1
+    assert "MLX stack (zoo unchanged, skipped)" in _run_to_extras.steps
