@@ -507,6 +507,26 @@ class TestFetcher:
 
         assert sent == ["https://93.184.216.34/caf%C3%A9%201.png?q=%C3%A9"]
 
+    def test_an_unencodable_path_is_a_400(self, monkeypatch):
+        def _never(*_a, **_k):
+            raise AssertionError("an unencodable URL must not be dialled")
+
+        _resolve_publicly(monkeypatch)
+        monkeypatch.setattr("urllib.request.build_opener", _never)
+        backend = _VisionGguf()
+        r = _client(monkeypatch, backend).post(
+            "/v1/chat/completions",
+            content = (
+                '{"model": "test/model.gguf", "stream": false, "messages": [{"role": "user",'
+                ' "content": [{"type": "image_url", "image_url": {"url":'
+                ' "https://images.example/\\ud800.png"}}, {"type": "text", "text": "x"}]}]}'
+            ),
+            headers = {"Content-Type": "application/json"},
+        )
+
+        assert r.status_code == 400, r.text
+        assert backend.dispatched == []
+
     def test_a_request_the_client_cannot_build_is_a_400(self, monkeypatch):
         import http.client
 

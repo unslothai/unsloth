@@ -870,11 +870,15 @@ def safe_fetch_remote_image_sync(
             return None
         cp, _cp_host, _cp_port = cp_info
         # http.client refuses a non-ASCII or spaced selector; encode it as _fetch_url_raw does.
-        cp = cp._replace(
-            path = quote(cp.path, safe = _IRI_PATH_SAFE),
-            params = quote(cp.params, safe = _IRI_PATH_SAFE),
-            query = quote(cp.query, safe = _IRI_QUERY_SAFE),
-        )
+        try:
+            cp = cp._replace(
+                path = quote(cp.path, safe = _IRI_PATH_SAFE),
+                params = quote(cp.params, safe = _IRI_PATH_SAFE),
+                query = quote(cp.query, safe = _IRI_QUERY_SAFE),
+            )
+        except UnicodeError:
+            logger.info(f"{label}: refusing unencodable url host=%s", current_host)
+            return None
         pinned_url = urlunparse(cp._replace(netloc = _pinned_netloc(pinned_ips[0], cp.port)))
 
         # Route on the hostname, as _fetch_url_raw does: no NO_PROXY entry matches the
