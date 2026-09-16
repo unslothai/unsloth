@@ -348,7 +348,7 @@ export function ChatTab() {
         </h1>
       </header>
 
-      <SettingsSection title={t("settings.chat.groups.composer.title")}>
+      <SettingsSection title={t("settings.general.chatDefaults")}>
         <ComposerSettings embedded={true} />
         <SettingsRow
           label={t("settings.chat.pastedTextThreshold")}
@@ -381,6 +381,64 @@ export function ChatTab() {
                     : choice.toLocaleString()}
                 </SelectItem>
               ))}
+            </SelectContent>
+          </Select>
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.autoCompact")}
+          description={t("settings.chat.autoCompactDescription")}
+          hint={t("settings.chat.autoCompactHint")}
+        >
+          <Switch
+            aria-label={t("settings.chat.autoCompact")}
+            checked={autoCompactEnabled}
+            onCheckedChange={setAutoCompactEnabled}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.compactionStyle")}
+          description={t(
+            contextPolicy === "inherit"
+              ? "settings.chat.compactionDescriptionInherit"
+              : contextPolicy === "checkpoint"
+                ? "settings.chat.compactionDescriptionCheckpoint"
+                : "settings.chat.compactionDescriptionRolling",
+          )}
+        >
+          <Select
+            value={compactionStyleValue(contextPolicy, compactionHeadroomRatio)}
+            onValueChange={(value) => {
+              const next = parseCompactionStyle(value);
+              setContextPolicy(next.contextPolicy);
+              setCompactionHeadroomRatio(next.compactionHeadroomRatio);
+            }}
+            disabled={!autoCompactEnabled}
+          >
+            <SelectTrigger
+              className="w-64"
+              aria-label={t("settings.chat.compactionStyle")}
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="inherit">
+                {t("settings.chat.compactionStyleInherit")}
+              </SelectItem>
+              <SelectItem value="checkpoint">
+                {t("settings.chat.compactionStyleCheckpoint")}
+              </SelectItem>
+              <SelectItem value="rolling:0.25">
+                {t("settings.chat.compactionStyleRollingDefault")}
+              </SelectItem>
+              <SelectItem value="rolling:0.1">
+                {t("settings.chat.compactionStyleRolling10")}
+              </SelectItem>
+              <SelectItem value="rolling:0.05">
+                {t("settings.chat.compactionStyleRolling5")}
+              </SelectItem>
+              <SelectItem value="rolling:0">
+                {t("settings.chat.compactionStyleRollingNone")}
+              </SelectItem>
             </SelectContent>
           </Select>
         </SettingsRow>
@@ -441,67 +499,6 @@ export function ChatTab() {
             checked={autoTitle}
             onCheckedChange={setAutoTitle}
           />
-        </SettingsRow>
-      </SettingsSection>
-
-      <SettingsSection title={t("settings.chat.groups.contextTitle")}>
-        <SettingsRow
-          label={t("settings.chat.autoCompact")}
-          description={t("settings.chat.autoCompactDescription")}
-          hint={t("settings.chat.autoCompactHint")}
-        >
-          <Switch
-            aria-label={t("settings.chat.autoCompact")}
-            checked={autoCompactEnabled}
-            onCheckedChange={setAutoCompactEnabled}
-          />
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.chat.compactionStyle")}
-          description={t(
-            contextPolicy === "inherit"
-              ? "settings.chat.compactionDescriptionInherit"
-              : contextPolicy === "checkpoint"
-                ? "settings.chat.compactionDescriptionCheckpoint"
-                : "settings.chat.compactionDescriptionRolling",
-          )}
-        >
-          <Select
-            value={compactionStyleValue(contextPolicy, compactionHeadroomRatio)}
-            onValueChange={(value) => {
-              const next = parseCompactionStyle(value);
-              setContextPolicy(next.contextPolicy);
-              setCompactionHeadroomRatio(next.compactionHeadroomRatio);
-            }}
-            disabled={!autoCompactEnabled}
-          >
-            <SelectTrigger
-              className="w-64"
-              aria-label={t("settings.chat.compactionStyle")}
-            >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="inherit">
-                {t("settings.chat.compactionStyleInherit")}
-              </SelectItem>
-              <SelectItem value="checkpoint">
-                {t("settings.chat.compactionStyleCheckpoint")}
-              </SelectItem>
-              <SelectItem value="rolling:0.25">
-                {t("settings.chat.compactionStyleRollingDefault")}
-              </SelectItem>
-              <SelectItem value="rolling:0.1">
-                {t("settings.chat.compactionStyleRolling10")}
-              </SelectItem>
-              <SelectItem value="rolling:0.05">
-                {t("settings.chat.compactionStyleRolling5")}
-              </SelectItem>
-              <SelectItem value="rolling:0">
-                {t("settings.chat.compactionStyleRollingNone")}
-              </SelectItem>
-            </SelectContent>
-          </Select>
         </SettingsRow>
       </SettingsSection>
 
