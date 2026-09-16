@@ -154,6 +154,27 @@ def _balanced(
     raise AssertionError(f"unbalanced {opener} at {open_at}")
 
 
+_TOP_LEVEL_DECLARATION = re.compile(
+    r"^(?:export\s+)?(?:default\s+)?(?:function|const|class)\s+(\w+)", re.MULTILINE
+)
+
+
+def _component_body(source: str, name: str) -> str:
+    """The module from `name`'s declaration up to the next top-level one.
+
+    The sheet holds several components, and later ones subscribe to the runtime store too. A
+    module-wide search would let `ChatSettingsPanel`'s selector be repointed at another field
+    while a sibling's subscription kept the guard green, leaving exactly the stale memos this
+    test exists to catch.
+    """
+    starts = [(match.start(), match.group(1)) for match in _TOP_LEVEL_DECLARATION.finditer(source)]
+    for index, (offset, declared) in enumerate(starts):
+        if declared == name:
+            end = starts[index + 1][0] if index + 1 < len(starts) else len(source)
+            return source[offset:end]
+    raise AssertionError(f"no top-level declaration of {name}; was the component renamed?")
+
+
 def _store_selectors(source: str) -> list:
     """Every `useChatRuntimeStore(...)` argument, whatever shape the selector takes."""
     out, needle = [], "useChatRuntimeStore("
@@ -237,7 +258,20 @@ def _selector_reads(selector: str, field: str) -> bool:
     if signature is None:
         return False
     read = re.compile(rf"\b{re.escape(signature.group(1))}\.{field}\b")
-    results = _split_ternary(selector[signature.end() :])
+    body = selector[signature.end() :].strip()
+    if body.startswith("{"):
+        # A block body returns what it returns; a statement that reads the field and drops it
+        # hands zustand the same value every time. Nothing to return is nothing to compare, so
+        # a body whose returns cannot be found is rejected rather than read as its own text.
+        block = _balanced(body, 0, "{", "}")
+        # Inline plain bindings, so naming the value before returning it stays a refactor:
+        # `const v = s.budget; return v ? ... : ...` reads the field through `v`.
+        for name, expression in re.findall(r"\b(?:const|let)\s+(\w+)\s*=\s*([^;]+);", block):
+            block = re.sub(rf"\b{re.escape(name)}\b", f"({expression})", block)
+        returned = re.findall(r"\breturn\b([^;}]*)", block)
+        results = [result for expression in returned for result in _split_ternary(expression)]
+    else:
+        results = _split_ternary(body)
     if not results:
         return False
     if all(read.search(result) for result, _ in results):
@@ -296,6 +330,11 @@ SELECTOR_CASES = [
     ("(s) => s.reasoningBudget ? s.other : s.other", False),
     ("(s) => s.reasoningBudget === 1 ? null : null", False),
     ("(s) => s.reasoningBudget ? (s.on ? null : null) : null", False),
+    # Block bodies: what is returned, not what is mentioned on the way there.
+    ("(s) => { return s.reasoningBudget; }", True),
+    ("(s) => { const v = s.reasoningBudget; return v ? s.reasoningBudget : -1; }", True),
+    ("(s) => { void s.reasoningBudget; return null; }", False),
+    ("(s) => { s.reasoningBudget; }", False),
     ("(s) => s.reasoningBudgetMessage", False),
     ("(s) => s.reasoningBudgets", False),
     ("{ budget: state.reasoningBudget }", False),
@@ -322,9 +361,12 @@ def test_preset_sheet_reacts_to_a_reasoning_budget_change():
     selector mapping every budget to one constant would pass here.
     """
     sheet = _read("studio/frontend/src/features/chat/chat-settings-sheet.tsx")
-    selectors = _store_selectors(sheet)
-    assert selectors, "no useChatRuntimeStore() call found; has the sheet been renamed?"
-    dependency_lists = _memo_dependency_lists(sheet)
+    # The component that holds the capture memos, not the module: its siblings subscribe to the
+    # runtime store too, and only this one's re-render moves the Update button and the summary.
+    panel = _component_body(sheet, "ChatSettingsPanel")
+    selectors = _store_selectors(panel)
+    assert selectors, "ChatSettingsPanel makes no useChatRuntimeStore() call"
+    dependency_lists = _memo_dependency_lists(panel)
     # The two memos that call capturePresetLoadConfig(): the dirty state behind the Update
     # button, and the summary. Named, so the field cannot leave one for an unrelated memo.
     capturing = ("hasUnsavedPresetChanges", "currentLoadSummary")
