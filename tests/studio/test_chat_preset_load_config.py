@@ -369,16 +369,29 @@ def _own_scope_returns(block: str) -> list:
     return out
 
 
+_STRING_LITERAL = re.compile(r"'[^']*'|\"[^\"]*\"")
+
+
 def _normalised(expression: str) -> str:
     """Whitespace out and `s["x"]` written as `s.x`, so one access has one spelling.
 
     Two arms are only interchangeable if they are the same expression, and the comparison is
     textual: without this, `s.other` and `s["other"]` read as a choice the guard steers, when
     the selector returns the same store value either way.
+
+    Whitespace goes only between tokens. Inside a quoted literal it is part of the value, and
+    stripping it collapses distinct runtime strings into one: a guard pinning the field to
+    `"a b"` would match an arm returning `"ab"`, which is a change the selector does not report.
     """
     # The trailing comma of the useChatRuntimeStore() argument rides along on the last arm, and
     # an arm that differs from its twin only by that comma is the same expression.
-    collapsed = re.sub(r"\s+", "", expression).rstrip(",;")
+    pieces, last = [], 0
+    for match in _STRING_LITERAL.finditer(expression):
+        pieces.append(re.sub(r"\s+", "", expression[last : match.start()]))
+        pieces.append(match.group(0))
+        last = match.end()
+    pieces.append(re.sub(r"\s+", "", expression[last:]))
+    collapsed = "".join(pieces).rstrip(",;")
     return re.sub(r"\[['\"]([A-Za-z_$][\w$]*)['\"]\]", r".\1", collapsed)
 
 
@@ -436,7 +449,7 @@ def _top_level_conjuncts(guard: str) -> list:
 def _pinned_literal(guard: str, taken: bool, access: str, field: str):
     """The one value `field` can hold on this branch, or None if the branch does not fix it.
 
-    `budget === -1` taken true says the budget is -1 there, and `budget != null` taken false says
+    `budget === -1` taken true says the budget is -1 there, and `budget !== null` taken false says
     it is null. `budget > 0` fixes nothing: every budget above zero reaches the same result.
 
     The comparison has to be against the field read off the selector's own parameter. Asking
@@ -450,11 +463,14 @@ def _pinned_literal(guard: str, taken: bool, access: str, field: str):
     # the store.
     start, end = r"(?<![\w$.])", r"(?![\w$])"
     bound = rf"{start}{access}{end}"
-    equal = rf"(?:{bound}(?:===|==)({_LITERAL})|({_LITERAL})(?:===|==){bound})"
-    unequal = rf"(?:{bound}(?:!==|!=)({_LITERAL})|({_LITERAL})(?:!==|!=){bound})"
+    # Strict only. `==` relates a whole class of values to one literal, so the branch is not a
+    # single-value path: `msg == 0` is taken by both "" and "0", and an arm returning 0 there
+    # holds still while the message moves between them.
+    equal = rf"(?:{bound}===({_LITERAL})|({_LITERAL})==={bound})"
+    unequal = rf"(?:{bound}!==({_LITERAL})|({_LITERAL})!=={bound})"
     # A comparison under `!` says the opposite of what it reads, and the branch no longer implies
     # it. Anything carrying a logical not is refused rather than interpreted.
-    if re.search(r"!(?![=])", re.sub(r"!==?", "", guard)):
+    if re.search(r"!(?![=])", re.sub(r"!==", "", guard)):
         return None
     if "||" in guard:
         # A disjunction does not imply its parts, either way round.
@@ -479,7 +495,7 @@ def _selector_reads(selector: str, field: str) -> bool:
     Zustand re-renders on the RESULT, not on a property the selector happened to touch, so one
     that tests `s.<field>` and returns something else either way tracks nothing. A result the
     field does not appear in still counts when the field decides whether it is returned at all,
-    as in `s.<field> != null ? s.<field> : null`. The parameter name comes from the signature
+    as in `s.<field> !== null ? s.<field> : null`. The parameter name comes from the signature
     rather than being assumed to be `s`.
     """
 
@@ -518,9 +534,9 @@ def _selector_reads(selector: str, field: str) -> bool:
     # Every path either returns the field, or is reachable for only one value of it. A condition
     # that merely mentions the field cannot carry a path: `s.budget > 0 ? s.other : null` holds
     # the same result while the budget moves from 1 to 2, and so does the `s.other` subpath of
-    # `s.budget != null ? (s.enabled ? s.budget : s.other) : null`. Only a comparison that pins
+    # `s.budget !== null ? (s.enabled ? s.budget : s.other) : null`. Only a comparison that pins
     # the field to a literal on the branch taken makes a constant result honest, which is what
-    # keeps `s.budget === -1 ? -1 : s.budget` and `s.budget != null ? s.budget : null` working.
+    # keeps `s.budget === -1 ? -1 : s.budget` and `s.budget !== null ? s.budget : null` working.
     # A constant on a pinned path is honest only when it IS the value the field holds there.
     # `s.budget === -1 ? 0 : s.budget` pins the first arm to a budget of -1 and then returns 0,
     # which is what the second arm returns for a budget of 0, so the supported -1 to 0 change
@@ -559,17 +575,23 @@ SELECTOR_CASES = [
     ("(s) => (s.reasoningBudget)", True),
     ("(s) => s.reasoningBudget ?? s.fallback", True),
     ("(s) => formatBudget(s.reasoningBudget)", True),
-    # A constant arm the field itself decides between still moves when the field moves.
-    ("(s) => s.reasoningBudget != null ? s.reasoningBudget : null", True),
+    # Loose comparison pins nothing: `!= null` is false for null and for undefined alike, so
+    # the null arm is returned for two distinct field values.
+    ("(s) => s.reasoningBudget != null ? s.reasoningBudget : null", False),
+    ("(s) => s.reasoningBudget !== null ? s.reasoningBudget : null", True),
+    ("(s) => s.reasoningBudget == 0 ? 0 : s.reasoningBudget", False),
     # Steering between arms is not tracking: the result is the same for every non-null
     # budget, so the sheet never re-renders on a change between two of them.
-    ("(s) => s.reasoningBudget != null ? s.other : null", False),
+    ("(s) => s.reasoningBudget !== null ? s.other : null", False),
+    # Whitespace inside a literal is part of the value: "a b" and "ab" are two messages.
+    ('(s) => s.reasoningBudget === "a b" ? "ab" : s.reasoningBudget', False),
+    ('(s) => s.reasoningBudget === "a b" ? "a b" : s.reasoningBudget', True),
     ("(s) => s.reasoningBudget > 0 ? s.other : null", False),
     # The literal has to be compared against the field, not merely to sit in the same guard.
     ('(s) => s.reasoningBudget > 0 && s.mode === "x" ? s.other : s.reasoningBudget', False),
     ('(s) => s.reasoningBudget === -1 && s.mode === "x" ? -1 : s.reasoningBudget', True),
     ('(s) => s.reasoningBudget === -1 || s.mode === "x" ? -1 : s.reasoningBudget', False),
-    ('(s) => s.reasoningBudget != null && s.mode === "x" ? s.reasoningBudget : null', False),
+    ('(s) => s.reasoningBudget !== null && s.mode === "x" ? s.reasoningBudget : null', False),
     # The comparison must be on the field read off the selector's own parameter.
     ("(s) => defaults.reasoningBudget === -1 ? -1 : s.reasoningBudget", False),
     ("(s) => -1 === s.reasoningBudgetExtra ? -1 : s.reasoningBudget", False),
@@ -589,7 +611,7 @@ SELECTOR_CASES = [
     ("(s) => s.reasoningBudget === -1 ? 0 : s.reasoningBudget", False),
     ("({ reasoningBudget: b }) => b === -1 ? -1 : b", True),
     # A guard cannot rescue a subpath it does not pin: `enabled` false holds s.other steady.
-    ("(s) => s.reasoningBudget != null ? (s.enabled ? s.reasoningBudget : s.other) : null", False),
+    ("(s) => s.reasoningBudget !== null ? (s.enabled ? s.reasoningBudget : s.other) : null", False),
     # Falling off the end of a block returns undefined, which tracks nothing.
     ("(s) => { if (s.enabled) return s.reasoningBudget; }", False),
     ("(s) => { if (s.enabled) { return s.reasoningBudget; } return s.reasoningBudget; }", True),
