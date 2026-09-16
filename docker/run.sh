@@ -279,6 +279,10 @@ elif [[ $ROCM -eq 0 && ${#GPU_FLAG[@]} -gt 0 ]] && host_has_nvidia \
         read -r -p "      Install it now with sudo (bash $INSTALLER)? [Y/n] " answer </dev/tty || answer=n
         answer="${answer:-y}"
     fi
+    # Nothing on disk to run: a forced UNSLOTH_INSTALL_TOOLKIT=1 would otherwise
+    # select the branch below and `bash ""` would fail into `|| true`, leaving the
+    # user with no toolkit, no error, and a docker run that still lacks the runtime.
+    [[ -n "$INSTALLER" ]] || answer=n
     case "$answer" in
         1|[Yy]*)
             # -E keeps UNSLOTH_TOOLKIT_VERIFY and the proxy settings through env_reset; a failed, cancelled or driver-too-old install (exit 3) must not stop the docker run below.
