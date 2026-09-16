@@ -973,7 +973,9 @@ def _persist_accelerator_runtime_failures(records: dict[str, dict]) -> None:
         logger.debug("could not persist the sd.cpp accelerator failure notes: %s", exc)
 
 
-def note_accelerator_runtime_failure(accelerator: Optional[str], *, proven: bool = True) -> None:
+def note_accelerator_runtime_failure(
+    accelerator: Optional[str], *, proven: bool = True, fingerprint: Optional[dict] = None
+) -> None:
     """Record that the ``accelerator`` sd.cpp build could not be run on this host.
 
     Only ever records for an accelerator that has a rung below it: noting one with no fallback
@@ -989,11 +991,20 @@ def note_accelerator_runtime_failure(accelerator: Optional[str], *, proven: bool
 
     A record observed under a different fingerprint is REPLACED rather than added to: the strikes
     counted against the old driver or the old bundle are not evidence about the new one.
+
+    ``fingerprint`` is for a caller that has already CHANGED the thing being fingerprinted. The
+    load path installs the fallback bundle before it gets here, and the bundle tag is read live
+    out of the managed install record, so a fingerprint taken now describes the build that
+    replaced the failed one. That is the wrong fact: the next release's ROCm asset would then
+    match the stored tag and the record would suppress the retry that might have worked. Taking
+    the reading BEFORE the install and passing it in is what keeps the note about the build that
+    actually failed. Omitted, it is read now, which is right for every caller that has installed
+    nothing.
     """
     klass = _accelerator_class_of(accelerator)
     if not klass or klass not in _ACCELERATOR_FALLBACK:
         return
-    fingerprint = _accelerator_fingerprint()
+    fingerprint = dict(fingerprint) if isinstance(fingerprint, dict) else _accelerator_fingerprint()
     records = _stored_accelerator_runtime_failures()
     records.update({k: v for k, v in _accelerator_runtime_failures.items() if k not in records})
     previous = records.get(klass)

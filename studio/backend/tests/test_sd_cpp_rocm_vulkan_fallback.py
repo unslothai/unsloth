@@ -1690,3 +1690,58 @@ def test_every_ensure_in_the_h3_load_is_checked_against_the_record():
     guarded = load.count("usable_or_recorded_failure(")
     assert ensures >= 3, ensures
     assert guarded == ensures, (guarded, ensures)
+
+
+def test_the_note_can_be_pinned_to_the_build_that_failed(monkeypatch):
+    """The bundle tag is read live out of the managed install record.
+
+    The load path installs the fallback bundle BEFORE it records the failure, so a reading
+    taken at the note describes the build that replaced the failed one. A newer release's
+    ROCm asset would then match the stored tag and the record would suppress the retry that
+    might have worked on it.
+    """
+    from core.inference import sd_cpp_backend
+
+    stored: dict = {}
+    monkeypatch.setattr(
+        sd_cpp_backend, "_stored_accelerator_runtime_failures", lambda: stored, raising = False
+    )
+    monkeypatch.setattr(
+        sd_cpp_backend, "_write_accelerator_runtime_failures",
+        lambda records: stored.update(records),
+        raising = False,
+    )
+    monkeypatch.setattr(
+        sd_cpp_backend, "_accelerator_fingerprint",
+        lambda: {"bundle": "after-the-install"},
+        raising = False,
+    )
+    monkeypatch.setattr(sd_cpp_backend, "_accelerator_runtime_failures", {}, raising = False)
+
+    sd_cpp_backend.note_accelerator_runtime_failure(
+        "rocm", fingerprint = {"bundle": "the-build-that-failed"}
+    )
+    record = (stored or sd_cpp_backend._accelerator_runtime_failures).get("rocm")
+    assert record, stored
+    assert record["fingerprint"]["bundle"] == "the-build-that-failed", record
+
+    # A caller that has installed nothing still gets the live reading.
+    monkeypatch.setattr(sd_cpp_backend, "_accelerator_runtime_failures", {}, raising = False)
+    stored.clear()
+    sd_cpp_backend.note_accelerator_runtime_failure("rocm")
+    record = (stored or sd_cpp_backend._accelerator_runtime_failures).get("rocm")
+    assert record["fingerprint"]["bundle"] == "after-the-install", record
+
+
+def test_the_load_path_reads_the_fingerprint_before_it_installs_the_fallback():
+    """The ordering is the whole of it, so it is pinned in the source rather than only in the
+    behaviour of the helper."""
+    import inspect
+    from core.inference import video as video_mod
+
+    source = inspect.getsource(video_mod)
+    read = source.index("failed_fingerprint = _accelerator_fingerprint()")
+    install = source.index("fallback_binary = usable_or_recorded_failure(")
+    note = source.index("note_accelerator_runtime_failure(\n")
+    assert read < install < note, (read, install, note)
+    assert "fingerprint = failed_fingerprint" in source[note:note + 200]

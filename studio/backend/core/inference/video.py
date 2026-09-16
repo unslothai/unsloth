@@ -1781,6 +1781,7 @@ class VideoBackend:
         )
         from .diffusion_engine_router import _install_accelerator_for
         from .sd_cpp_backend import (
+            _accelerator_fingerprint,
             _install_allowed,
             _installed_accelerator_of,
             accelerator_verdict_keeps_gpu,
@@ -1875,6 +1876,13 @@ class VideoBackend:
                 # for Windows, so it is tried before the GPU is given up on.
                 fallback = fallback_accelerator_for(accelerator)
                 if fallback:
+                    # Read BEFORE the fallback ensure. That install can replace the managed
+                    # tree, and the bundle tag in the fingerprint is read live out of the
+                    # install record, so a reading taken after it describes the build that
+                    # replaced the failed one -- after which a newer release's ROCm asset
+                    # matches the stored tag and the record suppresses the retry that might
+                    # have worked on it.
+                    failed_fingerprint = _accelerator_fingerprint()
                     fallback_binary = usable_or_recorded_failure(
                         ensure_h3_sd_cpp_binary(
                             allow_install = allow_install, accelerator = fallback
@@ -1898,7 +1906,9 @@ class VideoBackend:
                         # Only now, so the preference that survives this process is one we have SHOWN to be better.
                         # Noting it on the failure alone would move every later load onto a rung that may not exist on
                         # this host, for no gain.
-                        note_accelerator_runtime_failure(accelerator)
+                        note_accelerator_runtime_failure(
+                            accelerator, fingerprint = failed_fingerprint
+                        )
                         binary = fallback_binary
                         accelerator = fallback
                         listed_accelerator = True
