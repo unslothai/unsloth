@@ -119,6 +119,7 @@ _SHELL_EXEC_FUNCS = frozenset(
         "os.spawnvpe",
         "os.posix_spawn",
         "os.posix_spawnp",
+        "paramiko.ProxyCommand",
         "asyncio.create_subprocess_exec",
         "asyncio.create_subprocess_shell",
         "subprocess.run",
@@ -426,6 +427,7 @@ def _bound_name(node: Optional[ast.AST], bindings: dict[str, str]) -> str:
     return {
         "asyncio.subprocess.create_subprocess_exec": "asyncio.create_subprocess_exec",
         "asyncio.subprocess.create_subprocess_shell": "asyncio.create_subprocess_shell",
+        "paramiko.proxy.ProxyCommand": "paramiko.ProxyCommand",
         "paramiko.transport.Transport": "paramiko.Transport",
         "paramiko.client.SSHClient": "paramiko.SSHClient",
     }.get(name, name)
@@ -563,7 +565,14 @@ def _shell_exec_aliases(tree: ast.AST) -> dict[str, str]:
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                if alias.name in {"os", "subprocess", "asyncio", "asyncio.subprocess"}:
+                if alias.name in {
+                    "os",
+                    "subprocess",
+                    "asyncio",
+                    "asyncio.subprocess",
+                    "paramiko",
+                    "paramiko.proxy",
+                }:
                     local = alias.asname or alias.name.split(".")[0]
                     aliases[local] = alias.name if alias.asname else local
         elif isinstance(node, ast.ImportFrom) and node.module in {
@@ -571,6 +580,8 @@ def _shell_exec_aliases(tree: ast.AST) -> dict[str, str]:
             "subprocess",
             "asyncio",
             "asyncio.subprocess",
+            "paramiko",
+            "paramiko.proxy",
         }:
             module = node.module
             for alias in node.names:
@@ -581,7 +592,8 @@ def _shell_exec_aliases(tree: ast.AST) -> dict[str, str]:
         name = _fq_name(target)
         symbol = _bound_name(value, aliases)
         if name and (
-            symbol in {"os", "subprocess", "asyncio", "asyncio.subprocess"}
+            symbol
+            in {"os", "subprocess", "asyncio", "asyncio.subprocess", "paramiko", "paramiko.proxy"}
             or symbol in _SHELL_EXEC_FUNCS
         ):
             aliases[name] = symbol

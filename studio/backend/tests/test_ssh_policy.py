@@ -740,3 +740,39 @@ def test_bound_client_connect_alias_requires_approval(binding):
     assert _check_code_safety(code, session_id = "review") is not None
     approve_hosts("review", ["approved.example"])
     assert _check_code_safety(code, session_id = "review") is None
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "import paramiko; paramiko.ProxyCommand('ssh -F none approved.example')",
+        "from paramiko import ProxyCommand as Proxy; Proxy('ssh -F none approved.example')",
+        "from paramiko.proxy import ProxyCommand; ProxyCommand('ssh -F none approved.example')",
+        "import paramiko.proxy as proxy; proxy.ProxyCommand(command='ssh -F none approved.example')",
+        "import paramiko; Proxy=paramiko.ProxyCommand; Proxy('ssh -F none approved.example')",
+    ],
+)
+def test_proxy_command_requires_approval(code):
+    assert _check_code_safety(code, session_id = "review") is not None
+    approve_hosts("review", ["approved.example"])
+    assert _check_code_safety(code, session_id = "review") is None
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "import paramiko; paramiko.ProxyCommand(command)",
+        "from paramiko.proxy import ProxyCommand as Proxy; Proxy(command)",
+    ],
+)
+def test_proxy_command_dynamic_program_fails_closed(code):
+    assert _check_code_safety(code, session_id = "review") is not None
+
+
+def test_proxy_command_literal_local_program_remains_allowed():
+    assert (
+        _check_code_safety(
+            "import paramiko; paramiko.ProxyCommand('echo hello')", session_id = "review"
+        )
+        is None
+    )
