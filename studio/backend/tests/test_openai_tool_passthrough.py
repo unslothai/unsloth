@@ -8471,7 +8471,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             result = await self._run_passthrough_stream(
                 monkeypatch,
                 [
-                    'data: {"prompt_progress":{"total":2000,"processed":1200,"cache":0,"time_ms":15000},"choices":[]}',
+                    'data: {"prompt_progress":{"total":2000,"processed":1200,"cache":0,"time_ms":15000},"choices":[{"index":0,"delta":{"role":"assistant","content":null},"finish_reason":null}]}',
                     'data: {"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}',
                     "data: [DONE]",
                 ],
