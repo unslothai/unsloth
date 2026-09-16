@@ -709,10 +709,8 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
     }
 
 
-# The same seven aliases `unsloth_zoo.dataset_utils.standardize_data_formats` accepts
-# (aliases_for_system / user / assistant), so the preview shows the roles the training run
-# will actually see. Keys are in normalised form; look them up through
-# `_normalize_role_alias`, never with the raw value.
+# The same seven aliases `standardize_data_formats` accepts, so the preview shows the roles
+# the run will see. Keys are normalised: look them up through `_normalize_role_alias`.
 _ROLE_MAP = {
     "human": "user",
     "user": "user",
@@ -751,9 +749,8 @@ def _standardize_sharegpt_row(row: dict[str, Any], chat_column: str) -> dict[str
         normalized = _normalize_role_alias(role)
         messages.append(
             {
-                # An alias unknown even after normalising is shown as it is written, which is
-                # what this line has always done; only the matching is normalised. A role that
-                # is missing, empty or nothing but whitespace falls back to "user", as before.
+                # An unknown alias is shown as written; only the matching is normalised. A
+                # missing, empty or whitespace role falls back to "user", as before.
                 "role": _ROLE_MAP.get(normalized, str(role)) if normalized else "user",
                 "content": "" if content is None else content,
             }
