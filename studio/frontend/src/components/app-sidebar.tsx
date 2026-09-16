@@ -202,7 +202,7 @@ import { resolveNavRowState } from "@/components/nav-row-state";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { videoNavHint } from "@/config/hardware-verdict";
 import { AUTH_SESSION_ENDING_EVENT, clearAuthTokens, logout } from "@/features/auth";
-import { TOUR_OPEN_EVENT } from "@/features/tour";
+import { TOUR_OPEN_EVENT, getTourId, useTourAvailable } from "@/features/tour";
 import {
   deleteTrainingRun,
   emitTrainingRunDeleted,
@@ -254,13 +254,6 @@ function renderEmphasizedTranslation(
     }
   });
   return nodes;
-}
-
-function getTourId(pathname: string): string | null {
-  if (pathname.startsWith("/studio")) return "studio";
-  if (pathname.startsWith("/export")) return "export";
-  if (pathname.startsWith("/chat")) return "chat";
-  return null;
 }
 
 // Optional user-menu shortcuts that jump to a settings tab; the id is the tab id.
@@ -773,6 +766,10 @@ export function AppSidebar() {
       href: s.location.href,
     }),
   });
+  // Route alone is not enough: a page can gate its tour behind a capability check, and an entry
+  // that dispatches to nobody does nothing when clicked.
+  const routeTourId = getTourId(pathname);
+  const tourAvailable = useTourAvailable(routeTourId);
   const {
     pinned,
     togglePinned,
@@ -4406,16 +4403,14 @@ export function AppSidebar() {
                     );
                   }
                   if (item.id === "guidedTour") {
-                    if (!getTourId(pathname)) return null;
+                    if (!routeTourId || !tourAvailable) return null;
                     return (
                       <DropdownMenuItem
                         key={item.id}
                         onSelect={() => {
-                          const tourId = getTourId(pathname);
-                          if (!tourId) return;
                           window.dispatchEvent(
                             new CustomEvent(TOUR_OPEN_EVENT, {
-                              detail: { id: tourId },
+                              detail: { id: routeTourId },
                             }),
                           );
                         }}

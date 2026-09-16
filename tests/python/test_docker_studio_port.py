@@ -122,6 +122,7 @@ def test_the_ready_summary_and_its_health_probe_use_the_port(tmp_path: Path):
         UNSLOTH_STUDIO_READY_WAIT = "2",
         UNSLOTH_STUDIO_PORT = "9000",
         JUPYTER_PORT = "8888",
+        NO_COLOR = "1",
     )
     res = subprocess.run(["bash", str(PASSWORD)], capture_output = True, text = True, env = e, timeout = 60)
     assert res.returncode == 0, res.stderr
