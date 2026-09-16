@@ -9,6 +9,7 @@ gating logic and the best-effort applier run without a GPU or real diffusers.
 
 from __future__ import annotations
 
+import logging
 import sys
 import types
 
@@ -207,6 +208,10 @@ class AutoencoderKL(types.SimpleNamespace):
 
 class AutoencoderKLWan(types.SimpleNamespace):
     """A video VAE, reached through the same helper by the video backend's per-view calls."""
+
+
+class AutoencoderKLMiniMaxH3(types.SimpleNamespace):
+    """H3's video VAE: compiles 2.07x faster, and is still denied. See the deny set's comment."""
 
 
 class _Pipe:
@@ -559,6 +564,85 @@ def test_video_wan_vae_decode_stays_denied_on_max(monkeypatch):
     )
     assert applied["compiled_vae_decode"] is False
     assert torch.compile_calls == []
+
+
+def test_video_h3_vae_decode_is_denied_on_measurement(monkeypatch):
+    # H3 is denied for the OPPOSITE reason to Wan: forced to dynamic=False its decode is 2.07x faster
+    # (0.871 -> 0.422 s p50 on a B200 at 640x384x121). It is denied because that is 1.4 percent of a
+    # ~32 s render and costs a compile per distinct (resolution, frame count), and because at the
+    # dynamic=True the helper actually passes, inductor refuses the graph with CantSplit.
+    torch = _stub_torch(monkeypatch)
+    monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
+    assert "AutoencoderKLMiniMaxH3" in ds_mod._VAE_COMPILE_DENY
+    monkeypatch.setattr(
+        ds_mod, "_VAE_COMPILE_ALLOW", ds_mod._VAE_COMPILE_ALLOW | {"AutoencoderKLMiniMaxH3"}
+    )
+    applied = apply_speed_optims(
+        _Pipe(with_compile = True, vae_cls = AutoencoderKLMiniMaxH3),
+        _target(),
+        is_gguf = False,
+        family = _family(),
+        speed_mode = SPEED_DEFAULT,
+        cuda_graph_default = False,
+    )
+    assert applied["compiled"] is True and applied["compiled_vae_decode"] is False
+    assert torch.compile_calls == []
+
+
+class TestALazyCompileFailureFallsBackToEager:
+    """torch.compile is lazy, so a decode inductor cannot codegen raises in the RENDER that first
+    calls it, not where the compile was set up. Without a fallback that turns an optimisation into a
+    failed render, which is exactly what the H3 env override would do today.
+    """
+
+    @staticmethod
+    def _inductor_error():
+        import types as _types
+
+        module = _types.ModuleType("torch._inductor.exc")
+
+        class InductorError(RuntimeError):
+            pass
+
+        InductorError.__module__ = "torch._inductor.exc"
+        module.InductorError = InductorError
+        return InductorError
+
+    def test_a_compile_error_falls_back_and_stays_fallen_back(self):
+        calls = {"compiled": 0, "eager": 0}
+        error = self._inductor_error()
+
+        def _compiled(z):
+            calls["compiled"] += 1
+            raise error("CantSplit: 32768*s59 + 10240 not divisible by 16*s59 + 5")
+
+        def _eager(z):
+            calls["eager"] += 1
+            return z
+
+        decode = ds_mod._decode_with_eager_fallback(_compiled, _eager, logging.getLogger("t"))
+        assert decode(1) == 1
+        assert decode(2) == 2
+        # The compiled callable is dropped after the first failure, not retried once per frame.
+        assert calls == {"compiled": 1, "eager": 2}
+
+    def test_a_real_decode_failure_still_raises(self):
+        """An OOM must propagate. Retrying it eagerly would just OOM again a few seconds later, with
+        the original traceback replaced by a less useful one."""
+
+        def _compiled(z):
+            raise torch_oom()
+
+        def _eager(z):
+            raise AssertionError("must not reach the eager decode")
+
+        decode = ds_mod._decode_with_eager_fallback(_compiled, _eager, logging.getLogger("t"))
+        with pytest.raises(RuntimeError, match = "out of memory"):
+            decode(1)
+
+
+def torch_oom() -> RuntimeError:
+    return RuntimeError("CUDA out of memory. Tried to allocate 66.54 GiB")
 
 
 def test_unet_whole_compile_offload_drops_fullgraph(monkeypatch):

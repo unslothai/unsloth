@@ -583,7 +583,17 @@ _VAE_FALSE_TOKENS = ("0", "false", "no", "off")
 # a 1280x704x121 clip on a B200 goes 35.76 -> 37.41 s p50 (decode 11.29 -> 11.64 s of GPU, denoise unmoved at
 # 18.10 s) for a 193 s cold compile. Denied although nothing about it is wrong: no NaN, max-abs 0.0099 and LPIPS
 # 8.1e-05 against its own eager decode on the same latent.
-_VAE_COMPILE_DENY: frozenset[str] = frozenset({"AutoencoderKLQwenImage", "AutoencoderKLWan"})
+# AutoencoderKLMiniMaxH3 is denied for the opposite reason to the other two: compiled it is FASTER, and still not
+# worth it. At dynamic=True, the setting _compile_vae_decode passes, inductor refuses the graph outright
+# (CantSplit: 32768*s59*((s71//16)) + 10240 not divisible by 16*s59*((s71//16)) + 5), so the shipped call cannot
+# compile this decode at all. Forcing dynamic=False does compile, and on a B200 at 640x384x121 the decode goes
+# 0.871 -> 0.422 s p50 (2.07x, same 4.93 GB peak, max-abs 0.0161 and mean-abs 6.2e-04 against a reference whose own
+# std is 1.18). But 0.45 s is 1.4 percent of a ~32 s H3 render, and dynamic=False means one compile per distinct
+# (resolution, frame count): 1427 s cold, 80 s against a warm inductor cache. A video user changes the frame count
+# far more often than 1.4 percent of a render is worth.
+_VAE_COMPILE_DENY: frozenset[str] = frozenset(
+    {"AutoencoderKLQwenImage", "AutoencoderKLWan", "AutoencoderKLMiniMaxH3"}
+)
 
 # ``auto`` compiles only these: the video backend runs apply_speed_optims for every video DiT view, unmeasured.
 _VAE_COMPILE_ALLOW: frozenset[str] = frozenset({"AutoencoderKL"})
@@ -600,6 +610,48 @@ def _vae_decode_compile_allowed(pipe: Any) -> bool:
         return True
     name = type(getattr(pipe, "vae", None)).__name__
     return name in _VAE_COMPILE_ALLOW and name not in _VAE_COMPILE_DENY
+
+
+def _decode_with_eager_fallback(compiled: Any, eager: Any, logger: Any) -> Any:
+    """Run the compiled decode, and fall back to the eager one for good if it will not compile.
+
+    torch.compile is lazy, so a decode inductor cannot codegen raises inside the render that first
+    calls it, long after apply_speed_optims reported success. H3 is the live case: at the dynamic=True
+    this function passes, AutoencoderKLMiniMaxH3 raises InductorError CantSplit, which without this
+    would turn an optimisation into a failed render. The family is denied, so nothing reaches this on
+    the default path; the env override still can.
+
+    Only a compile-time failure is caught. A CUDA OOM or a cancel has to keep propagating, or an
+    out-of-memory decode would silently retry eagerly and OOM again a few seconds later.
+    """
+
+    def _decode(*args: Any, **kwargs: Any):
+        nonlocal compiled
+        if compiled is None:
+            return eager(*args, **kwargs)
+        try:
+            return compiled(*args, **kwargs)
+        except Exception as exc:  # noqa: BLE001 - narrowed by _is_compile_error below
+            if not _is_compile_error(exc):
+                raise
+            _warn(logger, "vae decode compile (falling back to eager)", exc)
+            compiled = None
+            return eager(*args, **kwargs)
+
+    return _decode
+
+
+def _is_compile_error(exc: BaseException) -> bool:
+    """Whether this came out of inductor/dynamo rather than out of the decode itself."""
+    seen: set[int] = set()
+    current: Optional[BaseException] = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        module = type(current).__module__ or ""
+        if module.startswith("torch._inductor") or module.startswith("torch._dynamo"):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 def _compile_vae_decode(
@@ -623,7 +675,7 @@ def _compile_vae_decode(
         kwargs: dict[str, Any] = {"fullgraph": False, "dynamic": True}
         if max_autotune:
             kwargs["mode"] = "max-autotune-no-cudagraphs"
-        vae.decode = torch.compile(decode, **kwargs)
+        vae.decode = _decode_with_eager_fallback(torch.compile(decode, **kwargs), decode, logger)
         vae._unsloth_compiled_decode = True
         return True
     except Exception as exc:  # noqa: BLE001 - optimisation only
