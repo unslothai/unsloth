@@ -98,3 +98,26 @@ def test_account_roots_are_separate(monkeypatch, tmp_path):
     account = save()
     monkeypatch.setattr(gallery, "is_owner_context", lambda: True)
     assert gallery.get(account["id"]) is None
+
+
+def test_archive_and_delete_survive_a_filesystem_without_flock(monkeypatch):
+    """A lock we cannot take must not cost the user archiving, only clearing.
+
+    ``clear`` deletes on the strength of a flag, so it fails closed. Archiving and
+    deleting one named transcript do not, and audio_gallery.set_flags deliberately takes
+    the plain lock for exactly that reason. Taking require_file_lock here made both a 500
+    on any mount where flock is unavailable, while the same account's audio clips worked.
+    """
+    import contextlib
+
+    @contextlib.contextmanager
+    def unlockable(directory):
+        yield False
+
+    record = save()
+    monkeypatch.setattr(gallery_flags, "_file_lock", unlockable)
+
+    assert gallery.set_archived(record["id"], True)["archived"] is True
+    assert gallery.delete(record["id"]) is True
+    with pytest.raises(gallery_flags.FlagsUnavailable):
+        gallery.clear()

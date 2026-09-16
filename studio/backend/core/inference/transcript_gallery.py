@@ -103,8 +103,11 @@ def list_transcripts(
 
 
 def set_archived(transcript_id: str, archived: bool) -> dict | None:
+    # No require_file_lock, matching audio_gallery.set_flags: archiving only moves a shelf
+    # label, so a filesystem that cannot take the lock must still be able to do it. Only
+    # clear(), which DELETES on the strength of a flag, has to fail closed.
     directory = gallery_dir()
-    with gallery_flags.exclusive(directory, require_file_lock = True):
+    with gallery_flags.exclusive(directory):
         record = _read(directory, transcript_id)
         if record is None:
             return None
@@ -115,7 +118,7 @@ def set_archived(transcript_id: str, archived: bool) -> dict | None:
 
 def delete(transcript_id: str) -> bool:
     directory = gallery_dir()
-    with gallery_flags.exclusive(directory, require_file_lock = True):
+    with gallery_flags.exclusive(directory):
         if _read(directory, transcript_id) is None:
             return False
         (directory / f"{transcript_id}.json").unlink()

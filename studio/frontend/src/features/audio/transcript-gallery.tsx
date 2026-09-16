@@ -76,12 +76,16 @@ export function TranscriptGallery({
         }
       })
       .catch((error: unknown) => {
-        if (ticket === generation.current)
-          toast.error(
-            error instanceof Error
-              ? error.message
-              : "Could not load transcripts.",
-          );
+        if (ticket !== generation.current) return;
+        // Drop the rows too. They belong to the view we just left, and leaving them
+        // renders History entries under the Archived heading: selecting one hands back
+        // a record whose `archived` contradicts the view, and Load more pages the OTHER
+        // view's cursor onto them.
+        setRecords([]);
+        setCursor(null);
+        toast.error(
+          error instanceof Error ? error.message : "Could not load transcripts.",
+        );
       })
       .finally(() => {
         if (ticket === generation.current) {

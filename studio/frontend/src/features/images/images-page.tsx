@@ -3704,8 +3704,13 @@ export function ImagesPage({
         ]}
       />
       {/* The dense transformer_quant fast path engages only on the GGUF kind, so gate the control to
-          GGUF (or nothing loaded) and otherwise say why it is unavailable. */}
-      {!status?.loaded || status.model_kind === "gguf" ? (
+          GGUF (or nothing loaded) and otherwise say why it is unavailable. The native sd.cpp engine
+          now reports model_kind "gguf" too, so that it can be recalled by exact checkpoint, but it
+          runs no torchao path at all and reports transformer_quant null whatever is picked. Gate it
+          out by ENGINE, or the control appears, offers FP8/INT8/NVFP4, carries no resolved badge to
+          contradict them, and silently snaps back on the next load. */}
+      {!status?.loaded
+      || (status.model_kind === "gguf" && !isNativeEngineStatus(status)) ? (
         <AdvancedSelect
           label="Precision"
           hint="How the model computes. Auto picks the fastest precision the hardware supports (at least INT8 on a capable GPU; FP8 on data-center cards) by loading the FULL base model and quantising its transformer onto low-precision tensor cores, and falls back to running the GGUF as-is when the device, VRAM or disk can't take it. Off always runs the GGUF as-is."

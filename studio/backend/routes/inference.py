@@ -37897,7 +37897,18 @@ async def delete_gallery_transcript(
 @studio_router.delete("/audio/transcripts")
 async def clear_gallery_transcripts(current_subject: str = Depends(get_current_subject)):
     from core.inference import transcript_gallery
-    return {"removed": await asyncio.to_thread(transcript_gallery.clear)}
+    from core.inference.gallery_flags import FlagsUnavailable
+
+    try:
+        removed = await asyncio.to_thread(transcript_gallery.clear)
+    except FlagsUnavailable as exc:
+        logger.warning("transcript_gallery.clear_blocked: %s", exc)
+        raise HTTPException(
+            status_code = 503,
+            detail = "Could not read the transcript archive data, so clearing was stopped "
+            "to avoid deleting archived transcripts.",
+        )
+    return {"removed": removed}
 
 
 @studio_router.post("/images/unload", response_model = DiffusionStatusResponse)

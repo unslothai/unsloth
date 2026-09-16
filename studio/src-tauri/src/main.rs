@@ -3124,27 +3124,39 @@ media-src 'self' https:"
         assert!(hardened.ends_with("\nTryExec=/plain/app"));
     }
 
-    fn renderer_activity(state: &RendererActivityState) -> (bool, bool) {
+    // One element per field of RendererActivity. A tuple narrower than the struct is how
+    // a kind gets shipped untested while a test named "each kind" still passes: the
+    // unsaved_transcript arm could be deleted outright and every assertion below held.
+    fn renderer_activity(state: &RendererActivityState) -> (bool, bool, bool) {
         let activity = state
             .lock()
             .expect("the activity mutex must not be poisoned");
-        (activity.downloads, activity.shell_update)
+        (
+            activity.downloads,
+            activity.shell_update,
+            activity.unsaved_transcript,
+        )
     }
 
     #[test]
     fn renderer_activity_starts_clear_and_round_trips_each_kind() {
         let state = new_renderer_activity_state();
-        assert_eq!(renderer_activity(&state), (false, false));
+        assert_eq!(renderer_activity(&state), (false, false, false));
 
         apply_renderer_activity(&state, "downloads", true);
-        assert_eq!(renderer_activity(&state), (true, false));
+        assert_eq!(renderer_activity(&state), (true, false, false));
         apply_renderer_activity(&state, "downloads", false);
-        assert_eq!(renderer_activity(&state), (false, false));
+        assert_eq!(renderer_activity(&state), (false, false, false));
 
         apply_renderer_activity(&state, "shell_update", true);
-        assert_eq!(renderer_activity(&state), (false, true));
+        assert_eq!(renderer_activity(&state), (false, true, false));
         apply_renderer_activity(&state, "shell_update", false);
-        assert_eq!(renderer_activity(&state), (false, false));
+        assert_eq!(renderer_activity(&state), (false, false, false));
+
+        apply_renderer_activity(&state, "unsaved_transcript", true);
+        assert_eq!(renderer_activity(&state), (false, false, true));
+        apply_renderer_activity(&state, "unsaved_transcript", false);
+        assert_eq!(renderer_activity(&state), (false, false, false));
     }
 
     #[test]
@@ -3153,11 +3165,16 @@ media-src 'self' https:"
 
         apply_renderer_activity(&state, "downloads", true);
         apply_renderer_activity(&state, "shell_update", true);
-        assert_eq!(renderer_activity(&state), (true, true));
+        apply_renderer_activity(&state, "unsaved_transcript", true);
+        assert_eq!(renderer_activity(&state), (true, true, true));
 
         // Downloads finishing must not clear an update that is still installing.
         apply_renderer_activity(&state, "downloads", false);
-        assert_eq!(renderer_activity(&state), (false, true));
+        assert_eq!(renderer_activity(&state), (false, true, true));
+
+        // Nor must a saved transcript clear either of the other two.
+        apply_renderer_activity(&state, "unsaved_transcript", false);
+        assert_eq!(renderer_activity(&state), (false, true, false));
     }
 
     #[test]
@@ -3169,7 +3186,8 @@ media-src 'self' https:"
         apply_renderer_activity(&state, "training", true);
         apply_renderer_activity(&state, "", false);
         apply_renderer_activity(&state, "Downloads", true);
-        assert_eq!(renderer_activity(&state), (false, true));
+        apply_renderer_activity(&state, "unsaved-transcript", true);
+        assert_eq!(renderer_activity(&state), (false, true, false));
     }
 
     /// The three states the tray-toggle-server listener in use-tauri-backend.ts acts
