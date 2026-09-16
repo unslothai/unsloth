@@ -49,6 +49,7 @@ HELPERS = (
     # Everything Test-WoaResolveReachesPyPI calls: a missing helper answers True and lets a
     # lookalike index pass unnoticed.
     "Test-UvEnvFlag",
+    "Test-NoIndexRequested",
     "Test-WoaUrlIsPublicPyPI",
     "Remove-WoaTomlComment",
     "Split-WoaTomlKey",

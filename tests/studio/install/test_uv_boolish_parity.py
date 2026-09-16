@@ -43,6 +43,7 @@ from woa_ps_harness import (
     SETUP_SRC,
     STACK_SRC,
     UV_POLICY_ENV,
+    _function_source,
     _ps_copies,
     _ps_last,
     _script,
@@ -297,7 +298,6 @@ def test_the_pip_reader_is_a_separate_function_from_the_uv_one():
         (INSTALL_SRC, "Test-UvEnvFlag", "Test-PipEnvFlag"),
         (SETUP_SRC, "Test-UvEnvFlag", "Test-PipEnvFlag"),
     ):
-        from woa_ps_harness import _function_source
         assert uv_name not in _function_source(source, pip_name)
 
 
@@ -351,11 +351,84 @@ def test_every_resolver_variable_in_shipped_powershell_goes_through_a_reader(pat
 
 
 @requires_pwsh
-@pytest.mark.parametrize("name", ["Test-UvEnvFlag", "Test-PipEnvFlag"])
+@pytest.mark.parametrize(
+    "name", ["Test-UvEnvFlag", "Test-PipEnvFlag", "Test-NoIndexRequested"]
+)
 def test_the_two_powershell_copies_are_identical(name):
     """install.ps1 and setup.ps1 cannot share code, so the parity is the assertion."""
     install, setup = _ps_copies(name)
     assert install == setup
+
+
+# ── UV_NO_INDEX is ours, and the code must say so ────────────────────────────────────────
+
+
+def test_uv_no_index_is_not_a_uv_environment_variable():
+    """Recorded as an assertion because the code reads a UV_-prefixed name and a reader
+    will otherwise assume uv defines it.
+
+    uv 0.10.7 defines UV_OFFLINE and UV_NO_CONFIG as environment variables and does NOT
+    define UV_NO_INDEX; `--no-index` exists only as a command-line flag. So our handling of
+    UV_NO_INDEX is our own convention, and every site that reads it goes through a function
+    whose name does not claim otherwise.
+    """
+    for source, reader, marker in (
+        (INSTALL_SRC, "Test-NoIndexRequested", "function Test-NoIndexRequested"),
+        (SETUP_SRC, "Test-NoIndexRequested", "function Test-NoIndexRequested"),
+        (STACK_SRC, "_no_index_requested", "def _no_index_requested("),
+    ):
+        assert reader in source, reader
+        # The documentation window: PowerShell puts it in the comment block ABOVE the
+        # function, Python in the docstring below the def, so take both sides.
+        at = source.index(marker)
+        window = source[max(0, at - 1800) : at + 1800]
+        # Comment markers stripped and whitespace collapsed before matching: the sentence
+        # is wrapped across lines, and an assertion that a reflow can break is an assertion
+        # that will be deleted rather than fixed.
+        prose = " ".join(
+            line.lstrip().lstrip("#").strip() for line in window.splitlines()
+        )
+        prose = " ".join(prose.split())
+        assert "defines no such environment variable" in prose, reader
+        assert "--no-index" in prose, (
+            f"{reader} must say that uv's --no-index is a command-line flag only"
+        )
+
+    # And no OTHER site reads the raw variable for its truth: one convention, one place.
+    for source, reader in ((INSTALL_SRC, "Test-UvEnvFlag"), (SETUP_SRC, "Test-UvEnvFlag")):
+        hits = [
+            line
+            for line in source.splitlines()
+            if 'Test-UvEnvFlag "UV_NO_INDEX"' in line and not line.strip().startswith("#")
+        ]
+        assert len(hits) == 1, hits
+
+
+@requires_pwsh
+@pytest.mark.parametrize("script", [INSTALL_PS1, SETUP_PS1], ids = ["install.ps1", "setup.ps1"])
+@pytest.mark.parametrize(("value", "expected"), BOOLISH_TABLE, ids = TABLE_IDS)
+def test_our_no_index_convention_uses_uvs_spelling_by_choice(script, value, expected):
+    """uv would ignore this variable whatever we did with it, so the table is a decision:
+    a caller sets it beside UV_OFFLINE and UV_NO_CONFIG and means it the same way."""
+    src = INSTALL_SRC if script == INSTALL_PS1 else SETUP_SRC
+    snippet = _script(
+        clear_env(_others("UV_NO_INDEX")),
+        functions(src, "Test-UvEnvFlag", "Test-NoIndexRequested"),
+        "Write-Output ([string](Test-NoIndexRequested))",
+    )
+    assert (_ps_last(snippet, env = _env("UV_NO_INDEX", value)) == "True") is expected
+
+
+def test_we_do_not_silently_translate_our_convention_into_a_uv_flag():
+    """Position taken and pinned: we shape the arguments we pass, we do not pass
+    `--no-index` to uv. Turning UV_NO_INDEX into a real uv flag would make our behaviour and
+    uv's agree, but it would also turn a resolve that works today into one with no index at
+    all. If that is ever done deliberately, this test is the place it gets discussed."""
+    for source in (INSTALL_SRC, SETUP_SRC):
+        for line in source.splitlines():
+            if line.strip().startswith("#"):
+                continue
+            assert not ("--no-index" in line and "UV_NO_INDEX" in line), line
 
 
 # ── what the callers do with the answer ──────────────────────────────────────────────────

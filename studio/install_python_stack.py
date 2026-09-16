@@ -7121,8 +7121,32 @@ def _pip_env_flag(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in ("1", "t", "true", "y", "yes", "on")
 
 
+def _no_index_requested() -> bool:
+    """True when the operator asked us for no registry index. OUR convention, not uv's.
+
+    The distinction is not pedantic: for UV_NO_INDEX, uv 0.10.7 defines no such
+    environment variable. `--no-index` exists only as a command-line flag, it is absent from
+    `uv pip install --help`'s environment list beside UV_OFFLINE and UV_NO_CONFIG, and
+    grepping the 0.10.7 tree for the name returns nothing. uv ignores it however it is
+    spelled, so this is not a prediction about uv; it is us honouring a stated intent by
+    shaping the arguments we pass.
+
+    Read with uv's boolish set deliberately, not by inheritance: a caller sets this beside
+    UV_OFFLINE and UV_NO_CONFIG, which uv really does read, and one spelling across all
+    three is the point. It is a choice, and the test says so.
+
+    Deliberately NOT turned into a `--no-index` argument. That would make our behaviour and
+    uv's agree, which is the honest long-term answer, but it would also turn a resolve that
+    works today into one with no index at all: a behaviour change for existing users, and
+    its own change rather than part of a truthiness fix.
+    """
+    return _uv_env_flag("UV_NO_INDEX")
+
+
 def _uv_reaches_public_pypi() -> bool:
-    if _uv_is_offline() or _uv_env_flag("UV_NO_INDEX"):
+    # Two different questions. UV_OFFLINE really does stop uv reaching a network;
+    # UV_NO_INDEX is ours and uv ignores it.
+    if _uv_is_offline() or _no_index_requested():
         return False
     extra_is_pypi = any(
         _url_is_public_pypi(u)

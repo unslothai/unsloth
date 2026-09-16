@@ -2414,6 +2414,7 @@ class TestThePipFallbackKeepsTheIndexArguments:
                 SETUP_SRC,
                 "Test-UvEnvFlag",
                 "Test-PipEnvFlag",
+                "Test-NoIndexRequested",
                 "Get-WoaUvConfigIndexPolicy",
                 "Get-WoaDependencyIndexArgs",
             ),
@@ -3902,6 +3903,7 @@ class TestThePyPIProbeHonoursUvConfiguration:
             functions(
                 INSTALL_SRC,
                 "Test-UvEnvFlag",
+                "Test-NoIndexRequested",
                 "Test-WoaUrlIsPublicPyPI",
                 "Remove-WoaTomlComment",
                 "Split-WoaTomlKey",
@@ -5120,6 +5122,7 @@ class TestTheDependencyIndexFollowsTheResolverPolicy:
                 src,
                 "Test-UvEnvFlag",
                 "Test-PipEnvFlag",
+                "Test-NoIndexRequested",
                 "Remove-WoaTomlComment",
                 "Split-WoaTomlKey",
                 "Read-WoaUvTomlIndexKeys",
@@ -5277,6 +5280,7 @@ class TestTheDependencyIndexFollowsTheResolverPolicy:
         [
             "Test-UvEnvFlag",
             "Test-PipEnvFlag",
+            "Test-NoIndexRequested",
             "Remove-WoaTomlComment",
             "Split-WoaTomlKey",
             "Read-WoaUvInlineIndexArray",
@@ -5421,6 +5425,7 @@ class TestANoIndexNativeTrioStillSeesItsSources:
                 INSTALL_SRC,
                 "Test-UvEnvFlag",
                 "Test-PipEnvFlag",
+                "Test-NoIndexRequested",
                 "Get-UvSafePath",
                 "Get-WoaUvConfigIndexPolicy",
                 "Get-WoaDependencyIndexArgs",
@@ -5463,7 +5468,7 @@ class TestANoIndexNativeTrioStillSeesItsSources:
             # The yield is gated on Test-UvEnvFlag, and PowerShell does not hoist: without
             # the lift the call is a non-terminating command-not-found, the `if` sees $null
             # and the block quietly never runs, which pwsh still exits 0 on.
-            functions(INSTALL_SRC, "Test-UvEnvFlag"),
+            functions(INSTALL_SRC, "Test-UvEnvFlag", "Test-NoIndexRequested"),
             "$script:WoaNativeCudaTorch = $true",
             "$VenvPlatform = 'win-arm64'",
             f"$env:UV_NO_INDEX = '{value}'",
@@ -5499,6 +5504,7 @@ class TestANoIndexNativeTrioStillSeesItsSourcesInSetup:
                 SETUP_SRC,
                 "Test-UvEnvFlag",
                 "Test-PipEnvFlag",
+                "Test-NoIndexRequested",
                 "Get-WoaUvConfigIndexPolicy",
                 "Get-WoaDependencyIndexArgs",
             ),
@@ -5550,7 +5556,7 @@ class TestANoIndexNativeTrioStillSeesItsSourcesInSetup:
         script = _script(
             substep_collector(),
             # As above: the UV_NO_INDEX yield calls Test-UvEnvFlag, so it comes with it.
-            functions(SETUP_SRC, "Test-UvEnvFlag"),
+            functions(SETUP_SRC, "Test-UvEnvFlag", "Test-NoIndexRequested"),
             "$WinArm64Venv = $true",
             f"$env:UV_NO_INDEX = '{value}'",
             "$env:UV_EXCLUDE_NEWER = '2026-01-01'",
@@ -5579,7 +5585,7 @@ class TestANoIndexNativeTrioStillSeesItsSourcesInSetup:
             # The arm64 guard means the yield never runs here, so the reader is never
             # called. Lifted anyway: a command-not-found inside a lifted block is
             # non-terminating, so without it this test could only ever pass.
-            functions(SETUP_SRC, "Test-UvEnvFlag"),
+            functions(SETUP_SRC, "Test-UvEnvFlag", "Test-NoIndexRequested"),
             "$WinArm64Venv = $false",
             "$env:UV_NO_INDEX = '1'",
             "$_woaCutoffSaved = @{}",
