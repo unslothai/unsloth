@@ -3888,22 +3888,37 @@ async def get_kv_cache_estimate(
             except Exception as e:
                 logger.debug(f"cache type resolution failed for '{repo_id}': {e}")
 
-            # ctx_checkpoints is not a rounding error: each saved checkpoint is an SWA snapshot per slot, so a
-            # 4-slot SWA model at 32k measures 5.82 GiB with none and 11.82 GiB at the llama.cpp default of 32.
+            # Probe failures keep the unflagged default rather than assuming zero.
+            _cc_caps: dict = {}
+            _total_ram_mib: Optional[int] = None
+            try:
+                _cc_caps = be.probe_server_capabilities() or {}
+                _total_ram_mib = getattr(be, "_host_memory_capacity_mib", lambda: None)()
+            except Exception as e:
+                logger.debug(f"checkpoint budget inputs unavailable for '{repo_id}': {e}")
+
+            # A blank field means llama.cpp's default, narrowed only by a cap Studio can emit.
+            from core.inference.llama_cpp import effective_ctx_checkpoints_for_caps
+
+            _effective_checkpoints = effective_ctx_checkpoints_for_caps(
+                _cc_caps,
+                None,
+                ctx_checkpoints,
+                per_checkpoint_bytes = getattr(be, "_rollback_state_bytes", lambda _n: 0)(1),
+                n_parallel = n_parallel,
+                total_host_bytes = (_total_ram_mib * 1024 * 1024) if _total_ram_mib else None,
+            )
             kv = be._estimate_kv_cache_bytes(
                 n_ctx,
                 _effective_cache_type,
                 n_parallel = n_parallel,
-                ctx_checkpoints = ctx_checkpoints or 0,
+                ctx_checkpoints = _effective_checkpoints,
                 n_ubatch = n_ubatch,
             )
 
-            # The checkpoint share of that cache, by difference rather than by re-deriving the SWA layer walk: the
-            # snapshots are the only term separating the two calls. Reported separately because llama.cpp keeps these
-            # snapshots in HOST heap (the planner's GPU figure is kv_bytes - kv_checkpoint_bytes); folded into the
-            # bar's VRAM total they warn OOM over memory that never touches the card.
+            # Report the host-resident checkpoint share separately from GPU cache bytes.
             kv_checkpoint = 0
-            if ctx_checkpoints:
+            if _effective_checkpoints:
                 _kv_without = be._estimate_kv_cache_bytes(
                     n_ctx,
                     _effective_cache_type,

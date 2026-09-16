@@ -13,7 +13,7 @@ Source: [`docker/`](https://github.com/unslothai/unsloth/tree/main/docker) in th
 | `nightly-<YYYY.MM.DD>`, `core-nightly-<YYYY.MM.DD>` | The same two images, one immutable pin per daily rebuild, kept 60 days | Reproducible runs. |
 | `<version>`, `core-<version>` | Release builds | Pin a release. |
 
-`latest` and `core` move with every push to `main` and on a daily rebuild. Both images are multi-arch: `linux/amd64` and `linux/arm64` (GH200, DGX Spark).
+`latest` and `core` are rebuilt daily and on every release tag, not on every merge to `main`. Both images are multi-arch: `linux/amd64` and `linux/arm64` (GH200, DGX Spark).
 
 ## Quick start
 
@@ -77,7 +77,7 @@ docker run --rm -e UNSLOTH_ALLOW_CPU=1 unsloth/unsloth:core python -c "import un
 
 ## Supported GPUs
 
-Compiled for `sm_75 sm_80 sm_86 sm_90 sm_100 sm_120`: Turing (T4, RTX 20), Ampere (A100, A10, RTX 30), Ada (L4, L40, RTX 40), Hopper (H100, H200, GH200) and Blackwell (B200, GB200, RTX 50, RTX PRO 6000). GB10 (DGX Spark, `sm_121`) runs the `sm_120` binaries through Blackwell forward compatibility; only kernels compiled at run time, such as Triton, use the CUDA 13 compiler the container switches to on that GPU. The container prints the detected GPU on start and explains what to do when the driver is too old.
+Turing (T4, RTX 20), Ampere (A100, A10, RTX 30), Ada (L4, L40, RTX 40), Hopper (H100, H200, GH200) and Blackwell (B200, GB200, RTX 50, RTX PRO 6000) all run precompiled SASS. The cu128 wheels the image ships carry native SASS for `sm_70 sm_75 sm_80 sm_86 sm_90 sm_100 sm_120` on `linux/amd64` and `sm_80 sm_90 sm_90a sm_100 sm_100a sm_120 sm_120a` on `linux/arm64`; SASS is forward-compatible within a major version, so Ada runs the `sm_86` binaries and B300 and GB300 run the `sm_100` ones. A source build inside the image is a separate matter: it compiles for `7.5;8.0;8.6;8.9;9.0;10.0;12.0+PTX` on either architecture. GB10 (DGX Spark, `sm_121`) runs the `sm_120` binaries through Blackwell forward compatibility; only kernels compiled at run time, such as Triton, use the CUDA 13 compiler the container switches to on that GPU. The container prints the detected GPU on start and explains what to do when the driver is too old.
 
 Driver requirements:
 
@@ -100,8 +100,8 @@ Turing has no bfloat16; Unsloth falls back to float16 there. These images are CU
 | Variable | Effect |
 |---|---|
 | `UNSLOTH_STUDIO_PASSWORD` | Initial Studio admin password for user `unsloth`; ignored once a password is stored. Unset: generated once and printed in the logs, and Studio stops after an hour unless it is changed (`UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0` disables). |
-| `JUPYTER_PASSWORD` | JupyterLab password. Unset: generated once and printed in the logs. |
-| `JUPYTER_PORT` | JupyterLab port inside the container. Default `8888`. |
+| `JUPYTER_PASSWORD` | JupyterLab password, read by the `latest` service launcher. Unset: generated once and printed in the logs. On `core` you start JupyterLab yourself, so pass its own flags instead. |
+| `JUPYTER_PORT` | JupyterLab port inside the container, read by the `latest` service launcher. Default `8888`. `8000` is refused: that is Studio's port inside the container. |
 | `SSH_KEY` or `PUBLIC_KEY` | OpenSSH public key for root login. Enables sshd on port 22. Password login is never enabled. |
 | `UNSLOTH_ALLOW_CPU=1` | Allow starting without a GPU (`latest` already does). Dropped when a GPU is visible, where it would turn off Unsloth's training patches. |
 | `UNSLOTH_JUPYTER_CLOUDFLARE=1` | Publish JupyterLab through a Cloudflare quick tunnel and print the URL. |
@@ -142,9 +142,9 @@ Studio's code (its venv, source tree, Node, prebuilt tools) ships in the image u
 
 On the `latest` image:
 
-- `unsloth-studio-update` upgrades Studio and Unsloth in place (in the image's copy: survives `docker restart`, not `docker rm`).
+- `unsloth-studio-update` upgrades Studio and Unsloth in place, leaving the torch and CUDA stack pinned (in the image's copy: survives `docker restart`, not `docker rm`).
 - `unsloth-llama-update` fetches the newest prebuilt llama.cpp.
-- `unsloth-jupyter-tunnel` opens a Cloudflare quick tunnel to JupyterLab.
+- `unsloth-jupyter-tunnel --force` opens a Cloudflare quick tunnel to JupyterLab. Without `--force`, and without `UNSLOTH_JUPYTER_CLOUDFLARE=1` in the environment, it prints that it is disabled and exits.
 
 On both images the notebooks refresh from GitHub on each start unless `UNSLOTH_SKIP_NOTEBOOK_REFRESH=1`. Pull a new image tag to update everything else.
 
