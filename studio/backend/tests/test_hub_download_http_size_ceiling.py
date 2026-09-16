@@ -844,3 +844,93 @@ def test_a_real_scope_is_still_measured_on_its_files(monkeypatch):
 
     assert excinfo.value.status_code == 400
     assert "HTTPS cannot fetch" in excinfo.value.detail
+
+
+# --------------------------------------------------------------------------------------------
+# A measurement the cache no longer holds
+# --------------------------------------------------------------------------------------------
+
+
+def test_nothing_left_to_fetch_is_zero_not_unknown(monkeypatch, tmp_path):
+    """A carried measurement only stands over an unknown, so the two must not share a value."""
+    siblings = [_Sibling("only.gguf", _OVERSIZED)]
+    monkeypatch.setattr(dl, "_repo_siblings", lambda *a, **k: tuple(siblings))
+    blobs = tmp_path / "models--unsloth--M-GGUF" / "blobs"
+    blobs.mkdir(parents = True)
+    (blobs / siblings[0].lfs["sha256"]).write_bytes(b"")
+    monkeypatch.setattr(
+        download_registry,
+        "iter_active_repo_cache_dirs",
+        lambda *a, **k: iter([blobs.parent]),
+    )
+
+    assert dl.largest_download_file_bytes("model", "unsloth/M-GGUF") == 0
+
+
+def _evicting_probe(values):
+    """A probe that measures once and is then unable to measure at all."""
+    remaining = list(values)
+
+    def _probe(*_a, **_k):
+        return remaining.pop(0) if remaining else None
+
+    return _probe
+
+
+def test_an_evicted_listing_does_not_reopen_the_http_rung(monkeypatch, tmp_path):
+    """Losing the cached listing must not turn a measured size back into an unknown one."""
+    _ladder_setup(monkeypatch, tmp_path, largest_file_bytes = None, probe = False)
+    monkeypatch.setattr(dl, "_xet_attempt_budget", lambda: 1)
+    monkeypatch.setattr(dl, "_largest_file_bytes_for_job", _evicting_probe([_OVERSIZED]))
+    rungs: list = []
+    monkeypatch.setattr(
+        dl, "_try_transport_retry", lambda *a, **kw: rungs.append(kw.get("retry_transport"))
+    )
+    key, registry = _claimed_registry()
+
+    assert _run_worker(registry, key, _Proc(1, b"xet transport failed"))
+
+    assert rungs == [], "an evicted listing reopened a rung that cannot serve this download"
+    state, error, _generation = dl.idle_status(
+        registry, key, repo_type = "model", repo_id = "unsloth/M-GGUF", variant = "UD-Q5_K_XL"
+    )
+    assert state == "error"
+    assert "HTTPS cannot fetch" in error
+
+
+def test_a_finalized_shard_still_overrides_the_carried_size(monkeypatch, tmp_path):
+    """A fresh measurement always wins; only an unmeasurable one defers to the carried size."""
+    _ladder_setup(monkeypatch, tmp_path, largest_file_bytes = None, probe = False)
+    monkeypatch.setattr(dl, "_xet_attempt_budget", lambda: 1)
+    monkeypatch.setattr(dl, "_largest_file_bytes_for_job", _evicting_probe([_OVERSIZED, 0]))
+    rungs: list = []
+    monkeypatch.setattr(
+        dl, "_try_transport_retry", lambda *a, **kw: rungs.append(kw.get("retry_transport"))
+    )
+    key, registry = _claimed_registry()
+
+    assert _run_worker(registry, key, _Proc(1, b"xet failed on the second shard"))
+
+    assert rungs == [download_registry.TRANSPORT_HTTP]
+
+
+def test_the_carried_size_survives_a_xet_retry(monkeypatch, tmp_path):
+    """The next rung inherits it, so an hours-long job never measures from scratch alone."""
+    _ladder_setup(
+        monkeypatch,
+        tmp_path,
+        largest_file_bytes = None,
+        probe = False,
+        stall_message = "Download appears stalled (xet transport) -- no progress for 30s",
+    )
+    monkeypatch.setattr(dl, "_xet_attempt_budget", lambda: 2)
+    monkeypatch.setattr(dl, "_largest_file_bytes_for_job", _evicting_probe([_OVERSIZED]))
+    carried: list = []
+    monkeypatch.setattr(
+        dl, "_try_transport_retry", lambda *a, **kw: carried.append(kw.get("largest_file_bytes"))
+    )
+    key, registry = _claimed_registry()
+
+    assert _run_worker(registry, key, _Proc(1, b"stalled"))
+
+    assert carried == [_OVERSIZED]

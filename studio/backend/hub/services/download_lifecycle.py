@@ -132,7 +132,9 @@ def largest_download_file_bytes(
     """Return the largest selected, uncached file, or None when it cannot be measured.
 
     Selection matches the worker: explicit files, a GGUF variant plan, filtered model snapshots, or
-    every dataset file. Finalized blobs are excluded because ``snapshot_download`` skips them.
+    every dataset file. Finalized blobs are excluded because ``snapshot_download`` skips them, so
+    ``0`` means the job has nothing left to fetch. It is not ``None``: only ``None`` says the size
+    is unknown, and a caller carrying an earlier measurement forward needs to tell those apart.
 
     ``allow_ambient_token`` is the caller's boundary, applied exactly as ``spawn_worker`` applies
     it: a caller denied the backend's own login measures anonymously, so this probe can never read
@@ -173,11 +175,10 @@ def largest_download_file_bytes(
         frozenset(file.sha256 for file in candidates if file.sha256),
         root = Path(hub_cache) if hub_cache else None,
     )
-    largest = max(
+    return max(
         (max(0, int(file.size or 0)) for file in candidates if file.sha256 not in cached),
         default = 0,
     )
-    return largest or None
 
 
 def _largest_file_bytes_for_job(
@@ -211,17 +212,25 @@ def http_rung_reason(
     *,
     hf_token: Optional[str] = None,
     allow_ambient_token: bool = True,
+    known_largest_file_bytes: Optional[int] = None,
 ) -> Optional[str]:
-    """Return why this job cannot use the recovery ladder's HTTP rung, if applicable."""
+    """Return why this job cannot use the recovery ladder's HTTP rung, if applicable.
+
+    The measurement is taken again here because the worker may have finalized the oversized file.
+    ``known_largest_file_bytes`` is what the job measured before it ran, and it stands when the
+    fresh attempt cannot measure at all: the sibling cache that would otherwise carry it is
+    bounded, so 64 other repositories are enough to evict an hours-long download's only listing.
+    """
+    measured = _largest_file_bytes_for_job(
+        repo_type,
+        repo_id,
+        metadata,
+        hf_token = hf_token,
+        allow_ambient_token = allow_ambient_token,
+    )
     return download_registry.download_transport_unavailable_reason(
         download_registry.TRANSPORT_HTTP,
-        largest_file_bytes = _largest_file_bytes_for_job(
-            repo_type,
-            repo_id,
-            metadata,
-            hf_token = hf_token,
-            allow_ambient_token = allow_ambient_token,
-        ),
+        largest_file_bytes = known_largest_file_bytes if measured is None else measured,
     )
 
 
@@ -705,8 +714,9 @@ def _try_transport_retry(
     pending_xet_failure: Optional[str] = None,
     bytes_before: "Optional[int]" = _UNSAMPLED,
     allow_ambient_token: bool = True,
+    largest_file_bytes: Optional[int] = None,
 ) -> bool:
-    """Reclaim *key* under *retry_transport* and spawn a recovery worker. Returns ``True`` when the recovery worker was successfully registered. Caller is responsible for ensuring this is only called when the job is in ``"error"`` state, the original transport was XET, and the target transport is available. Two directions share this body: ``TRANSPORT_HTTP`` is terminal, so the transport changes and the worker's own ``prepare_cache_for_transport`` purges the XET partial an HTTP resume would corrupt, while ``TRANSPORT_XET`` is the stall retry, same transport, same marker, one more child, bounded by *xet_attempt* rather than by the transport check that stops the HTTP one. *allow_ambient_token* rides along unchanged, so a job that started anonymous cannot pick the backend's own HF_TOKEN up on a lower rung. *pending_xet_failure* is a stall verdict held back from the health tracker and carried into the next worker, so a download that recovers on its second Xet attempt reports nothing and one that does not reports exactly one failure. *bytes_before* is the ORIGINAL pre-Xet baseline: resampling would fold the killed worker's partial writes in and make a recovered attempt read as a cached no-op. Derives variant and blob-hash metadata from the registry entry written by the original XET claim so callers do not re-construct worker arguments, and re-queries peer protection hashes at spawn time to reflect concurrent sibling changes."""
+    """Reclaim *key* under *retry_transport* and spawn a recovery worker. Returns ``True`` when the recovery worker was successfully registered. Caller is responsible for ensuring this is only called when the job is in ``"error"`` state, the original transport was XET, and the target transport is available. Two directions share this body: ``TRANSPORT_HTTP`` is terminal, so the transport changes and the worker's own ``prepare_cache_for_transport`` purges the XET partial an HTTP resume would corrupt, while ``TRANSPORT_XET`` is the stall retry, same transport, same marker, one more child, bounded by *xet_attempt* rather than by the transport check that stops the HTTP one. *allow_ambient_token* rides along unchanged, so a job that started anonymous cannot pick the backend's own HF_TOKEN up on a lower rung. *pending_xet_failure* is a stall verdict held back from the health tracker and carried into the next worker, so a download that recovers on its second Xet attempt reports nothing and one that does not reports exactly one failure. *bytes_before* is the ORIGINAL pre-Xet baseline: resampling would fold the killed worker's partial writes in and make a recovered attempt read as a cached no-op. *largest_file_bytes* is the size the job measured before it ran, carried down the ladder the same way, so a rung whose own probe cannot measure still knows HTTP cannot serve this download. Derives variant and blob-hash metadata from the registry entry written by the original XET claim so callers do not re-construct worker arguments, and re-queries peer protection hashes at spawn time to reflect concurrent sibling changes."""
     retry_over_xet = retry_transport == download_registry.TRANSPORT_XET
     retry_name = "XET" if retry_over_xet else "HTTP"
 
@@ -889,6 +899,7 @@ def _try_transport_retry(
                 original_metadata,
                 hf_token = hf_token,
                 allow_ambient_token = allow_ambient_token,
+                known_largest_file_bytes = largest_file_bytes,
             )
             if retry_over_xet
             else None
@@ -915,6 +926,7 @@ def _try_transport_retry(
                 pending_xet_failure = pending_xet_failure,
                 bytes_before = bytes_before,
                 allow_ambient_token = allow_ambient_token,
+                largest_file_bytes = largest_file_bytes,
             )
         _give_up()
         _set_retry_failure_state(
@@ -946,6 +958,7 @@ def _try_transport_retry(
         pending_xet_failure = pending_xet_failure,
         bytes_before = bytes_before,
         allow_ambient_token = allow_ambient_token,
+        largest_file_bytes = largest_file_bytes,
     )
 
 
@@ -1116,8 +1129,9 @@ def register_worker(
     xet_attempt: int = 1,
     pending_xet_failure: Optional[str] = None,
     allow_ambient_token: bool = True,
+    largest_file_bytes: Optional[int] = None,
 ) -> bool:
-    """Watch *proc* to completion and drive the recovery ladder off its exit. *xet_attempt* (1-based) bounds the XET->XET stall retry, the way ``transport == TRANSPORT_XET`` bounds the terminal XET->HTTP one. *pending_xet_failure* is an earlier attempt's stall verdict, held back from the health tracker until the XET phase ends so one download can never spend the two consecutive failures that demote a machine. *allow_ambient_token* is the token policy this job was started under, carried onto every rung of the ladder."""
+    """Watch *proc* to completion and drive the recovery ladder off its exit. *xet_attempt* (1-based) bounds the XET->XET stall retry, the way ``transport == TRANSPORT_XET`` bounds the terminal XET->HTTP one. *pending_xet_failure* is an earlier attempt's stall verdict, held back from the health tracker until the XET phase ends so one download can never spend the two consecutive failures that demote a machine. *allow_ambient_token* is the token policy this job was started under, carried onto every rung of the ladder. *largest_file_bytes* is an earlier rung's measurement, kept only for as long as this one cannot take its own."""
     if not registry.register_process(key, proc):
         kill_and_reap_process(proc, label = label, logger = logger)
         return False
@@ -1152,12 +1166,16 @@ def register_worker(
         try:
             started_on_xet = transport == download_registry.TRANSPORT_XET
             # Keep the pre-run size for error reporting. Retry eligibility is measured after exit.
-            largest_file_bytes = _largest_file_bytes_for_job(
+            measured_before_run = _largest_file_bytes_for_job(
                 repo_type,
                 repo_id,
                 _metadata,
                 hf_token = worker_token,
                 allow_ambient_token = allow_ambient_token,
+            )
+            # An earlier rung's measurement stands until this one takes its own.
+            known_largest_file_bytes = (
+                largest_file_bytes if measured_before_run is None else measured_before_run
             )
             # Watch every Xet attempt so even a final hung worker becomes terminal.
             if started_on_xet:
@@ -1187,7 +1205,7 @@ def register_worker(
                 # Retry eligibility is known only after the worker leaves its final cache state.
                 defer_error = started_on_xet,
                 deferred_error_out = deferred_error,
-                largest_file_bytes = largest_file_bytes,
+                largest_file_bytes = known_largest_file_bytes,
             )
             if watchdog_stop is not None:
                 # Stop measuring once the worker is reaped: post-download symlinking and verification make no byte-level progress and must not read as a stall.
@@ -1200,6 +1218,7 @@ def register_worker(
                     _metadata,
                     hf_token = worker_token,
                     allow_ambient_token = allow_ambient_token,
+                    known_largest_file_bytes = known_largest_file_bytes,
                 )
                 if started_on_xet
                 else None
@@ -1266,6 +1285,7 @@ def register_worker(
                         # Preserve the pre-Xet baseline across retries.
                         bytes_before = _bytes_before,
                         allow_ambient_token = allow_ambient_token,
+                        largest_file_bytes = known_largest_file_bytes,
                     )
                 else:
                     # No retry remains, so publish the deferred worker error.
