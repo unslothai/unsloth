@@ -85,7 +85,7 @@ Driver requirements:
 - 580 or newer for B300, GB300 and GB10.
 - On `linux/arm64` the bundled llama.cpp is a CUDA 13 build because upstream ships no CUDA 12 build for that architecture. Training works from driver 570, but GGUF export and Studio chat need 580 or newer.
 
-Turing has no bfloat16; Unsloth falls back to float16 there. AMD GPUs are not supported by these images.
+Turing has no bfloat16; Unsloth falls back to float16 there. These images are CUDA only; for AMD use [`unsloth/unsloth-rocm`](https://hub.docker.com/r/unsloth/unsloth-rocm), which carries a ROCm build of the training stack.
 
 ## Ports
 
