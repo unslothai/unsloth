@@ -88,3 +88,27 @@ def test_a_copy_is_removed_but_the_users_own_file_is_not():
         "the Remove-Item is not guarded on .Temporary, so a pass-through path "
         "would delete the user's own requirements file"
     )
+
+
+def test_the_helper_behaviour_suite_runs():
+    """Run the PowerShell unit test under pytest so the CPU test job executes it.
+
+    The static checks above assert the call shape; this one exercises the helper itself,
+    including the fallback chain and the give-up warning.
+    """
+    import shutil
+    import subprocess
+
+    import pytest
+
+    if shutil.which("pwsh") is None:
+        pytest.skip("pwsh not available")
+    script = REPO_ROOT / "tests" / "studio" / "test_uv_safe_requirements_path.ps1"
+    assert script.is_file(), f"missing: {script}"
+    proc = subprocess.run(
+        ["pwsh", "-NoProfile", "-File", str(script)],
+        capture_output = True,
+        text = True,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "All Get-UvSafeRequirementsPath checks passed" in proc.stdout, proc.stdout

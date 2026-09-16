@@ -6905,26 +6905,47 @@ exit 0
         $short = $null
         try { $short = (New-Object -ComObject Scripting.FileSystemObject).GetFile($Path).ShortPath } catch { }
         if ($short -and -not $short.Contains(" ")) { return @{ Path = $short; Temporary = $false } }
-        # No 8.3 name on this volume: copy the list somewhere space-free instead. %TEMP% can carry
-        # the space itself, which is the #11012 case exactly, so the copy is verified too.
-        try {
-            $tmp = [System.IO.Path]::GetTempFileName()
-            if ($tmp.Contains(" ")) {
-                $tmpShort = $null
-                try { $tmpShort = (New-Object -ComObject Scripting.FileSystemObject).GetFile($tmp).ShortPath } catch { }
-                if (-not $tmpShort -or $tmpShort.Contains(" ")) {
-                    Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
-                    return @{ Path = $Path; Temporary = $false }
-                }
-                $tmp = $tmpShort
+
+        # No 8.3 name for the file: copy the list to a space-free directory instead. More than one
+        # candidate, because %TEMP% can carry the space itself, which is the #11012 case exactly,
+        # and 8.3 creation is commonly disabled on non-system volumes so its short name may not
+        # exist either. Each candidate is accepted only once it is confirmed space-free and
+        # writable, so a directory we cannot actually use is never selected.
+        $candidates = @(
+            [System.IO.Path]::GetTempPath()
+            $env:TEMP
+            $env:TMP
+            (Join-Path ([System.IO.Path]::GetPathRoot([System.IO.Path]::GetTempPath())) "Windows\Temp")
+            [System.IO.Path]::GetDirectoryName($Path)
+        )
+        foreach ($candidate in $candidates) {
+            if (-not $candidate) { continue }
+            $dir = $candidate
+            if ($dir.Contains(" ")) {
+                $dirShort = $null
+                try { $dirShort = (New-Object -ComObject Scripting.FileSystemObject).GetFolder($dir).ShortPath } catch { }
+                if (-not $dirShort -or $dirShort.Contains(" ")) { continue }
+                $dir = $dirShort
             }
-            Copy-Item -LiteralPath $Path -Destination $tmp -Force -ErrorAction Stop
-            return @{ Path = $tmp; Temporary = $true }
-        } catch {
-            # Hand back the original rather than inventing a new failure: uv then reports the
-            # split path as it does today, instead of this helper swallowing the install.
-            return @{ Path = $Path; Temporary = $false }
+            try {
+                $tmp = Join-Path $dir ("unsloth-reqs-" + [guid]::NewGuid().ToString("N") + ".txt")
+                Copy-Item -LiteralPath $Path -Destination $tmp -Force -ErrorAction Stop
+                if ($tmp.Contains(" ")) {
+                    Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+                    continue
+                }
+                return @{ Path = $tmp; Temporary = $true }
+            } catch { continue }
         }
+
+        # Nowhere space-free and writable was found. Say so: uv's own message for the split path
+        # names a fragment of the install root and reads as a missing or malformed requirements
+        # file, which is what made #11012 expensive to diagnose. The original is still returned so
+        # the install behaves exactly as it does today rather than failing somewhere new.
+        substep "[WARN] the requirements path contains a space and no space-free location was" "Yellow"
+        substep "available; uv splits such a path, so this install may fail. Set TMP and TEMP" "Yellow"
+        substep "to a path without spaces and run the installer again." "Yellow"
+        return @{ Path = $Path; Temporary = $false }
     }
 
     function Find-NoTorchRuntimeFile {
