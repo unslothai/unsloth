@@ -185,9 +185,8 @@ class QGaLoreAdamW8bit(Optimizer2State):
                 self.update_step(group, p, gindex, pindex)
 
                 if "rank" in group:
-                    # Re-apply decoupled weight decay to the pre-update weight, before the
-                    # projected update is added. The decay touches only p._saved_data, so
-                    # p.data still holds the low-rank update for project_back below.
+                    # Decay the pre-update weight BEFORE adding the update; it touches only
+                    # p._saved_data, so p.data still holds the low-rank update below.
                     if "_wd_saved" in group:
                         p._saved_data.add_(
                             p._saved_data,
@@ -196,8 +195,7 @@ class QGaLoreAdamW8bit(Optimizer2State):
                         group["weight_decay"] = group["_wd_saved"]
                         del group["_wd_saved"]
 
-                    # p.data holds the weight update in low-rank space; keeping project_back
-                    # inline frees the full-rank result as soon as add_ returns.
+                    # project_back stays inline: a loop-local name outlives the iteration (+64 MiB).
                     p.data = p._saved_data.add_(state["projector"].project_back(p.data))
                     del p._saved_data
 
