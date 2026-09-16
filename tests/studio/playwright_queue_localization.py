@@ -25,13 +25,7 @@ JA = {
 }
 
 
-def seed(
-    page,
-    base,
-    *,
-    locale = "en",
-    shortcut = "enter",
-):
+def seed(page, base, *, locale = "en", shortcut = "enter"):
     page.goto(base + PAGE)
     page.evaluate(
         """([locale, shortcut]) => {
@@ -115,7 +109,7 @@ def check_escape_during_ime(page, base):
     seed(page, base)
     editor = open_editor(page, "More options for queued prompt 1", "Edit message")
     editor.fill("draft-survives-ime-escape")
-    for init in ("{isComposing: true}", "{keyCode: 229}"):
+    for init in ('{isComposing: true}', '{keyCode: 229}'):
         page.evaluate(
             f"""() => {{
                 const ta = document.querySelector('textarea[aria-label^="Edit queued prompt"]');
@@ -161,7 +155,9 @@ def check_candidate_confirming_enter(page, base):
     )
     editor.press("Enter")
     expect(editor).to_have_count(0)
-    expect(page.locator("[data-queue-item-id]").first).to_contain_text("composition-in-progress")
+    expect(page.locator("[data-queue-item-id]").first).to_contain_text(
+        "composition-in-progress"
+    )
     print("PASS: a candidate-confirming Enter does not save the edit", flush = True)
 
 
@@ -186,7 +182,9 @@ def check_stuck_composition_recovers(page, base):
     page.wait_for_timeout(2800)
     editor.press("Enter")
     expect(editor).to_have_count(0)
-    expect(page.locator("[data-queue-item-id]").first).to_contain_text("recovers-after-timeout")
+    expect(page.locator("[data-queue-item-id]").first).to_contain_text(
+        "recovers-after-timeout"
+    )
 
     # Blur is the other reset point.
     editor = open_editor(page, "More options for queued prompt 2", "Edit message")
@@ -196,7 +194,9 @@ def check_stuck_composition_recovers(page, base):
     editor.focus()
     editor.press("Enter")
     expect(editor).to_have_count(0)
-    expect(page.locator("[data-queue-item-id]").nth(1)).to_contain_text("recovers-after-blur")
+    expect(page.locator("[data-queue-item-id]").nth(1)).to_contain_text(
+        "recovers-after-blur"
+    )
     print("PASS: a stuck composition recovers on timeout and on blur", flush = True)
 
 
