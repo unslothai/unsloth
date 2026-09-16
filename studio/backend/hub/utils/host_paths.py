@@ -338,8 +338,7 @@ def redact_inventory_error_detail(detail: Any, *, via_api_key: bool) -> Any:
         }
     if isinstance(detail, (list, tuple)):
         redacted = [
-            redact_inventory_error_detail(value, via_api_key = via_api_key)
-            for value in detail
+            redact_inventory_error_detail(value, via_api_key = via_api_key) for value in detail
         ]
         return type(detail)(redacted) if isinstance(detail, tuple) else redacted
     return detail

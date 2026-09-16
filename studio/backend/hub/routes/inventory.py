@@ -120,9 +120,7 @@ def get_models_folder(
     except HTTPException as error:
         raise HTTPException(
             status_code = error.status_code,
-            detail = redact_inventory_error_detail(
-                error.detail, via_api_key = via_api_key
-            ),
+            detail = redact_inventory_error_detail(error.detail, via_api_key = via_api_key),
             headers = error.headers,
         ) from error
     return redact_inventory_host_paths(payload, via_api_key = via_api_key)
