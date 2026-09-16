@@ -149,6 +149,15 @@ class AuthSafeRedirectHandler(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
+def auth_safe_open(req, timeout):
+    """``urlopen`` through :class:`AuthSafeRedirectHandler` — the single call seam.
+
+    Tests patch THIS (not ``urllib.request.urlopen``) so the redirect policy
+    cannot be bypassed by a refactor that swaps the opener under them.
+    """
+    return urllib.request.build_opener(AuthSafeRedirectHandler()).open(req, timeout=timeout)
+
+
 def call_with_deadline(
     fn,
     timeout_s: float,

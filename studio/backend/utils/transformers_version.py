@@ -145,14 +145,12 @@ def _hf_proxy_opener(url: str):
 def _hf_urlopen(req, timeout: int):
     """``urlopen`` through the same proxy huggingface_hub would use for this request,
     with redirects that cannot carry the Authorization header off-origin."""
-    import urllib.request
-
-    from utils.utils import AuthSafeRedirectHandler
+    from utils.utils import auth_safe_open
 
     opener = _hf_proxy_opener(req.full_url)
-    if opener is None:
-        opener = urllib.request.build_opener(AuthSafeRedirectHandler())
-    return opener.open(req, timeout = timeout)
+    if opener is not None:
+        return opener.open(req, timeout = timeout)
+    return auth_safe_open(req, timeout = timeout)
 
 
 def hf_endpoint_unreachable(
