@@ -284,6 +284,11 @@ class TestStudioImageAllowsCpu:
         dest = re.findall(r"^COPY\s+entrypoint\.sh\s+(\S+)\s*$", base, re.M)
         assert dest == ["/usr/local/bin/unsloth-entrypoint"], dest
         assert re.findall(r"^COPY\s+entrypoint\.sh\s+(\S+)\s*$", studio, re.M) == dest
+        # The copy alone proves nothing: the base must still RUN that file, or the
+        # inherited ENTRYPOINT no longer translates UNSLOTH_IMAGE_ALLOW_CPU.
+        assert re.findall(r"^\s*ENTRYPOINT\s+(.+?)\s*$", base, re.M) == [
+            '["/usr/local/bin/unsloth-entrypoint"]'
+        ], "base Dockerfile no longer runs the bundled entrypoint"
         assert not re.search(
             r"^\s*ENTRYPOINT\b", studio, re.M
         ), "Dockerfile.studio must inherit the base ENTRYPOINT, not declare its own"
