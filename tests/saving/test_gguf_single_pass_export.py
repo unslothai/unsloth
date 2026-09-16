@@ -17,6 +17,7 @@ import contextlib
 import os
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -116,10 +117,11 @@ class _Harness:
 def _run(tmp_path, methods, **kwargs):
     model_dir = tmp_path / "model_dir"
     model_dir.mkdir(exist_ok = True)
+    model_dtype = kwargs.pop("model_dtype", "float16")
     return save_mod.save_to_gguf(
         model_name = "testmodel",
         model_type = "llama",
-        model_dtype = "float16",
+        model_dtype = model_dtype,
         model_directory = str(model_dir),
         quantization_method = methods,
         **kwargs,
@@ -169,6 +171,39 @@ def test_k_quant_keeps_two_pass(monkeypatch, tmp_path):
     assert want_full_precision is False
     # The 16-bit intermediate must be cleaned up.
     assert len(locations) == 1 and locations[0].endswith("testmodel.Q4_K_M.gguf")
+
+
+def test_bf16_fallback_shards_the_final_output(monkeypatch, tmp_path):
+    h = _Harness(monkeypatch, tmp_path)
+    monkeypatch.setattr(save_mod.torch.cuda, "is_bf16_supported", lambda: False)
+    split_calls = []
+
+    def split(files, shard_size, quantizer_location):
+        split_calls.append((files, shard_size, quantizer_location))
+        return [files[0].replace(".gguf", f"-0000{i}-of-00002.gguf") for i in (1, 2)]
+
+    monkeypatch.setattr(save_mod, "_split_main_gguf", split)
+    locations, _, _ = _run(
+        tmp_path,
+        ["bf16"],
+        model_dtype = "bfloat16",
+        gguf_shard_size = "256MB",
+    )
+
+    assert h.convert_calls[0]["quantization_type"] == "f16"
+    assert h.convert_calls[0]["max_shard_size"] == "0"
+    assert [call["quant_type"] for call in h.quantize_calls] == ["bf16"]
+    assert split_calls == [
+        (
+            [str(tmp_path / "model_dir_gguf" / "testmodel.BF16.gguf")],
+            "256MB",
+            "llama-quantize",
+        )
+    ]
+    assert [Path(path).name for path in locations] == [
+        "testmodel.BF16-00001-of-00002.gguf",
+        "testmodel.BF16-00002-of-00002.gguf",
+    ]
 
 
 def test_mixed_methods_share_16bit_base(monkeypatch, tmp_path):

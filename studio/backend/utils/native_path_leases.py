@@ -119,11 +119,10 @@ def run_without_native_path_secret(
 ) -> Any:
     """Run a multiprocessing child target without the native path lease secret."""
 
-    # Runs in the spawned child: bind it to the parent's death (Linux), since
-    # multiprocessing children cannot be given a preexec_fn by the parent. Shared
-    # entrypoint for the inference/export/training/data-recipe workers.
-    # Two try blocks, not one: allow_child_processes is the newer name, so on an
-    # older process_lifetime.py a combined import would lose the binding as well.
+    # Runs in the spawned child to bind it to the parent's death, since multiprocessing children get no
+    # preexec_fn. Shared entrypoint for the inference/export/training/data-recipe workers. Two try
+    # blocks, because allow_child_processes is the newer name: on an older process_lifetime.py a
+    # combined import would lose the binding as well.
     try:
         from utils.process_lifetime import bind_current_process_to_parent_lifetime
         bind_current_process_to_parent_lifetime()
@@ -144,6 +143,19 @@ def run_without_native_path_secret(
         function_name, environment, *args = args
         for key, value in environment.items():
             os.environ[key] = value
+
+    # Before the entrypoint module below, not after: a spawned child inherits no sys.modules, and
+    # every worker here imports transformers (fast-path hooks, version activation) long before it
+    # imports unsloth. A sentinel installed after that import leaves transformers saying
+    # sentencepiece is available while importing it fails, which sends tokenizer loads into the
+    # dummy-class path and its unguarded `import sentencepiece as spm`.
+    try:
+        from utils.sentencepiece_guard import disable_sentencepiece_on_windows
+        disable_sentencepiece_on_windows()
+    except Exception:
+        pass
+
+    if isinstance(target, str):
         target = getattr(importlib.import_module(target), function_name)
     return target(*args, **kwargs)
 

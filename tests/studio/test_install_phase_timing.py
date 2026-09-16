@@ -36,7 +36,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from unsloth_pwsh_runner import run_pwsh
+from unsloth_pwsh_runner import pwsh_env, run_pwsh
 
 REPO = Path(__file__).resolve().parents[2]
 WORKFLOWS = REPO / ".github" / "workflows"
@@ -50,14 +50,12 @@ INSTALLERS = (
     REPO / "studio" / "setup.ps1",
 )
 
-# Markers of the two filter dialects, each paired with the log-writing stage that must
-# come before it in the same pipeline.
+# Markers of the two filter dialects, each paired with the log-writing stage that must come before it in the same
+# pipeline.
 POSIX_FILTER = "printf '[%4ds] %s\\n' \"$SECONDS\""
 PWSH_FILTER = "$sw.Elapsed.TotalSeconds"
 
 
-# --------------------------------------------------------------------------------------
-# The installers stay out of it
 # --------------------------------------------------------------------------------------
 
 
@@ -227,9 +225,8 @@ def test_a_failing_install_still_fails_its_step():
                 f"-- and a failed install passes"
             )
         if PWSH_FILTER in run:
-            # The comparison, not the bare variable name: `$child` already ends with
-            # `exit $LASTEXITCODE`, so a substring test for the name alone stays green
-            # after the outer check is deleted. Confirmed by mutation.
+            # The comparison, not the bare variable name: `$child` already ends with `exit $LASTEXITCODE`, so a
+            # substring test for the name alone stays green after the outer check is deleted.
             assert re.search(r"\$LASTEXITCODE\s+-ne\s+0", run), (
                 f"{path.name}:{jid}:{name} no longer throws on a non-zero $LASTEXITCODE "
                 f"after the pipeline. PowerShell does not fail a step for a native "
@@ -360,8 +357,14 @@ def test_the_elapsed_prefix_tracks_real_time_rather_than_printing_a_constant(tmp
 PWSH = None
 for _candidate in ("pwsh", "powershell"):
     try:
+        # pwsh_env, not run_pwsh: a probe run at import time, whose only question is whether
+        # this shell exists, must answer "no" rather than raise out of collection, which is
+        # what run_pwsh's exhausted retry loop would do. It still needs the private startup
+        # cache: a torn one makes this probe exit non-zero and silently skips the whole file.
         if (
-            subprocess.run([_candidate, "-NoProfile", "-Command", "exit 0"], timeout = 60).returncode
+            subprocess.run(
+                [_candidate, "-NoProfile", "-Command", "exit 0"], timeout = 60, env = pwsh_env()
+            ).returncode
             == 0
         ):
             PWSH = _candidate

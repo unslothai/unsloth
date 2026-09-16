@@ -137,19 +137,17 @@ def exported_entries() -> List[ModelEntry]:
         if export_type == "gguf" and _gguf_export_task(path, name, base) in NON_CHAT_TASKS:
             continue
         if export_type == "gguf":
-            # No complete quant means every candidate is zero-byte or short a shard, which
-            # survives resolve_model_config() and fails only at load time. Drop it only when
-            # positively unloadable: a falsy result also means "could not tell", and hiding a
-            # real export on a transient read is worse than listing it.
+            # No complete quant means every candidate is zero-byte or short a shard, which survives
+            # resolve_model_config() and fails only at load time. Drop it only when positively unloadable: a
+            # falsy result also means "could not tell".
             load_id = _preferred_complete_gguf(path)
             if not load_id and not _local_dir_holds_a_payload(Path(path)):
                 continue
         else:
             load_id = None
-            # Positively loadable, not merely "not torn". scan_exported_models types a
-            # checkpoint as "lora" on adapter_config.json alone, so an interrupted export
-            # leaves a config and no weights: nothing torn because there is no payload, and
-            # the picker offered a directory load_peft_weights raises ValueError on.
+            # Positively loadable, not merely "not torn". scan_exported_models types a checkpoint as "lora" on
+            # adapter_config.json alone, so an interrupted export leaves a config and no weights and the
+            # picker offered a directory load_peft_weights raises ValueError on.
             if not _local_dir_holds_a_payload(Path(path)):
                 continue
         entries.append(ModelEntry("Fine-tunes", name, export_type, load_id or path))
@@ -190,14 +188,13 @@ def _reachable_snapshots(repo_path: Path, load_id: Optional[str] = None) -> List
         return []
     pinned = _pinned_snapshot(repo_path, load_id)
     if pinned is not None:
-        # Returned as validated, not re-checked against `available`. inventory_scan resolves
-        # the snapshot it pins while cache_path keeps the configured spelling, so under a
-        # symlinked cache root the two name one directory and fail lexical equality, and the
-        # membership test would drop a good pin back onto the ref it was pinned away from.
+        # Returned as validated, not re-checked against `available`: inventory_scan resolves the snapshot
+        # it pins while cache_path keeps the configured spelling, so under a symlinked cache root the two
+        # name one directory and fail lexical equality, and the membership test would drop a good pin.
         return [pinned]
     try:
-        # ValueError too: an undecodable ref raises UnicodeDecodeError, which is not an
-        # OSError, and uncaught it leaves _safe hiding every Downloaded row over one repo.
+        # ValueError too: an undecodable ref raises UnicodeDecodeError, which is not an OSError, and
+        # uncaught it leaves _safe hiding every Downloaded row over one repo.
         ref = (repo_path / "refs" / "main").read_text(encoding = "utf-8").strip()
     except (OSError, ValueError):
         ref = ""
@@ -219,8 +216,8 @@ def _complete_quants(snapshot: Path) -> Optional[set]:
         complete = complete_snapshot_variants(str(snapshot))
     except Exception:
         return None
-    # Empty here means the check could not tell, not that nothing loads: a genuinely
-    # incomplete repo arrives partial and never reaches the picker. Describe what is on disk.
+    # Empty here means the check could not tell, not that nothing loads: a genuinely incomplete repo
+    # arrives partial and never reaches the picker.
     return set(complete) or None
 
 
@@ -327,6 +324,64 @@ def _gguf_file_is_loadable(path: Path) -> bool:
     return present >= set(range(1, total + 1))
 
 
+def _is_gguf_file(path: str) -> bool:
+    try:
+        return path.lower().endswith(".gguf") and Path(path).is_file()
+    except OSError:
+        return False
+
+
+def _is_loose_gguf_companion(path: str) -> bool:
+    """Whether a scan row names a GGUF SIDECAR rather than a model.
+
+    ``_scan_models_dir`` screens mmproj, MTP drafter and imatrix files when it decides a
+    directory is a model, and ``_local_dir_holds_a_payload`` requires a main GGUF inside one,
+    but a loose ``.gguf`` child is listed on its extension alone. Resolving through the folder
+    used to hide that by rewriting the sidecar row onto the real model; loading the file the row
+    names offers a projector the loader refuses, so apply the same rule the directories get.
+    """
+    if not _is_gguf_file(path):
+        return False
+    try:
+        from hub.services.models.common import _is_main_gguf_filename
+    except ImportError:
+        return False
+    return not _is_main_gguf_filename(Path(path).name)
+
+
+def _gguf_file_as_the_loader_opens_it(path: str) -> str:
+    """*path*, collapsed to shard 1 when the LOADER reads it as a complete split family.
+
+    Asked of _local_gguf_load_path, not restated: the scan's _GGUF_SPLIT_RE takes three or more
+    digits and the loader's _GGUF_SPLIT_FILE_RE exactly five, so a local rule would rewrite
+    model-002-of-003.gguf onto a sibling detect_gguf_model still opens as its own model.
+    """
+    try:
+        from utils.models.model_config import _local_gguf_load_path
+    except ImportError:
+        return path
+    try:
+        resolved = _local_gguf_load_path(Path(path))
+        return path if resolved.samefile(path) else str(resolved)
+    except OSError:
+        return path
+
+
+def _gguf_load_target(target: str) -> str:
+    """The GGUF a picker row should load.
+
+    A row naming a .gguf loads that file: resolving it through the folder returned the best quant
+    across every unrelated GGUF beside it (#10352). Shards are the exception, collapsed to the
+    one the loader opens anyway so _dedup_key offers a split family once.
+
+    A FOLDER still resolves: detect_gguf_model takes the largest complete file, commonly the F16,
+    where cached and exported rows take a Q4-class quant. An OOM by source alone, not a taste.
+    """
+    if _is_gguf_file(target):
+        return _gguf_file_as_the_loader_opens_it(target)
+    return _preferred_complete_gguf(target) or target
+
+
 def _preferred_complete_gguf(path: str) -> Optional[str]:
     model_path = Path(path)
     try:
@@ -425,8 +480,8 @@ def cached_entries() -> List[ModelEntry]:
         # A cached embedding/CLIP repo has task None like any chat repo; can_chat is the gate.
         if row.get("capabilities", {}).get("can_chat") is False:
             continue
-        # A diffusion repo also carries no task, and its pipeline root has no config for
-        # can_chat to read, so neither gate above catches it.
+        # A diffusion repo also carries no task, and its pipeline root has no config for can_chat to read,
+        # so neither gate above catches it.
         if row.get("diffusers"):
             continue
         entries.append(ModelEntry("Downloaded", row["repo_id"], "", _cached_model_load_id(row)))
@@ -484,15 +539,15 @@ def _local_dir_holds_a_payload(path: Path) -> bool:
     )
     from utils.paths.path_utils import is_appledouble_metadata
 
-    # A pipeline keeps its weights in component subdirs, so the torn test below reads an
-    # empty root and would call every pipeline unserviceable.
+    # A pipeline keeps its weights in component subdirs, so the torn test below reads an empty root
+    # and would call every pipeline unserviceable.
     if _is_diffusers_pipeline_dir(path):
         return True
     if _local_payload_is_torn(path):
         return False
     # iterdir, not glob("*.gguf"): the glob is case-sensitive on Linux and macOS while
-    # _is_main_gguf_filename lowercases first, so a folder holding Model.GGUF was classified
-    # as a GGUF model and then dropped by this gate, which decides whether it is listed.
+    # _is_main_gguf_filename lowercases first, so a folder holding Model.GGUF was classified as a
+    # GGUF model and then dropped by this gate.
     try:
         children = list(path.iterdir())
     except OSError:
@@ -572,8 +627,8 @@ def local_folder_entries() -> List[ModelEntry]:
         ) or model.partial:
             continue
         is_gguf = model.model_format == "gguf" or model.path.lower().endswith(".gguf")
-        # No format gate: _dir_model_format reports only "gguf" or None, so a safetensors
-        # checkpoint arrives as None and a "safetensors" literal dropped every non-GGUF model.
+        # No format gate: _dir_model_format reports only "gguf" or None, so a safetensors checkpoint
+        # arrives as None and a "safetensors" literal dropped every non-GGUF model.
         if _local_model_task(model) in NON_CHAT_TASKS:
             continue
         # No format gate, so embedding and CLIP exports get through; only this stops them.
@@ -581,15 +636,13 @@ def local_folder_entries() -> List[ModelEntry]:
             continue
         if not _local_dir_holds_a_payload(Path(model.path)):
             continue
+        if _is_loose_gguf_companion(model.path):
+            continue
         if _local_is_a_diffusers_pipeline(model):
             continue
         target = model.load_id or model.id
-        # A GGUF DIRECTORY goes through detect_gguf_model, which sorts by size and takes the
-        # largest complete file, commonly the F16, while cached and exported rows resolve a
-        # Q4-class quant. Same folder, dramatically bigger load by source alone, so an OOM
-        # rather than a preference. Resolve it the same way here.
         if is_gguf:
-            target = _preferred_complete_gguf(target) or target
+            target = _gguf_load_target(target)
         entries.append(
             ModelEntry(
                 "Downloaded",

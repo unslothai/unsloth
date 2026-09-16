@@ -3,21 +3,18 @@
 
 """Runtime LAN listener for Unsloth Studio.
 
-Unsloth binds 127.0.0.1 by default, so a phone or laptop on the same network
-cannot reach it without relaunching with ``-H 0.0.0.0``. This module adds a
-second uvicorn listener over the already-running app, on the machine's own
-network addresses and the same port, and takes it away again -- no restart, and
-the loopback socket keeps serving the desktop app throughout.
+Unsloth binds 127.0.0.1 by default, so a phone or laptop on the same network cannot reach it without
+relaunching with ``-H 0.0.0.0``. This module adds a second uvicorn listener over the already-running app, on the
+machine's own network addresses and the same port, and takes it away again -- no restart, and the loopback
+socket keeps serving the desktop app throughout.
 
-The listener binds each detected address explicitly rather than the wildcard:
-``0.0.0.0`` collides with the loopback socket that already holds the port. It
-runs on the primary server's event loop with ``lifespan="off"``, so the app's
-startup and shutdown handlers stay owned by the primary server and never fire
-twice.
+The listener binds each detected address explicitly rather than the wildcard: ``0.0.0.0`` collides with the
+loopback socket that already holds the port. It runs on the primary server's event loop with ``lifespan="off"``,
+so the app's startup and shutdown handlers stay owned by the primary server and never fire twice.
 
-The settings-managed listener remains IPv4 only. Address discovery also serves
-an existing IPv6 wildcard launch, while link-local IPv6 addresses are omitted
-because another device cannot use them without the listener's interface scope.
+The settings-managed listener remains IPv4 only. Address discovery also serves an existing IPv6 wildcard launch,
+while link-local IPv6 addresses are omitted because another device cannot use them without the listener's
+interface scope.
 """
 
 from __future__ import annotations
@@ -44,8 +41,8 @@ _START_TIMEOUT = 10.0
 # kept under the ~5s Windows console-close budget run.py's shutdown path works to
 _STOP_TIMEOUT = 3.0
 
-# a LAN request already accepted can run for minutes, and it stays a remote caller
-# for all of them; on expiry the trust flag is left active rather than downgraded
+# a LAN request already accepted can run for minutes and stays a remote caller throughout; on expiry
+# the trust flag is left active rather than downgraded
 _DRAIN_TIMEOUT = 300.0
 
 # networking mode rarely changes, but a failed wslinfo probe must eventually recover
@@ -62,25 +59,21 @@ _serve_loop: Any = None
 _sockets: tuple[socket.socket, ...] = ()
 _port: Optional[int] = None
 _error: Optional[str] = None
-# stopped listeners whose accepted requests are still running; they remain remote
-# callers, so the trust flag stays up until every one of them has drained
+# stopped listeners whose accepted requests are still running remain remote callers, so the trust
+# flag stays up until every one has drained
 _pending_drains = 0
 # rebound whole, never mutated: request_on_lan_listener reads it without the lock
 _bound_addresses: tuple[str, ...] = ()
 
 
 def detect_lan_addresses(ip_version: int = 4) -> list[str]:
-    """The machine's own reachable addresses for one IP version, default route first.
-
-    Loopback, link-local (169.254/16) and multicast are dropped: none of them is
-    an address another device on the network can open. A public address is kept
-    -- a cloud VM binding its own public IP is the same operation as a laptop
-    binding its Wi-Fi address, and the caller decides whether that is wanted.
+    """The machine's own reachable addresses for one IP version, default route first. Loopback, link-local
+    (169.254/16) and multicast are dropped: none of them is an address another device on the network can open. A
+    public address is kept -- a cloud VM binding its own public IP is the same operation as a laptop binding its
+    Wi-Fi address, and the caller decides whether that is wanted.
     """
-    # WSL's NAT-side address belongs to a private Hyper-V network, not the
-    # physical LAN. A second device cannot open it directly. Mirrored mode is
-    # different: WSL participates in the host's network and its addresses can be
-    # reached subject to the host firewall.
+    # WSL's NAT-side address belongs to a private Hyper-V network a second device cannot open; mirrored
+    # mode is different, since WSL joins the host's network
     if _wsl_networking_mode() not in (None, "mirrored"):
         return []
 
@@ -123,20 +116,17 @@ def detect_lan_addresses(ip_version: int = 4) -> list[str]:
         if probe is not None:
             probe.close()
 
-    # every other adapter that is up: a route probe picks one source address, and
-    # an isolated LAN has no route at all, so neither it nor the hostname enumerates them
+    # a route probe picks one source address and an isolated LAN has no route at all, so neither it nor
+    # the hostname enumerates the other adapters
     for address in _interface_addresses(ip_version):
         _add(address)
     return addresses
 
 
 def _wsl_networking_mode() -> Optional[str]:
-    """The active WSL networking mode, or ``None`` outside WSL.
-
-    An older WSL without ``wslinfo`` is treated as unknown and therefore not
-    advertised. Older releases use NAT, so failing closed avoids handing a phone
-    an address that only the Windows host can route to.
-    """
+    """The active WSL networking mode, or ``None`` outside WSL. An older WSL without ``wslinfo`` is
+    treated as unknown and therefore not advertised. Older releases use NAT, so failing closed
+    avoids handing a phone an address that only the Windows host can route to."""
     global _wsl_mode_cache
 
     if sys.platform != "linux" or "microsoft" not in platform.release().casefold():
@@ -153,6 +143,7 @@ def _wsl_networking_mode() -> Optional[str]:
                 check = False,
                 text = True,
                 encoding = "utf-8",
+                errors = "replace",
                 timeout = 1,
             )
         except (OSError, subprocess.SubprocessError):
@@ -175,12 +166,9 @@ def _is_host_only_interface(name: str) -> bool:
 
 
 def _interface_addresses(ip_version: int = 4) -> list[str]:
-    """Addresses for one IP version on every interface that is up.
-
-    Falls back to resolving the hostname where psutil is unavailable. That
-    fallback is not an enumeration: a Linux host mapping its name to 127.0.1.1
-    reports nothing, which is why it is the last resort rather than the source.
-    """
+    """Addresses for one IP version on every interface that is up. Falls back to resolving the hostname
+    where psutil is unavailable. That fallback is not an enumeration: a Linux host mapping its name
+    to 127.0.1.1 reports nothing, which is why it is the last resort rather than the source."""
     try:
         import psutil
     except ImportError:
@@ -212,13 +200,10 @@ def _interface_addresses(ip_version: int = 4) -> list[str]:
 
 
 def is_public_address(address: str) -> bool:
-    """True when ``address`` is routable from the internet, not just this network.
-
-    A VPS or dedicated box usually carries its public IPv4 straight on the NIC, so
-    the addresses this module binds are not always the LAN addresses the name
-    implies. Callers surface that rather than refusing it: a public-IP campus or
-    office network is a legitimate place to serve, and only the operator knows
-    which one they are on.
+    """True when ``address`` is routable from the internet, not just this network. A VPS or dedicated box usually
+    carries its public IPv4 straight on the NIC, so the addresses this module binds are not always the LAN
+    addresses the name implies. Callers surface that rather than refusing it: a public-IP campus or office
+    network is a legitimate place to serve, and only the operator knows which one they are on.
     """
     try:
         return ipaddress.ip_address(address).is_global
@@ -276,13 +261,13 @@ def _wait_until(predicate, timeout: float) -> bool:
     return predicate()
 
 
-def start_lan_listener(app, loop, port: int) -> tuple[str, ...]:
-    """Serve ``app`` on every detected LAN address at ``port``. Idempotent.
-
-    Returns the bound addresses. Raises ``RuntimeError`` with a machine-readable
-    reason (``no_lan_address``, ``bind_failed``, ``listener_start_failed``) when
-    the listener could not be brought up.
-    """
+def start_lan_listener(
+    app,
+    loop,
+    port: int,
+    fallback_ports: tuple[int, ...] = (),
+) -> tuple[str, ...]:
+    """Serve ``app`` on LAN addresses at the first bindable candidate port."""
     global _server, _serve_loop, _sockets, _bound_addresses, _port, _error
 
     with _lock:
@@ -297,23 +282,33 @@ def start_lan_listener(app, loop, port: int) -> tuple[str, ...]:
         sockets: list[socket.socket] = []
         bound: list[str] = []
         failures: list[str] = []
-        for address in candidates:
-            try:
-                sockets.append(_bind_listener(address, port))
-            except OSError as exc:
-                failures.append(f"{address} ({exc})")
-                continue
-            bound.append(address)
+        attempted: list[str] = []
+        for candidate_port in (port, *fallback_ports):
+            sockets = []
+            bound = []
+            failures = []
+            for address in candidates:
+                try:
+                    sockets.append(_bind_listener(address, candidate_port))
+                except OSError as exc:
+                    failures.append(f"{address}:{candidate_port} ({exc})")
+                    continue
+                bound.append(address)
+            if sockets:
+                port = candidate_port
+                break
+            attempted.extend(failures)
+
         if not sockets:
             _error = "bind_failed"
-            logger.warning("LAN access could not bind port %s: %s", port, "; ".join(failures))
+            logger.warning("LAN access could not bind: %s", "; ".join(attempted))
             raise RuntimeError(_error)
         if failures:
             logger.info("LAN access skipped unbindable addresses: %s", "; ".join(failures))
 
         server = uvicorn.Server(_listener_config(app, bound[0], port))
-        # published before the socket can accept: a request served in between would
-        # still read the loopback-only trust defaults
+        # published before the socket can accept: a request served in between would still read the loopback-
+        # only trust defaults
         set_lan_connector_active(True)
         serving = server.serve(sockets = sockets)
         try:
@@ -339,12 +334,9 @@ def start_lan_listener(app, loop, port: int) -> tuple[str, ...]:
 
 
 def _sync_lan_trust() -> None:
-    """Publish the beyond-loopback flag from the authoritative state.
-
-    Derived rather than assigned by callers: a repeated stop, or a start racing a
-    stop in another worker thread, otherwise cleared a flag that a live listener
-    or a still-draining one owned. The caller holds ``_lock``.
-    """
+    """Publish the beyond-loopback flag from the authoritative state. Derived rather than assigned by
+    callers: a repeated stop, or a start racing a stop in another worker thread, otherwise cleared a
+    flag that a live listener or a still-draining one owned. The caller holds ``_lock``."""
     set_lan_connector_active(_server is not None or _pending_drains > 0)
 
 
@@ -382,12 +374,9 @@ def _arm_drain_watcher(server) -> None:
 
 
 def _clear_trust_after_drain(server) -> None:
-    """Hold the beyond-loopback flag until the stopped listener's requests finish.
-
-    Closing the listening sockets stops new connections, but uvicorn then drains
-    the accepted ones, and a request that started on the LAN is still a remote
-    caller for its whole life.
-    """
+    """Hold the beyond-loopback flag until the stopped listener's requests finish. Closing the
+    listening sockets stops new connections, but uvicorn then drains the accepted ones, and a
+    request that started on the LAN is still a remote caller for its whole life."""
     global _pending_drains
 
     state = getattr(server, "server_state", None)
@@ -412,20 +401,16 @@ def _close_sockets(sockets) -> None:
 
 
 def stop_lan_listener() -> bool:
-    """Release the LAN sockets and take the listener down. Idempotent.
-
-    Returns whether the port is confirmed released. A False means the sockets may
-    still be accepting, so the caller must keep treating the host as reachable.
-
-    Waits for the sockets, not for ``serve()`` to return: uvicorn closes the
-    sockets passed to it at the top of its shutdown and only then drains
-    in-flight responses, so waiting on the serve task would make a Stop pressed
-    from a LAN device wait out its own response.
+    """Release the LAN sockets and take the listener down. Idempotent. Returns whether the port is confirmed
+    released; False means the sockets may still be accepting, so the caller must keep treating the host as
+    reachable. Waits for the sockets, not for ``serve()`` to return: uvicorn closes the sockets passed to it at
+    the top of its shutdown and only then drains in-flight responses, so waiting on the serve task would make a
+    Stop pressed from a LAN device wait out its own response.
     """
     global _server, _serve_loop, _sockets, _bound_addresses, _port, _error
 
-    # a start holds _lock while waiting for this loop to run serve(), so a stop that
-    # arrives on the loop itself must not block on it or the two wait each other out
+    # a start holds _lock while waiting for this loop to run serve(), so a stop arriving on the loop
+    # itself must not block on it
     if not _lock.acquire(blocking = not _running_on_event_loop()):
         logger.info("LAN access stop deferred: a listener change is in flight")
         return False
@@ -441,9 +426,9 @@ def stop_lan_listener() -> bool:
             return True
         server.should_exit = True
         if _running_on_event_loop():
-            # /api/shutdown tears down from a task on this very loop; waiting would deadlock.
-            # ownership is kept because uvicorn cannot close the sockets until the loop is
-            # free again, and _graceful_shutdown blocks it for seconds stopping subprocesses
+            # /api/shutdown tears down from a task on this very loop, so waiting would deadlock; ownership is kept
+            # because uvicorn cannot close the sockets until the loop is free again, and _graceful_shutdown blocks it
+            # for seconds stopping subprocesses
             logger.info("LAN access stopping")
             return True
         if loop is None or loop.is_closed() or not loop.is_running():
@@ -458,8 +443,8 @@ def stop_lan_listener() -> bool:
             _release_listener_state()
             logger.info("LAN access stopped")
             return True
-        # ownership is kept so a retry waits on these same sockets, and so a second
-        # stop cannot report success while the port may still be accepting
+        # ownership is kept so a retry waits on these same sockets, and so a second stop cannot report
+        # success while the port may still be accepting
         _error = "stop_timed_out"
         logger.warning("LAN access did not release port %s within %ss", port, _STOP_TIMEOUT)
         return False
@@ -486,11 +471,9 @@ def clear_lan_listener_error() -> None:
 
 
 def request_on_lan_listener(scope) -> bool:
-    """True when this request arrived on a LAN listener socket, not on loopback.
-
-    ``scope["server"]`` is the accepting socket's own address, so it identifies
-    the listener a connection came in on without trusting any client header.
-    """
+    """True when this request arrived on a LAN listener socket, not on loopback. ``scope["server"]`` is
+    the accepting socket's own address, so it identifies the listener a connection came in on
+    without trusting any client header."""
     addresses = _bound_addresses
     if not addresses:
         return False

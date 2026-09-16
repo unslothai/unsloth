@@ -68,10 +68,8 @@ async function detachFile(composer: Composer, file: File): Promise<void> {
   if (added) await composer.attachment({ id: added.id }).remove();
 }
 
-/**
- * Offer to turn a pasted YouTube link into a transcript attachment. Sits above the
- * composer surface, matching the prompt-queue stack, and closes once the user picks.
- */
+/** Offer to turn a pasted YouTube link into a transcript attachment. Sits above the composer
+ *  surface, matching the prompt-queue stack, and closes once the user picks. */
 export function YoutubeTranscriptPrompt({
   url,
   onClose,
@@ -83,8 +81,8 @@ export function YoutubeTranscriptPrompt({
   const [fetching, setFetching] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
 
-  // A link removed from the draft unmounts this mid-fetch; drop the in-flight
-  // request so the attachment does not land in a composer that moved on.
+  // A link removed from the draft unmounts this mid-fetch; drop the in-flight request so the
+  // attachment does not land in a composer that moved on.
   useEffect(() => () => abortRef.current?.abort(), []);
 
   const attach = useCallback(async () => {
@@ -106,8 +104,8 @@ export function YoutubeTranscriptPrompt({
       );
       if (controller.signal.aborted) return;
       await composer.addAttachment(file);
-      // A send lands while addAttachment is still pending, and abort cannot recall it,
-      // so drop the file rather than let it ride along on the next message.
+      // A send lands while addAttachment is still pending, and abort cannot recall it, so drop the file
+      // rather than let it ride along on the next message.
       if (controller.signal.aborted) {
         await detachFile(composer, file);
         return;

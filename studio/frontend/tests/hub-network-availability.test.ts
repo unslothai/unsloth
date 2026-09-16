@@ -2,10 +2,14 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { register } from "node:module";
 import test from "node:test";
-import { readFile } from "node:fs/promises";
 
-import {
+// network.ts resolves the Hub origin through "@/lib/hf-endpoint", the way vite
+// resolves the alias. Bare node does not, so the import has to go through the
+// resolver, which in turn means a dynamic import after register().
+register("./bundler-resolver.mjs", import.meta.url);
+const {
   classifyFetchFailure,
   clearRemoteBackoff,
   fetchWithTimeout,
@@ -18,7 +22,9 @@ import {
   markRemoteNetworkOffline,
   markRemoteNetworkOnline,
   sanitizeHubErrorMessage,
-} from "../src/features/hub/lib/network.ts";
+} = await import("../src/features/hub/lib/network.ts");
+
+import { readSrcAsync } from "./helpers/kit.ts";
 
 const HF = "https://huggingface.co";
 
@@ -349,10 +355,7 @@ test("a generator that threw is not pulled again", async () => {
   assert.equal((await iter.next()).done, true, "it is finished once it throws");
   assert.equal(requests, 2, "reusing it issues no request, so done is a lie");
 
-  const src = await readFile(
-    new URL("../src/features/hub/hooks/use-hub-paginated-search.ts", import.meta.url),
-    "utf8",
-  );
+  const src = await readSrcAsync("features/hub/hooks/use-hub-paginated-search.ts");
   // Set on the failure path, cleared only where a new generator is built.
   assert.match(src, /iterDeadRef\.current = true;/);
   assert.match(src, /iterRef\.current = iter;\s*\n\s*iterDeadRef\.current = false;/);

@@ -2,96 +2,46 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /*
- * layoutcost.js -- counts the DOM operations suspected of forcing synchronous layout
- * during streaming, and times them.
+ * layoutcost.js -- counts and times the DOM operations suspected of forcing synchronous layout
+ * during streaming.
  *
- * WHAT IT COUNTS AND WHY THESE FIVE
+ * Under investigation: use-intent-aware-autoscroll.tsx, whose MutationObserver on the thread
+ * viewport reads `scrollHeight`, writes `--aui-scroll-stabilizer` and calls `scrollTo` on every
+ * delivery -- per streamed character, at a cost proportional to the whole thread. So the five
+ * instrumented operations are exactly the ones that shape is made of: scrollHeight reads (the
+ * forced-layout trigger), scrollTop writes, scrollTo calls, MutationObserver callbacks AND
+ * records per callback (one callback with 400 records and 400 callbacks cost wildly differently
+ * and look identical in a callback-only profile), and custom-property writes with
+ * `--aui-scroll-stabilizer` counted separately. Timings are here because a count cannot tell
+ * 4,000 cheap reads from 4,000 that each walk a 300-message thread.
+ * Configured childList + subtree + characterData + an attributeFilter.
  *
- * The mechanism under investigation is
- * studio/frontend/src/components/assistant-ui/use-intent-aware-autoscroll.tsx. It installs a
- * MutationObserver on the thread viewport (`.aui-thread-viewport.aui-stream-viewport`) with
- * `{childList, subtree, characterData, attributes, attributeFilter:["class","hidden",
- * "aria-hidden","aria-expanded","data-state"]}`. Every delivery of that observer runs
- * `el.scrollHeight` (a read that forces style plus layout when the DOM is dirty, and the DOM is
- * always dirty here because the mutation is what woke the observer), then
- * `el.style.setProperty("--aui-scroll-stabilizer", "<n>px")`, then
- * `el.scrollTo({top, behavior:"instant"})`. During token streaming the characterData mutations
- * arrive per streamed character, and each one costs something proportional to the size of the
- * whole thread, not to the size of the change. That is the shape of the hypothesis, so the
- * instrument records exactly the five operations that shape is made of:
+ * SELF COST. Wrapping a getter to time it makes it slower, so the distortion is measured rather
+ * than assumed: `selfCostEstimate()` times N wrapped reads against N through the ORIGINAL
+ * descriptor on a detached clean element, giving the per-call wrapper overhead; and the Python
+ * driver runs the same cell with and without injection and compares frame statistics, which
+ * catches cache effects and lost inlining that no microbenchmark sees. If the two runs disagree
+ * about the app, the counts stay usable and the timings do not.
+ * Reported as `overheadMsPerCall`.
  *
- *     scrollHeight READS   getter on Element.prototype. The forced-layout trigger.
- *     scrollTop WRITES     setter on Element.prototype. Cheap to issue, expensive later.
- *     scrollTo CALLS       method on Element.prototype. The pin.
- *     MutationObserver     callback invocations, and the number of MutationRecords handed to
- *                          each one. Records per callback is the number that separates "the
- *                          observer fires once with 400 records" from "it fires 400 times",
- *                          which are wildly different costs and look identical in a profile
- *                          that only counts callbacks.
- *     setProperty("--..")  custom property writes, with `--aui-scroll-stabilizer` counted on
- *                          its own so the autoscroll path is separable from every other CSS
- *                          variable the app writes.
+ * `clockGranularityMs` exists because a clean read can be faster than a clamped
+ * `performance.now()` can resolve: maxMs 0 means "below the clock", not "free".
+ * A genuine 0.003 ms read is indistinguishable from zero.
  *
- * Counts alone would be enough to test the "per character" claim. The timings are here because
- * a count cannot distinguish 4,000 cheap reads from 4,000 reads that each walk a 300-message
- * thread, and the whole question is which of those is happening.
+ * OFF BY DEFAULT because it perturbs the measurement; the driver injects it only for the deep
+ * tier, where the question has narrowed to "which operation". `window.__sbLayoutCostDisabled`
+ * is a secondary escape hatch for bisecting the instrument itself.
  *
- * THE SELF-COST PROBLEM, STATED PLAINLY
+ * It does not measure layout time, only how often the app asks for something that can force it;
+ * attribution comes from the trace. `window.scrollY`, `getBoundingClientRect`, `offsetHeight`
+ * and `getComputedStyle` also force layout and are deliberately NOT wrapped: they are not in the
+ * path under investigation and every wrapper makes the run less like the app.
  *
- * Wrapping the `scrollHeight` getter to time it makes `scrollHeight` slower. This instrument
- * changes the thing it measures. There is no version of this technique that does not, so the
- * honest move is to measure the distortion instead of hoping it is small:
- *
- *   1. `selfCostEstimate()` times N wrapped reads and N reads through the ORIGINAL descriptor,
- *      which this file keeps a reference to for exactly this purpose, both on a detached and
- *      clean element so no real layout work is included. The difference is the per-call
- *      overhead of the wrapper as installed, including its own bookkeeping. The deep tier can
- *      subtract `overheadMsPerCall * scrollHeightReads` from the total, or at minimum print it
- *      next to the total so a reader can see whether the instrument is a rounding error or a
- *      third of the number.
- *   2. The Python driver runs the SAME benchmark cell twice, once with this instrument injected
- *      and once without, and compares the frame statistics of the two. That is the real check.
- *      Step 1 measures what the wrapper costs per call in isolation; step 2 measures what the
- *      whole instrument costs the app in situ, including cache effects and lost inlining that
- *      no microbenchmark can see. If the two runs disagree about the app, the counts from this
- *      file are still usable and its timings are not, and that has to be discovered rather than
- *      assumed.
- *
- * `clockGranularityMs`, also reported by `selfCostEstimate()`, exists because a single
- * `scrollHeight` read on a clean DOM can be faster than `performance.now()` can resolve. In a
- * browser without cross-origin isolation the timer is clamped, so a genuine 0.003 ms read is
- * indistinguishable from zero. A `maxMs` of 0 therefore means "below the clock", not "free",
- * and the granularity number is what lets the report say so.
- *
- * WHY IT IS OFF BY DEFAULT
- *
- * See above: it perturbs the measurement. The default benchmark run must be as close to the
- * shipping app as the harness can manage, so the driver injects this file only for the deep
- * tier, where the question has already narrowed to "which operation" and a known, quantified
- * distortion is worth paying for. Injection is the opt-in. Setting
- * `window.__sbLayoutCostDisabled = true` before this script runs is a secondary escape hatch
- * for bisecting the instrument itself.
- *
- * WHAT IT DOES NOT MEASURE
- *
- * It does not measure layout time. It measures how often the app asks for something that can
- * force layout, and how long the asking took from JS. Actual layout attribution comes from the
- * trace, and the point of this file is to tell the trace where to look.
- *
- * Reads through `window.scrollY`, `document.documentElement.scrollHeight` in the getter's own
- * frame, `getBoundingClientRect`, `offsetHeight` and `getComputedStyle` are NOT wrapped. They
- * force layout too. They are not in the code path under investigation, and every wrapper added
- * here makes the run less like the app.
- *
- * ZERO DISCIPLINE
- *
- * A count of 0 from this file is a real observation: the operation did not happen. A count of 0
- * because the patch could not be installed is not, and the two must never print the same. So
- * `snapshot()` carries `attempted` per instrumented family, `unavailable` lists the names whose
- * original descriptor was missing or non-configurable, and a WebKit build that refuses the
- * patch reads as "not attempted" rather than as a quiet zero. The Python side turns those into
- * Measure objects. Failing to install is not an error and never throws: a partial instrument
- * that is honest about which half ran is more useful than a page that fails to boot.
+ * ZERO DISCIPLINE. A 0 because the operation did not happen and a 0 because the patch could not
+ * be installed must never print the same, so `snapshot()` carries `attempted` per family and
+ * `unavailable` lists names whose descriptor was missing or non-configurable. Failing to install
+ * is not an error and never throws.
+ * A WebKit build that refuses the patch reads as not attempted.
  */
 
 (function () {
@@ -103,9 +53,7 @@
 
   var W = window;
 
-  // Idempotence. add_init_script runs per document, and a page that creates an iframe or that
-  // the driver reloads must not stack wrappers: a doubly wrapped getter would double every
-  // count and square nothing useful.
+  // Idempotence: add_init_script runs per document; double wrapping would double every count.
   if (W.__sbLayoutCostInstalled) {
     return;
   }
@@ -116,8 +64,7 @@
   var MAX_KEYS = 24;
   var OTHER_KEY = "__other__";
 
-  // Capture these before the app can touch them. An app that replaces performance.now (some
-  // test doubles do) would otherwise silently redefine every timing in this file.
+  // Capture before the app can replace performance.now.
   var perf = W.performance;
   var rawNow =
     perf && typeof perf.now === "function" ? perf.now.bind(perf) : null;
@@ -138,9 +85,6 @@
     }
   }
 
-  // ---------------------------------------------------------------------------------------
-  // State
-  // ---------------------------------------------------------------------------------------
 
   function freshTiming() {
     return { totalMs: 0, maxMs: 0, samples: 0 };
@@ -199,8 +143,7 @@
     unavailable: [],
     selfCost: null,
     clockGranularityMs: null,
-    // Sink for the self-cost loops. A read whose result is thrown away can in principle be
-    // optimised out; assigning it somewhere observable keeps both loops honest.
+    // Sink so the discarded read cannot be optimised out.
     sink: 0
   };
 
@@ -228,18 +171,10 @@
     }
   }
 
-  // ---------------------------------------------------------------------------------------
-  // Per-target breakdown
-  //
-  // Keyed by a short, stable descriptor rather than by element identity. Holding elements in a
-  // Map would pin detached DOM alive for the whole run, which on a streaming thread means
-  // holding every message ever rendered. The key is deliberately coarse: the question is "which
-  // KIND of element is being read", and a 300-message thread has maybe six kinds.
-  //
-  // The cap matters. A page that reads scrollHeight on thousands of distinct elements would
-  // otherwise grow an unbounded object inside the hot path, so key 25 and beyond all land in
-  // one bucket and `breakdownCapped` says the truncation happened.
-  // ---------------------------------------------------------------------------------------
+  // Keyed by a coarse stable descriptor, not element identity, so detached DOM is not pinned alive.
+  // Coarse because the question is which KIND of element is read, and a 300-message thread has
+  // about six kinds.
+  // Cap keys so a page reading thousands of distinct elements cannot grow an unbounded object.
 
   function keyFor(el) {
     try {
@@ -260,8 +195,7 @@
           if (list.length > 0) {
             cls = String(list[0] || "");
           }
-          // contains(), not matches(): a class test cannot invoke the selector engine and
-          // cannot be tricked into anything expensive, and this runs inside the getter.
+          // contains(), not matches(): no selector engine inside the getter.
           isViewport = !!list.contains && list.contains(VIEWPORT_CLASS);
         }
       } catch (e) {
@@ -300,18 +234,13 @@
     };
     state.breakdown[key] = b;
     if (!isOther) {
-      // The overflow bucket is not charged to the budget, so `breakdownKeyCount` is the number
-      // of REAL keys and the object holds at most MAX_KEYS + 1 entries. Counting the bucket
-      // would make a capped run report 25 keys and a reader would reasonably conclude the cap
-      // does not work.
+      // The overflow bucket is not charged to the budget, so breakdownKeyCount counts REAL keys.
+      // At most MAX_KEYS + 1 entries.
       state.breakdownKeyCount += 1;
     }
     return b;
   }
 
-  // ---------------------------------------------------------------------------------------
-  // Element.prototype patches
-  // ---------------------------------------------------------------------------------------
 
   var ElementProto =
     typeof W.Element === "function" && W.Element.prototype
@@ -360,8 +289,7 @@
             return origGet.call(this);
           }
           var t0 = now();
-          // Outside try/catch on purpose. If the native getter throws, the app must see the
-          // same exception it would have seen without this file.
+          // Outside try/catch: a throwing native getter must reach the app unchanged.
           var value = origGet.call(this);
           try {
             var dt = now() - t0;
@@ -401,18 +329,14 @@
       Object.defineProperty(ElementProto, "scrollTop", {
         configurable: true,
         enumerable: d.enumerable,
-        // The getter is left exactly as it was. Reading scrollTop also forces layout, but it is
-        // not the operation under investigation and wrapping it would add cost to a path the
-        // hypothesis does not name.
+        // scrollTop's getter is left alone: not the operation under investigation.
         get: d.get,
         set: function (v) {
           if (!state.active) {
             origSet.call(this, v);
             return;
           }
-          // Writes are counted, not timed. Issuing a scroll write is cheap; the cost lands in
-          // the next layout, where a timer wrapped around the setter would not see it. A number
-          // that looks like a duration but is not one is worse than no number.
+          // Writes are counted, not timed; the cost lands in the next layout.
           try {
             state.counters.scrollTopWrites += 1;
             bucketFor(this).scrollTopWrites += 1;
@@ -477,9 +401,6 @@
     }
   }
 
-  // ---------------------------------------------------------------------------------------
-  // CSSStyleDeclaration.prototype.setProperty
-  // ---------------------------------------------------------------------------------------
 
   function installSetProperty() {
     var proto =
@@ -516,8 +437,7 @@
         value: function (name) {
           if (state.active) {
             try {
-              // Only custom properties. Ordinary style writes are far more numerous and are not
-              // part of the mechanism being tested; counting them would bury the signal.
+              // Only custom properties: ordinary style writes would bury the signal.
               if (typeof name === "string" && name.charCodeAt(0) === 45 && name.charCodeAt(1) === 45) {
                 state.counters.customPropSets += 1;
                 if (name === STABILIZER_PROP) {
@@ -538,22 +458,10 @@
     }
   }
 
-  // ---------------------------------------------------------------------------------------
-  // MutationObserver
-  //
-  // A subclass rather than a Proxy or a plain function: `instanceof MutationObserver` keeps
-  // working, `observe` / `disconnect` / `takeRecords` stay native (they are inherited, and
-  // `observe` is overridden only to read its arguments before delegating), and the callback is
-  // the single thing that changes.
-  //
-  // The split into viewportObserver and other exists because the app runs several observers and
-  // an aggregate count cannot tell the autoscroll one from React's own. Two independent
-  // discriminators are recorded per observer: the observe() target carrying the
-  // `.aui-stream-viewport` class, and an attributeFilter containing "aria-expanded", which no
-  // other observer in this app requests. An observer counts as the viewport observer if EITHER
-  // fires, because the classes are renamed more often than the filter is, and both booleans are
-  // reported separately so a reader can see when they disagree instead of trusting the merge.
-  // ---------------------------------------------------------------------------------------
+  // A subclass, not a Proxy: instanceof and the native methods keep working.
+  // Two independent discriminators (viewport class, aria-expanded filter) separate the autoscroll
+  // observer from React's, reported separately so disagreement is visible.
+  // The split key is `viewportObserver`; no other observer requests that attributeFilter.
 
   function installMutationObserver() {
     var Native = W.MutationObserver;
@@ -577,7 +485,7 @@
       Wrapped = class extends Native {
         constructor(callback) {
           if (typeof callback !== "function") {
-            // Let the native constructor produce its own TypeError, unchanged.
+            // Let the native constructor produce its own TypeError.
             super(callback);
             return;
           }
@@ -596,8 +504,7 @@
             try {
               return callback.call(this, records, observer);
             } finally {
-              // finally, not a trailing statement: a callback that throws still consumed the
-              // time, and dropping the sample would make a broken build look fast.
+              // finally: a throwing callback still consumed the time.
               try {
                 var dt = now() - t0;
                 state.counters.moCallbacks += 1;
@@ -655,8 +562,7 @@
           } catch (e) {
             /* classification is optional, observing is not */
           }
-          // apply(arguments), not (target, init): observe() with a missing options argument has
-          // its own spec behaviour and must keep it.
+          // apply(arguments), not (target, init): observe() with no options has its own spec behaviour.
           return super.observe.apply(this, arguments);
         }
       };
@@ -684,9 +590,6 @@
     }
   }
 
-  // ---------------------------------------------------------------------------------------
-  // Self cost
-  // ---------------------------------------------------------------------------------------
 
   function measureClockGranularityMs() {
     var best = null;
@@ -726,9 +629,7 @@
     state.breakdown = saved.breakdown;
     state.breakdownKeyCount = saved.breakdownKeyCount;
     state.breakdownCapped = saved.breakdownCapped;
-    // The live objects were replaced, so the convenience aliases on the public API have to be
-    // rebound or a caller reading __sbLayoutCost.counters directly would watch a detached copy
-    // that never increments again.
+    // Rebind the aliases or a caller reading __sbLayoutCost.counters watches a detached copy.
     api.counters = state.counters;
     api.timings = state.timings;
     api.mo = state.mo;
@@ -759,22 +660,16 @@
 
     var origGet = originals.scrollHeightDesc.get;
     var result;
-    // The probe runs through the live wrapper, so it increments the real counters. Saving and
-    // restoring them keeps the estimate from contaminating the measurement it exists to
-    // correct, while still timing the wrapper exactly as the app sees it, bookkeeping included.
+    // Save/restore counters so the probe does not contaminate the measurement it corrects.
     var saved = copyRawState();
     try {
       var probe = doc.createElement("div");
       probe.className = "sb-selfcost-probe";
-      // Detached and never inserted. An attached element would make both loops pay for real
-      // layout, which is the app's cost and not the instrument's, and would swamp the
-      // difference this function is trying to resolve. The number produced here is the cost of
-      // the WRAPPER, which is the only part this file is responsible for.
+      // Detached and never inserted: this measures the WRAPPER, not the app's layout.
       var i;
       var sink = 0;
 
-      // Warm both paths first. The first few hundred calls run in the interpreter tier, and
-      // whichever loop goes first would otherwise be charged for the JIT.
+      // Warm both paths so neither loop is charged for the JIT.
       for (i = 0; i < n; i++) {
         sink += probe.scrollHeight;
       }
@@ -841,14 +736,9 @@
     return copyPlain(result);
   }
 
-  // ---------------------------------------------------------------------------------------
-  // Public surface
-  // ---------------------------------------------------------------------------------------
 
   function copyPlain(v) {
-    // Hand written rather than JSON round tripping: JSON turns a non finite number into null
-    // and silently drops undefined, and a timing that reads null because of the serialiser
-    // would be indistinguishable from a timing that was never taken.
+    // Hand written: JSON turns non-finite into null and drops undefined.
     if (v === null || typeof v !== "object") {
       return v;
     }
@@ -878,7 +768,7 @@
         installedAt: api.installedAt,
         resetAt: api.resetAt,
         snapshotAt: nowStamp(),
-        // Per family, so a count of zero can be told apart from a patch that never landed.
+        // Per family, so zero counts differ from a patch that never landed.
         attempted: copyPlain(state.attempted),
         unavailable: copyPlain(state.unavailable),
         counters: copyPlain(state.counters),
@@ -918,9 +808,7 @@
   }
 
   function uninstall() {
-    // Restores the exact descriptors that were captured, so a page can be handed back to a
-    // measurement that must not carry the instrument's overhead. Counters are left alone: the
-    // driver usually snapshots after uninstalling.
+    // Restores the captured descriptors; counters are left alone.
     state.active = false;
     try {
       if (originals.scrollHeightDesc && ElementProto) {
@@ -986,8 +874,7 @@
   W.__sbLayoutCost = api;
 
   if (W.__sbLayoutCostDisabled === true) {
-    // Injected but told to stand down. Everything reads as not attempted, which is the correct
-    // answer and not a row of zeros.
+    // Injected but told to stand down: everything reads as not attempted, not a row of zeros.
     return;
   }
 

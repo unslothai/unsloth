@@ -35,8 +35,8 @@ from ..fixture.corpus import RungPlan, Unit
 from .lifecycle import StudioAuth, auth_request_json
 
 # How close the two paths must land to count as equivalent. Not zero: a streamed reply carries a
-# usage record and a duration the seeded one does not, and the composer state differs, so a
-# handful of elements always differ. 2% on the quantities that scale with content.
+# usage record and a duration the seeded one does not, and the composer state differs. 2% on the
+# quantities that scale with content.
 EQUIVALENCE_TOLERANCE = 0.02
 
 
@@ -55,11 +55,10 @@ def _assistant_content(unit: Unit) -> list[dict]:
     parts: list[dict] = []
     if unit.reasoning:
         parts.append({"type": "reasoning", "text": unit.reasoning})
-    # Tool calls sit BETWEEN the reasoning and the answer, which is where a real turn puts them:
-    # the model thinks, calls tools, then answers. reasoning.tsx groups adjacent tool-call parts
-    # with the reasoning above them, so the order decides whether a tool group renders inside the
-    # collapsible pane or as its own block, and those are different components with different
-    # costs.
+    # Tool calls sit BETWEEN the reasoning and the answer, where a real turn puts them. reasoning.tsx
+    # groups adjacent tool-call parts with the reasoning above them, so the order decides whether a
+    # tool group renders inside the collapsible pane or as its own block, and those are different
+    # components with different costs.
     for call in unit.tool_calls:
         parts.append(dict(call))
     if unit.content:
@@ -85,10 +84,10 @@ class SeededThread:
     seeded_chars: int
     seconds: float
     turns: int
-    # The markers on the FIRST and LAST user turns. The readiness gate uses `last_marker` to prove
-    # the end of the thread is mounted, and the completeness probe uses `first_marker` to prove a
-    # windowed arm still holds the head of the conversation. Plain text written by this harness,
-    # so neither is a guess about what a markdown renderer will do to the corpus.
+    # The markers on the FIRST and LAST user turns: the readiness gate uses `last_marker` to prove the
+    # end of the thread is mounted, and the completeness probe uses `first_marker` to prove a windowed
+    # arm still holds the head. Plain text written by this harness, so neither is a guess about what a
+    # markdown renderer will do.
     first_marker: Optional[str] = None
     last_marker: Optional[str] = None
 
@@ -109,10 +108,8 @@ class Seeder:
 
     def create_thread(self, title: str = "studiobench") -> str:
         thread_id = str(uuid.uuid4())
-        # `auth_request_json`, not `request_json`, and that is not a spelling preference: the
-        # seeder is asked for a thread once per cell for as long as the run lasts, and an access
-        # token is good for 60 minutes. See `StudioAuth`: the token is re-minted before it expires
-        # and once more if a 401 arrives anyway.
+        # `auth_request_json`, not `request_json`: the seeder is asked for a thread once per cell for as
+        # long as the run lasts and an access token is good for 60 minutes. See `StudioAuth`.
         auth_request_json(
             self.auth,
             self._url("/api/chat/threads"),
@@ -173,8 +170,8 @@ class Seeder:
             parent = assistant_id
         started = time.monotonic()
         if messages:
-            # pruneMissing so this REPLACES the thread rather than merging into whatever a
-            # previous cell left behind. A merge would make every rung after the first cumulative.
+            # pruneMissing so this REPLACES the thread rather than merging into whatever a previous cell left
+            # behind; a merge would make every rung after the first cumulative.
             auth_request_json(
                 self.auth,
                 self._url(f"/api/chat/threads/{thread_id}/messages"),
@@ -228,19 +225,14 @@ def compare_signatures(
     elements legitimately differ and gating on exact equality would fail every time for a reason
     that has nothing to do with fidelity.
     """
-    # GATED ON CONTENT, REPORTED ON REASONING.
-    #
-    # A collapsed reasoning pane in a SEEDED thread does not mount its children, while a streamed
-    # one does: it was open while the text arrived, and collapsing afterwards leaves the subtree
-    # in place. Measured directly, the same text carried 1,485 reasoning spans one way and 0 the
-    # other, and open-then-close on the seeded side unmounted them again, so this is not something
-    # seeding can be made to reproduce -- it is a property of how the app builds a thread.
-    #
+    # GATED ON CONTENT, REPORTED ON REASONING. A collapsed reasoning pane in a SEEDED thread does not
+    # mount its children while a streamed one does, because it was open while the text arrived.
+    # Measured, the same text carried 1,485 reasoning spans one way and 0 the other, so this is a
+    # property of how the app builds a thread rather than something seeding can reproduce.
     # Gating on total `highlight_spans` therefore asked a question seeding can never pass, and the
-    # answer moved with whatever pane state the film happened to leave behind: two runs of the
-    # same rung reported 2.1% and 36.4% drift. The question worth asking is whether the same text
-    # renders the same CONTENT, which is what these keys are. The reasoning difference is measured
-    # and reported below rather than swept into a pass or a fail.
+    # answer moved with whatever pane state the film left behind: two runs of the same rung reported
+    # 2.1% and 36.4% drift. The question worth asking is whether the same text renders the same
+    # CONTENT, and the reasoning difference is measured and reported below.
     keys = ("assistant_messages", "content_code_blocks", "content_spans", "reasoning_panes")
     fields: dict = {}
     equivalent = True
@@ -354,9 +346,9 @@ def measure_chars_per_token(
                 }
         except Exception:  # noqa: BLE001
             pass
-    # Last resort, and LABELLED. Counting whitespace-delimited words plus punctuation is a rough
-    # stand-in for a BPE tokeniser and is off by tens of percent on dense code, which is most of
-    # this corpus.
+    # Last resort, and LABELLED: counting whitespace-delimited words plus punctuation is a rough
+    # stand-in for a BPE tokeniser and is off by tens of percent on dense code, which is most of this
+    # corpus.
     words = len(sample.split())
     punct = sum(1 for c in sample if not c.isalnum() and not c.isspace())
     est = max(1, words + punct // 2)

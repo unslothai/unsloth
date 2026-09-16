@@ -41,15 +41,12 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[5]
 
-#: SIZED BY MEASUREMENT, not by guesswork. Under `spawn` the per-trial collision rate on the broken
-#: guard is well below the 50% a barrier reaches under `fork`, because each contender pays its own
-#: interpreter startup before arriving. At 10 trials the two headline tests missed the defect in one
-#: run out of four; at 40 they caught it in six runs out of six, and the whole file still costs
-#: about ten seconds. A concurrency test that only usually fails on the broken code is not much
-#: better than one that never does.
-#:
+#: SIZED BY MEASUREMENT. Under `spawn` the per-trial collision rate on the broken guard is well below
+#: the 50% a barrier reaches under `fork`, because each contender pays its own interpreter startup
+#: first. At 10 trials the two headline tests missed the defect in one run out of four; at 40 they
+#: caught it in six runs out of six, and the file still costs about ten seconds.
 #: `spawn` rather than `fork` because pytest has already started threads by the time this runs, and
-#: forking a multi-threaded process is deprecated for the good reason that the child can deadlock.
+#: forking a multi-threaded process is deprecated because the child can deadlock.
 TRIALS = 40
 
 
@@ -68,8 +65,8 @@ def _contend(repo_root: str, outdir: str, index: int, start, hold, q) -> None:
     except Exception as exc:  # noqa: BLE001 - reported rather than lost
         q.put((False, f"UNEXPECTED {type(exc).__name__}: {exc}"))
     finally:
-        # Nobody releases the marker until everyone has attempted, so an admission is genuine
-        # overlap rather than sequential reuse of a directory the first run already let go.
+        # Nobody releases the marker until everyone has attempted, so an admission is genuine overlap rather
+        # than sequential reuse of a directory the first run already let go.
         try:
             hold.wait(timeout = 60)
         except Exception:  # noqa: BLE001
@@ -197,14 +194,12 @@ def test_a_crashed_run_does_not_lock_the_directory_forever(tmp_path):
     rec.close()
 
 
+# A retained record is not a holder. The marker is deliberately never unlinked, so a directory used
+# before already contains the PREVIOUS run's `pid session` line. These two are deterministic on
+# purpose: they stand in the window rather than racing for it.
+
+
 # ── a retained record is not a holder ────────────────────────────────
-#
-# The marker is deliberately never unlinked, so on a directory that has been used before it already
-# contains the PREVIOUS run's `pid session` line. These two are deterministic on purpose: they stand
-# in the window rather than racing for it, so they say the same thing on a loaded runner as on an
-# idle one.
-
-
 def _stalled_holder(
     marker: Path,
     write_after_s: float,

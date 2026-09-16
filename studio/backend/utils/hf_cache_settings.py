@@ -64,8 +64,7 @@ class HuggingFaceCachePaths:
         from utils.utils import hf_environment_for_spawn, hf_environment_scrubbed
 
         env = hf_environment_for_spawn() if base is None else hf_environment_scrubbed(base)
-        # Do not rewrite HF_HOME. It also owns HF's token path, and credentials
-        # must not be moved onto a removable cache volume.
+        # Do not rewrite HF_HOME. It also owns HF's token path.
         env["HF_HUB_CACHE"] = str(self.hub_cache)
         env["HF_XET_CACHE"] = str(self.xet_cache)
         env.pop("HUGGINGFACE_HUB_CACHE", None)
@@ -112,8 +111,9 @@ def _environment_paths() -> Optional[HuggingFaceCachePaths]:
 def _stored_cache_home() -> Optional[Path]:
     try:
         from storage.studio_db import get_app_setting
-        value = get_app_setting(CACHE_HOME_SETTING_KEY, None)
-    except Exception:
+        from utils.account_context import OWNER, run_as
+        value = run_as(OWNER, get_app_setting, CACHE_HOME_SETTING_KEY, None)
+    except Exception:  # noqa: BLE001 - the shim is optional; a spawn must never depend on it
         return None
     if not isinstance(value, str) or not value.strip():
         return None
@@ -138,7 +138,8 @@ def configured_cache_key() -> str:
         return "env:" + explicit
     try:
         from storage.studio_db import get_app_setting
-        value = get_app_setting(CACHE_HOME_SETTING_KEY, None)
+        from utils.account_context import OWNER, run_as
+        value = run_as(OWNER, get_app_setting, CACHE_HOME_SETTING_KEY, None)
     except Exception:
         return "default"
     if isinstance(value, str) and value.strip():
@@ -181,7 +182,7 @@ def _xet_loader_barrier() -> Iterator[None]:
     try:
         from utils.hf_xet_fallback import env_override_barrier
         barrier = env_override_barrier()
-    except Exception:  # noqa: BLE001 - the shim is optional; a spawn must never depend on it
+    except Exception:  # noqa: BLE001 - the shim is optional; a spawn must never depend
         yield
         return
     with barrier:
@@ -199,10 +200,8 @@ def child_environment_for_spawn(environment: Mapping[str, str]) -> Iterator[None
 
     from utils.utils import hf_environment_restored_for_spawn
 
-    # Also exclude the Xet shim's GPU-init override window: a child spawned inside it inherits the
-    # flag for life, whereupon unsloth_zoo hands it STUB triton and bitsandbytes and the run
-    # silently produces nothing. Filtering a child env dict cannot help here, since spawn copies the
-    # live environment and takes no env argument.
+    # Exclude the Xet shim's GPU-init override window: a child spawned inside it inherits the flag for life and
+    # unsloth_zoo hands it STUB triton and bitsandbytes, so the run produces nothing.
     with _spawn_env_lock, _xet_loader_barrier(), hf_environment_restored_for_spawn():
         missing = object()
         saved_environment: dict[str, str | object] = {}
@@ -223,8 +222,8 @@ def initialize_hf_cache_environment() -> HuggingFaceCachePaths:
     """Seed import-time HF variables once during backend startup."""
 
     paths = get_hf_cache_paths()
-    # Preserve an explicit HF_HOME, otherwise keep credentials at the platform
-    # default while routing cache bytes through the selected home.
+    # Preserve an explicit HF_HOME, else keep credentials at the platform default while routing
+    # cache bytes through the selected home.
     if not os.environ.get("HF_HOME", "").strip():
         os.environ["HF_HOME"] = str(_default_cache_home())
     os.environ["HF_HUB_CACHE"] = str(paths.hub_cache)
@@ -288,7 +287,8 @@ def _validate_cache_home(raw_path: str) -> Path:
 def _stored_history() -> list[Path]:
     try:
         from storage.studio_db import get_app_setting
-        raw = get_app_setting(CACHE_HISTORY_SETTING_KEY, [])
+        from utils.account_context import OWNER, run_as
+        raw = run_as(OWNER, get_app_setting, CACHE_HISTORY_SETTING_KEY, [])
     except Exception:
         raw = []
     if not isinstance(raw, list):

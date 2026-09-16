@@ -10,8 +10,28 @@ export type ParentLinkedMessage = {
 
 const ROLE_ORDER: Record<string, number> = { system: 0, user: 1, assistant: 2 };
 
+// Rows in storage order. A null is a root only after a recorded parent; earlier it chains.
+export function createParentResolver(): (
+  message: ParentLinkedMessage,
+) => string | null {
+  let previousId: string | null = null;
+  let sawRecordedParent = false;
+  return (message) => {
+    const inferred =
+      message.parentId === undefined ||
+      (message.parentId === null && !sawRecordedParent);
+    const parentId = inferred ? previousId : message.parentId;
+    if (message.parentId != null) {
+      sawRecordedParent = true;
+    }
+    previousId = message.id;
+    return parentId ?? null;
+  };
+}
+
 export function orderBySelectedBranch<T extends ParentLinkedMessage>(
   messages: T[],
+  headId?: string | null,
 ): T[] {
   const sorted = messages.slice().sort((a, b) => {
     const createdAtDelta = (a.createdAt ?? 0) - (b.createdAt ?? 0);
@@ -28,16 +48,17 @@ export function orderBySelectedBranch<T extends ParentLinkedMessage>(
 
   const byId = new Map<string, T>();
   const parentOf = new Map<string, string | null>();
-  let previousId: string | null = null;
+  const resolveParent = createParentResolver();
   for (const message of sorted) {
     byId.set(message.id, message);
-    parentOf.set(message.id, message.parentId ?? previousId);
-    previousId = message.id;
+    parentOf.set(message.id, resolveParent(message));
   }
 
   const chain: T[] = [];
   const seen = new Set<string>();
-  let currentId: string | null = sorted.at(-1)?.id ?? null;
+  // undefined follows the newest message; null is a live branch with nothing saved yet.
+  let currentId: string | null =
+    headId === undefined ? (sorted.at(-1)?.id ?? null) : headId;
   while (currentId != null && !seen.has(currentId)) {
     seen.add(currentId);
     const message = byId.get(currentId);
@@ -53,11 +74,11 @@ export function orderBySelectedBranch<T extends ParentLinkedMessage>(
 // follow the newest parent chain because response slots can predate the next user message.
 export function orderByParentChain<T extends ParentLinkedMessage>(
   messages: T[],
-  options: { includeSiblings?: boolean } = {},
+  options: { includeSiblings?: boolean; headId?: string | null } = {},
 ): T[] {
-  const { includeSiblings = true } = options;
+  const { includeSiblings = true, headId } = options;
   if (!includeSiblings) {
-    return orderBySelectedBranch(messages);
+    return orderBySelectedBranch(messages, headId);
   }
   const byId = new Map<string, T>(
     messages.map((message) => [message.id, message]),

@@ -22,7 +22,9 @@ from core.inference.offload_layout import (
     BlockLayout,
     ModelLayout,
     _layout_from_reader,
+    _layout_from_readers,
     layout_from_gguf,
+    split_shard_paths,
     spill_pattern_for,
 )
 from core.inference.offload_cost_model import HostProfile
@@ -1490,3 +1492,60 @@ def test_a_wrong_length_vector_is_ignored_rather_than_trusted():
         kv_layer_weights = [1, 2, 3],
     )
     assert got is not None and "sliding-window" in got
+
+
+def test_every_shard_handed_over_prices_the_whole_split():
+    """Two readers summing to one layout, token_embd in its bucket whichever shard holds it."""
+    first = _StubReader(
+        _shard_fields(**{"split.count": 2, "split.no": 0}),
+        _shard_tensors(range(32)) + [_StubTensor("output.weight", GIB)],
+    )
+    second = _StubReader(
+        _shard_fields(**{"split.count": 2, "split.no": 1}),
+        _shard_tensors(range(32, 64)) + [_StubTensor("token_embd.weight", 3 * GIB)],
+    )
+    layout = _layout_from_readers([first, second])
+    assert layout.complete
+    assert len(layout.blocks) == 64
+    assert layout.token_embd_bytes == 3 * GIB
+    assert layout.lm_head_bytes == GIB
+
+
+def test_a_partial_shard_set_still_abstains():
+    readers = [
+        _StubReader(_shard_fields(**{"split.count": 3}), _shard_tensors(range(32))),
+        _StubReader(_shard_fields(**{"split.count": 3}), _shard_tensors(range(32, 64))),
+    ]
+    assert not _layout_from_readers(readers).complete
+
+
+def test_split_shard_paths_follow_llama_cpp_naming():
+    paths = split_shard_paths("/m/model-Q4-00002-of-00003.gguf")
+    assert paths == [
+        "/m/model-Q4-00001-of-00003.gguf",
+        "/m/model-Q4-00002-of-00003.gguf",
+        "/m/model-Q4-00003-of-00003.gguf",
+    ]
+    assert split_shard_paths("/m/model-Q4.gguf") is None
+
+
+def test_layout_from_gguf_reads_the_sibling_shards_only_when_asked(tmp_path, monkeypatch):
+    import gguf
+
+    shards = [tmp_path / f"m-{i:05d}-of-00002.gguf" for i in (1, 2)]
+    for shard in shards:
+        shard.write_bytes(b"GGUF")
+    by_path = {
+        str(shards[0]): _StubReader(_shard_fields(**{"split.count": 2}), _shard_tensors(range(32))),
+        str(shards[1]): _StubReader(
+            _shard_fields(**{"split.count": 2}), _shard_tensors(range(32, 64))
+        ),
+    }
+    monkeypatch.setattr(gguf, "GGUFReader", lambda path: by_path[str(path)])
+
+    assert not layout_from_gguf(str(shards[0])).complete
+    whole = layout_from_gguf(str(shards[0]), all_shards = True)
+    assert whole.complete and len(whole.blocks) == 64
+
+    shards[1].unlink()
+    assert not layout_from_gguf(str(shards[0]), all_shards = True).complete

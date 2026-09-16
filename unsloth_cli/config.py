@@ -5,16 +5,20 @@ from pathlib import Path
 from typing import Literal, Optional, List
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 
 class DataConfig(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
     dataset: Optional[str] = None
     local_dataset: Optional[List[str]] = None
     format_type: Literal["auto", "alpaca", "chatml", "sharegpt"] = "auto"
 
 
 class TrainingConfig(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
     training_type: Literal["lora", "full"] = "lora"
     max_seq_length: int = 2048
     load_in_4bit: bool = True
@@ -34,6 +38,8 @@ class TrainingConfig(BaseModel):
 
 
 class LoraConfig(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
     lora_r: int = 64
     lora_alpha: int = 16
     lora_dropout: float = 0.0
@@ -49,6 +55,8 @@ class LoraConfig(BaseModel):
 
 
 class LoggingConfig(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
     enable_wandb: bool = False
     wandb_project: str = "unsloth-training"
     wandb_token: Optional[str] = None
@@ -58,6 +66,8 @@ class LoggingConfig(BaseModel):
 
 
 class Config(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
     model: Optional[str] = None
     data: DataConfig = Field(default_factory = DataConfig)
     training: TrainingConfig = Field(default_factory = TrainingConfig)
@@ -128,6 +138,56 @@ class Config(BaseModel):
         }
 
 
+class ConfigError(ValueError):
+    pass
+
+
+def _section_for_field(name: str) -> Optional[str]:
+    for section, field_info in Config.model_fields.items():
+        annotation = field_info.annotation
+        if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+            if name in annotation.model_fields:
+                return section
+    return None
+
+
+def _describe_unknown_key(loc: tuple) -> str:
+    key = str(loc[-1])
+    parent = str(loc[-2]) if len(loc) > 1 else None
+    where = f"in section '{parent}'" if parent else "at the top level"
+    canonical = key.replace("-", "_")
+    section = _section_for_field(canonical)
+    subject = "it" if canonical == key else f"'{canonical}'"
+
+    if section is not None and section == parent:
+        return f"unknown key '{key}' {where}: did you mean '{canonical}'?"
+    if section is not None:
+        return f"unknown key '{key}' {where}: {subject} belongs under '{section}:'"
+    if canonical in Config.model_fields:
+        if parent is None:
+            return f"unknown key '{key}' {where}: did you mean '{canonical}'?"
+        return f"unknown key '{key}' {where}: {subject} belongs at the top level"
+    return f"unknown key '{key}' {where}"
+
+
+def _config_error_message(path: Path, error: ValidationError) -> str:
+    lines = [f"Invalid config file: {path}"]
+    for err in error.errors():
+        loc = tuple(err.get("loc") or ())
+        if err.get("type") == "extra_forbidden" and loc:
+            lines.append(f"  - {_describe_unknown_key(loc)}")
+        elif not loc:
+            got = type(err.get("input")).__name__
+            article = "an" if got[:1].lower() in "aeiou" else "a"
+            lines.append(
+                f"  - the top level must be a mapping of keys and sections, not {article} {got}"
+            )
+        else:
+            field = ".".join(str(part) for part in loc) or "config"
+            lines.append(f"  - {field}: {err.get('msg', 'invalid value')}")
+    return "\n".join(lines)
+
+
 def load_config(path: Optional[Path]) -> Config:
     """Load config from YAML/JSON file, or return defaults if no path given."""
     if not path:
@@ -137,11 +197,42 @@ def load_config(path: Optional[Path]) -> Config:
     if not path.exists():
         raise FileNotFoundError(f"Config file not found: {path}")
 
-    text = path.read_text(encoding = "utf-8")
+    # utf-8-sig: drops a Notepad BOM, identical to utf-8 when there is none.
+    try:
+        text = path.read_text(encoding = "utf-8-sig")
+    except UnicodeDecodeError as error:
+        raise ConfigError(
+            f"Could not read config file: {path}\n"
+            f"  - {error}\n"
+            f"  - config files must be UTF-8; re-save it as UTF-8 and try again"
+        ) from None
+    except OSError as error:
+        raise ConfigError(f"Could not read config file: {path}\n  - {error}") from None
+
     if path.suffix.lower() in {".yaml", ".yml"}:
-        data = yaml.safe_load(text) or {}
+        try:
+            data = yaml.safe_load(text)
+        except yaml.YAMLError as error:
+            raise ConfigError(f"Could not parse config file: {path}\n  - {error}") from None
     else:
         import json
-        data = json.loads(text or "{}")
+        try:
+            data = json.loads(text.strip() or "{}")
+        except json.JSONDecodeError as error:
+            hint = (
+                ""
+                if path.suffix.lower() == ".json"
+                else (
+                    f"\n  - parsed as JSON because of the '{path.suffix}' extension; "
+                    f"name it .yaml or .yml for YAML"
+                )
+            )
+            raise ConfigError(f"Could not parse config file: {path}\n  - {error}{hint}") from None
 
-    return Config(**data)
+    if data is None:
+        data = {}
+
+    try:
+        return Config.model_validate(data)
+    except ValidationError as error:
+        raise ConfigError(_config_error_message(path, error)) from None

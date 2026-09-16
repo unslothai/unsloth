@@ -287,10 +287,10 @@ def test_the_key_is_computed_over_the_fields_it_explains():
     """
     corpus = "ac9d5d8e37be2a3844deed559fde6070247ad2322377295fb383b60b5eec5a0c"
     a = _meta(corpus)
-    #: Fields the key reads out of the nested `platform` dict rather than off the row itself.
-    #: Written as a set rather than a single special case, because the single special case is what
-    #: had to be edited when `system` and `machine` were added -- and a test that needs editing to
-    #: keep passing when a field is added is a test that can be edited into silence instead.
+    #: Fields the key reads out of the nested `platform` dict rather than off the row itself. Written as
+    #: a set rather than a single special case, because the special case is what had to be edited when
+    #: `system` and `machine` were added, and a test that needs editing to keep passing can be edited
+    #: into silence instead.
     nested = {"engine", "system", "machine", "node"}
     for field in payload_rules.comparability_fields(a):
         b = _meta(corpus)

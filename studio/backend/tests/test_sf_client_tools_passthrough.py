@@ -53,6 +53,8 @@ class _Request:
     url = SimpleNamespace(path = "/v1/chat/completions")
     method = "POST"
     scope: dict = {}
+    # These cases drive the tool loop, whose confirm gate asks over these frames.
+    headers = {"X-Unsloth-Events": "1"}
 
     async def is_disconnected(self):
         return False
@@ -104,6 +106,9 @@ class _ScriptedBackend:
 
     def reset_generation_state(self, caller_cancel_event = None):
         self.reset_count += 1
+
+    def resize_image(self, image):
+        return image
 
 
 def _fixed(*snapshots):
@@ -251,6 +256,46 @@ def test_no_tools_request_untouched(monkeypatch):
     assert choice["finish_reason"] == "stop"
     assert choice["message"]["content"] == "just a plain answer"
     assert choice["message"].get("tool_calls") is None
+
+
+def test_participant_names_reach_the_local_backend(monkeypatch):
+    backend = _ScriptedBackend(_fixed("ok"))
+    payload = _request(
+        stream = False,
+        messages = [
+            ChatMessage(role = "user", name = "alice", content = "hi"),
+            ChatMessage(role = "assistant", name = "researcher", content = "hello"),
+            ChatMessage(role = "user", name = "bob", content = "again"),
+        ],
+    )
+    _call(payload, monkeypatch, backend)
+    assert [(m["role"], m.get("name")) for m in backend.calls[0]["messages"]] == [
+        ("user", "alice"),
+        ("assistant", "researcher"),
+        ("user", "bob"),
+    ]
+
+
+def test_a_named_system_message_does_not_restructure_the_request(monkeypatch):
+    """Moving it into the history is what changes how much of a thread the vision path renders."""
+    sent = []
+    for name in (None, "supervisor"):
+        backend = _ScriptedBackend(_fixed("ok"))
+        _call(
+            _request(
+                stream = False,
+                messages = [
+                    ChatMessage(role = "system", name = name, content = "be brief"),
+                    ChatMessage(role = "user", content = "hi"),
+                ],
+            ),
+            monkeypatch,
+            backend,
+        )
+        sent.append(backend.calls[0])
+    assert sent[0]["messages"] == sent[1]["messages"] == [{"role": "user", "content": "hi"}]
+    assert sent[0]["system_prompt"] == sent[1]["system_prompt"]
+    assert sent[1]["system_prompt"].endswith("be brief")
 
 
 def test_prose_around_call_retained(monkeypatch):
@@ -1172,3 +1217,154 @@ def test_completion_details_are_summed_with_the_completion_they_describe():
     )
     assert folded["usage"]["completion_tokens"] == 50
     assert folded["usage"]["completion_tokens_details"] == {"reasoning_tokens": 10}
+
+
+_PNG_1x1 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk"
+    "+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+)
+
+
+def _vision_backend(*snapshots):
+    backend = _ScriptedBackend(_fixed(*snapshots))
+    backend.models["sf-model"]["is_vision"] = True
+    return backend
+
+
+def _image_message(text = "run the tests"):
+    return ChatMessage(
+        role = "user",
+        content = [
+            {"type": "text", "text": text},
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{_PNG_1x1}"}},
+        ],
+    )
+
+
+def test_image_turn_keeps_the_client_tool_catalog(monkeypatch):
+    backend = _vision_backend(_CALL_XML)
+    payload = _request(messages = [_image_message()], tools = [LOOKUP_TOOL], stream = False)
+    body = _json_body(_call(payload, monkeypatch, backend))
+
+    assert backend.calls[0]["tools"] == [LOOKUP_TOOL]
+    assert backend.calls[0]["image"] is not None
+    choice = body["choices"][0]
+    assert choice["finish_reason"] == "tool_calls"
+    assert choice["message"]["tool_calls"][0]["function"]["name"] == "lookup"
+
+
+def test_legacy_image_field_keeps_the_client_tool_catalog(monkeypatch):
+    backend = _vision_backend(_CALL_XML)
+    payload = _request(
+        messages = [ChatMessage(role = "user", content = "run the tests")],
+        image_base64 = _PNG_1x1,
+        tools = [LOOKUP_TOOL],
+        stream = False,
+    )
+    _call(payload, monkeypatch, backend)
+
+    assert backend.calls[0]["tools"] == [LOOKUP_TOOL]
+    assert backend.calls[0]["image"] is not None
+
+
+def test_video_turn_with_tools_enabled_keeps_the_client_tool_catalog(monkeypatch):
+    """A clip rules out the server loop like an image; the passthrough keeps catalog and clip."""
+    backend = _vision_backend(_CALL_XML)
+    backend.models["sf-model"]["has_video_input"] = True
+    clip = "AAAAGGZ0eXBtcDQy"
+    payload = _request(
+        messages = [ChatMessage(role = "user", content = "run the tests")],
+        video_base64 = clip,
+        tools = [LOOKUP_TOOL],
+        enable_tools = True,
+        stream = False,
+    )
+    body = _json_body(_call(payload, monkeypatch, backend))
+
+    assert backend.calls[0]["tools"] == [LOOKUP_TOOL]
+    assert backend.calls[0]["video"] == clip
+    assert body["choices"][0]["message"]["tool_calls"][0]["function"]["name"] == "lookup"
+
+
+def test_a_nudge_retry_keeps_the_video_on_the_question_turn(monkeypatch):
+    """Without the clip's turn marked first, the retry's correction turn would take the clip."""
+    truncated = '<tool_call>{"name": "lookup"'
+
+    def responder(messages, tools):
+        nudged = any(
+            "native tool-call format" in (m.get("content") or "")
+            for m in messages
+            if m.get("role") == "user" and isinstance(m.get("content"), str)
+        )
+        return [_CALL_XML] if nudged else [truncated]
+
+    backend = _vision_backend(_CALL_XML)
+    backend._responder = responder
+    backend.models["sf-model"]["has_video_input"] = True
+    clip = "AAAAGGZ0eXBtcDQy"
+    payload = _request(
+        messages = [ChatMessage(role = "user", content = "run the tests")],
+        video_base64 = clip,
+        tools = [LOOKUP_TOOL],
+        stream = False,
+        nudge_tool_calls = True,
+    )
+    _call(payload, monkeypatch, backend)
+
+    assert len(backend.calls) == 2, "the nudge retry did not run"
+    retry = backend.calls[1]["messages"]
+    assert backend.calls[1]["video"] == clip
+    question = next(m for m in retry if m["role"] == "user")
+    assert question["content"][0] == {"type": "video"}
+    assert retry[-1]["role"] == "user" and isinstance(retry[-1]["content"], str)
+
+
+def test_an_input_audio_part_beside_a_clip_is_refused_too(monkeypatch):
+    """The part is lifted onto audio_base64 before the clip gate, so one rule covers both spellings."""
+    from fastapi import HTTPException
+
+    import routes.inference as inf
+
+    backend = _vision_backend("a plain answer")
+    backend.models["sf-model"]["has_video_input"] = True
+    payload = _request(
+        video_base64 = "AAAAGGZ0eXBtcDQy",
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_audio",
+                        "input_audio": {"data": "AAAA", "format": "wav"},
+                    },
+                    {"type": "text", "text": "what do you hear and see?"},
+                ],
+            }
+        ],
+        stream = False,
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        _call(payload, monkeypatch, backend)
+
+    assert exc.value.status_code == 400
+    assert exc.value.detail == inf._AUDIO_VIDEO_INPUT_DETAIL
+    assert backend.calls == []
+
+
+def test_audio_beside_a_clip_is_refused_before_any_dispatch(monkeypatch):
+    """A model without audio input never enters the audio path, so the conflict is settled first."""
+    from fastapi import HTTPException
+
+    import routes.inference as inf
+
+    backend = _vision_backend("a plain answer")
+    backend.models["sf-model"]["has_video_input"] = True
+    payload = _request(video_base64 = "AAAAGGZ0eXBtcDQy", audio_base64 = "AAAA", stream = False)
+
+    with pytest.raises(HTTPException) as exc:
+        _call(payload, monkeypatch, backend)
+
+    assert exc.value.status_code == 400
+    assert exc.value.detail == inf._AUDIO_VIDEO_INPUT_DETAIL
+    assert backend.calls == []

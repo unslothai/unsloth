@@ -9,6 +9,7 @@ import {
 import {
   CONTEXT_LENGTH_MIN,
   DEFAULT_PER_MODEL_CONFIG,
+  MAX_SEQ_LENGTH_MAX,
   DEFAULT_MAX_SEQ_LENGTH,
   KV_CACHE_DTYPES,
   MLX_KV_BITS,
@@ -16,10 +17,14 @@ import {
   N_BATCH_MIN,
   N_PARALLEL_MAX,
   N_PARALLEL_MIN,
+  isReasoningBudgetMessageValid,
   canonicalizeLoadMode,
+  isServedByLlamaCpp,
+  isServedByMlx,
   normalizeCacheRam,
   normalizeCtxCheckpoints,
   normalizeMaxSeqLength,
+  savedContextPin,
   type PerModelConfig,
 } from "@/features/model-picker/model-config/per-model-config";
 import {
@@ -31,6 +36,8 @@ import {
   useChatRuntimeStore,
   normalizeSpeculativeType,
 } from "../stores/chat-runtime-store";
+import { usePlatformStore } from "@/config/env";
+import { capturedContextLength } from "./preset-policy";
 
 /** Load/runtime knobs saved in a chat preset (excludes per-model-only blobs). */
 export type PresetLoadConfig = Pick<
@@ -42,6 +49,8 @@ export type PresetLoadConfig = Pick<
   | "speculativeType"
   | "specDraftNMax"
   | "nParallel"
+  | "reasoningBudget"
+  | "reasoningBudgetMessage"
   | "nBatch"
   | "nUbatch"
   | "loadMode"
@@ -66,6 +75,8 @@ export const EMPTY_PRESET_LOAD_CONFIG: PresetLoadConfig = {
   speculativeType: null,
   specDraftNMax: null,
   nParallel: null,
+  reasoningBudget: -1,
+  reasoningBudgetMessage: "",
   nBatch: null,
   nUbatch: null,
   loadMode: null,
@@ -79,12 +90,31 @@ export const EMPTY_PRESET_LOAD_CONFIG: PresetLoadConfig = {
 function toComparablePerModelConfig(
   config: PresetLoadConfig,
 ): PerModelConfig {
+  // Compared as a pin, not as whichever field the backend of the moment writes it in:
+  // the same preset replayed elsewhere holds that length in the other field.
+  const pin = savedContextPin(config);
   return {
     ...DEFAULT_PER_MODEL_CONFIG,
     ...config,
+    customContextLength: pin,
+    maxSeqLength: null,
     chatTemplateOverride: null,
     selectedGpuIds: null,
   };
+}
+
+/** A context as a preset may carry it, or null if it is not a length at all.
+ *
+ *  One bound for capture and for reading a saved preset back, since clamping only on the
+ *  way to storage would send one window on the first replay and another after saving. The
+ *  upper bound is what `/load` accepts; the lower is the control's own minimum, because a
+ *  pin the control cannot represent is one the user cannot undo.
+ */
+function requestableContextLength(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return null;
+  }
+  return Math.min(MAX_SEQ_LENGTH_MAX, Math.max(CONTEXT_LENGTH_MIN, Math.floor(value)));
 }
 
 export function normalizePresetLoadConfig(
@@ -118,12 +148,7 @@ export function normalizePresetLoadConfig(
   }
 
   const normalized: PresetLoadConfig = {
-    customContextLength:
-      typeof partial.customContextLength === "number" &&
-      Number.isFinite(partial.customContextLength) &&
-      partial.customContextLength > 0
-        ? Math.max(CONTEXT_LENGTH_MIN, Math.floor(partial.customContextLength))
-        : null,
+    customContextLength: requestableContextLength(partial.customContextLength),
     maxSeqLength: normalizeMaxSeqLength(partial.maxSeqLength as number | null),
     mlxKvBits:
       typeof partial.mlxKvBits === "number" &&
@@ -148,6 +173,19 @@ export function normalizePresetLoadConfig(
             Math.min(N_PARALLEL_MAX, Math.round(partial.nParallel)),
           )
         : null,
+    reasoningBudget:
+      typeof partial.reasoningBudget === "number" &&
+      Number.isFinite(partial.reasoningBudget)
+        ? Math.max(
+            -1,
+            Math.min(2_147_483_647, Math.trunc(partial.reasoningBudget)),
+          )
+        : -1,
+    reasoningBudgetMessage:
+      typeof partial.reasoningBudgetMessage === "string" &&
+      isReasoningBudgetMessageValid(partial.reasoningBudgetMessage)
+        ? partial.reasoningBudgetMessage
+        : "",
     nBatch:
       typeof partial.nBatch === "number" && Number.isFinite(partial.nBatch)
         ? Math.max(N_BATCH_MIN, Math.min(N_BATCH_MAX, Math.round(partial.nBatch)))
@@ -156,8 +194,8 @@ export function normalizePresetLoadConfig(
       typeof partial.nUbatch === "number" && Number.isFinite(partial.nUbatch)
         ? Math.max(N_BATCH_MIN, Math.min(N_BATCH_MAX, Math.round(partial.nUbatch)))
         : null,
-    // Through the same normalizers the per-model store uses, so a hand-edited or
-    // older preset cannot smuggle in a mode or dtype the panel cannot show.
+    // Through the same normalizers the per-model store uses, so a hand-edited or older preset cannot
+    // smuggle in a mode or dtype the panel cannot show.
     loadMode: canonicalizeLoadMode(partial.loadMode),
     specDraftCacheDtype:
       typeof partial.specDraftCacheDtype === "string" &&
@@ -202,21 +240,37 @@ export function isSamePresetLoadConfig(
 export function capturePresetLoadConfig(): PresetLoadConfig | undefined {
   const snapshot = currentRuntimePerModelConfig({ includeMaxSeqLength: true });
   const store = useChatRuntimeStore.getState();
-  const isGguf =
-    store.activeGgufVariant != null ||
-    store.ggufContextLength != null ||
-    (store.params.checkpoint?.toLowerCase().endsWith(".gguf") ?? false);
-  const effectiveContextLength =
-    snapshot.customContextLength ??
-    (isGguf ? store.ggufContextLength : null);
+  const isGguf = isServedByLlamaCpp({
+    loadedIsGguf: store.loadedIsGguf,
+    activeGgufVariant: store.activeGgufVariant,
+    activeNativePathToken: store.activeNativePathToken,
+    checkpoint: store.params.checkpoint,
+  });
+  const platform = usePlatformStore.getState();
+  const isMlx = isServedByMlx(isGguf, platform.deviceType, platform.chatOnlyReason);
+  // The same bound a saved preset is read back under; this one replays from memory first.
+  const effectiveContextLength = requestableContextLength(
+    capturedContextLength({
+      isGguf,
+      controlPin: snapshot.customContextLength,
+      loadedContextLength: store.loadedContextLength,
+    }),
+  );
+  // A diffusion GGUF is still a GGUF: its resolved context has to capture like
+  // any other. Only the reasoning flags, which it takes none of, are suppressed.
+  const capturesReasoning = isGguf && !store.loadedIsDiffusion;
   const captured: PresetLoadConfig = {
     customContextLength: effectiveContextLength ?? null,
-    maxSeqLength: normalizeMaxSeqLength(snapshot.maxSeqLength),
+    maxSeqLength: isMlx ? null : normalizeMaxSeqLength(snapshot.maxSeqLength),
     kvCacheDtype: snapshot.kvCacheDtype ?? null,
     mlxKvBits: snapshot.mlxKvBits ?? null,
     speculativeType: normalizeSpeculativeType(snapshot.speculativeType),
     specDraftNMax: snapshot.specDraftNMax ?? null,
     nParallel: snapshot.nParallel ?? null,
+    reasoningBudget: capturesReasoning ? snapshot.reasoningBudget : -1,
+    reasoningBudgetMessage: capturesReasoning
+      ? snapshot.reasoningBudgetMessage
+      : "",
     nBatch: snapshot.nBatch ?? null,
     nUbatch: snapshot.nUbatch ?? null,
     loadMode: snapshot.loadMode ?? null,
@@ -264,37 +318,40 @@ function coalesceDefaultLoadKnobs(
   return result;
 }
 
-export function applyPresetLoadConfig(
-  config?: PresetLoadConfig | null,
-): void {
+export function applyPresetLoadConfig(config?: PresetLoadConfig | null): void {
   if (config == null) {
     return;
   }
   const store = useChatRuntimeStore.getState();
-  applyPerModelConfigToRuntime({
-    ...DEFAULT_PER_MODEL_CONFIG,
-    maxSeqLength: normalizeMaxSeqLength(config.maxSeqLength) ?? DEFAULT_MAX_SEQ_LENGTH,
-    customContextLength: config.customContextLength ?? null,
-    kvCacheDtype: config.kvCacheDtype ?? null,
-    mlxKvBits: config.mlxKvBits ?? null,
-    speculativeType: config.speculativeType ?? null,
-    specDraftNMax: config.specDraftNMax ?? null,
-    nParallel: config.nParallel ?? null,
-    nBatch: config.nBatch ?? null,
-    nUbatch: config.nUbatch ?? null,
-    loadMode: config.loadMode ?? null,
-    specDraftCacheDtype: config.specDraftCacheDtype ?? null,
-    ctxCheckpoints: config.ctxCheckpoints ?? null,
-    cacheRam: config.cacheRam ?? null,
-    tensorParallel: config.tensorParallel ?? false,
-    disableVision: config.disableVision ?? false,
-    chatTemplateOverride: null,
-    gpuMemoryMode: config.gpuMemoryMode,
-    gpuLayers: config.gpuLayers,
-    nCpuMoe: config.nCpuMoe,
-    selectedGpuIds: store.selectedGpuIds,
-    selectedGpuIndexKind: store.selectedGpuIndexKind,
-  });
+  applyPerModelConfigToRuntime(
+    {
+      ...DEFAULT_PER_MODEL_CONFIG,
+      maxSeqLength: normalizeMaxSeqLength(config.maxSeqLength) ?? DEFAULT_MAX_SEQ_LENGTH,
+      customContextLength: config.customContextLength ?? null,
+      kvCacheDtype: config.kvCacheDtype ?? null,
+      mlxKvBits: config.mlxKvBits ?? null,
+      speculativeType: config.speculativeType ?? null,
+      specDraftNMax: config.specDraftNMax ?? null,
+      nParallel: config.nParallel ?? null,
+      nBatch: config.nBatch ?? null,
+      nUbatch: config.nUbatch ?? null,
+      loadMode: config.loadMode ?? null,
+      specDraftCacheDtype: config.specDraftCacheDtype ?? null,
+      ctxCheckpoints: config.ctxCheckpoints ?? null,
+      cacheRam: config.cacheRam ?? null,
+      reasoningBudget: config.reasoningBudget ?? -1,
+      reasoningBudgetMessage: config.reasoningBudgetMessage ?? "",
+      tensorParallel: config.tensorParallel ?? false,
+      disableVision: config.disableVision ?? false,
+      chatTemplateOverride: null,
+      gpuMemoryMode: config.gpuMemoryMode,
+      gpuLayers: config.gpuLayers,
+      nCpuMoe: config.nCpuMoe,
+      selectedGpuIds: store.selectedGpuIds,
+      selectedGpuIndexKind: store.selectedGpuIndexKind,
+    },
+    { isDiffusion: store.loadedIsDiffusion },
+  );
 }
 
 export function formatPresetLoadConfigSummary(
@@ -318,6 +375,14 @@ export function formatPresetLoadConfigSummary(
   }
   if (config.nParallel != null) {
     parts.push(`${config.nParallel} slots`);
+  }
+  if (config.reasoningBudget !== -1) {
+    parts.push(`Reasoning ${config.reasoningBudget}`);
+  }
+  // A marker, not the text: the message is free prose up to 8 KiB. Without it a
+  // message-only preset is non-default but summarises to null, hiding both lines.
+  if (config.reasoningBudgetMessage) {
+    parts.push("Budget msg");
   }
   if (config.nBatch != null) {
     parts.push(`Batch ${config.nBatch}`);

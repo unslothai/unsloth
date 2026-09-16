@@ -44,8 +44,8 @@ def reasoning_trigger(seconds: str) -> dict:
 
 
 def test_a_duration_split_across_text_nodes_is_normalised():
-    # The exact regression. Before the fix these two differed by one character and the digest
-    # moved; the two arms are the same build and the only difference is wall clock.
+    # The exact regression. Before the fix these two differed by one character and the digest moved;
+    # the two arms are the same build and the only difference is wall clock.
     assert sig(reasoning_trigger("3")) == sig(reasoning_trigger("2"))
 
 
@@ -77,8 +77,8 @@ def test_a_split_relative_time_is_normalised():
 
 
 def test_a_bare_number_with_no_unit_still_moves_the_signature():
-    # A message count, a row count, a badge. No time unit follows it, so it is content and the
-    # digest has to see it change. This is the false-negative direction and it is the worse one.
+    # A message count, a row count, a badge. No time unit follows it, so it is content and the digest
+    # has to see it change. This is the false-negative direction and it is the worse one.
     def badge(n: str) -> dict:
         return {"tag": "span", "children": [{"tag": "b", "children": [n, " messages"]}]}
 
@@ -97,8 +97,8 @@ def test_an_element_boundary_still_breaks_a_text_run():
     }
     joined = {"tag": "div", "children": [{"tag": "span", "children": ["3", " seconds"]}]}
     assert sig(split) != sig(joined)
-    # And the genuinely-split-across-elements case keeps its number, because nothing there proves
-    # the two spans are one rendered phrase.
+    # And the genuinely-split-across-elements case keeps its number, because nothing there proves the
+    # two spans are one rendered phrase.
     other = {
         "tag": "div",
         "children": [

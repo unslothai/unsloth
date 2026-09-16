@@ -43,7 +43,7 @@ from studiobench.runtime.session import (  # noqa: E402
 )
 from studiobench.sweep.ui_parity import incomplete_cells  # noqa: E402
 
-#: The coverage actually observed on the run this carve-out was derived from, not a round number.
+#:The coverage actually observed on the run this carve-out was derived from, not a round number.
 OBSERVED_COVERAGE = 0.481
 
 
@@ -167,11 +167,10 @@ def test_low_coverage_does_not_launder_a_real_pinning_failure(tmp_path) -> None:
     assert refused
 
 
-#: Every shape a failed `follows_the_stream` row can take, and whether it must still be fatal.
-#: The two admission lists have to agree on all of them: `INVALIDATING_CELL_GATES` was centralised
-#: so the scorers could not disagree about what invalidates a cell, and a predicate copied into
-#: both consumers reintroduces exactly that drift one level down, where it is harder to see
-#: because each copy reads correctly on its own.
+#: Every shape a failed `follows_the_stream` row can take, and whether it must still be fatal. The
+#: two admission lists have to agree on all of them: `INVALIDATING_CELL_GATES` was centralised so
+#: the scorers could not disagree about what invalidates a cell, and a predicate copied into both
+#: consumers reintroduces that drift one level down, where each copy reads correctly on its own.
 _AGREEMENT_CASES: list[tuple[str, dict, bool]] = [
     ("coverage-only shortfall", _coverage_short(OBSERVED_COVERAGE), False),
     ("sliver", _coverage_short(0.13), False),
@@ -236,9 +235,9 @@ _AGREEMENT_CASES: list[tuple[str, dict, bool]] = [
         True,
     ),
     ("absent instrument", {"follow_attempted": False, "reason": "sampler is not installed"}, False),
-    # The narrowing that must survive the refactor: `probe_attempted: False` has two producers and
-    # only one is an absent instrument. A missing thread viewport is the ARM missing the surface
-    # under test, and waiving it once let a real failure ride the instrument allowance.
+    # The narrowing that must survive the refactor: `probe_attempted: False` has two producers and only
+    # one is an absent instrument. A missing thread viewport is the ARM missing the surface under
+    # test, and waiving it once let a real failure ride the instrument allowance.
     ("no thread viewport", {"probe_attempted": False, "reason": "no thread viewport"}, True),
 ]
 
@@ -258,11 +257,12 @@ def test_both_admission_lists_agree_on_every_shape(tmp_path) -> None:
     assert not wrong, "wrong verdict: " + "; ".join(wrong)
 
 
-# ---------------------------------------------------------------------------------------
-# the WRITER. Everything above drives the two consumers with a hand-built gate detail, which
-# cannot see a defect in the thing that PRODUCES that detail: a `follow_verdict` that set
+# the WRITER. Everything above drives the two consumers with a hand-built gate detail, which cannot
+# see a defect in the thing that PRODUCES that detail: a `follow_verdict` that set
 # `stream_coverage_unmeasured` on every low reading would waive real follow failures and every
-# consumer test would still pass. These drive the real writer.
+# consumer test would still pass.
+
+
 # ---------------------------------------------------------------------------------------
 
 

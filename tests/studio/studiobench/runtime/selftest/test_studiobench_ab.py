@@ -86,13 +86,12 @@ def test_origin_gate_names_the_exact_origin_and_strips_the_slash():
     assert "return" in script
 
 
+# The gate compares against an ORIGIN, so it has to be given one. `window.location.origin` is the
+# URL standard's canonical origin, not the URL the caller typed, and every expectation below was
+# read out of chromium by navigating a real document to the spelling on the left.
+
+
 # ── the gate compares against an ORIGIN, so it has to be given one ──────────────────────────
-#
-# `window.location.origin` is the URL standard's canonical origin, not the URL the caller typed.
-# Every expectation below was read out of chromium, by navigating a real document to the spelling
-# on the left and asking the page for `window.location.origin`.
-
-
 @pytest.mark.parametrize(
     ("spelled", "origin"),
     [

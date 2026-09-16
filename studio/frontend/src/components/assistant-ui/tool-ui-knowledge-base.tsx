@@ -14,7 +14,11 @@ import { useToolAwaitingApproval } from "@/features/chat";
 import { stringifyToolResult } from "@/lib/strip-ansi";
 import { memo, useMemo } from "react";
 import { Badge } from "./badge";
-import { toolArgText } from "./tool-arg-text";
+import {
+  isToolCallRunning,
+  knowledgeBaseToolName,
+  toolArgText,
+} from "./tool-arg-text";
 import {
   ToolFallbackContent,
   ToolFallbackRoot,
@@ -81,7 +85,7 @@ const KnowledgeBaseToolUIImpl: ToolCallMessagePartComponent = ({
   toolCallId,
 }) => {
   const query = toolArgText((args as { query?: unknown })?.query);
-  const isRunning = status?.type === "running";
+  const isRunning = isToolCallRunning(status);
 
   const resultText = result == null ? "" : stringifyToolResult(result);
   const citations = useMemo(() => parseCitations(result), [result]);
@@ -111,7 +115,7 @@ const KnowledgeBaseToolUIImpl: ToolCallMessagePartComponent = ({
       awaitingApproval={awaitingApproval}
     >
       <ToolFallbackTrigger
-        toolName={query ? `Searched documents for "${query}"` : "Knowledge search"}
+        toolName={knowledgeBaseToolName({ isRunning, query })}
         status={status}
         icon={LibraryBigIcon}
       />

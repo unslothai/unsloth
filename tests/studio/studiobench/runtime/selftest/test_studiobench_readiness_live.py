@@ -82,8 +82,7 @@ TURNS = 9
 MESSAGES = TURNS * 2  # 18, the number in the failure this work exists to fix
 WINDOW = 6
 #: The fixture's row height. The completeness tests step the traversal by two rows, because a
-#: gesture whose stops do not overlap can only report NOT MEASURED, and a test that wants to see
-#: coverage refuse something has to give the probe a sweep that actually covers the thread.
+#: gesture whose stops do not overlap can only report NOT MEASURED.
 ROW_PX = 120
 
 _DOM_JS = _STUDIO_TESTS / "studiobench" / "scene" / "dom.js"
@@ -215,10 +214,10 @@ def test_full_mount_is_admitted_in_full_mode(browser):
     assert r.conditions["end_present"] is True
     assert r.conditions["settled"] is True
     assert r.probe["mounted"] == MESSAGES
-    # AND THE ORDINAL CONDITIONS ARE NOT APPLICABLE HERE, which is not the same as passing.
-    # Unsloth publishes no aria-posinset anywhere, so a `full` arm has none to validate and must
-    # never be gated on them; `None` is the value the parity layer and this gate both use for a
-    # surface that was not measured rather than one that agreed.
+    # AND THE ORDINAL CONDITIONS ARE NOT APPLICABLE HERE, which is not the same as passing. Unsloth
+    # publishes no aria-posinset anywhere, so a `full` arm has none to validate; `None` is what the
+    # parity layer and this gate both use for a surface that was not measured rather than one that
+    # agreed.
     assert r.conditions["posinset_ordinals_valid"] is None
     assert r.conditions["posinset_reaches_end"] is None
     assert r.probe["posinset_count"] == 0
@@ -248,7 +247,7 @@ def test_a_virtualised_thread_is_admitted_in_windowed_mode(browser):
     assert r.conditions["anchored_at_end"] is True
     assert r.conditions["end_present"] is True
     # The ordinals of a window at the END of an eighteen-message thread: 13..18, distinct, one per
-    # mounted row. This is the shape the three malformed modes below fail to produce.
+    # mounted row. The shape the three malformed modes below fail to produce.
     assert (r.probe["min_posinset"], r.probe["max_posinset"]) == (MESSAGES - WINDOW + 1, MESSAGES)
     assert r.probe["posinset_distinct"] == WINDOW
 
@@ -310,16 +309,15 @@ def _completeness(browser, mode: str, **kwargs) -> tuple[dict, list[str]]:
 def test_a_virtualised_thread_passes_the_completeness_probe(browser):
     out, _ = _completeness(browser, "windowed")
     assert out["head_reached"] is True, out
-    # AND THE COVERAGE VERDICT IS NOT MEASURED AT THE DEFAULT STEP, which is the honest answer
-    # rather than a flattering one. The gesture jumps 2,000px at a time and this fixture's whole
-    # thread is 2,160px, so it lands at the bottom and then at the top and the rows between the
-    # two stops were never in view. Nothing is known about them, so nothing is claimed.
+    # AND THE COVERAGE VERDICT IS NOT MEASURED AT THE DEFAULT STEP, which is the honest answer. The
+    # gesture jumps 2,000px and this thread is 2,160px, so it lands at the bottom and then the top
+    # and the rows between were never in view.
     assert out["ordinal_coverage_complete"] is None, out
     assert out["sweep_continuous"] is False
     assert "never in view" in out["coverage_reason"]
-    # WHICH KIND OF NOT MEASURED. The arm publishes ordinals, so the question applies and the
-    # sweep failed to answer it, which `record_completeness_gate` refuses to score the cell on.
-    # The remedy is the smaller step the next test uses, not a gate that accepts the unknown.
+    # WHICH KIND OF NOT MEASURED: the arm publishes ordinals, so the question applies and the sweep
+    # failed to answer it, which `record_completeness_gate` refuses to score the cell on. The remedy
+    # is the smaller step the next test uses.
     assert out["ordinal_coverage_state"] == COVERAGE_UNMEASURED, out
 
 
@@ -448,10 +446,9 @@ def test_windowed_mode_also_admits_a_thread_short_enough_to_mount_whole(browser)
     assert r.ready, r.reason
     assert r.probe["setsize"] is None
     assert r.conditions["total_declared"] is True
-    # THE SAME WAIVER COVERS THE ORDINALS, and for the same reason: there are none to publish and
-    # none to validate. It is waived on `mounted >= expected` AND on the absence of ordinals
-    # together, so an arm that publishes malformed ones cannot buy its way out by also mounting
-    # the whole thread.
+    # THE SAME WAIVER COVERS THE ORDINALS: there are none to publish and none to validate. Waived on
+    # `mounted >= expected` AND the absence of ordinals together, so an arm publishing malformed ones
+    # cannot buy its way out by also mounting the whole thread.
     assert r.probe["posinset_count"] == 0
     assert r.conditions["posinset_ordinals_valid"] is True
     assert r.conditions["posinset_reaches_end"] is True
@@ -479,8 +476,8 @@ def test_a_half_mounted_thread_is_refused_in_full_mode(browser):
     detail = caught.value.detail
     assert detail["ready"] is False
     assert detail["conditions"]["all_messages_mounted"] is False
-    # And the two NEW conditions caught it too, independently of the count. That matters: it is
-    # what makes the windowed mode safe, because the windowed mode has no count to rely on.
+    # And the two NEW conditions caught it too, independently of the count, which is what makes the
+    # windowed mode safe, since it has no count to rely on.
     assert detail["conditions"]["end_present"] is False
     assert detail["probe"]["mounted"] < MESSAGES
 
@@ -508,8 +505,8 @@ def test_a_half_mounted_thread_is_refused_in_windowed_mode_too(browser):
     finally:
         page.close()
     conditions = caught.value.detail["conditions"]
-    # THREE independent refusals, not one. It is still growing, it has not reached the end of the
-    # thread, and it publishes no total.
+    # THREE independent refusals: it is still growing, it has not reached the end of the thread, and
+    # it publishes no total.
     assert conditions["settled"] is False
     assert conditions["end_present"] is False
     assert conditions["total_declared"] is False
@@ -631,8 +628,8 @@ def test_a_bottom_window_numbered_from_one_is_refused(browser):
     assert conditions["posinset_ordinals_valid"] is True
     assert detail["probe"]["max_posinset"] == WINDOW
     assert conditions["posinset_reaches_end"] is False
-    # The TEXT of the last message is mounted; only the numbering disagrees with it. That split is
-    # the point: `end_present` reads the thread and this reads what the arm says about it.
+    # The TEXT of the last message is mounted; only the numbering disagrees. That split is the point:
+    # `end_present` reads the thread and this reads what the arm says about it.
     assert conditions["end_present"] is True
     assert conditions["anchored_at_end"] is True
 
@@ -738,8 +735,8 @@ def test_evaluate_refuses_ordinals_that_are_not_positions():
     conditions = evaluate(from_one, from_one, 18, MODE_WINDOWED)
     assert conditions["posinset_ordinals_valid"] is True
     assert conditions["posinset_reaches_end"] is False
-    # PAST THE END OF THE SET THE SAME ROWS DECLARE. 19 of 18 is not a position either, and it is
-    # what an off-by-one in a virtualizer's index-to-ordinal arithmetic produces.
+    # PAST THE END OF THE SET THE SAME ROWS DECLARE. 19 of 18 is not a position either, and it is what
+    # an off-by-one in index-to-ordinal arithmetic produces.
     over = _windowed_probe(max_posinset = 19)
     assert evaluate(over, over, 18, MODE_WINDOWED)["posinset_ordinals_valid"] is False
     # And every one of them is NOT APPLICABLE in full mode, where nothing publishes ordinals.
@@ -796,9 +793,8 @@ def test_ordinal_coverage_never_reports_a_gap_in_the_gesture_as_data_loss():
     }
     got_coarse = ordinal_coverage(coarse, 18)
     assert got_coarse["ordinal_coverage_complete"] is None
-    # And it is the kind of None that is NOT a pass: the ordinals apply to this arm and the sweep
-    # did not inspect them. `not_applicable` -- the other None -- is an arm publishing no ordinals
-    # at all, which is the case below in `test_ordinal_coverage_separates_...`.
+    # And it is the kind of None that is NOT a pass: the ordinals apply to this arm and the sweep did
+    # not inspect them. `not_applicable` is an arm publishing no ordinals at all.
     assert got_coarse["ordinal_coverage_state"] == COVERAGE_UNMEASURED
     continuous = dict(coarse, sweep_continuous = True)
     got = ordinal_coverage(continuous, 18)
@@ -923,6 +919,6 @@ def test_a_windowed_thread_with_no_viewport_is_refused(browser):
     finally:
         page.close()
 
-    # Named in the refusal, so the reader is told the surface is missing rather than left to infer
-    # it from a condition that is really about something else.
+    # Named in the refusal, so the reader is told the surface is missing rather than left to infer it
+    # from a condition about something else.
     assert "viewport_present" in str(caught.value), str(caught.value)

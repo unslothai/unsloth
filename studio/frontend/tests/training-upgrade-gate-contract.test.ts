@@ -9,22 +9,19 @@
 // guard against the gate being dropped from either one.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
+
+import { readText } from "./helpers/kit.ts";
 
 const START_PATHS = [
   "../src/features/training/lib/start-fresh-training-run.ts",
   "../src/features/training/lib/resume-training-run.ts",
 ] as const;
 
-function read(relative: string): string {
-  return readFileSync(new URL(relative, import.meta.url), "utf8");
-}
-
 test("both training start paths consult the transformers-upgrade gate", () => {
   for (const file of START_PATHS) {
     assert.ok(
-      read(file).includes("confirmTrainingTransformersUpgrade"),
+      readText(file).includes("confirmTrainingTransformersUpgrade"),
       `${file} must consult the transformers-upgrade gate: without it a model whose ` +
         "architecture no installed transformers ships is accepted and then dies at " +
         "model load, with no prompt and no way for the user to act on it",
@@ -36,7 +33,7 @@ test("the upgrade dialog is raised before the custom-code dialog", () => {
   // Chat's order, and for the same reason: installing a newer transformers changes
   // what the load would even run, so consenting to the install has to come first.
   for (const file of START_PATHS) {
-    const source = read(file);
+    const source = readText(file);
     const upgradeAt = source.indexOf("confirmTrainingTransformersUpgrade(");
     const remoteCodeAt = source.indexOf("confirmRemoteCodeIfNeeded(");
     // Both must be present: a missing call indexes to -1, which would otherwise
@@ -66,7 +63,7 @@ test("both gates on a start path inspect the same copy of the model", () => {
       "resumeModelCachePin(",
     ],
   ] as const) {
-    const source = read(file);
+    const source = readText(file);
     assert.equal(
       source.split(resolver).length - 1,
       3,
@@ -78,13 +75,15 @@ test("both gates on a start path inspect the same copy of the model", () => {
 test("the resume gate names the run it precedes", () => {
   // Without the run id the check cannot tell that installing would permanently strand
   // a checkpoint attested against a 4-bit model load the latest sidecar refuses.
-  const source = read("../src/features/training/lib/resume-training-run.ts");
+  const source = readText(
+    "../src/features/training/lib/resume-training-run.ts",
+  );
   assert.ok(source.includes("resumeRunId"));
 });
 
 test("the gate reaches the install through the shared consent dialog", () => {
   // Not a second implementation of the flow chat already owns.
-  const gate = read(
+  const gate = readText(
     "../src/features/training/lib/training-transformers-upgrade.ts",
   );
   assert.ok(gate.includes("confirmTransformersUpgradeIfNeeded"));
@@ -96,7 +95,7 @@ test("the Configure preview re-asks the check after an install", () => {
   // the store counts completed installs and the hook keys its answers on that count.
   // Break either end and Configure keeps offering an install that already ran, and
   // 4-bit for a run the new sidecar loads in 16-bit.
-  const store = read(
+  const store = readText(
     "../src/features/transformers-upgrade/stores/transformers-upgrade-dialog-store.ts",
   );
   assert.ok(
@@ -104,7 +103,7 @@ test("the Configure preview re-asks the check after an install", () => {
     "a successful install must advance sidecarGeneration",
   );
 
-  const hook = read(
+  const hook = readText(
     "../src/features/training/hooks/use-training-transformers-upgrade-notice.ts",
   );
   assert.ok(hook.includes("s.sidecarGeneration"));
@@ -119,7 +118,7 @@ test("the consent dialog offers the custom-code way out before an install fails"
   // run can be. For a model shipping its own code the install is the more expensive way
   // forward, activating the 16-bit sidecar, so gating the fallback on the error phase
   // left a QLoRA run with Install or Cancel and no way to the 4-bit run it asked for.
-  const dialog = read(
+  const dialog = readText(
     "../src/features/transformers-upgrade/components/transformers-upgrade-dialog.tsx",
   );
   assert.ok(
@@ -138,7 +137,7 @@ test("both start paths carry the upgrade gate's custom-code verdict forward", ()
   // scan request fails, and the stored flag is false on a fresh run. The upgrade check
   // has already answered the question, so it has to be the one that travels.
   for (const file of START_PATHS) {
-    const source = read(file);
+    const source = readText(file);
     assert.ok(
       source.includes(
         "verdict.requiresTrustRemoteCode = outcome.requiresTrustRemoteCode",

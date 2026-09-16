@@ -5,6 +5,13 @@
 
 from __future__ import annotations
 
+from core.training.account_jobs import (
+    account_is_retired,
+    account_key,
+    account_path,
+    job_accounts,
+)
+from utils.account_context import account_thread, run_as
 import hashlib
 import json
 import logging
@@ -19,7 +26,7 @@ import weakref
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
-from storage import rag_db
+from core.rag import account_db as rag_db
 from utils.paths import ensure_dir, rag_uploads_root
 
 from . import config, ingestion, job_leases, store
@@ -34,6 +41,8 @@ _thread_stop: threading.Event | None = None
 _thread_lock = threading.Lock()
 _worker_lock = threading.Lock()
 _worker_state = threading.local()
+# Scheduling cursor of the single worker; see _next_account_job.
+_last_job_account: str | None = None
 _folder_locks: weakref.WeakValueDictionary[str, threading.RLock] = weakref.WeakValueDictionary()
 _scope_locks: weakref.WeakValueDictionary[str, threading.RLock] = weakref.WeakValueDictionary()
 _named_locks_lock = threading.Lock()
@@ -60,21 +69,16 @@ class _FolderChanged(RuntimeError):
 
 def _folder_lock(folder_id: str) -> threading.RLock:
     with _named_locks_lock:
-        return _folder_locks.setdefault(folder_id, threading.RLock())
+        return _folder_locks.setdefault(account_key(folder_id), threading.RLock())
 
 
 def _scope_lock(scope: str) -> threading.RLock:
     with _named_locks_lock:
-        return _scope_locks.setdefault(scope, threading.RLock())
+        return _scope_locks.setdefault(account_key(scope), threading.RLock())
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def now_iso() -> str:
-    """The timestamp format linked-folder rows are written and compared with."""
-    return _now()
 
 
 def _hash_file(path: str) -> str:
@@ -126,6 +130,7 @@ def _is_within(root: str, path: str) -> bool:
 
 def validate_folder_path(path: str) -> str:
     """Apply the existing model scan-folder policy without persisting there."""
+    account_path(path)
     if not path or not path.strip() or "\x00" in path:
         raise ValueError("Path cannot be empty")
     expanded = os.path.abspath(os.path.expanduser(path))
@@ -564,43 +569,82 @@ def _metadata_table_exists(conn, table: str) -> bool:
     )
 
 
+# SQLite's default host-parameter cap is 999, so a bound id list is applied in chunks.
+_ID_CHUNK = 500
+
+
+def _id_chunks(folder_ids: list[str]) -> list[list[str]]:
+    unique = list(dict.fromkeys(folder_ids))
+    return [unique[start : start + _ID_CHUNK] for start in range(0, len(unique), _ID_CHUNK)]
+
+
+def linked_folder_ids(scope: str) -> list[str]:
+    """The folders a scope owns right now, for bounding a later retirement to them.
+
+    Metadata connection, like retirement itself: the delete path has to finish even when the
+    vector extension cannot load.
+    """
+    with closing(rag_db.get_metadata_connection()) as conn:
+        if not _metadata_table_exists(conn, "linked_folders"):
+            return []
+        return [
+            row["id"]
+            for row in conn.execute("SELECT id FROM linked_folders WHERE scope=?", (scope,))
+        ]
+
+
 def _retire_scope_rows(
     conn,
     scope: str,
-    linked_before: str | None = None,
+    folder_ids: list[str] | None = None,
+    rows: bool = True,
 ) -> None:
-    folders_exist = _metadata_table_exists(conn, "linked_folders")
+    folders_exist = rows and _metadata_table_exists(conn, "linked_folders")
     jobs_exist = folders_exist and _metadata_table_exists(conn, "linked_folder_sync_jobs")
     conn.execute(
         "INSERT OR IGNORE INTO linked_folder_retired_scopes(scope, retired_at) VALUES(?, ?)",
         (scope, _now()),
     )
-    # the ownership check and this write cannot share a transaction across two databases,
-    # so a folder another process linked after that check keeps its own state
-    bound = "" if linked_before is None else " AND created_at<=?"
-    params = () if linked_before is None else (linked_before,)
-    if folders_exist:
-        conn.execute(
-            "UPDATE linked_folders SET auto_sync=0, status='retired', "
-            f"last_error='Owning scope was removed', updated_at=? WHERE scope=?{bound}",
-            (_now(), scope, *params),
-        )
-    if jobs_exist:
-        conn.execute(
-            "UPDATE linked_folder_sync_jobs SET status='failed', stage='error', "
-            "error='Owning scope was removed', successor_kind=NULL, completed_at=? "
-            "WHERE folder_id IN (SELECT id FROM linked_folders WHERE scope=?"
-            f"{bound}) AND (status IN ('pending','running') OR successor_kind IS NOT NULL)",
-            (_now(), scope, *params),
-        )
+    # The ownership check and this write cannot share a transaction across two databases, so the
+    # caller bounds the write to the folders it saw. Identity, not created_at: Windows reads its
+    # clock in ~15.6ms steps, so a folder linked just after the check carries the check's own
+    # timestamp, and retiring it disables RAG for a project recreated with the same id, for good.
+    # None means no bound at all; an empty list means the caller saw no folders.
+    batches = [None] if folder_ids is None else _id_chunks(folder_ids)
+    for batch in batches:
+        bound = "" if batch is None else f" AND id IN ({','.join('?' * len(batch))})"
+        params = () if batch is None else tuple(batch)
+        if folders_exist:
+            conn.execute(
+                "UPDATE linked_folders SET auto_sync=0, status='retired', "
+                f"last_error='Owning scope was removed', updated_at=? WHERE scope=?{bound}",
+                (_now(), scope, *params),
+            )
+        if jobs_exist:
+            conn.execute(
+                "UPDATE linked_folder_sync_jobs SET status='failed', stage='error', "
+                "error='Owning scope was removed', successor_kind=NULL, completed_at=? "
+                "WHERE folder_id IN (SELECT id FROM linked_folders WHERE scope=?"
+                f"{bound}) AND (status IN ('pending','running') OR successor_kind IS NOT NULL)",
+                (_now(), scope, *params),
+            )
 
 
-def retire_scope(scope: str, linked_before: str | None = None) -> None:
-    """Stop all future work, even when the vector extension cannot load."""
+def retire_scope(
+    scope: str,
+    folder_ids: list[str] | None = None,
+    rows: bool = True,
+) -> None:
+    """Stop all future work, even when the vector extension cannot load.
+
+    `rows = False` writes only the tombstone: enough on its own to stop new links and uploads,
+    and the only half a caller can take back, since the folder and job updates overwrite state
+    nobody recorded. A caller whose ownership check can still go stale takes it first.
+    """
     conn = _retirement_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
-        _retire_scope_rows(conn, scope, linked_before)
+        _retire_scope_rows(conn, scope, folder_ids, rows)
         conn.commit()
     except Exception:
         conn.rollback()
@@ -739,13 +783,13 @@ def reconcile_retired_scopes(project_exists) -> dict[str, list[str]]:
         if not project_id:
             continue
         try:
-            # under the lock create_folder and upload admission take, and rechecked inside
-            # it: a project recreated with the same id must not have its new folders retired
+            # rechecked inside the lock create_folder takes: a project recreated with the same id must not have
+            # its new folders retired
             with _scope_lock(scope):
-                checked_at = _now()
+                owned = linked_folder_ids(scope)
                 if project_exists(project_id):
                     continue
-                retire_scope(scope, checked_at)
+                retire_scope(scope, owned)
             retired_scopes.add(scope)
             retired.append(scope)
         except Exception:
@@ -766,8 +810,7 @@ def reconcile_retired_scopes(project_exists) -> dict[str, list[str]]:
             else:
                 continue
             if owner_exists:
-                # the id came back, so the scope has an owner again and its retirement,
-                # which only ever meant "ownerless", must not keep gating that owner
+                # retirement only ever meant "ownerless", so a returned id must not keep gating its owner
                 if unretire_scope(scope):
                     restored.append(scope)
             elif delete_retired_scope(scope):
@@ -979,23 +1022,22 @@ def _scan(
                     continue
                 if os.path.splitext(entry.name)[1].lower() not in config.UPLOAD_EXTS:
                     continue
-                # Finder metadata carries the document's extension, and a text parser reads it
-                # with errors="replace", so it would be embedded and cited as a real chunk.
+                # Finder metadata carries the document's extension, so a text parser would embed and cite it as a
+                # real chunk.
                 if is_appledouble_metadata(Path(full)):
                     continue
                 st = entry.stat(follow_symlinks = False)
                 from_path = False
                 if st.st_ino in (None, 0):
-                    # Windows builds DirEntry from FindFirstFileW, which carries no file index, so
-                    # DirEntry.stat leaves st_dev/st_ino at 0. os.lstat opens a handle and fills
-                    # both; without it the stored identity is (0, 0) forever and a replacement of
-                    # identical size and mtime never reaches the reconciliation work list.
+                    # Windows DirEntry.stat leaves st_dev/st_ino at 0 (FindFirstFileW carries no file index); os.lstat
+                    # fills both, else the stored identity is (0, 0) forever.
                     try:
                         st = os.lstat(full)
                         from_path = True
                     except OSError:
-                        # A file that vanished mid-scan must still reach _snapshot as a failure
-                        # rather than abort the scan, which is never authoritative for deletion.
+                        # A file that vanished mid-scan must reach _snapshot as a failure: a scan is never
+                        # authoritative for
+                        # deletion.
                         pass
                 rel = os.path.relpath(full, root).replace(os.sep, "/")
                 found[rel] = {
@@ -1004,8 +1046,8 @@ def _scan(
                     "mtime_ns": st.st_mtime_ns,
                     "device": st.st_dev,
                     "inode": st.st_ino,
-                    # A recovered identity is comparable to the next scan's, but not to os.fstat's:
-                    # shared-folder and WebDAV drivers report different ids for the two call paths.
+                    # A recovered identity is comparable to the next scan's but not to os.fstat's: shared-folder and
+                    # WebDAV drivers report different ids per call path.
                     "identity_from_path": from_path,
                 }
                 if config.FOLDER_MAX_FILES and len(found) > config.FOLDER_MAX_FILES:
@@ -1039,10 +1081,8 @@ def _snapshot(root: str, metadata: dict) -> str:
             metadata["inode"],
         )
         actual = (before.st_size, before.st_mtime_ns, before.st_dev, before.st_ino)
-        # Only an identity os.fstat can reproduce is comparable here: os.scandir reports none at all
-        # on Windows, and the os.lstat _scan falls back to disagrees with os.fstat on file systems
-        # without stable file ids. Size and mtime still gate those, and the post-copy check below is
-        # fstat to fstat either way.
+        # Only an identity os.fstat can reproduce is comparable: os.scandir reports none on Windows, and the
+        # lstat fallback disagrees with fstat on file systems without stable ids.
         usable = metadata["inode"] not in (None, 0) and not metadata.get("identity_from_path")
         compared = 4 if usable else 2
         if actual[:compared] != expected[:compared]:
@@ -1077,6 +1117,8 @@ def _copy_exact(source, target, size: int) -> None:
 
 
 def _check_running() -> None:
+    if account_is_retired():
+        raise _SyncStopped
     stop_event = getattr(_worker_state, "stop_event", _stop)
     if stop_event.is_set():
         raise _SyncStopped
@@ -1210,8 +1252,8 @@ def _install_mapping(
         raise
     finally:
         conn.close()
-    # Only after the commit: a rollback here restores a live searchable document,
-    # unlike the delete paths where the surviving row is the retry queue.
+    # Only after the commit: a rollback here restores a live searchable document, unlike the delete
+    # paths where the surviving row is the retry queue.
     for stored_path in replaced:
         _remove_snapshot(stored_path)
 
@@ -1257,8 +1299,8 @@ def _delete_mapping(folder_id: str, rel: str) -> None:
         raise
     finally:
         conn.close()
-    # After the commit, as in _install_mapping: a rollback here restores a live
-    # document, and an auto_sync=0 folder may not reconcile again for a long time.
+    # After the commit: a rollback restores a live document, and an auto_sync=0 folder may not reconcile
+    # again for a long time.
     _remove_snapshot(row["stored_path"])
 
 
@@ -1607,9 +1649,8 @@ def _queue_successor(job_id: str) -> None:
 def reconcile_folder(job_id: str) -> None:
     """Reconcile and persist a terminal folder state for every unexpected failure."""
     if _claim_job(job_id) is None:
-        # The caller may already hold an activated claim (the queue claims before
-        # dispatching); drop it here or the heartbeat renews it for the process
-        # lifetime and an unlink waits on a job that will never run.
+        # Drop an already-activated claim here, or the heartbeat renews it for the process lifetime and an
+        # unlink waits on a job that will never run.
         job_leases.release(job_leases.FOLDER_SYNC, job_id)
         return
     lease_lost = False
@@ -1619,13 +1660,16 @@ def reconcile_folder(job_id: str) -> None:
     except _LeaseLost:
         lease_lost = True
     except _SyncStopped:
-        _pause_job(job_id)
+        # A retired account's database is closed; its rows moved with the roots.
+        if not account_is_retired():
+            _pause_job(job_id)
     except Exception as exc:
         logger.exception("linked-folder job %s failed unexpectedly", job_id)
-        _fail_job(job_id, exc)
+        if not account_is_retired():
+            _fail_job(job_id, exc)
     finally:
         try:
-            if not lease_lost:
+            if not lease_lost and not account_is_retired():
                 _queue_successor(job_id)
         finally:
             del _worker_state.job_id
@@ -1713,40 +1757,66 @@ def _worker(stop_event: threading.Event | None = None, project_exists = None) ->
             _worker_state.stop_event = stop_event
             while not stop_event.is_set():
                 try:
-                    _recover_startup_state()
-                    if project_exists is not None:
-                        reconcile_retired_scopes(project_exists)
-                    _enqueue_periodic()
-                    break
+                    accounts = job_accounts()
                 except Exception:
                     logger.warning("linked-folder worker initialization failed", exc_info = True)
                     stop_event.wait(1.0)
+                    continue
+                initialized = 0
+                for account in accounts:
+                    try:
+                        run_as(account, _initialize_account_sync, project_exists, recover = True)
+                        initialized += 1
+                    except Exception:
+                        # One bad account database must not keep the worker out of the loop.
+                        logger.warning(
+                            "linked-folder worker initialization failed for one account",
+                            exc_info = True,
+                        )
+                if initialized or not accounts:
+                    break
+                stop_event.wait(1.0)
             while not stop_event.is_set():
                 try:
-                    job = _next_job()
+                    job = _next_account_job()
                 except Exception:
-                    # Writer-lock contention must not retire the only worker: the
-                    # initialization and periodic paths already back off and retry.
+                    # Writer-lock contention must not retire the only worker; the initialization and periodic paths
+                    # retry.
                     logger.warning("linked-folder queue selection failed", exc_info = True)
                     stop_event.wait(1.0)
                     continue
                 if job:
-                    job_id, folder_id = job
+                    account, job_id, folder_id = job
                     try:
-                        reconcile_folder(job_id)
+                        run_as(account, reconcile_folder, job_id)
                     except Exception as exc:
                         logger.exception("linked-folder job %s failed unexpectedly", job_id)
-                        _fail_job(job_id, exc)
+                        try:
+                            run_as(account, _fail_job, job_id, exc)
+                        except Exception:
+                            # One account's bookkeeping must never stop the shared worker.
+                            logger.warning(
+                                "could not record the failure of linked-folder job %s",
+                                job_id,
+                                exc_info = True,
+                            )
                     continue
                 _wake.wait(max(1.0, config.FOLDER_SYNC_INTERVAL_S))
                 _wake.clear()
                 if not stop_event.is_set():
                     try:
-                        if project_exists is not None:
-                            reconcile_retired_scopes(project_exists)
-                        _enqueue_periodic()
+                        accounts = job_accounts()
                     except Exception:
                         logger.warning("linked-folder periodic scheduling failed", exc_info = True)
+                        accounts = []
+                    for account in accounts:
+                        try:
+                            run_as(account, _initialize_account_sync, project_exists)
+                        except Exception:
+                            logger.warning(
+                                "linked-folder periodic scheduling failed for one account",
+                                exc_info = True,
+                            )
     finally:
         _worker_state.stop_event = None
         with _thread_lock:
@@ -1818,8 +1888,8 @@ def start_auto_sync(
         if not rag_db.rag_available():
             return False
     except sqlite3.OperationalError:
-        # The worker retries initialization, so transient database contention must
-        # not turn a one-shot startup preflight into a process-lifetime outage.
+        # The worker retries initialization, so transient database contention must not turn a startup
+        # preflight into a process-lifetime outage.
         pass
     with _thread_lock:
         retired = _thread if _thread is not None and _thread.is_alive() else None
@@ -1834,7 +1904,7 @@ def start_auto_sync(
             stop_event = threading.Event()
             _stop.clear()
             _thread_stop = stop_event
-            _thread = threading.Thread(
+            _thread = account_thread(
                 target = _worker,
                 args = (stop_event, project_exists),
                 daemon = True,
@@ -1861,3 +1931,40 @@ def stop_auto_sync(timeout: float = 2.0) -> None:
         stop_event.set()
     if thread is not None:
         thread.join(timeout = timeout)
+
+
+def _initialize_account_sync(project_exists, *, recover: bool = False) -> None:
+    if recover:
+        _recover_startup_state()
+    if project_exists is not None:
+        reconcile_retired_scopes(project_exists)
+    _enqueue_periodic()
+
+
+def _next_account_job():
+    # Round robin from the account after the last claim: one folder is reconciled at a time,
+    # so always restarting at the first account starves everyone behind a backlog.
+    global _last_job_account
+    accounts = job_accounts()
+    start = 0
+    for index, account in enumerate(accounts):
+        if account.account_id == _last_job_account:
+            start = index + 1
+            break
+    for offset in range(len(accounts)):
+        account = accounts[(start + offset) % len(accounts)]
+        try:
+            job = run_as(account, _next_job)
+        except Exception:
+            # The order is stable, so one corrupt database would shadow the accounts behind it.
+            logger.warning("linked-folder queue selection failed for one account", exc_info = True)
+            continue
+        if job:
+            _last_job_account = account.account_id
+            return (account, *job)
+    return None
+
+
+def retire_account_sync() -> None:
+    """Wake the supervisor; retirement checks stop only the retired account."""
+    _wake.set()

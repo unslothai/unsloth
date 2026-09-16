@@ -26,6 +26,8 @@ const { calls } = await import("./helpers/toast-stub.mjs");
 const {
   dismissStartToast,
   dismissStartToasts,
+  currentStartToastSelectionEpoch,
+  dismissStartToastsForModelSelection,
   liveCallerToast,
   showCallerToast,
   showStartToast,
@@ -108,6 +110,49 @@ test("a toast raised on the route it landed on stays", () => {
   calls.length = 0;
 
   dismissStartToasts();
+  assert.deepEqual(raised(), []);
+});
+
+test("a later model selection drops start toasts without a route change", () => {
+  reset("/chat");
+  showStartToast("model:old-repo:q4", {
+    title: "Restarting this download",
+    description: "The partial can't be resumed.",
+  });
+  calls.length = 0;
+
+  dismissStartToastsForModelSelection();
+  assert.deepEqual(raised(), [
+    { kind: "dismiss", id: startToastId("model:old-repo:q4") },
+  ]);
+});
+
+test("a model pick preserves dataset notices and their delayed raises", () => {
+  reset("/hub");
+  const modelKey = "model:model-repo:q4";
+  const datasetKey = "dataset:dataset-repo:main";
+  showStartToast(modelKey, MESSAGE);
+  showStartToast(datasetKey, MESSAGE);
+  const startedForSelection = currentStartToastSelectionEpoch();
+  calls.length = 0;
+
+  dismissStartToastsForModelSelection();
+  assert.deepEqual(raised(), [{ kind: "dismiss", id: startToastId(modelKey) }]);
+
+  calls.length = 0;
+  showStartToast(datasetKey, MESSAGE, "/hub", startedForSelection);
+  assert.equal(calls[0]?.kind, "info");
+  assert.equal(calls[0]?.options?.id, startToastId(datasetKey));
+  dismissStartToast(datasetKey);
+});
+test("a delayed start cannot reappear after the next model selection", () => {
+  reset("/chat");
+  const startedForSelection = currentStartToastSelectionEpoch();
+
+  dismissStartToastsForModelSelection();
+  calls.length = 0;
+  showStartToast("model:old-repo:q4", MESSAGE, "/chat", startedForSelection);
+
   assert.deepEqual(raised(), []);
 });
 

@@ -39,6 +39,7 @@ import time
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 
+from ..scoring.from_payload import ATTEMPT_ROW_TYPES
 from ..scoring.schema import ExcludedCell, Measure, validate_payload
 
 RECORD_KINDS = (
@@ -205,10 +206,10 @@ def assemble(path: str | Path, *, validate: bool = True) -> dict[str, Any]:
     return payload
 
 
-#: How the harness layer's `row_type` values map onto the sections of an assembled payload.
-#: Layer 1 writes rows through its `Recorder`; this layer reads them. Keeping the mapping in one
-#: table rather than spread through the renderer means a new row type is one line here and a
-#: visible `unknown_rows` entry until somebody decides where it belongs.
+#: How the harness layer's `row_type` values map onto the sections of an assembled payload. Layer 1
+#: writes rows through its `Recorder` and this layer reads them; keeping the mapping in one table
+#: means a new row type is one line here and a visible `unknown_rows` entry until somebody decides
+#: where it belongs.
 ROW_TYPE_SECTIONS: Mapping[str, str] = {
     "run_meta": "header",
     "gate": "selfcheck",
@@ -217,30 +218,110 @@ ROW_TYPE_SECTIONS: Mapping[str, str] = {
     "action": "actions",
     "sample": "samples",
     "failure": "crashes",
-    # Bookkeeping about HOW the A/B was run, not a measurement of the app. It belongs beside the
-    # identity fields so a reader can see whether the order was balanced without digging.
-    "ab_plan": "header",
-    # The optional surface sweep. Its own section: a surface row is a coverage fact about the UI,
-    # not a timing, and folding it into `actions` would put it in front of the scorer.
+    # Bookkeeping about HOW the A/B was run, not a measurement of the app. Its OWN section: the
+    # `header` section is collapsed to its FIRST row when the payload is assembled, so an ab_plan
+    # row filed there is silently dropped while record_counts still reports two header rows.
+    "ab_plan": "ab_plan",
+    # The optional surface sweep. Its own section: a surface row is a coverage fact about the UI, not a
+    # timing, and folding it into `actions` would put it in front of the scorer.
     "surface": "surfaces",
-    # The comparability key. Its own section rather than `header`, for two independent reasons.
-    #
-    # First, `header` is collapsed to its FIRST row when the payload is assembled, so a second row
-    # filed there is dropped without a word. Second, the row's `fields` block is identity
-    # bookkeeping and not a measurement: `instrument_level: 0` is a true statement about how the
-    # run was instrumented, exactly like the `identity` and `config` subtrees, so the section is
-    # exempted from the bare-zero ban rather than made to fake a Measure. Left unmapped the row
-    # fell into `unknown_rows`, which nothing exempts, and the walker killed every real-path
+    # The comparability key. Its own section rather than `header` for two reasons: `header` is
+    # collapsed to its FIRST row when the payload is assembled, so a second row filed there is dropped
+    # without a word; and the row's `fields` block is identity bookkeeping, not a measurement, so the
+    # section is exempted from the bare-zero ban rather than made to fake a Measure. Left unmapped the
+    # row fell into `unknown_rows`, which nothing exempts, and the walker killed every real-path
     # session on `$.unknown_rows[0].fields.instrument_level = 0`.
     "comparability": "comparability",
-    # The terminal marker for a cell that did not finish. NOT `cells`, which is what the scorer
-    # reads, and NOT an exclusion source: the `cell` row it follows is emitted with
-    # `completed: false` immediately before it on the same path, and `excluded_from_rows` already
-    # turns that into a `rung_incomplete` exclusion. Filing this row as a second exclusion would
-    # count one abort twice. It exists so a reader scanning FORWARD can discard the cell's window
-    # rows, and that is all it is kept for here.
+    # The terminal marker for a cell that did not finish. NOT `cells`, which is what the scorer reads,
+    # and NOT an exclusion source: the `cell` row it follows is emitted with `completed: false`
+    # immediately before it and `excluded_from_rows` already turns that into a `rung_incomplete`
+    # exclusion, so filing this as a second exclusion would count one abort twice. It exists so a
+    # reader scanning FORWARD can discard the cell's window rows.
     "cell_aborted": "aborted_cells",
 }
+
+
+def executed_balance(order: Sequence[Any], attempted: set[str]) -> bool | None:
+    """`runtime/ab.py` `order_is_balanced`, over the cells that actually ran.
+
+    Same rule: which arm led each `(rung, rep)` pair, every arm equally often, one arm never
+    balanced because nothing cancels. Read off `make_cell_id`'s `r{rung}.{arm}.rep{rep}`,
+    rsplit from the right so a dotted rung parses. None when the ids are another shape, which
+    is cannot-tell, not unbalanced.
+    """
+
+    labels: set[str] = set()
+    first: dict[str, int] = {}
+    seen: set[tuple[str, str]] = set()
+    for cell_id in order:
+        if str(cell_id) not in attempted:
+            continue
+        try:
+            head, arm, rep = str(cell_id).rsplit(".", 2)
+        except ValueError:
+            return None
+        labels.add(arm)
+        if (head, rep) in seen:
+            continue
+        seen.add((head, rep))
+        first[arm] = first.get(arm, 0) + 1
+    if not labels:
+        return None
+    return len(labels) > 1 and len({first.get(label, 0) for label in labels}) == 1
+
+
+def merged_ab_plan(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """One plan out of however many sessions wrote one.
+
+    `--resume` emits a fresh `ab_plan` for the work that session was asked to do, so `[0]`
+    drops the cells a later one added while `record_counts` still reports both plans, which is
+    the loss that moved this row out of `header`, one layer down.
+
+    `order` is the union; the refs come from the first plan, and a resume whose refs disagree
+    is refused upstream.
+
+    `balanced` is ANDed over the sessions that still own a cell, taking ownership from
+    `latest_attempt_rows`: `ATTEMPT_ROW_TYPES` rather than `cell` rows alone, keyed on the
+    `session_id` `Recorder.emit` stamps on every row. A second copy of that rule that
+    disagreed would be worse than none.
+
+    Each verdict is recomputed over what that session ATTEMPTED, since the row's own was
+    computed over the whole plan before it ran: a `--reps 2` interrupted after rep 0 planned
+    base, treatment, treatment, base and ran base, treatment, so base led every pair that
+    happened. `order` stays the requested ladder; `balanced` describes the run.
+    """
+
+    plans = [r for r in records if r.get("row_type") == "ab_plan"]
+    if not plans:
+        return {}
+    plan = dict(plans[0])
+    # The merged object is a synthesis of every session's plan, so the first row's own stamps
+    # would assert it was written by one of them at one moment. `sessions` says who contributed
+    # instead, which is the question those fields were being read for.
+    plan["sessions"] = [row.get("session_id") for row in plans]
+    for stamp in ("session_id", "ts_ms"):
+        plan.pop(stamp, None)
+    order: list[Any] = []
+    for row in plans:
+        for cell_id in row.get("order", []):
+            if cell_id not in order:
+                order.append(cell_id)
+    plan["order"] = order
+    owner: dict[str, Any] = {}
+    for record in records:
+        if record.get("row_type") in ATTEMPT_ROW_TYPES and record.get("cell_id") is not None:
+            owner[str(record["cell_id"])] = record.get("session_id")
+    owning = set(owner.values())
+    # No attempt rows at all is not an experiment; the newest request is the best word there is.
+    live = [row for row in plans if row.get("session_id") in owning] or [plans[-1]]
+    verdicts = []
+    for row in live:
+        session = row.get("session_id")
+        attempted = {cell for cell, owned_by in owner.items() if owned_by == session}
+        ran = executed_balance(row.get("order", []), attempted)
+        verdicts.append(bool(row.get("balanced")) if ran is None else ran)
+    plan["balanced"] = all(verdicts)
+    return plan
 
 
 def assemble_rows(path: str | Path, *, validate: bool = True) -> dict[str, Any]:
@@ -287,6 +368,7 @@ def assemble_rows(path: str | Path, *, validate: bool = True) -> dict[str, Any]:
         "surfaces": sections.get("surfaces", []),
         "aborted_cells": sections.get("aborted_cells", []),
         "comparability": (sections["comparability"][0] if sections.get("comparability") else {}),
+        "ab_plan": merged_ab_plan(records),
         "crashes": sections.get("crashes", []),
         "arms": [],
         "unknown_rows": unknown,
