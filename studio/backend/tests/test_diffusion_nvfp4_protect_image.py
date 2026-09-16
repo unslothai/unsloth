@@ -101,13 +101,11 @@ class _CachedScheduler:
 
 
 class _CapableLayer:
-    """A stand-in for a converted flashinfer Linear: weak-referenceable, which is all the
-    controller's registry asks of it."""
+    """A stand-in for a converted flashinfer Linear: weak-referenceable is all the registry asks."""
 
 
 def _capable(ctl):
-    """Register one, which is what makes a controller willing to arm. The caller must keep the
-    returned object alive: the registry is weak."""
+    """Register one, which is what lets a controller arm. Keep the result alive: the registry is weak."""
     layer = _CapableLayer()
     ctl.register_layer(layer)
     return layer
@@ -342,8 +340,8 @@ def _cuda_or_skip():
 
 
 def test_a_graphed_dit_captures_one_tuned_graph_per_branch_and_replays_both(monkeypatch):
-    """Two captures, the FP4 tactic tuned before either, every replay bit-identical to the
-    un-graphed forward of its own branch, and the second graph costing about what the first did."""
+    """Two captures, the FP4 tactic tuned before either, every replay bit-identical to its branch's
+    un-graphed forward, and the second graph costing about what the first did."""
     torch = _cuda_or_skip()
     import torch.nn as nn
     from torchao.prototype.mx_formats import NVFP4DynamicActivationNVFP4WeightConfig

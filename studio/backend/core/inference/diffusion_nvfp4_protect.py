@@ -6,8 +6,8 @@
 At a protected step the layer dequantises its own bytes to a transient bf16 weight, so there is
 never a second resident operand. The step counter wraps ``pipe.scheduler.step``, which every
 diffusers denoise loop calls once per step, after that step's forward. The protected set must be
-MEASURED per model: copying one model's set to another has been observed to make held-out prompts
-worse than protecting nothing, so the lever is off unless an operator names the steps.
+MEASURED per model: a set copied from another model has been observed to do worse on held-out
+prompts than protecting nothing, so the lever is off unless an operator names the steps.
 """
 
 from __future__ import annotations
@@ -36,9 +36,9 @@ def protect_steps_env() -> str:
 
 
 def parse_protect_steps(spec: Any, total_steps: int) -> tuple:
-    """``spec`` resolved against a schedule of ``total_steps`` steps, as a sorted tuple. An
-    out-of-range index is dropped, so one value serves any step count; a non-integer token DOES
-    raise, since a typo that silently protects nothing reads as a measured lever that never ran."""
+    """``spec`` resolved against ``total_steps``, as a sorted tuple. An out-of-range index is
+    dropped so one value serves any step count; a non-integer token DOES raise, since a typo that
+    silently protects nothing reads as a measured lever that never ran."""
     total = int(total_steps)
     if total <= 0:
         return ()
@@ -197,7 +197,7 @@ def protect_generation(
         yield ctl
         return
     if not ctl.capable_layers():
-        # Only NVFP4FlashInferLinear consults the controller: a torchao load runs W4A4 at every step whatever the schedule says, and must not be reported as protected.
+        # Only NVFP4FlashInferLinear consults the controller: a torchao load runs W4A4 at every step and must not read as protected.
         if logger is not None:
             logger.warning(
                 "[nvfp4] protect schedule %r requested but no protect-capable NVFP4 layer is "
@@ -227,7 +227,7 @@ def protect_generation(
         ctl.advance()
         return out
 
-    # Restoring a bound class method by assignment would leave an instance attribute shadowing the class forever, so unwind by deleting unless there really was one before this wrap.
+    # Restoring by assignment would leave an instance attribute shadowing the class forever, so delete unless one existed before this wrap.
     had_own = "step" in getattr(scheduler, "__dict__", {})
     scheduler.step = _step
     try:
@@ -245,9 +245,9 @@ def protect_generation(
 
 @contextlib.contextmanager
 def suspend_protect(modules: Any):
-    """Force every controller reachable from ``modules`` to report itself unarmed, then restore.
-    The prewarm MUST suspend the lever: otherwise its forwards take the bf16 branch, tune nothing,
-    mark the shape tuned anyway, and the next capture records an untuned tactic."""
+    """Force every controller reachable from ``modules`` to report unarmed, then restore. The
+    prewarm MUST suspend the lever, or its forwards take the bf16 branch, tune nothing, mark the
+    shape tuned anyway, and the next capture records an untuned tactic."""
     seen: dict = {}
     for module in modules or ():
         ctl = getattr(module, "protect", None)
@@ -263,9 +263,9 @@ def suspend_protect(modules: Any):
 
 
 def protect_graph_key(protected: Optional[bool] = None) -> tuple:
-    """The CUDA-graph cache-key suffix for the branch in flight, or ``()`` when the lever is off.
-    A captured graph records ONE branch, so without this the lever is silently inert under
-    capture while the numbers look like it ran."""
+    """The CUDA-graph cache-key suffix for the branch in flight, or ``()`` when the lever is off. A
+    captured graph records ONE branch, so without this the lever is inert under capture while the
+    numbers look like it ran."""
     ctl = protect_controller()
     if not ctl.armed:
         return ()

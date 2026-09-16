@@ -333,9 +333,8 @@ class _Bytes:
 
 
 class Float8Tensor:
-    """A quantized fp8 weight as far as this module is concerned: the class NAME is the key, for the
-    fingerprint's payload table and for the activation-floor check that has to tell an fp8 weight
-    apart from the 4-bit ones beside it in a policy checkpoint."""
+    """A quantized fp8 weight as far as this module cares: the class NAME keys the fingerprint's
+    payload table and the activation-floor check that tells fp8 from the 4-bit weights beside it."""
 
     def __init__(
         self,
@@ -449,7 +448,7 @@ class _CountedBytes(_Bytes):
 
 
 def test_a_class_whose_payload_slots_all_read_none_is_not_fingerprinted():
-    # A torchao release that keeps the class name and renames every payload attribute must read as uncovered, not as the md5 of an empty stream (the same digest for every weight).
+    # A torchao release that keeps the class name but renames every payload attribute must read as uncovered, not as the md5 of an empty stream (one digest for every weight).
     from core.inference.diffusion_prequant import packed_weight_fingerprint
 
     renamed = Float8Tensor(b"q0")
@@ -2175,7 +2174,7 @@ def test_a_policy_checkpoint_is_validated_end_to_end():
 
 
 def test_the_fp8_invariants_cover_the_fp8_half_of_a_policy_checkpoint():
-    # A policy artifact is declared nvfp4 and is mostly Float8Tensor, so the per-row granularity and the activation floor decide whether ITS fp8 layers render or go black. Gating both on scheme == fp8 skipped every one of them.
+    # A policy artifact is declared nvfp4 but is mostly Float8Tensor, so the per-row granularity and activation floor decide whether ITS fp8 layers render or go black. Gating both on scheme == fp8 skipped them all.
     logger = _Recorder()
     ckpt = {
         "format": pq.PREQUANT_FORMAT_POLICY,
@@ -2228,9 +2227,8 @@ def test_the_checkpoint_is_released_before_the_device_copy(monkeypatch, tmp_path
     """The CPU checkpoint must be unreferenced by the time ``.to(device)`` allocates.
 
     ``assign = True`` gives the module the checkpoint's own tensors, so ckpt/state_dict hold only a
-    second reference to them. On a unified-memory host (DGX Spark) the host copy and the device copy
-    are the same physical memory, so keeping that reference across the move doubles the transient
-    peak the artifact-sized admission check was told to expect.
+    second reference. On unified memory (DGX Spark) host and device copy are the same physical
+    memory, so keeping it across the move doubles the transient peak.
     """
     import weakref
 

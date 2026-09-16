@@ -198,11 +198,7 @@ export function precisionLabel(value: string | null | undefined): string | null 
   return known[value] ?? value.toUpperCase();
 }
 
-/**
- * Which NVFP4 kernel path served the load, spelled the way the projects spell
- * themselves. Anything unrecognised is shown as the backend sent it, same rule as
- * precisionLabel.
- */
+/** Which NVFP4 kernel path served the load, spelled the way the projects spell themselves. Unrecognised values pass through as sent, as in precisionLabel. */
 export function quantBackendLabel(
   value: string | null | undefined,
 ): string | null {

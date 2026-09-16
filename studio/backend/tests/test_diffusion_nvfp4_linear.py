@@ -359,7 +359,7 @@ def test_conversion_refuses_when_one_layer_has_no_scale():
 
 
 def test_a_layer_that_fails_half_way_leaves_the_whole_tree_on_torchao(monkeypatch):
-    # The refusal is all-or-nothing by contract, and the loader ignores the return value: a raise after the first child was swapped in left a mixed tree under a log line saying it stayed on torchao, with the status badge reading flashinfer off the layers that did convert.
+    # The loader ignores the return value, so a raise after the first swap left a mixed tree logged as torchao while the badge read flashinfer off the converted layers.
     torch = pytest.importorskip("torch")
     import torch.nn as nn
 
