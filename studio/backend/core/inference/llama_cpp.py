@@ -6575,6 +6575,23 @@ def _write_direct_stream_key(key: str) -> "Path":
     return path
 
 
+def _extra_args_have_tensor_split(
+    extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]]
+) -> bool:
+    """PRESENCE of a pass-through split, parseable or not, in argv or the CHILD env.
+
+    _extra_args_tensor_split returns None for a value it cannot parse, and the repointer
+    does no numeric validation and takes the LAST occurrence, so a parse-check veto lets
+    the repointer permute a user share it exists to protect. Reads the child env rather
+    than os.environ because LLAMA_ARG_TENSOR_SPLIT is scrubbed before this point, and a
+    value the child never receives must not suppress the reorder.
+    """
+    for token in extra_args or ():
+        if str(token).split("=", 1)[0] in ("--tensor-split", "-ts", "--tensor_split"):
+            return True
+    return bool(str((env or {}).get("LLAMA_ARG_TENSOR_SPLIT", "")).strip())
+
+
 class LlamaCppBackend:
     """Manages a llama-server subprocess for GGUF model inference.
 
@@ -10929,44 +10946,21 @@ class LlamaCppBackend:
         except Exception:
             return False
 
-    def _gpu_ids_own_placement(
-        self,
-        gpu_ids,
-        *,
-        is_vulkan: Optional[bool] = None,
-    ) -> bool:
-        """Whether a ``gpu_ids`` pick is narrow enough to overrule a user ``--device``.
+    def _gpu_ids_own_placement(self, gpu_ids) -> bool:
+        """Whether a ``gpu_ids`` pick overrules a user ``--device`` / ``--main-gpu``.
 
-        A pick that keeps every visible GPU narrows nothing, so there is no conflict
-        to resolve, and stripping there costs the only way to ORDER devices (the
-        picker itself is sorted) for no gain. Anything narrower still owns placement:
-        the flag would send the model to a card the picker deselected.
+        An explicit pick always does. This asks nothing about the device VALUE on
+        purpose: letting a pass-through survive when the pick covered the whole
+        visible set was tried and withdrawn, because the ordering it bought is
+        already supplied by the inherited-mask reorder above, while every consumer
+        of the strip then had to agree about a value that planning can invalidate
+        after the answer is taken.
 
-        Vulkan always owns it -- Unsloth emits its own ``--device Vulkan<i>``, and
-        those ordinals are not the CUDA ids the visible set is counted in, so the
-        two cannot be compared. An unreadable visible set fails closed for the same
-        reason: unproven means stripped, as before.
-
-        Every consumer of the strip must ask this the same way, launch and reload
-        comparator alike, or the argv and the already-loaded check drift apart.
+        One predicate rather than eleven copies of ``gpu_ids is not None``: the
+        launch, the fit classifier, the cache tuning and the reload comparator
+        disagreeing is how the argv and the already-loaded check drift apart.
         """
-        if gpu_ids is None:
-            return False
-        if is_vulkan is None:
-            is_vulkan = self.is_vulkan_build()
-        if is_vulkan:
-            return True
-        picked = {int(i) for i in gpu_ids}
-        if not picked:
-            return True
-        from utils.hardware import get_parent_visible_gpu_ids
-
-        visible = {int(i) for i in get_parent_visible_gpu_ids()}
-        # One device has no order to express, so the pass-through buys nothing there
-        # and a --main-gpu naming the card that is not present still has to go.
-        if len(visible) < 2:
-            return True
-        return not picked.issuperset(visible)
+        return gpu_ids is not None
 
     @staticmethod
     def _strip_device_extra_args(extra_args):
@@ -21062,9 +21056,7 @@ class LlamaCppBackend:
             is_vulkan_backend = self._is_vulkan_backend(binary)
             # Once, and reused everywhere the strip is asked about: the reload
             # comparator has to reach the same answer as the argv it compares against.
-            _gpu_ids_own_device_flags = self._gpu_ids_own_placement(
-                gpu_ids, is_vulkan = is_vulkan_backend
-            )
+            _gpu_ids_own_device_flags = self._gpu_ids_own_placement(gpu_ids)
             _vulkan_ordinal_pin = (
                 is_vulkan_backend and bool(gpu_ids) and gpu_ids_are_vulkan_ordinals is not False
             )
@@ -24911,7 +24903,9 @@ class LlamaCppBackend:
                 # Speculative decoding. See _build_speculative_flags for the
                 # mode resolution, benchmarks, and llama.cpp references.
                 _vulkan_pin_ids = gpu_indices if gpu_indices is not None else (gpu_ids or None)
-                _draft_device = _extra_args_main_device(extra_args) if gpu_ids is None else None
+                _draft_device = (
+                    _extra_args_main_device(extra_args) if not _gpu_ids_own_device_flags else None
+                )
                 if _draft_device is None and is_vulkan_backend and _vulkan_pin_ids:
                     _draft_device = ",".join(f"Vulkan{i}" for i in _vulkan_pin_ids)
                 launch_mtp_draft_path = self._resolve_launch_mtp_path(
@@ -25750,7 +25744,6 @@ class LlamaCppBackend:
                     logger.info(
                         f"Appending user extra args to llama-server: {list(_emit_extra_args)}"
                     )
-
                 # Last so it wins: the drafter CPU pin on a virtualised Metal device
                 # is a correctness fix, not a preference, and llama.cpp is last-wins.
                 if _pv_draft_cpu_pin:
@@ -26361,7 +26354,7 @@ class LlamaCppBackend:
                         # A user --tensor-split is positional over the order they
                         # expected, so reordering under it re-weights the wrong cards.
                         # Theirs to own: decline instead of rewriting it.
-                        if _extra_args_tensor_split(extra_args, os.environ) is not None:
+                        if _extra_args_have_tensor_split(extra_args, env):
                             logger.info(
                                 "Keeping ascending GPU order: a pass-through "
                                 "--tensor-split is positional over it."
