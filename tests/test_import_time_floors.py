@@ -629,3 +629,55 @@ def test_a_callable_with_no_readable_signature_is_still_called():
     run = _isolated_run_temporary_patches([print], logger)
     run("init")
     assert logger.warnings == []
+
+
+def test_the_provider_lookup_still_works_without_packages_distributions(monkeypatch):
+    """`importlib.metadata.packages_distributions` is Python 3.10+, and pyproject still
+    admits 3.9. There the import raises, the mapping comes back empty, and the message
+    used to report `triton==unknown` and recommend the CUDA `triton` over the platform
+    build, which is the exact substitution this helper exists to prevent."""
+    import importlib.metadata as metadata
+
+    def _absent():
+        raise ImportError("no packages_distributions on this interpreter")
+
+    monkeypatch.setattr(metadata, "packages_distributions", _absent, raising = False)
+    monkeypatch.setitem(sys.modules, "importlib_metadata", None)
+    monkeypatch.setattr(
+        import_fixes,
+        "importlib_version",
+        lambda name: "3.3.0" if name == "pytorch-triton-rocm" else _raise_missing(name),
+    )
+    import_fixes._installed_version.cache_clear()
+    try:
+        assert import_fixes._triton_distribution() == ("pytorch-triton-rocm", "3.3.0")
+    finally:
+        import_fixes._installed_version.cache_clear()
+
+
+def test_the_provider_fallback_reports_unknown_when_nothing_is_installed(monkeypatch):
+    """NEGATIVE CONTROL: the fallback asks each provider whether it is installed, so a
+    host with none of them must not pick one anyway."""
+    import importlib.metadata as metadata
+
+    monkeypatch.setattr(metadata, "packages_distributions", lambda: {}, raising = False)
+    monkeypatch.setitem(sys.modules, "importlib_metadata", None)
+    monkeypatch.setattr(import_fixes, "importlib_version", _raise_missing)
+    import_fixes._installed_version.cache_clear()
+    try:
+        assert import_fixes._triton_distribution() == ("triton", "unknown")
+    finally:
+        import_fixes._installed_version.cache_clear()
+
+
+def test_the_mlx_branch_installs_the_torch_diagnosis():
+    """_gpu_init.py is the only other installation site and the MLX branch never reaches
+    it, so an Apple Silicon host with the old-torch/new-transformers pair would get the
+    bare AttributeError this PR exists to replace. The branch already mirrors three other
+    _gpu_init fixes for exactly this reason."""
+    source = (_UNSLOTH / "__init__.py").read_text(encoding = "utf-8")
+    mlx_branch = source[source.index("if _IS_MLX:"):source.index("import unsloth_zoo")]
+    assert "patch_torch_missing_attribute_error" in mlx_branch, (
+        "DRIFT DETECTED: the MLX branch no longer installs the torch-too-old diagnosis, "
+        "so it is installed only on the GPU path."
+    )

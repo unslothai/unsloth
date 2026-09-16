@@ -2139,6 +2139,18 @@ def _defines_py_ssize_t_clean_before_python_h(source: str) -> bool:
     return state
 
 
+# Every distribution this repository knows of that provides the `triton` import name. Only a
+# fallback for interpreters without `packages_distributions`; the mapping is asked for first
+# wherever it exists, so a provider added upstream is still found on 3.10 and later.
+_TRITON_PROVIDERS = (
+    "triton",
+    "triton-windows",
+    "pytorch-triton",
+    "pytorch-triton-rocm",
+    "pytorch-triton-xpu",
+)
+
+
 def _triton_distribution():
     """Which distribution owns the imported ``triton`` package, and its version.
 
@@ -2161,6 +2173,20 @@ def _triton_distribution():
         names = list(packages_distributions().get("triton") or [])
     except Exception:
         names = []
+    if not names:
+        # `packages_distributions` is Python 3.10+, and pyproject still admits 3.9, where
+        # the import above raises and leaves this empty -- reporting `triton==unknown` and
+        # recommending the CUDA `triton` over the platform build, which is the exact
+        # failure this helper exists to avoid. The backport answers the same question when
+        # it is installed; when it is not, ask each provider directly, which needs no
+        # mapping at all: a provider that is not installed has no version to report.
+        try:
+            from importlib_metadata import packages_distributions as _backport
+            names = list(_backport().get("triton") or [])
+        except Exception:
+            names = []
+    if not names:
+        names = [name for name in _TRITON_PROVIDERS if _installed_version(name) != "unknown"]
     # Prefer a provider that can actually report a version; a stale empty dist-info
     # otherwise wins over the real one purely on ordering.
     for name in names:
