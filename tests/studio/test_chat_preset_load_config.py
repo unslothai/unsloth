@@ -164,10 +164,7 @@ def _store_selectors(source: str) -> list:
     return out
 
 
-def _split_ternary(
-    expression: str,
-    guards: tuple = (),
-) -> list:
+def _split_ternary(expression: str, guards: tuple = ()) -> list:
     """`cond ? a : b` as `[(a, conditions), (b, conditions)]`, recursively.
 
     Each result is paired with every condition governing whether it is the one returned, so a
