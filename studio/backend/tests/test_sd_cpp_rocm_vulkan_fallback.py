@@ -2029,3 +2029,42 @@ def test_the_image_pin_follows_the_card_into_the_vulkan_namespace(monkeypatch):
     assert sd_cpp_backend._offload_with_device_pin_impl(
         ["--offload-to-cpu"], "/sd/sd-cli", 1
     ) == ["--offload-to-cpu"]
+
+
+def test_the_image_pin_tells_two_identical_cards_apart(monkeypatch):
+    """The case a name match alone cannot decide, which is the common multi-GPU box.
+
+    Two of the same card produce two identical descriptions, so the pin has to carry the
+    position within that run of identical names. Getting this wrong is worse than not pinning
+    at all: it writes a --backend for the OTHER card while the load reserves and accounts for
+    the selected one, which is the exact overcommit the pin exists to prevent. A position
+    outside the matches has to pin nothing rather than fall back to the first.
+    """
+    from core.inference import sd_cpp_backend
+
+    monkeypatch.setattr(
+        sd_cpp_backend,
+        "_sd_cpp_probe_output",
+        lambda *_a: (
+            "Vulkan0\tAMD Radeon RX 7900 XTX (RADV NAVI31)\n"
+            "Vulkan1\tAMD Radeon RX 7900 XTX (RADV NAVI31)\n"
+        ),
+    )
+    for position, expected in ((0, "Vulkan0"), (1, "Vulkan1")):
+        monkeypatch.setattr(
+            sd_cpp_backend,
+            "physical_card_name",
+            lambda _ordinal, _p = position: ("AMD Radeon RX 7900 XTX", _p),
+        )
+        flags = sd_cpp_backend._offload_with_device_pin_impl([], "/sd/sd-cli", position)
+        assert flags == [
+            "--backend",
+            f"diffusion={expected},te={expected},vae={expected}",
+        ], (position, flags)
+
+    # A third card of that name physically, but only two in the Vulkan namespace: the counts
+    # disagree, so the position means nothing and the pin is dropped.
+    monkeypatch.setattr(
+        sd_cpp_backend, "physical_card_name", lambda _ordinal: ("AMD Radeon RX 7900 XTX", 2)
+    )
+    assert sd_cpp_backend._offload_with_device_pin_impl([], "/sd/sd-cli", 2) == []
