@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from core.training.account_jobs import visible_cached_path
 import json
 import os
 import re
@@ -257,7 +258,6 @@ def _read_card_metadata(path: Path) -> Any:
 # whose symlink leaves the repository is refused, and only trainable extensions are offered.
 
 # Past this the result would depend on traversal order, so nothing is offered.
-# --- Split inference for cached datasets whose card declares nothing ------------------
 _MAX_SNAPSHOT_DATA_FILES = 200_000
 # datasets drops these by basename before it infers anything, so a metadata-only cache is empty
 # rather than a bogus train split.
@@ -717,9 +717,16 @@ def _sorted_options(options: set[tuple[str, str]], dataset: str = "") -> list[Da
 
 
 def local_dataset_options(request: LocalDatasetOptionsRequest) -> LocalDatasetOptionsResponse:
+    visible_cached_path(request.local_path, "dataset")
     repo_id = request.dataset_name.strip()
     if not is_valid_repo_id(repo_id):
         return LocalDatasetOptionsResponse(cache_available = False, splits = [])
+
+    if not request.local_path:
+        # The lookup spans the shared cache; a hit there is not authorization.
+        from hub.services.models import account_access
+        if not account_access.model_visible(repo_id, repo_type = "dataset"):
+            return LocalDatasetOptionsResponse(cache_available = False, splits = [])
 
     selected = (
         dataset_cache_path_from_cache_path(request.local_path, repo_id)

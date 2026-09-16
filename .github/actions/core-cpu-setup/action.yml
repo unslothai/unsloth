@@ -1,0 +1,237 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# The CPU install preamble that every `Core` matrix cell runs before it can
+# execute a single test: node, uv, the __from_pyproject__ spec resolution, the
+# ~2 GB pip install, and the shallow unsloth_zoo clone.
+#
+# Extracted because `consolidated-tests-ci.yml` now has TWO matrix jobs over the
+# same three (transformers, TRL) combos rather than one. The zoo suite was 457s
+# of a 17.2 minute serial cell, so it moved into its own job and now runs beside
+# the rest of Core instead of after it. Both jobs need a byte-identical
+# environment: the whole point of the split is that the two halves test the same
+# stack they used to test together, and the cheapest way for that claim to go
+# quietly false is two copies of a 120-line install block drifting apart one
+# pinned version at a time.
+#
+# So there is one copy, here, and the two call sites pass only what genuinely
+# differs between them: nothing, today, beyond the matrix specs both already
+# receive from the same matrix definition.
+#
+# What deliberately stays at the CALLER:
+#   - actions/checkout, because `uses: ./.github/actions/...` cannot resolve
+#     before the repository is on disk.
+#   - actions/setup-python, because the pip cache restore below it probes
+#     `python -m pip cache dir` and so has to run after the interpreter is
+#     selected, while the install steps in here have to run after the cache is
+#     restored. Splitting this action in two to swallow both halves would buy
+#     nothing over leaving four pinned lines in the caller.
+#   - the pip-cache-restore / pip-cache-save pair, which
+#     tests/studio/test_cache_budget_discipline.py and
+#     tests/studio/test_pip_cache_naming.py both read off the JOB's step list.
+#     Hiding them in here would make those guards silently vacuous for the two
+#     jobs that hold the largest pip entries in the repo, which is the exact
+#     failure shape that file exists to reject.
+#
+# tests/studio/test_zoo_suite_parallel_isolation.py asserts that the two callers
+# agree on all of the above, so the four lines this action does not own cannot
+# drift either.
+
+name: Core CPU setup
+description: >-
+  Install the CPU test environment shared by every Core matrix cell: node 22, uv,
+  the matrix-resolved transformers + TRL pins, torch CPU, unsloth (editable) and
+  a shallow unsloth_zoo checkout installed editable. Requires actions/checkout,
+  actions/setup-python and the pip cache restore to have run first.
+
+inputs:
+  transformers-spec:
+    description: >-
+      The matrix cell's `transformers` requirement, or the literal
+      `__from_pyproject__` sentinel to take whatever pyproject.toml pins.
+    required: true
+  trl-spec:
+    description: >-
+      The matrix cell's `trl` requirement, or `__from_pyproject__` as above.
+    required: true
+  unsloth-zoo-ref:
+    description: unsloth_zoo git ref to clone and install editable.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # Node 22 unblocks tests/studio/test_chat_preset_builtin_invariants.py's
+    # `node --experimental-strip-types` subprocess. Cheap to install; keeps
+    # the consolidated job self-sufficient even if studio-backend-ci.yml
+    # changes its node setup.
+    #
+    # Installed for the zoo job too, which has no node test of its own. A few
+    # seconds against a preamble measured in minutes, and it is what makes
+    # "the two jobs run the same environment" true without qualification.
+    - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+      with:
+        node-version: '22'
+
+    - name: Install uv (some unsloth_zoo dev tooling expects it on PATH)
+      shell: bash
+      run: pip install uv
+
+    - name: Resolve matrix specs (handle __from_pyproject__ sentinel)
+      # The pyproject cell uses a sentinel; resolve the real `transformers`
+      # and `trl` constraints from the project's pyproject.toml at job time.
+      # unsloth's pyproject puts the LLM stack pins in
+      # [project.optional-dependencies] under the `huggingfacenotorch`
+      # extra (top-level [project.dependencies] is just typer/pydantic/etc.),
+      # so we walk every optional extra and pick the first matching spec.
+      # Other cells pass their spec through unchanged.
+      #
+      # RESOLVED_* go to $GITHUB_ENV, which is the job's environment file: the
+      # install step below reads them, and so does every later step in the
+      # CALLING job, exactly as when these lines lived in the workflow.
+      shell: bash
+      env:
+        MATRIX_TRANSFORMERS_SPEC: ${{ inputs.transformers-spec }}
+        MATRIX_TRL_SPEC: ${{ inputs.trl-spec }}
+      run: |
+        set -euxo pipefail
+        python <<'PY' >> "$GITHUB_ENV"
+        import os, re, tomllib
+        spec_t = os.environ["MATRIX_TRANSFORMERS_SPEC"]
+        spec_r = os.environ["MATRIX_TRL_SPEC"]
+
+        def _pkg_name(spec: str) -> str:
+            m = re.match(r"\s*([A-Za-z0-9_.-]+)", spec)
+            return (m.group(1).lower() if m else "")
+
+        if spec_t == "__from_pyproject__" or spec_r == "__from_pyproject__":
+            with open("pyproject.toml", "rb") as f:
+                doc = tomllib.load(f)
+            proj = doc.get("project", {})
+            # Try top-level deps first, then all optional extras.
+            all_deps: list[str] = list(proj.get("dependencies", []))
+            for _name, dep_list in proj.get("optional-dependencies", {}).items():
+                all_deps.extend(dep_list)
+
+            if spec_t == "__from_pyproject__":
+                spec_t = next((x for x in all_deps if _pkg_name(x) == "transformers"),
+                              "transformers")
+            if spec_r == "__from_pyproject__":
+                spec_r = next((x for x in all_deps if _pkg_name(x) == "trl"),
+                              "trl")
+        print(f"RESOLVED_TRANSFORMERS_SPEC={spec_t}")
+        print(f"RESOLVED_TRL_SPEC={spec_r}")
+        PY
+        # Echo to logs so the matrix cell label maps cleanly to a spec.
+        grep RESOLVED_ "$GITHUB_ENV" || true
+
+    - name: Install runtime deps (mirrors studio-backend-ci.yml + mlx-ci.yml)
+      # The shape matches studio-backend-ci.yml's "Repo tests (CPU)" install
+      # so we inherit the same CPU-spoof harness in tests/conftest.py and
+      # the same import-chain guarantees, plus the extra deps that the
+      # tests/saving + tests/utils Bucket-A files transitively need but
+      # which Repo tests (CPU) does not require because it --ignores
+      # those directories:
+      #   - protobuf + sentencepiece: tests/saving/test_fix_sentencepiece_gguf_robustness.py
+      #     does `from transformers.utils import sentencepiece_model_pb2`,
+      #     which imports `google.protobuf`. Not pulled by transformers'
+      #     base install.
+      #   - triton: unsloth/_gpu_init.py:232 does an unconditional
+      #     `import triton`. The triton PyPI wheel installs cleanly on
+      #     Linux x86_64 even without CUDA (the import succeeds; runtime
+      #     GPU work is what would fail, which we never do here).
+      # transformers + trl are matrix-parameterized.
+      shell: bash
+      run: |
+        set -euxo pipefail
+        python -m pip install --upgrade pip
+        pip install -r studio/backend/requirements/studio.txt
+        # CPU torch FIRST, before anything that depends on torch. peft, accelerate and
+        # datasets all declare a torch dependency, so installing them first made pip
+        # resolve it from PyPI: the default CUDA build, plus 14 nvidia_* wheels and
+        # cuda-toolkit, roughly 2.3 GB, which the pinned CPU wheel below then replaced
+        # seconds later. Same end state either way; this just stops paying for the
+        # download. torchvision: unsloth_zoo.vision_utils imports it at module scope.
+        pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
+          'torch>=2.4,<2.11' 'torchvision<0.26'
+        pip install \
+          python-multipart aiofiles sqlalchemy cryptography \
+          pyyaml jinja2 mammoth unpdf requests typer \
+          'numpy<3' pytest==9.0.3 pytest-asyncio pytest-xdist pytest-timeout httpx \
+          protobuf sentencepiece triton \
+          psutil packaging tqdm safetensors datasets \
+          'peft>=0.18,<0.20' 'accelerate>=0.34,<2' \
+          ipython
+        # transformers + trl from the matrix combo.
+        pip install "$RESOLVED_TRANSFORMERS_SPEC"
+        pip install "$RESOLVED_TRL_SPEC"
+        # bitsandbytes: hard import in unsloth/models/_utils.py. Recent
+        # versions ship a CPU build that imports cleanly on Linux.
+        pip install 'bitsandbytes>=0.45'
+        # unsloth itself, editable, no-deps so pip does not fight the
+        # explicit torch CPU-index install above.
+        pip install -e . --no-deps
+        echo "::group::Installed transformers + trl + torch + unsloth versions"
+        pip show transformers
+        pip show trl
+        pip show torch
+        pip show unsloth
+        echo "::endgroup::"
+
+    - name: Clone unsloth_zoo @ ${{ inputs.unsloth-zoo-ref }}
+      # We need the repository tree (the wheel does not ship tests/), so
+      # clone shallow then editable-install so unsloth_zoo.* imports
+      # resolve to the cloned tree. We use `pip show` for the location
+      # check rather than `import unsloth_zoo` because the latter calls
+      # device_type.get_device_type() at module load and raises on a
+      # GPU-less runner; pytest steps below route through the existing
+      # tests/conftest.py spoof which handles that.
+      shell: bash
+      env:
+        UNSLOTH_ZOO_REF: ${{ inputs.unsloth-zoo-ref }}
+      run: |
+        set -euxo pipefail
+        # github.com occasionally 500s on the git fetch; retry so a
+        # single upstream blip does not fail CI.
+        # fetch + checkout rather than `clone --branch`: the ref is a commit SHA once
+        # resolve-zoo-ref has pinned it, and --branch takes only an advertised branch or
+        # tag, so it would fail with "Remote branch <sha> not found in upstream origin".
+        # tests/studio/studiobench/runtime/selftest/test_studiobench_lifecycle_refs.py
+        # ::test_clone_branch_cannot_take_a_commit asserts that rule. This form takes a
+        # branch, a tag or a commit, and stays shallow.
+        for attempt in 1 2 3; do
+          rm -rf "$RUNNER_TEMP/unsloth-zoo"
+          if git init -q "$RUNNER_TEMP/unsloth-zoo" \
+            && git -C "$RUNNER_TEMP/unsloth-zoo" remote add origin \
+              https://github.com/unslothai/unsloth-zoo \
+            && git -C "$RUNNER_TEMP/unsloth-zoo" fetch -q --depth=1 origin "$UNSLOTH_ZOO_REF" \
+            && git -C "$RUNNER_TEMP/unsloth-zoo" checkout -q FETCH_HEAD; then
+            break
+          fi
+          if [ "$attempt" -eq 3 ]; then
+            echo "::error::git clone unsloth-zoo failed after 3 attempts"
+            exit 1
+          fi
+          delay=$((5 * attempt))
+          echo "::warning::clone failed (attempt $attempt/3), retrying in ${delay}s..."
+          sleep "$delay"
+        done
+        pip install -e "$RUNNER_TEMP/unsloth-zoo" --no-deps
+        pip show unsloth_zoo
+
+        # resolve-zoo-ref pins the sha in a separate gating job, and `gh run rerun --failed`
+        # reuses successful jobs, so a re-run of a red Core zoo cell silently re-tests the
+        # revision it was given the first time. A full re-run re-resolves and picks up main.
+        # Nothing here may fail the cell: the suite has already passed by this point.
+        # `|| true` INSIDE the substitution, because under `set -euxo pipefail` the
+        # pipeline's status becomes the assignment's and -e ends the step; `timeout` for the
+        # other half, a lookup that hangs rather than exits, which `|| true` cannot reach.
+        # Covered by tests/studio/test_core_setup_zoo_revision_notice.py.
+        head="$( { timeout 15 git ls-remote https://github.com/unslothai/unsloth-zoo refs/heads/main 2>/dev/null || true; } | cut -f1 )"
+        pinned="$(git -C "$RUNNER_TEMP/unsloth-zoo" rev-parse HEAD)"
+        echo "unsloth_zoo revision under test: $pinned"
+        if [ -n "$head" ] && [ "$head" != "$pinned" ]; then
+          # A deliberate workflow_dispatch pin, a moving main and a stale re-run are
+          # indistinguishable here, and re-running is the remedy for only the last.
+          echo "::warning title=unsloth_zoo is not at main::Testing $pinned; unslothai/unsloth-zoo main is now $head. If this run pinned unsloth_zoo_ref deliberately, that is expected and re-running keeps the pin. Otherwise either main advanced between the resolve job and this step, or this is a --failed re-run that kept the revision resolved on the first attempt; for the latter, re-run ALL jobs to pick up main."
+        fi

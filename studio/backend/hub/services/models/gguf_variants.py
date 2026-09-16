@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from hub.services.models import account_access
+
 import asyncio
 import hashlib
 import re
@@ -23,7 +25,7 @@ from hub.utils import download_manifest
 from hub.utils import download_registry
 from hub.utils import inventory_scan as hf_cache_scan
 from hub.utils.hf_errors import hf_error_status
-from hub.utils.hf_tokens import is_anonymous
+from hub.utils.hf_tokens import cached_read_refused as hub_cached_read_refused
 from hub.utils.hf_cache_state import (
     incomplete_blob_hash,
     iter_destructive_repo_cache_dirs,
@@ -1004,6 +1006,9 @@ class VariantsAnswer(NamedTuple):
 
     response: GgufVariantsResponse
     context_source: Optional[str]
+    # False when the caller may not read this repo's caches, for a reader that falls back
+    # to the repo id rather than ``context_source``.
+    cache_authorized: bool = True
 
 
 def _default_variant_candidates(variants) -> list[str]:
@@ -1035,12 +1040,29 @@ async def get_gguf_variants_answer(
     with file sizes, whether the model supports vision, and the recommended
     default variant.
     """
+    if local_path:
+        if account_access.managed_account():
+            await asyncio.to_thread(account_access.require_model_access, local_path)
+    hf_token = account_access.account_hf_token(hf_token)
+    if account_access.managed_account():
+        try:
+            await asyncio.to_thread(account_access.require_model_access, repo_id)
+        except HTTPException:
+            # No grant exists before the first download, so for a private repo the caller's own
+            # token proves Hub access instead. A cache-only request without a token needs the grant.
+            if not isinstance(hf_token, str) or not hf_token.strip():
+                raise
+            if is_local_path(repo_id) or not _is_valid_repo_id(repo_id):
+                raise
+            await asyncio.to_thread(account_access.authorize_download, repo_id, "model", hf_token)
     # Returned with the listing because the HF cache answers before local_path, so a caller cannot infer
     # the copy from the request alone.
     answered_from: list[Optional[str]] = [None]
     # A repo-shaped id resolving to a directory is answered by that directory alone, not the HF cache
     # of the same-named repo, else a GGUF-less directory could evict the resident model.
     answered_locally = [False]
+    # Read by the route before its own cache walk, which this listing does not cover.
+    cache_authorized = [True]
 
     def _compute() -> GgufVariantsResponse:
         repo_cache_dir = (
@@ -1274,7 +1296,17 @@ async def get_gguf_variants_answer(
         # The HF cache answers from disk without authorizing, so a denied caller could name
         # a cached private repo and read back its filenames, sizes and vision flag. A
         # local_path the caller named itself is not the Hub cache and stays available.
-        cache_reads_authorized = not is_anonymous(hf_token)
+        # `offline` passed in: a cache-only request must not pay a probe it will not use.
+        # The shared gate rather than the raw check, so the forced-anonymous sentinel keeps
+        # a cached PUBLIC repo instead of falling through to the network for one it was
+        # always entitled to.
+        # is_cached is True rather than a directory probe. Every narrower predicate here
+        # has to consult one of the cache accessors below, which are the reads this gate
+        # exists to withhold, and the lister has a cache path of its own that no predicate
+        # can see before it runs. The cost is one memoized probe per repo and token.
+        cache_reads_authorized = not hub_cached_read_refused(
+            hf_token, repo_id = repo_id, is_cached = lambda: True, offline = bool(offline)
+        )
 
         def _scoped_local_response():
             """The pinned snapshot's own answer, or None when it holds nothing."""
@@ -1394,9 +1426,11 @@ async def get_gguf_variants_answer(
 
         # Per-snapshot accounting: split GGUFs need every shard together, sizes are max across snapshots
         # so shared blobs are not double-counted, and keys are lowercased since cache casing can differ.
-        cached_filenames_by_snapshot: list[dict[str, int]] = []
-        cached_quant_bytes_by_snapshot: list[dict[str, int]] = []
-        if _is_valid_repo_id(repo_id):
+        cached_snapshots: list[tuple[dict[str, int], dict[str, int]]] = []
+        # A gated repo can list its files publicly, so reaching here is not authorization:
+        # everything below reads the local caches, and would report `downloaded`, `partial`
+        # and remaining bytes for the operator's copy to a caller the other paths refuse.
+        if _is_valid_repo_id(repo_id) and cache_reads_authorized:
             # A pinned row resolves inside one directory, so nothing else counts as downloaded.
             scoped_snapshots = (
                 [snapshot_scope]
@@ -1431,10 +1465,8 @@ async def get_gguf_variants_answer(
                         continue
                     q = q.lower()
                     by_quant[q] = by_quant.get(q, 0) + size
-                if by_filename:
-                    cached_filenames_by_snapshot.append(by_filename)
-                if by_quant:
-                    cached_quant_bytes_by_snapshot.append(by_quant)
+                if by_filename or by_quant:
+                    cached_snapshots.append((by_filename, by_quant))
 
         requirements_by_quant = {
             v.quant.lower(): _variant_requirement_cache_get(
@@ -1451,54 +1483,134 @@ async def get_gguf_variants_answer(
                 if requirements_by_quant.get(key) is None:
                     requirements_by_quant[key] = fetched_requirements.get(key)
 
-        def _filenames_cached(filenames: frozenset[str], expected_size: int) -> bool:
+        def _filenames_cached_in_snapshot(
+            by_filename: dict[str, int], filenames: frozenset[str], expected_size: int
+        ) -> bool:
             if not filenames:
                 return False
             wanted = [name.lower() for name in filenames]
+            cached = 0
+            for name in wanted:
+                size = by_filename.get(name)
+                if size is None:
+                    return False
+                cached += size
+            return expected_size <= 0 or cached >= expected_size * 0.99
+
+        def _filenames_cached(filenames: frozenset[str], expected_size: int) -> bool:
             # All files must live in a single snapshot, not spread across several.
-            for by_filename in cached_filenames_by_snapshot:
-                cached = 0
-                for name in wanted:
-                    size = by_filename.get(name)
-                    if size is None:
-                        break
-                    cached += size
-                else:
-                    return expected_size <= 0 or cached >= expected_size * 0.99
-            return False
+            return any(
+                _filenames_cached_in_snapshot(by_filename, filenames, expected_size)
+                for by_filename, _by_quant in cached_snapshots
+            )
 
         def _any_mmproj_cached(filenames: frozenset[str]) -> bool:
             if any(
                 by_filename.get(name.lower()) is not None
-                for by_filename in cached_filenames_by_snapshot
+                for by_filename, _by_quant in cached_snapshots
                 for name in filenames
             ):
                 return True
             return any(
                 _is_mmproj_filename(name.rsplit("/", 1)[-1])
-                for by_filename in cached_filenames_by_snapshot
+                for by_filename, _by_quant in cached_snapshots
                 for name in by_filename
             )
 
-        def _quant_bytes_present(quant: str, size_bytes: int) -> bool:
-            # Small rounding tolerance for symlinks vs real sizes.
+        def _non_mmproj_companions(requirement: Optional[_GgufVariantRequirement]) -> tuple:
+            if requirement is None:
+                return ()
+            return tuple(
+                file
+                for file in requirement.expected_files
+                if _is_mtp_drafter_path(file.path) and not _is_mmproj_filename(file.path)
+            )
+
+        def _snapshot_has_companions(by_filename: dict[str, int], companions: tuple) -> bool:
+            return all(
+                _filenames_cached_in_snapshot(
+                    by_filename,
+                    frozenset({file.path}),
+                    max(0, int(file.size or 0)),
+                )
+                for file in companions
+            )
+
+        def _main_and_companions_ready(requirement: _GgufVariantRequirement) -> bool:
+            companions = _non_mmproj_companions(requirement)
+            return any(
+                _filenames_cached_in_snapshot(
+                    by_filename,
+                    requirement.main_filenames,
+                    requirement.main_size_bytes,
+                )
+                and _snapshot_has_companions(by_filename, companions)
+                for by_filename, _by_quant in cached_snapshots
+            )
+
+        def _quant_and_companions_ready(quant: str, size_bytes: int, companions: tuple) -> bool:
             if size_bytes <= 0:
                 return False
             return any(
                 by_quant.get(quant, 0) >= size_bytes * 0.99
-                for by_quant in cached_quant_bytes_by_snapshot
+                and _snapshot_has_companions(by_filename, companions)
+                for by_filename, by_quant in cached_snapshots
             )
+
+        def _pending_drafter(requirement: Optional[_GgufVariantRequirement], quant: str):
+            """Name one companion-only transfer without mislabelling a model pull."""
+            if requirement is None:
+                return None
+            for by_filename, _by_quant in cached_snapshots:
+                if not _filenames_cached_in_snapshot(
+                    by_filename, requirement.main_filenames, requirement.main_size_bytes
+                ):
+                    continue
+                missing = tuple(
+                    file
+                    for file in _non_mmproj_companions(requirement)
+                    if not _filenames_cached_in_snapshot(
+                        by_filename, frozenset({file.path}), max(0, int(file.size or 0))
+                    )
+                )
+                if len(missing) != 1:
+                    continue
+                local_blobs = local_blobs_by_quant.get(quant.lower(), {})
+                for expected in requirement.expected_files:
+                    if expected.path == missing[0].path:
+                        continue
+                    if not _filenames_cached_in_snapshot(
+                        by_filename, frozenset({expected.path}), expected.size
+                    ):
+                        break
+                    # Only subtract files the worker can reuse at the planned revision.
+                    identities = local_blobs.get(expected.path.replace("\\", "/"), set())
+                    if (
+                        expected.sha256
+                        and expected.sha256 not in identities
+                        and not _size_identity_matches(identities, expected.size)
+                    ):
+                        break
+                else:
+                    return missing[0]
+            return None
 
         def _is_fully_downloaded(variant) -> bool:
             quant = variant.quant.lower()
             requirement = requirements_by_quant.get(quant)
+            # The managed GGUF scope includes non-vision companions (MTP,
+            # DSpark and DFlash) as well as the quant. A cached main file with a
+            # newly-required drafter is loadable without speculation, but it is
+            # not ready for the requested load: calling it downloaded makes the
+            # picker bypass the manager and the loader fetches gigabytes inline
+            # with no Downloads-panel row. Keep the existing any-precision
+            # mmproj rule below; the loader can genuinely use any compatible
+            # projector, while it selects one exact planned drafter.
+            companions = _non_mmproj_companions(requirement)
             # Vision repos ship an mmproj adapter; any precision on disk suffices.
             if (
                 requirement is not None
-                and _filenames_cached(
-                    requirement.main_filenames,
-                    requirement.main_size_bytes,
-                )
+                and _main_and_companions_ready(requirement)
                 and (
                     not requirement.mmproj_filenames
                     or _any_mmproj_cached(requirement.mmproj_filenames)
@@ -1507,7 +1619,7 @@ async def get_gguf_variants_answer(
                 return True
             # Byte fallback so a present quant is not demoted by a filename mismatch; vision repos still need an
             # mmproj cached, at any precision.
-            if not _quant_bytes_present(quant, variant.size_bytes):
+            if not _quant_and_companions_ready(quant, variant.size_bytes, companions):
                 return False
             if (
                 requirement is not None
@@ -1519,16 +1631,24 @@ async def get_gguf_variants_answer(
 
         partial_quants: set[str] = set()
         partial_quant_transports: dict[str, Optional[str]] = {}
-        try:
-            incomplete_hashes = download_registry.incomplete_blob_hashes(
-                "model",
-                repo_id,
-                active_only = True,
-                root = hub_cache,
-            )
-        except Exception as e:
-            logger.warning(f"Failed to compute partial GGUF variants for {repo_id}: {e}")
-            incomplete_hashes = set()
+        # The rest of this accounting reads the operator's disk too: the download registry,
+        # the snapshot markers and manifests, and the local blobs. The snapshot walk above
+        # is gated and this was not, so a caller who can still list a gated repo's PUBLIC
+        # metadata was handed `partial`, `partial_transport` and the remaining byte count
+        # for a download it cannot see. Same authorization, one variable.
+        partial_scan_variants = variants if cache_reads_authorized else ()
+        incomplete_hashes: set = set()
+        if cache_reads_authorized:
+            try:
+                incomplete_hashes = download_registry.incomplete_blob_hashes(
+                    "model",
+                    repo_id,
+                    active_only = True,
+                    root = hub_cache,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to compute partial GGUF variants for {repo_id}: {e}")
+                incomplete_hashes = set()
         scan_snapshot_dir = snapshot_scope or hf_cache_scan.resolve_snapshot_dir_for_scan(
             "model",
             repo_id,
@@ -1553,7 +1673,7 @@ async def get_gguf_variants_answer(
 
         # Manifest + marker + main incomplete-blob check: catches variants whose download was cancelled or whose
         # expected shards are missing/undersized.
-        for variant in variants:
+        for variant in partial_scan_variants:
             try:
                 requirement = requirements_by_quant.get(variant.quant.lower())
                 variant_hashes = requirement.main_hashes if requirement is not None else None
@@ -1586,7 +1706,7 @@ async def get_gguf_variants_answer(
                 )
         # Same attribution as above: a pinned snapshot is not judged by a newer attempt's blobs.
         if incomplete_hashes:
-            for variant in variants:
+            for variant in partial_scan_variants:
                 requirement = requirements_by_quant.get(variant.quant.lower())
                 if requirement is None or not _repo_signals_apply_to(variant.quant):
                     continue
@@ -1608,12 +1728,17 @@ async def get_gguf_variants_answer(
                         ),
                     )
 
-        local_blobs_by_quant = _local_main_gguf_blobs_by_quant(repo_id, repo_cache_dir)
+        local_blobs_by_quant = (
+            _local_main_gguf_blobs_by_quant(repo_id, repo_cache_dir)
+            if cache_reads_authorized
+            else {}
+        )
 
         def _variant_detail(v) -> GgufVariantDetail:
             is_partial = v.quant in partial_quants
             requirement = requirements_by_quant.get(v.quant.lower())
             downloaded = _is_fully_downloaded(v) and not is_partial
+            pending_drafter = _pending_drafter(requirement, v.quant)
             return GgufVariantDetail(
                 filename = v.filename,
                 quant = v.quant,
@@ -1622,6 +1747,12 @@ async def get_gguf_variants_answer(
                 shard_count = int(getattr(v, "shard_count", 0) or 0),
                 download_size_bytes = (
                     requirement.download_size_bytes if requirement is not None else v.size_bytes
+                ),
+                pending_drafter_filename = (
+                    pending_drafter.path if pending_drafter is not None else None
+                ),
+                pending_drafter_size_bytes = (
+                    max(0, int(pending_drafter.size or 0)) if pending_drafter is not None else 0
                 ),
                 # Scanned per partial variant only: repos carry one, and the scan walks blobs/.
                 download_remaining_bytes = (
@@ -1649,15 +1780,25 @@ async def get_gguf_variants_answer(
             variants = [_variant_detail(v) for v in variants],
             has_vision = has_vision,
             default_variant = default_variant,
+            dependencies_resolved = siblings is not None,
         )
 
     def _compute_with_cleanables() -> VariantsAnswer:
         # Returned with the answer, not read from the closure afterwards: coalesced callers share one
         # computation and must all see the copy it answered from.
-        return VariantsAnswer(_compute_response(), answered_from[0])
+        return VariantsAnswer(_compute_response(), answered_from[0], cache_authorized[0])
 
     def _compute_response() -> GgufVariantsResponse:
         skip = is_local_path(repo_id) or not _is_valid_repo_id(repo_id)
+        # The enrichment reads this repo's cache dir, so it takes the same authorization:
+        # else the except branch returns 200 labelled with an empty quant folder, which is
+        # the existence of a cached private repo. Remote valid ids only, and memoized.
+        if not skip and hub_cached_read_refused(
+            hf_token, repo_id = repo_id, is_cached = lambda: True, offline = bool(offline)
+        ):
+            skip = True
+            # Carried out: the route's context-length fallback walks these same caches.
+            cache_authorized[0] = False
         try:
             response = _compute()
         except Exception:

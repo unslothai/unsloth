@@ -108,9 +108,9 @@ def test_windows_resolves_a_cuda_matched_wheel(family: str, torch_tag: str):
     extra = f"{family}onlytorch{torch_tag}"
     specs = _windows_xformers(_extras()[extra])
 
-    assert len(specs) == 1, (
-        f"{extra} must resolve exactly one xformers wheel on Windows, got {specs}"
-    )
+    assert (
+        len(specs) == 1
+    ), f"{extra} must resolve exactly one xformers wheel on Windows, got {specs}"
     spec = specs[0]
     if "@" in spec:
         url = spec.split("@", 1)[1].strip()
@@ -119,9 +119,9 @@ def test_windows_resolves_a_cuda_matched_wheel(family: str, torch_tag: str):
         # Version-pin form: the index is the install-time --index-url, so the version is
         # the only half of the pairing this branch can carry. It still has to be the
         # version that index publishes for this torch, which is what the matrix holds.
-        assert spec == f"xformers=={version}", (
-            f"{extra} must pin the {family} wheel version for torch {torch_tag}, got {spec!r}"
-        )
+        assert (
+            spec == f"xformers=={version}"
+        ), f"{extra} must pin the {family} wheel version for torch {torch_tag}, got {spec!r}"
 
 
 @pytest.mark.parametrize(("family", "torch_tag"), sorted(XFORMERS_WHEEL_MATRIX))

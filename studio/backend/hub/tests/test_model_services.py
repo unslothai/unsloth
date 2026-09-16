@@ -43,6 +43,315 @@ from hub.utils import (
 from hub.workers import hf_download
 
 
+def _shared_setup_1(_metadata, hub_cache, monkeypatch, snapshot):
+    monkeypatch.setattr(hf_download, "_dataset_info_with_retry", _metadata)
+    monkeypatch.setattr(
+        download_registry,
+        "prepare_cache_for_transport",
+        lambda *_args, **_kwargs: 0,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "huggingface_hub",
+        SimpleNamespace(snapshot_download = lambda **_kwargs: str(snapshot)),
+    )
+
+    hf_download._download_dataset("Org/Data", None, "http")
+
+    manifest = download_manifest.read_manifest(
+        "dataset",
+        "Org/Data",
+        hub_cache = hub_cache,
+    )
+    return manifest
+
+
+def _shared_setup_2(claimed, registry, state):
+    second_claimed, second_state = registry.claim(
+        "Org/Repo::Q4_K_M",
+        download_registry.TRANSPORT_HTTP,
+        repo_type = "model",
+        repo_id = "Org/Repo",
+        variant = "Q4_K_M",
+        blob_hashes = frozenset({"q4-main"}),
+        progress_blob_hashes = frozenset({"q4-main", "shared-mmproj"}),
+    )
+
+    assert claimed is True
+    assert state == "running"
+    assert second_claimed is True
+    assert second_state == "running"
+
+
+def _shared_setup_3(monkeypatch, verified):
+    monkeypatch.setattr(
+        hf_download, "_verify_completed_download", lambda *args, **kwargs: verified.append(args)
+    )
+    monkeypatch.setattr(
+        download_registry, "prepare_cache_for_transport", lambda *_args, **_kwargs: 0
+    )
+
+
+def _shared_setup_4(_run_inline, entry, monkeypatch):
+    monkeypatch.setattr(downloads.asyncio, "to_thread", _run_inline)
+    monkeypatch.setattr(
+        downloads.gguf_variants, "gguf_variant_requirements", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(
+        downloads.gguf_variants,
+        "gguf_variant_blob_hashes",
+        lambda *_args, **_kwargs: frozenset(),
+    )
+    monkeypatch.setattr(snapshot_progress, "preferred_repo_cache_dirs", lambda *_a, **_k: [entry])
+    monkeypatch.setattr(
+        downloads,
+        "_registry",
+        SimpleNamespace(get_job = lambda _key: SimpleNamespace(state = "running")),
+    )
+
+
+def _shared_setup_5():
+    registry = download_registry.DownloadRegistry()
+
+    claimed, state = registry.claim(
+        "Org/Repo::Q8_0",
+        download_registry.TRANSPORT_HTTP,
+        repo_type = "model",
+        repo_id = "Org/Repo",
+        variant = "Q8_0",
+        blob_hashes = frozenset({"q8-main"}),
+        progress_blob_hashes = frozenset({"q8-main", "shared-mmproj"}),
+    )
+    return claimed, registry, state
+
+
+def _shared_setup_6(entry, monkeypatch, tmp_path):
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    assert download_manifest.write_manifest(
+        "model",
+        "Org/Model-GGUF",
+        "Q4_K_M",
+        [download_manifest.ExpectedFile(path = "model-Q4_K_M.gguf", size = 100)],
+        "http",
+        hub_cache = entry.parent,
+    )
+
+
+def _shared_setup_7(monkeypatch, tmp_path, written):
+    monkeypatch.setattr(
+        download_manifest, "write_manifest", lambda *args: written.append(args) or True
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "huggingface_hub",
+        SimpleNamespace(snapshot_download = lambda **_kwargs: str(tmp_path)),
+    )
+
+
+def _shared_setup_8(monkeypatch, snapshot_calls, tmp_path):
+    monkeypatch.setitem(
+        sys.modules,
+        "huggingface_hub",
+        SimpleNamespace(
+            snapshot_download = lambda **kwargs: snapshot_calls.append(kwargs) or str(tmp_path)
+        ),
+    )
+
+
+def _shared_setup_9(blobs, entry, monkeypatch, tmp_path):
+    (blobs / "mmprojhash").write_bytes(b"y" * 30)
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    _write_gguf_mmproj_manifest(entry)
+
+    requirement = _gguf_mmproj_requirement()
+
+    _patch_gguf_progress(monkeypatch, entry, requirement)
+
+
+def _shared_setup_10(entry, monkeypatch):
+    monkeypatch.setattr(
+        snapshot_progress,
+        "preferred_repo_cache_dirs",
+        lambda _repo_type, _repo_id, force_active = False, **kw: [entry],
+    )
+
+
+def _shared_setup_11(epoch, monkeypatch):
+    monkeypatch.setattr(cache_inventory, "all_hf_cache_scans", lambda: [])
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = Path("/cache")),
+    )
+    monkeypatch.setattr(cache_inventory.hf_cache_scan, "hf_cache_scans_epoch", lambda: epoch[0])
+
+
+def _shared_setup_12(_Registry, monkeypatch):
+    monkeypatch.setattr(downloads, "_registry", _Registry())
+    monkeypatch.setattr(
+        downloads,
+        "resolve_cached_repo_id_case",
+        lambda repo_id, **_kwargs: repo_id,
+    )
+
+
+def _shared_setup_13(monkeypatch, repo, tmp_path):
+    monkeypatch.setattr(
+        deletion.cache_inventory,
+        "all_hf_cache_scans",
+        lambda: [SimpleNamespace(repos = [repo])],
+    )
+    _patch_variant_delete_side_effects(monkeypatch, tmp_path)
+
+
+def _shared_setup_14(cache_b, monkeypatch):
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = cache_b),
+    )
+
+
+def _shared_setup_15(tmp_path):
+    entry = tmp_path / "models--Org--Model-GGUF"
+    snap = entry / "snapshots" / "rev0"
+    snap.mkdir(parents = True)
+    (entry / "blobs").mkdir(parents = True)
+    return entry, snap
+
+
+def _shared_setup_16(_run_inline, monkeypatch):
+    monkeypatch.setattr(downloads.asyncio, "to_thread", _run_inline)
+    monkeypatch.setattr(
+        downloads.gguf_variants, "gguf_variant_requirements", lambda *_a, **_kw: None
+    )
+
+
+def _shared_setup_17(monkeypatch):
+    monkeypatch.setattr(cache_inventory.hf_cache_scan, "is_gguf_repo_partial", _not_partial_gguf)
+    monkeypatch.setattr(cache_inventory.hf_cache_scan, "is_snapshot_partial", _not_partial_snapshot)
+
+    assert cache_inventory._scan_cached_gguf() == []
+    assert cache_inventory._scan_cached_models() == []
+
+
+def _shared_setup_18(monkeypatch):
+    monkeypatch.setattr(
+        downloads.download_registry,
+        "download_transport_unavailable_reason",
+        lambda _transport, **_kwargs: None,
+    )
+
+
+def _shared_setup_19():
+    model = SimpleNamespace(id = "model", path = "model")
+    model.model_copy = lambda update: SimpleNamespace(id = model.id, path = model.path, **update)
+    response = SimpleNamespace(models = [model])
+    response.model_copy = lambda update: SimpleNamespace(models = update["models"])
+    return model, response
+
+
+def _shared_setup_20(tmp_path):
+    hub_cache = tmp_path / "hub"
+    snapshot = hub_cache / "datasets--Org--Data" / "snapshots" / "dataset-commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / "data.parquet").write_bytes(b"rows")
+    return hub_cache, snapshot
+
+
+def _shared_setup_21(entry):
+    blobs = entry / "blobs"
+    snap = entry / "snapshots" / "rev0"
+    blobs.mkdir(parents = True)
+    snap.mkdir(parents = True)
+    return blobs, snap
+
+
+_GGUF_MAIN_FILE = download_manifest.ExpectedFile(
+    path = "model-Q4_K_M.gguf", size = 100, sha256 = "mainhash"
+)
+_GGUF_MMPROJ_FILE = download_manifest.ExpectedFile(
+    path = "mmproj-F16.gguf", size = 30, sha256 = "mmprojhash"
+)
+
+
+def _gguf_cache_dirs(tmp_path):
+    """The hub cache entry for Org/Model-GGUF plus its snapshot and blobs directories."""
+    entry = tmp_path / "models--Org--Model-GGUF"
+    snap = entry / "snapshots" / "rev0"
+    blobs = entry / "blobs"
+    snap.mkdir(parents = True)
+    blobs.mkdir(parents = True)
+    return entry, snap, blobs
+
+
+def _gguf_mmproj_requirement():
+    """The main-quant + mmproj-companion requirement the progress tests share."""
+    return gguf_variants._GgufVariantRequirement(
+        main_filenames = frozenset({"model-Q4_K_M.gguf"}),
+        target_filenames = ("model-Q4_K_M.gguf", "mmproj-F16.gguf"),
+        main_hashes = frozenset({"mainhash"}),
+        required_hashes = frozenset({"mainhash", "mmprojhash"}),
+        companion_hashes = frozenset({"mmprojhash"}),
+        mmproj_filenames = frozenset({"mmproj-F16.gguf"}),
+        mmproj_hashes = frozenset({"mmprojhash"}),
+        expected_files = (_GGUF_MAIN_FILE, _GGUF_MMPROJ_FILE),
+        main_size_bytes = 100,
+        download_size_bytes = 130,
+    )
+
+
+def _write_gguf_mmproj_manifest(entry):
+    assert download_manifest.write_manifest(
+        "model",
+        "Org/Model-GGUF",
+        "Q4_K_M",
+        [_GGUF_MAIN_FILE, _GGUF_MMPROJ_FILE],
+        "http",
+        hub_cache = entry.parent,
+    )
+
+
+def _patch_gguf_progress(monkeypatch, entry, requirement):
+    """Run the progress query inline against `entry` with `requirement` already resolved."""
+
+    async def _run_inline(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    monkeypatch.setattr(downloads.asyncio, "to_thread", _run_inline)
+    monkeypatch.setattr(
+        downloads.gguf_variants,
+        "gguf_variant_requirements",
+        lambda *_args, **_kwargs: requirement,
+    )
+    monkeypatch.setattr(snapshot_progress, "preferred_repo_cache_dirs", lambda *_a, **_k: [entry])
+
+
+def _idle_registry():
+    return SimpleNamespace(get_job = lambda _key: SimpleNamespace(state = "idle"))
+
+
+def _running_registry(completed_baseline_bytes):
+    return SimpleNamespace(
+        get_job = lambda _key: SimpleNamespace(state = "running"),
+        get_job_metadata = lambda _key: SimpleNamespace(
+            completed_baseline_bytes = completed_baseline_bytes,
+        ),
+    )
+
+
+def _gguf_progress(**kwargs):
+    return asyncio.run(
+        downloads.get_gguf_download_progress_response("Org/Model-GGUF", variant = "Q4_K_M", **kwargs)
+    )
+
+
+def _not_partial_gguf(_repo_id, _path, **_kw):
+    return False
+
+
+def _not_partial_snapshot(_kind, _repo_id, _path, **_kw):
+    return False
+
+
 def _download_body(**over) -> SimpleNamespace:
     """A download request with every field the route reads.
 
@@ -504,10 +813,7 @@ def test_inventory_applies_download_state_to_its_owning_cache(monkeypatch, tmp_p
     (snapshot_b / "config.json").write_bytes(b"xx")
 
     monkeypatch.setattr(state_dir, "cache_root", lambda: state_root)
-    monkeypatch.setattr(
-        "utils.hf_cache_settings.get_hf_cache_paths",
-        lambda: SimpleNamespace(hub_cache = cache_b),
-    )
+    _shared_setup_14(cache_b, monkeypatch)
     assert download_manifest.write_manifest(
         "model",
         repo_id,
@@ -535,10 +841,7 @@ def test_inventory_scopes_cancel_markers_to_their_owning_cache(monkeypatch, tmp_
     repo_b.mkdir(parents = True)
 
     monkeypatch.setattr(state_dir, "cache_root", lambda: state_root)
-    monkeypatch.setattr(
-        "utils.hf_cache_settings.get_hf_cache_paths",
-        lambda: SimpleNamespace(hub_cache = cache_b),
-    )
+    _shared_setup_14(cache_b, monkeypatch)
     assert download_manifest.write_cancel_marker(
         "model",
         repo_id,
@@ -839,12 +1142,7 @@ def test_cached_inventory_requests_share_scan(monkeypatch, inventory_request, sc
 
     monkeypatch.setattr(cache_inventory.asyncio, "to_thread", fake_to_thread)
     monkeypatch.setattr(cache_inventory, scanner_name, scan)
-    monkeypatch.setattr(cache_inventory, "all_hf_cache_scans", lambda: [])
-    monkeypatch.setattr(
-        "utils.hf_cache_settings.get_hf_cache_paths",
-        lambda: SimpleNamespace(hub_cache = Path("/cache")),
-    )
-    monkeypatch.setattr(cache_inventory.hf_cache_scan, "hf_cache_scans_epoch", lambda: epoch[0])
+    _shared_setup_11(epoch, monkeypatch)
 
     async def run_requests():
         first = asyncio.create_task(inventory_request())
@@ -893,12 +1191,7 @@ def test_cached_inventory_discards_a_scan_that_raced_an_invalidation(
         return [{"repo_id": "Org/Kept"}]
 
     monkeypatch.setattr(cache_inventory, scanner_name, scan)
-    monkeypatch.setattr(cache_inventory, "all_hf_cache_scans", lambda: [])
-    monkeypatch.setattr(
-        "utils.hf_cache_settings.get_hf_cache_paths",
-        lambda: SimpleNamespace(hub_cache = Path("/cache")),
-    )
-    monkeypatch.setattr(cache_inventory.hf_cache_scan, "hf_cache_scans_epoch", lambda: epoch[0])
+    _shared_setup_11(epoch, monkeypatch)
     monkeypatch.setattr(cache_inventory, "_last_confirmed_inventory", {})
 
     result = asyncio.run(cache_inventory._shared_cached_inventory_scan(inventory_call, scan))
@@ -917,12 +1210,7 @@ def test_cached_inventory_scan_stops_retrying_under_constant_invalidation(monkey
         epoch[0] += 1
         return [{"repo_id": "Org/Model"}]
 
-    monkeypatch.setattr(cache_inventory, "all_hf_cache_scans", lambda: [])
-    monkeypatch.setattr(
-        "utils.hf_cache_settings.get_hf_cache_paths",
-        lambda: SimpleNamespace(hub_cache = Path("/cache")),
-    )
-    monkeypatch.setattr(cache_inventory.hf_cache_scan, "hf_cache_scans_epoch", lambda: epoch[0])
+    _shared_setup_11(epoch, monkeypatch)
     monkeypatch.setattr(cache_inventory, "_last_confirmed_inventory", {})
 
     async def run():
@@ -1021,10 +1309,7 @@ def test_local_inventory_requests_share_scan(monkeypatch, change_kind):
     calls, started, releases = 0, [event(), event()], [event(), event()]
     loaded, both_loaded, task_calls, epoch = 0, event(), [], [0]
     epoch_reads, retried = [0], event()
-    model = SimpleNamespace(id = "model", path = "model")
-    model.model_copy = lambda update: SimpleNamespace(id = model.id, path = model.path, **update)
-    response = SimpleNamespace(models = [model])
-    response.model_copy = lambda update: SimpleNamespace(models = update["models"])
+    model, response = _shared_setup_19()
     sources = local_inventory._local_inventory_sources()
     monkeypatch.setattr(local_inventory, "_local_inventory_sources", lambda: sources)
     monkeypatch.setattr(
@@ -1126,11 +1411,48 @@ def test_local_inventory_indexes_registered_hf_state_once(monkeypatch, tmp_path)
             (),
             (),
             (),
+            (),
             [{"path": str(custom)}],
         )
     )
     assert builds == [(("model", "Org/Active", active), ("model", "Org/Custom", custom))]
     assert propagated == [indexed, indexed]
+
+
+def test_local_inventory_lists_a_hermes_dir_registered_as_a_scan_folder_once(monkeypatch, tmp_path):
+    # Adding ~/.hermes/models as a custom folder was the way to see Hermes downloads before
+    # Studio scanned it; the Hermes scan and a generic walk of the same folder must not each
+    # list every download under the same id.
+    hermes = tmp_path / ".hermes" / "models"
+    hermes.mkdir(parents = True)
+    weight = hermes / "Qwen3.8-27B-UD-Q4_K_M.gguf"
+    weight.write_bytes(b"\x00" * 32)
+    # Something else the user keeps in that folder stays a custom row.
+    extra = hermes / "extra" / "Other-Q4_K_M.gguf"
+    extra.parent.mkdir()
+    extra.write_bytes(b"\x00" * 32)
+    monkeypatch.setattr(local_inventory, "note_scan_folder_scanned", lambda *_a, **_k: None)
+    monkeypatch.setattr(local_inventory, "record_scan_failure", lambda *_a, **_k: None)
+
+    rows = asyncio.run(
+        local_inventory._collect_models_from_default_sources(
+            tmp_path / "models",
+            tmp_path / "hf",
+            tmp_path / "legacy",
+            tmp_path / "default",
+            (),
+            (),
+            (hermes,),
+            (),
+            [{"path": str(hermes)}],
+        )
+    )
+    rows = local_inventory._filter_and_dedupe_local_models(rows)
+
+    assert sorted((row.source, row.path) for row in rows) == [
+        ("custom", str(extra.parent)),
+        ("hermes", str(weight)),
+    ]
 
 
 def test_list_local_gguf_variants_skips_big_endian_sibling(tmp_path):
@@ -1647,11 +1969,7 @@ def test_cached_gguf_scan_dedupes_and_excludes_mmproj_only(monkeypatch, tmp_path
         "all_hf_cache_scans",
         lambda: [SimpleNamespace(repos = [smaller, larger, mmproj_only])],
     )
-    monkeypatch.setattr(
-        cache_inventory.hf_cache_scan,
-        "is_gguf_repo_partial",
-        lambda _repo_id, _path, **_kw: False,
-    )
+    monkeypatch.setattr(cache_inventory.hf_cache_scan, "is_gguf_repo_partial", _not_partial_gguf)
 
     result = {"cached": cache_inventory._scan_cached_gguf()}
 
@@ -1744,11 +2062,7 @@ def test_cached_gguf_scan_hides_infra_repos_without_user_downloads(monkeypatch, 
         "all_hf_cache_scans",
         lambda: [SimpleNamespace(repos = [probe, embedder, chat])],
     )
-    monkeypatch.setattr(
-        cache_inventory.hf_cache_scan,
-        "is_gguf_repo_partial",
-        lambda _repo_id, _path, **_kw: False,
-    )
+    monkeypatch.setattr(cache_inventory.hf_cache_scan, "is_gguf_repo_partial", _not_partial_gguf)
 
     result = {"cached": cache_inventory._scan_cached_gguf()}
 
@@ -1769,11 +2083,7 @@ def test_cached_gguf_scan_emits_curated_asr_as_non_chat_audio_inventory(monkeypa
         "all_hf_cache_scans",
         lambda: [SimpleNamespace(repos = [asr])],
     )
-    monkeypatch.setattr(
-        cache_inventory.hf_cache_scan,
-        "is_gguf_repo_partial",
-        lambda _repo_id, _path, **_kw: False,
-    )
+    monkeypatch.setattr(cache_inventory.hf_cache_scan, "is_gguf_repo_partial", _not_partial_gguf)
 
     [row] = cache_inventory._scan_cached_gguf()
 
@@ -1807,11 +2117,7 @@ def test_cached_gguf_scan_keeps_infra_repo_with_user_downloaded_variant(monkeypa
         "all_hf_cache_scans",
         lambda: [SimpleNamespace(repos = [embedder])],
     )
-    monkeypatch.setattr(
-        cache_inventory.hf_cache_scan,
-        "is_gguf_repo_partial",
-        lambda _repo_id, _path, **_kw: False,
-    )
+    monkeypatch.setattr(cache_inventory.hf_cache_scan, "is_gguf_repo_partial", _not_partial_gguf)
 
     result = {"cached": cache_inventory._scan_cached_gguf()}
 
@@ -1839,11 +2145,7 @@ def test_cached_models_scan_hides_non_gguf_embedder(monkeypatch, tmp_path):
         "all_hf_cache_scans",
         lambda: [SimpleNamespace(repos = [embedder, chat])],
     )
-    monkeypatch.setattr(
-        cache_inventory.hf_cache_scan,
-        "is_snapshot_partial",
-        lambda _kind, _repo_id, _path, **_kw: False,
-    )
+    monkeypatch.setattr(cache_inventory.hf_cache_scan, "is_snapshot_partial", _not_partial_snapshot)
     result = {"cached": cache_inventory._scan_cached_models()}
 
     assert [row["repo_id"] for row in result["cached"]] == ["Org/Chat"]
@@ -1869,11 +2171,7 @@ def test_cached_models_scan_emits_curated_and_custom_whisper_as_stt(monkeypatch,
         "all_hf_cache_scans",
         lambda: [SimpleNamespace(repos = [curated, custom])],
     )
-    monkeypatch.setattr(
-        cache_inventory.hf_cache_scan,
-        "is_snapshot_partial",
-        lambda _kind, _repo_id, _path, **_kw: False,
-    )
+    monkeypatch.setattr(cache_inventory.hf_cache_scan, "is_snapshot_partial", _not_partial_snapshot)
     monkeypatch.setattr(
         cache_inventory,
         "_cached_model_local_metadata",
@@ -2181,19 +2479,7 @@ def test_cached_scans_hide_embedders_configured_by_cache_path(monkeypatch, tmp_p
         "all_hf_cache_scans",
         lambda: [SimpleNamespace(repos = [gguf, model])],
     )
-    monkeypatch.setattr(
-        cache_inventory.hf_cache_scan,
-        "is_gguf_repo_partial",
-        lambda _repo_id, _path, **_kw: False,
-    )
-    monkeypatch.setattr(
-        cache_inventory.hf_cache_scan,
-        "is_snapshot_partial",
-        lambda _kind, _repo_id, _path, **_kw: False,
-    )
-
-    assert cache_inventory._scan_cached_gguf() == []
-    assert cache_inventory._scan_cached_models() == []
+    _shared_setup_17(monkeypatch)
 
 
 def test_cached_scans_hide_embedders_configured_by_snapshot_path(monkeypatch, tmp_path):
@@ -2244,19 +2530,7 @@ def test_cached_scans_hide_embedders_configured_by_snapshot_path(monkeypatch, tm
         "resolve_hf_cache_realpath",
         _resolve_snapshot,
     )
-    monkeypatch.setattr(
-        cache_inventory.hf_cache_scan,
-        "is_gguf_repo_partial",
-        lambda _repo_id, _path, **_kw: False,
-    )
-    monkeypatch.setattr(
-        cache_inventory.hf_cache_scan,
-        "is_snapshot_partial",
-        lambda _kind, _repo_id, _path, **_kw: False,
-    )
-
-    assert cache_inventory._scan_cached_gguf() == []
-    assert cache_inventory._scan_cached_models() == []
+    _shared_setup_17(monkeypatch)
 
 
 def test_cached_models_scan_keeps_unrelated_repo_with_custom_generic_embedder(
@@ -2284,11 +2558,7 @@ def test_cached_models_scan_keeps_unrelated_repo_with_custom_generic_embedder(
         "all_hf_cache_scans",
         lambda: [SimpleNamespace(repos = [embedder, chat])],
     )
-    monkeypatch.setattr(
-        cache_inventory.hf_cache_scan,
-        "is_snapshot_partial",
-        lambda _kind, _repo_id, _path, **_kw: False,
-    )
+    monkeypatch.setattr(cache_inventory.hf_cache_scan, "is_snapshot_partial", _not_partial_snapshot)
 
     result = {"cached": cache_inventory._scan_cached_models()}
 
@@ -2318,19 +2588,7 @@ def test_cached_scans_hide_stale_default_embedder_after_custom_setting(monkeypat
         "all_hf_cache_scans",
         lambda: [SimpleNamespace(repos = [gguf, weights])],
     )
-    monkeypatch.setattr(
-        cache_inventory.hf_cache_scan,
-        "is_gguf_repo_partial",
-        lambda _repo_id, _path, **_kw: False,
-    )
-    monkeypatch.setattr(
-        cache_inventory.hf_cache_scan,
-        "is_snapshot_partial",
-        lambda _kind, _repo_id, _path, **_kw: False,
-    )
-
-    assert cache_inventory._scan_cached_gguf() == []
-    assert cache_inventory._scan_cached_models() == []
+    _shared_setup_17(monkeypatch)
 
 
 def test_gguf_variant_requirements_include_split_files_and_preferred_mmproj():
@@ -2356,6 +2614,68 @@ def test_gguf_variant_requirements_include_split_files_and_preferred_mmproj():
         "model-Q4_K_M-00002-of-00002.gguf",
         "mmproj-F16.gguf",
     )
+
+
+def test_qwen38_flash_next_plan_includes_the_loaders_nested_mtp_choice():
+    requirements = gguf_variants._build_gguf_variant_requirements(
+        [
+            _sibling("Qwen3.8-Flash-Next-UD-Q4_K_XL.gguf", 18_000, "main"),
+            _sibling("MTP/mtp-Qwen3.8-Flash-Next-BF16.gguf", 7_700, "bf16"),
+            _sibling("MTP/mtp-Qwen3.8-Flash-Next-Q8_0.gguf", 4_100, "q8"),
+            _sibling("MTP/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf", 2_600, "shared-q8"),
+            # A real weight copy under MTP/ is hidden from the variant menu by the broad path
+            # predicate, but the loader refuses it as a drafter because its basename is not published.
+            _sibling("MTP/aaa-Q8_0.gguf", 900, "not-a-drafter"),
+        ]
+    )
+
+    req = requirements["ud-q4_k_xl"]
+
+    assert req.target_filenames == (
+        "Qwen3.8-Flash-Next-UD-Q4_K_XL.gguf",
+        "MTP/mtp-Qwen3.8-Flash-Next-Q8_0.gguf",
+    )
+    assert req.download_size_bytes == 22_100
+    assert req.companion_hashes == frozenset({"q8"})
+
+
+def test_qwen38_flash_next_plan_skips_incomplete_preferred_mtp_family():
+    requirements = gguf_variants._build_gguf_variant_requirements(
+        [
+            _sibling("Qwen3.8-Flash-Next-UD-Q4_K_XL.gguf", 18_000, "main"),
+            # Q8_0 ranks first but cannot launch without shard 2. Planning must
+            # select the complete BF16 fallback, as detect_mtp_file does.
+            _sibling(
+                "MTP/mtp-Qwen3.8-Flash-Next-Q8_0-00001-of-00002.gguf",
+                2_100,
+                "q8-1",
+            ),
+            _sibling("MTP/mtp-Qwen3.8-Flash-Next-BF16.gguf", 7_700, "bf16"),
+        ]
+    )
+
+    req = requirements["ud-q4_k_xl"]
+
+    assert req.target_filenames == (
+        "Qwen3.8-Flash-Next-UD-Q4_K_XL.gguf",
+        "MTP/mtp-Qwen3.8-Flash-Next-BF16.gguf",
+    )
+    assert req.download_size_bytes == 25_700
+    assert req.companion_hashes == frozenset({"bf16"})
+
+
+def test_qwen38_embedded_head_family_does_not_plan_its_nested_mtp_copy():
+    requirements = gguf_variants._build_gguf_variant_requirements(
+        [
+            _sibling("Qwen3.8-27B-UD-Q4_K_XL.gguf", 18_000, "main"),
+            _sibling("MTP/mtp-Qwen3.8-27B-Q4_0.gguf", 1_300, "nested"),
+        ]
+    )
+
+    req = requirements["ud-q4_k_xl"]
+
+    assert req.target_filenames == ("Qwen3.8-27B-UD-Q4_K_XL.gguf",)
+    assert req.download_size_bytes == 18_000
 
 
 def test_gguf_variant_requirements_skip_big_endian_sibling():
@@ -2491,13 +2811,7 @@ def test_download_gguf_variant_purges_only_main_quant_hashes(monkeypatch, tmp_pa
     monkeypatch.setattr(
         download_manifest, "write_manifest", lambda *args: written.append(args) or True
     )
-    monkeypatch.setitem(
-        sys.modules,
-        "huggingface_hub",
-        SimpleNamespace(
-            snapshot_download = lambda **kwargs: snapshot_calls.append(kwargs) or str(tmp_path)
-        ),
-    )
+    _shared_setup_8(monkeypatch, snapshot_calls, tmp_path)
 
     hf_download._download_gguf_variant("Org/Vision", "Q4_K_M", None, "http")
 
@@ -2555,13 +2869,7 @@ def test_download_gguf_variant_manifest_resume_purges_only_main_quant_hashes(mon
         lambda *args, **kwargs: prepare_calls.append((args, kwargs)) or 0,
     )
     monkeypatch.setattr(hf_download, "_verify_completed_download", lambda *_args, **_kwargs: None)
-    monkeypatch.setitem(
-        sys.modules,
-        "huggingface_hub",
-        SimpleNamespace(
-            snapshot_download = lambda **kwargs: snapshot_calls.append(kwargs) or str(tmp_path)
-        ),
-    )
+    _shared_setup_8(monkeypatch, snapshot_calls, tmp_path)
 
     hf_download._download_gguf_variant("Org/Vision", "Q4_K_M", None, "http")
 
@@ -2591,23 +2899,11 @@ def test_download_snapshot_recovers_manifest_after_metadata_fallback(monkeypatch
         return SimpleNamespace(siblings = [SimpleNamespace(rfilename = "config.json", size = 12)])
 
     monkeypatch.setattr(hf_download, "_model_info_with_retry", _metadata)
-    monkeypatch.setattr(
-        hf_download, "_verify_completed_download", lambda *args, **kwargs: verified.append(args)
-    )
-    monkeypatch.setattr(
-        download_registry, "prepare_cache_for_transport", lambda *_args, **_kwargs: 0
-    )
+    _shared_setup_3(monkeypatch, verified)
     monkeypatch.setattr(
         download_manifest, "clear_cancel_marker", lambda *args: cleared.append(args)
     )
-    monkeypatch.setattr(
-        download_manifest, "write_manifest", lambda *args: written.append(args) or True
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        "huggingface_hub",
-        SimpleNamespace(snapshot_download = lambda **_kwargs: str(tmp_path)),
-    )
+    _shared_setup_7(monkeypatch, tmp_path, written)
 
     hf_download._download_snapshot("Org/Model", None, "http")
 
@@ -2630,12 +2926,7 @@ def test_download_dataset_continues_without_metadata_manifest(monkeypatch, tmp_p
         raise RuntimeError("metadata down")
 
     monkeypatch.setattr(hf_download, "_dataset_info_with_retry", _metadata)
-    monkeypatch.setattr(
-        hf_download, "_verify_completed_download", lambda *args, **kwargs: verified.append(args)
-    )
-    monkeypatch.setattr(
-        download_registry, "prepare_cache_for_transport", lambda *_args, **_kwargs: 0
-    )
+    _shared_setup_3(monkeypatch, verified)
     monkeypatch.setattr(
         download_manifest, "clear_cancel_marker", lambda *args: cleared.append(args)
     )
@@ -2645,13 +2936,7 @@ def test_download_dataset_continues_without_metadata_manifest(monkeypatch, tmp_p
     monkeypatch.setattr(
         hf_cache_state, "has_active_incomplete_blobs", lambda *_args, **_kwargs: False
     )
-    monkeypatch.setitem(
-        sys.modules,
-        "huggingface_hub",
-        SimpleNamespace(
-            snapshot_download = lambda **kwargs: snapshot_calls.append(kwargs) or str(tmp_path)
-        ),
-    )
+    _shared_setup_8(monkeypatch, snapshot_calls, tmp_path)
 
     hf_download._download_dataset("Org/Data", None, "http")
 
@@ -2672,10 +2957,7 @@ def test_download_dataset_continues_without_metadata_manifest(monkeypatch, tmp_p
 def test_download_dataset_recovers_commit_completion_after_transient_metadata_failure(
     monkeypatch, tmp_path
 ):
-    hub_cache = tmp_path / "hub"
-    snapshot = hub_cache / "datasets--Org--Data" / "snapshots" / "dataset-commit"
-    snapshot.mkdir(parents = True)
-    (snapshot / "data.parquet").write_bytes(b"rows")
+    hub_cache, snapshot = _shared_setup_20(tmp_path)
     metadata_calls = []
 
     def _metadata(*_args, **_kwargs):
@@ -2692,25 +2974,7 @@ def test_download_dataset_recovers_commit_completion_after_transient_metadata_fa
         "utils.hf_cache_settings.get_hf_cache_paths",
         lambda: SimpleNamespace(hub_cache = hub_cache),
     )
-    monkeypatch.setattr(hf_download, "_dataset_info_with_retry", _metadata)
-    monkeypatch.setattr(
-        download_registry,
-        "prepare_cache_for_transport",
-        lambda *_args, **_kwargs: 0,
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        "huggingface_hub",
-        SimpleNamespace(snapshot_download = lambda **_kwargs: str(snapshot)),
-    )
-
-    hf_download._download_dataset("Org/Data", None, "http")
-
-    manifest = download_manifest.read_manifest(
-        "dataset",
-        "Org/Data",
-        hub_cache = hub_cache,
-    )
+    manifest = _shared_setup_1(_metadata, hub_cache, monkeypatch, snapshot)
     completion = download_manifest.read_dataset_completion(
         "Org/Data",
         snapshot.name,
@@ -2727,10 +2991,7 @@ def test_download_dataset_recovers_commit_completion_after_transient_metadata_fa
 def test_download_dataset_promotes_existing_disk_manifest_after_metadata_recovers(
     monkeypatch, tmp_path
 ):
-    hub_cache = tmp_path / "hub"
-    snapshot = hub_cache / "datasets--Org--Data" / "snapshots" / "dataset-commit"
-    snapshot.mkdir(parents = True)
-    (snapshot / "data.parquet").write_bytes(b"rows")
+    hub_cache, snapshot = _shared_setup_20(tmp_path)
     metadata_calls = []
 
     def _metadata(*_args, **_kwargs):
@@ -2755,25 +3016,7 @@ def test_download_dataset_promotes_existing_disk_manifest_after_metadata_recover
         "http",
         hub_cache = hub_cache,
     )
-    monkeypatch.setattr(hf_download, "_dataset_info_with_retry", _metadata)
-    monkeypatch.setattr(
-        download_registry,
-        "prepare_cache_for_transport",
-        lambda *_args, **_kwargs: 0,
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        "huggingface_hub",
-        SimpleNamespace(snapshot_download = lambda **_kwargs: str(snapshot)),
-    )
-
-    hf_download._download_dataset("Org/Data", None, "http")
-
-    manifest = download_manifest.read_manifest(
-        "dataset",
-        "Org/Data",
-        hub_cache = hub_cache,
-    )
+    manifest = _shared_setup_1(_metadata, hub_cache, monkeypatch, snapshot)
     completion = download_manifest.read_dataset_completion(
         "Org/Data",
         snapshot.name,
@@ -2807,25 +3050,7 @@ def test_download_dataset_recovery_commit_mismatch_is_not_attested(monkeypatch, 
         "utils.hf_cache_settings.get_hf_cache_paths",
         lambda: SimpleNamespace(hub_cache = hub_cache),
     )
-    monkeypatch.setattr(hf_download, "_dataset_info_with_retry", _metadata)
-    monkeypatch.setattr(
-        download_registry,
-        "prepare_cache_for_transport",
-        lambda *_args, **_kwargs: 0,
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        "huggingface_hub",
-        SimpleNamespace(snapshot_download = lambda **_kwargs: str(snapshot)),
-    )
-
-    hf_download._download_dataset("Org/Data", None, "http")
-
-    manifest = download_manifest.read_manifest(
-        "dataset",
-        "Org/Data",
-        hub_cache = hub_cache,
-    )
+    manifest = _shared_setup_1(_metadata, hub_cache, monkeypatch, snapshot)
     assert len(metadata_calls) == 2
     assert manifest is not None
     assert manifest.commit_hash is None
@@ -2849,10 +3074,7 @@ def test_download_dataset_recovery_commit_mismatch_is_not_attested(monkeypatch, 
 
 
 def test_download_dataset_disk_fallback_is_not_attested(monkeypatch, tmp_path):
-    hub_cache = tmp_path / "hub"
-    snapshot = hub_cache / "datasets--Org--Data" / "snapshots" / "dataset-commit"
-    snapshot.mkdir(parents = True)
-    (snapshot / "data.parquet").write_bytes(b"rows")
+    hub_cache, snapshot = _shared_setup_20(tmp_path)
 
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     monkeypatch.setattr(
@@ -2913,12 +3135,7 @@ def test_download_snapshot_fails_when_metadata_unavailable_and_partial_remains(
         raise RuntimeError("metadata down")
 
     monkeypatch.setattr(hf_download, "_model_info_with_retry", _metadata)
-    monkeypatch.setattr(
-        hf_download, "_verify_completed_download", lambda *args, **kwargs: verified.append(args)
-    )
-    monkeypatch.setattr(
-        download_registry, "prepare_cache_for_transport", lambda *_args, **_kwargs: 0
-    )
+    _shared_setup_3(monkeypatch, verified)
     monkeypatch.setattr(download_manifest, "clear_cancel_marker", lambda *_args: None)
     monkeypatch.setattr(download_manifest, "read_manifest", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
@@ -2970,9 +3187,7 @@ def test_gguf_download_progress_fallback_logs_warning(monkeypatch):
     monkeypatch.setattr(snapshot_progress, "logger", logger)
     monkeypatch.setattr(downloads.asyncio, "to_thread", _run_inline)
     monkeypatch.setattr(
-        downloads.gguf_variants,
-        "gguf_variant_requirements",
-        lambda *_args, **_kwargs: None,
+        downloads.gguf_variants, "gguf_variant_requirements", lambda *_a, **_k: None
     )
     monkeypatch.setattr(
         downloads.gguf_variants,
@@ -3026,87 +3241,14 @@ def test_gguf_download_progress_fallback_logs_warning(monkeypatch):
 def test_gguf_progress_counts_completed_mmproj_with_expected_bytes(monkeypatch, tmp_path):
     """A finished mmproj companion keeps counting toward progress once the caller
     supplies expected bytes; resolving the variant requirement credits it."""
-    entry = tmp_path / "models--Org--Model-GGUF"
-    snap = entry / "snapshots" / "rev0"
-    blobs = entry / "blobs"
-    snap.mkdir(parents = True)
-    blobs.mkdir(parents = True)
+    entry, snap, blobs = _gguf_cache_dirs(tmp_path)
     (snap / "model-Q4_K_M.gguf").write_bytes(b"x" * 100)
     (snap / "mmproj-F16.gguf").write_bytes(b"y" * 30)
     (blobs / "mainhash").write_bytes(b"x" * 100)
-    (blobs / "mmprojhash").write_bytes(b"y" * 30)
-    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
-    assert download_manifest.write_manifest(
-        "model",
-        "Org/Model-GGUF",
-        "Q4_K_M",
-        [
-            download_manifest.ExpectedFile(
-                path = "model-Q4_K_M.gguf",
-                size = 100,
-                sha256 = "mainhash",
-            ),
-            download_manifest.ExpectedFile(
-                path = "mmproj-F16.gguf",
-                size = 30,
-                sha256 = "mmprojhash",
-            ),
-        ],
-        "http",
-        hub_cache = entry.parent,
-    )
+    _shared_setup_9(blobs, entry, monkeypatch, tmp_path)
+    monkeypatch.setattr(downloads, "_registry", _idle_registry())
 
-    requirement = gguf_variants._GgufVariantRequirement(
-        main_filenames = frozenset({"model-Q4_K_M.gguf"}),
-        target_filenames = ("model-Q4_K_M.gguf", "mmproj-F16.gguf"),
-        main_hashes = frozenset({"mainhash"}),
-        required_hashes = frozenset({"mainhash", "mmprojhash"}),
-        companion_hashes = frozenset({"mmprojhash"}),
-        mmproj_filenames = frozenset({"mmproj-F16.gguf"}),
-        mmproj_hashes = frozenset({"mmprojhash"}),
-        expected_files = (
-            download_manifest.ExpectedFile(
-                path = "model-Q4_K_M.gguf",
-                size = 100,
-                sha256 = "mainhash",
-            ),
-            download_manifest.ExpectedFile(
-                path = "mmproj-F16.gguf",
-                size = 30,
-                sha256 = "mmprojhash",
-            ),
-        ),
-        main_size_bytes = 100,
-        download_size_bytes = 130,
-    )
-
-    async def _run_inline(fn, *args, **kwargs):
-        return fn(*args, **kwargs)
-
-    monkeypatch.setattr(downloads.asyncio, "to_thread", _run_inline)
-    monkeypatch.setattr(
-        downloads.gguf_variants,
-        "gguf_variant_requirements",
-        lambda *_args, **_kwargs: requirement,
-    )
-    monkeypatch.setattr(
-        snapshot_progress,
-        "preferred_repo_cache_dirs",
-        lambda *_args, **_kwargs: [entry],
-    )
-    monkeypatch.setattr(
-        downloads,
-        "_registry",
-        SimpleNamespace(get_job = lambda _key: SimpleNamespace(state = "idle")),
-    )
-
-    result = asyncio.run(
-        downloads.get_gguf_download_progress_response(
-            "Org/Model-GGUF",
-            variant = "Q4_K_M",
-            expected_bytes = 130,
-        )
-    )
+    result = _gguf_progress(expected_bytes = 130)
 
     assert result["completed_bytes"] == 130
     assert result["downloaded_bytes"] == 130
@@ -3115,90 +3257,12 @@ def test_gguf_progress_counts_completed_mmproj_with_expected_bytes(monkeypatch, 
 
 
 def test_gguf_progress_subtracts_new_job_completed_baseline(monkeypatch, tmp_path):
-    entry = tmp_path / "models--Org--Model-GGUF"
-    snap = entry / "snapshots" / "rev0"
-    blobs = entry / "blobs"
-    snap.mkdir(parents = True)
-    blobs.mkdir(parents = True)
+    entry, snap, blobs = _gguf_cache_dirs(tmp_path)
     (snap / "mmproj-F16.gguf").write_bytes(b"y" * 30)
-    (blobs / "mmprojhash").write_bytes(b"y" * 30)
-    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
-    assert download_manifest.write_manifest(
-        "model",
-        "Org/Model-GGUF",
-        "Q4_K_M",
-        [
-            download_manifest.ExpectedFile(
-                path = "model-Q4_K_M.gguf",
-                size = 100,
-                sha256 = "mainhash",
-            ),
-            download_manifest.ExpectedFile(
-                path = "mmproj-F16.gguf",
-                size = 30,
-                sha256 = "mmprojhash",
-            ),
-        ],
-        "http",
-        hub_cache = entry.parent,
-    )
+    _shared_setup_9(blobs, entry, monkeypatch, tmp_path)
+    monkeypatch.setattr(downloads, "_registry", _running_registry(30))
 
-    requirement = gguf_variants._GgufVariantRequirement(
-        main_filenames = frozenset({"model-Q4_K_M.gguf"}),
-        target_filenames = ("model-Q4_K_M.gguf", "mmproj-F16.gguf"),
-        main_hashes = frozenset({"mainhash"}),
-        required_hashes = frozenset({"mainhash", "mmprojhash"}),
-        companion_hashes = frozenset({"mmprojhash"}),
-        mmproj_filenames = frozenset({"mmproj-F16.gguf"}),
-        mmproj_hashes = frozenset({"mmprojhash"}),
-        expected_files = (
-            download_manifest.ExpectedFile(
-                path = "model-Q4_K_M.gguf",
-                size = 100,
-                sha256 = "mainhash",
-            ),
-            download_manifest.ExpectedFile(
-                path = "mmproj-F16.gguf",
-                size = 30,
-                sha256 = "mmprojhash",
-            ),
-        ),
-        main_size_bytes = 100,
-        download_size_bytes = 130,
-    )
-
-    async def _run_inline(fn, *args, **kwargs):
-        return fn(*args, **kwargs)
-
-    monkeypatch.setattr(downloads.asyncio, "to_thread", _run_inline)
-    monkeypatch.setattr(
-        downloads.gguf_variants,
-        "gguf_variant_requirements",
-        lambda *_args, **_kwargs: requirement,
-    )
-    monkeypatch.setattr(
-        snapshot_progress,
-        "preferred_repo_cache_dirs",
-        lambda *_args, **_kwargs: [entry],
-    )
-    monkeypatch.setattr(
-        downloads,
-        "_registry",
-        SimpleNamespace(
-            get_job = lambda _key: SimpleNamespace(state = "running"),
-            get_job_metadata = lambda _key: SimpleNamespace(
-                completed_baseline_bytes = 30,
-            ),
-        ),
-    )
-
-    result = asyncio.run(
-        downloads.get_gguf_download_progress_response(
-            "Org/Model-GGUF",
-            variant = "Q4_K_M",
-            expected_bytes = 130,
-        )
-    )
+    result = _gguf_progress(expected_bytes = 130)
 
     assert result["completed_bytes"] == 0
     assert result["downloaded_bytes"] == 0
@@ -3215,62 +3279,12 @@ def test_gguf_progress_shows_main_when_companion_left_the_count(monkeypatch, tmp
     (blobs / "mainhash").write_bytes(b"x" * 20)
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
 
-    requirement = gguf_variants._GgufVariantRequirement(
-        main_filenames = frozenset({"model-Q4_K_M.gguf"}),
-        target_filenames = ("model-Q4_K_M.gguf", "mmproj-F16.gguf"),
-        main_hashes = frozenset({"mainhash"}),
-        required_hashes = frozenset({"mainhash", "mmprojhash"}),
-        companion_hashes = frozenset({"mmprojhash"}),
-        mmproj_filenames = frozenset({"mmproj-F16.gguf"}),
-        mmproj_hashes = frozenset({"mmprojhash"}),
-        expected_files = (
-            download_manifest.ExpectedFile(
-                path = "model-Q4_K_M.gguf",
-                size = 100,
-                sha256 = "mainhash",
-            ),
-            download_manifest.ExpectedFile(
-                path = "mmproj-F16.gguf",
-                size = 30,
-                sha256 = "mmprojhash",
-            ),
-        ),
-        main_size_bytes = 100,
-        download_size_bytes = 130,
-    )
+    requirement = _gguf_mmproj_requirement()
 
-    async def _run_inline(fn, *args, **kwargs):
-        return fn(*args, **kwargs)
+    _patch_gguf_progress(monkeypatch, entry, requirement)
+    monkeypatch.setattr(downloads, "_registry", _running_registry(30))
 
-    monkeypatch.setattr(downloads.asyncio, "to_thread", _run_inline)
-    monkeypatch.setattr(
-        downloads.gguf_variants,
-        "gguf_variant_requirements",
-        lambda *_args, **_kwargs: requirement,
-    )
-    monkeypatch.setattr(
-        snapshot_progress,
-        "preferred_repo_cache_dirs",
-        lambda *_args, **_kwargs: [entry],
-    )
-    monkeypatch.setattr(
-        downloads,
-        "_registry",
-        SimpleNamespace(
-            get_job = lambda _key: SimpleNamespace(state = "running"),
-            get_job_metadata = lambda _key: SimpleNamespace(
-                completed_baseline_bytes = 30,
-            ),
-        ),
-    )
-
-    result = asyncio.run(
-        downloads.get_gguf_download_progress_response(
-            "Org/Model-GGUF",
-            variant = "Q4_K_M",
-            expected_bytes = 130,
-        )
-    )
+    result = _gguf_progress(expected_bytes = 130)
 
     assert result["completed_bytes"] == 20
     assert result["downloaded_bytes"] == 20
@@ -3281,92 +3295,14 @@ def test_gguf_progress_shows_main_when_companion_left_the_count(monkeypatch, tmp
 def test_gguf_progress_complete_on_disk_ignores_full_baseline(monkeypatch, tmp_path):
     # A variant already complete on disk carries a baseline equal to its full size; subtracting it would
     # report 0/0, which the frontend evicts as gone.
-    entry = tmp_path / "models--Org--Model-GGUF"
-    snap = entry / "snapshots" / "rev0"
-    blobs = entry / "blobs"
-    snap.mkdir(parents = True)
-    blobs.mkdir(parents = True)
+    entry, snap, blobs = _gguf_cache_dirs(tmp_path)
     (snap / "model-Q4_K_M.gguf").write_bytes(b"x" * 100)
     (snap / "mmproj-F16.gguf").write_bytes(b"y" * 30)
     (blobs / "mainhash").write_bytes(b"x" * 100)
-    (blobs / "mmprojhash").write_bytes(b"y" * 30)
-    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
-    assert download_manifest.write_manifest(
-        "model",
-        "Org/Model-GGUF",
-        "Q4_K_M",
-        [
-            download_manifest.ExpectedFile(
-                path = "model-Q4_K_M.gguf",
-                size = 100,
-                sha256 = "mainhash",
-            ),
-            download_manifest.ExpectedFile(
-                path = "mmproj-F16.gguf",
-                size = 30,
-                sha256 = "mmprojhash",
-            ),
-        ],
-        "http",
-        hub_cache = entry.parent,
-    )
+    _shared_setup_9(blobs, entry, monkeypatch, tmp_path)
+    monkeypatch.setattr(downloads, "_registry", _running_registry(130))
 
-    requirement = gguf_variants._GgufVariantRequirement(
-        main_filenames = frozenset({"model-Q4_K_M.gguf"}),
-        target_filenames = ("model-Q4_K_M.gguf", "mmproj-F16.gguf"),
-        main_hashes = frozenset({"mainhash"}),
-        required_hashes = frozenset({"mainhash", "mmprojhash"}),
-        companion_hashes = frozenset({"mmprojhash"}),
-        mmproj_filenames = frozenset({"mmproj-F16.gguf"}),
-        mmproj_hashes = frozenset({"mmprojhash"}),
-        expected_files = (
-            download_manifest.ExpectedFile(
-                path = "model-Q4_K_M.gguf",
-                size = 100,
-                sha256 = "mainhash",
-            ),
-            download_manifest.ExpectedFile(
-                path = "mmproj-F16.gguf",
-                size = 30,
-                sha256 = "mmprojhash",
-            ),
-        ),
-        main_size_bytes = 100,
-        download_size_bytes = 130,
-    )
-
-    async def _run_inline(fn, *args, **kwargs):
-        return fn(*args, **kwargs)
-
-    monkeypatch.setattr(downloads.asyncio, "to_thread", _run_inline)
-    monkeypatch.setattr(
-        downloads.gguf_variants,
-        "gguf_variant_requirements",
-        lambda *_args, **_kwargs: requirement,
-    )
-    monkeypatch.setattr(
-        snapshot_progress,
-        "preferred_repo_cache_dirs",
-        lambda *_args, **_kwargs: [entry],
-    )
-    monkeypatch.setattr(
-        downloads,
-        "_registry",
-        SimpleNamespace(
-            get_job = lambda _key: SimpleNamespace(state = "running"),
-            get_job_metadata = lambda _key: SimpleNamespace(
-                completed_baseline_bytes = 130,
-            ),
-        ),
-    )
-
-    result = asyncio.run(
-        downloads.get_gguf_download_progress_response(
-            "Org/Model-GGUF",
-            variant = "Q4_K_M",
-            expected_bytes = 130,
-        )
-    )
+    result = _gguf_progress(expected_bytes = 130)
 
     assert result["complete_on_disk"] is True
     assert result["completed_bytes"] == 130
@@ -3403,38 +3339,10 @@ def test_gguf_progress_scoped_hashes_exclude_sibling_quant(monkeypatch, tmp_path
         download_size_bytes = 100,
     )
 
-    async def _run_inline(fn, *args, **kwargs):
-        return fn(*args, **kwargs)
+    _patch_gguf_progress(monkeypatch, entry, requirement)
+    monkeypatch.setattr(downloads, "_registry", _running_registry(0))
 
-    monkeypatch.setattr(downloads.asyncio, "to_thread", _run_inline)
-    monkeypatch.setattr(
-        downloads.gguf_variants,
-        "gguf_variant_requirements",
-        lambda *_args, **_kwargs: requirement,
-    )
-    monkeypatch.setattr(
-        snapshot_progress,
-        "preferred_repo_cache_dirs",
-        lambda *_args, **_kwargs: [entry],
-    )
-    monkeypatch.setattr(
-        downloads,
-        "_registry",
-        SimpleNamespace(
-            get_job = lambda _key: SimpleNamespace(state = "running"),
-            get_job_metadata = lambda _key: SimpleNamespace(
-                completed_baseline_bytes = 0,
-            ),
-        ),
-    )
-
-    result = asyncio.run(
-        downloads.get_gguf_download_progress_response(
-            "Org/Model-GGUF",
-            variant = "Q4_K_M",
-            expected_bytes = 100,
-        )
-    )
+    result = _gguf_progress(expected_bytes = 100)
 
     assert result["completed_bytes"] == 0
     assert result["downloaded_bytes"] == 5
@@ -3443,11 +3351,7 @@ def test_gguf_progress_scoped_hashes_exclude_sibling_quant(monkeypatch, tmp_path
 def test_gguf_progress_unknown_hashes_does_not_count_foreign_blobs(monkeypatch, tmp_path):
     # With hashes unresolved, the shared blobs/ dir's FINALIZED blobs must not be counted wholesale: a
     # cached sibling quant alongside is the "instant ~900 MB" bug.
-    entry = tmp_path / "models--Org--Model-GGUF"
-    snap = entry / "snapshots" / "rev0"
-    blobs = entry / "blobs"
-    snap.mkdir(parents = True)
-    blobs.mkdir(parents = True)
+    entry, snap, blobs = _gguf_cache_dirs(tmp_path)
     (blobs / "mainhash").write_bytes(b"x" * 100)
     (blobs / "mmprojhash").write_bytes(b"y" * 30)
     (blobs / "siblinghash").write_bytes(b"z" * 900)
@@ -3455,35 +3359,9 @@ def test_gguf_progress_unknown_hashes_does_not_count_foreign_blobs(monkeypatch, 
     async def _run_inline(fn, *args, **kwargs):
         return fn(*args, **kwargs)
 
-    monkeypatch.setattr(downloads.asyncio, "to_thread", _run_inline)
-    monkeypatch.setattr(
-        downloads.gguf_variants,
-        "gguf_variant_requirements",
-        lambda *_args, **_kwargs: None,
-    )
-    monkeypatch.setattr(
-        downloads.gguf_variants,
-        "gguf_variant_blob_hashes",
-        lambda *_args, **_kwargs: frozenset(),
-    )
-    monkeypatch.setattr(
-        snapshot_progress,
-        "preferred_repo_cache_dirs",
-        lambda *_args, **_kwargs: [entry],
-    )
-    monkeypatch.setattr(
-        downloads,
-        "_registry",
-        SimpleNamespace(get_job = lambda _key: SimpleNamespace(state = "running")),
-    )
+    _shared_setup_4(_run_inline, entry, monkeypatch)
 
-    result = asyncio.run(
-        downloads.get_gguf_download_progress_response(
-            "Org/Model-GGUF",
-            variant = "Q4_K_M",
-            expected_bytes = 130,
-        )
-    )
+    result = _gguf_progress(expected_bytes = 130)
 
     assert result["completed_bytes"] == 0
     assert result["downloaded_bytes"] == 0
@@ -3502,27 +3380,7 @@ def test_gguf_progress_unknown_hashes_drops_unscoped_incomplete_blob(monkeypatch
     async def _run_inline(fn, *args, **kwargs):
         return fn(*args, **kwargs)
 
-    monkeypatch.setattr(downloads.asyncio, "to_thread", _run_inline)
-    monkeypatch.setattr(
-        downloads.gguf_variants,
-        "gguf_variant_requirements",
-        lambda *_args, **_kwargs: None,
-    )
-    monkeypatch.setattr(
-        downloads.gguf_variants,
-        "gguf_variant_blob_hashes",
-        lambda *_args, **_kwargs: frozenset(),
-    )
-    monkeypatch.setattr(
-        snapshot_progress,
-        "preferred_repo_cache_dirs",
-        lambda *_args, **_kwargs: [entry],
-    )
-    monkeypatch.setattr(
-        downloads,
-        "_registry",
-        SimpleNamespace(get_job = lambda _key: SimpleNamespace(state = "running")),
-    )
+    _shared_setup_4(_run_inline, entry, monkeypatch)
 
     result = asyncio.run(
         downloads.get_gguf_download_progress_response(
@@ -3540,10 +3398,7 @@ def test_gguf_progress_unknown_hashes_no_backward_dip_when_variant_finalizes(mon
     # Regression for the two-variant dip: the sibling's .incomplete bytes used to leak into this
     # numerator, dipping the bar to ~78% for one poll.
     entry = tmp_path / "models--unsloth--SmolLM2-360M-Instruct-GGUF"
-    blobs = entry / "blobs"
-    snap = entry / "snapshots" / "rev0"
-    blobs.mkdir(parents = True)
-    snap.mkdir(parents = True)
+    blobs, snap = _shared_setup_21(entry)
     own_total = 218_673_760
     sibling_total = 234_686_560
 
@@ -3560,27 +3415,7 @@ def test_gguf_progress_unknown_hashes_no_backward_dip_when_variant_finalizes(mon
     async def _run_inline(fn, *args, **kwargs):
         return fn(*args, **kwargs)
 
-    monkeypatch.setattr(downloads.asyncio, "to_thread", _run_inline)
-    monkeypatch.setattr(
-        downloads.gguf_variants,
-        "gguf_variant_requirements",
-        lambda *_args, **_kwargs: None,
-    )
-    monkeypatch.setattr(
-        downloads.gguf_variants,
-        "gguf_variant_blob_hashes",
-        lambda *_args, **_kwargs: frozenset(),
-    )
-    monkeypatch.setattr(
-        snapshot_progress,
-        "preferred_repo_cache_dirs",
-        lambda *_args, **_kwargs: [entry],
-    )
-    monkeypatch.setattr(
-        downloads,
-        "_registry",
-        SimpleNamespace(get_job = lambda _key: SimpleNamespace(state = "running")),
-    )
+    _shared_setup_4(_run_inline, entry, monkeypatch)
 
     result = asyncio.run(
         downloads.get_gguf_download_progress_response(
@@ -3612,20 +3447,14 @@ def _unresolvable_variant_metadata(
 
     monkeypatch.setattr(downloads.asyncio, "to_thread", _run_inline)
     monkeypatch.setattr(
-        downloads.gguf_variants,
-        "gguf_variant_requirements",
-        lambda *_args, **_kwargs: None,
+        downloads.gguf_variants, "gguf_variant_requirements", lambda *_a, **_k: None
     )
     monkeypatch.setattr(
         downloads.gguf_variants,
         "gguf_variant_blob_hashes",
         lambda *_args, **_kwargs: frozenset(),
     )
-    monkeypatch.setattr(
-        snapshot_progress,
-        "preferred_repo_cache_dirs",
-        lambda *_args, **_kwargs: [entry],
-    )
+    monkeypatch.setattr(snapshot_progress, "preferred_repo_cache_dirs", lambda *_a, **_k: [entry])
     monkeypatch.setattr(
         downloads,
         "preferred_repo_cache_dirs",
@@ -3648,11 +3477,7 @@ def test_gguf_progress_unknown_hashes_reports_the_variant_files_on_disk(monkeypa
     variant's own snapshot files are still attributable by name, so they are
     what the reading falls back to -- the sibling quant beside them is not.
     """
-    entry = tmp_path / "models--Org--Model-GGUF"
-    snap = entry / "snapshots" / "rev0"
-    blobs = entry / "blobs"
-    snap.mkdir(parents = True)
-    blobs.mkdir(parents = True)
+    entry, snap, blobs = _gguf_cache_dirs(tmp_path)
     (snap / "model-Q4_K_M.gguf").write_bytes(b"x" * 100)
     (snap / "mmproj-F16.gguf").write_bytes(b"y" * 30)
     (snap / "model-Q2_K.gguf").write_bytes(b"z" * 900)
@@ -3661,13 +3486,7 @@ def test_gguf_progress_unknown_hashes_reports_the_variant_files_on_disk(monkeypa
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     _unresolvable_variant_metadata(monkeypatch, entry)
 
-    result = asyncio.run(
-        downloads.get_gguf_download_progress_response(
-            "Org/Model-GGUF",
-            variant = "Q4_K_M",
-            expected_bytes = 130,
-        )
-    )
+    result = _gguf_progress(expected_bytes = 130)
 
     assert result["completed_bytes"] == 130
     assert result["downloaded_bytes"] == 130
@@ -3683,10 +3502,7 @@ def test_gguf_progress_unknown_hashes_keeps_a_total_under_a_full_baseline(monkey
     cancels against the baseline and the response carries no total at all, so
     the bar has nothing to draw and the frontend reads the job as evictable.
     """
-    entry = tmp_path / "models--Org--Model-GGUF"
-    snap = entry / "snapshots" / "rev0"
-    snap.mkdir(parents = True)
-    (entry / "blobs").mkdir(parents = True)
+    entry, snap = _shared_setup_15(tmp_path)
     (snap / "model-Q4_K_M.gguf").write_bytes(b"x" * 130)
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     _unresolvable_variant_metadata(monkeypatch, entry)
@@ -3699,13 +3515,7 @@ def test_gguf_progress_unknown_hashes_keeps_a_total_under_a_full_baseline(monkey
         ),
     )
 
-    result = asyncio.run(
-        downloads.get_gguf_download_progress_response(
-            "Org/Model-GGUF",
-            variant = "Q4_K_M",
-            expected_bytes = 130,
-        )
-    )
+    result = _gguf_progress(expected_bytes = 130)
 
     assert result["expected_bytes"] == 130
     assert result["downloaded_bytes"] == 130
@@ -3718,21 +3528,10 @@ def test_gguf_progress_unknown_hashes_prefers_the_manifest_file_set(monkeypatch,
     carries paths and sizes but no sha256, so the hash filter still resolves to
     nothing. Its file list is exact, so it is used ahead of matching by name.
     """
-    entry = tmp_path / "models--Org--Model-GGUF"
-    snap = entry / "snapshots" / "rev0"
-    snap.mkdir(parents = True)
-    (entry / "blobs").mkdir(parents = True)
+    entry, snap = _shared_setup_15(tmp_path)
     (snap / "model-Q4_K_M.gguf").write_bytes(b"x" * 100)
     (snap / "model-Q2_K.gguf").write_bytes(b"z" * 900)
-    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
-    assert download_manifest.write_manifest(
-        "model",
-        "Org/Model-GGUF",
-        "Q4_K_M",
-        [download_manifest.ExpectedFile(path = "model-Q4_K_M.gguf", size = 100)],
-        "http",
-        hub_cache = entry.parent,
-    )
+    _shared_setup_6(entry, monkeypatch, tmp_path)
     _unresolvable_variant_metadata(monkeypatch, entry)
 
     result = asyncio.run(
@@ -3754,11 +3553,7 @@ def test_gguf_progress_unknown_hashes_stays_zero_without_variant_files(monkeypat
     Guards the "instant ~900 MB" regression from the other direction: a cached
     sibling quant with no snapshot file of this variant's own still reads zero.
     """
-    entry = tmp_path / "models--Org--Model-GGUF"
-    snap = entry / "snapshots" / "rev0"
-    blobs = entry / "blobs"
-    snap.mkdir(parents = True)
-    blobs.mkdir(parents = True)
+    entry, snap, blobs = _gguf_cache_dirs(tmp_path)
     (snap / "model-Q2_K.gguf").write_bytes(b"z" * 900)
     (blobs / "siblinghash").write_bytes(b"z" * 900)
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
@@ -3786,11 +3581,7 @@ def test_gguf_progress_settles_complete_from_disk_without_a_manifest(monkeypatch
     no longer name -- left the job in an active state with Retry/Resume showing
     on a download that had finished.
     """
-    entry = tmp_path / "models--Org--Model-GGUF"
-    snap = entry / "snapshots" / "rev0"
-    blobs = entry / "blobs"
-    snap.mkdir(parents = True)
-    blobs.mkdir(parents = True)
+    entry, snap, blobs = _gguf_cache_dirs(tmp_path)
     (snap / "model-Q4_K_M.gguf").write_bytes(b"x" * 100)
     (blobs / "mainhash").write_bytes(b"x" * 100)
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
@@ -3818,24 +3609,10 @@ def test_gguf_progress_settles_complete_from_disk_without_a_manifest(monkeypatch
             ),
         ),
     )
-    monkeypatch.setattr(
-        snapshot_progress,
-        "preferred_repo_cache_dirs",
-        lambda *_args, **_kwargs: [entry],
-    )
-    monkeypatch.setattr(
-        downloads,
-        "_registry",
-        SimpleNamespace(get_job = lambda _key: SimpleNamespace(state = "idle")),
-    )
+    monkeypatch.setattr(snapshot_progress, "preferred_repo_cache_dirs", lambda *_a, **_k: [entry])
+    monkeypatch.setattr(downloads, "_registry", _idle_registry())
 
-    result = asyncio.run(
-        downloads.get_gguf_download_progress_response(
-            "Org/Model-GGUF",
-            variant = "Q4_K_M",
-            expected_bytes = 100,
-        )
-    )
+    result = _gguf_progress(expected_bytes = 100)
 
     assert result["complete_on_disk"] is True
     assert result["progress"] == 1.0
@@ -3879,11 +3656,7 @@ def test_a_refused_manifest_is_not_reread_through_the_blob_hash_fallback(monkeyp
         return frozenset({"new"})
 
     monkeypatch.setattr(downloads.gguf_variants, "gguf_variant_blob_hashes", _blob_hashes)
-    monkeypatch.setattr(
-        downloads,
-        "_registry",
-        SimpleNamespace(get_job = lambda _key: SimpleNamespace(state = "idle")),
-    )
+    monkeypatch.setattr(downloads, "_registry", _idle_registry())
     captured: dict = {}
 
     async def _progress(*_args, **kwargs):
@@ -3919,11 +3692,7 @@ def test_gguf_progress_without_a_manifest_needs_every_expected_blob(monkeypatch,
     look satisfied must stay partial: the caller's expected_bytes is a catalog
     hint and can never be what completion is judged against.
     """
-    entry = tmp_path / "models--Org--Model-GGUF"
-    snap = entry / "snapshots" / "rev0"
-    blobs = entry / "blobs"
-    snap.mkdir(parents = True)
-    blobs.mkdir(parents = True)
+    entry, snap, blobs = _gguf_cache_dirs(tmp_path)
     (snap / "model-Q4_K_M-00001-of-00002.gguf").write_bytes(b"x" * 400)
     (blobs / "shard1").write_bytes(b"x" * 400)
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
@@ -3952,16 +3721,8 @@ def test_gguf_progress_without_a_manifest_needs_every_expected_blob(monkeypatch,
             ),
         ),
     )
-    monkeypatch.setattr(
-        snapshot_progress,
-        "preferred_repo_cache_dirs",
-        lambda *_args, **_kwargs: [entry],
-    )
-    monkeypatch.setattr(
-        downloads,
-        "_registry",
-        SimpleNamespace(get_job = lambda _key: SimpleNamespace(state = "idle")),
-    )
+    monkeypatch.setattr(snapshot_progress, "preferred_repo_cache_dirs", lambda *_a, **_k: [entry])
+    monkeypatch.setattr(downloads, "_registry", _idle_registry())
 
     result = asyncio.run(
         downloads.get_gguf_download_progress_response(
@@ -4067,11 +3828,7 @@ def test_gguf_progress_without_a_manifest_needs_the_snapshot_materialized(monkey
     polled -- a plan fetches one of each -- so a leftover one, or an opt-in
     ``dspark/`` drafter, would cover for the shard that never landed.
     """
-    entry = tmp_path / "models--Org--Model-GGUF"
-    snap = entry / "snapshots" / "rev0"
-    blobs = entry / "blobs"
-    snap.mkdir(parents = True)
-    blobs.mkdir(parents = True)
+    entry, snap, blobs = _gguf_cache_dirs(tmp_path)
     (blobs / "mainhash").write_bytes(b"x" * 100)
     (snap / "mmproj-F32.gguf").write_bytes(b"y" * 5_000)
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
@@ -4095,24 +3852,10 @@ def test_gguf_progress_without_a_manifest_needs_the_snapshot_materialized(monkey
             ),
         ),
     )
-    monkeypatch.setattr(
-        snapshot_progress,
-        "preferred_repo_cache_dirs",
-        lambda *_args, **_kwargs: [entry],
-    )
-    monkeypatch.setattr(
-        downloads,
-        "_registry",
-        SimpleNamespace(get_job = lambda _key: SimpleNamespace(state = "idle")),
-    )
+    monkeypatch.setattr(snapshot_progress, "preferred_repo_cache_dirs", lambda *_a, **_k: [entry])
+    monkeypatch.setattr(downloads, "_registry", _idle_registry())
 
-    result = asyncio.run(
-        downloads.get_gguf_download_progress_response(
-            "Org/Model-GGUF",
-            variant = "Q4_K_M",
-            expected_bytes = 100,
-        )
-    )
+    result = _gguf_progress(expected_bytes = 100)
 
     assert result["complete_on_disk"] is False
 
@@ -4561,6 +4304,7 @@ def test_gguf_variants_partial_marker_overrides_size_only_downloaded(monkeypatch
 
     result = asyncio.run(gguf_variants.get_gguf_variants_response("Org/PartialRepo"))
 
+    assert result.dependencies_resolved is False
     assert result.variants[0].downloaded is False
     assert result.variants[0].partial is True
 
@@ -4583,10 +4327,7 @@ def test_gguf_variants_scopes_partial_state_to_requested_cache(monkeypatch, tmp_
 
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     monkeypatch.setattr(gguf_variants.asyncio, "to_thread", _run_inline)
-    monkeypatch.setattr(
-        "utils.hf_cache_settings.get_hf_cache_paths",
-        lambda: SimpleNamespace(hub_cache = cache_b),
-    )
+    _shared_setup_14(cache_b, monkeypatch)
     assert download_manifest.write_cancel_marker(
         "model",
         repo_id,
@@ -4629,6 +4370,124 @@ def test_gguf_variants_scopes_partial_state_to_requested_cache(monkeypatch, tmp_
     assert result.variants[0].partial is False
 
 
+@pytest.mark.parametrize(
+    "cache_case",
+    [
+        "current",
+        "partial-mtp",
+        "alternate-projector",
+        "stale-main",
+        "planned-projector",
+        "cross-snapshot",
+        "undersized-mtp",
+    ],
+)
+def test_cached_flash_next_quant_needs_managed_mtp_before_it_is_downloaded(
+    monkeypatch, tmp_path, cache_case
+):
+    """A pre-MTP cache must enter the manager instead of downloading at load time."""
+    with gguf_variants._VARIANT_HASH_LOCK:
+        gguf_variants._VARIANT_REQUIREMENT_CACHE.clear()
+
+    async def _run_inline(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    repo_id = "unsloth/Qwen3.8-Flash-Next-GGUF"
+    snapshot = (
+        tmp_path / "cache" / "models--unsloth--Qwen3.8-Flash-Next-GGUF" / "snapshots" / "rev0"
+    )
+    snapshot.mkdir(parents = True)
+    main_name = "Qwen3.8-Flash-Next-UD-Q4_K_XL.gguf"
+    mtp_name = "MTP/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf"
+    (snapshot / main_name).write_bytes(b"m" * 100)
+    siblings = [
+        _sibling(main_name, 100, "main"),
+        _sibling(mtp_name, 20, "mtp"),
+    ]
+    snapshots = [snapshot]
+    if cache_case == "cross-snapshot":
+        companion_snapshot = snapshot.parent / "rev1"
+        companion = companion_snapshot / mtp_name
+        companion.parent.mkdir(parents = True)
+        companion.write_bytes(b"d" * 20)
+        snapshots.append(companion_snapshot)
+    elif cache_case == "undersized-mtp":
+        companion = snapshot / mtp_name
+        companion.parent.mkdir(parents = True)
+        companion.write_bytes(b"d" * 10)
+    local_blobs = {main_name: {"old-main" if cache_case == "stale-main" else "main"}}
+    if cache_case in {"alternate-projector", "planned-projector"}:
+        siblings.extend(
+            [
+                _sibling("mmproj-F16.gguf", 10, "projector-f16"),
+                _sibling("mmproj-Q8_0.gguf", 8, "projector-q8"),
+            ]
+        )
+        (snapshot / "mmproj-Q8_0.gguf").write_bytes(b"p" * 8)
+        local_blobs["mmproj-Q8_0.gguf"] = {"projector-q8"}
+        if cache_case == "planned-projector":
+            (snapshot / "mmproj-F16.gguf").write_bytes(b"p" * 10)
+            local_blobs["mmproj-F16.gguf"] = {"projector-f16"}
+    monkeypatch.setattr(
+        gguf_variants,
+        "_local_main_gguf_blobs_by_quant",
+        lambda *_args: {"ud-q4_k_xl": local_blobs},
+    )
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    monkeypatch.setattr(gguf_variants.asyncio, "to_thread", _run_inline)
+    monkeypatch.setattr(
+        gguf_variants,
+        "list_gguf_variants",
+        lambda *_args, **_kwargs: (
+            [
+                SimpleNamespace(
+                    filename = main_name,
+                    quant = "UD-Q4_K_XL",
+                    display_label = None,
+                    size_bytes = 100,
+                )
+            ],
+            False,
+            siblings,
+        ),
+    )
+    monkeypatch.setattr(
+        gguf_variants,
+        "iter_hf_cache_snapshots",
+        lambda _repo_id, root = None: snapshots,
+    )
+    monkeypatch.setattr(
+        gguf_variants.download_registry,
+        "incomplete_blob_hashes",
+        lambda *_args, **_kwargs: {"mtp"} if cache_case == "partial-mtp" else set(),
+    )
+
+    before = asyncio.run(gguf_variants.get_gguf_variants_response(repo_id))
+    assert before.dependencies_resolved is True
+    assert before.variants[0].downloaded is False
+    assert before.variants[0].download_size_bytes == (130 if "projector" in cache_case else 120)
+    assert before.variants[0].partial is (cache_case == "partial-mtp")
+    if cache_case in {"alternate-projector", "stale-main"}:
+        assert before.variants[0].pending_drafter_filename is None
+        assert before.variants[0].pending_drafter_size_bytes == 0
+        return
+    assert before.variants[0].pending_drafter_filename == mtp_name
+    assert before.variants[0].pending_drafter_size_bytes == 20
+
+    companion = snapshot / mtp_name
+    companion.parent.mkdir(exist_ok = True)
+    companion.write_bytes(b"d" * 20)
+    monkeypatch.setattr(
+        gguf_variants.download_registry,
+        "incomplete_blob_hashes",
+        lambda *_args, **_kwargs: set(),
+    )
+    after = asyncio.run(gguf_variants.get_gguf_variants_response(repo_id))
+    assert after.variants[0].downloaded is True
+    assert after.variants[0].pending_drafter_filename is None
+    assert after.variants[0].pending_drafter_size_bytes == 0
+
+
 def test_download_registry_repo_keys_are_case_insensitive():
     registry = download_registry.DownloadRegistry()
 
@@ -4657,31 +4516,8 @@ def test_download_registry_repo_keys_are_case_insensitive():
 
 
 def test_download_registry_allows_disjoint_gguf_variant_downloads():
-    registry = download_registry.DownloadRegistry()
-
-    claimed, state = registry.claim(
-        "Org/Repo::Q8_0",
-        download_registry.TRANSPORT_HTTP,
-        repo_type = "model",
-        repo_id = "Org/Repo",
-        variant = "Q8_0",
-        blob_hashes = frozenset({"q8-main"}),
-        progress_blob_hashes = frozenset({"q8-main", "shared-mmproj"}),
-    )
-    second_claimed, second_state = registry.claim(
-        "Org/Repo::Q4_K_M",
-        download_registry.TRANSPORT_HTTP,
-        repo_type = "model",
-        repo_id = "Org/Repo",
-        variant = "Q4_K_M",
-        blob_hashes = frozenset({"q4-main"}),
-        progress_blob_hashes = frozenset({"q4-main", "shared-mmproj"}),
-    )
-
-    assert claimed is True
-    assert state == "running"
-    assert second_claimed is True
-    assert second_state == "running"
+    claimed, registry, state = _shared_setup_5()
+    _shared_setup_2(claimed, registry, state)
     assert registry.active_jobs("org/repo") == {
         "org/repo::Q8_0": "running",
         "org/repo::Q4_K_M": "running",
@@ -4692,31 +4528,8 @@ def test_download_registry_allows_overlapping_same_transport_variant_downloads()
     # Two variants sharing one mmproj blob still download together on one transport:
     # huggingface_hub's per-blob lock serializes the shared write and prepare_cache_for_transport
     # never purges a blob a peer is writing.
-    registry = download_registry.DownloadRegistry()
-
-    claimed, state = registry.claim(
-        "Org/Repo::Q8_0",
-        download_registry.TRANSPORT_HTTP,
-        repo_type = "model",
-        repo_id = "Org/Repo",
-        variant = "Q8_0",
-        blob_hashes = frozenset({"q8-main"}),
-        progress_blob_hashes = frozenset({"q8-main", "shared-mmproj"}),
-    )
-    second_claimed, second_state = registry.claim(
-        "Org/Repo::Q4_K_M",
-        download_registry.TRANSPORT_HTTP,
-        repo_type = "model",
-        repo_id = "Org/Repo",
-        variant = "Q4_K_M",
-        blob_hashes = frozenset({"q4-main"}),
-        progress_blob_hashes = frozenset({"q4-main", "shared-mmproj"}),
-    )
-
-    assert claimed is True
-    assert state == "running"
-    assert second_claimed is True
-    assert second_state == "running"
+    claimed, registry, state = _shared_setup_5()
+    _shared_setup_2(claimed, registry, state)
 
 
 def test_download_registry_variant_delete_does_not_block_sibling_download():
@@ -4817,17 +4630,7 @@ def test_partial_gguf_reconstruction_drops_a_variant_read_off_the_filename(monke
 def test_download_registry_serializes_cross_transport_variant_downloads():
     # An HTTP append-resume and an XET rewrite of the same shared blob would corrupt each other, so
     # different-transport variants are serialized.
-    registry = download_registry.DownloadRegistry()
-
-    claimed, state = registry.claim(
-        "Org/Repo::Q8_0",
-        download_registry.TRANSPORT_HTTP,
-        repo_type = "model",
-        repo_id = "Org/Repo",
-        variant = "Q8_0",
-        blob_hashes = frozenset({"q8-main"}),
-        progress_blob_hashes = frozenset({"q8-main", "shared-mmproj"}),
-    )
+    claimed, registry, state = _shared_setup_5()
     second_claimed, second_state = registry.claim(
         "Org/Repo::Q4_K_M",
         download_registry.TRANSPORT_XET,
@@ -4857,20 +4660,7 @@ def test_download_registry_allows_unknown_hash_gguf_variant_downloads():
         repo_id = "Org/Repo",
         variant = "Q8_0",
     )
-    second_claimed, second_state = registry.claim(
-        "Org/Repo::Q4_K_M",
-        download_registry.TRANSPORT_HTTP,
-        repo_type = "model",
-        repo_id = "Org/Repo",
-        variant = "Q4_K_M",
-        blob_hashes = frozenset({"q4-main"}),
-        progress_blob_hashes = frozenset({"q4-main", "shared-mmproj"}),
-    )
-
-    assert claimed is True
-    assert state == "running"
-    assert second_claimed is True
-    assert second_state == "running"
+    _shared_setup_2(claimed, registry, state)
     assert registry.active_jobs("org/repo") == {
         "org/repo::Q8_0": "running",
         "org/repo::Q4_K_M": "running",
@@ -5352,10 +5142,7 @@ def test_orphan_reaper_uses_worker_cache_root_after_setting_changes(monkeypatch,
     cache_b.mkdir(parents = True)
     monkeypatch.setattr(state_dir, "workers_dir", lambda: workers)
     monkeypatch.setattr(download_registry, "_process_alive", lambda _pid: False)
-    monkeypatch.setattr(
-        "utils.hf_cache_settings.get_hf_cache_paths",
-        lambda: SimpleNamespace(hub_cache = cache_b),
-    )
+    _shared_setup_14(cache_b, monkeypatch)
     markers = []
     monkeypatch.setattr(
         download_registry,
@@ -5401,17 +5188,8 @@ def test_model_claim_register_cancel_uses_registry_marker_owner(monkeypatch):
         def get_job(self, _key):
             return SimpleNamespace(state = "cancelled", error = None)
 
-    monkeypatch.setattr(downloads, "_registry", _Registry())
-    monkeypatch.setattr(
-        downloads,
-        "resolve_cached_repo_id_case",
-        lambda repo_id, **_kwargs: repo_id,
-    )
-    monkeypatch.setattr(
-        downloads.download_registry,
-        "download_transport_unavailable_reason",
-        lambda _transport: None,
-    )
+    _shared_setup_12(_Registry, monkeypatch)
+    _shared_setup_18(monkeypatch)
     monkeypatch.setattr(
         downloads,
         "_spawn_download_worker",
@@ -5456,12 +5234,7 @@ def test_model_cancel_registered_worker_requests_and_kills(monkeypatch):
         def get_job(self, _key):
             return SimpleNamespace(state = "running")
 
-    monkeypatch.setattr(downloads, "_registry", _Registry())
-    monkeypatch.setattr(
-        downloads,
-        "resolve_cached_repo_id_case",
-        lambda repo_id, **_kwargs: repo_id,
-    )
+    _shared_setup_12(_Registry, monkeypatch)
 
     result = asyncio.run(
         downloads.cancel_download_model_response(
@@ -5496,23 +5269,21 @@ def test_model_download_watcher_invalidates_hf_cache_scan(monkeypatch):
             return SimpleNamespace(state = "complete", error = None)
 
     class _ImmediateThread:
-        def __init__(self, *, target, **_kwargs):
-            self._target = target
+        def __init__(
+            self,
+            *,
+            target,
+            args = (),
+            kwargs = None,
+            **_kwargs,
+        ):
+            self._target, self._args, self._kwargs = target, args, kwargs or {}
 
         def start(self):
-            self._target()
+            self._target(*self._args, **self._kwargs)
 
-    monkeypatch.setattr(downloads, "_registry", _Registry())
-    monkeypatch.setattr(
-        downloads,
-        "resolve_cached_repo_id_case",
-        lambda repo_id, **_kwargs: repo_id,
-    )
-    monkeypatch.setattr(
-        downloads.download_registry,
-        "download_transport_unavailable_reason",
-        lambda _transport: None,
-    )
+    _shared_setup_12(_Registry, monkeypatch)
+    _shared_setup_18(monkeypatch)
     monkeypatch.setattr(
         downloads.download_lifecycle,
         "finalize_worker_exit",
@@ -5558,11 +5329,7 @@ def test_two_concurrent_same_repo_variants_both_complete(monkeypatch, tmp_path):
         "resolve_cached_repo_id_case",
         lambda repo_id, **_k: repo_id,
     )
-    monkeypatch.setattr(
-        downloads.download_registry,
-        "download_transport_unavailable_reason",
-        lambda _transport: None,
-    )
+    _shared_setup_18(monkeypatch)
     monkeypatch.setattr(
         downloads.gguf_variants,
         "gguf_variant_blob_hashes",
@@ -5707,11 +5474,7 @@ def test_snapshot_progress_filters_stale_blobs(monkeypatch, tmp_path):
     (blobs / "stale").write_bytes(b"b" * 500)
     (blobs / "keep2.incomplete").write_bytes(b"c" * 40)
 
-    monkeypatch.setattr(
-        snapshot_progress,
-        "preferred_repo_cache_dirs",
-        lambda _repo_type, _repo_id, force_active = False, **kw: [entry],
-    )
+    _shared_setup_10(entry, monkeypatch)
 
     result = snapshot_progress.compute_snapshot_progress(
         repo_type = "dataset",
@@ -5736,18 +5499,11 @@ def test_snapshot_progress_filters_stale_blobs(monkeypatch, tmp_path):
 
 def test_snapshot_progress_confirms_complete_only_with_verified_snapshot(monkeypatch, tmp_path):
     entry = tmp_path / "models--Org--Model"
-    blobs = entry / "blobs"
-    snap = entry / "snapshots" / "rev0"
-    blobs.mkdir(parents = True)
-    snap.mkdir(parents = True)
+    blobs, snap = _shared_setup_21(entry)
     (blobs / "keep1").write_bytes(b"a" * 100)
     (snap / "model.safetensors").write_bytes(b"a" * 100)
 
-    monkeypatch.setattr(
-        snapshot_progress,
-        "preferred_repo_cache_dirs",
-        lambda _repo_type, _repo_id, force_active = False, **kw: [entry],
-    )
+    _shared_setup_10(entry, monkeypatch)
     monkeypatch.setattr(
         snapshot_progress.download_manifest,
         "has_cancel_marker",
@@ -5802,10 +5558,7 @@ def test_snapshot_progress_complete_with_manifest_synthesized_from_disk(monkeypa
     still verifies as complete, so a refresh finalizes it instead of capping at
     99% and evicting it as gone."""
     entry = tmp_path / "models--Org--Model"
-    blobs = entry / "blobs"
-    snap = entry / "snapshots" / "rev0"
-    blobs.mkdir(parents = True)
-    snap.mkdir(parents = True)
+    blobs, snap = _shared_setup_21(entry)
     (blobs / "keep1").write_bytes(b"a" * 100)
     (snap / "model.safetensors").write_bytes(b"a" * 100)
 
@@ -5818,11 +5571,7 @@ def test_snapshot_progress_complete_with_manifest_synthesized_from_disk(monkeypa
         expected_files = tuple(synthesized),
     )
 
-    monkeypatch.setattr(
-        snapshot_progress,
-        "preferred_repo_cache_dirs",
-        lambda _repo_type, _repo_id, force_active = False, **kw: [entry],
-    )
+    _shared_setup_10(entry, monkeypatch)
     monkeypatch.setattr(
         snapshot_progress.download_manifest,
         "has_cancel_marker",
@@ -5976,11 +5725,7 @@ def test_a_complete_scan_still_reports_the_target_as_gone(monkeypatch, tmp_path)
     (entry / "blobs").mkdir(parents = True)
     (entry / "snapshots" / "rev0").mkdir(parents = True)
 
-    monkeypatch.setattr(
-        snapshot_progress,
-        "preferred_repo_cache_dirs",
-        lambda _repo_type, _repo_id, force_active = False, **kw: [entry],
-    )
+    _shared_setup_10(entry, monkeypatch)
     monkeypatch.setattr(snapshot_progress.download_manifest, "read_manifest", lambda *a, **k: None)
 
     result = snapshot_progress.compute_snapshot_progress(
@@ -6014,12 +5759,7 @@ def test_delete_variant_keeps_blob_shared_with_other_snapshot(monkeypatch, tmp_p
             ("rev1", "extra-copy.gguf", "sharedblob"),
         ],
     )
-    monkeypatch.setattr(
-        deletion.cache_inventory,
-        "all_hf_cache_scans",
-        lambda: [SimpleNamespace(repos = [repo])],
-    )
-    _patch_variant_delete_side_effects(monkeypatch, tmp_path)
+    _shared_setup_13(monkeypatch, repo, tmp_path)
 
     result = deletion._delete_cached_model_blocking("Org/Repo-GGUF", "Q4_K_M", None)
 
@@ -6041,12 +5781,7 @@ def test_delete_variant_unlinks_unshared_blob(monkeypatch, tmp_path):
             ("rev1", "model-Q8_0.gguf", "q8blob"),
         ],
     )
-    monkeypatch.setattr(
-        deletion.cache_inventory,
-        "all_hf_cache_scans",
-        lambda: [SimpleNamespace(repos = [repo])],
-    )
-    _patch_variant_delete_side_effects(monkeypatch, tmp_path)
+    _shared_setup_13(monkeypatch, repo, tmp_path)
 
     result = deletion._delete_cached_model_blocking("Org/Repo-GGUF", "Q4_K_M", None)
 
@@ -6067,12 +5802,7 @@ def test_delete_variant_surfaces_locked_file_as_conflict(monkeypatch, tmp_path):
         blob_specs = {"lockedblob": b"x" * 200},
         snapshot_links = [("rev1", "model-Q4_K_M.gguf", "lockedblob")],
     )
-    monkeypatch.setattr(
-        deletion.cache_inventory,
-        "all_hf_cache_scans",
-        lambda: [SimpleNamespace(repos = [repo])],
-    )
-    _patch_variant_delete_side_effects(monkeypatch, tmp_path)
+    _shared_setup_13(monkeypatch, repo, tmp_path)
 
     real_unlink = Path.unlink
 
@@ -6100,21 +5830,9 @@ def test_download_snapshot_writes_manifest_for_xet(monkeypatch, tmp_path):
             siblings = [SimpleNamespace(rfilename = "config.json", size = 12)]
         ),
     )
-    monkeypatch.setattr(
-        hf_download, "_verify_completed_download", lambda *args, **kwargs: verified.append(args)
-    )
-    monkeypatch.setattr(
-        download_registry, "prepare_cache_for_transport", lambda *_args, **_kwargs: 0
-    )
+    _shared_setup_3(monkeypatch, verified)
     monkeypatch.setattr(download_manifest, "clear_cancel_marker", lambda *_args: None)
-    monkeypatch.setattr(
-        download_manifest, "write_manifest", lambda *args: written.append(args) or True
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        "huggingface_hub",
-        SimpleNamespace(snapshot_download = lambda **_kwargs: str(tmp_path)),
-    )
+    _shared_setup_7(monkeypatch, tmp_path, written)
 
     hf_download._download_snapshot("Org/Model", None, "xet")
 
@@ -6135,21 +5853,9 @@ def test_download_gguf_variant_writes_manifest_for_xet(monkeypatch, tmp_path):
             siblings = [_sibling("model-Q4_K_M.gguf", 10, "main")]
         ),
     )
-    monkeypatch.setattr(
-        hf_download, "_verify_completed_download", lambda *args, **kwargs: verified.append(args)
-    )
-    monkeypatch.setattr(
-        download_registry, "prepare_cache_for_transport", lambda *_args, **_kwargs: 0
-    )
+    _shared_setup_3(monkeypatch, verified)
     monkeypatch.setattr(download_manifest, "clear_cancel_marker", lambda *_args: None)
-    monkeypatch.setattr(
-        download_manifest, "write_manifest", lambda *args: written.append(args) or True
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        "huggingface_hub",
-        SimpleNamespace(snapshot_download = lambda **_kwargs: str(tmp_path)),
-    )
+    _shared_setup_7(monkeypatch, tmp_path, written)
 
     hf_download._download_gguf_variant("Org/Model", "Q4_K_M", None, "xet")
 
@@ -6172,12 +5878,7 @@ def test_download_dataset_writes_manifest_for_xet(monkeypatch, tmp_path):
             siblings = [SimpleNamespace(rfilename = "data.parquet", size = 30)],
         ),
     )
-    monkeypatch.setattr(
-        hf_download, "_verify_completed_download", lambda *args, **kwargs: verified.append(args)
-    )
-    monkeypatch.setattr(
-        download_registry, "prepare_cache_for_transport", lambda *_args, **_kwargs: 0
-    )
+    _shared_setup_3(monkeypatch, verified)
     monkeypatch.setattr(download_manifest, "clear_cancel_marker", lambda *_args: None)
     monkeypatch.setattr(
         download_manifest,
@@ -6751,22 +6452,13 @@ def test_gguf_progress_unknown_hashes_calls_a_sibling_only_dir_absent(monkeypatc
     download until the idle grace ran out. The snapshot dir is named per file, so absence is
     answerable here even when the hashes are not.
     """
-    entry = tmp_path / "models--Org--Model-GGUF"
-    snap = entry / "snapshots" / "rev0"
-    snap.mkdir(parents = True)
-    (entry / "blobs").mkdir(parents = True)
+    entry, snap = _shared_setup_15(tmp_path)
     (snap / "model-Q2_K.gguf").write_bytes(b"z" * 900)
     (snap / "mmproj-F16.gguf").write_bytes(b"y" * 30)
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     _unresolvable_variant_metadata(monkeypatch, entry)
 
-    result = asyncio.run(
-        downloads.get_gguf_download_progress_response(
-            "Org/Model-GGUF",
-            variant = "Q4_K_M",
-            expected_bytes = 130,
-        )
-    )
+    result = _gguf_progress(expected_bytes = 130)
 
     assert result["completed_bytes"] == 0
     assert result["target_present"] is False, result
@@ -6804,13 +6496,7 @@ def test_gguf_progress_target_presence_is_aggregated_across_caches(monkeypatch, 
         lambda *_args, **_kwargs: [sibling, holder],
     )
 
-    result = asyncio.run(
-        downloads.get_gguf_download_progress_response(
-            "Org/Model-GGUF",
-            variant = "Q4_K_M",
-            expected_bytes = 100,
-        )
-    )
+    result = _gguf_progress(expected_bytes = 100)
 
     assert result["target_present"] is True, result
 
@@ -6888,13 +6574,7 @@ def test_an_unreadable_blobs_dir_is_not_evidence_of_absence(monkeypatch, tmp_pat
 
     monkeypatch.setattr(Path, "iterdir", _deny)
 
-    result = asyncio.run(
-        downloads.get_gguf_download_progress_response(
-            "Org/Model-GGUF",
-            variant = "Q4_K_M",
-            expected_bytes = 130,
-        )
-    )
+    result = _gguf_progress(expected_bytes = 130)
 
     assert result["target_present"] is None, result
     assert result.get("cache_measured") is not True, result
@@ -6917,35 +6597,18 @@ def test_a_manifest_alone_is_not_evidence_the_variant_is_on_disk(monkeypatch, tm
         "http",
         hub_cache = entry.parent,
     )
-    monkeypatch.setattr(
-        snapshot_progress,
-        "preferred_repo_cache_dirs",
-        lambda *_args, **_kwargs: [entry],
-    )
-    monkeypatch.setattr(
-        downloads,
-        "_registry",
-        SimpleNamespace(get_job = lambda _key: SimpleNamespace(state = "idle")),
-    )
+    monkeypatch.setattr(snapshot_progress, "preferred_repo_cache_dirs", lambda *_a, **_k: [entry])
+    monkeypatch.setattr(downloads, "_registry", _idle_registry())
 
     async def _run_inline(fn, *args, **kwargs):
         return fn(*args, **kwargs)
 
-    monkeypatch.setattr(downloads.asyncio, "to_thread", _run_inline)
-    monkeypatch.setattr(
-        downloads.gguf_variants, "gguf_variant_requirements", lambda *_a, **_kw: None
-    )
+    _shared_setup_16(_run_inline, monkeypatch)
     monkeypatch.setattr(
         downloads.gguf_variants, "gguf_variant_blob_hashes", lambda *_a, **_kw: frozenset({"aa"})
     )
 
-    result = asyncio.run(
-        downloads.get_gguf_download_progress_response(
-            "Org/Model-GGUF",
-            variant = "Q4_K_M",
-            expected_bytes = 100,
-        )
-    )
+    result = _gguf_progress(expected_bytes = 100)
 
     assert result["completed_bytes"] == 0
     assert result["target_present"] is False, result
@@ -6970,13 +6633,7 @@ def test_one_unknown_cache_keeps_absence_unknown(monkeypatch, tmp_path):
         lambda *_args, **_kwargs: [sibling, unknown],
     )
 
-    result = asyncio.run(
-        downloads.get_gguf_download_progress_response(
-            "Org/Model-GGUF",
-            variant = "Q4_K_M",
-            expected_bytes = 100,
-        )
-    )
+    result = _gguf_progress(expected_bytes = 100)
 
     assert result["target_present"] is None, result
 
@@ -6986,24 +6643,14 @@ def test_an_unattributable_partial_keeps_presence_unknown(monkeypatch, tmp_path)
     blob that is not linked into any snapshot yet, so the by-name scan -- which is what answers
     presence on that path -- reports a confident absence. Idle hydration retires a persisted job
     on that verdict, throwing away a partial the user can still resume."""
-    entry = tmp_path / "models--Org--Model-GGUF"
-    snap = entry / "snapshots" / "rev0"
-    blobs = entry / "blobs"
-    snap.mkdir(parents = True)
-    blobs.mkdir(parents = True)
+    entry, snap, blobs = _gguf_cache_dirs(tmp_path)
     # A sibling quant keeps the repo dir alive; the requested variant has nothing materialized.
     (snap / "model-Q2_K.gguf").write_bytes(b"z" * 900)
     (blobs / "somehash.incomplete").write_bytes(b"x" * 40)
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     _unresolvable_variant_metadata(monkeypatch, entry, state = "idle")
 
-    result = asyncio.run(
-        downloads.get_gguf_download_progress_response(
-            "Org/Model-GGUF",
-            variant = "Q4_K_M",
-            expected_bytes = 100,
-        )
-    )
+    result = _gguf_progress(expected_bytes = 100)
 
     assert result["target_present"] is None, result
 
@@ -7015,10 +6662,7 @@ def test_a_subtree_that_cannot_be_scanned_keeps_presence_unknown(monkeypatch, tm
     like an empty one, and the scan then reported the variant absent though the unreadable
     subtree may hold its main shard. Idle hydration retires a persisted download on that
     verdict."""
-    entry = tmp_path / "models--Org--Model-GGUF"
-    snap = entry / "snapshots" / "rev0"
-    snap.mkdir(parents = True)
-    (entry / "blobs").mkdir(parents = True)
+    entry, snap = _shared_setup_15(tmp_path)
     (snap / "model-Q2_K.gguf").write_bytes(b"z" * 900)
     denied = snap / "split"
     denied.mkdir()
@@ -7034,13 +6678,7 @@ def test_a_subtree_that_cannot_be_scanned_keeps_presence_unknown(monkeypatch, tm
 
     monkeypatch.setattr(os, "scandir", _deny)
 
-    result = asyncio.run(
-        downloads.get_gguf_download_progress_response(
-            "Org/Model-GGUF",
-            variant = "Q4_K_M",
-            expected_bytes = 100,
-        )
-    )
+    result = _gguf_progress(expected_bytes = 100)
 
     assert result["target_present"] is None, result
 
@@ -7059,21 +6697,14 @@ def test_a_blob_that_cannot_be_stated_keeps_presence_unknown(monkeypatch, tmp_pa
     async def _run_inline(fn, *args, **kwargs):
         return fn(*args, **kwargs)
 
-    monkeypatch.setattr(downloads.asyncio, "to_thread", _run_inline)
-    monkeypatch.setattr(
-        downloads.gguf_variants, "gguf_variant_requirements", lambda *_a, **_kw: None
-    )
+    _shared_setup_16(_run_inline, monkeypatch)
     monkeypatch.setattr(
         downloads.gguf_variants,
         "gguf_variant_blob_hashes",
         lambda *_a, **_kw: frozenset({"mainhash"}),
     )
     monkeypatch.setattr(snapshot_progress, "preferred_repo_cache_dirs", lambda *_a, **_kw: [entry])
-    monkeypatch.setattr(
-        downloads,
-        "_registry",
-        SimpleNamespace(get_job = lambda _key: SimpleNamespace(state = "idle")),
-    )
+    monkeypatch.setattr(downloads, "_registry", _idle_registry())
     real_stat = Path.stat
 
     def _deny(self, *a, **kw):
@@ -7083,13 +6714,7 @@ def test_a_blob_that_cannot_be_stated_keeps_presence_unknown(monkeypatch, tmp_pa
 
     monkeypatch.setattr(Path, "stat", _deny)
 
-    result = asyncio.run(
-        downloads.get_gguf_download_progress_response(
-            "Org/Model-GGUF",
-            variant = "Q4_K_M",
-            expected_bytes = 100,
-        )
-    )
+    result = _gguf_progress(expected_bytes = 100)
 
     assert result["target_present"] is None, result
 
@@ -7114,13 +6739,7 @@ def test_an_older_snapshot_still_proves_the_variant_is_here(monkeypatch, tmp_pat
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     _unresolvable_variant_metadata(monkeypatch, entry, state = "idle")
 
-    result = asyncio.run(
-        downloads.get_gguf_download_progress_response(
-            "Org/Model-GGUF",
-            variant = "Q4_K_M",
-            expected_bytes = 100,
-        )
-    )
+    result = _gguf_progress(expected_bytes = 100)
 
     assert result["target_present"] is True, result
 
@@ -7155,13 +6774,7 @@ def test_a_verified_completion_wins_a_byte_tie_between_caches(monkeypatch, tmp_p
         lambda *_a, **_kw: [unverified, verified],
     )
 
-    result = asyncio.run(
-        downloads.get_gguf_download_progress_response(
-            "Org/Model-GGUF",
-            variant = "Q4_K_M",
-            expected_bytes = 100,
-        )
-    )
+    result = _gguf_progress(expected_bytes = 100)
 
     assert result["complete_on_disk"] is True, result
 
@@ -7189,13 +6802,7 @@ def test_an_unstatable_blobs_dir_is_not_an_absent_one(monkeypatch, tmp_path):
 
     monkeypatch.setattr(snapshot_progress.os, "stat", _deny)
 
-    result = asyncio.run(
-        downloads.get_gguf_download_progress_response(
-            "Org/Model-GGUF",
-            variant = "Q4_K_M",
-            expected_bytes = 100,
-        )
-    )
+    result = _gguf_progress(expected_bytes = 100)
 
     assert result["target_present"] is None, result
     assert result.get("cache_measured") is not True, result
@@ -7215,24 +6822,10 @@ def test_a_variant_complete_in_an_older_snapshot_settles(monkeypatch, tmp_path):
     (old_snap / "model-Q4_K_M.gguf").write_bytes(b"x" * 100)
     (new_snap / "model-Q2_K.gguf").write_bytes(b"z" * 900)
     os.utime(old_snap, (time.time() - 600, time.time() - 600))
-    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
-    assert download_manifest.write_manifest(
-        "model",
-        "Org/Model-GGUF",
-        "Q4_K_M",
-        [download_manifest.ExpectedFile(path = "model-Q4_K_M.gguf", size = 100)],
-        "http",
-        hub_cache = entry.parent,
-    )
+    _shared_setup_6(entry, monkeypatch, tmp_path)
     _unresolvable_variant_metadata(monkeypatch, entry, state = "idle")
 
-    result = asyncio.run(
-        downloads.get_gguf_download_progress_response(
-            "Org/Model-GGUF",
-            variant = "Q4_K_M",
-            expected_bytes = 100,
-        )
-    )
+    result = _gguf_progress(expected_bytes = 100)
 
     assert result["completed_bytes"] == 100, result
     assert result["complete_on_disk"] is True, result
@@ -7243,11 +6836,7 @@ def test_a_deleted_snapshot_link_is_absent_even_with_its_blob_left_behind(monkey
     dir, and a companion blob shared with a sibling keeps the tally positive on its own. Reading
     presence off those counters called a quant that is gone present, and idle hydration
     re-adopted the phantom and blocked a fresh download of it."""
-    entry = tmp_path / "models--Org--Model-GGUF"
-    snap = entry / "snapshots" / "rev0"
-    blobs = entry / "blobs"
-    snap.mkdir(parents = True)
-    blobs.mkdir(parents = True)
+    entry, snap, blobs = _gguf_cache_dirs(tmp_path)
     # The finalized blob survives; the snapshot entry that named it does not.
     (blobs / "mainhash").write_bytes(b"x" * 100)
     (snap / "model-Q2_K.gguf").write_bytes(b"z" * 900)
@@ -7256,29 +6845,16 @@ def test_a_deleted_snapshot_link_is_absent_even_with_its_blob_left_behind(monkey
     async def _run_inline(fn, *args, **kwargs):
         return fn(*args, **kwargs)
 
-    monkeypatch.setattr(downloads.asyncio, "to_thread", _run_inline)
-    monkeypatch.setattr(
-        downloads.gguf_variants, "gguf_variant_requirements", lambda *_a, **_kw: None
-    )
+    _shared_setup_16(_run_inline, monkeypatch)
     monkeypatch.setattr(
         downloads.gguf_variants,
         "gguf_variant_blob_hashes",
         lambda *_a, **_kw: frozenset({"mainhash"}),
     )
     monkeypatch.setattr(snapshot_progress, "preferred_repo_cache_dirs", lambda *_a, **_kw: [entry])
-    monkeypatch.setattr(
-        downloads,
-        "_registry",
-        SimpleNamespace(get_job = lambda _key: SimpleNamespace(state = "idle")),
-    )
+    monkeypatch.setattr(downloads, "_registry", _idle_registry())
 
-    result = asyncio.run(
-        downloads.get_gguf_download_progress_response(
-            "Org/Model-GGUF",
-            variant = "Q4_K_M",
-            expected_bytes = 100,
-        )
-    )
+    result = _gguf_progress(expected_bytes = 100)
 
     assert result["completed_bytes"] == 100, "the orphaned blob is still counted"
     assert result["target_present"] is False, result
@@ -7297,42 +6873,21 @@ def test_a_stale_revisions_filenames_do_not_settle_the_resolved_one(monkeypatch,
     (blobs / "oldhash").write_bytes(b"y" * 100)
     (blobs / "newhash").write_bytes(b"x" * 100)
     os.symlink(blobs / "oldhash", stale / "model-Q4_K_M.gguf")
-    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
-    assert download_manifest.write_manifest(
-        "model",
-        "Org/Model-GGUF",
-        "Q4_K_M",
-        [download_manifest.ExpectedFile(path = "model-Q4_K_M.gguf", size = 100)],
-        "http",
-        hub_cache = entry.parent,
-    )
+    _shared_setup_6(entry, monkeypatch, tmp_path)
 
     async def _run_inline(fn, *args, **kwargs):
         return fn(*args, **kwargs)
 
-    monkeypatch.setattr(downloads.asyncio, "to_thread", _run_inline)
-    monkeypatch.setattr(
-        downloads.gguf_variants, "gguf_variant_requirements", lambda *_a, **_kw: None
-    )
+    _shared_setup_16(_run_inline, monkeypatch)
     monkeypatch.setattr(
         downloads.gguf_variants,
         "gguf_variant_blob_hashes",
         lambda *_a, **_kw: frozenset({"newhash"}),
     )
     monkeypatch.setattr(snapshot_progress, "preferred_repo_cache_dirs", lambda *_a, **_kw: [entry])
-    monkeypatch.setattr(
-        downloads,
-        "_registry",
-        SimpleNamespace(get_job = lambda _key: SimpleNamespace(state = "idle")),
-    )
+    monkeypatch.setattr(downloads, "_registry", _idle_registry())
 
-    result = asyncio.run(
-        downloads.get_gguf_download_progress_response(
-            "Org/Model-GGUF",
-            variant = "Q4_K_M",
-            expected_bytes = 100,
-        )
-    )
+    result = _gguf_progress(expected_bytes = 100)
 
     assert result["complete_on_disk"] is False, result
 
@@ -7343,10 +6898,7 @@ def test_local_inventory_classifies_off_the_event_loop(monkeypatch):
 
     idents: list[int] = []
     loop_is_free = threading.Event()
-    model = SimpleNamespace(id = "model", path = "model")
-    model.model_copy = lambda update: SimpleNamespace(id = model.id, path = model.path, **update)
-    response = SimpleNamespace(models = [model])
-    response.model_copy = lambda update: SimpleNamespace(models = update["models"])
+    model, response = _shared_setup_19()
 
     def classify_row(row):
         idents.append(threading.get_ident())
@@ -7414,10 +6966,7 @@ def test_local_inventory_classifies_a_superseded_result_off_the_event_loop(monke
 
     idents: list[int] = []
     epoch = [0]
-    model = SimpleNamespace(id = "model", path = "model")
-    model.model_copy = lambda update: SimpleNamespace(id = model.id, path = model.path, **update)
-    response = SimpleNamespace(models = [model])
-    response.model_copy = lambda update: SimpleNamespace(models = update["models"])
+    model, response = _shared_setup_19()
 
     async def always_superseded(*_args):
         epoch[0] += 1

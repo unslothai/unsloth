@@ -124,10 +124,9 @@ export function ModelMemoryBar({
     pressure,
   } = segments;
   const colors = SEGMENT_COLORS[pressure];
-  // Two failures, two fixes: oversized weights need a smaller quant, while a
-  // total that only overflows with context needs a shorter context or a
-  // quantized KV cache. Both get said -- staying silent on the first reads as
-  // "this is fine" on a model that can't load at all.
+  // Two failures, two fixes: oversized weights need a smaller quant, while a total that only
+  // overflows with context needs a shorter context or a quantized KV cache. Both get said --
+  // staying silent on the first reads as "this is fine" on a model that can't load at all.
   const warning =
     segments.status === "model-exceeds"
       ? t("modelMemory.tooLarge")

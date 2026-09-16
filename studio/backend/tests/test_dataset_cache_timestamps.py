@@ -21,6 +21,21 @@ from hub.schemas.datasets import CachedDatasetItem
 from hub.services.datasets import cache_inventory
 
 
+def _cached_repo(**overrides):
+    """One scanned cache repo, with per-test overrides."""
+    return SimpleNamespace(
+        **{
+            "repo_id": "Org/Data",
+            "repo_type": "dataset",
+            "repo_path": "/cache/datasets--Org--Data",
+            "size_on_disk": 100,
+            "last_modified": 1_700_000_000.0,
+            "revisions": [SimpleNamespace(files = [], commit_hash = "abc")],
+            **overrides,
+        }
+    )
+
+
 def _stub_hf_scan(monkeypatch, repos):
     monkeypatch.setattr(
         cache_inventory,
@@ -51,16 +66,7 @@ def test_schema_carries_the_timestamp():
 def test_hf_scan_reports_the_repo_timestamp_in_seconds(monkeypatch):
     _stub_hf_scan(
         monkeypatch,
-        [
-            SimpleNamespace(
-                repo_id = "Org/Data",
-                repo_type = "dataset",
-                repo_path = "/cache/datasets--Org--Data",
-                size_on_disk = 100,
-                last_modified = 1_700_000_000.5,
-                revisions = [SimpleNamespace(files = [], commit_hash = "abc")],
-            )
-        ],
+        [_cached_repo(last_modified = 1_700_000_000.5)],
     )
 
     rows = cache_inventory._scan_hf_dataset_caches()
@@ -95,16 +101,7 @@ def test_the_key_is_omitted_when_no_mtime_is_readable(monkeypatch):
 def test_a_non_positive_mtime_is_dropped_rather_than_reported_as_1970(monkeypatch):
     _stub_hf_scan(
         monkeypatch,
-        [
-            SimpleNamespace(
-                repo_id = "Org/Data",
-                repo_type = "dataset",
-                repo_path = "/definitely/not/on/disk/datasets--Org--Data",
-                size_on_disk = 100,
-                last_modified = 0.0,
-                revisions = [SimpleNamespace(files = [], commit_hash = "abc")],
-            )
-        ],
+        [_cached_repo(repo_path = "/definitely/not/on/disk/datasets--Org--Data", last_modified = 0.0)],
     )
 
     assert "last_modified" not in cache_inventory._scan_hf_dataset_caches()[0]
@@ -139,16 +136,7 @@ def test_falls_back_to_stat_when_the_library_reports_nothing(monkeypatch, tmp_pa
 def test_a_merge_keeps_the_newer_of_the_two_timestamps(monkeypatch):
     _stub_hf_scan(
         monkeypatch,
-        [
-            SimpleNamespace(
-                repo_id = "Org/Data",
-                repo_type = "dataset",
-                repo_path = "/cache/datasets--Org--Data",
-                size_on_disk = 100,
-                last_modified = 1_700_000_000.0,
-                revisions = [SimpleNamespace(files = [], commit_hash = "abc")],
-            )
-        ],
+        [_cached_repo()],
     )
     # The processed-cache scan describes the same dataset, more recently touched.
     monkeypatch.setattr(
@@ -174,16 +162,7 @@ def test_a_merge_keeps_the_newer_of_the_two_timestamps(monkeypatch):
 def test_a_merge_does_not_lose_a_timestamp_the_other_row_lacks(monkeypatch):
     _stub_hf_scan(
         monkeypatch,
-        [
-            SimpleNamespace(
-                repo_id = "Org/Data",
-                repo_type = "dataset",
-                repo_path = "/cache/datasets--Org--Data",
-                size_on_disk = 100,
-                last_modified = 1_700_000_000.0,
-                revisions = [SimpleNamespace(files = [], commit_hash = "abc")],
-            )
-        ],
+        [_cached_repo()],
     )
     monkeypatch.setattr(
         cache_inventory,
@@ -206,9 +185,7 @@ def test_a_merge_does_not_lose_a_timestamp_the_other_row_lacks(monkeypatch):
 
 def test_hf_scan_keeps_a_newer_timestamp_from_a_smaller_duplicate(monkeypatch):
     def repo(size, last_modified):
-        return SimpleNamespace(
-            repo_id = "Org/Data",
-            repo_type = "dataset",
+        return _cached_repo(
             repo_path = f"/cache-{size}/datasets--Org--Data",
             size_on_disk = size,
             last_modified = last_modified,
@@ -362,19 +339,14 @@ def test_recent_order_is_now_derivable_from_the_payload(monkeypatch):
     _stub_hf_scan(
         monkeypatch,
         [
-            SimpleNamespace(
+            _cached_repo(
                 repo_id = "Org/Older",
-                repo_type = "dataset",
                 repo_path = "/cache/datasets--Org--Older",
-                size_on_disk = 100,
-                last_modified = 1_700_000_000.0,
                 revisions = [SimpleNamespace(files = [], commit_hash = "a")],
             ),
-            SimpleNamespace(
+            _cached_repo(
                 repo_id = "Org/Newer",
-                repo_type = "dataset",
                 repo_path = "/cache/datasets--Org--Newer",
-                size_on_disk = 100,
                 last_modified = 1_900_000_000.0,
                 revisions = [SimpleNamespace(files = [], commit_hash = "b")],
             ),

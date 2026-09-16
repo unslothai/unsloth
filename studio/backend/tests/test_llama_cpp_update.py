@@ -28,6 +28,13 @@ import utils.llama_cpp_freshness as freshness  # noqa: E402
 import utils.llama_cpp_update as upd  # noqa: E402
 import utils.process_lifetime as process_lifetime  # noqa: E402
 
+
+class _Proc:
+    returncode = 0
+    stdout = "installed"
+    stderr = ""
+
+
 MARKER = "UNSLOTH_PREBUILT_INFO.json"
 
 
@@ -421,11 +428,6 @@ def test_start_update_source_build_installs_prebuilt(monkeypatch, tmp_path):
 
     captured = {}
 
-    class _Proc:
-        returncode = 0
-        stdout = "installed"
-        stderr = ""
-
     def _fake_run(cmd, **kwargs):
         cmd = list(cmd)
         assert "--version" in cmd  # only status polls still use run()
@@ -464,11 +466,6 @@ def test_start_update_happy_path(monkeypatch, tmp_path):
     monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518")
 
     captured = {}
-
-    class _Proc:
-        returncode = 0
-        stdout = "installed"
-        stderr = ""
 
     def _on_start(cmd):
         captured["cmd"] = cmd
@@ -942,11 +939,6 @@ def _capture_install_cmd(
     monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: latest)
 
     captured = {}
-
-    class _Proc:
-        returncode = 0
-        stdout = "installed"
-        stderr = ""
 
     def _fake_run(cmd, **kwargs):
         cmd = list(cmd)

@@ -85,7 +85,12 @@ export function buildResearchInferenceRequest(input: {
   if (Number.isFinite(input.temperature) && input.temperature >= 0 && input.temperature <= 2) {
     request.temperature = input.temperature;
   }
-  if (Number.isFinite(input.topP) && input.topP > 0 && input.topP <= 1) {
+  // A connection leaves Off (1) out, as the chat request does; local runs still send it.
+  if (
+    Number.isFinite(input.topP) &&
+    input.topP > 0 &&
+    (input.external ? input.topP < 1 : input.topP <= 1)
+  ) {
     request.topP = input.topP;
   }
   if (Number.isFinite(input.maxTokens) && input.maxTokens > 0) {

@@ -552,16 +552,45 @@ jobs:
           SERVER_PID=$!
           trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
 
-          # Wait for /health to come up
-          for i in $(seq 1 30); do
-            if curl -sf "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
-              echo "  server up after ${i}s"
+          # Wait for /health to come up.
+          #
+          # 180s, the budget .github/scripts/wait-for-health.sh fixes for the
+          # Studio health waits, and the one the other server waits under
+          # .github/workflows already use. This poll was the outlier at 30, and
+          # 30 is under the cost of the thing it waits for: over 21 completed
+          # runs the server took 20.0s to 30.6s of wall clock to answer /health,
+          # median 27.8s, so the slowest passes were landing on the deadline and
+          # four runs -- including two pushes to main -- failed with the model
+          # still loading. Nothing here is slow when the server is healthy: the
+          # loop returns on the first good probe, so a larger budget costs only
+          # the runs that were going to fail anyway.
+          #
+          # A wall-clock deadline rather than an iteration count. With
+          # --max-time each probe can cost seconds, so an iteration is not a
+          # second and counting iterations does not bound the wait. $SECONDS is
+          # this shell's elapsed wall time. The old loop showed the gap: it
+          # advertised 30s, and its 30 iterations took 34s to expire.
+          #
+          # --connect-timeout/--max-time because curl sets no maximum transfer
+          # time by default. A server that binds the port and then wedges parks
+          # a probe forever, and one infinite iteration is not a deadline.
+          HEALTH_TIMEOUT=180
+          started=$SECONDS
+          deadline=$(( started + HEALTH_TIMEOUT ))
+          healthy=0
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            if curl -sf --connect-timeout 3 --max-time 5 \
+                 "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
+              healthy=1
+              # Elapsed wall time, not the iteration count the old loop
+              # printed: that undercounted, reporting 26s for a 28.0s wait.
+              echo "  server up after $(( SECONDS - started ))s"
               break
             fi
             sleep 1
           done
-          if ! curl -sf "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
-            echo "::error::llama-server never became healthy"
+          if [ "$healthy" != "1" ]; then
+            echo "::error::llama-server never became healthy after $(( SECONDS - started ))s"
             tail -40 /tmp/llama-server.log
             exit 1
           fi

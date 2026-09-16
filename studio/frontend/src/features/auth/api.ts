@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { accountTransitionPending } from "@/lib/account-transition";
 import { apiUrl, isTauri } from "@/lib/api-base";
 import {
   clearAuthTokens,
@@ -91,7 +92,7 @@ async function isPasswordChangeRequiredResponse(
   }
 }
 
-async function redirectToAuth(): Promise<void> {
+async function redirectToAuth(passwordChangeRequired = false): Promise<void> {
   if (isRedirecting) return;
   isRedirecting = true;
 
@@ -99,12 +100,18 @@ async function redirectToAuth(): Promise<void> {
   try {
     const res = await fetch(apiUrl("/api/auth/status"));
     if (res.ok) {
-      const data = (await res.json()) as { requires_password_change: boolean };
-      // Server truth wins; keep localStorage in sync both ways.
-      if (data.requires_password_change !== mustChangePassword()) {
-        setMustChangePassword(data.requires_password_change);
+      const data = (await res.json()) as {
+        requires_password_change: boolean;
+        login_mode?: "single" | "multi";
+      };
+      // Public status describes the owner. A managed session carries its own requirement.
+      const requiresChange = data.login_mode === "multi"
+        ? passwordChangeRequired || mustChangePassword()
+        : data.requires_password_change;
+      if (requiresChange !== mustChangePassword()) {
+        setMustChangePassword(requiresChange);
       }
-      if (data.requires_password_change) target = "/change-password";
+      if (requiresChange) target = "/change-password";
     }
   } catch {
     // Fall through to /login on error
@@ -226,6 +233,10 @@ export async function authFetch(
   init?: RequestInit,
   options?: AuthFetchOptions,
 ): Promise<Response> {
+  // Another tab is mid-switch: its new tokens are published before this tab reloads, so a
+  // request now would carry this tab's account content under the next account's credentials.
+  if (accountTransitionPending())
+    throw new Error("Another tab is switching accounts; this tab will reload.");
   const resolvedInput = typeof input === "string" ? apiUrl(input) : input;
   const headers = new Headers(init?.headers);
   addBrowserTimezoneHeaders(headers);
@@ -260,7 +271,7 @@ export async function authFetch(
         )) ?? response
       );
     }
-    void redirectToAuth();
+    void redirectToAuth(true);
     return response;
   }
   if (response.status !== 401) return response;
