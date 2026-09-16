@@ -2163,12 +2163,78 @@ exit 1
     # ── Helper: refresh PATH from registry (deduplicating entries) ──
     # Merge order: venv Scripts (if active) > Machine > User > current $env:Path.
     # Dedup compares both raw and expanded forms (%VAR% vs literal).
+    # Every prefix an active conda session has put on PATH, deepest environment first.
+    # CONDA_PREFIX is the active environment. CONDA_PREFIX_1.. are the ones it was stacked
+    # on, which conda sets on every `conda activate` inside another environment and whose
+    # entries sit on PATH just as the active one's do. CONDA_EXE names the installation
+    # root's own Scripts directory, which is where `conda` itself lives and is on PATH for
+    # the whole session rather than only inside an environment.
+    function Get-ActiveCondaPrefixes {
+        $prefixes = New-Object System.Collections.Generic.List[string]
+        foreach ($value in @($env:CONDA_PREFIX, $env:CONDA_PREFIX_1, $env:CONDA_PREFIX_2, $env:CONDA_PREFIX_3)) {
+            if (-not [string]::IsNullOrWhiteSpace($value)) { $prefixes.Add($value) }
+        }
+        if (-not [string]::IsNullOrWhiteSpace($env:_CONDA_ROOT)) { $prefixes.Add($env:_CONDA_ROOT) }
+        if (-not [string]::IsNullOrWhiteSpace($env:CONDA_EXE)) {
+            # ...\<root>\Scripts\conda.exe -> ...\<root>. Trimmed with a regex rather than
+            # Split-Path, which is provider-aware: on a non-Windows PowerShell, which is
+            # where the tests for this run, it does not treat a backslash as a separator and
+            # hands back the whole string, so the root is never recognised.
+            $scripts = $env:CONDA_EXE -replace '[\\/][^\\/]*$', ''
+            $root = $scripts -replace '[\\/][^\\/]*$', ''
+            if ($root -and $root -ne $env:CONDA_EXE) { $prefixes.Add($root) }
+        }
+        return $prefixes
+    }
+
+    # Is $Path inside one of $Prefixes? Compared on a directory boundary, so a sibling
+    # directory whose name merely STARTS with a prefix ("C:\conda-backup" against
+    # "C:\conda") is not dragged to the front with it.
+    function Test-PathUnderCondaPrefix {
+        param([string]$Path, $Prefixes)
+        if ([string]::IsNullOrWhiteSpace($Path) -or -not $Prefixes) { return $false }
+        $candidate = [Environment]::ExpandEnvironmentVariables($Path).Trim().Trim('"').TrimEnd('\')
+        if (-not $candidate) { return $false }
+        foreach ($prefix in $Prefixes) {
+            $normalized = [Environment]::ExpandEnvironmentVariables($prefix).Trim().Trim('"').TrimEnd('\')
+            if (-not $normalized) { continue }
+            if ($candidate -ieq $normalized) { return $true }
+            if ($candidate.StartsWith($normalized + '\', [System.StringComparison]::OrdinalIgnoreCase)) {
+                return $true
+            }
+        }
+        return $false
+    }
+
     function Refresh-SessionPath {
         $machine = [System.Environment]::GetEnvironmentVariable("Path", "Machine")
         $user    = [System.Environment]::GetEnvironmentVariable("Path", "User")
         $venvScripts = if ($env:VIRTUAL_ENV) { Join-Path $env:VIRTUAL_ENV "Scripts" } else { $null }
+        # An activated conda environment lives ONLY in the process PATH: nothing of it is in
+        # the Machine or User registry values, so rebuilding as machine + user + previous
+        # puts every conda entry behind the User PATH. Run through `irm | iex`, which is the
+        # documented command, that rebuilt PATH is the caller's own prompt and survives the
+        # installer, so `python` and `conda update` resolve the non-conda install first and
+        # the line telling the user conda keeps priority is false until the prompt is
+        # closed. The registry ordering the rest of this change fixes is the NEXT shell;
+        # this is the one they are standing in.
+        #
+        # Restored by position, not by rewriting anything: the conda entries already on PATH
+        # are moved back in front, in the order conda put them, and the dedup below drops
+        # the copies that then appear later in machine or user.
+        $condaFront = @()
+        if (Test-ActiveCondaEnvironment) {
+            $prefixes = Get-ActiveCondaPrefixes
+            foreach ($entry in ($env:Path -split ";")) {
+                if (Test-PathUnderCondaPrefix -Path $entry -Prefixes $prefixes) {
+                    $condaFront += $entry
+                }
+            }
+        }
         $sources = @()
+        # Still first: this is the environment the installer is driving, and it is ours.
         if ($venvScripts) { $sources += $venvScripts }
+        $sources += $condaFront
         $sources += @($machine, $user, $env:Path)
         $merged = ($sources | Where-Object { $_ }) -join ";"
         $seen    = @{}

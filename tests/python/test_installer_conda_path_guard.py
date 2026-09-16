@@ -297,3 +297,160 @@ def test_both_halves_call_the_same_environment_an_active_conda(path: Path):
     assert posix_vars == windows_vars, (
         f"{path.name} reads {sorted(posix_vars)} but install.ps1 reads " f"{sorted(windows_vars)}"
     )
+
+
+# ── The LIVE session PATH, not only the registry ──
+# The registry half above fixes the NEXT shell. `irm ... | iex` is the documented command,
+# and environment changes made by `iex` stay in the caller's own process, so the PATH the
+# installer leaves behind IS that prompt. Rebuilt as machine + user + previous, every
+# activated-conda entry lands behind the User PATH, because none of it is in the registry at
+# all: `python` and `conda update` then resolve the non-conda install first, in a session the
+# installer has just told the user keeps conda's priority.
+
+
+def _refresh_preamble(current_path: str) -> str:
+    """Refresh-SessionPath with the two registry reads stubbed and $env:Path seeded."""
+    body = (
+        _function(INSTALL_PS1, "    ", "Test-ActiveCondaEnvironment")
+        + _function(INSTALL_PS1, "    ", "Get-ActiveCondaPrefixes")
+        + _function(INSTALL_PS1, "    ", "Test-PathUnderCondaPrefix")
+        + _function(INSTALL_PS1, "    ", "Refresh-SessionPath")
+    )
+    return f"""
+$ErrorActionPreference = "Stop"
+{body}
+# The suite itself runs inside a virtualenv, and Refresh-SessionPath puts $VIRTUAL_ENV
+# first. That branch is not what these cases are about, and leaving it on would make the
+# expected orderings depend on where the suite was launched from.
+$env:VIRTUAL_ENV = ""
+$env:Path = "{current_path}"
+Refresh-SessionPath
+Write-Host ("PATH=" + $env:Path)
+"""
+
+
+MACHINE = "C:\\Windows\\system32;C:\\Windows"
+USER_PATH = "C:\\Users\\me\\.local\\bin;C:\\Users\\me\\AppData\\Local\\Programs\\Python\\Python312"
+CONDA_ROOT = "E:\\anaconda\\install"
+_CONDA_ENTRIES = (
+    f"{CONDA_ROOT}\\envs\\ml;"
+    f"{CONDA_ROOT}\\envs\\ml\\Library\\bin;"
+    f"{CONDA_ROOT}\\envs\\ml\\Scripts;"
+    f"{CONDA_ROOT}\\Scripts"
+)
+
+
+def _stub_registry(script: str) -> str:
+    """Answer the two registry reads without touching the machine running the suite."""
+    return script.replace(
+        '$machine = [System.Environment]::GetEnvironmentVariable("Path", "Machine")',
+        f'$machine = "{MACHINE}"',
+    ).replace(
+        '$user    = [System.Environment]::GetEnvironmentVariable("Path", "User")',
+        f'$user    = "{USER_PATH}"',
+    )
+
+
+@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.parametrize("shell", POWERSHELLS)
+def test_the_session_refresh_keeps_an_active_conda_ahead_of_the_user_path(shell: str):
+    """The case #5871 is about, in the prompt the user is standing in.
+
+    Without this the message that conda keeps priority is false for the rest of that
+    session: the registry ordering is right and the live PATH is not.
+    """
+    script = _stub_registry(_refresh_preamble(f"{_CONDA_ENTRIES};{MACHINE}"))
+    out = _run(shell, script, env = {
+        "CONDA_PREFIX": f"{CONDA_ROOT}\\envs\\ml",
+        "CONDA_DEFAULT_ENV": "ml",
+        "CONDA_EXE": f"{CONDA_ROOT}\\Scripts\\conda.exe",
+    })
+    assert out.startswith("PATH="), out
+    entries = out[len("PATH="):].split(";")
+    lowered = [entry.rstrip("\\").lower() for entry in entries]
+
+    conda_positions = [
+        index for index, entry in enumerate(lowered)
+        if entry.startswith(CONDA_ROOT.lower())
+    ]
+    assert conda_positions, f"the conda entries were dropped entirely: {entries}"
+    user_first = min(
+        index for index, entry in enumerate(lowered)
+        if entry.startswith("c:\\users\\me")
+    )
+    assert max(conda_positions) < user_first, (
+        f"an activated conda environment was left behind the User PATH: {entries}"
+    )
+    # Conda's own ordering inside the environment is preserved, not re-sorted.
+    assert lowered[:4] == [
+        f"{CONDA_ROOT}\\envs\\ml".lower(),
+        f"{CONDA_ROOT}\\envs\\ml\\Library\\bin".lower(),
+        f"{CONDA_ROOT}\\envs\\ml\\Scripts".lower(),
+        f"{CONDA_ROOT}\\Scripts".lower(),
+    ], entries
+    # And nothing is duplicated by the move.
+    assert len(lowered) == len(set(lowered)), entries
+
+
+@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.parametrize("shell", POWERSHELLS)
+def test_the_session_refresh_is_unchanged_outside_conda(shell: str):
+    """No conda, no reordering. The refresh is on the hot path of the whole installer and
+    must keep doing exactly what it did."""
+    previous = "C:\\tools\\bin"
+    script = _stub_registry(_refresh_preamble(previous))
+    out = _run(shell, script, env = _NO_CONDA)
+    entries = out[len("PATH="):].split(";")
+    assert entries == MACHINE.split(";") + USER_PATH.split(";") + [previous], entries
+
+
+@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.parametrize("shell", POWERSHELLS)
+def test_a_sibling_directory_is_not_dragged_forward_with_the_prefix(shell: str):
+    """`C:\\conda-backup` is not inside `C:\\conda`. Matching on the raw string would move an
+    unrelated directory to the front of PATH, which is the same class of defect this change
+    exists to prevent, pointed the other way."""
+    sibling = f"{CONDA_ROOT}-backup\\bin"
+    script = _stub_registry(_refresh_preamble(f"{sibling};{CONDA_ROOT}\\Scripts"))
+    out = _run(shell, script, env = {
+        "CONDA_PREFIX": CONDA_ROOT,
+        "CONDA_DEFAULT_ENV": "base",
+    })
+    entries = out[len("PATH="):].split(";")
+    lowered = [entry.rstrip("\\").lower() for entry in entries]
+    assert lowered[0] == f"{CONDA_ROOT}\\scripts".lower(), entries
+    assert lowered.index(sibling.lower()) > lowered.index(
+        USER_PATH.split(";")[0].lower()
+    ), f"a sibling of the conda prefix was promoted with it: {entries}"
+
+
+@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.parametrize("shell", POWERSHELLS)
+def test_a_stacked_conda_activation_keeps_both_prefixes_in_front(shell: str):
+    """`conda activate` inside another environment stacks them and records the outer one in
+    CONDA_PREFIX_1. Its entries are on PATH exactly as the inner one's are."""
+    outer = f"{CONDA_ROOT}\\envs\\outer\\Scripts"
+    inner = f"{CONDA_ROOT}\\envs\\inner\\Scripts"
+    script = _stub_registry(_refresh_preamble(f"{inner};{outer}"))
+    out = _run(shell, script, env = {
+        "CONDA_PREFIX": f"{CONDA_ROOT}\\envs\\inner",
+        "CONDA_PREFIX_1": f"{CONDA_ROOT}\\envs\\outer",
+        "CONDA_DEFAULT_ENV": "inner",
+    })
+    entries = out[len("PATH="):].split(";")
+    lowered = [entry.rstrip("\\").lower() for entry in entries]
+    assert lowered[:2] == [inner.lower(), outer.lower()], entries
+
+
+def test_the_refresh_consults_the_conda_helper_at_all():
+    """The three helpers are only worth anything if Refresh-SessionPath calls them, and a
+    refresh that rebuilt PATH the old way would leave every case above untouched if they
+    were driven directly instead."""
+    body = _function(INSTALL_PS1, "    ", "Refresh-SessionPath")
+    assert "Test-ActiveCondaEnvironment" in body
+    assert "Get-ActiveCondaPrefixes" in body
+    assert "Test-PathUnderCondaPrefix" in body
+    # And the conda entries go in FRONT of the registry values, which is the whole point.
+    assert body.index("$sources += $condaFront") < body.index("$sources += @($machine"), (
+        "the conda entries are appended after the User PATH, which changes nothing"
+    )
