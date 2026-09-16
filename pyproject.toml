@@ -31,11 +31,9 @@ dependencies = [
     "pyyaml",
     "nest-asyncio",
     "huggingface-hub>=0.34.0",
-    # Every CLI command imports studio.backend.*, which reaches structlog at
-    # module level. The rest of the server stack lives in the studio extra.
+    # Every CLI command imports studio.backend.*, which needs structlog at import time.
     "structlog>=24.1.0",
-    # unsloth_cli/__init__.py reaches click via commands/start.py, so every
-    # command needs it. typer supplied it until 0.27 dropped the dependency.
+    # Every command reaches click; typer stopped depending on it in 0.27.
     "click>=8.0",
 ]
 
@@ -71,8 +69,7 @@ studio = [
     "backend/plugins/**/*",
     "backend/assets/**/*.jinja",
     "backend/assets/**/*.html",
-    # Swagger UI / ReDoc, served from this origin instead of a CDN. Without these the
-    # /docs and /redoc pages render blank in an installed Unsloth.
+    # Swagger UI / ReDoc assets; without them /docs and /redoc render blank.
     "backend/assets/docs_ui/*",
     "backend/core/data_recipe/oxc-validator/*.json",
     "backend/core/data_recipe/oxc-validator/*.mjs",
@@ -94,15 +91,13 @@ exclude = [
     "*.node_modules.*",
 ]
 
-# Excluding a tests package above is not enough: include-package-data re-ships its
-# files as data of the surviving parent (pypa/setuptools#3260), and only
-# exclude-package-data outranks that.
+# include-package-data re-ships excluded packages as data of the parent
+# (pypa/setuptools#3260); only exclude-package-data outranks that.
 [tool.setuptools.exclude-package-data]
 "studio.backend" = ["tests/*"]
 "studio.backend.hub" = ["tests/*"]
-# Same mechanism for the frontend source tree and the desktop crate: only
-# frontend/dist is served at runtime (Vite copies public/ into it), and CI builds
-# Tauri from a checkout. src-tauri/icons stays because install.sh reads it. (#10426)
+# Same for the frontend source and desktop crate: only frontend/dist is served at
+# runtime and CI builds Tauri from a checkout. install.sh reads src-tauri/icons. (#10426)
 "studio" = [
     "frontend/public/**",
     "frontend/src/**",
@@ -155,8 +150,7 @@ studio = [
     "gguf==0.19.0 ; python_version >= '3.10'",
     "gguf==0.18.0 ; python_version < '3.10'",
     "av>=12.3.0",
-    # No win_arm64 wheel and no sdist either, so it cannot be floored or built. Dropped rather
-    # than pinned: the RAG store already treats a missing sqlite_vec as "RAG unavailable".
+    # No win_arm64 wheel or sdist; the RAG store treats a missing sqlite_vec as unavailable.
     "sqlite-vec==0.1.9 ; sys_platform != 'win32' or platform_machine != 'ARM64'",
     # Mirrors studio.txt: pymupdf publishes a win_arm64 wheel from 1.28 only.
     "pymupdf==1.27.2.3 ; sys_platform != 'win32' or platform_machine != 'ARM64'",
@@ -214,8 +208,7 @@ huggingfacenotorch = [
     "accelerate>=0.34.1",
     "peft>=0.18.0,!=0.11.0",
     "huggingface_hub>=0.34.0",
-    # A Rust extension with no win_arm64 wheel. huggingface_hub imports it only under
-    # HF_HUB_ENABLE_HF_TRANSFER=1, and hf_xet ships win_arm64 and covers fast downloads.
+    # No win_arm64 wheel; hf_xet covers fast downloads there.
     "hf_transfer ; sys_platform != 'win32' or platform_machine != 'ARM64'",
     # 0.39 is the floor the diffusion pipelines assume (Krea 2, Flux2, Z-Image).
     # diffusers dropped 3.9 in 0.37, so the floor only applies on 3.10+.
@@ -225,11 +218,9 @@ huggingfacenotorch = [
     "trl>=0.18.2,!=0.19.0,<=0.24.0",
     "sentence-transformers",
 ]
-# torchcodec backend for Gemma audio / datasets>=4 (#7225). Pick the audio-torch*
-# pin matching your torch minor (see TORCH_TORCHCODEC). Markers gate on the
-# platforms torchcodec ships wheels for (PLATFORM_LACKS_TORCHCODEC_WHEEL in
-# studio/install_python_stack.py); aarch64 wheels start at 0.11.0. soundfile and
-# PyAV are the decode fallback when torchcodec installs but cannot load.
+# torchcodec for Gemma audio / datasets>=4 (#7225); pick the audio-torch* matching
+# your torch minor. Markers gate on the platforms torchcodec ships wheels for
+# (PLATFORM_LACKS_TORCHCODEC_WHEEL). soundfile and PyAV are the decode fallback.
 audio-torch211 = [
     "torchcodec>=0.11.0,<0.12.0 ; python_version >= '3.10' and python_version < '3.15' and (((sys_platform == 'linux' or sys_platform == 'win32') and (platform_machine == 'x86_64' or platform_machine == 'AMD64')) or (sys_platform == 'linux' and platform_machine == 'aarch64') or (sys_platform == 'darwin' and platform_machine == 'arm64'))",
     "soundfile>=0.12.1 ; python_version >= '3.10' and python_version < '3.15' and (((sys_platform == 'linux' or sys_platform == 'win32') and (platform_machine == 'x86_64' or platform_machine == 'AMD64')) or (sys_platform == 'linux' and platform_machine == 'aarch64') or (sys_platform == 'darwin' and platform_machine == 'arm64'))",
@@ -256,16 +247,14 @@ huggingface = [
     "torchvision",
     "unsloth[triton]",
 ]
-# xFormers' Windows wheels are per-CUDA-family and no PEP 508 marker can see
-# which CUDA torch is resident, so this extra is CUDA-agnostic and deliberately
-# uncapped. For a CUDA-matched install use a cuXXX-torchYYY extra with the
-# matching --index-url; install.ps1 handles this itself. (#8156)
+# xFormers' Windows wheels are per-CUDA-family and no marker can see which torch
+# is resident, so this extra is CUDA-agnostic and deliberately uncapped. Use a
+# cuXXX-torchYYY extra with the matching --index-url for a CUDA match. (#8156)
 windows = [
     "unsloth[huggingface]",
     # bitsandbytes ships a win_arm64 wheel from 0.50.0, so this row covers it.
     "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0 ; (sys_platform == 'win32')",
-    # No win_arm64 wheel and no sdist that builds without CUDA's Windows-ARM toolchain, so this
-    # row would fail the whole extra. Torch's SDPA is the fallback.
+    # No win_arm64 wheel; torch's SDPA is the fallback.
     "xformers>=0.0.22.post7 ; (sys_platform == 'win32') and platform_machine != 'ARM64'",
 ]
 base = [
@@ -507,8 +496,7 @@ cu130onlytorch2100 = [
     "xformers @ https://download.pytorch.org/whl/cu130/xformers-0.0.34-cp39-abi3-win_amd64.whl ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
 ]
 cu126onlytorch2110 = [
-    # Pin the trio to +cuNNN: torch 2.11+ defaults to a CUDA-13 wheel and xformers 0.0.35
-    # does not pin torch. == not a range (+cu126 wins, PEP 440) and not === (force-replaces).
+    # Pin the trio to +cuNNN: torch 2.11+ defaults to CUDA 13 and xformers 0.0.35 does not pin torch.
     "torch==2.11.0+cu126",
     "torchvision==0.26.0+cu126",
     "torchaudio==2.11.0+cu126",
@@ -1504,9 +1492,7 @@ intel = [
 ]
 amd = [
     "unsloth[huggingfacenotorch]",
-    # 4-bit decode is unreliable on ROCm before 0.50.0, the first PyPI release
-    # carrying the full path: blocksize/warp decoupling (bnb #1887), fused SIMT
-    # GEMM on RDNA (#1979), RDNA3/4 workgroup fix (#2012).
+    # 4-bit decode is unreliable on ROCm before 0.50.0 (bnb #1887, #1979, #2012).
     "bitsandbytes>=0.50.0 ; ('linux' in sys_platform) and (platform_machine == 'AMD64' or platform_machine == 'x86_64' or platform_machine == 'aarch64')",
     "bitsandbytes>=0.50.0 ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
 ]
@@ -1640,9 +1626,7 @@ ignore = [
 [tool.ruff.format]
 
 [tool.pytest.ini_options]
-# Narrow the default test discovery so `pytest` from the repo root
-# does NOT pick up the GPU-heavy tests under tests/python, tests/qlora,
-# etc. The CI security job runs `pytest tests/security` explicitly.
+# Keep a bare `pytest` away from the GPU-heavy suites under tests/.
 testpaths = ["tests/security"]
 pythonpath = ["."]
 
