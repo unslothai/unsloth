@@ -1530,21 +1530,26 @@ def _torch_local_tag(torch_version_raw):
     return torch_version_raw.split("+", 1)[1]
 
 
-def _torch_is_conda_managed(torch_version_raw):
-    """Did conda install this torch, rather than pip?"""
+def _is_conda_managed(names, version_raw):
+    """Did conda install one of `names` at this version, rather than pip?"""
     conda_meta = os.path.join(sys.prefix, "conda-meta")
-    # A conda version never carries the +tag, but strip it so a pip torch inside a conda prefix is
+    # A conda version never carries the +tag, but strip it so a pip install inside a conda prefix is
     # still matched on its release numbers.
-    version = (torch_version_raw or "").split("+", 1)[0]
+    version = (version_raw or "").split("+", 1)[0]
     if not version or not os.path.isdir(conda_meta):
         return False
     # Pinned to this exact version, so an unrelated pytorch-lightning-*.json cannot answer for torch.
-    prefixes = tuple(f"{name}-{version}-" for name in _CONDA_TORCH_PACKAGES)
+    prefixes = tuple(f"{name}-{version}-" for name in names)
     try:
         entries = os.listdir(conda_meta)
     except OSError:
         return False
     return any(e.endswith(".json") and e.startswith(prefixes) for e in entries)
+
+
+def _torch_is_conda_managed(torch_version_raw):
+    """Did conda install this torch, rather than pip?"""
+    return _is_conda_managed(_CONDA_TORCH_PACKAGES, torch_version_raw)
 
 
 def _has_no_matching_public_wheel(torch_version_raw):
@@ -2354,6 +2359,17 @@ def _triton_repair_advice(distribution, triton_version):
     way the torchvision advice does for a torch with no public wheel.
     """
     command = _triton_reinstall_command(distribution, triton_version)
+    if _is_conda_managed((distribution,), triton_version):
+        # conda-forge publishes `triton`, and a pip --force-reinstall over a conda-managed
+        # one overlays conda's own files with a wheel, leaving two package managers owning
+        # the same paths. Same reasoning, and same remedy shape, as the conda branch of the
+        # torch upgrade advice.
+        return (
+            f"conda installed this Triton, so repair it the same way "
+            f"(`conda install --force-reinstall {distribution}={triton_version}` on the "
+            f"channel it came from). A pip reinstall would overlay the conda files with a "
+            f"wheel and can change the backend with them."
+        )
     local = (triton_version or "").split("+", 1)[1] if "+" in (triton_version or "") else ""
     if local and "--index-url" not in command:
         return (

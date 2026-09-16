@@ -64,12 +64,16 @@ try:
 except Exception:
     pass
 
+# Configure libdrm ids table path early so ROCm can resolve AMD GPU names. Stdlib only,
+# and it must stay ahead of the first `import torch` in this file: it sets
+# AMDGPU_ASIC_ID_TABLE_PATH, and a torch that has already brought up libdrm would not see
+# the discovered table.
+configure_amdgpu_asic_id_table_path()
 # Ahead of every fix below and of `import unsloth_zoo`, because those are what
 # import transformers, and a transformers newer than this torch raises its bare
-# AttributeError at the first one of them to reach it (#8933).
+# AttributeError at the first one of them to reach it (#8933). It imports torch, which is
+# why the ROCm table above comes first.
 patch_torch_missing_attribute_error()
-# Configure libdrm ids table path early so ROCm can resolve AMD GPU names.
-configure_amdgpu_asic_id_table_path()
 # Must precede `import unsloth_zoo` below, which imports bnb on ROCm.
 fix_bitsandbytes_rocm_arch_detection()
 disable_broken_causal_conv1d()

@@ -344,6 +344,82 @@ def test_the_diagnosis_is_installed_before_anything_imports_transformers():
     assert "del patch_torch_missing_attribute_error" in source
 
 
+def test_the_rocm_id_table_is_configured_before_torch_is_imported():
+    """`patch_torch_missing_attribute_error` imports torch, so it has to come after the
+    ROCm table. `configure_amdgpu_asic_id_table_path` sets AMDGPU_ASIC_ID_TABLE_PATH, which
+    is how ROCm resolves AMD device names, and a torch that has already brought up libdrm
+    would not see the discovered table."""
+    source = (_UNSLOTH / "_gpu_init.py").read_text(encoding = "utf-8")
+    table = source.find("configure_amdgpu_asic_id_table_path()")
+    install = source.find("patch_torch_missing_attribute_error()")
+    assert table != -1 and install != -1
+    assert table < install, (
+        "DRIFT DETECTED: the torch diagnosis, which imports torch, is installed before "
+        "the ROCm ASIC id table path is configured."
+    )
+
+
+def test_a_conda_triton_is_repaired_through_conda(monkeypatch, tmp_path):
+    """conda-forge publishes `triton`, and a pip --force-reinstall over a conda-managed one
+    overlays conda's files with a wheel, leaving two managers owning the same paths."""
+    conda_meta = tmp_path / "conda-meta"
+    conda_meta.mkdir()
+    (conda_meta / "triton-3.2.0-py312_0.json").write_text("{}", encoding = "utf-8")
+    monkeypatch.setattr(import_fixes.sys, "prefix", str(tmp_path))
+
+    spec, _driver = _fake_triton(tmp_path, _UNGUARDED_SHIM)
+    monkeypatch.setattr(sys, "version_info", (3, 12, 3))
+    monkeypatch.setattr(import_fixes.importlib.util, "find_spec", lambda name: spec)
+
+    import importlib.metadata as metadata
+
+    monkeypatch.setattr(metadata, "packages_distributions", lambda: {"triton": ["triton"]})
+    monkeypatch.setattr(
+        import_fixes,
+        "importlib_version",
+        lambda name: "3.2.0" if name == "triton" else _raise_missing(name),
+    )
+
+    logger = _CollectingLogger()
+    monkeypatch.setattr(import_fixes, "logger", logger)
+    import_fixes.check_triton_py_ssize_t_clean()
+
+    message = logger.warnings[0]
+    assert "conda installed this Triton" in message
+    assert "conda install --force-reinstall triton=3.2.0" in message
+    assert "pip install" not in message
+
+
+def test_a_pip_triton_in_a_conda_prefix_still_gets_pip(monkeypatch, tmp_path):
+    """NEGATIVE CONTROL: the conda-meta entry has to name this distribution at this
+    version, or a conda prefix alone would redirect every pip-installed Triton."""
+    conda_meta = tmp_path / "conda-meta"
+    conda_meta.mkdir()
+    (conda_meta / "pytorch-2.7.0-py312_0.json").write_text("{}", encoding = "utf-8")
+    monkeypatch.setattr(import_fixes.sys, "prefix", str(tmp_path))
+
+    spec, _driver = _fake_triton(tmp_path, _UNGUARDED_SHIM)
+    monkeypatch.setattr(sys, "version_info", (3, 12, 3))
+    monkeypatch.setattr(import_fixes.importlib.util, "find_spec", lambda name: spec)
+
+    import importlib.metadata as metadata
+
+    monkeypatch.setattr(metadata, "packages_distributions", lambda: {"triton": ["triton"]})
+    monkeypatch.setattr(
+        import_fixes,
+        "importlib_version",
+        lambda name: "3.2.0" if name == "triton" else _raise_missing(name),
+    )
+
+    logger = _CollectingLogger()
+    monkeypatch.setattr(import_fixes, "logger", logger)
+    import_fixes.check_triton_py_ssize_t_clean()
+
+    message = logger.warnings[0]
+    assert "conda installed this Triton" not in message
+    assert '--force-reinstall --no-cache-dir "triton==3.2.0"' in message
+
+
 # ---------------------------------------------------------------- #2760
 
 
