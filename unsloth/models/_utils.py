@@ -543,22 +543,40 @@ def _transformers_supports_attn_impl_mapping():
     return supported
 
 
-def _flex_attn_impl_for(config, other_attn_implementation):
-    """`flex_attention` for the decoder, `other_attn_implementation` for every other sub-config.
-
-    Falls back to the plain string whenever the mapping form is unavailable (Transformers < 4.57)
-    or the config has no separate text sub-config, which is the correct value either way.
-    """
-    if not _transformers_supports_attn_impl_mapping():
-        return "flex_attention"
-    text_config = None
+def _text_sub_config(config):
+    """The separate text sub-config, or None when the config is text-only."""
     getter = getattr(config, "get_text_config", None)
     if callable(getter):
         try:
             text_config = getter()
         except Exception:
             text_config = None
-    if text_config is None or text_config is config:
+    else:
+        text_config = None
+    if text_config is None:
+        text_config = _config_get(config, "text_config", None)
+    if text_config is config:
+        return None
+    return text_config
+
+
+def _flex_attn_impl_for(config, other_attn_implementation):
+    """`flex_attention` for the decoder, `other_attn_implementation` for every other sub-config.
+
+    Returns None when flex cannot be offered without also changing a sibling sub-config.
+
+    The mapping form needs Transformers 4.57+. Without it there is only one attention
+    implementation for the whole model, so on a multimodal config the plain string would
+    put flex on the VISION tower too. That is a regression, not a fallback: the tower's
+    head dim is small enough that SDPA already reaches a real fused kernel there, and it
+    attends over one chunk per image at a different length every call, which would make
+    flex recompile per shape. Text-only configs have no sibling to damage, so the plain
+    string is correct for them.
+    """
+    text_config = _text_sub_config(config)
+    if not _transformers_supports_attn_impl_mapping():
+        return "flex_attention" if text_config is None else None
+    if text_config is None:
         return "flex_attention"
     for field_name, child_config in _config_items(config):
         if (
@@ -863,7 +881,11 @@ def _disable_flash_attention_if_needed(
         and supports_flex_attention
         and _prefers_flex_for_head_dim(config)
     ):
-        fallback_attn_implementation = _flex_attn_impl_for(config, "sdpa")
+        _flex_fallback = _flex_attn_impl_for(config, "sdpa")
+        # None means flex is unofferable here (no mapping support + a sibling sub-config
+        # that must not be switched); keep the sdpa fallback unchanged.
+        if _flex_fallback is not None:
+            fallback_attn_implementation = _flex_fallback
     if _is_flash_attention_requested(requested_attn_implementation) or would_use_flash_attention:
         logged_attn_implementation = (
             requested_attn_implementation
@@ -1109,10 +1131,13 @@ def resolve_attention_implementation(
             # head_dim > 128: SDPA has no flash kernel here and falls back to the sm80 CUTLASS
             # memory-efficient one, so flex outranks sdpa. Scoped to the decoder, leaving a VLM's
             # vision tower (small head dim, variable chunk lengths) on its existing backend.
-            attn_impl = _set_attn_impl(
-                config,
-                _flex_attn_impl_for(config, "sdpa" if supports_sdpa else "eager"),
-            )
+            _flex_impl = _flex_attn_impl_for(config, "sdpa" if supports_sdpa else "eager")
+            if _flex_impl is None:
+                # Cannot scope flex to the decoder on this Transformers version without
+                # also moving a sibling sub-config. Stay on the existing backend.
+                attn_impl = _set_attn_impl(config, "sdpa" if supports_sdpa else "eager")
+            else:
+                attn_impl = _set_attn_impl(config, _flex_impl)
         elif supports_sdpa:
             attn_impl = _set_attn_impl(config, "sdpa")
         elif supports_flex_attention:
