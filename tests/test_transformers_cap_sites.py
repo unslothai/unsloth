@@ -270,7 +270,7 @@ def test_a_stale_range_cap_is_caught_even_in_an_allowlisted_workflow(tmp_path, m
     workflows.mkdir()
     (workflows / "version-compat-ci.yml").write_text(
         "run: |\n"
-        "  pip install 'transformers==4.51.3'\n"        # exact pin: a point, not a cap
+        "  pip install 'transformers==4.51.3'\n"  # exact pin: a point, not a cap
         "  pip install 'transformers>=4.51.3,<=5.5.0'\n",  # stale range cap: must be caught
         encoding = "utf-8",
     )
