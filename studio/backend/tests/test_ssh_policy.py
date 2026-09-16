@@ -784,3 +784,42 @@ def test_wildcard_proxy_command_import_requires_approval(module):
     assert _check_code_safety(code, session_id = "review") is not None
     approve_hosts("review", ["approved.example"])
     assert _check_code_safety(code, session_id = "review") is None
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "import asyncssh; asyncssh.create_connection(factory, 'approved.example', config=None)",
+        "from asyncssh import create_connection as connect; connect(factory, host='approved.example', config=None)",
+        "import asyncssh; asyncssh.get_server_host_key('approved.example', config=None)",
+        "import asyncssh; asyncssh.get_server_auth_methods('approved.example', config=None)",
+        "import paramiko\nwith paramiko.SSHClient() as client:\n client.connect(hostname='approved.example')",
+        "from paramiko import SSHClient as Client\nwith Client() as client:\n client.connect(hostname='approved.example')",
+    ],
+)
+def test_ssh_api_and_context_bindings(code):
+    assert _check_code_safety(code, session_id = "review") is not None
+    approve_hosts("review", ["approved.example"])
+    assert _check_code_safety(code, session_id = "review") is None
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "from asyncssh.connection import create_connection as connect; connect(factory, 'approved.example', config=None)",
+        "import asyncssh.connection; asyncssh.connection.create_connection(factory, 'approved.example', config=None)",
+        "import paramiko.transport; paramiko.transport.Transport(('approved.example', 22))",
+    ],
+)
+def test_qualified_ssh_submodule_imports_require_approval(code):
+    assert _check_code_safety(code, session_id = "review") is not None
+    approve_hosts("review", ["approved.example"])
+    assert _check_code_safety(code, session_id = "review") is None
+
+
+@pytest.mark.parametrize("factory", ["factory", "lambda: asyncssh.SSHClient()"])
+def test_asyncssh_client_factory_is_not_the_destination(factory):
+    code = (
+        f"import asyncssh; asyncssh.create_connection({factory}, 'approved.example', config=None)"
+    )
+    assert extract_ssh_hosts_from_python(code) == ({"approved.example"}, False, True)

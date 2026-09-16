@@ -30,6 +30,9 @@ _SSH_PY_CONNECT_FQ = (
     "paramiko.SSHClient.connect",
     "paramiko.Transport",
     "asyncssh.connect",
+    "asyncssh.create_connection",
+    "asyncssh.get_server_host_key",
+    "asyncssh.get_server_auth_methods",
     "asyncssh.SSHClient.connect",
     "fabric.Connection",
     "fabric.connection.Connection",
@@ -342,7 +345,7 @@ def _ssh_import_bindings(tree: ast.AST) -> dict[str, str]:
                 root = alias.name.split(".", 1)[0]
                 if root in _SSH_PY_ROOT_MODULES:
                     local = alias.asname or root
-                    bindings[local] = alias.name
+                    bindings[local] = alias.name if alias.asname else root
         elif isinstance(node, ast.ImportFrom) and _module_is_ssh_root(node.module):
             module = node.module or ""
             for alias in node.names:
@@ -374,6 +377,11 @@ def _ssh_import_bindings(tree: ast.AST) -> dict[str, str]:
 def _assignment_pairs(tree: ast.AST):
     """Yield individual assignment targets, including chained and unpacked forms."""
     for node in ast.walk(tree):
+        if isinstance(node, (ast.With, ast.AsyncWith)):
+            for item in node.items:
+                if item.optional_vars is not None:
+                    yield item.optional_vars, item.context_expr
+            continue
         if isinstance(node, ast.AnnAssign):
             targets = [node.target]
         elif isinstance(node, ast.Assign):
@@ -427,6 +435,10 @@ def _bound_name(node: Optional[ast.AST], bindings: dict[str, str]) -> str:
     return {
         "asyncio.subprocess.create_subprocess_exec": "asyncio.create_subprocess_exec",
         "asyncio.subprocess.create_subprocess_shell": "asyncio.create_subprocess_shell",
+        "asyncssh.connection.connect": "asyncssh.connect",
+        "asyncssh.connection.create_connection": "asyncssh.create_connection",
+        "asyncssh.connection.get_server_host_key": "asyncssh.get_server_host_key",
+        "asyncssh.connection.get_server_auth_methods": "asyncssh.get_server_auth_methods",
         "paramiko.proxy.ProxyCommand": "paramiko.ProxyCommand",
         "paramiko.transport.Transport": "paramiko.Transport",
         "paramiko.client.SSHClient": "paramiko.SSHClient",
@@ -721,8 +733,9 @@ def _scan_ssh_python_usage(
                 dynamic |= not _ssh_python_configuration_is_explicit(node, ssh_call, bindings)
                 connect_spans.append(_ssh_call_span(node))
                 host_lit: Optional[str] = None
-                if node.args:
-                    endpoint = node.args[0]
+                host_index = 1 if ssh_call == "asyncssh.create_connection" else 0
+                if len(node.args) > host_index:
+                    endpoint = node.args[host_index]
                     if (
                         ssh_call == "paramiko.Transport"
                         and isinstance(endpoint, ast.Tuple)
