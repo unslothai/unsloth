@@ -5,6 +5,21 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en";
 
 export const fr = {
+  composerSettings: {
+    title: "Saisie des messages",
+    plainText: "Saisie en texte brut",
+    plainTextDescription: "Conserver le code, le Markdown et les liens en texte brut. Désactivez pour afficher un aperçu mis en forme.",
+    showContext: "Afficher l’utilisation de la fenêtre de contexte",
+    sendShortcut: "Raccourci d’envoi",
+    sendDescription: "Choisissez si Entrée envoie un message ou insère une nouvelle ligne.",
+    followUp: "Messages de suivi",
+    followUpDescription: "Choisissez l’action lors d’un envoi pendant une réponse. Appuyez sur {shortcut} pour inverser ce choix pour un message.",
+    queue: "File d’attente",
+    steer: "Réorienter",
+    steerDescription: "Réorienter arrête la réponse en cours et envoie votre message de suivi en priorité.",
+    settings: "Paramètres de saisie",
+    preview: "Aperçu mis en forme",
+  },
   picker: {
     onDevice: "Sur l'appareil",
     huggingFace: "Hugging Face",
@@ -1442,6 +1457,30 @@ export const fr = {
       },
     },
     chat: {
+      groups: {
+        conversations: { title: "Conversations" },
+        files: { title: "Fichiers et collage" },
+        display: { title: "Affichage" },
+        composer: { title: "Zone de message" },
+        menu: { title: "Menu du chat" },
+        advanced: { title: "Avancé" },
+        contextTitle: "Contexte",
+      },
+      projectAttachmentsHint:
+        "Modifiez ce réglage pour chaque chat dans son menu de pièces jointes.",
+      rememberParamsPerModelHint:
+        "Lorsque cette option est désactivée, tous les modèles utilisent les mêmes réglages.",
+      autoCompactHint:
+        "Utilise la longueur de contexte définie, pas la VRAM disponible.",
+      pastedTextShortDescription:
+        "Le texte collé de {count} caractères ou plus devient une pièce jointe .txt. Le texte plus court reste dans le champ de message.",
+      pastedTextOffDescription:
+        "Tout le texte collé reste dans le champ de message, quelle que soit sa longueur.",
+      compactionDescriptionInherit: "Suit la politique de contexte du serveur.",
+      compactionDescriptionCheckpoint:
+        "Conserve le dernier échange et les instructions permanentes.",
+      compactionDescriptionRolling:
+        "Supprime les échanges les plus anciens pour conserver les plus récents et la marge choisie.",
       projectsSection: "Afficher la section Projets",
       projectsSectionDescription:
         "Regroupe les discussions de projet sous un titre Projets. Désactivez cette option pour les lister dans Récents.",
@@ -1471,7 +1510,8 @@ export const fr = {
         exportChat: "Exporter le chat",
       },
       pastedTextThreshold: "Condenser les collages longs",
-      pastedTextThresholdDescription: "Le texte collé plus long que cette valeur devient une pièce jointe .txt au lieu de remplir le champ de message. Appuyez sur {shortcut} pour coller quand même dans le champ de message.",
+      pastedTextThresholdDescription:
+        "Appuyez sur {shortcut} pour coller directement dans le champ de message.",
       pastedTextThresholdOff: "Désactivé",
       showResponseModel: "Afficher le modèle de réponse",
       showResponseModelDescription:
@@ -1481,13 +1521,13 @@ export const fr = {
         'Afficher "Les LLM peuvent faire des erreurs" sous la zone de discussion.',
       projectAttachments: "Partager les fichiers dans tout le projet",
       projectAttachmentsDescription:
-        "Valeur par defaut pour les fichiers joints dans une discussion appartenant a un projet : les indexer pour tout le projet afin que chaque discussion puisse les utiliser. Chaque discussion peut le modifier depuis le menu des pieces jointes.",
+        "Rend les nouvelles pièces jointes accessibles à toutes les discussions du projet.",
       rememberParamsPerModel: "Mémoriser les réglages par modèle",
       rememberParamsPerModelDescription:
-        "Changer de modèle restaure la température, le prompt et les autres réglages utilisés en dernier avec ce modèle. Désactivé, un seul jeu de réglages s'applique à tous les modèles.",
+        "Restaure le dernier prompt, la température et les autres réglages utilisés pour chaque modèle.",
       autoCompact: "Compacter automatiquement les longues discussions",
       autoCompactDescription:
-        "Lorsqu’une discussion GGUF locale atteint la longueur de contexte définie, supprimez les anciens tours au lieu de renvoyer une erreur. Ce réglage ne dépend pas de la VRAM libre.",
+        "Supprime les anciens échanges lorsqu’une discussion GGUF locale atteint sa limite de contexte.",
       compactionStyle: "Lorsque le contexte est plein",
       compactionStyleDescription:
         "La valeur par défaut du serveur conserve UNSLOTH_CONTEXT_POLICY. Réinitialiser la discussion garde le dernier tour et les instructions permanentes. Une fenêtre glissante supprime les tours les plus anciens et peut conserver davantage d’historique récent.",
@@ -1524,7 +1564,7 @@ export const fr = {
         title: "Recherche web",
         images: "Afficher les images de la recherche web",
         imagesDescription:
-          "Permet à la recherche web de renvoyer des images et en récupère une pour chaque élément listé dans une réponse. Unsloth télécharge et redimensionne les vignettes : le navigateur ne contacte jamais les hébergeurs d'images.",
+          "Inclut des images dans les résultats de recherche.",
       },
       artifacts: {
         title: "Canvas",
@@ -1559,7 +1599,7 @@ export const fr = {
       exportPerChatSuffix: "(par discussion)",
       importChats: "Importer des discussions",
       importChatsDescription:
-        "Importez un export Open WebUI, JSONL, NDJSON ou CSV dans Récents.",
+        "Importez des fichiers JSON, JSONL, NDJSON ou CSV dans Récents.",
       importChatsAction: "Importer",
       importNoConversations: "Aucune conversation trouvée dans le fichier.",
       importedOneChat: "1 conversation importée dans Récents.",
@@ -1607,6 +1647,80 @@ export const fr = {
       failedToClearChats: "Échec de l'effacement des discussions",
     },
     data: {
+      library: {
+        defaultSort: "Par défaut",
+        updated: "Modification",
+        created: "Création",
+        oldest: "Les plus anciens d’abord",
+        alphabetical: "Ordre alphabétique",
+        allChats: "Toutes les discussions",
+        singleChats: "Discussions simples",
+        compareChats: "Discussions comparatives",
+        allProjects: "Tous les projets",
+        noProject: "Sans projet",
+        unavailableProject: "Projet indisponible",
+        filterSort: "Filtrer et trier",
+        sort: "Trier",
+        type: "Type",
+        sortBy: "Trier par",
+        filterProject: "Filtrer par projet",
+        searchProjects: "Rechercher des projets",
+        noProjects: "Aucun projet trouvé.",
+        untitled: "Sans titre",
+        oneChat: "1 discussion",
+        chatCount: "{count} discussions",
+        searchChats: "Rechercher des discussions ou des projets",
+        searchArchivedChats: "Rechercher des discussions archivées ou des projets",
+        searchImages: "Rechercher des images archivées",
+        searchVideos: "Rechercher des vidéos archivées",
+        searchAudio: "Rechercher des fichiers audio archivés",
+        unarchive: "Désarchiver",
+        unarchiveAll: "Tout désarchiver",
+        unarchiveResults: "Désarchiver les résultats",
+        deleteResults: "Supprimer les résultats",
+        noChats: "Aucune discussion ne correspond à votre recherche.",
+        noArchivedChats: "Aucune discussion archivée.",
+        noArchivedMatches: "Aucune discussion archivée ne correspond à votre recherche.",
+        noMedia: "Aucun élément archivé.",
+        noMediaMatches: "Aucun élément archivé ne correspond à votre recherche.",
+        itemCount: "Éléments : {count}",
+        incompleteSearch: "La recherche est incomplète. Réessayez de charger les éléments restants.",
+        searchingRemaining: "Recherche des éléments restants ({count} chargés)...",
+        noLoadedMatches: "Aucune correspondance parmi les éléments déjà chargés.",
+        deleteItem: "Supprimer : {title}",
+        unarchiveItem: "Désarchiver : {title}",
+        deleteItemsTitle: "Supprimer les éléments archivés ({count})",
+        unarchiveItemsTitle: "Désarchiver les éléments ({count})",
+        deleteFilesWarning: "Ces fichiers seront supprimés définitivement. Cette action est irréversible.",
+        restoreWarning: "Ces éléments seront replacés dans la galerie.",
+        working: "Traitement en cours...",
+        loadFailed: "Impossible de charger les éléments archivés",
+        loadMoreFailed: "Impossible de charger davantage d’éléments archivés",
+        restoreFailed: "Impossible de désarchiver les éléments sélectionnés",
+        deleteFailed: "Impossible de supprimer les éléments sélectionnés",
+        projectsFailed: "Impossible de charger les projets archivés",
+        pageStalled: "La page des archives n’a pas avancé. Réessayez.",
+        pageChanged: "Les archives ont changé pendant le chargement. Réessayez.",
+        selectAll: "Sélectionner toutes les discussions visibles",
+        selectItem: "Sélectionner « {title} »",
+        selectedChats: "Discussions sélectionnées : {count}",
+        move: "Déplacer",
+        pin: "Épingler",
+        unpin: "Désépingler",
+        archive: "Archiver",
+        deletedChats: "Discussions supprimées : {count}",
+        restoredChats: "Discussions désarchivées : {count}",
+        pinnedChats: "Discussions épinglées : {count}",
+        unpinnedChats: "Discussions désépinglées : {count}",
+        movedChatsToProject: "Discussions déplacées vers {project} : {count}",
+        movedChatsToRecents: "Discussions déplacées vers Récentes : {count}",
+        moveFailed: "Impossible de déplacer les discussions",
+        deleteChatsTitle: "Supprimer les discussions ({count})",
+        deleteChatsWarning: "Supprimer les discussions sélectionnées ({count}) ? Cette action est irréversible.",
+        deleteArchivedTitle: "Supprimer {count} discussions archivées",
+        deleteArchivedWarning: "Supprimer les discussions archivées sélectionnées ({count}) ? Cette action est irréversible.",
+        deleting: "Suppression...",
+      },
       title: "Données",
       backToData: "Retour aux données",
       exportFailed: "Impossible d’exporter les chats",
@@ -1651,6 +1765,29 @@ export const fr = {
       alwaysDeleteFiles: "Toujours supprimer les fichiers",
       alwaysDeleteFilesDescription:
         "La suppression d'une discussion retire aussi son dossier bac à sable du disque. Les fichiers écrits dans un projet restent dans l'espace de travail de ce projet.",
+      chatsSection: "Discussions et archives",
+      transferSection: "Importation et exportation",
+      deletionSection: "Suppression",
+      archives: "Archives",
+      archiveChatsLabel: "Discussions",
+      archiveVideosLabel: "Vidéos",
+      exportFormatsSummary:
+        "Exportez les discussions de Récents et des projets dans le format de votre choix.",
+      trainingSummary:
+        "Transformez vos discussions en jeu de données pour le réglage fin.",
+      confirmDeletionSummary: "Demander confirmation avant de supprimer une discussion.",
+      sandboxFiles: "Fichiers du bac à sable",
+      sandboxFilesDescription:
+        "Action par défaut lors de la suppression d’une discussion.",
+      keepSandboxFiles: "Conserver les fichiers du bac à sable",
+      deleteSandboxFiles: "Supprimer les fichiers du bac à sable",
+      projectFilesKept:
+        "Les bacs à sable sont des dossiers créés pour chaque discussion. Les fichiers enregistrés dans les espaces de travail des projets sont conservés.",
+      deleteAllAction: "Tout supprimer",
+      deleteChatsOnly: "Supprimer uniquement les discussions…",
+      deleteChatsAndSandboxes: "Supprimer les discussions et les bacs à sable…",
+      deleteSandboxFilesDescription:
+        "Supprime aussi le dossier du bac à sable de chaque discussion et son contenu. Les fichiers des espaces de travail des projets sont conservés.",
       filesSection: "Fichiers",
       uploadedFiles: "Fichiers importés",
       uploadedFilesDescription:

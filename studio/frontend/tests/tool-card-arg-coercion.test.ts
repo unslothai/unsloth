@@ -307,7 +307,7 @@ test("the fallback card survives a tool name that is not a string", () => {
   );
   assert.match(
     source,
-    /formatMcpToolName\(name, mcpServer\) \?\? name/,
+    /formatMcpToolName\(name, mcpServer, mcpTool\) \?\? name/,
     "tool-fallback.tsx passes the raw toolName to formatMcpToolName",
   );
   assert.equal(toolArgText(123).startsWith("mcp__"), false);

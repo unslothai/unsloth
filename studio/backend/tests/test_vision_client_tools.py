@@ -1434,3 +1434,39 @@ def test_the_nudge_retry_skips_the_image_marker_on_a_text_only_fallback():
             body = message.get("content")
             if isinstance(body, list):
                 assert not any(p.get("type") == "image" for p in body), message
+
+
+def test_each_compare_pane_applies_its_own_adapter_state_on_an_image_turn(monkeypatch):
+    backend, _ = _vision_probe()
+    info = backend.models["vision-tools"]
+    info["is_vision"] = True
+    events = []
+    monkeypatch.setattr(
+        backend,
+        "_apply_adapter_state",
+        lambda state: events.append((state, backend._generation_lock.locked())),
+    )
+    monkeypatch.setattr(
+        info["model"],
+        "generate",
+        lambda **_kwargs: events.append(("generate", backend._generation_lock.locked())),
+    )
+
+    def pane(use_adapter):
+        list(
+            backend.generate_with_adapter_control(
+                use_adapter = use_adapter,
+                messages = [{"role": "user", "content": "what is in this picture"}],
+                image = object(),
+                max_new_tokens = 1,
+            )
+        )
+
+    panes = [threading.Thread(target = pane, args = (state,)) for state in (False, True)]
+    for thread in panes:
+        thread.start()
+    for thread in panes:
+        thread.join()
+
+    assert sorted(events[0::2]) == [(False, True), (True, True)]
+    assert events[1::2] == [("generate", True)] * 2

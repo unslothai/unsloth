@@ -9,6 +9,7 @@ import type {
 import {
   ggufVariantsMatch,
   isOllamaLinkPath,
+  isOllamaModelId,
   isStandaloneGgufPath,
   modelDisplayName,
   residentModelIdMatches,
@@ -105,7 +106,7 @@ export function modelConfigTargetIsResident({
   if (
     target.isGguf &&
     target.ggufVariant == null &&
-    (isStandaloneGgufPath(target.id) || isOllamaLinkPath(target.id))
+    (isStandaloneGgufPath(target.id) || isOllamaModelId(target.id))
   ) {
     return true;
   }

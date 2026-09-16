@@ -55,6 +55,8 @@ on:
       # absent for exactly the change they guard. Same reason as install.sh above.
       - '.github/actions/**'
       - '.github/workflows/studio-backend-ci.yml'
+      # tests/python/test_amd_extras_contract.py asserts against this file.
+      - '.github/workflows/security-audit.yml'
   push:
     branches: [main]
 
@@ -371,7 +373,7 @@ jobs:
         # yet. It only ever gets looser as the work per shard drops.
         run: |
           timeout --signal=INT --kill-after=60 1500 \
-          python -m pytest ${{ matrix.selection }} -q --tb=short -n 4 --timeout=330 \
+          python -m pytest ${{ matrix.selection }} -q --tb=short -n 4 --dist loadgroup --timeout=330 \
             --ignore=tests/test_studio_api.py \
             --ignore=tests/test_streaming_stripper.py \
             --ignore=tests/test_llama_cpp_wait_for_vram_settle.py \
@@ -653,7 +655,7 @@ jobs:
         # under the job cap, so this fires first and says where it was stuck.
         run: |
           timeout --signal=INT --kill-after=60 2100 \
-          python -m pytest ${{ matrix.selection }} -q --tb=short -n 4 --timeout=330 \
+          python -m pytest ${{ matrix.selection }} -q --tb=short -n 4 --dist loadgroup --timeout=330 \
             -m 'not server and not e2e'
 
       - name: Hardware-spoof tests (state-sensitive, run in isolation)
