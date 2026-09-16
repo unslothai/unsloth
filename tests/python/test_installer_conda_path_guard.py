@@ -684,3 +684,69 @@ def test_every_posix_writer_repositions_a_stale_prepend(path: Path, arms: tuple[
         assert "_unsloth_repoint_rc_line" in body, (
             f"{path.name}:{name} accepts a stale prepend as present instead of moving it"
         )
+
+
+def test_the_repoint_pass_runs_before_the_presence_guards():
+    """The guard that skips the writers is satisfied by the very line that needs moving.
+
+    A previous run wrote the prepend, the shell that launched this installer evaluated it,
+    so the directory IS on the login PATH and `_path_has_dir` short-circuits the call. The
+    repointing therefore has to happen ahead of that guard, and it has to add nothing when
+    it gets there.
+    """
+    source = INSTALL_SH.read_text(encoding = "utf-8")
+    shim_guard = source.index('if ! _path_has_dir "$_UNSLOTH_LOGIN_PATH" "$_LOCAL_BIN"')
+    shim_repoint = source.index('"~/.local/bin" \'\\.local/bin\' "" repoint')
+    assert shim_repoint < shim_guard, "the shim repoint is behind the guard that skips it"
+
+    uv_guard = source.index('if ! _path_has_dir "$_UNSLOTH_LOGIN_PATH" "$_UNSLOTH_UV_BIN_DIR"')
+    uv_repoint = source.index('"$_UNSLOTH_UV_BIN_DIR" "" "$_uv_prof" repoint')
+    assert uv_repoint < uv_guard, "the uv repoint is behind the guard that skips it"
+
+    setup = SETUP_SH_POSIX.read_text(encoding = "utf-8")
+    early_return = setup.index('_setup_path_has_dir "${_SETUP_LOGIN_PATH:-$PATH}" "$_supp_dir"')
+    assert "_unsloth_conda_env_active || return 0" in setup[early_return : early_return + 300], (
+        "studio/setup.sh still returns before it can reposition anything"
+    )
+
+
+@pytest.mark.parametrize(
+    "mode,expected",
+    [
+        ("repoint", 'export PATH="$PATH:/opt/unsloth/bin"\n'),
+        ("", 'export PATH="$PATH:/opt/unsloth/bin"\n'),
+    ],
+    ids = ["repoint-only", "ordinary"],
+)
+def test_the_repoint_only_mode_adds_nothing(tmp_path: Path, mode: str, expected: str):
+    """Repointing must not put a line in the rc file of someone whose PATH comes from
+    somewhere else: the caller's guard already decided against adding one."""
+    rc = tmp_path / "rc"
+    rc.write_text('export PATH="/opt/unsloth/bin:$PATH"\n', encoding = "utf-8")
+    empty = tmp_path / "empty"
+    empty.write_text("# nothing here\n", encoding = "utf-8")
+    source = INSTALL_SH.read_text(encoding = "utf-8")
+    body = (
+        _shell_function(INSTALL_SH, "_unsloth_repoint_rc_line")
+        + _shell_function(INSTALL_SH, "_unsloth_conda_env_active")
+        + _shell_function(INSTALL_SH, "_persist_fish_path_dir")
+        + re.search(r"^_PATH_LINE_RE=.*$", source, flags = re.M).group(0) + "\n"
+        + _shell_function(INSTALL_SH, "_persist_login_path_dir")
+    )
+    script = f"""
+CONDA_PREFIX=/opt/conda
+step() {{ :; }}
+substep() {{ :; }}
+C_WARN=""
+{body}
+_persist_login_path_dir "/opt/unsloth/bin" "/opt/unsloth/bin" "/opt/unsloth/bin" \\
+    "/opt/unsloth/bin" "{rc}" "{mode}"
+_persist_login_path_dir "/opt/unsloth/bin" "/opt/unsloth/bin" "/opt/unsloth/bin" \\
+    "/opt/unsloth/bin" "{empty}" "{mode}"
+"""
+    subprocess.run(["sh", "-c", script], capture_output = True, text = True, timeout = 60)
+    # The stale prepend is repositioned in both modes.
+    assert rc.read_text(encoding = "utf-8") == expected
+    # And only the ordinary mode adds a line where there was none.
+    added = "/opt/unsloth/bin" in empty.read_text(encoding = "utf-8")
+    assert added is (mode != "repoint"), empty.read_text(encoding = "utf-8")

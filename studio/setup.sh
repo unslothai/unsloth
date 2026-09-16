@@ -2088,7 +2088,15 @@ _setup_persist_uv_path() {
     [ -z "${UV_UNMANAGED_INSTALL:-}" ] || return 0
     # The PATH a new shell inherits, not the one this process has already prepended to, and
     # compared entry by entry: a directory holding *, ? or [ is a glob inside a case pattern.
-    _setup_path_has_dir "${_SETUP_LOGIN_PATH:-$PATH}" "$_supp_dir" && return 0
+    # Already on the login PATH BECAUSE a previous run wrote the line, and inside a conda
+    # environment that line is in the wrong place, so the repointing pass has to run before
+    # this early return rather than after it. `_setup_repoint_only` makes the rest of the
+    # function a no-op: it repositions what is there and adds nothing.
+    _setup_repoint_only=false
+    if _setup_path_has_dir "${_SETUP_LOGIN_PATH:-$PATH}" "$_supp_dir"; then
+        _unsloth_conda_env_active || return 0
+        _setup_repoint_only=true
+    fi
     # ~/.config, not XDG_CONFIG_HOME, because that is where astral's installer put its own fish
     # file, and it is written regardless of the current shell for the same reason.
     _supp_fish_dir="$HOME/.config/fish/conf.d"
@@ -2121,7 +2129,7 @@ _setup_persist_uv_path() {
         # spelling counts as present, or a run outside conda adds a second line for a
         # directory a run inside it already registered; the bare -a one is kept because an
         # install from before this fix wrote it.
-        if ! grep -v '^[[:space:]]*#' "$_supp_fish" 2>/dev/null \
+        if [ "$_setup_repoint_only" != true ] && ! grep -v '^[[:space:]]*#' "$_supp_fish" 2>/dev/null \
             | grep -qxF -e "fish_add_path '$_supp_quoted'" -e "fish_add_path -a '$_supp_quoted'" \
                         -e "fish_add_path -a -P '$_supp_quoted'"; then
             echo "# Added by Unsloth setup" >> "$_supp_fish"
@@ -2144,6 +2152,17 @@ _setup_persist_uv_path() {
     _supp_export_prepend="$_supp_export_line"
     if _unsloth_conda_env_active; then
         _supp_export_line="export PATH=\"\$PATH:$_supp_literal\""
+    fi
+    if [ "$_setup_repoint_only" = true ]; then
+        # The POSIX repointing pass, then out: nothing here may append a line the caller's
+        # guard decided against.
+        for _supp_profile in "$HOME/.profile" "$HOME/.bashrc" "$HOME/.bash_profile" \
+                             "$HOME/.bash_login" "${ZDOTDIR:-$HOME}/.zshrc" "${ZDOTDIR:-$HOME}/.zshenv"; do
+            [ -f "$_supp_profile" ] || continue
+            _unsloth_repoint_rc_line "$_supp_profile" "$_supp_export_prepend" \
+                "$_supp_export_line" || true
+        done
+        return 0
     fi
     # Every startup file astral's installer wired, because it is the installer this replaced:
     # ~/.profile always, each bash file that exists, and zsh under ZDOTDIR. Writing only the

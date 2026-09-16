@@ -6198,7 +6198,7 @@ _unsloth_conda_env_active() {
 }
 
 _persist_fish_path_dir() {
-    _pfp_dir="$1"; _pfp_label="${2:-$1}"
+    _pfp_dir="$1"; _pfp_label="${2:-$1}"; _pfp_mode="${3:-}"
     [ -n "${HOME:-}" ] || return 0
     _pfp_dir_conf="$HOME/.config/fish/conf.d"
     mkdir -p "$_pfp_dir_conf" 2>/dev/null || return 0
@@ -6220,6 +6220,7 @@ _persist_fish_path_dir() {
             fi
         done
     fi
+    [ "$_pfp_mode" = "repoint" ] && return 0
     # The exact line we would write, not any occurrence of the directory: /opt/uv-old must not pass for /opt/uv, and fish reads none of the POSIX files that would otherwise cover it. EVERY spelling counts as present, or a run outside conda would add a second line for a directory a run inside it already registered. The bare -a spelling is kept in the list because an install from before this fix wrote one, and a second line would not repair it anyway.
     if ! grep -v '^[[:space:]]*#' "$_pfp_file" 2>/dev/null \
         | grep -qxF -e "fish_add_path '$_pfp_quoted'" -e "fish_add_path -a '$_pfp_quoted'" -e "fish_add_path -a -P '$_pfp_quoted'"; then
@@ -6242,12 +6243,17 @@ _persist_fish_path_dir() {
 _PATH_LINE_RE='(^|[^[:alnum:]_])(PATH[[:space:]]*=|fish_add_path|pathmunge|path_helper)'
 
 # Put a directory on the PATH of the NEXT shell, not just this process. $1 the directory, $2 the rc-file literal (~/.local/bin keeps $HOME unexpanded, as it always has), $3 how to name it in the line we print, $4 the grep that says it is already there, $5 an explicit profile file or empty to pick one the way this installer always has.
+# $6 "repoint" asks for the repositioning pass ALONE: fix a line a previous run wrote and add
+# nothing. The callers below are guarded on whether the directory is already on the login PATH,
+# and it IS on it precisely because the previous run wrote the line, so the ordinary call is
+# skipped in exactly the case the repointing exists for.
 _persist_login_path_dir() {
     _plp_dir="$1"; _plp_literal="$2"; _plp_label="$3"; _plp_pattern="$4"; _plp_file="${5:-}"
+    _plp_mode="${6:-}"
     [ -n "${HOME:-}" ] || return 0
     # fish reads none of the POSIX rc files, so an `export` line there is a no-op for a fish user. conf.d is fish's own drop-in directory and fish_add_path is idempotent by design.
     if [ -z "$_plp_file" ] && [ "$(basename "${SHELL:-}")" = "fish" ]; then
-        _persist_fish_path_dir "$_plp_dir" "$_plp_label"
+        _persist_fish_path_dir "$_plp_dir" "$_plp_label" "$_plp_mode"
         return 0
     fi
     _SHELL_PROFILE="$_plp_file"
@@ -6283,6 +6289,9 @@ _persist_login_path_dir() {
             fi
         fi
     fi
+    # Repointing was the whole job for this call: adding a line the caller did not ask for
+    # would put an entry in the rc file of someone whose PATH comes from somewhere else.
+    [ "$_plp_mode" = "repoint" ] && return 0
     # Comments stripped first, then only lines that actually set PATH: a commented-out old export is not an active entry, and neither is `UV_CACHE=/opt/uv` or `PYTHONPATH=/opt/uv`. The name boundary is what keeps PYTHONPATH out. Taking any of them for a PATH entry leaves the next shell with no uv at all.
     if ! grep -v '^[[:space:]]*#' "$_SHELL_PROFILE" 2>/dev/null \
         | grep -E "$_PATH_LINE_RE" | grep -qE "$_plp_pattern"; then
@@ -6302,6 +6311,14 @@ _persist_login_path_dir() {
     fi
 }
 
+# Before the guard below, because that guard is satisfied by the very line that needs moving:
+# a previous run wrote the prepend, the shell that launched this installer evaluated it, and
+# the directory is therefore already on the login PATH. Repointing only, so a machine whose
+# PATH comes from somewhere else does not gain an rc line it never had.
+if _unsloth_conda_env_active && [ "$_STUDIO_HOME_REDIRECT" != "env" ]; then
+    _persist_login_path_dir "$_LOCAL_BIN" '$HOME/.local/bin' "~/.local/bin" '\.local/bin' "" repoint
+fi
+
 if ! _path_has_dir "$_UNSLOTH_LOGIN_PATH" "$_LOCAL_BIN"; then  # not on a new shell's PATH
         if [ "$_STUDIO_HOME_REDIRECT" = "env" ]; then
             export PATH="$_LOCAL_BIN:$PATH"
@@ -6316,6 +6333,19 @@ fi
 if [ -n "${_UNSLOTH_UV_BIN_DIR:-}" ] \
    && [ -z "${UV_NO_MODIFY_PATH:-}" ] && [ -z "${UV_UNMANAGED_INSTALL:-}" ] \
    && [ "$_STUDIO_HOME_REDIRECT" != "env" ]; then
+    # Same repointing pass as the shim block, and ahead of the same guard for the same
+    # reason: the directory is on the login PATH because the previous run's prepend put it
+    # there. Computed here because the guard below owns the escaping.
+    if _unsloth_conda_env_active; then
+        _uv_repoint_literal=$(printf '%s' "$_UNSLOTH_UV_BIN_DIR" | sed 's/[\\"$`]/\\&/g')
+        for _uv_prof in "$HOME/.profile" "$HOME/.bashrc" "$HOME/.bash_profile" \
+                        "$HOME/.bash_login" "${ZDOTDIR:-$HOME}/.zshrc" "${ZDOTDIR:-$HOME}/.zshenv"; do
+            [ -f "$_uv_prof" ] || continue
+            _persist_login_path_dir "$_UNSLOTH_UV_BIN_DIR" "$_uv_repoint_literal" \
+                "$_UNSLOTH_UV_BIN_DIR" "" "$_uv_prof" repoint
+        done
+        _persist_fish_path_dir "$_UNSLOTH_UV_BIN_DIR" "" repoint
+    fi
     if ! _path_has_dir "$_UNSLOTH_LOGIN_PATH" "$_UNSLOTH_UV_BIN_DIR"; then
         # The rc line is double-quoted, so a path holding $, ` or " would be expanded or terminated by the shell that reads it. The ~/.local/bin literal is exempt: its $HOME is meant to stay unexpanded.
         _uv_rc_literal=$(printf '%s' "$_UNSLOTH_UV_BIN_DIR" | sed 's/[\\"$`]/\\&/g')

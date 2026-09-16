@@ -747,3 +747,36 @@ def test_the_opt_out_message_is_only_printed_for_an_arm64_environment(shell: str
     out = _run(shell, _arch_mismatch_preamble("arm64", True, True, "win-arm64", "win-arm64"))
     assert "UNSLOTH_ALLOW_ARM64_PYTHON" in out, out
     assert out.splitlines()[-1] == "ANSWER=False", out
+
+
+def test_the_architecture_rebuild_does_not_move_the_venv_twice():
+    """An ordinary reinstall has already moved $VenvDir into a rollback by the time this
+    branch runs, so a second Start-StudioVenvRollback would move a directory that is no
+    longer there, throw, and take every architecture migration out through
+    Exit-InstallFailure. The tree is already where the branch wants it; only the flag that
+    keeps it from being swept is missing."""
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    branch = source.index("windows on arm: the existing environment runs native ARM64 Python")
+    tail = source[branch : branch + 2500]
+    guard = tail.index("if ($script:StudioVenvRollbackActive)")
+    move = tail.index("Start-StudioVenvRollback -ExistingDir $VenvDir")
+    assert guard < move, "the rebuild still moves the environment unconditionally"
+    assert "$script:StudioVenvRollbackPreserve = $true" in tail[guard:move], (
+        "an already-active rollback is not marked for preservation"
+    )
+
+
+def test_the_opt_out_keeps_the_environment_it_says_it_keeps():
+    """`UNSLOTH_ALLOW_ARM64_PYTHON=1` returning $false is not, by itself, keeping anything:
+    on a host that already has an x64 Python the reinstall has moved the ARM64 environment
+    into a rollback that success deletes. The opt-out marks that rollback preserved."""
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    optout = source.index(
+        '$script:PrevVenvPlatformTag -eq "win-arm64" -and (Test-Arm64PythonOptOut)'
+    )
+    create = source.index('step "venv" "creating Python')
+    assert optout < create, "the opt-out preservation runs after the rebuild has started"
+    assert "$script:StudioVenvRollbackPreserve = $true" in source[optout : optout + 600]
+    assert "unsloth_studio.arm64.*" in source[optout : optout + 600], (
+        "the user is not told where the kept environment is"
+    )

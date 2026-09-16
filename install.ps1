@@ -5591,10 +5591,19 @@ exit 0
         substep "the ARM64 environment is kept under $StudioHome as unsloth_studio.arm64.*;" "Yellow"
         substep "re-install any extra packages you had added to it, or set UNSLOTH_ALLOW_ARM64_PYTHON=1 to keep it." "Yellow"
         try {
-            Start-StudioVenvRollback -ExistingDir $VenvDir
-            # After the move, so a rollback that never started cannot leave the flag set for
-            # some later unrelated rollback to act on.
-            $script:StudioVenvRollbackPreserve = $true
+            if ($script:StudioVenvRollbackActive) {
+                # The ordinary reinstall already moved this environment aside; a second
+                # Start-StudioVenvRollback would try to move a directory that is no longer
+                # there and throw, taking every architecture migration out through
+                # Exit-InstallFailure. The tree is already where this branch wants it, so
+                # all that is left is to mark it kept rather than swept.
+                $script:StudioVenvRollbackPreserve = $true
+            } else {
+                Start-StudioVenvRollback -ExistingDir $VenvDir
+                # After the move, so a rollback that never started cannot leave the flag set
+                # for some later unrelated rollback to act on.
+                $script:StudioVenvRollbackPreserve = $true
+            }
         } catch {
             Write-StudioLine "[ERROR] Could not move the ARM64 environment aside: $($_.Exception.Message)" -ForegroundColor Red
             Write-StudioLine "        Close Unsloth Studio, including its tray process, then re-run install.ps1." -ForegroundColor Yellow
@@ -5602,6 +5611,20 @@ exit 0
         }
         # Left set, the migrated-environment branch below would --no-deps into a fresh venv.
         $_Migrated = $false
+    }
+
+    # The opt-out has to keep something, or it only changes the wording. On a host that
+    # already has an x64 Python, Find-CompatiblePython picks it and the ordinary reinstall
+    # has already moved the ARM64 environment into a rollback that success would delete, so
+    # "not rebuilt on x64" would have been true of the message and of nothing else. The tree
+    # is kept, under the same unsloth_studio.arm64.* name the rebuild branch uses, and the
+    # user is told where it is and how to go back to it.
+    if ($script:PrevVenvPlatformTag -eq "win-arm64" -and (Test-Arm64PythonOptOut) -and
+        $script:StudioVenvRollbackActive) {
+        $script:StudioVenvRollbackPreserve = $true
+        substep "windows on arm: keeping the existing native ARM64 environment under" "Yellow"
+        substep "$StudioHome as unsloth_studio.arm64.*; the new environment is built on" "Yellow"
+        substep "Python $($DetectedPython.Version) ($($DetectedPython.Arch))." "Yellow"
     }
 
     if (-not (Test-Path -LiteralPath $VenvPython)) {
