@@ -47,6 +47,7 @@ export const zhCN = {
     queueButton: "将消息排队",
     steerButton: "调整回复方向",
     sendTooltip: "发送消息（{shortcut}）",
+    sendLabel: "发送消息",
     followUpTooltip: "{action}（{send}）· {opposite} 执行相反操作",
     announceUpdated: "排队消息已更新。",
     announceEditFailed: "队列已变更，无法再编辑此消息。",

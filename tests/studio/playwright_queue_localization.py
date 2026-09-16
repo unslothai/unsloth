@@ -128,6 +128,39 @@ def check_escape_during_ime(page, base):
     print("PASS: Escape keeps the draft while an IME is composing", flush = True)
 
 
+def check_candidate_confirming_enter(page, base):
+    # A candidate-confirming Enter can arrive with isComposing false and no key
+    # code 229, so per-event flags alone would save the pre-edit text.
+    seed(page, base, shortcut = "enter")
+    editor = open_editor(page, "More options for queued prompt 1", "Edit message")
+    editor.fill("composition-in-progress")
+    page.evaluate(
+        """() => {
+            const ta = document.querySelector('textarea[aria-label^="Edit queued prompt"]');
+            ta.dispatchEvent(new CompositionEvent('compositionstart', {bubbles: true}));
+            ta.dispatchEvent(new KeyboardEvent('keydown',
+                {key: 'Enter', bubbles: true, cancelable: true}));
+        }"""
+    )
+    expect(editor).to_be_visible()
+    expect(page.locator("[data-queue-item-id]").first).to_have_attribute(
+        "aria-label", "Queued prompt 1 of 3: First prompt"
+    )
+    # After the composition ends the same Enter saves.
+    page.evaluate(
+        """() => {
+            const ta = document.querySelector('textarea[aria-label^="Edit queued prompt"]');
+            ta.dispatchEvent(new CompositionEvent('compositionend', {bubbles: true}));
+        }"""
+    )
+    editor.press("Enter")
+    expect(editor).to_have_count(0)
+    expect(page.locator("[data-queue-item-id]").first).to_contain_text(
+        "composition-in-progress"
+    )
+    print("PASS: a candidate-confirming Enter does not save the edit", flush = True)
+
+
 def main():
     server = None
     try:
@@ -155,6 +188,7 @@ def main():
                 check_localized(page, base)
                 check_editor_shortcut(page, base)
                 check_escape_during_ime(page, base)
+                check_candidate_confirming_enter(page, base)
                 assert not errors, errors
             finally:
                 browser.close()

@@ -66,6 +66,7 @@ export function PromptQueueList({
   const [draft, setDraft] = useState("");
   const [announcement, setAnnouncement] = useState("");
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const composingRef = useRef(false);
   const editFromMenuRef = useRef(false);
   const instructionsId = useId();
   const editingItem = items.find(
@@ -95,6 +96,7 @@ export function PromptQueueList({
   }, [activeEditingId]);
 
   function startEditing(item: PromptQueueUIItem) {
+    composingRef.current = false;
     setDraft(item.prompt);
     setEditingId(item.id);
   }
@@ -175,21 +177,40 @@ export function PromptQueueList({
                       value={draft}
                       rows={2}
                       onChange={(event) => setDraft(event.currentTarget.value)}
+                      onCompositionStart={() => {
+                        composingRef.current = true;
+                      }}
+                      onCompositionEnd={() => {
+                        composingRef.current = false;
+                      }}
                       onKeyDown={(event) => {
-                        // An IME consumes Escape to close its candidate window,
-                        // so cancelling here would discard the draft instead.
-                        const composing =
+                        // The candidate window owns this key, Escape included:
+                        // cancelling here would discard the draft instead.
+                        if (
                           event.nativeEvent.isComposing ||
-                          event.nativeEvent.keyCode === 229;
+                          event.nativeEvent.keyCode === 229
+                        ) {
+                          composingRef.current = true;
+                          return;
+                        }
+                        if (composingRef.current) {
+                          // Candidate-confirming Enter can arrive as
+                          // non-composing; keep it gated.
+                          if (event.key === "Enter") {
+                            if (!event.shiftKey) event.preventDefault();
+                            return;
+                          }
+                          // Any other key means the composition really ended.
+                          composingRef.current = false;
+                        }
                         if (event.key === "Escape") {
-                          if (composing) return;
                           event.preventDefault();
                           event.stopPropagation();
                           finishEditing();
                           return;
                         }
                         // Same chord as the composer send. The helper owns the
-                        // IME, repeat and Shift+Enter guards.
+                        // repeat and Shift+Enter guards.
                         if (
                           composerSubmitIntent(
                             {

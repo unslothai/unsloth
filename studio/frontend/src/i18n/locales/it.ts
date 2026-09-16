@@ -44,6 +44,7 @@ export const it = {
     queueButton: "Metti il messaggio in coda",
     steerButton: "Riorienta la risposta",
     sendTooltip: "Invia messaggio ({shortcut})",
+    sendLabel: "Invia messaggio",
     followUpTooltip: "{action} ({send}) · {opposite} per l’opposto",
     announceUpdated: "Messaggio in coda aggiornato.",
     announceEditFailed: "Questo messaggio non può più essere modificato perché la coda è cambiata.",

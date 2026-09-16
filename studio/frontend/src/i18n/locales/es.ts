@@ -47,6 +47,7 @@ export const es = {
     queueButton: "Poner el mensaje en cola",
     steerButton: "Redirigir la respuesta",
     sendTooltip: "Enviar mensaje ({shortcut})",
+    sendLabel: "Enviar mensaje",
     followUpTooltip: "{action} ({send}) · {opposite} para lo contrario",
     announceUpdated: "Mensaje en cola actualizado.",
     announceEditFailed: "Este mensaje ya no se puede editar porque la cola cambió.",

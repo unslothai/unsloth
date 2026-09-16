@@ -45,6 +45,7 @@ export const en = {
     queueButton: "Queue message",
     steerButton: "Steer response",
     sendTooltip: "Send message ({shortcut})",
+    sendLabel: "Send message",
     followUpTooltip: "{action} ({send}) · {opposite} for the opposite",
     announceUpdated: "Queued prompt updated.",
     announceEditFailed:

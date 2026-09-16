@@ -47,6 +47,7 @@ export const hi = {
     queueButton: "संदेश कतार में जोड़ें",
     steerButton: "उत्तर की दिशा बदलें",
     sendTooltip: "संदेश भेजें ({shortcut})",
+    sendLabel: "संदेश भेजें",
     followUpTooltip: "{action} ({send}) · विपरीत के लिए {opposite}",
     announceUpdated: "कतार का संदेश अपडेट हो गया।",
     announceEditFailed: "कतार बदल जाने के कारण यह संदेश अब संपादित नहीं किया जा सकता।",

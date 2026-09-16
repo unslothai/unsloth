@@ -47,6 +47,7 @@ export const ar = {
     queueButton: "إضافة الرسالة للطابور",
     steerButton: "توجيه الرد",
     sendTooltip: "إرسال الرسالة ({shortcut})",
+    sendLabel: "إرسال الرسالة",
     followUpTooltip: "{action} ({send}) · {opposite} للإجراء المعاكس",
     announceUpdated: "تم تحديث الرسالة في الطابور.",
     announceEditFailed: "لم يعد بالإمكان تعديل هذه الرسالة لأن الطابور تغيّر.",

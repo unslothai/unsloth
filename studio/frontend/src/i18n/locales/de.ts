@@ -47,6 +47,7 @@ export const de = {
     queueButton: "Nachricht einreihen",
     steerButton: "Antwort umlenken",
     sendTooltip: "Nachricht senden ({shortcut})",
+    sendLabel: "Nachricht senden",
     followUpTooltip: "{action} ({send}) · {opposite} für das Gegenteil",
     announceUpdated: "Eingereihte Nachricht aktualisiert.",
     announceEditFailed: "Diese Nachricht kann nicht mehr bearbeitet werden, weil sich die Warteschlange geändert hat.",

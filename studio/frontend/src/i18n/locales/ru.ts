@@ -47,6 +47,7 @@ export const ru = {
     queueButton: "Поставить сообщение в очередь",
     steerButton: "Перенаправить ответ",
     sendTooltip: "Отправить сообщение ({shortcut})",
+    sendLabel: "Отправить сообщение",
     followUpTooltip: "{action} ({send}) · {opposite} для обратного действия",
     announceUpdated: "Сообщение в очереди обновлено.",
     announceEditFailed: "Это сообщение больше нельзя изменить, потому что очередь изменилась.",

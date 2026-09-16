@@ -47,6 +47,7 @@ export const ko = {
     queueButton: "메시지 대기열에 추가",
     steerButton: "응답 방향 변경",
     sendTooltip: "메시지 전송({shortcut})",
+    sendLabel: "메시지 전송",
     followUpTooltip: "{action}({send}) · {opposite}(으)로 반대 동작",
     announceUpdated: "대기열 메시지를 업데이트했습니다.",
     announceEditFailed: "대기열이 변경되어 이 메시지를 더 이상 편집할 수 없습니다.",

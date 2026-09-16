@@ -47,6 +47,7 @@ export const fr = {
     queueButton: "Mettre le message en file d’attente",
     steerButton: "Réorienter la réponse",
     sendTooltip: "Envoyer le message ({shortcut})",
+    sendLabel: "Envoyer le message",
     followUpTooltip: "{action} ({send}) · {opposite} pour l’inverse",
     announceUpdated: "Message en file d’attente mis à jour.",
     announceEditFailed: "Ce message ne peut plus être modifié car la file d’attente a changé.",

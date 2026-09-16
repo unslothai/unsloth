@@ -48,6 +48,7 @@ export const ja = {
     queueButton: "メッセージをキューに追加",
     steerButton: "応答の方向を変更",
     sendTooltip: "メッセージを送信（{shortcut}）",
+    sendLabel: "メッセージを送信",
     followUpTooltip: "{action}（{send}）・{opposite} で逆の動作",
     announceUpdated: "キューのメッセージを更新しました。",
     announceEditFailed: "キューが変更されたため、このメッセージは編集できません。",

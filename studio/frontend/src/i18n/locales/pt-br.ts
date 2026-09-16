@@ -47,6 +47,7 @@ export const ptBR = {
     queueButton: "Enfileirar mensagem",
     steerButton: "Redirecionar a resposta",
     sendTooltip: "Enviar mensagem ({shortcut})",
+    sendLabel: "Enviar mensagem",
     followUpTooltip: "{action} ({send}) · {opposite} para o oposto",
     announceUpdated: "Mensagem na fila atualizada.",
     announceEditFailed: "Esta mensagem não pode mais ser editada porque a fila mudou.",
