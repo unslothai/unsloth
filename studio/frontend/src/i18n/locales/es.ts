@@ -1502,7 +1502,8 @@ export const es = {
         exportChat: "Exportar chat",
       },
       pastedTextThreshold: "Condensar pegados largos",
-      pastedTextThresholdDescription: "El texto pegado más largo que esto se convierte en un adjunto .txt en lugar de llenar el cuadro de mensaje. Pulsa {shortcut} para pegar en el cuadro de mensaje de todos modos.",
+      pastedTextThresholdDescription:
+        "Pulsa {shortcut} para pegar directamente en el cuadro de mensaje.",
       pastedTextThresholdOff: "Desactivado",
       showResponseModel: "Mostrar el modelo de respuesta",
       showResponseModelDescription:
@@ -1512,13 +1513,13 @@ export const es = {
         'Muestra "Los LLM pueden cometer errores" bajo el cuadro de chat.',
       projectAttachments: "Compartir archivos en todo el proyecto",
       projectAttachmentsDescription:
-        "Valor predeterminado para los archivos adjuntos en un chat que pertenece a un proyecto: indexarlos para todo el proyecto para que cualquier chat pueda usarlos. Cada chat puede cambiarlo desde el menú de adjuntos.",
+        "Comparte los nuevos archivos adjuntos con todos los chats del proyecto.",
       rememberParamsPerModel: "Recordar los ajustes por modelo",
       rememberParamsPerModelDescription:
-        "Al cambiar de modelo se restauran la temperatura, el prompt y los demás ajustes que usaste por última vez con ese modelo. Desactivado, se mantiene un único conjunto de ajustes para todos los modelos.",
+        "Restaura el último prompt, la temperatura y los demás ajustes usados con cada modelo.",
       autoCompact: "Compactar automáticamente chats largos",
       autoCompactDescription:
-        "Cuando un chat GGUF local alcance la longitud de contexto configurada, descarta los turnos antiguos en vez de devolver un error. Esto no depende de la VRAM libre.",
+        "Elimina los turnos antiguos cuando un chat GGUF local alcance su límite de contexto.",
       compactionStyle: "Cuando se llena el contexto",
       compactionStyleDescription:
         "Usar el valor del servidor conserva UNSLOTH_CONTEXT_POLICY. Restablecer la conversación mantiene el último turno y las instrucciones permanentes. Una ventana deslizante descarta los turnos más antiguos y puede conservar más historial reciente.",

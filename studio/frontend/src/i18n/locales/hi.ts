@@ -1431,24 +1431,28 @@ export const hi = {
     },
     chat: {
       groups: {
-        conversations: { title: "बतचत" },
-        files: { title: "फइल और पस" },
-        display: { title: "दखवट" },
-        composer: { title: "सदश बक" },
-        menu: { title: "चट मन" },
-        advanced: { title: "उनत" },
-        contextTitle: "सदर",
+        conversations: { title: "बातचीत" },
+        files: { title: "फ़ाइलें और पेस्ट" },
+        display: { title: "दिखावट" },
+        composer: { title: "संदेश बॉक्स" },
+        menu: { title: "चैट मेन्यू" },
+        advanced: { title: "उन्नत" },
+        contextTitle: "संदर्भ",
       },
-      projectAttachmentsHint: "हर चट क अटचमट मन स इस सटग क अलग स बदल।",
-      rememberParamsPerModelHint: "बद हन पर सभ मडल एक ह सटग इसमल करत ह।",
+      projectAttachmentsHint:
+        "हर चैट के अटैचमेंट मेन्यू से इस सेटिंग को अलग से बदलें।",
+      rememberParamsPerModelHint:
+        "बंद होने पर सभी मॉडल एक ही सेटिंग इस्तेमाल करते हैं।",
       autoCompactHint:
-        "उपलब VRAM क बजय आपक तय कए गए सदर क लबई क उपयग करत ह।",
+        "उपलब्ध VRAM के बजाय आपके तय किए गए संदर्भ की लंबाई का उपयोग करता है।",
       pastedTextShortDescription:
-        "इस सम स लब पस कए गए टक क .txt अटचमट म बदल।",
-      compactionDescriptionInherit: "सरर क सदर नत क पलन कर।",
-      compactionDescriptionCheckpoint: "सबस हल क सवद और सय नरश बनए रख।",
+        "इस सीमा से लंबे पेस्ट किए गए टेक्स्ट को .txt अटैचमेंट में बदलें।",
+      compactionDescriptionInherit:
+        "सर्वर की संदर्भ नीति का पालन करें।",
+      compactionDescriptionCheckpoint:
+        "सबसे हाल का संवाद और स्थायी निर्देश बनाए रखें।",
       compactionDescriptionRolling:
-        "परन सवद हटकर हल क इतहस और चन गई अतरक खल जगह बनए रख।",
+        "पुराने संवाद हटाकर हाल का इतिहास और चुनी गई अतिरिक्त खाली जगह बनाए रखें।",
       projectsSection: "प्रोजेक्ट अनुभाग दिखाएँ",
       projectsSectionDescription:
         "प्रोजेक्ट चैट को प्रोजेक्ट शीर्षक के नीचे समूहित करता है। बंद करने पर वे हाल ही के अंतर्गत दिखती हैं।",
@@ -1478,7 +1482,8 @@ export const hi = {
         exportChat: "चैट एक्सपोर्ट करें",
       },
       pastedTextThreshold: "लंबे पेस्ट को संक्षिप्त करें",
-      pastedTextThresholdDescription: "इससे लंबा चिपकाया गया टेक्स्ट संदेश बॉक्स भरने के बजाय .txt अटैचमेंट बन जाता है। {shortcut} दबाने पर यह फिर भी संदेश बॉक्स में चिपकेगा।",
+      pastedTextThresholdDescription:
+        "सीधे संदेश बॉक्स में पेस्ट करने के लिए {shortcut} दबाएँ।",
       pastedTextThresholdOff: "बंद",
       showResponseModel: "जवाब देने वाला मॉडल दिखाएँ",
       showResponseModelDescription:
@@ -1488,13 +1493,13 @@ export const hi = {
         'चैट बॉक्स के नीचे "LLMs can make mistakes" दिखाएं।',
       projectAttachments: "प्रोजेक्ट भर में फ़ाइलें साझा करें",
       projectAttachmentsDescription:
-        "किसी प्रोजेक्ट से जुड़ी चैट में संलग्न फ़ाइलों के लिए डिफ़ॉल्ट: उन्हें पूरे प्रोजेक्ट के लिए इंडेक्स करें ताकि उसकी हर चैट उनका उपयोग कर सके. हर चैट इसे अटैच मेनू से बदल सकती है.",
+        "नए चैट अटैचमेंट प्रोजेक्ट की हर चैट में उपलब्ध कराएँ।",
       rememberParamsPerModel: "हर मॉडल के लिए सेटिंग्स याद रखें",
       rememberParamsPerModelDescription:
-        "मॉडल बदलने पर उस मॉडल के साथ आपने आखिरी बार जो तापमान, प्रॉम्प्ट और अन्य सेटिंग्स इस्तेमाल की थीं, वे वापस आ जाती हैं। बंद होने पर सभी मॉडलों के लिए एक ही सेट रहता है।",
+        "हर मॉडल के साथ आखिरी बार इस्तेमाल किए गए प्रॉम्प्ट, तापमान और अन्य सेटिंग्स वापस लाएँ।",
       autoCompact: "लंबी चैट को अपने आप कॉम्पैक्ट करें",
       autoCompactDescription:
-        "जब लोकल GGUF चैट सेट की गई कॉन्टेक्स्ट लंबाई तक पहुँच जाए, तो त्रुटि लौटाने के बजाय पुराने टर्न हटा दें। यह खाली VRAM पर आधारित नहीं है।",
+        "लोकल GGUF चैट की कॉन्टेक्स्ट सीमा भरने पर पुराने टर्न हटाएँ।",
       compactionStyle: "कॉन्टेक्स्ट भरने पर",
       compactionStyleDescription:
         "सर्वर डिफ़ॉल्ट से UNSLOTH_CONTEXT_POLICY बना रहता है। बातचीत रीसेट करने पर नवीनतम टर्न और स्थायी निर्देश रहते हैं। स्लाइडिंग विंडो सबसे पुराने टर्न हटाती है और हाल का अधिक इतिहास रख सकती है।",

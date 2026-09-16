@@ -1470,7 +1470,8 @@ export const ko = {
         exportChat: "채팅 내보내기",
       },
       pastedTextThreshold: "긴 붙여넣기 압축",
-      pastedTextThresholdDescription: "이 길이를 초과한 붙여넣기 텍스트는 입력창을 채우는 대신 .txt 첨부 파일이 됩니다. {shortcut} 를 누르면 그래도 입력창에 붙여넣습니다.",
+      pastedTextThresholdDescription:
+        "{shortcut} 키를 누르면 입력창에 바로 붙여넣습니다.",
       pastedTextThresholdOff: "끄기",
       showResponseModel: "응답 모델 표시",
       showResponseModelDescription:
@@ -1480,13 +1481,13 @@ export const ko = {
         '채팅 상자 아래에 "LLMs can make mistakes" 문구를 표시합니다.',
       projectAttachments: "프로젝트 전체에서 파일 공유",
       projectAttachmentsDescription:
-        "프로젝트에 속한 채팅에서 첨부한 파일의 기본 동작입니다. 프로젝트 전체에 색인하여 해당 프로젝트의 모든 채팅에서 사용할 수 있게 합니다. 채팅마다 첨부 메뉴에서 변경할 수 있습니다.",
+        "새 채팅 첨부 파일을 프로젝트의 모든 채팅에서 사용할 수 있게 합니다.",
       rememberParamsPerModel: "모델별로 설정 기억",
       rememberParamsPerModelDescription:
-        "모델을 전환하면 해당 모델에서 마지막으로 사용한 온도, 프롬프트 등의 설정이 복원됩니다. 끄면 모든 모델이 하나의 설정을 공유합니다.",
+        "각 모델에서 마지막으로 사용한 프롬프트, 온도 등의 설정을 복원합니다.",
       autoCompact: "긴 채팅 자동 압축",
       autoCompactDescription:
-        "로컬 GGUF 채팅이 설정한 컨텍스트 길이에 도달하면 오류를 반환하는 대신 오래된 턴을 삭제합니다. 사용 가능한 VRAM을 기준으로 하지 않습니다.",
+        "로컬 GGUF 채팅이 컨텍스트 한도에 도달하면 오래된 턴을 삭제합니다.",
       compactionStyle: "컨텍스트가 가득 찼을 때",
       compactionStyleDescription:
         "서버 기본값을 사용하면 UNSLOTH_CONTEXT_POLICY가 유지됩니다. 대화 재설정은 최신 턴과 지속 지침을 남깁니다. 슬라이딩 윈도우는 가장 오래된 턴을 삭제하고 최근 기록을 더 많이 유지할 수 있습니다.",

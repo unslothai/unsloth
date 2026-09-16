@@ -1476,7 +1476,8 @@ export const it = {
         exportChat: "Esporta chat",
       },
       pastedTextThreshold: "Condensa incolla lunghi",
-      pastedTextThresholdDescription: "Il testo incollato più lungo di questo valore diventa un allegato .txt invece di riempire il campo del messaggio. Premi {shortcut} per incollare comunque nel campo del messaggio.",
+      pastedTextThresholdDescription:
+        "Premi {shortcut} per incollare direttamente nel campo del messaggio.",
       pastedTextThresholdOff: "Disattivato",
       showResponseModel: "Mostra il modello della risposta",
       showResponseModelDescription:
@@ -1486,13 +1487,13 @@ export const it = {
         "Mostra «Gli LLM possono commettere errori» sotto il campo della chat.",
       projectAttachments: "Condividi i file nel progetto",
       projectAttachmentsDescription:
-        "Impostazione predefinita per i file allegati in una chat che appartiene a un progetto: indicizzarli per l'intero progetto in modo che ogni chat possa usarli. Ogni chat puo cambiarlo dal menu degli allegati.",
+        "Rende i nuovi allegati disponibili in tutte le chat del progetto.",
       rememberParamsPerModel: "Ricorda le impostazioni per modello",
       rememberParamsPerModelDescription:
-        "Cambiando modello vengono ripristinati temperatura, prompt e le altre impostazioni usate l'ultima volta con quel modello. Disattivato, resta un unico set di impostazioni per tutti i modelli.",
+        "Ripristina l’ultimo prompt, la temperatura e le altre impostazioni usate con ogni modello.",
       autoCompact: "Compatta automaticamente le chat lunghe",
       autoCompactDescription:
-        "Quando una chat GGUF locale raggiunge la lunghezza di contesto impostata, elimina i turni precedenti invece di restituire un errore. Questa impostazione non dipende dalla VRAM libera.",
+        "Rimuove i turni più vecchi quando una chat GGUF locale raggiunge il limite del contesto.",
       compactionStyle: "Quando il contesto è pieno",
       compactionStyleDescription:
         "Il valore predefinito del server mantiene UNSLOTH_CONTEXT_POLICY. Reimpostare la conversazione conserva l'ultimo turno e le istruzioni permanenti. Una finestra scorrevole elimina i turni più vecchi e può conservare più cronologia recente.",
