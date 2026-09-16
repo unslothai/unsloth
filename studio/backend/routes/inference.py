@@ -10740,10 +10740,9 @@ def _gguf_runtime_bytes(
                 _fa_supported = False
         except Exception as _fa_exc:
             logger.debug("flash-attention capability probe failed: %s", _fa_exc)
-        # One resolver, shared with load_model, so this estimate and the launch cannot answer
-        # differently (#9697, #10489). It also closes the gap the two-step form had: a
-        # quantized V forced flash attention on even on a build with no --flash-attn to emit,
-        # where the launch rewrites the V cache to f16 and the padded arm is the right price.
+        # Shared with load_model so the estimate and the launch cannot answer differently
+        # (#9697, #10489). The old two-step form let a quantized V force flash attention on
+        # even on a build with no --flash-attn to emit.
         flash_attn = _planned_flash_attn_state(
             llama_extra_args,
             planned_cache_types = planned_cache_types,

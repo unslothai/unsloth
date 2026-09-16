@@ -3920,20 +3920,13 @@ async def get_kv_cache_estimate(
             except Exception as e:
                 logger.debug(f"cache type resolution failed for '{repo_id}': {e}")
 
-            # The attention plan, resolved exactly once for this answer. Taking the
-            # estimator's defaults here while the loader resolved the same knobs differently
-            # is why the panel and the loader's log reported two KV caches for one model and
-            # cache type (#10489).
-            #
+            # Taking the estimator's defaults here while the loader resolved the same knobs
+            # differently is why one model and cache type reported two KV caches (#10489).
             # An asked-for value is expressed as the extra argument a load would carry and
-            # then resolved by the same helpers the launch uses, never taken verbatim: that
-            # keeps one rule for both callers and stops the route answering for a load that
-            # cannot happen, since a quantized V cache turns flash attention on inside
-            # llama.cpp whatever the request said, and a build without the flag cannot.
-            #
-            # bool or nothing: called directly, in process and from the tests, an omitted
-            # argument arrives as the ``Query`` default object rather than None, and that
-            # sentinel reads as True.
+            # re-resolved by the launch's own helpers, never taken verbatim, so the route
+            # cannot answer for a load that cannot happen.
+            # isinstance(..., bool): called in process an omitted argument arrives as the
+            # ``Query`` default object, which is truthy.
             _asked_flash_attn = flash_attn if isinstance(flash_attn, bool) else None
             _asked_kv_unified = kv_unified if isinstance(kv_unified, bool) else None
             _asked_swa_full = swa_full if isinstance(swa_full, bool) else None
@@ -3971,12 +3964,10 @@ async def get_kv_cache_estimate(
                     "flash_attn": _planned_flash_attn_state(
                         _planner_extras,
                         planned_cache_types = _plan_cache_types(cache_type_kv, _planner_extras),
-                        # An unreadable probe keeps the managed default, which is what the
-                        # launch emits whenever the flag is there to emit.
+                        # An unreadable probe keeps the managed default.
                         supports_flash_attn = bool(_plan_caps.get("supports_flash_attn", True)),
                     ),
-                    # The loader's own default: Unsloth asks for a unified cache only to
-                    # serve more than one slot, and only on a build that has the flag.
+                    # The loader's own default: unified only for >1 slot, only if supported.
                     "kv_unified": _kv_unified_from_args(
                         _planner_extras,
                         default = (n_parallel or 1) > 1
@@ -4087,12 +4078,9 @@ async def get_kv_cache_estimate(
                 except Exception as e:
                     logger.debug(f"mmproj estimate failed for '{repo_id}' {quant}: {e}")
             if _asked_no_mmproj:
-                # A third case beside "vision off" and "mmproj resident":
-                # --no-mmproj-offload keeps vision on and puts the projector in HOST memory.
-                # The frontend adds projectorBytes straight onto its GPU weights segment, so
-                # a projector explicitly pinned off the card was still charged against the
-                # VRAM bar. Same reason kv_checkpoint_bytes is subtracted one field along:
-                # host heap must not warn OOM over memory that never reaches the card.
+                # --no-mmproj-offload keeps vision on with the projector in HOST memory.
+                # The frontend adds projectorBytes onto its GPU weights segment, so leaving
+                # it set charges the VRAM bar for memory that never reaches the card.
                 projector = None
 
             # Only the MTP modes reserve memory; ngram is free. "auto" may or may not resolve to MTP, and the estimator
@@ -4185,8 +4173,7 @@ async def get_kv_cache_estimate(
                             # 16. Blank is not zero: _build_speculative_flags emits its own default when the field is unset (2 with a
                             # GPU, 3 without) and the rollback state is multiplied by it. An explicit 0 is still honoured.
                             spec_draft_n_max = _effective_draft_n_max,
-                            # Same estimator, so the same resolved plan: on the defaults it
-                            # reported a reserve the target half had already contradicted.
+                            # Same estimator, so it must get the same resolved plan.
                             **_plan_kwargs,
                         )
                 except Exception as e:
@@ -4236,11 +4223,9 @@ async def get_kv_cache_estimate(
                             None, _cached_inference_devices(), tensor_parallel = True
                         ),
                     )
-                # The planner resolves the attention plan from the extra arguments a load
-                # would carry, which is why the asked-for plan was built in that vocabulary:
-                # handing it over is what stops gpu_bytes and kv_bytes in ONE response
-                # describing two different loads. None here leaves the planner's own
-                # resolution, which is already the launch's.
+                # The planner resolves its plan from extra arguments, which is why the
+                # asked-for plan was built in that vocabulary: without handing it over,
+                # gpu_bytes and kv_bytes in ONE response describe two different loads.
                 _cfg = _cached_estimate_config(repo_id, quant, None, False)
                 if _cfg is not None and _cfg is not _ESTIMATE_NOT_ON_DISK:
                     _cfg = _localized_estimate_config(_cfg, path)

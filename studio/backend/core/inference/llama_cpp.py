@@ -3773,10 +3773,8 @@ _FIT_FLOOR_MIN_CTX = 256
 # the ceiling that assumed one.
 _LLAMA_FIT_MIN_CTX = 4096
 
-# _plan_tensor_parallel's no-KV fallback: nothing can prove a safe cap without KV metadata,
-# and tensor mode has no --fit valve. A separate name because it is a GUESS: it may shrink
-# Auto, but may not overrule a hand-set context (#9653) nor be published as "the largest
-# that fits" when the load ran above it.
+# _plan_tensor_parallel's no-KV fallback. Named separately because it is a GUESS: it may
+# shrink Auto, but may not overrule a hand-set context nor be published as a ceiling (#9653).
 _TP_UNMEASURED_CTX = 4096
 
 # Auto only reaches this path when no discrete-GPU subset can hold the model.
@@ -4635,21 +4633,11 @@ def _planned_flash_attn_state(
     supports_flash_attn: bool = True,
     env: Optional[Mapping[str, str]] = None,
 ) -> bool:
-    """The flash-attention state a launch will really run at.
-
-    One answer for the estimate and for the argv. ``_estimate_kv_cache_bytes`` floors the V
-    axis at f16 with flash attention off and pads variable-width V tensors to the model-wide
-    maximum, so an estimate resolved differently from the launch is not conservative, it
-    describes a different load (#9697, #10489).
-
-    Three inputs, in llama.cpp's own order of authority:
-
-    - the build. Without ``--flash-attn`` in its ``--help`` nothing is emitted, and a
-      quantized V cache is then rewritten to f16 (``_reset_quantized_v_cache``), which is
-      what the padded, f16-floored arm of the estimator prices.
-    - the environment then the user's extras, last-wins, via ``_flash_attn_enabled_from_args``.
-    - a quantized V cache, which is not a choice: llama.cpp turns flash attention on itself,
-      so an explicit off does not survive contact with the child.
+    """One answer for the estimate and for the argv: ``_estimate_kv_cache_bytes`` floors V at
+    f16 and pads it model-wide when flash attention is off, so resolving the two separately
+    prices a different load, not a conservative one (#9697, #10489). A build with no
+    ``--flash-attn`` in its ``--help`` emits nothing and rewrites a quantized V to f16
+    (``_reset_quantized_v_cache``), which is exactly the padded arm.
     """
     if not supports_flash_attn:
         return False
@@ -4658,19 +4646,14 @@ def _planned_flash_attn_state(
     if quantized_v:
         # Not a choice: llama.cpp turns it on itself rather than refusing the load.
         return True
-    # LLAMA_ARG_FLASH_ATTN is read before argv is parsed (arg.cpp set_env), and ``load_model``
-    # appends a managed ``--flash-attn on`` on every launch whose build has the flag, so the
-    # environment loses to that managed flag and only the user's own extras beat it. Resolving
-    # from ``extra_args`` alone let ``LLAMA_ARG_FLASH_ATTN=off`` with no user ``-fa`` size the
-    # padded cache while the child ran with flash attention ON, which is #9697 and #10489
-    # arriving through the environment. Written as a prepended argv, like
-    # ``_kv_unified_from_args`` does for its own managed flag, so one last-wins parser decides.
+    # Prepended, not merely read from extra_args: ``load_model`` appends a managed
+    # ``--flash-attn on``, so LLAMA_ARG_FLASH_ATTN=off loses to it and only the user's own
+    # extras beat it. Reading the env directly sized the padded cache for a child running
+    # with flash attention ON (#9697, #10489).
     effective_args = ["--flash-attn", "on", *(str(arg) for arg in extra_args or ())]
     if _asked_for_auto_flash_attn(effective_args, env = env):
-        # ``auto`` means llama.cpp decides at load time, and it decides against flash
-        # attention whenever the backend, model or cache pair cannot take it, with no error
-        # and no log line. The honest sizing is the one that survives the answer being no,
-        # which is the larger padded, f16-floored cache.
+        # ``auto`` is decided at load time, silently, and can come back no. Size for the
+        # answer that costs more.
         return False
     return _flash_attn_enabled_from_args(effective_args, default = True, env = env)
 
@@ -4678,11 +4661,8 @@ def _planned_flash_attn_state(
 def _asked_for_auto_flash_attn(
     extra_args: Optional[Iterable[str]] = None, *, env: Optional[Mapping[str, str]] = None
 ) -> bool:
-    """Whether the resolved flash-attention setting is llama.cpp's ``auto``, not on or off.
-
-    ``_flash_attn_enabled_from_args`` folds auto into True, because it answers what the argv
-    will SAY; sizing needs to know that nobody has decided yet.
-    """
+    """``_flash_attn_enabled_from_args`` folds auto into True because it answers what the
+    argv will SAY; sizing needs to know nobody has decided yet."""
     asked: Optional[str] = None
     value = (os.environ if env is None else env).get("LLAMA_ARG_FLASH_ATTN")
     if value in _LLAMA_ARG_TRUE_FALSE_AUTO_VALUES:
@@ -13572,16 +13552,10 @@ class LlamaCppBackend:
     ) -> Optional[str]:
         """Advisory for a hand-set context launched with no KV estimate behind it.
 
-        The counterpart to ``_metal_context_overcommit_message``, for the state it abstains
-        on: the GGUF carries no attention dimensions, so nothing can price the cache. Both
-        arms that fall back to a short context there (``_TP_UNMEASURED_CTX`` and
-        ``_metal_floor_ctx``) used to apply it to an explicit request and publish it as
-        ``max_context_length``, so a 262,144-token selection arrived as 4,096 with the slider
-        reporting that nothing longer fits (#9653).
-
-        A guess may shrink Auto, but may not overrule a typed context or be published as "the
-        largest that fits" once the load has run above it. What is owed is the reason, which
-        is this notice. Not a refusal: refusing on a guess blocks loads that work today.
+        A GGUF with no attention dimensions cannot be priced, so both short-context fallbacks
+        (``_TP_UNMEASURED_CTX``, ``_metal_floor_ctx``) used to overrule a 262,144-token
+        request down to 4,096 and publish that as ``max_context_length`` (#9653). Deliberately
+        an advisory and not a refusal: refusing on a guess blocks loads that work today.
         """
         if requested_ctx <= 0:
             return None
@@ -14315,9 +14289,9 @@ class LlamaCppBackend:
         # layer's V is padded to hparams.n_embd_v_gqa_max() over the WHOLE model,
         # which is what _estimate_kv_cache_bytes charges (_max_kv_value_width). The
         # V half goes constant while K stays per-layer, so an unpadded vector
-        # prices a ratio the total does not have. Reached whenever the resolved launch
-        # runs without flash attention (_planned_flash_attn_state), which is also when
-        # llama.cpp pads V. bpe_v is floored at
+        # prices a ratio the total does not have. Reached whenever the resolved launch runs
+        # without flash attention (_planned_flash_attn_state), which is when V is padded.
+        # bpe_v is floored at
         # f16 for a quantised cache, and with V constant that asymmetry moves the
         # ratio too, so carry both rather than cancelling one.
         bpe_k = _kv_bytes_per_elem(cache_type_kv)
@@ -19148,11 +19122,9 @@ class LlamaCppBackend:
         so an asymmetric pair keeps both terms conservative. Defaults to
         ``cache_type_kv`` when unset, which is the symmetric case.
 
-        ``explicit_ctx`` says ``target_ctx`` was set by hand. It only matters when the KV
-        cache cannot be sized at all: the fallback has no measurement behind it, so it may
-        shrink Auto but must not overrule the request, and the ceiling it publishes may not
-        sit below the context this load launches at (#9653). With a real KV estimate the cap
-        is a measurement and binds either way.
+        ``explicit_ctx`` only matters when the KV cache cannot be sized at all: the fallback
+        is then a guess, so it may shrink Auto but must neither overrule the request nor
+        publish a ceiling below what launched (#9653). A real KV estimate binds either way.
         """
 
         # Per-GPU usable budget: free - (1-frac)*total, else (unknown total, e.g. a
@@ -19288,11 +19260,8 @@ class LlamaCppBackend:
         max_available_ctx = _fit_ctx(max_ctx_target)
         effective_ctx = min(_fit_ctx(target_ctx), max_available_ctx)
         if not self._can_estimate_kv() and explicit_ctx and target_ctx > 0:
-            # Nothing above measured anything, so the min() applies a guess to a typed
-            # context: a 262,144 request came back as 4,096 for the launch AND as
-            # max_context_length (#9653). Honour the request and publish a ceiling the
-            # launch does not contradict; the caller records that it is unmeasured, since a
-            # guess cannot refuse either.
+            # The min() above would apply a guess to a typed context: 262,144 requested came
+            # back as 4,096 for the launch AND as max_context_length (#9653).
             effective_ctx = target_ctx
             max_available_ctx = max(max_available_ctx, effective_ctx)
 
@@ -21733,16 +21702,11 @@ class LlamaCppBackend:
                     None if _cache_type_from_env else cache_type_kv,
                     extra_args,
                 )
-                # Resolved once here and threaded into every sizing call below, so the
-                # estimate and the argv describe the same load (#9697, #10489). After the
-                # cache pair, because a quantized V forces flash attention on.
-                #
-                # NOT pinned False to pre-reserve the larger cache a hard-crash recovery
-                # would relaunch with: that cost every path up to 2.28x of its context
-                # ceiling for a protection two mechanisms already give. Tensor mode cannot
-                # take that recovery at all (llama.cpp requires flash attention for
-                # SPLIT_MODE_TENSOR), and elsewhere the no-flash respawn goes back through
-                # _spawn_and_wait, whose own rung hands placement to llama.cpp with --fit on.
+                # After the cache pair, because a quantized V forces flash attention on.
+                # NOT pinned False to pre-reserve the cache a hard-crash recovery would
+                # relaunch with: tensor mode cannot take that recovery (llama.cpp requires
+                # flash attention for SPLIT_MODE_TENSOR) and elsewhere the no-flash respawn
+                # goes back through _spawn_and_wait, which hands placement to --fit.
                 planned_flash_attn = _planned_flash_attn_state(
                     extra_args,
                     planned_cache_types = _planned_cache_pair,
@@ -23346,16 +23310,14 @@ class LlamaCppBackend:
                             # would otherwise size placement against a fraction the
                             # ranking above never used.
                             vram_fraction = _vram_frac,
-                            # Only read when the KV cache cannot be sized: the fallback
-                            # is then a guess and must not overrule a typed context.
+                            # Only read when the KV cache cannot be sized.
                             explicit_ctx = explicit_ctx,
                         )
                         use_fit = False
                         _tp_planned = True
                         if explicit_ctx and not self._can_estimate_kv():
-                            # The planner honoured the request because its fallback is a
-                            # guess (_TP_UNMEASURED_CTX), and tensor mode emits --fit off,
-                            # so llama.cpp will not reduce this either.
+                            # Tensor mode emits --fit off, so llama.cpp will not reduce
+                            # this either: nothing downstream will catch an over-commit.
                             self._record_load_warning(
                                 self._unmeasured_context_notice(effective_ctx, cache_type_kv)
                             )
@@ -23620,9 +23582,8 @@ class LlamaCppBackend:
                         # The other measured verdict: nothing fits, so there is no ceiling
                         # to name and every explicit request over-commits.
                         _apple_nothing_fits = False
-                        # And the verdict that is no measurement at all: without the
-                        # dimensions the KV estimate needs, the floor below is a guess, so
-                        # it may neither refuse nor be published as a ceiling (#9653).
+                        # No measurement at all: the floor below is a guess, so it may
+                        # neither refuse nor be published as a ceiling (#9653).
                         _apple_ctx_unmeasured = False
                         # Reserve the flat MTP fraction up front like the discrete
                         # _pin_fraction, so an unsized MTP draft (e.g. Qwen3.6-MTP, #6529)
@@ -23729,11 +23690,9 @@ class LlamaCppBackend:
                         if not explicit_ctx:
                             effective_ctx = max_available_ctx
                         elif _apple_ctx_unmeasured:
-                            # Auto keeps the floor above; a hand-set context is not
-                            # overruled by a guess. This arm never overruled one, but it
-                            # published the floor anyway, so /v1/models answered
-                            # max_context_length 4,096 for a load launched at 262,144
-                            # (#9653). Publish what ran, and say the ceiling was a guess.
+                            # This arm never overruled the request, but published the floor
+                            # anyway: /v1/models answered max_context_length 4,096 for a load
+                            # launched at 262,144 (#9653).
                             max_available_ctx = max(max_available_ctx, effective_ctx)
                             self._record_load_warning(
                                 self._unmeasured_context_notice(effective_ctx, cache_type_kv)

@@ -3,19 +3,12 @@
 
 """The estimate and the launch price the same flash-attention state.
 
-``load_model`` used to pin ``planned_flash_attn = False`` unconditionally as a cushion for the
-crash recovery, and then emit ``--flash-attn on`` on every launch whose build has the flag, so
-every placement figure described a load that was not going to happen. With flash attention off
-the estimator floors the V axis at f16 and pads variable-width V tensors to the model-wide
-maximum, which is 1.44x the KV cache at q8_0 and 2.28x at q4_0. In tensor mode ``--fit`` is a
-no-op, so that inflated cache is a hard cap and becomes the published ``max_context_length``
-(#9697), and it is also what the context warning compares against while the memory panel
-prices the optimistic one (#10489).
-
-The cushion is not lost. Tensor mode cannot take the FA-off recovery at all (llama.cpp
-requires flash attention for ``SPLIT_MODE_TENSOR``, pinned by
+``load_model`` used to pin ``planned_flash_attn = False`` while emitting ``--flash-attn on``,
+so every placement figure described a load that was not going to happen (#9697, #10489). The
+crash-recovery cushion that pin gave is not lost: tensor mode cannot take the FA-off recovery
+at all (llama.cpp requires flash attention for ``SPLIT_MODE_TENSOR``, pinned by
 ``test_tensor_quant_kv_platform_matrix.py``), and elsewhere the no-flash respawn re-enters
-``_spawn_and_wait``, whose own rung hands placement back to llama.cpp with ``--fit on``.
+``_spawn_and_wait``, which hands placement back to llama.cpp with ``--fit on``.
 """
 
 from __future__ import annotations
@@ -41,7 +34,6 @@ def _load(module_name: str, file_name: str):
     return module
 
 
-# The placement harness owns the fake GPU probe, the stub GGUF and the captured Popen.
 _placement = _load("_placement_for_flash_attn_plan", "test_llama_cpp_placement.py")
 
 from core.inference.llama_cpp import (  # noqa: E402
@@ -53,17 +45,12 @@ GB = 1024**3
 NATIVE = 262144
 
 
-# ── the resolver, in isolation ────────────────────────────────────────────────
-
-
 class TestTheResolver:
     def test_the_managed_default_is_on(self):
-        """What the launch emits when nothing says otherwise: --flash-attn on."""
         assert _planned_flash_attn_state() is True
 
     def test_a_build_without_the_flag_is_off(self):
-        """Nothing is emitted, so the child runs without it and the padded, f16-floored
-        arm of the estimator is the right price."""
+        """No flag emitted, so the padded, f16-floored arm is the right price."""
         assert _planned_flash_attn_state(supports_flash_attn = False) is False
 
     @pytest.mark.parametrize(
@@ -82,23 +69,16 @@ class TestTheResolver:
         assert _planned_flash_attn_state(["-fa", "off", "--flash-attn", "on"]) is True
 
     def test_the_environment_loses_to_the_managed_flag(self):
-        """The environment is read, and then Unsloth's own ``--flash-attn on`` overrides it.
-
-        ``load_model`` appends a managed ``--flash-attn on`` on every launch whose build has
-        the flag, and llama.cpp reads ``LLAMA_ARG_FLASH_ATTN`` before it parses argv (arg.cpp
-        set_env), so with no user ``-fa`` the child runs WITH flash attention whatever the
-        environment said. Sizing it off is #9697 and #10489 through the environment.
-        """
+        """llama.cpp reads LLAMA_ARG_FLASH_ATTN before argv (arg.cpp set_env), so with no
+        user ``-fa`` the managed ``--flash-attn on`` wins and the child runs WITH it."""
         assert _planned_flash_attn_state(env = {"LLAMA_ARG_FLASH_ATTN": "0"}) is True
 
     def test_a_user_off_still_beats_the_managed_flag(self):
-        """Extras are appended AFTER the managed flag, so they win. Order of authority:
-        environment, then Unsloth's managed flag, then the user's extras."""
+        """Order of authority: environment, managed flag, then the user's extras."""
         assert _planned_flash_attn_state(["-fa", "off"], env = {"LLAMA_ARG_FLASH_ATTN": "0"}) is False
         assert _planned_flash_attn_state(["-fa", "off"], env = {}) is False
 
     def test_the_extras_beat_the_environment(self):
-        """llama.cpp applies LLAMA_ARG_* before parsing argv, so the CLI still wins."""
         assert (
             _planned_flash_attn_state(["--flash-attn", "on"], env = {"LLAMA_ARG_FLASH_ATTN": "0"})
             is True
@@ -106,8 +86,8 @@ class TestTheResolver:
 
     @pytest.mark.parametrize("v_type", ["q8_0", "q4_0", "q5_1", "iq4_nl"])
     def test_a_quantized_v_cache_forces_it_on(self, v_type):
-        """Not a choice: llama.cpp logs "enabling flash_attn since it is required for
-        quantized V cache" and turns it on itself, so an explicit off does not survive."""
+        """llama.cpp logs "enabling flash_attn since it is required for quantized V cache"
+        and turns it on itself, so an explicit off does not survive."""
         assert (
             _planned_flash_attn_state(["--flash-attn", "off"], planned_cache_types = ("f16", v_type))
             is True
@@ -121,8 +101,8 @@ class TestTheResolver:
         )
 
     def test_a_quantized_v_cannot_force_a_build_that_has_no_flag(self):
-        """With no --flash-attn to emit, the launch rewrites the V cache to f16 instead
-        (_reset_quantized_v_cache), so forcing "on" here would under-reserve."""
+        """The launch rewrites V to f16 instead (_reset_quantized_v_cache), so forcing "on"
+        here would under-reserve."""
         assert (
             _planned_flash_attn_state(
                 planned_cache_types = ("q8_0", "q8_0"), supports_flash_attn = False
@@ -131,17 +111,14 @@ class TestTheResolver:
         )
 
 
-# ── through the real load_model ───────────────────────────────────────────────
-
-
 def _tensor_backend(tmp_path, *, free_mib: int):
     backend, gguf = _placement._backend(
         tmp_path,
         vulkan = False,
         memory = [(0, free_mib, free_mib), (1, free_mib, free_mib)],
     )
-    # The harness turns KV estimation off (it is about argv, not arithmetic); this file is
-    # about the arithmetic, so seed a real shape: Qwen3-0.6B's, whose ratios are measured.
+    # The harness turns KV estimation off; this file needs the arithmetic, so seed a real
+    # shape (Qwen3-0.6B).
     backend._can_estimate_kv = lambda: True
     backend._n_layers = 28
     backend._embedding_length = 1024
@@ -168,8 +145,7 @@ def _flash_attn_in(cmd) -> bool:
 
 
 class TestTheTensorPlanPricesTheLaunch:
-    """A two-card pool too small for the full context at f16-priced V, and large enough
-    for it once the quantized V is priced the way the launch will run it."""
+    """A pool too small at f16-priced V and large enough once V is priced as launched."""
 
     def test_the_planned_context_matches_the_emitted_flash_attention(self, tmp_path):
         backend, gguf = _tensor_backend(tmp_path, free_mib = 12000)
@@ -180,7 +156,6 @@ class TestTheTensorPlanPricesTheLaunch:
         assert _flash_attn_in(cmd), "the launch emits flash attention"
         planned = _ctx_of(cmd)
 
-        # What the same pool prices with the V axis at f16, the plan main used to publish.
         # The gap is the defect, so assert the side of it rather than a magic number.
         pessimistic = backend._plan_tensor_parallel(
             [(0, 12000), (1, 12000)],
@@ -206,8 +181,7 @@ class TestTheTensorPlanPricesTheLaunch:
         )
 
     def test_the_published_ceiling_is_the_same_number(self, tmp_path):
-        """max_context_length is what the context warning compares against, so a ceiling
-        priced off a different plan than the launch is #10489's third number."""
+        """max_context_length is what the context warning compares against."""
         backend, gguf = _tensor_backend(tmp_path, free_mib = 12000)
         captured = _placement._launch(
             backend, gguf, n_ctx = NATIVE, cache_type_kv = "q8_0", tensor_parallel = True
@@ -215,10 +189,8 @@ class TestTheTensorPlanPricesTheLaunch:
         assert backend.max_context_length == _ctx_of(captured["cmd"])
 
     def test_an_unquantized_cache_is_unaffected(self, tmp_path):
-        """The V axis only moves for a quantized cache on this shape, so resolving the state
-        cannot change what an f16 load plans. Asserted on the arithmetic at the context this
-        load chose rather than against a second hand-built plan, because the loader charges
-        overheads a bare planner call does not and the comparison would fail on those."""
+        """Asserted on the arithmetic at the chosen context, not against a second hand-built
+        plan: the loader charges overheads a bare planner call does not."""
         backend, gguf = _tensor_backend(tmp_path, free_mib = 12000)
         captured = _placement._launch(
             backend, gguf, n_ctx = NATIVE, cache_type_kv = "f16", tensor_parallel = True
@@ -258,8 +230,7 @@ class TestTheSizingCallsSeeTheResolvedState:
         )
 
     def test_an_explicit_off_in_the_extras_is_priced_off(self, tmp_path):
-        """The resolution is not "always on": a user who turns flash attention off in the
-        extra arguments must be priced for the launch they will get."""
+        """The resolution is not "always on"."""
         seen = self._seen_flash_attn(
             tmp_path,
             n_ctx = NATIVE,
@@ -270,8 +241,7 @@ class TestTheSizingCallsSeeTheResolvedState:
 
 
 def test_the_state_is_still_named_planned_flash_attn():
-    """The offload-planner seam asserts on this identifier by AST. Keep the name; only
-    what it is assigned changed."""
+    """The offload-planner seam asserts on this identifier by AST."""
     import inspect
 
     source = inspect.getsource(inspect.unwrap(LlamaCppBackend.load_model))
@@ -280,12 +250,8 @@ def test_the_state_is_still_named_planned_flash_attn():
 
 
 class TestAutoIsNotAnAnswer:
-    """``auto`` is llama.cpp saying it will decide at load time.
-
-    It decides against flash attention, silently, whenever the backend, model or cache pair
-    cannot take it, so sizing that reads auto as "on" prices a cache that can turn out over
-    twice as large on exactly the hosts least able to absorb it. Studio's own launch emits
-    ``on``, never ``auto``, so this is only reached from the user's extras or the environment.
+    """``auto`` is decided at load time and decided against, silently, whenever the backend,
+    model or cache pair cannot take it, so reading it as "on" under-reserves by up to 2.28x.
     """
 
     def test_an_explicit_auto_prices_the_padded_cache(self):
@@ -296,10 +262,8 @@ class TestAutoIsNotAnAnswer:
         assert _planned_flash_attn_state(["-fa", "-1"]) is False
 
     def test_an_inherited_auto_is_overridden_by_the_managed_flag(self):
-        """``auto`` in the environment is not left undecided, because the launch decides it:
-        the managed ``--flash-attn on`` is appended after the environment is read, so the
-        child gets an explicit ``on``. Only an ``auto`` the USER puts in the extras survives,
-        because those come last."""
+        """The managed ``--flash-attn on`` is appended after the environment is read, so an
+        inherited auto never reaches the child. Only a USER auto in the extras survives."""
         assert _planned_flash_attn_state(None, env = {"LLAMA_ARG_FLASH_ATTN": "auto"}) is True
         assert (
             _planned_flash_attn_state(["-fa", "auto"], env = {"LLAMA_ARG_FLASH_ATTN": "1"}) is False
@@ -317,13 +281,11 @@ class TestAutoIsNotAnAnswer:
         assert _planned_flash_attn_state(["-fa", "on", "-fa", "auto"]) is False
 
     def test_a_quantized_v_cache_still_forces_it_on(self):
-        """The one thing auto cannot undo: llama.cpp turns flash attention on itself for a
-        quantized V cache rather than refusing the load, so that is what the launch runs."""
+        """The one thing auto cannot undo."""
         assert (
             _planned_flash_attn_state(["-fa", "auto"], planned_cache_types = ("q8_0", "q4_0")) is True
         )
 
     def test_the_managed_launch_is_unaffected(self):
-        """Studio emits ``--flash-attn on``; nothing here changes the default path."""
         assert _planned_flash_attn_state(None) is True
         assert _planned_flash_attn_state([]) is True
