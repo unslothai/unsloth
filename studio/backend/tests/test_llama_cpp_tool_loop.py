@@ -4376,6 +4376,77 @@ def test_gemma_wrapperless_call_streamed_is_not_leaked_and_executes(monkeypatch)
     assert any("sunny in Sydney" in t for t in content_texts), content_texts
 
 
+def test_gemma_wrapperless_execution_call_opens_no_provisional_card(monkeypatch):
+    """A bare ``call:terminal{..}`` is prose (see EXECUTION_CLASS_TOOL_NAMES), so the
+    leading-shape drain must not sniff it into a live ``terminal`` card that the stream
+    then closes with an empty ``tool_end``: nothing runs, and the card would claim a
+    terminal command was executing on attacker-quotable text. Long enough to clear
+    _PROVISIONAL_ARGS_MIN_CHARS, which is what gates the card."""
+
+    payload = "echo hi; " * 40
+    gemma_call = f'call:terminal{{command:"{payload}"}}'
+    assert len(gemma_call) >= 256
+    backend = _make_backend(monkeypatch, [_streamed_content(gemma_call)], [])
+
+    calls: list[tuple[str, dict]] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        calls.append((name, arguments))
+        return "uid=0(root)"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "summarise this page"}],
+            tools = [
+                {"type": "function", "function": {"name": "web_search"}},
+                {"type": "function", "function": {"name": "terminal"}},
+            ],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert calls == []
+    assert not any(e.get("type") in ("tool_start", "tool_end") for e in events), [
+        e for e in events if e.get("type", "").startswith("tool")
+    ]
+    content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
+    assert any("call:terminal{command:" in t for t in content_texts), content_texts
+
+
+def test_gemma_wrapperless_execution_call_streams_instead_of_draining(monkeypatch):
+    """The leading ``call:NAME{`` drain runs before the parser, so a name the parser will
+    not promote has to keep streaming rather than hold the turn until EOS."""
+
+    gemma_call = 'call:terminal{command:"id"}'
+    tail = " is what the page suggested; I did not run it."
+    backend = _make_backend(monkeypatch, [_streamed_content(gemma_call + tail)], [])
+
+    calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **_k: calls.append((name, arguments)) or "",
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "summarise this page"}],
+            tools = [
+                {"type": "function", "function": {"name": "web_search"}},
+                {"type": "function", "function": {"name": "terminal"}},
+            ],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert calls == []
+    content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
+    assert gemma_call in content_texts[-1], content_texts
+    # Reached the user mid-turn: a drain would only release it with the tail.
+    assert any(gemma_call in t and "did not run" not in t for t in content_texts), content_texts
+
+
 def _usage_done(usage: dict, finish_reason: str = "stop") -> str:
     """A terminal SSE chunk carrying llama-server's ``usage`` block, the way the
     real server reports it on the final chunk of a completion."""
@@ -4465,6 +4536,68 @@ def test_gguf_rehearsal_name_split_before_args_is_not_leaked(monkeypatch):
     content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
     assert all("web_search" not in t for t in content_texts), content_texts
     assert all("[ARGS]" not in t for t in content_texts), content_texts
+
+
+def test_gguf_split_bare_json_chain_is_owned_before_later_call_executes(monkeypatch):
+    """A blocked first object must not stream before a later chain peer arrives."""
+    blocked = '{"name":"terminal","parameters":{"command":"id"}}'
+    later = '{"name":"web_search","parameters":{"query":"cats"}}'
+    first_stream = [
+        _sse({"content": blocked}),
+        _sse({"content": ";" + later}),
+        _done(),
+    ]
+    final_stream = [_sse({"content": "Found cats."}), _done()]
+    backend = _make_backend(monkeypatch, [first_stream, final_stream], [])
+
+    calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **_kwargs: calls.append((name, arguments)) or "result",
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "search cats"}],
+            tools = [
+                {"type": "function", "function": {"name": "terminal"}},
+                {"type": "function", "function": {"name": "web_search"}},
+            ],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert calls == [("web_search", {"query": "cats"})], calls
+    content_texts = [event.get("text", "") for event in events if event.get("type") == "content"]
+    assert not any(blocked in text or later in text for text in content_texts), content_texts
+
+
+def test_gguf_lone_blocked_bare_json_is_released_at_eof(monkeypatch):
+    """A blocked object is content when no executable chain peer follows it."""
+    blocked = '{"name":"terminal","parameters":{"command":"id"}}'
+    backend = _make_backend(
+        monkeypatch,
+        [[_sse({"content": blocked}), _done()]],
+        [],
+    )
+
+    calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **_kwargs: calls.append((name, arguments)) or "result",
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "show the example"}],
+            tools = [{"type": "function", "function": {"name": "terminal"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert calls == []
+    content_texts = [event.get("text", "") for event in events if event.get("type") == "content"]
+    assert any(blocked in text for text in content_texts), content_texts
 
 
 def test_gguf_initial_buffer_flush_holds_split_rehearsal_name(monkeypatch):
@@ -4564,14 +4697,14 @@ def test_gguf_plain_answer_ending_with_tool_name_word_is_preserved(monkeypatch):
 
 
 def test_gguf_long_tool_name_split_rehearsal_is_not_capped_and_executes(monkeypatch):
-    """Finding 11: a realistic MCP name longer than the 32-char buffer cap split as
-    NAME then [ARGS]{...} must still be held (a rehearsal prefix is self-bounding),
-    so the name does not leak and the call executes."""
+    """Finding 11: an explicitly marked MCP name longer than the 32-char buffer cap,
+    split before [ARGS]{...}, must still be held, so the name does not leak and the
+    call executes."""
     name = "mcp__github__create_pull_request"
     assert len(name) >= 32, len(name)
 
     first_stream = [
-        _sse({"content": name}),
+        _sse({"content": "[TOOL_CALLS]" + name}),
         _sse({"content": '[ARGS]{"x":1}'}),
         _done(),
     ]
@@ -4724,7 +4857,7 @@ def test_gguf_oversized_bare_json_not_leaked_and_executes(monkeypatch):
 
     cap = 16384
     big = "A" * (cap + 5000)
-    full = '{"name":"python","parameters":{"code":"' + big + '"}}'
+    full = '{"name":"web_search","parameters":{"code":"' + big + '"}}'
     first_stream = [_sse({"content": full[i : i + 2000]}) for i in range(0, len(full), 2000)]
     first_stream.append(_done())
     final_stream = [_sse({"content": "done"}), _done()]
@@ -4739,12 +4872,12 @@ def test_gguf_oversized_bare_json_not_leaked_and_executes(monkeypatch):
     events = _run_tool_loop(
         backend,
         [{"role": "user", "content": "run"}],
-        [{"type": "function", "function": {"name": "python"}}],
+        [{"type": "function", "function": {"name": "web_search"}}],
     )
 
     content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
     assert not any(t.lstrip().startswith('{"name') for t in content_texts), content_texts[:1]
-    assert calls and calls[0][0] == "python"
+    assert calls and calls[0][0] == "web_search"
     assert len(calls[0][1].get("code", "")) > cap
 
 
@@ -5085,7 +5218,7 @@ def test_provisional_mcp_card_carries_server_display_name(tmp_path, monkeypatch)
     from storage import mcp_servers_db
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(mcp_servers_db, "_schema_ready", False)
+    monkeypatch.setattr(mcp_servers_db, "_schema_ready", set())
     mcp_servers_db.create_server(id = "a3f9c1d2e4b6f807", display_name = "GitHub", url = "https://a/m")
 
     tool_name = "mcp__a3f9c1d2e4b6f807__create_issue"
@@ -5115,7 +5248,7 @@ def test_provisional_non_mcp_card_omits_mcp_server(tmp_path, monkeypatch):
     from storage import mcp_servers_db
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(mcp_servers_db, "_schema_ready", False)
+    monkeypatch.setattr(mcp_servers_db, "_schema_ready", set())
 
     big_code = "total = 0\n" + "\n".join(f"total += {i}" for i in range(120))
     first_stream = _streamed_structured_tool_call("python", {"code": big_code}, "call_py")
@@ -5436,8 +5569,9 @@ def test_conversation_search_budget_counts_the_tool_catalogue(monkeypatch):
     monkeypatch.setattr(
         backend,
         "count_chat_tokens",
-        lambda candidate, *_a, **_k: 2800
-        + sum(len(str(message.get("content", ""))) for message in candidate) // 10,
+        lambda candidate, *_a, **_k: (
+            2800 + sum(len(str(message.get("content", ""))) for message in candidate) // 10
+        ),
     )
 
     seen = {}
@@ -5510,10 +5644,9 @@ def test_a_long_tool_run_reports_a_boundary_in_the_requests_own_terms(monkeypatc
     monkeypatch.setattr(
         backend,
         "count_chat_tokens",
-        lambda candidate, *_a, **_k: sum(
-            len(str(message.get("content", ""))) for message in candidate
-        )
-        // 4,
+        lambda candidate, *_a, **_k: (
+            sum(len(str(message.get("content", ""))) for message in candidate) // 4
+        ),
     )
     monkeypatch.setattr(
         "core.inference.tools.execute_tool", lambda name, arguments, **_k: "R" * 3200
@@ -5593,8 +5726,9 @@ def test_conversation_search_budget_is_exact_when_nothing_was_truncated(monkeypa
     monkeypatch.setattr(
         backend,
         "count_chat_tokens",
-        lambda candidate, *_a, **_k: 2800
-        + sum(len(str(message.get("content", ""))) for message in candidate) // 10,
+        lambda candidate, *_a, **_k: (
+            2800 + sum(len(str(message.get("content", ""))) for message in candidate) // 10
+        ),
     )
 
     seen = {}
@@ -5673,8 +5807,9 @@ def test_the_exact_recall_budget_is_recomputed_after_an_intervening_tool(monkeyp
     monkeypatch.setattr(
         backend,
         "count_chat_tokens",
-        lambda candidate, *_a, **_k: 1000
-        + sum(len(str(message.get("content", ""))) for message in candidate) // 10,
+        lambda candidate, *_a, **_k: (
+            1000 + sum(len(str(message.get("content", ""))) for message in candidate) // 10
+        ),
     )
 
     budgets: list = []
@@ -6167,3 +6302,339 @@ def test_the_synthesized_final_pass_is_recosted_before_it_is_sent(monkeypatch):
         f"the final pass sends {len(final_messages)} messages but the pool was last told "
         f"about {len(last_seen)}"
     )
+
+
+@pytest.mark.parametrize("wanted", [True, False])
+def test_the_decode_slot_is_asked_for_and_read_only_when_a_caller_wants_it(monkeypatch, wanted):
+    """Verbose alone would attach the whole prompt, so it travels with the narrowing."""
+    final = {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
+    final["__verbose"] = {"id_slot": 3}
+    stream = [_sse({"content": "done"}), "data: " + json.dumps(final) + "\n", _done()]
+    backend, payloads = _backend_and_payloads(monkeypatch, [stream])
+    seen = []
+
+    _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "hi"}],
+        _render_html_tools(),
+        on_decode_slot = (lambda url, slot: seen.append((url, slot))) if wanted else None,
+    )
+
+    assert seen == ([(backend.base_url, 3)] if wanted else [])
+    assert payloads[0].get("verbose") is (True if wanted else None)
+    assert payloads[0].get("response_fields") == (["id_slot"] if wanted else None)
+
+
+@pytest.mark.parametrize(
+    "held",
+    [
+        '{"name":"terminal","arguments":{"command":"id"}}',
+        'call:terminal{command:"id"}',
+    ],
+)
+def test_a_cancel_emits_the_blocked_object_the_gguf_guard_was_holding(monkeypatch, held):
+    """A completed blocked markerless call keeps the chain guard true while its suffix is
+    empty, so the whole object sits in the buffer as display text the parser never promotes.
+    The cancel arm returned without it and the reply vanished."""
+    from core.inference.llama_cpp import _LlamaStreamCancelled
+
+    backend = _make_backend(monkeypatch, [[_sse({"content": held})]], [])
+
+    def _cancel_after_chunks(
+        response,
+        _cancel_event,
+        first_token_deadline = None,
+    ):
+        yield from response.chunks
+        raise _LlamaStreamCancelled
+
+    monkeypatch.setattr(backend, "_iter_text_cancellable", _cancel_after_chunks)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "go"}],
+            tools = [
+                {"type": "function", "function": {"name": "terminal"}},
+                {"type": "function", "function": {"name": "web_search"}},
+            ],
+            max_tool_iterations = 1,
+        )
+    )
+
+    texts = [event["text"] for event in events if event["type"] == "content"]
+    assert texts and texts[-1] == held
+    assert not any(event["type"] == "tool_start" for event in events)
+
+
+def test_only_the_tool_loop_flushes_held_text_on_cancel():
+    """``_cancelled_hold_text`` reads buffers bound inside the tool loop. The synthesized
+    final pass never rebinds or writes them and emits incrementally, holding nothing, so a
+    flush there could only ever replay the previous iteration's text as the final answer.
+    Asserted on the source because reaching that pass needs a live template render."""
+    import inspect
+
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    src = inspect.getsource(LlamaCppBackend.generate_chat_completion_with_tools)
+    arms = src.split("except _LlamaStreamCancelled:")[1:]
+    flushing = [i for i, arm in enumerate(arms) if "_cancelled_hold_text()" in arm]
+    assert (
+        len(flushing) == 1
+    ), f"exactly one cancel arm may flush held text; flushing arms: {flushing}"
+    # The last arm is the synthesized final pass, which owns none of those buffers.
+    assert flushing[0] != len(arms) - 1, "the final pass must not flush the tool loop's buffers"
+
+
+@pytest.mark.parametrize("edit_result", ["Edited notes.txt", "Error: failed after writing"])
+def test_textual_workspace_read_edit_read_in_one_turn(monkeypatch, edit_result):
+    read = '<tool_call>{"name":"terminal","arguments":{"command":"cat notes.txt"}}</tool_call>'
+    edit = '<tool_call>{"name":"edit_file","arguments":{"path":"notes.txt","edits":[]}}</tool_call>'
+    backend, _ = _backend_and_payloads(
+        monkeypatch,
+        [
+            [_sse({"content": read + edit + read}), _done()],
+            [_sse({"content": "Done."}), _done()],
+        ],
+    )
+    calls = []
+    results = iter(["before", edit_result, "after"])
+
+    def execute(name, arguments, **kwargs):
+        calls.append(name)
+        return next(results)
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", execute)
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Read, edit, and verify notes.txt"}],
+            tools = [
+                {"type": "function", "function": {"name": name}}
+                for name in ("terminal", "edit_file")
+            ],
+            max_tool_iterations = 3,
+        )
+    )
+    assert calls == ["terminal", "edit_file", "terminal"]
+
+
+def test_textual_repeated_workspace_reads_do_not_crowd_out_a_later_edit(monkeypatch):
+    read = '<tool_call>{"name":"terminal","arguments":{"command":"cat notes.txt"}}</tool_call>'
+    edit = '<tool_call>{"name":"edit_file","arguments":{"path":"notes.txt","edits":[]}}</tool_call>'
+    backend, _ = _backend_and_payloads(
+        monkeypatch,
+        [
+            [_sse({"content": read * 8 + edit + read}), _done()],
+            [_sse({"content": "Done."}), _done()],
+        ],
+    )
+    calls = []
+    results = iter(["before", "Edited notes.txt", "after"])
+
+    def execute(name, arguments, **kwargs):
+        calls.append(name)
+        return next(results)
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", execute)
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Read, edit, and verify notes.txt"}],
+            tools = [
+                {"type": "function", "function": {"name": name}}
+                for name in ("terminal", "edit_file")
+            ],
+            max_tool_iterations = 3,
+        )
+    )
+    assert calls == ["terminal", "edit_file", "terminal"]
+
+
+def test_textual_alternating_workspace_block_does_not_replay_the_edit(monkeypatch):
+    """One re-run verifies an edit. A repeating block past that applied the edit twice."""
+    read = '<tool_call>{"name":"terminal","arguments":{"command":"cat notes.txt"}}</tool_call>'
+    edit = '<tool_call>{"name":"edit_file","arguments":{"path":"notes.txt","edits":[]}}</tool_call>'
+    backend, _ = _backend_and_payloads(
+        monkeypatch,
+        [
+            [_sse({"content": (read + edit) * 2}), _done()],
+            [_sse({"content": "Done."}), _done()],
+        ],
+    )
+    calls = []
+    results = iter(["before", "Edited notes.txt", "after", "Edited notes.txt"])
+
+    def execute(name, arguments, **kwargs):
+        calls.append(name)
+        return next(results)
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", execute)
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Read, edit, and verify notes.txt"}],
+            tools = [
+                {"type": "function", "function": {"name": name}}
+                for name in ("terminal", "edit_file")
+            ],
+            max_tool_iterations = 3,
+        )
+    )
+    assert calls == ["terminal", "edit_file", "terminal"]
+
+
+def test_textual_alternating_workspace_block_does_not_crowd_out_a_later_tool(monkeypatch):
+    """The block used to fill the 8-call cap, so the search the model asked for never ran."""
+    read = '<tool_call>{"name":"terminal","arguments":{"command":"cat notes.txt"}}</tool_call>'
+    edit = '<tool_call>{"name":"edit_file","arguments":{"path":"notes.txt","edits":[]}}</tool_call>'
+    search = '<tool_call>{"name":"web_search","arguments":{"query":"gpu prices"}}</tool_call>'
+    backend, _ = _backend_and_payloads(
+        monkeypatch,
+        [
+            [_sse({"content": (read + edit) * 4 + search}), _done()],
+            [_sse({"content": "Done."}), _done()],
+        ],
+    )
+    calls = []
+    results = iter(["before", "Edited notes.txt", "after", "results"])
+
+    def execute(name, arguments, **kwargs):
+        calls.append(name)
+        return next(results)
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", execute)
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Read, edit, verify, then search"}],
+            tools = [
+                {"type": "function", "function": {"name": name}}
+                for name in ("terminal", "edit_file", "web_search")
+            ],
+            max_tool_iterations = 3,
+        )
+    )
+    assert calls == ["terminal", "edit_file", "terminal", "web_search"]
+
+
+def test_textual_every_independent_edit_gets_its_own_verification_rerun(monkeypatch):
+    """Two edit-and-verify cycles in one turn: the test after the second edit must run."""
+    test = '<tool_call>{"name":"terminal","arguments":{"command":"pytest -q"}}</tool_call>'
+    edit_a = '<tool_call>{"name":"edit_file","arguments":{"path":"a.py","edits":[]}}</tool_call>'
+    edit_b = '<tool_call>{"name":"edit_file","arguments":{"path":"b.py","edits":[]}}</tool_call>'
+    backend, _ = _backend_and_payloads(
+        monkeypatch,
+        [
+            [_sse({"content": test + edit_a + test + edit_b + test}), _done()],
+            [_sse({"content": "Done."}), _done()],
+        ],
+    )
+    calls = []
+    results = iter(["1 failed", "Edited a.py", "1 failed", "Edited b.py", "1 passed"])
+
+    def execute(name, arguments, **kwargs):
+        calls.append(name)
+        return next(results)
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", execute)
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Fix the test"}],
+            tools = [
+                {"type": "function", "function": {"name": name}}
+                for name in ("terminal", "edit_file")
+            ],
+            max_tool_iterations = 3,
+        )
+    )
+    assert calls == ["terminal", "edit_file", "terminal", "edit_file", "terminal"]
+
+
+def _structured_batch(spec: list) -> list:
+    """One assistant turn carrying `spec` as parallel structured tool_calls."""
+    frames = [
+        _tool_call_sse(name, args, f"call_{i}", index = i) for i, (name, args) in enumerate(spec)
+    ]
+    return [frames + [_done()], [_sse({"content": "Done."}), _done()]]
+
+
+def _drive_structured(monkeypatch, spec, results):
+    backend, _ = _backend_and_payloads(monkeypatch, _structured_batch(spec))
+    calls: list[str] = []
+    supply = iter(results)
+
+    def execute(name, arguments, **kwargs):
+        calls.append(name)
+        return next(supply, "OK")
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", execute)
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Read, edit, and verify notes.txt"}],
+            tools = [
+                {"type": "function", "function": {"name": name}}
+                for name in ("terminal", "edit_file")
+            ],
+            max_tool_iterations = 3,
+        )
+    )
+    return calls
+
+
+def test_structured_workspace_block_does_not_replay_the_edit(monkeypatch):
+    """Structured batches skip the textual prefilter, so the controller has to catch this."""
+    read = ("terminal", {"command": "cat notes.txt"})
+    edit = ("edit_file", {"path": "notes.txt", "edits": []})
+    calls = _drive_structured(
+        monkeypatch, [read, edit, read, edit], ["v1", "Edited notes.txt", "v2", "Edited"]
+    )
+    assert calls == ["terminal", "edit_file", "terminal"]
+
+
+def test_structured_every_independent_edit_keeps_its_verification(monkeypatch):
+    read = ("terminal", {"command": "cat notes.txt"})
+    edit_a = ("edit_file", {"path": "a.txt", "edits": []})
+    edit_b = ("edit_file", {"path": "b.txt", "edits": []})
+    calls = _drive_structured(
+        monkeypatch,
+        [read, edit_a, read, edit_b, read],
+        ["v1", "Edited a.txt", "v2", "Edited b.txt", "v3"],
+    )
+    assert calls == ["terminal", "edit_file", "terminal", "edit_file", "terminal"]
+
+
+def test_nested_object_schema_is_relaxed_on_the_wire_but_not_in_the_loop(monkeypatch):
+    data = {
+        "type": "object",
+        "properties": {
+            "view_url": {"type": "string"},
+            "start_cursor": {"type": "string"},
+            "page_size": {"type": "integer"},
+        },
+        "required": ["view_url"],
+    }
+    tool = {
+        "type": "function",
+        "function": {
+            "name": "mcp__notion__query",
+            "parameters": {"type": "object", "properties": {"data": data}, "required": ["data"]},
+        },
+    }
+    arguments = {"data": {"view_url": "u", "page_size": "1", "start_cursor": "c"}}
+    stream = [
+        _tool_call_sse("mcp__notion__query", arguments, "call_a"),
+        _finish("tool_calls"),
+        _done(),
+    ]
+    final_stream = [_sse({"content": "done"}), _done()]
+    backend, payloads = _backend_and_payloads(monkeypatch, [stream, final_stream])
+    calls = _record_tool_calls(monkeypatch, "row 2")
+
+    _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "next page"}],
+        [tool],
+        max_tool_iterations = 2,
+    )
+
+    wire = payloads[0]["tools"][0]["function"]["parameters"]["properties"]["data"]
+    assert wire == {**data, "anyOf": [{"type": "object", "additionalProperties": True}]}
+    assert calls == [
+        ("mcp__notion__query", {"data": {"view_url": "u", "page_size": 1, "start_cursor": "c"}})
+    ]

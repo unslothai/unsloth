@@ -396,13 +396,20 @@ class TestTheRecoveryReachesEveryModeThatNeedsIt:
         ), "guarded: neither record present must not export an empty value"
 
     def test_studio_txt_is_installed_in_no_torch_mode(self):
-        """The premise of the placement test above."""
+        """The premise of the placement test above.
+
+        The step sits behind _skip_step, which asks whether the file is ALREADY satisfied --
+        a cache gate, not a mode gate. Anything reading NO_TORCH or the platform here would
+        mean a no-torch venv never installs studio.txt, and the recovery above would be
+        guarding a step that never runs.
+        """
         call = STACK_SRC.index('req = REQ_ROOT / "studio.txt"')
-        line_start = STACK_SRC.rfind("\n", 0, STACK_SRC.rindex("pip_install(", 0, call)) + 1
-        indent = len(STACK_SRC[line_start:]) - len(STACK_SRC[line_start:].lstrip())
-        assert (
-            indent == 4
-        ), "the studio.txt install is no longer unconditional inside install_python_stack()"
+        gate_line = STACK_SRC.rindex("\n", 0, STACK_SRC.rindex("pip_install(", 0, call)) + 1
+        gate = STACK_SRC[STACK_SRC.rindex("\n", 0, gate_line - 1) + 1 : gate_line]
+        assert '_skip_step(REQ_ROOT / "studio.txt"' in gate, gate
+        assert "NO_TORCH" not in gate and "IS_WINDOWS" not in gate, gate
+        indent = len(gate) - len(gate.lstrip())
+        assert indent == 4, "the studio.txt step moved inside another branch"
         skip_list = STACK_SRC[STACK_SRC.index("NO_TORCH_SKIP_PACKAGES = {") :][:400]
         assert "ddgs" not in skip_list, "ddgs is still installed when NO_TORCH is set"
 
@@ -2700,7 +2707,7 @@ class TestThePipFallbackIsRefusedOnTheNativeStack:
             "silently resolve the wrong stack"
         )
         after_uv_failed = STACK_SRC.index("if _woa_overrides_are_load_bearing():")
-        pip_build = STACK_SRC.index("pip_cmd = _build_pip_cmd(args)")
+        pip_build = STACK_SRC.index("pip_cmd, pip_env = _pinned_cmd_and_env(")
         assert after_uv_failed < pip_build, "the check has to precede the pip command"
 
     def test_the_message_names_the_remedy(self):

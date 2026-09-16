@@ -131,13 +131,22 @@ def test_the_atexit_handler_quiets_stdlib_loggers_too(monkeypatch, capsys):
     other.addHandler(handler)
     other.propagate = False
 
-    def kill_and_log():
+    ran = []
+
+    # **_kw because _cleanup calls _kill_process(teardown = True). A double that only
+    # accepts () raises TypeError inside a handler that swallows everything, so the
+    # write this test exists to make would never happen and nothing would say so.
+    def kill_and_log(**_kw):
+        ran.append(1)
         other.warning("something a dependency logs at exit")
 
     backend = _stub()
     monkeypatch.setattr(backend, "_kill_process", kill_and_log)
     try:
         backend._cleanup()
+        # _cleanup swallows everything, so a double whose signature stops
+        # matching would silently skip the write this test exists to make.
+        assert ran, "the kill double never ran; this assertion proves nothing"
         assert capsys.readouterr().err == ""
     finally:
         other.removeHandler(handler)
@@ -220,9 +229,15 @@ def test_a_failing_kill_does_not_escape_the_atexit_handler(monkeypatch):
     """atexit swallows it anyway, and there is nowhere left to report it."""
     backend = _stub()
 
-    def boom():
+    raised = []
+
+    def boom(**_kw):
+        raised.append(1)
         raise RuntimeError("teardown went wrong")
 
     monkeypatch.setattr(backend, "_kill_process", boom)
 
     backend._cleanup()
+    # Same trap: a TypeError from a stale signature is swallowed too, and then
+    # the RuntimeError this test is about is never raised at all.
+    assert raised, "the failing kill never ran; the handler swallowed the wrong error"

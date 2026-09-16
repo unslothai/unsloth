@@ -30,6 +30,13 @@ websockets>=15.0.1
 # later with-deps steps can't re-resolve it up.
 anyio<4.14.0
 
+# accelerate 1.15.0 calls model_has_dtensor() unconditionally in prepare_model, reaching
+# torch._C._distributed_c10d, which AMD's Windows ROCm wheels do not ship, so every run dies
+# at trainer start (huggingface/accelerate#4249). A marker cannot say "ROCm", so this caps
+# Windows generally; CUDA there loses only 1.15's DTensor placement fix. Lift once upstream
+# guards the call. install_python_stack.py repairs an install that is already past the cap.
+accelerate<1.15.0; sys_platform == "win32"
+
 # pandas publishes win_arm64 wheels from 3.0 only; 2.3.x would source-build there.
 pandas==2.3.3; sys_platform != "win32" or platform_machine != "ARM64" or python_version < "3.11"
 pandas>=3.0,<4; sys_platform == "win32" and platform_machine == "ARM64" and python_version >= "3.11"

@@ -34,6 +34,7 @@ export {
   subscribeJobListeners,
   useDownloadManagerStore,
   type DownloadManagerController,
+  type DownloadPresentation,
   type DownloadRequest,
   type JobListeners,
   type ManagedDownload,
@@ -52,6 +53,10 @@ export {
   downloadInventoryHintKind,
   scopedVariant,
 } from "./download-manager-types";
+export {
+  pendingDrafterPresentation,
+  presentedProgress,
+} from "./download-presentation";
 export {
   dismissStartToast,
   dismissStartToasts,

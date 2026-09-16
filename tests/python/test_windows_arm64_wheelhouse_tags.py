@@ -505,7 +505,7 @@ class TestAHostedOptionalIsActuallyInstalled:
 
     def test_a_hosted_torchcodec_keeps_its_requirement(self, ips):
         """The one line that asks for torchcodec was filtered out before the resolver."""
-        guard = STACK_SRC.index("and PLATFORM_LACKS_TORCHCODEC_WHEEL")
+        guard = STACK_SRC.index("if PLATFORM_LACKS_TORCHCODEC_WHEEL")
         block = STACK_SRC[guard : STACK_SRC.index("_filter_requirements", guard)]
         assert 'not _wheelhouse_hosts("torchcodec")' in block
 
@@ -1445,3 +1445,32 @@ class TestAHostedTorchcodecIsInstalledByItsStep:
     def test_a_failed_install_leaves_audio_off_without_failing(self, ips):
         calls, ns = self._run_step(ips, "0.10.1", pip_install_try = lambda *a, **kw: False)
         assert any("stays disabled" in c.args[0] for c in ns["_note"].call_args_list)
+
+
+class TestTheSkipGateAuditsTheArm64FilteredFile:
+    """The ARM64 skip list has to be applied by _effective_requirements, the helper pip_install
+    and the two skip-gate audits share. Filtering only inside pip_install would leave the audits
+    reading the raw file: tiktoken, xformers and sqlite-vec would read as missing on every
+    win_arm64 host, so no step could ever be skipped and `known_unmet` would record packages
+    this platform deliberately never installs."""
+
+    def test_the_filter_lives_in_the_shared_helper(self, ips):
+        helper = STACK_SRC[STACK_SRC.index("def _effective_requirements(") :]
+        helper = helper[: helper.index("\ndef ", 1)]
+        assert "_windows_arm64_skip_packages(req)" in helper, (
+            "the ARM64 skip is applied somewhere the audits do not see"
+        )
+        assert '_wheelhouse_hosts("torchcodec")' in helper
+
+    def test_the_skip_list_is_judged_against_the_unfiltered_file(self, ips):
+        """`req`, not the partly filtered copy: the pins decide whether a hosted wheel is
+        usable, and the Windows filter above has already dropped rows they sit on."""
+        helper = STACK_SRC[STACK_SRC.index("def _effective_requirements(") :]
+        helper = helper[: helper.index("\ndef ", 1)]
+        assert "_windows_arm64_skip_packages(actual)" not in helper
+
+    def test_pip_install_and_the_audits_share_it(self, ips):
+        """Three call sites: the install, the closure record, and the on-disk skip check."""
+        assert STACK_SRC.count("_effective_requirements(req)") == 3, (
+            "a caller that filters its own way can disagree with the file that installs"
+        )

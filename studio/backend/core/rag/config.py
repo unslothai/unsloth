@@ -66,7 +66,8 @@ FIGURE_TILE_OVERLAP = float(os.environ.get("RAG_FIGURE_TILE_OVERLAP", "0.12"))
 FIGURE_FULLPAGE = os.environ.get("RAG_FIGURE_FULLPAGE", "1") == "1"
 CAPTION_MAX_PAGES = int(os.environ.get("RAG_CAPTION_MAX_PAGES", "4"))
 
-# Needs a vision model, else the page stays empty; MIN_CHARS is the text length below which a page counts as scanned.
+# OCR uses the loaded vision model, falling back to local Tesseract language data.
+# MIN_CHARS is the text length below which a page is considered for transcription.
 OCR_SCANNED = os.environ.get("RAG_OCR_SCANNED", "1") == "1"
 OCR_MIN_CHARS = int(os.environ.get("RAG_OCR_MIN_CHARS", "16"))
 OCR_MAX_PAGES = int(os.environ.get("RAG_OCR_MAX_PAGES", "20"))

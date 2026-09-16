@@ -341,8 +341,7 @@ export function useRagDocuments(
       try {
         for (let attempt = 0; attempt < REFRESH_RETRIES; attempt += 1) {
           const last = attempt === REFRESH_RETRIES - 1;
-          // True for a request that published, and for one a newer request has
-          // already outranked.
+          // True for a request that published, and for one a newer request has already outranked.
           if (await refresh({ quiet: opts?.quiet, silentErrors: !last })) return;
           if (last) break;
           await new Promise((resolve) =>
@@ -389,10 +388,9 @@ export function useRagDocuments(
           ? loadProjectSources(scope.projectId)
           : refresh());
       } else {
-        // Nothing is coming for the scope just dropped, and the request that
-        // was is now behind the sequence, so it will not clear these itself.
-        // Left set, the composer reads the list as still unknown and holds
-        // every send.
+        // Nothing is coming for the scope just dropped, and the request that was is now behind the
+        // sequence, so it will not clear these itself. Left set, the composer reads the list as
+        // still unknown and holds every send.
         refreshInFlight.current = false;
         // eslint-disable-next-line react-hooks/set-state-in-effect
         setLoading(false);
@@ -412,12 +410,11 @@ export function useRagDocuments(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scopeKey]);
 
-  // Safety net: a big upload opens one SSE stream per doc, but HTTP/1.1 caps
-  // concurrent connections, so streams past the cap may never deliver a terminal
-  // frame and leave a chip spinning. While anything is indexing, reconcile against
-  // the document list (one request covers every doc) so chips always resolve.
-  // Work on this project running elsewhere: an upload from the other instance,
-  // or a folder sync. Neither has a row here until it lands.
+  // Safety net: a big upload opens one SSE stream per doc, but HTTP/1.1 caps concurrent
+  // connections, so streams past the cap may never deliver a terminal frame and leave a chip
+  // spinning. While anything is indexing, reconcile against the document list (one request covers
+  // every doc) so chips always resolve. Work on this project running elsewhere: an upload from the
+  // other instance, or a folder sync. Neither has a row here until it lands.
   const [workElsewhere, setWorkElsewhere] = useState(0);
   const workScopeId = scope?.type === "project" ? scope.projectId : null;
   useEffect(() => {
@@ -453,10 +450,9 @@ export function useRagDocuments(
     documents.some((d) => d.status === "pending" || d.status === "running");
   useEffect(() => {
     if (!scopeKey || !hasIndexing) return;
-    // Skip a tick while one is still out. Starting another would retire it
-    // through the sequence gate, and a list slower than the interval would
-    // then never publish: the row this is watching never reaches completed and
-    // a queued send waits forever.
+    // Skip a tick while one is still out. Starting another would retire it through the sequence
+    // gate, and a list slower than the interval would then never publish: the row this is watching
+    // never reaches completed and a queued send waits forever.
     const id = setInterval(() => {
       if (!refreshInFlight.current) {
         void refresh({ quiet: true });
@@ -558,9 +554,8 @@ export function useRagDocuments(
     [trackJob],
   );
 
-  // `overrideScope` lets a caller pass a freshly-resolved scope (or a promise of
-  // one), since the thread bar's id is still null on the first click; falls back to
-  // the hook scope.
+  // `overrideScope` lets a caller pass a freshly-resolved scope (or a promise of one), since the
+  // thread bar's id is still null on the first click; falls back to the hook scope.
   const upload = useCallback(
     async (
       files: FileList | File[] | RagUploadItem[],
@@ -577,10 +572,9 @@ export function useRagDocuments(
       // job tracking and optimistic chips alone.
       uploadInFlightRef.current = true;
       setUploading(true);
-      // Published before the first await so the other instance gates from the
-      // moment the upload starts, not once the bytes are in.
-      // The composer passes its project scope explicitly, since the hook's own
-      // can still be null on the render that starts the upload.
+      // Published before the first await so the other instance gates from the moment the upload
+      // starts, not once the bytes are in. The composer passes its project scope explicitly, since
+      // the hook's own can still be null on the render that starts the upload.
       const knownScope =
         overrideScope instanceof Promise || typeof overrideScope === "function"
           ? null

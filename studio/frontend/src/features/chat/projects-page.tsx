@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useAppShellReadySignal } from "@/components/app-readiness";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -112,6 +113,7 @@ function formatModified(ts: number): string {
 }
 
 export function ProjectsPage() {
+  const signalReady = useAppShellReadySignal();
   const navigate = useNavigate();
   const { projects, hasLoaded } = useChatProjects();
 
@@ -263,8 +265,8 @@ export function ProjectsPage() {
       return;
     }
     reloadReadySent.current = true;
-    window.dispatchEvent(new Event("unsloth:app-shell-ready"));
-  }, [hasLoaded]);
+    signalReady();
+  }, [hasLoaded, signalReady]);
 
   // Estimate how many rows fit below the list's top so the first page fills the screen without
   // loading everything up front.

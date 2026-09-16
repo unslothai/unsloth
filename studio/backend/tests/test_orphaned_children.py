@@ -1450,7 +1450,11 @@ def test_the_visual_server_goes_down_with_an_ordinary_stop():
 
     from core.inference.llama_cpp import LlamaCppBackend
 
-    source = inspect.getsource(LlamaCppBackend._kill_process)
+    # The whole kill path: _kill_process is a thin wrapper that takes the spawn
+    # lock for a teardown and delegates the termination to _kill_process_body.
+    source = inspect.getsource(LlamaCppBackend._kill_process) + inspect.getsource(
+        LlamaCppBackend._kill_process_body
+    )
     assert "_collect_descendants" in source
     assert "_terminate_descendants" in source
     # Named before the wait: the shim's children are reparented once it exits.

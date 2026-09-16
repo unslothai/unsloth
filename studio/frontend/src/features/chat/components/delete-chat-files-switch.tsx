@@ -12,15 +12,17 @@ export function DeleteChatFilesSwitch({
   checked,
   onCheckedChange,
   description,
+  label: labelOverride,
 }: {
   id: string;
   checked: boolean;
   onCheckedChange: (next: boolean) => void;
   /** For a delete covering more than one chat, which reads differently. */
   description?: string;
+  label?: string;
 }) {
   const t = useT();
-  const label = t("shell.selection.deleteFilesLabel");
+  const label = labelOverride ?? t("shell.selection.deleteFilesLabel");
   return (
     <div className="flex items-start justify-between gap-4 rounded-md border border-border/60 bg-muted/35 px-3 py-2.5">
       <label htmlFor={id} className="min-w-0 space-y-1">
