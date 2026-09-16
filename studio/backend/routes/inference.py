@@ -10927,14 +10927,19 @@ def _estimate_gguf_kv_gb(
     is_diffusion: bool = False,
     model_identifier: Optional[str] = None,
     launch_required_ubatch: int = 0,
+    shared_memory_pool: bool = True,
 ) -> float:
     """``_gguf_runtime_bytes`` summed into GB, for the training guard.
 
     An unreadable header is 0 GB, as it always was: a cache the guard cannot size
     must not become a refusal on its own.
 
-    Context checkpoints are removed because this is a VRAM admission figure and the
-    snapshots live in host memory.
+    Context checkpoints leave this figure only when ``shared_memory_pool`` is False,
+    i.e. the caller has CONFIRMED the pool it checks against is separate from host
+    RAM. On an iGPU or a unified-memory APU the driver's "free VRAM" IS the host
+    heap, so dropping a host-resident allocation there admits a load beside training
+    that the one pool cannot hold. Defaults to keeping them, like the rest of this
+    guard, which refuses what it cannot size.
     """
     runtime = _gguf_runtime_bytes(
         gguf_path,
@@ -10951,7 +10956,11 @@ def _estimate_gguf_kv_gb(
         model_identifier = model_identifier,
         launch_required_ubatch = launch_required_ubatch,
     )
-    gpu_kv_bytes = max(0, runtime.kv_bytes - runtime.kv_checkpoint_bytes)
+    gpu_kv_bytes = (
+        runtime.kv_bytes
+        if shared_memory_pool
+        else max(0, runtime.kv_bytes - runtime.kv_checkpoint_bytes)
+    )
     return (gpu_kv_bytes + runtime.compute_bytes) / (1024**3)
 
 
@@ -11052,6 +11061,36 @@ def _remote_gguf_compute_reserve_gb(
     return 0.0
 
 
+def _admission_pool_shares_host_ram(
+    *,
+    is_vulkan_backend: bool,
+    vulkan_gpu_memory: Optional[list] = None,
+    requested_gpu_ids: Optional[list[int]] = None,
+) -> bool:
+    """Whether the pool the training guard checks against is also the host heap.
+
+    Fails CLOSED. An unreadable inventory, a selection this cannot map to devices,
+    or any candidate that turns out to be integrated all answer True, so a figure
+    that must not under-charge keeps its host-resident terms.
+    """
+    try:
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        if is_vulkan_backend:
+            # Vulkan reports total 0 only for an integrated GPU, the same rule the
+            # launcher's _shared_gpu_ids uses. Judged over every visible row rather
+            # than the pin, because the pin may be in either index space here.
+            rows = list(vulkan_gpu_memory or [])
+            return not rows or any(int(total) <= 0 for _idx, _free, total in rows)
+        unified = LlamaCppBackend._rocm_unified_memory_gpu_ids()
+        if not unified:
+            return False  # discrete CUDA, or a ROCm host with no APU among its GPUs
+        return not requested_gpu_ids or any(int(i) in unified for i in requested_gpu_ids)
+    except Exception as e:  # noqa: BLE001 -- an unreadable device keeps the charge
+        logger.debug("Could not classify the admission pool: %s", e)
+        return True
+
+
 def _estimate_gguf_required_gb(
     config: ModelConfig,
     hf_token: Optional[str] = None,
@@ -11073,6 +11112,9 @@ def _estimate_gguf_required_gb(
     # every settings change. This skips that listing; the caller marks the total a
     # floor instead, exactly as it already does for a drafter it cannot weigh.
     local_only: bool = False,
+    # Passed straight to _estimate_gguf_kv_gb: only a caller that has confirmed a
+    # discrete pool may drop the host-resident checkpoint share.
+    shared_memory_pool: bool = True,
 ) -> Optional[float]:
     """Approximate GGUF VRAM (GB): quantized weights + companions, plus the KV
     cache for local files (unreadable pre-download for remote). None when nothing
@@ -11375,6 +11417,7 @@ def _estimate_gguf_required_gb(
                 launch_required_ubatch = _launch_required_ubatch_for_config(
                     config, llama_extra_args, disable_vision
                 ),
+                shared_memory_pool = shared_memory_pool,
             )
 
         repo = getattr(config, "gguf_hf_repo", None)
@@ -14030,6 +14073,13 @@ def _guard_chat_load_against_training(
             # getattr for the same reason as the batch flags above: an older caller
             # hands this guard a bare request double that does not carry the field.
             disable_vision = bool(getattr(request, "disable_vision", False)),
+            # Host-resident checkpoints come out of this VRAM figure only when the
+            # pool really is separate from host RAM.
+            shared_memory_pool = _admission_pool_shares_host_ram(
+                is_vulkan_backend = is_vulkan_backend,
+                vulkan_gpu_memory = vulkan_gpu_memory,
+                requested_gpu_ids = requested_gpu_ids,
+            ),
         )
     # A confirmed-diffusion positive split puts only ngl/n_layers of the weights on the GPU (a
     # split the loader would drop was nulled above). Unknown classification keeps the full

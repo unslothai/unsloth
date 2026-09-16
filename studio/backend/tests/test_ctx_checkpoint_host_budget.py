@@ -486,6 +486,8 @@ class TestCheckpointsNeverReachAVramFigure:
         source = inspect.getsource(inference_routes._estimate_gguf_kv_gb)
         assert "runtime.kv_bytes - runtime.kv_checkpoint_bytes" in source
         assert "runtime.kv_bytes + runtime.compute_bytes" not in source
+        # ...but only against a pool that is really separate from host RAM.
+        assert "if shared_memory_pool" in source
 
 
 def test_the_launcher_stands_down_for_a_typed_count(monkeypatch):
@@ -901,3 +903,74 @@ class TestTheCapFollowsTheSlotCountTheChildGets:
         ]
         assert len(decisions) >= 2, decisions
         assert min(decisions) > max(fit_rebinds), (decisions, fit_rebinds)
+
+
+# --------------------------------------------------------------- one pool or two
+
+
+class TestTheGuardOnlyDropsHostBytesFromADiscretePool:
+    """On an iGPU or an APU the driver's free VRAM IS the host heap, so nothing may leave."""
+
+    def _shares(self, **kwargs):
+        from routes import inference as inference_routes
+
+        return inference_routes._admission_pool_shares_host_ram(**kwargs)
+
+    def test_an_integrated_vulkan_device_shares(self):
+        # Vulkan reports total 0 only for an integrated GPU.
+        assert self._shares(is_vulkan_backend = True, vulkan_gpu_memory = [(0, 8192, 0)]) is True
+
+    def test_a_discrete_vulkan_device_does_not(self):
+        assert self._shares(
+            is_vulkan_backend = True, vulkan_gpu_memory = [(0, 8192, 24576)]
+        ) is False
+
+    def test_a_mixed_or_unreadable_vulkan_inventory_fails_closed(self):
+        assert self._shares(is_vulkan_backend = True, vulkan_gpu_memory = []) is True
+        assert self._shares(is_vulkan_backend = True, vulkan_gpu_memory = None) is True
+        assert self._shares(
+            is_vulkan_backend = True, vulkan_gpu_memory = [(0, 8192, 24576), (1, 4096, 0)]
+        ) is True
+
+    def test_a_discrete_cuda_host_keeps_the_subtraction(self, monkeypatch):
+        monkeypatch.setattr(
+            LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: set())
+        )
+        assert self._shares(is_vulkan_backend = False, requested_gpu_ids = [0]) is False
+
+    def test_a_rocm_apu_shares_whether_or_not_it_is_pinned(self, monkeypatch):
+        monkeypatch.setattr(
+            LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {0})
+        )
+        assert self._shares(is_vulkan_backend = False, requested_gpu_ids = [0]) is True
+        assert self._shares(is_vulkan_backend = False, requested_gpu_ids = None) is True
+        # A discrete sibling that is explicitly pinned is its own pool.
+        assert self._shares(is_vulkan_backend = False, requested_gpu_ids = [1]) is False
+
+    def test_an_unreadable_classifier_keeps_the_charge(self, monkeypatch):
+        def _boom():
+            raise RuntimeError("no driver")
+
+        monkeypatch.setattr(
+            LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(_boom)
+        )
+        assert self._shares(is_vulkan_backend = False, requested_gpu_ids = [0]) is True
+
+    def test_the_figure_follows_the_verdict(self, tmp_path, monkeypatch):
+        """The same runtime, priced against one pool and against two."""
+        from routes import inference as inference_routes
+
+        class _Runtime:
+            kv_bytes = 10 * GIB
+            kv_checkpoint_bytes = 4 * GIB
+            compute_bytes = 1 * GIB
+
+        monkeypatch.setattr(
+            inference_routes, "_gguf_runtime_bytes", lambda *a, **k: _Runtime()
+        )
+        shared = inference_routes._estimate_gguf_kv_gb("x.gguf", 4096)
+        discrete = inference_routes._estimate_gguf_kv_gb(
+            "x.gguf", 4096, shared_memory_pool = False
+        )
+        assert shared == 11.0 and discrete == 7.0
+        assert shared > discrete, "the shared pool must not be credited the host share"
