@@ -6166,6 +6166,16 @@ _path_has_dir() {
 }
 
 # fish reads none of the POSIX rc files, so an `export` line is a no-op for a fish user: the next session resolves neither uv nor the shim. conf.d is fish's own drop-in directory and fish_add_path is idempotent by design. ~/.config, not XDG_CONFIG_HOME, because that is where astral's installer put its own fish file.
+# Is a conda environment ACTIVE in this shell? Mirrors Test-ActiveCondaEnvironment in
+# install.ps1, including the second variable: CONDA_PREFIX is what `conda activate` and the
+# Anaconda Prompt export, and CONDA_DEFAULT_ENV is read too because a shell hook that
+# exports only that one still leaves the caller inside conda's PATH ordering. Reading one
+# variable on POSIX and two on Windows would give the same user two different answers on
+# two machines. Parity is asserted in tests/python/test_installer_conda_path_guard.py.
+_unsloth_conda_env_active() {
+    [ -n "${CONDA_PREFIX:-}" ] || [ -n "${CONDA_DEFAULT_ENV:-}" ]
+}
+
 _persist_fish_path_dir() {
     _pfp_dir="$1"; _pfp_label="${2:-$1}"
     [ -n "${HOME:-}" ] || return 0
@@ -6176,7 +6186,7 @@ _persist_fish_path_dir() {
     _pfp_quoted=$(printf '%s' "$_pfp_dir" | sed "s/\\\\/\\\\\\\\/g; s/'/\\\\'/g")
     # fish_add_path PREPENDS, and that ordering outlives the conda activation it was written under, so from the next shell on this directory sits ahead of the active conda environment's own entries and conda resolves out of ours (#5871). -a is the same registration at the back. install.ps1 makes the same choice for the Windows registry.
     _pfp_line="fish_add_path '$_pfp_quoted'"
-    if [ -n "${CONDA_PREFIX:-}" ]; then
+    if _unsloth_conda_env_active; then
         _pfp_line="fish_add_path -a '$_pfp_quoted'"
     fi
     # The exact line we would write, not any occurrence of the directory: /opt/uv-old must not pass for /opt/uv, and fish reads none of the POSIX files that would otherwise cover it. BOTH spellings count as present, or a run outside conda would add a second line for a directory a run inside it already registered.
@@ -6225,7 +6235,7 @@ _persist_login_path_dir() {
     [ -n "$_SHELL_PROFILE" ] || return 0
     # A persisted PREPEND jumps ahead of an active conda environment's own entries in every later shell, and that ordering outlives the activation, so conda ends up resolving binaries and DLLs out of our directory (#5871). Inside one, write the same line as an APPEND: the grep below matches either spelling, so a later run does not add a second line for the same directory. install.ps1 makes the same choice for the Windows registry.
     _plp_line="export PATH=\"$_plp_literal:\$PATH\""
-    if [ -n "${CONDA_PREFIX:-}" ]; then
+    if _unsloth_conda_env_active; then
         _plp_line="export PATH=\"\$PATH:$_plp_literal\""
     fi
     # Comments stripped first, then only lines that actually set PATH: a commented-out old export is not an active entry, and neither is `UV_CACHE=/opt/uv` or `PYTHONPATH=/opt/uv`. The name boundary is what keeps PYTHONPATH out. Taking any of them for a PATH entry leaves the next shell with no uv at all.

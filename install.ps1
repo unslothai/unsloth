@@ -4450,19 +4450,24 @@ exit 0
     function Resolve-WindowsOnArmX64Python {
         param($SelectedPython)
         if (-not $SelectedPython) { return $null }
+        # Read BEFORE the x64 install is attempted, not only after it fails. Anyone who sets
+        # this has pyarrow and hf-transfer built for ARM64 already and asked for the native
+        # interpreter; downloading an x64 CPython they did not want and then using it is not
+        # an opt-out, and on a machine where that install succeeds, which is most of them,
+        # the variable would otherwise do nothing at all.
+        if ($env:UNSLOTH_ALLOW_ARM64_PYTHON -in @('1', 'true', 'yes', 'on')) {
+            Write-StudioLine "[WARN] UNSLOTH_ALLOW_ARM64_PYTHON is set, so keeping native ARM64 Python $($SelectedPython.Version)." -ForegroundColor Yellow
+            Write-StudioLine "       pyarrow (via datasets) and hf-transfer publish no win_arm64 wheels, so they will be" -ForegroundColor Yellow
+            Write-StudioLine "       built from source, which needs CMake plus the MSVC and Rust toolchains." -ForegroundColor Yellow
+            Write-StudioLine "       Unset UNSLOTH_ALLOW_ARM64_PYTHON to have x64 Python installed and used instead." -ForegroundColor Yellow
+            return $SelectedPython
+        }
         substep "windows on arm: only a native ARM64 Python $($SelectedPython.Version) was found." "Yellow"
         substep "pyarrow and hf-transfer publish no win_arm64 wheels, so installing x64 Python..." "Yellow"
         $X64Python = Install-X64Python
         if ($X64Python) {
             step "python" "using x64 Python $($X64Python.Version) under emulation"
             return $X64Python
-        }
-        if ($env:UNSLOTH_ALLOW_ARM64_PYTHON -in @('1', 'true', 'yes', 'on')) {
-            Write-StudioLine "[WARN] Could not install an x64 Python on this ARM64 machine." -ForegroundColor Yellow
-            Write-StudioLine "       UNSLOTH_ALLOW_ARM64_PYTHON is set, so continuing with ARM64 Python $($SelectedPython.Version)." -ForegroundColor Yellow
-            Write-StudioLine "       pyarrow (via datasets) and hf-transfer will be built from source, which needs" -ForegroundColor Yellow
-            Write-StudioLine "       CMake plus the MSVC and Rust toolchains." -ForegroundColor Yellow
-            return $SelectedPython
         }
         Write-StudioLine "[ERROR] Could not install an x64 Python on this ARM64 machine." -ForegroundColor Red
         Write-StudioLine "        pyarrow (via datasets) and hf-transfer ship no win_arm64 wheels, so an install" -ForegroundColor Yellow
@@ -4508,8 +4513,10 @@ exit 0
         # front. Inside one, take the python.org route first, where this installer chooses
         # the switch itself; winget stays as the fallback it has always been, because a
         # failed install is worse than a PATH we warn about.
+        $pythonOrgTried = $false
         if (Test-ActiveCondaEnvironment) {
             substep "conda environment active ($env:CONDA_PREFIX) -- installing Python from python.org, which can be installed without taking PATH priority." "Yellow"
+            $pythonOrgTried = $true
             $DetectedPython = Install-PythonFromPythonOrg
             if (-not $DetectedPython -and $script:WingetAvailable) {
                 substep "python.org could not provide Python -- falling back to winget, whose package always puts Python ahead of conda on PATH." "Yellow"
@@ -4544,7 +4551,10 @@ exit 0
             }
         }
 
-        if (-not $DetectedPython) {
+        # $pythonOrgTried, so an offline box inside conda does not sit through the same
+        # failing download twice and then read "falling back to python.org" for a fallback
+        # that already ran.
+        if (-not $DetectedPython -and -not $pythonOrgTried) {
             if ($script:WingetAvailable) {
                 substep "winget could not install Python -- falling back to python.org..." "Yellow"
             } else {

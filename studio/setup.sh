@@ -2053,6 +2053,16 @@ _setup_path_has_dir() {
     return "$_sphd_found"
 }
 
+# Is a conda environment ACTIVE in this shell? Mirrors Test-ActiveCondaEnvironment in
+# install.ps1, including the second variable: CONDA_PREFIX is what `conda activate` and the
+# Anaconda Prompt export, and CONDA_DEFAULT_ENV is read too because a shell hook that
+# exports only that one still leaves the caller inside conda's PATH ordering. Reading one
+# variable on POSIX and two on Windows would give the same user two different answers on
+# two machines. Parity is asserted in tests/python/test_installer_conda_path_guard.py.
+_unsloth_conda_env_active() {
+    [ -n "${CONDA_PREFIX:-}" ] || [ -n "${CONDA_DEFAULT_ENV:-}" ]
+}
+
 _setup_persist_uv_path() {
     _supp_dir="$1"
     [ -n "$_supp_dir" ] || return 0
@@ -2074,7 +2084,7 @@ _setup_persist_uv_path() {
         # conda environment's own entries and conda resolves out of ours (#5871). -a is the
         # same registration at the back. install.sh and install.ps1 make the same choice.
         _supp_fish_line="fish_add_path '$_supp_quoted'"
-        if [ -n "${CONDA_PREFIX:-}" ]; then
+        if _unsloth_conda_env_active; then
             _supp_fish_line="fish_add_path -a '$_supp_quoted'"
         fi
         # The exact line, not any occurrence: /opt/uv-old must not pass for /opt/uv. BOTH
@@ -2099,7 +2109,7 @@ _setup_persist_uv_path() {
     # same line as an APPEND; the grep below matches either spelling, so a later run does not
     # add a second line for the same directory.
     _supp_export_line="export PATH=\"$_supp_literal:\$PATH\""
-    if [ -n "${CONDA_PREFIX:-}" ]; then
+    if _unsloth_conda_env_active; then
         _supp_export_line="export PATH=\"\$PATH:$_supp_literal\""
     fi
     # Every startup file astral's installer wired, because it is the installer this replaced:

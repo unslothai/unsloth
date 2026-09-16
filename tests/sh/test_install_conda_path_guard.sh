@@ -49,12 +49,16 @@ extract_function() {
 PATH_LINE_RE_SRC=$(grep -n "^_PATH_LINE_RE=" "$INSTALL_SH" | head -n1 | cut -d: -f2-)
 LOGIN_FN=$(extract_function _persist_login_path_dir)
 FISH_FN=$(extract_function _persist_fish_path_dir)
+# The predicate both writers ask. Extracted rather than restated, so a change to WHICH
+# environment variables count as an active conda reaches these cases.
+CONDA_FN=$(extract_function _unsloth_conda_env_active)
 
-for _chunk_label in _PATH_LINE_RE _persist_login_path_dir _persist_fish_path_dir; do
+for _chunk_label in _PATH_LINE_RE _persist_login_path_dir _persist_fish_path_dir _unsloth_conda_env_active; do
     case "$_chunk_label" in
-        _PATH_LINE_RE)           _chunk="$PATH_LINE_RE_SRC" ;;
-        _persist_login_path_dir) _chunk="$LOGIN_FN" ;;
-        *)                       _chunk="$FISH_FN" ;;
+        _PATH_LINE_RE)             _chunk="$PATH_LINE_RE_SRC" ;;
+        _persist_login_path_dir)   _chunk="$LOGIN_FN" ;;
+        _unsloth_conda_env_active) _chunk="$CONDA_FN" ;;
+        *)                         _chunk="$FISH_FN" ;;
     esac
     if [ -z "$_chunk" ]; then
         echo "  FAIL: could not extract $_chunk_label from install.sh"
@@ -75,17 +79,23 @@ EOF
 # $1 rc file contents ("" for an empty file), $2 CONDA_PREFIX ("" for none).
 run_login() {
     WORK=$(mktemp -d)
-    printf '%s' "$1" > "$WORK/.bashrc"
+    RC_FILE=${RC_NAME:+$WORK/$RC_NAME}
+    printf '%s' "$1" > "${RC_FILE:-$WORK/.bashrc}"
     (
         eval "$HARNESS"
         eval "$PATH_LINE_RE_SRC"
+        eval "$CONDA_FN"
         eval "$LOGIN_FN"
         HOME="$WORK"
-        SHELL=/bin/bash
-        if [ -n "$2" ]; then CONDA_PREFIX="$2"; export CONDA_PREFIX; else unset CONDA_PREFIX; fi
-        _persist_login_path_dir "$WORK/.local/bin" '$HOME/.local/bin' "~/.local/bin" '\.local/bin' "$WORK/.bashrc"
+        SHELL="${4:-/bin/bash}"
+        unset CONDA_PREFIX CONDA_DEFAULT_ENV
+        # $3 names WHICH variable carries the activation: a shell hook that exports only
+        # CONDA_DEFAULT_ENV still leaves the caller inside conda's PATH ordering, which is
+        # why install.ps1 reads both and these installers have to agree with it.
+        if [ -n "$2" ]; then eval "${3:-CONDA_PREFIX}=\"\$2\"; export ${3:-CONDA_PREFIX}"; fi
+        _persist_login_path_dir "$WORK/.local/bin" '$HOME/.local/bin' "~/.local/bin" '\.local/bin' "${RC_FILE:-$WORK/.bashrc}"
     )
-    RC_CONTENTS=$(cat "$WORK/.bashrc")
+    RC_CONTENTS=$(cat "${RC_FILE:-$WORK/.bashrc}")
     rm -rf "$WORK"
 }
 
@@ -115,6 +125,7 @@ chmod 400 "$WORK/.bashrc"
 ADVICE=$(
     eval "$HARNESS"
     eval "$PATH_LINE_RE_SRC"
+    eval "$CONDA_FN"
     eval "$LOGIN_FN"
     HOME="$WORK"
     SHELL=/bin/bash
@@ -131,6 +142,21 @@ else
 fi
 rm -rf "$WORK"
 
+# 5. CONDA_DEFAULT_ENV alone. A shell hook can export it without CONDA_PREFIX, and the
+#    caller is still inside conda's PATH ordering. install.ps1 has always read both; the
+#    POSIX writers used to read only CONDA_PREFIX, so the same user got a prepend on Linux
+#    and an append on Windows.
+run_login "" "myenv" CONDA_DEFAULT_ENV
+assert_contains "CONDA_DEFAULT_ENV alone: writes a PATH append" "$RC_CONTENTS" 'export PATH="$PATH:$HOME/.local/bin"'
+assert_not_contains "CONDA_DEFAULT_ENV alone: does not prepend" "$RC_CONTENTS" 'export PATH="$HOME/.local/bin:$PATH"'
+
+# 6. zsh, which is the default shell on macOS and lands in a different rc file. Same
+#    writer, so the same guard has to apply to it.
+RC_NAME=.zshrc run_login "" "/opt/anaconda3" CONDA_PREFIX /bin/zsh
+assert_contains "zsh rc, active conda: appends" "$RC_CONTENTS" 'export PATH="$PATH:$HOME/.local/bin"'
+RC_NAME=.zshrc run_login "" "" CONDA_PREFIX /bin/zsh
+assert_contains "zsh rc, no conda: prepends" "$RC_CONTENTS" 'export PATH="$HOME/.local/bin:$PATH"'
+
 # ── fish ───────────────────────────────────────────────────────────────────────────
 # fish reads none of the POSIX rc files, so it has its own writer and its own defect:
 # fish_add_path prepends by default and -a is the documented append.
@@ -140,9 +166,11 @@ run_fish() {
     printf '%s' "$1" > "$WORK/.config/fish/conf.d/unsloth.fish"
     (
         eval "$HARNESS"
+        eval "$CONDA_FN"
         eval "$FISH_FN"
         HOME="$WORK"
-        if [ -n "$2" ]; then CONDA_PREFIX="$2"; export CONDA_PREFIX; else unset CONDA_PREFIX; fi
+        unset CONDA_PREFIX CONDA_DEFAULT_ENV
+        if [ -n "$2" ]; then eval "${3:-CONDA_PREFIX}=\"\$2\"; export ${3:-CONDA_PREFIX}"; fi
         _persist_fish_path_dir "$WORK/.local/bin" "~/.local/bin"
     )
     FISH_CONTENTS=$(cat "$WORK/.config/fish/conf.d/unsloth.fish")
@@ -156,15 +184,19 @@ assert_contains "fish, no conda: prepends" "$FISH_CONTENTS" "fish_add_path '$FIS
 run_fish "" "/opt/anaconda3"
 assert_contains "fish, active conda: appends" "$FISH_CONTENTS" "fish_add_path -a '$FISH_DIR'"
 
+run_fish "" "myenv" CONDA_DEFAULT_ENV
+assert_contains "fish, CONDA_DEFAULT_ENV alone: appends" "$FISH_CONTENTS" "fish_add_path -a '$FISH_DIR'"
+
 # Idempotence across both spellings, the same way as the POSIX arm.
 WORK=$(mktemp -d)
 mkdir -p "$WORK/.config/fish/conf.d"
 printf "fish_add_path -a '%s/.local/bin'\n" "$WORK" > "$WORK/.config/fish/conf.d/unsloth.fish"
 (
     eval "$HARNESS"
+    eval "$CONDA_FN"
     eval "$FISH_FN"
     HOME="$WORK"
-    unset CONDA_PREFIX
+    unset CONDA_PREFIX CONDA_DEFAULT_ENV
     _persist_fish_path_dir "$WORK/.local/bin" "~/.local/bin"
 ) >/dev/null
 assert_eq "fish: append already there, no second line" "1" \
@@ -185,7 +217,8 @@ extract_setup_function() {
 }
 SETUP_FN=$(extract_setup_function _setup_persist_uv_path)
 SETUP_HAS_DIR_FN=$(extract_setup_function _setup_path_has_dir)
-if [ -z "$SETUP_FN" ] || [ -z "$SETUP_HAS_DIR_FN" ]; then
+SETUP_CONDA_FN=$(extract_setup_function _unsloth_conda_env_active)
+if [ -z "$SETUP_FN" ] || [ -z "$SETUP_HAS_DIR_FN" ] || [ -z "$SETUP_CONDA_FN" ]; then
     echo "  FAIL: could not extract the PATH persistence functions from studio/setup.sh"
     exit 1
 fi
@@ -197,12 +230,13 @@ run_setup() {
     : > "$WORK/.bashrc"
     (
         eval "$HARNESS"
+        eval "$SETUP_CONDA_FN"
         eval "$SETUP_HAS_DIR_FN"
         eval "$SETUP_FN"
         HOME="$WORK"
         _SETUP_LOGIN_PATH="/usr/bin"
-        unset UV_NO_MODIFY_PATH UV_UNMANAGED_INSTALL
-        if [ -n "$1" ]; then CONDA_PREFIX="$1"; export CONDA_PREFIX; else unset CONDA_PREFIX; fi
+        unset UV_NO_MODIFY_PATH UV_UNMANAGED_INSTALL CONDA_PREFIX CONDA_DEFAULT_ENV
+        if [ -n "$1" ]; then eval "${2:-CONDA_PREFIX}=\"\$1\"; export ${2:-CONDA_PREFIX}"; fi
         _setup_persist_uv_path "$WORK/.local/bin"
     )
     SETUP_RC=$(cat "$WORK/.bashrc")
@@ -214,6 +248,9 @@ run_setup() {
 run_setup ""
 assert_contains "setup.sh, no conda: prepends" "$SETUP_RC" "export PATH=\"$SETUP_DIR:\$PATH\""
 assert_contains "setup.sh, no conda: fish prepends" "$SETUP_FISH" "fish_add_path '$SETUP_DIR'"
+
+run_setup "myenv" CONDA_DEFAULT_ENV
+assert_contains "setup.sh, CONDA_DEFAULT_ENV alone: appends" "$SETUP_RC" "export PATH=\"\$PATH:$SETUP_DIR\""
 
 run_setup "/opt/anaconda3"
 assert_contains "setup.sh, active conda: appends" "$SETUP_RC" "export PATH=\"\$PATH:$SETUP_DIR\""

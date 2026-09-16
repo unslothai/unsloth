@@ -238,4 +238,33 @@ def test_the_posix_installers_carry_the_same_guard(path: Path, funcs: tuple[str,
     for func in funcs:
         body = re.search(rf"\n{func}\(\) \{{.*?\n\}}\n", source, flags = re.DOTALL)
         assert body is not None, f"{path.name} no longer defines {func}"
-        assert "CONDA_PREFIX" in body.group(0), f"{func} must not prepend inside conda"
+        assert "_unsloth_conda_env_active" in body.group(0), f"{func} must not prepend inside conda"
+
+
+@pytest.mark.parametrize(
+    "path", [INSTALL_SH, SETUP_SH_POSIX], ids = ["install.sh", "studio/setup.sh"]
+)
+def test_both_halves_call_the_same_environment_an_active_conda(path: Path):
+    """The PowerShell and POSIX halves must agree on WHICH variables mean "inside conda".
+
+    `conda activate` exports CONDA_PREFIX and CONDA_DEFAULT_ENV, but a shell hook can
+    export only the second and still leave the caller inside conda's PATH ordering.
+    install.ps1 has always read both. The POSIX writers read only CONDA_PREFIX, which gave
+    one user a prepend on Linux and an append on Windows for the same conda; asserting the
+    two name sets are equal is what keeps that from coming back, in either direction.
+    """
+    posix = path.read_text(encoding = "utf-8")
+    body = re.search(r"\n_unsloth_conda_env_active\(\) \{.*?\n\}\n", posix, flags = re.DOTALL)
+    assert body is not None, f"{path.name} no longer defines _unsloth_conda_env_active"
+    posix_vars = set(re.findall(r"\bCONDA_[A-Z_]+", body.group(0)))
+
+    windows = INSTALL_PS1.read_text(encoding = "utf-8")
+    probe = re.search(
+        r"function Test-ActiveCondaEnvironment \{.*?\n    \}", windows, flags = re.DOTALL
+    )
+    assert probe is not None, "install.ps1 no longer defines Test-ActiveCondaEnvironment"
+    windows_vars = set(re.findall(r"\bCONDA_[A-Z_]+", probe.group(0)))
+
+    assert posix_vars == windows_vars, (
+        f"{path.name} reads {sorted(posix_vars)} but install.ps1 reads " f"{sorted(windows_vars)}"
+    )

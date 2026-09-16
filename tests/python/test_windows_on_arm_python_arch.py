@@ -96,7 +96,7 @@ function step {{ param([string]$Label, [string]$Value, [string]$Color = "Green")
 function substep {{ param([string]$Message, [string]$Color = "DarkGray") Write-Host "SUBSTEP $Message" }}
 function Get-HostMachineArch {{ return "{host_arch}" }}
 function Get-PythonPlatformTag {{ param([string]$Exe) return "{venv_tag}" }}
-function Install-X64Python {{ return {x64} }}
+function Install-X64Python {{ Write-Host "INSTALL-X64-CALLED"; return {x64} }}
 """
 
 
@@ -164,6 +164,57 @@ Write-Host ("CHOSEN=" + $(if ($chosen) {{ $chosen.Arch }} else {{ "none" }}))
     assert "CHOSEN=arm64" in out
     assert "[WARN]" in out
     assert "[ERROR]" not in out
+
+
+@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.parametrize("shell", POWERSHELLS)
+@pytest.mark.parametrize("value", ["1", "true", "YES", "on"])
+def test_the_opt_out_is_read_before_the_x64_install_is_attempted(shell: str, value: str):
+    """The opt-out has to opt out on a machine where the x64 install would SUCCEED.
+
+    Read only after Install-X64Python fails, the variable does nothing at all on any host
+    that can reach python.org, which is most of them: an interpreter the user did not ask
+    for is downloaded, installed and then used. Someone who sets this has pyarrow and
+    hf-transfer built for ARM64 already.
+    """
+    script = (
+        _preamble("arm64", "win-arm64", x64_available = True)
+        + f"""
+{_function("Resolve-WindowsOnArmX64Python")}
+$selected = @{{ Version = "3.13"; Path = "C:\\arm\\python.exe"; Arch = "arm64" }}
+$chosen = Resolve-WindowsOnArmX64Python -SelectedPython $selected
+Write-Host ("CHOSEN=" + $(if ($chosen) {{ $chosen.Arch }} else {{ "none" }}))
+"""
+    )
+    out = _run(shell, script, env = {"UNSLOTH_ALLOW_ARM64_PYTHON": value})
+    assert "CHOSEN=arm64" in out
+    assert (
+        "INSTALL-X64-CALLED" not in out
+    ), "an x64 Python was installed for someone who asked to keep the ARM64 one"
+    assert "[WARN]" in out
+    assert "[ERROR]" not in out
+    assert "Unset UNSLOTH_ALLOW_ARM64_PYTHON" in out, "the warning has to say how to undo it"
+
+
+def test_the_python_org_route_is_not_attempted_twice_inside_conda():
+    """Inside conda, python.org is tried FIRST, so the later winget fallback must not
+    repeat it.
+
+    On an offline machine the second attempt is the same failing download again, and it is
+    announced as "falling back to python.org" for a fallback that already ran.
+    """
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    start = source.index('substep "installing Python ${PythonVersion}..."')
+    end = source.index("Python installation failed", start)
+    block = source[start:end]
+    assert (
+        block.count("Install-PythonFromPythonOrg") == 2
+    ), "the conda-first call and the winget fallback, and nothing else"
+    guard = source.index('substep "winget could not install Python', start)
+    condition = source.rindex("if (-not $DetectedPython", start, guard)
+    assert (
+        "-not $pythonOrgTried" in source[condition : source.index("\n", condition)]
+    ), "the winget fallback would otherwise run python.org a second time"
 
 
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
