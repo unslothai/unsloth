@@ -313,7 +313,6 @@ def test_ordinary_prose_is_not_read_as_a_path(monkeypatch):
     """Widening the pattern must not start eating text. A ratio and a slashed conjunction
     are the two shapes that look like a root and are not."""
     from hub.utils.host_paths import redact_paths_in_text
-
     for kept in ("3/4 of the shards", "and/or the projector", "no paths here"):
         assert redact_paths_in_text(kept) == kept, kept
 

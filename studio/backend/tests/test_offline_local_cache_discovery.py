@@ -617,10 +617,7 @@ def test_the_row_check_does_not_need_to_decrypt(monkeypatch):
     body = source.split("def secret_row_exists(", 1)[1].split("\ndef ", 1)[0]
     # Comments out: the docstring explains why it does NOT call the decrypting reader, and
     # a check that read them as code would fail on the sentence describing the fix.
-    code = "\n".join(
-        line for line in body.splitlines()
-        if not line.lstrip().startswith("#")
-    )
+    code = "\n".join(line for line in body.splitlines() if not line.lstrip().startswith("#"))
     code = code.split('"""')[0] + "".join(code.split('"""')[2:])
     assert "get_secret" not in code, "the row check goes back through the decrypting reader"
     assert "SELECT 1" in code
