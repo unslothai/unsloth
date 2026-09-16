@@ -29,10 +29,13 @@ import os
 import pathlib
 import re
 import shutil
-import subprocess
+import sys
 import textwrap
 
 import pytest
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "_shared"))
+from unsloth_pwsh_runner import run_pwsh  # noqa: E402
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 INSTALL_PS1 = REPO_ROOT / "install.ps1"
@@ -106,7 +109,11 @@ _UV_POLICY_ENV = (
 
 def _run(script: str, *, cwd: str | pathlib.Path | None = None) -> str:
     env = {key: value for key, value in os.environ.items() if key not in _UV_POLICY_ENV}
-    proc = subprocess.run(
+    # run_pwsh, not subprocess.run: the scrub above keeps HOME, so without the runner's own
+    # XDG_CACHE_HOME every worker still shares one ~83 KB pwsh startup-profile cache and ~1
+    # startup in 500 dies reading a half-written copy. run_pwsh layers its private cache
+    # directory onto the env dict handed to it and leaves every other key exactly as scrubbed.
+    proc = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", PRELUDE + "\n" + script],
         capture_output = True,
         text = True,

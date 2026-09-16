@@ -264,8 +264,131 @@ def _composite_actions():
             yield f.parent.name, ((doc.get("runs") or {}).get("steps") or [])
 
 
+#: Triggers that can put a workflow on a ref other than `main`. `pull_request` and
+#: `pull_request_target` are the obvious two; `workflow_call` is here because a reusable
+#: workflow runs on the CALLER's ref, so one called from a pull_request workflow saves on
+#: the PR's ref as surely as if it declared the trigger itself.
+_PR_REACHABLE_TRIGGERS = frozenset({"pull_request", "pull_request_target", "workflow_call"})
+
+
+def _triggers(doc: dict) -> dict:
+    """A workflow's `on:` block as a mapping, whatever shape it was written in.
+
+    YAML 1.1 reads a bare `on:` key as the boolean True (the Norway problem's cousin), so
+    the key is looked up both ways. `on: push`, `on: [push, workflow_dispatch]` and the
+    mapping form all normalise to a dict here so one reader handles all three.
+    """
+    raw = doc.get("on", doc.get(True))
+    if isinstance(raw, str):
+        return {raw: None}
+    if isinstance(raw, list):
+        return {event: None for event in raw}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _pull_request_reachable(doc: dict) -> bool:
+    """Whether any pull request can cause this workflow to run.
+
+    The rule below exists because a save on a PR ref writes an entry only re-runs of that
+    same PR can ever restore, while competing for the shared budget against main's copy.
+    That harm needs a pull request to reach the workflow at all. A workflow no pull request
+    can trigger is therefore outside the rule -- but only if that is READ from its `on:`
+    block, never assumed, so the day it grows a `pull_request` trigger it comes straight
+    back under the rule with no one having to remember.
+
+    Conservative in both directions:
+      * a `push` with no `branches` filter runs on every branch pushed to this repo,
+        including the in-repo topic branches most pull requests here are opened from, so
+        it counts as reachable;
+      * a `push` restricted to `main` does not;
+      * anything unrecognised counts as reachable, because the cost of a wrong "exempt"
+        is a silently refilled cache and the cost of a wrong "reachable" is a comment.
+    """
+    triggers = _triggers(doc)
+    if not triggers:
+        # No parseable `on:` at all. Says nothing, so it does not get to say "exempt".
+        return True
+    for event, spec in triggers.items():
+        if event in _PR_REACHABLE_TRIGGERS:
+            return True
+        if event != "push":
+            continue
+        branches = (spec or {}).get("branches") if isinstance(spec, dict) else None
+        if not branches or [b for b in branches if b != "main"]:
+            return True
+    return False
+
+
+#: Workflows exempted from the save-on-a-pull-request-ref rule because no pull request can
+#: reach them. Named rather than silently skipped, in the style of PIP_CACHE_JOBS above: an
+#: entry is a claim, and the test below re-checks the claim against the workflow's `on:`.
+_NOT_PR_REACHABLE_CACHE_SAVES = {
+    "woa-wheelhouse.yml": (
+        "workflow_dispatch only -- it holds signing credentials and writes a release, so it "
+        "is deliberately unreachable from a pull request (see the header comment there). The "
+        "cached path is C:\\vcpkg\\installed for a 300-minute Arrow C++ build, which a "
+        "maintainer dispatching from a topic branch has to be able to reuse; gating the save "
+        "on refs/heads/main would make every iteration on the wheelhouse pay that build again."
+    ),
+}
+
+
+def test_every_cache_save_exemption_names_a_workflow_no_pull_request_can_reach():
+    """The exemption list above, re-derived from the workflows rather than trusted.
+
+    This is the half that keeps the entry honest: it fails if the file is renamed or
+    deleted, and it fails the moment the workflow gains a trigger a pull request can use,
+    which is exactly when the exemption stops being true.
+    """
+    by_name = {name: doc for name, doc in _workflows()}
+    for name, reason in _NOT_PR_REACHABLE_CACHE_SAVES.items():
+        assert name in by_name, f"{name} is exempted from the cache rule but does not exist"
+        assert reason.strip(), f"{name} is exempted with no reason"
+        assert not _pull_request_reachable(by_name[name]), (
+            f"{name} is exempted from the save-on-a-pull-request-ref rule on the grounds that "
+            f"no pull request can reach it, but its `on:` block now says otherwise: "
+            f"{sorted(_triggers(by_name[name]))}. Gate the save on refs/heads/main "
+            f"(actions/cache/restore plus a github.ref == 'refs/heads/main' save) or drop the "
+            f"trigger."
+        )
+
+
+@pytest.mark.parametrize(
+    ("on_block", "reachable"),
+    [
+        ({"workflow_dispatch": None}, False),
+        ({"schedule": [{"cron": "0 0 * * *"}]}, False),
+        ({"push": {"branches": ["main"]}}, False),
+        ({"workflow_dispatch": None, "push": {"branches": ["main"]}}, False),
+        ({"pull_request": None}, True),
+        ({"pull_request_target": {"types": ["opened"]}}, True),
+        # Reusable: it runs on the caller's ref, so a pull_request caller saves on the PR ref.
+        ({"workflow_call": None}, True),
+        # No `branches` filter means every branch, which is where PRs here come from.
+        ({"push": None}, True),
+        ({"push": {"branches": ["main", "release/**"]}}, True),
+        ({"push": {"tags": ["v*"]}}, True),
+        # A dispatch-only workflow that also builds every PR is not dispatch-only.
+        ({"workflow_dispatch": None, "pull_request": {"paths": ["x"]}}, True),
+        # Unparseable says nothing, so it does not get to claim the exemption.
+        ({}, True),
+    ],
+)
+def test_the_pull_request_reachability_check_reads_the_trigger_block(on_block, reachable):
+    """The exemption is only as good as this predicate, so the predicate is tested too.
+
+    Mirrors test_the_main_only_expression_check_reads_the_expression above, and for the same
+    reason: the guard's failure mode is silence, so the thing that can make it silent is the
+    thing that most needs its own rows.
+    """
+    assert _pull_request_reachable({"on": on_block}) is reachable, on_block
+    # YAML 1.1 turns a bare `on:` key into True. Both spellings must read the same.
+    assert _pull_request_reachable({True: on_block}) is reachable, on_block
+
+
 def test_no_workflow_saves_a_cache_on_a_pull_request_ref():
     offenders = []
+    exempt = set(_NOT_PR_REACHABLE_CACHE_SAVES)
     for name, steps in _composite_actions():
         for step in steps:
             uses = _uses(step)
@@ -274,6 +397,12 @@ def test_no_workflow_saves_a_cache_on_a_pull_request_ref():
             if "refs/heads/main" not in str(step.get("if", "")):
                 offenders.append(f"action {name}: {step.get('name') or step.get('uses')}")
     for name, jid, job in _jobs():
+        # Only a workflow a pull request can reach can write a PR-scoped entry. The
+        # exemption is the named list above, and it is re-derived from `on:` by
+        # test_every_cache_save_exemption_names_a_workflow_no_pull_request_can_reach, so a
+        # workflow that gains a pull_request trigger loses the exemption on that commit.
+        if name in exempt:
+            continue
         for step in job.get("steps") or []:
             uses = _uses(step)
             # setup-python's `cache:` is a save too, and an invisible one: the action
