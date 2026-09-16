@@ -265,7 +265,5 @@ def test_the_image_budget_refusal_goes_through_the_callers_reject(monkeypatch):
         return HTTPException(status_code = status_code, detail = detail)
 
     with pytest.raises(HTTPException):
-        asyncio.run(
-            inference_route._decode_request_images(None, ["a", "b"], None, reject = reject)
-        )
+        asyncio.run(inference_route._decode_request_images(None, ["a", "b"], None, reject = reject))
     assert len(seen) == 1 and seen[0][0] == 400

@@ -17620,8 +17620,13 @@ async def _decode_request_images(
         )
         # Through the caller's reject, so an open API monitor row is failed rather than left
         # reported as running.
-        raise reject(400, detail) if reject is not None else HTTPException(
-            status_code = 400, detail = detail,
+        raise (
+            reject(400, detail)
+            if reject is not None
+            else HTTPException(
+                status_code = 400,
+                detail = detail,
+            )
         )
     ready = dict(decoded or {})
     images = []
