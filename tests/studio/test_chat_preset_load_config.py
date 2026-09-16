@@ -410,10 +410,12 @@ def _selector_reads(selector: str, field: str) -> bool:
     ]
     if all(read.search(result) for result, _ in results):
         return True
-    # A guard only justifies an arm it can steer away from: if every arm returns the same
-    # expression the condition decides nothing, so `s.budget ? s.other : s.other` subscribes
-    # to `s.other` however prominently it names the budget.
-    if len({result for result, _ in results}) < 2:
+    # Some arm has to return the field. A condition alone cannot carry the subscription: it only
+    # says which arm is taken, so `s.budget > 0 ? s.other : null` holds the same result while the
+    # budget moves from 1 to 2 and the sheet never re-renders. Where one arm does return it, a
+    # guard naming the field can still account for the others, which is how
+    # `s.budget != null ? s.budget : null` stays a subscription.
+    if not any(read.search(result) for result, _ in results):
         return False
     return all(
         read.search(result) or any(read.search(guard) for guard in guards)
@@ -450,7 +452,10 @@ SELECTOR_CASES = [
     ("(s) => formatBudget(s.reasoningBudget)", True),
     # A constant arm the field itself decides between still moves when the field moves.
     ("(s) => s.reasoningBudget != null ? s.reasoningBudget : null", True),
-    ("(s) => s.reasoningBudget != null ? s.other : null", True),
+    # Steering between arms is not tracking: the result is the same for every non-null
+    # budget, so the sheet never re-renders on a change between two of them.
+    ("(s) => s.reasoningBudget != null ? s.other : null", False),
+    ("(s) => s.reasoningBudget > 0 ? s.other : null", False),
     ("(s) => s.reasoningBudget === -1 ? -1 : s.reasoningBudget", True),
     # Read but not returned: zustand compares results, so these subscribe to something else.
     ("(s) => s.enabled ? s.reasoningBudget : s.fallback", False),
@@ -488,7 +493,9 @@ SELECTOR_CASES = [
     ('(s) => s["reasoningBudget"]', True),
     # A comment is not part of the value an arm returns.
     ("(s) => s.reasoningBudget ? s.other : /* same value */ s.other", False),
-    ("(s) => s.reasoningBudget ? s.other : s.another // differs", True),
+    ("(s) => s.reasoningBudget ? s.other : s.another // differs", False),
+    ("(s) => s.reasoningBudget /* the effective one */", True),
+    ("(s) => s.enabled ? s.reasoningBudget : /* same */ s.reasoningBudget", True),
     # A helper's own return is not what zustand compares.
     ("(s) => { function n(v) { return v ?? -1; } return n(s.reasoningBudget); }", True),
     ("(s) => { function n(v) { return v ?? -1; } return n(s.other); }", False),
@@ -517,7 +524,11 @@ def test_preset_sheet_reacts_to_a_reasoning_budget_change():
     sheet = _read("studio/frontend/src/features/chat/chat-settings-sheet.tsx")
     # The component that holds the capture memos, not the module: its siblings subscribe to the
     # runtime store too, and only this one's re-render moves the Update button and the summary.
-    panel = _component_body(sheet, "ChatSettingsPanel")
+    # Comments out before anything is discovered, not just inside the arms: a commented-out
+    # `// useChatRuntimeStore((s) => s.reasoningBudget)` left beside a selector repointed at
+    # another field is still a call as far as a text scan is concerned, and the marker sits
+    # outside the extracted argument, so stripping later cannot reach it.
+    panel = _without_comments(_component_body(sheet, "ChatSettingsPanel"))
     selectors = _store_selectors(panel)
     assert selectors, "ChatSettingsPanel makes no useChatRuntimeStore() call"
     dependency_lists = _memo_dependency_lists(panel)
