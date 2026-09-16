@@ -1515,6 +1515,104 @@ def test_the_decode_span_comes_only_from_engine_timings(monkeypatch):
     assert row["prompt_tok_per_sec"] == 11.0
 
 
+def test_prompt_progress_updates_for_followup_prefill_and_decode_phase(monkeypatch):
+    monitor = ApiMonitor(max_entries = 3)
+    monkeypatch.setattr(inference_route, "api_monitor", monitor)
+    entry_id = _start(monitor)
+
+    monitor.set_prompt_progress(
+        entry_id,
+        total = 1000,
+        processed = 400,
+        cached = 100,
+        time_ms = 250.25,
+    )
+    row = monitor.get(entry_id)
+    assert row["running_phase"] == "prompt_processing"
+    assert row["prompt_progress"] == {
+        "total": 1000,
+        "processed": 400,
+        "cached": 100,
+        "time_ms": 250.25,
+        "percent": 40.0,
+    }
+
+    monitor.set_running_phase(entry_id, "token_generation")
+    monitor.set_prompt_progress(entry_id, total = 1000, processed = 500)
+    row = monitor.get(entry_id)
+    assert row["running_phase"] == "prompt_processing"
+    assert row["prompt_progress"]["processed"] == 500
+
+    inference_route._monitor_usage(
+        entry_id,
+        None,
+        timings = {
+            "prompt_progress": {"total": 1000, "processed": 600},
+            "running_phase": "token_generation",
+        },
+    )
+    row = monitor.get(entry_id)
+    assert row["running_phase"] == "token_generation"
+    assert row["prompt_progress"]["processed"] == 600
+
+
+def test_monitor_usage_relays_live_progress_and_decode_phase(monkeypatch):
+    monitor = ApiMonitor(max_entries = 3)
+    monkeypatch.setattr(inference_route, "api_monitor", monitor)
+    entry_id = _start(monitor)
+
+    inference_route._monitor_usage(
+        entry_id,
+        None,
+        timings = {
+            "prompt_progress": {
+                "total": 800,
+                "processed": 200,
+                "cache": 0,
+                "time_ms": 10,
+            }
+        },
+    )
+    inference_route._monitor_usage(
+        entry_id,
+        None,
+        timings = {"running_phase": "token_generation"},
+    )
+
+    row = monitor.get(entry_id)
+    assert row["running_phase"] == "token_generation"
+    assert row["prompt_progress"]["percent"] == 25.0
+
+
+def test_streaming_response_exposes_monitor_id():
+    response = inference_route._sse_streaming_response(
+        iter(()),
+        monitor_id = "apireq_test",
+    )
+    assert response.headers["X-Unsloth-Monitor-ID"] == "apireq_test"
+    assert "X-Unsloth-Monitor-ID" not in inference_route._sse_streaming_response(iter(())).headers
+
+
+def test_monitor_id_reads_the_matching_concurrent_request(monkeypatch):
+    monitor = ApiMonitor(max_entries = 3)
+    monkeypatch.setattr(inference_route, "api_monitor", monitor)
+    first_id = _start(monitor, subject = "alice", model = "same-model", prompt = "same")
+    second_id = _start(monitor, subject = "alice", model = "same-model", prompt = "same")
+    monitor.set_prompt_progress(first_id, total = 1000, processed = 200)
+    monitor.set_prompt_progress(second_id, total = 1000, processed = 800)
+
+    app = FastAPI()
+    app.include_router(inference_route.studio_router)
+    app.dependency_overrides = {get_current_subject: lambda: "alice"}
+    client = TestClient(app)
+
+    first = client.get(f"/monitor/{first_id}").json()
+    second = client.get(f"/monitor/{second_id}").json()
+    assert first["id"] != second["id"]
+    assert first["prompt_progress"]["processed"] == 200
+    assert second["prompt_progress"]["processed"] == 800
+
+
 def test_a_timings_only_final_chunk_still_sets_the_decode_span(monkeypatch):
     """llama-server can end a stream with timings and no usage."""
     monitor = ApiMonitor(max_entries = 3)

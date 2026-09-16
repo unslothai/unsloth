@@ -6367,6 +6367,7 @@ def _report_live_llama_timings(callback, chunk) -> None:
     sample.pop("prompt_ms", None)
     progress = chunk.get("prompt_progress")
     if isinstance(progress, dict):
+        sample["prompt_progress"] = dict(progress)
         try:
             processed = max(0.0, float(progress.get("processed", 0)))
             cached = max(0.0, float(progress.get("cache", 0)))
@@ -6379,6 +6380,23 @@ def _report_live_llama_timings(callback, chunk) -> None:
                 )
         except (TypeError, ValueError, OverflowError):
             pass
+    choices = chunk.get("choices")
+    if isinstance(choices, list) and any(
+        isinstance(choice, dict)
+        and (
+            choice.get("text") not in (None, "")
+            or (
+                isinstance(choice.get("delta"), dict)
+                and any(
+                    value not in (None, "", [])
+                    for key, value in choice["delta"].items()
+                    if key != "role"
+                )
+            )
+        )
+        for choice in choices
+    ):
+        sample["running_phase"] = "token_generation"
     if not sample:
         return
     try:
