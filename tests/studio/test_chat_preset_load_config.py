@@ -199,18 +199,30 @@ def _split_ternary(
     if question == -1:
         return [(expression.strip(), guards)]
 
+    # An unparenthesised nested ternary in the true arm owns the next colon, so count `?` here
+    # too: taking the first one at bracket depth 0 cuts `a ? b ? c : d : e` into `a ? b` and
+    # `d : e`, and a field named anywhere in that second blob would look like every arm reading it.
     inner = guards + (expression[:question],)
-    depth = 0
-    for index in range(question + 1, len(expression)):
+    depth, nested = 0, 0
+    index = question + 1
+    while index < len(expression):
         char = expression[index]
         if char in "([{":
             depth += 1
         elif char in ")]}":
             depth -= 1
+        elif depth == 0 and char == "?":
+            if expression[index + 1 : index + 2] in ("?", "."):
+                index += 2
+                continue
+            nested += 1
         elif depth == 0 and char == ":":
-            return _split_ternary(expression[question + 1 : index], inner) + _split_ternary(
-                expression[index + 1 :], inner
-            )
+            if not nested:
+                return _split_ternary(expression[question + 1 : index], inner) + _split_ternary(
+                    expression[index + 1 :], inner
+                )
+            nested -= 1
+        index += 1
     return [(expression[question + 1 :].strip(), inner)]
 
 
@@ -262,9 +274,14 @@ SELECTOR_CASES = [
     # A constant arm the field itself decides between still moves when the field moves.
     ("(s) => s.reasoningBudget != null ? s.reasoningBudget : null", True),
     ("(s) => s.reasoningBudget != null ? s.other : null", True),
+    ("(s) => s.reasoningBudget === -1 ? -1 : s.reasoningBudget", True),
     # Read but not returned: zustand compares results, so these subscribe to something else.
     ("(s) => s.enabled ? s.reasoningBudget : s.fallback", False),
     ("(s) => s.mode === 'x' ? (s.on ? s.reasoningBudget : s.q) : s.reasoningBudget", False),
+    # The same shape without brackets: the nested arm owns the first colon, not the outer one.
+    ("(s) => s.mode ? s.on ? s.reasoningBudget : s.q : s.reasoningBudget", False),
+    ("(s) => s.mode ? s.on ? s.reasoningBudget : s.q : s.other", False),
+    ("(s) => s.mode ? s.on ? s.reasoningBudget : s.reasoningBudget : s.reasoningBudget", True),
     ("(s) => s.enabled ? s.other : s.fallback", False),
     ("(s) => s.reasoningBudgetMessage", False),
     ("(s) => s.reasoningBudgets", False),
