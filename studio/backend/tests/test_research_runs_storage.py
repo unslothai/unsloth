@@ -4419,8 +4419,11 @@ def test_planner_opt_out_is_only_sent_where_the_model_has_one(research_home, mon
     assert "enable_thinking" not in plain and "reasoning_effort" not in plain
     with_off = planner_payload(supportsReasoning = True, supportsReasoningOff = True, reasoningEffort = "high")
     assert with_off["enable_thinking"] is False and with_off["reasoning_effort"] == "none"
+    # A run queued or retried from before these flags existed carries neither, so the gate has
+    # to treat unknown like non-reasoning: a resumed legacy run must not be the one request that
+    # sends a field the model may not take.
     older_run = planner_payload(reasoningEffort = "high")
-    assert older_run["enable_thinking"] is False and older_run["reasoning_effort"] == "none"
+    assert "enable_thinking" not in older_run and "reasoning_effort" not in older_run
 
     # Mistral documents reasoning_effort for mistral-small-latest and mistral-medium-3-5 only, and the
     # provider branch now writes it for every model, so the planner opt-out must not reach a

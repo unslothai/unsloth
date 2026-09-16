@@ -1662,7 +1662,11 @@ class ResearchSupervisor:
             # These providers forward reasoning fields verbatim, and a strict upstream rejects one the model lacks.
             # Mistral documents reasoning_effort for mistral-small-latest and mistral-medium-3-5 only, so the
             # planner opt-out must not reach mistral-large and the other non-reasoning models.
-            if inference.get("supportsReasoning") is False:
+            # `is not True` rather than `is False`: a run queued or retried from before these
+            # flags existed carries neither, and "unknown" has to fail safe here. Leaving the
+            # opt-out in place costs a resumed run nothing worse than a thinking planner call,
+            # while sending it to a model without reasoning can be rejected outright.
+            if inference.get("supportsReasoning") is not True:
                 enable_thinking = None
                 inference = {
                     key: value
