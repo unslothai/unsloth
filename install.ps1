@@ -2744,7 +2744,28 @@ exit 1
         # -I isolates the run from PYTHONPATH, a sitecustomize and the user site directory, so a
         # broken environment cannot change the answer. studio/setup.sh runs nvidia_probe.py the
         # same way.
-        $script = "import os,sys" + [char]10 + "sys.stdout.write(os.path.realpath(sys.argv[1]))"
+        # Deliberately the SAME expression unsloth_cli/_studio_runtime_gate.py's
+        # _resolved_windows_path uses, Path(...).resolve(strict = False), not os.path.realpath.
+        # The two agree today, but this string is hashed into a lock name that the running
+        # Unsloth derives from that function, so matching the expression removes a whole class of
+        # divergence rather than relying on two spellings staying equivalent.
+        #
+        # Written as UTF-8 bytes rather than through print, and read back as UTF-8 below. Windows
+        # PowerShell 5.1 decodes a child's stdout with the console codepage, which mangles every
+        # non-ASCII character in a path and would silently produce a different hash from the one
+        # the Python side computes.
+        # strict=True, unlike the gate's strict=False, and the difference is deliberate. For any
+        # path that genuinely resolves the two return the same string, so the byte-identity above
+        # holds for every valid input. They part company on a symlink loop or a dangling
+        # component, where strict=False returns the path UNRESOLVED rather than raising. That
+        # string is not an identity, and this rung's whole contract is that an answer is exact, so
+        # handing one back would let a caller treat an unresolved path as vouched for and decide
+        # two paths are different when it cannot know. Raising means null here and the lexical
+        # fallback with Exact = $false, which fails closed.
+        #
+        # Test-Path is not enough on its own: it returns true for the loop's own symlink.
+        $script = "import pathlib,sys" + [char]10 +
+                  "sys.stdout.buffer.write(str(pathlib.Path(sys.argv[1]).resolve(strict=True)).encode('utf-8'))"
         $proc = $null
         try {
             $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -2753,6 +2774,10 @@ exit 1
             $psi.UseShellExecute = $false
             $psi.RedirectStandardOutput = $true
             $psi.RedirectStandardError = $true
+            # Without this, 5.1 decodes the child's bytes with the console codepage and a path
+            # containing any non-ASCII character comes back corrupted. The corruption is silent:
+            # the string still looks like a path, and it is what gets hashed into a lock name.
+            $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
             $psi.CreateNoWindow = $true
             $proc = [System.Diagnostics.Process]::Start($psi)
             $stdout = $proc.StandardOutput.ReadToEndAsync()

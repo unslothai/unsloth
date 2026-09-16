@@ -100,13 +100,55 @@ try {
     }
 
     # No interpreter means today's behaviour, unchanged: lexical answer, not exact. Verified by
-    # replacing the finder rather than by reasoning about it.
+    # replacing the finder rather than by reasoning about it, and restored afterwards: leaving it
+    # stubbed made every later check silently exercise the disabled rung instead of the real one.
+    $savedFinder2 = ${function:Get-StudioEarlyPython}
     function Get-StudioEarlyPython { return $null }
     $script:StudioEarlyPythonProbed = $false
     $noPy = Resolve-StudioFinalPathInfo -Path $real
     Check "with no interpreter the identity is inexact, as before" ($noPy.Exact -eq $false)
     Check "with no interpreter a usable path still comes back" (
         -not [string]::IsNullOrWhiteSpace($noPy.Path))
+    ${function:Get-StudioEarlyPython} = $savedFinder2
+    $script:StudioEarlyPythonProbed = $false
+    $script:StudioEarlyPython = $null
+    Check "the interpreter is back after the no-interpreter case" ($null -ne (Get-StudioEarlyPython))
+
+    # Non-ASCII survives the child boundary. This string is hashed into a lock name that the
+    # running Unsloth derives from _studio_runtime_gate.py's own resolve(), so a byte that does
+    # not round-trip is not a cosmetic defect: the two sides compute different names for one
+    # directory and neither excludes the other. Windows PowerShell 5.1 decodes a child's stdout
+    # with the console codepage unless told otherwise, which is exactly how that happens.
+    $unicodeName = "studio-ünïcôde-日本語-ß"
+    $unicodeDir = Join-Path $tmp $unicodeName
+    New-Item -ItemType Directory -Force -Path $unicodeDir | Out-Null
+    $unicodeAnswer = Get-StudioPythonFinalPath -Path $unicodeDir
+    Check "a non-ASCII path survives the child process" (
+        -not [string]::IsNullOrWhiteSpace($unicodeAnswer) -and
+        $unicodeAnswer.EndsWith($unicodeName))
+
+    # The resolver must produce what the running Unsloth produces, since both are hashed into
+    # lock names. Compare against _studio_runtime_gate.py's own expression rather than against
+    # another spelling of it.
+    $gateScript = "import pathlib,sys" + [char]10 +
+        "sys.stdout.buffer.write(str(pathlib.Path(sys.argv[1]).resolve(strict=False)).encode('utf-8'))"
+    $gateAnswer = & $exe -I -c $gateScript $unicodeDir
+    Check "the answer matches the runtime gate's own resolve()" ($unicodeAnswer -eq "$gateAnswer".Trim())
+
+    # A symlink loop must not be promoted to an exact identity. realpath is non-strict, so it
+    # returns a best-effort string rather than raising, and promoting that to Exact would let a
+    # caller treat an unresolved path as a vouched-for one.
+    $loopA = Join-Path $tmp "loop-a"
+    $loopOk = $false
+    try {
+        New-Item -ItemType SymbolicLink -Path $loopA -Target (Join-Path $tmp "loop-b") -ErrorAction Stop | Out-Null
+        New-Item -ItemType SymbolicLink -Path (Join-Path $tmp "loop-b") -Target $loopA -ErrorAction Stop | Out-Null
+        $loopOk = $true
+    } catch {}
+    if ($loopOk) {
+        $loopAnswer = Get-StudioPythonFinalPath -Path $loopA
+        Check "a link loop is not promoted to an exact identity" ([string]::IsNullOrWhiteSpace($loopAnswer))
+    }
 
     # A hung interpreter must not hang the installer. The whole point of running this before the
     # install lock is that it cannot be allowed to wedge the run.
