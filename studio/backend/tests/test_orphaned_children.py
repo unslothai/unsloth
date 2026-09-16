@@ -697,7 +697,11 @@ def test_the_windows_breadcrumb_fallback_takes_the_whole_tree(tmp_path, monkeypa
     monkeypatch.setattr(pl, "_pid_alive", lambda pid: pid == 4242)
     monkeypatch.setattr(pl, "_identity_or_none", lambda pid: "same" if pid == 4242 else None)
     trees = []
-    monkeypatch.setattr(pl, "_windows_terminate_validated_tree", trees.append)
+    monkeypatch.setattr(
+        pl,
+        "_windows_terminate_validated_tree",
+        lambda pid, identity = None: trees.append(pid),
+    )
 
     record = tmp_path / "999.json"
     record.write_text(
@@ -843,7 +847,11 @@ def test_the_windows_backstop_takes_the_whole_tree(tmp_path, monkeypatch):
     monkeypatch.setattr(pl, "_pid_identity", lambda pid: "same")
     monkeypatch.setattr(pl, "_identity_or_none", lambda pid: "same")
     trees = []
-    monkeypatch.setattr(pl, "_windows_terminate_validated_tree", trees.append)
+    monkeypatch.setattr(
+        pl,
+        "_windows_terminate_validated_tree",
+        lambda pid, identity = None: trees.append(pid),
+    )
     killed_singly = []
     monkeypatch.setattr(pl.os, "kill", lambda pid, sig: killed_singly.append(pid))
 
@@ -899,7 +907,9 @@ def test_a_retained_child_keeps_its_group(tmp_path, monkeypatch):
     monkeypatch.setattr(pl, "_pid_identity", lambda pid: "recorded")
     monkeypatch.setattr(pl, "_identity_or_none", lambda pid: "recorded")
     monkeypatch.setattr(pl, "_posix_terminate", lambda pid, timeout = 5.0: None)
-    monkeypatch.setattr(pl, "_windows_terminate_validated_tree", lambda pid: None)
+    monkeypatch.setattr(
+        pl, "_windows_terminate_validated_tree", lambda pid, identity = None: None
+    )
     assert pl.terminate_all(timeout = 1.0) == [4242]
     assert pl._tracked_pgids.get(4242) == 4242
 
@@ -1871,7 +1881,7 @@ def test_a_tree_taskkill_could_not_take_keeps_its_record(tmp_path, monkeypatch):
     state = {"leader": True, "tree": False}
     monkeypatch.setattr(lifetime, "_pid_alive", lambda pid: state["leader"])
 
-    def fake_tree(pid):
+    def fake_tree(pid, identity = None):
         state["leader"] = False
         return state["tree"]
 
@@ -1916,7 +1926,7 @@ def test_a_failed_tree_kill_keeps_the_pid_in_the_shutdown_record(monkeypatch):
     state = {"leader": True, "tree": False}
     monkeypatch.setattr(lifetime, "_pid_alive", lambda pid: state["leader"])
 
-    def fake_tree(pid):
+    def fake_tree(pid, identity = None):
         state["leader"] = False
         return state["tree"]
 
@@ -2201,7 +2211,11 @@ def test_terminate_pid_keeps_a_record_taskkill_could_not_confirm(monkeypatch):
     # The validated sweep, not `taskkill /T`: the Windows tree kill is enumerated by
     # `_windows_collect_descendants` so it cannot re-expand through a recycled pid. The
     # contract under test is unchanged -- a tree that did not go down keeps its record.
-    monkeypatch.setattr(lifetime, "_windows_terminate_validated_tree", lambda pid: state["tree"])
+    monkeypatch.setattr(
+        lifetime,
+        "_windows_terminate_validated_tree",
+        lambda pid, identity = None: state["tree"],
+    )
 
     def track():
         with lifetime._record_lock:

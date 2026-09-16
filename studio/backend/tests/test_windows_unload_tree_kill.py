@@ -1715,3 +1715,96 @@ def test_a_survivor_whose_identity_cannot_be_read_is_still_reported(monkeypatch)
     monkeypatch.setattr(pl, "_pid_identity", _identity)
     survivors = pl._windows_terminate_collected([(survivor, "1400")])
     assert survivors == [(survivor, "1400")], survivors
+
+
+def test_a_tree_kill_does_not_follow_the_number_to_a_stranger(monkeypatch):
+    """The leader can exit, and its number be taken, after the caller validated it.
+
+    Re-reading the identity inside the helper blesses whatever holds the number now: the
+    descendant collection walks the STRANGER's tree with the stranger as its ancestry
+    floor, and the root terminate confirms a handle whose identity it derived from the
+    same reading. The caller's identity has to travel in, so the mismatch is visible.
+    """
+    monkeypatch.setattr(pl, "_is_linux", lambda: False)
+    monkeypatch.setattr(pl, "_signalable", lambda pid: True)
+    monkeypatch.setattr(pl, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(pl, "_pid_is_zombie", lambda pid: False)
+    # The number now belongs to a process created later.
+    monkeypatch.setattr(pl, "_pid_identity", lambda pid: "900:500")
+    killed: "list[int]" = []
+    walked: "list[int]" = []
+    alive = {500, 600}
+
+    def _collect(pid):
+        walked.append(pid)
+        return ([(600, "0:600")], True) if pid == 500 else ([], True)
+
+    def _kill(pid, identity = None):
+        killed.append(pid)
+        alive.discard(pid)
+        return True
+
+    monkeypatch.setattr(pl, "_windows_collect_descendants_known", _collect)
+    monkeypatch.setattr(pl, "_windows_terminate_pid", _kill)
+    # False, because nothing was signalled and the record is the only handle left on
+    # whatever our leader started before it exited.
+    assert pl._windows_terminate_validated_tree(500, "0:500") is False
+    assert killed == [], "a stranger holding a recycled number must not be signalled"
+    assert walked == [], "nor may its tree be enumerated as if it were ours"
+
+    # The same call for the process the caller actually validated still kills the tree.
+    monkeypatch.setattr(pl, "_pid_identity", lambda pid: f"0:{pid}")
+    monkeypatch.setattr(pl, "_pid_alive", lambda pid: pid in alive)
+    assert pl._windows_terminate_validated_tree(500, "0:500") is True
+    assert killed == [500, 600]
+
+
+def test_the_root_is_killed_through_the_identity_the_caller_validated(monkeypatch):
+    """Not one derived from the pid being acted on, which is the thing in question."""
+    monkeypatch.setattr(pl, "_is_linux", lambda: False)
+    monkeypatch.setattr(pl, "_signalable", lambda pid: True)
+    monkeypatch.setattr(pl, "_pid_is_zombie", lambda pid: False)
+    monkeypatch.setattr(pl, "_pid_identity", lambda pid: "0:500")
+    monkeypatch.setattr(pl, "_windows_collect_descendants_known", lambda pid: ([], True))
+    seen: "list[tuple[int, object]]" = []
+    alive = {500}
+
+    def _kill(pid, identity = None):
+        seen.append((pid, identity))
+        alive.discard(pid)
+        return True
+
+    monkeypatch.setattr(pl, "_pid_alive", lambda pid: pid in alive)
+    monkeypatch.setattr(pl, "_windows_terminate_pid", _kill)
+    assert pl._windows_terminate_validated_tree(500, "0:500") is True
+    assert seen == [(500, "0:500")]
+
+
+def test_a_subtree_deeper_than_the_capture_depth_is_unresolved(monkeypatch):
+    """Exhausting the depth is an unperformed walk, not an empty one.
+
+    A process that starts another child after each preceding snapshot produces a chain
+    longer than the recursion goes. Answering False there told the caller the anchor had
+    nothing below it, so the anchor was killed -- severing the only traversable link to
+    the child no walk had seen -- and the sweep went on to report success, taking the
+    lifetime record and the pidfile with it.
+    """
+    monkeypatch.setattr(pl, "_is_linux", lambda: False)
+    monkeypatch.setattr(pl, "_signalable", lambda pid: True)
+    monkeypatch.setattr(pl, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(pl, "_pid_is_zombie", lambda pid: False)
+    monkeypatch.setattr(pl, "_pid_identity", lambda pid: f"0:{pid}")
+    monkeypatch.setattr(pl, "_windows_terminate_pid", lambda pid, identity = None: True)
+    # Every process has exactly one child, one number higher, forever.
+    monkeypatch.setattr(
+        pl, "_windows_collect_descendants_known", lambda pid: ([(pid + 1, f"0:{pid + 1}")], True)
+    )
+    attempted: "list[tuple[int, object]]" = []
+    unresolved: "list[tuple[int, object]]" = []
+    result = pl._windows_kill_below(500, attempted, unresolved, set(), 3)
+    assert result is True, "the levels it did reach were killed"
+    # The deepest anchor it could not walk below is carried out, not reported gone.
+    assert (503, "0:503") in unresolved, unresolved
+
+    # The depth limit itself answers None rather than "nothing below".
+    assert pl._windows_kill_below(500, [], [], set(), 0) is None

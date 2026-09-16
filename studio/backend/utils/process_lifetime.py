@@ -1102,8 +1102,9 @@ def terminate_descendants(
 # can still be read: killing an intermediate first removes it from the next snapshot, and a
 # grandchild that still records it as its creator can then no longer be reached by a walk
 # that starts at the root, because the walk has to pass THROUGH a process that is gone. A
-# tree deeper than this is not dropped silently -- the round loop above reports the anchor
-# as unresolved when the walks keep producing pids.
+# tree deeper than this is not dropped silently: exhausting the depth answers None, the
+# same answer an unperformed walk gives, so the anchor above it is carried out as
+# unresolved and the record naming it survives the sweep.
 _SUBTREE_CAPTURE_DEPTH = 8
 
 
@@ -1128,7 +1129,13 @@ def _windows_kill_below(
     read immediately before that process is signalled, never after.
     """
     if depth <= 0:
-        return False
+        # Not False. False is "there was nothing left to signal", and the caller acts on
+        # that by killing the anchor and reporting the subtree accounted for. A chain that
+        # outran the depth (one more child started after each preceding snapshot) is the
+        # opposite case: the walk was never performed at this level, killing the anchor
+        # severs the only traversable link to whatever is below it, and the sweep would go
+        # on to delete the lifetime record and the pidfile while that descendant runs.
+        return None
     found, known = _windows_collect_descendants_known(anchor)
     if not known:
         return None
@@ -1293,7 +1300,7 @@ def _windows_terminate_collected(
     return ordered
 
 
-def _windows_terminate_validated_tree(pid: int) -> bool:
+def _windows_terminate_validated_tree(pid: int, identity: "Optional[str]" = None) -> bool:
     """What ``taskkill /T /F`` was for, with the collector's filter kept intact.
 
     Same contract as `_windows_terminate_tree`: True when nothing of this tree is left
@@ -1316,6 +1323,14 @@ def _windows_terminate_validated_tree(pid: int) -> bool:
     is what keeps the record, so a later sweep still has a handle on whatever the failed
     walk did not name.
     """
+    # The caller's identity, not a fresh read of the number. The leader can exit and its
+    # pid be recycled between the caller's check and this line, and re-deriving the
+    # identity here would bless the replacement: the collection below would enumerate the
+    # stranger's tree and `_windows_terminate_pid` would terminate it through a handle
+    # whose identity it just confirmed matches. Nothing is signalled in that case, and
+    # False keeps the record, which is the same direction every other failure here fails.
+    if identity is not None and not _provably_the_same(pid, identity):
+        return False
     descendants, known = _windows_collect_descendants_known(pid)
     # The root goes FIRST, the moment the snapshot exists. Killing the snapshot first spends
     # one `taskkill` per descendant, each with a 15 second ceiling, and the root is still
@@ -1326,7 +1341,7 @@ def _windows_terminate_validated_tree(pid: int) -> bool:
     # taken before anything is signalled.
     if _signalable(pid) and _pid_alive(pid):
         try:
-            _windows_terminate_pid(pid, _pid_identity(pid))
+            _windows_terminate_pid(pid, identity if identity is not None else _pid_identity(pid))
         except Exception:  # noqa: BLE001 - best effort, like the rest of this
             pass
     # And the descendants go through the survivor sweep's own terminator rather than a
@@ -1800,7 +1815,7 @@ def terminate_all(timeout: float = 5.0) -> "list[int]":
                 # record naming them is cleared right after. Through the validated
                 # collector, never taskkill /T: the same rejected-stranger problem
                 # applies here as on the single-pid path.
-                tree_stands = not _windows_terminate_validated_tree(pid)
+                tree_stands = not _windows_terminate_validated_tree(pid, identity)
             else:
                 _posix_terminate(pid, timeout)
         except Exception:
@@ -1868,7 +1883,7 @@ def terminate_pid(
             # re-expands through the live parent-pid links, so a stranger holding a
             # recycled number that `_windows_collect_descendants` rejected is killed
             # by the very sweep that filter protects.
-            tree_stands = not _windows_terminate_validated_tree(pid)
+            tree_stands = not _windows_terminate_validated_tree(pid, identity)
         else:
             _posix_terminate(pid, timeout)
             # A leader that exited first takes getpgid with it, so _posix_terminate
@@ -1989,7 +2004,7 @@ def _reap_one_record(path, timeout: float) -> "tuple[list[int], bool]":
             # `_windows_collect_descendants` rejected would be killed by the very
             # sweep that filter exists to protect. A record deferred to the next
             # application start must not be the way back in.
-            tree_stands = not _windows_terminate_validated_tree(pid)
+            tree_stands = not _windows_terminate_validated_tree(pid, identity)
         else:
             _posix_terminate(pid, timeout = timeout)
         killed.append(pid)
