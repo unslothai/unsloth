@@ -258,6 +258,39 @@ def test_the_models_folder_is_not_disclosed(monkeypatch):
     assert _hub(via_api_key = False).get("/api/hub/models-folder").json()["path"] == HOST_ROOT
 
 
+def test_a_rejected_scan_folder_does_not_disclose_where_it_resolved(monkeypatch):
+    """The registration route raises before it has a payload, exactly like the one below.
+
+    Normalisation and the filesystem inspection after it raise "Path is not readable: <errno
+    message>", and that message carries the NORMALISED path: the server's working directory
+    for a relative path, the resolved target for a symlink. The caller named a path, but not
+    that one. ENAMETOOLONG on a pasted name reaches this with no effort at all.
+    """
+    from fastapi import HTTPException
+
+    def _raises(path):
+        raise HTTPException(
+            status_code = 400,
+            detail = f"Path is not readable: [Errno 36] File name too long: '{REPO_DIR}'",
+        )
+
+    monkeypatch.setattr(local_inventory, "add_scan_folder_response", _raises)
+
+    response = _hub(via_api_key = True).post(
+        "/api/hub/scan-folders", json = {"path": "./models"}
+    )
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert HOST_ROOT not in detail, detail
+    assert REPO_DIR not in detail, detail
+    # The cause survives, or the error stops being actionable.
+    assert "File name too long" in detail, detail
+
+    # And the browser session still sees its own machine.
+    ui = _hub(via_api_key = False).post("/api/hub/scan-folders", json = {"path": "./models"})
+    assert REPO_DIR in ui.json()["detail"]
+
+
 def test_the_models_folder_error_is_not_disclosed_either(monkeypatch):
     """The redactors only ever see a payload that was BUILT.
 

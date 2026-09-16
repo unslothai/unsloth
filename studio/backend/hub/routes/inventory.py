@@ -109,9 +109,22 @@ def add_scan_folder_endpoint(
     # The caller named this path, so echoing it back discloses nothing it did not send. Redacted
     # anyway, so one rule covers the whole family and a normalised path (symlinks resolved, a
     # relative path anchored, a weight file walked up to its folder) cannot answer for the host.
-    return redact_inventory_host_paths(
-        local_inventory.add_scan_folder_response(body.path), via_api_key = via_api_key
-    )
+    #
+    # The call is inside the try, not inside the redactor's argument list, for the same reason
+    # the models-folder route below spells it out: normalisation and the filesystem inspection
+    # after it raise "Path is not readable: <errno message>", and that message carries the
+    # NORMALISED path -- the server's working directory for a relative one, the resolved target
+    # for a symlink. An exception raised while evaluating an argument never reaches the function
+    # it was being passed to, so that detail went out unredacted.
+    try:
+        payload = local_inventory.add_scan_folder_response(body.path)
+    except HTTPException as error:
+        raise HTTPException(
+            status_code = error.status_code,
+            detail = redact_inventory_error_detail(error.detail, via_api_key = via_api_key),
+            headers = error.headers,
+        ) from error
+    return redact_inventory_host_paths(payload, via_api_key = via_api_key)
 
 
 @router.delete("/scan-folders/{folder_id}", response_model = RemoveScanFolderResponse)
