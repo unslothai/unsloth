@@ -110,6 +110,7 @@ def _run_copy_uvset(
 def test_copy_uvset_puts_the_set_in_place(tmp_path):
     work, dest = tmp_path / "work", tmp_path / "dest"
     work.mkdir()
+    dest.mkdir()  # Install-UvFromRelease creates it before calling Copy-UvSet.
     for name in ("uv.exe", "uvx.exe", "uvw.exe"):
         (work / name).write_bytes(b"pinned " + name.encode())
     res = _run_copy_uvset(tmp_path, f"$work = '{work}'\n$dest = '{dest}'\n")
@@ -128,8 +129,10 @@ def test_copy_uvset_leaves_an_identical_locked_destination_alone(tmp_path):
     (dest / "uv.exe").write_bytes(b"pinned uv.exe")
     prelude = (
         f"$work = '{work}'\n$dest = '{dest}'\n"
-        # Exclusive open, as a running executable's image is on Windows.
-        "$h = [System.IO.File]::Open((Join-Path $dest 'uv.exe'), 'Open', 'Read', 'None')\n"
+        # A running executable's image on Windows admits readers and refuses writers, so share
+        # Read: the hash can still see the file is already ours and nothing is written. (Share
+        # None would refuse the hash too, which no running uv does.)
+        "$h = [System.IO.File]::Open((Join-Path $dest 'uv.exe'), 'Open', 'Read', 'Read')\n"
     )
     res = _run_copy_uvset(tmp_path, prelude, "$h.Dispose()\n")
     assert "ok=True blocked=" in res.stdout, res.stdout + res.stderr
