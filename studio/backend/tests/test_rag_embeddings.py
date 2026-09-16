@@ -176,6 +176,64 @@ def test_first_encode_builds_the_selected_backend_once(monkeypatch):
     assert builds == ["backend"]
 
 
+class _AutoBackend:
+    def encode(self, texts, **_kwargs):
+        return np.zeros((len(texts), 4), dtype = np.float32)
+
+    def token_counter(self, **_kwargs):
+        return lambda text: len(text.split())
+
+    def dim(self, **_kwargs):
+        return 4
+
+
+def _resolve_auto_for(monkeypatch, *, stored = None):
+    import utils.embedding_model_settings as ems
+
+    asked: list[str] = []
+    monkeypatch.setattr(config, "EMBED_BACKEND", "auto")
+    monkeypatch.setattr(ems, "get_stored_backend", lambda _model: stored and stored["backend"])
+    monkeypatch.setattr(
+        embeddings, "_resolve_auto", lambda: asked.append("probe") or "sentence-transformers"
+    )
+    monkeypatch.setattr(
+        embeddings, "_build_st_backend_or_fallback", lambda model_name = None: _AutoBackend()
+    )
+    return asked
+
+
+def test_auto_asks_the_hardware_once_for_the_backend_it_built(monkeypatch):
+    """Every encode, token count and identity check resolves ``auto``, and the GPU probe
+    behind it starts a subprocess, so asking per call started ~3 per indexed document (#10390)."""
+    asked = _resolve_auto_for(monkeypatch)
+
+    embeddings.encode(["first"], model_name = "org/embedder")
+    assert asked == ["probe"]
+    for _ in range(3):
+        embeddings.encode(["again"], model_name = "org/embedder")
+        embeddings.token_counter("org/embedder")("some words")
+        embeddings.dim("org/embedder")
+        embeddings.embedding_identity("org/embedder")
+    assert asked == ["probe"]
+
+    # An unload is a fresh start, so the next backend asks again.
+    embeddings.release_backend()
+    embeddings.encode(["after unload"], model_name = "org/embedder")
+    assert asked == ["probe", "probe"]
+
+
+def test_a_saved_backend_still_replaces_a_resident_auto_backend(monkeypatch):
+    """``auto`` is resolved per model so that saving a backend rebuilds (#9739); keeping the
+    hardware answer must not keep the backend it chose."""
+    stored = {"backend": None}
+    _resolve_auto_for(monkeypatch, stored = stored)
+    _patch_llama_backend(monkeypatch, binary = "/fake/llama-server")
+
+    assert isinstance(embeddings._get_backend("org/embedder"), _AutoBackend)
+    stored["backend"] = "llama-server"
+    assert isinstance(embeddings._get_backend("org/embedder"), _SentinelLlamaBackend)
+
+
 def test_encode_is_serialized(monkeypatch):
     probe = _ConcurrencyProbe()
     monkeypatch.setattr(embeddings, "_get", lambda model_name = None: _FakeModel(probe))
