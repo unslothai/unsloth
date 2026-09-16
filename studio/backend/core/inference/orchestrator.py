@@ -1006,12 +1006,22 @@ class InferenceOrchestrator:
         }.get(context, context)
         message = f"The inference worker stopped unexpectedly while {context_label}."
 
-        if self._proc is None:
+        proc = self._proc
+        if proc is None:
+            # A concurrent teardown can clear `_proc` between the worker dying and this
+            # call, and the capture is retired when the next worker spawns, so returning
+            # here without replaying it was a race that threw away the diagnostic the
+            # capture exists to keep. The identifiers are gone with the handle; the bytes
+            # are not.
+            self._log_worker_stderr_once(None, None)
             return f"{message} Details: process missing."
 
-        exitcode = self._proc.exitcode
-        pid = self._proc.pid
+        exitcode = proc.exitcode
+        pid = proc.pid
         if exitcode is None:
+            # Same reason: the worker changed under a blocked generation, and this path
+            # has no exit status to report either.
+            self._log_worker_stderr_once(pid, None)
             return f"{message} Details: pid={pid}."
 
         # What the worker itself said before it went. A worker that dies from an unhandled

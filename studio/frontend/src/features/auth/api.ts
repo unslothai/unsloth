@@ -39,9 +39,31 @@ let logoutGeneration = 0;
 // first. Guarded against drift by `the_frontend_retry_ladder_outlives_one_probe_budget` in
 // src-tauri/src/commands.rs.
 const TAURI_FETCH_RETRY_DELAYS_MS = [250, 750, 1500, 3000, 5000] as const;
+// The long ladder is for requests it is safe to send twice. A network error is not an
+// answer: the backend may have COMMITTED the request and lost the connection before the
+// response headers reached the webview, and retrying a POST then creates a second API key,
+// project or job. Those keep the ladder this file had before the startup fix, so the change
+// that made the UI wait for a slow backend does not also double the exposure on mutations.
+// PUT and DELETE are idempotent by HTTP semantics and stay on the long one with GET.
+const TAURI_FETCH_RETRY_DELAYS_UNSAFE_MS = [250, 750, 1500] as const;
+const IDEMPOTENT_METHODS = new Set(["GET", "HEAD", "OPTIONS", "PUT", "DELETE"]);
+
+function retryDelaysFor(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+): readonly number[] {
+  const method = (
+    init?.method ??
+    (typeof Request !== "undefined" && input instanceof Request
+      ? input.method
+      : "GET")
+  ).toUpperCase();
+  return IDEMPOTENT_METHODS.has(method)
+    ? TAURI_FETCH_RETRY_DELAYS_MS
+    : TAURI_FETCH_RETRY_DELAYS_UNSAFE_MS;
+}
 const BROWSER_TIMEZONE_HEADER = "X-Unsloth-Timezone";
-const BROWSER_TIMEZONE_OFFSET_HEADER =
-  "X-Unsloth-Timezone-Offset-Minutes";
+const BROWSER_TIMEZONE_OFFSET_HEADER = "X-Unsloth-Timezone-Offset-Minutes";
 
 function addBrowserTimezoneHeaders(headers: Headers): void {
   try {
@@ -70,6 +92,7 @@ async function fetchWithTauriNetworkRetry(
   retryNetworkErrors = true,
   beforeRetry?: () => void,
 ): Promise<Response> {
+  const delays = retryDelaysFor(input, init);
   for (let attempt = 0; ; attempt++) {
     try {
       return await fetch(input, init);
@@ -78,11 +101,11 @@ async function fetchWithTauriNetworkRetry(
         !isTauri ||
         !retryNetworkErrors ||
         !(error instanceof TypeError) ||
-        attempt >= TAURI_FETCH_RETRY_DELAYS_MS.length
+        attempt >= delays.length
       ) {
         throw error;
       }
-      await wait(TAURI_FETCH_RETRY_DELAYS_MS[attempt]);
+      await wait(delays[attempt]);
       beforeRetry?.();
     }
   }
@@ -114,9 +137,10 @@ async function redirectToAuth(passwordChangeRequired = false): Promise<void> {
         login_mode?: "single" | "multi";
       };
       // Public status describes the owner. A managed session carries its own requirement.
-      const requiresChange = data.login_mode === "multi"
-        ? passwordChangeRequired || mustChangePassword()
-        : data.requires_password_change;
+      const requiresChange =
+        data.login_mode === "multi"
+          ? passwordChangeRequired || mustChangePassword()
+          : data.requires_password_change;
       if (requiresChange !== mustChangePassword()) {
         setMustChangePassword(requiresChange);
       }
@@ -180,7 +204,9 @@ async function nativeBackendIsAlive(): Promise<boolean> {
   const probe = (async () => {
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      return (await invoke<boolean>("check_backend_present", { port })) === true;
+      return (
+        (await invoke<boolean>("check_backend_present", { port })) === true
+      );
     } catch {
       return false;
     }

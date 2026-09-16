@@ -480,14 +480,44 @@ pub async fn check_health(port: u16) -> Result<bool, String> {
 /// A connection REFUSED is still `false`: that error is not a timeout, so nothing is holding
 /// the port and the relaunch verdict stands.
 #[tauri::command]
-pub async fn check_backend_present(port: u16) -> Result<bool, String> {
+pub async fn check_backend_present(
+    state: tauri::State<'_, BackendState>,
+    port: u16,
+) -> Result<bool, String> {
+    // A timeout is silence, and silence alone does not say which side went quiet: a
+    // per-process firewall dropping the SYN and an unrelated process that accepted the port
+    // and stalled both produce it, and reading either as "the backend is running" leaves the
+    // user being told to wait for something that is gone. What settles it is whether THIS
+    // app has a backend on that port: with one, a stall is our own process holding the GIL
+    // and relaunching would kill work in flight; without one, there is nothing of ours to
+    // wait for and the relaunch verdict stands.
+    backend_presence(port, we_manage_a_backend_on(state.inner(), port)).await
+}
+
+/// The body of `check_backend_present`, without the Tauri state.
+///
+/// Separated so a test can drive both answers for *we_manage_it* against a real socket: a
+/// `tauri::State` cannot be built outside a running app, and a test that re-spells the rule
+/// over hand-made structs asserts its own arithmetic.
+async fn backend_presence(port: u16, we_manage_it: bool) -> Result<bool, String> {
     match check_health_inner(port, HEALTH_PROBE_TIMEOUT).await {
-        Ok(liveness) => Ok(backend_is_present(&liveness)),
+        Ok(liveness) => Ok(backend_is_present(&liveness, we_manage_it)),
         Err(e) => {
             info!("Backend presence check on port {} failed: {}", port, e);
-            Ok(backend_is_present(&liveness_from_probe_error(&e)))
+            Ok(backend_is_present(&liveness_from_probe_error(&e), we_manage_it))
         }
     }
+}
+
+/// Whether this app's own backend handle names *port*, spawned or adopted.
+///
+/// Read from the handle rather than from the probe: the probe is the thing that just failed
+/// to answer, and asking it again cannot decide what its silence meant.
+fn we_manage_a_backend_on(state: &BackendState, port: u16) -> bool {
+    matches!(
+        process::owned_backend_snapshot(state),
+        Ok(Some(snapshot)) if snapshot.port == Some(port)
+    )
 }
 
 /// The rule `check_backend_present` applies, as a value rather than as an expression inlined
@@ -496,8 +526,10 @@ pub async fn check_backend_present(port: u16) -> Result<bool, String> {
 /// Separated so the test for it can actually fail. The commands themselves need a live port to
 /// probe, so a test that re-spells `alive || probe_timed_out` over hand-built structs asserts
 /// its own arithmetic and goes on passing no matter what the command does.
-fn backend_is_present(liveness: &BackendLiveness) -> bool {
-    liveness.alive || liveness.probe_timed_out
+fn backend_is_present(liveness: &BackendLiveness, we_manage_it: bool) -> bool {
+    // An answer is an answer whoever owns the port. A TIMEOUT is not, so it only counts as
+    // presence for a backend this app is managing.
+    liveness.alive || (liveness.probe_timed_out && we_manage_it)
 }
 
 /// Probe the backend for process liveness.
@@ -1504,14 +1536,18 @@ mod tests {
         // passing if check_backend_present went back to answering `liveness.alive`.
         assert!(!stalled.alive, "a stall is not an answer");
         assert!(
-            super::backend_is_present(&stalled),
+            super::backend_is_present(&stalled, true),
             "a stalled probe must read as a backend that is still present"
         );
         assert!(
-            !super::backend_is_present(&closed),
+            !super::backend_is_present(&stalled, false),
+            "a stall on a port this app does not manage proves nothing about our backend"
+        );
+        assert!(
+            !super::backend_is_present(&closed, true),
             "a refused connection must still read as absent"
         );
-        assert!(super::backend_is_present(&answered));
+        assert!(super::backend_is_present(&answered, false));
         // And the health command must keep collapsing the stall, since that is the answer its
         // own caller wants: "may I use this backend" is no.
         assert!(
@@ -1699,10 +1735,24 @@ mod tests {
         // actually be spent for the error to be a timeout.
         let port = stalling_test_backend().await;
         assert_eq!(
-            super::check_backend_present(port).await,
+            super::backend_presence(port, true).await,
             Ok(true),
             "a backend holding the port and not answering was reported absent, which is the \
              relaunch prompt this command was added to prevent"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stalled_port_this_app_does_not_manage_is_not_our_backend() {
+        // The other half of the same silence. A firewall dropping the SYN and a stranger that
+        // accepted the port and went quiet both time out, and with no backend of our own on
+        // that port there is nothing for the user to wait for: telling them to wait rather
+        // than relaunch is the failure mode this arm has to avoid.
+        let port = stalling_test_backend().await;
+        assert_eq!(
+            super::backend_presence(port, false).await,
+            Ok(false),
+            "a stalled port with no managed backend behind it was reported as present"
         );
     }
 
@@ -1718,7 +1768,7 @@ mod tests {
             port
         };
         assert_eq!(
-            super::check_backend_present(port).await,
+            super::backend_presence(port, true).await,
             Ok(false),
             "a closed port must still read as an absent backend"
         );

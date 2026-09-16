@@ -856,3 +856,35 @@ def test_the_operator_still_gets_the_last_words_in_the_server_log(monkeypatch):
     written.clear()
     instance._subprocess_crash_message("wait")
     assert written == [], written
+
+
+def test_a_teardown_that_clears_the_handle_first_still_logs_the_tail(monkeypatch):
+    """A concurrent teardown can clear `_proc` between the worker dying and the blocked
+    generation noticing.
+
+    The message then degrades to "process missing", which is fine, but the capture is retired
+    when the next worker spawns, so returning without reading it threw the diagnostic away
+    entirely -- the thing the capture was added to keep.
+    """
+    from core.inference import orchestrator as orchestrator_module
+
+    written = []
+    monkeypatch.setattr(
+        orchestrator_module.logger,
+        "error",
+        lambda message, *args, **kwargs: written.append(message % args if args else message),
+    )
+    instance = _orchestrator_with_capture(
+        "terminate called after throwing an instance of 'c10::Error'\n"
+    )
+    instance._proc = None
+    message = instance._subprocess_crash_message("generation")
+    assert "process missing" in message
+    assert any("terminate called" in line for line in written), written
+
+    # And the exit-status-not-yet-available path, which is the same race one step later.
+    written.clear()
+    other = _orchestrator_with_capture("Fatal Python error: Segmentation fault\n")
+    other._proc = SimpleNamespace(exitcode = None, pid = 99, is_alive = lambda: True)
+    other._subprocess_crash_message("wait")
+    assert any("Segmentation fault" in line for line in written), written

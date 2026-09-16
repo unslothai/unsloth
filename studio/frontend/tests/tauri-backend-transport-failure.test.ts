@@ -290,7 +290,11 @@ test("panels that all lose the backend at once share one native probe", async ()
     await probeStarted;
     const errors = await Promise.all([first, call(), call()]);
 
-    assert.equal(probes, 1, "each lost panel opened its own native health probe");
+    assert.equal(
+      probes,
+      1,
+      "each lost panel opened its own native health probe",
+    );
     for (const error of errors) {
       assert.ok(error instanceof Error);
       assert.equal(error.message, authApi.BACKEND_NOT_ANSWERING_MESSAGE);
@@ -317,7 +321,10 @@ test("updating an existing install does not go through the changed path", async 
     "utf8",
   );
   assert.ok(update.includes('invoke("start_backend_update")'));
-  assert.ok(!update.includes("authFetch"), "the update flow now goes through authFetch");
+  assert.ok(
+    !update.includes("authFetch"),
+    "the update flow now goes through authFetch",
+  );
   assert.ok(
     !/(?<![.\w])fetch\(/.test(update),
     "the update flow now issues its own fetch, which the transport path wraps",
@@ -376,4 +383,35 @@ test("the background chat storage filter accepts every transport verdict", async
     !filter.includes("please relaunch it"),
     "the filter still matches one exact wording of the transport failure",
   );
+});
+
+test("a POST is not retried on the long ladder", async () => {
+  // A network error is not an answer. The backend may have committed the request and lost
+  // the connection before the response headers arrived, so every extra attempt is another
+  // chance at a duplicate API key, project or job. The startup fix lengthened the ladder for
+  // the GETs the UI makes while a slow backend warms up; it must not lengthen it here.
+  const port = 61797;
+  const originalFetch = globalThis.fetch;
+  let attempts = 0;
+  globalThis.fetch = async () => {
+    attempts += 1;
+    throw new TypeError("fetch failed");
+  };
+
+  try {
+    const authApi = loadAuthApi({ port, checkHealth: () => false });
+    await authApi
+      .authFetch("/api/auth/api-keys", { method: "POST", body: "{}" })
+      .catch(() => undefined);
+    assert.ok(
+      attempts <= OLD_LADDER_ATTEMPTS,
+      `a POST was sent ${attempts} times; the unsafe ladder allows ${OLD_LADDER_ATTEMPTS}`,
+    );
+    assert.ok(
+      attempts > 1,
+      "the unsafe ladder still retries, as it always did",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
