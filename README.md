@@ -155,15 +155,21 @@ Use our [Docker image](https://hub.docker.com/r/unsloth/unsloth) ```unsloth/unsl
 
 **Linux / WSL (Bash):**
 ```bash
-docker run -d --gpus all --ipc=host \
+docker run -d --name unsloth --gpus all --ipc=host \
   -p 8000:8000 -p 8888:8888 \
-  -e UNSLOTH_STUDIO_PASSWORD="mypassword" -e JUPYTER_PASSWORD="mypassword" \
   -v "$PWD":/workspace/host \
   -v "$HOME/.cache/huggingface":/workspace/.cache/huggingface \
   -v unsloth-studio:/opt/unsloth-studio \
   unsloth/unsloth
+docker logs -f unsloth
 ```
-Follow startup with `docker logs -f <container>`, where `<container>` is the ID printed by `docker run -d` or a name from `docker ps`. Studio is at `http://localhost:8000` (user `unsloth`), JupyterLab at `http://localhost:8888`. The two mounts keep different things across `docker rm`: the Hugging Face cache holds models you download (mounting your host cache also reuses what you already have), and the `unsloth-studio` volume holds your accounts, chats and trained models; each image brings its own Studio code, and a volume from an older image is migrated on the first start (its old code is kept under `.unsloth-studio-legacy/`). Tags (`unsloth/unsloth:core` for notebooks only), GPU support and options: [Docker Hub](https://hub.docker.com/r/unsloth/unsloth).
+`docker run -d` returns as soon as the container starts, so the second command follows the startup. It ends with the links and the passwords to sign in with, generated for this container:
+```
+  Unsloth container ready
+  Studio      http://localhost:8000   username: unsloth   password: HumpedSneerDislikeRetiring   (change it on first sign-in: Studio stops after 60 minutes with the default password)
+  JupyterLab  http://localhost:8888   generated password: Wja7F9OPH00S6GHS
+```
+Use those. Change the Studio one when you first sign in, or Studio stops after an hour. Set `-e UNSLOTH_STUDIO_PASSWORD=...` and `-e JUPYTER_PASSWORD=...` to choose your own instead, and never a placeholder: these ports publish on every interface, so on a cloud host use `-p 127.0.0.1:8000:8000 -p 127.0.0.1:8888:8888` and an SSH tunnel. Studio checks this on start and says whether it is reachable from the internet. The two mounts keep different things across `docker rm`: the Hugging Face cache holds models you download (mounting your host cache also reuses what you already have), and the `unsloth-studio` volume holds your accounts, chats and trained models; each image brings its own Studio code, and a volume from an older image is migrated on the first start (its old code is kept under `.unsloth-studio-legacy/`). Tags (`unsloth/unsloth:core` for notebooks only), GPU support and options: [Docker Hub](https://hub.docker.com/r/unsloth/unsloth).
 
 On AMD there is a separate image, [`unsloth/unsloth-rocm`](https://hub.docker.com/r/unsloth/unsloth-rocm), with the run command and the supported cards on its [Docker Hub page](https://hub.docker.com/r/unsloth/unsloth-rocm). It carries the training stack only, so there is no Studio or JupyterLab in it, and it needs native Linux: WSL exposes `/dev/dxg` rather than the `/dev/kfd` that ROCm needs.
 

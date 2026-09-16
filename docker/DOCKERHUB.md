@@ -32,18 +32,41 @@ curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/docker/insta
 On Windows use Docker Desktop with the WSL 2 backend and a current NVIDIA Windows driver; nothing else to install. Then:
 
 ```bash
-docker run -d --gpus all --ipc=host \
+docker run -d --name unsloth --gpus all --ipc=host \
   --ulimit memlock=-1 --ulimit stack=67108864 \
   -p 8000:8000 -p 8888:8888 \
-  -e UNSLOTH_STUDIO_PASSWORD="choose-a-password" \
-  -e JUPYTER_PASSWORD="choose-a-password" \
   -v "$PWD":/workspace/host \
   -v "$HOME/.cache/huggingface":/workspace/.cache/huggingface \
   -v unsloth-studio:/opt/unsloth-studio \
   unsloth/unsloth
+docker logs -f unsloth
 ```
 
-`docker run -d` returns at once; follow the startup with `docker logs -f <container>`, which ends with a ready block once both services answer (Studio takes about a minute). Then open Studio at `http://localhost:8000` (user `unsloth`) and JupyterLab at `http://localhost:8888`. Leave either password variable unset and a random one is generated and printed in that log.
+`docker run -d` returns as soon as the container starts and prints only its id, so the second command follows the startup. After about a minute, once both services answer, it ends with the links and the passwords to sign in with, generated for this container:
+
+```
+  Unsloth container ready
+  Studio      http://localhost:8000   username: unsloth   password: HumpedSneerDislikeRetiring   (change it on first sign-in: Studio stops after 60 minutes with the default password; UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0 disables)
+  JupyterLab  http://localhost:8888   generated password: Wja7F9OPH00S6GHS
+  Ports are the container's: use the host side of your -p flags, or an SSH tunnel to a remote host.
+```
+
+Sign in with those. Change the Studio password when you first sign in, or Studio stops after an hour. To choose your own instead, add `-e UNSLOTH_STUDIO_PASSWORD=...` and `-e JUPYTER_PASSWORD=...`, and pick a real one: these ports publish on every interface, so anyone who can reach the host gets the sign-in page. On a cloud host, publish to loopback and tunnel instead:
+
+```bash
+docker run -d --name unsloth --gpus all --ipc=host \
+  -p 127.0.0.1:8000:8000 -p 127.0.0.1:8888:8888 \
+  -v unsloth-studio:/opt/unsloth-studio unsloth/unsloth
+ssh -L 8000:localhost:8000 -L 8888:localhost:8888 user@your-host
+```
+
+Studio checks this for you on start and says whether the port answered from the public internet.
+
+To wait for the ready block and return, rather than following the log by hand:
+
+```bash
+docker logs -f unsloth | awk '/Unsloth container ready/{f=1} f{print} f&&/^ *={10,}/{exit}'
+```
 
 Or let `run.sh` set these flags, including the `unsloth-studio` volume, for you. It offers to install the NVIDIA Container Toolkit if the daemon has no `nvidia` runtime:
 
