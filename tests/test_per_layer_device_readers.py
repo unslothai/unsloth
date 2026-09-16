@@ -172,12 +172,12 @@ def test_an_unavailable_accelerator_is_not_a_usable_device():
     from unsloth.models import _utils
 
     assert _utils._device_type_is_usable("cpu")
-    assert _utils._device_type_is_usable("meta"), (
-        "meta has no is_available to ask, and an offloaded layer sits on it"
-    )
-    assert _utils._device_type_is_usable("not-a-backend"), (
-        "an unknown backend must be taken at its word, not refused"
-    )
+    assert _utils._device_type_is_usable(
+        "meta"
+    ), "meta has no is_available to ask, and an offloaded layer sits on it"
+    assert _utils._device_type_is_usable(
+        "not-a-backend"
+    ), "an unknown backend must be taken at its word, not refused"
     assert _utils._device_type_is_usable("cuda") == torch.cuda.is_available()
 
 
@@ -194,9 +194,9 @@ def test_a_default_pointing_at_a_missing_accelerator_reads_the_layer(monkeypatch
 
     layer = _Layer(parameter_device = "cpu")
     device, buffer_index = _utils.per_layer_device(layer)
-    assert device == torch.device("cpu"), (
-        "with no accelerator the layer's own parameters are the only real answer"
-    )
+    assert device == torch.device(
+        "cpu"
+    ), "with no accelerator the layer's own parameters are the only real answer"
     assert buffer_index == 0, "the historical subscript must survive the fallback"
 
 
