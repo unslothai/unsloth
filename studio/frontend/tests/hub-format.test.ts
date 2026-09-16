@@ -4,7 +4,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { formatEta } from "../src/features/hub/lib/format.ts";
+import { formatBytes, formatEta } from "../src/features/hub/lib/format.ts";
+import { readSrcAsync } from "./helpers/kit.ts";
 
 const MINUTE = 60;
 const HOUR = 60 * MINUTE;
@@ -50,4 +51,14 @@ test("no ETA is ever reported in days", () => {
   for (let s = 1; s <= 3 * DAY; s += 137) {
     assert.doesNotMatch(formatEta(s), /\d+d\b/);
   }
+});
+
+test("sizes and free space use decimal gigabytes", async () => {
+  assert.equal(formatBytes(1_834_426_944), "1.8 GB");
+  assert.equal(formatBytes(403_400_000_000), "403 GB");
+  const source = await readSrcAsync(
+    "features/hub/catalog/on-device-folders-dialog.tsx",
+  );
+  assert.match(source, /`\$\{formatBytes\(bytes\)\} free`/);
+  assert.doesNotMatch(source, /1024 \*\* 3/);
 });
