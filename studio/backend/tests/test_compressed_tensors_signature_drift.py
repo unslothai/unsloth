@@ -179,14 +179,11 @@ def test_a_workflow_that_installs_a_modern_transformers_actually_collects_this_f
     nobody runs -- which is the same shape as the defect this file guards, one level up.
     """
     workflow = (
-        Path(__file__).resolve().parents[3]
-        / ".github"
-        / "workflows"
-        / "consolidated-tests-ci.yml"
+        Path(__file__).resolve().parents[3] / ".github" / "workflows" / "consolidated-tests-ci.yml"
     )
     text = workflow.read_text(encoding = "utf-8")
-    assert "studio/backend/tests/test_compressed_tensors_signature_drift.py" in text, (
-        "the modern-transformers matrix does not collect this file"
-    )
+    assert (
+        "studio/backend/tests/test_compressed_tensors_signature_drift.py" in text
+    ), "the modern-transformers matrix does not collect this file"
     # And that matrix is the one that installs a transformers past the 5.5 ceiling.
     assert 'transformers_spec: "transformers>=5,<6"' in text
