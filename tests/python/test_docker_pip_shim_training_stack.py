@@ -74,16 +74,17 @@ def _run(
     shim,
     args,
     tool = "pip",
+    sub = "install",
 ):
-    """Args after `install`, or None when the shim no-op'd; constraints pair dropped."""
-    argv = ["uv", "pip", "install", *args] if tool == "uv" else ["pip", "install", *args]
+    """Args after the subcommand, or None when the shim no-op'd; constraints pair dropped."""
+    argv = ["uv", "pip", sub, *args] if tool == "uv" else ["pip", sub, *args]
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(shim.sys, "argv", argv)
         try:
             shim.main()
             return None
         except _Exec as exc:
-            i = exc.argv.index("install")
+            i = exc.argv.index(sub)
             execd = exc.argv[i + 1 :]
             if (
                 len(execd) >= 2
@@ -313,3 +314,55 @@ def test_forwarded_installs_pin_the_protected_set_for_the_resolver(shim):
     assert all(
         n in shim._KEEP or n == "transformers" or n.startswith("nvidia-") for n in names
     ), sorted(names)
+
+
+# --- uninstall: the other direction the notebooks take ------------------------------
+
+
+def test_the_shipped_falcon_cell_cannot_remove_unsloth(shim, capsys):
+    assert _run(shim, ["unsloth", "-y"], sub = "uninstall") is None
+    assert "skipped: unsloth" in capsys.readouterr().out
+
+
+def test_the_shipped_qwen_moe_cell_keeps_torchcodec(shim):
+    assert _run(shim, ["-y", "sentence-transformers", "torchcodec"], sub = "uninstall") == ["-y", "sentence-transformers"]
+
+
+@pytest.mark.parametrize("pkg", ["torch", "vllm", "trl", "transformers", "nvidia-cublas-cu12"])
+def test_uninstall_of_the_baked_stack_is_dropped(shim, pkg):
+    assert _run(shim, ["-y", pkg], sub = "uninstall") is None
+    assert _run(shim, [pkg], tool = "uv", sub = "uninstall") is None
+
+
+def test_uninstall_of_an_unbaked_package_still_runs(shim):
+    assert _run(shim, ["-y", UNBAKED], sub = "uninstall") == ["-y", UNBAKED]
+    assert _run(shim, ["-qy", UNBAKED], sub = "uninstall") == ["-q", "-y", UNBAKED]
+
+
+def test_uninstall_of_a_protected_package_the_image_never_baked_still_runs(shim_without_vllm):
+    assert _run(shim_without_vllm, ["-y", MISSING], sub = "uninstall") == ["-y", MISSING]
+
+
+def test_uninstall_protection_survives_a_requirements_file(shim, tmp_path):
+    req = tmp_path / "remove.txt"
+    req.write_text(f"torchcodec\n{UNBAKED}\n")
+    for args in (["-y", "-r", str(req)], ["-y", f"-r{req}"], ["-y", f"--requirement={req}"]):
+        execd = _run(shim, args, sub = "uninstall")
+        assert execd is not None, args
+        path = execd[-1].partition("=")[2] if execd[-1].startswith("--requirement=") else execd[-1]
+        assert Path(path).read_text().split() == [UNBAKED], args
+
+
+def test_uninstall_protection_survives_the_pip_requirement_env(shim, tmp_path, monkeypatch):
+    req = tmp_path / "remove.txt"
+    req.write_text(f"torchcodec\n{UNBAKED}\n")
+    monkeypatch.setenv("PIP_REQUIREMENT", str(req))
+
+    def _fake_execve(path, argv, env):
+        assert "PIP_REQUIREMENT" not in env
+        raise _Exec(path, argv)
+
+    monkeypatch.setattr(shim.os, "execve", _fake_execve)
+    execd = _run(shim, ["-y"], sub = "uninstall")
+    assert execd is not None and execd[0] == "-r" and execd[2] == "-y", execd
+    assert Path(execd[1]).read_text().split() == [UNBAKED]

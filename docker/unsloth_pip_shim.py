@@ -849,7 +849,11 @@ def _install_index(tool, argv):
     outcome available here: the install runs unfiltered and unconstrained, free to
     replace the baked torch/CUDA stack. _VALUE_FLAGS is the same set the tail scanner
     uses and _selfcheck_value_flags() holds it to the real CLIs at build time."""
-    expect = ["install"] if tool == "pip" else ["pip", "install"]
+    return _subcommand_index(tool, argv, "install")
+
+
+def _subcommand_index(tool, argv, sub):
+    expect = [sub] if tool == "pip" else ["pip", sub]
     got = _positionals(argv)
     if len(got) < len(expect):
         return None
@@ -857,6 +861,66 @@ def _install_index(tool, argv):
         if tok != want:
             return None
     return got[len(expect) - 1][0]
+
+
+def _uninstall_file(path, dropped):
+    filtered, _, drp = _filter_requirements_file(path)
+    dropped.extend(drp)
+    return filtered
+
+
+def _uninstall(tool, argv, i):
+    head, tail = argv[: i + 1], _expand_short_clusters(argv[i + 1 :])
+    child_env = None
+    if tool == "pip":
+        env_tail = [x for val in os.environ.get("PIP_REQUIREMENT", "").split() for x in ("-r", val)]
+        if env_tail:
+            tail = env_tail + tail
+            child_env = {k: v for k, v in os.environ.items() if k != "PIP_REQUIREMENT"}
+    keep, dropped = [], []
+    has_target = False
+    pending = None
+    for tok in tail:
+        if pending is not None:
+            if pending in _REQ_FILE_FLAGS:
+                tok = _uninstall_file(tok, dropped)
+                has_target = True
+            keep += [pending, tok]
+            pending = None
+            continue
+        if tok.startswith("--") and "=" in tok:
+            flag, _, val = tok.partition("=")
+            if flag in _REQ_FILE_FLAGS:
+                tok = flag + "=" + _uninstall_file(val, dropped)
+                has_target = True
+            keep.append(tok)
+            continue
+        if len(tok) > 2 and tok[:2] in _REQ_FILE_FLAGS:
+            keep += [tok[:2], _uninstall_file(tok[2:], dropped)]
+            has_target = True
+            continue
+        if tok in _VALUE_FLAGS:
+            pending = tok
+            continue
+        if tok.startswith("-"):
+            keep.append(tok)
+            continue
+        name = _canon(tok)
+        if _is_protected(name) or (name == "transformers" and _is_installed(name)):
+            dropped.append(tok)
+            continue
+        keep.append(tok)
+        has_target = True
+    if dropped:
+        print("[unsloth-nb] kept baked versions, skipped: " + " ".join(dropped))
+    if not has_target:
+        print("[unsloth-nb] nothing to uninstall after keeping the baked stack; ok.")
+        return
+    cmd = [REAL[tool]] + head + keep
+    sys.stdout.flush()
+    if child_env is not None:
+        os.execve(REAL[tool], cmd, child_env)
+    os.execv(REAL[tool], cmd)
 
 
 def _positionals(argv):
@@ -1026,6 +1090,11 @@ def main():
     global _WORKING_DIR
     _wd = _uv_working_dir(tool, argv)
     _WORKING_DIR = os.path.abspath(_wd) if _wd else None
+
+    i = _subcommand_index(tool, argv, "uninstall")
+    if i is not None:
+        _uninstall(tool, argv, i)
+        return
 
     i = _install_index(tool, argv)
     if i is None:
