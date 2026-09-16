@@ -513,3 +513,49 @@ def test_native_token_gemma_call_inside_a_fence_is_still_a_call():
     assert len(calls) == 1, calls
     assert _args(calls[0]) == {"query": "cats"}
     assert "call:web_search" not in _strip(text, en)
+
+
+def test_wrapperless_call_after_a_longer_fence_quoting_a_fence_is_still_promoted():
+    text = '````md\n```py\nx=1\n```\n````\ncall:web_search{query:"b"}'
+    en = {"web_search"}
+    calls = parse_tool_calls_from_text(text, enabled_tool_names = en)
+    assert [_args(c) for c in calls] == [{"query": "b"}]
+    assert promotable_gemma_call_pos(text, en) == text.index("call:web_search")
+    assert _strip(text, en) == "````md\n```py\nx=1\n```\n````"
+
+
+def test_inline_code_example_keeps_streaming_on_the_safetensors_loop():
+    from core.inference.safetensors_agentic import run_safetensors_tool_loop
+
+    text = 'In Gemma syntax: `call:web_search{query:"x"}`. ' + "More explanation follows. " * 40
+    en = {"web_search"}
+    for i in range(1, len(text) + 1):
+        assert promotable_gemma_call_pos(text[:i], en, streaming = True) == -1, i
+
+    calls = []
+
+    def _gen(_messages):
+        acc = ""
+        for i in range(0, len(text), 4):
+            acc += text[i : i + 4]
+            yield acc
+
+    events = list(
+        run_safetensors_tool_loop(
+            single_turn = _gen,
+            messages = [{"role": "user", "content": "hi"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            execute_tool = lambda name, arguments, **_: calls.append(name) or "RESULT",
+        )
+    )
+    contents = [e["text"] for e in events if e["type"] == "content"]
+    assert calls == []
+    assert contents[-1] == text
+    assert len(contents[-2]) > text.index("`.") + 1
+
+
+def test_unclosed_inline_backtick_does_not_hide_a_call_once_its_line_ends():
+    text = 'Use `call:web_search{query:"x"}\n'
+    en = {"web_search"}
+    assert promotable_gemma_call_pos(text[:-1], en, streaming = True) == -1
+    assert promotable_gemma_call_pos(text, en, streaming = True) == text.index("call:")

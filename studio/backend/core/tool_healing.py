@@ -285,12 +285,14 @@ _REHEARSAL_RE = re.compile(r"(?<!\[CALL_ID\])\b([\w-]+)\[ARGS\]\s*(?=\{)")
 # Gates the markerless rehearsal form only, so quoting the syntax as documentation stays text
 # instead of executing. A fence's info string cannot contain backticks, so a triple-backtick run
 # opening a line is an inline span and not a fence running to EOF; the closer tolerates a CR so a
-# CRLF block still closes. Inline runs are enumerated by length rather than backreferenced: a
-# (`+)..\1 form backtracks over every candidate length and turned 21 KB of unmatched runs into a
-# 1.8s stall.
+# CRLF block still closes. A fence closes only on a run of its own character at least as long as
+# the opener, so a ```` block quoting a ``` block does not end early and swallow the rest. Inline
+# runs are enumerated by length rather than backreferenced: a (`+)..\1 form backtracks over every
+# candidate length and turned 21 KB of unmatched runs into a 1.8s stall.
 _CODE_SPAN_RE = re.compile(
-    r"^[ \t]*(?:>[ \t]*)*(?:```+[^`\n]*|~~~+[^\n]*)$"
-    r".*?(?:^[ \t]*(?:>[ \t]*)*(?:```+|~~~+)[ \t\r]*$|\Z)"
+    r"^[ \t]*(?:>[ \t]*)*(?:"
+    r"(?P<bt>```+)[^`\n]*$.*?(?:^[ \t]*(?:>[ \t]*)*(?P=bt)`*[ \t\r]*$|\Z)"
+    r"|(?P<tl>~~~+)(?!~)[^\n]*$.*?(?:^[ \t]*(?:>[ \t]*)*(?P=tl)~*[ \t\r]*$|\Z))"
     r"|``(?:[^`]|`(?!`))*?``|`[^`\n]*`",
     re.DOTALL | re.MULTILINE,
 )

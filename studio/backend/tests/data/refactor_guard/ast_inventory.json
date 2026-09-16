@@ -1989,7 +1989,7 @@
       "promotable_gemma_call_pos": {
         "decorators": [],
         "kind": "def",
-        "signature": "text: str, enabled_tool_names, start: int=0, *, floor: int=0"
+        "signature": "text: str, enabled_tool_names, start: int=0, *, floor: int=0, streaming: bool=False"
       },
       "reasoning_cap_spent_message": {
         "decorators": [],
@@ -2045,7 +2045,7 @@
   },
   "core.tool_healing": {
     "compiled": {
-      "_CODE_SPAN_RE": "'^[ \\\\t]*(?:>[ \\\\t]*)*(?:```+[^`\\\\n]*|~~~+[^\\\\n]*)$.*?(?:^[ \\\\t]*(?:>[ \\\\t]*)*(?:```+|~~~+)[ \\\\t\\\\r]*$|\\\\Z)|``(?:[^`]|`(?!`))*?``|`[^`\\\\n]*`' flags=56",
+      "_CODE_SPAN_RE": "'^[ \\\\t]*(?:>[ \\\\t]*)*(?:(?P<bt>```+)[^`\\\\n]*$.*?(?:^[ \\\\t]*(?:>[ \\\\t]*)*(?P=bt)`*[ \\\\t\\\\r]*$|\\\\Z)|(?P<tl>~~~+)(?!~)[^\\\\n]*$.*?(?:^[ \\\\t]*(?:>[ \\\\t]*)*(?P=tl)~*[ \\\\t\\\\r]*$|\\\\Z))|``(?:[^`]|`(?!`))*?``|`[^`\\\\n]*`' flags=56",
       "_GEMMA_NEXT_KEY_RE": "'\\\\s*[A-Za-z_][\\\\w.\\\\-]*\\\\s*:' flags=32",
       "_MISTRAL_ARRAY_RE": "'\\\\[TOOL_CALLS\\\\]\\\\s*(?=\\\\[)' flags=32",
       "_MISTRAL_BRACKET_RE": "'\\\\[TOOL_CALLS\\\\]\\\\s*([\\\\w-]+)(?:\\\\[CALL_ID\\\\][\\\\w-]+)?(?:\\\\[ARGS\\\\])?\\\\s*(?=\\\\{)' flags=32",
@@ -2118,7 +2118,7 @@
       "re.compile('\\\\s*</function>\\\\s*$')": 1,
       "re.compile('\\\\s*</parameter>\\\\s*$')": 1,
       "re.compile('\\\\s*[A-Za-z_][\\\\w.\\\\-]*\\\\s*:')": 1,
-      "re.compile('^[ \\\\t]*(?:>[ \\\\t]*)*(?:```+[^`\\\\n]*|~~~+[^\\\\n]*)$.*?(?:^[ \\\\t]*(?:>[ \\\\t]*)*(?:```+|~~~+)[ \\\\t\\\\r]*$|\\\\Z)|``(?:[^`]|`(?!`))*?``|`[^`\\\\n]*`', re.DOTALL | re.MULTILINE)": 1,
+      "re.compile('^[ \\\\t]*(?:>[ \\\\t]*)*(?:(?P<bt>```+)[^`\\\\n]*$.*?(?:^[ \\\\t]*(?:>[ \\\\t]*)*(?P=bt)`*[ \\\\t\\\\r]*$|\\\\Z)|(?P<tl>~~~+)(?!~)[^\\\\n]*$.*?(?:^[ \\\\t]*(?:>[ \\\\t]*)*(?P=tl)~*[ \\\\t\\\\r]*$|\\\\Z))|``(?:[^`]|`(?!`))*?``|`[^`\\\\n]*`', re.DOTALL | re.MULTILINE)": 1,
       "re.match('\\\\s*</tool_call>', content[span_end:])": 1,
       "re.match('\\\\s*\\\\[/TOOL_CALLS\\\\]', content[end:])": 1,
       "re.search('<tool_call>\\\\s*$', content[:span_start])": 1

@@ -3591,6 +3591,7 @@ def promotable_gemma_call_pos(
     start: int = 0,
     *,
     floor: int = 0,
+    streaming: bool = False,
 ) -> int:
     """Offset of the first bare ``call:NAME{`` the parser would promote, or -1. Bare Gemma has
     no ``TOOL_XML_SIGNALS`` entry, so without this the streaming detectors miss a mid-prose
@@ -3603,7 +3604,9 @@ def promotable_gemma_call_pos(
     covers 4x the 64-character cap every provider enforces (OpenAI/Bedrock
     ``^[a-zA-Z0-9_-]{1,64}$``, MCP SEP-986). Sentinel-gated like ``_promotable_gemma_call_pos``.
     ``enabled_tool_names`` may be a zero-argument callable, resolved only once a candidate
-    exists, so an ordinary completion never materializes a large MCP catalogue per chunk."""
+    exists, so an ordinary completion never materializes a large MCP catalogue per chunk.
+    ``streaming`` holds back a call after an unclosed inline backtick on the still-open last
+    line: its closing backtick has not arrived yet, and draining there froze a quoted example."""
     # Widen, do not seek: an rfind window has to contain the whole sentinel, so a ``call``
     # straddling the boundary was missed and a short-named call went unseen.
     start = text.find(_GEMMA_BARE_SENTINEL, max(0, start - _MAX_GEMMA_PREFIX_TAIL))
@@ -3620,8 +3623,13 @@ def promotable_gemma_call_pos(
             continue
         if code_spans is None:
             code_spans = _tool_healing._code_spans(text)
-        if not _tool_healing._in_code(code_spans, m.start()):
-            return m.start()
+        if _tool_healing._in_code(code_spans, m.start()):
+            continue
+        if streaming and "\n" not in text[m.start() :]:
+            line_start = text.rfind("\n", 0, m.start()) + 1
+            if text.count("`", line_start, m.start()) % 2:
+                continue
+        return m.start()
     return -1
 
 
