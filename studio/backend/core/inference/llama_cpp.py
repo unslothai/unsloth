@@ -6599,7 +6599,11 @@ def _device_selection_is_a_permutation(
         if not match:
             return False
         ids.add(int(match.group(1)))
-    return ids == set(visible)
+    # llama.cpp names devices by its OWN enumeration, which a visibility mask makes
+    # compact: under CUDA_VISIBLE_DEVICES=2,3 the child has CUDA0 and CUDA1, not
+    # CUDA2 and CUDA3. Comparing against the physical ids stripped a real reorder
+    # and passed through a pair of devices the child does not have.
+    return ids == set(range(len(visible)))
 
 
 def _extra_args_have_tensor_split(
@@ -29182,7 +29186,9 @@ class LlamaCppBackend:
             list(intent.extra_args) if intent.extra_args is not None else self._extra_args
         )
         candidate_extra_args = list(effective_extra_args) if effective_extra_args else []
-        if intent.extra_args is not None and self._gpu_ids_own_placement(intent.gpu_ids):
+        if intent.extra_args is not None and self._gpu_ids_own_placement(
+            intent.gpu_ids, extra_args = intent.extra_args, env = os.environ
+        ):
             candidate_extra_args = self._strip_device_extra_args(candidate_extra_args)
         # A Model Memory toggle changes only the launch flags, so the intent is
         # unchanged and this would otherwise report already-loaded and leave the
@@ -31104,7 +31110,11 @@ class LlamaCppBackend:
                             if fallback_extra_args is not snapshot.extra_args:
                                 self._requested_extra_args = (
                                     self._strip_device_extra_args(_ea)
-                                    if self._gpu_ids_own_placement(snapshot.gpu_ids)
+                                    if self._gpu_ids_own_placement(
+                                        snapshot.gpu_ids,
+                                        extra_args = _ea,
+                                        env = os.environ,
+                                    )
                                     else list(_ea)
                                 )
                             # Restore the requested mode + reason load_model("off") cleared,

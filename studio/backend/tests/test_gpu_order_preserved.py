@@ -204,3 +204,42 @@ def test_a_split_the_child_does_inherit_still_vetoes(monkeypatch, tmp_path):
     _, result = _run(monkeypatch, tmp_path, mask = "1,0")
     assert result["env"].get("LLAMA_ARG_TENSOR_SPLIT") == "60,40"
     assert result["env"]["CUDA_VISIBLE_DEVICES"] == "0,1"
+
+
+def test_a_reorder_is_read_in_the_childs_own_ordinals(monkeypatch, tmp_path):
+    """A non-zero mask is where physical ids and llama.cpp device names diverge.
+
+    Under CUDA_VISIBLE_DEVICES=2,3 the child has CUDA0 and CUDA1. Comparing the
+    device value against the physical ids stripped the real reorder and kept a
+    pair naming devices the child does not have.
+    """
+    backend, _ = _backend(tmp_path, vulkan = False, memory = _TWO_GPUS)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "2,3")
+    own = backend._gpu_ids_own_placement
+    # The real reorder survives...
+    assert own([2, 3], is_vulkan = False, extra_args = ["--device", "CUDA1,CUDA0"]) is False
+    # ...and a value naming devices the child will not have does not.
+    assert own([2, 3], is_vulkan = False, extra_args = ["--device", "CUDA2,CUDA3"]) is True
+    # A narrowing value is still stripped.
+    assert own([2, 3], is_vulkan = False, extra_args = ["--device", "CUDA0"]) is True
+
+
+def test_the_reload_comparator_asks_what_the_launch_asked(monkeypatch, tmp_path):
+    """Re-sending an unchanged intent must not reload.
+
+    The launch keeps a permuting --device, so a comparator that strips it compares
+    a stripped list against the preserved one and rejects the live server on every
+    unchanged Apply.
+    """
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1")
+    monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = _TWO_GPUS)
+    backend._select_gpus = lambda *args, **kwargs: ([0, 1], False)
+    extras = ["--device", "CUDA1,CUDA0"]
+    _launch(backend, gguf, n_ctx = 4096, gpu_ids = [0, 1], extra_args = extras)
+    assert backend._gpu_ids_own_placement([0, 1], is_vulkan = False, extra_args = extras) is False
+    # What the comparator would compare, with the flag preserved on both sides.
+    assert backend._strip_device_extra_args(extras) != list(extras)
+    assert backend._requested_extra_args == list(
+        extras
+    ), f"the launch stored a stripped list: {backend._requested_extra_args}"
