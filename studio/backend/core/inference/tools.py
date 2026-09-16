@@ -1831,6 +1831,19 @@ def _find_blocked_commands(
                     if payload:
                         blocked |= _find_blocked_commands(payload, _ssh_segments = _ssh_segments)
 
+    if (
+        _ssh_segments is not None
+        and any(name == "sftp" for name, _args in _ssh_segments)
+        and any(
+            index not in quoted_separators
+            and token in {"|", "|&"}
+            or index in redirect_indexes
+            and re.match(r"^(?:0)?<", token)
+            for index, token in enumerate(tokens)
+        )
+    ):
+        _ssh_segments.append(("sftp", []))
+
     return blocked
 
 

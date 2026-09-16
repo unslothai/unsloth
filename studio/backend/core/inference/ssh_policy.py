@@ -289,6 +289,8 @@ def _parse_ssh_cli_options(tokens: list[str], command: str) -> tuple[list[str], 
                 dynamic |= not configuration_disabled
             elif command in {"scp", "sftp"} and option in {"D", "S"}:
                 dynamic = True
+            elif command == "sftp" and option == "b":
+                dynamic = True
             elif option == "J":
                 found, unknown = _host_from_ssh_option("proxyjump", value)
                 hosts.update(found)
@@ -340,7 +342,9 @@ def _hosts_from_ssh_segment(name: str, tokens: list[str]) -> tuple[set[str], boo
     return literal_hosts, dynamic
 
 
-def extract_ssh_hosts_from_command(command: str) -> tuple[set[str], bool]:
+def extract_ssh_hosts_from_command(
+    command: str, *, _stdin_supplied: bool = False
+) -> tuple[set[str], bool]:
     """Return literal SSH hosts and whether a dynamic/unparsed target exists."""
     if not command or not command.strip():
         return set(), False
@@ -354,7 +358,7 @@ def extract_ssh_hosts_from_command(command: str) -> tuple[set[str], bool]:
             continue
         segment_hosts, segment_dynamic = _hosts_from_ssh_segment(name, arg_tokens)
         hosts.update(segment_hosts)
-        dynamic = dynamic or segment_dynamic
+        dynamic = dynamic or segment_dynamic or name == "sftp" and _stdin_supplied
     return hosts, dynamic
 
 
@@ -652,14 +656,18 @@ def _literal_strings_from_node(node: ast.AST) -> list[str]:
     return []
 
 
-def _ssh_from_argv_literals(strings: list[str]) -> tuple[set[str], bool]:
+def _ssh_from_argv_literals(
+    strings: list[str], stdin_supplied: bool = False
+) -> tuple[set[str], bool]:
     if not strings:
         return set(), False
-    return extract_ssh_hosts_from_command(shlex.join(strings))
+    return extract_ssh_hosts_from_command(shlex.join(strings), _stdin_supplied = stdin_supplied)
 
 
-def _extract_ssh_from_shell_literal(literal: str) -> tuple[set[str], bool]:
-    hosts, dynamic = extract_ssh_hosts_from_command(literal)
+def _extract_ssh_from_shell_literal(
+    literal: str, stdin_supplied: bool = False
+) -> tuple[set[str], bool]:
+    hosts, dynamic = extract_ssh_hosts_from_command(literal, _stdin_supplied = stdin_supplied)
     return hosts, dynamic
 
 
@@ -910,6 +918,14 @@ def _scan_ssh_python_usage(
                 uses_ssh = dynamic = True
 
             shell_func = _bound_name(node.func, shell_aliases)
+            call_kwargs, _opaque = _call_keyword_values(node)
+            stdin_supplied = any(
+                key in call_kwargs
+                and not (
+                    isinstance(call_kwargs[key], ast.Constant) and call_kwargs[key].value is None
+                )
+                for key in ("stdin", "input")
+            )
 
             if (
                 shell_func
@@ -926,7 +942,7 @@ def _scan_ssh_python_usage(
                 else:
                     argv_nodes = _os_process_argv(node, shell_func)
                 argv = [text for arg in argv_nodes for text in _literal_strings_from_node(arg)]
-                found, unknown = _ssh_from_argv_literals(argv)
+                found, unknown = _ssh_from_argv_literals(argv, stdin_supplied)
                 if found or unknown:
                     uses_ssh = True
                     hosts.update(found)
@@ -946,7 +962,7 @@ def _scan_ssh_python_usage(
                 for arg in cmd_args:
                     argv = _literal_strings_from_node(arg)
                     if isinstance(arg, (ast.List, ast.Tuple)) and argv:
-                        seg_hosts, seg_dynamic = _ssh_from_argv_literals(argv)
+                        seg_hosts, seg_dynamic = _ssh_from_argv_literals(argv, stdin_supplied)
                         if seg_hosts or seg_dynamic:
                             uses_ssh = True
                             connect_spans.append(_ssh_call_span(node))
@@ -954,7 +970,9 @@ def _scan_ssh_python_usage(
                             dynamic = dynamic or seg_dynamic
                         continue
                     for literal in argv:
-                        seg_hosts, seg_dynamic = _extract_ssh_from_shell_literal(literal)
+                        seg_hosts, seg_dynamic = _extract_ssh_from_shell_literal(
+                            literal, stdin_supplied
+                        )
                         if seg_hosts or seg_dynamic:
                             uses_ssh = True
                             connect_spans.append(_ssh_call_span(node))
