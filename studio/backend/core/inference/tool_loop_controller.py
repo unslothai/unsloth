@@ -1031,8 +1031,6 @@ def tool_call_limit_nudge(
         arguments = function.get("arguments", {})
         if not isinstance(arguments, str):
             arguments = canonical_arguments_text(arguments)
-        if len(arguments) > 200:
-            arguments = arguments[:200] + "..."
         described.append(f"{function.get('name', '')} {arguments}")
     follow_up = (
         "Do not describe results you did not receive."
