@@ -17,7 +17,13 @@ Source: [`docker/`](https://github.com/unslothai/unsloth/tree/main/docker) in th
 
 ## Quick start
 
-Needs an NVIDIA driver of 570.26 or newer and, on Linux, the NVIDIA Container Toolkit. One command installs the toolkit (Ubuntu, Debian, RHEL, Fedora, Rocky, Amazon Linux, SUSE) and checks a container can see the GPU:
+Needs an NVIDIA driver of 570.26 or newer and, on Linux, Docker plus the NVIDIA Container Toolkit. Without Docker, start here:
+
+```bash
+curl -fsSL https://get.docker.com -o get-docker.sh && sh get-docker.sh
+```
+
+Then one command installs the toolkit (Ubuntu, Debian, RHEL, Fedora, Rocky, Amazon Linux, SUSE) and checks a container can see the GPU:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/docker/install_nvidia_toolkit.sh -o install_nvidia_toolkit.sh && sudo -E bash install_nvidia_toolkit.sh
@@ -39,11 +45,11 @@ docker run -d --gpus all --ipc=host \
 
 `docker run -d` returns at once; follow the startup with `docker logs -f <container>`, which ends with a ready block once both services answer (Studio takes about a minute). Then open Studio at `http://localhost:8000` (user `unsloth`) and JupyterLab at `http://localhost:8888`. Leave either password variable unset and a random one is generated and printed in that log.
 
-The `docker/run.sh` helper in the repository sets these flags, including the `unsloth-studio` volume, for you:
+Or let `run.sh` set these flags, including the `unsloth-studio` volume, for you. It offers to install the NVIDIA Container Toolkit if the daemon has no `nvidia` runtime:
 
 ```bash
-git clone https://github.com/unslothai/unsloth && cd unsloth
-UNSLOTH_PORTS="-p 8000:8000 -p 8888:8888" bash docker/run.sh
+curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/docker/run.sh -o run.sh
+UNSLOTH_PORTS="-p 8000:8000 -p 8888:8888" bash run.sh
 ```
 
 ### Notebooks only (`core`)
