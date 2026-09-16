@@ -171,9 +171,10 @@ function repoLeaf(modelId: string): string {
   return parts.at(-1) ?? modelId;
 }
 
-function detectFormatKey(
+function detectUnsupportedFormatKey(
   modelId: string | null | undefined,
   lowerTags: ReadonlySet<string>,
+  excludedFormats: ReadonlySet<string>,
 ): string | null {
   // Hub format tags describe every artifact in a repository. Native checkpoints
   // can coexist with ONNX/OpenVINO exports (for example all-MiniLM-L6-v2).
@@ -182,17 +183,17 @@ function detectFormatKey(
   const hasNativeWeights = lowerTags.has("pytorch") || lowerTags.has("safetensors");
   for (const tag of lowerTags) {
     if (hasNativeWeights && (tag === "onnx" || tag === "openvino")) continue;
-    if (FORMAT_TAG_LABEL[tag]) return tag;
+    if (excludedFormats.has(tag)) return tag;
     const alias = FORMAT_ALIAS_TAGS[tag];
-    if (alias) return alias;
+    if (alias && excludedFormats.has(alias)) return alias;
   }
   if (modelId) {
     // Owner implies format even when local metadata lacks tags; mirrors the
     // backend's _looks_like_mlx_repo heuristic.
-    if (modelId.trim().toLowerCase().startsWith("mlx-community/")) return "mlx";
+    if (excludedFormats.has("mlx") && modelId.trim().toLowerCase().startsWith("mlx-community/")) return "mlx";
     const name = repoLeaf(modelId);
     for (const { key, pattern } of FORMAT_NAME_PATTERNS) {
-      if (pattern.test(name)) return key;
+      if (excludedFormats.has(key) && pattern.test(name)) return key;
     }
   }
   return null;
@@ -259,8 +260,8 @@ export function classifyUnslothSupport({
       reason: `Library: ${library}.`,
     };
   }
-  const formatKey = detectFormatKey(modelId, lowerTags);
-  if (formatKey && formatTags.has(formatKey)) {
+  const formatKey = detectUnsupportedFormatKey(modelId, lowerTags, formatTags);
+  if (formatKey) {
     const label = FORMAT_TAG_LABEL[formatKey] ?? `${formatKey.toUpperCase()} weights`;
     return {
       status: "unsupported",

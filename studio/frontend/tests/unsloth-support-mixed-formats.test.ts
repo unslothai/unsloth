@@ -45,3 +45,17 @@ test("native storage tags do not make MLX weights GPU compatible", () => {
     modelId: "mlx-community/model", tags: ["onnx", "safetensors"], deviceType: "cuda",
   }).status, "unsupported");
 });
+
+for (const format of ["gptq", "awq", "exl2", "coreml"]) {
+  test(`Mac-compatible MLX tags do not hide ${format}`, () => {
+    for (const tags of [["safetensors", "onnx", "mlx", format], [format, "mlx", "safetensors", "onnx"]]) {
+      assert.equal(classifyUnslothSupport({ tags, deviceType: "mac" }).status, "unsupported");
+    }
+    assert.equal(classifyUnslothSupport({
+      modelId: `owner/model-${format}`, tags: ["safetensors", "onnx", "mlx"], deviceType: "mac",
+    }).status, "unsupported");
+  });
+}
+test("MLX remains compatible with Mac without an unsupported format", () => {
+  assert.equal(classifyUnslothSupport({ tags: ["safetensors", "onnx", "mlx"], deviceType: "mac" }).status, "supported");
+});
