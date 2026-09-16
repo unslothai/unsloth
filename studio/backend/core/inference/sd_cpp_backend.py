@@ -441,9 +441,115 @@ def _without_driver_tag(text: str) -> str:
     return _DRIVER_TAG_RE.sub("", text).strip()
 
 
+# The masks that make torch's device list something other than the physical one. ROCm applies
+# them in this order, and they COMPOSE: ROCR_VISIBLE_DEVICES filters the agents the ROC runtime
+# reports, and HIP_VISIBLE_DEVICES (for which CUDA_VISIBLE_DEVICES is the alias, so setting both
+# is documented as unsafe) then indexes into what is left rather than into the physical order.
+# Each is "the devices listed, in the order listed", so a mask both filters AND reorders.
+# GPU_DEVICE_ORDINAL is a third spelling at the HIP level; it is not composed here, it only makes
+# the translation decline, which is the safe direction.
+_ROCR_MASK_VAR = "ROCR_VISIBLE_DEVICES"
+_HIP_MASK_VARS = ("HIP_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
+_OPAQUE_MASK_VAR = "GPU_DEVICE_ORDINAL"
+
+
+def _mask_entries(value: Optional[str]) -> "Optional[list[int]]":
+    """A visibility mask as physical indices, or ``None`` if it is not written as indices.
+
+    A mask may name UUIDs (`GPU-...`), which this cannot translate into an enumeration order,
+    so an unreadable mask declines rather than guessing.
+    """
+    if value is None:
+        return None
+    entries = [part.strip() for part in str(value).split(",")]
+    entries = [part for part in entries if part]
+    if not entries:
+        return []
+    out: "list[int]" = []
+    for part in entries:
+        try:
+            index = int(part)
+        except ValueError:
+            return None
+        if index < 0:
+            # CUDA stops at the first invalid entry; a negative one hides everything after it.
+            break
+        out.append(index)
+    return out
+
+
+def _physical_index_of(ordinal: int, env: Optional[dict] = None) -> "tuple[Optional[int], bool]":
+    """``(physical index, a mask was set)`` for a torch-visible *ordinal*.
+
+    With no mask set the two namespaces are the same list, so the ordinal is returned as it
+    arrived. With a mask this composes the levels; when any of them cannot be read as indices
+    the index is ``None`` and the caller declines the tie-break rather than pinning a guess.
+    """
+    source = os.environ if env is None else env
+    rocr = source.get(_ROCR_MASK_VAR)
+    hip = next((source.get(var) for var in _HIP_MASK_VARS if source.get(var) is not None), None)
+    opaque = source.get(_OPAQUE_MASK_VAR)
+    if rocr is None and hip is None and opaque is None:
+        return ordinal, False
+    if opaque is not None:
+        return None, True
+    visible: "Optional[list[int]]" = None
+    for raw in (rocr, hip):
+        if raw is None:
+            continue
+        entries = _mask_entries(raw)
+        if entries is None:
+            return None, True
+        if visible is None:
+            visible = entries
+        else:
+            # The inner mask indexes into what the outer one left, not into the physical list.
+            try:
+                visible = [visible[index] for index in entries]
+            except IndexError:
+                return None, True
+    if visible is None or ordinal >= len(visible):
+        return None, True
+    return visible[ordinal], True
+
+
+def _physical_position_of(physical_index: int) -> "tuple[Optional[str], Optional[int]]":
+    """``(name, position)`` for a PHYSICAL index, read from the host's own card enumeration.
+
+    torch cannot answer this once a mask is set: it can only see the cards it was left. The
+    hardware inventory enumerates every card, so it is what says how many cards of the same
+    kind come before this one in the order the Vulkan build will walk.
+    """
+    try:
+        from utils.hardware.hardware import get_physical_gpu_inventory
+
+        inventory = get_physical_gpu_inventory(block = False)
+        if (inventory or {}).get("unknown"):
+            return None, None
+        devices = [
+            device for device in ((inventory or {}).get("devices") or [])
+            if isinstance(device, dict) and device.get("index") is not None
+        ]
+    except Exception:  # noqa: BLE001 -- no reader, no position; the name alone still pins
+        return None, None
+    devices.sort(key = lambda device: device.get("index"))
+    selected = next((d for d in devices if d.get("index") == physical_index), None)
+    if selected is None:
+        return None, None
+    identity = _card_identity(selected)
+    if identity is None:
+        return None, None
+    position = sum(
+        1 for device in devices
+        if device.get("index") < physical_index and _card_identity(device) == identity
+    )
+    name = (selected.get("name") or "").strip() or None
+    return name, position
+
+
 def physical_card_name(ordinal: Optional[int]) -> "tuple[Optional[str], Optional[int]]":
-    """The card at physical index *ordinal* as the driver names it, and its place among the
-    cards of that same name. ``(None, None)`` when unreadable.
+    """The card at torch-visible index *ordinal* as the driver names it, and its place among
+    the physical cards of that same name. ``(None, None)`` when unreadable.
 
     For the accelerator fallback, where the build's devices are in a namespace the physical
     index means nothing in. The name is what the two namespaces agree on, so it is what the
@@ -453,6 +559,16 @@ def physical_card_name(ordinal: Optional[int]) -> "tuple[Optional[str], Optional
     The POSITION is what breaks a tie between identical cards, which a name cannot: two
     7900 XTXs describe themselves identically in both namespaces, so what is carried instead
     is "this is the second one". See `sd_cpp_device_named` for the assumption that rests on.
+
+    That count has to be taken over the PHYSICAL cards. `HIP_VISIBLE_DEVICES` and its
+    relatives filter and reorder what torch enumerates, and the Vulkan child gets no
+    equivalent mask -- Vulkan does not read those variables -- so it walks every card. Counted
+    inside the visible list, a mask of `1` on two identical cards made the selected card "the
+    first one of its name", and the pin then named physical card 0 while Studio reserved and
+    accounted for card 1. So the ordinal is translated back to a physical index and the
+    position is taken from the host's own enumeration; where that translation or that
+    enumeration cannot be had, the position is ``None`` and `sd_cpp_device_named` declines the
+    tie-break instead of pinning the wrong card.
     """
     if ordinal is None:
         return None, None
@@ -465,9 +581,20 @@ def physical_card_name(ordinal: Optional[int]) -> "tuple[Optional[str], Optional
     except Exception:  # noqa: BLE001 -- no reader, no pin; the load runs as it does today
         return None, None
     name = (names[ordinal] or "").strip()
+    physical_index, masked = _physical_index_of(ordinal)
+    if not masked:
+        # The visible list IS the physical list, so torch answers both halves.
+        if not name:
+            return None, None
+        return name, sum(
+            1 for index in range(ordinal) if (names[index] or "").strip() == name
+        )
+    physical_name, position = (None, None)
+    if physical_index is not None:
+        physical_name, position = _physical_position_of(physical_index)
+    name = name or (physical_name or "")
     if not name:
         return None, None
-    position = sum(1 for index in range(ordinal) if (names[index] or "").strip() == name)
     return name, position
 
 

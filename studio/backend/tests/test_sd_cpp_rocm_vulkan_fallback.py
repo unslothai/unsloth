@@ -1545,9 +1545,25 @@ def test_the_h3_load_resolves_the_pin_by_name_when_the_index_says_nothing():
     assert "position = selected_position" in source
 
 
+_VISIBILITY_VARS = (
+    "ROCR_VISIBLE_DEVICES",
+    "HIP_VISIBLE_DEVICES",
+    "CUDA_VISIBLE_DEVICES",
+    "GPU_DEVICE_ORDINAL",
+)
+
+
+def _no_visibility_mask(monkeypatch):
+    """An unmasked host: torch's list and the physical list are the same list."""
+    for variable in _VISIBILITY_VARS:
+        monkeypatch.delenv(variable, raising = False)
+
+
 def test_the_position_among_identical_cards_is_what_is_carried(monkeypatch):
     """A name cannot separate two 7900 XTXs; "this is the second one" can."""
     from core.inference import video as video_mod
+
+    _no_visibility_mask(monkeypatch)
 
     class _FakeCuda:
         @staticmethod
@@ -1571,6 +1587,110 @@ def test_the_position_among_identical_cards_is_what_is_carried(monkeypatch):
     # An index the host does not have, and no selection at all, are both "cannot tell".
     assert video_mod._physical_card_name(9) == (None, None)
     assert video_mod._physical_card_name(None) == (None, None)
+
+
+def _pinned_torch(monkeypatch, names):
+    class _FakeCuda:
+        @staticmethod
+        def is_available():
+            return True
+
+        @staticmethod
+        def device_count():
+            return len(names)
+
+        @staticmethod
+        def get_device_name(index):
+            return names[index]
+
+    monkeypatch.setitem(
+        __import__("sys").modules, "torch", type("torch", (), {"cuda": _FakeCuda})
+    )
+
+
+def _pinned_inventory(monkeypatch, devices):
+    from utils.hardware import hardware
+
+    monkeypatch.setattr(
+        hardware,
+        "get_physical_gpu_inventory",
+        lambda *, block = True: {
+            "available": True, "devices": list(devices), "sources": ["test"], "unknown": False,
+        },
+    )
+
+
+def test_a_visibility_mask_is_translated_before_the_tie_is_broken(monkeypatch):
+    """The count has to be taken over the PHYSICAL cards.
+
+    `HIP_VISIBLE_DEVICES` filters and reorders what torch enumerates, and the Vulkan child
+    gets no equivalent mask -- Vulkan does not read those variables -- so it walks every
+    card. With two identical cards and only physical card 1 visible, torch's own list makes
+    the selection "the first card of that name", and the pin then named physical card 0 while
+    Studio reserved and accounted for card 1.
+    """
+    from core.inference import video as video_mod
+
+    _no_visibility_mask(monkeypatch)
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "1")
+    _pinned_torch(monkeypatch, ["AMD Radeon RX 7900 XTX"])
+    _pinned_inventory(monkeypatch, [
+        {"vendor": "amd", "index": 0, "name": "AMD Radeon RX 7900 XTX"},
+        {"vendor": "amd", "index": 1, "name": "AMD Radeon RX 7900 XTX"},
+    ])
+
+    assert video_mod._physical_card_name(0) == ("AMD Radeon RX 7900 XTX", 1)
+
+
+def test_the_masks_compose_the_way_rocm_applies_them(monkeypatch):
+    """ROCR filters the agents the runtime reports and HIP then indexes into WHAT IS LEFT,
+    not into the physical order, so the two levels have to be composed in that order."""
+    from core.inference import video as video_mod
+
+    _no_visibility_mask(monkeypatch)
+    monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "1,2,3")
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "2")            # -> physical 3
+    _pinned_torch(monkeypatch, ["AMD Radeon RX 7900 XTX"])
+    _pinned_inventory(monkeypatch, [
+        {"vendor": "amd", "index": index, "name": "AMD Radeon RX 7900 XTX"}
+        for index in range(4)
+    ])
+
+    assert video_mod._physical_card_name(0) == ("AMD Radeon RX 7900 XTX", 3)
+
+
+def test_a_mask_this_cannot_read_declines_the_tie_break(monkeypatch):
+    """A mask may name UUIDs, which say nothing about enumeration order. The name still pins
+    a card that is alone of its kind; the POSITION is withheld, so `sd_cpp_device_named`
+    refuses to choose between identical cards rather than pinning the wrong one."""
+    from core.inference import video as video_mod
+
+    _no_visibility_mask(monkeypatch)
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "GPU-a1b2c3d4e5f60718")
+    _pinned_torch(monkeypatch, ["AMD Radeon RX 7900 XTX"])
+    _pinned_inventory(monkeypatch, [
+        {"vendor": "amd", "index": 0, "name": "AMD Radeon RX 7900 XTX"},
+        {"vendor": "amd", "index": 1, "name": "AMD Radeon RX 7900 XTX"},
+    ])
+
+    assert video_mod._physical_card_name(0) == ("AMD Radeon RX 7900 XTX", None)
+
+
+def test_an_unnamed_physical_card_still_answers_the_position(monkeypatch):
+    """The inventory answers from sysfs-drm with no marketing name on exactly the AMD hosts
+    this feature is about, so the position is counted on the same identity the fingerprint
+    uses, and the name torch reports is what goes to the matcher."""
+    from core.inference import video as video_mod
+
+    _no_visibility_mask(monkeypatch)
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "1")
+    _pinned_torch(monkeypatch, ["AMD Radeon(TM) Graphics"])
+    _pinned_inventory(monkeypatch, [
+        {"vendor": "amd", "index": 0, "name": None, "gfx_candidates": ["gfx11", "gfx1151"]},
+        {"vendor": "amd", "index": 1, "name": None, "gfx_candidates": ["gfx11", "gfx1151"]},
+    ])
+
+    assert video_mod._physical_card_name(0) == ("AMD Radeon(TM) Graphics", 1)
 
 
 def test_a_strike_never_forgets_what_the_last_one_knew(monkeypatch):
