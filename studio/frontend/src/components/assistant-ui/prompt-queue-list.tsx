@@ -160,7 +160,7 @@ export function PromptQueueList({
               )}
             >
               {isEditing ? (
-                <div className="flex flex-wrap items-center justify-end gap-2 px-1 py-2">
+                <div className="group/queue-editor flex flex-wrap items-center justify-end gap-2 px-1 py-2">
                   <div className="w-full overflow-hidden rounded-3xl border-0 bg-muted/40 p-3 has-[:focus-visible]:bg-muted dark:bg-card dark:has-[:focus-visible]:bg-accent">
                     <textarea
                       ref={inputRef}
@@ -190,6 +190,12 @@ export function PromptQueueList({
                       aria-label={`Edit queued prompt ${position}`}
                     />
                   </div>
+                  <span
+                    aria-hidden="true"
+                    className="invisible mr-auto text-xs font-medium text-foreground group-has-[textarea:focus-visible]/queue-editor:visible"
+                  >
+                    Editing message
+                  </span>
                   <Button
                     type="button"
                     variant="ghost"
