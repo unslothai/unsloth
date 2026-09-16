@@ -454,25 +454,73 @@ def _breaks_out(arm: str) -> bool:
     nested switch absorbs a `break` but not a `continue`, which goes on to the surrounding
     loop's test and out of the switch either way.
     """
-    scan = _outside_literals(arm)
-    loops = [
-        (match.start(), _consume_statement(scan, match.start())[1])
-        for match in re.finditer(r"\b(?:for|while|do)\b", scan)
-    ]
-    switches = [
-        (match.start(), _consume_statement(scan, match.start())[1])
-        for match in re.finditer(r"\bswitch\b", scan)
-    ]
-    functions = _nested_function_spans(scan)
-    def _escapes(keyword: str, absorbing: list) -> bool:
-        return any(
-            not any(begin <= match.start() < end for begin, end in absorbing)
-            for match in re.finditer(rf"\b{keyword}\b", scan)
-        )
-
-    return _escapes("break", loops + switches + functions) or _escapes(
-        "continue", loops + functions
+    return _jumps_out(arm, "break", absorbed_by_switch = True) or _jumps_out(
+        arm, "continue", absorbed_by_switch = False
     )
+
+
+def _jumps_out(text: str, keyword: str, *, absorbed_by_switch: bool) -> bool:
+    """A `keyword` jump in `text` that nothing nested inside `text` absorbs."""
+    scan = _outside_literals(text)
+    absorbing = [
+        (match.start(), _consume_statement(scan, match.start())[1])
+        for match in re.finditer(
+            r"\b(?:for|while|do|switch)\b" if absorbed_by_switch else r"\b(?:for|while|do)\b",
+            scan,
+        )
+    ]
+    absorbing += _nested_function_spans(scan)
+    return any(
+        not any(begin <= match.start() < end for begin, end in absorbing)
+        for match in re.finditer(rf"\b{keyword}\b", scan)
+    )
+
+
+def _loop_always_enters(statement: str) -> bool:
+    """A loop whose body is certain to run: `do`, or a test that is written as true.
+
+    `while (s.on)` may never run, so a return inside it is not a return on every path, but
+    `for (;;)` and `while (true)` are how a selector spells "loop until something returns".
+    Only a literal test counts; anything read off the store is a condition, not a certainty.
+    """
+    keyword = re.match(r"\b(for|while|do)\b", statement.strip())
+    if keyword is None:
+        return False
+    if keyword.group(1) == "do":
+        return True
+    body = statement.strip()[keyword.end() :]
+    opening = body.find("(")
+    if opening == -1:
+        return False
+    test = _balanced(body, opening, "(", ")")
+    if keyword.group(1) == "while":
+        return test.strip() in ("true", "1")
+    clauses = _top_level_split(test, ";")
+    return len(clauses) == 3 and clauses[1].strip() in ("", "true", "1")
+
+
+def _top_level_split(text: str, separator: str) -> list:
+    """`text` split on `separator` at bracket depth zero."""
+    scan = _outside_literals(text)
+    parts, depth, start = [], 0, 0
+    for index, char in enumerate(scan):
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        elif depth == 0 and char == separator:
+            parts.append(text[start:index])
+            start = index + 1
+    parts.append(text[start:])
+    return parts
+
+
+def _loop_body_start(statement: str, keyword) -> int:
+    """Where a loop's body begins: after `do`, or after the parenthesised test."""
+    if keyword.group(0) == "do":
+        return keyword.end()
+    opening = statement.find("(", keyword.end())
+    return opening + len(_balanced(statement, opening, "(", ")")) + 2
 
 
 def _try_always_returns(statement: str) -> bool:
@@ -538,10 +586,13 @@ def _block_always_returns(block: str) -> bool:
             return True
         if re.match(r"\btry\b", stripped) and _try_always_returns(stripped):
             return True
-        # `do` is the one loop whose body is not optional: it runs before the test.
-        if re.match(r"\bdo\b", stripped):
-            repeated, _ = _consume_statement(stripped, re.match(r"\bdo\b", stripped).end())
-            if _arm_always_returns(repeated):
+        # A loop counts only when its body is certain to run and cannot break out of it.
+        loop = re.match(r"\b(?:for|while|do)\b", stripped)
+        if loop is not None and _loop_always_enters(stripped):
+            repeated, _ = _consume_statement(stripped, _loop_body_start(stripped, loop))
+            if _arm_always_returns(repeated) and not _jumps_out(
+                repeated, "break", absorbed_by_switch = True
+            ):
                 return True
         branch = re.match(r"\bif\b\s*", stripped)
         if branch is None:
@@ -585,8 +636,17 @@ def _own_scope_returns(block: str) -> list:
 
 
 # A backslash escapes the next character, so a quote carrying one is not the end of the token.
-_STRING_BODY = r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\""
-_STRING_LITERAL = re.compile(_STRING_BODY)
+_QUOTED = r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\""
+# Two template patterns, on purpose. Blanking has to pair backticks the way the source does,
+# substitutions and all: a pattern that cannot match `` `a${x}b` `` does not simply skip it, it
+# pairs that template's closing backtick with the next template's opening one and blanks the
+# operators in between, which is how a ternary stopped being split at all.
+_TEMPLATE = r"`(?:[^`\\]|\\.)*`"
+# A constant, though, is only a template with no substitution in it. One with `${}` is an
+# expression, so it is not a literal a guard can pin a value to.
+_TEMPLATE_CONSTANT = r"`(?:[^`\\$]|\\.|\$(?!\{))*`"
+_STRING_BODY = rf"{_QUOTED}|{_TEMPLATE_CONSTANT}"
+_STRING_LITERAL = re.compile(rf"{_QUOTED}|{_TEMPLATE}")
 
 
 def _normalised(expression: str) -> str:
@@ -763,7 +823,10 @@ def _literal_value(text: str):
             return float(int(text, 0))
         except ValueError:
             return float(text)
-    if len(text) >= 2 and text[0] == text[-1] and text[0] in "'\"":
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "'\"`":
+        if text[0] == "`" and re.search(r"\$\{", text):
+            # A substitution makes it an expression, whose value this cannot know.
+            return text
         return ("string", _decoded(text[1:-1]))
     return text
 
@@ -954,6 +1017,13 @@ SELECTOR_CASES = [
     ('(s) => s.reasoningBudget === "\\x61" ? "a" : s.reasoningBudget', True),
     ('(s) => s.reasoningBudget === "\\u0061" ? "a" : s.reasoningBudget', True),
     ('(s) => s.reasoningBudget === "\\x61" ? "b" : s.reasoningBudget', False),
+    # A template with no substitution is a constant like any other string.
+    ("(s) => s.reasoningBudget === `thinking` ? `thinking` : s.reasoningBudget", True),
+    ('(s) => s.reasoningBudget === `thinking` ? "thinking" : s.reasoningBudget', True),
+    ("(s) => s.reasoningBudget === `thinking` ? `other` : s.reasoningBudget", False),
+    # One with a substitution is an expression, and its backticks still have to pair correctly
+    # or the operators between two templates get blanked and the ternary is never split.
+    ("(s) => s.reasoningBudget === `a${x}b` ? `a${x}b` : s.reasoningBudget", False),
     # A surrogate pair is one character, written the way JavaScript stores it.
     ('(s) => s.reasoningBudget === "😀" ? "\\uD83D\\uDE00" : s.reasoningBudget', True),
     ('(s) => s.reasoningBudget === "😀" ? "\\uD83D" : s.reasoningBudget', False),
@@ -1075,6 +1145,14 @@ SELECTOR_CASES = [
         "catch { return s.reasoningBudget; } } } catch { return s.reasoningBudget; } }",
         False,
     ),
+    # A loop with a test written as true always enters, so a return inside it always happens.
+    ("(s) => { for (;;) return s.reasoningBudget; }", True),
+    ("(s) => { while (true) return s.reasoningBudget; }", True),
+    # Unless it can break out of itself first.
+    ("(s) => { for (;;) { if (s.stop) break; return s.reasoningBudget; } }", False),
+    # A test read off the store is a condition, not a certainty.
+    ("(s) => { while (s.on) return s.reasoningBudget; }", False),
+    ("(s) => { for (const x of s.l) return s.reasoningBudget; }", False),
     # `do` is the one loop whose body runs before the test; the others may not run at all.
     ("(s) => { do { return s.reasoningBudget; } while (s.on); }", True),
     ("(s) => { while (s.on) { return s.reasoningBudget; } }", False),
