@@ -249,3 +249,70 @@ def test_a_stale_range_cap_is_caught_even_in_an_allowlisted_workflow(tmp_path, m
     assert "version-compat-ci.yml" in str(raised.value)
     assert "<=5.5.0" in str(raised.value)
     assert "==4.51.3" not in str(raised.value), "an exact pin is a point in the range, not a cap"
+
+
+def _matrix_module(urlopen):
+    """`tests/version_compat/test_transformers_pinned_symbols.py`, imported fresh with
+    `urllib.request.urlopen` replaced.
+
+    Imported under its own name, because the matrix is built at import: the substitution
+    has to be in place before the module body runs, and the real module may already be in
+    `sys.modules` from a full-suite run.
+    """
+    import importlib.util
+    import urllib.request
+
+    path = Path(__file__).resolve().parent / "version_compat" / "test_transformers_pinned_symbols.py"
+    spec = importlib.util.spec_from_file_location("_matrix_under_test", path)
+    module = importlib.util.module_from_spec(spec)
+    original = urllib.request.urlopen
+    urllib.request.urlopen = urlopen
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        urllib.request.urlopen = original
+    return module
+
+
+def test_a_pypi_outage_keeps_every_load_bearing_tag() -> None:
+    """The fallback list holds one tag per minor, so it does not carry the anchors.
+
+    `_ALWAYS` names the patches a specific check exists for: v5.5.0 is the Apple Silicon
+    ceiling and v5.16.0 is the tokenizers breakpoint. Returning `_TAGS_FALLBACK` unmerged
+    let a transient PyPI failure drop both and still report green on a smaller matrix.
+    """
+    import urllib.error
+
+    def refuses(*args, **kwargs):
+        raise urllib.error.URLError("pypi is unreachable")
+
+    module = _matrix_module(refuses)
+
+    assert set(module._ALWAYS).issubset(module.TRANSFORMERS_TAGS), (
+        "a PyPI outage dropped a load-bearing tag from the matrix"
+    )
+    # The frozen list is still the body of it, so the outage does not shrink coverage.
+    assert set(module._TAGS_FALLBACK).issubset(module.TRANSFORMERS_TAGS)
+    assert module.TRANSFORMERS_TAGS[-1] == "main"
+
+
+def test_an_empty_release_index_keeps_every_load_bearing_tag() -> None:
+    """NEGATIVE CONTROL for the other fallback: a reachable PyPI that yields no usable
+    release takes a different return path, and it has to merge the anchors too."""
+    import io
+    import json as _json
+
+    class _Response(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self.close()
+            return False
+
+    def empty(*args, **kwargs):
+        return _Response(_json.dumps({"releases": {}}).encode("utf-8"))
+
+    module = _matrix_module(empty)
+
+    assert set(module._ALWAYS).issubset(module.TRANSFORMERS_TAGS)

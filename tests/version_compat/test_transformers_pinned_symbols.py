@@ -78,7 +78,7 @@ def _release_tags() -> list[str]:
         ) as response:
             releases = json.loads(response.read().decode("utf-8"))["releases"]
     except (urllib.error.URLError, TimeoutError, ValueError, KeyError):
-        return list(_TAGS_FALLBACK)
+        return _with_always(_TAGS_FALLBACK)
 
     latest_by_minor: dict[tuple[int, int], tuple[int, ...]] = {}
     for version, files in releases.items():
@@ -93,16 +93,24 @@ def _release_tags() -> list[str]:
         if parts > latest_by_minor.get(minor, ()):
             latest_by_minor[minor] = parts
     if not latest_by_minor:
-        return list(_TAGS_FALLBACK)
+        return _with_always(_TAGS_FALLBACK)
 
     tags = []
     for parts in sorted(latest_by_minor.values()):
         name = ".".join(str(p) for p in parts)
         tags.append(_TAG_OVERRIDES.get(name, "v" + name))
-    for tag in _ALWAYS:
-        if tag not in tags:
-            tags.append(tag)
-    return sorted(set(tags), key = _sort_key)
+    return _with_always(tags)
+
+
+def _with_always(tags) -> list[str]:
+    """`tags` with every `_ALWAYS` anchor present, sorted, deduplicated.
+
+    Every return path goes through here, the fallback ones included. `_ALWAYS` names the
+    patches a specific check exists for, and `_TAGS_FALLBACK` carries one tag per minor, so
+    it does not hold v5.5.0 or v5.16.0: returning it unmerged let a PyPI outage drop the
+    Apple Silicon ceiling and the tokenizers breakpoint and still report green.
+    """
+    return sorted(set(tuple(tags) + _ALWAYS), key = _sort_key)
 
 
 def _sort_key(tag: str) -> tuple[int, ...]:
