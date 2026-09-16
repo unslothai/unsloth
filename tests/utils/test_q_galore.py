@@ -122,7 +122,7 @@ def test_optimizer_constructs_against_the_installed_bitsandbytes():
 @pytest.mark.parametrize("initial_value", [0.0, 1.0])
 @pytest.mark.parametrize("weight_decay", [0.0, 0.1])
 def test_default_optimizer_updates_match_adamw(projected, initial_value, weight_decay):
-    pytest.importorskip("bitsandbytes")
+    bnb = pytest.importorskip("bitsandbytes")
     device = "cuda" if torch.cuda.is_available() else "cpu"
     requires_bnb_optimizer(device)
     param = nn.Parameter(torch.full((2, 2), initial_value, device = device))
@@ -131,13 +131,9 @@ def test_default_optimizer_updates_match_adamw(projected, initial_value, weight_
     if projected:
         group.update(rank = 2, scale = 1.0, quant = False)
     optimizer = _adamw_mod.QGaLoreAdamW8bit([group], lr = 0.1, weight_decay = weight_decay)
-    if projected:
-        reference_optimizer = torch.optim.AdamW([reference], lr = 0.1, weight_decay = weight_decay)
-    else:
-        # Without a rank the step is delegated wholly to bitsandbytes, whose CUDA kernel decays
-        # AFTER the update, so torch.optim.AdamW would assert a bitsandbytes property, not ours.
-        import bitsandbytes as bnb
-        reference_optimizer = bnb.optim.AdamW8bit([reference], lr = 0.1, weight_decay = weight_decay)
+    # Unprojected steps delegate to bitsandbytes, whose CUDA kernel decays AFTER the update.
+    reference_cls = torch.optim.AdamW if projected else bnb.optim.AdamW8bit
+    reference_optimizer = reference_cls([reference], lr = 0.1, weight_decay = weight_decay)
     # A diagonal gradient keeps full-rank projection aligned with the AdamW reference.
     gradient = torch.diag(torch.tensor([2.0, 1.0], device = device))
     for weight, opt in [(param, optimizer), (reference, reference_optimizer)]:
