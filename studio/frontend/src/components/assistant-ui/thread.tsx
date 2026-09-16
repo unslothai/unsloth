@@ -51,7 +51,7 @@ import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
 import { WebSearchToolUI } from "@/components/assistant-ui/tool-ui-web-search";
 import { ChatDictationBar } from "@/components/assistant-ui/chat-dictation-bar";
 import {
-  ChatAudioUpload,
+  ChatAudioUploadMount,
   ChatSkillsDialog,
 
   PROMPT_QUEUE_DRAG_TYPE,
@@ -68,6 +68,7 @@ import {
   pasteLongTextAsFile,
   isPlainPasteChord,
   plainPasteStillCounts,
+  currentDictationEntryMode,
   isStudioDictationAvailable,
   notifyStudioDictationUnavailable,
   YoutubeTranscriptPrompt,
@@ -77,6 +78,7 @@ import {
   useInComparePane,
   refreshSkillsCatalog,
 } from "@/features/chat";
+import { useT } from "@/i18n";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import {
   IntentAwareScrollProvider,
@@ -4503,6 +4505,7 @@ const Composer: FC<{
   // a new chat first persists, which is the same composer.
   const composerIdentity = threadListItemId ?? "";
   composerIdentityRef.current = composerIdentity;
+  const chatActive = useChatActive();
   const readAudioUploadDraft = useCallback(
     () => aui.composer().getState().text,
     [aui],
@@ -4511,12 +4514,19 @@ const Composer: FC<{
     (value: string) => aui.composer().setText(value),
     [aui],
   );
+  const focusAudioUploadDraft = useCallback(() => {
+    inputRef.current?.focus({ preventScroll: true });
+  }, []);
+  // Keep the live mic's existing availability. The old upload trigger had
+  // send/attachment gates that must not leak into the unified Dictate action.
+  const dictationEntryDisabled = !chatActive;
   const audioUpload = useChatAudioUpload({
     owner: composerIdentity,
     chatId: referenceThreadId,
-    disabled: Boolean(disabled) || isDictating,
+    disabled: dictationEntryDisabled || isDictating,
     readDraft: readAudioUploadDraft,
     writeDraft: writeAudioUploadDraft,
+    focusDraft: focusAudioUploadDraft,
   });
   useEffect(() => {
     setIsWritingExpanded(false);
@@ -4542,7 +4552,11 @@ const Composer: FC<{
   // Keep the mic clickable: if the engine can't run here, explain and point to
   // the local model instead of disabling the button.
   const startDictation = useCallback(() => {
-    if (audioUpload.busy) return;
+    if (audioUpload.busy || dictationEntryDisabled) return;
+    if (currentDictationEntryMode() === "recording-file") {
+      audioUpload.openDialog();
+      return;
+    }
     if (!isStudioDictationAvailable()) {
       notifyStudioDictationUnavailable();
       return;
@@ -4552,7 +4566,7 @@ const Composer: FC<{
     } catch {
       notifyStudioDictationUnavailable();
     }
-  }, [aui, audioUpload.busy]);
+  }, [aui, audioUpload, dictationEntryDisabled]);
   const sendAfterDictation = useCallback(() => {
     sendAfterDictationRef.current = true;
     dictationComposerRef.current = composerIdentity;
@@ -4578,7 +4592,6 @@ const Composer: FC<{
   // Both chords live here, not with the controls below: the recording bar
   // replaces those while dictation runs, so a chord registered there could
   // start dictation and never stop it.
-  const chatActive = useChatActive();
   useShortcut(
     "startDictation",
     () => {
@@ -5053,9 +5066,7 @@ const Composer: FC<{
                 isComposing ||
                 hasPendingAttachments
               }
-              audioUploadDisabled={
-                disabled || isComposing || hasPendingAttachments
-              }
+              dictationDisabled={dictationEntryDisabled}
               // disableQueue (project new-chat composer) also blocks the queue
               // button, so a running thread shows Stop instead of Queue.
               queueDisabled={
@@ -5110,6 +5121,7 @@ const Composer: FC<{
         open={researchWebsiteAccessOpen && effectiveDeepResearchEnabled}
         onOpenChange={setResearchWebsiteAccessOpen}
       />
+      <ChatAudioUploadMount audioUpload={audioUpload} />
     </>
   );
 
@@ -6829,7 +6841,7 @@ const PromptQueueStack: FC<{ queueThreadIds: string[] }> = ({
 
 const ComposerRightControls: FC<{
   disabled?: boolean;
-  audioUploadDisabled?: boolean;
+  dictationDisabled?: boolean;
   queueDisabled?: boolean;
   onQueueClick?: () => void;
   onSendClick?: (event: { preventDefault: () => void }) => void;
@@ -6842,7 +6854,7 @@ const ComposerRightControls: FC<{
   queueThreadIds: string[];
 }> = ({
   disabled,
-  audioUploadDisabled,
+  dictationDisabled,
   queueDisabled,
   onQueueClick,
   onSendClick,
@@ -6854,6 +6866,7 @@ const ComposerRightControls: FC<{
   menuSide,
   queueThreadIds,
 }) => {
+  const t = useT();
   const queueEntry = usePromptQueueUI((s) =>
     findPromptQueueEntry(s, queueThreadIds),
   );
@@ -6923,28 +6936,33 @@ const ComposerRightControls: FC<{
       {/* Starts dictation; the recording bar then covers the input row and owns
           the stop and send actions. */}
       <ComposerPrimitive.If dictation={false}>
-        <div className="flex items-center gap-1">
-          <ChatAudioUpload
-            model={audioUpload.model}
-            language={audioUpload.language}
-            busy={audioUpload.busy}
-            disabled={audioUploadDisabled}
-            onFileSelected={audioUpload.selectFile}
-            onCancel={audioUpload.cancel}
-            className="size-9 rounded-full"
-          />
+        {audioUpload.busy ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-9 gap-1.5 rounded-full px-2.5 text-muted-foreground"
+            aria-label={t("settings.voice.dictation.audioUploadCancel")}
+            title={t("settings.voice.dictation.audioUploadCancel")}
+            onClick={audioUpload.cancel}
+          >
+            <Spinner className="size-4" />
+            <span>{t("settings.voice.dictation.audioUploadTranscribing")}</span>
+            <XIcon className="size-3.5" aria-hidden="true" />
+          </Button>
+        ) : (
           <TooltipIconButton
             tooltip="Dictate"
             aria-label="Dictate"
             type="button"
             variant="ghost"
             className="size-9 rounded-full text-foreground"
-            disabled={audioUpload.busy}
+            disabled={dictationDisabled}
             onClick={onDictateClick}
           >
             <MicIcon className="unsloth-dictate-icon size-6" />
           </TooltipIconButton>
-        </div>
+        )}
       </ComposerPrimitive.If>
       <AuiIf
         condition={({ thread }) =>

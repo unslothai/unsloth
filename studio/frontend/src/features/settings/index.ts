@@ -93,6 +93,7 @@ export { requestSttDownload } from "./stores/stt-download-prompt-store";
 export {
   applyDictationDictionary,
   recordRecentDictation,
+  sttModelName,
   useVoiceSettingsStore,
 } from "./stores/voice-settings-store";
 export type { Palette, ResolvedTheme, Theme } from "./stores/theme-store";

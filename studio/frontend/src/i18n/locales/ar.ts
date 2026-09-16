@@ -511,9 +511,25 @@ export const ar = {
       title: "الصوت",
       description: "الميكروفون والإملاء وتحويل الكلام إلى نص والقراءة بصوت عالٍ",
       dictation: {
-        audioUploadTitle: "نسخ ملف صوتي",
-        audioUploadDescription: "سيحوّل النموذج المحلي الموضّح أدناه الملف الصوتي الذي تختاره إلى نص على خادم Studio هذا.",
-        audioUploadChooseFile: "اختيار ملف صوتي",
+        audioUploadTitle: "الإملاء باستخدام تسجيل",
+        audioUploadDescription:
+          "يتطلب متصفحك اتصالاً آمنًا (HTTPS) للتسجيل مباشرةً في Studio. على اتصال HTTP هذا، استخدم مسجل هاتفك أو اختر تسجيلاً محفوظًا بدلاً من ذلك. سينسخ خادم Studio الصوت ويضيف النص إلى رسالتك.",
+        audioUploadChooseFile: "اختيار تسجيل",
+        audioUploadRecord: "تسجيل الصوت",
+        audioUploadIphoneHint:
+          "على iPhone، احفظ تسجيلاً من Voice Memos أو من تطبيق تسجيل آخر، ثم اختره هنا.",
+        audioUploadServerModelNote:
+          "يستخدم هذا التسجيل النموذج المحلي الموضّح أعلاه على خادم Studio، حتى إذا كان الإملاء العادي يستخدم محركًا مختلفًا.",
+        audioUploadAutomatic: "تلقائي",
+        audioUploadModelReady: "جاهز على خادم Studio هذا",
+        audioUploadRetryTitle: "تعذّر نسخ {file}",
+        audioUploadRetry: "إعادة محاولة النسخ",
+        audioUploadChooseModel:
+          "اختر نموذجًا محليًا للتعرّف على الكلام في إعدادات الصوت.",
+        audioUploadEmpty: "التسجيل المحدد فارغ.",
+        audioUploadTooLarge: "اختر تسجيلاً أصغر من {size}.",
+        audioUploadNoSpeech: "لم يسمع النموذج أي كلام في ذلك التسجيل.",
+        audioUploadFailed: "تعذّر نسخ التسجيل.",
         audioUploadCancel: "إلغاء النسخ",
         audioUploadTranscribing: "جارٍ نسخ الصوت…",
         sectionTitle: "الإملاء",

@@ -16,13 +16,14 @@ import {
 const hookSource = readSrc("features/chat/hooks/use-chat-audio-upload.ts");
 const sharedComposerSource = readSrc("features/chat/shared-composer.tsx");
 const threadSource = readSrc("components/assistant-ui/thread.tsx");
+const dialogSource = readSrc("features/chat/components/chat-audio-upload.tsx");
 
 test("audio upload rejects empty and oversized files", () => {
-  assert.equal(chatAudioUploadFileError({ size: 0 }), "The selected audio file is empty.");
+  assert.equal(chatAudioUploadFileError({ size: 0 }), "empty");
   assert.equal(chatAudioUploadFileError({ size: 25 * 1024 * 1024 }), null);
-  assert.match(
-    chatAudioUploadFileError({ size: 25 * 1024 * 1024 + 1 }) ?? "",
-    /smaller than 25MB/,
+  assert.equal(
+    chatAudioUploadFileError({ size: 25 * 1024 * 1024 + 1 }),
+    "too-large",
   );
 });
 
@@ -137,52 +138,99 @@ test("a current result commits exactly once and empty audio commits nothing", as
   assert.deepEqual(committed, ["hello"]);
 });
 
-test("the main composer does not use empty-draft sendability to disable audio upload", () => {
+test("the main composer has one Dictate entry and does not gate it on draft text", () => {
   const callStart = threadSource.indexOf("<ComposerRightControls");
   assert.notEqual(callStart, -1);
-  const call = threadSource.slice(callStart, threadSource.indexOf("/>", callStart));
-  assert.match(
-    call,
-    /audioUploadDisabled=\{\s*disabled \|\| isComposing \|\| hasPendingAttachments\s*\}/,
+  const call = threadSource.slice(
+    callStart,
+    threadSource.indexOf("/>", callStart),
   );
-
+  assert.match(call, /dictationDisabled=\{dictationEntryDisabled\}/);
+  assert.match(threadSource, /const dictationEntryDisabled = !chatActive;/);
+  const entryGate = threadSource.slice(
+    threadSource.indexOf("const dictationEntryDisabled"),
+    threadSource.indexOf(
+      "const audioUpload",
+      threadSource.indexOf("const dictationEntryDisabled"),
+    ),
+  );
+  assert.doesNotMatch(
+    entryGate,
+    /disabled|isComposing|hasPendingAttachments|hasSendableContent/,
+  );
   const controlsStart = threadSource.indexOf("const ComposerRightControls:");
-  const controls = threadSource.slice(controlsStart, threadSource.indexOf("const ", controlsStart + 40));
-  assert.match(controls, /audioUploadDisabled\?: boolean/);
-  assert.match(threadSource, /<ChatAudioUpload[\s\S]*?disabled=\{audioUploadDisabled\}/);
+  const controls = threadSource.slice(controlsStart);
+  assert.equal((controls.match(/tooltip="Dictate"/g) ?? []).length, 1);
+  assert.doesNotMatch(controls, /Upload01Icon|DialogTrigger/);
 });
 
 test("a later disabled transition cancels the active upload", () => {
   assert.match(
     hookSource,
-    /useEffect\(\(\) => \{\s*if \(disabled\) \{\s*invalidate\(\);[\s\S]*?queueMicrotask\([\s\S]*?setBusy\(false\);[\s\S]*?\}\);\s*\}\s*\}, \[disabled, invalidate\]\);/,
+    /useLayoutEffect\(\(\) => \{\s*if \(!disabled\) return;\s*invalidateRefs\(\);[\s\S]*?queueMicrotask\([\s\S]*?setBusy\(false\);/,
   );
 });
 
 test("owner changes fence stale completions before passive effects", () => {
   assert.match(
     hookSource,
-    /useLayoutEffect\(\(\) => \{\s*ownerRef\.current = owner;\s*readDraftRef\.current = readDraft;\s*writeDraftRef\.current = writeDraft;\s*\}, \[owner, readDraft, writeDraft\]\);/,
+    /useLayoutEffect\(\(\) => \{\s*const ownerChanged = ownerRef\.current !== owner;[\s\S]*?if \(ownerChanged\) clearOperation\(\);/,
   );
 });
 
-test("Compare uses the upload-busy dictation guard for button and shortcut", () => {
-  const wrapperStart = sharedComposerSource.indexOf("const startDictation = useCallback");
+test("Compare routes button and shortcut through the same Dictate entry", () => {
+  const wrapperStart = sharedComposerSource.indexOf(
+    "const startDictation = useCallback",
+  );
   assert.notEqual(wrapperStart, -1);
   const wrapper = sharedComposerSource.slice(
     wrapperStart,
-    sharedComposerSource.indexOf(");", wrapperStart) + 2,
+    sharedComposerSource.indexOf("  }, [", wrapperStart),
   );
-  assert.match(wrapper, /if \(audioUpload\.busy\) return;/);
+  assert.match(wrapper, /if \(audioUpload\.busy \|\| !chatActive\) return;/);
+  assert.match(wrapper, /currentDictationEntryMode\(\) === "recording-file"/);
+  assert.match(wrapper, /audioUpload\.openDialog\(\)/);
   assert.match(wrapper, /startDictationSession\(\)/);
   assert.match(sharedComposerSource, /onClick=\{startDictation\}/);
 
-  const shortcutStart = sharedComposerSource.indexOf('useShortcut(\n    "startDictation"');
+  const shortcutStart = sharedComposerSource.indexOf(
+    'useShortcut(\n    "startDictation"',
+  );
   const shortcut = sharedComposerSource.slice(
     shortcutStart,
     sharedComposerSource.indexOf("\n  );", shortcutStart),
   );
   assert.match(shortcut, /startDictation\(\)/);
+});
+
+test("the controlled dialog has separate Android recorder and saved-file inputs", () => {
+  assert.doesNotMatch(dialogSource, /DialogTrigger|Upload01Icon/);
+  assert.match(dialogSource, /accept="audio\/\*"\s*capture="user"/);
+  assert.match(dialogSource, /accept=\{AUDIO_PICKER_ACCEPT\}/);
+  const chooseInput = dialogSource.slice(
+    dialogSource.indexOf("ref={chooseInputRef}"),
+  );
+  assert.doesNotMatch(
+    chooseInput.slice(0, chooseInput.indexOf("/>")),
+    /capture=/,
+  );
+  assert.match(dialogSource, /platform === "android"/);
+  assert.match(dialogSource, /platform === "ios"/);
+});
+
+test("picker launch snapshots before the native input opens", () => {
+  assert.match(
+    dialogSource,
+    /if \(!input \|\| !audioUpload\.snapshotForPicker\(\)\) return;\s*input\.click\(\);/,
+  );
+  assert.match(
+    hookSource,
+    /pickerSnapshotRef\.current = snapshot;\s*return snapshot;/,
+  );
+  assert.match(
+    hookSource,
+    /const snapshot = pickerSnapshotRef\.current;\s*pickerSnapshotRef\.current = null;/,
+  );
 });
 
 test("Compare automatic queue takeovers invalidate the previous draft upload", () => {
@@ -195,7 +243,9 @@ test("Compare automatic queue takeovers invalidate the previous draft upload", (
     runListStart,
     sharedComposerSource.indexOf("        }}", runListStart),
   );
-  const incompleteModelGuard = runList.indexOf("if (hasCompareHandles && !isGeneralizedCompare)");
+  const incompleteModelGuard = runList.indexOf(
+    "if (hasCompareHandles && !isGeneralizedCompare)",
+  );
   const cancel = runList.indexOf("audioUpload.cancel()");
   const replace = runList.indexOf("setText(filtered[0])");
   assert.ok(incompleteModelGuard >= 0 && incompleteModelGuard < cancel);
@@ -211,7 +261,10 @@ test("Compare cancels uploads only after a send reaches an accepted effect", () 
   const cancellations = [...send.matchAll(/audioUpload\.cancel\(\)/g)];
   assert.equal(cancellations.length, 2);
   for (const cancellation of cancellations) {
-    assert.match(send.slice(cancellation.index, cancellation.index + 100), /audioUpload\.cancel\(\);\s*clearSubmittedDraft\(\);/);
+    assert.match(
+      send.slice(cancellation.index, cancellation.index + 100),
+      /audioUpload\.cancel\(\);\s*clearSubmittedDraft\(\);/,
+    );
   }
   assert.doesNotMatch(
     send.slice(0, send.indexOf("if (isGeneralizedCompare)")),

@@ -12,13 +12,16 @@ export interface ChatAudioUploadFence {
   authSessionEpoch: number;
 }
 
-export function chatAudioUploadFileError(file: Pick<File, "size">): string | null {
-  if (file.size === 0) return "The selected audio file is empty.";
-  const sizeError = getAudioSizeError(file.size);
-  return sizeError
-    ? `Choose an audio file smaller than ${MAX_AUDIO_SIZE_LABEL}.`
-    : null;
+export type ChatAudioUploadFileError = "empty" | "too-large";
+
+export function chatAudioUploadFileError(
+  file: Pick<File, "size">,
+): ChatAudioUploadFileError | null {
+  if (file.size === 0) return "empty";
+  return getAudioSizeError(file.size) ? "too-large" : null;
 }
+
+export { MAX_AUDIO_SIZE_LABEL };
 
 export function chatAudioUploadFenceMatches(
   started: ChatAudioUploadFence,

@@ -513,9 +513,25 @@ export const ptBR = {
       title: "Voz",
       description: "Microfone, ditado, conversão de fala em texto e leitura em voz alta",
       dictation: {
-        audioUploadTitle: "Transcrever arquivo de áudio",
-        audioUploadDescription: "O arquivo de áudio escolhido será transcrito pelo modelo local mostrado abaixo neste servidor do Studio.",
-        audioUploadChooseFile: "Escolher arquivo de áudio",
+        audioUploadTitle: "Ditar com uma gravação",
+        audioUploadDescription:
+          "Seu navegador exige uma conexão segura (HTTPS) para gravar diretamente no Studio. Nesta conexão HTTP, use o gravador do celular ou escolha uma gravação salva. Seu servidor do Studio transcreverá o áudio e adicionará o texto à sua mensagem.",
+        audioUploadChooseFile: "Escolher gravação",
+        audioUploadRecord: "Gravar áudio",
+        audioUploadIphoneHint:
+          "No iPhone, salve uma gravação do Gravador ou de outro aplicativo de gravação e escolha-a aqui.",
+        audioUploadServerModelNote:
+          "Esta gravação usa o modelo local mostrado acima no servidor do Studio, mesmo que o ditado normal use outro mecanismo.",
+        audioUploadAutomatic: "Automático",
+        audioUploadModelReady: "Pronto neste servidor do Studio",
+        audioUploadRetryTitle: "Não foi possível transcrever {file}",
+        audioUploadRetry: "Tentar transcrever novamente",
+        audioUploadChooseModel:
+          "Escolha um modelo local de reconhecimento de fala nas configurações de Voz.",
+        audioUploadEmpty: "A gravação selecionada está vazia.",
+        audioUploadTooLarge: "Escolha uma gravação menor que {size}.",
+        audioUploadNoSpeech: "O modelo não detectou fala nessa gravação.",
+        audioUploadFailed: "Não foi possível transcrever a gravação.",
         audioUploadCancel: "Cancelar transcrição",
         audioUploadTranscribing: "Transcrevendo áudio…",
         sectionTitle: "Ditado",

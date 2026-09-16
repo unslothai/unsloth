@@ -45,9 +45,9 @@ function customSttConfigured(): boolean {
   const providerId = sttProviderId.trim();
   return Boolean(
     connectionsEnabled &&
-      providerId &&
-      sttProviderModel.trim() &&
-      providers.some((provider) => provider.id === providerId),
+    providerId &&
+    sttProviderModel.trim() &&
+    providers.some((provider) => provider.id === providerId),
   );
 }
 
@@ -98,7 +98,9 @@ export class StudioDictationAdapter implements DictationAdapter {
         );
       }
       if (StudioModelDictationAdapter.isSupported()) {
-        return new StudioModelDictationAdapter({ chatId: this.chatId }).listen();
+        return new StudioModelDictationAdapter({
+          chatId: this.chatId,
+        }).listen();
       }
       throw new Error(
         dictationEngine === "custom"
@@ -107,7 +109,9 @@ export class StudioDictationAdapter implements DictationAdapter {
       );
     }
     if (StudioWebSpeechDictationAdapter.isSupported()) {
-      return new StudioWebSpeechDictationAdapter({ chatId: this.chatId }).listen();
+      return new StudioWebSpeechDictationAdapter({
+        chatId: this.chatId,
+      }).listen();
     }
     throw new Error("Browser dictation is not supported in this browser.");
   }
@@ -130,7 +134,7 @@ export function notifyStudioDictationUnavailable(
   if (typeof window !== "undefined" && !window.isSecureContext) {
     toast.error("Voice typing needs a secure connection.", {
       description:
-        "Use Transcribe audio file here, or open this Studio server through HTTPS to dictate live.",
+        "Press Dictate to choose a recording on this connection, or open this Studio server through HTTPS to dictate live.",
     });
     return;
   }

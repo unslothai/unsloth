@@ -14,6 +14,7 @@ import {
   thinkToggleAriaLabel,
 } from "@/components/assistant-ui/think-aria-label";
 import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
 import { BulbIcon } from "@/lib/bulb-icon";
 import { MicIcon } from "@/lib/mic-icon";
 import { Tick02Icon } from "@/lib/tick-icon";
@@ -112,9 +113,10 @@ import { reasoningCapsFromLoad } from "./lib/apply-inference-status-to-store";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
 import { NewProjectDialog } from "./components/new-project-dialog";
 import { ChatSkillsDialog } from "./components/chat-skills-dialog";
-import { ChatAudioUpload } from "./components/chat-audio-upload";
+import { ChatAudioUploadMount } from "./components/chat-audio-upload-mount";
 import { useChatProjects } from "./hooks/use-chat-projects";
 import { useChatAudioUpload } from "./hooks/use-chat-audio-upload";
+import { currentDictationEntryMode } from "./utils/dictation-entry";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import {
   DEFAULT_MAX_SEQ_LENGTH,
@@ -158,6 +160,7 @@ import { compareModelDisplayName } from "./lib/external-model-label";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import { useComposerPillFit } from "@/hooks/use-composer-pill-fit";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { useT } from "@/i18n";
 import {
   PLUS_MENU_ORDER,
   type PlusMenuItemId,
@@ -561,6 +564,7 @@ export function SharedComposer({
   sendUnavailableReason?: string;
   requireStableCheckpoint?: boolean;
 }): ReactElement {
+  const t = useT();
   const navigate = useNavigate();
   // Exit compare: parent's restore handler, or fresh chat if opened by URL.
   const handleExitCompare = useCallback(() => {
@@ -882,21 +886,30 @@ export function SharedComposer({
     start: startDictationSession,
     stop: stopDictation,
   } = useDictation(setText);
+  const chatActive = useChatActive();
   const compareUploadInstanceId = useId();
   const audioUploadOwner = `${compareUploadInstanceId}:${model1?.id ?? ""}:${model2?.id ?? ""}`;
   const readAudioUploadDraft = useCallback(() => textRef.current, []);
   const writeAudioUploadDraft = useCallback((value: string) => setText(value), []);
+  const focusAudioUploadDraft = useCallback(() => {
+    textareaRef.current?.focus({ preventScroll: true });
+  }, []);
   const audioUpload = useChatAudioUpload({
     owner: audioUploadOwner,
     chatId: null,
-    disabled: isDictating,
+    disabled: isDictating || !chatActive,
     readDraft: readAudioUploadDraft,
     writeDraft: writeAudioUploadDraft,
+    focusDraft: focusAudioUploadDraft,
   });
   const startDictation = useCallback(() => {
-    if (audioUpload.busy) return;
+    if (audioUpload.busy || !chatActive) return;
+    if (currentDictationEntryMode() === "recording-file") {
+      audioUpload.openDialog();
+      return;
+    }
     startDictationSession();
-  }, [audioUpload.busy, startDictationSession]);
+  }, [audioUpload, chatActive, startDictationSession]);
 
   useEffect(() => {
     const id = setInterval(() => {
@@ -1952,7 +1965,6 @@ export function SharedComposer({
 
   // Compare mode swaps this composer in for the single-chat one and only one is ever on screen, so the
   // chords register in both. Both gate on the chat tab being visible: off-route the pane is hidden.
-  const chatActive = useChatActive();
   useShortcut(
     "startDictation",
     () => {
@@ -2183,6 +2195,7 @@ export function SharedComposer({
       }}
     >
       <ChatSkillsDialog open={skillsOpen} onOpenChange={setSkillsOpen} />
+      <ChatAudioUploadMount audioUpload={audioUpload} />
 
       <PromptStorageDialog
         open={promptStorageOpen}
@@ -2803,29 +2816,34 @@ export function SharedComposer({
           {
             <>
               {!isDictating ? (
-                <>
-                  <ChatAudioUpload
-                    model={audioUpload.model}
-                    language={audioUpload.language}
-                    busy={audioUpload.busy}
-                    disabled={isDictating}
-                    onFileSelected={audioUpload.selectFile}
-                    onCancel={audioUpload.cancel}
-                    className="size-8 rounded-full"
-                  />
+                audioUpload.busy ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 gap-1.5 rounded-full px-2 text-muted-foreground"
+                    aria-label={t("settings.voice.dictation.audioUploadCancel")}
+                    title={t("settings.voice.dictation.audioUploadCancel")}
+                    onClick={audioUpload.cancel}
+                  >
+                    <Spinner className="size-3.5" />
+                    <span>{t("settings.voice.dictation.audioUploadTranscribing")}</span>
+                    <XIcon className="size-3" aria-hidden="true" />
+                  </Button>
+                ) : (
                   <TooltipIconButton
                     tooltip="Dictate"
                     side="bottom"
                     variant="ghost"
                     size="icon"
                     className="size-8 rounded-full text-muted-foreground"
-                    disabled={audioUpload.busy}
+                    disabled={!chatActive}
                     onClick={startDictation}
                     aria-label="Dictate"
                   >
                     <MicIcon className="unsloth-dictate-icon size-4" />
                   </TooltipIconButton>
-                </>
+                )
               ) : (
                 <TooltipIconButton
                   tooltip={
