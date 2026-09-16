@@ -21903,22 +21903,21 @@ class LlamaCppBackend:
                     )
 
                 _effective_ubatch = _ubatch_for_slots(n_parallel)
-                # Decide the cap once so planning and command emission use the same count.
-                _auto_ctx_checkpoints = (
-                    self._bounded_ctx_checkpoints(n_parallel, server_caps, extra_args)
-                    if ctx_checkpoints is None
-                    else None
-                )
-                # Price the child count, including upstream's default for a blank field.
-                _effective_ctx_checkpoints = effective_ctx_checkpoints_for_caps(
-                    server_caps,
-                    extra_args,
-                    ctx_checkpoints,
-                    per_checkpoint_bytes = self._rollback_state_bytes(1),
-                    n_parallel = n_parallel,
-                    total_host_bytes = ((self._host_memory_capacity_mib() or 0) * 1024 * 1024)
-                    or None,
-                )
+                # The checkpoint budget is per slot, and the fit can still cut n_parallel
+                # below the request, so both counts are taken AFTER the slot count settles
+                # (the reason _effective_ubatch is re-derived there too). The budget reads
+                # the live n_parallel through this one helper, so plan and argv agree.
+                def _ctx_checkpoints_for_final_slots() -> int:
+                    return effective_ctx_checkpoints_for_caps(
+                        server_caps,
+                        extra_args,
+                        ctx_checkpoints,
+                        per_checkpoint_bytes = self._rollback_state_bytes(1),
+                        n_parallel = n_parallel,
+                        total_host_bytes = ((self._host_memory_capacity_mib() or 0) * 1024 * 1024)
+                        or None,
+                    )
+
                 _requested_ctx_checkpoints = (
                     resolve_ctx_checkpoints(extra_args, ctx_checkpoints)
                     if server_caps.get("ctx_checkpoints_flag")
@@ -24494,6 +24493,7 @@ class LlamaCppBackend:
                         + self._inherited_mmproj_soft_overhead(_fit_env_mmproj_bytes, on_host = False)
                     )
                     # Derive the host-only share from the same estimator as the total.
+                    _effective_ctx_checkpoints = _ctx_checkpoints_for_final_slots()
                     _ckpt_host_bytes = max(
                         0,
                         _kv_bytes(effective_ctx, _effective_ctx_checkpoints)
@@ -25645,6 +25645,11 @@ class LlamaCppBackend:
                             ", ".join(unsupported_cache_flags),
                         )
 
+                _auto_ctx_checkpoints = (
+                    self._bounded_ctx_checkpoints(n_parallel, server_caps, extra_args)
+                    if ctx_checkpoints is None
+                    else None
+                )
                 # Tracked apart from _cache_flags_emitted, which means "the Windows tuning
                 # ran", so the arch-crash respawn can re-decide each one on its own.
                 _auto_ckpt_emitted: list[str] = []

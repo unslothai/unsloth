@@ -804,3 +804,55 @@ class TestAnInheritedEnvCountIsTheOperatorsSetting:
             total_host_bytes = 94 * GIB,
             env = {"LLAMA_ARG_CTX_CHECKPOINTS": "256"},
         ) == 256
+
+
+# --------------------------------------------------------------- after the fit picks the slots
+
+
+class TestTheCapFollowsTheSlotCountTheChildGets:
+    """The fit can cut n_parallel below the request; a cap sized for the request is wrong."""
+
+    def test_the_cap_is_slot_sensitive_at_all(self, monkeypatch):
+        monkeypatch.setattr(
+            LlamaCppBackend, "_total_system_memory_mib", staticmethod(lambda: 94 * 1024)
+        )
+        backend = _backend()
+        assert backend._bounded_ctx_checkpoints(32, _caps()) == CTX_CHECKPOINTS_MIN_USEFUL
+        # One slot affords the whole default, so nothing is emitted and nothing is lost.
+        assert backend._bounded_ctx_checkpoints(1, _caps()) is None
+
+    def test_both_counts_are_decided_after_the_fit_rebinds_the_slots(self):
+        """Structural, because the reduction sits ~2000 lines inside one function."""
+        import ast
+        import inspect
+        import textwrap
+
+        source, first = inspect.getsourcelines(LlamaCppBackend.load_model)
+        tree = ast.parse(textwrap.dedent("".join(source)))
+        fit_rebinds = [
+            node.lineno
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            and any(
+                isinstance(t, ast.Tuple)
+                and any(isinstance(e, ast.Name) and e.id == "n_parallel" for e in t.elts)
+                for t in node.targets
+            )
+        ]
+        assert fit_rebinds, "the fit no longer rebinds n_parallel; re-check this ordering"
+        decisions = [
+            node.lineno
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            and any(
+                isinstance(t, ast.Name) and t.id == "_auto_ctx_checkpoints" for t in node.targets
+            )
+        ] + [
+            node.lineno
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "_ctx_checkpoints_for_final_slots"
+        ]
+        assert len(decisions) == 2, decisions
+        assert min(decisions) > max(fit_rebinds), (decisions, fit_rebinds)
