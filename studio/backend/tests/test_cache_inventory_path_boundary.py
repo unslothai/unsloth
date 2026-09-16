@@ -1211,3 +1211,214 @@ def test_the_long_lived_routes_redact_what_they_persisted():
         source = inspect.getsource(module)
         assert needle in source, (module.__name__, needle)
         assert "authenticated_via_api_key" in source, module.__name__
+
+
+def test_a_second_load_does_not_hand_back_the_resident_path():
+    """A load answers with the status of what is RESIDENT, which on a second load is still
+    the previous model.
+
+    That path was resolved by an earlier request, so the per-request restoration has no
+    handle for it and the response would carry the absolute path the caller was never shown.
+    The route redacts, so the caller gets the same opaque reference `/images/status` and
+    `/video/status` give, and the reference it sent for THIS load comes back as that
+    reference rather than as the path it resolved to.
+    """
+    import asyncio
+
+    from models.inference import DiffusionStatusResponse
+    from routes import inference as inference_routes
+    from routes import video as video_routes
+
+    resident = f"{HOST_ROOT}/my models/previous-image-model"
+    resident_reference = host_paths.cache_reference(resident)
+
+    async def _gated(request, subject, **kwargs):
+        return DiffusionStatusResponse(
+            **{"loaded": True, "repo_id": resident, "model_path": resident}
+        )
+
+    class _Request:
+        model_path = "ref:whatever"
+        base_repo = None
+
+    original = inference_routes.load_diffusion_model_gated
+    inference_routes.load_diffusion_model_gated = _gated
+    try:
+        answered = asyncio.run(
+            inference_routes.load_diffusion_model(
+                _Request(), current_subject = "api", via_api_key = True
+            )
+        )
+    finally:
+        inference_routes.load_diffusion_model_gated = original
+    body = json.dumps(jsonable(answered))
+    assert HOST_ROOT not in body, body
+    assert resident_reference in body, body
+    assert host_paths.resolve_host_path_reference(resident_reference) == resident
+
+    # The browser session still sees its own machine, exactly as on the status routes.
+    inference_routes.load_diffusion_model_gated = _gated
+    try:
+        seen = asyncio.run(
+            inference_routes.load_diffusion_model(
+                _Request(), current_subject = "browser", via_api_key = False
+            )
+        )
+    finally:
+        inference_routes.load_diffusion_model_gated = original
+    assert resident in json.dumps(jsonable(seen))
+    del video_routes
+
+
+def jsonable(payload):
+    from fastapi.encoders import jsonable_encoder
+
+    return jsonable_encoder(payload)
+
+
+def test_every_route_that_answers_with_a_persisted_record_redacts():
+    """Naming the three status routes was not the boundary.
+
+    The same record is reachable through the load and unload responses and through the two
+    single-run routes, and a caller that can open or rename a run, or simply start another
+    load, recovers the path that way. The check is on the route bodies, because that is
+    where a response either goes through the redactor or does not.
+    """
+    import inspect
+
+    from routes import inference as inference_routes
+    from routes import training_history as training_routes
+    from routes import video as video_routes
+
+    expected = {
+        inference_routes: (
+            "load_diffusion_model",
+            "unload_diffusion_model",
+            "diffusion_status",
+        ),
+        video_routes: ("load_video_model", "unload_video_model", "video_status"),
+        training_routes: (
+            "list_training_runs",
+            "get_training_run_detail",
+            "update_training_run",
+        ),
+    }
+    for module, names in expected.items():
+        tree = ast.parse(inspect.getsource(module))
+        found = {
+            node.name: node
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        for name in names:
+            assert name in found, (module.__name__, name)
+            body = ast.unparse(found[name])
+            assert "redact_host_paths(" in body, (module.__name__, name)
+            assert "authenticated_via_api_key" in body, (module.__name__, name)
+
+
+def test_opening_or_renaming_a_run_does_not_hand_back_the_path():
+    """`GET /runs` was redacted and the two single-run routes were not, so the same path
+    came back by opening the run, and the config carries a second copy of it."""
+    import asyncio
+
+    from routes import training_history as training_routes
+
+    path = f"{HOST_ROOT}/my models/trained-from"
+    reference = host_paths.cache_reference(path)
+    row = {
+        "id": "run-1",
+        "run_id": "run-1",
+        "model_name": path,
+        "dataset_name": "some/dataset",
+        "started_at": "2026-01-01T00:00:00Z",
+        "status": "completed",
+        "config_json": json.dumps({"model_name": path}),
+        "output_dir": None,
+        "display_name": None,
+    }
+
+    async def _detail():
+        return await training_routes.get_training_run_detail(
+            "run-1", current_subject = "api", no_credential = False, via_api_key = True
+        )
+
+    saved = (
+        training_routes.get_run,
+        training_routes.get_run_metrics,
+        training_routes.get_preview_sharing_enabled,
+    )
+    training_routes.get_run = lambda run_id: dict(row)
+    training_routes.get_run_metrics = lambda run_id: {}
+    training_routes.get_preview_sharing_enabled = lambda: False
+    try:
+        detail = json.dumps(jsonable(asyncio.run(_detail())))
+        assert HOST_ROOT not in detail, detail
+        assert reference in detail, detail
+
+        async def _patch():
+            return await training_routes.update_training_run(
+                "run-1",
+                training_routes.TrainingRunUpdateRequest(),
+                current_subject = "api",
+                no_credential = False,
+                via_api_key = True,
+            )
+
+        renamed = json.dumps(jsonable(asyncio.run(_patch())))
+        assert HOST_ROOT not in renamed, renamed
+        assert reference in renamed, renamed
+    finally:
+        (
+            training_routes.get_run,
+            training_routes.get_run_metrics,
+            training_routes.get_preview_sharing_enabled,
+        ) = saved
+
+
+def test_a_prepared_dataset_cache_still_counts_when_the_hub_copy_is_unusable():
+    """The two trees are independent evidence.
+
+    A pruned snapshot or an interrupted refetch leaves a hub repo directory with nothing
+    usable under it, and returning on that answer alone refused a preview the prepared
+    `datasets` cache can serve in full -- offline, during an outage, or on a mirror that
+    never implemented the auth-check route, which is the whole case this fallback is for.
+    """
+    from hub.utils import hf_tokens
+
+    import sys
+    import types
+
+    cache_state = types.ModuleType("hub.utils.hf_cache_state")
+    cache_state.iter_repo_cache_dirs = lambda repo_type, repo_id: iter(["a-directory"])
+    cache_state.repo_cache_has_usable_snapshot = lambda repo_type, repo_id: False
+    dataset_cache = types.ModuleType("hub.utils.dataset_cache")
+    dataset_cache.latest_processed_dataset_cache_path = lambda repo_id: "/prepared/here"
+
+    saved = {
+        name: sys.modules.get(name)
+        for name in ("hub.utils.hf_cache_state", "hub.utils.dataset_cache")
+    }
+    sys.modules["hub.utils.hf_cache_state"] = cache_state
+    sys.modules["hub.utils.dataset_cache"] = dataset_cache
+    try:
+        assert hf_tokens._repo_present_on_disk("owner/ds", "dataset") is True
+        # A model has no second tree, so an unusable snapshot is still absence.
+        assert hf_tokens._repo_present_on_disk("owner/model", "model") is False
+        # And a dataset with neither is absent too: this widens nothing else.
+        dataset_cache.latest_processed_dataset_cache_path = lambda repo_id: None
+        assert hf_tokens._repo_present_on_disk("owner/ds", "dataset") is False
+        # An unreadable hub tree says nothing about the prepared one either.
+        def _raise(repo_type, repo_id):
+            raise OSError("unreadable cache root")
+
+        cache_state.iter_repo_cache_dirs = _raise
+        dataset_cache.latest_processed_dataset_cache_path = lambda repo_id: "/prepared/here"
+        assert hf_tokens._repo_present_on_disk("owner/ds", "dataset") is True
+        assert hf_tokens._repo_present_on_disk("owner/model", "model") is False
+    finally:
+        for name, module in saved.items():
+            if module is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module

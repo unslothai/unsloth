@@ -36746,9 +36746,25 @@ def _assert_native_precision_unset(
 @studio_router.post("/images/load", response_model = DiffusionStatusResponse)
 @account_access.gpu_busy_route
 async def load_diffusion_model(
-    request: DiffusionLoadRequest, current_subject: str = Depends(get_current_subject)
+    request: DiffusionLoadRequest,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    return await load_diffusion_model_gated(request, current_subject, user_initiated = True)
+    # The status this answers with describes whatever is resident, which on a second load is
+    # still the PREVIOUS model: a path an earlier request resolved, so the request context has
+    # no handle to put back for it and the response would hand the caller the absolute path it
+    # was never shown. Restore first, so the reference the caller just sent comes back as the
+    # reference it sent, then redact, which turns anything left over into the same opaque
+    # reference `GET /images/status` gives. Done in the route rather than in the gated body
+    # below, because the internal callers of that body are not serving an API-key request.
+    from hub.utils.host_paths import redact_host_paths, restore_inventory_handles
+
+    return redact_host_paths(
+        restore_inventory_handles(
+            await load_diffusion_model_gated(request, current_subject, user_initiated = True)
+        ),
+        via_api_key = via_api_key,
+    )
 
 
 async def load_diffusion_model_gated(
@@ -37492,7 +37508,10 @@ async def clear_gallery_audio(current_subject: str = Depends(get_current_subject
 
 @studio_router.post("/images/unload", response_model = DiffusionStatusResponse)
 @account_access.gpu_busy_route
-async def unload_diffusion_model(current_subject: str = Depends(get_current_subject)):
+async def unload_diffusion_model(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
     account_access.require_resident_control("diffusion")
     from core.inference.diffusion_engine_router import annotate_status, get_active_diffusion_engine
     from core.inference.gpu_arbiter import release_if, DIFFUSION
@@ -37513,7 +37532,14 @@ async def unload_diffusion_model(current_subject: str = Depends(get_current_subj
         DIFFUSION,
         lambda: not engine.loading_repo_ids() and not engine.is_loaded,
     )
-    return DiffusionStatusResponse(**annotate_status(status_dict))
+    # An unload answers with the state it left behind, which still names the model it just
+    # dropped, so it is the same disclosure the load route has and gets the same treatment.
+    from hub.utils.host_paths import redact_host_paths, restore_inventory_handles
+
+    return redact_host_paths(
+        restore_inventory_handles(DiffusionStatusResponse(**annotate_status(status_dict))),
+        via_api_key = via_api_key,
+    )
 
 
 @studio_router.get("/images/status", response_model = DiffusionStatusResponse)

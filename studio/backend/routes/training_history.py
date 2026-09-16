@@ -301,6 +301,7 @@ async def get_training_run_detail(
     run_id: str,
     current_subject: str = Depends(get_current_subject),
     no_credential: bool = Depends(authenticated_without_credential),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     """Get a single training run with full config and metrics."""
     run = get_run(run_id)
@@ -321,10 +322,18 @@ async def get_training_run_detail(
         run,
         get_preview_sharing_enabled() and not no_credential,
     )
-    return TrainingRunDetailResponse(
-        run = summary,
-        config = config,
-        metrics = TrainingRunMetrics(**metrics_data),
+    # The same persisted path the list route redacts, reachable one run at a time. It is in
+    # the summary as `model_name` and again inside `config_json`, so the whole response goes
+    # through the redactor rather than the summary alone.
+    from hub.utils.host_paths import redact_host_paths
+
+    return redact_host_paths(
+        TrainingRunDetailResponse(
+            run = summary,
+            config = config,
+            metrics = TrainingRunMetrics(**metrics_data),
+        ),
+        via_api_key = via_api_key,
     )
 
 
@@ -334,6 +343,7 @@ async def update_training_run(
     payload: TrainingRunUpdateRequest,
     current_subject: str = Depends(get_current_subject),
     no_credential: bool = Depends(authenticated_without_credential),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     """Update mutable fields on a training run (currently only display_name)."""
     run = get_run(run_id)
@@ -349,11 +359,16 @@ async def update_training_run(
     refreshed = get_run(run_id)
     if refreshed is None:
         raise HTTPException(status_code = 404, detail = f"Run {run_id} not found")
-    return await asyncio.to_thread(
+    summary = await asyncio.to_thread(
         _summary_from_row,
         refreshed,
         get_preview_sharing_enabled() and not no_credential,
     )
+    # Renaming a run answers with the run, so without this the path is recoverable by
+    # sending a no-op PATCH.
+    from hub.utils.host_paths import redact_host_paths
+
+    return redact_host_paths(summary, via_api_key = via_api_key)
 
 
 @router.delete("/runs/{run_id}", response_model = TrainingRunDeleteResponse)

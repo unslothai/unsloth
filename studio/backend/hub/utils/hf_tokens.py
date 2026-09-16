@@ -608,15 +608,24 @@ def _repo_present_on_disk(repo_id: str, repo_type: str) -> bool:
     except Exception:
         # Cannot establish the local fact -> no local authorization. Deny, do not guess.
         return False
+    # The two trees are independent evidence, so the hub answer is COMBINED with the prepared
+    # one rather than returned in place of it. A dataset can have a perfectly good prepared
+    # cache and a hub repo directory with nothing usable under it -- a pruned snapshot, an
+    # interrupted refetch that left only boilerplate -- and returning on the hub answer alone
+    # refused a preview the prepared cache can serve in full, which is the offline case this
+    # fallback exists for. Not being able to look at the hub tree is not absence either, and
+    # it says nothing at all about the prepared one, so that path falls through here too.
     try:
         if any(True for _dir in iter_repo_cache_dirs(repo_type, repo_id)):
-            return bool(repo_cache_has_usable_snapshot(repo_type, repo_id))
+            if bool(repo_cache_has_usable_snapshot(repo_type, repo_id)):
+                return True
     except Exception:
         import logging
         logging.getLogger(__name__).debug(
             "Could not check the local cache for '%s'", repo_id, exc_info = True
         )
-        return False
+        if repo_type != "dataset":
+            return False
     if repo_type != "dataset":
         return False
     try:
