@@ -21903,6 +21903,7 @@ class LlamaCppBackend:
                     )
 
                 _effective_ubatch = _ubatch_for_slots(n_parallel)
+
                 # The checkpoint budget is per slot, and the fit can still cut n_parallel
                 # below the request, so both counts are taken AFTER the slot count settles
                 # (the reason _effective_ubatch is re-derived there too). The budget reads

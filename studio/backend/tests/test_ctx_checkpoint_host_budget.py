@@ -637,9 +637,17 @@ class TestTheCapSurvivesAWindowsDeviceRetry:
 class TestTheCapNeverRaisesTheBuildsOwnDefault:
     """The flag shipped at 3 as --swa-checkpoints (ggml-org/llama.cpp#15293) and is 32 now."""
 
-    def _caps_with_default(self, advertised, flag = "--ctx-checkpoints"):
-        return {"found": True, "help_probe_ok": True, "ctx_checkpoints_flag": flag,
-                "ctx_checkpoints_default": advertised}
+    def _caps_with_default(
+        self,
+        advertised,
+        flag = "--ctx-checkpoints",
+    ):
+        return {
+            "found": True,
+            "help_probe_ok": True,
+            "ctx_checkpoints_flag": flag,
+            "ctx_checkpoints_default": advertised,
+        }
 
     @pytest.mark.parametrize(
         "block, expected",
@@ -669,9 +677,10 @@ class TestTheCapNeverRaisesTheBuildsOwnDefault:
 
     def test_a_silent_build_falls_back_to_upstreams_default_today(self):
         assert ctx_checkpoints_default_for_caps({}) == LLAMA_CTX_CHECKPOINTS_DEFAULT
-        assert ctx_checkpoints_default_for_caps(
-            self._caps_with_default(None)
-        ) == LLAMA_CTX_CHECKPOINTS_DEFAULT
+        assert (
+            ctx_checkpoints_default_for_caps(self._caps_with_default(None))
+            == LLAMA_CTX_CHECKPOINTS_DEFAULT
+        )
         assert ctx_checkpoints_default_for_caps(self._caps_with_default(3)) == 3
         assert ctx_checkpoints_default_for_caps(self._caps_with_default(0)) == 0
 
@@ -692,14 +701,17 @@ class TestTheCapNeverRaisesTheBuildsOwnDefault:
         backend = _backend()
         caps = self._caps_with_default(0)
         assert backend._bounded_ctx_checkpoints(4, caps) is None
-        assert effective_ctx_checkpoints_for_caps(
-            caps,
-            None,
-            None,
-            per_checkpoint_bytes = backend._rollback_state_bytes(1),
-            n_parallel = 4,
-            total_host_bytes = 94 * GIB,
-        ) == 0
+        assert (
+            effective_ctx_checkpoints_for_caps(
+                caps,
+                None,
+                None,
+                per_checkpoint_bytes = backend._rollback_state_bytes(1),
+                n_parallel = 4,
+                total_host_bytes = 94 * GIB,
+            )
+            == 0
+        )
 
     def test_a_small_default_still_gets_capped_on_a_tiny_host(self, monkeypatch):
         """Capping below the build's own default is still allowed, and still floored at 2."""
@@ -721,18 +733,23 @@ class TestTheCapNeverRaisesTheBuildsOwnDefault:
     def test_the_priced_count_is_the_builds_own_default_for_a_blank_field(self):
         for default in (0, 3, 32):
             caps = self._caps_with_default(default)
-            assert effective_ctx_checkpoints_for_caps(
-                caps, None, None, per_checkpoint_bytes = 0, n_parallel = 4, total_host_bytes = None
-            ) == default
+            assert (
+                effective_ctx_checkpoints_for_caps(
+                    caps, None, None, per_checkpoint_bytes = 0, n_parallel = 4, total_host_bytes = None
+                )
+                == default
+            )
 
     def test_an_explicit_count_still_outranks_the_advertised_default(self):
         caps = self._caps_with_default(3)
-        budget = dict(per_checkpoint_bytes = int(149.625 * MIB), n_parallel = 4,
-                      total_host_bytes = 94 * GIB)
+        budget = dict(
+            per_checkpoint_bytes = int(149.625 * MIB), n_parallel = 4, total_host_bytes = 94 * GIB
+        )
         assert effective_ctx_checkpoints_for_caps(caps, None, 64, **budget) == 64
-        assert effective_ctx_checkpoints_for_caps(
-            caps, ["--ctx-checkpoints", "64"], None, **budget
-        ) == 64
+        assert (
+            effective_ctx_checkpoints_for_caps(caps, ["--ctx-checkpoints", "64"], None, **budget)
+            == 64
+        )
 
 
 # --------------------------------------------------------------- an inherited env setting
@@ -741,7 +758,11 @@ class TestTheCapNeverRaisesTheBuildsOwnDefault:
 class TestAnInheritedEnvCountIsTheOperatorsSetting:
     """llama.cpp applies LLAMA_ARG_CTX_CHECKPOINTS before argv, so an emitted flag overrules it."""
 
-    def _host(self, monkeypatch, gib = 94):
+    def _host(
+        self,
+        monkeypatch,
+        gib = 94,
+    ):
         monkeypatch.setattr(
             LlamaCppBackend, "_total_system_memory_mib", staticmethod(lambda: gib * 1024)
         )
@@ -782,28 +803,36 @@ class TestAnInheritedEnvCountIsTheOperatorsSetting:
             per_checkpoint_bytes = int(149.625 * MIB), n_parallel = 4, total_host_bytes = 94 * GIB
         )
         assert effective_ctx_checkpoints_for_caps(_caps(), None, 4, **budget) == 4
-        assert effective_ctx_checkpoints_for_caps(
-            _caps(), ["--ctx-checkpoints", "64"], None, **budget
-        ) == 64
-        assert effective_ctx_checkpoints_for_caps(
-            _caps(), ["--ctx-checkpoints", "0"], None, **budget
-        ) == 0
+        assert (
+            effective_ctx_checkpoints_for_caps(_caps(), ["--ctx-checkpoints", "64"], None, **budget)
+            == 64
+        )
+        assert (
+            effective_ctx_checkpoints_for_caps(_caps(), ["--ctx-checkpoints", "0"], None, **budget)
+            == 0
+        )
 
     def test_an_explicit_env_map_is_used_over_the_process_environment(self, monkeypatch):
         self._host(monkeypatch)
         monkeypatch.delenv("LLAMA_ARG_CTX_CHECKPOINTS", raising = False)
-        assert _backend()._bounded_ctx_checkpoints(
-            4, _caps(), None, {"LLAMA_ARG_CTX_CHECKPOINTS": "256"}
-        ) is None
-        assert effective_ctx_checkpoints_for_caps(
-            _caps(),
-            None,
-            None,
-            per_checkpoint_bytes = int(149.625 * MIB),
-            n_parallel = 4,
-            total_host_bytes = 94 * GIB,
-            env = {"LLAMA_ARG_CTX_CHECKPOINTS": "256"},
-        ) == 256
+        assert (
+            _backend()._bounded_ctx_checkpoints(
+                4, _caps(), None, {"LLAMA_ARG_CTX_CHECKPOINTS": "256"}
+            )
+            is None
+        )
+        assert (
+            effective_ctx_checkpoints_for_caps(
+                _caps(),
+                None,
+                None,
+                per_checkpoint_bytes = int(149.625 * MIB),
+                n_parallel = 4,
+                total_host_bytes = 94 * GIB,
+                env = {"LLAMA_ARG_CTX_CHECKPOINTS": "256"},
+            )
+            == 256
+        )
 
 
 # --------------------------------------------------------------- after the fit picks the slots
