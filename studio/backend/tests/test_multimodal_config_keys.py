@@ -189,9 +189,108 @@ def test_a_text_config_counts_beside_a_modality_sibling(tmp_path, partner):
 def test_text_config_is_not_recorded_as_a_modality_key():
     """Stated at the constant, so re-adding it has to argue with this test."""
     assert "text_config" not in resolver._MULTIMODAL_CONFIG_KEYS
+    assert "text_config" not in resolver._VISUAL_TOKEN_ID_KEYS
     # audio_token_id is excluded for its own reason: the audio families are admitted by name, and a
     # generic marker would bypass that allowlist.
     assert "audio_token_id" not in resolver._MULTIMODAL_CONFIG_KEYS
+    assert "audio_token_id" not in resolver._VISUAL_TOKEN_ID_KEYS
+    # The four new keys are read for their VALUE, so they are kept out of the presence tuple. A
+    # move back into it would silently restore the null-marker admission below.
+    assert not set(resolver._VISUAL_TOKEN_ID_KEYS) & set(resolver._MULTIMODAL_CONFIG_KEYS)
+
+
+# ------------------------------------------------------------------ the marker has to MEAN something
+#
+# The four new keys are scalars, not sub-configs, and a key survives its value: a serialiser that
+# writes every field of a dataclass emits "image_token_id": null for a model that has none. Testing
+# membership alone would therefore admit a T5-shaped config that merely carries the field, which is
+# exactly what the gate exists to refuse. Every case here is a config that PASSES a membership test
+# and must still be rejected.
+
+
+@pytest.mark.parametrize(
+    "value",
+    [None, False, True, -1, "151655", "", [], (), {}, {"id": 1}, [1, None], [1, "2"]],
+    ids = ["null", "false", "true", "negative", "string", "empty-string", "empty-list",
+           "empty-tuple", "empty-dict", "dict", "list-with-null", "list-with-string"],
+)
+def test_a_visual_marker_that_is_not_a_token_id_does_not_admit_anything(tmp_path, value):
+    """The key is there; the value is not a vocabulary index. `true` is called out on its own
+    because bool is an int subclass, so an unguarded check reads it as token 1."""
+    config = {
+        "architectures": ["Qwen3_5MoeForConditionalGeneration"],
+        "model_type": "qwen3_5_moe",
+        "image_token_id": value,
+    }
+    info = _checkpoint(tmp_path, f"bad-marker-{type(value).__name__}-{value!r}"[:60], config)
+
+    assert "image_token_id" in config, "the case is only interesting while the KEY is present"
+    assert resolver._is_generative_chat_config(config) is False
+    assert resolver.local_servable_model(info) is None
+
+
+@pytest.mark.parametrize(
+    ("architecture", "model_type"),
+    [("T5ForConditionalGeneration", "t5"), ("BartForConditionalGeneration", "bart")],
+)
+@pytest.mark.parametrize("marker", ["image_token_id", "video_token_id",
+                                    "vision_start_token_id", "vision_end_token_id"])
+def test_a_seq2seq_carrying_a_null_visual_marker_is_still_refused(
+    tmp_path, architecture, model_type, marker
+):
+    """The counterexample the earlier negative cases missed: they omitted every new key, so they
+    could not have caught a presence-only predicate. T5 and BART are the two families this gate
+    was written to refuse, and the serving path still has no AutoModelForSeq2SeqLM branch."""
+    config = {
+        "architectures": [architecture],
+        "model_type": model_type,
+        "text_config": {"hidden_size": 768, "model_type": model_type},
+        marker: None,
+    }
+    info = _checkpoint(tmp_path, f"{model_type}-{marker}-null", config)
+
+    assert resolver._is_generative_chat_config(config) is False
+    assert resolver.local_servable_model(info) is None
+
+
+@pytest.mark.parametrize("value", [0, 1, 151655, [151655], [151655, 151656], (151655,)])
+def test_a_real_visual_marker_still_admits_the_reported_conversion(tmp_path, value):
+    """The other direction. Zero is a legal vocabulary index, and several transformers 5 configs
+    carry a LIST of placeholder ids for a model with more than one image slot."""
+    config = {
+        "architectures": ["Qwen3_5MoeForConditionalGeneration"],
+        "model_type": "qwen3_5_moe",
+        "image_token_id": value,
+    }
+    info = _checkpoint(tmp_path, f"good-marker-{value!r}"[:60], config)
+
+    assert resolver._is_generative_chat_config(config) is True
+    assert resolver.local_servable_model(info) == (False, ())
+
+
+def test_a_visual_marker_does_not_get_an_audio_family_past_its_own_gate(tmp_path, monkeypatch):
+    """The audio bypass. csm is on the audio allowlist and its verdict is the HOST's: served
+    where a Transformers worker runs, refused on an MLX host whose worker rejects TTS outright.
+    A visual token id on that same config must not short-circuit ahead of that decision, or it
+    becomes a way around the MLX refusal -- the same bypass the comments already refuse to open
+    with audio_token_id, arriving through the other door."""
+    config = {
+        "architectures": ["CsmForConditionalGeneration"],
+        "model_type": "csm",
+        "audio_token_id": 128002,
+        "image_token_id": 151655,
+    }
+    info = _checkpoint(tmp_path, "csm-with-a-visual-marker", config)
+
+    monkeypatch.setattr(resolver, "_host_serves_mlx", lambda: True)
+    assert resolver._is_generative_chat_config(config) is False, (
+        "a visual marker carried an audio family past the MLX refusal"
+    )
+    assert resolver.local_servable_model(info) is None
+
+    resolver.invalidate_index()
+    monkeypatch.setattr(resolver, "_host_serves_mlx", lambda: False)
+    assert resolver._is_generative_chat_config(config) is True
 
 
 @pytest.mark.parametrize(
