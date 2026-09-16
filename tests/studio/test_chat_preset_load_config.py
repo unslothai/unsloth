@@ -220,7 +220,7 @@ def _split_ternary(expression: str, guards: tuple = ()) -> list:
     # An unparenthesised nested ternary in the true arm owns the next colon, so count `?` here
     # too: taking the first one at bracket depth 0 cuts `a ? b ? c : d : e` into `a ? b` and
     # `d : e`, and a field named anywhere in that second blob would look like every arm reading it.
-    inner = guards + (expression[:question],)
+    condition = expression[:question]
     depth, nested = 0, 0
     index = question + 1
     while index < len(expression):
@@ -236,12 +236,14 @@ def _split_ternary(expression: str, guards: tuple = ()) -> list:
             nested += 1
         elif depth == 0 and char == ":":
             if not nested:
-                return _split_ternary(expression[question + 1 : index], inner) + _split_ternary(
-                    expression[index + 1 :], inner
-                )
+                # Each branch records the condition AND which way it fell, because only one
+                # direction of `budget === -1` says the budget is -1 on that path.
+                return _split_ternary(
+                    expression[question + 1 : index], guards + ((condition, True),)
+                ) + _split_ternary(expression[index + 1 :], guards + ((condition, False),))
             nested -= 1
         index += 1
-    return [(expression[question + 1 :].strip(), inner)]
+    return [(expression[question + 1 :].strip(), guards + ((condition, True),))]
 
 
 def _without_comments(source: str) -> str:
@@ -311,6 +313,40 @@ def _nested_function_spans(block: str) -> list:
             return spans
 
 
+def _block_always_returns(block: str) -> bool:
+    """Does every path out of this block go through a `return`?
+
+    Only the simple shape counts: the block's last statement is an unconditional return. A block
+    that can fall off the end returns `undefined`, and a selector doing that holds `undefined`
+    steady while the field moves, so the caller has to score that path too.
+    """
+    nested = _nested_function_spans(block)
+    last = None
+    for match in re.finditer(r"\breturn\b", block):
+        if not any(begin <= match.start() < end for begin, end in nested):
+            last = match
+    if last is None:
+        return False
+    tail = block[last.end() :]
+    depth = 0
+    for index, char in enumerate(tail):
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        elif depth == 0 and char == ";":
+            if tail[index + 1 :].strip():
+                return False
+            break
+    else:
+        if tail.strip():
+            return False
+    # An `if (x) return y;` with no braces is the last statement and still falls through.
+    head = block[: last.start()]
+    boundary = max(head.rfind(";"), head.rfind("}"))
+    return not re.search(r"\b(if|else|for|while|switch|catch)\b", head[boundary + 1 :])
+
+
 def _own_scope_returns(block: str) -> list:
     """The `return` expressions belonging to this block, not to a function nested in it.
 
@@ -369,6 +405,25 @@ def _selector_signature(selector: str, field: str):
     return 0, None
 
 
+_PIN = re.compile(r"(===|!==|==|!=)\s*(null|undefined|-?\d+|'[^']*'|\"[^\"]*\")")
+
+
+def _pins(guard: str, taken: bool, field: str) -> bool:
+    """Does this guard, decided this way, fix `field` at one literal value?
+
+    `budget === -1` taken true says the budget is -1 there, and `budget != null` taken false says
+    it is null, so a constant result on that path is still the whole of what the selector can
+    return for that value. `budget > 0` fixes nothing: every budget above zero reaches the same
+    result, which is a subscription in name only.
+    """
+    if not re.search(rf"\b\w+\.{field}\b", guard):
+        return False
+    match = _PIN.search(guard)
+    if match is None:
+        return False
+    return (match.group(1) in ("===", "==")) == taken
+
+
 def _selector_reads(selector: str, field: str) -> bool:
     """Does every value this selector can return depend on `field`?
 
@@ -400,25 +455,25 @@ def _selector_reads(selector: str, field: str) -> bool:
             for expression in _own_scope_returns(block)
             for result in _split_ternary(expression)
         ]
+        if results and not _block_always_returns(block):
+            # The fall-through path, which returns undefined and tracks nothing.
+            results.append(("undefined", ()))
     else:
         results = _split_ternary(body)
     if not results:
         return False
     results = [
-        (_normalised(result), tuple(_normalised(guard) for guard in guards))
+        (_normalised(result), tuple((_normalised(guard), taken) for guard, taken in guards))
         for result, guards in results
     ]
-    if all(read.search(result) for result, _ in results):
-        return True
-    # Some arm has to return the field. A condition alone cannot carry the subscription: it only
-    # says which arm is taken, so `s.budget > 0 ? s.other : null` holds the same result while the
-    # budget moves from 1 to 2 and the sheet never re-renders. Where one arm does return it, a
-    # guard naming the field can still account for the others, which is how
-    # `s.budget != null ? s.budget : null` stays a subscription.
-    if not any(read.search(result) for result, _ in results):
-        return False
+    # Every path either returns the field, or is reachable for only one value of it. A condition
+    # that merely mentions the field cannot carry a path: `s.budget > 0 ? s.other : null` holds
+    # the same result while the budget moves from 1 to 2, and so does the `s.other` subpath of
+    # `s.budget != null ? (s.enabled ? s.budget : s.other) : null`. Only a comparison that pins
+    # the field to a literal on the branch taken makes a constant result honest, which is what
+    # keeps `s.budget === -1 ? -1 : s.budget` and `s.budget != null ? s.budget : null` working.
     return all(
-        read.search(result) or any(read.search(guard) for guard in guards)
+        read.search(result) or any(_pins(guard, taken, field) for guard, taken in guards)
         for result, guards in results
     )
 
@@ -456,6 +511,11 @@ SELECTOR_CASES = [
     # budget, so the sheet never re-renders on a change between two of them.
     ("(s) => s.reasoningBudget != null ? s.other : null", False),
     ("(s) => s.reasoningBudget > 0 ? s.other : null", False),
+    # A guard cannot rescue a subpath it does not pin: `enabled` false holds s.other steady.
+    ("(s) => s.reasoningBudget != null ? (s.enabled ? s.reasoningBudget : s.other) : null", False),
+    # Falling off the end of a block returns undefined, which tracks nothing.
+    ("(s) => { if (s.enabled) return s.reasoningBudget; }", False),
+    ("(s) => { if (s.enabled) { return s.reasoningBudget; } return s.reasoningBudget; }", True),
     ("(s) => s.reasoningBudget === -1 ? -1 : s.reasoningBudget", True),
     # Read but not returned: zustand compares results, so these subscribe to something else.
     ("(s) => s.enabled ? s.reasoningBudget : s.fallback", False),
@@ -471,7 +531,9 @@ SELECTOR_CASES = [
     ("(s) => s.reasoningBudget ? (s.on ? null : null) : null", False),
     # Block bodies: what is returned, not what is mentioned on the way there.
     ("(s) => { return s.reasoningBudget; }", True),
-    ("(s) => { const v = s.reasoningBudget; return v ? s.reasoningBudget : -1; }", True),
+    # A truthiness test pins nothing: a budget of 0 and a budget of null both land on -1.
+    ("(s) => { const v = s.reasoningBudget; return v ? s.reasoningBudget : -1; }", False),
+    ("(s) => { const v = s.reasoningBudget; return v ? s.reasoningBudget : s.reasoningBudget; }", True),
     ("(s) => { void s.reasoningBudget; return null; }", False),
     ("(s) => { s.reasoningBudget; }", False),
     # A control block is the selector's own scope; a function declared inside it is not.
