@@ -260,14 +260,6 @@ if ! configured; then
     else
         fail "could not restart Docker; restart it yourself, then run: docker run --rm --gpus all --platform ${PLATFORM} ubuntu:24.04 nvidia-smi -L"
     fi
-    # `service docker restart` returns when the init script has forked the daemon,
-    # not when the daemon is serving, so a single `docker info` here can still be
-    # answered by the process that was running before the restart. systemctl is
-    # synchronous, but the wait costs nothing on a host that is already up.
-    for _try in 1 2 3 4 5 6 7 8 9 10; do
-        configured && break
-        sleep 2
-    done
     configured || fail "Docker still does not list the nvidia runtime after the install; see 'docker info'."
 fi
 
