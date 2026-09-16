@@ -13,10 +13,13 @@ docker run --rm -it \
   --device /dev/kfd --device /dev/dri \
   --group-add video --group-add render \
   --ipc=host \
+  -v "$HOME/.cache/huggingface":/workspace/.cache/huggingface \
   unsloth/unsloth-rocm
 ```
 
-Or let the launcher work out the device nodes and group ids for you:
+The Hugging Face mount is not optional if you care about your downloads: `HF_HOME` inside the container is `/workspace/.cache/huggingface`, which lives in the container's writable layer, so without it every model is fetched again after `docker rm`.
+
+Or let the launcher work out the device nodes, group ids and mounts for you:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/docker/run.sh -o run.sh
@@ -82,6 +85,8 @@ Not included, unlike `unsloth/unsloth`: Unsloth Studio and its web UI, JupyterLa
 | `UNSLOTH_SKIP_GPU_CHECK=1` | skip the startup diagnostics |
 | `HSA_OVERRIDE_GFX_VERSION` | present an unsupported card as a supported one. Ignored on images with native kernels for the card |
 | `HF_TOKEN` | forwarded for gated models |
+
+Model downloads land in `/workspace/.cache/huggingface`, which is in the container's writable layer unless you mount it. Mount it to keep them, and to reuse what the host has already downloaded.
 
 The build's own record is in the image: `cat /etc/unsloth-rocm-build` reports the ROCm version, the wheel index and the architecture it was built for, and `/opt/unsloth-venv/requirements.lock.txt` is the resolved package set.
 
