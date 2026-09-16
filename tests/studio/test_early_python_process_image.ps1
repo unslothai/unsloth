@@ -359,6 +359,26 @@ Check "the probe declares CloseHandle's argument type" (
 Check "the probe asks for the limited-information right only" ($probeText -match "OpenProcess\(0x1000,")
 # EnumProcesses reports the bytes it used. Equal to the buffer size means it may have run out, so
 # only a strictly smaller figure proves the enumeration was complete.
+# Exactness. This rung and the native rung must return the SAME string for the same process, or
+# Test-StudioProtectedPathMatch compares a path from one against a path recorded by the other and
+# sees a difference that is not there. They agree by construction only if the underlying call is
+# identical: same access right, same flags argument (0 is the Win32 path form; 1 would return
+# \Device\HarddiskVolume1\... instead), same buffer size. Read both out of the file and compare.
+$nativeInit = ($ast.FindAll({ param($n)
+    $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+    $n.Name -eq "Get-StudioNativeProcessImagePath" }, $true)[0]).Extent.Text
+# The native rung names the constant rather than inlining it, so follow the name to its value.
+$nativeRight = if ($nativeInit -match '\$queryLimitedInformation\s*=\s*\[uint32\](0x[0-9a-fA-F]+)') { $Matches[1] } else { "" }
+Check "the native rung asks for the same access right the probe does" (
+    $nativeRight -eq "0x1000" -and
+    $nativeInit -match "OpenProcess\(\s*\r?\n?\s*\`$queryLimitedInformation," -and
+    $probeText -match "OpenProcess\(0x1000,")
+Check "both pass flags 0, so both get the Win32 path form and not the device form" (
+    $nativeInit -match "QueryFullProcessImageNameW\(\s*\`$handle,\s*\[uint32\]0," -and
+    $probeText -match "QueryFullProcessImageNameW\(h,0,")
+Check "both size the buffer the same" (
+    $nativeInit -match "32768" -and $probeText -match "create_unicode_buffer\(32768\)")
+
 Check "the probe grows its buffer until the enumeration is provably complete" (
     $probeText -match "b\.value\s*<\s*ctypes\.sizeof\(a\)")
 
