@@ -1136,3 +1136,27 @@ def test_dynamic_import_clients_require_approval(code):
     assert _check_code_safety(code, session_id = "review") is not None
     approve_hosts("review", ["evil.example"])
     assert _check_code_safety(code, session_id = "review") is None
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "import paramiko\nclass Pool: client=paramiko.SSHClient()\nPool.client.connect(hostname='evil.example')",
+        "import paramiko\nclass Outer:\n class Pool: client=paramiko.SSHClient()\nOuter.Pool.client.connect(hostname='evil.example')",
+        "import paramiko\nclass Pool: clients=[paramiko.SSHClient()]\nPool.clients[0].connect(hostname='evil.example')",
+    ],
+)
+def test_class_clients_require_approval(code):
+    assert _check_code_safety(code, session_id = "review") is not None
+    approve_hosts("review", ["evil.example"])
+    assert _check_code_safety(code, session_id = "review") is None
+
+
+def test_unrelated_import_remains_allowed():
+    assert (
+        _check_code_safety(
+            "import importlib; math=importlib.import_module('math'); print(math.sqrt(4))",
+            session_id = "review",
+        )
+        is None
+    )

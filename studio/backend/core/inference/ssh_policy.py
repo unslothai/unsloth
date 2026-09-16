@@ -429,7 +429,17 @@ def _ssh_import_bindings(tree: ast.AST) -> dict[str, str]:
 
 def _assignment_pairs(tree: ast.AST):
     """Yield individual assignment targets, including chained and unpacked forms."""
-    for node in ast.walk(tree):
+
+    def scoped_nodes(node: ast.AST, scope: str = ""):
+        yield node, scope
+        if isinstance(node, ast.ClassDef):
+            scope = f"{scope}.{node.name}" if scope else node.name
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            scope = ""
+        for child in ast.iter_child_nodes(node):
+            yield from scoped_nodes(child, scope)
+
+    for node, scope in scoped_nodes(tree):
         if isinstance(node, (ast.With, ast.AsyncWith)):
             for item in node.items:
                 if item.optional_vars is not None:
@@ -444,6 +454,8 @@ def _assignment_pairs(tree: ast.AST):
         pending = [(target, node.value) for target in targets]
         while pending:
             target, value = pending.pop()
+            if scope and isinstance(target, ast.Name):
+                pending.append((ast.Attribute(value = ast.Name(id = scope), attr = target.id), value))
             if isinstance(target, (ast.Tuple, ast.List)) and isinstance(
                 value, (ast.Tuple, ast.List)
             ):
