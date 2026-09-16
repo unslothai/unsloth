@@ -709,3 +709,167 @@ class TestFormatErrorMessage:
         err = Exception("Something completely unexpected")
         msg = format_error_message(err, "any/model")
         assert msg == "Something completely unexpected"
+
+
+# ---------------------------------------------------------------------------
+# AuthSafeRedirectHandler
+# ---------------------------------------------------------------------------
+
+
+class TestAuthSafeRedirectHandler:
+    """A Hub token must not leave the origin the operator configured.
+
+    urllib's default redirect handler copies the request headers onto the
+    redirect target, so a mirror answering /resolve/ with a cross-host 302 --
+    or an HTTPS-to-HTTP downgrade -- receives the caller's Authorization header.
+    Socket-level cases run over loopback on two ports, which is a real cross-
+    origin redirect on every platform; the scheme cases are driven against
+    redirect_request directly, since a loopback TLS server would need a cert the
+    suite does not carry.
+    """
+
+    TOKEN = "Bearer hf_FAKE_TOKEN_FOR_TESTS"
+
+    @staticmethod
+    def _serve(plan):
+        """A throwaway loopback server that records the Authorization it was sent."""
+        import http.server
+        import threading
+
+        class _Recorder(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.0"
+
+            def _handle(self):
+                self.server.seen.append(
+                    {"path": self.path, "auth": self.headers.get("Authorization")}
+                )
+                code, location = self.server.plan(self.path)
+                self.send_response(code)
+                if location:
+                    self.send_header("Location", location)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            do_GET = _handle
+            do_HEAD = _handle
+
+            def log_message(self, *args):
+                pass
+
+        srv = http.server.HTTPServer(("127.0.0.1", 0), _Recorder)
+        srv.seen = []
+        srv.plan = plan
+        threading.Thread(target = srv.serve_forever, daemon = True).start()
+        return srv
+
+    def _get(self, url):
+        import urllib.request
+        from utils.utils import auth_safe_open
+
+        req = urllib.request.Request(url, method = "HEAD", headers = {"Authorization": self.TOKEN})
+        auth_safe_open(req, timeout = 5).close()
+
+    def test_same_origin_redirect_keeps_the_token(self):
+        srv = self._serve(lambda p: (302, "/final") if p == "/start" else (200, None))
+        try:
+            self._get(f"http://127.0.0.1:{srv.server_port}/start")
+        finally:
+            srv.shutdown()
+        hop2 = [r for r in srv.seen if r["path"] == "/final"]
+        assert hop2 and hop2[0]["auth"] == self.TOKEN
+
+    def test_cross_origin_redirect_drops_the_token(self):
+        """Another port on the same host is another origin, and gets no token."""
+        dest = self._serve(lambda p: (200, None))
+        src = self._serve(lambda p: (302, f"http://127.0.0.1:{dest.server_port}/final"))
+        try:
+            self._get(f"http://127.0.0.1:{src.server_port}/start")
+        finally:
+            src.shutdown()
+            dest.shutdown()
+        assert src.seen and src.seen[0]["auth"] == self.TOKEN
+        assert dest.seen and dest.seen[0]["auth"] is None
+
+    def test_token_does_not_come_back_on_the_return_hop(self):
+        """A -> B -> A must not re-attach the token once B has been in the chain."""
+        ports = {}
+        first = self._serve(
+            lambda p: (302, f"http://127.0.0.1:{ports['b']}/via") if p == "/start" else (200, None)
+        )
+        second = self._serve(lambda p: (302, f"http://127.0.0.1:{first.server_port}/back"))
+        ports["b"] = second.server_port
+        try:
+            self._get(f"http://127.0.0.1:{first.server_port}/start")
+        finally:
+            first.shutdown()
+            second.shutdown()
+        back = [r for r in first.seen if r["path"] == "/back"]
+        assert second.seen and second.seen[0]["auth"] is None
+        assert back and back[0]["auth"] is None
+
+    # --- scheme and host rules, at the handler ---
+
+    def _redirect(
+        self,
+        start,
+        newurl,
+        code = 302,
+    ):
+        import urllib.request
+        from utils.utils import AuthSafeRedirectHandler
+
+        req = urllib.request.Request(start, method = "HEAD", headers = {"Authorization": self.TOKEN})
+        return AuthSafeRedirectHandler().redirect_request(req, None, code, "Found", {}, newurl)
+
+    def test_tls_downgrade_is_not_followed(self):
+        assert self._redirect("https://hub.example/a", "http://hub.example/a") is None
+
+    def test_scheme_upgrade_drops_the_token(self):
+        new = self._redirect("http://hub.example/a", "https://hub.example/a")
+        assert new is not None
+        assert new.headers.get("Authorization") is None
+
+    def test_explicit_default_port_is_the_same_origin(self):
+        """https://h/a -> https://h:443/b is one origin, not two."""
+        new = self._redirect("https://hub.example/a", "https://hub.example:443/b")
+        assert new is not None
+        assert new.headers.get("Authorization") == self.TOKEN
+
+    def test_host_case_is_not_an_origin_change(self):
+        new = self._redirect("https://Hub.Example/a", "https://hub.example/b")
+        assert new is not None
+        assert new.headers.get("Authorization") == self.TOKEN
+
+    def test_lookalike_host_drops_the_token(self):
+        new = self._redirect("https://hub.example/a", "https://hub.example.evil.test/a")
+        assert new is not None
+        assert new.headers.get("Authorization") is None
+
+    def test_refused_downgrade_reaches_the_caller_as_an_http_error(self):
+        """redirect_request returning None makes urllib raise HTTPError for the 3xx
+        rather than hand the 3xx back as a response. Every probe that uses this
+        opener catches HTTPError and treats a non-401/403/404 as reachable, so the
+        refusal fails open -- but the shape is HTTPError, and it is pinned here."""
+        import urllib.error
+        import urllib.request
+
+        class _Refuse(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, *a, **k):
+                return None
+
+        dest = self._serve(lambda p: (200, None))
+        src = self._serve(lambda p: (302, f"http://127.0.0.1:{dest.server_port}/final"))
+        opener = urllib.request.build_opener(_Refuse())
+        try:
+            with pytest.raises(urllib.error.HTTPError) as excinfo:
+                opener.open(
+                    urllib.request.Request(
+                        f"http://127.0.0.1:{src.server_port}/start", method = "HEAD"
+                    ),
+                    timeout = 5,
+                )
+        finally:
+            src.shutdown()
+            dest.shutdown()
+        assert excinfo.value.code == 302
+        assert dest.seen == []
