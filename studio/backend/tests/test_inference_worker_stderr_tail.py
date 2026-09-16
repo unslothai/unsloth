@@ -387,9 +387,7 @@ def test_a_missing_sink_is_never_re_created_by_the_child(tmp_path):
     assert not missing.exists(), "the child created a sink the parent had retired"
 
 
-@pytest.mark.skipif(
-    not hasattr(os, "O_NOFOLLOW"), reason = "O_NOFOLLOW is POSIX only"
-)
+@pytest.mark.skipif(not hasattr(os, "O_NOFOLLOW"), reason = "O_NOFOLLOW is POSIX only")
 def test_a_symlink_at_the_sink_path_is_not_followed(tmp_path):
     """The sink path is a name in a world-writable directory once the parent unlinks it.
 
@@ -446,10 +444,9 @@ def test_a_forked_child_does_not_retire_its_parents_live_sink(tmp_path):
     Path(capture.path).write_bytes(b"the parent is still writing here\n")
 
     pid = os.fork()
-    if pid == 0:                                    # pragma: no cover - runs in the child
+    if pid == 0:  # pragma: no cover - runs in the child
         # What a normal interpreter exit does, without unwinding into pytest's own teardown.
         import atexit as _atexit
-
         try:
             _atexit._run_exitfuncs()
         finally:

@@ -31,7 +31,7 @@ def hold_a_second_handle_on_stderr_then_exit(**_kwargs) -> None:
     close, so the pump never sees EOF and the join at exit has to time out."""
     import os
 
-    _keep_alive = os.dup(2)                                 # noqa: F841
+    _keep_alive = os.dup(2)  # noqa: F841
     print("held a second handle on stderr", file = sys.stderr)
     sys.stderr.flush()
     raise SystemExit(1)
