@@ -1640,3 +1640,42 @@ def test_a_persisted_failure_message_keeps_its_reason_and_loses_the_path():
     assert host_paths.redact_host_paths(
         {"error_message": message}, via_api_key = False
     )["error_message"] == message
+
+
+def test_the_chat_status_does_not_hand_back_the_path_the_load_resolved(monkeypatch):
+    """Loading a filesystem-backed row and then polling status was a way around the redaction.
+
+    The load request's validator resolves the opaque reference to an absolute path, and that
+    path is RETAINED as the resident model identity. Restoration covers the load's own
+    response, but `GET /api/inference/status` answers long after the request that resolved the
+    reference has ended, so there is no handle left in the request context to put back. The
+    image and video status routes already redact their retained state; this one did not, and
+    returned the path through `active_model`, `model_identifier` and `loaded`.
+    """
+    import asyncio
+
+    from models.inference import InferenceStatusResponse
+    from routes import inference as inference_routes
+
+    async def _payload(current_subject: str):
+        return InferenceStatusResponse(
+            active_model = REPO_DIR,
+            model_identifier = REPO_DIR,
+            is_gguf = True,
+            is_local_model = True,
+            loaded = [REPO_DIR],
+        )
+
+    monkeypatch.setattr(inference_routes, "get_status", _payload)
+    answered = asyncio.run(
+        inference_routes.inference_status(current_subject = "alice", via_api_key = True)
+    )
+    body = json.dumps(json.loads(InferenceStatusResponse(**dict(answered)).model_dump_json()))
+    assert HOST_ROOT not in body, body
+    assert REPO_DIR not in body, body
+
+    # And the browser session still sees its own machine, as everywhere else in this file.
+    ui = asyncio.run(
+        inference_routes.inference_status(current_subject = "alice", via_api_key = False)
+    )
+    assert ui.model_identifier == REPO_DIR

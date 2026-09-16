@@ -2632,3 +2632,37 @@ def test_a_local_only_config_read_stays_off_the_wire(monkeypatch):
         )
 
     assert probes["n"] == 0
+
+
+def test_a_slow_denial_is_still_a_denial(monkeypatch):
+    """Elapsed time is not evidence about what the Hub said.
+
+    Giving up is recognised by CLASS and by STATUS: every timeout, connect error, proxy
+    failure and transport error already reaches the caller as None, and the only way the
+    probe answers False is a classified denial (401, 403, 410, 451, an HF-coded 404, or one
+    of the denial exception classes). The budget covers the cold huggingface_hub import and
+    a distant mirror as well as the request itself, so a definitive 401 can easily take all
+    of it -- and rewriting that to None discarded the refusal, left no remembered denial,
+    and let a caller presenting the host's stored but revoked token be served the cached
+    private repo.
+    """
+    monkeypatch.setattr(hf_tokens, "_REPO_ACCESS_PROBE_TIMEOUT_S", 0.05)
+    calls = _counting_probe(monkeypatch, False, offline = False, delay = 0.2)
+
+    assert (
+        hf_tokens._explicit_token_reaches_repo("org/private", "hf_revoked", "model") is False
+    )
+    assert calls["n"] == 1
+    # Memoized as the denial it was, under the denial TTL rather than the short unreachable
+    # one, and remembered, which is what survives a later unaskable Hub.
+    (expiry, allowed) = next(iter(hf_tokens._repo_access_cache.values()))
+    assert allowed is False
+    assert expiry - time.monotonic() > hf_tokens._REPO_ACCESS_UNREACHABLE_TTL_S
+
+    # And the remembered denial outlives an unaskable probe afterwards, which is the path the
+    # disclosure went through: with nothing remembered, local presence decided it.
+    hf_tokens._repo_access_cache.clear()
+    _counting_probe(monkeypatch, None, offline = False)
+    assert (
+        hf_tokens._explicit_token_reaches_repo("org/private", "hf_revoked", "model") is False
+    )

@@ -687,7 +687,6 @@ def _explicit_token_reaches_repo(
         cached = _cached_repo_access(key, time.monotonic())
         if cached is not _CACHE_MISS:
             return _with_remembered_denial(key, cached)  # type: ignore[arg-type]
-        started = time.monotonic()
         try:
             allowed = _probe_repo_access(repo_id, token, repo_type)
         except _ProbeTimedOut:
@@ -702,9 +701,15 @@ def _explicit_token_reaches_repo(
             allowed = None
         # AFTER the probe: `start + TTL` memoizes an expired entry when the Hub stalls.
         finished = time.monotonic()
-        if allowed is False and (finished - started) >= _REPO_ACCESS_PROBE_TIMEOUT_S:
-            # A denial that took the whole budget is a probe that gave up, not an answer.
-            allowed = None
+        # No elapsed-time rewrite of the verdict. Giving up is recognised by CLASS and by
+        # STATUS, not by the clock: every timeout, connect error, proxy failure and transport
+        # error already arrives here as None, and the only way `allowed` is False is a
+        # classified denial (401, 403, 410, 451, an HF-coded 404, or one of the denial
+        # exception classes). Elapsed time cannot tell one of those apart from a slow one --
+        # the budget covers the cold `huggingface_hub` import and a distant mirror as well as
+        # the request -- and rewriting it to None discarded the Hub's explicit refusal. With
+        # no denial remembered, a caller presenting the host's stored but revoked token then
+        # passed the caller-populated-the-cache test and was served the private repo.
         expiry = finished + (
             _REPO_ACCESS_UNREACHABLE_TTL_S if allowed is None else _REPO_ACCESS_TTL_S
         )

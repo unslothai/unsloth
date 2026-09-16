@@ -18072,7 +18072,29 @@ async def get_llama_flags(
 
 
 @router.get("/status", response_model = InferenceStatusResponse)
-async def get_status(current_subject: str = Depends(get_current_subject)):
+async def inference_status(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
+    """`GET /api/inference/status`, redacted the way the image and video status routes are.
+
+    A chat or GGUF row loaded from an inventory reference RETAINS the resolved absolute path
+    as the resident model identity, and it comes back out here through `active_model`,
+    `model_identifier` and `loaded`. This route answers long after the request that resolved
+    the reference has ended, so there is no handle in the request context to put back and
+    `restore_inventory_handles` cannot help: the redactor hands out the same opaque reference
+    the caller sent instead. Without it, an API-key caller recovered the path the inventory
+    redaction exists to hide by loading the row and then polling status.
+    """
+    from hub.utils.host_paths import redact_host_paths
+
+    return redact_host_paths(
+        await get_status(current_subject = current_subject),
+        via_api_key = via_api_key,
+    )
+
+
+async def get_status(current_subject: str):
     """
     Get current inference backend status.
     Reports whichever backend (Unsloth or llama-server) is active.

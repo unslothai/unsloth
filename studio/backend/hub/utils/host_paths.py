@@ -134,7 +134,22 @@ def _conditional_path_is_local(payload: Mapping) -> bool:
 # reference records, and what `/images/status`, `/video/status` and the training run list
 # hand back long after the request that resolved the reference has ended. The value decides,
 # so a repo id is never touched.
-HOST_PATH_IDENTITY_FIELDS = ("id", "load_id", "repo_id", "model_name")
+# `active_model` and `model_identifier` are the chat half of the same thing: a chat or GGUF
+# row loaded from an inventory reference keeps the RESOLVED path as its resident identity, and
+# `GET /api/inference/status` publishes it for as long as that model stays loaded -- long
+# after the request that resolved the reference ended, so there is no handle left to put back.
+# Value-decided like the two above it: almost always a repo id, and never touched when it is.
+HOST_PATH_IDENTITY_FIELDS = (
+    "id",
+    "load_id",
+    "repo_id",
+    "model_name",
+    "active_model",
+    "model_identifier",
+)
+# The same identities, published as lists by the chat status route. Each ENTRY is decided on
+# its own value, so a list of repo ids with one local path in it keeps every id.
+HOST_PATH_IDENTITY_LIST_FIELDS = ("loaded", "loading")
 # The subset a LOCAL row is named by, which is referenced on the strength of the row's
 # source alone. The other two are only ever referenced when the value itself is a path: a
 # local row can carry a `repo_id` that is not one, and blanking that would take away the
@@ -384,6 +399,12 @@ def _redact(payload: Any, *, redact_ambiguous_path: bool) -> Any:
                 or _identity_value_is_a_path(value)
             ):
                 out[key] = _referenced_identity(value)
+                continue
+            if key in HOST_PATH_IDENTITY_LIST_FIELDS and isinstance(value, (list, tuple)):
+                out[key] = [
+                    _referenced_identity(item) if _identity_value_is_a_path(item) else item
+                    for item in value
+                ]
                 continue
             if identity_is_a_path and key == HOST_PATH_ENCODED_IDENTITY_FIELD:
                 out[key] = _referenced_inventory_id(value)
