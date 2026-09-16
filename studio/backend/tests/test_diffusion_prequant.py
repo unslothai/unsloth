@@ -433,7 +433,8 @@ class _CountedBytes(_Bytes):
 
 
 def test_a_class_whose_payload_slots_all_read_none_is_not_fingerprinted():
-    # A torchao release that keeps the class name and renames every payload attribute must read as uncovered, not as the md5 of an empty stream (the same digest for every weight).
+    # A torchao release keeping the class name but renaming every payload attribute must read as
+    # uncovered, not as the md5 of an empty stream (the same digest for every weight).
     from core.inference.diffusion_prequant import packed_weight_fingerprint
 
     renamed = Float8Tensor(b"q0")
@@ -2083,9 +2084,9 @@ def test_the_checkpoint_is_released_before_the_device_copy(monkeypatch, tmp_path
     """The CPU checkpoint must be unreferenced by the time ``.to(device)`` allocates.
 
     ``assign = True`` gives the module the checkpoint's own tensors, so ckpt/state_dict hold only a
-    second reference to them. On a unified-memory host (DGX Spark) the host copy and the device copy
-    are the same physical memory, so keeping that reference across the move doubles the transient
-    peak the artifact-sized admission check was told to expect.
+    second reference. On a unified-memory host (DGX Spark) host and device copies are the same
+    physical memory, so keeping it across the move doubles the transient peak the artifact-sized
+    admission check was told to expect.
     """
     import weakref
 

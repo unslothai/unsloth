@@ -33,11 +33,10 @@ Two properties make the padding exact rather than approximately exact, and both 
     quietly leaving it unwrapped: a half-padded transformer is the one outcome worse than either
     end state, since it compiles on the modules that were wrapped and crashes on the rest.
 
-This module also holds the other shape guard a quantized Linear can need, for the opposite end
-of the range: ``ZeroRowSafeLinear``, which answers an EMPTY activation itself instead of handing
-it to a kernel that cannot reduce over zero elements. Same transparency rules, same wrap-once
-gate, and the two can never meet on one module (the row floor is int8's, the empty-input raise
-is nvfp4's).
+``ZeroRowSafeLinear`` is the other end of that range: it answers an EMPTY activation itself
+rather than hand it to a kernel that cannot reduce over zero elements. Same transparency and
+wrap-once rules, and the two never meet on one module (the row floor is int8's, the empty raise
+nvfp4's).
 
 Ordering invariant: wrapping REPARENTS the Linear, so it must happen AFTER a state dict is
 loaded and BEFORE nothing in particular. The offline prequant builder
@@ -228,10 +227,9 @@ class PadToMinM(nn.Module):
 class ZeroRowSafeLinear(nn.Module):
     """Wrap ``inner`` so an EMPTY activation is answered here rather than by the GEMM.
 
-    torchao's NVFP4 dynamic-activation path takes its global scale from ``torch.max(torch.abs(x))``
-    over the whole input, and ``max()`` raises on ``numel() == 0``. An empty projection has one
-    correct answer, an empty tensor at the output width, so producing it here is not an
-    approximation. Inert above zero rows.
+    torchao's NVFP4 dynamic-activation path scales by ``torch.max(torch.abs(x))`` over the whole
+    input, and ``max()`` raises on ``numel() == 0``. An empty projection has one correct answer, an
+    empty tensor at the output width, so producing it here is exact. Inert above zero rows.
     """
 
     def __init__(self, inner: nn.Linear) -> None:
@@ -240,14 +238,14 @@ class ZeroRowSafeLinear(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if x.numel() == 0:
-            # The bias add is a broadcast over zero elements, kept so the result matches what F.linear would build, dtype and all.
+            # The bias add broadcasts over zero elements, kept so the result matches F.linear's.
             out = x.new_zeros((*x.shape[:-1], self.inner.out_features))
             bias = getattr(self.inner, "bias", None)
             return out if bias is None else out + bias
         return self.inner(x)
 
     def __getattr__(self, name: str) -> Any:
-        # Same passthrough as PadToMinM: callers reach THROUGH a Linear for weight / bias / in_features / out_features.
+        # Same passthrough as PadToMinM: callers reach THROUGH a Linear for weight, bias, features.
         try:
             return super().__getattr__(name)
         except AttributeError:
@@ -259,7 +257,8 @@ class ZeroRowSafeLinear(nn.Module):
             return getattr(inner, name)
 
     def state_dict(self, *args: Any, **kwargs: Any) -> Any:  # type: ignore[override]
-        """Emit the inner Linear's tensors under the WRAPPER's prefix so the checkpoint stays loadable by an unwrapped tree."""
+        """Emit the inner Linear's tensors under the WRAPPER's prefix, so an unwrapped tree
+        can load them."""
         destination = kwargs.pop("destination", args[0] if args else None)
         prefix = kwargs.pop("prefix", args[1] if len(args) > 1 else "")
         keep_vars = kwargs.pop("keep_vars", args[2] if len(args) > 2 else False)
@@ -291,10 +290,8 @@ class ZeroRowSafeLinear(nn.Module):
 
 def wrap_zero_row_linears(model: nn.Module, fqns: Iterable[str]) -> tuple[str, ...]:
     """Replace each Linear named in ``fqns`` with a ``ZeroRowSafeLinear``; return those wrapped.
-
-    Gated on ``is_quantized_linear``, which also makes the wrap idempotent and keeps the two
-    wrappers from stacking: neither wrapper is an ``nn.Linear``. Skipping a ``PadToMinM`` is right
-    rather than a missed guard, since it answers a zero-row call itself without reaching the GEMM."""
+    Gated on ``is_quantized_linear``, so the wrap is idempotent and the two wrappers never stack;
+    a skipped ``PadToMinM`` already answers a zero-row call without reaching the GEMM."""
     done: list[str] = []
     for fqn in sorted(set(fqns)):
         parent_name, _, leaf = fqn.rpartition(".")

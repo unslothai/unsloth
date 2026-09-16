@@ -41,7 +41,7 @@ PREQUANT_FORMAT_ROTATED = "unsloth_prequant_transformer_state_dict_v2"
 
 PREQUANT_FORMATS = (PREQUANT_FORMAT, PREQUANT_FORMAT_ROTATED)
 
-# The denoiser subfolder a checkpoint is baked from when nothing says otherwise; a MoE video family's second expert lives in "transformer_2".
+# Default denoiser subfolder; a MoE video family's second expert lives in "transformer_2".
 DEFAULT_PREQUANT_COMPONENT = "transformer"
 
 
@@ -349,14 +349,10 @@ def prequant_repo_filename(
     scheme: str,
     component: Optional[str] = None,
 ) -> str:
-    """The model-name checkpoint filename for ``scheme`` in ``repo_id``: the hosted repos are
-    named <Model>-FP8 (or -INT8 / -quantized) and carry <Model>-<SCHEME>.pt files, e.g.
-    unsloth/Z-Image-Turbo-FP8 -> Z-Image-Turbo-INT8.pt / Z-Image-Turbo-FP8.pt.
-
-    ``component`` names the denoiser SUBFOLDER the checkpoint was baked from, for the families
-    that ship more than one (Wan2.2 A14B's ``transformer`` and ``transformer_2`` experts), and
-    lands in the name as <Model>-<component>-<SCHEME>.pt. The default component keeps the plain
-    name every hosted repo already uses, so nothing that exists today moves."""
+    """The checkpoint filename for ``scheme`` in ``repo_id``: unsloth/Z-Image-Turbo-FP8 ships
+    Z-Image-Turbo-FP8.pt. A non-default ``component`` (the denoiser subfolder it was baked from,
+    for a family shipping several) lands as <Model>-<component>-<SCHEME>.pt, so the plain name
+    every hosted repo already uses does not move."""
     model = repo_id.rsplit("/", 1)[-1]
     for suffix in ("-fp8", "-int8", "-nvfp4", "-mxfp8", "-quantized"):
         if model.lower().endswith(suffix):
@@ -475,9 +471,8 @@ def local_prequant_scheme(path: str) -> Optional[str]:
 
 def read_prequant_metadata(path: str) -> dict:
     """The metadata block of the pre-quant artifact at ``path``, read the way a LOAD reads it.
-
-    Raises ``ValueError`` for anything that is not a pre-quant checkpoint: the callers here are
-    offline tools that must say so, unlike the loader's silent dense fallback."""
+    Raises ``ValueError`` for anything else: these callers are offline tools that must say so,
+    unlike the loader's silent dense fallback."""
     import os
 
     obj = _torch_load_prequant(os.path.expanduser(path), map_location = "meta", mmap = True)
@@ -486,10 +481,12 @@ def read_prequant_metadata(path: str) -> dict:
     return dict(obj.get("metadata") or {})
 
 
-# The fingerprint algorithm, in the block itself: the name moves with a payload order or hash change so two recipes are never compared under one name.
+# Bump on any payload-order or hash change, so two recipes are never compared under one name.
 FINGERPRINT_ALGO = "md5-packed-v1"
 
-# The attributes carrying a torchao weight's QUANTIZED BYTES, in a fixed order, read off torchao 0.17's own ``tensor_data_names`` and keyed by class NAME (the class is re-exported under several module paths). An unlisted class is not hashed at all: a corruption tripwire has to read as "not covered", never as "equal".
+# A torchao weight's QUANTIZED BYTES in fixed hash order, from torchao 0.17's ``tensor_data_names``
+# and keyed by class NAME (the classes are re-exported under several module paths). An unlisted
+# class is not hashed at all: a corruption tripwire must read as "not covered", never as "equal".
 _FINGERPRINT_PAYLOAD: dict = {
     "NVFP4Tensor": ("qdata", "scale", "per_tensor_scale"),
     "Float8Tensor": ("qdata", "scale"),
@@ -501,11 +498,10 @@ _FINGERPRINT_PAYLOAD: dict = {
 
 
 def _packed_bytes(tensor: Any, torch: Any) -> bytes:
-    """``tensor``'s raw bytes, whatever its dtype.
-
-    ``view(torch.uint8)`` REINTERPRETS rather than converts, so an fp8 / fp4 / bf16 payload numpy
-    cannot represent still hashes exactly. ``contiguous()`` first because a dtype view needs a
-    contiguous last dimension, and a 0-dim scale is reshaped because it has none."""
+    """``tensor``'s raw bytes, whatever its dtype: ``view(torch.uint8)`` REINTERPRETS rather than
+    converts, so an fp8 / fp4 / bf16 payload numpy cannot represent still hashes exactly.
+    ``contiguous()`` first (a dtype view needs a contiguous last dim), and a 0-dim scale is
+    reshaped because it has none."""
     t = tensor.detach().contiguous()
     if t.dim() == 0:
         t = t.reshape(1)
@@ -517,11 +513,9 @@ def _packed_bytes(tensor: Any, torch: Any) -> bytes:
 def _hash_packed_payload(tensor: Any, digest: Any, torch: Any) -> bool:
     """Feed one weight's packed payload into ``digest``. False when its class is not covered.
 
-    The attribute NAME goes into the hash beside its bytes, so two payloads holding the same bytes
-    in different slots do not collide.
-
-    A covered class none of whose payload attributes are present reads as uncovered: hashing an
-    empty stream would give every such weight the same digest and a gate that passes any bytes."""
+    The attribute NAME is hashed beside its bytes, so the same bytes in different slots do not
+    collide. A covered class with no payload attribute present reads as UNCOVERED: hashing an
+    empty stream would give every such weight one digest and a gate that passes any bytes."""
     names = _FINGERPRINT_PAYLOAD.get(type(tensor).__name__)
     if names is None:
         return False
@@ -546,12 +540,10 @@ def packed_weight_fingerprint(state_dict: Any, *, select: Any = None) -> dict:
 
     Written by the builder into ``metadata["fingerprint"]`` and recomputed by the loader, so a
     checkpoint corrupted between the two is refused instead of rendering. It hashes the QUANTIZED
-    bytes the tensor subclass carries, not the pickle, so it is stable across a re-save. Only
-    ``.weight`` entries count, and a ``.weight`` that is not a recognised quantized subclass is
-    recorded under ``skipped`` rather than raising.
-
-    ``select`` narrows WHICH fqns are hashed, so a partial verification pays for the weights it
-    actually compares instead of scanning every packed payload first.
+    bytes the subclass carries, not the pickle, so it is stable across a re-save. Only ``.weight``
+    entries count, and an unrecognised one is recorded under ``skipped`` rather than raising.
+    ``select`` narrows which fqns are hashed, so a partial verification pays only for what it
+    compares.
     """
     import hashlib
 
@@ -582,10 +574,10 @@ def packed_weight_fingerprint(state_dict: Any, *, select: Any = None) -> dict:
     }
 
 
-# How much of the fingerprint a load checks: ``full`` (default), ``sample``, or ``off`` for a bulk re-render on an artifact verified minutes ago.
+# Fingerprint check depth: ``full`` (default), ``sample``, or ``off`` for a just-verified artifact.
 FINGERPRINT_MODE_ENV = "UNSLOTH_PREQUANT_FINGERPRINT"
 FINGERPRINT_MODES = ("full", "sample", "off")
-# One fqn in eight under ``sample``: corruption touching a single weight is missed seven times in eight, which is why this is not the default.
+# One fqn in eight, so ``sample`` misses single-weight corruption 7 times in 8: not the default.
 FINGERPRINT_SAMPLE_RATE = 8
 
 
@@ -598,10 +590,9 @@ def _fingerprint_mode() -> str:
 
 
 def _fingerprint_sampled(fqn: str) -> bool:
-    """Whether ``sample`` mode checks this fqn: a stable 1-in-8 by md5 of the name.
-
-    md5 rather than ``hash()``, which PYTHONHASHSEED randomises per process: the subset has to be
-    the same on every load."""
+    """Whether ``sample`` mode checks this fqn: a stable 1-in-8 by md5 of the name. md5 rather
+    than ``hash()``, which PYTHONHASHSEED randomises per process, so the subset is the same on
+    every load."""
     import hashlib
     return hashlib.md5(fqn.encode("utf-8")).digest()[0] % FINGERPRINT_SAMPLE_RATE == 0
 
@@ -614,11 +605,10 @@ def _verify_packed_fingerprint(
 ) -> bool:
     """Recompute the packed-weight fingerprint and compare it with the one the artifact carries.
 
-    A flipped byte in a quantized weight renders plausible garbage rather than raising, and nothing
-    else on this path would notice, so a mismatch drops to the dense path. Soft where softness is
-    right: an artifact with no block, or a build that cannot compute the fingerprint at all (a
-    torchao rename), is accepted. A block this build CAN compute and that does not match is
-    refused."""
+    A flipped byte renders plausible garbage rather than raising and nothing else here would
+    notice, so a mismatch drops to the dense path. Soft where softness is right: no block, or a
+    build that cannot compute one at all (a torchao rename), is accepted; a block this build CAN
+    compute and that does not match is refused."""
     block = (metadata or {}).get("fingerprint")
     expected = (block or {}).get("modules") if isinstance(block, dict) else None
     if not expected:
@@ -631,7 +621,7 @@ def _verify_packed_fingerprint(
             )
         return True
     try:
-        # Sample mode hashes only the fqns it compares; that is what makes it cheap.
+        # Sample mode hashes only the fqns it compares, which is what makes it cheap.
         actual = (
             packed_weight_fingerprint(
                 state_dict,
@@ -814,29 +804,26 @@ def load_prequantized_transformer(
     lands under huggingface_hub's import-time constant, so a mid-session cache change re-downloads
     into a root Unsloth no longer reads.
 
-    ``component`` is which denoiser of the family this load is bringing up (a MoE video family's
-    ``transformer`` or ``transformer_2``), checked against the one the checkpoint records. Belt
-    and braces beside the per-component filename: the two experts share family, scheme, base and
-    key set, so a resolver that handed back the wrong artifact would pass every other check here.
+    ``component`` is which denoiser of the family this load brings up (``transformer`` or
+    ``transformer_2``), checked against the one the checkpoint records. Belt and braces beside the
+    per-component filename: the two experts share family, scheme, base and key set, so a resolver
+    handing back the wrong artifact would pass every other check here.
 
     ``config_subfolder`` is where the DENOISER CONFIG lives inside ``base``, defaulting to the
-    universal ``transformer``. A family hosting several denoiser partitions in one repo overrides it
-    with the one this checkpoint belongs to (MiniMax-H3's ``transformer_ref``): the scoped download
-    stages only that partition, so reading the config from the other one would send an otherwise
-    fully staged load back to the Hub.
+    universal ``transformer``. A family hosting several partitions in one repo overrides it with
+    this checkpoint's (MiniMax-H3's ``transformer_ref``): the scoped download stages only that
+    partition, so reading the other config sends an otherwise fully staged load back to the Hub.
 
-    ``prepare_model`` (optional) is called as ``prepare_model(transformer, metadata)`` on the
-    freshly built skeleton, AFTER ``from_config`` and BEFORE ``load_state_dict``. That window is the
-    only one where a family can reshape the module to match how the checkpoint was baked (a swapped
-    submodule, a patched attention class): earlier there is no module, and later ``strict=True`` has
-    already rejected the mismatch. It gets the checkpoint's own metadata so it can key on what was
-    baked rather than on today's defaults. A raising callback falls out to the outer handler below,
-    i.e. a warning and a dense fallback, never a failed load.
+    ``prepare_model`` (optional) runs as ``prepare_model(transformer, metadata)`` between
+    ``from_config`` and ``load_state_dict``, the only window where a family can reshape the module
+    to match how the checkpoint was baked (a swapped submodule, a patched attention class): earlier
+    there is no module, later ``strict=True`` has already rejected the mismatch. It gets the
+    checkpoint's own metadata so it can key on what was baked rather than on today's defaults, and
+    a raising callback falls out to a warning and a dense fallback, never a failed load.
 
-    A checkpoint that declares an ACTIVATION ROTATION (``diffusion_convrot``) has the matching
-    online half installed here, on exactly the fqns it records. That is unconditional and central
-    rather than a family opt-in, because the one failure mode worth designing against is the silent
-    one: rotated weights met by unrotated activations render wrong pixels and raise nothing.
+    A checkpoint declaring an ACTIVATION ROTATION (``diffusion_convrot``) gets the matching online
+    half installed here, on exactly the fqns it records, unconditionally rather than as a family
+    opt-in: rotated weights met by unrotated activations render wrong pixels and raise nothing.
 
     Returns the placed transformer, or None on any problem (missing / mismatched / unreadable
     checkpoint, unsupported meta-init, or a rotation this build cannot apply exactly) so the caller
@@ -879,7 +866,7 @@ def load_prequantized_transformer(
         ):
             return None
         state_dict = ckpt["state_dict"]
-        # The only check that reads what the artifact HOLDS rather than what it says: a checkpoint corrupted after it was built passes all the others.
+        # The only check reading what the artifact HOLDS: corruption after build passes the rest.
         if not _verify_packed_fingerprint(state_dict, ckpt.get("metadata") or {}, logger = logger):
             return None
         _pin_kernel_preference(state_dict, logger)
@@ -927,7 +914,8 @@ def load_prequantized_transformer(
 
         apply_activation_rotation(transformer, metadata, logger = logger)
 
-        # assign=True handed the module the checkpoint's tensors: a second reference keeps every CPU copy alive across to(device), doubling the transient peak on a unified-memory host.
+        # assign=True handed over the checkpoint's tensors, so a lingering reference keeps every CPU
+        # copy alive across to(device), doubling the transient peak on a unified-memory host.
         del state_dict
         del ckpt
 
@@ -939,7 +927,8 @@ def load_prequantized_transformer(
         from .diffusion_transformer_quant import apply_small_m_padding, apply_zero_row_guard
 
         apply_small_m_padding(transformer, scheme, metadata.get("family"), logger = logger)
-        # The other end of the range: an nvfp4 family whose attention trim can hand a quantized Linear an EMPTY activation, which torchao's whole-input activation scale cannot reduce over.
+        # Other end of the range: an nvfp4 attention trim can hand a quantized Linear an EMPTY
+        # activation, which torchao's whole-input activation scale cannot reduce over.
         apply_zero_row_guard(transformer, scheme, metadata.get("family"), logger = logger)
         # from_config starts in TRAIN mode while the dense/GGUF paths use from_pretrained (eval()'d). Match it so
         # train/eval-sensitive layers cannot make prequant inference diverge.
@@ -1209,10 +1198,10 @@ def _validate_checkpoint(
 ) -> bool:
     """Reject a checkpoint that is the wrong format / scheme / base model / filter / denoiser.
 
-    A different ``min_features`` or ``fast_accum`` quantises a different set of Linears or ignores
-    the caller's request, so assign=True would silently install a mismatched model; an absent field
-    predates it and is accepted. ``component`` tells a MoE family's two experts apart, which share
-    family, scheme, base and key set and so pass every other check on the wrong one."""
+    A different ``min_features`` or ``fast_accum`` quantises a different set of Linears, so
+    assign=True would silently install a mismatched model; an absent field predates it and is
+    accepted. ``component`` tells a MoE family's two experts apart, which share family, scheme,
+    base and key set and so pass every other check on the wrong one."""
     if not isinstance(ckpt, dict) or ckpt.get("format") not in PREQUANT_FORMATS:
         _warn(logger, scheme, ValueError("unrecognised pre-quant checkpoint format"))
         return False
@@ -1306,7 +1295,8 @@ def _validate_checkpoint(
                 ),
             )
             return False
-    # The GEMM tiling floor the filter was built with. A checkpoint baked before the builder passed it carries the ragged linears the runtime leaves dense: same scheme, different admitted set. Absent is accepted.
+    # The GEMM tiling floor the filter was built with: a checkpoint baked before the builder passed
+    # it carries ragged linears the runtime leaves dense. Absent is accepted.
     ckpt_divisible = meta.get("require_divisible")
     if ckpt_divisible is not None:
         from .diffusion_transformer_quant import divisible_for_scheme
