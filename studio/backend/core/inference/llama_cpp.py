@@ -11436,6 +11436,11 @@ class LlamaCppBackend:
             or any(source_env.get(name) for name in _FIT_CONTROL_ENV_VARS)
             # Extras are appended after the pin, while inherited values are overridden by it.
             or fit_is_enabled_in(extra_args)
+            # A pass-through adapter is resident on the base tensor's buffer
+            # (llama-adapter.cpp:335, :67) and neither the probe nor model_size carries it,
+            # and nothing on the Apple path charges it the way _fits_without_paging does
+            # off Metal. Spending the discount would hand that budget to the KV cache.
+            or _sidecar_adapter_paths(extra_args)
         ):
             return 0
         env_view = dict(source_env)

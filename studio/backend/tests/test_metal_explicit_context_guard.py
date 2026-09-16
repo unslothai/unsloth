@@ -1310,6 +1310,25 @@ class TestWhichLoadsLeaveTheEmbeddingsInTheMapping:
     def test_a_holding_per_model_mode_drops_it(self, monkeypatch, load_mode):
         assert self._bytes(monkeypatch, load_mode = load_mode) == 0
 
+    @pytest.mark.parametrize(
+        "extra_args",
+        [
+            ["--lora", "/a.gguf"],
+            ["--lora-scaled", "/a.gguf:0.5"],
+            ["--control-vector", "/v.gguf"],
+            ["--control-vector-scaled", "/v.gguf:0.5"],
+            ["--lora=/a.gguf"],
+        ],
+    )
+    def test_a_pass_through_adapter_drops_it(self, monkeypatch, extra_args):
+        """The probe loads the base GGUF alone, and no Apple term charges the adapter."""
+        assert self._bytes(monkeypatch, extra_args = extra_args) == 0
+
+    def test_the_adapter_gate_is_the_flag_set_the_other_consumers_price(self, monkeypatch):
+        from core.inference.llama_cpp import _SIDECAR_ADAPTER_FLAGS
+        for flag in _SIDECAR_ADAPTER_FLAGS:
+            assert self._bytes(monkeypatch, extra_args = [flag, "/a.gguf:0.5"]) == 0
+
     def test_keep_model_in_gpu_memory_drops_it(self, monkeypatch):
         assert self._bytes(monkeypatch, settings = (True, False)) == 0
 
