@@ -26374,6 +26374,18 @@ class LlamaCppBackend:
                                 _pin_ids,
                             )
                             _pin_ids = _inherited_order
+                            # The emitted fingerprint was recorded from the pre-rewrite
+                            # value, so /status would pair each share with the wrong
+                            # device and the repeat check would compare against a split
+                            # the child never ran.
+                            if "--tensor-split" in cmd and gpu_memory_mode != "manual":
+                                _rewritten = cmd[cmd.index("--tensor-split") + 1]
+                                try:
+                                    self._auto_tensor_split_emitted = self._auto_split_fingerprint(
+                                        [float(x) for x in str(_rewritten).split(",")]
+                                    )
+                                except (TypeError, ValueError):
+                                    self._auto_tensor_split_emitted = None
                     # Mask on AMD at the ROCr/HSA layer: HIP-only masking still
                     # enumerates every agent first, which segfaults on a deselected
                     # unsupported GPU (e.g. gfx1036 iGPU under a gfx103X prebuilt).

@@ -150,3 +150,26 @@ def test_the_authoritative_effective_pin_keeps_the_picked_order(monkeypatch, tmp
     backend._select_gpus = lambda *args, **kwargs: ([1, 0], False)
     _launch(backend, gguf, n_ctx = 4096, gpu_ids = [1, 0])
     assert backend._gpu_ids == [1, 0], f"the effective pin was re-sorted: {backend._gpu_ids}"
+
+
+def test_the_reported_split_follows_the_reorder(monkeypatch, tmp_path):
+    """/status serves the recorded emitted split, which was captured before the
+    reorder rewrote it, so each share was paired with the wrong visible device."""
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1,0")
+    monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = _TWO_GPUS)
+    backend._get_gguf_size_bytes = lambda _path: 14 * 1024**3
+    backend._select_gpus = lambda *args, **kwargs: ([0, 1], False)
+    # No explicit pick: in this branch an explicit pick outranks the inherited
+    # mask, so only an unpicked load reaches the mask reorder at all.
+    result = _launch(backend, gguf, n_ctx = 4096, tensor_parallel = True)
+    cmd = result["cmd"]
+    assert result["env"]["CUDA_VISIBLE_DEVICES"] == "1,0"
+    in_argv = [float(x) for x in cmd[cmd.index("--tensor-split") + 1].split(",")]
+    reported = backend.tensor_split
+    assert reported is not None, "no split reported at all; this would be vacuous"
+    assert [round(float(x), 3) for x in reported] == [
+        round(v / sum(in_argv), 3) for v in in_argv
+    ] or list(
+        reported
+    ) == in_argv, f"reported {reported} does not match the argv the child ran: {in_argv}"
