@@ -251,15 +251,18 @@ def test_the_win_arm64_floor_is_the_first_release_that_has_a_wheel(relpath, dist
     # scanned file's contents, so a dist recorded there has to be pinned exactly or the security
     # audit reds on whatever unrelated PR is open the day upstream publishes.
     wanted = {
-        f'{dist}>={floor}; {marker}',
-        f'{dist}=={floor}; {marker}',
+        f"{dist}>={floor}; {marker}",
+        f"{dist}=={floor}; {marker}",
     }
-    assert wanted & set(line.strip() for line in text.splitlines()), (
-        f"{relpath} no longer floors {dist} at {floor}"
-    )
+    assert wanted & set(
+        line.strip() for line in text.splitlines()
+    ), f"{relpath} no longer floors {dist} at {floor}"
     # And nothing else floors the same dist higher on that marker.
     for line in text.splitlines():
         line = line.strip()
-        if not line.startswith((f"{dist}>=", f"{dist}==")) or 'platform_machine == "ARM64"' not in line:
+        if (
+            not line.startswith((f"{dist}>=", f"{dist}=="))
+            or 'platform_machine == "ARM64"' not in line
+        ):
             continue
         assert line in wanted, f"{relpath}: a second ARM64 floor for {dist}: {line}"
