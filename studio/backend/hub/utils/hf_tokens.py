@@ -293,7 +293,7 @@ def cache_reads_authorized(
         return False
     verdict = _explicit_token_reaches_repo(repo, hf_token, repo_type, offline = offline)
     if verdict is None:
-        return _resolve_unaskable(repo, repo_type)
+        return _resolve_unaskable(repo, repo_type, token = hf_token)
     return verdict
 
 
@@ -317,7 +317,7 @@ def public_cache_read_authorized(
         return False
     verdict = _explicit_token_reaches_repo(repo, None, repo_type, offline = offline)
     if verdict is None:
-        return _resolve_unaskable(repo, repo_type)
+        return _resolve_unaskable(repo, repo_type, token = None)
     return verdict
 
 
@@ -364,20 +364,87 @@ def _is_local_path(repo_id: str) -> bool:
         return False
 
 
-def _resolve_unaskable(repo_id: str, repo_type: str) -> bool:
+def _ambient_hf_token() -> Optional[str]:
+    """The credential THIS HOST downloads with, or None when it has none.
+
+    ``huggingface_hub.get_token()`` is the authority: it is what every download in this
+    process resolves, so it covers the env aliases, the OIDC exchange and the token file
+    together, and asking it is the only way to be sure the answer matches what actually
+    populated the cache. The env keys are the fallback for a hub too old to export it.
+
+    Not memoized. It is read only inside the unaskable branch, an operator can revoke or
+    set a token at any moment, and a memo would decide authorization from a credential the
+    host no longer has.
+    """
+    try:
+        from huggingface_hub import get_token
+        token = get_token()
+        if isinstance(token, str) and token.strip():
+            return token.strip()
+    except Exception:
+        pass
+    import os
+    for key in _HF_TOKEN_ENV_KEYS:
+        if key == "HF_OIDC_RESOURCE":
+            # Names a token rather than holding one, so it cannot be compared to a caller's.
+            continue
+        value = os.environ.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _caller_populated_the_cache(token: Optional[str]) -> bool:
+    """Whether this caller's credential is the one this host's cache was filled with.
+
+    This is the whole safety of the unaskable fallback. "The repo is on this disk" is a
+    fact about the OPERATOR, not about the caller asking, so resolving an unanswerable
+    probe against disk presence for any caller at all hands a second principal the
+    operator's private downloads: a holder of a valid Studio API key with no permission to
+    that HF repo gets it the moment the Hub is offline, times out, 429s, 5xx's or sits
+    behind an ``HF_ENDPOINT`` mirror with no /auth-check route. So presence only decides the
+    question for a caller that could have produced it.
+
+    A caller with an explicit token qualifies when that token IS the host's ambient one:
+    the operator's own credential, the one the bytes were fetched with. Nothing is leaked
+    to it that it could not fetch from the Hub itself.
+
+    A caller with NO credential qualifies only when the host has no ambient credential
+    either. Then nothing in the cache can have been fetched under a credential this caller
+    lacks, so everything in it was public when it was downloaded. That is the ordinary
+    install: most hosts never configure an HF token, which is exactly the offline operator
+    this PR exists for. On a host that DOES hold a token, a credential-less caller is
+    refused, because a private repo could be sitting in that cache.
+
+    Compared with ``compare_digest`` rather than ``==``: the comparison is on a secret, and
+    an early-exit compare over a repeated request is a timing oracle for it.
+    """
+    ambient = _ambient_hf_token()
+    if token is None:
+        return ambient is None
+    if not isinstance(token, str) or not token or ambient is None:
+        return False
+    import hmac
+    return hmac.compare_digest(token, ambient)
+
+
+def _resolve_unaskable(repo_id: str, repo_type: str, *, token: Optional[str]) -> bool:
     """What an UNASKABLE Hub means for a cache read. Never called for an answered probe.
 
     The gate above guards one thing: reading the repo the operator already has on this host.
     So when huggingface.co cannot be reached at all, the question left over is entirely
-    local, and the local fact decides it.
+    local, and the local fact decides it -- BUT only for a caller that fact is about.
 
-    On disk -> authorized. The bytes are already here; the operator downloaded them, and
-    making "can I see my own downloaded model" contingent on a round trip to huggingface.co
-    is what broke offline hosts, air-gapped installs, Hub outages and ``HF_ENDPOINT`` mirrors
-    that never implemented the undocumented /auth-check route. Nothing new is fetched by
-    saying yes: the caller's own credential still authenticates every network read, so this
-    cannot lend it the operator's ambient token, and a repo NOT on disk still needs a real
-    probe before anything remote happens.
+    Not this caller's cache -> refused, whatever is on disk. See
+    ``_caller_populated_the_cache``: disk presence is a fact about the operator, and
+    letting it answer for a second principal is how "could not ask" becomes "here is the
+    operator's private repo".
+
+    This caller's cache, on disk -> authorized. The bytes are already here; the operator
+    downloaded them with this very credential, and making "can I see my own downloaded
+    model" contingent on a round trip to huggingface.co is what broke offline hosts,
+    air-gapped installs, Hub outages and ``HF_ENDPOINT`` mirrors that never implemented the
+    undocumented /auth-check route.
 
     Not on disk -> refused, which costs nothing (there is nothing cached to serve) and keeps
     the gate shut for a caller trying to make the backend go and fetch something.
@@ -386,6 +453,8 @@ def _resolve_unaskable(repo_id: str, repo_type: str) -> bool:
     online, an API key that cannot reach a private repo is still refused the operator's
     cached copy of it.
     """
+    if not _caller_populated_the_cache(token):
+        return False
     return _repo_present_on_disk(repo_id, repo_type)
 
 
