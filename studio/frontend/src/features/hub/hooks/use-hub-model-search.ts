@@ -25,7 +25,6 @@ import {
   type UnslothSupport,
   type UnslothSupportStatus,
   classifyUnslothSupport,
-  excludedFormatTagsForDevice,
 } from "../lib/unsloth-support";
 import { pullBatch, useHubPaginatedSearch } from "./use-hub-paginated-search";
 
@@ -163,7 +162,6 @@ function makeSortFetch(
 
 function makeMapModel(
   excludeGguf: boolean,
-  excludedTags: ReadonlySet<string>,
   keepUnsupportedTags: boolean,
   idSuffix: string,
   deviceType: string | null,
@@ -191,13 +189,6 @@ function makeMapModel(
       return null;
     }
     const isEmbedding = m.tags?.some((t) => EMBEDDING_TAGS.has(t));
-    if (
-      !keepUnsupportedTags &&
-      !isEmbedding &&
-      m.tags?.some((t) => excludedTags.has(t))
-    ) {
-      return null;
-    }
     // A repo cross-tagged "gguf" that is actually a diffusers pipeline (e.g. an unsloth *-bnb-4bit image model) ships no .gguf files, so the variant
     // expander would dead-end at "No GGUF variants found." Trust the bare tag only when the repo is not a pipeline; "-GGUF" and real metadata still win.
     const isDiffusersPipeline =
@@ -560,7 +551,6 @@ export async function fetchChannelFirstPage(
   } = options;
   const mapModel = makeMapModel(
     excludeGguf,
-    excludedFormatTagsForDevice(deviceType),
     keepUnsupportedTags,
     channel.idSuffix ?? "",
     deviceType,
@@ -766,19 +756,16 @@ export function useHubModelSearch(
   );
 
   const deviceType = usePlatformStore((s) => s.deviceType);
-  const excludedTags = excludedFormatTagsForDevice(deviceType);
   const mapModel = useMemo(
     () =>
       makeMapModel(
         excludeGguf,
-        excludedTags,
         keepUnsupportedTags,
         channelIdSuffix,
         deviceType,
       ),
     [
       excludeGguf,
-      excludedTags,
       keepUnsupportedTags,
       channelIdSuffix,
       deviceType,
