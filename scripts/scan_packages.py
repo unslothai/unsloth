@@ -2524,6 +2524,82 @@ def _norm_pkg(name: str) -> str:
     return re.sub(r"[-_.]+", "-", (name or "").strip().lower())
 
 
+# Packages this repo publishes. Their releases are cut from a tree we own and review
+# in its own repo, so an approval taken against one release is an approval of our own
+# code rather than of a third party's archive. That is what makes the coarser match
+# below defensible, and why this is a closed hard-coded set: a dependency cannot opt
+# itself into it by adding a field to the baseline JSON.
+_FIRST_PARTY_PACKAGES = frozenset({"unsloth", "unsloth-zoo"})
+
+# A baseline entry may ask to be keyed on (package, file, check) instead of on a hash
+# of the flagged code. It then suppresses THAT check on THAT file whatever the matched
+# lines say -- and only that one: a new file, or a second check on the same file, is
+# still reported, so the scanner keeps its job of noticing a new KIND of dangerous
+# code in first-party source.
+#
+# It exists because an evidence-keyed approval is only stable when the archive is. The
+# first-party packages float (`unsloth_zoo>=X` resolves to whatever was published most
+# recently), and the files that carry these findings are the ones that change on every
+# release: unsloth_zoo/compiler.py and unsloth_zoo/mlx/loader.py were touched by 21 of
+# the 252 commits between 2026-08-01 and 2026-09-16, i.e. by essentially every one of
+# the 20 releases in that window. So the entry reopened on RELEASE DAY rather than on
+# anything anyone here changed, and the gate went red on main, on the nightly, and on
+# every PR that trips the workflow's path filter. Regenerating is not a fix for that,
+# it is the treadmill: see the six baseline commits between 2026-07-26 and 2026-09-12,
+# three of which name unsloth-zoo.
+#
+# Restricted to findings whose danger IS the file's purpose, not its details:
+# compiler.py exec()s the forward methods it generates, that is the module, and
+# mlx/loader.py's "eval" evidence is mx.eval, MLX's lazy-array evaluation, which is not
+# Python eval at all. An entry whose danger sits OUTSIDE the matched lines -- a
+# credential send records the urlopen call and not its destination -- must keep its
+# evidence key and its file_sha256 pin, and unsloth_zoo/vision_utils.py and
+# unsloth_zoo/hf_xet_health.py still do.
+_MATCH_FILE_RULE = "package+file+check"
+
+# What a coarse entry still pins: the VOCABULARY of dangerous constructs in the flagged
+# code, not the code. A release that adds another `exec(f"{model}.forward = forward")`
+# to compiler.py adds no new construct and rides the entry. A release that adds
+# `exec(marshal.loads(zlib.decompress(base64.b64decode(...))))` to the same file under
+# the same check brings three constructs the approval never covered, so it reopens --
+# which is the one thing a bare (package, file, check) key would have let through.
+#
+# Deliberately narrow, and deliberately about deserialisation / dynamic execution /
+# process / socket rather than about anything a refactor picks up. Every token here has
+# to be something an attacker needs and our own code does not casually acquire inside a
+# line that is ALREADY flagged; a wider vocabulary buys nothing and re-imports churn.
+# Not re.DOTALL, unlike RE_OBFUSCATION: this runs over concatenated evidence spans, and
+# a greedy cross-span match there would be a token nobody wrote.
+_RE_ESCALATION_TOKEN = re.compile(
+    r"\bmarshal\s*\.\s*loads?\b"
+    r"|\bpickle\s*\.\s*loads?\b"
+    r"|\b(?:zlib|lzma|bz2|gzip)\s*\.\s*decompress\b"
+    r"|\bbase64\s*\.\s*\w+"
+    r"|\b(?:b64decode|b85decode|b32decode|a85decode|decodebytes)\s*\("
+    r"|\bbinascii\s*\.\s*\w+"
+    r"|\bcodecs\s*\.\s*decode\b"
+    r"|\bfromhex\s*\("
+    r"|\bbytearray\s*\(\s*\["
+    r"|\bcompile\s*\("
+    r"|\b__import__\s*\("
+    r"|\bgetattr\s*\(\s*__builtins__"
+    r"|\b(?:exec|eval)\s*\("
+    r"|\b(?:urlopen|urlretrieve)\s*\("
+    r"|\bsubprocess\s*\.\s*\w+"
+    r"|\bos\s*\.\s*(?:system|popen|exec\w*|spawn\w*)\b"
+    r"|\bsocket\s*\.\s*\w+"
+    r"|\bctypes\s*\.\s*\w+"
+)
+
+
+def _escalation_tokens(evidence: str) -> "set[str]":
+    """The dangerous constructs the flagged code uses, spelling-normalised. Run over the canonical evidence, so an ``L<NN>:`` marker and a line shift are already gone and only the code is read."""
+    return {
+        re.sub(r"\s+", "", m.group(0)).lower()
+        for m in _RE_ESCALATION_TOKEN.finditer(_canon_evidence(evidence))
+    }
+
+
 # Leading "<name>-<version>/" archive root of an sdist member, which carries the version. Stripping it while keeping the rest of the path gives a key stable across version bumps that still distinguishes same-named files.
 _RE_SDIST_ROOT = re.compile(r"^[^/]+-\d[^/]*/")
 
@@ -2563,8 +2639,13 @@ def _finding_key(f: Finding) -> tuple[str, str, str, str]:
     )
 
 
+def _coarse_key(package: str, filename: str, check: str) -> tuple[str, str, str, str]:
+    """The (package, file, check) key a ``match = package+file+check`` entry registers. The empty string sits where an evidence hash would: a real hash is 64 hex characters, so the two key spaces cannot collide and one dict still holds both."""
+    return (_norm_pkg(package), _relpath_in_package(filename), check, "")
+
+
 def _load_baseline(path: str) -> "dict[tuple[str, str, str, str], set[str] | None]":
-    """Load an allowlist JSON into {match key: pinned file digests}. None means unpinned: the key alone suppresses. A set of digests covers only those exact file contents, so any other edit to the file reopens the finding, which matters for files whose danger sits outside the matched lines."""
+    """Load an allowlist JSON into {match key: pinned file digests}. None means unpinned: the key alone suppresses. A set of digests covers only those exact file contents, so any other edit to the file reopens the finding, which matters for files whose danger sits outside the matched lines. An entry carrying ``match = package+file+check`` registers the coarse key instead, and only a first-party package may: see _MATCH_FILE_RULE."""
     try:
         with open(path, "r", encoding = "utf-8") as fh:
             data = json.load(fh)
@@ -2585,6 +2666,28 @@ def _load_baseline(path: str) -> "dict[tuple[str, str, str, str], set[str] | Non
     for e in entries:
         if not isinstance(e, dict):
             continue
+        # Fail CLOSED on anything unrecognised here: an unknown or ineligible `match`
+        # falls back to the evidence key, which suppresses strictly less. Silently
+        # honouring it would let a typo, or a third-party entry, widen an approval.
+        match = e.get("match")
+        if match is not None and match != _MATCH_FILE_RULE:
+            print(
+                f"  [WARN] baseline {path}: entry for {e.get('package')!r} carries an "
+                f"unknown match {match!r}; keyed on its evidence instead",
+                file = sys.stderr,
+            )
+            match = None
+        if (
+            match == _MATCH_FILE_RULE
+            and _norm_pkg(e.get("package") or "") not in _FIRST_PARTY_PACKAGES
+        ):
+            print(
+                f"  [WARN] baseline {path}: {e.get('package')!r} is not a first-party "
+                f"package, so match={_MATCH_FILE_RULE!r} on {e.get('file')!r} is "
+                f"refused and the entry is keyed on its evidence instead",
+                file = sys.stderr,
+            )
+            match = None
         try:
             evidence_hash = e.get("evidence_hash") or _evidence_hash(e.get("evidence") or "")
             if not e.get("evidence_hash"):
@@ -2593,9 +2696,22 @@ def _load_baseline(path: str) -> "dict[tuple[str, str, str, str], set[str] | Non
                 _norm_pkg(e["package"]),
                 _relpath_in_package(e["file"]),
                 e["check"],
-                evidence_hash,
+                "" if match == _MATCH_FILE_RULE else evidence_hash,
             )
         except (KeyError, TypeError):
+            continue
+        if match == _MATCH_FILE_RULE:
+            # A coarse key's value is the approved escalation vocabulary, not a set of
+            # file digests: pinning a file whose bytes this repo does not choose is the
+            # failure being fixed, so a stray file_sha256 on one is ignored rather than
+            # honoured into a guaranteed reopen. Recorded tokens are trusted over
+            # recomputed ones only where they are a SUBSET, so an entry cannot widen
+            # itself by listing a vocabulary its own evidence does not show.
+            recorded = e.get("evidence_tokens")
+            tokens = _escalation_tokens(e.get("evidence") or "")
+            if isinstance(recorded, list):
+                tokens &= {str(t) for t in recorded}
+            keys[key] = tokens
             continue
         # None = unpinned (key alone suppresses). A set = only those file digests. An unpinned entry wins, since it already suppresses the key on its own.
         pin = e.get("file_sha256")
@@ -2615,17 +2731,51 @@ def _load_baseline(path: str) -> "dict[tuple[str, str, str, str], set[str] | Non
     return keys
 
 
+def _file_rule_entries(path: str) -> "dict[tuple[str, str, str, str], dict]":
+    """Reviewed ``match = package+file+check`` entries from `path`, by coarse key. `--write-baseline` carries these through verbatim rather than re-deriving them: they approve a file and a check, so rewriting their evidence to whatever the release in hand happens to show would churn the baseline on every regeneration for no review value -- which is the churn this match exists to stop."""
+    try:
+        with open(path, "r", encoding = "utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    out: dict[tuple[str, str, str, str], dict] = {}
+    for e in data.get("entries") or []:
+        if not isinstance(e, dict) or e.get("match") != _MATCH_FILE_RULE:
+            continue
+        if _norm_pkg(e.get("package") or "") not in _FIRST_PARTY_PACKAGES:
+            continue
+        try:
+            out[_coarse_key(e["package"], e["file"], e["check"])] = e
+        except (KeyError, TypeError):
+            continue
+    return out
+
+
 def _write_baseline(
     path: str,
     findings: list[Finding],
     source: "str | None" = None,
 ) -> None:
-    """Persist CRITICAL/HIGH findings as an allowlist for human triage. Pins are carried over from `source`, the baseline in effect for this run, so regenerating cannot silently widen a reviewed entry; reading them from `path` instead would drop every pin whenever the output goes somewhere new."""
-    pinned = {k for k, v in _load_baseline(source or path).items() if v is not None}
+    """Persist CRITICAL/HIGH findings as an allowlist for human triage. Pins and ``match = package+file+check`` approvals are carried over from `source`, the baseline in effect for this run, so regenerating cannot silently widen OR narrow a reviewed entry; reading them from `path` instead would drop every one whenever the output goes somewhere new."""
+    # A coarse key's value is its approved vocabulary, never a digest set, so it is
+    # excluded here rather than read as "pinned" and handed a file_sha256 it ignores.
+    pinned = {k for k, v in _load_baseline(source or path).items() if v is not None and k[3]}
+    reviewed_file_rules = _file_rule_entries(source or path)
     entries = []
     seen: set[tuple[str, str, str, str]] = set()
     for f in sorted(findings, key = lambda f: SEVERITY_ORDER.get(f.severity, 99)):
         if f.severity not in (CRITICAL, HIGH):
+            continue
+        coarse = _coarse_key(f.package, f.filename, f.check)
+        if coarse in reviewed_file_rules:
+            # One entry per (package, file, check), not one per revision of the
+            # matched lines a release has shipped. compiler.py had collected five.
+            if coarse in seen:
+                continue
+            seen.add(coarse)
+            entries.append(dict(reviewed_file_rules[coarse]))
             continue
         key = _finding_key(f)
         if key in seen:
@@ -2651,6 +2801,14 @@ def _write_baseline(
             "reopen an entry but changed code does. An optional file_sha256 pins an "
             "entry to that exact file, for danger sitting outside the matched lines "
             "(a credential send records the urlopen call, not its destination). "
+            'A first-party entry may instead say match = "package+file+check", which '
+            "keys it on the file and the check alone: for a package we publish and "
+            "whose version floats, an evidence key reopens on release day rather than "
+            "on any change made here. It suppresses only that check on that file, and "
+            "only while the flagged code uses no dangerous construct outside "
+            "evidence_tokens (the approved vocabulary): a new file, a new check on the "
+            "same file, or a marshal/zlib/base64/subprocess/socket construct the "
+            "approval never covered, is still reported. "
             "severity and evidence are for review only. Regenerate with "
             "--write-baseline AFTER reviewing every line."
         ),
@@ -2677,6 +2835,17 @@ def _partition_baseline(
             pins = baseline[key]
             # A pinned entry only covers the file it was reviewed against.
             hit = pins is None or f.file_sha256 in pins
+        if not hit and _norm_pkg(f.package) in _FIRST_PARTY_PACKAGES:
+            # A reviewed (package, file, check) approval. Deliberately checked AFTER
+            # the exact key, so it can only ever widen an approval a reviewer already
+            # wrote, and only for this one check on this one file: a new first-party
+            # file, or a new check firing on an approved one, misses both keys and
+            # stays active. Within the file and the check, the flagged code may change
+            # freely as long as it uses no dangerous construct the approval did not
+            # already cover.
+            coarse = _coarse_key(f.package, f.filename, f.check)
+            approved = baseline.get(coarse)
+            hit = approved is not None and _escalation_tokens(f.evidence) <= approved
         (suppressed if hit else active).append(f)
     return active, suppressed
 

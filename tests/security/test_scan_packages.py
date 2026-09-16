@@ -472,19 +472,26 @@ def test_annotation_only_network_entries_are_digest_pinned():
 def test_context_dependent_unsloth_zoo_findings_are_digest_pinned():
     """Require a new review when context around an approved finding changes.
 
-    These three findings sit in files whose matched lines are benign on their own,
-    so the approval has to be for the file as it was reviewed, not for the lines.
+    These findings sit in files whose matched lines are benign on their own, so the
+    approval has to be for the file as it was reviewed, not for the lines.
     `_partition_baseline` gives that: an entry carrying `file_sha256` only suppresses
     while the file still hashes to a pinned value, so any edit reopens it. What this
-    guards is that each of the three keeps a pinned approval -- dropping the pin
-    turns it into a line-matched approval that a later payload in the same file
-    would ride.
+    guards is that each keeps a pinned approval -- dropping the pin turns it into a
+    line-matched approval that a later payload in the same file would ride.
 
-    A (file, check) pair can hold several entries, one per revision of the matched
-    lines that a release has shipped. compiler.py already carries four. Three of them
-    are superseded and unpinned, and those are grandfathered by evidence hash below;
-    any variant added from here on has to be pinned, because an unpinned one
-    suppresses the finding whatever the file contains.
+    unsloth_zoo/compiler.py used to be in here and is not any more, because a pin is
+    only meaningful when this repo chooses the bytes. `unsloth_zoo>=X` resolves to
+    whatever was published most recently, compiler.py and mlx/loader.py are touched by
+    essentially every zoo release, and a pin on a file that moves on release day is a
+    scheduled red, not a review: the audit went red on main, on the nightly and on
+    every path-filtered PR from 2026-09-16T15:22Z, when 2026.9.4 landed, with 62
+    changed lines in compiler.py of which the only one mentioning exec was a COMMENT
+    and 499 changed lines in mlx/loader.py of which none touched exec/eval/__import__.
+    Those three now carry match = "package+file+check" instead, asserted below.
+
+    The two that remain are pinned because their danger really does sit outside the
+    matched lines, and their files barely move: vision_utils.py took 2 of the 252
+    commits in that same window, hf_xet_health.py took 1.
 
     It used to also duplicate each approved digest as a literal here, which pinned
     nothing extra (whoever edits the baseline can edit this file in the same commit)
@@ -508,25 +515,6 @@ def test_context_dependent_unsloth_zoo_findings_are_digest_pinned():
             "unsloth_zoo/vision_utils.py",
             "Accesses cloud metadata/IMDS AND makes network calls",
         ),
-        (
-            "unsloth_zoo/compiler.py",
-            "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
-        ),
-    }
-    # The evidence hashes of the superseded compiler.py variants, which are already
-    # in the baseline unpinned. These are frozen by construction: an evidence hash is
-    # over code a past zoo release shipped, so unlike the live digest it can never
-    # move, and listing them here brings back no drift. They are grandfathered rather
-    # than pinned because pinning them would be pinning a file no installed zoo has.
-    #
-    # Everything else has to be pinned. `_load_baseline` keys each variant on its own
-    # evidence_hash and maps an unpinned one to None, i.e. suppress for any file
-    # contents, so appending a new unpinned variant for one of these pairs would
-    # silence the finding entirely while an older pinned variant kept this test green.
-    GRANDFATHERED_UNPINNED = {
-        "ec1875fd32d00fe885e566ebda75163e46e838ca31020abb57e0991892c2bdf7",
-        "d8dabff7099fd84e1276c932c7bb70ba273333e5708eb149fec6a6130856085d",
-        "610993c0b6f612bbbf2fa0b593591375e7b20cb5c9b516ea60b6c44a8b9430e9",
     }
     pinned = set()
     for entry in entries:
@@ -534,21 +522,321 @@ def test_context_dependent_unsloth_zoo_findings_are_digest_pinned():
         if entry.get("package") != "unsloth-zoo" or key not in must_be_pinned:
             continue
         digest = entry.get("file_sha256")
-        if isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest):
-            pinned.add(key)
-            continue
-        assert entry.get("evidence_hash") in GRANDFATHERED_UNPINNED, (
-            f"{key[0]} has a new unpinned entry for {key[1]!r} "
-            f"(evidence_hash {entry.get('evidence_hash')!r}). An unpinned variant "
-            f"suppresses that finding whatever the file contains, so a re-approval "
-            f"has to carry file_sha256 rather than ride the evidence alone."
+        assert isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest), (
+            f"{key[0]} has an entry for {key[1]!r} with no reviewed file digest, so it "
+            f"is approved on evidence that a later payload can leave unchanged."
         )
+        assert entry.get("match") is None, (
+            f"{key[0]} asks to be matched on (package, file, check) for {key[1]!r}, "
+            f"but its danger is the destination of a call and not the call, which is "
+            f"outside the matched lines and outside the file+check key too."
+        )
+        pinned.add(key)
     for key in sorted(must_be_pinned - pinned):
         raise AssertionError(
-            f"{key[0]} is baselined for {key[1]!r} with no reviewed file digest, so "
-            f"it is approved on evidence that a later payload can leave unchanged. "
-            f"Re-approve it with --write-baseline and keep the file_sha256 pin."
+            f"{key[0]} is no longer baselined for {key[1]!r}. If the finding really "
+            f"went away, delete it from must_be_pinned in the same commit; do not "
+            f"leave the guard vacuous."
         )
+
+
+def test_the_high_churn_unsloth_zoo_entries_are_keyed_on_file_and_check():
+    """The other half of the contract above, and the fix for the release-day red.
+
+    Each of these three is exactly one entry, carries match = "package+file+check",
+    and carries no file_sha256. One entry: the evidence-keyed form accumulated one per
+    revision of the matched lines that a release had shipped, and compiler.py had
+    reached five. No pin: `_load_baseline` ignores a pin on a coarse entry, so leaving
+    one there would read as a narrower approval than the baseline grants.
+    """
+    import json
+    import pathlib
+
+    path = pathlib.Path(__file__).resolve().parents[2] / "scripts" / "scan_packages_baseline.json"
+    entries = json.loads(path.read_text(encoding = "utf-8"))["entries"]
+    check = "Advanced obfuscation (marshal/compile/zlib) + exec/eval"
+    expected = {
+        "unsloth_zoo/compiler.py",
+        "unsloth_zoo/mlx/loader.py",
+        "unsloth_zoo/saving_utils.py",
+    }
+    found = [
+        e
+        for e in entries
+        if e.get("package") == "unsloth-zoo"
+        and e.get("check") == check
+        and e.get("file") in expected
+    ]
+    assert {e["file"] for e in found} == expected, sorted(e["file"] for e in found)
+    assert len(found) == len(expected), (
+        "one entry per (file, check): a coarse approval already covers every revision "
+        f"of the matched lines, so a second is dead weight; got {len(found)}"
+    )
+    for e in found:
+        assert e.get("match") == sp._MATCH_FILE_RULE, e["file"]
+        assert "file_sha256" not in e, (
+            f"{e['file']} carries a pin on a coarse entry; the loader ignores it, so it "
+            f"reads as a review that is not in force"
+        )
+        # The approved vocabulary has to be there, has to be what the evidence beside
+        # it actually shows, and must not have grown past the dynamic-execution family
+        # these three were approved for. A blank list here would be a blanket approval
+        # of the file wearing the shape of a narrow one.
+        tokens = e.get("evidence_tokens")
+        assert tokens, f"{e['file']} has no evidence_tokens"
+        assert sorted(tokens) == sorted(
+            sp._escalation_tokens(e["evidence"])
+        ), f"{e['file']}: evidence_tokens disagrees with the evidence beside it"
+        assert set(tokens) <= {"exec(", "eval(", "__import__(", "compile("}, (
+            f"{e['file']} was approved for generating and importing code. "
+            f"{sorted(set(tokens) - {'exec(', 'eval(', '__import__(', 'compile('})} is "
+            f"deserialisation, decoding, process or socket work and needs its own review."
+        )
+
+
+def test_the_coarse_key_reopens_on_a_construct_the_approval_never_covered():
+    """The half a bare (package, file, check) key would have lost.
+
+    Driven through the SHIPPED baseline, not a synthetic one, so it fails if the
+    committed entry is ever widened. Adding another `exec(f"...")` to compiler.py is
+    invisible; wrapping one in marshal/zlib/base64 is not.
+    """
+    import json
+    import pathlib
+
+    path = pathlib.Path(__file__).resolve().parents[2] / "scripts" / "scan_packages_baseline.json"
+    baseline = sp._load_baseline(str(path))
+    check = "Advanced obfuscation (marshal/compile/zlib) + exec/eval"
+
+    benign = _mk(
+        "HIGH",
+        "unsloth-zoo",
+        "unsloth_zoo/compiler.py",
+        check,
+        'Obfusc: L1: _m = __import__(loc)\nExec: L2: exec(f"{loc}.{mod}.forward = fwd") | L3: eval(f"{loc}.{mod}")',
+    )
+    payload = _mk(
+        "HIGH",
+        "unsloth-zoo",
+        "unsloth_zoo/compiler.py",
+        check,
+        "Obfusc: L1: _m = __import__(loc)\nExec: L2: exec(marshal.loads(zlib.decompress(base64.b64decode(blob))))",
+    )
+    active, suppressed = sp._partition_baseline([benign, payload], baseline)
+    assert suppressed == [benign]
+    assert active == [
+        payload
+    ], "a marshal/zlib/base64 payload inside an approved file rode the approval"
+
+
+def test_a_coarse_entry_cannot_widen_itself_past_its_own_evidence():
+    """`evidence_tokens` is intersected with what the evidence shows, never trusted over
+    it, so hand-adding `subprocess.run` to the list approves nothing."""
+    import json
+
+    check = "Advanced obfuscation (marshal/compile/zlib) + exec/eval"
+    evidence = "Exec: L1: exec(payload)"
+    entry = dict(
+        package = "unsloth-zoo",
+        file = "unsloth_zoo/compiler.py",
+        check = check,
+        severity = "HIGH",
+        match = sp._MATCH_FILE_RULE,
+        evidence = evidence,
+        evidence_hash = sp._evidence_hash(evidence),
+        evidence_tokens = ["exec(", "subprocess.run", "marshal.loads"],
+    )
+    import tempfile, pathlib
+
+    with tempfile.TemporaryDirectory() as td:
+        path = pathlib.Path(td) / "baseline.json"
+        path.write_text(json.dumps({"version": 1, "entries": [entry]}))
+        baseline = sp._load_baseline(str(path))
+    assert baseline[sp._coarse_key("unsloth-zoo", "unsloth_zoo/compiler.py", check)] == {"exec("}
+
+    widened = _mk(
+        "HIGH",
+        "unsloth-zoo",
+        "unsloth_zoo/compiler.py",
+        check,
+        "Exec: L1: exec(x) | L2: subprocess.run(cmd)",
+    )
+    assert sp._partition_baseline([widened], baseline) == ([widened], [])
+
+
+def test_only_first_party_packages_may_ask_for_the_coarse_key():
+    """The set is closed in the scanner, and nothing in the shipped baseline is outside it.
+
+    Two halves, because either alone is bypassable. The loader refuses the flag for a
+    package outside `_FIRST_PARTY_PACKAGES` and falls back to the evidence key, which
+    suppresses strictly less; and the shipped file is checked so a third-party entry
+    cannot sit there quietly relying on a warning nobody reads.
+    """
+    import json
+    import pathlib
+
+    assert sp._FIRST_PARTY_PACKAGES == frozenset({"unsloth", "unsloth-zoo"})
+
+    path = pathlib.Path(__file__).resolve().parents[2] / "scripts" / "scan_packages_baseline.json"
+    entries = json.loads(path.read_text(encoding = "utf-8"))["entries"]
+    stray = sorted(
+        {
+            e.get("package")
+            for e in entries
+            if e.get("match") is not None
+            and sp._norm_pkg(e.get("package") or "") not in sp._FIRST_PARTY_PACKAGES
+        }
+    )
+    assert not stray, f"third-party entries asking for the coarse key: {stray}"
+
+
+def test_a_third_party_coarse_entry_is_refused_and_falls_back(tmp_path, capsys):
+    """A dependency cannot widen its own approval by adding the field."""
+    import json
+
+    evidence = "L1: exec(payload)"
+    entry = dict(
+        package = "requests",
+        file = "requests/api.py",
+        check = "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+        severity = "HIGH",
+        match = sp._MATCH_FILE_RULE,
+        evidence = evidence,
+        evidence_hash = sp._evidence_hash(evidence),
+    )
+    path = tmp_path / "baseline.json"
+    path.write_text(json.dumps({"version": 1, "entries": [entry]}))
+    baseline = sp._load_baseline(str(path))
+    assert list(baseline) == [
+        ("requests", "requests/api.py", entry["check"], sp._evidence_hash(evidence))
+    ], "the flag was honoured for a third party"
+    assert "not a first-party package" in capsys.readouterr().err
+
+    same = _mk("HIGH", "requests", "requests/api.py", entry["check"], evidence)
+    changed = _mk("HIGH", "requests", "requests/api.py", entry["check"], "L1: exec(other)")
+    assert sp._partition_baseline([same], baseline) == ([], [same])
+    assert sp._partition_baseline([changed], baseline) == ([changed], [])
+
+
+def test_an_unknown_match_value_falls_back_to_the_evidence_key(tmp_path, capsys):
+    """A typo must not silently become a blanket approval."""
+    import json
+
+    evidence = "L1: exec(payload)"
+    path = tmp_path / "baseline.json"
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "entries": [
+                    dict(
+                        package = "unsloth-zoo",
+                        file = "unsloth_zoo/compiler.py",
+                        check = "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+                        severity = "HIGH",
+                        match = "package+file",
+                        evidence = evidence,
+                        evidence_hash = sp._evidence_hash(evidence),
+                    )
+                ],
+            }
+        )
+    )
+    baseline = sp._load_baseline(str(path))
+    assert "" not in {key[3] for key in baseline}, "an unknown match registered a coarse key"
+    assert "unknown match" in capsys.readouterr().err
+
+
+def test_the_coarse_key_survives_churn_but_not_a_new_file_or_a_new_check(tmp_path):
+    """What the coarse key buys, and what it deliberately does not.
+
+    Same file, same check, completely different matched lines: suppressed, which is
+    the release-day red going away. A different first-party FILE under the same check,
+    or a different CHECK on the approved file: both active, which is the scanner still
+    doing its job on a new kind of dangerous code.
+    """
+    import json
+
+    check = "Advanced obfuscation (marshal/compile/zlib) + exec/eval"
+    reviewed = 'L10: exec(f"{model_location}.{module}.forward = forward")'
+    path = tmp_path / "baseline.json"
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "entries": [
+                    dict(
+                        package = "unsloth-zoo",
+                        file = "unsloth_zoo/compiler.py",
+                        check = check,
+                        severity = "HIGH",
+                        match = sp._MATCH_FILE_RULE,
+                        evidence = reviewed,
+                        evidence_hash = sp._evidence_hash(reviewed),
+                    )
+                ],
+            }
+        )
+    )
+    baseline = sp._load_baseline(str(path))
+
+    churned = _mk(
+        "HIGH", "unsloth-zoo", "unsloth_zoo/compiler.py", check, "L9999: exec(something_else)"
+    )
+    churned.file_sha256 = "f" * 64
+    new_file = _mk("HIGH", "unsloth-zoo", "unsloth_zoo/backdoor.py", check, reviewed)
+    new_check = _mk(
+        "CRITICAL",
+        "unsloth-zoo",
+        "unsloth_zoo/compiler.py",
+        "Harvests environment variables/secrets AND makes network calls",
+        reviewed,
+    )
+    # An sdist member carries the version in its archive root; the coarse key strips it.
+    sdist = _mk(
+        "HIGH", "unsloth-zoo", "unsloth_zoo-2026.9.4/unsloth_zoo/compiler.py", check, "L1: exec(x)"
+    )
+
+    active, suppressed = sp._partition_baseline([churned, new_file, new_check, sdist], baseline)
+    assert suppressed == [churned, sdist]
+    assert active == [new_file, new_check]
+
+
+def test_write_baseline_carries_a_coarse_entry_through_verbatim(tmp_path):
+    """Regenerating must neither re-derive nor duplicate a coarse approval.
+
+    Re-deriving would rewrite its evidence to whatever release is in hand, which is
+    the churn the match exists to stop; duplicating is how compiler.py reached five
+    entries for one (file, check).
+    """
+    import json
+
+    check = "Advanced obfuscation (marshal/compile/zlib) + exec/eval"
+    reviewed = "L10: exec(reviewed)"
+    entry = dict(
+        package = "unsloth-zoo",
+        file = "unsloth_zoo/compiler.py",
+        check = check,
+        severity = "HIGH",
+        match = sp._MATCH_FILE_RULE,
+        evidence = reviewed,
+        evidence_hash = sp._evidence_hash(reviewed),
+    )
+    source = tmp_path / "source.json"
+    source.write_text(json.dumps({"version": 1, "entries": [entry]}))
+
+    a = _mk("HIGH", "unsloth-zoo", "unsloth_zoo/compiler.py", check, "L1: exec(now)")
+    b = _mk(
+        "HIGH",
+        "unsloth-zoo",
+        "unsloth_zoo-2026.9.4/unsloth_zoo/compiler.py",
+        check,
+        "L2: exec(later)",
+    )
+    out = tmp_path / "out.json"
+    sp._write_baseline(str(out), [a, b], source = str(source))
+    written = json.loads(out.read_text())["entries"]
+    assert written == [entry], written
 
 
 def test_context_dependent_unsloth_zoo_pins_reopen_on_other_file_changes():
@@ -562,21 +850,19 @@ def test_context_dependent_unsloth_zoo_pins_reopen_on_other_file_changes():
         entry
         for entry in entries
         if entry.get("package") == "unsloth-zoo"
-        and entry.get("file") in {"unsloth_zoo/vision_utils.py", "unsloth_zoo/compiler.py"}
+        and entry.get("file") == "unsloth_zoo/vision_utils.py"
         and entry.get("file_sha256")
     ]
-    # Three (file, check) pairs are pinned; a re-approval may append a revision
-    # rather than replace one, so count the pairs covered, not the entries. An
-    # exact entry count here would go red the first time a zoo release is
-    # approved by appending, which is the shape the torch and huggingface-hub
-    # entries in this baseline already have.
+    # A re-approval may append a revision rather than replace one, so count the
+    # (file, check) pairs covered, not the entries. An exact entry count here would go
+    # red the first time a zoo release is approved by appending, which is the shape the
+    # torch and huggingface-hub entries in this baseline already have.
     assert {(e["file"], e["check"]) for e in targets} == {
         (
             "unsloth_zoo/vision_utils.py",
             "Harvests environment variables/secrets AND makes network calls",
         ),
         ("unsloth_zoo/vision_utils.py", "Accesses cloud metadata/IMDS AND makes network calls"),
-        ("unsloth_zoo/compiler.py", "Advanced obfuscation (marshal/compile/zlib) + exec/eval"),
     }
     baseline = sp._load_baseline(str(path))
     for entry in targets:
