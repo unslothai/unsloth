@@ -593,6 +593,10 @@ def get_backend_status(*, force_refresh: bool = False) -> dict:
     }
     if unsupported is not None:
         return status
+    if update_checks_disabled():
+        status["supported"] = False
+        status["reason"] = "update_checks_disabled"
+        return status
     if job["state"] == _JOB_RUNNING:
         return status
     repo = (marker or {}).get("published_repo") or DEFAULT_PUBLISHED_REPO
