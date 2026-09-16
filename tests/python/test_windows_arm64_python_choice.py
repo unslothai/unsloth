@@ -104,7 +104,9 @@ function Get-PythonPlatformTag {{
     param([string]$Exe)
     foreach ($i in $Interpreters) {{
         if ($i.Name -eq $Exe) {{
-            if ($i.Arch -eq "x86_64") {{ return "win-amd64" }} else {{ return "win-arm64" }}
+            if ($i.Arch -eq "x86_64") {{ return "win-amd64" }}
+            elseif ($i.Arch -eq "arm64") {{ return "win-arm64" }}
+            else {{ return $i.Arch }}
         }}
     }}
     return "win-amd64"
@@ -123,6 +125,67 @@ if ($found -and $found.Arch -ne "x86_64") {{
 }}
 if ($found) {{ Write-Output "$($found.Version)|$($found.Arch)" }} else {{ Write-Output "none" }}
 """
+
+
+def _opt_out_script(installed: list[tuple[str, str]], can_download: bool) -> str:
+    """The same fakes, but ending in the REAL swap resolver rather than a condensed one.
+
+    UNSLOTH_ALLOW_ARM64_PYTHON is read in two places -- the selection and the swap after it
+    -- and the cases below are about both, so the swap cannot be a paraphrase here.
+    """
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    resolver = _extract(
+        r"    function Resolve-WindowsOnArmX64Python \{.*?\n    \}\n", source
+    )
+    base = _resolver_script(installed, can_download)
+    tail = base.index("# The caller's ARM64 swap")
+    return base[:tail] + (
+        "function Write-StudioLine { param([Parameter(ValueFromRemainingArguments = $true)]$Rest) }\n"
+        "function step { param($a, $b, $c) }\n"
+        + resolver
+        + "\n$found = Find-CompatiblePython\n"
+        "if ($found -and $found.Arch -ne \"x86_64\") { $found = Resolve-WindowsOnArmX64Python $found }\n"
+        "if ($found) { Write-Output \"$($found.Version)|$($found.Arch)\" } else { Write-Output \"none\" }\n"
+    )
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
+@pytest.mark.parametrize(
+    ("installed", "can_download", "expected"),
+    [
+        # The opt-out asks for a NATIVE interpreter. With x64 3.13 and ARM64 3.12 installed
+        # the per-minor loop answered the version preference first, returned the x64 3.13 and
+        # stopped -- and the swap never runs on an x64 selection, so the variable produced an
+        # x64 environment after all, which is the opposite of what it asks for.
+        ([("3.13", "x86_64"), ("3.12", "arm64")], True, "3.12|arm64"),
+        # The requested minor's own ARM64 build still wins over a lower one.
+        ([("3.13", "arm64"), ("3.12", "arm64")], True, "3.13|arm64"),
+        # No ARM64 anywhere: the opt-out cannot invent one, so the x64 build is used.
+        ([("3.13", "x86_64")], False, "3.13|x86_64"),
+        # A 32-bit interpreter is NOT an ARM64 one. Its platform tag is neither win-amd64 nor
+        # win-arm64, so it reaches the swap as "not x64", and returning it under this
+        # variable would label it native ARM64 and install a stack it cannot hold. The x64
+        # bootstrap runs instead.
+        ([("3.13", "win32")], True, "3.13|x86_64"),
+        # And with nothing to download, that same interpreter fails closed rather than being
+        # accepted as native.
+        ([("3.13", "win32")], False, "none"),
+    ],
+)
+def test_the_arm64_opt_out_selects_a_native_interpreter(installed, can_download, expected):
+    environment = _environment_without_the_arm64_opt_out()
+    environment["UNSLOTH_ALLOW_ARM64_PYTHON"] = "1"
+    result = run_pwsh(
+        [
+            "pwsh", "-NoProfile", "-NonInteractive", "-Command",
+            _opt_out_script(installed, can_download),
+        ],
+        check = True,
+        capture_output = True,
+        text = True,
+        env = environment,
+    )
+    assert result.stdout.strip() == expected
 
 
 def _environment_without_the_arm64_opt_out() -> dict:

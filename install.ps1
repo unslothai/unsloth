@@ -5476,6 +5476,20 @@ exit 0
             $tag = Get-PythonPlatformTag $c.Path
             $c.Arch = if ($tag -eq "win-amd64") { "x86_64" } elseif ($tag -eq "win-arm64") { "arm64" } else { "unknown" }
         }
+        # The opt-out asks for a NATIVE interpreter, and the per-minor loop below answers the
+        # version preference first: with x64 3.13 and ARM64 3.12 installed it returns the x64
+        # 3.13 and stops, and the swap guard never runs on an x64 selection, so the variable
+        # produced an x64 environment after all. Sweep every supported minor for an ARM64
+        # build first, in the caller's own version order, and only fall through to the
+        # arch-blind loop when this host has none.
+        if ($preferArm64) {
+            foreach ($minor in $minors) {
+                $arm = $candidates |
+                    Where-Object { $_.Version -eq $minor -and $_.Arch -eq "arm64" } |
+                    Select-Object -First 1
+                if ($arm) { return $arm }
+            }
+        }
         foreach ($minor in $minors) {
             $sameMinor = @($candidates | Where-Object { $_.Version -eq $minor })
             if ($sameMinor.Count -eq 0) { continue }
@@ -5673,7 +5687,13 @@ exit 0
         # interpreter; downloading an x64 CPython they did not want and then using it is not
         # an opt-out, and on a machine where that install succeeds, which is most of them,
         # the variable would otherwise do nothing at all.
-        if (Test-Arm64PythonOptOut) {
+        # ARM64 only. Discovery can hand this a 32-bit `win32` interpreter, or one whose
+        # platform probe failed and is therefore tagged "unknown", and both reach here as
+        # "not x64". Returning one of those under this variable would label it native ARM64
+        # and go on to install a stack a 32-bit Python cannot hold, while the variable's own
+        # promise -- the caller has pyarrow and hf-transfer built for ARM64 -- says nothing
+        # about it. Anything else continues to the x64 bootstrap below, or fails closed there.
+        if ((Test-Arm64PythonOptOut) -and ($SelectedPython.Arch -eq "arm64")) {
             Write-StudioLine "[WARN] UNSLOTH_ALLOW_ARM64_PYTHON is set, so keeping native ARM64 Python $($SelectedPython.Version)." -ForegroundColor Yellow
             Write-StudioLine "       pyarrow (via datasets) and hf-transfer publish no win_arm64 wheels, so they will be" -ForegroundColor Yellow
             Write-StudioLine "       built from source, which needs CMake plus the MSVC and Rust toolchains." -ForegroundColor Yellow
