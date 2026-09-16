@@ -4094,10 +4094,24 @@ async def get_kv_cache_estimate(
                         projector = int(_Be._get_gguf_size_bytes(mmproj) * _Be._MMPROJ_VRAM_SAFETY)
                 except Exception as e:
                     logger.debug(f"mmproj estimate failed for '{repo_id}' {quant}: {e}")
-            if _asked_no_mmproj:
-                # --no-mmproj-offload keeps vision on with the projector in HOST memory.
-                # The frontend adds projectorBytes onto its GPU weights segment, so leaving
-                # it set charges the VRAM bar for memory that never reaches the card.
+            # The RESOLVED placement, not the query value. The query value is None whenever
+            # the caller omitted the parameter, which is every existing client, and the
+            # launch resolver still puts the projector on the host when
+            # LLAMA_ARG_NO_MMPROJ_OFFLOAD is set in the environment or
+            # LLAMA_ARG_MMPROJ_OFFLOAD is off. Reading only what was asked left the itemised
+            # projector populated on exactly that path, and the frontend adds projectorBytes
+            # onto its GPU weights segment, so the VRAM bar was charged for memory that never
+            # reaches the card. Same helper and same precedence -- environment first, argv on
+            # top -- as the launch, so the route cannot answer for a load that cannot happen.
+            try:
+                from core.inference.llama_cpp import _resolved_mmproj_offload
+
+                _mmproj_offloaded = _resolved_mmproj_offload(_planner_extras)
+            except Exception as e:  # noqa: BLE001 -- cannot resolve -> the asked value stands
+                logger.debug(f"could not resolve the mmproj placement: {e}")
+                _mmproj_offloaded = None if _asked_no_mmproj is None else not _asked_no_mmproj
+            if _mmproj_offloaded is False:
+                # The projector is in HOST memory, with vision still on.
                 projector = None
 
             # Only the MTP modes reserve memory; ngram is free. "auto" may or may not resolve to MTP, and the estimator

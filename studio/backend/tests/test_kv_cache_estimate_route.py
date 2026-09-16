@@ -672,6 +672,55 @@ class TestTheEstimateMatchesTheConfiguredLoad:
         # difference between "no projector on the card" and "no vision".
         assert pinned["kv_bytes"] and pinned["kv_bytes"] > 0
 
+    def test_an_inherited_host_pin_is_not_charged_to_the_card_either(
+        self, monkeypatch, tmp_path
+    ):
+        """The parameter is omitted by every existing client, and the launch still reads the
+        environment.
+
+        `LLAMA_ARG_NO_MMPROJ_OFFLOAD`, or `LLAMA_ARG_MMPROJ_OFFLOAD=off`, puts the projector
+        in host memory exactly as the flag does, so an answer that looked only at what was
+        ASKED left projectorBytes populated on the one path where nothing was asked -- and
+        the frontend adds it to the GPU weights segment regardless.
+        """
+        gguf = _write_gguf(tmp_path / "vision-Q4_K_M.gguf", _MLA_NO_HEAD)
+        (tmp_path / "mmproj-F16.gguf").write_bytes(b"\x00" * 800_000)
+
+        for variable, value in (
+            ("LLAMA_ARG_NO_MMPROJ_OFFLOAD", "1"),
+            ("LLAMA_ARG_MMPROJ_OFFLOAD", "off"),
+        ):
+            monkeypatch.delenv("LLAMA_ARG_NO_MMPROJ_OFFLOAD", raising = False)
+            monkeypatch.delenv("LLAMA_ARG_MMPROJ_OFFLOAD", raising = False)
+            monkeypatch.setenv(variable, value)
+            inherited = _call_std_route(
+                monkeypatch, path = gguf, repo_id = str(tmp_path), is_local = True
+            )
+            assert inherited["projector_bytes"] is None, variable
+            # Still a vision row, not a collapsed one.
+            assert inherited["kv_bytes"] and inherited["kv_bytes"] > 0, variable
+
+        # And an explicit flag still wins over the environment, the way the child resolves
+        # them: argv on top.
+        monkeypatch.setenv("LLAMA_ARG_NO_MMPROJ_OFFLOAD", "1")
+        monkeypatch.delenv("LLAMA_ARG_MMPROJ_OFFLOAD", raising = False)
+        asked_on = _call_std_route(
+            monkeypatch,
+            path = gguf,
+            repo_id = str(tmp_path),
+            is_local = True,
+            no_mmproj_offload = False,
+        )
+        assert asked_on["projector_bytes"], "an explicit --mmproj-offload must still charge"
+
+        # A clean environment and nothing asked is unchanged: the projector is resident.
+        monkeypatch.delenv("LLAMA_ARG_NO_MMPROJ_OFFLOAD", raising = False)
+        monkeypatch.delenv("LLAMA_ARG_MMPROJ_OFFLOAD", raising = False)
+        plain = _call_std_route(
+            monkeypatch, path = gguf, repo_id = str(tmp_path), is_local = True
+        )
+        assert plain["projector_bytes"], "an unasked, uninherited projector is on the card"
+
     def test_a_model_with_no_projector_reports_none(self, monkeypatch, tmp_path):
         gguf = _write_gguf(tmp_path / "text-Q4_K_M.gguf", _MLA_NO_HEAD)
         out = _call_std_route(monkeypatch, path = gguf, repo_id = str(tmp_path), is_local = True)
