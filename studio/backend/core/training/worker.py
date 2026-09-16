@@ -3730,93 +3730,104 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         try:
             import torch as _torch_mem
             if _torch_mem.cuda.is_available():
-                # Classify unified vs discrete (see _rocm_classify_unified_memory's docstring).
-                _props = _torch_mem.cuda.get_device_properties(0)
-                _dev_name = _props.name
-                _gcn_arch, _is_unified = _rocm_classify_unified_memory(_props)
-                if _is_unified and not _gcn_arch:
-                    logger.debug(
-                        "ROCm OOM guard: gcnArchName absent -- inferred "
-                        "unified memory from device name %r; applying unified cap",
-                        _dev_name,
+                # Every visible device, not just cuda:0. torch keeps the fraction PER
+                # DEVICE and set_per_process_memory_fraction(f) with no `device` applies
+                # it to current_device() alone, so a sharded ROCm run left the later GPUs
+                # uncapped while the log said the cap was in force. The classification and
+                # the pool size are per device too, so each one is solved from its own
+                # properties rather than cuda:0's.
+                _unified_seen = False
+                for _mem_index in range(_torch_mem.cuda.device_count()):
+                    # Classify unified vs discrete (see _rocm_classify_unified_memory's docstring).
+                    _props = _torch_mem.cuda.get_device_properties(_mem_index)
+                    _dev_name = _props.name
+                    _gcn_arch, _is_unified = _rocm_classify_unified_memory(_props)
+                    if _is_unified and not _gcn_arch:
+                        logger.debug(
+                            "ROCm OOM guard: gcnArchName absent -- inferred "
+                            "unified memory from device name %r; applying unified cap",
+                            _dev_name,
+                        )
+                    # Unified hosts on native Windows: mem_get_info's total is the WDDM budget the driver grants HIP (BIOS
+                    # carve + ~half of remaining RAM). The OS share is already outside it, so any sub-1.0
+                    # starve-protection double-taxes (48.49 GiB budget -> 38.79 allowed) and blocks loads that fit in free
+                    # memory. Current AMD Windows wheels only enforce sub-1.0 fractions (gfx1151: 0.5 caps, 1.0
+                    # overcommits via WDDM), so 1.0 behaves like torch's uncapped default. On Linux the total spans nearly
+                    # all RAM, so keep a bounded headroom. props.total_memory is the pool the reserve comes out of, and
+                    # from torch 2.10 also what the allocator scales; through 2.9 it scales hipMemGetInfo's total, a
+                    # different number on a unified APU, so hand that to the helper on those wheels and the reserve is the
+                    # same bytes either way.
+                    _total_bytes = int(getattr(_props, "total_memory", 0) or 0)
+                    _driver_total = 0
+                    if not _allocator_divides_by_props_total(getattr(_torch_mem, "__version__", "")):
+                        try:
+                            _driver_total = int(_torch_mem.cuda.mem_get_info(_mem_index)[1])
+                        except Exception:
+                            _driver_total = 0
+                    # UNSLOTH_ROCM_MEM_FRACTION first, then the backend-neutral
+                    # UNSLOTH_GPU_MEM_FRACTION, so a host that already exports the ROCm name keeps
+                    # the cap it had and a host that sets only the neutral one is still honoured.
+                    _env_raw, _env_name = _mem_fraction_env_value("rocm")
+                    _env_fraction = _parse_mem_fraction_env(_env_raw)
+                    if _env_raw and _env_fraction is None:
+                        logger.warning(
+                            "ROCm OOM guard: ignoring %s=%r (needs a float in (0.0, 1.0]); "
+                            "using the computed cap instead",
+                            _env_name,
+                            _env_raw,
+                        )
+                    _mem_fraction = _gpu_memory_fraction(
+                        _total_bytes, _is_unified, sys.platform, "rocm", _env_raw, _driver_total or None
                     )
-                # Unified hosts on native Windows: mem_get_info's total is the WDDM budget the driver grants HIP (BIOS
-                # carve + ~half of remaining RAM). The OS share is already outside it, so any sub-1.0
-                # starve-protection double-taxes (48.49 GiB budget -> 38.79 allowed) and blocks loads that fit in free
-                # memory. Current AMD Windows wheels only enforce sub-1.0 fractions (gfx1151: 0.5 caps, 1.0
-                # overcommits via WDDM), so 1.0 behaves like torch's uncapped default. On Linux the total spans nearly
-                # all RAM, so keep a bounded headroom. props.total_memory is the pool the reserve comes out of, and
-                # from torch 2.10 also what the allocator scales; through 2.9 it scales hipMemGetInfo's total, a
-                # different number on a unified APU, so hand that to the helper on those wheels and the reserve is the
-                # same bytes either way.
-                _total_bytes = int(getattr(_props, "total_memory", 0) or 0)
-                _driver_total = 0
-                if not _allocator_divides_by_props_total(getattr(_torch_mem, "__version__", "")):
-                    try:
-                        _driver_total = int(_torch_mem.cuda.mem_get_info(0)[1])
-                    except Exception:
-                        _driver_total = 0
-                # UNSLOTH_ROCM_MEM_FRACTION first, then the backend-neutral
-                # UNSLOTH_GPU_MEM_FRACTION, so a host that already exports the ROCm name keeps
-                # the cap it had and a host that sets only the neutral one is still honoured.
-                _env_raw, _env_name = _mem_fraction_env_value("rocm")
-                _env_fraction = _parse_mem_fraction_env(_env_raw)
-                if _env_raw and _env_fraction is None:
-                    logger.warning(
-                        "ROCm OOM guard: ignoring %s=%r (needs a float in (0.0, 1.0]); "
-                        "using the computed cap instead",
-                        _env_name,
-                        _env_raw,
+                    # A wheel that reports no total still gets a cap; say so rather than printing "0.0 of 0.0 GiB allowed"
+                    # on the one host whose props are suspect.
+                    _allowed = (
+                        f"{_total_bytes * _mem_fraction / 1024**3:.1f} of "
+                        f"{_total_bytes / 1024**3:.1f} GiB allowed"
+                        if _total_bytes > 0
+                        else "device total unreported by this wheel"
                     )
-                _mem_fraction = _gpu_memory_fraction(
-                    _total_bytes, _is_unified, sys.platform, "rocm", _env_raw, _driver_total or None
-                )
-                # A wheel that reports no total still gets a cap; say so rather than printing "0.0 of 0.0 GiB allowed"
-                # on the one host whose props are suspect.
-                _allowed = (
-                    f"{_total_bytes * _mem_fraction / 1024**3:.1f} of "
-                    f"{_total_bytes / 1024**3:.1f} GiB allowed"
-                    if _total_bytes > 0
-                    else "device total unreported by this wheel"
-                )
-                _torch_mem.cuda.set_per_process_memory_fraction(_mem_fraction)
-                logger.info(
-                    "ROCm OOM guard: set_per_process_memory_fraction(%.4f) — "
-                    "%s memory host (%s, %s), %s, %s",
-                    _mem_fraction,
-                    "unified" if _is_unified else "discrete",
-                    _dev_name,
-                    _gcn_arch or "unknown arch",
-                    _allowed,
-                    f"from {_env_name}"
-                    if _env_fraction is not None
-                    else f"computed; override with {_MEM_FRACTION_ENV} or {_GPU_MEM_FRACTION_ENV}",
-                )
-                # When the totals differ the cap was solved against the driver's, so the budget printed above is not
-                # the one enforced. Give both, and the headroom that results, which the floor can leave under the
-                # intended reserve.
-                if (
-                    _is_unified
-                    and sys.platform != "win32"
-                    and _env_fraction is None
-                    and _total_bytes > 0
-                    and _driver_total > 0
-                    and abs(_driver_total - _total_bytes) > _total_bytes // 100
-                ):
+                    _torch_mem.cuda.set_per_process_memory_fraction(_mem_fraction, _mem_index)
                     logger.info(
-                        "ROCm OOM guard: props.total_memory is %.1f GiB but this torch caps "
-                        "against the driver's %.1f GiB, so the fraction is solved for that "
-                        "total and %.1f GiB stays free against the intended %.1f GiB. Adjust "
-                        "with %s.",
-                        _total_bytes / 1024**3,
-                        _driver_total / 1024**3,
-                        (_total_bytes - _mem_fraction * _driver_total) / 1024**3,
-                        _UNIFIED_OS_RESERVE_BYTES / 1024**3,
-                        _MEM_FRACTION_ENV,
+                        "ROCm OOM guard: set_per_process_memory_fraction(%.4f, cuda:%d) — "
+                        "%s memory host (%s, %s), %s, %s",
+                        _mem_fraction,
+                        _mem_index,
+                        "unified" if _is_unified else "discrete",
+                        _dev_name,
+                        _gcn_arch or "unknown arch",
+                        _allowed,
+                        f"from {_env_name}"
+                        if _env_fraction is not None
+                        else f"computed; override with {_MEM_FRACTION_ENV} or {_GPU_MEM_FRACTION_ENV}",
                     )
+                    # When the totals differ the cap was solved against the driver's, so the budget printed above is not
+                    # the one enforced. Give both, and the headroom that results, which the floor can leave under the
+                    # intended reserve.
+                    if (
+                        _is_unified
+                        and sys.platform != "win32"
+                        and _env_fraction is None
+                        and _total_bytes > 0
+                        and _driver_total > 0
+                        and abs(_driver_total - _total_bytes) > _total_bytes // 100
+                    ):
+                        logger.info(
+                            "ROCm OOM guard: props.total_memory is %.1f GiB but this torch caps "
+                            "against the driver's %.1f GiB, so the fraction is solved for that "
+                            "total and %.1f GiB stays free against the intended %.1f GiB. Adjust "
+                            "with %s.",
+                            _total_bytes / 1024**3,
+                            _driver_total / 1024**3,
+                            (_total_bytes - _mem_fraction * _driver_total) / 1024**3,
+                            _UNIFIED_OS_RESERVE_BYTES / 1024**3,
+                            _MEM_FRACTION_ENV,
+                        )
+                    _unified_seen = _unified_seen or _is_unified
+
                 # Unified Windows APUs: the WDDM budget is user-raisable, but nothing on the box says so -- users see
                 # "48 GB VRAM" on a 96 GB machine. Say where the limit comes from.
-                if _is_unified and sys.platform == "win32":
+                if _unified_seen and sys.platform == "win32":
                     try:
                         import psutil as _psutil
 

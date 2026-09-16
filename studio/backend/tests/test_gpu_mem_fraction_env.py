@@ -429,3 +429,135 @@ def test_a_single_gpu_host_is_unchanged():
     )
     assert cuda.fractions == {0: pytest.approx(0.9)}
     assert len(log.info) == 1
+
+
+# ── Section 1g: the ROCm arm caps every visible device too ───────────────────
+
+
+def _section_1g_source() -> str:
+    source = _WORKER_PY.read_text(encoding = "utf-8")
+    start = source.index("    # ── 1g. ROCm OOM guard ──")
+    end = source.index("    # ── 1h. Explicit GPU memory cap ──")
+    return textwrap.dedent(source[start:end])
+
+
+class _FakeRocmCuda(_FakeCuda):
+    """_FakeCuda plus the two things only the ROCm arm asks for: the driver's own
+    total, and the arch string the unified/discrete classification reads."""
+
+    def __init__(self, *, driver_total = None, gcn_arch = "gfx1100", **kwargs):
+        kwargs.setdefault("name", "AMD Radeon PRO W7900")
+        super().__init__(**kwargs)
+        self._driver_total = self._total if driver_total is None else driver_total
+        self._gcn_arch = gcn_arch
+
+    def mem_get_info(self, index = None):
+        return (self._driver_total // 2, self._driver_total)
+
+    def get_device_properties(self, index):
+        return SimpleNamespace(
+            total_memory = self._total,
+            name = f"{self._name} #{index}",
+            gcnArchName = self._gcn_arch,
+        )
+
+
+def _run_section_1g(*, environ, cuda = None, platform = "linux"):
+    import sys as _real_sys
+
+    from core.training import worker as worker_module
+
+    cuda = cuda if cuda is not None else _FakeRocmCuda()
+    logger, recorded = _make_logger()
+    fake_torch = SimpleNamespace(cuda = cuda, __version__ = "2.9.0+rocm6.4")
+
+    def resolve_env(backend, environ_ = None):
+        return worker_module._mem_fraction_env_value(
+            backend, environ if environ_ is None else environ_
+        )
+
+    namespace = {
+        "_hw": SimpleNamespace(IS_ROCM = True),
+        "sys": SimpleNamespace(
+            platform = platform, modules = dict(_real_sys.modules, torch = fake_torch)
+        ),
+        "logger": logger,
+        "_mem_fraction_env_value": resolve_env,
+        "_parse_mem_fraction_env": worker_module._parse_mem_fraction_env,
+        "_gpu_memory_fraction": worker_module._gpu_memory_fraction,
+        "_rocm_classify_unified_memory": worker_module._rocm_classify_unified_memory,
+        "_allocator_divides_by_props_total": worker_module._allocator_divides_by_props_total,
+        "_UNIFIED_OS_RESERVE_BYTES": worker_module._UNIFIED_OS_RESERVE_BYTES,
+        "_MEM_FRACTION_ENV": _MEM_FRACTION_ENV,
+        "_GPU_MEM_FRACTION_ENV": _GPU_MEM_FRACTION_ENV,
+        "torch": fake_torch,
+    }
+    real_import = __import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "torch":
+            return fake_torch
+        return real_import(name, *args, **kwargs)
+
+    builtins_map = __builtins__ if isinstance(__builtins__, dict) else vars(__builtins__)
+    namespace["__builtins__"] = dict(builtins_map, __import__ = fake_import)
+
+    exec(compile(_section_1g_source(), str(_WORKER_PY), "exec"), namespace)
+    return cuda, recorded
+
+
+def test_the_rocm_guard_caps_every_visible_device():
+    """A sharded ROCm run capped cuda:0 and logged that the cap was in force, while the
+    allocator, which keeps the fraction per device, left cuda:1 and up free."""
+    cuda, log = _run_section_1g(
+        environ = {_GPU_MEM_FRACTION_ENV: "0.75"},
+        cuda = _FakeRocmCuda(count = 4),
+    )
+    assert cuda.fractions == {index: pytest.approx(0.75) for index in range(4)}
+    assert len(log.info) == 4, log.info
+    for index, line in enumerate(log.info):
+        assert f"cuda:{index}" in line, line
+
+
+def test_the_rocm_guard_names_the_device_rather_than_the_current_one():
+    """The control for the mechanism: a call with no `device` would record only cuda:2."""
+    cuda, _log = _run_section_1g(
+        environ = {_MEM_FRACTION_ENV: "0.5"},
+        cuda = _FakeRocmCuda(count = 4, current = 2),
+    )
+    assert sorted(cuda.fractions) == [0, 1, 2, 3]
+
+
+def test_a_single_rocm_gpu_is_unchanged():
+    cuda, log = _run_section_1g(
+        environ = {_MEM_FRACTION_ENV: "0.9"},
+        cuda = _FakeRocmCuda(count = 1),
+    )
+    assert cuda.fractions == {0: pytest.approx(0.9)}
+    assert len(log.info) == 1
+
+
+def test_each_rocm_device_is_solved_from_its_own_properties():
+    """A host that mixes a unified APU with a discrete card must not cap both from
+    cuda:0's pool: the APU needs OS headroom and the discrete card does not."""
+
+    class _MixedCuda(_FakeRocmCuda):
+        def get_device_properties(self, index):
+            unified = index == 0
+            return SimpleNamespace(
+                total_memory = 128 * GIB if unified else 48 * GIB,
+                name = "AMD Radeon 8060S" if unified else "AMD Radeon PRO W7900",
+                gcnArchName = "gfx1151" if unified else "gfx1100",
+            )
+
+        def mem_get_info(self, index = None):
+            # This wheel reports the same pool both ways, so the cap is the one the
+            # properties alone imply and the arithmetic stays readable.
+            total = self.get_device_properties(index).total_memory
+            return (total // 2, total)
+
+    cuda, log = _run_section_1g(environ = {}, cuda = _MixedCuda(count = 2))
+    assert cuda.fractions[1] == pytest.approx(_DISCRETE_MEM_FRACTION)
+    assert cuda.fractions[0] == pytest.approx(_rocm_memory_fraction(128 * GIB, True, "linux"))
+    assert cuda.fractions[0] != cuda.fractions[1]
+    assert "unified" in log.info[0] and "discrete" in log.info[1]

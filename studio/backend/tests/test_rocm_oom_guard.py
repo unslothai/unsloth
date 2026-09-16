@@ -308,7 +308,7 @@ class TestMemFractionSelection:
         Scoped to the byte arm: discrete and win32 take a flat fraction, which no
         denominator gap can distort."""
         source = _WORKER_PY.read_text(encoding = "utf-8")
-        assert "_driver_total = int(_torch_mem.cuda.mem_get_info(0)[1])" in source
+        assert "_driver_total = int(_torch_mem.cuda.mem_get_info(_mem_index)[1])" in source
         assert "if not _allocator_divides_by_props_total(" in source
         assert 'sys.platform, "rocm", _env_raw, _driver_total or None' in source
         assert "but this torch caps" in source

@@ -203,3 +203,60 @@ def test_the_check_format_route_previews_a_mixed_case_sharegpt_upload(isolated_s
             "user",
             "assistant",
         ]
+
+
+# ---------------------------------------------------------------------------
+# The training path, which is the one the preview is a preview OF
+# ---------------------------------------------------------------------------
+
+
+def test_the_training_standardiser_normalises_the_same_way():
+    """Studio training does not call the zoo helper: `core/training/trainer.py` goes
+    through `utils/datasets/dataset_utils.py`, which calls the local
+    `standardize_chat_format`. That matched the raw role, so a "Human"/"GPT" dataset
+    previewed as user/assistant and then handed the raw roles to the tokenizer."""
+    from utils.datasets.format_conversion import _normalize_role_alias as training_normalize
+
+    for spelling, expected in _SPELLINGS:
+        assert _ROLE_MAP[training_normalize(spelling)] == expected
+
+
+@pytest.mark.parametrize("spelling, expected", _SPELLINGS)
+def test_standardize_chat_format_maps_every_spelling(spelling, expected):
+    datasets = pytest.importorskip("datasets")
+    from utils.datasets.format_conversion import standardize_chat_format
+
+    dataset = datasets.Dataset.from_list(
+        [{"conversations": [{"from": spelling, "value": "hello"}]}] * 4
+    )
+    result = standardize_chat_format(dataset, num_proc = 1)
+    message = result[0]["conversations"][0]
+    assert message["role"] == expected
+    assert message["content"] == "hello"
+
+
+def test_standardize_chat_format_leaves_an_unknown_role_as_written():
+    """NEGATIVE CONTROL: only the matching is normalised. A role no alias list knows
+    keeps its own spelling rather than being lowercased on the way to the template."""
+    datasets = pytest.importorskip("datasets")
+    from utils.datasets.format_conversion import standardize_chat_format
+
+    dataset = datasets.Dataset.from_list(
+        [{"conversations": [{"from": "Narrator", "value": "x"}]}] * 4
+    )
+    assert standardize_chat_format(dataset, num_proc = 1)[0]["conversations"][0]["role"] == "Narrator"
+
+
+def test_the_preview_and_the_training_path_agree_on_every_spelling():
+    """The property the P1 was about: two standardisers, one answer."""
+    datasets = pytest.importorskip("datasets")
+    from utils.datasets.format_conversion import standardize_chat_format
+
+    conversation = [{"from": spelling, "value": "x"} for spelling, _ in _SPELLINGS]
+    trained = standardize_chat_format(
+        datasets.Dataset.from_list([{"conversations": conversation}] * 4), num_proc = 1
+    )[0]["conversations"]
+    previewed = _standardize_sharegpt_row({"conversations": conversation}, "conversations")[
+        "conversations"
+    ]
+    assert [m["role"] for m in trained] == [m["role"] for m in previewed]
