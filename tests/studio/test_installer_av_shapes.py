@@ -511,31 +511,80 @@ def test_no_new_native_imports(name: str) -> None:
 
 @pytest.mark.parametrize("name", ("install.ps1", "studio/setup.ps1"))
 def test_virtual_terminal_answers_a_redirected_stream_without_defining_a_type(name: str) -> None:
-    """The answer we already know must come first, before any native work at all.
+    """The stronger contract this test's name always implied: nothing native happens here at all.
 
-    Only the redirected case is decided early, and it is decided FALSE: a redirected stdout is
-    not a console, GetConsoleMode fails on a non-console handle, and the native path could only
-    have returned false too. Anything claiming VT here would put raw escape sequences in the
-    Unsloth log panel, which is a pipe.
+    It used to assert an ordering -- that the redirect check came *before* the emit call -- because
+    the redirect check was the only thing keeping the desktop app off csc.exe. There is no emit call
+    now. A CI pre-flight measured Windows PowerShell 5.1 attached to a real console and found the
+    console mode already 0x7 before any of our code ran: bit 0x4,
+    ENABLE_VIRTUAL_TERMINAL_PROCESSING, is set by the host at startup. The SetConsoleMode this
+    replaced was re-setting a bit that was already set, so reading
+    $Host.UI.SupportsVirtualTerminal loses nothing.
 
-    This used to guard an Add-Type, when the redirect check was all that kept the desktop app
-    off csc.exe. Nothing compiles now, so the ordering no longer matters to a scanner, but it is
-    still the cheaper answer and getting it wrong still corrupts the log panel.
+    Two things still have to hold. The redirected case must still be decided FALSE and decided
+    first: a redirected stdout is not a console, and anything claiming VT there puts raw escape
+    sequences in the Unsloth log panel, which is a pipe. And the function must stay free of native
+    work, or the three kernel32 imports come back one careful commit at a time.
     """
     text = _text(name)
     start = text.index("function Enable-StudioVirtualTerminal")
-    call = re.compile(r"(?m)^[ \t]*\$null = New-StudioEmittedNativeType\b").search(text, start)
-    assert call, f"{name} no longer emits the console thunk; update this guard"
-    define_at = call.start()
-    fast_path = text.index("if ($script:StudioStdoutRedirected) { return $false }", start)
-    assert fast_path < define_at, (
-        f"{name} builds the native console thunk before checking the stream: move the redirect "
-        f"guard above it, since a redirected stream can never render VT anyway."
+    # To the end of the function. The next top-level construct after it is the assignment of its
+    # result, which is a stable landmark in both files.
+    end = text.index("$script:StudioVtOk = Enable-StudioVirtualTerminal", start)
+    body = text[start:end]
+
+    fast_path = body.index("if ($script:StudioStdoutRedirected) { return $false }")
+    property_read = body.index("$Host.UI.SupportsVirtualTerminal")
+    assert fast_path < property_read, (
+        f"{name} consults the host before checking whether the stream is redirected. A redirected "
+        f"stream can never render VT, so that case has to be decided first and decided false."
     )
-    assert "$true" not in text[fast_path:define_at], (
-        f"{name} returns something other than $false before the native work. The early answer is "
-        f"only sound because a redirected stream can never render VT."
-    )
+
+    for banned in (
+        "New-StudioEmittedNativeType",
+        "DefinePInvokeMethod",
+        "Add-Type",
+        "GetStdHandle",
+        "SetConsoleMode",
+        "kernel32",
+    ):
+        assert banned not in _strip_comments(body), (
+            f"{name}'s Enable-StudioVirtualTerminal does native work again ({banned}). The host "
+            f"already enables virtual terminal processing at startup, measured: the console mode "
+            f"is 0x7 before we touch it. Colouring a banner is not worth three kernel32 imports."
+        )
+
+
+def _strip_comments(text: str) -> str:
+    return "\n".join(line for line in text.splitlines() if not line.strip().startswith("#"))
+
+
+def test_neither_installer_declares_a_console_mode_import() -> None:
+    """The console thunk reached zero native surface, and must not drift back.
+
+    Both scripts used to declare GetStdHandle, GetConsoleMode and SetConsoleMode for one consumer: a
+    cosmetic ANSI colour banner. A CI pre-flight measured Windows PowerShell 5.1 attached to a real
+    console and found the mode already 0x7 before anything of ours ran, so bit 0x4,
+    ENABLE_VIRTUAL_TERMINAL_PROCESSING, was already set by the host and the SetConsoleMode was
+    re-setting it. Without this test the three imports are one "just add a small helper" away from
+    coming back, and nothing else in the suite would notice: every other check here is about how a
+    native import is DECLARED rather than whether there is one.
+
+    Scoped to the console imports rather than to all of them. studio/setup.ps1 still emits the nvml
+    and nvcuda imports for Get-NvidiaLibraryProbeType, which is what the GPU inventory reads, so a
+    blanket "no native imports" assertion would be false and deleting the apparatus to satisfy it
+    would break that.
+    """
+    for name in ("install.ps1", "studio/setup.ps1"):
+        declared = _native_imports(_text(name))
+        for banned in ("GetStdHandle", "GetConsoleMode", "SetConsoleMode"):
+            assert banned not in declared, (
+                f"{name} declares {banned} again; the console mode is the host's job and "
+                f"$Host.UI.SupportsVirtualTerminal reports its outcome"
+            )
+    setup = _strip_comments(_text("studio/setup.ps1"))
+    assert "StudioVTNative" not in setup, "the emitted console thunk is back in studio/setup.ps1"
+    assert "Add-Type" not in setup, "studio/setup.ps1 compiles C# through csc.exe again"
 
 
 @pytest.mark.parametrize("name", ALL_SCRIPTS)
@@ -603,13 +652,18 @@ def test_the_installer_never_runs_the_c_sharp_compiler(name: str) -> None:
         "DefinePInvokeMethod block where the script is generated and cannot call it; "
         "-MemberDefinition runs csc.exe just as -TypeDefinition does."
     )
-    # Conditional: only a script that declares a native import has an emit to still be doing.
-    # scripts/uninstall.ps1 and studio/setup.sh declare none, and demanding the token of them would
-    # be a guard that fails for being satisfied.
+    # Conditional, because "emits its native imports" only means anything for a file that HAS
+    # native imports. Three shipped files now declare none: scripts/uninstall.ps1 and
+    # studio/setup.sh never did, and studio/setup.ps1 stopped -- its whole emit apparatus existed
+    # to colour a banner, and the host turns out to enable virtual terminal processing before our
+    # code runs. Demanding the token of a file with zero native surface would be a guard that
+    # fails for being satisfied; test_setup_declares_no_native_imports_at_all is what keeps that
+    # zero honest.
     if _native_imports(text):
-        assert (
-            "DefinePInvokeMethod" in text
-        ), f"{name} declares native imports without emitting them; update this guard"
+        assert "DefinePInvokeMethod" in text, (
+            f"{name} declares native imports but no longer emits them. If they are compiled again "
+            f"instead, that is csc.exe on 5.1, which is the shape this whole file exists to keep out."
+        )
     # The private-%TEMP% retry is gone with it: redirecting TEMP to compile again cannot beat a
     # filter driver, and "blocked writing an executable to TEMP, change TEMP, write it again" is
     # itself an evasion heuristic. Scoped to the resolver, since Initialize-StudioTempEnvironment
@@ -1255,3 +1309,48 @@ def test_setup_bat_steps_down_to_bypass_only_for_a_remote_script() -> None:
 
     # The launch line, the -NoProfile asymmetry and the Unblock-File ordering are asserted by
     # test_setup_bat_clears_the_mark_before_loading_under_remotesigned above; not repeated here.
+
+
+# Whole-line comments only. Both defects this guards against were whole-line, and a trailing `#`
+# cannot be told from a `#` inside a string without re-parsing, which would trade a real check for
+# a source of false alarms.
+_COMMENT_PREFIXES = {".bat": ("rem ", "::"), ".ps1": ("#",), ".sh": ("#",)}
+
+# A repo-relative path, which is a claim about THIS tree, as opposed to a PR number or a URL.
+# Anchored on the real top-level directories and required to carry a file extension, so
+# `unsloth.ai/install.ps1` (a URL) and a bare directory mention do not match.
+_REPO_PATH_IN_PROSE = re.compile(
+    r"(?<![\w./-])((?:\.github|docs|tests|scripts|studio|unsloth|unsloth_cli|unsloth_zoo)"
+    r"/[\w./-]+\.\w+)"
+)
+
+
+def _comment_lines(text: str, name: str):
+    prefixes = _COMMENT_PREFIXES[Path(name).suffix]
+    for line in text.splitlines():
+        stripped = line.strip().lower() if name.endswith(".bat") else line.strip()
+        if stripped.startswith(prefixes):
+            yield line
+
+
+@pytest.mark.parametrize("name", DOCUMENTED_SCRIPTS)
+def test_a_comment_never_points_at_a_file_that_is_not_here(name: str) -> None:
+    """A comment citing evidence must cite something a reader can actually open.
+
+    Twice now a shipped script has carried a pointer to a file that was not in the tree: first
+    `docs/windows-installer-av-shapes.md` after the doc was folded into AV_SHAPES_RECORD, then
+    `.github/workflows/windows-vt-preflight.yml`, which lives in a separate PR and therefore does
+    not exist on this branch at all. Both read as authoritative and neither could be followed, which
+    is worse than saying nothing: the justification for deleting a native call becomes unverifiable.
+    Referring to a PR number is fine and stays true; referring to a path is a claim about this tree.
+    """
+    text = (REPO / name).read_text(encoding = "utf-8")
+    cited = set()
+    for line in _comment_lines(text, name):
+        cited.update(_REPO_PATH_IN_PROSE.findall(line))
+
+    missing = sorted(p for p in cited if not (REPO / p).exists())
+    assert not missing, (
+        f"{name} has a comment pointing at {missing}, which is not in this tree. Cite a PR number, "
+        "or cite tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD), which travels with the repo."
+    )
