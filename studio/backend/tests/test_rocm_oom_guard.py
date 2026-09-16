@@ -314,10 +314,7 @@ class TestMemFractionSelection:
         # Whitespace-insensitive: the formatter is free to wrap this call across lines,
         # and it did. What is pinned is that the ROCm cap is still solved against the
         # driver's total when the wheel disagrees with props, not how it is laid out.
-        assert re.search(
-            r'sys\.platform,\s*"rocm",\s*_env_raw,\s*_driver_total or None',
-            source,
-        )
+        assert re.search(r'sys\.platform,\s*"rocm",\s*_env_raw,\s*_driver_total or None', source)
         assert "but this torch caps" in source
 
 
