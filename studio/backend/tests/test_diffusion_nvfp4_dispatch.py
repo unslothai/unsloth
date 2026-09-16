@@ -148,7 +148,7 @@ def test_verify_does_not_run_the_gemm_when_the_library_is_wrong(monkeypatch):
 
 
 class _Ptr:
-    """A stand-in for a weight buffer: a data_ptr, a shape and a ``.T``."""
+    """A stand-in for a weight buffer."""
 
     def __init__(
         self,

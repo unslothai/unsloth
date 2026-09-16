@@ -80,7 +80,7 @@ def available() -> tuple:
 
 
 def enabled(device: Any) -> bool:
-    """Whether the fast path may be used on ``device``: false until ``verify(device)`` passed."""
+    """False until ``verify(device)`` passed."""
     from .diffusion_nvfp4_ops import _device_index
 
     record = _VERIFIED.get(_device_index(device))
@@ -216,17 +216,17 @@ def _fast_quantize(
 
 
 def _drop_transposed(key: int, ref: Any) -> None:
-    """Weakref callback: forget the collected weight's entry. No lock (a collection can land on a
-    thread already holding it); each step is one atomic dict op."""
+    """Weakref callback, lock-free: a collection can land on a thread already holding the lock, and
+    each step is one atomic dict op."""
     entry = _TRANSPOSED.get(key)
     if entry is not None and entry[0] is ref:
         _TRANSPOSED.pop(key, None)
 
 
 def transposed(t: Any):
-    """A kept ``.T`` of a weight buffer, released with the weight itself: keyed on the weight
-    object (revalidated against data_ptr and shape) and holding a view of ``t.detach()``, since
-    ``t.T`` would keep ``t`` alive through ``_base`` and the weakref would never fire."""
+    """A kept ``.T`` released with the weight itself: keyed on the weight object (revalidated
+    against data_ptr and shape), over ``t.detach()`` since ``t.T`` would keep ``t`` alive through
+    ``_base`` and the weakref would never fire."""
     key = id(t)
     stamp = (t.data_ptr(), tuple(t.shape))
     entry = _TRANSPOSED.get(key)
@@ -256,7 +256,7 @@ def gemm_plan(
     *,
     force: bool = False,
 ):
-    """``(runner, tactic, workspace)``, or None (use ``mm_fp4``) including for a COLD key under
+    """``(runner, tactic, workspace)``, or None (use ``mm_fp4``), including for a COLD key under
     capture, where ``choose_one`` may profile and bake tactics into the graph."""
     from .diffusion_nvfp4_ops import _device_index, _is_capturing
 
@@ -313,7 +313,7 @@ def reset() -> None:
 
 
 def describe() -> dict:
-    """What the caches hold right now. For the preflight record and for tests."""
+    """What the caches hold right now, for the preflight record and for tests."""
     return {
         "available": available()[0],
         "reason": available()[1],

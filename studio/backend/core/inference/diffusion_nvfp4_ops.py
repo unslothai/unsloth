@@ -76,7 +76,6 @@ def _device_index(device: Any) -> int:
 
 
 def _is_capturing() -> bool:
-    """Whether the current stream is capturing a CUDA graph."""
     try:
         import torch
         return bool(torch.cuda.is_current_stream_capturing())
@@ -85,8 +84,8 @@ def _is_capturing() -> bool:
 
 
 def _barrier(device: Any):
-    """The process-wide 1-element bf16 buffer for ``device``, UNCACHED while the stream is
-    capturing: an allocation made inside a capture dies with the graph."""
+    """The process-wide 1-element bf16 buffer for ``device``, UNCACHED under capture: an allocation
+    made inside a capture dies with the graph."""
     import torch
 
     index = _device_index(device)
@@ -101,16 +100,15 @@ def _barrier(device: Any):
 
 
 def _fire_barrier(device: Any):
-    """Launch the ordering kernel that has to sit between the quantiser and the GEMM. What
-    protects the GEMM is a kernel EXISTING there, not that kernel writing M x N bytes."""
+    """The ordering kernel between the quantiser and the GEMM. What protects the GEMM is a kernel
+    EXISTING there, not that kernel writing M x N bytes."""
     buf = _barrier(device)
     buf.zero_()
     return buf
 
 
 def reset_barriers() -> None:
-    """Drop every cached barrier: one allocated under a model's allocator state must not be handed
-    to the next model's graph pool."""
+    """One allocated under a model's allocator state must not reach the next model's graph pool."""
     with _BARRIER_LOCK:
         _BARRIERS.clear()
 
@@ -146,9 +144,9 @@ def _mm_impl(xq: Any, wq: Any, x_sf: Any, w_sf: Any, alpha: Any, n: int, backend
     ``griddepcontrol`` instructions that make PDL safe are compiled out of its build, and
     ``enable_pdl = False`` is plumbed only to the cute-dsl runner). What protects it is a kernel
     EXISTING, so a one-element fill is as good as the memset while ``torch.empty`` alone is NOT.
-    The barrier buffer is persistent per device (``_fire_barrier``); only the fill is per call, and
-    nothing ever reads the buffer, so a cached one cannot carry a stale NaN into a later output.
-    ``UNSLOTH_NVFP4_ZERO_BUFFER=1`` restores the full memset (slower, bounds an unknown fault to garbage).
+    The barrier is persistent per device (``_fire_barrier``) and never read, so it cannot carry a
+    stale NaN forward. ``UNSLOTH_NVFP4_ZERO_BUFFER=1`` restores the full memset (slower, bounds an
+    unknown fault to garbage).
     """
     import flashinfer
     import torch

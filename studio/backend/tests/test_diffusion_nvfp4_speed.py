@@ -217,7 +217,6 @@ def _fake_flashinfer():
 
 @pytest.fixture
 def stub_kernels(monkeypatch):
-    """Install the stubbed torch and flashinfer for the duration of one test."""
     _RECORDER.reset()
     # A verdict left behind by another file would take a path the stub does not model.
     dispatch.reset()

@@ -248,8 +248,8 @@ _STREAM_BANNED = ("set_stream", "set_device", "setDevice")
 
 
 def _banned_stream_calls(source: str) -> list[tuple[int, str]]:
-    """Lines that switch the current device or stream behind the guard's back: ``set_stream``
-    silently sets the current DEVICE as well, and ``set_device`` moves what the guard restores."""
+    """``set_stream`` silently sets the current DEVICE too, and ``set_device`` moves what the guard
+    restores."""
     found: list[tuple[int, str]] = []
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.Attribute) and node.attr in _STREAM_BANNED:
