@@ -255,6 +255,22 @@ Write-Output ("ANSWER=" + (Invoke-StudioEarlyPythonScript -Exe '$exe' -Script "$
     if ($rs) { $rs.Dispose() }
 }
 
+# The cmdlet launcher is the only new code that writes anything at all: three temporary files
+# per call. Idempotency means the tenth install leaves the machine as the first one found it, so
+# every exit path has to clean up, not just the happy one. The timeout path is the one that
+# matters, since it returns while the child is being killed.
+$tempRoot = [System.IO.Path]::GetTempPath()
+function Get-TempFileCount { return @(Get-ChildItem -LiteralPath $tempRoot -File -ErrorAction SilentlyContinue).Count }
+$tempBefore = Get-TempFileCount
+for ($i = 0; $i -lt 3; $i++) {
+    $null = Invoke-StudioEarlyPythonScriptViaCmdlets -Exe $exe -Script "import sys;sys.stdout.write('ok')"
+}
+$null = Invoke-StudioEarlyPythonScriptViaCmdlets -Exe $exe -Script "import sys;sys.exit(3)"
+$null = Invoke-StudioEarlyPythonScriptViaCmdlets -Exe $exe -Script "import time;time.sleep(60)" -TimeoutMs 1500
+$null = Invoke-StudioEarlyPythonScriptViaCmdlets -Exe (Join-Path $root "no-such-interpreter") -Script "pass"
+Check "the cmdlet launcher leaves no temporary files behind, on any exit path" (
+    (Get-TempFileCount) -eq $tempBefore)
+
 # ------------------------------------------------------- the table, through a stubbed runner
 
 $script:RunnerCalls = 0
