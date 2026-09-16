@@ -387,48 +387,60 @@ def _selector_signature(selector: str, field: str):
 
     A destructured parameter is the other way to write the same subscription, so
     `({ reasoningBudget }) => reasoningBudget` and `({ reasoningBudget: budget }) => budget`
-    are read through their local name. Returns (0, None) when the parameter is neither shape,
+    are read through their local name. Returns (0, None, None) when the parameter is neither shape,
     or when a destructuring does not take the field at all.
     """
     plain = re.match(r"\s*\(?\s*([A-Za-z_$][\w$]*)\s*\)?\s*(?::[^=]*)?=>", selector)
     if plain is not None:
-        return plain.end(), re.compile(rf"\b{re.escape(plain.group(1))}\.{field}\b")
+        access = rf"{re.escape(plain.group(1))}\.{field}"
+        return plain.end(), re.compile(rf"\b{access}\b"), access
 
     destructured = re.match(r"\s*\(?\s*\{([^}]*)\}\s*\)?\s*(?::[^=]*)?=>", selector)
     if destructured is None:
-        return 0, None
+        return 0, None, None
     for entry in destructured.group(1).split(","):
         name, _, alias = entry.partition(":")
         if name.strip() == field:
             local = alias.strip() or field
-            return destructured.end(), re.compile(rf"\b{re.escape(local)}\b")
-    return 0, None
+            access = re.escape(local)
+            return destructured.end(), re.compile(rf"\b{access}\b"), access
+    return 0, None, None
 
 
 _LITERAL = r"(?:null|undefined|true|false|-?\d+(?:\.\d+)?|'[^']*'|\"[^\"]*\")"
 
 
-def _pins(guard: str, taken: bool, field: str) -> bool:
-    """Does this guard, decided this way, fix `field` at one literal value?
+def _pinned_literal(guard: str, taken: bool, access: str, field: str):
+    """The one value `field` can hold on this branch, or None if the branch does not fix it.
 
     `budget === -1` taken true says the budget is -1 there, and `budget != null` taken false says
-    it is null, so a constant result on that path is still the whole of what the selector can
-    return for that value. `budget > 0` fixes nothing: every budget above zero reaches the same
-    result, which is a subscription in name only.
+    it is null. `budget > 0` fixes nothing: every budget above zero reaches the same result.
 
-    The comparison has to be against the field itself. Asking separately whether the guard names
-    the field and whether it compares something to a literal lets the two answers come from
-    different operands, so `s.budget > 0 && s.mode === "x"` reads as pinning the budget.
+    The comparison has to be against the field read off the selector's own parameter. Asking
+    separately whether the guard names the field and whether it compares something to a literal
+    lets the two answers come from different operands, and a bare `.field` match would take
+    `defaults.reasoningBudget === -1` for a statement about the store.
     """
     # Guards arrive normalised, so there is no whitespace to allow for.
-    reference = rf"(?:\w+\.)?{field}"
-    equal = re.search(rf"(?:{reference}(===|==){_LITERAL}|{_LITERAL}(===|==){reference})", guard)
-    unequal = re.search(rf"(?:{reference}(!==|!=){_LITERAL}|{_LITERAL}(!==|!=){reference})", guard)
+    # The lookbehind matters: without it `s.reasoningBudget` matches inside
+    # `defaults.reasoningBudget`, and a statement about some other object reads as one about
+    # the store.
+    start = r"(?<![\w$.])"
+    equal = re.search(
+        rf"(?:{start}{access}(?:===|==)({_LITERAL})|({_LITERAL})(?:===|==){start}{access})", guard
+    )
+    unequal = re.search(
+        rf"(?:{start}{access}(?:!==|!=)({_LITERAL})|({_LITERAL})(?:!==|!=){start}{access})", guard
+    )
     if taken:
         # A conjunction still implies its parts; a disjunction does not.
-        return equal is not None and "||" not in guard
+        if equal is None or "||" in guard:
+            return None
+        return equal.group(1) or equal.group(2)
     # Negating the guard only pins the field when the guard is that comparison and nothing else.
-    return unequal is not None and "||" not in guard and "&&" not in guard
+    if unequal is None or "||" in guard or "&&" in guard:
+        return None
+    return unequal.group(1) or unequal.group(2)
 
 
 def _selector_reads(selector: str, field: str) -> bool:
@@ -442,7 +454,7 @@ def _selector_reads(selector: str, field: str) -> bool:
     """
 
     selector = _without_comments(selector)
-    signature, read = _selector_signature(selector, field)
+    signature, read, access = _selector_signature(selector, field)
     if read is None:
         return False
     body = selector[signature:].strip()
@@ -479,8 +491,13 @@ def _selector_reads(selector: str, field: str) -> bool:
     # `s.budget != null ? (s.enabled ? s.budget : s.other) : null`. Only a comparison that pins
     # the field to a literal on the branch taken makes a constant result honest, which is what
     # keeps `s.budget === -1 ? -1 : s.budget` and `s.budget != null ? s.budget : null` working.
+    # A constant on a pinned path is honest only when it IS the value the field holds there.
+    # `s.budget === -1 ? 0 : s.budget` pins the first arm to a budget of -1 and then returns 0,
+    # which is what the second arm returns for a budget of 0, so the supported -1 to 0 change
+    # produces no change in the result at all.
     return all(
-        read.search(result) or any(_pins(guard, taken, field) for guard, taken in guards)
+        read.search(result)
+        or any(_pinned_literal(guard, taken, access, field) == result for guard, taken in guards)
         for result, guards in results
     )
 
@@ -523,6 +540,12 @@ SELECTOR_CASES = [
     ('(s) => s.reasoningBudget === -1 && s.mode === "x" ? -1 : s.reasoningBudget', True),
     ('(s) => s.reasoningBudget === -1 || s.mode === "x" ? -1 : s.reasoningBudget', False),
     ('(s) => s.reasoningBudget != null && s.mode === "x" ? s.reasoningBudget : null', False),
+    # The comparison must be on the field read off the selector's own parameter.
+    ("(s) => defaults.reasoningBudget === -1 ? -1 : s.reasoningBudget", False),
+    # A pinned arm has to return the value the field holds there, or it collides: -1 becoming 0
+    # returns 0 both before and after.
+    ("(s) => s.reasoningBudget === -1 ? 0 : s.reasoningBudget", False),
+    ("({ reasoningBudget: b }) => b === -1 ? -1 : b", True),
     # A guard cannot rescue a subpath it does not pin: `enabled` false holds s.other steady.
     ("(s) => s.reasoningBudget != null ? (s.enabled ? s.reasoningBudget : s.other) : null", False),
     # Falling off the end of a block returns undefined, which tracks nothing.
