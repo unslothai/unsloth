@@ -385,3 +385,10 @@ def test_uninstall_requirements_file_of_only_baked_packages_is_a_no_op(shim, tmp
         assert _run(shim, args, sub = "uninstall") is None, args
         assert "nothing to uninstall" in capsys.readouterr().out
     assert _run(shim, ["-y", "-r", str(req), UNBAKED], sub = "uninstall") == ["-y", UNBAKED]
+
+
+@pytest.mark.parametrize("var", ["PIP_TARGET", "PIP_PREFIX", "PIP_ROOT"])
+def test_pip_uninstall_ignores_install_destination_variables(shim, monkeypatch, tmp_path, var):
+    monkeypatch.setenv(var, str(tmp_path / "outside"))
+    assert _run(shim, ["-y", "torch"], sub = "uninstall") is None
+    assert _run(shim, ["-y", UNBAKED], sub = "uninstall") == ["-y", UNBAKED]

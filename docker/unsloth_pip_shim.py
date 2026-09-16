@@ -1071,10 +1071,13 @@ def _installs_elsewhere(tool, argv):
     baked interpreter, so it keeps the protective behaviour. Environment variables
     count only for the tool that actually reads them; a flag is left unscoped because
     a tool that does not accept one fails loudly on it rather than silently."""
+    # pip uninstall has no --target/--prefix/--root and ignores their variables, so
+    # they still leave it pointed at the baked venv
+    dest_env = not (tool == "pip" and _subcommand_index(tool, argv, "uninstall") is not None)
     dirs = _flag_values(argv, _DEST_DIR_FLAGS)
-    dirs += [os.environ[v] for v in _DEST_DIR_ENV[tool] if os.environ.get(v)]
+    dirs += [os.environ[v] for v in _DEST_DIR_ENV[tool] if dest_env and os.environ.get(v)]
     roots = _flag_values(argv, _DEST_ROOT_FLAGS)
-    roots += [os.environ[v] for v in _DEST_ROOT_ENV[tool] if os.environ.get(v)]
+    roots += [os.environ[v] for v in _DEST_ROOT_ENV[tool] if dest_env and os.environ.get(v)]
     # a root re-anchors the venv's OWN paths beneath it, so resolve where each one
     # actually lands rather than classifying the root value itself
     dirs += [_relocated_under_root(r, _base_venv_root()) for r in roots]
