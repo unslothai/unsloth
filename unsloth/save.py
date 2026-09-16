@@ -5683,7 +5683,23 @@ def unsloth_generic_save(
         # reads what was really written (tied weights dropped, shards split);
         # a push has no local folder, so there the config is fixed for the
         # duration of the write instead.
-        _mtp_tensor_names = list(state_dict.keys()) if state_dict is not None else None
+        if state_dict is not None:
+            _mtp_tensor_names = list(state_dict.keys())
+        else:
+            # Not None. Only "16bit" and the Qwen3.5 VLM path build a state_dict above, so
+            # save_method="lora" and "merged_4bit"/"merged_4bit_forced" arrive here with None
+            # and push_to_hub then serialises the RESIDENT state dict anyway. Leaving the
+            # names unknown made the guard a deliberate no-op for exactly those methods, so a
+            # full-finetuned MTP model whose head transformers dropped on load still pushed
+            # the stale declaration this guard exists to remove. Reading the names is the
+            # same call the "16bit" branch already makes, and returns tensor references
+            # rather than copies, so it costs no extra memory.
+            try:
+                _mtp_tensor_names = list(model.state_dict().keys())
+            except Exception:
+                # A model that cannot report its own tensors falls back to the previous
+                # behaviour: the config is left exactly as the caller had it.
+                _mtp_tensor_names = None
         if push_to_hub:
             print(f"Unsloth: Pushing full fine-tuned model to '{save_directory}' ...")
             with _mtp_config_matching_tensors(model, _mtp_tensor_names):

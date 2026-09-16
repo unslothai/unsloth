@@ -90,6 +90,41 @@ def test_the_push_write_is_inside_the_guard(tree):
     assert guarded, "model.push_to_hub is not inside _mtp_config_matching_tensors"
 
 
+def test_the_push_guard_reads_the_resident_tensors_when_no_state_dict_was_built(tree):
+    """The guard is a no-op when the names are unknown, so the push path may not leave
+    them unknown.
+
+    Only "16bit" and the Qwen3.5 VLM branch build a `state_dict` above this point.
+    `save_method="lora"`, `"merged_4bit"` and `"merged_4bit_forced"` therefore reach the
+    push with `state_dict is None` while `push_to_hub` goes on to serialise the resident
+    state dict regardless, so deriving the names from `state_dict` alone disarmed the
+    guard for exactly the methods that still write `mtp.*`-free weights: a full-finetuned
+    MTP model pushed the stale declaration this whole file exists to remove.
+    """
+    func = _func(tree, "unsloth_generic_save")
+    derived_from_model = False
+    for node in ast.walk(func):
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(
+            isinstance(t, ast.Name) and t.id == "_mtp_tensor_names" for t in node.targets
+        ):
+            continue
+        for sub in ast.walk(node.value):
+            if (
+                isinstance(sub, ast.Call)
+                and isinstance(sub.func, ast.Attribute)
+                and sub.func.attr == "state_dict"
+                and isinstance(sub.func.value, ast.Name)
+                and sub.func.value.id == "model"
+            ):
+                derived_from_model = True
+    assert derived_from_model, (
+        "_mtp_tensor_names is never derived from model.state_dict(), so the push guard "
+        "does nothing for save methods that build no state_dict of their own"
+    )
+
+
 # ---- the dict-level stripper ---------------------------------------------
 
 
