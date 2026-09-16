@@ -61,6 +61,38 @@ fi
 # regression tests can stage a fake device tree; leave it unset in normal use.
 DEV_ROOT="${UNSLOTH_DEV_ROOT:-}"
 
+# WSL2 has no /dev/kfd: the amdgpu kernel driver is not loaded there and the card
+# is reached over the DXG bridge instead. /dev/dxg plus librocdxg is the same GPU
+# evidence install.sh gates on for a WSL host. The bridge is userspace, so this
+# needs a device and an env var, not group ids: WSL exposes /dev/dxg to everyone
+# and has no render group.
+wsl_dxg_host() {
+    [[ ! -e "$DEV_ROOT/dev/kfd" && -e "$DEV_ROOT/dev/dxg" ]]
+}
+amd_dxg_flags() {
+    printf '%s\n' --device /dev/dxg
+    # librocdxg is NOT in the image and cannot be: its cmake build needs the Windows
+    # 11 SDK 'shared' headers off the host (see scripts/install_rocm_wsl_strixhalo.sh),
+    # which no Linux build runner has. Mount the host's, which that helper installs.
+    local _so=""
+    for _c in "$DEV_ROOT"/opt/rocm/lib/librocdxg.so.1* "$DEV_ROOT"/opt/rocm-*/lib/librocdxg.so.1* \
+              "$DEV_ROOT"/opt/rocm/lib64/librocdxg.so.1* ; do
+        [[ -e "$_c" ]] && { _so="$_c"; break; }
+    done
+    if [[ -z "$_so" ]]; then
+        printf "\033[1;33mWARN:\033[0m /dev/dxg is present but no librocdxg was found under /opt/rocm.\n" >&2
+        printf "      Install ROCm for WSL first:  bash scripts/install_rocm_wsl_strixhalo.sh\n" >&2
+        return 0
+    fi
+    printf '%s\n' -v "${_so}:/usr/lib/x86_64-linux-gnu/librocdxg.so:ro"
+    # librocdxg links libdxcore from WSL's own lib directory.
+    [[ -d /usr/lib/wsl/lib ]] && printf '%s\n' -v /usr/lib/wsl/lib:/usr/lib/wsl/lib:ro \
+                              && printf '%s\n' -e LD_LIBRARY_PATH=/usr/lib/wsl/lib
+    # The standard HSA runtime only looks for the bridge when this is set.
+    printf '%s\n' -e HSA_ENABLE_DXG_DETECTION=1
+    return 0
+}
+
 # --group-add needs NUMERIC gids: a name is resolved INSIDE the container, where
 # the host's video/render groups do not exist.
 amd_device_flags() {
@@ -90,18 +122,28 @@ collect_amd_device_flags() {
         GPU_FLAG+=("$_flag")
     done < <(amd_device_flags)
 }
+collect_amd_dxg_flags() {
+    local _flag
+    GPU_FLAG=()
+    while IFS= read -r _flag; do
+        GPU_FLAG+=("$_flag")
+    done < <(amd_dxg_flags)
+}
 
 if [[ $ROCM -eq 1 ]]; then
     IMAGE="${UNSLOTH_IMAGE:-unsloth/unsloth-rocm:latest}"
     GPUS=none
     if [[ -e "$DEV_ROOT/dev/kfd" ]]; then
         collect_amd_device_flags
+    elif wsl_dxg_host; then
+        collect_amd_dxg_flags
+        printf "\033[1;33mNOTE:\033[0m no /dev/kfd; passing /dev/dxg, the WSL2 bridge to the card.\n" >&2
     else
         GPU_FLAG=()
         printf "\033[1;33mWARN:\033[0m /dev/kfd is not present, so no AMD GPU can be passed through.\n" >&2
         printf "      On Linux install the amdgpu driver and add yourself to the video/render\n" >&2
-        printf "      groups. Docker Desktop on Windows and macOS has no /dev/kfd at all: the\n" >&2
-        printf "      ROCm image cannot reach a GPU there, whatever the host card is.\n\n" >&2
+        printf "      groups. On Windows the card is reached over WSL2's /dev/dxg, which only a\n" >&2
+        printf "      docker engine running INSIDE your WSL distribution can pass through.\n\n" >&2
     fi
 else
 IMAGE="${UNSLOTH_IMAGE:-unsloth/unsloth:latest}"

@@ -47,6 +47,8 @@ def _run_sh(
     *,
     kfd = True,
     dri = True,
+    dxg = False,
+    librocdxg = False,
     nvidia = False,
     groups = "both",
     extra_env = None,
@@ -83,6 +85,12 @@ def _run_sh(
         (dev_root / "dev" / "kfd").write_text("")
         if dri:
             (dev_root / "dev" / "dri").mkdir()
+    if dxg:
+        (dev_root / "dev" / "dxg").write_text("")
+    if librocdxg:
+        lib = dev_root / "opt" / "rocm" / "lib"
+        lib.mkdir(parents = True)
+        (lib / "librocdxg.so.1.2.1").write_text("")
     env = dict(os.environ)
     env["PATH"] = str(bindir) + ":/usr/bin:/bin"
     env["UNSLOTH_DEV_ROOT"] = str(dev_root)
@@ -168,12 +176,34 @@ class TestRunShRocm:
         assert image == "unsloth/unsloth-rocm:latest"
         assert "/dev/kfd" in argv
 
-    def test_no_kfd_warns_and_starts_without_devices(self, tmp_path):
-        """Docker Desktop has no /dev/kfd; the entrypoint then explains, so the
-        container must still start rather than docker failing on a missing node."""
+    def test_no_kfd_and_no_dxg_warns_and_starts_without_devices(self, tmp_path):
+        """A host with neither node has no GPU to pass: the container must still start
+        rather than docker failing on a missing device."""
         argv, stderr = _run_sh(tmp_path, ["--rocm", "true"], kfd = False)
         assert "--device" not in argv and "--gpus" not in argv, argv
-        assert "/dev/kfd is not present" in stderr and "Docker Desktop" in stderr, stderr
+        assert "/dev/kfd is not present" in stderr, stderr
+        assert "/dev/dxg" in stderr, stderr
+
+    def test_wsl_passes_dxg_instead_of_kfd(self, tmp_path):
+        """WSL2 has no /dev/kfd: the card is reached over the DXG bridge, so the flags
+        are the device plus the runtime's opt-in, and librocdxg off the host (its cmake
+        build needs Windows SDK headers, so no Linux image build can carry it)."""
+        argv, stderr = _run_sh(
+            tmp_path, ["--rocm", "true"], kfd = False, dxg = True, librocdxg = True,
+        )
+        assert "/dev/dxg" in argv, argv
+        assert "/dev/kfd" not in argv, argv
+        assert "HSA_ENABLE_DXG_DETECTION=1" in argv, argv
+        assert any("librocdxg.so" in a for a in argv), argv
+        assert "--gpus" not in argv, argv
+        assert "DXG" in stderr or "dxg" in stderr, stderr
+
+    def test_dxg_without_librocdxg_warns_and_points_at_the_helper(self, tmp_path):
+        """/dev/dxg alone is not enough: without the bridge library the runtime cannot
+        reach the card, and the fix is the WSL ROCm helper, not a docker flag."""
+        argv, stderr = _run_sh(tmp_path, ["--rocm", "true"], kfd = False, dxg = True)
+        assert "librocdxg" in stderr, stderr
+        assert "install_rocm_wsl_strixhalo.sh" in stderr, stderr
 
     def test_a_mixed_host_is_not_offered_the_nvidia_toolkit(self, tmp_path):
         """An NVIDIA + AMD box under --rocm runs the ROCm image through the AMD nodes;
@@ -368,6 +398,7 @@ def _entrypoint(
     *,
     kfd = True,
     readable = True,
+    dxg = False,
     smi_sees_gpu = True,
     python_body = None,
     env_extra = None,
@@ -382,6 +413,8 @@ def _entrypoint(
         (dev_root / "dev" / "kfd").write_text("")
         if not readable:
             os.chmod(dev_root / "dev" / "kfd", 0)
+    if dxg:
+        (dev_root / "dev" / "dxg").write_text("")
     _stub(
         str(bindir / "rocm-smi"),
         'echo "GPU[0] : GPU ID: 0x1586"\n' if smi_sees_gpu else "echo 'No AMD GPUs specified'\n",
@@ -438,6 +471,28 @@ class TestRocmEntrypoint:
     def test_a_happy_host_runs_the_command(self, tmp_path):
         rc, ran, err = _entrypoint(tmp_path)
         assert rc == 0 and ran, err
+
+    def test_dxg_is_accepted_when_kfd_is_absent(self, tmp_path):
+        """WSL2 never has /dev/kfd. /dev/dxg plus librocdxg is the same GPU evidence
+        install.sh gates a WSL host on, so the run must proceed, not refuse."""
+        lib = tmp_path / "rocmlib"
+        lib.mkdir()
+        (lib / "librocdxg.so.1").write_text("")
+        rc, ran, err = _entrypoint(
+            tmp_path, kfd = False, dxg = True,
+            env_extra = {"UNSLOTH_ROCM_DXG_LIBDIRS": str(lib)},
+        )
+        assert rc == 0 and ran, err
+        assert "DXG bridge" in err, err
+
+    def test_dxg_without_the_bridge_library_refuses(self, tmp_path):
+        """/dev/dxg alone cannot reach the card: the HSA runtime needs librocdxg."""
+        rc, ran, err = _entrypoint(
+            tmp_path, kfd = False, dxg = True,
+            env_extra = {"UNSLOTH_ROCM_DXG_LIBDIRS": str(tmp_path / "empty")},
+        )
+        assert rc == 1 and not ran
+        assert "librocdxg" in err, err
 
     def test_a_failing_torch_check_stops_before_the_command(self, tmp_path):
         rc, ran, _ = _entrypoint(tmp_path, python_body = "cat > /dev/null\nexit 1\n")
