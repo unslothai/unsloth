@@ -942,9 +942,9 @@ _GPU_NAME_GFX_TABLE: "list[tuple[str, str]]" = [
     (r"RX 7800|RX 7700(?!S)|PRO W7700|PRO V710", "gfx1101"),
     (r"RX 7600|RX 7700S|RX 7650|PRO W7600|PRO W7500", "gfx1102"),
     (r"780M|760M|740M|Phoenix|Hawk Point|Z1 Extreme|Z2 Extreme", "gfx1103"),
-    (r"RX 6900|RX 6800|RX 6750|RX 6700|PRO W6800|PRO W6900", "gfx1030"),
+    (r"RX 6950|RX 6900|RX 6850|RX 6800|RX 6750|RX 6700|PRO W6800|PRO W6900", "gfx1030"),
     (r"RX 6650|RX 6600|PRO W6600|PRO W6650", "gfx1032"),
-    (r"RX 6500|RX 6400|RX 6300|PRO W6400|PRO W6500", "gfx1034"),
+    (r"RX 6550|RX 6500|RX 6450|RX 6400|RX 6300|PRO W6400|PRO W6500|PRO W6300", "gfx1034"),
 ]
 
 
@@ -4852,9 +4852,14 @@ def _determine_attention_impl_for_gpu_estimate(config) -> str:
 
     from unsloth.models._utils import resolve_attention_implementation
     from transformers import AutoModel, AutoModelForCausalLM
+    from transformers.models.auto.configuration_auto import CONFIG_MAPPING
 
     # resolve_attention_implementation writes _attn_implementation onto the config and propagates to nested sub-configs, so a shallow copy would still mutate the cached config's shared inner objects.
     config_copy = copy.deepcopy(config)
+    model_type = getattr(config_copy, "model_type", None)
+    config_class = (
+        CONFIG_MAPPING[model_type] if model_type in CONFIG_MAPPING else config_copy.__class__
+    )
 
     model_class = None
     for auto_model in (AutoModelForCausalLM, AutoModel):
@@ -4862,8 +4867,8 @@ def _determine_attention_impl_for_gpu_estimate(config) -> str:
         if mapping is None:
             continue
         try:
-            if config_copy.__class__ in mapping:
-                model_class = mapping[config_copy.__class__]
+            if config_class in mapping:
+                model_class = mapping[config_class]
                 break
         except Exception:
             continue

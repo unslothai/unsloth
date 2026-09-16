@@ -87,7 +87,8 @@ import {
 import {
   BUILTIN_PRESETS,
   BUILTIN_PRESET_NAMES,
-  applyPresetParams,
+  type Preset,
+  applyPresetForProvider,
   getBuiltinVariantName,
   getOrderedPresets,
   getPresetSaveState,
@@ -122,6 +123,8 @@ import {
   modelReadsSamplingSeed,
   type InferenceParams,
 } from "./types/runtime";
+
+import { effectiveMinPMode, isMinPMode } from "./lib/min-p-policy";
 
 export { defaultInferenceParams, type Preset } from "./presets/preset-policy";
 export type { InferenceParams } from "./types/runtime";
@@ -396,7 +399,10 @@ interface ChatSettingsPanelProps {
   open: boolean;
   onOpenChange?: (open: boolean) => void;
   params: InferenceParams;
-  onParamsChange: (params: InferenceParams) => void;
+  onParamsChange: (
+    params: InferenceParams,
+    options?: { minPChoiceEdited?: boolean },
+  ) => void;
   modelConfig?: ReactNode;
   isExternalModel?: boolean;
   /** Sampling-param capabilities for the active external provider, or `null` for local models
@@ -439,6 +445,11 @@ function specFallbackMessage({
       return `This model fits in VRAM but its ${drafter} drafter does not, so Auto kept your context length and turned ${drafter} off for this load. Choose ${drafter} in Settings to force it, at a smaller context.`;
     case "runtime_error":
       return `${drafter} could not start for this model on the installed llama.cpp build, so it is running without speculative decoding.`;
+    case "drafter_unloadable":
+      // The file IS beside the model; it just cannot be opened as a draft. So no "place
+      // the sidecar" and no "check your network": both name a remedy that changes
+      // nothing, and the backend stands the refetch down for exactly this case.
+      return "This model's MTP drafter file cannot be loaded as a draft model, so it is running without MTP. The sidecar beside the model is a head-only file that llama.cpp cannot open on its own. Replace it with a self-contained mtp-*.gguf, then reload the model.";
     case "drafter_not_found":
       if (drafter === "DSpark") {
         return isLocalGguf
@@ -487,6 +498,7 @@ export function ChatSettingsPanel({
     !isExternalModel || Boolean(providerCapabilities?.temperature);
   const showTopP = !isExternalModel || Boolean(providerCapabilities?.topP);
   const showTopK = !isExternalModel || Boolean(providerCapabilities?.topK);
+  const isVllm = isExternalModel && externalProviderType === "vllm";
   const showMinP = !isExternalModel || Boolean(providerCapabilities?.minP);
   const showRepetitionPenalty =
     !isExternalModel || Boolean(providerCapabilities?.repetitionPenalty);
@@ -544,6 +556,18 @@ export function ChatSettingsPanel({
   const disableVision = useChatRuntimeStore((s) => s.disableVision);
   const specDraftNMax = useChatRuntimeStore((s) => s.specDraftNMax);
   const nParallel = useChatRuntimeStore((s) => s.nParallel);
+  // subscribe to the same requested values that preset capture snapshots.
+  const reasoningBudget = useChatRuntimeStore((s) =>
+    s.reasoningBudget === s.loadedReasoningBudget
+      ? (s.loadedReasoningBudgetRequested ?? s.reasoningBudget)
+      : s.reasoningBudget,
+  );
+  const reasoningBudgetMessage = useChatRuntimeStore(
+    (s) =>
+      s.reasoningBudgetMessage === s.loadedReasoningBudgetMessage
+        ? (s.loadedReasoningBudgetMessageRequested ?? s.reasoningBudgetMessage)
+        : s.reasoningBudgetMessage,
+  );
   const nBatch = useChatRuntimeStore((s) => s.nBatch);
   const nUbatch = useChatRuntimeStore((s) => s.nUbatch);
   const speculativeType = useChatRuntimeStore((s) => s.speculativeType);
@@ -729,6 +753,8 @@ export function ChatSettingsPanel({
     speculativeType,
     specDraftNMax,
     nParallel,
+    reasoningBudget,
+    reasoningBudgetMessage,
     nBatch,
     nUbatch,
     params.maxSeqLength,
@@ -752,6 +778,8 @@ export function ChatSettingsPanel({
       speculativeType,
       specDraftNMax,
       nParallel,
+      reasoningBudget,
+      reasoningBudgetMessage,
       nBatch,
       nUbatch,
       params.maxSeqLength,
@@ -816,12 +844,18 @@ export function ChatSettingsPanel({
 
   function set<K extends keyof InferenceParams>(key: K) {
     return (v: InferenceParams[K]) => {
-      const nextParams = { ...params, [key]: v };
+      const nextParams = {
+        ...params,
+        [key]: v,
+        ...(key === "minP" ? { minPMode: "custom" as const } : {}),
+      };
       const nextSource = isSamePresetConfig(activePresetBaseline, nextParams)
         ? getPresetSource(activePreset)
         : "modified";
       setActivePresetSource(nextSource);
-      onParamsChange(nextParams);
+      onParamsChange(nextParams, {
+        minPChoiceEdited: key === "minP" || key === "minPMode",
+      });
     };
   }
 
@@ -860,9 +894,9 @@ export function ChatSettingsPanel({
   ]);
 
   function applyPresetParamsWithinCurrentLimits(
-    presetParams: Parameters<typeof applyPresetParams>[1],
+    preset: Preset,
   ): InferenceParams {
-    const nextParams = applyPresetParams(params, presetParams);
+    const nextParams = applyPresetForProvider(params, preset, isVllm ? "vllm" : null);
     // Same reason the effect waits for a provider: without one `maxTokensMax` is the fallback, so
     // applying a preset here would lower the value for good.
     if (!isExternalModel || activeExternalProvider == null) return nextParams;
@@ -878,7 +912,9 @@ export function ChatSettingsPanel({
     }
     const p = presets.find((pr) => pr.name === name);
     if (p) {
-      onParamsChange(applyPresetParamsWithinCurrentLimits(p.params));
+      onParamsChange(applyPresetParamsWithinCurrentLimits(p), {
+        minPChoiceEdited: true,
+      });
       if (p.loadConfig) {
         applyPresetLoadConfig(p.loadConfig);
       }
@@ -939,7 +975,8 @@ export function ChatSettingsPanel({
     if (activePreset === name) {
       if (fallbackPreset) {
         onParamsChange(
-          applyPresetParamsWithinCurrentLimits(fallbackPreset.params),
+          applyPresetParamsWithinCurrentLimits(fallbackPreset),
+          { minPChoiceEdited: true },
         );
         if (fallbackPreset.loadConfig) {
           applyPresetLoadConfig(fallbackPreset.loadConfig);
@@ -1478,15 +1515,45 @@ export function ChatSettingsPanel({
               />
             ) : null}
             {showMinP ? (
-              <ParamSlider
-                label="Min P"
-                value={params.minP}
-                min={0}
-                max={1}
-                step={0.01}
-                onChange={set("minP")}
-                info="Drops tokens whose probability is below this fraction of the top token's probability. Filters unlikely candidates."
-              />
+              <div className="space-y-3">
+                {isVllm ? (
+                  <div className="space-y-2">
+                    <Select
+                      value={effectiveMinPMode(params)}
+                      onValueChange={(value) => {
+                        if (isMinPMode(value)) set("minPMode")(value);
+                      }}
+                    >
+                      <SelectTrigger aria-label="Min P mode" className="w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="server-default">
+                          Server default
+                        </SelectItem>
+                        <SelectItem value="custom">Custom</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    {effectiveMinPMode(params) === "server-default" ? (
+                      <p className="text-xs text-muted-foreground">
+                        Uses the server’s sampling settings.
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
+                <ParamSlider
+                  label="Min P"
+                  value={params.minP}
+                  disabled={
+                    isVllm && effectiveMinPMode(params) === "server-default"
+                  }
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  onChange={set("minP")}
+                  info="Drops tokens whose probability is below this fraction of the top token's probability. Filters unlikely candidates."
+                />
+              </div>
             ) : null}
             {showRepetitionPenalty ? (
               <ParamSlider

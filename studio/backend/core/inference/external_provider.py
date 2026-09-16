@@ -1156,7 +1156,7 @@ class ExternalProviderClient:
         messages: list[dict[str, Any]],
         model: str,
         temperature: float = 0.7,
-        top_p: float = 0.95,
+        top_p: Optional[float] = 0.95,
         max_tokens: Optional[int] = None,
         presence_penalty: float = 0.0,
         top_k: Optional[int] = None,
@@ -1310,10 +1310,11 @@ class ExternalProviderClient:
             "messages": messages,
             "stream": stream,
             "temperature": temperature,
-            "top_p": top_p,
             "presence_penalty": presence_penalty,
             **_continue_body,
         }
+        if top_p is not None:
+            body["top_p"] = top_p
         # Only alongside stream=True: the field is rejected on a non-streaming request.
         if stream and self.provider_type in _USAGE_STREAM_OPTION_PROVIDERS:
             body["stream_options"] = {"include_usage": True}
@@ -3198,6 +3199,21 @@ class ExternalProviderClient:
                                 yield usage_line
                             yield "data: [DONE]"
                             await response.aclose()  # set PoolByteStream._closed=True FIRST
+                            break
+
+                        elif event_type == "error":
+                            if thinking_open:
+                                yield _content_chunk("</think>")
+                            error = event.get("error")
+                            error_type = error.get("type") if isinstance(error, dict) else None
+                            # An unhashable `type` from a stand-in gateway raised out of here.
+                            if not isinstance(error_type, str):
+                                error_type = None
+                            yield _error_sse_line(
+                                _ANTHROPIC_ERROR_STATUS.get(error_type, 502),
+                                _json.dumps(event),
+                                self.provider_type,
+                            )
                             break
                 except GeneratorExit:
                     await response.aclose()  # set PoolByteStream._closed=True FIRST
@@ -6257,7 +6273,7 @@ class ExternalProviderClient:
         messages: list[dict[str, Any]],
         model: str,
         temperature: float = 0.7,
-        top_p: float = 0.95,
+        top_p: Optional[float] = 0.95,
         max_tokens: Optional[int] = None,
         presence_penalty: float = 0.0,
     ) -> dict[str, Any]:
@@ -6270,9 +6286,10 @@ class ExternalProviderClient:
             "messages": messages,
             "stream": False,
             "temperature": temperature,
-            "top_p": top_p,
             "presence_penalty": presence_penalty,
         }
+        if top_p is not None:
+            body["top_p"] = top_p
         if max_tokens is not None:
             if self.provider_type == "openai":
                 body["max_completion_tokens"] = max_tokens
@@ -6657,6 +6674,22 @@ def _readable_provider_error(status_code: int, message: str, provider_type: str)
 
     text = text.strip()
     return f"{text} ({code})" if code and code not in text else text
+
+
+# A mid-stream error keeps the status its type maps to, so a rate limit still reads as 429.
+_ANTHROPIC_ERROR_STATUS = {
+    "invalid_request_error": 400,
+    "authentication_error": 401,
+    "billing_error": 402,
+    "permission_error": 403,
+    "not_found_error": 404,
+    "conflict_error": 409,
+    "request_too_large": 413,
+    "rate_limit_error": 429,
+    "api_error": 500,
+    "timeout_error": 504,
+    "overloaded_error": 529,
+}
 
 
 def _error_sse_line(

@@ -1,0 +1,167 @@
+# The native Windows on ARM install path, run on Windows on ARM: wheel-tag arithmetic, path handling and
+# PowerShell parsing, none of which fails the same way on x64. No GPU, CUDA or compiler, so a full install or a Tauri build is out of scope (ring and aws-lc-sys need clang for their aarch64 sources).
+name: Windows ARM64 CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'install.ps1'
+      - 'scripts/uninstall.ps1'
+      - 'scripts/uninstall.sh'
+      - 'studio/install_python_stack.py'
+      - 'studio/setup.ps1'
+      - 'pyproject.toml'
+      - 'studio/backend/requirements/**'
+      - 'tests/studio/install/test_woa_wheelhouse_prefers_pypi.py'
+      - 'tests/studio/install/test_woa_wheelhouse_guard_behaviour.py'
+      - 'tests/studio/install/test_woa_torch_index_persistence.py'
+      - 'tests/studio/install/test_diffusers_pin.py'
+      - 'tests/python/test_windows_arm64_wheelhouse_tags.py'
+      - 'tests/studio/test_uninstall_arg_guard.ps1'
+      - 'tests/studio/test_uninstall_dual_install_icon.ps1'
+      - 'tests/studio/test_uninstall_prebuilt_parity.ps1'
+      - 'tests/studio/test_uninstall_reparse_stop_roots.ps1'
+      - '.github/workflows/windows-arm64-ci.yml'
+  pull_request:
+    paths:
+      - 'install.ps1'
+      - 'scripts/uninstall.ps1'
+      - 'scripts/uninstall.sh'
+      - 'studio/install_python_stack.py'
+      - 'studio/setup.ps1'
+      - 'pyproject.toml'
+      - 'studio/backend/requirements/**'
+      - 'tests/studio/install/test_woa_wheelhouse_prefers_pypi.py'
+      - 'tests/studio/install/test_woa_wheelhouse_guard_behaviour.py'
+      - 'tests/studio/install/test_woa_torch_index_persistence.py'
+      - 'tests/studio/install/test_diffusers_pin.py'
+      - 'tests/python/test_windows_arm64_wheelhouse_tags.py'
+      - 'tests/studio/test_uninstall_arg_guard.ps1'
+      - 'tests/studio/test_uninstall_dual_install_icon.ps1'
+      - 'tests/studio/test_uninstall_prebuilt_parity.ps1'
+      - 'tests/studio/test_uninstall_reparse_stop_roots.ps1'
+      - '.github/workflows/windows-arm64-ci.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  woa:
+    # Free for public repositories since 2025-08-07; a fork on a private plan fails to start.
+    runs-on: windows-11-arm
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both shells: pwsh 7 is what CI has always run, and Windows PowerShell 5.1 is the only shell on a stock Windows box, which the CLI launches setup.ps1 with (see #8335).
+        powershell: [pwsh-7, windows-powershell-5.1]
+    name: woa (${{ matrix.powershell }})
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: The runner really is ARM64
+        shell: pwsh
+        run: |
+          $arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+          $proc = [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture
+          # Machine scope: an x64-emulated process reports AMD64 in its own environment block.
+          $machine = [Environment]::GetEnvironmentVariable(
+            "PROCESSOR_ARCHITECTURE", [EnvironmentVariableTarget]::Machine)
+          Write-Host "OSArchitecture=$arch ProcessArchitecture=$proc machine=$machine"
+          if ("$arch" -ne "Arm64") {
+            Write-Host "::error::this job is not running on ARM64 (OSArchitecture=$arch)"
+            exit 1
+          }
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.12'
+          # Required: the image ships an emulated x64 Python whose sysconfig says win-amd64.
+          architecture: 'arm64'
+
+      - name: The interpreter really is ARM64
+        shell: pwsh
+        run: |
+          python -c "import platform, sysconfig, sys; print(sys.version); print('machine', platform.machine()); print('platform', sysconfig.get_platform())"
+          python -c "import sysconfig, sys; p = sysconfig.get_platform(); sys.exit(0 if p == 'win-arm64' else (print(f'::error::sysconfig reports {p}, expected win-arm64') or 1))"
+
+      - run: python -m pip install -U pip pytest packaging
+
+      # 5.1 has no `pwsh` on PATH and the suites locate their shell with shutil.which("pwsh"), so without this they SKIP and report green. A copy, because CreateProcess will not run a .cmd.
+      - name: Put Windows PowerShell 5.1 on PATH as pwsh
+        if: matrix.powershell == 'windows-powershell-5.1'
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP "wps51"
+          New-Item -ItemType Directory -Path $dir -Force | Out-Null
+          $src = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+          if (-not (Test-Path -LiteralPath $src)) {
+            Write-Host "::error::Windows PowerShell 5.1 was not found at $src"
+            exit 1
+          }
+          Copy-Item -LiteralPath $src -Destination (Join-Path $dir "pwsh.exe") -Force
+          "$dir" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Which PowerShell the suites will use
+        shell: pwsh
+        run: |
+          $exe = (Get-Command pwsh).Source
+          $ver = & $exe -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
+          Write-Host "pwsh resolves to $exe (version $ver)"
+          $wanted = if ("${{ matrix.powershell }}" -eq "pwsh-7") { "7" } else { "5" }
+          if (-not $ver.StartsWith($wanted)) {
+            Write-Host "::error::expected PowerShell $wanted.x for this row, got $ver"
+            exit 1
+          }
+
+      # A skip is a failure here: these files exist for this row, and -rs only REPORTS skipped cases, so the summary line is read back and any skipped count fails the step.
+      - name: WoA installer and wheelhouse tests
+        shell: pwsh
+        env:
+          UNSLOTH_NO_TORCH: '1'
+        run: |
+          & python -m pytest `
+            tests/studio/install/test_woa_wheelhouse_prefers_pypi.py `
+            tests/studio/install/test_woa_wheelhouse_guard_behaviour.py `
+            tests/studio/install/test_woa_torch_index_persistence.py `
+            tests/studio/install/test_diffusers_pin.py `
+            tests/python/test_windows_arm64_wheelhouse_tags.py `
+            -q -rs 2>&1 | Tee-Object -Variable pytestOut
+          $rc = $LASTEXITCODE
+          $summary = ($pytestOut | Where-Object { $_ -match '\d+ (passed|failed|error)' } | Select-Object -Last 1)
+          if ($rc -ne 0) { exit $rc }
+          if ($summary -match '(\d+) skipped') {
+            Write-Host "::error::$($Matches[1]) test(s) skipped on the row they exist for: $summary"
+            exit 1
+          }
+
+      - name: Uninstaller tests
+        shell: pwsh
+        run: |
+          $failed = @()
+          foreach ($t in @(
+            "test_uninstall_arg_guard",
+            "test_uninstall_dual_install_icon",
+            "test_uninstall_prebuilt_parity",
+            "test_uninstall_reparse_stop_roots"
+          )) {
+            $path = "tests/studio/$t.ps1"
+            if (-not (Test-Path -LiteralPath $path)) { continue }
+            Write-Host "::group::$t"
+            & (Get-Command pwsh).Source -NoProfile -File $path
+            $code = $LASTEXITCODE
+            Write-Host "::endgroup::"
+            if ($code -ne 0) { $failed += "$t (exit $code)" }
+          }
+          if ($failed.Count -gt 0) {
+            Write-Host "::error::failing uninstaller tests: $($failed -join ', ')"
+            exit 1
+          }

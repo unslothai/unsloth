@@ -86,7 +86,20 @@ def _run_diffusion_child(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 
 def _default_target(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
     # First thing in the child (before torch): self-bind to parent death and scrub the native path
-    # secret, like the other workers.
+    # secret, like the other workers. Token policy first of all, ahead of the account branch
+    # below, which returns: both children need it applied.
+    if not config.get("allow_ambient", True):
+        # Before any huggingface_hub import, as the LLM worker does: a child env is seeded from
+        # the parent's, so not setting a token is not denying one.
+        import os
+
+        from hub.utils.hf_tokens import apply_token_to_child_env, hf_token_arg, is_anonymous
+
+        hf_token = hf_token_arg(config.get("hf_token"), allow_ambient_token = False)
+        apply_token_to_child_env(os.environ, hf_token)
+        if is_anonymous(hf_token):
+            os.environ["HF_TOKEN_PATH"] = os.devnull
+
     account = config.pop("_job_account", None)
     if account is not None:
         from core.training.account_jobs import run_account_child

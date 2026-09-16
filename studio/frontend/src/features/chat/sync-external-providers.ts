@@ -325,7 +325,7 @@ export async function syncExternalProvidersFromBackend(
 
 const MODEL_CATALOG_TTL_MS = 24 * 60 * 60 * 1000;
 // The live catalog is stored per provider type, so only the provider's own endpoint may write it; a connection
-// pointed at a compatible gateway keeps the bundled snapshot instead of overwriting OpenRouter's entries.
+// pointed at a compatible gateway keeps the built-in tables instead of overwriting OpenRouter's entries.
 const MODEL_CATALOG_PROVIDER_BASE_URLS: Record<string, string> = {
   openrouter: "https://openrouter.ai/api/v1",
 };
@@ -370,7 +370,7 @@ export async function refreshProviderModelCatalogs(
       if (isCurrent && !isCurrent()) return;
       if (models.length > 0) setProviderModelCatalog(providerType, models);
     } catch {
-      // Offline or unauthorized: the bundled snapshot answers until the next sync.
+      // Offline or unauthorized: the built-in tables answer until the next sync.
     }
   }
 }

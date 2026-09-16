@@ -60,11 +60,11 @@ export function redactDiagnosticsText(text: string): string {
     "<studio_home>",
   );
   redacted = redacted.replace(
-    /[A-Z]:\\Users\\[^\s\\]+\\\.unsloth\\studio/gi,
+    /[A-Z]:\\Users\\[^\s\\:]+\\\.unsloth\\studio/gi,
     "<studio_home>",
   );
   redacted = redacted.replace(/(?:\/Users|\/home)\/[^\s/]+/gi, "$HOME");
-  redacted = redacted.replace(/[A-Z]:\\Users\\[^\s\\]+/gi, "%USERPROFILE%");
+  redacted = redacted.replace(/[A-Z]:\\Users\\[^\s\\:]+/gi, "%USERPROFILE%");
   redacted = redacted.replace(
     /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi,
     "<redacted-email>",

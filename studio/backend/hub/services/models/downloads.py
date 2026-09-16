@@ -151,9 +151,6 @@ def _spawn_download_worker(
     args = ["--repo-id", repo_id]
     if variant:
         args.extend(["--variant", variant])
-    if files:
-        # Via a temp file, not argv: a pipeline repo's list runs to hundreds of names.
-        args.extend(["--files-json", download_lifecycle.write_files_manifest(files)])
     return download_lifecycle.spawn_worker(
         args,
         hf_token,
@@ -161,6 +158,7 @@ def _spawn_download_worker(
         protected_blob_hashes = protected_blob_hashes,
         cache_env = cache_env,
         allow_ambient_token = allow_ambient_token,
+        files = files,
     )
 
 
@@ -216,13 +214,24 @@ async def download_model_response(
             raise HTTPException(status_code = 400, detail = f"Invalid scope_id: {body.scope_id!r}")
         variant = scope_variant
     key = _download_job_key(repo_id, variant)
-    # Off the event loop: resolving "auto" can run the Xet reachability probe, and a blackholed DNS makes that outlast its 3s budget while every other request waits behind it.
+    # Size and Auto resolution may perform network probes, so keep both off the event loop.
+    largest_file_bytes = await asyncio.to_thread(
+        download_lifecycle.largest_download_file_bytes,
+        "model",
+        repo_id,
+        variant = variant,
+        # Mirror the claim and the worker below: files are honoured only under a scope_id.
+        files = scoped_files if scope_variant is not None else None,
+        hf_token = hf_token,
+        allow_ambient_token = allow_ambient_token,
+    )
     use_xet, transport_reason = await asyncio.to_thread(
         download_lifecycle.resolve_requested_use_xet,
         getattr(body, "transport_mode", None),
         body.use_xet,
+        largest_file_bytes = largest_file_bytes,
     )
-    transport = download_lifecycle.resolve_transport(use_xet)
+    transport = download_lifecycle.resolve_transport(use_xet, largest_file_bytes = largest_file_bytes)
     logger.info("Download transport for %s: %s (%s)", repo_id, transport, transport_reason)
     from utils.hf_cache_settings import get_hf_cache_paths
 
@@ -275,94 +284,99 @@ async def download_model_response(
                 variant_progress_blob_hashes,
             )
 
-    claimed, claim_state = _registry.claim(
-        key,
-        transport,
-        repo_type = "model",
-        repo_id = repo_id,
-        variant = variant,
-        blob_hashes = variant_blob_hashes,
-        progress_blob_hashes = variant_progress_blob_hashes,
-        completed_baseline_bytes = completed_baseline_bytes,
-        admission_check = lambda: not _load_in_flight(repo_id),
-        hub_cache = str(cache_paths.hub_cache),
-        xet_cache = str(cache_paths.xet_cache),
-        scoped_files = scoped_files if scope_variant is not None else None,
-    )
-    generation = _registry.current_generation(key)
-    if not claimed:
-        download_lifecycle.require_download_account(_registry, key)
-        if claim_state == "admission_blocked":
-            raise _load_in_flight_error(repo_id)
-        if claim_state == "scope_file_mismatch":
-            raise HTTPException(
-                status_code = 409,
-                detail = (
-                    f"Another download for '{repo_id}' is already fetching a different "
-                    "set of files. Wait for it to finish (or cancel it), then start "
-                    "this one."
-                ),
-            )
-        # claim_state is the blocking job's state. Attaching and accepting are one verdict: only this key's own in-flight job can be joined, and a cross-variant conflict or in-progress delete joined nothing.
-        adoptable = _registry.adoptable(key)
-        return {
-            "job_key": key,
-            "state": claim_state,
-            "accepted": adoptable,
-            "attached": adoptable,
-            "generation": generation,
-            # An adopted job keeps the transport it started on, so report it rather than let the caller assume the one it asked for.
-            "transport": _registry.job_transport(key),
-            # And its cancel marker: a run that fell back from Xet to HTTP still cancels into a restart-only partial.
-            "cancel_transport": _registry.job_cancel_transport(key),
-        }
-    # Record ownership with the claim, not at launch, or the last downloader keeps the key.
-    download_lifecycle.record_download_account(_registry, key)
-    # Only then read the tombstone: an account retired during the awaits must not spawn.
-    download_lifecycle.require_live_account(_registry, key)
-    download_manifest.clear_cancel_marker(
-        "model",
-        repo_id,
-        variant,
-        hub_cache = cache_paths.hub_cache,
-    )
-    # Blobs a concurrent same-repo variant is already writing, such as a shared mmproj: the worker must not purge these during cache preparation.
-    protected_blob_hashes = _registry.peer_blob_hashes(key) if variant else frozenset()
-
-    label = f"{repo_id}{f' [{variant}]' if variant else ''}"
-    state = download_lifecycle.launch_worker(
-        _registry,
-        key,
-        spawn = lambda: _spawn_download_worker(
+    def claim_and_launch():
+        # Claim and launch as one operation, off the loop: a cancel while queued must not
+        # leave a claimed job with no worker, and token resolution can do network I/O.
+        claimed, claim_state = _registry.claim(
+            key,
+            transport,
+            repo_type = "model",
+            repo_id = repo_id,
+            variant = variant,
+            blob_hashes = variant_blob_hashes,
+            progress_blob_hashes = variant_progress_blob_hashes,
+            completed_baseline_bytes = completed_baseline_bytes,
+            admission_check = lambda: not _load_in_flight(repo_id),
+            hub_cache = str(cache_paths.hub_cache),
+            xet_cache = str(cache_paths.xet_cache),
+            scoped_files = scoped_files if scope_variant is not None else None,
+        )
+        generation = _registry.current_generation(key)
+        if not claimed:
+            download_lifecycle.require_download_account(_registry, key)
+            if claim_state == "admission_blocked":
+                raise _load_in_flight_error(repo_id)
+            if claim_state == "scope_file_mismatch":
+                raise HTTPException(
+                    status_code = 409,
+                    detail = (
+                        f"Another download for '{repo_id}' is already fetching a different "
+                        "set of files. Wait for it to finish (or cancel it), then start "
+                        "this one."
+                    ),
+                )
+            # claim_state is the blocking job's state. Attaching and accepting are one verdict: only this key's own in-flight job can be joined, and a cross-variant conflict or in-progress delete joined nothing.
+            adoptable = _registry.adoptable(key)
+            return {
+                "job_key": key,
+                "state": claim_state,
+                "accepted": adoptable,
+                "attached": adoptable,
+                "generation": generation,
+                # An adopted job keeps the transport it started on, so report it rather than let the caller assume the one it asked for.
+                "transport": _registry.job_transport(key),
+                # And its cancel marker: a run that fell back from Xet to HTTP still cancels into a restart-only partial.
+                "cancel_transport": _registry.job_cancel_transport(key),
+            }
+        # Record ownership with the claim, not at launch, or the last downloader keeps the key.
+        download_lifecycle.record_download_account(_registry, key)
+        # Only then read the tombstone: an account retired during the awaits must not spawn.
+        download_lifecycle.require_live_account(_registry, key)
+        download_manifest.clear_cancel_marker(
+            "model",
             repo_id,
             variant,
-            hf_token,
-            use_xet = use_xet,
-            protected_blob_hashes = protected_blob_hashes,
-            cache_env = cache_env,
-            files = scoped_files if scope_variant is not None else None,
-            allow_ambient_token = allow_ambient_token,
-        ),
-        hf_token = hf_token,
-        allow_ambient_token = allow_ambient_token,
-        label = label,
-        log_prefix = "Download",
-        logger = logger,
-        repo_type = "model",
-        repo_id = repo_id,
-        transport = transport,
-        watch_name = f"hf-download-watch-{repo_id}",
-    )
+            hub_cache = cache_paths.hub_cache,
+        )
+        # Blobs a concurrent same-repo variant is already writing, such as a shared mmproj: the worker must not purge these during cache preparation.
+        protected_blob_hashes = _registry.peer_blob_hashes(key) if variant else frozenset()
 
-    return {
-        "job_key": key,
-        "state": state,
-        "accepted": True,
-        "attached": False,
-        "generation": generation,
-        # The transport actually resolved: an explicit "xet" is downgraded to HTTP where hf_xet is unavailable, and a client that assumed its request stood would offer the wrong stop control.
-        "transport": transport,
-    }
+        label = f"{repo_id}{f' [{variant}]' if variant else ''}"
+        state = download_lifecycle.launch_worker(
+            _registry,
+            key,
+            spawn = lambda: _spawn_download_worker(
+                repo_id,
+                variant,
+                hf_token,
+                use_xet = use_xet,
+                protected_blob_hashes = protected_blob_hashes,
+                cache_env = cache_env,
+                files = scoped_files if scope_variant is not None else None,
+                allow_ambient_token = allow_ambient_token,
+            ),
+            hf_token = hf_token,
+            allow_ambient_token = allow_ambient_token,
+            label = label,
+            log_prefix = "Download",
+            logger = logger,
+            repo_type = "model",
+            repo_id = repo_id,
+            transport = transport,
+            watch_name = f"hf-download-watch-{repo_id}",
+        )
+
+        return {
+            "job_key": key,
+            "state": state,
+            "accepted": True,
+            "attached": False,
+            "generation": generation,
+            # The transport actually resolved: an explicit "xet" is downgraded to HTTP where hf_xet is unavailable, and a client that assumed its request stood would offer the wrong stop control.
+            "transport": transport,
+        }
+
+    return await asyncio.to_thread(claim_and_launch)
 
 
 def retire_account_downloads() -> None:

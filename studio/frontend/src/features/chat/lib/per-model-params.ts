@@ -10,6 +10,8 @@ import type {
   PersistedInferenceParams,
 } from "../types/runtime";
 
+import { normalizeSavedMinP } from "./min-p-policy.ts";
+
 export type PersistedInferenceParamKey = keyof PersistedInferenceParams;
 
 /** Params that persist across a reload. `checkpoint` is the key, not a value. */
@@ -18,6 +20,7 @@ export const PERSISTED_INFERENCE_PARAM_KEYS = [
   "topP",
   "topK",
   "minP",
+  "minPMode",
   "repetitionPenalty",
   "presencePenalty",
   "maxSeqLength",
@@ -118,7 +121,8 @@ export function getReplayedParams(
   if (!(enabled && checkpointChanged)) {
     return capped(current);
   }
-  const remembered = paramsByModel[modelId];
+  const saved = paramsByModel[modelId];
+  const remembered = saved ? normalizeSavedMinP(saved) : undefined;
   if (!remembered) {
     return capped(current);
   }

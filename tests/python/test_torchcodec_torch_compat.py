@@ -214,7 +214,12 @@ def test_security_audit_covers_every_installable_torchcodec_line():
     audited = ["audio-torch211", "audio-torch210", "audio-torch290", "audio-torch280"]
     # Both halves of the workflow build the inputs; one is the advisory audit, one is
     # scan_packages. 211 is folded into unsloth-deps.txt, the rest get a file each.
-    assert text.count('optional-dependencies"]["audio-torch211"]') == 2
+    # Either index shape counts: the workflow now reaches extras through a guarded helper
+    # that names a missing group. What matters is that both halves still look the group up.
+    indexed = text.count('optional-dependencies"]["audio-torch211"]') + text.count(
+        'extra("audio-torch211")'
+    )
+    assert indexed == 2, f"both halves must index audio-torch211, found {indexed}"
     assert text.count("for extra in audio-torch210 audio-torch290 audio-torch280; do") == 2
     for extra in audited[1:]:
         assert f"audit-reqs/{extra}.txt" in text, extra

@@ -1109,6 +1109,11 @@ export function getExternalReasoningCapabilities(
     return withEnableThinkingStyle();
   }
 
+  if (normalizedProvider === "openrouter" && !normalizedModel.startsWith("openrouter/")) {
+    const catalog = catalogCapabilities(normalizedProvider, normalizedModel);
+    if (catalog) return catalog;
+  }
+
   // Some OpenRouter-routed ids are mandatory-reasoning and must stay on even when they
   // arrive through aliased or custom provider routes.
   if (isOpenRouterMandatoryReasoningModel(normalizedModel)) {
@@ -1128,9 +1133,9 @@ export function getExternalReasoningCapabilities(
   switch (normalizedProvider) {
     case "openrouter": {
       // OpenRouter's unified `reasoning` param is accepted everywhere and no-ops for non-reasoning
-      // models, so a route the catalog does not know still gets a toggleable control.
-      if (normalizedModel.startsWith("openrouter/")) return OPENROUTER_GENERIC_TOGGLE;
-      return catalogCapabilities("openrouter", normalizedModel) ?? OPENROUTER_GENERIC_TOGGLE;
+      // models, so a route the live catalog does not know still gets a toggleable control. The
+      // catalog lookup itself already ran above.
+      return OPENROUTER_GENERIC_TOGGLE;
     }
     case "kimi": {
       const table = resolveKimiReasoningCapabilities(modelForMatching);

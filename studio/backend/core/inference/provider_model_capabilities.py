@@ -44,7 +44,12 @@ def openrouter_model_capabilities(raw: dict[str, Any]) -> dict[str, Any] | None:
     if isinstance(reasoning_raw, dict):
         default_effort = reasoning_raw.get("default_effort")
         reasoning = {
-            "supported_efforts": _sorted_efforts(reasoning_raw.get("supported_efforts")),
+            "supported_efforts": (
+                list(REASONING_EFFORT_SCALE)
+                if "supported_efforts" in reasoning_raw
+                and reasoning_raw["supported_efforts"] is None
+                else _sorted_efforts(reasoning_raw.get("supported_efforts"))
+            ),
             "mandatory": reasoning_raw.get("mandatory") is True,
             "default_effort": default_effort if default_effort in REASONING_EFFORT_SCALE else None,
             "default_enabled": (

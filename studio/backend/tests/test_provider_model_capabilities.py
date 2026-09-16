@@ -239,6 +239,23 @@ def test_a_bare_toggle_still_maps_to_enabled():
     assert "reasoning" not in _openrouter_body()
 
 
+def test_null_efforts_accept_the_full_scale_while_omitted_efforts_remain_toggle_only():
+    unrestricted = openrouter_model_capabilities(
+        {"id": "acme/reasoning", "reasoning": {"supported_efforts": None}}
+    )
+    assert unrestricted["reasoning"]["supported_efforts"] == [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+    ]
+    toggle = openrouter_model_capabilities({"id": "acme/reasoning", "reasoning": {}})
+    assert toggle["reasoning"]["supported_efforts"] is None
+
+
 _RAW_MODELS_DEV = {
     "openrouter": {
         "models": {

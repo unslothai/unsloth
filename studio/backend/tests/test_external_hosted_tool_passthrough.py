@@ -720,3 +720,15 @@ def test_b_a_credential_reading_python_call_is_gated(monkeypatch):
     )
     assert [s["awaiting_confirmation"] for s in starts] == [True]
     assert executed == []
+
+
+def test_a_request_without_tools_never_scans_the_skill_roots(monkeypatch):
+    inf = _install(monkeypatch, "openai")
+
+    def _scan():
+        raise AssertionError("skill roots scanned for a request that asked for no tools")
+
+    monkeypatch.setattr(inf, "_enabled_agent_skills", _scan)
+    chunks = _run(inf, _payload(enable_tools = False))
+    assert FakeExternalClient.last["passthrough"] is not None
+    assert any("hi" in chunk for chunk in chunks)

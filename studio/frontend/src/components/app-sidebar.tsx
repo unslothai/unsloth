@@ -201,7 +201,7 @@ import { useEffectiveProfile, UserAvatar } from "@/features/profile";
 import { resolveNavRowState } from "@/components/nav-row-state";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { videoNavHint } from "@/config/hardware-verdict";
-import { clearAuthTokens, logout } from "@/features/auth";
+import { AUTH_SESSION_ENDING_EVENT, clearAuthTokens, logout } from "@/features/auth";
 import { TOUR_OPEN_EVENT } from "@/features/tour";
 import {
   deleteTrainingRun,
@@ -2829,6 +2829,7 @@ export function AppSidebar() {
       // Desktop signs out through the OS account menu, not here.
       if (isTauri) return;
       void (async () => {
+        if (!window.dispatchEvent(new Event(AUTH_SESSION_ENDING_EVENT, { cancelable: true }))) return;
         try {
           await logout();
         } catch {
@@ -3051,16 +3052,14 @@ export function AppSidebar() {
           : showWorkSpinner
             ? // A spinner glyph cannot truncate, so clear the kebab's 30px inset (pr-1.5 + size-6).
               "group-hover/recent-item:pr-8 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-8 [@media(pointer:coarse)]:pr-10"
-            : // Hover room for the kebab only; title keeps one more character.
-              // Touch rows clear the full always-visible kebab hit area (pr-10).
-              "group-hover/recent-item:pr-6 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-6 [@media(pointer:coarse)]:pr-10",
-      // A focused kebab is revealed without hover, so a spinner row reserves the same room.
-      showWorkSpinner &&
-        (variant === "project"
-          ? "group-has-[.sidebar-row-action:focus-visible]/project-chat-item:pr-14"
-          : isPinned
-            ? "group-has-[.sidebar-row-action:focus-visible]/recent-item:pr-16"
-            : "group-has-[.sidebar-row-action:focus-visible]/recent-item:pr-8"),
+            : // Clear the full menu circle only while it is visible.
+              "group-hover/recent-item:pr-8 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-8 [@media(pointer:coarse)]:pr-10",
+      // Keyboard focus reveals the action without hover.
+      variant === "project"
+        ? "group-has-[.sidebar-row-action:focus-visible]/project-chat-item:pr-14"
+        : isPinned
+          ? "group-has-[.sidebar-row-action:focus-visible]/recent-item:pr-16"
+          : "group-has-[.sidebar-row-action:focus-visible]/recent-item:pr-8",
     );
 
     const isRenamingThis =
@@ -4450,6 +4449,7 @@ export function AppSidebar() {
               {!isTauri && (
                 <DropdownMenuItem
                   onSelect={async () => {
+                    if (!window.dispatchEvent(new Event(AUTH_SESSION_ENDING_EVENT, { cancelable: true }))) return;
                     // Best-effort server revocation; ignore network errors so the local clear still runs.
                     try {
                       await logout();

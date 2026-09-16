@@ -78,6 +78,7 @@ from utils.download_transport_settings import (
     set_download_transport_mode,
 )
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES, chat_template_byte_length
+from utils.reasoning_budget import validate_reasoning_budget_message
 from utils.coding_agents import CODING_AGENTS, detect_installed_coding_agents
 from utils.model_memory_settings import (
     DEFAULT_KEEP_RESIDENT,
@@ -810,6 +811,8 @@ class ModelOverridePayload(BaseModel):
     spec_draft_n_max: Optional[int] = Field(default = None, ge = 1, le = 16)
     # Parallel decode slots (llama-server --parallel), GGUF-only; None follows the server default.
     n_parallel: Optional[int] = Field(default = None, ge = PARALLEL_SLOTS_MIN, le = PARALLEL_SLOTS_MAX)
+    reasoning_budget: Optional[int] = Field(default = None, ge = -1, le = 2_147_483_647)
+    reasoning_budget_message: Optional[str] = None
     # prompt batch sizes (--batch-size / --ubatch-size), gguf-only; none = llama.cpp defaults
     n_batch: Optional[int] = Field(default = None, ge = BATCH_SIZE_MIN, le = BATCH_SIZE_MAX)
     n_ubatch: Optional[int] = Field(default = None, ge = BATCH_SIZE_MIN, le = BATCH_SIZE_MAX)
@@ -825,6 +828,9 @@ class ModelOverridePayload(BaseModel):
     # predates them is indistinguishable from a user clearing them. Only a client that sets this may clear by
     # omission; default False, so an old payload is the safe case.
     mirrors_server_tuning: bool = False
+    # The reasoning pair came later than the four, so a build that mirrors them can still
+    # predate it: its own flag, same contract.
+    mirrors_reasoning_budget: bool = False
     tensor_parallel: bool = False
     disable_vision: bool = False
     # Validated in bytes below: pydantic counts characters, so a multi-byte template would pass.
@@ -854,11 +860,17 @@ class ModelOverridePayload(BaseModel):
             raise ValueError(f"Chat template exceeds the {MAX_CHAT_TEMPLATE_BYTES}-byte limit.")
         return value
 
+    @field_validator("reasoning_budget_message")
+    @classmethod
+    def _validate_reasoning_budget_message(cls, value: Optional[str]) -> Optional[str]:
+        return None if value is None else validate_reasoning_budget_message(value)
+
     @field_validator(
         "max_seq_length",
         "custom_context_length",
         "spec_draft_n_max",
         "n_parallel",
+        "reasoning_budget",
         "n_batch",
         "n_ubatch",
         "ctx_checkpoints",
@@ -930,40 +942,84 @@ _NO_LAUNCH = object()
 
 
 def _active_launch_placement():
-    """``(state, policy_active, mlock_applicable)`` for the running child. ``state`` is ``_NO_LAUNCH``
-    when nothing is running or coming up, so the caller can tell "no process" from "a process with no
-    load-mode"."""
+    """``(state, policy_active, mlock_applicable, direct_io, dio_applicable, dio_managed,
+    pending_settings)`` for the running child.
+
+    ``state`` is ``_NO_LAUNCH`` when nothing is running or coming up, so the
+    caller can tell "no process" apart from "a process with no load-mode".
+    """
     try:
         from routes.inference import get_llama_cpp_backend
 
         backend = get_llama_cpp_backend()
-        pending = bool(getattr(backend, "_memory_launch_pending", False))
-        if not backend.is_active and not pending:
-            return _NO_LAUNCH, False, True
+        # Read ONCE: two reads can straddle the marker clear, leaving a killed child's
+        # placement answering for the launch that replaced it. One attribute carries both
+        # "is a launch pending" and "what is it committed to".
+        pending = getattr(backend, "_memory_pending_launch", None)
+        if not backend.is_active and pending is None:
+            return _NO_LAUNCH, False, True, None, False, False, None
         return (
             getattr(backend, "_memory_state", None),
             bool(getattr(backend, "_memory_policy_active", False)),
             bool(getattr(backend, "_memory_mlock_applicable", True)),
+            getattr(backend, "_memory_direct_io", None),
+            bool(getattr(backend, "_memory_dio_applicable", False)),
+            # The pair the POLICY emitted, not the aggregate: a user's own `dio` must
+            # not be withdrawn on their behalf.
+            bool(getattr(backend, "_memory_dio_flags", None)),
+            pending,
         )
     except Exception:
-        return _NO_LAUNCH, False, True
+        return _NO_LAUNCH, False, True, None, False, False, None
+
+
+def _launch_effect_of(settings):
+    """The part of ``(keep_resident, no_ram_reserve)`` a launch can express.
+
+    Mirrors ``should_mlock``: the page-lock is emitted only when residency is on and
+    no-reserve is off, so with no-reserve on the residency toggle reaches no flag.
+    """
+    keep_resident, no_ram_reserve = settings
+    return (keep_resident and not no_ram_reserve, no_ram_reserve)
 
 
 def _model_memory_reload_required() -> bool:
-    """True when the loaded process's memory placement contradicts the settings. Compares the state the child
-    ACTUALLY launched with (env defaults plus last-wins argv, so a user-supplied --mlock / --no-mmap counts)
-    against what the current settings would produce. The idle-unload veto applies immediately, so only
-    placement can be stale. Keyed on is_active, not is_loaded: a save that lands while a load is still
-    passing its health check would otherwise report no reload while the child is already committed to the
-    pre-save flags."""
-    state, policy_active, mlock_applicable = _active_launch_placement()
+    """True when the loaded process's memory placement contradicts the settings.
+
+    Compares the state the child ACTUALLY launched with -- env defaults plus
+    last-wins argv, so a user-supplied --mlock / --no-mmap counts -- against
+    what the current settings would produce. The idle-unload veto applies
+    immediately (the loop re-reads each poll), so only placement can be stale.
+
+    Keyed on is_active, not is_loaded: a save that lands while a load is still
+    passing its health check would otherwise report no reload while the child is
+    already committed to the pre-save flags. _memory_launch_pending covers the
+    same window before Popen, where the placement is decided but _process is
+    still None.
+    """
+    state, policy_active, mlock_applicable, direct_io, dio_applicable, dio_managed, pending = (
+        _active_launch_placement()
+    )
     if state is _NO_LAUNCH:
         return False
+
+    # A launch in flight has no resolved flags and the comparator reads None as "not
+    # governed", so answer from its snapshot. Whenever one is pending, NOT only when
+    # `state` is None: replacing a model leaves the old child's `_memory_state` behind.
+    if pending is not None:
+        from utils.model_memory_settings import get_model_memory_settings
+
+        # By EFFECT, not the literal pair: no-reserve wins over keep-resident for every
+        # loader flag, so flipping keep-resident under it only moves the idle-unload veto,
+        # which the loop re-reads each poll. The raw tuple asked for an inexpressible reload.
+        return _launch_effect_of(get_model_memory_settings()) != _launch_effect_of(pending)
 
     # Same predicate the duplicate-load comparator uses.
     from core.inference.llama_server_args import memory_state_satisfies_settings
 
-    return not memory_state_satisfies_settings(state, policy_active, mlock_applicable)
+    return not memory_state_satisfies_settings(
+        state, policy_active, mlock_applicable, direct_io, dio_applicable, dio_managed
+    )
 
 
 def _model_memory_mlock_active(want_mlock: bool) -> bool:
@@ -974,7 +1030,9 @@ def _model_memory_mlock_active(want_mlock: bool) -> bool:
     user's own --mlock counts, since the resolver reads the launched argv."""
     if not want_mlock:
         return False
-    state, _policy_active, _applicable = _active_launch_placement()
+    state, _policy_active, _applicable, _direct_io, _dio_applicable, _dio_managed, _pending = (
+        _active_launch_placement()
+    )
     if state is _NO_LAUNCH:
         return True
     return bool(state and state[0])
@@ -1537,6 +1595,43 @@ def _fallback_supplies_extra_args(model_id: str, target_id: str) -> bool:
     return False
 
 
+def _fallback_supplies_reasoning_flag(model_id: str, target_id: str) -> bool:
+    """Whether a load for this model would still pick a reasoning flag off another entry.
+
+    The -1/"" pair is stored rather than dropped so a qualified row survives as a tombstone that
+    shadows such a flag. A later save leaving the controls at their defaults omits the pair, and
+    without this the row can empty out, be deleted, and hand the reset value straight back.
+    """
+    from core.inference.llama_server_args import (
+        parse_reasoning_budget_message_override,
+        parse_reasoning_budget_override,
+    )
+    from utils.openai_auto_switch_settings import get_model_override
+
+    for candidate in (
+        _bare_model_id(model_id),
+        _legacy_standalone_gguf_key(model_id),
+    ):
+        if not candidate or candidate == target_id:
+            continue
+        stored = get_model_override(candidate)
+        if stored.get("reasoning_budget", -1) != -1 or stored.get("reasoning_budget_message"):
+            return True
+        stored_args = stored.get("llama_extra_args")
+        if not stored_args:
+            continue
+        try:
+            if (
+                parse_reasoning_budget_override(stored_args) is not None
+                or parse_reasoning_budget_message_override(stored_args) is not None
+            ):
+                return True
+        except ValueError:
+            # A malformed stored flag is the loader's problem, not this save's.
+            continue
+    return False
+
+
 def _other_quants_remain(bare_id: str, removed_ids: list[str]) -> bool:
     """Whether a quant of ``bare_id`` other than the ones being removed still has an entry. Such a quant has its
     own settings and never reads the bare fallback, so this is not "is anyone inheriting" but "is this
@@ -1624,7 +1719,11 @@ def _serialized_override_write(func):
 def update_openai_auto_switch_override(
     payload: ModelOverridePayload, current_subject: str = Depends(get_current_subject)
 ) -> ModelOverridesResponse:
-    from core.inference.llama_server_args import drop_managed_flags, validate_extra_args
+    from core.inference.llama_server_args import (
+        drop_managed_flags,
+        strip_shadowing_flags,
+        validate_extra_args,
+    )
     from utils.openai_auto_switch_settings import get_model_override
 
     try:
@@ -1643,6 +1742,7 @@ def update_openai_auto_switch_override(
                 "remove",
                 "fill_absent_fields",
                 "mirrors_server_tuning",
+                "mirrors_reasoning_budget",
             },
             exclude_none = True,
         )
@@ -1681,6 +1781,22 @@ def update_openai_auto_switch_override(
                         requested_extra_args = get_model_override(alias_id).get("llama_extra_args")
                         if requested_extra_args is not None:
                             break
+        fields_set = payload.model_fields_set
+        reset_reasoning_budget = "reasoning_budget" in fields_set and payload.reasoning_budget == -1
+        reset_reasoning_budget_message = (
+            "reasoning_budget_message" in fields_set and payload.reasoning_budget_message == ""
+        )
+        if not payload.fill_absent_fields and requested_extra_args:
+            requested_extra_args = strip_shadowing_flags(
+                requested_extra_args,
+                strip_context = False,
+                strip_cache = False,
+                strip_spec = False,
+                strip_template = False,
+                strip_split_mode = False,
+                strip_reasoning_budget = reset_reasoning_budget,
+                strip_reasoning_budget_message = reset_reasoning_budget_message,
+            )
         # Not validated on an explicit remove: a 400 would only leave the override in place.
         if payload.remove is True:
             extra_args = []
@@ -1700,8 +1816,13 @@ def update_openai_auto_switch_override(
         # the caller never knew about must survive it. Gated on is_removal, not on payload.remove: the documented
         # legacy contract is a payload carrying only model_id, which leaves remove None.
         _tuning_fields = ("load_mode", "spec_draft_cache_type", "ctx_checkpoints", "cache_ram")
-        _kept_tuning = {name: getattr(payload, name) for name in _tuning_fields}
-        if not payload.mirrors_server_tuning and not is_removal:
+        _reasoning_fields = ("reasoning_budget", "reasoning_budget_message")
+        _kept_tuning = {name: getattr(payload, name) for name in _tuning_fields + _reasoning_fields}
+        # Each group is carried only for a client that does not mirror it.
+        _carried_fields = (() if payload.mirrors_server_tuning else _tuning_fields) + (
+            () if payload.mirrors_reasoning_budget else _reasoning_fields
+        )
+        if _carried_fields and not is_removal:
             # The same spellings the extra-args carry-over walks: a cached repo is not an ordinary folded match,
             # so a save under the repo id would find nothing and retire the alias with its tuning.
             _alias_ids = [payload.model_id]
@@ -1722,7 +1843,7 @@ def update_openai_auto_switch_override(
                 _stored_tuning = get_model_override(_alias_id)
                 if not _stored_tuning:
                     continue
-                for name in _tuning_fields:
+                for name in _carried_fields:
                     if _kept_tuning[name] is None:
                         _kept_tuning[name] = _stored_tuning.get(name)
                 break
@@ -1777,6 +1898,18 @@ def update_openai_auto_switch_override(
                 and not payload.fill_absent_fields
                 and _fallback_supplies_extra_args(payload.model_id, target_id)
             )
+            # A default the caller did not send still has to be written while a broader entry
+            # would otherwise answer with the flag this row exists to shadow.
+            _kept_reasoning_budget = _kept_tuning["reasoning_budget"]
+            _kept_reasoning_budget_message = _kept_tuning["reasoning_budget_message"]
+            if (
+                not payload.fill_absent_fields
+                and _kept_reasoning_budget is None
+                and _kept_reasoning_budget_message is None
+                and _fallback_supplies_reasoning_flag(payload.model_id, target_id)
+            ):
+                _kept_reasoning_budget = -1
+                _kept_reasoning_budget_message = ""
             set_model_override(
                 target_id,
                 llama_extra_args = extra_args,
@@ -1788,6 +1921,16 @@ def update_openai_auto_switch_override(
                 speculative_type = payload.speculative_type,
                 spec_draft_n_max = payload.spec_draft_n_max,
                 n_parallel = payload.n_parallel,
+                reasoning_budget = (
+                    None
+                    if payload.fill_absent_fields and reset_reasoning_budget
+                    else _kept_reasoning_budget
+                ),
+                reasoning_budget_message = (
+                    None
+                    if payload.fill_absent_fields and reset_reasoning_budget_message
+                    else _kept_reasoning_budget_message
+                ),
                 n_batch = payload.n_batch,
                 n_ubatch = payload.n_ubatch,
                 load_mode = _kept_tuning["load_mode"],
@@ -3360,6 +3503,7 @@ class PersonalizationCustomization(BaseModel):
 
     uiFontSize: Optional[int] = Field(None, ge = 12, le = 20)
     codeFontSize: Optional[int] = Field(None, ge = 10, le = 20)
+    chatWidth: Literal["standard", "wide", "full"] = "standard"
     contrast: int = Field(50, ge = 0, le = 100)
     pointerCursors: bool = False
     reduceMotion: Literal["system", "on", "off"] = "system"
@@ -3426,6 +3570,7 @@ class PersonalizationResponse(PersonalizationPayload):
     # False when the stored record predates a field, so the client keeps local
     # overrides instead of treating a server-filled default as an explicit value.
     customizationSaved: bool = False
+    chatWidthSaved: bool = False
     paletteSaved: bool = False
     greetingSlothSaved: bool = False
 
@@ -3438,8 +3583,10 @@ def get_personalization_settings(
     response = PersonalizationResponse.model_validate(stored or {})
     response.saved = bool(stored)
     appearance = stored.get("appearance") if isinstance(stored, dict) else None
+    customization = appearance.get("customization") if isinstance(appearance, dict) else None
     profile = stored.get("profile") if isinstance(stored, dict) else None
     response.customizationSaved = isinstance(appearance, dict) and "customization" in appearance
+    response.chatWidthSaved = isinstance(customization, dict) and "chatWidth" in customization
     response.paletteSaved = isinstance(appearance, dict) and "palette" in appearance
     response.greetingSlothSaved = isinstance(profile, dict) and "showGreetingSloth" in profile
     return response

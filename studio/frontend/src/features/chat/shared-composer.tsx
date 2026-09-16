@@ -8,10 +8,18 @@ import {
   serverTuningLoadPayload,
 } from "./lib/server-tuning-fields";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
+import { useTextareaSkillMentions } from "@/components/assistant-ui/skill-mentions";
 import {
   thinkEffortAriaLabel,
   thinkToggleAriaLabel,
 } from "@/components/assistant-ui/think-aria-label";
+import { ComposerDraftPreview } from "@/components/assistant-ui/composer-draft-preview";
+import { useChatPreferencesStore } from "./stores/chat-preferences-store";
+import {
+  composerSubmitIntent,
+  composerShortcutLabels,
+} from "./utils/composer-preferences";
+import { useT } from "@/i18n";
 import { Button } from "@/components/ui/button";
 import { BulbIcon } from "@/lib/bulb-icon";
 import { MicIcon } from "@/lib/mic-icon";
@@ -42,6 +50,8 @@ import {
   COMPOSER_INPUT_SELECTOR,
   isSurfaceInForeground,
   useShortcut,
+  useSettingsDialogStore,
+  isMacPlatform,
 } from "@/features/settings";
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import {
@@ -69,6 +79,7 @@ import type { ModelLifecycleLease } from "./utils/model-lifecycle-gate";
 import { useAui } from "@assistant-ui/react";
 import {
   ArrowUpIcon,
+  BookOpenIcon,
   ChevronDownIcon,
   Columns2Icon,
   GlobeIcon,
@@ -76,6 +87,7 @@ import {
   MoreHorizontalIcon,
   PlusIcon,
   SquareIcon,
+  SlidersHorizontalIcon,
   XIcon,
 } from "lucide-react";
 import {
@@ -109,6 +121,7 @@ import { PermissionModeComposerPill } from "./permission-mode-select";
 import { reasoningCapsFromLoad } from "./lib/apply-inference-status-to-store";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
 import { NewProjectDialog } from "./components/new-project-dialog";
+import { ChatSkillsDialog } from "./components/chat-skills-dialog";
 import { useChatProjects } from "./hooks/use-chat-projects";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import {
@@ -555,6 +568,9 @@ export function SharedComposer({
   sendUnavailableReason?: string;
   requireStableCheckpoint?: boolean;
 }): ReactElement {
+  const t = useT();
+  const sendShortcut = useChatPreferencesStore((s) => s.sendShortcut);
+  const shortcutLabels = composerShortcutLabels(sendShortcut, isMacPlatform());
   const navigate = useNavigate();
   // Exit compare: parent's restore handler, or fresh chat if opened by URL.
   const handleExitCompare = useCallback(() => {
@@ -584,6 +600,7 @@ export function SharedComposer({
   const [dragging, setDragging] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
+  const [skillsOpen, setSkillsOpen] = useState(false);
   const [promptStorageOpen, setPromptStorageOpen] = useState(false);
   const [recentPrompts, setRecentPrompts] = useState<PromptEntry[]>([]);
   const refreshRecentPrompts = useCallback(async () => {
@@ -653,6 +670,14 @@ export function SharedComposer({
   const preserveThinking = useChatRuntimeStore((s) => s.preserveThinking);
   const setPreserveThinking = useChatRuntimeStore((s) => s.setPreserveThinking);
   const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
+
+  const skillMentions = useTextareaSkillMentions({
+    text,
+    setText,
+    inputRef: textareaRef,
+    composingRef,
+    enabled: supportsTools,
+  });
   const supportsBuiltinWebSearch = useChatRuntimeStore(
     (s) => s.supportsBuiltinWebSearch,
   );
@@ -1147,7 +1172,7 @@ export function SharedComposer({
     if (isGeneralizedCompare) {
       compareLifecycleLease = useChatRuntimeStore
         .getState()
-        .beginModelLoading();
+        .beginModelLoading("preparing");
       if (compareLifecycleLease === null) {
         toast.info("A model is loading", {
           description: "Wait for it to finish or cancel it first.",
@@ -1169,7 +1194,7 @@ export function SharedComposer({
       }
       compareLifecycleLease = useChatRuntimeStore
         .getState()
-        .beginModelLoading();
+        .beginModelLoading("preparing");
       if (compareLifecycleLease === null) {
         throw new Error("Another model load started during comparison");
       }
@@ -1478,6 +1503,12 @@ export function SharedComposer({
                 gpu_layers: effectiveGpuLayers,
                 // Slots scale the KV estimate; keep validate sized like the load.
                 n_parallel: ownConfig.nParallel ?? null,
+                reasoning_budget: resolvedIsDiffusion
+                  ? -1
+                  : ownConfig.reasoningBudget,
+                reasoning_budget_message: resolvedIsDiffusion
+                  ? ""
+                  : ownConfig.reasoningBudgetMessage,
                 // Only when this panel has read the stored value: omitted, the load inherits it, which is what
                 // keeps CLI-set flags working.
                 ...(ownConfig.llamaExtraArgs !== undefined
@@ -1555,6 +1586,14 @@ export function SharedComposer({
           mlx_kv_bits: ownConfig.mlxKvBits ?? null,
           speculative_type: effectiveSpeculativeType,
           spec_draft_n_max: effectiveSpecDraftNMax,
+          reasoning_budget:
+            targetIsGguf && !resolvedIsDiffusion
+              ? ownConfig.reasoningBudget
+              : -1,
+          reasoning_budget_message:
+            targetIsGguf && !resolvedIsDiffusion
+              ? ownConfig.reasoningBudgetMessage
+              : "",
           tensor_parallel: effectiveTensorParallel,
           disable_vision: effectiveDisableVision,
           force_cancel_active:
@@ -1654,6 +1693,30 @@ export function SharedComposer({
           // Click-time value, not the resolved echo (see the single-model load).
           nParallel: committedSlots,
           loadedNParallel: committedSlots,
+          reasoningBudget:
+            targetIsGguf && !(resp.is_diffusion ?? false)
+              ? (resp.reasoning_budget ?? ownConfig.reasoningBudget)
+              : -1,
+          loadedReasoningBudget:
+            targetIsGguf && !(resp.is_diffusion ?? false)
+              ? (resp.reasoning_budget ?? ownConfig.reasoningBudget)
+              : -1,
+          reasoningBudgetMessage:
+            targetIsGguf && !(resp.is_diffusion ?? false)
+              ? (resp.reasoning_budget_message ??
+                ownConfig.reasoningBudgetMessage)
+              : "",
+          loadedReasoningBudgetMessage:
+            targetIsGguf && !(resp.is_diffusion ?? false)
+              ? (resp.reasoning_budget_message ??
+                ownConfig.reasoningBudgetMessage)
+              : "",
+          loadedReasoningBudgetRequested: targetIsGguf && !resp.is_diffusion
+            ? (resp.requested_reasoning_budget ?? ownConfig.reasoningBudget)
+            : -1,
+          loadedReasoningBudgetMessageRequested: targetIsGguf && !resp.is_diffusion
+            ? (resp.requested_reasoning_budget_message ?? ownConfig.reasoningBudgetMessage)
+            : "",
           nBatch: committedNBatch,
           loadedNBatch: committedNBatch,
           nUbatch: committedNUbatch,
@@ -1900,7 +1963,7 @@ export function SharedComposer({
       }
       setCompositionState(false);
     }
-    if (e.key === "Enter" && !e.shiftKey) {
+    if (composerSubmitIntent(e, sendShortcut)) {
       e.preventDefault();
       if (!busy && !isDictating) {
         send();
@@ -1990,6 +2053,12 @@ export function SharedComposer({
         {mcpEnabledForChat ? (
           <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
         ) : null}
+      </DropdownMenuItem>
+    ),
+    skills: (
+      <DropdownMenuItem onSelect={() => setSkillsOpen(true)}>
+        <BookOpenIcon />
+        Agent Skills
       </DropdownMenuItem>
     ),
     savedPrompts: (
@@ -2143,6 +2212,8 @@ export function SharedComposer({
         void addFiles(e.dataTransfer.files);
       }}
     >
+      <ChatSkillsDialog open={skillsOpen} onOpenChange={setSkillsOpen} />
+
       <PromptStorageDialog
         open={promptStorageOpen}
         onOpenChange={setPromptStorageOpen}
@@ -2219,7 +2290,11 @@ export function SharedComposer({
           )}
         </div>
       )}
+      {skillMentions.popover}
+      <ComposerDraftPreview text={text} />
+
       <textarea
+        {...skillMentions.inputProps}
         ref={textareaRef}
         value={text}
         onChange={(e) => {
@@ -2228,6 +2303,18 @@ export function SharedComposer({
           // to the stored value mid-composition, wiping the preedit (#5318).
           setCompositionState(isNativeComposing(e.nativeEvent));
           setText(e.target.value);
+          skillMentions.update(
+            e.target.value,
+            e.target.selectionStart ?? e.target.value.length,
+          );
+        }}
+
+        onSelect={(event) => {
+          skillMentions.update(
+            event.currentTarget.value,
+            event.currentTarget.selectionStart ??
+              event.currentTarget.value.length,
+          );
         }}
         onCompositionStart={() => {
           setCompositionState(true);
@@ -2239,12 +2326,16 @@ export function SharedComposer({
           setCompositionState(false);
           setText(e.currentTarget.value);
         }}
-        onKeyDown={onKeyDown}
+        onKeyDown={(event) => {
+          if (!skillMentions.onKeyDown(event)) onKeyDown(event);
+        }}
         onPaste={handleFilePaste}
         onBlur={() => {
           // Mac: switching input methods can fire compositionstart without a matching compositionend,
           // leaving composingRef pinned. The OS always commits or cancels before focus is lost.
           setCompositionState(false);
+
+          skillMentions.close();
         }}
         placeholder="Send to both models..."
         // dir="auto" detects RTL from the first strong character; no effect on LTR scripts. Kept next to
@@ -2399,19 +2490,26 @@ export function SharedComposer({
               {pinnedPlusItems.map((id) => (
                 <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
               ))}
-              {overflowPlusItems.length > 0 ? (
-                <DropdownMenuSub>
-                  <DropdownMenuSubTrigger>
-                    <MoreHorizontalIcon className="size-4" />
-                    More
-                  </DropdownMenuSubTrigger>
-                  <DropdownMenuSubContent className="unsloth-plus-menu w-[248px]">
-                    {overflowPlusItems.map((id) => (
-                      <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
-                    ))}
-                  </DropdownMenuSubContent>
-                </DropdownMenuSub>
-              ) : null}
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>
+                  <MoreHorizontalIcon className="size-4" />
+                  More
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent className="unsloth-plus-menu w-[248px]">
+                  {overflowPlusItems.map((id) => (
+                    <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
+                  ))}
+                  {overflowPlusItems.length > 0 && <DropdownMenuSeparator />}
+                  <DropdownMenuItem
+                    onSelect={() => useSettingsDialogStore.getState().openDialog("chat", {
+                      scrollTarget: "chat-composer",
+                    })}
+                  >
+                    <SlidersHorizontalIcon className="size-4" />
+                    {t("composerSettings.settings")}
+                  </DropdownMenuItem>
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
             </DropdownMenuContent>
           </DropdownMenu>
           {/* Active in compare mode; sits first. Click to exit back to single chat. */}
@@ -2803,7 +2901,7 @@ export function SharedComposer({
             </Button>
           ) : (
             <TooltipIconButton
-              tooltip={sendUnavailableReason ?? "Send message"}
+              tooltip={sendUnavailableReason ?? `Send message (${shortcutLabels.send})`}
               side="bottom"
               variant="default"
               size="icon"

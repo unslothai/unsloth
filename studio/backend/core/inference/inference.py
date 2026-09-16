@@ -13,6 +13,7 @@ from peft import PeftModel, PeftModelForCausalLM
 import contextlib
 import json
 import sys
+import threading
 import torch
 from pathlib import Path
 from typing import Optional, Union, Generator, Tuple
@@ -33,7 +34,7 @@ from core.inference.runtime_context import (
     generation_budget_within_context,
     runtime_context_length,
 )
-from core.inference.message_content import content_to_text
+from core.inference.message_content import content_to_text, named_turn
 from core.inference.chat_eos import (
     chat_eos_repair,
     resolve_chat_turn_end_eos_ids_using,
@@ -61,6 +62,7 @@ from core.inference.native_tool_tokens import (
     reasoning_control_tokens,
     stop_token_text,
 )
+from core.inference.mlx_inference import _mlx_stop_cut, _mlx_stop_sequences
 from io import StringIO
 import structlog
 from loggers import get_logger
@@ -256,6 +258,198 @@ class ReasoningTextIteratorStreamer(TextIteratorStreamer):
 
 class _GenerationThreadError(RuntimeError):
     """Generation worker failures that should propagate through stream routes."""
+
+
+# What clean_up_tokenization_spaces deletes a space before. Every rule is a space plus
+# one of these, and the longest is three characters, so a rule spans at most four.
+_CLEANUP_TAILS = (".", "?", "!", ",", "' ", "n't", "'m", "'s", "'ve", "'re")
+_CLEANUP_SPAN_CHARS = 4
+# Tokens, not characters: those four characters can arrive as four one-character tokens,
+# and eight leaves room for tokens that decode to "".
+_CLEANUP_SPAN_TOKENS = 8
+
+
+def _cleanup_join_pending(text: str) -> bool:
+    """Could a cleanup rule still be completed at the end of ``text``?
+
+    Only the last few characters can matter, and only after a space: a rule whose space is
+    further back than that is already settled either way. A trailing space counts, since the
+    next token can start any of the rules.
+    """
+    window = text[-_CLEANUP_SPAN_CHARS:]
+    for i, char in enumerate(window):
+        if char != " ":
+            continue
+        rest = window[i + 1 :]
+        if not rest or any(tail.startswith(rest) for tail in _CLEANUP_TAILS):
+            return True
+    return False
+
+
+def _decoder_cleans_up(streamer) -> bool:
+    """Does this streamer's decode apply clean_up_tokenization_spaces?
+
+    Read once, because the widened re-decode below is pure cost for the tokenizers that do
+    not (Qwen, Gemma, Mistral, gpt-oss ship it off, and transformers 5.17 ignores it for
+    every BPE tokenizer). The streamer's own kwargs win, then the tokenizer's default,
+    unwrapping NativeToolTokenDecoder to reach it.
+    """
+    kwargs = getattr(streamer, "decode_kwargs", None) or {}
+    if "clean_up_tokenization_spaces" in kwargs:
+        return bool(kwargs["clean_up_tokenization_spaces"])
+    tokenizer = getattr(streamer, "tokenizer", None)
+    for _ in range(4):
+        if tokenizer is None:
+            break
+        flag = getattr(tokenizer, "clean_up_tokenization_spaces", None)
+        if flag is not None:
+            return bool(flag)
+        tokenizer = getattr(tokenizer, "tokenizer", None)
+    return False
+
+
+class _StopSequenceStreamer:
+    def __init__(self, streamer, stop):
+        self.streamer = streamer
+        self.sequences = _mlx_stop_sequences(stop)
+        self.matched = threading.Event()
+        self.token_ids = []
+        self.text = ""
+        self.settled = ""
+        self.prefix_offset = 0
+        self.read_offset = 0
+        self.scan_from = 0
+        self.longest = max((len(s) for s in self.sequences), default = 0)
+        self.released = 0
+        self.cut = 0
+        self.finished = False
+        self.next_tokens_are_prompt = bool(getattr(streamer, "skip_prompt", False))
+        self.is_harmony = isinstance(streamer, HarmonyTextStreamer)
+        self.cleans_up = _decoder_cleans_up(streamer)
+
+    def __next__(self):
+        return next(self.streamer)
+
+    def __iter__(self):
+        return self
+
+    def put(self, value):
+        if not self.sequences:
+            return self.streamer.put(value)
+        if self.finished or self.matched.is_set():
+            return
+        # Matches the supported batch-one TextIteratorStreamer protocol.
+        if len(value.shape) > 1:
+            if value.shape[0] > 1:
+                raise ValueError("TextStreamer only supports batch size 1")
+            value = value[0]
+        if self.next_tokens_are_prompt:
+            self.next_tokens_are_prompt = False
+            return
+        self.token_ids.extend(value.tolist())
+        self._decode_new_tokens()
+        # Earlier text was already scanned; only a stop overlapping new text can match.
+        start = self.scan_from
+        cut, matched = _mlx_stop_cut(self.text[start:], self.sequences)
+        self.cut = start + cut
+        if matched:
+            # This runs in the producer, before model.generate checks criteria.
+            self.matched.set()
+        else:
+            self.scan_from = max(start, len(self.settled) - self.longest + 1)
+        cut = self.cut
+        if not matched and not self.is_harmony and cut > self.released:
+            # Keep the word-buffering stability guarantee for displayed text.
+            # Stop detection above must still inspect every decoded token.
+            if not self.streamer._is_chinese_char(ord(self.text[cut - 1])):
+                cut = (
+                    max(
+                        self.text.rfind(" ", self.released, cut),
+                        self.text.rfind("\n", self.released, cut),
+                    )
+                    + 1
+                )
+        self._publish(cut)
+
+    def _decode(self, token_ids):
+        decode_kwargs = (
+            {"skip_special_tokens": False} if self.is_harmony else self.streamer.decode_kwargs
+        )
+        return self.streamer.tokenizer.decode(token_ids, **decode_kwargs)
+
+    def _decode_new_tokens(self):
+        # Re-decoding the whole reply each token is quadratic; decode a short window
+        # and settle its text once it no longer ends in unresolved bytes.
+        prefix = self._decode(self.token_ids[self.prefix_offset : self.read_offset])
+        window = self._decode(self.token_ids[self.prefix_offset :])
+        if (
+            self.cleans_up
+            and window.startswith(prefix)
+            and _cleanup_join_pending(self.settled + window[len(prefix) :])
+        ):
+            # A cleanup rewrite that spans the join is invisible from this window: split
+            # across tokens (" ", "'", "v", "e") each half decodes unchanged, so
+            # ``startswith`` holds and the concatenation keeps a space the full decode
+            # drops. Settled text then diverges permanently and a stop written across the
+            # join never matches. Re-read the few tokens behind the join while a rule could
+            # still complete there, so ordinary text keeps the short window.
+            wider = max(0, self.read_offset - _CLEANUP_SPAN_TOKENS)
+            if wider < self.prefix_offset:
+                wide_prefix = self._decode(self.token_ids[wider : self.read_offset])
+                # Splicing onto text this prefix does not end is worse than the divergence
+                # it repairs, so fall back to the short window rather than guess.
+                if self.settled.endswith(wide_prefix):
+                    prefix = wide_prefix
+                    window = self._decode(self.token_ids[wider:])
+        if window.endswith("\ufffd"):
+            # Bytes still arriving can rewrite the whole window (byte-fallback tokenizers
+            # show an unfinished emoji as replacement characters), so wait for them.
+            tail = window[len(prefix) :] if window.startswith(prefix) else ""
+            self.text = self.settled + tail
+            return
+        if not window.startswith(prefix):
+            # The new tokens rewrote settled text (e.g. space cleanup turning " ." into
+            # "."), so rebuild it once from every token and rescan it for stops.
+            self.settled = self._decode(self.token_ids)
+            self.prefix_offset = max(0, len(self.token_ids) - 4)
+            self.read_offset = len(self.token_ids)
+            self.scan_from = 0
+        elif len(window) > len(prefix):
+            self.settled += window[len(prefix) :]
+            self.prefix_offset = self.read_offset
+            self.read_offset = len(self.token_ids)
+        self.text = self.settled
+
+    def _publish(self, cut):
+        if cut <= self.released:
+            return
+        if self.is_harmony:
+            # Harmony consumes cumulative raw text and synthesizes tags itself.
+            self.streamer._process_incremental(self.text[:cut])
+        else:
+            # The reasoning subclass normalizes here; plain text just queues it.
+            self.streamer.on_finalized_text(self.text[self.released : cut])
+        self.released = cut
+
+    def end(self):
+        if not self.sequences:
+            return self.streamer.end()
+        if self.finished:
+            return
+        self.finished = True
+        if not self.matched.is_set() and self.read_offset < len(self.token_ids):
+            # Bytes that never resolved still belong to the reply, as a full decode shows.
+            self.text = self._decode(self.token_ids)
+        # A natural end releases a partial unmatched stop and unresolved bytes.
+        self._publish(self.cut if self.matched.is_set() else len(self.text))
+        # Their token caches are empty: put() above feeds raw decoded text, so
+        # end() only finishes reasoning framing and sends the queue sentinel.
+        self.streamer.end()
+
+    def abort(self):
+        abort = getattr(self.streamer, "abort", None)
+        if abort is not None:
+            abort()
 
 
 def _prompt_already_has_bos(tokenizer, prompt):
@@ -1039,6 +1233,7 @@ class InferenceBackend:
         continue_final_message: bool = False,
         presence_penalty: float = 0.0,
         tool_protocol_active: Optional[bool] = None,
+        stop: Optional[list] = None,
     ) -> Generator[str, None, None]:
         """Generate response for text or vision models (lock held by background thread).
 
@@ -1065,6 +1260,7 @@ class InferenceBackend:
             continue_final_message = continue_final_message,
             tool_protocol_active = tool_protocol_active,
             presence_penalty = presence_penalty,
+            stop = stop,
         )
 
     def _generate_chat_response_inner(
@@ -1087,6 +1283,7 @@ class InferenceBackend:
         continue_final_message: bool = False,
         presence_penalty: float = 0.0,
         tool_protocol_active: Optional[bool] = None,
+        stop: Optional[list] = None,
     ) -> Generator[str, None, None]:
         """Inner generation logic.
 
@@ -1127,10 +1324,12 @@ class InferenceBackend:
                     max_new_tokens,
                     repetition_penalty,
                     cancel_event = cancel_event,
+                    _adapter_state = _adapter_state,
                     presence_penalty = presence_penalty,
                     continue_final_message = continue_final_message,
                     tools = tools,
                     tool_protocol_active = tool_protocol_active,
+                    stop = stop,
                 )
                 return
             else:
@@ -1262,6 +1461,7 @@ class InferenceBackend:
             if tool_protocol_active is None
             else tool_protocol_active,
             add_special_tokens = add_special_tokens,
+            stop = stop,
         )
 
     def _generate_vision_response(
@@ -1276,10 +1476,12 @@ class InferenceBackend:
         max_new_tokens,
         repetition_penalty,
         cancel_event = None,
+        _adapter_state = None,
         presence_penalty: float = 0.0,
         continue_final_message: bool = False,
         tools: Optional[list] = None,
         tool_protocol_active: Optional[bool] = None,
+        stop: Optional[list] = None,
     ) -> Generator[str, None, None]:
         """Handle vision model generation with true token-by-token streaming."""
         # Reset so a failed or uncountable run cannot surface stale stats.
@@ -1311,23 +1513,21 @@ class InferenceBackend:
             user_message = "Describe this image." if image else "Hello"
 
         if image:
-            # Ordinary vision turns keep the historic collapse; full history is unbounded.
             has_tool_history = messages_have_tool_history(messages)
             # Client-tools route signature: tool_choice="none" and a forced unknown name
             # also arrive tools=None, and the catalog alone missed them (#10092).
             folded_system = not system_prompt and any(
                 isinstance(m, dict) and m.get("role") in ("system", "developer") for m in messages
             )
+            # Rebuilding from newest user TEXT dropped the system turn and the tool
+            # history an OpenAI tool loop replays (#10092).
+            vision_messages = messages_with_attached_image(
+                messages,
+                system_prompt = system_prompt,
+                fallback_user_text = user_message,
+                structured_content = True,
+            )
             if bool(tools) or has_tool_history or folded_system:
-                # Rebuilding from newest user TEXT dropped the system turn and the tool
-                # history an OpenAI tool loop replays (#10092).
-                vision_messages = messages_with_attached_image(
-                    messages,
-                    system_prompt = system_prompt,
-                    fallback_user_text = user_message,
-                    structured_content = True,
-                )
-
                 # The conversation the LAST render used, not the no-tools probe's (#10092).
                 rendered_with: dict = {"messages": vision_messages}
 
@@ -1394,50 +1594,21 @@ class InferenceBackend:
                         self.active_model_name,
                     )
             else:
-                user_msg = {
-                    "role": "user",
-                    "content": [
-                        {"type": "image"},
-                        {"type": "text", "text": user_message},
-                    ],
-                }
-                if system_prompt:
-                    vision_messages = [
-                        {
-                            "role": "system",
-                            "content": [{"type": "text", "text": system_prompt}],
-                        },
-                        user_msg,
-                    ]
-                else:
-                    vision_messages = [user_msg]
-
-                # Resume the partial answer instead of opening a new turn.
-                if continue_partial:
-                    vision_messages.append(
-                        {
-                            "role": "assistant",
-                            "content": [{"type": "text", "text": continue_partial}],
-                        }
-                    )
-
-                # Processor's own template skips the choke point (#7066). Rebind user_msg
-                # so the no-system retry keeps the copy.
+                # Processor's own template skips the choke point (#7066).
                 from core.inference.chat_template_helpers import markup_for_tokenizer
 
                 vision_messages = neutralize_control_markup_in_messages(
                     vision_messages, None, markup_for_tokenizer(processor)
                 )
-                user_msg = next(m for m in reversed(vision_messages) if m.get("role") == "user")
 
-                def _render_collapsed_vision(msgs):
+                def _render_plain_vision(msgs):
                     # Partial taken from the swept msgs, not the raw pre-sweep capture.
                     return render_prompt_with_boundary(
                         processor, msgs, continue_final_message = bool(continue_partial)
                     )
 
                 try:
-                    input_text = _render_collapsed_vision(vision_messages)
+                    input_text = _render_plain_vision(vision_messages)
                 except Exception as e:
                     # Safe here: no catalog and no tool history to hide a failure behind.
                     if system_prompt:
@@ -1446,7 +1617,7 @@ class InferenceBackend:
                             f"system messages; retrying without. Original error: {e}"
                         )
                         vision_messages = [m for m in vision_messages if m.get("role") != "system"]
-                        input_text = _render_collapsed_vision(vision_messages)
+                        input_text = _render_plain_vision(vision_messages)
                     else:
                         raise
             inputs = processor(
@@ -1529,7 +1700,10 @@ class InferenceBackend:
             )
             timer = GenerationTimer()
             generation_kwargs["logits_processor"] = with_prefill_boundary_processor(_pp, timer)
-            stopping_criteria = self._cancel_stopping_criteria(cancel_event)
+            stop_streamer = _StopSequenceStreamer(streamer, stop)
+            if stop_streamer.sequences:
+                generation_kwargs["streamer"] = stop_streamer
+            stopping_criteria = self._cancel_stopping_criteria(cancel_event, stop_streamer.matched)
             if stopping_criteria is not None:
                 generation_kwargs["stopping_criteria"] = stopping_criteria
             active_stop_token_ids = self._generation_stop_token_ids(model, generation_kwargs)
@@ -1540,6 +1714,7 @@ class InferenceBackend:
             def generate_fn():
                 with self._generation_lock:
                     try:
+                        self._apply_adapter_state(_adapter_state)
                         # Started inside the lock so a queued request's wait is not billed as prefill.
                         timer.start()
                         # See generate_stream: only the returned sequences carry
@@ -1547,13 +1722,12 @@ class InferenceBackend:
                         gen_outputs["sequences"] = model.generate(**generation_kwargs)
                     except Exception as e:
                         err["msg"] = str(e)
-                        if hasattr(streamer, "abort"):
-                            streamer.abort()
+                        stop_streamer.abort()
                         logger.error(f"Vision generation error in thread: {e}")
                     finally:
                         timer.finish()
                         try:
-                            streamer.end()
+                            stop_streamer.end()
                         except Exception:
                             pass
 
@@ -1578,7 +1752,7 @@ class InferenceBackend:
                         elif time.monotonic() >= cancel_deadline:
                             break
                     try:
-                        new_token = next(streamer)
+                        new_token = next(stop_streamer)
                     except StopIteration:
                         generation_complete = True
                         break
@@ -1586,7 +1760,7 @@ class InferenceBackend:
                         if not thread.is_alive():
                             generation_complete = True
                             output = yield from self._drain_streamer_tail(
-                                streamer, output, active_stop_token_ids
+                                stop_streamer, output, active_stop_token_ids
                             )
                             break
                         if cancel_deadline is not None:
@@ -1598,7 +1772,7 @@ class InferenceBackend:
                                 break
                             generation_complete = True
                             output = yield from self._drain_streamer_tail(
-                                streamer, output, active_stop_token_ids
+                                stop_streamer, output, active_stop_token_ids
                             )
                             break
                         continue
@@ -1626,9 +1800,8 @@ class InferenceBackend:
                         model, gen_outputs["sequences"], prompt_len
                     ),
                     max_new_tokens = max_new_tokens,
-                    ended_on_stop_token = self._ended_on_stop_token(
-                        gen_outputs["sequences"], active_stop_token_ids
-                    ),
+                    ended_on_stop_token = stop_streamer.matched.is_set()
+                    or self._ended_on_stop_token(gen_outputs["sequences"], active_stop_token_ids),
                     cancelled = not generation_complete
                     or (cancel_event is not None and cancel_event.is_set()),
                     timer = timer,
@@ -1679,6 +1852,11 @@ class InferenceBackend:
                 if msg["role"] == "user" and msg.get("content"):
                     user_text = content_to_text(msg["content"])
                     break
+        # Not the caption scan above: that one falls back past a media-only turn.
+        last_user = next(
+            (m for m in reversed(messages or []) if m.get("role") == "user"),
+            None,
+        )
 
         if not system_prompt:
             system_prompt = "You are an assistant that transcribes speech accurately."
@@ -1686,13 +1864,16 @@ class InferenceBackend:
         # Gemma 3n format — audio goes INTO apply_chat_template
         audio_messages = [
             {"role": "system", "content": [{"type": "text", "text": system_prompt}]},
-            {
-                "role": "user",
-                "content": [
-                    {"type": "audio", "audio": audio_array},
-                    {"type": "text", "text": user_text},
-                ],
-            },
+            named_turn(
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "audio", "audio": audio_array},
+                        {"type": "text", "text": user_text},
+                    ],
+                },
+                last_user,
+            ),
         ]
 
         # Direct processor render like the vision path, so neutralize here too, with
@@ -1957,6 +2138,7 @@ class InferenceBackend:
         continued: bool = False,
         preserve_tool_tokens: bool = False,
         add_special_tokens: bool = True,
+        stop: Optional[list] = None,
     ) -> Generator[str, None, None]:
         """Generate a streaming text response (text models only).
 
@@ -2044,7 +2226,10 @@ class InferenceBackend:
             _pp = _make_presence_penalty_processor(presence_penalty, prompt_len)
             timer = GenerationTimer()
             generation_kwargs["logits_processor"] = with_prefill_boundary_processor(_pp, timer)
-            stopping_criteria = self._cancel_stopping_criteria(cancel_event)
+            stop_streamer = _StopSequenceStreamer(streamer, stop)
+            if stop_streamer.sequences:
+                generation_kwargs["streamer"] = stop_streamer
+            stopping_criteria = self._cancel_stopping_criteria(cancel_event, stop_streamer.matched)
             if stopping_criteria is not None:
                 generation_kwargs["stopping_criteria"] = stopping_criteria
 
@@ -2060,13 +2245,12 @@ class InferenceBackend:
                         gen_outputs["sequences"] = model.generate(**generation_kwargs)
                     except Exception as e:
                         err["msg"] = str(e)
-                        if hasattr(streamer, "abort"):
-                            streamer.abort()
+                        stop_streamer.abort()
                         logger.error(f"Generation error: {e}")
                     finally:
                         timer.finish()
                         try:
-                            streamer.end()
+                            stop_streamer.end()
                         except Exception:
                             pass
 
@@ -2093,7 +2277,7 @@ class InferenceBackend:
                         elif time.monotonic() >= cancel_deadline:
                             break
                     try:
-                        new_token = next(streamer)
+                        new_token = next(stop_streamer)
                     except StopIteration:
                         generation_complete = True
                         break
@@ -2101,7 +2285,7 @@ class InferenceBackend:
                         if not thread.is_alive():
                             generation_complete = True
                             output = yield from self._drain_streamer_tail(
-                                streamer, output, active_stop_token_ids
+                                stop_streamer, output, active_stop_token_ids
                             )
                             break
                         if cancel_deadline is not None:
@@ -2113,7 +2297,7 @@ class InferenceBackend:
                                 break
                             generation_complete = True
                             output = yield from self._drain_streamer_tail(
-                                streamer, output, active_stop_token_ids
+                                stop_streamer, output, active_stop_token_ids
                             )
                             break
                         continue
@@ -2143,9 +2327,8 @@ class InferenceBackend:
                         model, gen_outputs["sequences"], prompt_len
                     ),
                     max_new_tokens = max_new_tokens,
-                    ended_on_stop_token = self._ended_on_stop_token(
-                        gen_outputs["sequences"], active_stop_token_ids
-                    ),
+                    ended_on_stop_token = stop_streamer.matched.is_set()
+                    or self._ended_on_stop_token(gen_outputs["sequences"], active_stop_token_ids),
                     cancelled = not generation_complete
                     or (cancel_event is not None and cancel_event.is_set()),
                     timer = timer,
@@ -2533,10 +2716,12 @@ class InferenceBackend:
                     import re
                     clean_content = re.sub(r"<[^>]+>", "", content).strip()
                     if clean_content:
-                        chat_messages.append({"role": role, "content": clean_content})
+                        chat_messages.append(
+                            named_turn({"role": role, "content": clean_content}, msg)
+                        )
                         last_role = role
                 elif role == "assistant":
-                    assistant_message = {"role": role, "content": content}
+                    assistant_message = named_turn({"role": role, "content": content}, msg)
                     if has_reasoning_content:
                         assistant_message["reasoning_content"] = reasoning_content
                     chat_messages.append(assistant_message)
@@ -2855,9 +3040,10 @@ class InferenceBackend:
             stats["timings"] = timings
         self.last_generation_stats = stats
 
-    def _cancel_stopping_criteria(self, cancel_event):
+    def _cancel_stopping_criteria(self, *events):
         """Build a Transformers stopping criteria list for user cancellation."""
-        if cancel_event is None:
+        events = [ev for ev in events if ev is not None]
+        if not events:
             return None
         from transformers.generation.stopping_criteria import (
             StoppingCriteria,
@@ -2871,7 +3057,7 @@ class InferenceBackend:
             def __call__(self, input_ids, scores, **kwargs):
                 return self.ev.is_set()
 
-        return StoppingCriteriaList([_CancelCriteria(cancel_event)])
+        return StoppingCriteriaList([_CancelCriteria(ev) for ev in events])
 
     def _clean_generated_text(
         self,

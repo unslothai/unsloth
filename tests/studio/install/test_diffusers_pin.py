@@ -19,7 +19,10 @@ import ast
 import io
 import pathlib
 import re
+import subprocess
 import tokenize
+
+import pytest
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 REQ_ROOT = REPO_ROOT / "studio" / "backend" / "requirements"
@@ -181,3 +184,70 @@ def test_install_sh_still_delegates_the_core_package_skip():
     """The handoff flag skips core packages while allowing other base entries through."""
     assert 'SKIP_STUDIO_BASE="$_SKIP_BASE"' in INSTALL_SH.read_text(encoding = "utf-8")
     assert "_SKIP_BASE=1" in INSTALL_SH.read_text(encoding = "utf-8")
+
+
+def test_no_generated_filter_snapshot_is_tracked():
+    """They are a copy of a file already in the tree, and one got committed.
+
+    _filter_requirements writes beside the source so relative -r/-c includes resolve.
+    pip_install unlinks them in a finally, but a test calling the helper directly, or an
+    install killed mid-run, leaves them in the checkout, where `git add -A` picks them up.
+    A stale snapshot then reads as a second, silently divergent copy of the pins.
+    """
+    done = subprocess.run(
+        ["git", "ls-files", "-z", "--", "studio/backend/requirements/"],
+        cwd = REPO_ROOT,
+        capture_output = True,
+        text = True,
+    )
+    if done.returncode != 0:
+        pytest.skip("not a git checkout")
+    tracked = [p for p in done.stdout.split("\0") if p]
+    offenders = [p for p in tracked if _GENERATED_FILTER.fullmatch(pathlib.Path(p).name)]
+    assert not offenders, f"generated filter snapshots are tracked: {offenders}"
+
+
+def test_gitignore_covers_the_generated_snapshots():
+    """So the next `git add -A` cannot put one back."""
+    probe = REQ_ROOT / ".studio-filtered-abcd1234.txt"
+    assert _GENERATED_FILTER.fullmatch(probe.name), "the probe must match the generated shape"
+    done = subprocess.run(
+        ["git", "check-ignore", "-q", "--no-index", str(probe)],
+        cwd = REPO_ROOT,
+        capture_output = True,
+        text = True,
+    )
+    if done.returncode == 128:
+        pytest.skip("not a git checkout")
+    assert done.returncode == 0, f"{probe.name} is not ignored; .gitignore needs the pattern"
+
+
+# A win_arm64 floor set above the first release that actually publishes one costs the
+# resolver every wheel in between, and for scikit-learn it cost the only one that exists on
+# a free-threaded 3.13. Each floor below is the earliest release carrying a win_arm64 wheel,
+# read off PyPI's own file list, so the pin can be checked against the index by hand.
+WIN_ARM64_FLOORS = [
+    # scikit-learn 1.9.0 dropped cp313-cp313t; 1.8.0 is the only release with one, so a
+    # >=1.9.0 floor leaves a free-threaded 3.13 with no wheel and an sdist to compile.
+    ("extras.txt", "scikit-learn", "1.8.0"),
+    # av publishes cp311-abi3 plus a cp314t from 17.0.0. No release has a 3.13t wheel.
+    ("extras.txt", "av", "17.0.0"),
+    ("single-env/constraints.txt", "av", "17.0.0"),
+]
+
+
+@pytest.mark.parametrize(
+    "relpath, dist, floor",
+    WIN_ARM64_FLOORS,
+    ids = [f"{r.split('/')[-1]}:{d}" for r, d, _ in WIN_ARM64_FLOORS],
+)
+def test_the_win_arm64_floor_is_the_first_release_that_has_a_wheel(relpath, dist, floor):
+    text = (REQ_ROOT / relpath).read_text(encoding = "utf-8")
+    wanted = f'{dist}>={floor}; sys_platform == "win32" and platform_machine == "ARM64"'
+    assert wanted in text, f"{relpath} no longer floors {dist} at {floor}"
+    # And nothing else floors the same dist higher on that marker.
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith(f"{dist}>=") or 'platform_machine == "ARM64"' not in line:
+            continue
+        assert line == wanted, f"{relpath}: a second ARM64 floor for {dist}: {line}"

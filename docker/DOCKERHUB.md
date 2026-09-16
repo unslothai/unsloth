@@ -1,6 +1,6 @@
 # Unsloth Docker Image
 
-Pre-built images for [Unsloth](https://github.com/unslothai/unsloth): fine-tune and run LLMs, vision, audio and diffusion models with no setup. Every image carries the full training stack (PyTorch 2.11 with CUDA 12.8, Unsloth, unsloth-zoo, bitsandbytes, TRL, PEFT, plus xformers on `linux/amd64`), JupyterLab with the [Unsloth notebooks](https://github.com/unslothai/notebooks) pre-synced, and prebuilt llama.cpp and whisper.cpp for GGUF work.
+Pre-built images for [Unsloth](https://github.com/unslothai/unsloth): fine-tune and run LLMs, vision, audio and diffusion models with no setup. Every image carries the full training stack (PyTorch 2.11 with CUDA 12.8, Unsloth, unsloth-zoo, bitsandbytes, TRL, PEFT, plus xformers on `linux/amd64`), JupyterLab with the [Unsloth notebooks](https://github.com/unslothai/notebooks) pre-synced, and prebuilt llama.cpp for GGUF work. The `latest` image adds whisper.cpp for Studio's speech-to-text.
 
 Source: [`docker/`](https://github.com/unslothai/unsloth/tree/main/docker) in the main repository. Guide: [docs.unsloth.ai](https://docs.unsloth.ai/get-started/install/docker).
 
@@ -13,7 +13,7 @@ Source: [`docker/`](https://github.com/unslothai/unsloth/tree/main/docker) in th
 | `nightly-<YYYY.MM.DD>`, `core-nightly-<YYYY.MM.DD>` | The same two images, one immutable pin per daily rebuild, kept 60 days | Reproducible runs. |
 | `<version>`, `core-<version>` | Release builds | Pin a release. |
 
-`latest` and `core` move with every push to `main` and on a daily rebuild. Both images are multi-arch: `linux/amd64` and `linux/arm64` (GH200, DGX Spark).
+`latest` and `core` are rebuilt daily and on every release tag, not on every merge to `main`. Both images are multi-arch: `linux/amd64` and `linux/arm64` (GH200, DGX Spark).
 
 ## Quick start
 
@@ -33,12 +33,13 @@ docker run -d --gpus all --ipc=host \
   -e JUPYTER_PASSWORD="choose-a-password" \
   -v "$PWD":/workspace/host \
   -v "$HOME/.cache/huggingface":/workspace/.cache/huggingface \
+  -v unsloth-studio:/opt/unsloth-studio \
   unsloth/unsloth
 ```
 
 `docker run -d` returns at once; follow the startup with `docker logs -f <container>`, which ends with a ready block once both services answer (Studio takes about a minute). Then open Studio at `http://localhost:8000` (user `unsloth`) and JupyterLab at `http://localhost:8888`. Leave either password variable unset and a random one is generated and printed in that log.
 
-The `docker/run.sh` helper in the repository sets these flags for you:
+The `docker/run.sh` helper in the repository sets these flags, including the `unsloth-studio` volume, for you:
 
 ```bash
 git clone https://github.com/unslothai/unsloth && cd unsloth
@@ -67,15 +68,16 @@ docker run --rm --gpus all --ipc=host -v "$PWD":/workspace/host \
 
 ### CPU-only hosts
 
-Without a GPU the container refuses to start unless you opt in. Studio chat with GGUF models, JupyterLab and the GGUF tooling work; training does not.
+`latest` starts without a GPU on its own. Studio chat with GGUF models, JupyterLab and the GGUF tooling work; training does not. `core` refuses to start without a GPU unless you opt in:
 
 ```bash
-docker run -d -e UNSLOTH_ALLOW_CPU=1 -p 8000:8000 -p 8888:8888 unsloth/unsloth
+docker run -d -p 8000:8000 -p 8888:8888 unsloth/unsloth
+docker run --rm -e UNSLOTH_ALLOW_CPU=1 unsloth/unsloth:core python -c "import unsloth"
 ```
 
 ## Supported GPUs
 
-Compiled for `sm_75 sm_80 sm_86 sm_90 sm_100 sm_120`: Turing (T4, RTX 20), Ampere (A100, A10, RTX 30), Ada (L4, L40, RTX 40), Hopper (H100, H200, GH200) and Blackwell (B200, GB200, RTX 50, RTX PRO 6000). GB10 (DGX Spark, `sm_121`) runs the `sm_120` binaries through Blackwell forward compatibility; only kernels compiled at run time, such as Triton, use the CUDA 13 compiler the container switches to on that GPU. The container prints the detected GPU on start and explains what to do when the driver is too old.
+Turing (T4, RTX 20), Ampere (A100, A10, RTX 30), Ada (L4, L40, RTX 40), Hopper (H100, H200, GH200) and Blackwell (B200, GB200, RTX 50, RTX PRO 6000) all run precompiled SASS. The cu128 wheels the image ships carry native SASS for `sm_70 sm_75 sm_80 sm_86 sm_90 sm_100 sm_120` on `linux/amd64` and `sm_80 sm_90 sm_90a sm_100 sm_100a sm_120 sm_120a` on `linux/arm64`; SASS is forward-compatible within a major version, so Ada runs the `sm_86` binaries and B300 and GB300 run the `sm_100` ones. A source build inside the image is a separate matter: it compiles for `7.5;8.0;8.6;8.9;9.0;10.0;12.0+PTX` on either architecture. GB10 (DGX Spark, `sm_121`) runs the `sm_120` binaries through Blackwell forward compatibility; only kernels compiled at run time, such as Triton, use the CUDA 13 compiler the container switches to on that GPU. The container prints the detected GPU on start and explains what to do when the driver is too old.
 
 Driver requirements:
 
@@ -83,7 +85,7 @@ Driver requirements:
 - 580 or newer for B300, GB300 and GB10.
 - On `linux/arm64` the bundled llama.cpp is a CUDA 13 build because upstream ships no CUDA 12 build for that architecture. Training works from driver 570, but GGUF export and Studio chat need 580 or newer.
 
-Turing has no bfloat16; Unsloth falls back to float16 there. AMD GPUs are not supported by these images.
+Turing has no bfloat16; Unsloth falls back to float16 there. These images are CUDA only; for AMD use [`unsloth/unsloth-rocm`](https://hub.docker.com/r/unsloth/unsloth-rocm), which carries a ROCm build of the training stack.
 
 ## Ports
 
@@ -98,12 +100,13 @@ Turing has no bfloat16; Unsloth falls back to float16 there. AMD GPUs are not su
 | Variable | Effect |
 |---|---|
 | `UNSLOTH_STUDIO_PASSWORD` | Initial Studio admin password for user `unsloth`; ignored once a password is stored. Unset: generated once and printed in the logs, and Studio stops after an hour unless it is changed (`UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0` disables). |
-| `JUPYTER_PASSWORD` | JupyterLab password. Unset: generated once and printed in the logs. |
-| `JUPYTER_PORT` | JupyterLab port inside the container. Default `8888`. |
+| `JUPYTER_PASSWORD` | JupyterLab password, read by the `latest` service launcher. Unset: generated once and printed in the logs. On `core` you start JupyterLab yourself, so pass its own flags instead. |
+| `JUPYTER_PORT` | JupyterLab port inside the container, read by the `latest` service launcher. Default `8888`. `8000` is refused: that is Studio's port inside the container. |
 | `SSH_KEY` or `PUBLIC_KEY` | OpenSSH public key for root login. Enables sshd on port 22. Password login is never enabled. |
 | `UNSLOTH_ALLOW_CPU=1` | Allow starting without a GPU (`latest` already does). Dropped when a GPU is visible, where it would turn off Unsloth's training patches. |
 | `UNSLOTH_JUPYTER_CLOUDFLARE=1` | Publish JupyterLab through a Cloudflare quick tunnel and print the URL. |
-| `UNSLOTH_SKIP_NOTEBOOK_SYNC=1` | Do not refresh the notebooks from GitHub on start. |
+| `UNSLOTH_SKIP_NOTEBOOK_REFRESH=1` | Do not refresh the notebooks from GitHub on start; the copy baked into the image is still used. |
+| `UNSLOTH_SKIP_NOTEBOOK_SYNC=1` | Do not set up the notebooks at all: nothing is created at `/workspace/unsloth-notebooks` or `/workspace/Unsloth Notebooks` (copies left there by an earlier start on a mounted `/workspace` stay as they are). |
 | `HF_TOKEN`, `WANDB_API_KEY` | Forwarded to Hugging Face and Weights and Biases. |
 
 On a host with no GPU, Studio, JupyterLab and its kernels, and login shells all run in
@@ -119,21 +122,33 @@ The working directory is `/workspace`. Mount what you want to keep:
 |---|---|
 | `/workspace/host` | Your files. Mount your project directory here. |
 | `/workspace/.cache/huggingface` | Model downloads. Mount your host HF cache to reuse it. |
+| `/opt/unsloth-studio` | Studio's accounts, chats, outputs, exports and runs (`latest`). Use a named volume: without one, `docker rm` loses them. A new image still brings new Studio code (see below). |
 | `/workspace/.cache/triton` | Compiled kernels. Optional, speeds up restarts. |
 | `/workspace/unsloth-notebooks` | The synced notebooks. Your edits are kept across refreshes. |
 | `/workspace/Unsloth Notebooks` | The same notebooks grouped by topic, rebuilt on each start. |
 
-The container runs as root by default. `--user <uid>:<gid>` is supported and keeps files on your mounts owned by you.
+The container runs as root by default. On `core`, `--user <uid>:<gid>` is supported and keeps files on your mounts owned by you. `latest` runs its services as root and does not start under `--user`.
+
+### Studio data and Studio code
+
+Studio's code (its venv, source tree, Node, prebuilt tools) ships in the image under `/opt/unsloth-studio-app` and is linked into `/opt/unsloth-studio` at every start, so the volume holds only your data and every image runs its own code. What that means in practice:
+
+- A volume created by an image from before this split holds that image's code as real directories. The first start of a newer image moves each of them aside to `/opt/unsloth-studio/.unsloth-studio-legacy/<name>` on the volume and links the new code in; nothing is deleted, and the log lists what moved. Delete the legacy directory once the new image works (`docker exec <c> rm -rf /opt/unsloth-studio/.unsloth-studio-legacy`), or start with `-e UNSLOTH_STUDIO_KEEP_LEGACY=0` to skip keeping it. Such a volume also holds that image's uv download cache at `/opt/unsloth-studio/cache/uv` (about 9 GB, hardlinked with the legacy venv); once the legacy directory is gone, `rm -rf /opt/unsloth-studio/cache/uv` frees it.
+- To go back to an image from before the split on the same volume, move the legacy entries back first: `docker run --rm -v unsloth-studio:/h alpine sh -c 'cd /h && for e in .unsloth-studio-legacy/* .unsloth-studio-legacy/.[!.]*; do [ -e "$e" ] || [ -L "$e" ] || continue; rm -rf "${e##*/}"; mv "$e" .; done'`. Images from after the split need nothing. A volume that never held old code (first used after the split, or its legacy directory deleted) gets a copy of the current image's code instead: `docker run --rm -v unsloth-studio:/opt/unsloth-studio --entrypoint unsloth-studio-home <current image> --restore` (about 5 GB, half a minute), after which the older image runs it.
+- `docker rm` still discards anything written into the image's copy: an in-container `unsloth-studio-update` and the `cloudflared` binary `unsloth-jupyter-tunnel` downloads. Studio's caches under `/opt/unsloth-studio/cache` (download resume state, dataset caches) are in the home, so they stay with the volume. Models stay in the Hugging Face cache mount.
+- Use a named volume, not a bind mount of a Windows or macOS host directory. The Studio home needs symlinks, and bind mounts through Docker Desktop's file sharing (a Windows drive under WSL 2 in particular) may refuse to create them; the container then stops at start with the linker's error instead of running a half-linked Studio. A bind mount of a Linux directory (including a directory inside the WSL 2 distribution) works.
 
 ## Updating inside a running container
 
 On the `latest` image:
 
-- `unsloth-studio-update` upgrades Studio and Unsloth in place.
+- `unsloth-studio-update` upgrades Studio and Unsloth in place, leaving the torch and CUDA stack pinned (in the image's copy: survives `docker restart`, not `docker rm`).
 - `unsloth-llama-update` fetches the newest prebuilt llama.cpp.
-- `unsloth-jupyter-tunnel` opens a Cloudflare quick tunnel to JupyterLab.
+- `unsloth-jupyter-tunnel --force` opens a Cloudflare quick tunnel to JupyterLab. Without `--force`, and without `UNSLOTH_JUPYTER_CLOUDFLARE=1` in the environment, it prints that it is disabled and exits.
 
-On both images the notebooks refresh from GitHub on each start unless `UNSLOTH_SKIP_NOTEBOOK_SYNC=1`. Pull a new image tag to update everything else.
+On both images the notebooks refresh from GitHub on each start unless `UNSLOTH_SKIP_NOTEBOOK_REFRESH=1`. Pull a new image tag to update everything else.
+
+Setting them up costs roughly 10 to 20 seconds of every start, depending on the disk, so a one-shot `docker run --rm ... python script.py` is worth running with `UNSLOTH_SKIP_NOTEBOOK_SYNC=1`.
 
 ## Help
 
@@ -143,4 +158,4 @@ On both images the notebooks refresh from GitHub on each start unless `UNSLOTH_S
 
 ## License
 
-AGPL-3.0, following the main repository. See [LICENSE](https://github.com/unslothai/unsloth/blob/main/LICENSE).
+Unsloth is Apache-2.0 ([LICENSE](https://github.com/unslothai/unsloth/blob/main/LICENSE)). Both images also include Unsloth Studio's code (`studio/`), which is AGPL-3.0 ([studio/LICENSE.AGPL-3.0](https://github.com/unslothai/unsloth/blob/main/studio/LICENSE.AGPL-3.0)).
