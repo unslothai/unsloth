@@ -4670,7 +4670,22 @@ def _planned_flash_attn_state(
     if quantized_v:
         # Not a choice: llama.cpp turns it on itself rather than refusing the load.
         return True
-    if _asked_for_auto_flash_attn(extra_args, env = env):
+    # The order of authority llama.cpp really applies, and the order this has to match or the
+    # estimate describes a different load than the one that runs. LLAMA_ARG_FLASH_ATTN is read
+    # before argv is parsed (arg.cpp set_env), and ``load_model`` appends a managed
+    # ``--flash-attn on`` to the command on every launch whose build has the flag, so the
+    # environment loses to that managed flag and only the user's own extras beat it.
+    #
+    # Resolving from ``extra_args`` alone let the environment stand in for a flag the child
+    # never ran with: ``LLAMA_ARG_FLASH_ATTN=off`` with no user ``-fa`` sized the padded,
+    # f16-floored cache while the child ran with flash attention ON, so the inflated cache
+    # became the published context ceiling again. That is #9697 and #10489 arriving through the
+    # environment instead of through the argv they were fixed in.
+    #
+    # Same shape ``_kv_unified_from_args`` already applies to its own managed flag. Written as a
+    # prepended argv rather than a third boolean so the one last-wins parser decides all of it.
+    effective_args = ["--flash-attn", "on", *(str(arg) for arg in extra_args or ())]
+    if _asked_for_auto_flash_attn(effective_args, env = env):
         # ``auto`` is llama.cpp saying it will decide at load time, and it decides against
         # flash attention whenever the backend, the model or the cache pair cannot take it
         # (ROCm on several quantized caches, Metal on a mixed quantized pair, Vulkan), with
@@ -4679,7 +4694,7 @@ def _planned_flash_attn_state(
         # and there the honest sizing is the one that also survives the answer being no: the
         # padded, f16-floored cache is the larger of the two.
         return False
-    return _flash_attn_enabled_from_args(extra_args, default = True, env = env)
+    return _flash_attn_enabled_from_args(effective_args, default = True, env = env)
 
 
 def _asked_for_auto_flash_attn(

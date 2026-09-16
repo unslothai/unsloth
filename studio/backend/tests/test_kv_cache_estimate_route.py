@@ -639,6 +639,37 @@ class TestTheEstimateMatchesTheConfiguredLoad:
         )
         assert off["projector_bytes"] is None, "vision off must free the projector"
 
+    def test_a_host_pinned_projector_is_not_charged_to_the_card(self, monkeypatch, tmp_path):
+        """There is a third case beside "vision off" and "mmproj resident".
+
+        ``--no-mmproj-offload`` keeps vision ON and puts the projector in HOST memory. That
+        flag reached the planner through ``_plan_extra_args``, but this route still itemised
+        the projector, and the frontend adds ``projectorBytes`` straight onto its GPU weights
+        segment, which is also the VRAM total whenever ``_cached_estimate_config`` has no
+        planner result to use instead. So a projector the user explicitly pinned off the card
+        was charged against the VRAM bar anyway, at ``_MMPROJ_VRAM_SAFETY`` rather than even
+        at its file size.
+        """
+        gguf = _write_gguf(tmp_path / "vision-Q4_K_M.gguf", _MLA_NO_HEAD)
+        (tmp_path / "mmproj-F16.gguf").write_bytes(b"\x00" * 800_000)
+
+        offloaded = _call_std_route(
+            monkeypatch, path = gguf, repo_id = str(tmp_path), is_local = True,
+            no_mmproj_offload = False,
+        )
+        assert offloaded["projector_bytes"], "a resident projector must still be charged"
+
+        pinned = _call_std_route(
+            monkeypatch, path = gguf, repo_id = str(tmp_path), is_local = True,
+            no_mmproj_offload = True,
+        )
+        assert pinned["projector_bytes"] is None, (
+            "a projector pinned to host memory must not be reported as VRAM"
+        )
+        # Vision is still on, so nothing else about the row collapses: this is the
+        # difference between "no projector on the card" and "no vision".
+        assert pinned["kv_bytes"] and pinned["kv_bytes"] > 0
+
     def test_a_model_with_no_projector_reports_none(self, monkeypatch, tmp_path):
         gguf = _write_gguf(tmp_path / "text-Q4_K_M.gguf", _MLA_NO_HEAD)
         out = _call_std_route(monkeypatch, path = gguf, repo_id = str(tmp_path), is_local = True)

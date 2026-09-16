@@ -4093,6 +4093,20 @@ async def get_kv_cache_estimate(
                         projector = int(_Be._get_gguf_size_bytes(mmproj) * _Be._MMPROJ_VRAM_SAFETY)
                 except Exception as e:
                     logger.debug(f"mmproj estimate failed for '{repo_id}' {quant}: {e}")
+            if _asked_no_mmproj:
+                # There is a third case beside "vision off" and "mmproj resident":
+                # --no-mmproj-offload keeps vision on and puts the projector in HOST memory.
+                # Until now that flag only reached the planner through _plan_extra_args while
+                # this route still itemised the projector, and the frontend adds
+                # projectorBytes straight onto its GPU weights segment ("the projector is
+                # resident alongside the weights"), which is also the VRAM total whenever
+                # _cached_estimate_config has no planner result to use instead. So a
+                # projector the user explicitly pinned off the card was still charged
+                # against the VRAM bar, and at _MMPROJ_VRAM_SAFETY rather than at its file
+                # size. Exactly the kv_checkpoint_bytes case one field along, which is
+                # subtracted for the same reason: host heap must not warn OOM over memory
+                # that never reaches the card.
+                projector = None
 
             # Only the MTP modes reserve memory; ngram is free. "auto" may or may not resolve to MTP, and the estimator
             # returns None when it does not. Guarded separately: the MTP path reads more metadata than the KV path, and

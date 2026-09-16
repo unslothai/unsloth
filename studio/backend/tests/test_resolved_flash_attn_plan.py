@@ -91,8 +91,31 @@ class TestTheResolver:
     def test_the_last_flag_wins_like_llama_cpp(self):
         assert _planned_flash_attn_state(["-fa", "off", "--flash-attn", "on"]) is True
 
-    def test_the_environment_is_read(self):
-        assert _planned_flash_attn_state(env = {"LLAMA_ARG_FLASH_ATTN": "0"}) is False
+    def test_the_environment_loses_to_the_managed_flag(self):
+        """The environment is read, and then Unsloth's own ``--flash-attn on`` overrides it.
+
+        This asserted ``False`` and was wrong about the load it describes. ``load_model``
+        appends a managed ``--flash-attn on`` to the command on every launch whose build has
+        the flag, and llama.cpp reads ``LLAMA_ARG_FLASH_ATTN`` before it parses argv
+        (arg.cpp set_env), so with no user ``-fa`` the child runs WITH flash attention no
+        matter what the environment said. Sizing it off meant pricing the padded, f16-floored
+        cache for a run that never happens, and that inflated cache becomes the published
+        context ceiling: #9697 and #10489 reappearing through the environment rather than
+        through the argv they were fixed in.
+        """
+        assert _planned_flash_attn_state(env = {"LLAMA_ARG_FLASH_ATTN": "0"}) is True
+
+    def test_a_user_off_still_beats_the_managed_flag(self):
+        """The other side of it: extras are appended AFTER the managed flag, so they win.
+
+        Order of authority end to end: environment, then Unsloth's managed flag, then the
+        user's own extras. Only the middle term was missing.
+        """
+        assert (
+            _planned_flash_attn_state(["-fa", "off"], env = {"LLAMA_ARG_FLASH_ATTN": "0"})
+            is False
+        )
+        assert _planned_flash_attn_state(["-fa", "off"], env = {}) is False
 
     def test_the_extras_beat_the_environment(self):
         """llama.cpp applies LLAMA_ARG_* before parsing argv, so the CLI still wins."""
@@ -298,8 +321,17 @@ class TestAutoIsNotAnAnswer:
         # llama.cpp's numeric spelling of the same value.
         assert _planned_flash_attn_state(["-fa", "-1"]) is False
 
-    def test_the_environment_spelling_is_read_too(self):
-        assert _planned_flash_attn_state(None, env = {"LLAMA_ARG_FLASH_ATTN": "auto"}) is False
+    def test_an_inherited_auto_is_overridden_by_the_managed_flag(self):
+        """``auto`` in the environment is not left undecided, because the launch decides it.
+
+        Asserted ``False`` before, on the reasoning that nobody had chosen yet. But the
+        managed ``--flash-attn on`` is appended after the environment is read, so the child
+        is launched with an explicit ``on`` and ``auto`` never reaches it. Only an ``auto``
+        the USER puts in the extras survives, because those come last; that case is the next
+        assertion and still sizes conservatively.
+        """
+        assert _planned_flash_attn_state(None, env = {"LLAMA_ARG_FLASH_ATTN": "auto"}) is True
+        assert _planned_flash_attn_state(["-fa", "auto"], env = {"LLAMA_ARG_FLASH_ATTN": "1"}) is False
         # And the extras still beat the environment, in both directions.
         assert (
             _planned_flash_attn_state(["-fa", "on"], env = {"LLAMA_ARG_FLASH_ATTN": "auto"}) is True
