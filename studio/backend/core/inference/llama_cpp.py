@@ -6575,65 +6575,6 @@ def _write_direct_stream_key(key: str) -> "Path":
     return path
 
 
-_DEVICE_ORDINAL_RE = re.compile(r"\s*(?:CUDA|ROCm|Vulkan|SYCL|MUSA)(\d+)\s*", re.IGNORECASE)
-
-
-def _device_selection_is_a_permutation(
-    extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]], visible: set
-) -> bool:
-    """Whether a surviving device selection names exactly ``visible``, reordered.
-
-    Both spellings, because llama.cpp reads LLAMA_ARG_DEVICE before argv: a value that
-    survives in either place owns placement just as much, and the guard this feeds also
-    gates the env scrub. A value naming anything else -- fewer cards, a card outside the
-    set, or a spelling we cannot parse -- is not a reorder and must not be passed through.
-    """
-    value = _extra_args_main_device(extra_args) if extra_args else None
-    if value is None and env is not None:
-        value = env.get("LLAMA_ARG_DEVICE")
-    if not value or not str(value).strip():
-        return False
-    parsed = []
-    for token in str(value).split(","):
-        match = _DEVICE_ORDINAL_RE.fullmatch(token)
-        if not match:
-            return False
-        parsed.append(int(match.group(1)))
-    # Arity and uniqueness, not just membership: llama.cpp keeps duplicate entries, so
-    # CUDA0,CUDA0,CUDA1 is a three-device list a two-entry split would be spread across.
-    if len(parsed) != len(visible) or len(set(parsed)) != len(parsed):
-        return False
-    ids = set(parsed)
-    # llama.cpp names devices by its OWN enumeration, which a visibility mask makes
-    # compact: under CUDA_VISIBLE_DEVICES=2,3 the child has CUDA0 and CUDA1, not
-    # CUDA2 and CUDA3. Comparing against the physical ids stripped a real reorder
-    # and passed through a pair of devices the child does not have.
-    return ids == set(range(len(visible)))
-
-
-def _preserved_device_ordinals(
-    extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]]
-) -> Optional[list[int]]:
-    """The child device ordinals a surviving device value names, in ITS order.
-
-    None when there is no such value or it does not spell plain ordinals. Only the
-    order matters to the caller: the value has already been accepted as a
-    permutation, which is what makes repointing a positional split meaningful.
-    """
-    value = _extra_args_main_device(extra_args) if extra_args else None
-    if value is None and env is not None:
-        value = env.get("LLAMA_ARG_DEVICE")
-    if not value or not str(value).strip():
-        return None
-    out = []
-    for token in str(value).split(","):
-        match = _DEVICE_ORDINAL_RE.fullmatch(token)
-        if not match:
-            return None
-        out.append(int(match.group(1)))
-    return out or None
-
-
 def _extra_args_have_tensor_split(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]]
 ) -> bool:
@@ -11005,55 +10946,21 @@ class LlamaCppBackend:
         except Exception:
             return False
 
-    def _gpu_ids_own_placement(
-        self,
-        gpu_ids,
-        *,
-        is_vulkan: Optional[bool] = None,
-        extra_args: Optional[Iterable[str]] = None,
-        env: Optional[Mapping[str, str]] = None,
-    ) -> bool:
-        """Whether a ``gpu_ids`` pick is narrow enough to overrule a user ``--device``.
+    def _gpu_ids_own_placement(self, gpu_ids) -> bool:
+        """Whether a ``gpu_ids`` pick overrules a user ``--device`` / ``--main-gpu``.
 
-        A pick that keeps every visible GPU narrows nothing, so there is no conflict
-        to resolve, and stripping there costs the only way to ORDER devices (the
-        picker itself is sorted) for no gain. Anything narrower still owns placement:
-        the flag would send the model to a card the picker deselected.
+        An explicit pick always does. This asks nothing about the device VALUE on
+        purpose: letting a pass-through survive when the pick covered the whole
+        visible set was tried and withdrawn, because the ordering it bought is
+        already supplied by the inherited-mask reorder above, while every consumer
+        of the strip then had to agree about a value that planning can invalidate
+        after the answer is taken.
 
-        Vulkan always owns it -- Unsloth emits its own ``--device Vulkan<i>``, and
-        those ordinals are not the CUDA ids the visible set is counted in, so the
-        two cannot be compared. An unreadable visible set fails closed for the same
-        reason: unproven means stripped, as before.
-
-        Every consumer of the strip must ask this the same way, launch and reload
-        comparator alike, or the argv and the already-loaded check drift apart.
+        One predicate rather than eleven copies of ``gpu_ids is not None``: the
+        launch, the fit classifier, the cache tuning and the reload comparator
+        disagreeing is how the argv and the already-loaded check drift apart.
         """
-        if gpu_ids is None:
-            return False
-        if is_vulkan is None:
-            is_vulkan = self.is_vulkan_build()
-        if is_vulkan:
-            return True
-        picked = {int(i) for i in gpu_ids}
-        if not picked:
-            return True
-        from utils.hardware import get_parent_visible_gpu_ids
-
-        visible = {int(i) for i in get_parent_visible_gpu_ids()}
-        # One device has no order to express, so the pass-through buys nothing there
-        # and a --main-gpu naming the card that is not present still has to go.
-        if len(visible) < 2:
-            return True
-        # Equality, not issuperset: a pick naming a card that is not visible is a stale
-        # selection, and relinquishing placement to it would strip nothing while the
-        # planner still budgets the cards that ARE visible.
-        if picked != visible:
-            return True
-        # The pick covers the visible set, so it narrows nothing -- but only a device
-        # value that REORDERS that set is safe to pass through. One that narrows it
-        # (--device CUDA0 of two) contradicts a plan already budgeted and split across
-        # both cards, and llama.cpp reads it last, so the child would run on one.
-        return not _device_selection_is_a_permutation(extra_args, env, visible)
+        return gpu_ids is not None
 
     @staticmethod
     def _strip_device_extra_args(extra_args):
@@ -21149,12 +21056,7 @@ class LlamaCppBackend:
             is_vulkan_backend = self._is_vulkan_backend(binary)
             # Once, and reused everywhere the strip is asked about: the reload
             # comparator has to reach the same answer as the argv it compares against.
-            _gpu_ids_own_device_flags = self._gpu_ids_own_placement(
-                gpu_ids,
-                is_vulkan = is_vulkan_backend,
-                extra_args = extra_args,
-                env = os.environ,
-            )
+            _gpu_ids_own_device_flags = self._gpu_ids_own_placement(gpu_ids)
             _vulkan_ordinal_pin = (
                 is_vulkan_backend and bool(gpu_ids) and gpu_ids_are_vulkan_ordinals is not False
             )
@@ -25814,31 +25716,6 @@ class LlamaCppBackend:
                     logger.info(
                         f"Appending user extra args to llama-server: {list(_emit_extra_args)}"
                     )
-                    # A preserved device value reorders the SELECTED device list, and
-                    # llama.cpp applies --tensor-split positionally over that list, so
-                    # Unsloth's own shares have to move with it. Same rule the inherited
-                    # mask path applies; without it, preserving the reorder hands the
-                    # roomier card's share to the smaller one. A pass-through split is
-                    # the user's and positional over the order they asked for, so it
-                    # vetoes rather than being rewritten under them.
-                    _preserved_device_order = _preserved_device_ordinals(
-                        _emit_extra_args, os.environ
-                    )
-                    if (
-                        not _gpu_ids_own_device_flags
-                        and _preserved_device_order is not None
-                        and not _extra_args_have_tensor_split(_emit_extra_args, os.environ)
-                        and not self._repoint_emitted_tensor_split(
-                            cmd,
-                            list(range(len(_preserved_device_order))),
-                            _preserved_device_order,
-                        )
-                    ):
-                        logger.info(
-                            "Could not move the planned tensor split onto the "
-                            "pass-through device order; leaving the shares as planned."
-                        )
-
                 # Last so it wins: the drafter CPU pin on a virtualised Metal device
                 # is a correctness fix, not a preference, and llama.cpp is last-wins.
                 if _pv_draft_cpu_pin:
@@ -29238,9 +29115,7 @@ class LlamaCppBackend:
             list(intent.extra_args) if intent.extra_args is not None else self._extra_args
         )
         candidate_extra_args = list(effective_extra_args) if effective_extra_args else []
-        if intent.extra_args is not None and self._gpu_ids_own_placement(
-            intent.gpu_ids, extra_args = intent.extra_args, env = os.environ
-        ):
+        if intent.extra_args is not None and self._gpu_ids_own_placement(intent.gpu_ids):
             candidate_extra_args = self._strip_device_extra_args(candidate_extra_args)
         # A Model Memory toggle changes only the launch flags, so the intent is
         # unchanged and this would otherwise report already-loaded and leave the
@@ -31162,11 +31037,7 @@ class LlamaCppBackend:
                             if fallback_extra_args is not snapshot.extra_args:
                                 self._requested_extra_args = (
                                     self._strip_device_extra_args(_ea)
-                                    if self._gpu_ids_own_placement(
-                                        snapshot.gpu_ids,
-                                        extra_args = _ea,
-                                        env = os.environ,
-                                    )
+                                    if self._gpu_ids_own_placement(snapshot.gpu_ids)
                                     else list(_ea)
                                 )
                             # Restore the requested mode + reason load_model("off") cleared,
