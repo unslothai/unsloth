@@ -30,6 +30,7 @@ export type SettingsTab = (typeof SETTINGS_TABS)[number];
 export type SettingsScrollTarget =
   | "about-updates"
   | "appearance-sidebar-nav"
+  | "chat-composer"
   | "chat-canvas-network";
 
 /** Which archive the Data tab should open straight into. */
@@ -107,6 +108,7 @@ function loadInitialTab(): SettingsTab {
 
 /** The panel that delivers each scroll target, so a navigation elsewhere abandons it. */
 const SCROLL_TARGET_TAB: Record<SettingsScrollTarget, SettingsTab> = {
+  "chat-composer": "chat",
   "about-updates": "about",
   "appearance-sidebar-nav": "appearance",
   "chat-canvas-network": "chat",

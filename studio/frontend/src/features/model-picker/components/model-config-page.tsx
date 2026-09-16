@@ -153,6 +153,7 @@ import {
   deletePerModelConfig,
   floorMaxSeqLength,
   isDefaultConfig,
+  isReasoningBudgetMessageValid,
   contextPinPatch,
   isServedByMlx,
   savedContextPin,
@@ -264,6 +265,8 @@ function hasNonDefaultAdvanced(config: PerModelConfig): boolean {
     config.specDraftNMax != null ||
     config.specDraftCacheDtype != null ||
     config.nParallel != null ||
+    config.reasoningBudget !== -1 ||
+    config.reasoningBudgetMessage !== "" ||
     config.nBatch != null ||
     config.nUbatch != null ||
     config.loadMode != null ||
@@ -294,6 +297,8 @@ function withoutUnsupportedDiffusionSettings(
     (config.gpuMemoryMode ?? "auto") === "auto" &&
     config.gpuLayers == null &&
     config.nCpuMoe == null &&
+    config.reasoningBudget === -1 &&
+    config.reasoningBudgetMessage === "" &&
     !config.tensorParallel &&
     !config.disableVision &&
     config.nBatch == null &&
@@ -308,6 +313,8 @@ function withoutUnsupportedDiffusionSettings(
     gpuMemoryMode: "auto",
     gpuLayers: undefined,
     nCpuMoe: undefined,
+    reasoningBudget: -1,
+    reasoningBudgetMessage: "",
     tensorParallel: false,
     disableVision: false,
     // the diffusion runner ignores the llama-server batch flags
@@ -758,17 +765,37 @@ function GpuMemorySettings({
   const showGpuPicker = (gpuContext.ids?.length ?? 0) > 1;
   const isGpuChecked = (index: number) =>
     selectedGpuIds === null || selectedGpuIds.includes(index);
-  const toggleGpu = (index: number) => {
-    const all = gpuContext.ids ?? [];
-    const current = selectedGpuIds ?? all;
-    const next = current.includes(index)
-      ? current.filter((i) => i !== index)
-      : [...current, index].sort((a, b) => a - b);
+  // The list order IS the device order the backend pins, so a re-checked GPU goes
+  // to the end rather than back to its numeric slot.
+  const orderedGpuIds = selectedGpuIds ?? gpuContext.ids ?? [];
+  const commitGpuIds = (next: number[]) => {
     if (next.length === 0) return; // keep at least one GPU selected
     update({
       selectedGpuIds: next,
       selectedGpuIndexKind: gpuIndexKind,
     });
+  };
+  const toggleGpu = (index: number) => {
+    commitGpuIds(
+      orderedGpuIds.includes(index)
+        ? orderedGpuIds.filter((i) => i !== index)
+        : [...orderedGpuIds, index],
+    );
+  };
+  // Selected devices in the order they will be given to the model, then the rest.
+  const orderedPinnableDevices = [
+    ...orderedGpuIds
+      .map((id) => pinnableDevices.find((d) => d.index === id))
+      .filter((d): d is SystemGpuDevice => d !== undefined),
+    ...pinnableDevices.filter((d) => !orderedGpuIds.includes(d.index)),
+  ];
+  const moveGpu = (index: number, delta: -1 | 1) => {
+    const from = orderedGpuIds.indexOf(index);
+    const to = from + delta;
+    if (from < 0 || to < 0 || to >= orderedGpuIds.length) return;
+    const next = [...orderedGpuIds];
+    [next[from], next[to]] = [next[to], next[from]];
+    commitGpuIds(next);
   };
   return (
     <>
@@ -869,12 +896,14 @@ function GpuMemorySettings({
             <span className={LABEL_CLASS}>GPUs</span>
             <InfoHint>
               By default, Unsloth chooses GPUs automatically. Editing this list
-              makes the checked GPUs the explicit candidate pool. At least one
-              GPU must stay selected.
+              makes the checked GPUs the explicit candidate pool.
+              {!isDiffusion &&
+                " Their order here is the order they are given to the model, so the first one takes the prompt."}{" "}
+              At least one GPU must stay selected.
             </InfoHint>
           </div>
           <div className="flex flex-col gap-2">
-            {pinnableDevices.map((d) => (
+            {orderedPinnableDevices.map((d, position) => (
               <div
                 key={d.index}
                 className="flex items-center justify-between gap-3"
@@ -885,6 +914,31 @@ function GpuMemorySettings({
                     ? ` · ${Math.round(d.memoryTotalGb)} GiB`
                     : ""}
                 </span>
+                {/* Not for diffusion: that runner drives one device and matches_gpu_ids
+                    reduces the request to its lowest id, so the arrows would move a row
+                    without moving the model, under help text promising the opposite. */}
+                {isGpuChecked(d.index) && !singleGpuInUse && !isDiffusion && (
+                  <div className="flex shrink-0 items-center gap-0.5">
+                    <button
+                      type="button"
+                      className="rounded px-1 text-ui-12 text-nav-fg/60 hover:text-nav-fg disabled:opacity-30"
+                      aria-label={`Move GPU ${d.index} earlier`}
+                      disabled={position === 0}
+                      onClick={() => moveGpu(d.index, -1)}
+                    >
+                      ↑
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded px-1 text-ui-12 text-nav-fg/60 hover:text-nav-fg disabled:opacity-30"
+                      aria-label={`Move GPU ${d.index} later`}
+                      disabled={position >= orderedGpuIds.length - 1}
+                      onClick={() => moveGpu(d.index, 1)}
+                    >
+                      ↓
+                    </button>
+                  </div>
+                )}
                 <Switch
                   className="panel-switch shrink-0"
                   checked={isGpuChecked(d.index)}
@@ -1466,6 +1520,67 @@ function GgufAdvancedSettings({
             className="panel-switch shrink-0"
             checked={!config.disableVision}
             onCheckedChange={(checked) => update({ disableVision: !checked })}
+          />
+        </div>
+      )}
+
+      {!isDiffusion && (
+        <div className={ROW_CLASS}>
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className={LABEL_CLASS}>Reasoning Budget</span>
+            <InfoHint>
+              Maximum thinking tokens. -1 is unrestricted, 0 ends reasoning
+              immediately, and a positive value sets a token budget.
+            </InfoHint>
+          </div>
+          <input
+            type="number"
+            min={-1}
+            max={2_147_483_647}
+            step={1}
+            value={config.reasoningBudget}
+            onChange={(event) => {
+              const raw = event.target.value;
+              if (raw === "") {
+                update({ reasoningBudget: -1 });
+                return;
+              }
+              const parsed = Number.parseInt(raw, 10);
+              if (Number.isFinite(parsed)) {
+                update({
+                  reasoningBudget: Math.max(
+                    -1,
+                    Math.min(2_147_483_647, parsed),
+                  ),
+                });
+              }
+            }}
+            aria-label="Reasoning Budget"
+            className={NUMBER_INPUT_CLASS}
+          />
+        </div>
+      )}
+
+      {!isDiffusion && (
+        <div className={ROW_CLASS}>
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className={LABEL_CLASS_WRAP}>Reasoning Budget Message</span>
+            <InfoHint>
+              Optional text injected before the end-of-thinking tag when the
+              model reaches its reasoning budget.
+            </InfoHint>
+          </div>
+          <input
+            type="text"
+            value={config.reasoningBudgetMessage}
+            placeholder="None"
+            onChange={(event) => {
+              if (isReasoningBudgetMessageValid(event.target.value)) {
+                update({ reasoningBudgetMessage: event.target.value });
+              }
+            }}
+            aria-label="Reasoning Budget Message"
+            className={`h-8 w-[180px] min-w-0 ${CONTROL_SURFACE} px-3 py-0 text-ui-13 font-medium text-nav-fg outline-none focus-visible:ring-0`}
           />
         </div>
       )}
@@ -2836,7 +2951,13 @@ export function ModelConfigPage({
       hasPending || peerChanged ? { ...baseConfig, ...pendingPatch } : baseConfig;
     const effectiveConfig = resolvedIsDiffusion
       ? withoutUnsupportedDiffusionSettings(committedConfig, gpuIndexKind)
-      : committedConfig;
+      : target.isGguf
+        ? committedConfig
+        : {
+            ...committedConfig,
+            reasoningBudget: -1,
+            reasoningBudgetMessage: "",
+          };
     // pinFixedLayerContext above was computed from the render-time config, before the same-click
     // GPU Layers draft was committed, so recompute from effectiveConfig or a later fresh load
     // recreates the OOM.
@@ -2893,6 +3014,16 @@ export function ModelConfigPage({
         configId,
         target.ggufVariant,
         remember ? normalizedRuntimeConfig : null,
+        remember
+          ? {
+              resetReasoningBudget:
+                baseline.reasoningBudget !== -1 &&
+                normalizedRuntimeConfig.reasoningBudget === -1,
+              resetReasoningBudgetMessage:
+                baseline.reasoningBudgetMessage !== "" &&
+                normalizedRuntimeConfig.reasoningBudgetMessage === "",
+            }
+          : undefined,
       );
     }
     // Only once the write landed: a blocked or full localStorage leaves the values on screen,
