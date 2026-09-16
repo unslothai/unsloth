@@ -643,15 +643,9 @@ def bootstrap_banner_lines(
 ) -> "list[str]":
     """The first-boot banner for a freshly created admin account.
 
-    Naming the file is enough for a normal launch: _inject_bootstrap puts the
-    credentials into the login page itself, so the form arrives filled in and nobody
-    reads the file by hand. Two launches never get that injection, and there the file
-    is the only copy: a public URL suppresses it on purpose rather than hand the
-    default credential to whoever loads the page, and --api-only serves no HTML to
-    inject into. Those are also the launches least likely to have a terminal sitting
-    next to the file, so print the value rather than a path to cat over SSH. Local
-    runs keep printing the path alone, because a credential nothing needed does not
-    belong in logs that get pasted into bug reports.
+    Printing the password is the exception, not the rule: _inject_bootstrap fills the
+    login form in, so a launch that gets the injection must keep the credential out of
+    a log that ends up in a bug report.
     """
     lines = ["=" * 60, "DEFAULT ADMIN ACCOUNT CREATED", f"    username: {username}"]
     if autofill_available or not password:
@@ -807,13 +801,19 @@ async def lifespan(app: FastAPI):
     # run_server's pre-bind gate sets suppress_bootstrap_injection when a public URL is about
     # to serve with the default credential: never capture the bootstrap password into app.state.
     _suppress_bootstrap = getattr(app.state, "suppress_bootstrap_injection", False)
-    if storage.ensure_default_admin():
-        bootstrap_pw = None if _suppress_bootstrap else storage.get_bootstrap_password()
-        app.state.bootstrap_password = bootstrap_pw
-
+    _created = storage.ensure_default_admin()
+    app.state.bootstrap_password = (
+        None if _suppress_bootstrap else storage.get_bootstrap_password()
+    )
+    # A tunnel launch runs the pre-bind gate first and that gate seeds the account, so
+    # _created is False there and the whole banner would be skipped on exactly the launch
+    # that needs it. requires_password_change: the gate may also have taken a new password
+    # at its prompt, which retires the bootstrap one.
+    if (_created or storage.admin_created_this_process()) and storage.requires_password_change(
+        storage.DEFAULT_ADMIN_USERNAME
+    ):
         bootstrap_path = storage.DB_PATH.parent / ".bootstrap_password"
-        # _suppress_bootstrap: a public URL is about to serve, so the login page is not
-        # given the credential. UNSLOTH_API_ONLY: no login page is served at all.
+        # No injection to rely on: a public URL withholds it, api-only serves no page.
         _autofill = not (
             _suppress_bootstrap or os.environ.get("UNSLOTH_API_ONLY") == "1"
         )
@@ -828,10 +828,6 @@ async def lifespan(app: FastAPI):
                 )
             )
             + "\n"
-        )
-    else:
-        app.state.bootstrap_password = (
-            None if _suppress_bootstrap else storage.get_bootstrap_password()
         )
 
     # Last, so it never contends for the GIL: the socket binds as soon as this returns, so the login
