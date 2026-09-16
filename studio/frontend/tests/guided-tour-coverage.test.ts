@@ -103,6 +103,14 @@ test("a persistently mounted page hides its tour when its route goes", () => {
   }
 });
 
+test("a step is left when the tour unmounts, not only when it advances", () => {
+  assert.match(
+    readSrc("features/tour/components/guided-tour.tsx"),
+    /onEnter\?\.\(\);[\s\S]{0,240}?return \(\) => \{[\s\S]{0,160}?onExit\?\.\(\);/,
+    "onEnter must be undone by the effect's cleanup; a separate close-only effect never runs when a page unmounts the tour mid-step, so onEnter's side effects leak onto the next page",
+  );
+});
+
 const EM_DASH = "\u2014";
 
 test("tour copy avoids em dashes", () => {

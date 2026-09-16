@@ -45,7 +45,6 @@ export function GuidedTour({
   const closeLockRef = useRef(false);
   const rafRef = useRef<number | null>(null);
   const lastRectRef = useRef<Rect | null>(null);
-  const activeStepRef = useRef<TourStep | null>(null);
 
   const step = steps[idx] ?? null;
   const total = steps.length;
@@ -57,26 +56,16 @@ export function GuidedTour({
     return padded(targetRect, pad, vw, vh);
   }, [step?.target, targetRect, vw, vh]);
 
+  // Cleanup, not a second effect: a step is then also left when the tour unmounts mid-step, as a
+  // page hiding its tour on navigation does. Without it onEnter's side effects leak onto the next
+  // page, and a persisted one (the sidebar pin) is never put back.
   useEffect(() => {
-    if (!open) return;
-    const prev = activeStepRef.current;
-    if (prev && prev.id !== step?.id) {
-      void prev.onExit?.();
-    }
-    activeStepRef.current = step;
-    if (step) {
-      void step.onEnter?.();
-    }
-  }, [open, step?.id]); // run before target lookup effect below
-
-  useEffect(() => {
-    if (open) return;
-    const prev = activeStepRef.current;
-    activeStepRef.current = null;
-    if (prev) {
-      void prev.onExit?.();
-    }
-  }, [open]);
+    if (!open || !step) return;
+    void step.onEnter?.();
+    return () => {
+      void step.onExit?.();
+    };
+  }, [open, step?.id]); // stays above the target lookup effect below
 
   useEffect(() => {
     if (!open) return;
