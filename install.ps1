@@ -7157,6 +7157,11 @@ exit 0
         # this runs on hosts that enforce it.
         $probeDeadline = (Get-Date).AddSeconds(30)
         $firstListing = $null
+        # Captured beside the path, because $script:NvidiaSmiWedged describes the LAST binary probed
+        # and the one this loop settles on can be an earlier one. Captured rather than assumed to be
+        # false: it is false today because a candidate only becomes $firstListing when its -L probe
+        # succeeded, and that is a property of Test-NvidiaSmiHasGpu rather than of this loop.
+        $firstListingWedged = $false
         foreach ($p in @(Get-NvidiaSmiCandidatePaths)) {
             # After at least one probe, never before: the deadline must not be able to skip the whole
             # loop on a slow machine and report no GPU without having looked.
@@ -7166,7 +7171,10 @@ exit 0
                     if ((Get-Date) -gt $probeDeadline) { break }
                     continue
                 }
-                if (-not $firstListing) { $firstListing = $p }
+                if (-not $firstListing) {
+                    $firstListing = $p
+                    $firstListingWedged = $script:NvidiaSmiWedged
+                }
                 $banner = Invoke-NvidiaSmiBounded $p
                 if ($banner -match 'CUDA(?: UMD)? Version:\s+\d+\.\d+') {
                     $HasNvidiaSmi = $true; $NvidiaSmiExe = $p; break
@@ -7175,6 +7183,12 @@ exit 0
         }
         if (-not $HasNvidiaSmi -and $firstListing) {
             $HasNvidiaSmi = $true; $NvidiaSmiExe = $firstListing
+            # Restored for the binary actually selected. A later candidate that timed out leaves the
+            # flag set for ITS path, and the guard downstream reads the flag to decide whether to ask
+            # the selected binary for the name, the compute capability and the driver version. Left
+            # alone, a working nvidia-smi would be treated as wedged and all three queries skipped
+            # because a different binary elsewhere on the machine hung.
+            $script:NvidiaSmiWedged = $firstListingWedged
         }
     }
     if (-not $HasNvidiaSmi -and (Get-NvidiaLibraryInventory)) {

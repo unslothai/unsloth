@@ -191,7 +191,11 @@ $setupAll = Get-Content -Raw -LiteralPath $setupPs1
 $start = $setupAll.IndexOf('$firstListing = $null')
 if ($start -lt 0) { Check "the detection loop still makes two passes" $false }
 else {
-    $loop = $setupAll.Substring($start, 1400)
+    # Bounded by the next statement rather than by a character count. A fixed 1400 stopped
+    # short of the fallback the moment a comment was added above it, and the check failed
+    # for a reason that had nothing to do with the loop.
+    $loopEndForRead = $setupAll.IndexOf('if (-not $HasNvidiaSmi -and (Get-NvidiaLibraryInventory))', $start)
+    $loop = $setupAll.Substring($start, $loopEndForRead - $start)
     Check "the loop prefers a candidate that also reports a CUDA version" (
         $loop -match "CUDA\(\?: UMD\)\? Version:")
     Check "and still settles for one that only lists a GPU when none reports a version" (
@@ -277,6 +281,48 @@ $HasNvidiaSmi = $false
 $NvidiaSmiExe = $null
 Invoke-Expression $fastLoop
 Check "control: with fast probes every candidate is still tried" ($script:Probed -eq 10)
+
+# ------------------------------------------- the wedge flag must describe the binary we chose
+#
+# Test-NvidiaSmiHasGpu records whether the binary it just probed timed out, and its own comment
+# says what matters is "whether the binary it settled on answered". The two-pass loop broke that:
+# it can keep probing after the candidate it will settle on, so the flag ends up describing a
+# LATER binary. Downstream that flag decides whether to ask the selected nvidia-smi for the GPU
+# name, the compute capability and the driver version, so a working binary would have all three
+# skipped because a different copy elsewhere on the machine hung.
+$script:NvidiaSmiWedged = $false
+function Test-NvidiaSmiHasGpu {
+    param([string]$Exe)
+    # The first candidate answers and is the one the loop settles on. The second hangs.
+    if ($Exe -like "*good*") { $script:NvidiaSmiWedged = $false; return $true }
+    $script:NvidiaSmiWedged = $true
+    return $false
+}
+function Invoke-NvidiaSmiBounded { param($Exe, $Arguments) return "no version here" }
+function Get-NvidiaSmiCandidatePaths {
+    return @("C:\good\nvidia-smi.exe", "C:\hung\nvidia-smi.exe")
+}
+$HasNvidiaSmi = $false
+$NvidiaSmiExe = $null
+Invoke-Expression $loopSrc
+Check "the working candidate is the one selected" (
+    $HasNvidiaSmi -eq $true -and $NvidiaSmiExe -eq "C:\good\nvidia-smi.exe")
+Check "a later candidate hanging does not mark the selected binary wedged" (
+    $script:NvidiaSmiWedged -eq $false)
+
+# Bites control: when the binary the loop settles on is ITSELF the one that hung, the flag must
+# stay set, or the guard downstream would query a hung nvidia-smi and wait out the bound again.
+function Test-NvidiaSmiHasGpu {
+    param([string]$Exe)
+    $script:NvidiaSmiWedged = $true
+    return $true
+}
+$script:NvidiaSmiWedged = $false
+$HasNvidiaSmi = $false
+$NvidiaSmiExe = $null
+Invoke-Expression $loopSrc
+Check "control: a selected binary that did hang is still reported wedged" (
+    $script:NvidiaSmiWedged -eq $true)
 
 if ($failures -gt 0) {
     Write-Host "$failures check(s) failed" -ForegroundColor Red
