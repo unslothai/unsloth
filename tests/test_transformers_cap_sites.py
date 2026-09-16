@@ -222,3 +222,31 @@ def test_the_checker_rejects_the_window_that_shipped_the_defect() -> None:
     assert "5.17.0" not in shipped, "the old window must not admit the release that fixes it"
     for rejected in REJECTED:
         assert rejected not in shipped
+
+
+def test_this_file_is_triggered_by_everything_it_scans() -> None:
+    """A gate that its own workflow's `paths:` filter cannot start is not a gate.
+
+    The two assertions above sweep `.github/workflows/*.yml`, so a PR that moves a cap in
+    notebooks-ci.yml or studio-backend-ci.yml and nothing else has to start this workflow.
+    Before the trigger listed them, `paths:` named only `unsloth/**`,
+    `tests/{vllm_compat,version_compat}/**`, pyproject.toml and version-compat-ci.yml, so
+    exactly the drift this file exists to block merged without the job ever running.
+    """
+    if sys.version_info < (3, 11):
+        pytest.skip("yaml parsing here needs the 3.11+ interpreter the job uses")
+    import yaml
+
+    workflow = yaml.safe_load((WORKFLOWS / "version-compat-ci.yml").read_text(encoding = "utf-8"))
+    # PyYAML resolves a bare `on:` key to the boolean True (the YAML 1.1 "norway
+    # problem"), so read both spellings rather than trusting either.
+    triggers = workflow.get("on", workflow.get(True)) or {}
+    paths = (triggers.get("pull_request") or {}).get("paths") or []
+
+    required = (".github/workflows/**", "tests/test_transformers_cap_sites.py")
+    missing = [name for name in required if name not in paths]
+    assert not missing, (
+        f"version-compat-ci.yml's pull_request.paths does not cover {missing}, so a PR "
+        f"touching only those files never starts the cap-site-consistency job that reads "
+        f"them. Current filter: {paths}"
+    )

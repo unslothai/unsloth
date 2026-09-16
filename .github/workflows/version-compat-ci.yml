@@ -37,7 +37,14 @@ on:
       - 'tests/vllm_compat/**'
       - 'tests/version_compat/**'
       - 'pyproject.toml'
-      - '.github/workflows/version-compat-ci.yml'
+      # The cap-site-consistency job below reads every file that declares the
+      # transformers window, and tests/test_transformers_cap_sites.py finds the
+      # workflow half of that set with a `.github/workflows/*.yml` glob. Trigger on
+      # the same set the job scans, or a PR that moves a cap in notebooks-ci.yml,
+      # studio-backend-ci.yml or studio-export-capability-ci.yml never starts the job
+      # that exists to catch exactly that drift, and it merges green.
+      - '.github/workflows/**'
+      - 'tests/test_transformers_cap_sites.py'
   schedule:
     # Daily 06:43 UTC. Catches upstream PyPI releases roughly within
     # 24 h. Off the :00 / :30 fleet-collision spots.
