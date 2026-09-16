@@ -830,6 +830,32 @@ class TestAnInheritedEnvCountIsTheOperatorsSetting:
             == 0
         )
 
+    def test_the_windows_tuning_does_not_zero_an_inherited_count(self):
+        """The tuning stands down for the field; the variable is the same instruction."""
+        import inspect
+
+        source = inspect.getsource(LlamaCppBackend.load_model)
+        assert "_ctx_checkpoints_owned = (" in source
+        assert "else _env_ctx_checkpoints_override()" in source
+        # The tuning's zero and the arch-crash retry both read the combined value.
+        assert "if _ctx_checkpoints_owned is not None:" in source
+        assert "ctx_checkpoints = _ctx_checkpoints_owned," in source
+        owned = source.index("_ctx_checkpoints_owned = (")
+        zero = source.index('_cache_flags_emitted.extend([str(server_caps["ctx_checkpoints_flag"]), "0"])')
+        assert owned < zero, "decide ownership before the tuning would zero it"
+
+    def test_the_retry_tuning_also_respects_an_inherited_count(self):
+        """_retry_cache_tuning_flags reads the same combined value as the launch."""
+        caps = {"supports_cache_ram": True, "ctx_checkpoints_flag": "--ctx-checkpoints"}
+        cmd = ["llama-server", "-m", "x.gguf"]
+        assert LlamaCppBackend._retry_cache_tuning_flags(
+            cmd, cache_ram = None, ctx_checkpoints = None, server_caps = caps
+        ) == ["--cache-ram", "0", "--ctx-checkpoints", "0"]
+        # What load_model now passes when LLAMA_ARG_CTX_CHECKPOINTS is set.
+        assert LlamaCppBackend._retry_cache_tuning_flags(
+            cmd, cache_ram = None, ctx_checkpoints = 256, server_caps = caps
+        ) == ["--cache-ram", "0"]
+
     def test_an_explicit_env_map_is_used_over_the_process_environment(self, monkeypatch):
         self._host(monkeypatch)
         monkeypatch.delenv("LLAMA_ARG_CTX_CHECKPOINTS", raising = False)

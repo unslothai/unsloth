@@ -25589,6 +25589,14 @@ class LlamaCppBackend:
                 # The exact tokens the tuning appended, so the arch-crash respawn can
                 # take them back off when it lands on a different device class.
                 _cache_flags_emitted: list[str] = []
+                # An inherited LLAMA_ARG_CTX_CHECKPOINTS is as explicit as the field, and
+                # llama.cpp reads it before argv, so a 0 appended below would overrule the
+                # operator while every estimate still priced the value they set.
+                _ctx_checkpoints_owned = (
+                    ctx_checkpoints
+                    if ctx_checkpoints is not None
+                    else _env_ctx_checkpoints_override()
+                )
                 # extra_args, not the memory policy's list: that one is built later, and
                 # a gpu_ids pin is the case _strip_device_extra_args removes the flag in.
                 # The env twin counts too: only an explicit gpu_ids clears
@@ -25633,7 +25641,7 @@ class LlamaCppBackend:
                         _cache_flags_emitted.extend(["--cache-ram", "0"])
                     else:
                         unsupported_cache_flags.append("--cache-ram")
-                    if ctx_checkpoints is not None:
+                    if _ctx_checkpoints_owned is not None:
                         pass
                     elif server_caps.get("ctx_checkpoints_flag"):
                         _cache_flags_emitted.extend([str(server_caps["ctx_checkpoints_flag"]), "0"])
@@ -27789,7 +27797,7 @@ class LlamaCppBackend:
                                 _retry_flags = self._retry_cache_tuning_flags(
                                     cmd,
                                     cache_ram = cache_ram,
-                                    ctx_checkpoints = ctx_checkpoints,
+                                    ctx_checkpoints = _ctx_checkpoints_owned,
                                     server_caps = server_caps,
                                 )
                                 if _retry_flags:
