@@ -780,3 +780,67 @@ def test_the_watcher_probes_under_the_jobs_own_boundary(monkeypatch, tmp_path):
 
     assert seen, "the watcher never measured"
     assert set(seen) == {False}, "a watcher probe borrowed the backend's own login"
+
+
+# --------------------------------------------------------------------------------------------
+# The request path measures what the worker will actually fetch
+# --------------------------------------------------------------------------------------------
+
+
+def _request_path(monkeypatch):
+    """Take a model download request as far as the transport decision, then stop."""
+    from hub.services.models import downloads as model_downloads
+
+    monkeypatch.setattr(dl, "_repo_siblings", lambda *a, **k: tuple(_flash_next_siblings()))
+    monkeypatch.setattr(model_downloads, "_reject_if_load_in_flight", lambda repo_id: None)
+    monkeypatch.setattr(model_downloads, "resolve_cached_repo_id_case", lambda repo, **k: repo)
+    monkeypatch.setattr(model_downloads, "scoped_file_blob_hashes", lambda *a, **k: frozenset())
+    monkeypatch.setattr(dl, "launch_worker", lambda *a, **k: "running")
+    return model_downloads
+
+
+def _download(model_downloads, **over):
+    import asyncio
+
+    from hub.schemas.downloads import DownloadModelRequest
+
+    body = {"repo_id": "unsloth/M-GGUF", "transport_mode": "http"}
+    body.update(over)
+    return asyncio.run(model_downloads.download_model_response(DownloadModelRequest(**body)))
+
+
+_BIG_SHARD = "UD-Q5_K_XL/M-UD-Q5_K_XL-00001-of-00002.gguf"
+
+
+def test_files_without_a_scope_id_do_not_decide_the_transport(monkeypatch):
+    """``files`` is ignored without ``scope_id``, so it must not shrink the measured size."""
+    model_downloads = _request_path(monkeypatch)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _download(
+            model_downloads,
+            gguf_variant = "UD-Q5_K_XL",
+            files = ["README.md"],
+        )
+
+    assert excinfo.value.status_code == 400
+    assert "HTTPS cannot fetch" in excinfo.value.detail
+
+
+def test_an_ignored_file_list_does_not_refuse_a_download_that_fits(monkeypatch):
+    """The other direction: an ignored oversized name must not reject a valid snapshot."""
+    model_downloads = _request_path(monkeypatch)
+
+    result = _download(model_downloads, files = [_BIG_SHARD])
+
+    assert result["transport"] == download_registry.TRANSPORT_HTTP
+
+
+def test_a_real_scope_is_still_measured_on_its_files(monkeypatch):
+    model_downloads = _request_path(monkeypatch)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _download(model_downloads, scope_id = "diffusion", files = [_BIG_SHARD])
+
+    assert excinfo.value.status_code == 400
+    assert "HTTPS cannot fetch" in excinfo.value.detail

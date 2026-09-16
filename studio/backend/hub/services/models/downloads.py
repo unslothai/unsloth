@@ -220,7 +220,8 @@ async def download_model_response(
         "model",
         repo_id,
         variant = variant,
-        files = scoped_files or None,
+        # Mirror the claim and the worker below: files are honoured only under a scope_id.
+        files = scoped_files if scope_variant is not None else None,
         hf_token = hf_token,
         allow_ambient_token = allow_ambient_token,
     )
