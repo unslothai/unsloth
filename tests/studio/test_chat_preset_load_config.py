@@ -354,6 +354,21 @@ def _consume_statement(block: str, index: int):
             cursor += 1
         if cursor < len(block) and block[cursor] == "(":
             cursor += len(_balanced(block, cursor, "(", ")")) + 2
+        if keyword.group(1) == "try":
+            # The clauses are one statement: read apart, a `try` whose every clause returns
+            # looks like a block that falls through.
+            _, cursor = _consume_statement(block, cursor)
+            while True:
+                following = re.match(r"\s*\b(?:catch|finally)\b", block[cursor:])
+                if following is None:
+                    break
+                cursor += following.end()
+                while cursor < len(block) and block[cursor].isspace():
+                    cursor += 1
+                if cursor < len(block) and block[cursor] == "(":
+                    cursor += len(_balanced(block, cursor, "(", ")")) + 2
+                _, cursor = _consume_statement(block, cursor)
+            return block[index:cursor], cursor
         if keyword.group(1) == "if":
             _, cursor = _consume_statement(block, cursor)
             tail = block[cursor:]
@@ -450,6 +465,35 @@ def _breaks_out(arm: str) -> bool:
     )
 
 
+def _try_always_returns(statement: str) -> bool:
+    """A `try` that returns whichever way it goes.
+
+    `finally` runs on every path, so a return there settles it. Otherwise both the attempt and
+    its `catch` have to return: a `try` alone leaves the throwing path uncovered.
+    """
+    clauses, index = [], 0
+    for match in re.finditer(r"\b(try|catch|finally)\b", _outside_literals(statement)):
+        cursor = match.end()
+        while cursor < len(statement) and statement[cursor].isspace():
+            cursor += 1
+        if cursor < len(statement) and statement[cursor] == "(":
+            cursor += len(_balanced(statement, cursor, "(", ")")) + 2
+            while cursor < len(statement) and statement[cursor].isspace():
+                cursor += 1
+        if cursor >= len(statement) or statement[cursor] != "{":
+            return False
+        clauses.append((match.group(1), _balanced(statement, cursor, "{", "}")))
+    bodies = dict(clauses)
+    if "finally" in bodies and _block_always_returns(bodies["finally"]):
+        return True
+    return (
+        "try" in bodies
+        and "catch" in bodies
+        and _block_always_returns(bodies["try"])
+        and _block_always_returns(bodies["catch"])
+    )
+
+
 def _block_always_returns(block: str) -> bool:
     """Does every path out of this block go through a `return`?
 
@@ -472,6 +516,13 @@ def _block_always_returns(block: str) -> bool:
             return True
         if re.match(r"\bswitch\b", stripped) and _switch_always_returns(stripped):
             return True
+        if re.match(r"\btry\b", stripped) and _try_always_returns(stripped):
+            return True
+        # `do` is the one loop whose body is not optional: it runs before the test.
+        if re.match(r"\bdo\b", stripped):
+            repeated, _ = _consume_statement(stripped, re.match(r"\bdo\b", stripped).end())
+            if _arm_always_returns(repeated):
+                return True
         branch = re.match(r"\bif\b\s*", stripped)
         if branch is None:
             continue
@@ -668,7 +719,14 @@ def _decoded(text: str) -> str:
         else:
             out.append(_STRING_ESCAPES.get(marker, marker))
             index += 2
-    return "".join(out)
+    # `\\uD83D\\uDE00` is one character written as the UTF-16 pair JavaScript stores it in.
+    return re.sub(
+        r"[\ud800-\udbff][\udc00-\udfff]",
+        lambda pair: chr(
+            0x10000 + ((ord(pair.group(0)[0]) - 0xD800) << 10) + (ord(pair.group(0)[1]) - 0xDC00)
+        ),
+        "".join(out),
+    )
 
 
 def _literal_value(text: str):
@@ -876,6 +934,9 @@ SELECTOR_CASES = [
     ('(s) => s.reasoningBudget === "\\x61" ? "a" : s.reasoningBudget', True),
     ('(s) => s.reasoningBudget === "\\u0061" ? "a" : s.reasoningBudget', True),
     ('(s) => s.reasoningBudget === "\\x61" ? "b" : s.reasoningBudget', False),
+    # A surrogate pair is one character, written the way JavaScript stores it.
+    ('(s) => s.reasoningBudget === "😀" ? "\\uD83D\\uDE00" : s.reasoningBudget', True),
+    ('(s) => s.reasoningBudget === "😀" ? "\\uD83D" : s.reasoningBudget', False),
     # An escaped quote is a character in the message, not the end of the literal.
     ('(s) => s.reasoningBudget === "a\\"b" ? "a\\"b" : s.reasoningBudget', True),
     ('(s) => s.reasoningBudget === "a\\"b" ? "ab" : s.reasoningBudget', False),
@@ -981,6 +1042,16 @@ SELECTOR_CASES = [
         '(s) => { switch (s.mode) { default: return s.reasoningBudget; case "x": sideEffect(); } }',
         False,
     ),
+    # `try` returns whichever way it goes only when both clauses do, or when `finally` does.
+    ("(s) => { try { return s.reasoningBudget; } catch { return s.reasoningBudget; } }", True),
+    ("(s) => { try { return s.reasoningBudget; } catch (e) { return s.reasoningBudget; } }", True),
+    ("(s) => { try { return s.reasoningBudget; } catch { return s.other; } }", False),
+    # A `try` alone leaves the throwing path uncovered, and a `finally` that returns nothing
+    # settles nothing.
+    ("(s) => { try { return s.reasoningBudget; } finally { cleanup(); } }", False),
+    # `do` is the one loop whose body runs before the test; the others may not run at all.
+    ("(s) => { do { return s.reasoningBudget; } while (s.on); }", True),
+    ("(s) => { while (s.on) { return s.reasoningBudget; } }", False),
     # A nested switch's `default:` is not the outer switch's: a mode matching no outer case
     # still falls past the closing brace.
     (
