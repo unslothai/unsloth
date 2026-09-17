@@ -208,8 +208,7 @@
       "check": "openssl encryption + network/key material (encrypted exfiltration)",
       "severity": "CRITICAL",
       "evidence": "OpenSSL: L137:   actual=$(openssl dgst -sha256 -r \"$d\" | cut -d' ' -f1)\nNetwork: L650:         self._client = httpx.Client(\nL651:             headers={\"X-Sandbox-Token\": sandbox_token},\nL652:             auth=_SandboxAuth(api),\nL653:             limits=httpx.Limits(max_connections=max_connections, max_keepalive_connections=max_connections),\nL654: \nL655: \nL656: \nL657: \nL658:             follow_redirects=False,\nL659:         )",
-      "evidence_hash": "434d8421cac99d2f6cb5677896be3d0ba2186866d639ae0231ef8d8390fccc74",
-      "file_sha256": "0eb8ef30815d200296551cf2b7c47bf9615f2ae7719b5f1b873def636223433e"
+      "evidence_hash": "434d8421cac99d2f6cb5677896be3d0ba2186866d639ae0231ef8d8390fccc74"
     },
     {
       "package": "huggingface-hub",
@@ -217,8 +216,7 @@
       "check": "Writes to /tmp and executes (staged dropper)",
       "severity": "CRITICAL",
       "evidence": "L130: d=/tmp/.sbx-server sha256:c845d184bd7941b05696b89387cb975850ab04e8ad83091f69342b0aee775884",
-      "evidence_hash": "8b25f31477366141a6677614c8d1dead8aa6c825ab4b80808df0106abf2d87c9",
-      "file_sha256": "0eb8ef30815d200296551cf2b7c47bf9615f2ae7719b5f1b873def636223433e"
+      "evidence_hash": "8b25f31477366141a6677614c8d1dead8aa6c825ab4b80808df0106abf2d87c9"
     },
     {
       "package": "huggingface-hub",
