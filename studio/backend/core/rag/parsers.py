@@ -29,6 +29,7 @@ class Page:
     text: str
     page_number: int | None = None
     char_count: int = 0
+    needs_ocr: bool = False
 
 
 @dataclass(frozen = True)
@@ -38,6 +39,9 @@ class ParsedImage:
     image_bytes: bytes
     page_number: int | None
     xref: int
+    full_page: bool = False
+    tile_index: int | None = None
+    tile_count: int = 0
 
 
 def _page(text: str, page_number: int | None) -> Page:
@@ -162,7 +166,27 @@ def _pdf(
                 text = candidate
             else:
                 text = plain
-            pages.append(_page(text, page_number + 1))
+            # Markdown may contain image placeholders even when there is no text layer.
+            # Record scanned pages from the PDF itself; blank separator pages need no OCR.
+            images_on_page = page.get_image_info()
+            needs_ocr = bool(images_on_page) and not plain.strip()
+            for info in images_on_page:
+                image_rect = fitz.Rect(info["bbox"]) & page.rect
+                if image_rect.get_area() < page.rect.get_area() * 0.5:
+                    continue
+                # A selectable header/footer does not make the scanned body readable.
+                body = fitz.Rect(
+                    image_rect.x0,
+                    image_rect.y0 + image_rect.height * 0.1,
+                    image_rect.x1,
+                    image_rect.y1 - image_rect.height * 0.1,
+                )
+                if len(page.get_text("text", clip = body).strip()) < config.OCR_MIN_CHARS:
+                    needs_ocr = True
+                    break
+            if needs_ocr:
+                text = plain
+            pages.append(Page(text, page_number + 1, len(text), needs_ocr = needs_ocr))
             if want_images:
                 for img in page.get_images(full = True):
                     xref = img[0]
@@ -326,10 +350,20 @@ def render_pdf_figure_tiles(
                         )
                         & rect
                     )
-            for clip in clips:
+            for index, clip in enumerate(clips):
                 try:
                     pix = page.get_pixmap(dpi = dpi, clip = clip)
-                    out.append(ParsedImage(image_bytes = pix.tobytes("png"), page_number = num, xref = 0))
+                    is_full_page = fullpage and index == 0
+                    out.append(
+                        ParsedImage(
+                            image_bytes = pix.tobytes("png"),
+                            page_number = num,
+                            xref = 0,
+                            full_page = is_full_page,
+                            tile_index = None if is_full_page else index - int(fullpage),
+                            tile_count = rows * cols,
+                        )
+                    )
                 except Exception:
                     continue
                 if len(out) >= max_tiles:

@@ -32,6 +32,8 @@ const DEFAULT_ISH = {
   nParallel: null,
   nBatch: null,
   nUbatch: null,
+  reasoningBudget: -1,
+  reasoningBudgetMessage: "",
   tensorParallel: false,
   disableVision: false,
   chatTemplateOverride: null,
@@ -47,6 +49,8 @@ const BLANK = {
   nParallel: null,
   nBatch: null,
   nUbatch: null,
+  reasoningBudget: -1,
+  reasoningBudgetMessage: "",
   tensorParallel: false,
   disableVision: false,
   chatTemplateOverride: null,
@@ -215,7 +219,8 @@ const FIELDS: {
   {
     name: "GPU placement",
     config: { selectedGpuIds: [0, 2] },
-    same: { requested_gpu_ids: [2, 0] },
+    // Same ORDER, not merely the same cards: the reordered pair is a reload now.
+    same: { requested_gpu_ids: [0, 2] },
     differs: { requested_gpu_ids: [0, 1] },
   },
 ];
@@ -241,11 +246,20 @@ for (const field of FIELDS) {
 }
 
 /** Ordering is the backend's to choose: it narrows and reorders placement at fit time. */
-test("GPU placement compares as a set, not as an order", () => {
+test("GPU placement compares as an order, not as a set", () => {
+  // The picker hands the list to the backend in order and position decides which
+  // card takes the prompt, so a reorder is a different placement and must reload.
   assert.equal(
     matches(
       { requested_gpu_ids: [3, 1, 0] },
       { ...BLANK, selectedGpuIds: [0, 1, 3] },
+    ),
+    false,
+  );
+  assert.equal(
+    matches(
+      { requested_gpu_ids: [3, 1, 0] },
+      { ...BLANK, selectedGpuIds: [3, 1, 0] },
     ),
     true,
   );
@@ -1487,6 +1501,42 @@ test("a retryable drafter failure declines the shortcut", () => {
   }
 });
 
+test("a repaired drafter has to reach the backend to be re-checked", () => {
+  // The sheet's remedy is to replace the sidecar in place, and `adoptable` skips /load
+  // when this returns false, so the re-check would never run. An unchanged file still
+  // dedupes server-side, so declining the shortcut is cheap rather than a teardown.
+  for (const mode of ["auto", "mtp", "mtp+ngram"]) {
+    assert.equal(
+      residentSpeculativeNeedsRepair(
+        { spec_fallback_reason: "drafter_unloadable", spec_drafter_kind: "mtp" },
+        mode,
+      ),
+      true,
+      `drafter_unloadable under ${mode} must reload`,
+    );
+  }
+  // No sendsGgufPath exclusion, unlike drafter_not_found: the re-check sits in the drafter
+  // comparison, which a standalone .gguf load reaches, not in the gguf_path-gated refetch.
+  assert.equal(
+    residentSpeculativeNeedsRepair(
+      { spec_fallback_reason: "drafter_unloadable", spec_drafter_kind: "mtp" },
+      "auto",
+      true,
+    ),
+    true,
+    "a standalone .gguf load must still reload for a repaired drafter",
+  );
+  // And the mode still has to be one that asked for a drafter at all.
+  assert.equal(
+    residentSpeculativeNeedsRepair(
+      { spec_fallback_reason: "drafter_unloadable", spec_drafter_kind: "mtp" },
+      "off",
+    ),
+    false,
+    "spec off asked for no drafter, so there is nothing to repair",
+  );
+});
+
 test("an Auto-mode policy downgrade is not a repair the load can make", () => {
   for (const reason of [
     "drafter_no_vram",
@@ -1790,4 +1840,100 @@ test("a runtime_error resident does not claim its draft depth is the default", (
       `${reason} must still adopt a default-against-default pick`,
     );
   }
+});
+
+/**
+ * Auto tensor-parallel now reports a split (unslothai/unsloth#10884): the backend emits
+ * one whenever the planner sizes the load itself, and the /status echo carries it. The
+ * store never holds a split in auto mode -- applyInferenceStatusToStore nulls it unless
+ * the mode is manual -- so comparing the two sides here compares a cleared field against
+ * a server that is legitimately running a ratio, and declines to adopt a resident model
+ * that is exactly what was asked for. The split is a manual-mode opinion; in auto it is
+ * the planner's business.
+ */
+test("an auto tensor-parallel server that reports a split still adopts", () => {
+  assert.equal(
+    matches(
+      { gpu_memory_mode: "auto", tensor_parallel: true, tensor_split: [0.75, 0.25] },
+      { ...BLANK, tensorParallel: true },
+    ),
+    true,
+  );
+});
+
+/**
+ * The limit of the rule above. applyInferenceStatusToStore preserves prevState.splitRatio
+ * whenever a gpu-memory edit is pending, so a ratio set under Manual survives the switch
+ * to Auto, and the load path sends store.splitRatio in either mode. Adopting on the
+ * resident's mode alone would drop a placement change the user made and the server would
+ * have applied, since the backend honours a ratio in auto now too.
+ */
+test("a pending ratio the auto resident is not running is still a reload", () => {
+  assert.equal(
+    matches(
+      { gpu_memory_mode: "auto", tensor_parallel: true, tensor_split: [0.75, 0.25] },
+      { ...BLANK, tensorParallel: true },
+      { ...STANDING, splitRatio: [0.5, 0.5] },
+    ),
+    false,
+  );
+});
+
+test("a pending ratio the auto resident IS running adopts", () => {
+  // The other half of the guard: it must not turn into a blanket reload for anyone who
+  // ever touched the ratio.
+  assert.equal(
+    matches(
+      { gpu_memory_mode: "auto", tensor_parallel: true, tensor_split: [0.75, 0.25] },
+      { ...BLANK, tensorParallel: true },
+      { ...STANDING, splitRatio: [0.75, 0.25] },
+    ),
+    true,
+  );
+});
+
+test("a remembered manual split the resident load does not run is still a reload", () => {
+  assert.equal(
+    matches(
+      { gpu_memory_mode: "manual", tensor_split: [0.5, 0.5] },
+      { ...BLANK, gpuMemoryMode: "manual" as const, gpuLayers: 99 },
+      { ...STANDING, splitRatio: [0.75, 0.25] },
+    ),
+    false,
+  );
+});
+
+
+test("inherited reasoning defaults do not reload an unchanged resident", () => {
+  assert.equal(matches({
+    reasoning_budget: 32,
+    reasoning_budget_message: "Conclude now.",
+    requested_reasoning_budget: -1,
+    requested_reasoning_budget_message: "",
+  }, BLANK), true);
+});
+
+test("pinning the effective reasoning value changes the resident request", () => {
+  assert.equal(matches({
+    reasoning_budget: 32,
+    requested_reasoning_budget: -1,
+  }, { ...BLANK, reasoningBudget: 32 }), false);
+  assert.equal(matches({
+    reasoning_budget_message: "Conclude now.",
+    requested_reasoning_budget_message: "",
+  }, { ...BLANK, reasoningBudgetMessage: "Conclude now." }), false);
+});
+
+test("an explicit zero reasoning request can reuse the resident", () => {
+  assert.equal(matches({
+    reasoning_budget: 0,
+    requested_reasoning_budget: 0,
+  }, { ...BLANK, reasoningBudget: 0 }), true);
+});
+
+test("legacy status without reasoning request echoes keeps its comparison", () => {
+  assert.equal(matches({
+    reasoning_budget: 32,
+    reasoning_budget_message: "Conclude now.",
+  }, { ...BLANK, reasoningBudget: 32, reasoningBudgetMessage: "Conclude now." }), true);
 });

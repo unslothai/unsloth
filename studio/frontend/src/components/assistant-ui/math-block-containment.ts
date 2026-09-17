@@ -3,7 +3,6 @@
 
 /*
  * READING THE FLAG, AND PUTTING IT WHERE THE STYLESHEET CAN SEE IT.
- *
  * Split from `math-block-mode.ts` for the same reason `code-fence-defer.tsx` is split from
  * `code-fence-mode.ts`: this file touches `import.meta.env` and `document`, neither of which the
  * frontend's `node --experimental-strip-types` test runner can evaluate, and the decision itself

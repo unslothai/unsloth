@@ -4,7 +4,6 @@
 import { useAppShellReadySignal } from "@/components/app-readiness";
 import { usePlatformStore } from "@/config/env";
 import { Button } from "@/components/ui/button";
-import { useSidebar } from "@/components/ui/sidebar";
 import { Spinner } from "@/components/ui/spinner";
 import { Tabs, TabsContent } from "@/components/ui/tabs";
 import { useHfTokenStore } from "@/features/hub";
@@ -27,9 +26,7 @@ import {
 import { useNavigate } from "@tanstack/react-router";
 import {
   type ReactElement,
-  useCallback,
   useEffect,
-  useMemo,
   useRef,
 } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -39,7 +36,11 @@ import { useTrainingCacheReconciliation } from "./hooks/use-training-cache-recon
 import { LiveTrainingView } from "./live-training-view";
 import { DatasetPreviewDialog } from "./sections/dataset-preview-dialog";
 import { TrainSubNav } from "./studio-navigation";
-import { studioTourSteps, studioTrainingTourSteps } from "./tour";
+import {
+  studioHistoryTourSteps,
+  studioTourSteps,
+  studioTrainingTourSteps,
+} from "./tour";
 import {
   type TrainSubTab,
   getStudioSubtitle,
@@ -112,20 +113,15 @@ export function StudioPage(): ReactElement {
     showTrainingView,
   } = useStudioNavigation();
 
-  const { setPinned } = useSidebar();
-  const pinSidebar = useCallback(() => setPinned(true), [setPinned]);
-
   const tourEnabled = hasHydratedRuntime && !isHydratingRuntime;
   const isConfigTour = activeTab === "configure";
-  const baseTourSteps =
-    activeTab === "current-run" ? studioTrainingTourSteps : studioTourSteps;
-  const tourSteps = useMemo(
-    () =>
-      baseTourSteps.map((step) =>
-        step.target === "navbar" ? { ...step, onEnter: pinSidebar } : step,
-      ),
-    [baseTourSteps, pinSidebar],
-  );
+  // Each tab unmounts the others, so each gets the steps whose anchors are actually on screen.
+  const tourSteps =
+    activeTab === "current-run"
+      ? studioTrainingTourSteps
+      : activeTab === "history"
+        ? studioHistoryTourSteps
+        : studioTourSteps;
   const tour = useGuidedTourController({
     id: "studio",
     steps: tourSteps,
@@ -268,7 +264,11 @@ export function StudioPage(): ReactElement {
                 <TabsContent value="current-run" className="mt-0">
                   <LiveTrainingView />
                 </TabsContent>
-                <TabsContent value="history" className="mt-0">
+                <TabsContent
+                  value="history"
+                  className="mt-0"
+                  data-tour="studio-history"
+                >
                   {selectedHistoryRunId ? (
                     <HistoricalTrainingView
                       runId={selectedHistoryRunId}

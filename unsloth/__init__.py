@@ -1,11 +1,8 @@
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
-#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-#
 #     http://www.apache.org/licenses/LICENSE-2.0
-#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -15,6 +12,11 @@
 import os, importlib.util, platform, sys
 
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
+
+# Opt into ROCm AOTriton kernels PyTorch still gates as experimental; it keeps its own hardware
+# checks and reads this lazily at the SDPA probe, so no torch import here. `setdefault` preserves
+# an explicit override, including "0".
+os.environ.setdefault("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")
 
 # Before transformers, which reads sentencepiece availability during its own import. On Windows
 # the extension is never imported at all: a code integrity policy can refuse it by reputation,
@@ -151,6 +153,18 @@ def _is_mlx_available():
 _IS_MLX = _is_mlx_available()
 
 if _IS_MLX:
+    # Same reason again, and first because it is what turns the bare AttributeError into a
+    # diagnosis: this branch imports transformers below, so an Apple Silicon host carrying the
+    # old-torch/new-transformers pair hits #8933 here exactly as a CUDA host does, and
+    # _gpu_init.py, the only other installation site, is never reached on this path. The
+    # triton shim check is deliberately NOT mirrored: it is a CUDA/ROCm/XPU driver shim and
+    # there is no triton on this platform to inspect.
+    try:
+        from .import_fixes import patch_torch_missing_attribute_error as _patch_torch_attr
+        _patch_torch_attr()
+        del _patch_torch_attr
+    except Exception:
+        pass
     # _gpu_init does this on the GPU path and the MLX path never reaches it, so torchao 0.18 + torch <
     # 2.10 dies on `ScalingType`.
     try:
@@ -1555,9 +1569,10 @@ else:
     from ._gpu_init import __version__
 
     def get_gpu_memory_stats():
-        """Return CUDA/ROCm/XPU device stats, peak memory, and total memory in GiB."""
+        """Return CUDA/ROCm/XPU/NPU device stats, peak memory, and total memory in GiB."""
         try:
             import torch
+
             if hasattr(torch, "xpu") and torch.xpu.is_available():
                 props = torch.xpu.get_device_properties(0)
                 peak = (
@@ -1572,19 +1587,31 @@ else:
                 peak = torch.cuda.max_memory_reserved()
                 total = getattr(props, "total_memory", 0)
                 return props, _bytes_to_gb(peak), _bytes_to_gb(total) or 1.0
+            # Last, so no existing device changes branch. npu fell through to a fake 1 GiB.
+            if hasattr(torch, "npu") and torch.npu.is_available():
+                props = torch.npu.get_device_properties(0)
+                peak = (
+                    torch.npu.max_memory_reserved()
+                    if hasattr(torch.npu, "max_memory_reserved")
+                    else torch.npu.max_memory_allocated()
+                )
+                total = getattr(props, "total_memory", 0)
+                return props, _bytes_to_gb(peak), _bytes_to_gb(total) or 1.0
         except Exception:
             pass
         stats = _UnslothDeviceStats("Unknown GPU", 0)
         return stats, 0.0, 1.0
 
     def clear_gpu_memory():
-        """Clear cached GPU memory on CUDA, ROCm, or XPU when available."""
+        """Clear cached GPU memory on CUDA, ROCm, XPU, or NPU when available."""
         try:
             import torch
             if hasattr(torch, "xpu") and torch.xpu.is_available():
                 torch.xpu.empty_cache()
             elif hasattr(torch, "cuda") and torch.cuda.is_available():
                 torch.cuda.empty_cache()
+            elif hasattr(torch, "npu") and torch.npu.is_available():
+                torch.npu.empty_cache()
         except Exception:
             pass
 

@@ -612,10 +612,13 @@ def test_hidden_shared_ids_do_not_outlive_their_entries():
     monitor = ApiMonitor(max_entries = 2)
     monitor.record_lifecycle(event = "unload", model = "org/A")
     monitor.clear(subject = "alice")
-    assert monitor._hidden_shared.get("alice")
+    from utils.account_context import current_account_id
+
+    key = (current_account_id(), "alice")
+    assert monitor._hidden_shared.get(key)
     for i in range(5):
         monitor.record_lifecycle(event = "unload", model = f"org/M{i}")
-    assert not monitor._hidden_shared.get("alice")
+    assert not monitor._hidden_shared.get(key)
 
 
 def test_an_api_triggered_lifecycle_row_carries_the_attribution():

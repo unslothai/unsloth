@@ -69,7 +69,7 @@ def _shared_setup_6():
 @pytest.fixture
 def research_home(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
     studio_db.upsert_chat_thread(
         {
             "id": "thread-1",
@@ -378,13 +378,14 @@ def test_report_is_recovered_from_substantial_synthesis_reasoning():
 
 def test_document_citations_are_restricted_to_persisted_sources():
     from core import research_runs as worker
+    from core.research.citations import _validate_report_document_sources
 
     report = (
         "Supported [Document: private.pdf, p. 2]. "
         "Fabricated [Document: invented.pdf, p. 9] and "
         "[Document: multiline.pdf,\np. 3]."
     )
-    validated = worker._validate_report_document_sources(
+    validated = _validate_report_document_sources(
         report,
         [{"filename": "private.pdf", "page": 2}],
     )
@@ -549,7 +550,7 @@ def test_schema_and_state_transitions(research_home):
 
 def test_owner_scoped_claim_schema_migrates_to_global(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
     studio_db.upsert_chat_thread(
         {
             "id": "shared-thread",
@@ -594,7 +595,7 @@ def test_owner_scoped_claim_schema_migrates_to_global(tmp_path, monkeypatch):
     finally:
         conn.close()
 
-    studio_db._schema_ready = False
+    studio_db._schema_ready = set()
     conn = studio_db.get_connection()
     try:
         primary_key = [
@@ -619,7 +620,7 @@ def test_owner_scoped_claim_schema_migrates_to_global(tmp_path, monkeypatch):
 
 def test_owner_scoped_claim_migration_rolls_back_on_interruption(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
     studio_db.upsert_chat_thread(
         {
             "id": "shared-thread",
@@ -661,14 +662,14 @@ def test_owner_scoped_claim_migration_rolls_back_on_interruption(tmp_path, monke
         return real_connect(path, *args, **kwargs)
 
     monkeypatch.setattr(studio_db.sqlite3, "connect", _failing_connect)
-    studio_db._schema_ready = False
+    studio_db._schema_ready = set()
     with pytest.raises(RuntimeError, match = "simulated crash"):
         studio_db.get_connection()
 
     # Recover: the interrupted migration left nothing half-applied, so a clean boot
     # completes the migration and preserves the original claim exactly once.
     monkeypatch.setattr(studio_db.sqlite3, "connect", real_connect)
-    studio_db._schema_ready = False
+    studio_db._schema_ready = set()
     conn = studio_db.get_connection()
     try:
         primary_key = [
@@ -1155,13 +1156,13 @@ def test_partial_report_is_persisted_and_emits_an_event(research_home):
 
 
 def test_report_citations_are_limited_to_gathered_sources():
-    from core.research_runs import _validate_report_sources
+    from core.research import citations
 
     report = (
         "Supported [claim](https://example.com/source) and "
         "invented [claim](https://invalid.example/guess)."
     )
-    validated = _validate_report_sources(
+    validated = citations._validate_report_sources(
         report,
         [
             {
@@ -1176,24 +1177,24 @@ def test_report_citations_are_limited_to_gathered_sources():
 
 
 def test_report_citations_preserve_balanced_parentheses_in_urls():
-    from core.research_runs import _validate_report_sources
+    from core.research import citations
 
     url = "https://en.wikipedia.org/wiki/Function_(mathematics)"
-    validated = _validate_report_sources(
+    validated = citations._validate_report_sources(
         f"Supported [generic label]({url}).",
         [{"url": url, "title": "Function (mathematics)"}],
     )
 
     assert f"[Function (mathematics)]({url})" in validated
     assert (
-        _validate_report_sources(
+        citations._validate_report_sources(
             f'With title [generic label]({url} "reference page").',
             [{"url": url, "title": "Function (mathematics)"}],
         )
         == f"With title [Function (mathematics)]({url})."
     )
     assert (
-        _validate_report_sources(
+        citations._validate_report_sources(
             f"Malformed [generic label]({url}",
             [{"url": url, "title": "Function (mathematics)"}],
         )
@@ -1202,13 +1203,13 @@ def test_report_citations_preserve_balanced_parentheses_in_urls():
 
 
 def test_report_citations_use_canonical_titles_without_model_sources_section():
-    from core.research_runs import _validate_report_sources
+    from core.research import citations
 
     report = (
         "A supported claim [generic source](https://example.com/a).\n\n"
         "## Sources\n\n- [Duplicate](https://example.com/a)"
     )
-    validated = _validate_report_sources(
+    validated = citations._validate_report_sources(
         report,
         [
             {"url": "https://example.com/a", "title": "Primary Report"},
@@ -1223,13 +1224,13 @@ def test_report_citations_use_canonical_titles_without_model_sources_section():
 
 
 def test_report_citations_normalize_numbered_bare_and_autolink_styles():
-    from core.research_runs import _validate_report_sources
+    from core.research import citations
 
     sources = [
         {"url": "https://example.com/a", "title": "Primary Report"},
         {"url": "https://example.com/b", "title": "Supporting Data"},
     ]
-    validated = _validate_report_sources(
+    validated = citations._validate_report_sources(
         "Numbered [1], bare https://example.com/b, and "
         "automatic <https://example.com/a>. Unknown https://invalid.example/x.",
         sources,
@@ -2872,7 +2873,8 @@ def test_terminal_sse_event_contains_report_and_complete_snapshot(research_home)
     ("cancelled", "expected_status", "text"),
     [
         (True, "cancelled", "Research cancelled."),
-        (False, "failed", "Research failed: mocked model failure"),
+        # Provider text reaches a Markdown surface here too, so it is quoted literally.
+        (False, "failed", "Research failed: `mocked model failure`"),
     ],
 )
 def test_worker_terminal_paths_create_one_fallback_without_frontend_message(
@@ -2978,6 +2980,65 @@ def test_create_run_rejects_binding_to_populated_reply(research_home):
     )
     run = _create(assistant_message_id = "empty-placeholder")
     assert run["assistantMessageId"] == "empty-placeholder"
+
+
+def test_create_run_binds_through_a_preamble_beside_the_handoff(research_home):
+    # A thinking model narrates before it calls a tool, so both arrive in one message.
+    studio_db.upsert_chat_message(
+        {
+            "id": "preamble-and-call",
+            "threadId": "thread-1",
+            "parentId": "user-1",
+            "role": "assistant",
+            "content": [
+                {"type": "reasoning", "text": "the user wants research"},
+                {"type": "text", "text": "I'll research that now."},
+                {"type": "tool-call", "toolName": "deep_research", "toolCallId": "c1"},
+            ],
+            "createdAt": 6,
+        }
+    )
+    run = _create(assistant_message_id = "preamble-and-call")
+    assert run["assistantMessageId"] == "preamble-and-call"
+
+
+def test_create_run_still_rejects_an_answer_beside_an_unrelated_tool_call(research_home):
+    studio_db.upsert_chat_message(
+        {
+            "id": "answer-and-other-call",
+            "threadId": "thread-1",
+            "parentId": "user-1",
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "existing answer"},
+                {"type": "tool-call", "toolName": "search_knowledge_base", "toolCallId": "c2"},
+            ],
+            "createdAt": 7,
+        }
+    )
+    with pytest.raises(research_db.ResearchConflictError):
+        _create(assistant_message_id = "answer-and-other-call")
+    assert research_db.get_run("run-1") is None
+
+
+def test_create_run_rejects_a_completed_answer_even_beside_the_handoff(research_home):
+    studio_db.upsert_chat_message(
+        {
+            "id": "sources-and-call",
+            "threadId": "thread-1",
+            "parentId": "user-1",
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "existing answer"},
+                {"type": "source", "sourceType": "url", "url": "https://kept.example"},
+                {"type": "tool-call", "toolName": "deep_research", "toolCallId": "c3"},
+            ],
+            "createdAt": 8,
+        }
+    )
+    with pytest.raises(research_db.ResearchConflictError):
+        _create(assistant_message_id = "sources-and-call")
+    assert research_db.get_run("run-1") is None
 
 
 def test_update_assistant_replaces_report_parts_without_duplication(research_home):
@@ -4291,3 +4352,95 @@ def test_an_attachment_only_turn_with_no_question_is_still_refused(research_home
         _create_via_route(message_id)
     assert excinfo.value.status_code == 400
     assert "non-empty text" in excinfo.value.detail
+
+
+def test_planner_opt_out_is_only_sent_where_the_model_has_one(research_home, monkeypatch):
+    from core import research_runs as worker
+
+    _create()
+    run = research_db.claim_next("worker-1")
+    payloads = []
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        async def aclose(self):
+            return None
+
+        async def aiter_lines(self):
+            yield 'data: {"choices":[{"delta":{"content":"{}"},"finish_reason":"stop"}]}'
+            yield "data: [DONE]"
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def build_request(self, *args, **kwargs):
+            payloads.append(kwargs["json"])
+            return object()
+
+        async def send(self, request, *, stream):
+            return FakeResponse()
+
+    monkeypatch.setattr(worker.httpx, "AsyncClient", FakeClient)
+    monkeypatch.setattr(
+        worker.auth_storage, "create_api_key", lambda **kwargs: ("token", {"id": 1})
+    )
+    monkeypatch.setattr(worker.auth_storage, "revoke_internal_api_key", lambda key_id: None)
+    monkeypatch.setattr(
+        worker.db, "append_worker_event", lambda run_id, worker_id, event_type, data: 1
+    )
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    external = {
+        "model": "m",
+        "providerId": "p1",
+        "providerType": "huggingface",
+        "externalModel": "m",
+    }
+
+    def planner_payload(**inference):
+        run["config"]["inferenceRequest"] = {**external, **inference}
+        payloads.clear()
+        asyncio.run(
+            supervisor._stream_completion(
+                run,
+                [{"role": "user", "content": "question"}],
+                report_progress = False,
+                phase = "planning",
+                enable_thinking = False,
+            )
+        )
+        return payloads[0]
+
+    # gpt-oss has no "none" effort, so the planner keeps the chat's effort instead.
+    no_off = planner_payload(
+        supportsReasoning = True, supportsReasoningOff = False, reasoningEffort = "high"
+    )
+    assert "enable_thinking" not in no_off and no_off["reasoning_effort"] == "high"
+    plain = planner_payload(
+        supportsReasoning = False, supportsReasoningOff = False, enableThinking = True
+    )
+    assert "enable_thinking" not in plain and "reasoning_effort" not in plain
+    with_off = planner_payload(
+        supportsReasoning = True, supportsReasoningOff = True, reasoningEffort = "high"
+    )
+    assert with_off["enable_thinking"] is False and with_off["reasoning_effort"] == "none"
+    # A run queued or retried from before these flags existed carries neither, so the gate has
+    # to treat unknown like non-reasoning: a resumed legacy run must not be the one request that
+    # sends a field the model may not take.
+    older_run = planner_payload(reasoningEffort = "high")
+    assert "enable_thinking" not in older_run and "reasoning_effort" not in older_run
+
+    # Mistral documents reasoning_effort for mistral-small-latest and mistral-medium-3-5 only, and the
+    # provider branch now writes it for every model, so the planner opt-out must not reach a
+    # non-reasoning model such as mistral-large-latest.
+    external["providerType"] = "mistral"
+    mistral = planner_payload(supportsReasoning = False, supportsReasoningOff = False)
+    assert "enable_thinking" not in mistral and "reasoning_effort" not in mistral

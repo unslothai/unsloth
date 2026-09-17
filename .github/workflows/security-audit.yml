@@ -266,9 +266,19 @@ jobs:
           with open("pyproject.toml", "rb") as f:
               d = tomllib.load(f)
           core = d["project"]["dependencies"]
-          extras = d["project"]["optional-dependencies"]["huggingfacenotorch"]
+          def extra(name):
+              # A bare KeyError reads as a generic crash: that is how four scan jobs
+              # stayed dead for three weeks. Name the extra, for every extra indexed here.
+              try:
+                  return d["project"]["optional-dependencies"][name]
+              except KeyError:
+                  raise SystemExit(
+                      f"pyproject.toml has no [{name}] extra, so the hf-stack scan "
+                      "set cannot be built. Add the extra, or update this workflow."
+                  )
+          extras = extra("huggingfacenotorch")
           # extras-no-deps.txt no longer pins torchcodec, so the audit set would lose it.
-          audio = d["project"]["optional-dependencies"]["audio-torch211"]
+          audio = extra("audio-torch211")
           print("# Auto-generated from pyproject.toml by security-audit.yml.")
           print("# core deps + huggingfacenotorch extras + audio-torch211.")
           for spec in core + extras + audio:
@@ -284,9 +294,16 @@ jobs:
           # which the flavor and default-ROCm repairs still resolve. One file each: their
           # ranges are disjoint, so they cannot share a resolve with each other or with
           # audio-torch211's >=0.11.
+          try:
+              specs = d["project"]["optional-dependencies"][extra]
+          except KeyError:
+              raise SystemExit(
+                  f"pyproject.toml has no [{extra}] extra, so its scan set cannot be "
+                  "built. Add the extra, or update this workflow."
+              )
           print("# Auto-generated from pyproject.toml by security-audit.yml.")
           print(f"# {extra}.")
-          for spec in d["project"]["optional-dependencies"][extra]:
+          for spec in specs:
               print(spec)
           PY
           done
@@ -888,9 +905,19 @@ jobs:
           with open("pyproject.toml", "rb") as f:
               d = tomllib.load(f)
           core = d["project"]["dependencies"]
-          extras = d["project"]["optional-dependencies"]["huggingfacenotorch"]
+          def extra(name):
+              # A bare KeyError reads as a generic crash: that is how four scan jobs
+              # stayed dead for three weeks. Name the extra, for every extra indexed here.
+              try:
+                  return d["project"]["optional-dependencies"][name]
+              except KeyError:
+                  raise SystemExit(
+                      f"pyproject.toml has no [{name}] extra, so the hf-stack scan "
+                      "set cannot be built. Add the extra, or update this workflow."
+                  )
+          extras = extra("huggingfacenotorch")
           # extras-no-deps.txt no longer pins torchcodec, so the audit set would lose it.
-          audio = d["project"]["optional-dependencies"]["audio-torch211"]
+          audio = extra("audio-torch211")
           print("# Auto-generated from pyproject.toml by security-audit.yml.")
           print("# core deps + huggingfacenotorch extras + audio-torch211.")
           for spec in core + extras + audio:
@@ -906,9 +933,16 @@ jobs:
           # which the flavor and default-ROCm repairs still resolve. One file each: their
           # ranges are disjoint, so they cannot share a resolve with each other or with
           # audio-torch211's >=0.11.
+          try:
+              specs = d["project"]["optional-dependencies"][extra]
+          except KeyError:
+              raise SystemExit(
+                  f"pyproject.toml has no [{extra}] extra, so its scan set cannot be "
+                  "built. Add the extra, or update this workflow."
+              )
           print("# Auto-generated from pyproject.toml by security-audit.yml.")
           print(f"# {extra}.")
-          for spec in d["project"]["optional-dependencies"][extra]:
+          for spec in specs:
               print(spec)
           PY
           done
