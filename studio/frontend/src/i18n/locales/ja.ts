@@ -1282,6 +1282,8 @@ export const ja = {
           sourceBuild: "この llama.cpp はソースからビルドされているため、ここではバックエンドを切り替えられません。",
           customPath: "カスタム llama.cpp フォルダーが選択されています。そのビルドによって計算バックエンドが決まります。",
           unresolved: "利用可能なバックエンドを確認できませんでした。接続を確認して再試行してください。",
+          updateChecksDisabled:
+            "更新チェックが無効になっているため (UNSLOTH_DISABLE_UPDATE_CHECK=1)、利用可能なバックエンドは確認されません。",
         },
         // 非表示: 設定検索用の追加キーワード。
         llamaBackendKeywords:
