@@ -2283,6 +2283,43 @@ function Install-UnslothStudio {
     $script:StudioEarlyPythonProbed = $false
     $script:StudioEarlyPython = $null
 
+    # Is this path inside a root that only an administrator can write.
+    #
+    # An elevated run launches whatever interpreter this ladder settles on WITH THE ADMINISTRATOR
+    # TOKEN. A per-user CPython under %LOCALAPPDATA%, or one on PATH from a directory the same
+    # user's medium-integrity token can write, is then a way to have arbitrary code run elevated:
+    # replace the executable, wait for the next install. The labelled child directory does not
+    # help, because it protects the script this runs, not the thing running it.
+    #
+    # Matched by location rather than by reading the ACL. The Windows-protected roots are the ones
+    # whose default ACLs give write to administrators and TrustedInstaller only, and asking icacls
+    # instead would mean parsing account names that are rendered in the OS language. A system-wide
+    # Python is accepted, a per-user one is not, and a run that is not elevated is not affected at
+    # all: it has no token worth stealing.
+    function Test-StudioPathUnderAdminRoot {
+        param([string]$Path)
+        if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+        # $env: rather than [Environment]::GetEnvironmentVariable: System.Environment is not on
+        # Constrained Language Mode's allowed type list, and this helper runs on hosts under it.
+        $roots = @()
+        foreach ($value in @($env:SystemRoot, $env:ProgramFiles, $env:ProgramW6432, ${env:ProgramFiles(x86)})) {
+            if (-not [string]::IsNullOrWhiteSpace($value)) { $roots += "$value".TrimEnd('\', '/') }
+        }
+        foreach ($root in $roots) {
+            # The separator is part of the comparison: "C:\Program Files" must not match
+            # "C:\Program Files Evil", which any user can create.
+            #
+            # -like, not String.StartsWith with a StringComparison: that enum is not on
+            # Constrained Language Mode's allowed type list either, and -like is already
+            # case-insensitive. The root is escaped first, because a bracket in it would
+            # otherwise be read as a character class and match the wrong thing.
+            $escapedRoot = $root -replace '([\[\]\*\?])', '`$1'
+            if ("$Path" -like ($escapedRoot + "\*")) { return $true }
+            if ("$Path" -like ($escapedRoot + "/*")) { return $true }
+        }
+        return $false
+    }
+
     function Get-StudioEarlyPython {
         if ($script:StudioEarlyPythonProbed) { return $script:StudioEarlyPython }
         $script:StudioEarlyPythonProbed = $true
@@ -2314,9 +2351,23 @@ function Install-UnslothStudio {
                 }
             } catch {}
         }
+        # Asked once, and only on Windows: everything below is about which token a child would
+        # run with, and the elevation split is a Windows one.
+        $requireAdminRoot = $false
+        if ($env:OS -eq "Windows_NT") {
+            $requireAdminRoot = Test-StudioChildScriptDirectoryElevated
+        }
+        $rejectedForWritability = $false
         foreach ($candidate in $candidates) {
             if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
             if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
+            # Elevated: only an interpreter a medium-integrity process cannot replace. See
+            # Test-StudioPathUnderAdminRoot. Declining costs the exact path identity and nothing
+            # else, and the caller already says out loud when it falls back to the lexical one.
+            if ($requireAdminRoot -and -not (Test-StudioPathUnderAdminRoot -Path $candidate)) {
+                $rejectedForWritability = $true
+                continue
+            }
             # Windows ships python.exe and python3.exe in WindowsApps as App Execution Aliases:
             # zero-length reparse stubs that satisfy Get-Command and Test-Path and, when run,
             # OPEN THE MICROSOFT STORE instead of executing anything. On a first install with no
@@ -2341,6 +2392,10 @@ function Install-UnslothStudio {
                 $script:StudioEarlyPython = $candidate
                 return $candidate
             }
+        }
+        if ($rejectedForWritability) {
+            Write-StudioFinalPathDegraded -Reason ("this run is elevated and the only interpreters found " +
+                "are in directories a standard user can write, which an elevated run must not launch")
         }
         return $null
     }

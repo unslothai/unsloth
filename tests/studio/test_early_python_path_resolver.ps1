@@ -35,6 +35,7 @@ $wanted = @(
     "Invoke-StudioEarlyPythonScriptViaCmdlets", "Get-StudioPythonFinalPath",
     "New-StudioChildScriptDirectory",
     "Test-StudioChildScriptDirectoryElevated",
+    "Test-StudioPathUnderAdminRoot",
     "Resolve-StudioLinkTarget", "Get-StudioSubstTarget", "Get-StudioLexicalPath",
     "Resolve-StudioFinalPathInfo", "Resolve-StudioFinalPathsInOneChild",
     # Called by Resolve-StudioFinalPathInfo on the rung below this one. Extracted rather than
@@ -507,6 +508,58 @@ try {
         $hit = [bool]("$($case.P)" -match '(?i)[\\/]Microsoft[\\/]WindowsApps[\\/]')
         Check "the alias filter $(if ($case.Skip) { 'skips' } else { 'keeps' }) $($case.P)" ($hit -eq $case.Skip)
     }
+    # ---- an elevated run will not launch an interpreter a standard user can replace ----
+    #
+    # Whatever this ladder settles on is launched WITH THE ADMINISTRATOR TOKEN when the install is
+    # elevated. A per-user CPython, or any on PATH from a directory the same user's medium
+    # integrity token can write, is then a way to have arbitrary code run elevated: replace the
+    # executable and wait for the next install. The labelled child directory does not help, since
+    # it protects the script being run and not the thing running it.
+    # The roots come from the environment, so they are set here rather than assumed: a Linux
+    # runner has no C: drive, and Join-Path on one throws rather than composing a string.
+    $savedProgramFiles = $env:ProgramFiles
+    $savedSystemRoot = $env:SystemRoot
+    $env:ProgramFiles = "C:\Program Files"
+    $env:SystemRoot = "C:\Windows"
+    Check "the admin-root test accepts a system-wide location" (
+        (Test-StudioPathUnderAdminRoot -Path "C:\Program Files\Python312\python.exe") -eq $true)
+    # A directory any user can create, whose name merely starts with a protected one.
+    Check "and is not fooled by a look-alike root" (
+        (Test-StudioPathUnderAdminRoot -Path "C:\Program Files Evil\python.exe") -eq $false)
+    Check "and rejects a per-user install" (
+        (Test-StudioPathUnderAdminRoot -Path "C:\Users\me\AppData\Local\Programs\Python\python.exe") -eq $false)
+    Check "and rejects an empty path" ((Test-StudioPathUnderAdminRoot -Path "") -eq $false)
+    if ($null -eq $savedProgramFiles) { Remove-Item Env:ProgramFiles -ErrorAction SilentlyContinue } else { $env:ProgramFiles = $savedProgramFiles }
+    if ($null -eq $savedSystemRoot) { Remove-Item Env:SystemRoot -ErrorAction SilentlyContinue } else { $env:SystemRoot = $savedSystemRoot }
+
+    # Driven through the real discovery: elevated, with this host's own interpreter, which is not
+    # under a Windows protected root, so the rung has to decline and say why.
+    $savedOsElev = $env:OS
+    try {
+        $env:OS = "Windows_NT"
+        function Test-StudioChildScriptDirectoryElevated { return $true }
+        $script:StudioEarlyPythonProbed = $false
+        $script:StudioEarlyPython = $null
+        $script:StudioEarlyPythonProbedWithoutVenv = $false
+        $script:StudioFinalPathWarned = $false
+        $elevatedAnswer = Get-StudioEarlyPython
+        Check "an elevated run declines a user-writable interpreter" (
+            [string]::IsNullOrWhiteSpace($elevatedAnswer))
+        # Bites control: the same call without elevation finds the interpreter this host has, so
+        # the row above is about the rule and not about discovery being broken.
+        function Test-StudioChildScriptDirectoryElevated { return $false }
+        $script:StudioEarlyPythonProbed = $false
+        $script:StudioEarlyPython = $null
+        $script:StudioEarlyPythonProbedWithoutVenv = $false
+        Check "control: an unelevated run still finds one" (
+            -not [string]::IsNullOrWhiteSpace((Get-StudioEarlyPython)))
+    } finally {
+        Remove-Item Function:Test-StudioChildScriptDirectoryElevated -ErrorAction SilentlyContinue
+        if ($null -eq $savedOsElev) { Remove-Item Env:OS -ErrorAction SilentlyContinue } else { $env:OS = $savedOsElev }
+        $script:StudioEarlyPythonProbed = $false
+        $script:StudioEarlyPython = $null
+    }
+
 } finally {
     Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }
