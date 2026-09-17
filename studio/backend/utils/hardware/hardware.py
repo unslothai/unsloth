@@ -963,6 +963,8 @@ def _torch_reports_another_vendors_runtime() -> bool:
         return bool(getattr(_version, "cuda", None)) or bool(getattr(_version, "xpu", None))
     except Exception:
         return False
+
+
 # Marketing name -> gfx, mirroring setup.ps1's $nameArchTable and install_python_stack._WIN_GPU_NAME_ARCH_TABLE. Only names those two route to a wheel family, since this decides whether a repair could change anything. Most specific first.
 _GPU_NAME_GFX_TABLE: "list[tuple[str, str]]" = [
     (r"9070|9080|R9700", "gfx1201"),
