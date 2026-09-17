@@ -153,7 +153,6 @@ export function ConfigActions() {
       <Tooltip>
         <TooltipTrigger asChild={true}>
           <Button
-            data-tour="studio-save"
             variant="outline"
             size="sm"
             className="h-9 cursor-pointer rounded-lg"

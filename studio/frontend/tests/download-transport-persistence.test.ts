@@ -52,6 +52,14 @@ store.set(
         invalid: persistedJob("org/auto-model", "auto"),
         fallback: persistedJob("org/fallback-model", "http", "xet"),
         badMarker: persistedJob("org/bad-marker-model", "http", "auto"),
+        presented: {
+          ...persistedJob("org/presented-model", "http"),
+          presentation: {
+            label: "MTP companion",
+            filename: "mtp-shared-Q8_0.gguf",
+            expectedBytes: 20,
+          },
+        },
       },
       conflicts: {},
     },
@@ -59,8 +67,17 @@ store.set(
   }),
 );
 
-const { getState, hasActiveDownloadJob, jobKeyOf, putJob } = await import(
+const {
+  getState,
+  hasActiveDownloadJob,
+  jobKeyOf,
+  putJob,
+  setExpectedBytesForJob,
+} = await import(
   "../src/features/hub/download-manager/download-manager-state.ts"
+);
+const { presentedProgress } = await import(
+  "../src/features/hub/download-manager/download-presentation.ts"
 );
 
 test("reload hydration keeps only a resolved active transport", () => {
@@ -120,6 +137,18 @@ test("an unresolved persisted marker is dropped, not trusted", () => {
   );
 });
 
+test("reload hydration keeps a valid companion-only presentation", () => {
+  assert.deepEqual(
+    getState().jobs[jobKeyOf("model", "org/presented-model", null)]
+      ?.presentation,
+    {
+      label: "MTP companion",
+      filename: "mtp-shared-Q8_0.gguf",
+      expectedBytes: 20,
+    },
+  );
+});
+
 test("the cancel marker is written with the persisted job", () => {
   const key = jobKeyOf("model", "org/retry-model", null);
   putJob({
@@ -146,6 +175,99 @@ test("the cancel marker is written with the persisted job", () => {
   const persisted = JSON.parse(store.get(PERSIST_KEY) ?? "null");
   assert.equal(persisted.state.jobs[key].transport, "http");
   assert.equal(persisted.state.jobs[key].cancelTransport, "xet");
+});
+
+test("a companion-only presentation is written for reload and Resume", () => {
+  const key = jobKeyOf("model", "org/flash-next", "UD-Q4_K_XL");
+  const presentation = {
+    label: "MTP companion",
+    filename: "mtp-Flash-Next-shared-Q8_0.gguf",
+    expectedBytes: 2_786_568_256,
+  };
+  putJob({
+    key,
+    kind: "model",
+    repoId: "org/flash-next",
+    variant: "UD-Q4_K_XL",
+    state: "running",
+    downloadedBytes: 100,
+    completedBytes: 0,
+    completeOnDisk: false,
+    expectedBytes: 120,
+    presentation,
+    fraction: 0.5,
+    bytesPerSec: 0,
+    etaSeconds: 0,
+    error: null,
+    startedAt: 4,
+    transport: "http",
+  });
+  assert.ok(flushPersistedState);
+  flushPersistedState();
+
+  const persisted = JSON.parse(store.get(PERSIST_KEY) ?? "null");
+  assert.deepEqual(persisted.state.jobs[key].presentation, presentation);
+  assert.deepEqual(getState().jobs[key]?.presentation, presentation);
+});
+
+test("growing a plan freezes the old cached prefix before changing totals", () => {
+  const key = jobKeyOf("model", "org/growing-plan", "Q4_K_M");
+  putJob({
+    key,
+    kind: "model",
+    repoId: "org/growing-plan",
+    variant: "Q4_K_M",
+    state: "running",
+    downloadedBytes: 105,
+    completedBytes: 100,
+    completeOnDisk: false,
+    expectedBytes: 120,
+    presentation: {
+      label: "MTP companion",
+      filename: "mtp-shared-Q8_0.gguf",
+      expectedBytes: 20,
+    },
+    fraction: 0.875,
+    bytesPerSec: 0,
+    etaSeconds: 0,
+    error: null,
+    startedAt: 5,
+  });
+
+  setExpectedBytesForJob("model", "org/growing-plan", "Q4_K_M", 200);
+  const job = getState().jobs[key];
+  assert.equal(job?.presentation?.cachedPlanPrefixBytes, 100);
+  assert.equal(job && presentedProgress(job).downloadedBytes, 5);
+});
+
+test("the first known plan total stabilizes an adopted companion", () => {
+  const key = jobKeyOf("model", "org/adopted-plan", "Q4_K_M");
+  putJob({
+    key,
+    kind: "model",
+    repoId: "org/adopted-plan",
+    variant: "Q4_K_M",
+    state: "running",
+    downloadedBytes: 105,
+    completedBytes: 100,
+    completeOnDisk: false,
+    expectedBytes: 0,
+    presentation: {
+      label: "MTP companion",
+      filename: "mtp-shared-Q8_0.gguf",
+      expectedBytes: 20,
+    },
+    fraction: 0,
+    bytesPerSec: 0,
+    etaSeconds: 0,
+    error: null,
+    startedAt: 6,
+  });
+
+  setExpectedBytesForJob("model", "org/adopted-plan", "Q4_K_M", 120);
+  const job = getState().jobs[key];
+  assert.equal(job?.presentation?.cachedPlanPrefixBytes, 100);
+  assert.equal(job && presentedProgress(job).downloadedBytes, 5);
 });
 
 test("a running job is the activity the desktop quit path asks about", () => {

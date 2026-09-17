@@ -3641,3 +3641,14 @@ def test_restoring_many_code_spans_stays_linear():
     elapsed = time.perf_counter() - start
     assert restored == "x" * 200_000 + "".join(placeholders.values())
     assert elapsed < 2.0, f"restoration took {elapsed:.1f}s for 2000 spans in a 200KB report"
+
+
+def test_sanitize_config_keeps_the_reasoning_support_flags():
+    request = {"model": "m", "supportsReasoning": True, "supportsReasoningOff": False}
+    config = _sanitize_config(_make_payload(inferenceRequest = dict(request)), {"modelId": "other"})
+    assert config["inferenceRequest"] == request
+    with pytest.raises(Exception):
+        _sanitize_config(
+            _make_payload(inferenceRequest = {"model": "m", "supportsReasoningOff": "no"}),
+            {"modelId": "m"},
+        )

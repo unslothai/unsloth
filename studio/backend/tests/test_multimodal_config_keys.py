@@ -20,6 +20,7 @@ this gate reads.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -59,6 +60,11 @@ def _checkpoint(root, name: str, config: dict):
     return SimpleNamespace(id = str(path), path = str(path))
 
 
+def _classifies(info, config: dict):
+    """The config gate as the resolver calls it: the classifier also reads the directory."""
+    return resolver._is_generative_chat_config(Path(info.path), config)
+
+
 # ornith-ai/Ornith-1.5-35B-A3B-MLX-4bit, the checkpoint reported in #10951: a language-only MLX
 # conversion of a VLM. architectures still says ForConditionalGeneration, the vision tower and its
 # vision_config are gone, and the placeholder token ids are all that is left to judge it by.
@@ -89,14 +95,14 @@ def test_the_reported_language_only_conversion_is_servable(tmp_path):
     """#10951: installed, unloaded, and 404 model_not_found from the API until it is accepted."""
     info = _checkpoint(tmp_path, "Ornith-1.5-35B-A3B-MLX-4bit", REPORTED_CONFIG)
 
-    assert resolver._is_generative_chat_config(REPORTED_CONFIG) is True
+    assert _classifies(info, REPORTED_CONFIG) is True
     assert resolver.local_servable_model(info) == (False, ())
 
 
 def test_the_control_from_the_same_report_stays_servable(tmp_path):
     info = _checkpoint(tmp_path, "Qwen3.8-27B-mlx-uniform-4bit", CONTROL_CONFIG)
 
-    assert resolver._is_generative_chat_config(CONTROL_CONFIG) is True
+    assert _classifies(info, CONTROL_CONFIG) is True
     assert resolver.local_servable_model(info) == (False, ())
 
 
@@ -134,7 +140,7 @@ def test_a_text_seq2seq_is_still_refused(tmp_path, architecture, model_type):
     config = {"architectures": [architecture], "model_type": model_type}
     info = _checkpoint(tmp_path, model_type, config)
 
-    assert resolver._is_generative_chat_config(config) is False
+    assert _classifies(info, config) is False
     assert resolver.local_servable_model(info) is None
 
 
@@ -166,7 +172,7 @@ def test_a_text_seq2seq_is_still_refused(tmp_path, architecture, model_type):
 def test_a_nested_text_config_alone_is_not_proof_of_a_modality(tmp_path, name, config):
     info = _checkpoint(tmp_path, name, config)
 
-    assert resolver._is_generative_chat_config(config) is False
+    assert _classifies(info, config) is False
     assert resolver.local_servable_model(info) is None
 
 
@@ -194,15 +200,10 @@ def test_a_text_config_counts_beside_a_modality_sibling(tmp_path, partner):
 
 def test_text_config_is_not_recorded_as_a_modality_key():
     """Stated at the constant, so re-adding it has to argue with this test."""
-    assert "text_config" not in resolver._MULTIMODAL_CONFIG_KEYS
     assert "text_config" not in resolver._VISUAL_TOKEN_ID_KEYS
-    # audio_token_id is excluded for its own reason: the audio families are admitted by name, and a
-    # generic marker would bypass that allowlist.
-    assert "audio_token_id" not in resolver._MULTIMODAL_CONFIG_KEYS
-    assert "audio_token_id" not in resolver._VISUAL_TOKEN_ID_KEYS
-    # The four new keys are read for their VALUE, so they are kept out of the presence tuple. A
-    # move back into it would silently restore the null-marker admission below.
-    assert not set(resolver._VISUAL_TOKEN_ID_KEYS) & set(resolver._MULTIMODAL_CONFIG_KEYS)
+    assert not resolver._config_declares_multimodality({"text_config": {"hidden_size": 1}})
+    # "text" is not a modality word either, or the word match would readmit it by the back door.
+    assert "text" not in resolver._MODALITY_KEY_WORDS
 
 
 def _safe_dir_name(text: str) -> str:
@@ -257,7 +258,7 @@ def test_a_visual_marker_that_is_not_a_token_id_does_not_admit_anything(tmp_path
     )
 
     assert "image_token_id" in config, "the case is only interesting while the KEY is present"
-    assert resolver._is_generative_chat_config(config) is False
+    assert _classifies(info, config) is False
     assert resolver.local_servable_model(info) is None
 
 
@@ -289,7 +290,7 @@ def test_a_seq2seq_carrying_a_null_visual_marker_is_still_refused(
     }
     info = _checkpoint(tmp_path, f"{model_type}-{marker}-null", config)
 
-    assert resolver._is_generative_chat_config(config) is False
+    assert _classifies(info, config) is False
     assert resolver.local_servable_model(info) is None
 
 
@@ -304,7 +305,7 @@ def test_a_real_visual_marker_still_admits_the_reported_conversion(tmp_path, val
     }
     info = _checkpoint(tmp_path, _safe_dir_name(f"good-marker-{value!r}"), config)
 
-    assert resolver._is_generative_chat_config(config) is True
+    assert _classifies(info, config) is True
     assert resolver.local_servable_model(info) == (False, ())
 
 
@@ -324,13 +325,13 @@ def test_a_visual_marker_does_not_get_an_audio_family_past_its_own_gate(tmp_path
 
     monkeypatch.setattr(resolver, "_host_serves_mlx", lambda: True)
     assert (
-        resolver._is_generative_chat_config(config) is False
+        _classifies(info, config) is False
     ), "a visual marker carried an audio family past the MLX refusal"
     assert resolver.local_servable_model(info) is None
 
     resolver.invalidate_index()
     monkeypatch.setattr(resolver, "_host_serves_mlx", lambda: False)
-    assert resolver._is_generative_chat_config(config) is True
+    assert _classifies(info, config) is True
 
 
 @pytest.mark.parametrize(
@@ -378,4 +379,4 @@ def test_csm_keeps_its_host_dependent_audio_verdict(tmp_path, monkeypatch):
 
     resolver.invalidate_index()
     monkeypatch.setattr(resolver, "_host_serves_mlx", lambda: True)
-    assert resolver._is_generative_chat_config(config) is False
+    assert _classifies(info, config) is False

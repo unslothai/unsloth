@@ -482,10 +482,10 @@ test("a page fetch is refused while a shelf mutation is still pending", async ()
 test("archived audio pages from the stable server cursor", () => {
   assert.match(
     archivedMediaSource,
-    /listAudioGallery\(\s*0,\s*ARCHIVED_PAGE_SIZE,\s*before,\s*true,?\s*\)/,
+    /listAudioGallery\(\s*0,\s*pageSize,\s*before,\s*true,?\s*\)/,
   );
   assert.match(
     archivedMediaSource,
-    /const page = await loadPage\(\s*rowsRef\.current\.length,\s*audioCursor\.current,?\s*\);[\s\S]*audioCursor\.current = page\.nextAudioCursor;/,
+    /const page = await loadPage\(\s*rowsRef\.current\.length,\s*audioCursor\.current,\s*scanAll \? SEARCH_PAGE_SIZE : ARCHIVED_PAGE_SIZE,?\s*\);[\s\S]*audioCursor\.current = page\.nextAudioCursor;/,
   );
 });

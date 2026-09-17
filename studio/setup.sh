@@ -258,6 +258,19 @@ _nvcc_meets_llama_minimum() {
 # UNSLOTH_LLAMA_CUDA_ARCHS) wins verbatim; else parse+dedupe compute_cap text
 # ($1). Empty means "no arch detected", so the caller builds CPU instead of a
 # PTX-only binary that fails on an old driver (#5854).
+# Every GPU's capability from nvidia_probe.py, one per line; nothing when the probe is off or
+# absent, or when one listed GPU has no readable capability (a partial list would build kernels
+# for part of the machine).
+_probe_compute_caps() {
+    [ -f "$SCRIPT_DIR/nvidia_probe.py" ] && command -v python3 >/dev/null 2>&1 || return 0
+    _setup_run_smi python3 -I "$SCRIPT_DIR/nvidia_probe.py" 2>/dev/null | awk '
+        /^GPU [0-9]+:/ {
+            if (match($0, /\(compute [0-9]+\.[0-9]+\)$/)) caps = caps substr($0, RSTART + 9, RLENGTH - 10) "\n"
+            else bad = 1
+        }
+        END { if (!bad) printf "%s", caps }' || true
+}
+
 _resolve_cuda_archs() {
     local _raw_caps=$1
     local _arch_override=$2
@@ -639,6 +652,9 @@ _setup_cvd_hides_nvidia() {
 # and a mixed host steered to its AMD card keeps the ROCm route.
 # Present, mask or no mask. The usable probe is this plus the CUDA_VISIBLE_DEVICES check.
 _setup_has_physical_nvidia_gpu() {
+    # Reset here rather than in the usable wrapper: this is where the bounded -L call
+    # lives, and both entry points reach the probe through it.
+    _setup_nv_smi_wedged=""
     _setup_nvsmi=""
     if command -v nvidia-smi >/dev/null 2>&1; then
         _setup_nvsmi="nvidia-smi"
@@ -646,7 +662,15 @@ _setup_has_physical_nvidia_gpu() {
         _setup_nvsmi="/usr/bin/nvidia-smi"
     fi
     if [ -n "$_setup_nvsmi" ]; then
-        if _setup_run_smi "$_setup_nvsmi" -L 2>/dev/null \
+        # Captured rather than piped so `timeout`'s own 124 stays visible. A wedged
+        # driver still detects as a GPU through /proc below, and the banner must not
+        # then pay the 10s bound a second time asking a hung nvidia-smi for a name.
+        _setup_nv_l_rc=0
+        _setup_nv_l_out=$(_setup_run_smi "$_setup_nvsmi" -L 2>/dev/null) || _setup_nv_l_rc=$?
+        if [ "$_setup_nv_l_rc" = "124" ]; then
+            _setup_nv_smi_wedged=1
+        fi
+        if printf '%s\n' "$_setup_nv_l_out" \
            | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}'; then
             return 0
         fi
@@ -661,6 +685,121 @@ _setup_has_physical_nvidia_gpu() {
         _setup_run_smi python3 -I "$SCRIPT_DIR/nvidia_probe.py" >/dev/null 2>&1 && return 0
     fi
     return 1
+}
+
+# Row index of the GPU whose UUID starts with $1, or empty. NVIDIA allows a UUID to
+# be abbreviated to any unique leading portion, hence the prefix match.
+_setup_nv_idx_from_uuid() {
+    # NVIDIA accepts an abbreviation only when it is a UNIQUE leading portion, so a
+    # prefix matching two cards selects NO device. Counting instead of stopping at the
+    # first hit keeps the banner from naming one of them.
+    _setup_run_smi "$_setup_nvsmi" --query-gpu=uuid --format=csv,noheader 2>/dev/null \
+        | awk -v want="$1" '
+            NF { gsub(/^[[:space:]]+|[[:space:]]+$/,""); if (index($0, want) == 1) { hits++; idx = NR-1 } }
+            END { if (hits == 1) print idx }' || true
+}
+
+# Resolves the banner's NVIDIA fields into _setup_nv_name / _setup_nv_sm /
+# _setup_nv_driver, each empty when it could not be read. Mirrors install.sh's
+# _nv_banner_fields. Bounded, and fed the executable _setup_has_usable_nvidia_gpu
+# already resolved into $_setup_nvsmi: a wedged driver blocks nvidia-smi indefinitely,
+# and detection also succeeds via /usr/bin/nvidia-smi off PATH or via
+# /proc/driver/nvidia/gpus with no nvidia-smi at all.
+_setup_nv_banner_fields() {
+    _setup_nv_name=""; _setup_nv_sm=""; _setup_nv_driver=""
+    _setup_nv_row=""; _setup_nv_cc=""; _setup_nv_ambiguous=""
+    [ -n "${_setup_nvsmi:-}" ] || return 0
+    # Detection already waited out the full bound on this binary. Asking again cannot
+    # succeed and would double the stall, so the banner keeps the vendor-only wording.
+    [ -z "${_setup_nv_smi_wedged:-}" ] || return 0
+    # nvidia-smi ignores CUDA_VISIBLE_DEVICES, so its rows are the physical devices and
+    # the mask has to be resolved against them by hand.
+    _setup_nv_idx=0
+    # Set while nothing has IDENTIFIED a device: an ordinal, or a failed identity lookup
+    # that fell back to one. Only an ordinal is order-dependent.
+    _setup_nv_by_ordinal=1
+    _setup_nv_vis="${CUDA_VISIBLE_DEVICES:-}"
+    # Only the FIRST entry selects the device, and only IT decides the form of the mask.
+    # CUDA truncates enumeration at the first invalid index, so the documented `2,-1`
+    # means "device 2, then stop"; classifying the whole string would see the `-1`, call
+    # it non-numeric, and send a plain ordinal down the UUID path.
+    _setup_nv_tok="${_setup_nv_vis%%,*}"
+    case "$_setup_nv_tok" in
+        '') ;;
+        *[!0-9]*)
+            _setup_nv_by_ordinal=""
+            case "$_setup_nv_tok" in
+                MIG-GPU-*)
+                    # Pre-R470 MIG name, MIG-<GPU-UUID>/<gi>/<ci>: the parent UUID is
+                    # embedded, so it still matches a --query-gpu=uuid row.
+                    _setup_nv_tok="${_setup_nv_tok#MIG-}"; _setup_nv_tok="${_setup_nv_tok%%/*}"
+                    _setup_nv_idx=$(_setup_nv_idx_from_uuid "$_setup_nv_tok") ;;
+                MIG-*)
+                    # R470 and later give each MIG instance its OWN opaque UUID, which
+                    # carries nothing of the parent, so --query-gpu=uuid can never match
+                    # it. `nvidia-smi -L` nests the instances under their GPU.
+                    _setup_nv_idx=$(_setup_run_smi "$_setup_nvsmi" -L 2>/dev/null | awk -v want="$_setup_nv_tok" '
+                        /^GPU[[:space:]]+[0-9]+:/ { cur = $2 + 0 }
+                        index($0, want) > 0 { print cur; exit }' || true) ;;
+                *)
+                    _setup_nv_idx=$(_setup_nv_idx_from_uuid "$_setup_nv_tok") ;;
+            esac
+            # An identity mask that does not resolve means CUDA selected NO device: an
+            # abbreviation short enough to match two cards, or a UUID for a card that is
+            # not here. Row 0 is not a fallback for that -- it is a different card.
+            case "$_setup_nv_idx" in ''|*[!0-9]*) _setup_nv_idx=0; _setup_nv_ambiguous=1 ;; esac
+            ;;
+        *) _setup_nv_idx="$_setup_nv_tok" ;;
+    esac
+    # Canonicalise the ordinal before anything compares or subscripts with it.
+    # `[` parses with strtol and ERRORS on a value wider than a long, printing a
+    # shell diagnostic and skipping the range check below, so an absurd ordinal
+    # would have named row 0. Clamped rather than rejected: 9999 is past any real
+    # host, so it stays out of range and declines, which is the right answer.
+    _setup_nv_idx=$(printf '%s' "$_setup_nv_idx" \
+        | awk '{ n = $0 + 0; if (n < 0) n = 0; if (n > 9999) n = 9999; printf "%d", n }')
+    _setup_nv_all=$(_setup_run_smi "$_setup_nvsmi" --query-gpu=name,compute_cap,driver_version --format=csv,noheader 2>/dev/null || true)
+    _setup_nv_row=$(printf '%s\n' "$_setup_nv_all" \
+        | awk -v idx="$_setup_nv_idx" 'NF { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx+0] }')
+    [ -n "$_setup_nv_row" ] || return 0
+    # A numeric entry is a CUDA ordinal, and CUDA's default CUDA_DEVICE_ORDER=FASTEST_FIRST
+    # puts the fastest card at 0 and leaves the rest "unspecified", while nvidia-smi always
+    # lists in PCI order. So an ordinal identifies an nvidia-smi row only when the order is
+    # pinned to PCI_BUS_ID, or when the cards are interchangeable and every row gives the
+    # same answer anyway. Compared on name and compute_cap, not the driver, which is
+    # host-wide and identical on every row.
+    # CUDA stops enumerating at the first invalid index, so an ordinal past the last
+    # row exposes NO device at all. The awk above clamps to row 0 so the driver still
+    # reads, but row 0 is not the selected card -- nothing is.
+    _setup_nv_rowcount=$(printf '%s\n' "$_setup_nv_all" | awk 'NF { n++ } END { print n+0 }')
+    if [ -n "$_setup_nv_by_ordinal" ] && [ "$_setup_nv_idx" -ge "$_setup_nv_rowcount" ]; then
+        _setup_nv_ambiguous=1
+    fi
+    if [ -n "$_setup_nv_by_ordinal" ]; then
+        _setup_nv_order=$(printf '%s' "${CUDA_DEVICE_ORDER:-}" | tr '[:lower:]' '[:upper:]' | tr -d '[:space:]')
+        _setup_nv_models=$(printf '%s\n' "$_setup_nv_all" \
+            | awk -F, 'NF { k=$0; sub(/,[^,]*$/,"",k); if (!(k in s)) { s[k]; n++ } } END { print n+0 }')
+        if [ "$_setup_nv_order" != "PCI_BUS_ID" ] && [ "$_setup_nv_models" -gt 1 ]; then
+            _setup_nv_ambiguous=1
+        fi
+    fi
+    # Split from the right: nvidia-smi does not quote, so a comma in a device name
+    # would otherwise shift every field.
+    _setup_nv_driver=$(printf '%s' "$_setup_nv_row" | awk -F, 'NF>=3 { gsub(/^[[:space:]]+|[[:space:]]+$/,"",$NF); print $NF }')
+    _setup_nv_cc=$(printf '%s' "$_setup_nv_row" | awk -F, 'NF>=3 { gsub(/^[[:space:]]+|[[:space:]]+$/,"",$(NF-1)); print $(NF-1) }')
+    _setup_nv_name=$(printf '%s' "$_setup_nv_row" | awk -F, 'NF>=3 { out=$1; for(i=2;i<=NF-2;i++) out=out","$i; gsub(/^[[:space:]]+|[[:space:]]+$/,"",out); print out }')
+    # Short row: keep field 1 only, or the compute capability lands in the name.
+    [ -n "$_setup_nv_name" ] || _setup_nv_name=$(printf '%s' "$_setup_nv_row" | awk -F, '{ gsub(/^[[:space:]]+|[[:space:]]+$/,"",$1); print $1 }')
+    # An nvidia-smi too old for a field answers with a placeholder rather than failing.
+    case "$_setup_nv_name"   in '[N/A]'|'[Not Supported]'|'[Unknown Error]') _setup_nv_name="" ;; esac
+    case "$_setup_nv_driver" in '[N/A]'|'[Not Supported]'|'[Unknown Error]') _setup_nv_driver="" ;; esac
+    # Keep the driver, drop the identity: the banner falls back to the vendor-only wording
+    # rather than claiming a card that may not be the one CUDA will use.
+    if [ -n "$_setup_nv_ambiguous" ]; then _setup_nv_name=""; _setup_nv_cc=""; fi
+    case "$_setup_nv_cc" in
+        [0-9]*.[0-9]*) _setup_nv_sm="sm_$(printf '%s' "$_setup_nv_cc" | awk -F. '{ print ($1*10)+$2 }')" ;;
+    esac
+    return 0
 }
 
 _setup_has_usable_nvidia_gpu() {
@@ -1826,6 +1965,7 @@ _setup_http_get_timed() {
 # ── uv from a pinned release ──
 # Same archive and destination as astral's installer, but it fetches a data file with a
 # pinned SHA-256 instead of piping remote script text into a shell. Mirrors install.sh.
+# See tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD)
 # Bumping the version means bumping every hash:
 #   curl -sL https://github.com/astral-sh/uv/releases/download/<ver>/<asset>.sha256
 #
@@ -2039,6 +2179,60 @@ _setup_path_has_dir() {
     return "$_sphd_found"
 }
 
+# Is a conda environment ACTIVE in this shell? Both variables, matching install.ps1: a hook
+# exporting only CONDA_DEFAULT_ENV still leaves the caller inside conda's PATH ordering.
+# A prepend a previous run persisted is repositioned, not accepted: otherwise a rerun
+# inside conda leaves our directory ahead of it for ever (#5871).
+# Only an exact whole-line match on what this writer writes is touched, and the content is
+# copied back into the ORIGINAL file so a symlinked rc keeps its link, mode and owner.
+_unsloth_repoint_rc_line() {
+    [ -f "$1" ] || return 1
+    # OURS, not merely matching: a hand-written `export PATH="$HOME/.local/bin:$PATH"` is a
+    # line users have too, and demoting theirs would move that whole directory behind the
+    # rest of PATH for good. The `# Added by Unsloth` marker above the line is the ownership
+    # record, so a line without one is left alone.
+    _URRL_OLD="$2" awk '
+        $0 == ENVIRON["_URRL_OLD"] && prev ~ /^# Added by Unsloth/ { found = 1 }
+        { prev = $0 }
+        END { exit(found ? 0 : 1) }
+    ' "$1" 2>/dev/null || return 1
+    # Staged and renamed, because `cat tmp > file` truncates the profile first and an
+    # interrupt leaves wreckage. Onto the RESOLVED path: renaming over a chezmoi or stow
+    # symlink would replace it with a regular file. `readlink -f` is GNU-only, hence the walk.
+    _urrl_real="$1"
+    _urrl_hops=0
+    while [ -L "$_urrl_real" ] && [ "$_urrl_hops" -lt 40 ]; do
+        _urrl_hops=$((_urrl_hops + 1))
+        _urrl_target="$(readlink -- "$_urrl_real" 2>/dev/null)" || break
+        [ -n "$_urrl_target" ] || break
+        case "$_urrl_target" in
+            /*) _urrl_real="$_urrl_target" ;;
+            *) _urrl_real="$(dirname -- "$_urrl_real")/$_urrl_target" ;;
+        esac
+    done
+    [ -f "$_urrl_real" ] || return 1
+    _urrl_tmp="$_urrl_real.unsloth-tmp.$$"
+    # `cp -p` keeps the original's mode; without it the umask masks it and a 0644 .bashrc
+    # comes back 0600. ENVIRON, not `-v`: POSIX awk decodes backslash escapes in `-v`, so an
+    # escaped path arrived as something else and renamed an unchanged file.
+    if { cp -p -- "$_urrl_real" "$_urrl_tmp" 2>/dev/null \
+        || cp -- "$_urrl_real" "$_urrl_tmp" 2>/dev/null; } \
+        && _URRL_OLD="$2" _URRL_NEW="$3" awk '
+            $0 == ENVIRON["_URRL_OLD"] && prev ~ /^# Added by Unsloth/ { print ENVIRON["_URRL_NEW"]; prev = $0; next }
+            { print; prev = $0 }
+        ' "$_urrl_real" > "$_urrl_tmp" 2>/dev/null \
+        && mv -f -- "$_urrl_tmp" "$_urrl_real" 2>/dev/null; then
+        return 0
+    fi
+    # The original is untouched on every failure above; only the staged copy needs removing.
+    rm -f -- "$_urrl_tmp" 2>/dev/null
+    return 1
+}
+
+_unsloth_conda_env_active() {
+    [ -n "${CONDA_PREFIX:-}" ] || [ -n "${CONDA_DEFAULT_ENV:-}" ]
+}
+
 _setup_persist_uv_path() {
     _supp_dir="$1"
     [ -n "$_supp_dir" ] || return 0
@@ -2047,7 +2241,15 @@ _setup_persist_uv_path() {
     [ -z "${UV_UNMANAGED_INSTALL:-}" ] || return 0
     # The PATH a new shell inherits, not the one this process has already prepended to, and
     # compared entry by entry: a directory holding *, ? or [ is a glob inside a case pattern.
-    _setup_path_has_dir "${_SETUP_LOGIN_PATH:-$PATH}" "$_supp_dir" && return 0
+    # Already on the login PATH BECAUSE a previous run wrote the line, and inside a conda
+    # environment that line is in the wrong place, so the repointing pass has to run before
+    # this early return rather than after it. `_setup_repoint_only` makes the rest of the
+    # function a no-op: it repositions what is there and adds nothing.
+    _setup_repoint_only=false
+    if _setup_path_has_dir "${_SETUP_LOGIN_PATH:-$PATH}" "$_supp_dir"; then
+        _unsloth_conda_env_active || return 0
+        _setup_repoint_only=true
+    fi
     # ~/.config, not XDG_CONFIG_HOME, because that is where astral's installer put its own fish
     # file, and it is written regardless of the current shell for the same reason.
     _supp_fish_dir="$HOME/.config/fish/conf.d"
@@ -2055,10 +2257,35 @@ _setup_persist_uv_path() {
         _supp_fish="$_supp_fish_dir/unsloth.fish"
         # Single-quoted: an unquoted path with a space is two arguments to fish_add_path.
         _supp_quoted=$(printf '%s' "$_supp_dir" | sed "s/\\\\/\\\\\\\\/g; s/'/\\\\'/g")
-        # The exact line, not any occurrence: /opt/uv-old must not pass for /opt/uv.
-        if ! grep -v '^[[:space:]]*#' "$_supp_fish" 2>/dev/null | grep -qxF "fish_add_path '$_supp_quoted'"; then
+        # fish_add_path PREPENDS, and that ordering outlives the conda activation (#5871),
+        # so the conda arm appends. All three flags are load-bearing:
+        #   -a alone appends to $fish_user_paths, which fish prepends to PATH, so -P is what
+        #      makes it an append to PATH at all
+        #   -P edits $PATH for the session, right for a conf.d drop-in read after conda.fish
+        #   -m moves an entry a bare `fish_add_path` from an older install already put in
+        #      the universal $fish_user_paths; without it the append is a no-op
+        # https://fishshell.com/docs/current/cmds/fish_add_path.html
+        _supp_fish_line="fish_add_path '$_supp_quoted'"
+        if _unsloth_conda_env_active; then
+            _supp_fish_line="fish_add_path -a -P -m '$_supp_quoted'"
+            # Every earlier spelling puts the directory in front of PATH, the bare -a by way of
+            # $fish_user_paths, and the -a -P line without -m cannot move an entry already in PATH,
+            # so any of them left by a previous run is repointed rather than accepted as present.
+            for _supp_stale in "fish_add_path '$_supp_quoted'" "fish_add_path -a '$_supp_quoted'" \
+                               "fish_add_path -a -P '$_supp_quoted'"; do
+                _unsloth_repoint_rc_line "$_supp_fish" "$_supp_stale" "$_supp_fish_line" || true
+            done
+        fi
+        # The exact line, not any occurrence: /opt/uv-old must not pass for /opt/uv. EVERY
+        # spelling counts as present, or a run outside conda adds a second line for a
+        # directory a run inside it already registered; the bare -a one is kept because an
+        # install from before this fix wrote it.
+        if [ "$_setup_repoint_only" != true ] && ! grep -v '^[[:space:]]*#' "$_supp_fish" 2>/dev/null \
+            | grep -qxF -e "fish_add_path '$_supp_quoted'" -e "fish_add_path -a '$_supp_quoted'" \
+                        -e "fish_add_path -a -P '$_supp_quoted'" \
+                        -e "fish_add_path -a -P -m '$_supp_quoted'"; then
             echo "# Added by Unsloth setup" >> "$_supp_fish"
-            echo "fish_add_path '$_supp_quoted'" >> "$_supp_fish"
+            echo "$_supp_fish_line" >> "$_supp_fish"
         fi
     fi
     # An entry has to be active, whole and on a line that SETS PATH: a commented-out export,
@@ -2069,6 +2296,43 @@ _setup_persist_uv_path() {
     # Escaped: the line is double-quoted, so a path holding $, ` or " would be expanded or
     # terminated by the shell that reads it.
     _supp_literal=$(printf '%s' "$_supp_dir" | sed 's/[\\"$`]/\\&/g')
+    # A persisted PREPEND outlives the activation and leaves conda resolving out of our
+    # directory in every later shell (#5871). Inside one, write the same line as an APPEND;
+    # the grep below matches either spelling, so no second line is added. install.ps1 makes
+    # the same choice for the Windows registry.
+    _supp_export_line="export PATH=\"$_supp_literal:\$PATH\""
+    _supp_export_prepend="$_supp_export_line"
+    # And the $HOME-relative spelling of the same prepend, because install.sh writes the shim
+    # line that way and this script runs standalone on an update: _SETUP_LOGIN_PATH holds the
+    # EXPANDED directory, which is what selects the repoint-only branch below, while the line
+    # sitting in the profile says $HOME. Matching only the expanded form meant the rewrite
+    # never fired and the stale prepend stayed ahead of the active conda environment. $HOME is
+    # left unexpanded on purpose; only the rest of the path is escaped.
+    _supp_export_home_prepend=""
+    case "$_supp_dir" in
+        "$HOME"/*)
+            _supp_home_literal='$HOME'$(printf '%s' "${_supp_dir#$HOME}" | sed 's/[\\"$`]/\\&/g')
+            _supp_export_home_prepend="export PATH=\"$_supp_home_literal:\$PATH\""
+            ;;
+    esac
+    if _unsloth_conda_env_active; then
+        _supp_export_line="export PATH=\"\$PATH:$_supp_literal\""
+    fi
+    if [ "$_setup_repoint_only" = true ]; then
+        # The POSIX repointing pass, then out: nothing here may append a line the caller's
+        # guard decided against.
+        for _supp_profile in "$HOME/.profile" "$HOME/.bashrc" "$HOME/.bash_profile" \
+                             "$HOME/.bash_login" "${ZDOTDIR:-$HOME}/.zshrc" "${ZDOTDIR:-$HOME}/.zshenv"; do
+            [ -f "$_supp_profile" ] || continue
+            _unsloth_repoint_rc_line "$_supp_profile" "$_supp_export_prepend" \
+                "$_supp_export_line" || true
+            if [ -n "$_supp_export_home_prepend" ]; then
+                _unsloth_repoint_rc_line "$_supp_profile" "$_supp_export_home_prepend" \
+                    "$_supp_export_line" || true
+            fi
+        done
+        return 0
+    fi
     # Every startup file astral's installer wired, because it is the installer this replaced:
     # ~/.profile always, each bash file that exists, and zsh under ZDOTDIR. Writing only the
     # file for the shell that happens to be running would leave a bash user whose .bash_profile
@@ -2076,14 +2340,30 @@ _setup_persist_uv_path() {
     for _supp_profile in "$HOME/.profile" "$HOME/.bashrc" "$HOME/.bash_profile" \
                          "$HOME/.bash_login" "${ZDOTDIR:-$HOME}/.zshrc" "${ZDOTDIR:-$HOME}/.zshenv"; do
         if [ "$_supp_profile" != "$HOME/.profile" ] && [ ! -f "$_supp_profile" ]; then continue; fi
+        # Repointing comes BEFORE the presence check, not inside it. The check below matches
+        # the EXPANDED directory, so it cannot see the $HOME-relative prepend install.sh
+        # writes: gating the rewrite on it left that spelling in place and appended a second
+        # line underneath it, which is both a duplicate entry and the original ordering bug,
+        # since the surviving prepend still resolves ahead of the active conda environment.
+        # Rewriting first also makes the check find the append it just produced.
+        if _unsloth_conda_env_active; then
+            _unsloth_repoint_rc_line "$_supp_profile" "$_supp_export_prepend" \
+                "$_supp_export_line" || true
+            if [ -n "$_supp_export_home_prepend" ]; then
+                _unsloth_repoint_rc_line "$_supp_profile" "$_supp_export_home_prepend" \
+                    "$_supp_export_line" || true
+            fi
+        fi
         # Only lines that actually set PATH count: `UV_CACHE=/opt/uv` and `PYTHONPATH=/opt/uv`
         # are not PATH entries, and taking one for an entry leaves the next shell without uv.
         if grep -v '^[[:space:]]*#' "$_supp_profile" 2>/dev/null \
             | grep -E "$_supp_path_line" \
-            | grep -qE "(^|[^[:alnum:]_.~/-])$_supp_grep([^[:alnum:]_.~/-]|\$)"; then continue; fi
+            | grep -qE "(^|[^[:alnum:]_.~/-])$_supp_grep([^[:alnum:]_.~/-]|\$)"; then
+            continue
+        fi
         echo '' >> "$_supp_profile"
         echo '# Added by Unsloth setup' >> "$_supp_profile"
-        echo "export PATH=\"$_supp_literal:\$PATH\"" >> "$_supp_profile"
+        echo "$_supp_export_line" >> "$_supp_profile"
     done
 }
 
@@ -2450,6 +2730,32 @@ if [ "$_SKIP_PYTHON_DEPS" = true ] && [ -x "$VENV_DIR/bin/python" ]; then
     fi
 fi
 
+# Same for an NVIDIA host left on a CPU wheel (GPU hidden or driver broken when it was
+# installed, a dependency step that resolved torch from PyPI, or a GPU added since). The
+# CUDA repair is inside the pass too, so without this the wheel survives every "up to
+# date" update. setup.ps1 heals this at its stale-venv check; this is the POSIX half.
+if [ "$_SKIP_PYTHON_DEPS" = true ] && [ -x "$VENV_DIR/bin/python" ]; then
+    _setup_cuda_torch_stale=false
+    if command -v timeout >/dev/null 2>&1; then
+        timeout -k 5 180 "$VENV_DIR/bin/python" \
+            "$SCRIPT_DIR/install_python_stack.py" --cuda-torch-needs-dependency-pass \
+            >/dev/null 2>&1 && _setup_cuda_torch_stale=true
+    elif "$VENV_DIR/bin/python" "$SCRIPT_DIR/install_python_stack.py" \
+            --cuda-torch-needs-dependency-pass >/dev/null 2>&1; then
+        _setup_cuda_torch_stale=true
+    fi
+    if [ "$_setup_cuda_torch_stale" = true ]; then
+        # Offline the pass can only fail, and failing it loses the verified install.
+        if [ "${_OFFLINE_FAST_PATH:-false}" = true ] || _uv_offline_requested; then
+            substep "installed PyTorch cannot use this NVIDIA GPU but UV_OFFLINE is set -- left for the next online update"
+        else
+            substep "installed PyTorch cannot use this NVIDIA GPU -- forcing dependency pass to repair..."
+            substep "   (set UNSLOTH_TORCH_BACKEND=cpu to keep a deliberate CPU install)"
+            _SKIP_PYTHON_DEPS=false
+        fi
+    fi
+fi
+
 if [ "$_SKIP_PYTHON_DEPS" = false ]; then
     install_python_stack
 else
@@ -2767,10 +3073,8 @@ _setup_rocminfo_gpu_records() {
 # side reads the same field in utils/hardware/amd.py get_hip_id_by_gpu_index.
 # Keep in sync with install.sh.
 _setup_amd_smi_hip_order() {
-    # POSIX awk forbids a physical newline in a -v value (gawk --posix makes it fatal),
-    # so the records arrive on stdin ahead of the map, separated by a sentinel. The first
-    # output line reports which index space the records came back in; the caller needs to
-    # know, because a mask cannot be applied to an untranslated list of unlike adapters.
+    # POSIX awk forbids a newline in a -v value (fatal under gawk --posix), so records arrive
+    # on stdin before the map, sentinel-separated. Line 1 names the index space.
     { printf '%s\n' "$1"; echo "@@hip-map@@"; cat; } | awk '
         function value(line,   v) {
             v = line
@@ -2787,9 +3091,7 @@ _setup_amd_smi_hip_order() {
             next
         }
         END {
-            # All or nothing, like get_hip_id_by_gpu_index: an older CLI rejects -e, and
-            # hip_id reads N/A when the library cannot reach a KFD node. A partial or
-            # colliding map is not a 1:1 device mapping, so keep discovery order.
+            # All or nothing, like get_hip_id_by_gpu_index: a partial or colliding map is not 1:1.
             if (r == 0 || n != r) { keep(); exit }
             for (i = 1; i <= n; i++) {
                 if (hip[i] < 0 || hip[i] >= r || (hip[i] in used)) { keep(); exit }
@@ -2818,9 +3120,14 @@ _setup_amd_smi_gpu_records() {
             if (started) print gfx "|" mkt
             gfx = ""; mkt = ""
         }
-        # amd-smi upper-cases every key (amdsmi_logger.py _capitalize_keys): MARKET_NAME,
-        # TARGET_GRAPHICS_VERSION. Matched case-folded so older spellings work too.
-        /^[[:space:]]*GPU:[[:space:]]*[0-9]/ { flush(); started = 1; next }
+        # amd-smi upper-cases every key (amdsmi_logger.py _capitalize_keys), so match
+        # case-folded. Two header shapes: `GPU: 0` opens a keyed block with the arch later,
+        # `GPU[0] : gfx1100` IS the record. Matching only the first answered no arch at all.
+        /^[[:space:]]*GPU[[:space:]]*[:\[][[:space:]]*[0-9]/ {
+            flush(); started = 1
+            if (match($0, /gfx[1-9][0-9a-z][0-9a-z][0-9a-z]?/)) gfx = substr($0, RSTART, RLENGTH)
+            next
+        }
         !started { next }
         tolower($0) ~ /market.?name/ { if (mkt == "") mkt = value($0); next }
         tolower($0) ~ /target.?graphics.?version/ {
@@ -2882,9 +3189,9 @@ _setup_supported_gfx_from_name() {
         *"RX 7800"*|*"RX 7700"*|*"PRO W7700"*|*"PRO V710"*)                                            _sup_gfx_out="gfx1101" ;;  # RDNA 3 (Navi 32)
         *"RX 7900"*|*"PRO W7900"*|*"PRO W7800"*)                                                       _sup_gfx_out="gfx1100" ;;  # RDNA 3 desktop / workstation (Navi 31)
         *"780M"*|*"760M"*|*"740M"*|*"Phoenix"*|*"Hawk Point"*|*"Z1 Extreme"*|*"Z2 Extreme"*)            _sup_gfx_out="gfx1103" ;;  # RDNA 3 iGPU (Phoenix / Hawk Point)
-        *"RX 6900"*|*"RX 6800"*|*"RX 6750"*|*"RX 6700"*|*"PRO W6800"*|*"PRO W6900"*)                    _sup_gfx_out="gfx1030" ;;  # RDNA 2 (Navi 21)
+        *"RX 6950"*|*"RX 6900"*|*"RX 6850"*|*"RX 6800"*|*"RX 6750"*|*"RX 6700"*|*"PRO W6800"*|*"PRO W6900"*) _sup_gfx_out="gfx1030" ;;  # RDNA 2 (Navi 21)
         *"RX 6650"*|*"RX 6600"*|*"PRO W6600"*|*"PRO W6650"*)                                            _sup_gfx_out="gfx1032" ;;  # RDNA 2 (Navi 23)
-        *"RX 6500"*|*"RX 6400"*|*"RX 6300"*|*"PRO W6400"*|*"PRO W6500"*)                                _sup_gfx_out="gfx1034" ;;  # RDNA 2 (Navi 24)
+        *"RX 6550"*|*"RX 6500"*|*"RX 6450"*|*"RX 6400"*|*"RX 6300"*|*"PRO W6400"*|*"PRO W6500"*|*"PRO W6300"*)                    _sup_gfx_out="gfx1034" ;;  # RDNA 2 (Navi 24)
     esac
     [ -n "$_sup_gfx_out" ] || return 1
     printf '%s\n' "$_sup_gfx_out"
@@ -2951,7 +3258,17 @@ if [ "$_setup_nvidia_usable" != true ]; then
 fi
 
 if [ "$_setup_nvidia_usable" = true ]; then
-    step "gpu" "NVIDIA GPU detected"
+    _setup_nv_banner_fields
+    if [ -n "$_setup_nv_name" ] && [ -n "$_setup_nv_sm" ]; then
+        step "gpu" "$_setup_nv_name ($_setup_nv_sm)"
+    elif [ -n "$_setup_nv_name" ]; then
+        step "gpu" "$_setup_nv_name"
+    else
+        step "gpu" "NVIDIA GPU detected"
+    fi
+    # An `if`, not `[ ... ] && substep ...`: the AND-list form leaves a non-zero status
+    # behind on the common path where there is no driver string to print.
+    if [ -n "$_setup_nv_driver" ]; then substep "Driver: $_setup_nv_driver"; fi
 elif [ "$_setup_amd_detected" = true ]; then
     _setup_vis="${HIP_VISIBLE_DEVICES:-${ROCR_VISIBLE_DEVICES:-}}"
     _setup_vis_idx=0
@@ -2962,14 +3279,14 @@ elif [ "$_setup_amd_detected" = true ]; then
     if [ -n "$_setup_amd_records" ]; then
         # Records already preserve device ordinals, including duplicate arches.
         _setup_amd_record=$(printf '%s\n' "$_setup_amd_records" | awk -v idx="$_setup_vis_idx" \
-            'NF { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx] }')
+            'NF { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx+0] }')
         _setup_gfx=${_setup_amd_record%%|*}
         _setup_mkt=${_setup_amd_record#*|}
     fi
     # Only pre-TARGET_GRAPHICS_VERSION amd-smi lands here: names but no arch in the record.
     if [ -z "$_setup_gfx" ]; then
         _setup_gfx=$(printf '%s\n' "$_setup_gfx_all" | awk -v idx="$_setup_vis_idx" \
-            'NF && !seen[$0]++ { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx] }')
+            'NF && !seen[$0]++ { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx+0] }')
     fi
     # UNSLOTH_ROCM_GFX_ARCH env override (mirrors setup.ps1)
     if [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ]; then
@@ -3057,7 +3374,11 @@ $_setup_unsup_pci
 EOF
         return 1
     }
-    if [ -n "$_setup_gfx" ]; then
+    # $_setup_mkt is the marketing name of the SAME record the arch came from, paired
+    # per GPU agent by _rocminfo_gpu_records and ordered by _amd_smi_hip_order.
+    if [ -n "$_setup_gfx" ] && [ -n "$_setup_mkt" ]; then
+        step "gpu" "$_setup_mkt ($_setup_gfx)"
+    elif [ -n "$_setup_gfx" ]; then
         step "gpu" "AMD ROCm ($_setup_gfx)"
     elif _setup_unsup_gfx=$(_setup_unsupported_gfx_any "$_setup_mkt"); then
         step "gpu" "AMD GPU detected ($_setup_unsup_gfx) -- no ROCm PyTorch wheels Unsloth installs"
@@ -3079,6 +3400,11 @@ EOF
         substep "GGUF chat can still use this GPU through Vulkan: export UNSLOTH_LLAMA_CPP_BACKEND=vulkan,"
         substep "then re-run the installer. It picks the llama.cpp bundle at install time, so setting"
         substep "it afterwards has no effect until you install or update again."
+    elif [ -n "$_setup_mkt" ]; then
+        # Name without an arch, as install.sh does. Deliberately BELOW the unsupported
+        # arm above: a card with no ROCm wheels also reaches here with a name, and
+        # naming it quietly would drop the warning that training will not run.
+        step "gpu" "$_setup_mkt"
     else
         step "gpu" "AMD ROCm"
     fi
@@ -3094,7 +3420,6 @@ EOF
         substep "ROCm: runtime detected (no SDK tree at $_setup_rocm_root)"
     fi
     [ -n "$_setup_rocm_ver" ] && substep "hipconfig: $_setup_rocm_ver"
-    [ -n "$_setup_mkt" ] && [ -n "$_setup_gfx" ] && substep "GPU: $_setup_mkt"
 elif [ "$_setup_xpu_ready" = true ]; then
     # Ranks below NVIDIA and AMD, as in setup.ps1: those hosts get their own wheels.
     step "gpu" "Intel GPU detected (XPU runtime)"
@@ -3229,6 +3554,33 @@ _has_local_llama_server() {
 
 # The backend the installed prebuilt's marker records (cuda/rocm/vulkan/cpu), or nothing.
 # `backend` arrived with #8520; older markers name it in llama_backend or only in the asset.
+# Whether the install marker's $2 names the pinned ref $3: exact, or ($4 = refs) the installer's
+# own alias and commit-prefix matching (a short commit pin matches the recorded full one). A
+# published release tag is a name, not a ref, so it compares exactly.
+_installed_prebuilt_ref_matches() {
+    [ -f "$1/UNSLOTH_PREBUILT_INFO.json" ] || return 1
+    python - "$SCRIPT_DIR/install_llama_prebuilt.py" "$1/UNSLOTH_PREBUILT_INFO.json" "$2" "$3" "${4:-exact}" <<'PY' 2>/dev/null
+import importlib.util
+import json
+import sys
+
+spec = importlib.util.spec_from_file_location("installer", sys.argv[1])
+installer = importlib.util.module_from_spec(spec)
+sys.modules["installer"] = installer  # the module's dataclasses resolve through sys.modules
+spec.loader.exec_module(installer)
+try:
+    marker = json.load(open(sys.argv[2], encoding="utf-8"))
+except Exception:
+    marker = {}
+values = [marker.get(f) for f in sys.argv[3].split(",")] if isinstance(marker, dict) else []
+values = [v.strip() for v in values if isinstance(v, str) and v.strip()]
+same = any(
+    v == sys.argv[4] or (sys.argv[5] == "refs" and installer.refs_match(v, sys.argv[4])) for v in values
+)
+sys.exit(0 if same else 1)
+PY
+}
+
 _installed_prebuilt_backend() {
     [ -f "$1/UNSLOTH_PREBUILT_INFO.json" ] || return 0
     python - "$1/UNSLOTH_PREBUILT_INFO.json" <<'PY' 2>/dev/null || true
@@ -3291,9 +3643,17 @@ _gpu_prebuilt_to_keep_over_cpu_build() {
     local install_dir=$1 backend
     [ "$_LLAMA_FORCE_COMPILE" != "1" ] || return 1
     [ -z "$_LLAMA_PR" ] || return 1
-    # An explicit version pin asked for that version, which the old install is not.
-    [ -z "${UNSLOTH_LLAMA_RELEASE_TAG:-}" ] || return 1
-    case "${UNSLOTH_LLAMA_TAG:-}" in ""|latest|master) ;; *) return 1 ;; esac
+    # An explicit version pin asked for that version; the old install satisfies it only
+    # when its marker records the same one.
+    if [ -n "${UNSLOTH_LLAMA_RELEASE_TAG:-}" ]; then
+        _installed_prebuilt_ref_matches "$install_dir" release_tag "$UNSLOTH_LLAMA_RELEASE_TAG" || return 1
+    fi
+    case "${UNSLOTH_LLAMA_TAG:-}" in
+        ""|latest|master) ;;
+        # A commit pin is recorded beside the build tag, in the source ref fields.
+        *) _installed_prebuilt_ref_matches "$install_dir" \
+               tag,requested_source_ref,resolved_source_ref,source_commit "$UNSLOTH_LLAMA_TAG" refs || return 1 ;;
+    esac
     _has_local_llama_server "$install_dir" || return 1
     backend="$(_installed_prebuilt_backend "$install_dir")"
     case "$backend" in
@@ -3973,6 +4333,10 @@ else
                             _raw_caps=$(_setup_run_smi "$_smi_bin" --query-gpu=compute_cap --format=csv,noheader 2>/dev/null || true)
                         fi
                         CUDA_ARCHS="$(_resolve_cuda_archs "$_raw_caps" "${UNSLOTH_LLAMA_CUDA_ARCHS:-}")"
+                        # nvidia-smi absent, stale or answering N/A: the driver library lists the capabilities.
+                        if [ -z "$CUDA_ARCHS" ] && [ "${UNSLOTH_NVIDIA_LIBRARY_PROBE:-1}" != "0" ]; then
+                            CUDA_ARCHS="$(_resolve_cuda_archs "$(_probe_compute_caps)" "")"
+                        fi
 
                         if [ -n "$CUDA_ARCHS" ]; then
                             CMAKE_ARGS="$CMAKE_ARGS -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHS}"

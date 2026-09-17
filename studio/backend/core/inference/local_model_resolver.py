@@ -101,7 +101,11 @@ def _advertised_loader_id(info) -> Optional[str]:
     """The id to advertise for a scanned model: prefer a client-facing alias over
     an absolute filesystem path so /v1/models and the override key never expose a
     host path (the ./models and LM Studio scanners report the path as info.id)."""
+    from hub.services.models.ollama import is_ollama_manifest_ref
+
     raw_id = getattr(info, "id", None)
+    if isinstance(raw_id, str) and is_ollama_manifest_ref(raw_id):
+        return getattr(info, "model_id", None)
     if not raw_id or not _is_abs_path_id(raw_id):
         return raw_id
     for alt in (getattr(info, "model_id", None), getattr(info, "display_name", None)):
@@ -351,29 +355,14 @@ def _local_gguf_entry(
 # A LoRA directory can carry a copied config.json and tokenizer beside these, and ModelConfig would then resolve its
 # base model and fetch weights this resolver promises never to download.
 _ADAPTER_MARKERS = ("adapter_config.json", "adapter_model.safetensors", "adapter_model.bin")
-# The multimodal sub-configs the repo's own vision detector reads, which is what tells a served VLM apart from a plain
-# seq2seq wearing the same architecture suffix. Presence of any one of these is the proof; nothing here is read for
-# its value, so a renamed spelling is a miss and not a wrong answer.
-_MULTIMODAL_CONFIG_KEYS = (
-    "vision_config",
-    "img_processor",
-    "image_token_index",
-    "projector_config",
-    "audio_config",
-)
-# transformers 5 spellings of the same proof, kept APART from the tuple above because they are read for their VALUE.
-#
-# A visual checkpoint declares its placeholder token ids at the top level, and a conversion can ship them with no
-# vision sub-config at all: the checkpoint reported in #10951 is a language-only MLX conversion of a VLM that kept
-# ``Qwen3_5MoeForConditionalGeneration`` in architectures and carries image_token_id, video_token_id and the
-# vision_start/end pair, while its vision tower and vision_config are gone. Without these the auto-switch reads it as
-# a plain seq2seq and 404s an installed model.
-#
-# Presence is not the test here, because these are scalars rather than sub-configs and the key survives its value: a
-# serialiser that writes every field of a dataclass emits ``"image_token_id": null`` for a model that has none, and a
-# T5-shaped config that happens to carry the field would then be admitted by a key that says nothing. The tuple above
-# keeps its presence test unchanged, so no config that was accepted before is re-examined; only the four new keys have
-# to mean something.
+_SUPPORTED_CONDITIONAL_AUDIO_MODEL_TYPES = frozenset({"csm", "whisper"})
+_MODALITY_KEY_WORDS = frozenset({"vision", "image", "img", "audio", "video", "projector"})
+# The transformers 5 placeholder token ids, read for their VALUE instead of by the word match, because they are
+# scalars and a key survives its value: a serialiser that writes every field of a dataclass emits
+# ``"image_token_id": null`` for a model that has none, and the word match would then admit a T5-shaped config on a
+# key that says nothing. video_token_index is the transformers 4 spelling, declared by VideoLlavaConfig and
+# InstructBlipVideoConfig and already paired with video_token_id by routes/inference.py::_target_accepts_request_input
+# and mlx_inference.py::_vlm_media_token_ids.
 _VISUAL_TOKEN_ID_KEYS = (
     "image_token_id",
     "video_token_id",
@@ -381,26 +370,6 @@ _VISUAL_TOKEN_ID_KEYS = (
     "vision_start_token_id",
     "vision_end_token_id",
 )
-# video_token_index is the transformers 4 spelling and sits here rather than beside image_token_index in the presence
-# tuple above: it is a vocabulary index like the rest of this tuple, so a serialised null must not admit the config.
-# VideoLlavaConfig and InstructBlipVideoConfig declare it, and a stripped conversion of one keeps it after losing both
-# vision_config and image_token_index, which is the #10951 shape with the video half of the pair. The rest of the
-# backend already reads the spelling -- routes/inference.py::_target_accepts_request_input and
-# mlx_inference.py::_vlm_media_token_ids both pair it with video_token_id -- so withholding it here advertised nothing
-# for a checkpoint the video router would then accept.
-# text_config is deliberately NOT in the tuple above, and audio_token_id is deliberately not either.
-#
-# text_config: transformers 5 nests one in text-only configs too, so on its own it is not evidence of a second
-# modality. ClvpConfig (``ClvpModelForConditionalGeneration``, a voice model with no chat serving path here) and the
-# Gemma 4 assistant configs serialise text_config and no modality key at all, so accepting it alone would open this
-# gate to exactly what the gate exists to close. It counts only beside one of the keys above, and those keys already
-# decide that case, so the pairing needs no branch of its own; test_multimodal_config_keys.py holds the rule.
-#
-# audio_token_id: the audio families are admitted by name below rather than by marker, because the MLX worker refuses
-# ASR and TTS outright and only some model types have a conditional audio serving path at all. A generic audio marker
-# would bypass that allowlist and advertise HiggsAudioV2 and VibeVoiceAsr as chat models, and would serve csm on an
-# MLX host where the worker rejects it.
-_SUPPORTED_CONDITIONAL_AUDIO_MODEL_TYPES = frozenset({"csm", "whisper"})
 
 
 def _read_json(path):
@@ -472,7 +441,7 @@ def _has_safetensors_weights(load_dir) -> bool:
         return False
 
 
-def _is_generative_chat_config(config: dict) -> bool:
+def _is_generative_chat_config(load_dir, config: dict) -> bool:
     """Whether a config.json describes a checkpoint the chat loader can generate with."""
     architectures = config.get("architectures")
     # model_type cannot stand in for the list: transformers' causal mapping lists bert and bart
@@ -485,22 +454,45 @@ def _is_generative_chat_config(config: dict) -> bool:
         return True
     if not any(name.endswith("ForConditionalGeneration") for name in names):
         return False
-    # ForConditionalGeneration is overloaded: T5 and BART wear it too, and the serving path has no AutoModelForSeq2SeqLM
-    # branch, so require proof of a second modality. A nested text_config is not that proof on its own; see the
-    # _MULTIMODAL_CONFIG_KEYS comment.
-    if any(key in config for key in _MULTIMODAL_CONFIG_KEYS):
-        return True
-    # A real placeholder token id, and only on a model type the audio allowlist below does not own. Ordered after that
-    # allowlist's own families deliberately: a csm or whisper config that also carries a visual token id must still go
-    # through the audio branch, or a visual marker becomes a way around the MLX refusal that branch applies. Every
-    # other input reaches the same answer it did before.
-    if not _model_type_is_audio(config.get("model_type")) and any(
-        _is_placeholder_token_id(config.get(key)) for key in _VISUAL_TOKEN_ID_KEYS
-    ):
-        return True
-    # whisper is the audio model rather than wearing one, so it carries no such sub-config. the MLX worker refuses ASR
-    # and TTS outright, so only a Transformers host serves these.
-    return not _host_serves_mlx() and _model_type_is_audio(config.get("model_type"))
+    # These are the audio model rather than wearing one, so they declare no modality below and the
+    # classifier further down refuses them; chat serves them through the transcription path instead.
+    if _model_type_is_audio(config.get("model_type")):
+        return not _host_serves_mlx()
+    # T5 and BART wear the suffix too, and udop-large shows modality cannot separate them.
+    if config.get("is_encoder_decoder") is True:
+        return False
+    if not _config_declares_multimodality(config):
+        return False
+    # The model picker's own classifier; its None means inconclusive, which must not qualify here.
+    from hub.services.models.common import _local_transformers_can_chat
+
+    return _local_transformers_can_chat(load_dir) is True
+
+
+def _config_declares_multimodality(config: dict) -> bool:
+    """Whether a config declares a non-text modality, by whole key words: substrings admit ``revision``."""
+    import re
+
+    for key in config:
+        if not isinstance(key, str):
+            continue
+        # Neither is evidence on its own; both count only beside one of the keys below.
+        #
+        # text_config: transformers 5 nests one in TEXT-ONLY configs too (ClvpConfig, the Gemma 4 assistant
+        # configs), so alone it admits exactly what this gate exists to refuse.
+        #
+        # audio_token_id: the audio families are admitted by name, through
+        # _SUPPORTED_CONDITIONAL_AUDIO_MODEL_TYPES above. A generic audio marker goes around that allowlist
+        # and advertises HiggsAudioV2 and VibeVoiceAsr as chat models. audio_config is untouched.
+        if key in ("text_config", "audio_token_id"):
+            continue
+        if key in _VISUAL_TOKEN_ID_KEYS:
+            if _is_placeholder_token_id(config[key]):
+                return True
+            continue
+        if _MODALITY_KEY_WORDS & set(re.split(r"[^a-z0-9]+", key.lower())):
+            return True
+    return False
 
 
 def _is_placeholder_token_id(value) -> bool:
@@ -560,10 +552,13 @@ def _config_is_servable_here(load_dir, config: dict) -> bool:
     # trust_remote_code needs an approval fingerprint a switch has not got; read as data only.
     for name in REMOTE_CODE_CONFIG_FILES:
         candidate = config if name == "config.json" else _read_json(load_dir / name)
+        if not isinstance(candidate, dict):
+            continue
         # truthiness like the consent gate's _config_has_auto_map: an empty map runs nothing.
-        if isinstance(candidate, dict) and candidate.get("auto_map"):
+        # model_file runs repo code too and bypasses trust_remote_code: MLX loaders exec_module it.
+        if candidate.get("auto_map") or candidate.get("model_file"):
             return False
-    return _is_generative_chat_config(config)
+    return _is_generative_chat_config(load_dir, config)
 
 
 def _host_can_serve_minimax_music3() -> bool:
@@ -648,6 +643,19 @@ def _local_weights_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
 
 def _local_servable_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
     """Entry for whichever backend can serve *info* from disk, GGUF first."""
+    from hub.services.models.ollama import is_ollama_manifest_ref, ollama_model_ref_files
+
+    raw_id = getattr(info, "id", None)
+    if isinstance(raw_id, str) and is_ollama_manifest_ref(raw_id):
+        if getattr(info, "source", None) != "ollama":
+            return None
+        # Raises when the tag's layers are gone or unsupported, withholding rather than advertising.
+        try:
+            ollama_model_ref_files(raw_id)
+        except (OSError, ValueError):
+            return None
+        # No quants: an Ollama tag names one file, so there is no ":<quant>" to pin.
+        return _LocalGgufEntry(loader_id, raw_id, ())
     return _local_gguf_entry(loader_id, info) or _local_weights_entry(loader_id, info)
 
 
@@ -662,15 +670,32 @@ def local_servable_model(info) -> Optional[tuple[bool, tuple[str, ...]]]:
     from pathlib import Path
 
     path = getattr(info, "path", None)
-    # Ollama-link entries come from a scanner _build_index intentionally skips (it creates symlinks on the request
-    # path), so their advertised ids never resolve. Don't report them as servable, or /v1/models would list unswitchable
-    # models.
+    # A link an earlier load materialized, rescanned: the manifest row already has those weights.
     if isinstance(path, str) and any(
         seg in (".studio_links", "ollama_links") for seg in Path(path).parts
     ):
         return None
     entry = _local_servable_entry(getattr(info, "id", "") or "", info)
-    return (entry.is_gguf, entry.variants) if entry is not None else None
+    if entry is None:
+        return None
+    if not _advertises_this_ollama_row(info):
+        return None
+    return (entry.is_gguf, entry.variants)
+
+
+def _advertises_this_ollama_row(info) -> bool:
+    """Whether an Ollama row's catalog id is the one the resolver loads for it: two roots can hold
+    one tag. Asks the index, so it cannot be called from inside a scan."""
+    from hub.services.models.ollama import is_ollama_manifest_ref
+
+    raw_id = getattr(info, "id", None)
+    if not isinstance(raw_id, str) or not is_ollama_manifest_ref(raw_id):
+        return True
+    model_id = getattr(info, "model_id", None)
+    if not model_id:
+        return False
+    resolved = resolve_local_gguf(model_id)
+    return bool(resolved and resolved[0] == raw_id)
 
 
 def local_load_dir(path: Optional[str]) -> Optional[str]:
@@ -695,9 +720,8 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
 
     Scans the same roots Unsloth's model picker lists (./models, the active plus
     legacy/default HF caches, LM Studio and Hermes dirs, and user scan folders) so a named
-    local model is never missed and silently served as the loaded one. Ollama's
-    scanner is skipped: it creates symlinks as a side effect and this runs on the
-    request path.
+    local model is never missed and silently served as the loaded one. The Ollama scan only reads
+    manifests: the ``.gguf`` link its blobs need is materialized by the load.
     """
     # Lazy import: routes.models imports core.inference, so import at call time.
     from pathlib import Path
@@ -705,6 +729,7 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
         _scan_models_dir,
         _scan_hf_cache,
         _scan_lmstudio_dir,
+        _scan_ollama_dir,
         _resolve_hf_cache_dir,
         _is_hidden_model,
     )
@@ -773,6 +798,12 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
     except Exception as exc:
         logger.debug("auto-switch: Hermes scan failed: %s", exc)
     try:
+        from utils.paths import ollama_model_dirs
+        for ollama_dir in ollama_model_dirs():
+            found += _scan_ollama_dir(ollama_dir, materialize_links = False)
+    except Exception as exc:
+        logger.debug("auto-switch: Ollama scan failed: %s", exc)
+    try:
         from storage.studio_db import list_scan_folders
 
         custom_found = []
@@ -780,7 +811,10 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
             try:
                 fp = Path(folder["path"])
                 custom_found += dedupe_custom_gguf_rows(
-                    _scan_models_dir(fp, limit = 200) + _scan_hf_once(fp) + _scan_lmstudio_dir(fp)
+                    _scan_models_dir(fp, limit = 200)
+                    + _scan_hf_once(fp)
+                    + _scan_lmstudio_dir(fp)
+                    + _scan_ollama_dir(fp, limit = 200, materialize_links = False)
                 )
             except Exception as exc:
                 logger.debug("auto-switch: scan folder %r failed: %s", folder, exc)
@@ -1051,7 +1085,7 @@ def resolve_local_gguf(
 ) -> Optional[tuple]:
     """Return ``(load_path, gguf_variant, loader_id)`` for a local match, else None.
 
-    ``load_path`` is the concrete on-disk path to hand /load (so it never fetches a remote),
+    ``load_path`` is the local path or ``ollama-manifest:`` ref to hand /load (never a remote),
     ``loader_id`` is the advertised id used as the launch-override key, and ``gguf_variant`` is None
     for a non-GGUF checkpoint, which has no quant to pin. ``requested`` is ``repo`` or
     ``repo:VARIANT``: an exact id match wins first (so ids containing a colon still resolve), else
