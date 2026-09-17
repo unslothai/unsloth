@@ -305,9 +305,7 @@ def test_both_entrypoints_resolve_and_reuse_the_same_managed_directory() -> None
 #
 # Spelled tightly on purpose: this variable, and either this verb or no verb at all. A grant, a
 # reset, any other target, and any takeown still fail.
-_LABELS_OUR_OWN_DIRECTORY = re.compile(
-    r'icacls\.exe "\$dir"(?: /setintegritylevel\b| 2>&1)'
-)
+_LABELS_OUR_OWN_DIRECTORY = re.compile(r'icacls\.exe "\$dir"(?: /setintegritylevel\b| 2>&1)')
 
 
 def test_the_installer_never_repairs_permissions_by_itself() -> None:
