@@ -119,3 +119,46 @@ def test_guard_is_injected_when_no_anchor_matches():
     assert "_unsloth_reject_grpo_image_list(inputs)" in patched
     lines = patched.splitlines()
     assert lines[1].strip() == "_unsloth_reject_grpo_image_list(inputs)"
+
+
+def test_guard_is_injected_when_the_legacy_reference_calls_drift():
+    """Rewriting the cell is half the job. A legacy TRL also has to carry the image counts
+    into the reference logprob calls; without them the images are sliced by sample index and
+    all but the first are dropped, which the model reports as a token/feature mismatch."""
+    source = (
+        "    def _generate_and_score_completions(self, inputs):\n"
+        '        has_images = "image" in inputs[0]\n'
+        "        if has_images:\n"
+        '            images = [example.get("image") for example in inputs]\n'
+        '            kwargs = {"images": [[img] for img in images]}\n'
+        "        ref = self._get_per_token_logps_and_entropies(\n"
+        "            self.model,\n"
+        '            pixel_values=prompt_inputs.get("pixel_values"), image_grid_thw=None,\n'
+        "        )\n"
+        "        return inputs\n"
+    )
+    patched = grpo_trainer__generate_and_score_completions(
+        "_generate_and_score_completions", source
+    )
+    assert "_unsloth_grpo_image_cell(img)" in patched
+    assert "_unsloth_reject_grpo_image_list(inputs)" in patched
+    lines = patched.splitlines()
+    assert lines[1].strip() == "_unsloth_reject_grpo_image_list(inputs)"
+
+
+def test_guard_stays_off_a_trl_whose_reference_calls_do_take_the_counts():
+    """The installed TRL is fully plumbed, so a multi image row works and must not be refused."""
+    trl_grpo = pytest.importorskip("trl.trainer.grpo_trainer")
+    with open(trl_grpo.__file__, "r", encoding = "utf-8") as fh:
+        module_source = fh.read()
+    start = module_source.find("    def _generate_and_score_completions(")
+    assert start != -1, "TRL renamed _generate_and_score_completions"
+    source = module_source[start:]
+    patched = grpo_trainer__generate_and_score_completions(
+        "_generate_and_score_completions", source
+    )
+    assert "_unsloth_reject_grpo_image_list(inputs)" not in patched
+    if 'pixel_values=prompt_inputs.get("pixel_values")' in source:
+        # A legacy TRL: every reference call site must have taken the counts.
+        assert 'pixel_values=prompt_inputs.get("pixel_values")' not in patched
+        assert "**_unsloth_legacy_vision," in patched

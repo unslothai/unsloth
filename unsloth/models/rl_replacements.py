@@ -1106,7 +1106,8 @@ def _unsloth_reject_grpo_image_list(inputs):
     if isinstance(value, (list, tuple)) and len(value) > 1:
         raise ValueError(
             f"Unsloth: GRPO received a singular `image` column holding {len(value)} "
-            "images, and this TRL version cannot be normalised to the plural path. "
+            "images, and this TRL version cannot carry more than one image per row "
+            "through to the model. "
             "Rename the column to `images`, which TRL reads as the per example list of "
             "images, or keep one image per row. "
             "See https://github.com/unslothai/unsloth/issues/3605"
@@ -1349,7 +1350,12 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         r"\1**_unsloth_legacy_vision,\n",
         function,
     )
-    if _legacy_vision_calls == 0 and 'prompt_inputs.get("pixel_values")' in function:
+    # Every TRL from 0.22.2 to 0.23.1 takes all three rewrites, and 0.24.0 and up pass
+    # forward_kwargs instead and need none, so this is a guard against a future drift.
+    _legacy_vision_unplumbed = (
+        _legacy_vision_calls == 0 and 'prompt_inputs.get("pixel_values")' in function
+    )
+    if _legacy_vision_unplumbed:
         _warn_once(
             "grpo_legacy_vision_calls",
             "Unsloth: the GRPO reference logprob call sites changed shape, so a multi "
@@ -1644,7 +1650,12 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
     if _placeholder_old in function:
         function = function.replace(_placeholder_old, _placeholder_new)
 
-    if not _image_cell_normalised:
+    # Rewriting the cell is only half of a multi image row: on a legacy TRL the reference
+    # logprob call sites have to carry the counts too, or the images are sliced by sample
+    # index and all but the first are dropped. That surfaces as a token/feature mismatch
+    # raised inside the model, naming neither the column nor the fix, so refuse it here
+    # instead. A single image cell is unaffected either way and keeps working.
+    if not _image_cell_normalised or _legacy_vision_unplumbed:
         _signature = re.search(
             r"([ \t]*)def _generate_and_score_completions\((?:[^()]|\([^()]*\))*\)[^\n]*:\n",
             function,
