@@ -385,14 +385,34 @@ def test_history_theft_plus_network_is_critical():
     assert fs and fs[0].severity == sp.CRITICAL, findings
 
 
+#: Sentinel for "derive the tokens from the evidence", so `tokens = None` can mean the
+#: other thing: a check that recorded none.
+_NO_TOKENS = object()
+
+
 def _mk(
     sev,
     pkg,
     fname,
     check,
     evidence = "evidence",
+    tokens = _NO_TOKENS,
 ):
-    return sp.Finding(sev, pkg, fname, check, evidence)
+    """A Finding. `tokens` defaults to "read them off this evidence", which is what the real
+    check records for code whose evidence is short enough to be a complete rendering of it.
+
+    Pass `None` for a check that records no vocabulary at all: a coarse approval must not
+    reach one, and the rows that pin that say so explicitly rather than by omission.
+    """
+    recorded = sp._escalation_tokens(evidence) if tokens is _NO_TOKENS else tokens
+    return sp.Finding(
+        sev,
+        pkg,
+        fname,
+        check,
+        evidence,
+        escalation_tokens = None if recorded is None else frozenset(recorded),
+    )
 
 
 def test_baseline_key_version_stable_but_path_specific():
@@ -3109,38 +3129,59 @@ def test_a_decoder_split_over_lines_is_read_the_same_as_one_on_a_single_line():
         assert active == [finding] and suppressed == [], f"{what} rode the coarse approval"
 
 
-def test_lossless_evidence_lifts_every_display_cap_and_only_for_tokens():
-    """`lossless` is what makes the token read complete, and it is confined to the token
-    read: the rendered and hashed evidence keeps its bounds."""
+def test_the_token_read_sees_what_the_display_caps_hide_and_stays_bounded():
+    """The token read goes to the source, and the rendered evidence keeps its bounds.
+
+    Those are two different things and both matter: the evidence written to the report and
+    the baseline must stay capped, while the vocabulary the approval is tested against must
+    not be read from it.
+    """
     long_line = "exec(" + "y" * (sp._MAX_LINE_CHARS + 40) + " or marshal.loads(b))"
     content = "\n".join([long_line] + [f"exec(v{i})" for i in range(sp._MAX_EVIDENCE_SPANS + 8)])
 
     capped = sp._extract_evidence(content, sp.RE_EXEC_EVAL)
-    full = sp._extract_evidence(content, sp.RE_EXEC_EVAL, lossless = True)
+    assert "sha256:" in capped and "more)" in capped, "the display caps stopped applying"
+    assert "marshal.loads" not in sp._escalation_tokens(capped), "the capped read is the floor"
 
-    assert "sha256:" in capped and "more)" in capped
-    assert "sha256:" not in full and "more)" not in full
-    assert f"exec(v{sp._MAX_EVIDENCE_SPANS + 7})" in full
-    assert "marshal.loads" in sp._escalation_tokens(full)
-    assert "marshal.loads" not in sp._escalation_tokens(capped)
+    tokens = sp._tokens_in_matches(content, sp.RE_EXEC_EVAL)
+    assert "marshal.loads" in tokens
 
 
-def test_a_coarse_approval_fails_closed_when_the_evidence_is_lossy_and_unreadable():
-    """A check that records no `evidence_full` cannot be read past its display caps, so a
-    lossy evidence string is refused rather than approved on the part that is visible."""
+def test_the_token_read_cannot_be_made_unbounded_by_the_member():
+    """The earlier lossless rendering was a denial of service on the scanner itself.
+
+    A member whose brackets never close renders overlapping windows per match, so a lossless
+    string grew with the square of the file. A set of short tokens cannot, and past the cap
+    it collapses to one sentinel that is in no baseline, so an attempt to flood it fails
+    closed rather than approving anything.
+    """
+    flood = "\n".join(f"exec(chr({i})" for i in range(sp._MAX_ESCALATION_TOKENS + 50))
+    tokens = sp._tokens_in_matches(flood, sp.RE_OBFUSCATION, sp.RE_EXEC_EVAL)
+    assert len(tokens) <= sp._MAX_ESCALATION_TOKENS + 1, len(tokens)
+    if tokens == frozenset({sp._TOKEN_OVERFLOW}):
+        key = sp._coarse_key("unsloth-zoo", "unsloth_zoo/compiler.py", _ZOO_CHECK)
+        approved = _shipped_baseline()[key]
+        assert not tokens <= approved, "the overflow sentinel must not be approvable"
+
+
+def test_a_coarse_approval_does_not_apply_to_a_check_that_records_no_tokens():
+    """Fail closed. A check with no recorded vocabulary cannot be read, so the coarse key
+    simply does not reach it; the exact evidence key above still can."""
     check = _ZOO_CHECK
     key = sp._coarse_key("unsloth-zoo", "unsloth_zoo/compiler.py", check)
     baseline = {key: {"exec("}}
-    lossy = _mk(
+    unread = _mk(
         "HIGH",
         "unsloth-zoo",
         "unsloth_zoo/compiler.py",
         check,
         "Exec: L1: exec(payload) sha256:" + "0" * 64,
+        tokens = None,
     )
-    active, suppressed = sp._partition_baseline([lossy], baseline)
-    assert active == [lossy] and suppressed == []
+    assert unread.escalation_tokens is None, "the fixture must not record a token set"
+    active, suppressed = sp._partition_baseline([unread], baseline)
+    assert active == [unread] and suppressed == []
 
-    lossy.evidence_full = "Exec: L1: exec(payload)"
-    active, suppressed = sp._partition_baseline([lossy], baseline)
-    assert suppressed == [lossy] and active == []
+    unread.escalation_tokens = frozenset({"exec("})
+    active, suppressed = sp._partition_baseline([unread], baseline)
+    assert suppressed == [unread] and active == []
