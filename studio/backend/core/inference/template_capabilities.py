@@ -25,10 +25,12 @@ feature, which is the bug this replaces. The same reasoning drives the fail-clos
 handler: a capability hint must never stop a model from loading, so anything
 unexpected leaves tools off rather than raising.
 
-Verified against 120 chat templates (87 unique) from 106 published repositories, with
-the ground truth taken from rendering each one with and without a tool catalog and
-looking at what actually came out: no regressions, no false negatives, no false
-positives, no crashes, and Granite 3.3 fixed.
+Verified against 348 unique chat templates from 1330 published repositories, with the
+ground truth taken from rendering each one with a tool catalog and with a renamed
+same-size control, so a template that merely mentions the word does not count: no
+regressions against the marker scan it replaces, no false negatives, no crashes, and
+Granite 3.3, LiquidAI's LFM2 family and Xing4.0 all detected where the markers missed
+them.
 """
 
 from functools import lru_cache
@@ -121,21 +123,58 @@ def _is_payload(node):
     return True
 
 
+def _bound_names(node):
+    """The names a `{% set %}` or `{% for %}` target binds, tuple targets included."""
+    if isinstance(node, nodes.Tuple):
+        return {name for item in node.items for name in _bound_names(item)}
+    # Indexed and attribute targets write through to the container they name, and
+    # `{% set ns.catalog = ... %}` parses to an NSRef that already names it.
+    while isinstance(node, (nodes.Getattr, nodes.Getitem)):
+        node = node.node
+    return {node.name} if isinstance(node, (nodes.Name, nodes.NSRef)) else set()
+
+
 def _receiver_gaining_catalog(node, aliases):
-    """The name a call puts the catalog into, for `catalog.append(tools)` and friends.
+    """The names a call puts the catalog into, for `catalog.append(tools)` and friends.
 
     Not modelled per method: anything handed tool data is assumed to keep it. Taking
     it back out again is not tracked, which is the safe direction here.
     """
     if not (isinstance(node, nodes.Call) and isinstance(node.node, nodes.Getattr)):
-        return None
+        return set()
     arguments = list(node.args) + [keyword.value for keyword in node.kwargs]
     if not any(_reads_catalog(argument, aliases) for argument in arguments):
-        return None
-    receiver = node.node.node
-    while isinstance(receiver, (nodes.Getattr, nodes.Getitem)):
-        receiver = receiver.node
-    return receiver.name if isinstance(receiver, nodes.Name) else None
+        return set()
+    return _bound_names(node.node.node)
+
+
+def _scan_maybe(body, aliases, guarded, bound = frozenset()):
+    """Walk a body that may not run, or may run with names of its own.
+
+    What the body learns is kept, what it unbinds is not:
+    `{% if legacy %}{% set tools = none %}{% endif %}{{ tools | tojson }}` renders the
+    catalog whenever the branch is skipped. `bound` names belong to the body alone -
+    a `{% for %}` variable is undefined after `{% endfor %}` - so they do not escape.
+    """
+    local = set(aliases) | set(bound)
+    found = _scan(body, local, guarded)
+    aliases |= local - (set(bound) - aliases)
+    return found
+
+
+def _join(aliases, arms, exhaustive):
+    """Merge the alias sets an `{% if %}` chain's arms walked out with.
+
+    A name holds the catalog here if it does on any arm, since the walk cannot tell
+    which one runs. Falling past every arm is itself a path, so the incoming set
+    counts too unless an `{% else %}` makes the chain exhaustive - which is what lets
+    a rebinding on every arm still be a rebinding.
+    """
+    merged = set() if exhaustive else set(aliases)
+    for arm in arms:
+        merged |= arm
+    aliases.clear()
+    aliases.update(merged)
 
 
 def _scan(body, aliases, guarded):
@@ -151,44 +190,59 @@ def _scan(body, aliases, guarded):
                     return True
         elif isinstance(node, nodes.ExprStmt):
             # `{% do catalog.append(tools) %}`
-            gained = _receiver_gaining_catalog(node.node, aliases)
-            if gained is not None:
-                aliases.add(gained)
+            aliases |= _receiver_gaining_catalog(node.node, aliases)
             continue
         elif isinstance(node, nodes.Assign):
             # `{% set _ = catalog.append(tools) %}` is the same mutation without the
             # do extension.
-            gained = _receiver_gaining_catalog(node.node, aliases)
-            if gained is not None:
-                aliases.add(gained)
-            if isinstance(node.target, nodes.Name):
-                # Gen and kill. `{% set tools = item['tools'] %}` rebinds the name to
-                # something that is not the caller's catalog, so it stops being one -
-                # which is exactly what THUDM/glm-4-9b-chat and granite-guardian do.
-                if _reads_catalog(node.node, aliases):
-                    aliases.add(node.target.name)
-                else:
-                    aliases.discard(node.target.name)
+            aliases |= _receiver_gaining_catalog(node.node, aliases)
+            if _reads_catalog(node.node, aliases):
+                # Gen. A plain name, a tuple target, and a namespace field alike:
+                # LiquidAI's LFM2 accumulates the catalog with
+                # `{% set ns.system_prompt = ns.system_prompt + tool %}` and renders
+                # `ns.system_prompt` outside the guard, so `ns` has to carry it.
+                aliases |= _bound_names(node.target)
+            elif isinstance(node.target, nodes.Name):
+                # Kill. `{% set tools = item['tools'] %}` rebinds the name to something
+                # that is not the caller's catalog, so it stops being one - which is
+                # exactly what THUDM/glm-4-9b-chat and granite-guardian do. Only a
+                # plain name is killed; writing one field of a container says nothing
+                # about the rest of it.
+                aliases.discard(node.target.name)
             continue
 
         if isinstance(node, nodes.If):
+            arms = []
             for branch in [node, *node.elif_]:
                 inner = (
                     guarded
                     or _reads_catalog(branch.test, aliases)
                     or _checks_tool_role(branch.test)
                 )
-                if _scan(branch.body, aliases, inner):
+                arm = set(aliases)
+                if _scan(branch.body, arm, inner):
                     return True
-            if _scan(node.else_, aliases, guarded):
-                return True
+                arms.append(arm)
+            if node.else_:
+                arm = set(aliases)
+                if _scan(node.else_, arm, guarded):
+                    return True
+                arms.append(arm)
+            _join(aliases, arms, exhaustive = bool(node.else_))
         elif isinstance(node, nodes.For):
-            inner = guarded or _reads_catalog(node.iter, aliases)
-            if _scan(node.body, aliases, inner) or _scan(node.else_, aliases, guarded):
+            over_catalog = _reads_catalog(node.iter, aliases)
+            # `{% for tool in tools %}` hands each item to the loop variable, so a
+            # name bound to one carries the catalog - inside the loop only, since
+            # Jinja leaves it undefined after `{% endfor %}`.
+            bound = _bound_names(node.target) if over_catalog else frozenset()
+            if _scan_maybe(node.body, aliases, guarded or over_catalog, bound):
+                return True
+            if _scan_maybe(node.else_, aliases, guarded):
                 return True
         elif hasattr(node, "body"):
             # Macros, blocks, filters, with, autoescape: the body can still render.
-            if _scan(node.body, aliases, guarded):
+            # May-run, since a macro body does not run where it is written.
+            if _scan_maybe(node.body, aliases, guarded):
                 return True
     return False
 
@@ -197,10 +251,12 @@ def template_supports_tools(template) -> bool:
     """Inspect syntax only; rendering and parser support remain backend checks."""
     # Outside the cache: lru_cache hashes its argument before the body runs, so a
     # dict- or list-valued chat template would raise "unhashable type" past every
-    # fail-closed branch below.
+    # fail-closed branch below. A str subclass is narrowed to str for the same
+    # reason - its __hash__, __eq__ and __contains__ are the caller's code and they
+    # run before the try as well, and lru_cache misses on a subclass regardless.
     if not isinstance(template, str):
         return False
-    return _analyse_template(template)
+    return _analyse_template(str(template))
 
 
 @lru_cache(maxsize = 128)

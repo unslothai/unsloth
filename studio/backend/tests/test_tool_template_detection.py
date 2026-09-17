@@ -50,12 +50,29 @@ def _renders_catalog(template, **context):
         # Aliases the catalog and renders the alias. The old substring scan matched
         # none of its spellings and reported it tool-less, which is the bug.
         ("granite-3.3", True),
+        # Accumulates the catalog into a namespace field inside the guard and renders
+        # that field outside it, so nothing is emitted where the walk can see the
+        # guard. The marker scan matched its `{%- if tools -%}` and this has to agree.
+        ("lfm2-tool", True),
         # Names a `tools` variable but never renders anything derived from it.
         ("phi-4-mini", False),
     ],
 )
 def test_published_templates(name, detected):
     assert template_supports_tools(_published(name)) is detected
+
+
+def test_lfm2_really_does_render_its_catalog():
+    """Pins the ground truth rather than the detector. LiquidAI/LFM2-1.2B-Tool is a
+    tool-calling model, and reporting it tool-less is the bug this file is about."""
+    environment = Environment(extensions = ["jinja2.ext.loopcontrols", "jinja2.ext.do"])
+    rendered = environment.from_string(_published("lfm2-tool")).render(
+        tools = list(TOOLS),
+        messages = [{"role": "user", "content": "what is the weather"}],
+        bos_token = "<s>",
+        add_generation_prompt = True,
+    )
+    assert "get_weather" in rendered
 
 
 def test_granite_really_does_render_its_catalog():
@@ -108,12 +125,45 @@ def test_guard_spellings(template, detected):
         ("{% if tools %}{% set c = tools %}{% endif %}{{ c|tojson }}", True),
         ("{% set catalog = tools %}{{ catalog|length }}", False),
         # A name rebound to something that is not the caller's catalog stops being
-        # one. THUDM/glm-4-9b-chat reads `tools` off a message, and
-        # ibm-granite/granite-guardian-3.1-8b sets it to none; neither consumes the
-        # catalog Studio would pass in.
+        # one. THUDM/glm-4-9b-chat reads `tools` off a message, inside the same
+        # branch that then renders it, so it does not consume what Studio passes in.
         ("{% set tools = item['tools'] %}{{ tools|tojson }}", False),
         ("{% set tools = none %}{{ tools }}", False),
         ("{% set catalog = tools %}{% set catalog = [] %}{{ catalog|tojson }}", False),
+        # A loop over the catalog hands each item to the loop variable, and a
+        # namespace field written from one holds the catalog. LiquidAI's LFM2 builds
+        # its whole tool block this way, outside any guard the walk can see.
+        ("{% set ns = namespace(p='') %}{% for t in tools %}"
+         "{% set ns.p = ns.p + (t|tojson) %}{% endfor %}{{ ns.p }}", True),
+        ("{% set ns = namespace(c=none) %}{% set ns.c = tools %}{{ ns.c|tojson }}", True),
+        ("{% set ns = namespace(c=none) %}{% set ns.c = messages %}{{ ns.c|tojson }}", False),
+        ("{% set a, b = tools, none %}{{ a|tojson }}", True),
+        # A rebinding inside a branch that may not run must not follow the walk out:
+        # with the branch skipped the caller's catalog is still there and still
+        # renders. The unconditional cases above stay False, which is what keeps
+        # glm-4-9b-chat and granite-guardian's own rebindings meaningful.
+        ("{% if legacy %}{% set tools = none %}{% endif %}{{ tools|tojson }}", True),
+        ("{% if legacy %}{% set tools = none %}{% else %}{{ tools|tojson }}{% endif %}", True),
+        ("{% if a %}{% if b %}{% set tools = none %}{% endif %}{% endif %}{{ tools|tojson }}", True),
+        ("{% if a %}x{% elif b %}{% set tools = none %}{% endif %}{{ tools|tojson }}", True),
+        ("{% for m in messages %}{% set tools = m.tools %}{% endfor %}{{ tools|tojson }}", True),
+        ("{% macro unused() %}{% set tools = none %}{% endmacro %}{{ tools|tojson }}", True),
+        # A rebinding on EVERY arm is still a rebinding: there is no path left where
+        # the catalog survives, so an exhaustive chain has to kill it. Without this
+        # the branch rule above would turn every `{% if %}/{% else %}` into a yes.
+        ("{% if x %}{% set tools = none %}{% else %}{% set tools = none %}{% endif %}"
+         "{{ tools|tojson }}", False),
+        ("{% set c = tools %}{% if x %}{% set c = [] %}{% else %}{% set c = [] %}"
+         "{% endif %}{{ c|tojson }}", False),
+        ("{% if x %}{% set tools = none %}{% elif y %}{% set tools = none %}"
+         "{% else %}{% set tools = none %}{% endif %}{{ tools|tojson }}", False),
+        # One arm leaving it alone is a path where it survives.
+        ("{% if x %}{% set tools = none %}{% else %}prose{% endif %}{{ tools|tojson }}", True),
+        # The loop variable is undefined after `{% endfor %}`, so it must not carry
+        # the catalog out with it.
+        ("{% for t in tools %}{% endfor %}{{ t|tojson }}", False),
+        ("{% for t in tools %}{% endfor %}"
+         "{% for t in messages %}{{ t.content }}{% endfor %}", False),
         # Handing the catalog to a container puts it in that container.
         ("{% set c = [] %}{% do c.append(tools) %}{{ c|tojson }}", True),
         ("{% set c = [] %}{% set _ = c.append(tools) %}{{ c|tojson }}", True),
@@ -133,11 +183,17 @@ def test_names_carrying_the_catalog(template, detected):
         "{% if tools %}{{ tools|tojson }}{% endif %}",
         "{% for t in tools %}{{ t|tojson }}{% endfor %}",
         "{% set c = [] %}{% do c.append(tools) %}{{ c|tojson }}",
+        "{% set ns = namespace(p='') %}{% for t in tools %}"
+        "{% set ns.p = ns.p + (t|tojson) %}{% endfor %}{{ ns.p }}",
+        "{% set ns = namespace(c=none) %}{% set ns.c = tools %}{{ ns.c|tojson }}",
+        "{% set a, b = tools, none %}{{ a|tojson }}",
+        "{% if legacy %}{% set tools = none %}{% endif %}{{ tools|tojson }}",
+        "{% macro unused() %}{% set tools = none %}{% endmacro %}{{ tools|tojson }}",
     ],
 )
 def test_positives_match_a_real_render(template):
     """Every case claimed positive here really does emit a tool name."""
-    assert _renders_catalog(template, item = {}, message = {}, messages = [])
+    assert _renders_catalog(template, item = {}, message = {}, messages = [], legacy = False)
     assert template_supports_tools(template) is True
 
 
@@ -200,6 +256,24 @@ def test_non_string_templates_are_turned_away(template):
     """Hugging Face ships named-template maps and Hermes-style lists. These reach the
     detector unhashable, so the type check has to sit outside the cache."""
     assert template_supports_tools(template) is False
+
+
+def test_a_string_subclass_cannot_escape_the_fail_closed_branch():
+    """`isinstance` lets a subclass through, and then its own `__hash__` and
+    `__contains__` run before the try: the cache hashes the argument and the early-out
+    does `"tool" not in template`. Narrowing to str is what keeps those from reaching
+    a caller that has no except around the model load."""
+
+    class NoHash(str):
+        __hash__ = None
+
+    class BadContains(str):
+        def __contains__(self, item):
+            raise ValueError("injected")
+
+    template = "{% if tools %}{{ tools|tojson }}{% endif %}"
+    assert template_supports_tools(NoHash(template)) is True
+    assert template_supports_tools(BadContains(template)) is True
 
 
 @pytest.mark.parametrize(
