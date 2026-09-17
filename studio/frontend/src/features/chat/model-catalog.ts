@@ -197,7 +197,14 @@ function snapshotNamespace(
   if (!mergedNamespaces) mergedNamespaces = new Map();
   const cached = mergedNamespaces.get(providerType);
   if (cached) return cached;
-  const merged = { ...bundled, ...served };
+  const merged: Record<string, ModelCatalogSnapshotEntry> = { ...bundled };
+  for (const [id, entry] of Object.entries(served)) {
+    // A served entry replaces the bundled one, except that it cannot take away a context window
+    // it has no field for: a backend older than that field, or its cached payload inside the
+    // day-long TTL, would otherwise report every model it covers as not publishing one.
+    const context = entry.context ?? bundled[id]?.context;
+    merged[id] = context == null ? entry : { ...entry, context };
+  }
   mergedNamespaces.set(providerType, merged);
   return merged;
 }

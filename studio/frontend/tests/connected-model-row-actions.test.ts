@@ -8,7 +8,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { readSrc } from "./helpers/kit.ts";
+import { readSrc, readText } from "./helpers/kit.ts";
 
 const pickers = readSrc(
   "features/model-picker/components/model-selector/pickers.tsx",
@@ -185,7 +185,18 @@ test("the connection's own settings hang off the group heading", () => {
   // Beside the fold chevron, in the heading's own right-hand cluster.
   assert.match(
     pickers,
-    /<div className="flex shrink-0 items-center gap-0\.5">\s*\{onConfigure \?/,
+    /<div className="-mr-2 flex shrink-0 items-center -space-x-0\.5">\s*\{onConfigure \?/,
+  );
+  // Hover-only, as a row's gear is, while the chevron beside it stays on screen.
+  assert.match(
+    pickers,
+    /HEADING_ACTION_CLASS,\s*"opacity-0 group-hover\/heading:opacity-100/,
+  );
+  assert.match(pickers, /className=\{HEADING_ACTION_CLASS\}\s*>\s*\{collapsed \?/);
+  // The same box and glyph the row gutter's buttons use, so the columns line up.
+  assert.match(
+    pickers,
+    /const HEADING_ACTION_CLASS =\s*"flex size-5 shrink-0 items-center justify-center rounded-md/,
   );
   assert.match(
     pickers,
@@ -352,4 +363,21 @@ test("the published context window reaches the row and the info box", () => {
   );
   assert.match(infoDialog, /<Field label="Context window">/);
   assert.match(infoDialog, /tokens\(entry\.contextLength\)/);
+});
+
+test("a served catalogue cannot take away a context window it has no field for", () => {
+  const catalog = readSrc("features/chat/model-catalog.ts");
+  // The served payload replaces the bundled entry per model, so before the backend carried the
+  // field every model models.dev covers read as publishing no window at all.
+  assert.match(catalog, /const context = entry\.context \?\? bundled\[id\]\?\.context;/);
+  assert.match(
+    catalog,
+    /merged\[id\] = context == null \? entry : \{ \.\.\.entry, context \};/,
+  );
+  // And the backend now sends it, so a fresh payload needs no rescue.
+  const trimmer = readText(
+    "../../backend/core/inference/provider_model_capabilities.py",
+  );
+  assert.match(trimmer, /context = limit\.get\("context"\) if isinstance\(limit, dict\) else None/);
+  assert.match(trimmer, /entry\["context"\] = context/);
 });

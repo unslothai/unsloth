@@ -948,6 +948,11 @@ const ROW_ACTIONS_CLASS =
 // affordance, and hiding it reads as the stalled download having no controls.
 const ROW_ACTIONS_PINNED_CLASS = cn(ROW_ACTIONS_CLASS, "opacity-100");
 
+// Same box and glyph size as ModelLoadSettingsAction, so a heading's buttons sit in the same
+// column and hover the same size as the ones on the rows under it.
+const HEADING_ACTION_CLASS =
+  "flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/60 transition hover:bg-black/5 hover:text-foreground dark:hover:bg-white/10";
+
 /** A Connected group label. Wider than the On Device section labels, since nothing divides these
  *  groups but the gap, and foldable the same way. */
 function ConnectedGroupHeading({
@@ -967,12 +972,15 @@ function ConnectedGroupHeading({
   configureLabel?: string;
 }) {
   return (
-    <div className="flex items-center justify-between gap-1 px-2.5 pb-1 pt-5">
+    <div className="group/heading flex items-center justify-between gap-1 px-2.5 pb-1 pt-5">
       <span className="flex min-w-0 items-center gap-2 text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground">
         {icon}
         <span className="min-w-0 truncate">{label}</span>
       </span>
-      <div className="flex shrink-0 items-center gap-0.5">
+      {/* -mr-2 takes the heading's own px-2.5 down to the rows' mr-0.5, and the buttons carry the
+          row gutter's box and overlap, so the chevron lands in the column each row's dots menu
+          does rather than 8px inside it. */}
+      <div className="-mr-2 flex shrink-0 items-center -space-x-0.5">
         {onConfigure ? (
           <Tooltip delayDuration={0}>
             <TooltipTrigger asChild={true}>
@@ -980,7 +988,12 @@ function ConnectedGroupHeading({
                 type="button"
                 onClick={onConfigure}
                 aria-label={configureLabel ?? "Connection settings"}
-                className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-foreground"
+                // Hidden until the heading is hovered, like a row's own gear. The chevron beside
+                // it stays: folding is what the heading is for.
+                className={cn(
+                  HEADING_ACTION_CLASS,
+                  "opacity-0 group-hover/heading:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100",
+                )}
               >
                 <HugeiconsIcon
                   icon={Settings02Icon}
@@ -998,7 +1011,7 @@ function ConnectedGroupHeading({
           type="button"
           onClick={onToggle}
           aria-label={collapsed ? "Expand section" : "Collapse section"}
-          className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-foreground"
+          className={HEADING_ACTION_CLASS}
         >
           {collapsed ? (
             <ChevronRightIcon className="size-3" />
