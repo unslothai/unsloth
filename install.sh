@@ -3944,7 +3944,22 @@ _amd_node_repairs() {
             # POSIX resolves the owner class EXCLUSIVELY once the uid matches, so on a
             # node this account owns the group bits are never consulted and no membership
             # opens it however they read. The repair there is the mode.
-            if (self != -1 && $5 + 0 == self + 0) { print "owner:" $4; next }
+            if (self != -1 && $5 + 0 == self + 0) {
+                # Unless the OWNER digit already grants read and write. The node is known
+                # shut, so the mode is then not what denies it and chmod repairs nothing:
+                # it is the same external denial the already-a-member branch reports,
+                # reached by owner class instead. Mirrors the external bucket in amd.py.
+                # Padded before indexing: stat %a drops leading zeros, so mode 060 prints
+                # "60" and an owner index of 0 is not an error -- gawk and mawk return the
+                # GROUP digit there and busybox returns "", so the classification would
+                # differ by which awk the host ships. The group read below counts from the
+                # right, where the digit is always second-from-last, so it is unaffected.
+                perm = $1
+                while (length(perm) < 3) { perm = "0" perm }
+                u = substr(perm, length(perm) - 2, 1) + 0
+                if (u == 6 || u == 7) { print "external:" $4; next }
+                print "owner:" $4; next
+            }
             # Group digit of the octal mode; read AND write, since HIP and the Vulkan
             # loader both open the node read-write.
             g = substr($1, length($1) - 1, 1) + 0
@@ -6136,6 +6151,8 @@ if [ "$_amd_node_diag_route" = true ] && _run_may_open_a_gpu_node && \
         | tr '\n' ',' | sed 's/,*$//')
     _closed_amd_already=$(printf '%s\n' "$_closed_amd_repairs" | sed -n 's/^already://p' \
         | tr '\n' ',' | sed 's/,*$//')
+    _closed_amd_external=$(printf '%s\n' "$_closed_amd_repairs" | sed -n 's/^external://p' \
+        | tr '\n' ',' | sed 's/,*$//')
     # Who the mode tests above answered for. $USER is inherited, so a container that changes
     # its numeric user without resetting it names somebody else, and the usermod below would
     # then modify an account that is not the one holding the device shut.
@@ -6155,7 +6172,7 @@ if [ "$_amd_node_diag_route" = true ] && _run_may_open_a_gpu_node && \
     if [ -z "$_closed_amd_groups" ] && [ -z "$_closed_amd_gids" ] && \
        [ -z "$_closed_amd_modes" ] && [ -z "$_closed_amd_acls" ] && \
        [ -z "$_closed_amd_owned" ] && [ -z "$_closed_amd_priv" ] && \
-       [ -z "$_closed_amd_already" ]; then
+       [ -z "$_closed_amd_already" ] && [ -z "$_closed_amd_external" ]; then
         _closed_amd_groups="render,video"
     fi
     if [ -n "$_closed_amd_groups" ] && [ -z "$_amd_repair_user" ]; then
@@ -6233,6 +6250,12 @@ if [ "$_amd_node_diag_route" = true ] && _run_may_open_a_gpu_node && \
         substep "  $_closed_amd_owned is owned by this account, and POSIX stops at the" "$C_WARN"
         substep "  owner bits once the uid matches, so no group membership opens it"
         substep "  however its group bits read: fix the mode, or the udev rule behind it."
+    fi
+    if [ -n "$_closed_amd_external" ]; then
+        substep "  $_closed_amd_external is owned by this account and its owner bits" "$C_WARN"
+        substep "  already grant read and write, so the mode is not what is shutting it:"
+        substep "  something outside the file mode is denying it, typically a container"
+        substep "  device cgroup or an LSM such as SELinux or AppArmor."
     fi
     if [ -n "$_closed_amd_priv" ]; then
         substep "  Those nodes belong to the $_closed_amd_priv group, which grants a" "$C_WARN"

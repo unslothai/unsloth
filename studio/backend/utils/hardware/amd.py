@@ -1392,10 +1392,15 @@ def _groups_that_own(paths: list) -> tuple:
                    to report rather than a membership to prescribe.
     ``already``    already in the group and still shut, so a container device cgroup or an
                    LSM denies it and usermod would exit 0 and change nothing.
+    ``external``   this account owns it AND the owner bits already grant read and write,
+                   so the mode is not what is shutting it either: same external denial as
+                   ``already``, reached by owner class rather than by membership.
 
     Best effort: a node that cannot be stat'd joins no bucket rather than raising.
     """
-    joinable, unnamed, no_group, acl, owned, privileged, already = ([], [], [], [], [], [], [])
+    joinable, unnamed, no_group, acl, owned, privileged, already, external = (
+        [], [], [], [], [], [], [], []
+    )
     try:
         # The account's own gids, read once. getgroups() is the supplementary list and does
         # not always include the primary one, so both are needed.
@@ -1419,7 +1424,14 @@ def _groups_that_own(paths: list) -> tuple:
         # this account owns the group bits are never consulted and joining the group
         # cannot open it. os.access() already said it is shut; the repair is the mode.
         if _st.st_uid == os.getuid():
-            owned.append(path)
+            # Unless the owner bits ALREADY grant it. os.access said the node is shut, so
+            # when rw is there for the owner the mode is not what is denying it and chmod
+            # repairs nothing: it is the same external denial the membership case below
+            # reports, reached by owner class instead.
+            if _st.st_mode & stat.S_IRUSR and _st.st_mode & stat.S_IWUSR:
+                external.append(path)
+            else:
+                owned.append(path)
             continue
         # Group read AND write: HIP and the Vulkan loader both open the node read-write,
         # which is the same bar amd_nodes_closed_to_this_user() applied to this account.
@@ -1465,7 +1477,7 @@ def _groups_that_own(paths: list) -> tuple:
             continue
         if name not in joinable:
             joinable.append(name)
-    return joinable, unnamed, no_group, acl, owned, privileged, already
+    return joinable, unnamed, no_group, acl, owned, privileged, already, external
 
 
 _RENDER_NODE_GLOB = "/dev/dri/renderD*"
@@ -1686,7 +1698,9 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
         # and _explain_empty_gpu_probe reaches exactly that host, appending this sentence
         # after saying the closed node is not why the probe is empty.
         user = _repair_account()
-        joinable, unnamed, no_group, acl, owned, privileged, already = _groups_that_own(closed)
+        joinable, unnamed, no_group, acl, owned, privileged, already, external = (
+            _groups_that_own(closed)
+        )
         if not any(_p != _KFD_NODE for _p in closed):
             _claim = "so ROCm cannot use the AMD card even though the driver is loaded"
         elif an_amd_render_node_is_open():
@@ -1701,7 +1715,9 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
         # be stat'd at all still gets the documented pair, since some advice beats none; a
         # host whose nodes were read and offer no joinable group gets the sentences below
         # instead of a command that would fail.
-        if joinable or not (unnamed or no_group or acl or owned or privileged or already):
+        if joinable or not (
+            unnamed or no_group or acl or owned or privileged or already or external
+        ):
             groups = joinable or ["render", "video"]
             joined = ",".join(groups)
             plural = "group" if len(groups) == 1 else "groups"
@@ -1784,6 +1800,13 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
                 f"usermod would change nothing: something outside the file mode is denying "
                 f"them, typically a container device cgroup or an LSM such as SELinux or "
                 f"AppArmor."
+            )
+        if external:
+            parts.append(
+                f"{', '.join(external)} is owned by this account and its owner bits already "
+                f"grant read and write, so the mode is not what is shutting it: something "
+                f"outside the file mode is denying it, typically a container device cgroup "
+                f"or an LSM such as SELinux or AppArmor."
             )
         if privileged:
             parts.append(
