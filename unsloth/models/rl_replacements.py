@@ -971,13 +971,56 @@ def _unsloth_grpo_split_vision_by_sample(batch):
             return None
 
     pixel_values = batch.get("pixel_values", None)
-    if pixel_values is None or isinstance(pixel_values, list):
-        # Absent, or TRL split it already.
+    if pixel_values is None:
         return batch
-    if batch.get("image_grid_thw", None) is not None:
-        # The grid layout is TRL's own, in every version that persists it.
-        return batch
+    image_grid_thw = batch.get("image_grid_thw", None)
     num_images = _counts(batch.get("num_images", None))
+
+    if isinstance(pixel_values, list):
+        # TRL split it. From 1.1.0 split_pixel_values_by_grid splits by SAMPLE, off num_images;
+        # 0.22.x-0.23.x splits by GRID ROW -- "lengths = batch["image_grid_thw"].prod(dim=1)",
+        # one element per image -- and leaves image_grid_thw itself flat. The shuffle right
+        # after takes its length from the first entry of the batch and indexes everything by
+        # sample, so on a row holding two images that list is both permuted wrongly and
+        # truncated to the sample count. Regroup it, and split the grid the way 1.1.0 does.
+        # all-ones, not len(pixel_values) == len(num_images): over two samples num_images = [0, 2]
+        # makes those two numbers agree while the axes still differ, and the early return would
+        # hand both of the second sample's images to the first.
+        _prompt_ids = batch.get("prompt_ids", None)
+        if (
+            image_grid_thw is None
+            or isinstance(image_grid_thw, list)
+            or not num_images
+            or not pixel_values
+            or len(pixel_values) != sum(num_images)
+            or all(_count == 1 for _count in num_images)
+            or (_prompt_ids is not None and len(num_images) != _prompt_ids.shape[0])
+        ):
+            return batch
+        split = dict(batch)
+        _empty = pixel_values[0][:0]
+        _grouped = []
+        _offset = 0
+        for _count in num_images:
+            _group = pixel_values[_offset : _offset + _count]
+            _offset += _count
+            _grouped.append(torch.cat(_group, dim = 0) if _group else _empty)
+        split["pixel_values"] = _grouped
+        split["image_grid_thw"] = list(torch.split(image_grid_thw, num_images, dim = 0))
+        for _image_key in ("pixel_attention_mask", "image_sizes"):
+            _per_image = batch.get(_image_key, None)
+            if (
+                _per_image is not None
+                and not isinstance(_per_image, list)
+                and _per_image.shape[0] == sum(num_images)
+                and _per_image.shape[0] != len(num_images)
+            ):
+                split[_image_key] = list(torch.split(_per_image, num_images, dim = 0))
+        return split
+
+    if image_grid_thw is not None:
+        # An unsplit grid batch: TRL owns this layout in every version that persists it.
+        return batch
     if not num_images:
         return batch
     rows = pixel_values.shape[0]
@@ -1019,11 +1062,12 @@ def _unsloth_grpo_split_vision_by_sample(batch):
 
 def _unsloth_grpo_unsplit_vision(batch):
     """Undo _unsloth_grpo_split_vision_by_sample once this step's slice has been taken, so
-    the forward sees the layout the processor produced. TRL's own unsplit only merges
-    pixel_values and image_grid_thw before 1.1.0."""
+    the forward sees the layout the processor produced. TRL's own unsplit merges only
+    pixel_values before 1.1.0, and pixel_values plus the grid and position ids from 1.1.0."""
     merged = None
     for key in (
         "pixel_values",
+        "image_grid_thw",
         "pixel_attention_mask",
         "spatial_shapes",
         "image_sizes",
@@ -1221,9 +1265,74 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
                 left_pad_tokens_per_prompt = calculate_pad_tokens_in_prompt(prompt_completion_ids, logits_to_keep, self.processing_class.pad_token_id)
                 max_left_pad = torch.max(left_pad_tokens_per_prompt).item()
         _use_gc = self.model._unsloth_gradient_checkpointing if hasattr(self.model, '_unsloth_gradient_checkpointing') else getattr(self.args, 'gradient_checkpointing', True)
-        self.model.for_training(use_gradient_checkpointing=_use_gc)"""
+        self.model.for_training(use_gradient_checkpointing=_use_gc)
+        # TRL 0.22.x-0.23.x has neither `forward_kwargs` nor `num_images`: it hardcoded one image
+        # per example, counted nothing, and saved only four processor keys. The singular `image`
+        # column normalisation below lets a cell hold several, and every consumer of a multi image
+        # batch -- the shared chunker, and the per sample split in _prepare_inputs -- reads those
+        # counts, so without them a two image row is sliced as if it were two rows and the images
+        # are handed to the wrong samples. Built HERE rather than in the output block, because the
+        # no-grad old/reference logprob calls a few lines below take it too and the output block
+        # only runs once they have already returned. Counted off the same normalised cells the
+        # processor was given, so the two can never disagree; a row with no image counts zero.
+        _unsloth_legacy_vision = {}
+        try:
+            _unsloth_legacy_vision = _unsloth_grpo_vision_inputs(prompt_inputs)
+            if has_images and images is not None:
+                _unsloth_legacy_vision["num_images"] = [
+                    len(_unsloth_cell) if _unsloth_cell else 0
+                    for _unsloth_cell in (
+                        _unsloth_grpo_image_cell(_unsloth_image) for _unsloth_image in images
+                    )
+                ]
+            _unsloth_legacy_vision = {
+                _unsloth_key: _unsloth_value
+                for _unsloth_key, _unsloth_value in _unsloth_legacy_vision.items()
+                if _unsloth_value is not None
+            }
+            # TRL 0.24.0 extends these with zeros over the completion before the very same call
+            # (grpo_trainer.py, "If token_type_ids are used, extend them with zeros"); 0.22.x-0.23.x
+            # never forwarded them at all, so the processor's prompt length tensor would not fit a
+            # prompt+completion forward. Anything that still does not fit is dropped rather than
+            # sent: a truncated prompt leaves the processor's copy the wrong width.
+            for _unsloth_key in ("token_type_ids", "mm_token_type_ids"):
+                _unsloth_ids = _unsloth_legacy_vision.get(_unsloth_key, None)
+                if _unsloth_ids is None:
+                    continue
+                if getattr(_unsloth_ids, "ndim", 0) != 2 or _unsloth_ids.shape[0] != prompt_completion_ids.shape[0]:
+                    _unsloth_legacy_vision.pop(_unsloth_key, None)
+                elif _unsloth_ids.shape[1] == prompt_ids.shape[1]:
+                    _unsloth_legacy_vision[_unsloth_key] = torch.cat(
+                        [_unsloth_ids, _unsloth_ids.new_zeros(completion_ids.shape)], dim = 1
+                    )
+                elif _unsloth_ids.shape[1] != prompt_completion_ids.shape[1]:
+                    _unsloth_legacy_vision.pop(_unsloth_key, None)
+        except NameError:
+            # TRL 0.24.0 and up: no prompt_inputs/has_images here, and forward_kwargs carries these.
+            _unsloth_legacy_vision = {}"""
 
     function = function.replace(line_to_replace, replacement_lines)
+
+    # TRL 0.22.x-0.23.x calls the no-grad old/reference logprob pass with four hand named
+    # processor tensors and no counts, so the shared chunker cannot tell one sample's images
+    # from the next and slices an image indexed grid by sample index.
+    _legacy_vision_call = re.compile(
+        r"(^[ \t]+)pixel_values=prompt_inputs\.get\(\"pixel_values\"\),\n"
+        r"[ \t]+image_grid_thw=prompt_inputs\.get\(\"image_grid_thw\"\),\n"
+        r"[ \t]+pixel_attention_mask=prompt_inputs\.get\(\"pixel_attention_mask\"\),\n"
+        r"[ \t]+image_sizes=prompt_inputs\.get\(\"image_sizes\"\),\n",
+        re.MULTILINE,
+    )
+    function, _legacy_vision_calls = _legacy_vision_call.subn(
+        r"\1**_unsloth_legacy_vision,\n",
+        function,
+    )
+    if _legacy_vision_calls == 0 and 'prompt_inputs.get("pixel_values")' in function:
+        _warn_once(
+            "grpo_legacy_vision_calls",
+            "Unsloth: the GRPO reference logprob call sites changed shape, so a multi "
+            "image batch is being sliced there without its image counts.",
+        )
 
     pattern_to_find = re.compile(
         r"^\s*if self\.args\.gradient_accumulation_steps % generate_every != 0 or \(\s*"
@@ -1304,24 +1413,16 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
     string_to_find = """        if "image_sizes" in prompt_inputs:
             output["image_sizes"] = prompt_inputs["image_sizes"]"""
 
-    # TRL 0.22.x-0.23.x has no `num_images` at all: it hardcoded one image per example, so
-    # nothing counted them and nothing saved them. The singular `image` column normalisation
-    # above lets a cell hold several, and every consumer of a multi image batch -- the chunker
-    # that slices the vision tensors per sample and the per sample split in _prepare_inputs --
-    # reads those counts, so without them a two image row is sliced as if it were two rows and
-    # the images are handed to the wrong samples. Counted off the same normalised cells the
-    # processor was given, so the two can never disagree; a row with no image counts zero,
-    # which is what it contributed.
+    # 0.22.x-0.23.x saves the four keys above and nothing else, so a processor that emits
+    # spatial_shapes, num_tiles or the Gemma position ids loses them between generation and the
+    # gradient forward, and there is no `if images is not None` anchor here to hang the generic
+    # copy on. Same mapping the no-grad calls above were given, so both policies see one batch.
     replacement_string = """        if "image_sizes" in prompt_inputs:
             output["image_sizes"] = prompt_inputs["image_sizes"]
         try:
-            if has_images and images is not None:
-                output["num_images"] = [
-                    len(_unsloth_cell) if _unsloth_cell else 0
-                    for _unsloth_cell in (
-                        _unsloth_grpo_image_cell(_unsloth_image) for _unsloth_image in images
-                    )
-                ]
+            for _vision_key, _vision_value in _unsloth_legacy_vision.items():
+                if _vision_value is not None and _vision_key not in output:
+                    output[_vision_key] = _vision_value
         except NameError:
             pass
         if max_left_pad is not None:
@@ -1689,7 +1790,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 raise RuntimeError(
                     "Unsloth: vision GRPO needs an unsloth_zoo build that exports "
                     "grpo_vision_chunks, the shared multimodal key tuple and chunker "
-                    "used by both GRPO logprob paths. Please upgrade unsloth_zoo."
+                    "used by both GRPO logprob paths. Please upgrade unsloth_zoo to "
+                    "2026.9.5 or newer: pip install -U unsloth_zoo"
                 )
             pixel_values = vision_inputs.get("pixel_values", None)
             image_grid_thw = vision_inputs.get("image_grid_thw", None)
@@ -2728,7 +2830,8 @@ def grpo_trainer_compute_loss(function_name, function):
                     raise RuntimeError(
                         "Unsloth: vision GRPO needs an unsloth_zoo build that exports "
                         "grpo_vision_chunks, the shared multimodal key tuple and chunker "
-                        "used by both GRPO logprob paths. Please upgrade unsloth_zoo."
+                        "used by both GRPO logprob paths. Please upgrade unsloth_zoo to "
+                        "2026.9.5 or newer: pip install -U unsloth_zoo"
                     )
                 self._unsloth_grpo_vision_zoo_checked = True
 
