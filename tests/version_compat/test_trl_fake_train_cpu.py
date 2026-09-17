@@ -212,10 +212,20 @@ def _load_plain():
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     try:
+    # Neither dtype kwarg is safe across the declared transformers window: `dtype=` is
+    # rejected at the 4.52.4 floor (from_pretrained forwards it into the model __init__,
+    # which raises TypeError), and `torch_dtype=` spans the window but is deprecated from
+    # 4.57.6 on. Load with neither and cast after, which needs no probe and no branch. The
+    # model is tiny and CPU-only, so the intermediate costs nothing.
         tok = AutoTokenizer.from_pretrained(_MODEL)
-        model = AutoModelForCausalLM.from_pretrained(_MODEL, dtype = torch.float32)
+        model = AutoModelForCausalLM.from_pretrained(_MODEL).to(torch.float32)
     except OSError as e:  # hub unreachable / model missing
         pytest.skip(f"could not fetch {_MODEL} (network/hub): {str(e)[:150]}")
+    got = next(model.parameters()).dtype
+    assert got == torch.float32, (
+        f"the cast after load left the model in {got}, not float32. These tests compare "
+        f"losses, so a silent dtype change is a silent change of what they measure."
+    )
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
     # Unsloth's GRPO path calls model.for_training()/for_inference() (added by FastLanguageModel). A plain HF model
