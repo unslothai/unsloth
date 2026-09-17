@@ -646,6 +646,42 @@ def clear_compiled_cache_unless_shared(app: FastAPI) -> None:
     _clear_compiled_cache_unless_shared(getattr(app.state, "live_sibling_backend", None))
 
 
+def banner_autofill_available(app_state, environ) -> bool:
+    """Whether _inject_bootstrap will hand the login page the credential.
+
+    Read from the launch, not the environment: run_server sets UNSLOTH_API_ONLY and never
+    clears it, and an embedded host may call run_server() again in the same process with
+    different flags, so the variable outlives the launch that set it. The environment is
+    only the fallback for a direct uvicorn launch that never went through run_server.
+    """
+    if getattr(app_state, "suppress_bootstrap_injection", False):
+        return False
+    api_only = getattr(app_state, "api_only", None)
+    if api_only is None:
+        api_only = environ.get("UNSLOTH_API_ONLY") == "1"
+    return not api_only
+
+
+def bootstrap_banner_lines(
+    username: str, bootstrap_path, password: Optional[str], *, autofill_available: bool
+) -> "list[str]":
+    """The first-boot banner for a freshly created admin account.
+
+    Printing the password is the exception, not the rule: _inject_bootstrap fills the
+    login form in, so a launch that gets the injection must keep the credential out of
+    a log that ends up in a bug report.
+    """
+    lines = ["=" * 60, "DEFAULT ADMIN ACCOUNT CREATED", f"    username: {username}"]
+    if autofill_available or not password:
+        lines.append(f"    password saved to: {bootstrap_path}")
+    else:
+        lines.append(f"    password: {password}")
+        lines.append(f"    also saved to: {bootstrap_path}")
+    lines.append("    Open the Unsloth UI to sign in and change it.")
+    lines.append("=" * 60)
+    return lines
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup: detect hardware, seed default admin if needed. Shutdown: clean up compiled cache."""
@@ -789,20 +825,28 @@ async def lifespan(app: FastAPI):
     # run_server's pre-bind gate sets suppress_bootstrap_injection when a public URL is about
     # to serve with the default credential: never capture the bootstrap password into app.state.
     _suppress_bootstrap = getattr(app.state, "suppress_bootstrap_injection", False)
-    if storage.ensure_default_admin():
-        bootstrap_pw = None if _suppress_bootstrap else storage.get_bootstrap_password()
-        app.state.bootstrap_password = bootstrap_pw
-
+    _created = storage.ensure_default_admin()
+    app.state.bootstrap_password = None if _suppress_bootstrap else storage.get_bootstrap_password()
+    # A tunnel launch runs the pre-bind gate first and that gate seeds the account, so
+    # _created is False there and the whole banner would be skipped on exactly the launch
+    # that needs it. requires_password_change: the gate may also have taken a new password
+    # at its prompt, which retires the bootstrap one.
+    if (_created or storage.admin_created_this_process()) and storage.requires_password_change(
+        storage.DEFAULT_ADMIN_USERNAME
+    ):
         bootstrap_path = storage.DB_PATH.parent / ".bootstrap_password"
-        print("\n" + "=" * 60)
-        print("DEFAULT ADMIN ACCOUNT CREATED")
-        print(f"    username: {storage.DEFAULT_ADMIN_USERNAME}")
-        print(f"    password saved to: {bootstrap_path}")
-        print("    Open the Unsloth UI to sign in and change it.")
-        print("=" * 60 + "\n")
-    else:
-        app.state.bootstrap_password = (
-            None if _suppress_bootstrap else storage.get_bootstrap_password()
+        _autofill = banner_autofill_available(app.state, os.environ)
+        print(
+            "\n"
+            + "\n".join(
+                bootstrap_banner_lines(
+                    storage.DEFAULT_ADMIN_USERNAME,
+                    bootstrap_path,
+                    storage.get_bootstrap_password(),
+                    autofill_available = _autofill,
+                )
+            )
+            + "\n"
         )
 
     # Last, so it never contends for the GIL: the socket binds as soon as this returns, so the login

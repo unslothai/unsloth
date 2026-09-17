@@ -1442,7 +1442,8 @@ class LoadResponse(_InferenceRuntimeFields):
         None,
         description = "Non-blocking advisory about this load, or null. Set when the "
         "weights do not fit in free VRAM plus available system RAM, so llama.cpp pages "
-        "them in from disk and generation will be slow. The model still loaded.",
+        "them in from disk and generation will be slow, or when the requested GGUF quant "
+        "did not fit on disk and a smaller one was loaded. The model still loaded.",
     )
     carveout_advice: Optional[dict] = Field(
         None,
@@ -1570,6 +1571,11 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
         False, description = "Whether the active model came from a local filesystem path"
     )
     gguf_variant: Optional[str] = Field(None, description = "GGUF quantization variant (e.g. Q4_K_M)")
+    memory_warning: Optional[str] = Field(
+        None,
+        description = "Non-blocking advisory about the active load, or null: the "
+        "memory_warning its load response carried, kept while that model is running.",
+    )
     loading: List[str] = Field(default_factory = list, description = "Models currently being loaded")
     loaded: List[str] = Field(default_factory = list, description = "Models currently loaded")
     inference: Optional[Dict[str, Any]] = Field(
@@ -4245,6 +4251,9 @@ class DiffusionStatusResponse(BaseModel):
     dtype: Optional[str] = Field(None, description = "Compute dtype")
     model_kind: Optional[str] = Field(
         None, description = "Resolved load kind: gguf | single_file | pipeline (gates GGUF-only UI)"
+    )
+    gguf_filename: Optional[str] = Field(
+        None, description = "Loaded single-file checkpoint filename, or null for a pipeline"
     )
     gguf_variant: Optional[str] = Field(
         None, description = "Selected GGUF quantisation variant (for example Q8_0)"
