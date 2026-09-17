@@ -683,3 +683,52 @@ def test_a_failed_cleanup_that_did_unhook_still_clears_the_marker(monkeypatch):
 
     assert apply_step_cache(_pipe(t), mode = "fbcache") is None
     assert t._unsloth_step_cache is None
+
+
+class _ReconfigureCleanupPartlyFails:
+    """Already caching. The re-configure ``disable_cache`` takes the hooks off and THEN raises, so the
+    cache reads as off afterwards even though the call failed."""
+
+    def __init__(self, *, enabled_after_disable):
+        self.enabled = True
+        self.enabled_after_disable = enabled_after_disable
+        self.enabled_with = None
+
+    @property
+    def is_cache_enabled(self):
+        return self.enabled
+
+    def disable_cache(self):
+        self.enabled = self.enabled_after_disable
+        raise RuntimeError("hook registry went away mid-teardown")
+
+    def enable_cache(self, config):
+        self.enabled_with = config
+        self.enabled = True
+
+    def cache_context(self, *_a, **_k):
+        raise AssertionError("not used")
+
+
+def test_a_reconfigure_whose_cleanup_unhooked_anyway_re_engages(monkeypatch):
+    """disable_cache raised, but the cache reads as OFF, so it did the thing this call wanted. Keeping
+    the old marker there would pin the transformer to the eager path and block every later re-engage."""
+    _stub_diffusers(monkeypatch)
+    t = _ReconfigureCleanupPartlyFails(enabled_after_disable = False)
+    t._unsloth_step_cache = "fbcache@0.1"
+
+    assert apply_step_cache(_pipe(t), mode = "fbcache", threshold = 0.42) == TC_FBCACHE
+    assert t.enabled_with.threshold == 0.42
+    assert t._unsloth_step_cache == "fbcache@0.42"
+
+
+def test_a_reconfigure_that_could_not_unhook_keeps_reporting_the_prior_mode(monkeypatch):
+    """The other half: the cache is still enabled, so the hooks are live and the honest answer is the
+    mode that is STILL running, not None and not the mode that was asked for."""
+    _stub_diffusers(monkeypatch)
+    t = _ReconfigureCleanupPartlyFails(enabled_after_disable = True)
+    t._unsloth_step_cache = "fbcache@0.1"
+
+    assert apply_step_cache(_pipe(t), mode = "fbcache", threshold = 0.42) == TC_FBCACHE
+    assert t.enabled_with is None  # never re-engaged
+    assert t._unsloth_step_cache == "fbcache@0.1"  # marker still describes the live hooks

@@ -228,10 +228,21 @@ def apply_step_cache(
             _restore_hooked_block_inners(transformer)
             transformer.disable_cache()
         except Exception as exc:  # noqa: BLE001 - cannot re-configure -> keep what is already running
-            # Report what is STILL engaged, not None: the hooks are live either way, and a None here would
-            # claim uncached while the transformer caches, which is the same desync this guard prevents.
-            _warn(logger, mode, exc)
-            return prior.split("@")[0] if isinstance(prior, str) else None
+            # Which of the two statements above raised decides this, so ask the model rather than assume.
+            # _restore_hooked_block_inners raising means disable_cache never ran and the cache is still
+            # live; disable_cache raising can still have taken the hooks off before it did. So report
+            # what is STILL engaged: a None while the transformer caches is the very desync this guard
+            # exists to prevent, and a prior mode on a transformer that no longer caches is the same
+            # desync mirrored, pinning it to the eager path and blocking every later re-engage.
+            if getattr(transformer, "is_cache_enabled", False):
+                _warn(logger, mode, exc)
+                return prior.split("@")[0] if isinstance(prior, str) else None
+            # Unhooked after all: the reconfiguration this call wanted is exactly what happened, so drop
+            # the stale marker and fall through to engage at the new settings.
+            try:
+                transformer._unsloth_step_cache = None
+            except Exception:  # noqa: BLE001 - marker is best-effort
+                pass
     try:
         try:
             from diffusers import FirstBlockCacheConfig
