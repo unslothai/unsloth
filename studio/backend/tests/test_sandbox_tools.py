@@ -345,6 +345,31 @@ class TestNetworkTargetResolution:
                 f"import urllib3\nurllib3.HTTPSConnectionPool(host='{_H}')",
                 id = "urllib3_connection_pool_host_keyword",
             ),
+            # Unpacking carries the value to the matching target.
+            pytest.param(
+                f"import requests\nfetch, = (requests.get,)\nfetch('http://{_H}/')",
+                id = "single_element_unpack",
+            ),
+            pytest.param(
+                f"import requests\n[fetch] = [requests.get]\nfetch('http://{_H}/')",
+                id = "list_unpack",
+            ),
+            pytest.param(
+                f"import requests\nfetch, *rest = requests.get, 1\nfetch('http://{_H}/')",
+                id = "unpack_before_splat",
+            ),
+            pytest.param(
+                f"import requests\n*rest, fetch = 1, requests.get\nfetch('http://{_H}/')",
+                id = "unpack_after_splat",
+            ),
+            pytest.param(
+                f"import requests\n(a, b), c = (requests.get, print), 1\na('http://{_H}/')",
+                id = "nested_unpack",
+            ),
+            pytest.param(
+                f"import paramiko\nc, = (paramiko.SSHClient(),)\nc.connect(hostname='{_H}')",
+                id = "client_unpack",
+            ),
             # Competing aliases are checked under each signature, not just the first.
             pytest.param(
                 f"import requests\nf = requests.get\nf = requests.request\nf('GET', 'http://{_H}/')",
@@ -400,6 +425,7 @@ class TestNetworkTargetResolution:
             "from urllib3.util import parse_url\nparse_url('https://example.com/')",
             "import urllib3\nurllib3.util.parse_url('https://example.com/')",
             "import requests\nf = requests.get\nf = requests.request\nf('GET', 'https://pypi.org/simple/')",
+            "import requests\nfetch, = (requests.get,)\nfetch('https://pypi.org/simple/')",
             # Two functions with a same-named attribute receiver do not contaminate each other.
             "import paramiko\ndef a(obj):\n    obj.client = paramiko.SSHClient()\n"
             "def b(obj):\n    obj.client = get_db()\n    obj.client.connect(host='localhost')",

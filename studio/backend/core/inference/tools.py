@@ -16538,10 +16538,25 @@ def _check_signal_escape_patterns(code: str):
         # Resolve scopes after collecting bindings so nonlocal can find its owner.
         _raw_name_stores.append((scope, name, value, _position(at)))
 
+    def _first_splat(elts: list) -> int:
+        return next((i for i, e in enumerate(elts) if isinstance(e, ast.Starred)), len(elts))
+
     def _record_store(target: ast.AST, value, scope: ast.AST, handled: set) -> None:
         if isinstance(target, (ast.Tuple, ast.List)):
-            for elt in target.elts:
-                _record_store(elt, None, scope, handled)
+            sources = value.elts if isinstance(value, (ast.Tuple, ast.List)) else []
+            # Unpacking pairs from the left up to the first splat, and from the right after a
+            # splat on the target side. A splat in the sources makes every offset unknowable.
+            splat = _first_splat(target.elts)
+            head = min(splat, _first_splat(sources))
+            tail = splat < len(target.elts) and _first_splat(sources) == len(sources)
+            for index, elt in enumerate(target.elts):
+                if index < head:
+                    source = sources[index]
+                elif tail and index > splat:
+                    source = sources[len(sources) - len(target.elts) + index]
+                else:
+                    source = None
+                _record_store(elt, source, scope, handled)
         elif isinstance(target, ast.Starred):
             _record_store(target.value, None, scope, handled)
         elif isinstance(target, ast.Name):
