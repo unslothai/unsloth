@@ -1105,9 +1105,7 @@ mamba2_split_conv1d_scan_combined.calls = []
 def _make_refactored_mamba2_model(module, monkeypatch):
     import types
 
-    fake_kernels = (
-        ("mamba2 fused kernel", module.__dict__["mamba2_split_conv1d_scan_combined"]),
-    )
+    fake_kernels = (("mamba2 fused kernel", module.__dict__["mamba2_split_conv1d_scan_combined"]),)
     monkeypatch.setattr(
         packing_module,
         "_resolve_accelerated_mamba2_kernels",
