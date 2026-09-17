@@ -235,14 +235,21 @@ async def download_dataset_response(
     repo_id = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "dataset")
     key = _download_job_key(repo_id)
 
-    # Off the event loop: resolving "auto" can run the Xet reachability probe, and a blackholed DNS
-    # makes that outlast its 3s budget while every other request waits behind it.
+    # Size and Auto resolution may perform network probes, so keep both off the event loop.
+    largest_file_bytes = await asyncio.to_thread(
+        download_lifecycle.largest_download_file_bytes,
+        "dataset",
+        repo_id,
+        hf_token = hf_token,
+        allow_ambient_token = allow_ambient_token,
+    )
     use_xet, transport_reason = await asyncio.to_thread(
         download_lifecycle.resolve_requested_use_xet,
         getattr(body, "transport_mode", None),
         body.use_xet,
+        largest_file_bytes = largest_file_bytes,
     )
-    transport = download_lifecycle.resolve_transport(use_xet)
+    transport = download_lifecycle.resolve_transport(use_xet, largest_file_bytes = largest_file_bytes)
     logger.info("Download transport for %s: %s (%s)", repo_id, transport, transport_reason)
     from utils.hf_cache_settings import get_hf_cache_paths
 

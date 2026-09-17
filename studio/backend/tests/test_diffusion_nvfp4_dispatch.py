@@ -147,7 +147,7 @@ def test_verify_does_not_run_the_gemm_when_the_library_is_wrong(monkeypatch):
 
 
 class _Ptr:
-    """A stand-in for a weight buffer: a data_ptr, a shape and a ``.T``."""
+    """A stand-in for a weight buffer."""
 
     def __init__(
         self,
@@ -202,7 +202,7 @@ def test_the_transpose_cache_holds_the_view_and_revalidates_pointer_and_shape():
     weight = _Ptr(1024)
     view = dispatch.transposed(weight)
     assert dispatch.transposed(weight) is view
-    # A reallocated buffer at the same address with a different shape must not get the old view.
+    # A reallocated buffer at the same address with a new shape must not get the old view.
     other = _Ptr(1024, shape = (4, 8))
     assert dispatch.transposed(other) is not view
     # Nor may the SAME object whose storage was swapped under it.
@@ -438,7 +438,7 @@ def test_a_collected_layer_takes_its_cached_weights_and_their_vram_with_it():
         layer(x)
         torch.cuda.synchronize(device)
 
-    # Both weight buffers are cached, and both entries are keyed on the buffer the layer holds.
+    # Both weight buffers are cached, keyed on the buffers the layer holds.
     assert len(dispatch._TRANSPOSED) == 2
     assert {id(layer.wq), id(layer.w_sf)} == set(dispatch._TRANSPOSED)
     weight_bytes = layer.wq.numel() + layer.w_sf.numel()
