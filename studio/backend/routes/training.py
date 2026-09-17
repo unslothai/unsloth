@@ -468,6 +468,14 @@ _HF_MODEL_ACCESS_DENIED = (
 )
 
 
+def _preflight_load_in_4bit(request) -> bool:
+    """The load mode the worker will really use: a full finetune is forced to 16-bit by
+    _build_training_worker_config. getattr, because model_construct() may leave the field unset."""
+    return bool(getattr(request, "load_in_4bit", True)) and (
+        getattr(request, "training_type", None) != "Full Finetuning"
+    )
+
+
 def _remote_untrainable_model_format(
     model_name: str, hf_token: HfTokenArg, load_in_4bit: bool = True
 ) -> Optional[str]:
@@ -1012,7 +1020,7 @@ def _reject_untrainable_model_request(
                     ),
                 )
             remote_format = _remote_untrainable_model_format(
-                request.model_name, hf_token, request.load_in_4bit
+                request.model_name, hf_token, _preflight_load_in_4bit(request)
             )
         except HTTPException as error:
             metadata_error = error

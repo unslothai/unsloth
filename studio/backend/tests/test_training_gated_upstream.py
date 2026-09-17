@@ -342,6 +342,26 @@ def test_the_start_route_passes_the_requested_load_mode(mapper, monkeypatch):
     assert seen == {"load_in_4bit": False}
 
 
+def test_a_full_finetune_preflights_as_16bit(mapper, monkeypatch):
+    session = _Session(_http_error(401))
+    _route(monkeypatch, gated = "manual", session = session)
+    monkeypatch.setattr(tr, "hf_env_offline", lambda: False)
+    monkeypatch.setattr(tr, "_hub_unreachable", lambda: False)
+    monkeypatch.setattr(tr, "cached_read_refused", lambda *a, **kw: False)
+
+    # Full Finetuning is forced to 16-bit, so the 4-bit-only mirror does not apply.
+    request = TrainingStartRequest(
+        model_name = "meta-llama/Meta-Llama-3-70B-Instruct",
+        training_type = "Full Finetuning",
+        format_type = "alpaca",
+    )
+    with pytest.raises(HTTPException) as error:
+        tr._reject_untrainable_model_request(request, hf_token = None)
+
+    assert error.value.detail["code"] == "hf_model_access_denied"
+    assert request.load_in_4bit is True
+
+
 def test_load_model_gate_checks_the_repo_the_loader_fetches(mapper, monkeypatch):
     import huggingface_hub
 
