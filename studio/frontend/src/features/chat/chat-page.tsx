@@ -183,7 +183,6 @@ import {
   getTrainingCompareHandoff,
 } from "./lib/training-compare-handoff";
 import {
-  clampReasoningEffortToLevels,
   getExternalReasoningCapabilities,
   getProviderCapabilities,
   modelCatalogVersion,
@@ -194,6 +193,7 @@ import {
   providerSupportsBuiltinWebSearch,
   providerSupportsFastMode,
   reasoningFieldsAfterCatalogRefresh,
+  resolveExternalReasoningEffort,
   subscribeModelCatalog,
 } from "./provider-capabilities";
 import {
@@ -2539,41 +2539,16 @@ export function ChatPage({
       },
     );
     const state = useChatRuntimeStore.getState();
-    const preferredEffort = state.reasoningEffort;
     const effortLevels = reasoningCaps.reasoningEffortLevels;
-    const clampedEffort = clampReasoningEffortToLevels(
-      preferredEffort,
-      effortLevels,
-    );
-    // Per-provider default effort: Anthropic gets the highest level, since Claude's adaptive thinking
-    // adjusts cost per turn; OpenAI gets "high"; everyone else "medium". Overridable via Think.
-    const isAnthropic = provider?.providerType === "anthropic";
-    const isOpenAI = provider?.providerType === "openai";
-    const anthropicTopEffort = effortLevels.includes("xhigh")
-      ? "xhigh"
-      : effortLevels.includes("high")
-        ? "high"
-        : clampedEffort;
-    const openaiDefaultEffort = effortLevels.includes("high")
-      ? "high"
-      : effortLevels.includes("medium")
-        ? "medium"
-        : clampedEffort;
-    const catalogDefaultEffort =
-      reasoningCaps.defaultEffort &&
-      effortLevels.includes(reasoningCaps.defaultEffort)
-        ? reasoningCaps.defaultEffort
-        : null;
-    const nextReasoningEffort = reasoningCaps.supportsReasoning
-      ? (catalogDefaultEffort ??
-        (isAnthropic
-          ? anthropicTopEffort
-          : isOpenAI
-            ? openaiDefaultEffort
-            : effortLevels.includes("medium")
-              ? "medium"
-              : clampedEffort))
-      : state.reasoningEffort;
+    // Through the shared resolver, pin included: this runs on reload and on every provider
+    // resync, and resolving it without the pin is what put the provider default back over a
+    // level the user had set on the model's row.
+    const nextReasoningEffort = resolveExternalReasoningEffort({
+      caps: reasoningCaps,
+      providerType: provider?.providerType,
+      current: state.reasoningEffort,
+      pinned: pinnedReasoningEffort(inferenceParams.checkpoint, effortLevels),
+    });
     const supportsBuiltinWebSearch = providerSupportsBuiltinWebSearch(
       provider?.providerType,
       selection.modelId,
@@ -3191,45 +3166,13 @@ export function ChatPage({
             baseUrl: selectedProvider?.baseUrl ?? null,
           },
         );
-        const preferredEffort = store.reasoningEffort;
         const effortLevels = reasoningCaps.reasoningEffortLevels;
-        const clampedEffort = clampReasoningEffortToLevels(
-          preferredEffort,
-          effortLevels,
-        );
-        // Same per-provider default policy as the useEffect above: Anthropic highest level, OpenAI
-        // "high", everyone else "medium".
-        const isAnthropic = selectedProvider?.providerType === "anthropic";
-        const isOpenAI = selectedProvider?.providerType === "openai";
-        const anthropicTopEffort = effortLevels.includes("xhigh")
-          ? "xhigh"
-          : effortLevels.includes("high")
-            ? "high"
-            : clampedEffort;
-        const openaiDefaultEffort = effortLevels.includes("high")
-          ? "high"
-          : effortLevels.includes("medium")
-            ? "medium"
-            : clampedEffort;
-        const catalogDefaultEffort =
-          reasoningCaps.defaultEffort &&
-          effortLevels.includes(reasoningCaps.defaultEffort)
-            ? reasoningCaps.defaultEffort
-            : null;
-        // A level pinned on the model's picker row wins over the defaults below. Null when the
-        // catalogue no longer offers it, so a withdrawn level falls back instead of failing.
-        const pinnedEffort = pinnedReasoningEffort(value, effortLevels);
-        const nextReasoningEffort = reasoningCaps.supportsReasoning
-          ? ((pinnedEffort as typeof catalogDefaultEffort) ??
-            catalogDefaultEffort ??
-            (isAnthropic
-              ? anthropicTopEffort
-              : isOpenAI
-                ? openaiDefaultEffort
-                : effortLevels.includes("medium")
-                  ? "medium"
-                  : clampedEffort))
-          : store.reasoningEffort;
+        const nextReasoningEffort = resolveExternalReasoningEffort({
+          caps: reasoningCaps,
+          providerType: selectedProvider?.providerType,
+          current: store.reasoningEffort,
+          pinned: pinnedReasoningEffort(value, effortLevels),
+        });
         // Clear any cached router-picked openrouter/free model unless staying on openrouter/free, else
         // the chip keeps a stale ":<chosen>" suffix.
         const stillOnOpenRouterFree =

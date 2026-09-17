@@ -5015,13 +5015,17 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       const merged = { ...state.paramsByModel[modelId], ...patch };
       const next = { ...state.paramsByModel, [modelId]: merged };
       // Only the moved keys: the server merges per key, so a full snapshot clobbers other tabs.
-      if (state.settingsHydrated) {
-        saveSettingsPatch({ inferenceParamsByModel: { [modelId]: patch } });
-      }
+      // Not gated on hydration, unlike a defaults write: this is a typed edit for one model that
+      // can only set the keys it names, and gating it dropped an edit made while the initial
+      // /api/chat/settings request was out.
+      saveSettingsPatch({ inferenceParamsByModel: { [modelId]: patch } });
+      // The same fence, since trackParamsByModel files nothing before hydration: without it the
+      // response in flight rebuilds paramsByModel from the server and the edit is gone.
+      locallyRememberedModels.add(modelId);
       // Editing the live model must land on the live params, not just on the next switch back.
       const live = state.params.checkpoint === modelId;
       return {
-        paramsByModel: trackParamsByModel(state, next, modelId) ?? next,
+        paramsByModel: next,
         ...(live ? { params: { ...state.params, ...patch } } : {}),
       };
     }),

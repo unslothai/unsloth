@@ -276,14 +276,15 @@ test("editing the live model's effort reaches the chat now", () => {
     settingsDialog,
     /state\.params\.checkpoint === checkpointId,/,
   );
+  // Through the same resolver the switch uses, so clearing the pin recomputes the default
+  // instead of leaving the cleared level in force, and a level the model rejects cannot get in.
   assert.match(
     settingsDialog,
-    /if \(isLiveModel && level\) \{\s*setReasoningEffort\(level\);/,
+    /if \(isLiveModel\) \{\s*setReasoningEffort\(\s*resolveExternalReasoningEffort\(\{/,
   );
-  // Matched against the levels on offer, so a stale pin cannot reach the chat.
   assert.match(
     settingsDialog,
-    /const level = efforts\.find\(\(candidate\) => candidate === effort\);/,
+    /pinned: effort === FOLLOW_CHAT \? null : effort,/,
   );
 });
 
@@ -314,6 +315,16 @@ test("the store write merges per key and reaches the live params", () => {
   );
   // Editing the model that is loaded has to land now, not on the next switch back.
   assert.match(runtime, /const live = state\.params\.checkpoint === modelId;/);
+  // A save while the initial settings request is still out has to survive it. The write is not
+  // gated on hydration, since the patch can only set the keys it names, and the model is filed as
+  // locally remembered so the response in flight lays this edit over the server's copy instead of
+  // rebuilding paramsByModel without it.
+  assert.match(runtime, /locallyRememberedModels\.add\(modelId\);/);
+  // Which is the set hydration overlays, and the only thing that saves a pre-hydration edit.
+  assert.match(
+    runtime,
+    /for \(const modelId of locallyRememberedModels\) \{\s*const local = state\.paramsByModel\[modelId\];/,
+  );
 });
 
 test("a pinned reasoning effort wins, unless the catalogue withdrew it", () => {
@@ -325,16 +336,34 @@ test("a pinned reasoning effort wins, unless the catalogue withdrew it", () => {
     effort,
     /if \(allowed && allowed\.length > 0 && !allowed\.includes\(effort\)\) return null;/,
   );
+  const caps = readSrc("features/chat/provider-capabilities.ts");
+  // Ahead of the catalogue and the per-provider defaults: the user set this one deliberately.
+  assert.match(
+    caps,
+    /if \(pinned && levels\.includes\(pinned as ReasoningEffortLevel\)\) \{\s*return pinned as ReasoningEffortLevel;/,
+  );
+  assert.match(
+    caps,
+    /if \(caps\.defaultEffort && levels\.includes\(caps\.defaultEffort\)\) \{/,
+  );
+  // One resolver for every caller, so a reload and a resync cannot answer differently from a
+  // switch. The pin used to be read by the switch alone.
   const chatPage = readSrc("features/chat/chat-page.tsx");
   assert.match(
     chatPage,
-    /const pinnedEffort = pinnedReasoningEffort\(value, effortLevels\);/,
+    /pinned: pinnedReasoningEffort\(value, effortLevels\),/,
   );
-  // Ahead of the catalogue and per-provider defaults: the user set this one deliberately.
   assert.match(
     chatPage,
-    /pinnedEffort as typeof catalogDefaultEffort\) \?\?\s*catalogDefaultEffort/,
+    /pinned: pinnedReasoningEffort\(inferenceParams\.checkpoint, effortLevels\),/,
   );
+  // The normalization effect reruns on reload and on every provider resync, and it is the one
+  // that used to put the provider default back over the pin.
+  assert.match(
+    chatPage,
+    /\}, \[externalProvidersForChat, inferenceParams\.checkpoint, settingsHydrated\]\);/,
+  );
+  assert.doesNotMatch(chatPage, /const anthropicTopEffort =/);
 });
 
 test("the info box is a dialog, so it is wide enough and closable", () => {

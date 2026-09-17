@@ -28,7 +28,10 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { useChatRuntimeStore } from "@/features/chat";
 // eslint-disable-next-line no-restricted-imports -- Avoid the chat barrel's React exports.
-import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
+import {
+  getExternalReasoningCapabilities,
+  resolveExternalReasoningEffort,
+} from "@/features/chat/provider-capabilities";
 import { useState } from "react";
 import { useModelReasoningEffortStore } from "./model-reasoning-effort";
 
@@ -76,6 +79,7 @@ export function ConnectedModelSettingsDialog({
   const setReasoningEffort = useChatRuntimeStore(
     (state) => state.setReasoningEffort,
   );
+  const chatEffort = useChatRuntimeStore((state) => state.reasoningEffort);
   const pinnedEffort = useModelReasoningEffortStore(
     (state) => state.effortByModel[checkpointId],
   );
@@ -117,12 +121,18 @@ export function ConnectedModelSettingsDialog({
       effort === FOLLOW_CHAT ? null : effort,
     );
     // The pin is read on a model switch, and a switch to the model already loaded returns before
-    // that, so the live model's effort has to land on the chat's own level here or the edit would
-    // not apply until the user switched away and back. Matched against the levels on offer, so
-    // only one this model accepts can reach the chat.
-    const level = efforts.find((candidate) => candidate === effort);
-    if (isLiveModel && level) {
-      setReasoningEffort(level);
+    // that, so the live model's level has to be set here or the edit would not apply until the
+    // user switched away and back. Through the same resolver the switch uses, so clearing the pin
+    // falls back to the default rather than leaving the cleared level in force.
+    if (isLiveModel) {
+      setReasoningEffort(
+        resolveExternalReasoningEffort({
+          caps: reasoning,
+          providerType,
+          current: chatEffort,
+          pinned: effort === FOLLOW_CHAT ? null : effort,
+        }),
+      );
     }
     onOpenChange(false);
   }

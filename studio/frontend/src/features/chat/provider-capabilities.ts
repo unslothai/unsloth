@@ -93,6 +93,52 @@ export function clampReasoningEffortToLevels(
   return effortLevels[0] ?? "low";
 }
 
+/** The effort an external model should run at, pin first.
+ *
+ *  One resolver, because there are three callers and they must not disagree: a model switch, the
+ *  normalization that reruns on reload and on every provider resync, and the picker's own
+ *  per-model editor. The pin used to be read by the switch alone, so a reload or a resync put the
+ *  provider default back over it.
+ *
+ *  Pass `pinned: null` to resolve as if nothing were pinned, which is what clearing a pin needs. */
+export function resolveExternalReasoningEffort(opts: {
+  caps: ExternalReasoningCapabilities;
+  providerType: string | null | undefined;
+  /** The chat's level now: the clamp target, and what a model that cannot think keeps. */
+  current: ReasoningEffortLevel;
+  /** The level pinned on this model's picker row. Ignored when the model no longer offers it. */
+  pinned?: string | null;
+}): ReasoningEffortLevel {
+  const { caps, providerType, current, pinned } = opts;
+  const levels = caps.reasoningEffortLevels;
+  if (!caps.supportsReasoning) return current;
+  // Set deliberately, for this model, so it outranks every default below.
+  if (pinned && levels.includes(pinned as ReasoningEffortLevel)) {
+    return pinned as ReasoningEffortLevel;
+  }
+  if (caps.defaultEffort && levels.includes(caps.defaultEffort)) {
+    return caps.defaultEffort;
+  }
+  const clamped = clampReasoningEffortToLevels(current, levels);
+  // Anthropic gets the highest level, since Claude's adaptive thinking adjusts cost per turn;
+  // OpenAI gets "high"; everyone else "medium". Overridable via Think.
+  if (providerType === "anthropic") {
+    return levels.includes("xhigh")
+      ? "xhigh"
+      : levels.includes("high")
+        ? "high"
+        : clamped;
+  }
+  if (providerType === "openai") {
+    return levels.includes("high")
+      ? "high"
+      : levels.includes("medium")
+        ? "medium"
+        : clamped;
+  }
+  return levels.includes("medium") ? "medium" : clamped;
+}
+
 /** Fallback cap for a model with no documented limit and no connection override. */
 export const EXTERNAL_MAX_OUTPUT_TOKENS = 32768;
 
