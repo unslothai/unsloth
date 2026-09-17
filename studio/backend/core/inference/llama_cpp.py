@@ -12778,9 +12778,9 @@ class LlamaCppBackend:
                     if _override:
                         node_hint = (
                             f"{node_hint} The Vulkan loader also has no driver it can load "
-                            f"here, and {_override} is what leaves it with none: clear or "
-                            f"correct that variable, since reinstalling the driver does not "
-                            f"change an environment override."
+                            f"here, and what leaves it with none is {_override}: clear or "
+                            f"correct that, since reinstalling the driver does not change "
+                            f"an environment override."
                         )
                     else:
                         node_hint = (

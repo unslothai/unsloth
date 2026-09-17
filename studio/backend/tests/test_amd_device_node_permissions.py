@@ -5612,6 +5612,75 @@ def test_a_missing_library_is_still_a_reinstall(monkeypatch):
     assert _loader_blame(monkeypatch, {"/etc/vulkan/icd.d/radeon_icd.x86_64.json": True}) is None
 
 
+def test_the_filter_that_actually_emptied_the_set_is_the_one_named(monkeypatch):
+    """Disable WINS over select, so selecting and disabling the same name leaves clearing
+    select changing nothing. Naming select there is advice that cannot work: the disable
+    rule still removes the manifest and the loader is left with no driver either way.
+    """
+    manifests = {"/etc/vulkan/icd.d/radeon_icd.x86_64.json": True}
+    # The reported case: select accepts the manifest and disable is what removes it, so
+    # clearing disable restores the driver and clearing select does nothing. This answered
+    # VK_LOADER_DRIVERS_SELECT before.
+    assert (
+        _loader_blame(
+            monkeypatch,
+            manifests,
+            VK_LOADER_DRIVERS_SELECT = "radeon*",
+            VK_LOADER_DRIVERS_DISABLE = "radeon*",
+        )
+        == "VK_LOADER_DRIVERS_DISABLE"
+    )
+    # Select is named when it is select that excludes the manifest.
+    assert (
+        _loader_blame(
+            monkeypatch,
+            manifests,
+            VK_LOADER_DRIVERS_SELECT = "nvidia*",
+            VK_LOADER_DRIVERS_DISABLE = "intel*",
+        )
+        == "VK_LOADER_DRIVERS_SELECT"
+    )
+    # Both, when neither one alone is the repair: select does not name it AND disable does.
+    assert (
+        _loader_blame(
+            monkeypatch,
+            manifests,
+            VK_LOADER_DRIVERS_SELECT = "nvidia*",
+            VK_LOADER_DRIVERS_DISABLE = "radeon*",
+        )
+        == "VK_LOADER_DRIVERS_SELECT and VK_LOADER_DRIVERS_DISABLE together"
+    )
+
+
+def test_a_forced_list_whose_manifest_is_fine_still_asks_for_a_reinstall(monkeypatch):
+    """The forced list is only to blame when the LIST is what went wrong. A list naming a
+    manifest that is present, permitted and has simply lost its library is the reinstall
+    case: clearing the variable leaves the loader reading that same unusable manifest, and
+    reinstalling the driver is what puts the library back.
+    """
+    monkeypatch.setattr(amd, "_searched_vulkan_icd_manifest_paths", list)
+    assert (
+        _loader_blame(
+            monkeypatch,
+            {__file__: True},  # a path that exists, so the list itself is not stale
+            VK_DRIVER_FILES = __file__,
+        )
+        is None
+    )
+
+    # The other half of the same rule: the list hides an ordinary search that WOULD have
+    # found a usable driver, so clearing it is the repair after all.
+    monkeypatch.setattr(
+        amd, "_searched_vulkan_icd_manifest_paths", lambda: ["/etc/vulkan/icd.d/radeon.json"]
+    )
+    monkeypatch.setattr(amd, "_an_icd_is_32_bit", lambda _p: False)
+    monkeypatch.setattr(amd, "_icd_manifest_is_usable", lambda _p: True)
+    assert (
+        _loader_blame(monkeypatch, {__file__: True}, VK_DRIVER_FILES = __file__)
+        == "VK_DRIVER_FILES"
+    )
+
+
 def test_a_loader_with_no_manifests_at_all_blames_nothing(monkeypatch):
     """The other control. Finding nothing says only that this cannot read the loader's
     configuration, which the_vulkan_loader_has_no_usable_driver already answers False for,

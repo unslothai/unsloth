@@ -1086,6 +1086,16 @@ def _vulkan_icd_manifest_paths() -> "list[str]":
         if not value:
             continue
         return [entry.strip() for entry in value.split(os.pathsep) if entry.strip()]
+    return _searched_vulkan_icd_manifest_paths()
+
+
+def _searched_vulkan_icd_manifest_paths() -> "list[str]":
+    """The half of the above a forced list REPLACES: the ordinary search, plus the additive
+    list the loader ignores while a force list is set.
+
+    Split out so the attribution below can ask the counterfactual -- what the loader would
+    read if the forced list were cleared -- rather than assuming it would read something.
+    """
     if platform.system() != "Linux":
         return []
     added = (os.environ.get("VK_ADD_DRIVER_FILES") or "").strip()
@@ -1116,11 +1126,14 @@ def the_vulkan_loader_can_only_load_amd() -> bool:
     return all(_is_an_amd_icd_name(path) for path in loadable)
 
 
-def _loadable_icd_manifests() -> "list[str]":
-    """The manifests the loader would both find here and be able to load."""
+def _loadable_icd_manifests(paths: "list[str] | None" = None) -> "list[str]":
+    """The manifests the loader would both find here and be able to load.
+
+    ``paths`` asks the same question of a candidate list instead of this host's.
+    """
     return [
         path
-        for path in _vulkan_icd_manifest_paths()
+        for path in (_vulkan_icd_manifest_paths() if paths is None else paths)
         # A 32-bit manifest is registered beside the 64-bit one and this binary cannot load
         # it, so it is neither evidence of an AMD driver nor of another vendor's.
         if not _an_icd_is_32_bit(path)
@@ -1156,24 +1169,55 @@ def the_vulkan_loader_override_to_blame() -> "str | None":
     variable in place and the probe just as empty.
 
     Filters first, because they are applied last and absolutely -- they exclude drivers a
-    forced list named as well. ``VK_LOADER_DRIVERS_SELECT`` before
-    ``VK_LOADER_DRIVERS_DISABLE``, for the reason ``_vulkan_loader_allows`` reads them in
-    that order: a set select list answers alone. ``None`` where no override is responsible,
-    which is the missing-library and 32-bit case the reinstall sentence was written for.
+    forced list named as well. Which filter, though, is decided by which one actually
+    emptied the set rather than by a fixed order: since disable WINS over select, selecting
+    and disabling the same name leaves clearing select changing nothing, and naming it sent
+    the user to unset a variable that was holding nothing back. ``None`` where no override
+    is responsible, which is the missing-library and 32-bit case the reinstall sentence was
+    written for.
     """
     paths = _vulkan_icd_manifest_paths()
     if not paths:
         return None
     if not any(_vulkan_loader_allows(path) for path in paths):
-        for var in ("VK_LOADER_DRIVERS_SELECT", "VK_LOADER_DRIVERS_DISABLE"):
-            if (os.environ.get(var) or "").strip():
-                return var
+
+        def _patterns(var: str) -> "list[str]":
+            value = os.environ.get(var) or ""
+            return [entry.strip() for entry in value.split(",") if entry.strip()]
+
+        disable = _patterns("VK_LOADER_DRIVERS_DISABLE")
+        select = _patterns("VK_LOADER_DRIVERS_SELECT")
+        # Clearing one filter repairs this only if the OTHER one still leaves a manifest, so
+        # that is the test rather than a fixed precedence.
+        select_is_it = select and any(
+            not any(_vulkan_glob_matches(p, PurePath(path).name) for p in disable)
+            for path in paths
+        )
+        disable_is_it = disable and any(
+            not select or any(_vulkan_glob_matches(p, PurePath(path).name) for p in select)
+            for path in paths
+        )
+        if select_is_it:
+            return "VK_LOADER_DRIVERS_SELECT"
+        if disable_is_it:
+            return "VK_LOADER_DRIVERS_DISABLE"
+        if select and disable:
+            # Both match everything left, so neither one alone is the repair.
+            return "VK_LOADER_DRIVERS_SELECT and VK_LOADER_DRIVERS_DISABLE together"
     # Reached only when the filters are not what emptied the set, so the manifests
-    # themselves do not resolve -- and a forced list means the ones that would have been
-    # found by the ordinary search were never looked at.
+    # themselves do not resolve. A forced list is to blame for THAT only when the list is
+    # what went wrong: a path that is not there, or an ordinary search it hides that would
+    # have found a usable driver. A list naming a manifest that is present and permitted
+    # and has simply lost its library is the reinstall case, since clearing the variable
+    # leaves the loader reading that same unusable manifest.
     for var in ("VK_DRIVER_FILES", "VK_ICD_FILENAMES"):
-        if (os.environ.get(var) or "").strip():
+        if not (os.environ.get(var) or "").strip():
+            continue
+        if any(not os.path.exists(path) for path in paths) or _loadable_icd_manifests(
+            _searched_vulkan_icd_manifest_paths()
+        ):
             return var
+        return None
     return None
 
 
