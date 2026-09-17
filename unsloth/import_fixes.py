@@ -5493,7 +5493,8 @@ def _guard_peft_torchao_dispatcher(original):
         except (TypeError, ValueError):
             return None
         positional = [
-            name for name, parameter in signature.parameters.items()
+            name
+            for name, parameter in signature.parameters.items()
             if parameter.kind in (parameter.POSITIONAL_ONLY, parameter.POSITIONAL_OR_KEYWORD)
         ]
         layer_kwargs = {}

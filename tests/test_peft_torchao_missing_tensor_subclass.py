@@ -96,10 +96,19 @@ MISSING = ImportError(
 class _BlockTorchao:
     """A meta path finder that makes torchao look absent rather than merely reduced."""
 
-    def find_module(self, fullname, path = None):
+    def find_module(
+        self,
+        fullname,
+        path = None,
+    ):
         return None
 
-    def find_spec(self, fullname, path = None, target = None):
+    def find_spec(
+        self,
+        fullname,
+        path = None,
+        target = None,
+    ):
         if fullname == "torchao" or fullname.startswith("torchao."):
             raise ModuleNotFoundError("No module named 'torchao'", name = "torchao")
         return None
@@ -128,10 +137,13 @@ def fake_torchao(monkeypatch):
             dtypes.AffineQuantizedTensor = classes["AffineQuantizedTensor"]
         if linear_activation:
             classes["LinearActivationQuantizedTensor"] = type(
-                "LinearActivationQuantizedTensor", (), {},
+                "LinearActivationQuantizedTensor",
+                (),
+                {},
             )
-            quantization.LinearActivationQuantizedTensor = \
-                classes["LinearActivationQuantizedTensor"]
+            quantization.LinearActivationQuantizedTensor = classes[
+                "LinearActivationQuantizedTensor"
+            ]
         pkg.dtypes = dtypes
         pkg.quantization = quantization
         for name, mod in (
@@ -205,7 +217,12 @@ def peft_env(monkeypatch, fake_torchao):
 
 
 def _raiser(exc):
-    def dispatch_torchao(target, adapter_name, lora_config = None, **kwargs):
+    def dispatch_torchao(
+        target,
+        adapter_name,
+        lora_config = None,
+        **kwargs,
+    ):
         raise exc
 
     return dispatch_torchao
@@ -300,7 +317,12 @@ def test_the_third_parameter_is_read_by_position_not_by_name(peft_env, fake_torc
     # by position so a rename cannot leak the config through as a layer kwarg.
     classes = fake_torchao(affine = True, linear_activation = False)
 
-    def dispatch_torchao(target, adapter_name, config = None, **kwargs):
+    def dispatch_torchao(
+        target,
+        adapter_name,
+        config = None,
+        **kwargs,
+    ):
         raise MISSING
 
     definer, _ = peft_env(dispatch_torchao)
@@ -508,8 +530,11 @@ def test_the_real_torchao_class_lookup_agrees_with_the_imports_peft_does():
 
     src = (REPO_ROOT / "unsloth" / "import_fixes.py").read_text(encoding = "utf-8")
     ns = {
-        "functools": functools, "importlib": importlib, "inspect": inspect,
-        "sys": sys, "re": re,
+        "functools": functools,
+        "importlib": importlib,
+        "inspect": inspect,
+        "sys": sys,
+        "re": re,
         "logger": types.SimpleNamespace(warning = lambda *a, **k: None),
     }
     for node in ast.parse(src).body:
