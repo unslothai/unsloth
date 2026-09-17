@@ -1,21 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""What counts as proof of a second modality when the auto-switch judges a downloaded checkpoint.
-
-``_is_generative_chat_config`` accepts an architecture ending in ``ForConditionalGeneration`` only
-when the config proves it carries a modality a chat request can be served with, because T5 and BART
-wear the same suffix and this path has no seq2seq branch. Two things are held here:
-
-* the transformers 5 spellings of that proof, so a conversion that dropped its vision tower but kept
-  its placeholder token ids is still served (unsloth#10951), and
-* that a nested ``text_config`` is NOT that proof, because transformers 5 nests one in text-only
-  configs too. Accepting it alone would admit ``ClvpModelForConditionalGeneration`` and any seq2seq
-  that grows a ``text_config``, which is exactly what the gate exists to refuse.
-
-The config bodies for the reported checkpoint and its control are the real ones, reduced to the keys
-this gate reads.
-"""
+"""What counts as proof of a second modality when the auto-switch judges a downloaded checkpoint: the
+transformers 5 spellings (unsloth#10951, a conversion that kept its placeholder token ids after losing its vision
+tower), and that a nested ``text_config`` is NOT proof, since transformers 5 nests one in text-only configs too."""
 
 from __future__ import annotations
 
@@ -31,13 +19,9 @@ from utils.hardware import hardware as hw
 
 @pytest.fixture(autouse = True)
 def _host_serves_non_gguf(monkeypatch):
-    """Pin the host-capability gates, as test_openai_auto_switch.py does for the same classifier.
-
-    These tests are about the config rules. Left unpinned they would pass or fail by whether this
-    machine has torch or MLX, and the MLX gate has its own test below.
-    """
+    """Pin the host-capability gates: these tests are about the config rules, not this machine."""
     monkeypatch.setattr(resolver, "_host_has_a_non_gguf_backend", lambda: True)
-    # the device itself, not the helper, so a test setting DEVICE for itself still wins.
+    # the device, not the helper, so a test setting DEVICE for itself still wins.
     monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CUDA, raising = False)
 
 
@@ -61,13 +45,10 @@ def _checkpoint(root, name: str, config: dict):
 
 
 def _classifies(info, config: dict):
-    """The config gate as the resolver calls it: the classifier also reads the directory."""
     return resolver._is_generative_chat_config(Path(info.path), config)
 
 
-# ornith-ai/Ornith-1.5-35B-A3B-MLX-4bit, the checkpoint reported in #10951: a language-only MLX
-# conversion of a VLM. architectures still says ForConditionalGeneration, the vision tower and its
-# vision_config are gone, and the placeholder token ids are all that is left to judge it by.
+# ornith-ai/Ornith-1.5-35B-A3B-MLX-4bit from #10951: a language-only MLX conversion, vision_config gone.
 REPORTED_CONFIG = {
     "architectures": ["Qwen3_5MoeForConditionalGeneration"],
     "model_type": "qwen3_5_moe",
@@ -77,8 +58,7 @@ REPORTED_CONFIG = {
     "vision_start_token_id": 151652,
     "vision_end_token_id": 151653,
 }
-# caslca/Qwen3.8-27B-mlx-uniform-4bit, the control from the same report: the same suffix on the same
-# host, working, and differing only in keeping a top-level vision_config.
+# caslca/Qwen3.8-27B-mlx-uniform-4bit, the working control from the same report: it kept vision_config.
 CONTROL_CONFIG = {
     "architectures": ["Qwen3_5ForConditionalGeneration"],
     "model_type": "qwen3_5",
@@ -136,7 +116,6 @@ def test_one_visual_token_id_is_enough_on_its_own(tmp_path, marker):
     ],
 )
 def test_a_text_seq2seq_is_still_refused(tmp_path, architecture, model_type):
-    """The pair this gate exists to exclude. Neither carries any modality key."""
     config = {"architectures": [architecture], "model_type": model_type}
     info = _checkpoint(tmp_path, model_type, config)
 
@@ -147,8 +126,7 @@ def test_a_text_seq2seq_is_still_refused(tmp_path, architecture, model_type):
 @pytest.mark.parametrize(
     ("name", "config"),
     [
-        # transformers 5.17 ClvpConfig: text_config and no modality key at all, on
-        # ClvpModelForConditionalGeneration. A voice model with no chat serving path here.
+        # transformers 5.17 ClvpConfig: text_config and no modality key, on a ForConditionalGeneration name.
         (
             "clvp",
             {
@@ -157,8 +135,6 @@ def test_a_text_seq2seq_is_still_refused(tmp_path, architecture, model_type):
                 "text_config": {"hidden_size": 768, "model_type": "clvp_text_model"},
             },
         ),
-        # And the case that makes the rule matter for the gate's own exclusions: a text seq2seq
-        # that grows a text_config is still a text seq2seq.
         (
             "t5-with-text-config",
             {
@@ -181,11 +157,7 @@ def test_a_nested_text_config_alone_is_not_proof_of_a_modality(tmp_path, name, c
     ["vision_config", "audio_config", "image_token_id", "video_token_id", "image_token_index"],
 )
 def test_a_text_config_counts_beside_a_modality_sibling(tmp_path, partner):
-    """The other half of the rule: text_config is not refused, it is simply not the evidence.
-
-    Paired with a vision or audio sibling, or with a per-modality token id, the same config is
-    served. Parametrised so the pairing is checked rather than described in a comment.
-    """
+    """The other half of the rule: text_config is not refused, it is simply not the evidence."""
     value = {"hidden_size": 1} if partner.endswith("_config") else 151655
     config = {
         "architectures": ["Qwen3_5MoeForConditionalGeneration"],
@@ -199,7 +171,6 @@ def test_a_text_config_counts_beside_a_modality_sibling(tmp_path, partner):
 
 
 def test_text_config_is_not_recorded_as_a_modality_key():
-    """Stated at the constant, so re-adding it has to argue with this test."""
     assert "text_config" not in resolver._VISUAL_TOKEN_ID_KEYS
     assert not resolver._config_declares_multimodality({"text_config": {"hidden_size": 1}})
     # "text" is not a modality word either, or the word match would readmit it by the back door.
@@ -207,24 +178,10 @@ def test_text_config_is_not_recorded_as_a_modality_key():
 
 
 def _safe_dir_name(text: str) -> str:
-    """A fixture directory name Windows will accept.
-
-    The parametrised value goes into the directory name, and `{"id": 1}` spells out as
-    `bad-marker-dict-{'id': 1}`, which Windows rejects outright: the windows-latest staging
-    leg failed on NotADirectoryError [WinError 267] while Linux built it happily. Anything
-    outside the portable set becomes an underscore.
-    """
+    """A fixture directory name Windows will accept: `{"id": 1}` spells out as `bad-marker-dict-{'id': 1}`,
+    which windows-latest rejected with NotADirectoryError [WinError 267] while Linux built it happily."""
     import re
     return re.sub(r"[^A-Za-z0-9._-]", "_", text)[:60]
-
-
-# ------------------------------------------------------------------ the marker has to MEAN something
-#
-# The four new keys are scalars, not sub-configs, and a key survives its value: a serialiser that
-# writes every field of a dataclass emits "image_token_id": null for a model that has none. Testing
-# membership alone would therefore admit a T5-shaped config that merely carries the field, which is
-# exactly what the gate exists to refuse. Every case here is a config that PASSES a membership test
-# and must still be rejected.
 
 
 @pytest.mark.parametrize(
@@ -246,8 +203,7 @@ def _safe_dir_name(text: str) -> str:
     ],
 )
 def test_a_visual_marker_that_is_not_a_token_id_does_not_admit_anything(tmp_path, value):
-    """The key is there; the value is not a vocabulary index. `true` is called out on its own
-    because bool is an int subclass, so an unguarded check reads it as token 1."""
+    """The key is there, the value is not a vocabulary index. `true` is separate: bool is an int subclass."""
     config = {
         "architectures": ["Qwen3_5MoeForConditionalGeneration"],
         "model_type": "qwen3_5_moe",
@@ -279,9 +235,7 @@ def test_a_visual_marker_that_is_not_a_token_id_does_not_admit_anything(tmp_path
 def test_a_seq2seq_carrying_a_null_visual_marker_is_still_refused(
     tmp_path, architecture, model_type, marker
 ):
-    """The counterexample the earlier negative cases missed: they omitted every new key, so they
-    could not have caught a presence-only predicate. T5 and BART are the two families this gate
-    was written to refuse, and the serving path still has no AutoModelForSeq2SeqLM branch."""
+    """The counterexample a presence-only predicate passes: T5 and BART carrying a new key, set to null."""
     config = {
         "architectures": [architecture],
         "model_type": model_type,
@@ -296,8 +250,7 @@ def test_a_seq2seq_carrying_a_null_visual_marker_is_still_refused(
 
 @pytest.mark.parametrize("value", [0, 1, 151655, [151655], [151655, 151656], (151655,)])
 def test_a_real_visual_marker_still_admits_the_reported_conversion(tmp_path, value):
-    """The other direction. Zero is a legal vocabulary index, and several transformers 5 configs
-    carry a LIST of placeholder ids for a model with more than one image slot."""
+    """Zero is a legal vocabulary index, and transformers 5 writes a LIST for a multi-slot model."""
     config = {
         "architectures": ["Qwen3_5MoeForConditionalGeneration"],
         "model_type": "qwen3_5_moe",
@@ -310,11 +263,7 @@ def test_a_real_visual_marker_still_admits_the_reported_conversion(tmp_path, val
 
 
 def test_a_visual_marker_does_not_get_an_audio_family_past_its_own_gate(tmp_path, monkeypatch):
-    """The audio bypass. csm is on the audio allowlist and its verdict is the HOST's: served
-    where a Transformers worker runs, refused on an MLX host whose worker rejects TTS outright.
-    A visual token id on that same config must not short-circuit ahead of that decision, or it
-    becomes a way around the MLX refusal -- the same bypass the comments already refuse to open
-    with audio_token_id, arriving through the other door."""
+    """A visual marker must not carry an audio family past the MLX refusal its own branch applies."""
     config = {
         "architectures": ["CsmForConditionalGeneration"],
         "model_type": "csm",
@@ -344,12 +293,8 @@ def test_a_visual_marker_does_not_get_an_audio_family_past_its_own_gate(tmp_path
 def test_an_audio_token_id_does_not_admit_a_family_off_the_audio_allowlist(
     tmp_path, architecture, model_type
 ):
-    """These carry audio_token_id and no audio_config in transformers 5.17.
-
-    ``_SUPPORTED_CONDITIONAL_AUDIO_MODEL_TYPES`` is the audio decision, and it is a list of the
-    model types that have a serving path here. A marker-based audio rule would advertise a TTS and
-    an ASR model as chat targets and would also bypass the MLX refusal below.
-    """
+    """These carry audio_token_id and no audio_config in transformers 5.17: a marker-based audio rule would
+    advertise a TTS and an ASR model as chat targets, around _SUPPORTED_CONDITIONAL_AUDIO_MODEL_TYPES."""
     config = {
         "architectures": [architecture],
         "model_type": model_type,
@@ -362,11 +307,7 @@ def test_an_audio_token_id_does_not_admit_a_family_off_the_audio_allowlist(
 
 
 def test_csm_keeps_its_host_dependent_audio_verdict(tmp_path, monkeypatch):
-    """csm is on the audio allowlist, and it carries audio_token_id and no audio_config.
-
-    Its verdict must stay the host's: served where a Transformers worker runs, refused on an MLX
-    host whose worker rejects TTS outright. A generic audio marker would have served it on both.
-    """
+    """csm is on the audio allowlist, so its verdict stays the host's: MLX rejects TTS outright."""
     config = {
         "architectures": ["CsmForConditionalGeneration"],
         "model_type": "csm",

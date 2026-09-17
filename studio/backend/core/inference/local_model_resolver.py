@@ -357,12 +357,8 @@ def _local_gguf_entry(
 _ADAPTER_MARKERS = ("adapter_config.json", "adapter_model.safetensors", "adapter_model.bin")
 _SUPPORTED_CONDITIONAL_AUDIO_MODEL_TYPES = frozenset({"csm", "whisper"})
 _MODALITY_KEY_WORDS = frozenset({"vision", "image", "img", "audio", "video", "projector"})
-# The transformers 5 placeholder token ids, read for their VALUE instead of by the word match, because they are
-# scalars and a key survives its value: a serialiser that writes every field of a dataclass emits
-# ``"image_token_id": null`` for a model that has none, and the word match would then admit a T5-shaped config on a
-# key that says nothing. video_token_index is the transformers 4 spelling, declared by VideoLlavaConfig and
-# InstructBlipVideoConfig and already paired with video_token_id by routes/inference.py::_target_accepts_request_input
-# and mlx_inference.py::_vlm_media_token_ids.
+# transformers 5 placeholder token ids, read for their VALUE not by the word match: a serialiser emits
+# ``"image_token_id": null`` for a model with none. video_token_index is the transformers 4 spelling (VideoLlava).
 _VISUAL_TOKEN_ID_KEYS = (
     "image_token_id",
     "video_token_id",
@@ -476,14 +472,8 @@ def _config_declares_multimodality(config: dict) -> bool:
     for key in config:
         if not isinstance(key, str):
             continue
-        # Neither is evidence on its own; both count only beside one of the keys below.
-        #
-        # text_config: transformers 5 nests one in TEXT-ONLY configs too (ClvpConfig, the Gemma 4 assistant
-        # configs), so alone it admits exactly what this gate exists to refuse.
-        #
-        # audio_token_id: the audio families are admitted by name, through
-        # _SUPPORTED_CONDITIONAL_AUDIO_MODEL_TYPES above. A generic audio marker goes around that allowlist
-        # and advertises HiggsAudioV2 and VibeVoiceAsr as chat models. audio_config is untouched.
+        # Neither counts alone: transformers 5 nests a text_config in TEXT-ONLY configs too (ClvpConfig), and
+        # audio_token_id would route HiggsAudioV2 and VibeVoiceAsr around the audio allowlist above.
         if key in ("text_config", "audio_token_id"):
             continue
         if key in _VISUAL_TOKEN_ID_KEYS:
@@ -496,15 +486,8 @@ def _config_declares_multimodality(config: dict) -> bool:
 
 
 def _is_placeholder_token_id(value) -> bool:
-    """Whether *value* is a token id a tokenizer could actually emit.
-
-    A vocabulary index: a non-negative int. ``bool`` is excluded by hand because it is an ``int`` subclass, so
-    ``"image_token_id": true`` would otherwise read as token 1. ``None`` is the case this exists for -- a serialiser
-    that writes every field of a dataclass emits the key for a model that has no such token -- and a string, a dict or
-    a negative sentinel are equally not a proof of a second modality.
-
-    A list or tuple counts when it is non-empty and every element qualifies: several transformers 5 configs carry a
-    list of placeholder ids for a model with more than one image slot.
+    """A token id a tokenizer could emit: a non-negative int, or a non-empty list of them. ``bool`` is excluded by
+    hand, or ``"image_token_id": true`` reads as token 1; transformers 5 writes the list form for multi-slot models.
     """
     if isinstance(value, bool):
         return False
