@@ -52,7 +52,7 @@ _spoof.apply()
 # statements and eight spaces of indent, and no vision token ids anywhere. Held here as a
 # fixture rather than read from the installed TRL, so the test covers the affected versions
 # on a runner that has a different one.
-_TRL_0_18_BLOCK = '''
+_TRL_0_18_BLOCK = """
     def _generate_and_score_completions(self, inputs):
         device = self.accelerator.device
         prompts = [x["prompt"] for x in inputs]
@@ -62,15 +62,12 @@ _TRL_0_18_BLOCK = '''
         if self.use_vllm:
             pass
         return inputs
-'''
+"""
 
 
 def _injected(source: str) -> str:
     from unsloth.models.rl_replacements import grpo_trainer__generate_and_score_completions
-
-    return grpo_trainer__generate_and_score_completions(
-        "_generate_and_score_completions", source
-    )
+    return grpo_trainer__generate_and_score_completions("_generate_and_score_completions", source)
 
 
 class _TrainerWithoutVisionIds:
@@ -91,7 +88,7 @@ def _protected_lines(emitted: str) -> str:
         "If the block was rewritten, retarget the test; do not delete it."
     )
     indent = match.group(1)
-    return "\n".join(line[len(indent):] for line in match.group(0).split("\n"))
+    return "\n".join(line[len(indent) :] for line in match.group(0).split("\n"))
 
 
 def test_the_substitution_still_fires_on_the_affected_shape() -> None:
