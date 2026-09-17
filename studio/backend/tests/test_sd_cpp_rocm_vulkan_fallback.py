@@ -2024,7 +2024,12 @@ def test_a_resident_server_does_not_cost_the_reload_its_native_engine(fake_setti
 
 
 def test_the_router_counts_a_binary_it_rejects_for_not_launching(fake_settings, monkeypatch):
-    """Selection runs BEFORE the load, so the load's own recorders never see this build."""
+    """Selection runs BEFORE the load, so the load's own recorders never see this build.
+
+    ONE strike, though the server and the CLI both failed: they are two executables out of a single
+    install, so the second record would say nothing new while carrying the bundle straight to the
+    two-strike diversion bar, condemning ROCm on one install event rather than on two independent
+    failures. The run still falls back to diffusers, which is the part that protects the request."""
     from core.inference import diffusion_engine_router as router
     from core.inference import sd_cpp_backend
 
@@ -2047,8 +2052,10 @@ def test_the_router_counts_a_binary_it_rejects_for_not_launching(fake_settings, 
 
     chosen = router.select_and_activate_engine(_detect_load_family(H3_REPO, None, "minimax-h3"))
     assert chosen == "diffusers", chosen
-    assert _recorded_strikes(fake_settings) == 2
-    assert _noted_accelerators(fake_settings) == ["rocm"]
+    assert _recorded_strikes(fake_settings) == 1
+    # One strike is not a diversion: ROCm is still what the next load will try.
+    assert sd_cpp_backend.accelerator_runtime_failed("rocm", None) is False
+    assert _noted_accelerators(fake_settings) == []
 
 
 def _backend_with_a_deferred_upgrade(
@@ -2775,7 +2782,8 @@ class TestTheRouterRecordsTheBundleNotTheServer:
     def test_a_bundle_where_nothing_runs_is_still_recorded(self):
         source = self._selection_source()
         # The dead-bundle case must still reach the recorder, not be dropped along with the deferral.
-        assert "if unlaunchable_server is not None and binary is None:" in source
+        assert "if unlaunchable_server is not None and binary is None" in source
+
 
 
 def test_the_download_plan_predicts_for_the_card_the_load_will_select():

@@ -290,15 +290,22 @@ def select_and_activate_engine(
                 accelerator = install_accelerator,
             )
         )
+        cli_unlaunchable = False
         if binary and SdCppEngine(binary = binary).version() is None:
             logger.warning("sd-cli at %s is present but not runnable; not using it", binary)
             note_unlaunchable_accelerator_build(binary, card = selected_card)
+            cli_unlaunchable = True
             binary = None
-        if unlaunchable_server is not None and binary is None:
+        if unlaunchable_server is not None and binary is None and not cli_unlaunchable:
             # Nothing from this bundle runs, so the build really is the problem. Counted here rather
             # than in the load: the router runs first, so a build it rejects never reaches the
             # recorders there. Against the CARD being selected, since a card-less note is read as
             # host-wide and would move every other card to Vulkan too.
+            #
+            # ONE strike per bundle per selection. sd-server and sd-cli are two executables out of a
+            # single install, so when both fail their probes the CLI branch above has already said
+            # "this build does not run" and saying it twice reaches the two-strike diversion bar on
+            # one install event, condemning ROCm for what is meant to need two independent failures.
             note_unlaunchable_accelerator_build(unlaunchable_server, card = selected_card)
 
     native_available = bool(binary or server_binary) and policy_eligible and fam_ok
