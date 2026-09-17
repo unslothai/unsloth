@@ -2632,3 +2632,94 @@ def test_the_router_counts_a_binary_it_rejects_for_not_launching(fake_settings, 
     # missing execute bit fails identically and says nothing about the accelerator.
     assert _recorded_strikes(fake_settings) == 2
     assert _noted_accelerators(fake_settings) == ["rocm"]
+
+
+def _backend_with_a_deferred_upgrade(
+    monkeypatch,
+    *,
+    delivered,
+    requested = "vulkan",
+):
+    """A backend whose deferred install has just run, returning ``delivered``."""
+    from core.inference import sd_cpp_backend
+
+    backend = sd_cpp_backend.SdCppDiffusionBackend.__new__(sd_cpp_backend.SdCppDiffusionBackend)
+    monkeypatch.setattr(
+        sd_cpp_backend.SdCppDiffusionBackend,
+        "_upgrade_server_after_teardown",
+        lambda _self, _binary: delivered,
+        raising = False,
+    )
+    monkeypatch.setattr(
+        sd_cpp_backend.SdCppDiffusionBackend,
+        "_resolved_accelerator",
+        lambda _self: requested,
+        raising = False,
+    )
+    monkeypatch.setattr(
+        sd_cpp_backend,
+        "_installed_accelerator_of",
+        lambda binary: "rocm" if binary and "rocm" in binary else "vulkan",
+    )
+    sd_cpp_backend.note_accelerator_runtime_failure("rocm", proven = True)
+    return backend
+
+
+def test_a_deferred_upgrade_that_did_not_deliver_does_not_start_the_condemned_build(
+    fake_settings, monkeypatch
+):
+    """The router kept this native selection on the strength of an install that had not run.
+
+    It has run by now, and `_upgrade_server_after_teardown` is never fatal: offline, on a
+    failed download, or with an archive that carries no server it hands back the path it was
+    given. Committing that is committing the build the record condemns, which dies mid-render
+    a full download later.
+    """
+    backend = _backend_with_a_deferred_upgrade(monkeypatch, delivered = "/opt/sd/rocm/sd-server")
+    with pytest.raises(RuntimeError, match = "recorded as failing"):
+        backend._upgraded_or_refused("/opt/sd/rocm/sd-server", mode = "server", engine = None)
+
+
+def test_a_deferred_upgrade_that_delivered_is_started(fake_settings, monkeypatch):
+    backend = _backend_with_a_deferred_upgrade(monkeypatch, delivered = "/opt/sd/vulkan/sd-server")
+    assert (
+        backend._upgraded_or_refused("/opt/sd/rocm/sd-server", mode = "server", engine = None)
+        == "/opt/sd/vulkan/sd-server"
+    )
+
+
+def test_the_build_that_was_asked_for_is_still_run_after_the_teardown(fake_settings, monkeypatch):
+    """With the Vulkan fallback switched off the request is ROCm again on purpose, and that
+    opt-out means run it anyway -- the same boundary the selection draws."""
+    backend = _backend_with_a_deferred_upgrade(
+        monkeypatch, delivered = "/opt/sd/rocm/sd-server", requested = "rocm"
+    )
+    assert (
+        backend._upgraded_or_refused("/opt/sd/rocm/sd-server", mode = "server", engine = None)
+        == "/opt/sd/rocm/sd-server"
+    )
+
+
+def test_a_serverless_upgrade_is_judged_by_the_cli_this_load_will_run(fake_settings, monkeypatch):
+    """A one-shot load resolves to sd-cli precisely BECAUSE the deferral suppressed the
+    install, and its binary comes out of the same archive, so the server path says nothing."""
+    backend = _backend_with_a_deferred_upgrade(monkeypatch, delivered = None)
+    engine = types.SimpleNamespace(binary = "/opt/sd/rocm/sd-cli")
+    with pytest.raises(RuntimeError, match = "recorded as failing"):
+        backend._upgraded_or_refused(None, mode = "oneshot", engine = engine)
+
+    engine = types.SimpleNamespace(binary = "/opt/sd/vulkan/sd-cli")
+    assert backend._upgraded_or_refused(None, mode = "oneshot", engine = engine) is None
+
+
+def test_the_load_path_takes_the_deferred_upgrade_through_the_record_check(fake_settings):
+    """Placement: the helper above proves only what it does once reached."""
+    import inspect
+
+    from core.inference import sd_cpp_backend
+
+    body = inspect.getsource(sd_cpp_backend.SdCppDiffusionBackend._run_load)
+    assert "_upgraded_or_refused(" in body
+    assert (
+        "_upgrade_server_after_teardown(" not in body
+    ), "the load path went around the record check again"

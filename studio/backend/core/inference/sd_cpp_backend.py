@@ -2298,6 +2298,37 @@ class SdCppDiffusionBackend:
             logger.warning("sd.cpp accelerator upgrade failed: %s", exc)
             return server_binary
 
+    def _upgraded_or_refused(
+        self, server_binary: Optional[str], *, mode: str, engine: Optional[Any]
+    ) -> Optional[str]:
+        """Land the deferred install, then answer the question the router could not.
+
+        The router keeps a native selection whose only defence was an install that had not run
+        yet: a resident server executing out of the managed tree cannot be replaced while it
+        runs, so both ensures hand back the build the record condemns and refusing it there
+        would send the first reload after a mid-render failure to diffusers for nothing.
+
+        It has run now. ``_upgrade_server_after_teardown`` is deliberately never fatal and
+        returns the path it was given when the install could not deliver -- an offline host, a
+        failed download, an archive that carries no server -- so the build about to be started
+        can still be the condemned one. That is the point where the answer is real, and the
+        same record check the router skipped decides it: this load fails instead of committing
+        a build that dies mid-render, minutes and a full download later, and by then the server
+        is stopped, so the next selection finds the tree free and routes to diffusers.
+
+        A build that IS the requested accelerator is not refused, here or in the router: with
+        the Vulkan fallback switched off the request is ROCm again on purpose, and that opt-out
+        means run it anyway.
+        """
+        upgraded = self._upgrade_server_after_teardown(server_binary)
+        running = upgraded if mode == "server" else getattr(engine, "binary", None)
+        if running and not usable_or_recorded_failure(running, self._resolved_accelerator()):
+            raise RuntimeError(
+                "the sd.cpp build in the managed tree is recorded as failing on this host "
+                "and the replacement for it could not be installed."
+            )
+        return upgraded
+
     def begin_load(
         self,
         repo_id: str,
@@ -2603,7 +2634,7 @@ class SdCppDiffusionBackend:
                 # suppressed the install, and its sd-cli comes out of the same archive.
                 if self._deferred_accelerator_install:
                     self._deferred_accelerator_install = False
-                    upgraded = self._upgrade_server_after_teardown(server_binary)
+                    upgraded = self._upgraded_or_refused(server_binary, mode = mode, engine = engine)
                     if mode == "server":
                         server_binary = upgraded
                     # This load's own install just rewrote the tree, under the install claim, so what it left behind
