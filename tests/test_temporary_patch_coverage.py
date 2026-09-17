@@ -61,6 +61,19 @@ import json
 import unsloth  # noqa: F401
 import unsloth.models._utils as _utils
 
+# `import unsloth` only runs the "init" pass. The other two run from
+# unsloth_compile_transformers around the compiler, and a phase-aware patch
+# branches on which one it is (patch_Gemma4_static_cache_backport and
+# patch_gpt_oss_for_grpo both return immediately unless phase == post_compile),
+# so a patch can be perfectly quiet at import and raise only in a compile pass.
+# Running the two passes here executes those branches without standing up a
+# model or a compiler. It is not the full production state -- post_compile
+# normally runs after _unsloth_compile_transformers has swapped classes -- so
+# this catches a patch that raises on its own terms, not one that only raises
+# against a compiled model.
+_utils._run_temporary_patches("pre_compile")
+_utils._run_temporary_patches("post_compile")
+
 {injection}
 
 report = {{}}
@@ -141,19 +154,25 @@ def _clean_report():
 # ------------------------------------------------------------------ the gate
 
 
+_PHASES = ("init", "pre_compile", "post_compile")
+
+
 def test_no_temporary_patch_raised_on_this_library_version(_clean_report):
     assert _clean_report, "no phase was recorded at all, the bookkeeping is not running"
-    assert "init" in _clean_report, "the import-time pass did not record an outcome"
+    missing = [phase for phase in _PHASES if phase not in _clean_report]
+    assert not missing, f"no outcome was recorded for {missing}"
     _assert_no_patch_raised(_clean_report)
 
 
-def test_the_import_pass_actually_ran_some_patches(_clean_report):
-    # Guards the degenerate green: an empty TEMPORARY_PATCHES would satisfy the
-    # gate above without applying anything. No upper or exact bound, and no
-    # names, so adding or removing a patch never touches this file.
-    assert _clean_report["init"][
+@pytest.mark.parametrize("phase", _PHASES)
+def test_every_pass_actually_ran_some_patches(_clean_report, phase):
+    # Guards the degenerate green: an empty TEMPORARY_PATCHES, or a pass that
+    # was never driven, would satisfy the gate above without applying anything.
+    # No upper or exact bound, and no names, so adding or removing a patch never
+    # touches this file.
+    assert _clean_report[phase][
         "completed"
-    ], "no temporary patch completed during import, so the gate above is vacuous"
+    ], f"no temporary patch completed in the {phase} pass, so the gate above is vacuous there"
 
 
 # ------------------------------------------------- mutation controls
@@ -186,6 +205,31 @@ def _mutation_control_patch_that_declines(phase):
 _utils.TEMPORARY_PATCHES.append(_mutation_control_patch_that_declines)
 _utils._run_temporary_patches("init")
 """
+
+
+_RAISES_ONLY_AT_COMPILE_TIME = """
+def _mutation_control_patch_quiet_until_compile(phase = "post_compile"):
+    # The shape the import-only gate could not see: the same phase test the two
+    # real phase-aware patches use, with a body that no longer works.
+    if phase != "post_compile": return
+    raise AttributeError("mutation control: this compile-time patch is broken")
+
+_utils.TEMPORARY_PATCHES.append(_mutation_control_patch_quiet_until_compile)
+_utils._run_temporary_patches("init")
+_utils._run_temporary_patches("post_compile")
+"""
+
+
+def test_mutation_control_a_patch_that_only_breaks_at_compile_time_turns_the_gate_red():
+    report = _collect(injection = _RAISES_ONLY_AT_COMPILE_TIME)
+    assert (
+        "_mutation_control_patch_quiet_until_compile" in report["init"]["completed"]
+    ), "the control has to be quiet during import, or it proves nothing about the compile passes"
+    with pytest.raises(AssertionError) as caught:
+        _assert_no_patch_raised(report)
+    message = str(caught.value)
+    assert "_mutation_control_patch_quiet_until_compile" in message, message
+    assert "phase post_compile" in message, message
 
 
 def test_mutation_control_a_raising_patch_turns_the_gate_red():
@@ -279,42 +323,75 @@ def test_a_repeated_pass_replaces_rather_than_grows_its_phase():
     assert len(outcomes["pre_compile"]["completed"]) == 1
 
 
-def test_a_repeated_pass_releases_what_the_previous_failure_was_holding():
+def test_a_recorded_failure_does_not_pin_the_frames_it_raised_from():
     # The count check above uses a patch that returns cleanly, which is the
-    # cheap half of the question. The half that can actually cost memory is a
-    # patch that RAISES: `raised` stores the exception object, the exception
-    # carries its __traceback__, and the traceback keeps the raising frame and
-    # every local in it alive. Measured: the frame's local is still reachable
-    # for as long as the phase entry lives, and is released the moment the next
-    # pass of that phase replaces the entry. So the bound on this record is not
-    # just its length, it is that one pass never keeps the previous pass's
-    # frames. Pinned here because a record that accumulated history would still
-    # satisfy every other test in this file.
+    # cheap half of the question. The half that can cost memory is a patch that
+    # RAISES: `raised` stores the exception object, an exception carries its
+    # __traceback__, and a traceback keeps every frame in it and every local in
+    # those frames alive. Measured before the trim went in: the raising frame's
+    # local stayed reachable for as long as the phase entry lived, and the
+    # "init" entry is written once per process and never replaced, so an
+    # import-time failure pinned them until the process ended.
     class _Held:
         pass
 
+    probes = []
+
     def explodes():
-        heavy = _Held()  # noqa: F841  the local the traceback pins alive
+        heavy = _Held()
+        # A weak reference, so the probe itself is not what keeps `heavy` alive.
+        probes.append(weakref.ref(heavy))
         raise RuntimeError("boom")
 
     outcomes = {}
     run = _isolated([explodes], _CollectingLogger(), outcomes)
-    run("pre_compile")
+    run("init")
 
-    _, exception = outcomes["pre_compile"]["raised"][0]
-    traceback = exception.__traceback__
-    assert traceback is not None, "the stored exception lost its traceback"
-    frame = (traceback.tb_next or traceback).tb_frame
-    held = weakref.ref(frame.f_locals["heavy"])
-    del exception, traceback, frame
-    assert held() is not None, "the probe never had a live reference to hold"
-
-    run("pre_compile")
-    gc.collect()
-    assert held() is None, (
-        "a second pass did not release the frames the previous failure was holding, so "
-        "TEMPORARY_PATCH_OUTCOMES retains one traceback per failing model load"
+    patch, exception = outcomes["init"]["raised"][0]
+    assert patch is explodes
+    assert isinstance(exception, RuntimeError), "the exception itself must still be recorded"
+    assert str(exception) == "boom", "the message the gate reports must survive the trim"
+    assert exception.__traceback__ is None, (
+        "the recorded exception still carries its traceback, which keeps the failed patch's "
+        "frames and their locals alive for the lifetime of the phase entry"
     )
+
+    # And the frame's local really is gone, not merely unreachable through the
+    # attribute that was cleared.
+    gc.collect()
+    assert probes[0]() is None, (
+        "an object local to the failed patch is still alive after the pass, so the record "
+        "is pinning the raising frame"
+    )
+
+
+def test_an_exception_that_refuses_the_trim_does_not_break_the_pass():
+    # __traceback__, __context__ and __cause__ are ordinary settable attributes,
+    # and a subclass can shadow them with a property that refuses the write.
+    # This loop runs inside `import unsloth`, so the trim must never be the thing
+    # that ends the import.
+    class _Stubborn(Exception):
+        @property
+        def __traceback__(self):
+            return None
+
+        @__traceback__.setter
+        def __traceback__(self, value):
+            raise ValueError("this exception will not give up its traceback")
+
+    def explodes():
+        raise _Stubborn("boom")
+
+    def runs_after():
+        return None
+
+    outcomes = {}
+    logger = _CollectingLogger()
+    _isolated([explodes, runs_after], logger, outcomes)("init")
+
+    assert [p.__name__ for p, _ in outcomes["init"]["raised"]] == ["explodes"]
+    assert [p.__name__ for p in outcomes["init"]["completed"]] == ["runs_after"]
+    assert len(logger.warnings) == 1
 
 
 def test_an_unnamed_callable_does_not_break_the_recording():

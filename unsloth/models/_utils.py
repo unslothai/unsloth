@@ -953,6 +953,25 @@ def _run_temporary_patches(phase):
             else:
                 temporary_patch()
         except Exception as exception:
+            # Keep the exception, drop what it drags along. An exception holds
+            # its __traceback__, and a traceback holds every frame in it and
+            # every local in those frames; __context__ and __cause__ chain to
+            # more of the same. The "init" entry is written once per process and
+            # never replaced, so recording a failure as-is would pin the failed
+            # patch's frames for the lifetime of the process. Nothing reads them
+            # (the gate and the warning below both use only the type and the
+            # message), so this loses no diagnosis and bounds the record to the
+            # exception objects themselves.
+            # Guarded because these three are ordinary settable attributes and a
+            # subclass can shadow them with a property that refuses the write
+            # (measured: a ValueError out of a __traceback__ setter). Losing the
+            # trim is fine; losing the import over bookkeeping is not.
+            try:
+                exception.__traceback__ = None
+                exception.__context__ = None
+                exception.__cause__ = None
+            except Exception:
+                pass
             raised.append((temporary_patch, exception))
             logger.warning(
                 f"Unsloth: temporary patch "
