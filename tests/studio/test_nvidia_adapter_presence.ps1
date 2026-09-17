@@ -49,7 +49,7 @@ $strip = { param($t) (($t -split "`n") | ForEach-Object { $_.TrimStart() }) -joi
 $shared = @(
     "Invoke-BoundedVideoControllerScan", "Test-NvidiaAdapterPresent",
     "Test-OtherVendorAdapterPresent", "Get-XpuCapableNameRegex",
-    "Get-NvidiaDriverRelease", "Get-NvidiaDriverCudaFloor",
+    "Get-NvidiaDriverRelease", "Get-NvidiaCudaFloorForRelease", "Get-NvidiaDriverCudaFloor",
     "Get-NvidiaAdapterDriverRelease", "Get-NvidiaAdapterCudaFloor",
     "Get-NvidiaRegistryAdapter"
 )
@@ -59,7 +59,7 @@ foreach ($name in $shared) {
 }
 
 foreach ($name in @("Test-NvidiaAdapterPresent", "Test-OtherVendorAdapterPresent", "Get-XpuCapableNameRegex",
-                    "Get-NvidiaDriverRelease", "Get-NvidiaDriverCudaFloor",
+                    "Get-NvidiaDriverRelease", "Get-NvidiaCudaFloorForRelease", "Get-NvidiaDriverCudaFloor",
                     "Get-NvidiaAdapterDriverRelease", "Get-NvidiaAdapterCudaFloor",
                     "Get-NvidiaRegistryAdapter")) {
     Invoke-Expression (Get-FunctionText $setupPs1 $name)
@@ -291,7 +291,9 @@ foreach ($m in [regex]::Matches($tableMatch.Groups[1].Value, '\((\d+),\s*\((\d+)
     $pyRows += "$($m.Groups[1].Value):$($m.Groups[2].Value).$($m.Groups[3].Value)"
 }
 Check "the python table has rows to compare (bites)" ($pyRows.Count -ge 5)
-$psText = Get-FunctionText $setupPs1 "Get-NvidiaDriverCudaFloor"
+# Read from the function that HOLDS the table. Get-NvidiaDriverCudaFloor now only parses a
+# version and hands the release on, so reading it would compare an empty list and pass.
+$psText = Get-FunctionText $setupPs1 "Get-NvidiaCudaFloorForRelease"
 $psRows = @()
 foreach ($m in [regex]::Matches($psText, '@\((\d+),\s*(\d+),\s*(\d+)\)')) {
     $psRows += "$($m.Groups[1].Value):$($m.Groups[2].Value).$($m.Groups[3].Value)"
@@ -631,6 +633,39 @@ $script:FakeScanOk = $false
 Check "a later entry that names a version wins over an earlier one that does not" (
     (Get-NvidiaAdapterDriverRelease) -eq 536)
 Check "and presence is unaffected by which entry answered" ((Test-NvidiaAdapterPresent) -eq $true)
+
+# Two entries that disagree read as unknown, not as whichever came first. These keys outlive the
+# hardware and enumeration order says nothing about which adapter is live, so a stale newer entry
+# would pick wheels an older current driver cannot load, and a stale pre-R450 entry would demote a
+# current GPU to CPU. Unknown is already handled: presence stands, the floor does not.
+function Get-ItemProperty {
+    param([string]$LiteralPath, $ErrorAction)
+    if ("$LiteralPath" -eq "fake::0000") {
+        return [pscustomobject]@{ MatchingDeviceId = "PCI\\VEN_10DE&DEV_1DB1"; DriverVersion = "31.0.15.3699" }
+    }
+    if ("$LiteralPath" -eq "fake::0001") {
+        return [pscustomobject]@{ MatchingDeviceId = "PCI\\VEN_10DE&DEV_1DB1"; DriverVersion = "30.0.14.4568" }
+    }
+    return $null
+}
+Check "two entries naming different releases read as unknown" ($null -eq (Get-NvidiaAdapterDriverRelease))
+Check "and yield no floor either" ($null -eq (Get-NvidiaAdapterCudaFloor))
+Check "while the GPU is still reported present" ((Test-NvidiaAdapterPresent) -eq $true)
+
+# Two spellings of ONE release are agreement, not conflict: these entries can spell the same
+# driver differently, and comparing the strings rather than the releases would throw the floor
+# away on a machine that never disagreed with itself.
+function Get-ItemProperty {
+    param([string]$LiteralPath, $ErrorAction)
+    if ("$LiteralPath" -eq "fake::0000") {
+        return [pscustomobject]@{ MatchingDeviceId = "PCI\\VEN_10DE&DEV_1DB1"; DriverVersion = "31.0.15.3699" }
+    }
+    if ("$LiteralPath" -eq "fake::0001") {
+        return [pscustomobject]@{ MatchingDeviceId = "PCI\\VEN_10DE&DEV_1DB1"; DriverVersion = "536.99" }
+    }
+    return $null
+}
+Check "two spellings of one release still name it" ((Get-NvidiaAdapterDriverRelease) -eq 536)
 
 # And with NO entry naming a version, the versionless one is still the presence answer.
 function Get-ItemProperty {

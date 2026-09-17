@@ -3013,12 +3013,17 @@ function Get-NvidiaRegistryAdapter {
     try {
         $subs = @(Get-ChildItem -LiteralPath $classKey -ErrorAction SilentlyContinue)
     } catch { return $null }
-    # The first NVIDIA entry answers presence, but the first is not always the one that names a
-    # version: a machine with retained driver configurations carries several NVIDIA subkeys and
-    # the earliest can have no DriverVersion at all. Returning that one would report the GPU and
-    # lose the floor, which is the whole reason this hands back an entry. So the walk continues
-    # for one that names a version, and the versionless match is kept only as the fallback.
-    $fallback = $null
+    # Every NVIDIA entry, not the first one. These keys outlive the hardware and enumeration order
+    # says nothing about which adapter is live, so "the first one with a DriverVersion" can be a
+    # retained configuration: a newer stale entry would pick CUDA wheels an older current driver
+    # cannot load, and a stale pre-R450 entry would demote a current GPU to CPU.
+    #
+    # So the versions are collected and only a UNANIMOUS answer is used. Disagreement reads as no
+    # version at all, which leaves presence intact and the floor unknown, and unknown is already
+    # handled: the routing takes its conservative default and says so. Guarded per subkey, so one
+    # unreadable entry does not discard the rest.
+    $present = $false
+    $versions = @()
     foreach ($sub in $subs) {
         try {
             # Numeric subkeys only: "Properties" is ACL-restricted and is not an adapter.
@@ -3026,12 +3031,21 @@ function Get-NvidiaRegistryAdapter {
             $props = Get-ItemProperty -LiteralPath $sub.PSPath -ErrorAction SilentlyContinue
             if (-not $props) { continue }
             if ("$($props.MatchingDeviceId)" -notmatch '(?i)ven_10de') { continue }
-            $entry = [pscustomobject]@{ DriverVersion = "$($props.DriverVersion)" }
-            if (-not [string]::IsNullOrWhiteSpace($entry.DriverVersion)) { return $entry }
-            if ($null -eq $fallback) { $fallback = $entry }
+            $present = $true
+            $version = "$($props.DriverVersion)"
+            if ([string]::IsNullOrWhiteSpace($version)) { continue }
+            # Compared as RELEASES, not as strings. Two retained entries can spell one driver
+            # differently and still mean the same release, and that is agreement, not conflict.
+            $release = Get-NvidiaDriverRelease -DriverVersion $version
+            if ($null -eq $release) { continue }
+            if ($versions -notcontains $release) { $versions += $release }
         } catch {}
     }
-    return $fallback
+    if (-not $present) { return $null }
+    # A release, because that is what was compared. Null where the entries disagreed or none named a
+    # version, which is the same "unknown" the rest of the ladder already handles.
+    if ($versions.Count -ne 1) { return [pscustomobject]@{ Release = $null } }
+    return [pscustomobject]@{ Release = $versions[0] }
 }
 
 # Is there an NVIDIA display adapter on this machine, judged by PCI vendor ID and nothing else.
@@ -3181,18 +3195,25 @@ function Get-NvidiaDriverRelease {
     return $null
 }
 
-function Get-NvidiaDriverCudaFloor {
-    param([string]$DriverVersion)
-    $release = Get-NvidiaDriverRelease -DriverVersion $DriverVersion
-    if ($null -eq $release) { return $null }
+# The table, taken on a release number. Separate from the version parsing above it because the
+# registry fallback already has a release and nothing to re-parse: spelling it back as a version
+# string just so this could take it apart again is a round trip that can only lose.
+function Get-NvidiaCudaFloorForRelease {
+    param($Release)
+    if ($null -eq $Release) { return $null }
     # Highest floor first, the same order and values as _DRIVER_MAJOR_CUDA.
     foreach ($row in @(
         @(580, 13, 0), @(570, 12, 8), @(560, 12, 6), @(555, 12, 5), @(550, 12, 4),
         @(545, 12, 3), @(535, 12, 2), @(525, 12, 0), @(450, 11, 0)
     )) {
-        if ($release -ge $row[0]) { return @($row[1], $row[2]) }
+        if ([int]$Release -ge $row[0]) { return @($row[1], $row[2]) }
     }
     return $null
+}
+
+function Get-NvidiaDriverCudaFloor {
+    param([string]$DriverVersion)
+    return (Get-NvidiaCudaFloorForRelease -Release (Get-NvidiaDriverRelease -DriverVersion $DriverVersion))
 }
 
 # The floor for whichever healthy NVIDIA adapter the bus reports, or $null.
@@ -3213,7 +3234,7 @@ function Get-NvidiaAdapterDriverRelease {
     # the family it can actually load instead of the unknown-version default.
     if (-not $Scan.Ok) {
         $registryAdapter = Get-NvidiaRegistryAdapter
-        if ($registryAdapter) { return (Get-NvidiaDriverRelease -DriverVersion "$($registryAdapter.DriverVersion)") }
+        if ($registryAdapter) { return $registryAdapter.Release }
     }
     return $null
 }
@@ -3233,7 +3254,7 @@ function Get-NvidiaAdapterCudaFloor {
     # the family it can actually load instead of the unknown-version default.
     if (-not $Scan.Ok) {
         $registryAdapter = Get-NvidiaRegistryAdapter
-        if ($registryAdapter) { return (Get-NvidiaDriverCudaFloor -DriverVersion "$($registryAdapter.DriverVersion)") }
+        if ($registryAdapter) { return (Get-NvidiaCudaFloorForRelease -Release $registryAdapter.Release) }
     }
     return $null
 }
