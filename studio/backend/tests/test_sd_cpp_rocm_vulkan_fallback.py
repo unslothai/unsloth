@@ -2594,7 +2594,9 @@ class TestSelectedCardIndexSpaces:
 
         assert sd_cpp_backend.selected_card_identity(0) is None
 
-    def test_a_single_gpu_host_with_no_mapping_still_names_its_card(self, fake_settings, monkeypatch):
+    def test_a_single_gpu_host_with_no_mapping_still_names_its_card(
+        self, fake_settings, monkeypatch
+    ):
         """One card is the case this fallback exists for (gfx1151 Strix Halo, every APU). With a
         single inventory row the identity mapping is the only one there is, so declining would cost
         failure attribution on every pre-6.4 ROCm host and buy no safety."""
@@ -2656,9 +2658,7 @@ class TestACpuOnlyAnswerIsOnlyProofWhenItIsExplained:
         monkeypatch.setattr(
             sd_cpp_backend, "rocm_runtime_resolvable", lambda: resolvable, raising = False
         )
-        host = h3_amd_host(
-            platform = "linux", backend = "rocm", device = "cuda", devices = _ROCM_CPU_ONLY
-        )
+        host = h3_amd_host(platform = "linux", backend = "rocm", device = "cuda", devices = _ROCM_CPU_ONLY)
         host.run()
 
     def test_a_loadable_runtime_makes_it_ambiguous(self, h3_amd_host, fake_settings, monkeypatch):
@@ -2680,7 +2680,9 @@ class TestTheCommittedCardIsPublishedAtTheCommit:
     def test_a_load_in_flight_does_not_publish_its_card(self):
         from core.inference import sd_cpp_backend
 
-        backend_obj = sd_cpp_backend.SdCppDiffusionBackend.__new__(sd_cpp_backend.SdCppDiffusionBackend)
+        backend_obj = sd_cpp_backend.SdCppDiffusionBackend.__new__(
+            sd_cpp_backend.SdCppDiffusionBackend
+        )
         backend_obj._loading_card_store = lambda: types.SimpleNamespace()
         backend_obj._committed_loading_card = "Card A@gfx1100"
 
@@ -2696,9 +2698,7 @@ class TestTheCommittedCardIsPublishedAtTheCommit:
         from core.inference import sd_cpp_backend
 
         setter = inspect.getsource(sd_cpp_backend.SdCppDiffusionBackend._loading_card.fset)
-        code = "\n".join(
-            line for line in setter.splitlines() if not line.strip().startswith("#")
-        )
+        code = "\n".join(line for line in setter.splitlines() if not line.strip().startswith("#"))
         assert "_committed_loading_card" not in code, code
 
         source = inspect.getsource(sd_cpp_backend)
@@ -2763,7 +2763,6 @@ class TestTheRouterRecordsTheBundleNotTheServer:
     @staticmethod
     def _selection_source():
         from core.inference import diffusion_engine_router as router
-
         return inspect.getsource(router.select_and_activate_engine)
 
     def test_a_dead_server_is_held_until_the_cli_has_answered(self):
