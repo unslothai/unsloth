@@ -478,6 +478,15 @@ def test_a_survivor_keeps_its_record_through_a_clean_shutdown(tmp_path, monkeypa
         # Signalling silently does nothing, as an unkillable child would.
         monkeypatch.setattr(pl, "_posix_terminate", lambda pid, timeout = 5.0: None)
         monkeypatch.setattr(pl.os, "kill", lambda pid, sig: None)
+        # Both spellings, not just the POSIX one. `terminate_all` routes through the
+        # validated tree kill on Windows, and that goes to TerminateProcess through a
+        # handle rather than to `os.kill`, so on a Windows runner this child really was
+        # killed and the test was passing on the read-back being taken before the kill had
+        # landed. False is the Windows spelling of what the line above says: the signal did
+        # nothing and the tree still stands.
+        monkeypatch.setattr(
+            pl, "_windows_terminate_validated_tree", lambda pid, identity = None: False
+        )
 
         survivors = pl.terminate_all()
         assert survivors == [stubborn.pid]

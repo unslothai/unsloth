@@ -2286,6 +2286,7 @@ def test_a_windows_startup_sweep_consumes_the_record_it_has_emptied(monkeypatch,
 # ── the teardown lock is not held across a kill killpg already did ──
 
 
+@pytest.mark.skipif(IS_WINDOWS, reason = "no killpg here, so the branch below is POSIX-only")
 def test_a_killed_process_group_makes_the_tree_kill_unnecessary(monkeypatch):
     """`_kill_process_group` sends killpg SIGKILL to this exact tree eleven lines earlier.
 
@@ -2335,6 +2336,33 @@ def test_without_a_process_group_the_tree_kill_still_runs(monkeypatch):
     assert killed == [4242]
     assert confirmed == []
     assert cleared == [], "dropped the pidfile while the server was still running"
+
+
+@pytest.mark.skipif(IS_WINDOWS, reason = "deletes os.killpg, which is not here to delete")
+def test_a_process_group_with_no_killpg_still_tree_kills(monkeypatch):
+    """The second half of the condition. `_kill_process_group` is a no-op when `os.killpg`
+    is missing, so a pgid on its own is not evidence that anything was signalled, and
+    skipping the tree kill on it would skip a kill that never happened."""
+    import core.inference.llama_cpp as lc
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    b = _make_backend()
+    b._process.pid = 4242
+    b._process.poll.return_value = None
+    b._leading_process_group = lambda pid: pid
+    monkeypatch.delattr(lc.os, "killpg", raising = False)
+    cleared, killed = _instrument(monkeypatch, gone = True)
+    confirmed = []
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_confirm_group_kill_landed",
+        staticmethod(lambda pid: bool(confirmed.append(pid)) or True),
+    )
+
+    b._kill_process()
+
+    assert killed == [4242]
+    assert confirmed == []
 
 
 def test_confirming_a_group_kill_signals_nothing(monkeypatch):
