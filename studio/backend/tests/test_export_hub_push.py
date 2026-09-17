@@ -373,3 +373,147 @@ def test_merged_export_push_card_does_not_name_a_local_base_model(tmp_path, monk
     assert success is True, message
     assert "base_model: owner/model" in seen["card"]
     assert str(tmp_path) not in seen["card"]
+
+
+class _LoraTokenizer(_Tokenizer):
+    def __init__(self, calls):
+        self.calls = calls
+
+    def push_to_hub(self, repo_id, token = None, private = None):
+        self.calls.append(f"tokenizer_push:{repo_id}")
+
+
+class _LoraModel:
+    config = _Config()
+    peft_config: dict = {}
+
+    def __init__(self, calls):
+        self.calls = calls
+
+    def save_pretrained(self, save_directory):
+        Path(save_directory, "adapter_model.safetensors").write_bytes(b"weights")
+
+    def save_lora_adapters(self, save_directory):
+        Path(save_directory, "adapters.safetensors").write_bytes(b"weights")
+
+    def save_pretrained_gguf(
+        self,
+        save_directory,
+        tokenizer,
+        save_method = None,
+        quantization_method = None,
+        token = None,
+    ):
+        Path(save_directory, "model-lora-q8_0.gguf").write_bytes(b"GGUF")
+
+    def push_to_hub(self, repo_id, token = None, private = None):
+        self.calls.append(f"model_push:{repo_id}")
+
+
+_LORA_LEGS = {
+    "adapter": (False, False, ["model_push:owner/model", "tokenizer_push:owner/model"]),
+    "gguf": (True, False, ["upload_folder"]),
+    "mlx": (False, True, ["upload_folder"]),
+}
+
+
+def _lora_backend(monkeypatch, name, calls, seen, leg):
+    gguf, is_mlx, uploads = _LORA_LEGS[leg]
+    backend = _non_mlx_backend(monkeypatch, name, calls, seen)
+    export_module = sys.modules[type(backend).__module__]
+    monkeypatch.setattr(export_module, "_IS_MLX", is_mlx)
+    monkeypatch.setattr(export_module, "_export_runtime_available", lambda: True)
+    monkeypatch.setattr(export_module, "_apply_wsl_sudo_patch", lambda: None)
+    backend.current_model = _LoraModel(calls)
+    backend.current_tokenizer = _LoraTokenizer(calls)
+    backend.is_peft = True
+    return export_module, backend, gguf, uploads
+
+
+def _push_lora(backend, save_directory, gguf, private):
+    return backend.export_lora_adapter(
+        save_directory,
+        push_to_hub = True,
+        repo_id = "model",
+        hf_token = "hf_fake",
+        private = private,
+        gguf = gguf,
+    )
+
+
+@pytest.mark.parametrize("leg", list(_LORA_LEGS))
+@pytest.mark.parametrize("private", [True, False])
+def test_lora_export_push_makes_an_existing_repo_private_before_uploading(
+    tmp_path, monkeypatch, leg, private
+):
+    calls: list[str] = []
+    seen: dict = {}
+    _module, backend, gguf, uploads = _lora_backend(
+        monkeypatch, f"test_export_hub_push_lora_{leg}_backend", calls, seen, leg
+    )
+
+    success, message, _path = _push_lora(backend, str(tmp_path / "export"), gguf, private)
+
+    assert success is True, message
+    assert seen["token"] == "hf_fake"
+    assert seen["repo"] == {"repo_id": "model", "private": private, "exist_ok": True}
+    visibility = ["update_repo_settings"] if private else []
+    assert calls == ["create_repo", *visibility, *uploads]
+    if private:
+        assert seen["visibility"] == {"repo_id": "owner/model", "private": True}
+    else:
+        assert "visibility" not in seen
+
+
+@pytest.mark.parametrize("leg", list(_LORA_LEGS))
+def test_lora_export_push_refuses_to_upload_when_privacy_cannot_be_confirmed(
+    tmp_path, monkeypatch, leg
+):
+    calls: list[str] = []
+    seen: dict = {}
+    module, backend, gguf, _uploads = _lora_backend(
+        monkeypatch, f"test_export_hub_push_lora_{leg}_denied_backend", calls, seen, leg
+    )
+
+    def _denied(
+        self,
+        repo_id,
+        private = None,
+        repo_type = None,
+    ):
+        raise RuntimeError("403 Forbidden: write:repo_settings missing")
+
+    monkeypatch.setattr(module.HfApi, "update_repo_settings", _denied)
+    seen["repo_info_result"] = types.SimpleNamespace(private = False)
+
+    success, message, output_path = _push_lora(backend, str(tmp_path / "export"), gguf, True)
+
+    assert success is False
+    assert "could not be confirmed private" in message
+    assert output_path is None
+    assert calls == ["create_repo", "repo_info"]
+
+
+@pytest.mark.parametrize("leg", list(_LORA_LEGS))
+def test_lora_export_push_uploads_when_the_repo_is_already_private(tmp_path, monkeypatch, leg):
+    calls: list[str] = []
+    seen: dict = {}
+    module, backend, gguf, uploads = _lora_backend(
+        monkeypatch, f"test_export_hub_push_lora_{leg}_ok_backend", calls, seen, leg
+    )
+
+    def _denied(
+        self,
+        repo_id,
+        private = None,
+        repo_type = None,
+    ):
+        raise RuntimeError("403 Forbidden: write:repo_settings missing")
+
+    monkeypatch.setattr(module.HfApi, "update_repo_settings", _denied)
+    seen["repo_info_result"] = types.SimpleNamespace(private = True)
+
+    success, message, _path = _push_lora(backend, str(tmp_path / "export"), gguf, True)
+
+    assert success is True, message
+    assert calls == ["create_repo", "repo_info", *uploads]

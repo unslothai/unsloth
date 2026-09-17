@@ -1627,17 +1627,21 @@ class ExportBackend:
 
                 logger.info(f"Pushing LoRA adapter to Hub: {repo_id}")
 
+                # Needs a local save_directory so the conversion is not re-run.
+                if gguf and not (output_path and Path(output_path).is_dir()):
+                    return (
+                        False,
+                        "GGUF LoRA Hub upload requires a local save directory; set one and retry.",
+                        None,
+                    )
+
+                hf_api = HfApi(token = hf_token)
+                repo_url = hf_api.create_repo(repo_id, private = private, exist_ok = True)
+                repo_id = getattr(repo_url, "repo_id", repo_id)
+                if private:
+                    _ensure_hub_repo_private(hf_api, repo_id)
+
                 if gguf:
-                    # Needs a local save_directory so the conversion is not re-run.
-                    if not (output_path and Path(output_path).is_dir()):
-                        return (
-                            False,
-                            "GGUF LoRA Hub upload requires a local save directory; set one and "
-                            "retry.",
-                            None,
-                        )
-                    hf_api = HfApi(token = hf_token)
-                    hf_api.create_repo(repo_id, private = private, exist_ok = True)
                     hf_api.upload_folder(
                         folder_path = output_path,
                         repo_id = repo_id,
@@ -1647,8 +1651,6 @@ class ExportBackend:
                     with tempfile.TemporaryDirectory() as tmp_dir:
                         self.current_model.save_lora_adapters(tmp_dir)
                         self.current_tokenizer.save_pretrained(tmp_dir)
-                        hf_api = HfApi(token = hf_token)
-                        hf_api.create_repo(repo_id, private = private, exist_ok = True)
                         hf_api.upload_folder(
                             folder_path = tmp_dir,
                             repo_id = repo_id,
