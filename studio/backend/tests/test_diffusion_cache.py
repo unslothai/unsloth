@@ -540,3 +540,93 @@ def test_invalidate_child_registry_cache_tolerates_absence():
     reg = types.SimpleNamespace(_child_registries_cache = None)
     _invalidate_child_registry_cache(types.SimpleNamespace(_diffusers_hook = reg))
     assert reg._child_registries_cache is None
+
+
+# ── a second engage must not destroy the cache the first one installed ────────────
+class _RealisticCacheMixin:
+    """``CacheMixin`` as diffusers actually implements it, which the simple stub above does not model.
+
+    The two behaviours that matter: ``enable_cache`` RAISES when a cache is already enabled ("To apply a new
+    caching technique, please disable the existing one first"), and ``is_cache_enabled`` reports the live
+    state. Without them a redundant ``apply_step_cache`` looks harmless in tests while tearing the running
+    cache down in production.
+    """
+
+    def __init__(self):
+        self.enabled_with = None
+        self.disable_calls = 0
+        self.enable_calls = 0
+
+    @property
+    def is_cache_enabled(self):
+        return self.enabled_with is not None
+
+    def enable_cache(self, config):
+        self.enable_calls += 1
+        if self.is_cache_enabled:
+            raise ValueError("Caching has already been enabled with <class 'FirstBlockCacheConfig'>.")
+        self.enabled_with = config
+
+    def disable_cache(self):
+        self.disable_calls += 1
+        self.enabled_with = None
+
+
+def test_a_redundant_engage_keeps_the_running_cache(monkeypatch):
+    _stub_diffusers(monkeypatch)
+    t = _RealisticCacheMixin()
+    assert apply_step_cache(_pipe(t), mode = "fbcache") == TC_FBCACHE
+    first = t.enabled_with
+
+    # Same settings a second time: the cache must still be on, on the SAME config object, and diffusers must
+    # not have been asked to enable or disable anything.
+    assert apply_step_cache(_pipe(t), mode = "fbcache") == TC_FBCACHE
+    assert t.is_cache_enabled is True
+    assert t.enabled_with is first
+    assert (t.enable_calls, t.disable_calls) == (1, 0)
+    assert t._unsloth_step_cache == f"fbcache@{DEFAULT_FBCACHE_THRESHOLD}"
+
+
+def test_re_engaging_at_a_new_threshold_reconfigures(monkeypatch):
+    # Different settings are a real request, so the old cache comes off and the new one goes on. This is the
+    # only order diffusers accepts, and it must leave the marker describing the NEW threshold.
+    _stub_diffusers(monkeypatch)
+    t = _RealisticCacheMixin()
+    apply_step_cache(_pipe(t), mode = "fbcache")
+    assert apply_step_cache(_pipe(t), mode = "fbcache", threshold = 0.5) == TC_FBCACHE
+    assert t.is_cache_enabled is True
+    assert t.enabled_with.threshold == 0.5
+    assert (t.enable_calls, t.disable_calls) == (2, 1)
+    assert t._unsloth_step_cache == "fbcache@0.5"
+
+
+def test_a_failed_re_engage_clears_the_marker(monkeypatch):
+    # The marker is read far from here as "this transformer step-caches", so it must not outlive a failed
+    # engage. Re-engaging at a new threshold is the only way to reach that state: the first engage set the
+    # marker, the second drops the old cache and then fails, leaving a transformer that does NOT cache and a
+    # marker that says it does.
+    _stub_diffusers(monkeypatch)
+    t = _RealisticCacheMixin()
+    apply_step_cache(_pipe(t), mode = "fbcache")
+    assert t._unsloth_step_cache == f"fbcache@{DEFAULT_FBCACHE_THRESHOLD}"
+
+    real_enable = t.enable_cache
+
+    def _boom(config):
+        real_enable(config)
+        raise RuntimeError("block signature not recognised")
+
+    t.enable_cache = _boom
+    assert apply_step_cache(_pipe(t), mode = "fbcache", threshold = 0.5) is None
+    assert t._unsloth_step_cache is None
+
+
+def test_a_stale_marker_without_hooks_re_engages(monkeypatch):
+    # The reverse desync: a marker left set on a transformer whose hooks are gone. The cache is genuinely off,
+    # so the engage must proceed and rewrite the marker rather than trust it and no-op.
+    _stub_diffusers(monkeypatch)
+    t = _RealisticCacheMixin()
+    t._unsloth_step_cache = f"fbcache@{DEFAULT_FBCACHE_THRESHOLD}"
+    assert apply_step_cache(_pipe(t), mode = "fbcache") == TC_FBCACHE
+    assert t.is_cache_enabled is True
+    assert t.enable_calls == 1

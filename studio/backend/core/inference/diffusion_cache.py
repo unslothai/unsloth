@@ -215,6 +215,23 @@ def apply_step_cache(
             logger, mode, RuntimeError("pipeline __call__ opens no cache_context; running uncached")
         )
         return None
+    # A second call on an already-cached transformer must not tear the working cache down. diffusers'
+    # enable_cache RAISES when is_cache_enabled, so without this the ValueError lands in the recovery branch
+    # below, which calls disable_cache() and returns None: one redundant call and the cache the caller
+    # already had is gone, reported only at warning level. Same settings is therefore a no-op, and different
+    # settings go through disable_cache first, which is the only way diffusers accepts a new config.
+    if getattr(transformer, "is_cache_enabled", False):
+        prior = getattr(transformer, "_unsloth_step_cache", None)
+        if prior == f"{mode}@{thr}":
+            return mode
+        try:
+            _restore_hooked_block_inners(transformer)
+            transformer.disable_cache()
+        except Exception as exc:  # noqa: BLE001 - cannot re-configure -> keep what is already running
+            # Report what is STILL engaged, not None: the hooks are live either way, and a None here would
+            # claim uncached while the transformer caches, which is the same desync this guard prevents.
+            _warn(logger, mode, exc)
+            return prior.split("@")[0] if isinstance(prior, str) else None
     try:
         try:
             from diffusers import FirstBlockCacheConfig
@@ -242,6 +259,13 @@ def apply_step_cache(
         try:
             transformer.disable_cache()
         except Exception:  # noqa: BLE001
+            pass
+        # The marker has to come off with the hooks. It is read as "this transformer step-caches" well away from
+        # here (the CUDA graph wrapper short-circuits to eager on it), so a marker left set by a failed engage
+        # sends a transformer that is NOT caching down the caching path for the rest of the process.
+        try:
+            transformer._unsloth_step_cache = None
+        except Exception:  # noqa: BLE001 - marker is best-effort
             pass
         _warn(logger, mode, exc)
         return None
