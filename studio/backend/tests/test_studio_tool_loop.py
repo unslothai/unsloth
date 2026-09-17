@@ -136,7 +136,6 @@ def _run(
     tools = None,
     tool_choice = None,
     messages = None,
-    session_id = "s1",
     **policy_kwargs,
 ):
     policy_fields = {
@@ -157,7 +156,7 @@ def _run(
             transport,
             run = ToolLoopRun(
                 messages = messages or [{"role": "user", "content": "hi"}],
-                session_id = session_id,
+                session_id = "s1",
                 thread_id = "t1",
                 tool_choice = tool_choice,
             ),
@@ -490,48 +489,6 @@ def test_zero_budget_withdraws_the_catalog(executed):
     assert executed == []
     assert transport.requests[0]["tools"] is None
     assert transport.requests[0]["tool_choice"] == "none"
-
-
-def test_confirmed_ssh_without_session_is_approved_only_for_that_call(executed, monkeypatch):
-    from core.inference.ssh_policy import check_ssh_python_access
-
-    code = "import paramiko; c=paramiko.SSHClient(); c.connect(hostname='approved.example')"
-    seen = []
-
-    def execute(name, arguments, **kwargs):
-        seen.append(check_ssh_python_access(arguments["code"], kwargs["session_id"]))
-        return seen[-1] or "approved"
-
-    monkeypatch.setattr(loop_mod, "execute_tool", execute)
-    monkeypatch.setattr(loop_mod, "begin_tool_decision", lambda *args: object())
-    monkeypatch.setattr(loop_mod, "wait_tool_decision", lambda *args: "allow")
-    monkeypatch.setattr(loop_mod, "abort_tool_decision", lambda *args: None)
-    transport = FakeTransport(
-        [
-            [
-                _sse(
-                    {
-                        "tool_calls": [
-                            {
-                                "index": 0,
-                                "id": "c1",
-                                "function": {
-                                    "name": "python",
-                                    "arguments": json.dumps({"code": code}),
-                                },
-                            }
-                        ]
-                    }
-                ),
-                _sse(finish = "tool_calls"),
-                _DONE,
-            ],
-            [_sse({"content": "ok"}), _sse(finish = "stop"), _DONE],
-        ]
-    )
-    _run(transport, tools = [PY], session_id = None, permission_mode = "ask", confirm_calls = True)
-    assert seen == [None]
-    assert check_ssh_python_access(code, None) is not None
 
 
 def test_denied_call_does_not_spend_an_iteration(executed, monkeypatch):

@@ -198,6 +198,7 @@ def _earliest_tool_signal(
     *,
     unrestricted: bool = False,
     start: int = 0,
+    streaming: bool = False,
 ) -> int:
     """Index where the turn's first genuine tool-call boundary begins, or -1.
 
@@ -242,6 +243,7 @@ def _earliest_tool_signal(
             None if unrestricted else (lambda: _active_tool_names(active_tools)),
             start,
             floor = floor,
+            streaming = streaming,
         )
         if gemma >= floor and (best < 0 or gemma < best):
             best = gemma
@@ -904,6 +906,7 @@ def run_safetensors_tool_loop(
                     _detect_tools,
                     unrestricted = unrestricted_tools,
                     start = max(0, _tool_signal_scanned_upto - _TOOL_SIGNAL_OVERLAP),
+                    streaming = True,
                 )
                 if signal_pos >= 0:
                     before_tool = candidate[:signal_pos]
@@ -1421,7 +1424,6 @@ def run_safetensors_tool_loop(
                 }
                 yield start_event
 
-                ssh_hosts = set()
                 _decision = (
                     wait_tool_decision(
                         decision_slot,
@@ -1431,14 +1433,6 @@ def run_safetensors_tool_loop(
                     if decision_slot is not None
                     else None
                 )
-                if _decision == "allow":
-                    from core.inference.ssh_policy import collect_ssh_hosts_for_approval
-                    from state.ssh_approvals import approve_hosts
-
-                    ssh_hosts = collect_ssh_hosts_for_approval(
-                        decision.tool_name, decision.arguments
-                    )
-                    approve_hosts(session_id, ssh_hosts)
                 if _decision is not None and _decision != "deny":
                     yield {"type": "status", "text": decision.status_text}
                 if _decision == "deny":
@@ -1479,11 +1473,7 @@ def run_safetensors_tool_loop(
                 # stream while the tool blocks (the SSE route turns heartbeats into
                 # keepalives). execute_tool is injectable; pass output_callback
                 # only when it accepts it.
-                def _invoke_tool(
-                    _output_callback,
-                    _decision = decision,
-                    approved_ssh_hosts = ssh_hosts,
-                ):
+                def _invoke_tool(_output_callback, _decision = decision):
                     kwargs = dict(
                         cancel_event = cancel_event,
                         timeout = eff_timeout,
@@ -1583,10 +1573,7 @@ def run_safetensors_tool_loop(
                     if _accepts_output_callback(execute_tool):
                         kwargs["output_callback"] = _output_callback
                     kwargs.update(_search_images_kwargs(execute_tool, _decision.tool_name))
-                    from state.ssh_approvals import temporary_ssh_approval
-
-                    with temporary_ssh_approval(approved_ssh_hosts):
-                        return execute_tool(_decision.tool_name, _decision.arguments, **kwargs)
+                    return execute_tool(_decision.tool_name, _decision.arguments, **kwargs)
 
                 try:
                     result = yield from stream_tool_execution(
