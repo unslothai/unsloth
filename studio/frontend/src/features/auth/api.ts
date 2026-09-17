@@ -94,6 +94,14 @@ async function fetchWithTauriNetworkRetry(
       ) {
         throw error;
       }
+      // Everything below this line is Tauri only, so the browser build reaches none of it.
+      //
+      // #10520 stretched the ladder past the launcher's 10s probe budget so a slow backend
+      // stops being called dead, and a stopped one then pays 10.5s of sleeping to be told
+      // what a refused connect already proved. The native side can tell a refused port apart
+      // from a silent one, which `fetch` cannot, so ask it once on the FIRST failure: a port
+      // that refuses with nothing of ours coming up on it is an answer, not a wait.
+      if (attempt === 0 && (await nativeBackendIsGone())) throw error;
       await wait(delays[attempt]);
       beforeRetry?.();
     }
@@ -187,6 +195,51 @@ async function nativeBackendIsAlive(): Promise<boolean> {
     // Identity, not the port: a probe for a newer port owns the slot now.
     if (nativeHealthInflight === inflight) {
       nativeHealthInflight = null;
+    }
+  }
+}
+
+/** `check_backend_is_gone` and NOT `check_backend_present`: presence reports a backend of ours that has not bound its port yet as absent. */
+let nativeGoneInflight: { port: number; probe: Promise<boolean> } | null = null;
+
+/**
+ * Whether the retry ladder has anything left to wait for.
+ *
+ * Only ever answers true on positive proof, so every failure mode below returns false and
+ * leaves the ladder exactly as long as it is today: the browser build, which has no native
+ * side to ask; a port the webview has not been given yet; and a shell too old to carry the
+ * command, whose rejected `invoke` is caught here.
+ */
+async function nativeBackendIsGone(): Promise<boolean> {
+  if (!isTauri) {
+    return false;
+  }
+  const port = getApiPort();
+  if (port === null) {
+    return false;
+  }
+  // Single flight, like the presence probe: a hub losing the backend fails every panel at once.
+  if (nativeGoneInflight !== null && nativeGoneInflight.port === port) {
+    return nativeGoneInflight.probe;
+  }
+  const probe = (async () => {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return (
+        (await invoke<boolean>("check_backend_is_gone", { port })) === true
+      );
+    } catch {
+      return false;
+    }
+  })();
+  const inflight = { port, probe };
+  nativeGoneInflight = inflight;
+  try {
+    return await probe;
+  } finally {
+    // Identity, not the port: a probe for a newer port owns the slot now.
+    if (nativeGoneInflight === inflight) {
+      nativeGoneInflight = null;
     }
   }
 }

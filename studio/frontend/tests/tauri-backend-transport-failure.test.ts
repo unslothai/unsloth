@@ -24,6 +24,9 @@ function loadAuthApi(options: {
   port: number | null;
   getPort?: () => number | null;
   checkHealth?: (port: number) => boolean | Promise<boolean>;
+  /** `check_backend_is_gone`. Default false: the ladder the tree had before the fast path. */
+  checkGone?: (port: number) => boolean | Promise<boolean>;
+  isTauri?: boolean;
   onInvoke?: (command: string, args: Record<string, unknown>) => void;
 }): AuthApi {
   const currentPort = options.getPort ?? (() => options.port);
@@ -38,7 +41,7 @@ function loadAuthApi(options: {
             : `http://127.0.0.1:${port}${path}`;
         },
         getApiPort: () => currentPort(),
-        isTauri: true,
+        isTauri: options.isTauri ?? true,
       },
       "@/lib/account-transition": { accountTransitionPending: () => false },
       "./session": {
@@ -52,6 +55,9 @@ function loadAuthApi(options: {
       "@tauri-apps/api/core": {
         invoke: async (command: string, args: Record<string, unknown>) => {
           options.onInvoke?.(command, args);
+          if (command === "check_backend_is_gone") {
+            return options.checkGone?.(args.port as number) ?? false;
+          }
           if (command !== "check_backend_present") {
             throw new Error(`unexpected command ${command}`);
           }
@@ -104,7 +110,10 @@ test("a backend that accepts late is reached instead of declared not running", a
 
   try {
     listenAfter(server, port, SLOW_LOOPBACK_ACCEPT_DELAY_MS);
-    const authApi = loadAuthApi({ port });
+    // The connects here are genuinely refused until 3s. `check_backend_is_gone` answers
+    // false anyway, because a backend this app is bringing up owns the port before it binds
+    // it -- which is why the fast path asks for absence rather than for presence.
+    const authApi = loadAuthApi({ port, checkGone: () => false });
     const response = await authApi.authFetch("/api/models");
 
     assert.equal(response.status, 200);
@@ -326,6 +335,8 @@ test("updating an existing install does not go through the changed path", async 
   assert.ok(main.includes("commands::check_health,"));
   // check_health collapses a stalled probe onto false, the verdict this file exists to stop showing.
   assert.ok(main.includes("commands::check_backend_present,"));
+  // The fast path's command. Unregistered, every invoke rejects and the ladder is the old one.
+  assert.ok(main.includes("commands::check_backend_is_gone,"));
   const authApiSrc = await readFile(
     new URL("../src/features/auth/api.ts", import.meta.url),
     "utf8",
@@ -437,6 +448,219 @@ test("a probe pending against the old port is not the answer about the new one",
     assert.equal(second.message, authApi.BACKEND_NOT_ANSWERING_MESSAGE);
     assert.ok(firstError instanceof Error);
     assert.equal(firstError.message, authApi.BACKEND_NOT_RUNNING_MESSAGE);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+// The ladder the fast path short-circuits, as the source states it.
+const LONG_LADDER_MS = 250 + 750 + 1500 + 3000 + 5000;
+const LONG_LADDER_ATTEMPTS = 6;
+
+test("a backend that is provably gone is reported without sleeping out the ladder", async () => {
+  // A refused port with nothing of ours coming up on it: the native side has already
+  // answered the question the remaining 10.5s of sleeping would ask five more times.
+  const port = 61820;
+  const asked: string[] = [];
+  const originalFetch = globalThis.fetch;
+  let attempts = 0;
+  globalThis.fetch = async () => {
+    attempts += 1;
+    throw new TypeError("fetch failed");
+  };
+
+  try {
+    const authApi = loadAuthApi({
+      port,
+      checkGone: () => true,
+      checkHealth: () => false,
+      onInvoke: (command) => asked.push(command),
+    });
+    const started = performance.now();
+    const error = await authApi.authFetch("/api/models").then(
+      () => null,
+      (rejection: unknown) => rejection,
+    );
+    const elapsed = performance.now() - started;
+
+    assert.ok(error instanceof Error);
+    assert.equal(error.message, authApi.BACKEND_NOT_RUNNING_MESSAGE);
+    assert.equal(
+      attempts,
+      1,
+      `the request was sent ${attempts} times after the backend was proven gone`,
+    );
+    assert.ok(
+      elapsed < LONG_LADDER_MS / 4,
+      `reporting a dead backend took ${Math.round(elapsed)}ms of a ${LONG_LADDER_MS}ms ladder`,
+    );
+    assert.deepEqual(asked, ["check_backend_is_gone", "check_backend_present"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("a backend that is merely slow still gets every rung and the busy message", async () => {
+  // The other direction. `check_backend_is_gone` is false for a port we are bringing up and
+  // for one whose handshake is filtered, and neither may lose a single retry.
+  const port = 61821;
+  const originalFetch = globalThis.fetch;
+  let attempts = 0;
+  let goneProbes = 0;
+  globalThis.fetch = async () => {
+    attempts += 1;
+    throw new TypeError("fetch failed");
+  };
+
+  try {
+    const authApi = loadAuthApi({
+      port,
+      checkGone: () => {
+        goneProbes += 1;
+        return false;
+      },
+      checkHealth: () => true,
+    });
+    const started = performance.now();
+    const error = await authApi.authFetch("/api/models").then(
+      () => null,
+      (rejection: unknown) => rejection,
+    );
+    const elapsed = performance.now() - started;
+
+    assert.ok(error instanceof Error);
+    assert.equal(error.message, authApi.BACKEND_NOT_ANSWERING_MESSAGE);
+    assert.equal(
+      attempts,
+      LONG_LADDER_ATTEMPTS,
+      `a backend that may still be starting was given ${attempts} attempts`,
+    );
+    assert.ok(
+      elapsed >= LONG_LADDER_MS,
+      `the ladder finished in ${Math.round(elapsed)}ms, short of ${LONG_LADDER_MS}ms`,
+    );
+    assert.equal(
+      goneProbes,
+      1,
+      "the fast path probed on more than the first failure",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("a shell too old for the command keeps the ladder it has today", async () => {
+  // The webview ships ahead of the shell it runs in. A rejected invoke is not an answer.
+  const port = 61822;
+  const originalFetch = globalThis.fetch;
+  let attempts = 0;
+  globalThis.fetch = async () => {
+    attempts += 1;
+    throw new TypeError("fetch failed");
+  };
+
+  try {
+    const authApi = loadAuthApi({
+      port,
+      checkGone: () => {
+        throw new Error("command not registered on this build");
+      },
+      checkHealth: () => false,
+    });
+    const error = await authApi.authFetch("/api/models").then(
+      () => null,
+      (rejection: unknown) => rejection,
+    );
+
+    assert.ok(error instanceof Error);
+    assert.equal(error.message, authApi.BACKEND_NOT_RUNNING_MESSAGE);
+    assert.equal(attempts, LONG_LADDER_ATTEMPTS);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("the browser build asks nothing and behaves exactly as it did", async () => {
+  // `fetch` in a browser reports a refused connection and a timed-out one as the same
+  // opaque TypeError, so there is nothing to be fast about and no native side to ask.
+  const invoked: string[] = [];
+  const originalFetch = globalThis.fetch;
+  let attempts = 0;
+  globalThis.fetch = async () => {
+    attempts += 1;
+    throw new TypeError("fetch failed");
+  };
+
+  try {
+    const authApi = loadAuthApi({
+      port: 61823,
+      isTauri: false,
+      checkGone: () => true,
+      checkHealth: () => true,
+      onInvoke: (command) => invoked.push(command),
+    });
+    const error = await authApi.authFetch("/api/models").then(
+      () => null,
+      (rejection: unknown) => rejection,
+    );
+
+    assert.ok(error instanceof Error);
+    assert.equal(error.message, authApi.BACKEND_NOT_RUNNING_MESSAGE);
+    assert.equal(attempts, 1, "the browser build started retrying");
+    assert.deepEqual(
+      invoked,
+      [],
+      "the browser build reached for the native side",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("panels that all lose the backend at once share one absence probe", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    throw new TypeError("fetch failed");
+  };
+
+  let probes = 0;
+  let releaseProbe: (() => void) | null = null;
+  const probeStarted = new Promise<void>((resolve) => {
+    releaseProbe = resolve;
+  });
+
+  try {
+    const authApi = loadAuthApi({
+      port: 61824,
+      checkGone: async () => {
+        probes += 1;
+        releaseProbe?.();
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        return true;
+      },
+      checkHealth: () => false,
+    });
+    const call = () =>
+      authApi.authFetch("/api/models").then(
+        () => null,
+        (rejection: unknown) => rejection,
+      );
+
+    const first = call();
+    // Bounded: a build that never probes must fail on the count below, not hang here.
+    await Promise.race([
+      probeStarted,
+      new Promise<void>((resolve) => {
+        setTimeout(resolve, 5_000).unref();
+      }),
+    ]);
+    const errors = await Promise.all([first, call(), call()]);
+
+    assert.equal(probes, 1, "each lost panel opened its own absence probe");
+    for (const error of errors) {
+      assert.ok(error instanceof Error);
+      assert.equal(error.message, authApi.BACKEND_NOT_RUNNING_MESSAGE);
+    }
   } finally {
     globalThis.fetch = originalFetch;
   }

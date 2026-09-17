@@ -7,11 +7,12 @@ from __future__ import annotations
 
 import atexit
 import collections
-import logging
 import os
 import sys
 import tempfile
 import threading
+
+# `logging` is deliberately NOT imported here; see _prefix_formatter_class().
 
 __all__ = [
     "LOG_RECORD_CONTINUATION_PREFIX",
@@ -479,28 +480,47 @@ def install_worker_stderr_mirror(
     return True
 
 
-class _EveryLineCarriesThePrefix(logging.Formatter):
-    def __init__(self, inner: "logging.Formatter") -> None:
-        super().__init__()
-        self._inner = inner
+_PREFIX_FORMATTER_CLASS = None
 
-    def format(self, record: "logging.LogRecord") -> str:
-        text = self._inner.format(record)
-        first, newline, rest = text.partition("\n")
-        # The first line too: a default-formatted single-line record has no shape to spot.
-        marked_first = (
-            first if first.startswith(LOG_RECORD_START_MARK) else LOG_RECORD_START_MARK + first
-        )
-        if not newline:
-            return marked_first
-        return (
-            marked_first
-            + "\n"
-            + "\n".join(LOG_RECORD_CONTINUATION_PREFIX + line for line in rest.split("\n"))
-        )
 
-    def __getattr__(self, name: str):
-        return getattr(self._inner, name)
+def _prefix_formatter_class():
+    """Built on first use, so importing this module does not import ``logging``.
+
+    Every spawned inference worker imports this module before its entrypoint runs, and a
+    fresh spawn child has no ``logging`` yet: pulling it in here was 4.2ms of the 5.3ms this
+    file added to each worker spawn. Nothing on that path needs it -- the marking below runs
+    later in the worker, after logging is configured, where the import is already paid for.
+    """
+    global _PREFIX_FORMATTER_CLASS
+    if _PREFIX_FORMATTER_CLASS is not None:
+        return _PREFIX_FORMATTER_CLASS
+    import logging
+
+    class _EveryLineCarriesThePrefix(logging.Formatter):
+        def __init__(self, inner: "logging.Formatter") -> None:
+            super().__init__()
+            self._inner = inner
+
+        def format(self, record: "logging.LogRecord") -> str:
+            text = self._inner.format(record)
+            first, newline, rest = text.partition("\n")
+            # The first line too: a default-formatted single-line record has no shape to spot.
+            marked_first = (
+                first if first.startswith(LOG_RECORD_START_MARK) else LOG_RECORD_START_MARK + first
+            )
+            if not newline:
+                return marked_first
+            return (
+                marked_first
+                + "\n"
+                + "\n".join(LOG_RECORD_CONTINUATION_PREFIX + line for line in rest.split("\n"))
+            )
+
+        def __getattr__(self, name: str):
+            return getattr(self._inner, name)
+
+    _PREFIX_FORMATTER_CLASS = _EveryLineCarriesThePrefix
+    return _PREFIX_FORMATTER_CLASS
 
 
 _UNHOOKED_SET_FORMATTER = None
@@ -508,11 +528,14 @@ _UNHOOKED_ADD_HANDLER = None
 
 
 def _mark_handler(handler) -> bool:
+    import logging
+
+    prefixed = _prefix_formatter_class()
     formatter = getattr(handler, "formatter", None)
-    if isinstance(formatter, _EveryLineCarriesThePrefix):
+    if isinstance(formatter, prefixed):
         return False
     setter = _UNHOOKED_SET_FORMATTER or type(handler).setFormatter
-    setter(handler, _EveryLineCarriesThePrefix(formatter or logging.Formatter()))
+    setter(handler, prefixed(formatter or logging.Formatter()))
     return True
 
 
@@ -521,12 +544,15 @@ def _install_continuation_hook() -> bool:
     global _UNHOOKED_SET_FORMATTER, _UNHOOKED_ADD_HANDLER
     if _UNHOOKED_SET_FORMATTER is not None:
         return False
+    import logging
+
+    prefixed = _prefix_formatter_class()
     unhooked_set = logging.Handler.setFormatter
     unhooked_add = logging.Logger.addHandler
 
     def setFormatter(self, fmt):  # noqa: N802 -- matches logging's own spelling
-        if fmt is not None and not isinstance(fmt, _EveryLineCarriesThePrefix):
-            fmt = _EveryLineCarriesThePrefix(fmt)
+        if fmt is not None and not isinstance(fmt, prefixed):
+            fmt = prefixed(fmt)
         unhooked_set(self, fmt)
 
     def addHandler(self, hdlr):  # noqa: N802 -- matches logging's own spelling
@@ -546,6 +572,8 @@ def _install_continuation_hook() -> bool:
 def mark_log_record_continuations(logger_object = None, *, cover_later_handlers = True) -> int:
     """Covers ``logging.lastResort`` and later handlers too: a miss hands a RECOVERED
     request's traceback to the next caller as their crash."""
+    import logging
+
     root = logger_object if logger_object is not None else logging.getLogger()
     wrapped = 0
     for handler in list(getattr(root, "handlers", ())):

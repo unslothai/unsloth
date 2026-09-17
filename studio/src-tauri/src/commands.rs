@@ -3,6 +3,7 @@ use crate::install;
 use crate::process::{self, BackendState, ShutdownFlag};
 use crate::update;
 use log::{error, info, warn};
+use std::net::{Ipv4Addr, SocketAddr};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
@@ -36,6 +37,14 @@ const HEALTH_WATCHDOG_MAX_FAILURES_BUSY: u32 = 12;
 /// than retrying, and `backend/tests/test_health_answers_within_probe_budget.py` derives
 /// `_HEALTH_DETECT_BUDGET_S` from that number.
 const HEALTH_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long one loopback connect gets to be REFUSED before the answer stops being "nothing
+/// is listening". A refusal comes back in microseconds (0.18ms median here, 1.3ms worst),
+/// so this is not a budget the answer normally uses; it is the point past which silence is
+/// a filtered or stalled handshake, which is #10520 and keeps the full retry ladder.
+///
+/// Small on purpose: it is spent BEFORE the ladder's first rung, so it is the whole cost the
+/// fast path can add to a backend that turns out to be alive.
+const REFUSAL_PROBE_TIMEOUT: Duration = Duration::from_millis(250);
 /// Budget for the single last-chance probe spent before a stalled backend is declared dead.
 ///
 /// Deliberately above HEALTH_WATCHDOG_INTERVAL, unlike the per-cycle budget: this one is not
@@ -488,6 +497,70 @@ async fn backend_presence(
                 we_manage_it(),
             ))
         }
+    }
+}
+
+/// Whether the webview can stop retrying and tell the user the backend is gone.
+///
+/// `check_backend_present` cannot answer this. It reports a backend of ours that has not
+/// bound its port yet exactly as it reports one that was never there, and the first case is
+/// the slow start the frontend's retry ladder exists to survive. So ownership is asked
+/// FIRST, and only for a port nobody here is bringing up does a refused connect settle it.
+#[tauri::command]
+pub async fn check_backend_is_gone(
+    state: tauri::State<'_, BackendState>,
+    port: u16,
+) -> Result<bool, String> {
+    let state = state.inner();
+    Ok(backend_is_gone(port, REFUSAL_PROBE_TIMEOUT, || {
+        we_manage_a_backend_on(state, port)
+    })
+    .await)
+}
+
+async fn backend_is_gone(port: u16, budget: Duration, we_manage_it: impl Fn() -> bool) -> bool {
+    // Port 0 is the placeholder base the webview holds before a validated port arrives.
+    if port == 0 {
+        return false;
+    }
+    // A backend we started may simply not have bound its port yet: #10520, keep waiting.
+    if we_manage_it() {
+        return false;
+    }
+    matches!(connect_outcome(port, budget).await, ConnectOutcome::Refused)
+}
+
+/// What one loopback connect established, as three answers rather than two.
+#[derive(Debug, PartialEq, Eq)]
+enum ConnectOutcome {
+    /// The kernel answered that nothing holds the port. Proof, not an expiring budget.
+    Refused,
+    /// Something accepted, so an empty port is not what the webview ran into.
+    Accepted,
+    /// No answer inside the budget, or an error that does not name a closed port. A
+    /// filtered loopback handshake lands here, which is #10520 itself.
+    Unsettled,
+}
+
+async fn connect_outcome(port: u16, budget: Duration) -> ConnectOutcome {
+    let target = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+    let settled = tokio::time::timeout(budget, tokio::net::TcpStream::connect(target))
+        .await
+        .ok()
+        .map(|attempt| attempt.map(|_stream| ()));
+    classify_connect(settled)
+}
+
+/// `None` is a budget that ran out. Split from the connect itself so the rule can be tested
+/// without a port that behaves the way each branch needs.
+fn classify_connect(settled: Option<std::io::Result<()>>) -> ConnectOutcome {
+    match settled {
+        Some(Ok(())) => ConnectOutcome::Accepted,
+        Some(Err(err)) if err.kind() == std::io::ErrorKind::ConnectionRefused => {
+            ConnectOutcome::Refused
+        }
+        Some(Err(_)) => ConnectOutcome::Unsettled,
+        None => ConnectOutcome::Unsettled,
     }
 }
 
@@ -1825,6 +1898,127 @@ mod tests {
             super::backend_presence(port, || true).await,
             Ok(false),
             "a closed port must still read as an absent backend"
+        );
+    }
+
+    /// A port that is free and, unlike a dropped port-0 binding, cannot be handed to a
+    /// sibling test in this binary before the probe runs: the range is below the ephemeral
+    /// one on every platform here (32768 on Linux, 49152 on macOS and Windows). Its own
+    /// window, so it cannot collide with the one `a_port_with_nothing_on_it_reads_as_death_
+    /// not_a_stall` walks either.
+    async fn a_closed_port_below_the_ephemeral_range() -> u16 {
+        for candidate in 20_064..20_128u16 {
+            if let Ok(listener) = TcpListener::bind(("127.0.0.1", candidate)).await {
+                drop(listener);
+                return candidate;
+            }
+        }
+        panic!("every port in the probe window was already bound")
+    }
+
+    #[tokio::test]
+    async fn a_closed_port_nobody_here_owns_is_gone() {
+        // The whole point of the command: this is the answer that lets the webview stop
+        // sleeping out a 10.5s ladder against a backend that is not coming back.
+        let port = a_closed_port_below_the_ephemeral_range().await;
+        assert!(
+            super::backend_is_gone(port, super::REFUSAL_PROBE_TIMEOUT, || false).await,
+            "a refused loopback connect on a port nothing here owns is not reported as gone"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_closed_port_we_are_bringing_up_is_not_gone() {
+        // #10520: our own backend has not bound its port yet, so the connect is refused
+        // exactly as it would be for a dead one. Cutting the ladder short here is the
+        // regression this guard exists to catch.
+        //
+        // Port 0 is safe here where it is not above: ownership is read before anything
+        // connects, so a sibling taking this port back cannot change the answer.
+        let port = {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            drop(listener);
+            port
+        };
+        assert!(
+            !super::backend_is_gone(port, super::REFUSAL_PROBE_TIMEOUT, || true).await,
+            "a backend of ours that is still starting was reported as gone"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_port_something_is_listening_on_is_not_gone() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        assert!(
+            !super::backend_is_gone(port, super::REFUSAL_PROBE_TIMEOUT, || false).await,
+            "a port that accepted a connection was reported as gone"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_placeholder_port_is_never_an_answer() {
+        // Port 0 is the base the webview holds before server-port arrives.
+        assert!(!super::backend_is_gone(0, super::REFUSAL_PROBE_TIMEOUT, || false).await);
+    }
+
+    #[test]
+    fn a_connect_that_never_answers_is_unsettled_not_refused() {
+        // A filtered loopback handshake is #10520 itself, and no test here can drop a SYN,
+        // so the rule is checked on its own: only a refusal is proof, a spent budget is not.
+        assert_eq!(
+            super::classify_connect(None),
+            super::ConnectOutcome::Unsettled,
+            "a spent budget was reported as proof that nothing is listening"
+        );
+        assert_eq!(
+            super::classify_connect(Some(Err(std::io::Error::from(
+                std::io::ErrorKind::TimedOut
+            )))),
+            super::ConnectOutcome::Unsettled
+        );
+        assert_eq!(
+            super::classify_connect(Some(Err(std::io::Error::from(
+                std::io::ErrorKind::PermissionDenied
+            )))),
+            super::ConnectOutcome::Unsettled,
+            "a blocked connect is not evidence the port is empty"
+        );
+        assert_eq!(
+            super::classify_connect(Some(Err(std::io::Error::from(
+                std::io::ErrorKind::ConnectionRefused
+            )))),
+            super::ConnectOutcome::Refused
+        );
+        assert_eq!(
+            super::classify_connect(Some(Ok(()))),
+            super::ConnectOutcome::Accepted
+        );
+    }
+
+    #[test]
+    fn the_refusal_probe_cannot_eat_the_ladder_it_short_circuits() {
+        // It is spent before the first rung, so it is the whole cost the fast path adds to
+        // a backend that turns out to be alive.
+        assert!(super::REFUSAL_PROBE_TIMEOUT * 4 <= super::HEALTH_PROBE_TIMEOUT);
+    }
+
+    #[test]
+    fn the_fast_path_asks_for_absence_and_not_for_presence() {
+        // Two different questions. `check_backend_present` reports a backend of ours that
+        // has not bound its port yet as absent, so shortening the ladder on that answer
+        // would undo #10520.
+        let src = include_str!("../../frontend/src/features/auth/api.ts").replace("\r\n", "\n");
+        assert!(
+            src.contains("invoke<boolean>(\"check_backend_is_gone\""),
+            "the retry ladder no longer has a fast path for a backend that is provably gone"
+        );
+        let marker = "if (attempt === 0 && (await nativeBackendIsGone()))";
+        assert!(
+            src.contains(marker),
+            "the fast path stopped being gated on the first failure and a positive answer, \
+             so a slow backend can be abandoned before the ladder has run"
         );
     }
 
