@@ -21,12 +21,22 @@ import pytest
 from utils import desktop_shell_env as dse
 
 
+@pytest.fixture
+def linux(monkeypatch):
+    """The module returns before anything else off Linux, so pin the platform.
+
+    Without this the import tests pass on a Windows or macOS runner by asserting
+    the early return, which is how staging CI caught them asserting nothing.
+    """
+    monkeypatch.setattr(dse.sys, "platform", "linux")
+
+
 def desktop(**extra) -> dict:
     """An environment as the desktop app hands it over: marked, and ROCm-empty."""
     return {dse.DESKTOP_MANAGED_ENV: "1", **extra}
 
 
-def test_no_amd_gpu_imports_nothing_and_spawns_no_shell(monkeypatch):
+def test_no_amd_gpu_imports_nothing_and_spawns_no_shell(linux, monkeypatch):
     monkeypatch.setattr(dse, "host_has_amd_gpu", lambda: False)
 
     def _explode(*_a, **_k):
@@ -38,7 +48,7 @@ def test_no_amd_gpu_imports_nothing_and_spawns_no_shell(monkeypatch):
     assert environ == desktop()
 
 
-def test_amd_host_imports_the_missing_rocm_vars(monkeypatch):
+def test_amd_host_imports_the_missing_rocm_vars(linux, monkeypatch):
     monkeypatch.setattr(dse, "host_has_amd_gpu", lambda: True)
     monkeypatch.setattr(
         dse,
@@ -101,7 +111,7 @@ def test_the_allowlist_carries_no_other_vendor():
     assert offenders == []
 
 
-def test_importing_twice_is_a_no_op_the_second_time(monkeypatch):
+def test_importing_twice_is_a_no_op_the_second_time(linux, monkeypatch):
     monkeypatch.setattr(dse, "host_has_amd_gpu", lambda: True)
     monkeypatch.setattr(dse, "read_login_shell_env", lambda *_a, **_k: {"ROCM_PATH": "/opt/rocm"})
     environ = desktop()
@@ -118,7 +128,7 @@ def test_the_opt_out_short_circuits_before_anything_is_read(monkeypatch):
     assert dse.import_rocm_env_from_login_shell(environ = environ) == {}
 
 
-def test_a_shell_that_fails_yields_nothing(monkeypatch):
+def test_a_shell_that_fails_yields_nothing(linux, monkeypatch):
     monkeypatch.setattr(dse, "host_has_amd_gpu", lambda: True)
 
     def _raise(*_a, **_k):
@@ -163,7 +173,7 @@ def test_the_amd_probe_answers_from_the_kernel_without_torch():
     assert dse.host_has_amd_gpu() in (True, False)
 
 
-def test_a_launch_the_desktop_app_does_not_own_reads_no_shell(monkeypatch):
+def test_a_launch_the_desktop_app_does_not_own_reads_no_shell(linux, monkeypatch):
     def _explode(*_a, **_k):
         raise AssertionError("only a desktop launch lost its environment")
 
@@ -268,14 +278,14 @@ def _shell_with_the_reporters_override(monkeypatch):
     )
 
 
-def test_an_override_the_install_cannot_serve_is_not_imported(monkeypatch):
+def test_an_override_the_install_cannot_serve_is_not_imported(linux, monkeypatch):
     _shell_with_the_reporters_override(monkeypatch)
     environ = desktop(**{dse.ROCM_INSTALLED_ARCH_ENV: "gfx1151"})
     assert dse.import_rocm_env_from_login_shell(environ = environ) == {"ROCM_PATH": "/opt/rocm"}
     assert dse.HSA_OVERRIDE_ENV not in environ
 
 
-def test_an_override_the_install_can_serve_is_imported(monkeypatch):
+def test_an_override_the_install_can_serve_is_imported(linux, monkeypatch):
     # 11.0.0 is gfx1100, and these wheels carry gfx1100 kernels.
     _shell_with_the_reporters_override(monkeypatch)
     environ = desktop(**{dse.ROCM_INSTALLED_ARCH_ENV: "gfx1100"})
@@ -283,7 +293,7 @@ def test_an_override_the_install_can_serve_is_imported(monkeypatch):
     assert imported["HSA_OVERRIDE_GFX_VERSION"] == "11.0.0"
 
 
-def test_an_install_that_is_not_single_arch_arbitrates_nothing(monkeypatch):
+def test_an_install_that_is_not_single_arch_arbitrates_nothing(linux, monkeypatch):
     """No marker means generic or multi-arch wheels, which contradict no override."""
     _shell_with_the_reporters_override(monkeypatch)
     imported = dse.import_rocm_env_from_login_shell(environ = desktop())
@@ -323,3 +333,18 @@ def test_the_cli_and_this_module_name_the_same_marker():
     """Two files, one contract: a rename on either side must fail here."""
     import unsloth_cli.commands.studio as studio_cli
     assert studio_cli.ROCM_INSTALLED_ARCH_ENV == dse.ROCM_INSTALLED_ARCH_ENV
+
+
+@pytest.mark.parametrize("platform", ["win32", "darwin"])
+def test_no_other_platform_reads_a_shell(platform, monkeypatch):
+    """Windows inherits the user environment already, and macOS has no KFD."""
+
+    def _explode(*_a, **_k):
+        raise AssertionError(f"{platform} must return before anything is read")
+
+    monkeypatch.setattr(dse.sys, "platform", platform)
+    monkeypatch.setattr(dse, "host_has_amd_gpu", _explode)
+    monkeypatch.setattr(dse, "read_login_shell_env", _explode)
+    environ = desktop()
+    assert dse.import_rocm_env_from_login_shell(environ = environ) == {}
+    assert environ == desktop()
