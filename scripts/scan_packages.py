@@ -396,6 +396,10 @@ class Finding:
     check: str
     evidence: str = ""
     file_sha256: str = ""
+    # The same matched code rendered with no display caps, recorded only where a
+    # first-party (package, file, check) approval may have to read it. It is never
+    # hashed, printed or written to the baseline; see _partition_baseline.
+    evidence_full: str = ""
 
 
 def check_pth_file(content: str, filename: str, package: str) -> list[Finding]:
@@ -855,6 +859,10 @@ def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
                 "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
                 f"Obfusc: {_extract_evidence(content, RE_OBFUSCATION)}\n"
                 f"Exec: {_extract_evidence(content, RE_EXEC_EVAL)}",
+                evidence_full = (
+                    f"Obfusc: {_extract_evidence(content, RE_OBFUSCATION, lossless = True)}\n"
+                    f"Exec: {_extract_evidence(content, RE_EXEC_EVAL, lossless = True)}"
+                ),
             )
         )
 
@@ -1199,11 +1207,18 @@ def _extract_evidence(
     content: str,
     pattern: re.Pattern,
     max_matches: int = 0,
+    lossless: bool = False,
 ) -> str:
     """Pull matching lines as evidence snippets (``max_matches=0`` means all). Records every matching line in full so an extra match appended to an already-flagged file changes the baseline key instead of riding the first few, and keeps leading whitespace so a flagged line moved out of a guarded block reads as changed. Each single-line match is extended over bracket continuations; cross-line matches the per-line scan cannot see are recorded afterwards. A pathological greedy span is bounded to its head line plus a digest of the rest."""
     lines = content.splitlines()
     sl_blanked = [_RE_STR_LITERAL.sub("", ln) for ln in lines]
     ml_blanked = _blank_code_strings(lines)
+    # `lossless` lifts the three display caps. Only a token reader asks for it, never the
+    # rendered/hashed evidence, so the bound on what a packed payload can dump into a
+    # report or a baseline file is unchanged.
+    span_cap = float("inf") if lossless else _MAX_EVIDENCE_SPANS
+    cap_line = (lambda code: code) if lossless else _cap_line
+    multiline_cap = float("inf") if lossless else _MAX_MULTILINE_LINES
     out = []
     seen: set[tuple[int, int]] = set()
     # Overflow is streamed, not buffered: past _MAX_EVIDENCE_SPANS every further span folds straight into a running digest, so memory stays bounded to the display cap while the digest still covers every overflow span. The fold reproduces _canon_evidence(" | ".join(overflow)) exactly.
@@ -1213,7 +1228,7 @@ def _extract_evidence(
 
     def _emit(rendered: str) -> None:
         nonlocal overflow_count, overflow_started
-        if len(out) < _MAX_EVIDENCE_SPANS:
+        if len(out) < span_cap:
             out.append(rendered)
             return
         overflow_count += 1
@@ -1228,7 +1243,7 @@ def _extract_evidence(
 
     def _render(start: int, end: int) -> str:
         span = lines[start - 1 : end] or ["<multiline match>"]
-        if len(span) > _MAX_MULTILINE_LINES:
+        if len(span) > multiline_cap:
             # Digest the code without the L<NN>: markers so a pure line shift of the same span stays stable while a code change still reopens. The head is truncated for display only.
             code = "\n".join(ln.rstrip() for ln in span)
             digest = hashlib.sha256(code.encode("utf-8", "replace")).hexdigest()
@@ -1236,7 +1251,7 @@ def _extract_evidence(
             if len(head) > _MAX_LINE_CHARS:
                 head = head[:_MAX_LINE_CHARS] + "..."
             return f"L{start}: {head} sha256:{digest}"
-        return "\n".join(f"L{start + i}: {_cap_line(ln.rstrip())}" for i, ln in enumerate(span))
+        return "\n".join(f"L{start + i}: {cap_line(ln.rstrip())}" for i, ln in enumerate(span))
 
     for i, line in enumerate(lines, 1):
         if pattern.search(line):
@@ -1244,7 +1259,7 @@ def _extract_evidence(
             if span in seen:
                 continue
             # Only track spans while still filling the display list: past the cap every span folds into the overflow digest, so growing `seen` with all of them would keep memory proportional to the match count. The per-line spans are unique by line number, so dropping them past the cap cannot cause a missed dedup.
-            if len(out) < _MAX_EVIDENCE_SPANS:
+            if len(out) < span_cap:
                 seen.add(span)
             _emit(_render(*span))
             if max_matches and len(out) >= max_matches:
@@ -1258,7 +1273,7 @@ def _extract_evidence(
         if end <= start or (start, end) in seen:
             continue  # single-line matches are already covered by the pass above
         # A giant greedy DOTALL span is bound by the full digest of its content: binding only the anchors leaves the bridged interior unhashed, so a new cross-line payload could be inserted between unchanged outer anchors and keep the same key.
-        if len(out) < _MAX_EVIDENCE_SPANS:
+        if len(out) < span_cap:
             seen.add((start, end))
         _emit(_render(start, end))
         if max_matches and len(out) >= max_matches:
@@ -2589,15 +2604,42 @@ _RE_ESCALATION_TOKEN = re.compile(
     r"|\bos\s*\.\s*(?:system|popen|exec\w*|spawn\w*)\b"
     r"|\bsocket\s*\.\s*\w+"
     r"|\bctypes\s*\.\s*\w+"
+    # The two RE_OBFUSCATION forms the list above did not otherwise cover. Without them a
+    # first-party file approved for `exec(` also rides `exec(chr(101)+chr(118)+...)`: the
+    # decoder raises the very finding the entry suppresses and contributes no token.
+    r"|\bchr\s*\(\s*\d+\s*\)[^\n]*\bchr\s*\(\s*\d+\s*\)"
+    r"|\brotate\s*=[^\n]*\blambda\b[^\n]*\bchr\b"
 )
+
+# A chr() chain is normalised to its ORDINALS, not to a category: the ordinals are the
+# payload. unsloth_zoo/compiler.py already ships `{chr(92)}{chr(92)}` in the training
+# banner, so a category token would be approved there on day one and would then cover
+# every other chain in the file. `chr-chain:92,92` covers exactly the banner.
+_RE_CHR_CALL = re.compile(r"chr\(\d+\)")
+
+
+def _normalise_escalation_token(raw: str) -> str:
+    """One matched construct, reduced to the form the approval is keyed on."""
+    token = re.sub(r"\s+", "", raw).lower()
+    if token.startswith("chr("):
+        return "chr-chain:" + ",".join(m.group(0)[4:-1] for m in _RE_CHR_CALL.finditer(token))
+    if token.startswith("rotate="):
+        return "rotate-lambda-chr"
+    return token
 
 
 def _escalation_tokens(evidence: str) -> "set[str]":
-    """The dangerous constructs the flagged code uses, spelling-normalised. Run over the canonical evidence, so an ``L<NN>:`` marker and a line shift are already gone and only the code is read."""
+    """The dangerous constructs the flagged code uses, spelling-normalised. Run over the canonical evidence, so an ``L<NN>:`` marker and a line shift are already gone and only the code is read. Feed it LOSSLESS evidence: `_cap_line`, the multi-line digest and the span overflow all replace code with a digest, and a construct inside the omitted part is a construct this cannot see."""
     return {
-        re.sub(r"\s+", "", m.group(0)).lower()
+        _normalise_escalation_token(m.group(0))
         for m in _RE_ESCALATION_TOKEN.finditer(_canon_evidence(evidence))
     }
+
+
+# Markers `_extract_evidence` leaves where it dropped code: a `_cap_line`/multi-line
+# digest, or the overflow tail. Their presence means the rendered evidence is not a
+# complete reading of the flagged code, so a token set taken from it is a floor.
+_RE_LOSSY_EVIDENCE = re.compile(r"sha256:|\(\+\d+ more\)")
 
 
 # Leading "<name>-<version>/" archive root of an sdist member, which carries the version. Stripping it while keeping the rest of the path gives a key stable across version bumps that still distinguishes same-named files.
@@ -2845,7 +2887,16 @@ def _partition_baseline(
             # already cover.
             coarse = _coarse_key(f.package, f.filename, f.check)
             approved = baseline.get(coarse)
-            hit = approved is not None and _escalation_tokens(f.evidence) <= approved
+            # Read the UNCAPPED matched code. f.evidence is a display rendering: a line
+            # over _MAX_LINE_CHARS, a span over _MAX_MULTILINE_LINES and everything past
+            # _MAX_EVIDENCE_SPANS are all replaced by a digest, and a token inside the
+            # omitted part is invisible -- an approved `exec(` with `marshal.loads(...)`
+            # pushed past column 200 read as the approved vocabulary and was suppressed.
+            # A check that never records evidence_full cannot be read at all when its
+            # evidence is lossy, so it fails closed rather than on a partial token set.
+            basis = f.evidence_full or f.evidence
+            readable = bool(f.evidence_full) or not _RE_LOSSY_EVIDENCE.search(f.evidence)
+            hit = approved is not None and readable and _escalation_tokens(basis) <= approved
         (suppressed if hit else active).append(f)
     return active, suppressed
 

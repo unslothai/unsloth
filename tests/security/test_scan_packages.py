@@ -587,9 +587,14 @@ def test_the_high_churn_unsloth_zoo_entries_are_keyed_on_file_and_check():
         assert sorted(tokens) == sorted(
             sp._escalation_tokens(e["evidence"])
         ), f"{e['file']}: evidence_tokens disagrees with the evidence beside it"
-        assert set(tokens) <= {"exec(", "eval(", "__import__(", "compile("}, (
+        # chr-chain:92,92 is the two `{chr(92)}` in compiler.py's training banner, which
+        # is what makes RE_OBFUSCATION fire on that file at all. It is pinned to those
+        # ordinals, so a decoder chain in the same file carries different ones and is not
+        # covered by it.
+        approved_family = {"exec(", "eval(", "__import__(", "compile(", "chr-chain:92,92"}
+        assert set(tokens) <= approved_family, (
             f"{e['file']} was approved for generating and importing code. "
-            f"{sorted(set(tokens) - {'exec(', 'eval(', '__import__(', 'compile('})} is "
+            f"{sorted(set(tokens) - approved_family)} is "
             f"deserialisation, decoding, process or socket work and needs its own review."
         )
 
@@ -2999,3 +3004,115 @@ def test_building_the_fixtures_leaves_the_callers_environment_alone() -> None:
             os.environ.pop("SOURCE_DATE_EPOCH", None)
         else:
             os.environ["SOURCE_DATE_EPOCH"] = previous
+
+
+def _shipped_baseline():
+    import pathlib
+    return sp._load_baseline(
+        str(pathlib.Path(__file__).resolve().parents[2] / "scripts" / "scan_packages_baseline.json")
+    )
+
+
+_ZOO_CHECK = "Advanced obfuscation (marshal/compile/zlib) + exec/eval"
+
+
+def _zoo_compiler_finding(extra: str):
+    """The obfuscation+exec finding a compiler.py carrying `extra` raises, built through
+    the real file checker so the evidence is rendered exactly as a scan renders it."""
+    content = (
+        "def build(loc, mod):\n"
+        "    _m = __import__(loc)\n"
+        '    exec(f"{loc}.{mod}.forward = fwd")\n'
+        '    return eval(f"{loc}.{mod}")\n'
+    ) + extra
+    findings = [
+        f
+        for f in sp.check_py_file(content, "unsloth_zoo-1.0/unsloth_zoo/compiler.py", "unsloth-zoo")
+        if f.check == _ZOO_CHECK
+    ]
+    assert len(findings) == 1, [f.check for f in findings]
+    return findings[0]
+
+
+def test_a_payload_past_the_display_cap_still_reopens_a_coarse_approval():
+    """Evidence is a DISPLAY rendering: `_cap_line` replaces everything past
+    `_MAX_LINE_CHARS` with a digest. Reading the approved vocabulary off it let an
+    approved `exec(` carry a `marshal.loads` parked past column 200, so the release that
+    added the payload was suppressed by the reviewed entry. Tokens come off the uncapped
+    matched code instead."""
+    baseline = _shipped_baseline()
+    pad = "x" * (sp._MAX_LINE_CHARS + 60)
+    hidden = _zoo_compiler_finding(f'    exec("{pad}" or marshal.loads(blob))\n')
+
+    assert "sha256:" in hidden.evidence, "the payload line was not truncated; test is void"
+    assert "marshal.loads" not in sp._escalation_tokens(hidden.evidence)
+
+    active, suppressed = sp._partition_baseline([hidden], baseline)
+    assert (
+        active == [hidden] and suppressed == []
+    ), "a marshal.loads past the display cap rode the coarse approval"
+
+
+def test_a_coarse_approval_reopens_on_the_obfuscation_forms_the_check_itself_matches():
+    """Every construct RE_OBFUSCATION recognises has to be in the escalation vocabulary,
+    or it raises the finding while contributing nothing that could reopen it. A chr()
+    decoder chain and a rotation lambda are both spelled out of `exec(`/`__import__(`,
+    which compiler.py is approved for."""
+    baseline = _shipped_baseline()
+    chr_chain = _zoo_compiler_finding(
+        '    exec(chr(101) + chr(118) + chr(97) + chr(108) + "(blob)")\n'
+    )
+    rotation = _zoo_compiler_finding(
+        '    rotate = lambda s: "".join(chr(ord(c) ^ 13) for c in s)\n' "    exec(rotate(blob))\n"
+    )
+    for finding, what in ((chr_chain, "a chr() decoder chain"), (rotation, "a rotation lambda")):
+        active, suppressed = sp._partition_baseline([finding], baseline)
+        assert active == [finding] and suppressed == [], f"{what} rode the coarse approval"
+
+
+def test_the_banner_chr_chain_does_not_approve_another_one():
+    """compiler.py's approval covers `chr-chain:92,92`, the `{chr(92)}{chr(92)}` in the
+    training banner. The token carries the ordinals, so it is an approval of that chain
+    and not of chr() chains in that file."""
+    baseline = _shipped_baseline()
+    key = sp._coarse_key("unsloth-zoo", "unsloth_zoo/compiler.py", _ZOO_CHECK)
+    assert "chr-chain:92,92" in baseline[key]
+    assert sp._escalation_tokens('f"{chr(92)}{chr(92)} banner"') == {"chr-chain:92,92"}
+    assert sp._escalation_tokens("exec(chr(101) + chr(118))") == {"exec(", "chr-chain:101,118"}
+
+
+def test_lossless_evidence_lifts_every_display_cap_and_only_for_tokens():
+    """`lossless` is what makes the token read complete, and it is confined to the token
+    read: the rendered and hashed evidence keeps its bounds."""
+    long_line = "exec(" + "y" * (sp._MAX_LINE_CHARS + 40) + " or marshal.loads(b))"
+    content = "\n".join([long_line] + [f"exec(v{i})" for i in range(sp._MAX_EVIDENCE_SPANS + 8)])
+
+    capped = sp._extract_evidence(content, sp.RE_EXEC_EVAL)
+    full = sp._extract_evidence(content, sp.RE_EXEC_EVAL, lossless = True)
+
+    assert "sha256:" in capped and "more)" in capped
+    assert "sha256:" not in full and "more)" not in full
+    assert f"exec(v{sp._MAX_EVIDENCE_SPANS + 7})" in full
+    assert "marshal.loads" in sp._escalation_tokens(full)
+    assert "marshal.loads" not in sp._escalation_tokens(capped)
+
+
+def test_a_coarse_approval_fails_closed_when_the_evidence_is_lossy_and_unreadable():
+    """A check that records no `evidence_full` cannot be read past its display caps, so a
+    lossy evidence string is refused rather than approved on the part that is visible."""
+    check = _ZOO_CHECK
+    key = sp._coarse_key("unsloth-zoo", "unsloth_zoo/compiler.py", check)
+    baseline = {key: {"exec("}}
+    lossy = _mk(
+        "HIGH",
+        "unsloth-zoo",
+        "unsloth_zoo/compiler.py",
+        check,
+        "Exec: L1: exec(payload) sha256:" + "0" * 64,
+    )
+    active, suppressed = sp._partition_baseline([lossy], baseline)
+    assert active == [lossy] and suppressed == []
+
+    lossy.evidence_full = "Exec: L1: exec(payload)"
+    active, suppressed = sp._partition_baseline([lossy], baseline)
+    assert suppressed == [lossy] and active == []

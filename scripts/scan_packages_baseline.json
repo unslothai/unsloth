@@ -1444,6 +1444,7 @@
       "evidence_hash": "bdfae4c24572c2a86fa6a2dede720ebb0723746963e43c2cd42701de5fc48fdb",
       "evidence_tokens": [
         "__import__(",
+        "chr-chain:92,92",
         "eval(",
         "exec("
       ]
