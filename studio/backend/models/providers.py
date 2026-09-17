@@ -7,8 +7,7 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
-
-# ── Registry (static provider info) ───────────────────────────────
+MAX_JSON_SAFE_INTEGER = 9_007_199_254_740_991
 
 
 class ProviderRegistryEntry(BaseModel):
@@ -20,6 +19,8 @@ class ProviderRegistryEntry(BaseModel):
     default_models: list[str] = Field(
         default_factory = list, description = "Well-known model IDs for this provider"
     )
+
+    model_capabilities: dict[str, dict[str, bool]] = Field(default_factory = dict)
     supports_streaming: bool = Field(
         True, description = "Whether this provider supports SSE streaming"
     )
@@ -29,13 +30,22 @@ class ProviderRegistryEntry(BaseModel):
     supports_tool_calling: bool = Field(
         False, description = "Whether this provider supports tool/function calling"
     )
+    supports_studio_tools: bool = Field(
+        False,
+        description = "Whether Unsloth runs its own tool loop (search/code/MCP/RAG) against this provider",
+    )
+    hidden: bool = Field(
+        False,
+        description = "Backend-only entry; the UI surfaces it via a custom preset, not the dropdown",
+    )
+
+    auth_kind: Literal["api_key", "chatgpt_oauth"] = "api_key"
+    base_url_editable: bool = True
+    model_ids_editable: bool = True
     model_list_mode: Literal["remote", "curated"] = Field(
         "remote",
         description = "remote = fetch /models; curated = huge catalogs — UI uses defaults + manual IDs only",
     )
-
-
-# ── Provider config CRUD ──────────────────────────────────────────
 
 
 class ProviderCreate(BaseModel):
@@ -55,6 +65,18 @@ class ProviderCreate(BaseModel):
         default_factory = list,
         description = "Discovered catalog model IDs last fetched for this connection",
     )
+    max_output_tokens: Optional[int] = Field(
+        None,
+        strict = True,
+        ge = 64,
+        le = MAX_JSON_SAFE_INTEGER,
+        description = "Optional maximum Max Tokens cap for this connection",
+    )
+
+    encrypted_api_key: Optional[str] = Field(
+        None,
+        description = "Optional RSA-encrypted API key to persist for this connection",
+    )
 
 
 class ProviderUpdate(BaseModel):
@@ -68,6 +90,32 @@ class ProviderUpdate(BaseModel):
         None,
         description = "Discovered catalog model IDs last fetched for this connection",
     )
+    max_output_tokens: Optional[int] = Field(
+        None,
+        strict = True,
+        ge = 64,
+        le = MAX_JSON_SAFE_INTEGER,
+        description = "Optional maximum Max Tokens cap for this connection",
+    )
+
+    encrypted_api_key: Optional[str] = Field(
+        None,
+        description = "Optional RSA-encrypted replacement API key; omission preserves the saved key",
+    )
+    clear_api_key: bool = Field(
+        False,
+        description = "Explicitly remove the saved API key",
+    )
+
+
+class ProviderCredentialMigration(BaseModel):
+    """One-time browser credential migration that never replaces a saved key."""
+
+    encrypted_api_key: str = Field(
+        ...,
+        min_length = 1,
+        description = "RSA-encrypted legacy API key to insert only when no key exists",
+    )
 
 
 class ProviderResponse(BaseModel):
@@ -78,6 +126,11 @@ class ProviderResponse(BaseModel):
     display_name: str = Field(..., description = "User-chosen label")
     base_url: str = Field(..., description = "API base URL")
     is_enabled: bool = Field(True, description = "Whether this provider is enabled")
+
+    has_api_key: bool = Field(False, description = "Whether this caller has a saved API key")
+
+    auth_kind: Literal["api_key", "chatgpt_oauth"] = "api_key"
+    auth_status: Literal["disconnected", "connected", "reauthorization_required"] = "disconnected"
     models: list[str] = Field(
         default_factory = list,
         description = "Enabled model IDs for this connection",
@@ -86,11 +139,12 @@ class ProviderResponse(BaseModel):
         default_factory = list,
         description = "Discovered catalog model IDs last fetched for this connection",
     )
+    max_output_tokens: Optional[int] = Field(
+        None,
+        description = "Configured maximum Max Tokens cap for this connection",
+    )
     created_at: str = Field(..., description = "ISO 8601 creation timestamp")
     updated_at: str = Field(..., description = "ISO 8601 last-update timestamp")
-
-
-# ── Model listing ─────────────────────────────────────────────────
 
 
 class ProviderModelInfo(BaseModel):
@@ -102,8 +156,32 @@ class ProviderModelInfo(BaseModel):
     owned_by: Optional[str] = Field(None, description = "Model owner/organization")
 
 
+class ProviderModelReasoningInfo(BaseModel):
+    supported_efforts: Optional[list[str]] = None
+    mandatory: bool = False
+    default_effort: Optional[str] = None
+    default_enabled: Optional[bool] = None
+
+
+class ProviderModelCapabilityInfo(BaseModel):
+    id: str
+    input_modalities: Optional[list[str]] = None
+    reasoning: Optional[ProviderModelReasoningInfo] = None
+    max_output_tokens: Optional[int] = None
+    supported_parameters: Optional[list[str]] = None
+
+
+class ModelCatalogResponse(BaseModel):
+    fetched_at: float
+    providers: dict[str, dict[str, dict]]
+
+
 class ProviderModelsRequest(BaseModel):
     """Request to list models from an external provider."""
+
+    provider_id: Optional[str] = Field(
+        None, description = "Saved provider config whose stored key may be used"
+    )
 
     provider_type: str = Field(..., description = "Provider type from the registry")
     encrypted_api_key: Optional[str] = Field(
@@ -115,11 +193,12 @@ class ProviderModelsRequest(BaseModel):
     )
 
 
-# ── Connection testing ────────────────────────────────────────────
-
-
 class ProviderTestRequest(BaseModel):
     """Request to test connectivity to an external provider."""
+
+    provider_id: Optional[str] = Field(
+        None, description = "Saved provider config whose stored key may be used"
+    )
 
     provider_type: str = Field(..., description = "Provider type from the registry")
     encrypted_api_key: Optional[str] = Field(

@@ -43,7 +43,6 @@ DEP_FIELDS = (
     "optionalDependencies",
 )
 
-# Files where seeing a package name does NOT count as usage.
 EXPECTED_NOISE_FILES = {
     "studio/frontend/package.json",
     "studio/frontend/package-lock.json",
@@ -51,15 +50,11 @@ EXPECTED_NOISE_FILES = {
     "studio/backend/core/data_recipe/oxc-validator/package-lock.json",
 }
 
-# File types where a quoted string can be a module specifier.
 JS_LIKE_EXT = re.compile(r"\.(ts|tsx|js|jsx|mjs|cjs|html|htm|css|scss|sass|json|jsonc)$")
-# Files where JS import patterns could be a real module reference (.mdx is
-# real ESM; .md code fences are not).
 SCRIPT_LIKE_EXT = re.compile(r"\.(ts|tsx|js|jsx|mjs|cjs|mdx)$")
 STYLE_EXT = re.compile(r"\.(css|scss|sass)$")
 HTML_EXT = re.compile(r"\.(html|htm)$")
 TS_LIKE_EXT = re.compile(r"\.(ts|tsx|mts|cts|mdx)$")
-# Files where a removed package's CLI binary could be invoked.
 COMMAND_LIKE_EXT = re.compile(r"(\.(ya?ml|sh|ps1|bat)$|(^|/)Dockerfile[^/]*$)")
 
 GREP_INCLUDES = [
@@ -151,8 +146,7 @@ def all_decl_names(pkg: dict) -> set[str]:
 
 
 def _resolve_install_path(parent_path: str, name: str, pkgs: dict) -> str | None:
-    """Walk up the nested node_modules chain from `parent_path` to find where
-    `name` resolves, mirroring Node module resolution."""
+    """Walk up the nested node_modules chain from `parent_path` to find where `name` resolves, mirroring Node module resolution."""
     parts = parent_path.split("/node_modules/")
     for i in range(len(parts), 0, -1):
         prefix = "/node_modules/".join(parts[:i])
@@ -165,8 +159,7 @@ def _resolve_install_path(parent_path: str, name: str, pkgs: dict) -> str | None
 
 
 def _deps_of(meta: dict) -> dict:
-    """Deps npm actually installs. Optional peers are skipped: they can't keep
-    a removed top-level dep reachable on their own."""
+    """Deps npm actually installs. Optional peers are skipped: they can't keep a removed top-level dep reachable on their own."""
     out = {}
     for field in ("dependencies", "optionalDependencies"):
         out.update(meta.get(field) or {})
@@ -179,8 +172,7 @@ def _deps_of(meta: dict) -> dict:
 
 
 def reachable_from_head(head_pkg: dict, lock: dict) -> set[str]:
-    """BFS the lockfile dep graph from `head_pkg`'s top-level deps. Returns the
-    surviving install paths, excluding stale (orphaned) lockfile entries."""
+    """BFS the lockfile dep graph from `head_pkg`'s top-level deps. Returns the surviving install paths, excluding stale (orphaned) lockfile entries."""
     pkgs = lock.get("packages", {})
     if not pkgs:
         return set()
@@ -205,19 +197,11 @@ def reachable_from_head(head_pkg: dict, lock: dict) -> set[str]:
 
 
 def classify(pkg: str, file: str, content: str) -> str | None:
-    """Return why `content` references `pkg`, or None.
-
-    `content` may span multiple lines (multi-line imports/exports use re.DOTALL).
-    Bare-spec regexes word-boundary the package name so `foobar` doesn't match
-    `foo`. File-type gating restricts JS patterns to .ts/.tsx/.js/.jsx/.mjs/
-    .cjs/.mdx, CSS to .css/.scss/.sass, HTML to .html/.htm, so a snippet inside
-    a Python fixture or Markdown code block isn't mistaken for real npm usage.
-    """
+    """Return why `content` references `pkg`, or None. `content` may span multiple lines (multi-line imports/exports use re.DOTALL). Bare-spec regexes word-boundary the package name so `foobar` does not match `foo`. File-type gating restricts JS patterns to .ts/.tsx/.js/.jsx/.mjs/.cjs/.mdx, CSS to .css/.scss/.sass, HTML to .html/.htm, so a snippet inside a Python fixture or Markdown code block is not mistaken for real npm usage."""
     if file in EXPECTED_NOISE_FILES:
         return None
 
     esc = re.escape(pkg)
-    # Subpath gate: pkg must be followed by quote, `/`, or end-of-string.
     sub = r"(?:/[^'\"`]*)?"
 
     flags_dotall = re.DOTALL | re.MULTILINE
@@ -227,64 +211,50 @@ def classify(pkg: str, file: str, content: str) -> str | None:
     is_html = bool(HTML_EXT.search(file))
     is_ts = bool(TS_LIKE_EXT.search(file))
 
-    # Gate out Python fixtures, Markdown code blocks, shell snippets, etc.
     is_json = file.endswith(".json") or file.endswith(".jsonc")
     if not (is_script or is_style or is_html or is_json):
         return None
 
-    # CSS @import first so it doesn't collide with side-effect-import below.
     if is_style and re.search(rf"@import\s+['\"]{esc}{sub}['\"]", content):
         return "css_import"
-    # Static imports, including multi-line `import { ... } from "pkg"`.
     if is_script and re.search(
         rf"(?<!@)\bimport\b[^;'\"]*?\bfrom\s+['\"]{esc}{sub}['\"]",
         content,
         flags_dotall,
     ):
         return "static_import"
-    # Side-effect import `import "pkg"` (no `from`); lookbehind rules out @import.
     if is_script and re.search(rf"(?<!@)\bimport\s+['\"]{esc}{sub}['\"]", content):
         return "side_effect_import"
-    # Dynamic import: `import("pkg")` and `await import("pkg")`.
     if is_script and re.search(rf"\bimport\(\s*['\"]{esc}{sub}['\"]\s*\)", content):
         return "dynamic_import"
-    # require / require.resolve
     if is_script and re.search(rf"\brequire(?:\.resolve)?\(\s*['\"]{esc}{sub}['\"]\s*\)", content):
         return "require"
-    # Re-exports: `export * from`, `export { x } from`, `export type { Foo } from`.
     if is_script and re.search(
         rf"\bexport\b[^;'\"]*?\bfrom\s+['\"]{esc}{sub}['\"]",
         content,
         flags_dotall,
     ):
         return "re_export"
-    # HTML script / link. Match pkg as a complete path segment so
-    # `/node_modules/foo-extra/...` is not treated as usage of `foo`.
+    # HTML script / link. Match pkg as a complete path segment so `/node_modules/foo-extra/...` is not treated as usage of `foo`.
     html_pkg = rf"{esc}(?:/[^'\"#?]*)?(?=['\"#?])"
     if is_html and re.search(rf"<script[^>]*src\s*=\s*['\"][^'\"]*/{html_pkg}", content):
         return "html_script"
     if is_html and re.search(rf"<link[^>]*href\s*=\s*['\"][^'\"]*/{html_pkg}", content):
         return "html_link"
-    # TypeScript triple-slash
     if is_ts and re.search(rf"///\s*<reference\s+types\s*=\s*['\"]{esc}{sub}['\"]", content):
         return "tsc_triple_slash"
-    # new URL("pkg/...", import.meta.url)
     if is_script and re.search(rf"\bnew\s+URL\(\s*['\"]{esc}{sub}['\"]", content):
         return "new_url"
-    # CSS url(...), quoted and unquoted, bounded so `pkg-extra` doesn't match.
     if is_style and re.search(
         rf"\burl\(\s*['\"]?(?:[^)'\"\s]+/)?{esc}(?:/[^)'\"`]*)?['\"]?\s*\)",
         content,
     ):
         return "css_url"
-    # Template literal containing the package as the leading specifier
     if is_script and re.search(rf"`{esc}{sub}`", content):
         return "template_literal"
-    # JSDoc / TS @import comment: `@import("pkg")`
     if is_script and re.search(rf"@import\(\s*['\"]{esc}{sub}['\"]\s*\)", content):
         return "jsdoc_import"
-    # Bare quoted-string fallback (config plugin lists, vite aliases,
-    # tsconfig paths, biome plugin arrays, shadcn registries).
+    # Bare quoted-string fallback (config plugin lists, vite aliases, tsconfig paths, biome plugin arrays, shadcn registries).
     if not JS_LIKE_EXT.search(file):
         return None
     # pkg must be followed by `'`, `"`, or `/` so `foo` doesn't match `foobar`.
@@ -294,8 +264,7 @@ def classify(pkg: str, file: str, content: str) -> str | None:
 
 
 def lockfile_root_sync(head_pkg: dict, head_lock: dict) -> list[str]:
-    """Warn if package-lock.json's <root> dep map disagrees with package.json
-    (i.e. npm install was not re-run)."""
+    """Warn if package-lock.json's <root> dep map disagrees with package.json (i.e. npm install was not re-run)."""
     warnings = []
     if not head_lock:
         return warnings
@@ -323,8 +292,7 @@ def lockfile_root_sync(head_pkg: dict, head_lock: dict) -> list[str]:
 
 
 def types_orphan_warnings(head_pkg: dict) -> list[str]:
-    """Flag @types/<X> deps where <X> is no longer declared in package.json,
-    which leaves dangling type packages."""
+    """Flag @types/<X> deps where <X> is no longer declared in package.json, which leaves dangling type packages."""
     decl = set()
     for f in DEP_FIELDS:
         decl.update((head_pkg.get(f) or {}).keys())
@@ -332,13 +300,12 @@ def types_orphan_warnings(head_pkg: dict) -> list[str]:
     for name in decl:
         if not name.startswith("@types/"):
             continue
-        # @types/scope__pkg provides types for @scope/pkg.
         target = name[len("@types/") :]
         if "__" in target:
             scope, sub = target.split("__", 1)
             target = f"@{scope}/{sub}"
         if target == "node":
-            continue  # Node.js types are always implicit
+            continue
         if target not in decl:
             warnings.append(
                 f"@types/{target.replace('@', '').replace('/', '__')} present but '{target}' is not declared"
@@ -397,13 +364,7 @@ _PKG_JSON_OPAQUE_KEYS = {
 
 
 def package_json_extra_refs(pkg: dict, target: str) -> list[str]:
-    """Walk package.json (except dep declaration blocks) and return citations
-    for string values or dict keys equal to `target` (or `target/subpath`).
-
-    Catches refs that public dep-checkers commonly miss: overrides/resolutions/
-    pnpm.overrides keys, pnpm.patchedDependencies, peerDependenciesMeta,
-    prettier, eslintConfig.extends, stylelint, babel, jest, commitlint, etc.
-    """
+    """Walk package.json (except dep declaration blocks) and return citations for string values or dict keys equal to `target` (or `target/subpath`). Catches refs that public dep-checkers commonly miss: overrides/resolutions/pnpm.overrides keys, pnpm.patchedDependencies, peerDependenciesMeta, prettier, eslintConfig.extends, stylelint, babel, jest, commitlint, etc."""
     target_sub = target + "/"
     cites: list[str] = []
 
@@ -417,7 +378,6 @@ def package_json_extra_refs(pkg: dict, target: str) -> list[str]:
                     continue
                 if path == "" and k in _PKG_JSON_OPAQUE_KEYS:
                     continue
-                # Inside overrides/resolutions/etc., the KEY is a package ref.
                 if matches(k):
                     cites.append(f"{path}.{k}" if path else k)
                 walk(v, f"{path}.{k}" if path else k)
@@ -433,8 +393,7 @@ def package_json_extra_refs(pkg: dict, target: str) -> list[str]:
 
 
 def build_bin_to_pkg(head_lock: dict) -> dict[str, str]:
-    """Map a binary name (e.g. 'vite', 'eslint') to its providing package,
-    from each lockfile entry's `bin` field."""
+    """Map a binary name (e.g. 'vite', 'eslint') to its providing package, from each lockfile entry's `bin` field."""
     out: dict[str, str] = {}
     if not head_lock:
         return out
@@ -453,29 +412,22 @@ def build_bin_to_pkg(head_lock: dict) -> dict[str, str]:
 
 _SCRIPT_TOKENIZE = re.compile(r"\s*(?:&&|\|\||;|\|(?!\|))\s*")
 
-# Wrappers that delegate to a real CLI in the same shell word list; we skip
-# past them and their flags to find the wrapped bin. Script-name wrappers
-# (concurrently, npm-run-all, turbo, nx) are excluded: they reference script
-# names, so the real bin lives in the target script's chunk we already tokenize.
+# Wrappers that delegate to a real CLI in the same shell word list; we skip past them and their flags to find the wrapped bin. Script-name wrappers (concurrently, npm-run-all, turbo, nx) are excluded: they reference script names, so the real bin lives in the target script's chunk we already tokenize.
 _SCRIPT_WRAPPERS = {"cross-env", "dotenv", "dotenvx", "env-cmd"}
 _ENV_PREFIX_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
 
 def _next_real_bin(words: list[str], idx: int) -> str | None:
-    """Walk `words` from `idx`, peeling env-prefix tokens, the package-manager
-    runner (npx, pnpm exec, etc.), and known wrapper bins. Return the next
-    real CLI binary, or None. Bounded by the chunk's word count."""
+    """Walk `words` from `idx`, peeling env-prefix tokens, the package-manager runner (npx, pnpm exec, etc.), and known wrapper bins. Return the next real CLI binary, or None. Bounded by the chunk's word count."""
     seen_wrappers: set[str] = set()
     while idx < len(words):
-        # 1. env-prefix run `FOO=bar BAZ="a b" cmd ...` (shlex pre-collapsed).
         while idx < len(words) and _ENV_PREFIX_RE.match(words[idx]):
             idx += 1
         if idx >= len(words):
             return None
 
         first = words[idx]
-        # 2. Package-manager runner (npx/pnpm exec/yarn dlx/bunx): strip and
-        # continue so the wrapped command re-enters the unwrap loop.
+        # Package-manager runner (npx/pnpm exec/yarn dlx/bunx): strip it and continue so the wrapped command re-enters the unwrap loop.
         if first in {"npx", "pnpx", "bunx"} and idx + 1 < len(words):
             idx += 1
             continue
@@ -483,7 +435,7 @@ def _next_real_bin(words: list[str], idx: int) -> str | None:
             idx += 2
             continue
 
-        # 3. Wrapper bin (cross-env, dotenv): skip its flags and env prefixes.
+        # Wrapper bin (cross-env, dotenv): skip its flags and env prefixes.
         bin_token = first.removeprefix("./node_modules/.bin/").removeprefix("node_modules/.bin/")
         if bin_token in _SCRIPT_WRAPPERS and bin_token not in seen_wrappers:
             seen_wrappers.add(bin_token)
@@ -511,13 +463,7 @@ def _next_real_bin(words: list[str], idx: int) -> str | None:
 
 
 def scripts_bin_refs(head_pkg: dict, bin_to_pkg: dict[str, str]) -> dict[str, list[str]]:
-    """Return `{package_name: ['scripts.X: cmd', ...]}` for every package
-    referenced via its bin name in package.json scripts.
-
-    Each script is split on shell separators; `_next_real_bin()` unwraps env
-    prefixes, package-manager runners, and wrapper bins so `cross-env CI=1
-    biome check` credits `biome`. Uses shlex.split so quoted env values survive.
-    """
+    """Return `{package_name: ['scripts.X: cmd', ...]}` for every package referenced via its bin name in package.json scripts. Each script is split on shell separators; `_next_real_bin()` unwraps env prefixes, package-manager runners, and wrapper bins so `cross-env CI=1 biome check` credits `biome`. Uses shlex.split so quoted env values survive."""
     import shlex
 
     scripts = head_pkg.get("scripts", {}) or {}
@@ -546,8 +492,7 @@ def scripts_bin_refs(head_pkg: dict, bin_to_pkg: dict[str, str]) -> dict[str, li
 
 
 def tsconfig_compiler_types_refs() -> set[str]:
-    """Return package names in tsconfig*.json compilerOptions.types arrays.
-    These are implicitly loaded by tsc and count as real uses."""
+    """Return package names in tsconfig*.json compilerOptions.types arrays. These are implicitly loaded by tsc and count as real uses."""
     out: set[str] = set()
     base = REPO_ROOT / "studio/frontend"
     for name in ("tsconfig.json", "tsconfig.app.json", "tsconfig.node.json"):
@@ -572,10 +517,7 @@ def tsconfig_compiler_types_refs() -> set[str]:
 
 
 def enumerate_dep_usage(head_pkg: dict, head_lock: dict) -> dict[str, list]:
-    """For every declared dep, classify usage into a dict of package-name lists:
-    used, unused, type_pkg_kept (@types/X with X declared), type_pkg_orphan
-    (@types/X with X gone). `unused` is a CANDIDATE list; verify before deletion.
-    """
+    """For every declared dep, classify usage into a dict of package-name lists: used, unused, type_pkg_kept (@types/X with X declared), type_pkg_orphan (@types/X with X gone). `unused` is a CANDIDATE list; verify before deletion."""
     decl = all_decl_names(head_pkg)
     bin_to_pkg = build_bin_to_pkg(head_lock) if head_lock else {}
     script_refs = scripts_bin_refs(head_pkg, bin_to_pkg)
@@ -600,20 +542,15 @@ def enumerate_dep_usage(head_pkg: dict, head_lock: dict) -> dict[str, list]:
             else:
                 results["type_pkg_orphan"].append(name)
             continue
-        # Real-source-usage check
         hits = find_usage(name)
         used = bool(hits)
-        # CLI usage in shell/workflow/Dockerfile. Skipped for @types/* (no CLI
-        # binary; the bare-name bin candidate would false-match the runtime).
+        # CLI usage in shell/workflow/Dockerfile.
         if not used and not name.startswith("@types/") and find_command_usage(name):
             used = True
-        # Bin scripts
         if not used and name in script_refs:
             used = True
-        # package.json non-dep field references
         if not used and package_json_extra_refs(head_pkg, name):
             used = True
-        # tsconfig compilerOptions.types implicit usage
         if not used and name in tsc_types:
             used = True
         if used:
@@ -624,15 +561,11 @@ def enumerate_dep_usage(head_pkg: dict, head_lock: dict) -> dict[str, list]:
 
 
 def find_imports_without_decl(head_pkg: dict) -> list[tuple[str, int, str]]:
-    """Reverse check: find bare-specifier imports in studio/frontend/src with
-    no matching package.json dep (import added but dep declaration forgotten).
-    Covers import/require/dynamic-import shapes. Returns (file, line, spec).
-    """
+    """Reverse check: find bare-specifier imports in studio/frontend/src with no matching package.json dep (import added but dep declaration forgotten). Covers import/require/dynamic-import shapes. Returns (file, line, spec)."""
     decl = set()
     for f in DEP_FIELDS:
         decl.update((head_pkg.get(f) or {}).keys())
-    # Exclude relative paths and the `@/` alias by requiring the specifier's
-    # first char to be neither `.` nor `/`. Capture group is the specifier.
+    # Exclude relative paths and the `@/` alias by requiring the specifier's first char to be neither `.` nor `/`.
     pattern = (
         r"(?:\bfrom\s+|"
         r"\bimport\s+(?:\(\s*)?|"
@@ -658,7 +591,6 @@ def find_imports_without_decl(head_pkg: dict) -> list[tuple[str, int, str]]:
         file, ln, content = m.group(1), int(m.group(2)), m.group(3)
         for spec_match in re.finditer(pattern, content):
             spec = spec_match.group(1)
-            # Resolve to package name (strip subpath).
             if spec.startswith("@"):
                 parts = spec.split("/", 2)
                 pkg_name = "/".join(parts[:2]) if len(parts) >= 2 else spec
@@ -666,7 +598,6 @@ def find_imports_without_decl(head_pkg: dict) -> list[tuple[str, int, str]]:
                 pkg_name = spec.split("/", 1)[0]
             if pkg_name in decl:
                 continue
-            # Internal aliases like '@/foo' or builtin names.
             if pkg_name == "@":
                 continue
             if pkg_name in {
@@ -711,22 +642,16 @@ def _read_file(path: str) -> list[str]:
 
 
 def find_usage(pkg: str) -> list[Hit]:
-    """Return real usages of `pkg` (pip-playwright filtered separately).
-
-    For each grep hit, also feed a multi-line window into classify() so
-    multi-line imports get picked up.
-    """
+    """Return real usages of `pkg` (pip-playwright filtered separately). For each grep hit, also feed a multi-line window into classify() so multi-line imports get picked up."""
     rows = grep_repo(re.escape(pkg))
     hits = []
     seen_keys: set[tuple[str, str]] = set()
     for file, lineno, content in rows:
         if pkg == "playwright" and PIP_PLAYWRIGHT.search(content):
             continue
-        # Try the single-line classify first.
         kind = classify(pkg, file, content)
         if not kind:
-            # Multi-line window (25 lines each side) so Prettier's
-            # one-import-per-line formatting still pairs `import` with `from`.
+            # Multi-line window (25 lines each side) so Prettier's one-import-per-line formatting still pairs `import` with `from`.
             lines = _read_file(file)
             lo = max(0, lineno - 26)
             hi = min(len(lines), lineno + 25)
@@ -742,21 +667,15 @@ def find_usage(pkg: str) -> list[Hit]:
 
 
 def _candidate_bin_names(pkg: str) -> set[str]:
-    """Bin names a removed package's CLI could be invoked under. Most npm CLIs
-    use the package name; scoped ones expose an unscoped bin (@biomejs/biome ->
-    biome)."""
+    """Bin names a removed package's CLI could be invoked under. Most npm CLIs use the package name; scoped ones expose an unscoped bin (@biomejs/biome -> biome)."""
     return {pkg, pkg.rsplit("/", 1)[-1]}
 
 
 def find_command_usage(pkg: str) -> list[Hit]:
-    """Find package CLI invocations in shell/workflow/Dockerfile surfaces (npx,
-    bunx, pnpm exec, yarn dlx, or bare `pkg --flag`). Bounded to
-    COMMAND_LIKE_EXT so `npx foo` in a TS fixture isn't mistaken for real use.
-    """
+    """Find package CLI invocations in shell/workflow/Dockerfile surfaces (npx, bunx, pnpm exec, yarn dlx, or bare `pkg --flag`). Bounded to COMMAND_LIKE_EXT so `npx foo` in a TS fixture is not mistaken for real use."""
     bins = sorted(_candidate_bin_names(pkg), key = len, reverse = True)
     esc_bins = "|".join(re.escape(b) for b in bins)
-    # grep ERE pattern. Built without f-strings to avoid clashing with the
-    # POSIX `[[:space:]]` literals.
+    # Built without f-strings to avoid clashing with the POSIX `[[:space:]]` literals.
     grep_pat = (
         r"(^|[[:space:]:;&|(\[])"
         r"(npx[[:space:]]+|pnpm[[:space:]]+exec[[:space:]]+"
@@ -788,8 +707,7 @@ def find_command_usage(pkg: str) -> list[Hit]:
 
 
 def types_target_name(pkg: str) -> str | None:
-    """Strip `@types/` and decode scope-encoding to the runtime package name
-    (`@types/foo__bar` -> `@foo/bar`). None for non-@types packages."""
+    """Strip `@types/` and decode scope-encoding to the runtime package name (`@types/foo__bar` -> `@foo/bar`). None for non-@types packages."""
     if not pkg.startswith("@types/"):
         return None
     target = pkg[len("@types/") :]
@@ -800,8 +718,7 @@ def types_target_name(pkg: str) -> str | None:
 
 
 def find_types_runtime_usage(pkg: str, tsc_types: set[str]) -> list[Hit]:
-    """For a removed `@types/X`, find usages of `X` itself (triple-slash
-    reference, tsconfig types, runtime import). If any exist, @types/X stays."""
+    """For a removed `@types/X`, find usages of `X` itself (triple-slash reference, tsconfig types, runtime import). If any exist, @types/X stays."""
     target = types_target_name(pkg)
     if target is None:
         return []
@@ -886,9 +803,7 @@ def main() -> int:
         return 2
     head_lock = read_pkg_file(head_lock_path)
 
-    # Base lockfile is best-effort: only used to recover the bin -> package
-    # mapping for packages the PR removes, so a scripts.biome cite still fires
-    # when @biomejs/biome is dropped from the head lockfile.
+    # Base lockfile is best-effort: it only recovers the bin -> package mapping for packages the PR removes, so a scripts.biome cite still fires when @biomejs/biome is dropped from the head lockfile.
     if args.base_lock:
         base_lock_path = Path(args.base_lock)
         base_lock = read_pkg_file(base_lock_path) if base_lock_path.exists() else {}
@@ -899,8 +814,7 @@ def main() -> int:
     head_names = all_decl_names(head_pkg)
     removed = sorted(base_names - head_names)
 
-    # Hygiene checks compute up front so they run on both the removal-present
-    # and removal-empty paths (so --strict fails on hygiene-only issues).
+    # Hygiene checks compute up front so they run on both the removal-present and removal-empty paths (so --strict fails on hygiene-only issues).
     sync_warns = lockfile_root_sync(head_pkg, head_lock)
     types_warns = types_orphan_warnings(head_pkg)
     missing_imports = find_imports_without_decl(head_pkg)
@@ -961,9 +875,7 @@ def main() -> int:
     print()
 
     reachable_paths = reachable_from_head(head_pkg, head_lock) if head_lock else set()
-    # bin -> package map from the head lockfile, layering base-lockfile entries
-    # for removed packages so scripts.biome still flags when @biomejs/biome is
-    # dropped (head lockfile no longer maps it).
+    # bin -> package map from the head lockfile, layering base-lockfile entries for removed packages so scripts.biome still flags when @biomejs/biome is dropped (head lockfile no longer maps it).
     bin_to_pkg = build_bin_to_pkg(head_lock) if head_lock else {}
     base_bin_to_pkg = build_bin_to_pkg(base_lock) if base_lock else {}
     removed_set = set(removed)
@@ -974,9 +886,7 @@ def main() -> int:
     tsc_types = tsconfig_compiler_types_refs()
 
     def reachable_install_paths(name: str) -> tuple[str | None, list[str]]:
-        """Return (top_level_path, nested_paths). top_level is what bare
-        `import "name"` resolves to; nested copies are only visible inside
-        their parent package."""
+        """Return (top_level_path, nested_paths). top_level is what bare `import "name"` resolves to; nested copies are only visible inside their parent package."""
         top = f"node_modules/{name}"
         top_path = top if top in reachable_paths else None
         nested = sorted(
@@ -987,9 +897,7 @@ def main() -> int:
     failures: list[tuple[str, list[Hit]]] = []
     for name in removed:
         hits = find_usage(name)
-        # CLI invocations in shell scripts / workflows / Dockerfiles.
         hits.extend(find_command_usage(name))
-        # @types/X is "used" if X is referenced as a type or runtime import.
         hits.extend(find_types_runtime_usage(name, tsc_types))
         for cite in script_refs.get(name, []):
             hits.append(Hit("studio/frontend/package.json", 0, "script_bin", cite))
@@ -997,8 +905,7 @@ def main() -> int:
             hits.append(Hit("studio/frontend/package.json", 0, "pkg_json_field", cite))
         top, nested = reachable_install_paths(name)
         importable_top_level = top is not None
-        # Bare specifier `name` resolves ONLY to top-level node_modules/<name>;
-        # nested copies are invisible to src/ files.
+        # A bare specifier resolves ONLY to top-level node_modules/<name>; nested copies are invisible to src/.
         if hits and not importable_top_level:
             status = "FAIL"
         elif hits and importable_top_level:

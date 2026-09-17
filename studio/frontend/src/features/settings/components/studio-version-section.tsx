@@ -4,6 +4,7 @@
 import { getAuthToken, refreshSession } from "@/features/auth";
 import { useT } from "@/i18n";
 import { apiUrl } from "@/lib/api-base";
+import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
 import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
@@ -65,13 +66,16 @@ async function fetchStudioVersions(): Promise<StudioVersions> {
 
 // Shared "Unsloth" version block, shown in both General and About. The About
 // tab passes llamaCppVersion to surface the installed llama.cpp build alongside
-// the version rows; General omits it, so the row only shows on About.
+// the version rows; General omits it, so the row only shows on About. Children
+// are appended below the version rows, for controls that act on them.
 export function StudioVersionSection({
   llamaCppVersion,
   desktopAppVersion,
+  children,
 }: {
   llamaCppVersion?: string | null;
   desktopAppVersion?: string | null;
+  children?: ReactNode;
 } = {}) {
   const t = useT();
   const [packageVersion, setPackageVersion] = useState("dev");
@@ -116,6 +120,7 @@ export function StudioVersionSection({
           </code>
         </SettingsRow>
       ) : null}
+      {children}
     </SettingsSection>
   );
 }

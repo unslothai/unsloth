@@ -49,15 +49,12 @@ class RepoScraper:
         self.base_dir = base_dir
         self.client = client
         self.trial_limits = trial_limits or {}
-        # light=True uses trimmed GraphQL queries (no reviewThreads/reviews/
-        # commits/timelineItems/files) so PR pages can be larger without
-        # hitting GitHub's node-count ceiling.
+        # light=True uses trimmed GraphQL queries so PR pages can be larger without hitting GitHub's node-count ceiling.
         self.light = light
         self.repo_dir = base_dir / f"{owner}__{name}"
         self.repo_dir.mkdir(parents = True, exist_ok = True)
         self.state = StateStore(base_dir / "state" / f"{owner}__{name}.json")
 
-        # Writers
         self.writers: Dict[str, JsonlWriter] = {}
         for key in (
             "issues",
@@ -78,7 +75,6 @@ class RepoScraper:
         ):
             self.writers[key] = JsonlWriter(self.repo_dir / f"{key}.jsonl")
 
-    # ----- helpers -----
     def _trial_stop(self, key: str, counter: int) -> bool:
         lim = self.trial_limits.get(key)
         if lim is None:
@@ -96,7 +92,6 @@ class RepoScraper:
                 rl.get("resetAt"),
             )
 
-    # ----- repo meta -----
     def scrape_repo_meta(self) -> Dict[str, Any]:
         data = self.client.graphql(Q.REPO_META_QUERY, {"owner": self.owner, "name": self.name})
         self._log_rate("repo_meta", data)
@@ -105,7 +100,6 @@ class RepoScraper:
         self.writers["repo_meta"].write(repo)
         return repo
 
-    # ----- issues -----
     def scrape_issues(self) -> int:
         key = "issues"
         cursor = self.state.get(f"{key}_cursor")
@@ -115,8 +109,8 @@ class RepoScraper:
             return 0
         total_new = 0
         page = 0
-        # Light query skips heavy nested fields; safe at 50/page. Clamp by
-        # trial_limit so limit=1 asks for first:1, not a full 50-item page.
+        # The light query skips heavy nested fields, so 50/page is safe; clamp by trial_limit so limit=1
+        # does not fetch a full page.
         page_cap = 50 if self.light else 15
         trial_cap = self.trial_limits.get(key)
         per_page = min(page_cap, trial_cap) if trial_cap and trial_cap > 0 else page_cap
@@ -212,7 +206,6 @@ class RepoScraper:
             info = tl.get("pageInfo") or {}
             cur = info.get("endCursor") if info.get("hasNextPage") else None
 
-    # ----- PRs -----
     def scrape_prs(self) -> int:
         key = "pull_requests"
         cursor = self.state.get(f"{key}_cursor")
@@ -222,9 +215,8 @@ class RepoScraper:
             return 0
         total_new = 0
         page = 0
-        # Heavy nested PR query caps at 3/page (GitHub node-count ceiling);
-        # light query skips nested fields and goes to 25/page. Clamp by
-        # trial_limit so limit=1 does not fetch a whole 25-item page.
+        # The heavy nested PR query caps at 3/page against GitHub's node-count ceiling and the light one at
+        # 25; clamp by trial_limit so limit=1 does not fetch a whole page.
         page_cap = 25 if self.light else 3
         trial_cap = self.trial_limits.get(key)
         per_page = min(page_cap, trial_cap) if trial_cap and trial_cap > 0 else page_cap
@@ -397,7 +389,6 @@ class RepoScraper:
             info = rt.get("pageInfo") or {}
             cur = info.get("endCursor") if info.get("hasNextPage") else None
 
-    # ----- Discussions -----
     def scrape_discussions(self) -> int:
         key = "discussions"
         cursor = self.state.get(f"{key}_cursor")
@@ -496,7 +487,6 @@ class RepoScraper:
             info = replies.get("pageInfo") or {}
             cur = info.get("endCursor") if info.get("hasNextPage") else None
 
-    # ----- Commits -----
     def scrape_commits(self, branch: str = "refs/heads/main") -> int:
         key = "commits"
         cursor = self.state.get(f"{key}_cursor")
@@ -547,7 +537,6 @@ class RepoScraper:
                 break
         return total_new
 
-    # ----- Releases/Labels/Milestones -----
     def scrape_releases(self) -> int:
         return self._scrape_simple("releases", Q.RELEASES_QUERY, "releases")
 

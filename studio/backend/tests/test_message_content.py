@@ -98,3 +98,52 @@ def test_result_supports_string_ops():
     out = mc.content_to_text([{"type": "text", "text": "  padded  "}])
     assert out.strip() == "padded"
     assert isinstance(out, str)
+
+
+def _pasted(name, body, size):
+    return f"<pasted_text name={name} bytes={size}>\n{body}\n</pasted_text>"
+
+
+def test_paste_only_turn_is_not_empty_text():
+    mc = _load_message_content()
+    body = "Fix the retry backoff\ndetail"
+    message = {
+        "content": [],
+        "attachments": [{"content": [{"type": "text", "text": _pasted("Fix.txt", body, 28)}]}],
+    }
+    # Deep research rejects a message whose text is empty, and a long paste
+    # carries all of its text in the attachment.
+    assert mc.message_text_with_pastes(message) == body
+
+
+def test_typed_text_keeps_the_paste_after_it():
+    mc = _load_message_content()
+    message = {
+        "content": [{"type": "text", "text": "summarise this"}],
+        "attachments": [{"content": [{"type": "text", "text": _pasted("Log.txt", "line", 4)}]}],
+    }
+    assert mc.message_text_with_pastes(message) == "summarise this\n\nline"
+
+
+def test_other_attachments_are_left_out():
+    mc = _load_message_content()
+    message = {
+        "content": [{"type": "text", "text": "read this"}],
+        "attachments": [
+            {"content": [{"type": "text", "text": "[PDF: paper.pdf]\nAbstract"}]},
+            {"content": [{"type": "text", "text": "<attachment name=n.txt>\nx\n</attachment>"}]},
+        ],
+    }
+    assert mc.message_text_with_pastes(message) == "read this"
+    assert mc.message_text_with_pastes({}) == ""
+    assert mc.message_text_with_pastes(None) == ""
+
+
+def test_pasted_body_unwraps_only_the_wrapper():
+    mc = _load_message_content()
+    assert mc.pasted_text_body(_pasted("a.txt", "body", 4)) == "body"
+    # Without the size, and with a body that itself ends in a tag-like line.
+    assert mc.pasted_text_body("<pasted_text name=a.txt>\nbody") == "body"
+    assert mc.pasted_text_body("plain text") == ""
+    assert mc.pasted_text_body("<attachment name=a.txt>\nbody\n</attachment>") == ""
+    assert mc.pasted_text_body("") == ""

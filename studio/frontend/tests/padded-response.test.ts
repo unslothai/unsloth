@@ -13,15 +13,13 @@
  */
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { assertCompletedPaddedBody } from "../src/features/chat/api/padded-response.ts";
 
-const chatApi = readFileSync(
-  new URL("../src/features/chat/api/chat-api.ts", import.meta.url),
-  "utf8",
-);
+import { readSrc, readText } from "./helpers/kit.ts";
+
+const chatApi = readSrc("features/chat/api/chat-api.ts");
 
 test("a real payload passes through", () => {
   assertCompletedPaddedBody({ status: "loaded", model: "org/A" }, "Model load");
@@ -63,10 +61,7 @@ test("only the two padded routes require a payload", () => {
 
 test("the Python client agrees", () => {
   // If only one client rejects a truncated reply, one reads success where the other fails.
-  const cli = readFileSync(
-    new URL("../../../unsloth_cli/_inference.py", import.meta.url),
-    "utf8",
-  );
+  const cli = readText("../../../unsloth_cli/_inference.py");
   assert.ok(cli.includes("def require_completed_padded_body("));
   // unsloth_cli/tests/test_inference_chat.py asserts it actually raises.
   assert.ok(cli.includes("if isinstance(body, dict) and body:"));

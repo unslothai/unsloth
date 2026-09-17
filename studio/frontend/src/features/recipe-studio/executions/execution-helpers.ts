@@ -122,6 +122,14 @@ export function sortExecutions(records: RecipeExecutionRecord[]): RecipeExecutio
   return next;
 }
 
+/** A cached page is complete only when the producer recorded the full row count. */
+export function hasCompleteLocalDataset(execution: RecipeExecutionRecord): boolean {
+  return (
+    typeof execution.datasetTotal === "number" &&
+    execution.dataset.length >= execution.datasetTotal
+  );
+}
+
 export function withExecutionDefaults(
   record: RecipeExecutionRecord,
 ): RecipeExecutionRecord {
@@ -140,7 +148,7 @@ export function withExecutionDefaults(
   const datasetTotal =
     typeof record.datasetTotal === "number" && record.datasetTotal >= 0
       ? record.datasetTotal
-      : dataset.length;
+      : null;
 
   return {
     ...record,

@@ -1,0 +1,42 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# The legs of .github/workflows/interrupted-install-ci.yml, one list per matrix job.
+# `pr: true` legs run on pull_request; everything runs nightly and on workflow_dispatch.
+# Every leg is a hard gate, with no continue-on-error cell: a leg allowed to fail is a
+# warning wearing a red icon, and the claim here is that a killed install cannot report
+# itself healthy. The PR subset (10 legs, 6 macOS, five concurrent macOS jobs account-wide)
+# takes one leg per verdict family on different operating systems: `studio-deps`, a partial
+# venv that reports HEALTHY, and `torch`, a complete venv with nothing in it where the
+# re-run must repair rather than short-circuit on the version fast path.
+# tests/studio/test_install_matrix_selection.py pins the counts and the keys.
+
+interrupt:
+  # A marker, never a delay: every label prints BEFORE its work, so the kill lands inside
+  # the phase, while a timed wait bets on phase duration and twice turned a leg into a
+  # duplicate of the next one. This one is the reported case, killed installing structlog.
+  - {os: macos-15, label: studio-deps, marker: 'studio deps', pr: true}
+  # Coarse phases, earliest to latest, each leaving a different partial venv. No venv leg:
+  # "Creating virtual environment" runs ~0.1s, shorter than any poll, so its kill always
+  # landed in the NEXT phase and the leg duplicated this one.
+  - {os: macos-15, label: torch,       marker: '\[TAURI:STEP\] Installing PyTorch', pr: false}
+  - {os: macos-15, label: unsloth,     marker: '\[TAURI:STEP\] Installing Unsloth', pr: false}
+  # The latest phase, the closest to a complete-looking install.
+  - {os: macos-15, label: setup,       marker: '\[TAURI:STEP\] Running Unsloth setup', pr: false}
+  # Other dependency-pass sub-steps around the named one. No pip-bootstrap leg (over before
+  # a poll can see it) and no base-packages leg (--local sets skip_base, so it never prints
+  # and the leg ran to completion, proving nothing).
+  - {os: macos-15, label: unsloth-extras, marker: 'unsloth extras', pr: false}
+  # Killed before install_python_stack.py writes the manifest.
+  - {os: macos-15, label: data-designer,  marker: 'data designer deps', pr: false}
+  # Linux: same teardown path, different package manager and process semantics.
+  - {os: ubuntu-latest, label: studio-deps, marker: 'studio deps', pr: false}
+  - {os: ubuntu-latest, label: torch, marker: '\[TAURI:STEP\] Installing PyTorch', pr: true}
+
+# Windows has no process groups, so the kill path differs. Both legs are nightly only:
+# the verdict families are covered on PRs by the POSIX legs.
+interrupt_windows:
+  # install.ps1:121 parses `--no-torch`; `-SkipTorch` matches no case there and is
+  # silently dropped. The torch leg must NOT skip torch or its marker never appears.
+  - {label: studio-deps, marker: 'studio deps', installArgs: '--tauri --no-torch --local', pr: false}
+  - {label: torch, marker: 'Installing PyTorch', installArgs: '--tauri --local', pr: false}

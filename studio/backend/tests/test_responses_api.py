@@ -315,6 +315,53 @@ class TestNormaliseResponsesInput:
         assert msgs[1].role == "user"
 
 
+class TestResponsesReasoning:
+    """`/v1/responses` parsed `reasoning` and dropped it, and never relayed
+    llama-server's `reasoning_content` back -- so Codex could neither turn
+    thinking on nor see it. Mirrors the /v1/messages fix."""
+
+    @staticmethod
+    def _chat_req(reasoning):
+        from routes.inference import _build_chat_request
+        payload = ResponsesRequest(input = "hi", reasoning = reasoning)
+        return _build_chat_request(payload, [ChatMessage(role = "user", content = "hi")], stream = False)
+
+    def test_effort_reaches_the_chat_request(self):
+        req = self._chat_req({"effort": "high"})
+        assert req.reasoning_effort == "high"
+        assert req.enable_thinking is True
+
+    def test_effort_none_disables_thinking(self):
+        """enable_thinking-style templates have no dial, only a boolean."""
+        req = self._chat_req({"effort": "none"})
+        assert req.enable_thinking is False
+
+    def test_absent_reasoning_leaves_model_default(self):
+        req = self._chat_req(None)
+        assert req.reasoning_effort is None
+        assert req.enable_thinking is None
+
+    def test_malformed_reasoning_is_ignored_not_fatal(self):
+        """Never 400 on a shape we don't recognise -- that regressed real
+        Claude Code traffic once already."""
+        for bad in ("high", {"effort": 3}, {}, {"summary": "auto"}, {"effort": "auto"}):
+            req = self._chat_req(bad)
+            assert req.enable_thinking is None
+
+    def test_reasoning_output_item_shape(self):
+        from models.inference import (
+            ResponsesOutputReasoning,
+            ResponsesOutputReasoningContent,
+        )
+
+        item = ResponsesOutputReasoning(
+            content = [ResponsesOutputReasoningContent(text = "because 2+2")]
+        ).model_dump()
+        assert item["type"] == "reasoning"
+        assert item["id"].startswith("rs_")
+        assert item["content"] == [{"type": "reasoning_text", "text": "because 2+2"}]
+
+
 if __name__ == "__main__":
     import pytest
     pytest.main([__file__, "-v"])

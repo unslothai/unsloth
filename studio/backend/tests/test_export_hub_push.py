@@ -1,0 +1,375 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+from __future__ import annotations
+
+import importlib.util
+import sys
+import tempfile
+import types
+from pathlib import Path
+
+import pytest
+
+
+_HELPERS_SPEC = importlib.util.spec_from_file_location(
+    "export_hub_push_helpers",
+    Path(__file__).with_name("test_export_gguf_hub_upload.py"),
+)
+assert _HELPERS_SPEC is not None and _HELPERS_SPEC.loader is not None
+_HELPERS = importlib.util.module_from_spec(_HELPERS_SPEC)
+_HELPERS_SPEC.loader.exec_module(_HELPERS)
+
+
+class _Config:
+    _name_or_path = "unsloth/Qwen2.5-0.5B-Instruct"
+    model_type = "qwen2"
+
+
+class _Tokenizer:
+    def save_pretrained(self, save_directory):
+        Path(save_directory, "tokenizer.json").write_bytes(b"{}")
+
+
+class _Model:
+    config = _Config()
+
+    def __init__(self):
+        self.merges = []
+
+    def save_pretrained(self, save_directory):
+        Path(save_directory, "model.safetensors").write_bytes(b"weights")
+
+    def save_pretrained_merged(
+        self,
+        save_directory,
+        tokenizer,
+        save_method = None,
+        token = None,
+    ):
+        self.merges.append(save_method)
+        suffix = "-torchao-fp8" if save_method == "torchao_fp8" else ""
+        output = Path(f"{save_directory}{suffix}")
+        output.mkdir(parents = True, exist_ok = True)
+        (output / "model.safetensors").write_bytes(b"weights")
+
+    def push_to_hub_merged(self, *args, **kwargs):
+        self.merges.append("push_to_hub_merged")
+
+
+def _non_mlx_backend(monkeypatch, name, calls, seen):
+    _HELPERS._install_export_backend_stubs(monkeypatch)
+    unsloth = sys.modules["unsloth"]
+    monkeypatch.setattr(unsloth, "_IS_MLX", False)
+
+    unsloth_save = types.ModuleType("unsloth.save")
+    unsloth_save._normalize_torchao_method = lambda method: (
+        ("fp8", "torchao-fp8") if method == "torchao_fp8" else None
+    )
+    monkeypatch.setattr(unsloth, "save", unsloth_save, raising = False)
+    monkeypatch.setitem(sys.modules, "unsloth.save", unsloth_save)
+
+    peft = types.ModuleType("peft")
+    peft.PeftModel = object
+    peft.PeftModelForCausalLM = object
+    transformers = types.ModuleType("transformers")
+    transformers.__path__ = []
+    modeling_utils = types.ModuleType("transformers.modeling_utils")
+    modeling_utils.PushToHubMixin = type("PushToHubMixin", (), {})
+    transformers.modeling_utils = modeling_utils
+    monkeypatch.setitem(sys.modules, "peft", peft)
+    monkeypatch.setitem(sys.modules, "transformers", transformers)
+    monkeypatch.setitem(sys.modules, "transformers.modeling_utils", modeling_utils)
+    monkeypatch.setitem(sys.modules, "torch", types.ModuleType("torch"))
+
+    export_module = _HELPERS._load_module(name, "core/export/export.py", monkeypatch)
+    _HELPERS._patch_hub(monkeypatch, export_module, calls, seen)
+
+    backend = export_module.ExportBackend.__new__(export_module.ExportBackend)
+    backend.current_model = _Model()
+    backend.current_tokenizer = _Tokenizer()
+    backend.current_checkpoint = None
+    backend.is_peft = False
+    backend._audio_type = None
+    return backend
+
+
+def _expected_calls(private):
+    visibility = ["update_repo_settings"] if private else []
+    return ["create_repo", *visibility, "model_card", "upload_folder"]
+
+
+def _expected_merged_calls(private):
+    visibility = ["update_repo_settings"] if private else []
+    return ["create_repo", *visibility, "upload_folder", "model_card"]
+
+
+@pytest.mark.parametrize("private", [True, False])
+def test_base_export_push_creates_the_repo_without_push_to_hub_mixin(
+    tmp_path, monkeypatch, private
+):
+    calls: list[str] = []
+    seen: dict = {}
+    backend = _non_mlx_backend(monkeypatch, "test_export_hub_push_base_backend", calls, seen)
+
+    success, message, output_path = backend.export_base_model(
+        str(tmp_path / "export"),
+        push_to_hub = True,
+        repo_id = "model",
+        hf_token = "hf_fake",
+        private = private,
+    )
+
+    assert success is True, message
+    assert seen["token"] == "hf_fake"
+    assert seen["repo"] == {"repo_id": "model", "private": private, "exist_ok": True}
+    assert calls == _expected_calls(private)
+    assert seen["card_repo"] == "owner/model"
+    assert seen["folder"] == output_path
+    assert "model.safetensors" in seen["uploaded"]
+
+
+@pytest.mark.parametrize("private", [True, False])
+def test_merged_torchao_export_push_creates_the_repo_without_push_to_hub_mixin(
+    tmp_path, monkeypatch, private
+):
+    calls: list[str] = []
+    seen: dict = {}
+    backend = _non_mlx_backend(monkeypatch, "test_export_hub_push_merged_backend", calls, seen)
+
+    success, message, output_path = backend.export_merged_model(
+        str(tmp_path / "export"),
+        push_to_hub = True,
+        repo_id = "model",
+        hf_token = "hf_fake",
+        private = private,
+        compressed_method = "torchao_fp8",
+    )
+
+    assert success is True, message
+    assert backend.current_model.merges == ["torchao_fp8"]
+    assert output_path == str(Path(f"{tmp_path / 'export'}-torchao-fp8").resolve())
+    assert seen["token"] == "hf_fake"
+    assert seen["repo"] == {"repo_id": "model", "private": private, "exist_ok": True}
+    assert calls == _expected_merged_calls(private)
+    assert seen["card_repo"] == "owner/model"
+    assert seen["folder"] == output_path
+    assert "model.safetensors" in seen["uploaded"]
+
+
+@pytest.mark.parametrize(
+    "format_type, save_method",
+    [("16-bit (FP16)", "merged_16bit"), ("4-bit (FP4)", "merged_4bit_forced")],
+)
+@pytest.mark.parametrize("private", [True, False])
+def test_merged_export_push_uploads_the_saved_folder_instead_of_merging_again(
+    tmp_path, monkeypatch, format_type, save_method, private
+):
+    calls: list[str] = []
+    seen: dict = {}
+    backend = _non_mlx_backend(monkeypatch, "test_export_hub_push_merged_backend", calls, seen)
+
+    success, message, output_path = backend.export_merged_model(
+        str(tmp_path / "export"),
+        format_type = format_type,
+        push_to_hub = True,
+        repo_id = "model",
+        hf_token = "hf_fake",
+        private = private,
+    )
+
+    assert success is True, message
+    assert backend.current_model.merges == [save_method]
+    assert output_path == str((tmp_path / "export").resolve())
+    assert seen["repo"] == {"repo_id": "model", "private": private, "exist_ok": True}
+    assert calls == _expected_merged_calls(private)
+    assert f"# Uploaded finetuned {format_type} model" in seen["card"]
+    assert "base_model: unsloth/Qwen2.5-0.5B-Instruct" in seen["card"]
+    assert seen["folder"] == output_path
+    assert seen["uploaded"] == ["model.safetensors"]
+
+
+def test_merged_export_push_to_a_reused_folder_does_not_upload_its_leftovers(tmp_path, monkeypatch):
+    calls: list[str] = []
+    seen: dict = {}
+    backend = _non_mlx_backend(monkeypatch, "test_export_hub_push_merged_backend", calls, seen)
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    (export_dir / "adapter_config.json").write_text("{}")
+
+    success, message, output_path = backend.export_merged_model(
+        str(export_dir),
+        push_to_hub = True,
+        repo_id = "model",
+        hf_token = "hf_fake",
+    )
+
+    assert success is True, message
+    assert output_path == str(export_dir.resolve())
+    assert backend.current_model.merges == ["merged_16bit", "merged_16bit"]
+    assert seen["folder"] != output_path
+    assert not Path(seen["folder"]).exists()
+    assert seen["uploaded"] == ["model.safetensors"]
+
+
+@pytest.mark.parametrize("roomier", ["temp", "export", "export_but_unwritable"])
+def test_merged_export_push_stages_the_clean_save_where_there_is_room(
+    tmp_path, monkeypatch, roomier
+):
+    import shutil
+
+    calls: list[str] = []
+    seen: dict = {}
+    backend = _non_mlx_backend(monkeypatch, "test_export_hub_push_merged_backend", calls, seen)
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    (export_dir / "adapter_config.json").write_text("{}")
+    export_parent = export_dir.resolve().parent
+
+    def fake_disk_usage(path):
+        under_export = Path(path).resolve() == export_parent
+        roomy = under_export if roomier != "temp" else not under_export
+        return types.SimpleNamespace(total = 1 << 40, used = 0, free = (1 << 40) if roomy else 1)
+
+    monkeypatch.setattr(shutil, "disk_usage", fake_disk_usage)
+
+    if roomier == "export_but_unwritable":
+        # Only the export directory has to be writable; its parent need not be.
+        real_temporary_directory = tempfile.TemporaryDirectory
+
+        def refusing_temporary_directory(
+            *args,
+            dir = None,
+            **kwargs,
+        ):
+            if dir is not None and Path(dir).resolve() == export_parent:
+                raise PermissionError(13, "Permission denied", str(dir))
+            return real_temporary_directory(*args, dir = dir, **kwargs)
+
+        monkeypatch.setattr(tempfile, "TemporaryDirectory", refusing_temporary_directory)
+
+    success, message, _ = backend.export_merged_model(
+        str(export_dir),
+        push_to_hub = True,
+        repo_id = "model",
+        hf_token = "hf_fake",
+    )
+
+    assert success is True, message
+    staging_parent = Path(seen["folder"]).resolve().parent
+    if roomier == "export":
+        assert staging_parent == export_parent
+    else:
+        assert staging_parent != export_parent
+
+
+def test_merged_export_push_treats_a_folder_of_finder_metadata_as_fresh(tmp_path, monkeypatch):
+    calls: list[str] = []
+    seen: dict = {}
+    backend = _non_mlx_backend(monkeypatch, "test_export_hub_push_merged_backend", calls, seen)
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    (export_dir / "._model.safetensors").write_bytes(b"\x00\x05\x16\x07rsrc")
+
+    success, message, output_path = backend.export_merged_model(
+        str(export_dir),
+        push_to_hub = True,
+        repo_id = "model",
+        hf_token = "hf_fake",
+    )
+
+    assert success is True, message
+    assert backend.current_model.merges == ["merged_16bit"]
+    assert seen["folder"] == output_path
+    assert seen["uploaded"] == ["model.safetensors"]
+
+
+def test_merged_export_push_keeps_the_card_of_an_existing_repo(tmp_path, monkeypatch):
+    calls: list[str] = []
+    seen: dict = {"existing_files": {"README.md": True}}
+    backend = _non_mlx_backend(monkeypatch, "test_export_hub_push_merged_backend", calls, seen)
+
+    success, message, _ = backend.export_merged_model(
+        str(tmp_path / "export"),
+        push_to_hub = True,
+        repo_id = "model",
+        hf_token = "hf_fake",
+    )
+
+    assert success is True, message
+    assert calls == ["create_repo", "upload_folder"]
+    assert "card" not in seen
+    assert seen["uploaded"] == ["model.safetensors"]
+
+
+def test_merged_export_push_still_uploads_when_the_card_fails(tmp_path, monkeypatch):
+    calls: list[str] = []
+    seen: dict = {"card_error": RuntimeError("validate-yaml unreachable")}
+    backend = _non_mlx_backend(monkeypatch, "test_export_hub_push_merged_backend", calls, seen)
+
+    success, message, output_path = backend.export_merged_model(
+        str(tmp_path / "export"),
+        push_to_hub = True,
+        repo_id = "model",
+        hf_token = "hf_fake",
+    )
+
+    assert success is True, message
+    assert seen["folder"] == output_path
+    assert seen["uploaded"] == ["model.safetensors"]
+
+
+# A stale weight file makes the folder look reused, so the emptiness is only visible on the staging
+# copy; a fresh folder shows it on the export directory itself.
+@pytest.mark.parametrize("stale_weights", [False, True])
+def test_merged_export_push_merges_again_when_the_save_left_no_weights(
+    tmp_path, monkeypatch, stale_weights
+):
+    calls: list[str] = []
+    seen: dict = {}
+    backend = _non_mlx_backend(monkeypatch, "test_export_hub_push_merged_backend", calls, seen)
+    export_dir = tmp_path / "export"
+    if stale_weights:
+        export_dir.mkdir()
+        (export_dir / "model.safetensors").write_bytes(b"stale")
+
+    def save_nothing(
+        save_directory,
+        tokenizer,
+        save_method = None,
+        token = None,
+    ):
+        Path(save_directory).mkdir(parents = True, exist_ok = True)
+
+    backend.current_model.save_pretrained_merged = save_nothing
+
+    success, message, _ = backend.export_merged_model(
+        str(export_dir),
+        push_to_hub = True,
+        repo_id = "model",
+        hf_token = "hf_fake",
+    )
+
+    assert success is True, message
+    assert backend.current_model.merges == ["push_to_hub_merged"]
+    assert calls == []
+
+
+def test_merged_export_push_card_does_not_name_a_local_base_model(tmp_path, monkeypatch):
+    calls: list[str] = []
+    seen: dict = {}
+    backend = _non_mlx_backend(monkeypatch, "test_export_hub_push_merged_backend", calls, seen)
+    backend.current_model.config = types.SimpleNamespace(
+        _name_or_path = str(tmp_path), model_type = "qwen2"
+    )
+
+    success, message, _ = backend.export_merged_model(
+        str(tmp_path / "export"),
+        push_to_hub = True,
+        repo_id = "model",
+        hf_token = "hf_fake",
+    )
+
+    assert success is True, message
+    assert "base_model: owner/model" in seen["card"]
+    assert str(tmp_path) not in seen["card"]

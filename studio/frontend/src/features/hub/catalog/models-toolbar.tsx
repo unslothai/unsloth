@@ -15,6 +15,7 @@ import {
   AiChipIcon,
   CancelCircleIcon,
   Database02Icon,
+  Delete02Icon,
   FolderSearchIcon,
   Search01Icon,
   SlidersHorizontalIcon,
@@ -72,6 +73,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   fitOnDeviceOnly,
   onFitOnDeviceOnlyChange,
   onManageLocalFolders,
+  onFreeUpSpace,
   onOpenFineTune,
 }: {
   tab: ModelsTab;
@@ -91,6 +93,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   fitOnDeviceOnly: boolean;
   onFitOnDeviceOnlyChange: (value: boolean) => void;
   onManageLocalFolders: () => void;
+  onFreeUpSpace: () => void;
   /** Opens the curated "Fine-tune ready" channel (discover only). Exposed as a
    *  format-dropdown option rather than a standalone feed section. */
   onOpenFineTune: () => void;
@@ -202,6 +205,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
       className="flex min-w-0 flex-col gap-2 lg:flex-row lg:flex-wrap lg:items-center"
     >
       <div
+        data-tour="hub-tabs"
         className={cn(
           "hub-menu-trigger hub-tab-toggle relative inline-flex h-9 w-full shrink-0 items-center rounded-full lg:w-[280px]",
         )}
@@ -248,6 +252,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
 
       <div
         ref={searchWrapRef}
+        data-tour="hub-search"
         className="relative min-w-0 flex-1 lg:min-w-[220px] lg:flex-[1_1_220px]"
       >
         <HugeiconsIcon
@@ -351,6 +356,32 @@ export const ModelsToolbar = memo(function ModelsToolbar({
             </TooltipTrigger>
             <TooltipContent side="bottom" sideOffset={6}>
               Manage local model folders
+            </TooltipContent>
+          </Tooltip>
+        )}
+
+        {tab === "downloaded" && !isDataset && (
+          <Tooltip>
+            <TooltipTrigger asChild={true}>
+              <button
+                type="button"
+                onClick={onFreeUpSpace}
+                data-testid="free-up-space-trigger"
+                className={cn(
+                  triggerBase,
+                  "field-filter inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full px-3 text-ui-12p5",
+                )}
+              >
+                <HugeiconsIcon
+                  icon={Delete02Icon}
+                  strokeWidth={1.75}
+                  className="size-3.5"
+                />
+                Free up space
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" sideOffset={6}>
+              Remove shared model assets no installed model needs
             </TooltipContent>
           </Tooltip>
         )}

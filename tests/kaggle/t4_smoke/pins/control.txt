@@ -1,0 +1,50 @@
+# Pinned library set for the CONTROL leg of the Kaggle T4 notebook CI.
+#
+# The control leg and the version canary run the SAME payload, seed, data and
+# step count, differing only in this file: control installs these exact
+# versions, the canary the newest release of each that Unsloth's declared
+# constraints allow. That is what makes "canary red, control green" mean "a
+# library release broke us" and nothing else.
+#
+# Every version here is evidence rather than preference: each is one a real T4
+# session resolved on its own from the base install (unsloth_zoo with deps,
+# unsloth, bitsandbytes), so pinning refuses silent drift rather than changing
+# the environment. Those sessions installed unsloth with --no-deps, which the
+# base install no longer does; the five packages below are unaffected, since
+# unsloth's own pyproject.toml declares none of them.
+#
+# transformers and trl are the pair recorded in the `environment` block of
+# tests/kaggle/t4_smoke/references/t4_qwen2.5-0.5b.json, the trace the committed
+# band is made of, from kernel danielhanchen/unsloth-t4-ci-e3c6661f. Pinning
+# either elsewhere would stop the control leg producing the curve the band
+# checks against.
+#
+# peft, accelerate and bitsandbytes were not recorded by that run
+# (environment_fingerprint() captured only torch, transformers, trl and unsloth
+# then). They come from the feasibility probe kernels
+# danielhanchen/unsloth-t4-ci-8161ceb9 and unsloth-t4-ci-7ab727f1 (2026-08-11),
+# which ran the identical base install on a Tesla T4 and, being independent
+# sessions, agreed. They also reported transformers 5.5.0 and trl 0.24.0, the
+# corroboration that matters: these five lines describe one coherent
+# environment rather than two from different months.
+#
+# The payload asserts these held (versions.pin_failures): a control whose pins a
+# transitive dependency silently overrode is not a control, and every comparison
+# against it would be wrong with nothing else showing it.
+transformers==5.5.0
+trl==0.24.0
+peft==0.19.1
+accelerate==1.13.0
+bitsandbytes==0.50.0
+
+# torch is NOT PINNED, deliberately. It comes from the Kaggle base image
+# (2.10.0+cu128 as measured), which is the situation a notebook user is in, and
+# is the one package here that cannot be moved cheaply: pinning it pulls a
+# multi-gigabyte wheel whose CUDA runtime dependencies the image may not carry.
+# Not hypothetical -- the first GRPO probe died at `import torch` with
+# `libcusparseLt.so.0: cannot open shared object file` after vLLM downgraded
+# torch underneath it -- and that risk is larger than the pin removes.
+#
+# torch is RECORDED in every report instead, so a bump stays attributable, and
+# it has a signature pinning cannot hide: an image change moves BOTH legs at
+# once, where a library release moves only the canary.

@@ -11,7 +11,8 @@ peft's 4bit LoRA layer is exported only when bnb is importable, so
 here too.
 """
 
-# Path | None below is a PEP 604 union; the project still supports Python 3.9.
+# Path | None below is a PEP 604 union;
+# the project still supports Python 3.9.
 from __future__ import annotations
 
 import ast
@@ -237,8 +238,8 @@ def test_capability_fallback_precedes_the_mutually_exclusive_mode_check():
     src, _ = _bnb_guards()
     tree = ast.parse(src)
     checked = 0
-    # Scope to the enclosing function: the other loader's guard sits earlier in the
-    # file and would otherwise satisfy a plain line-number comparison.
+    # Scope to the enclosing function: the other loader's guard sits earlier in the file and would
+    # otherwise satisfy a plain line-number comparison.
     for func in ast.walk(tree):
         if not isinstance(func, ast.FunctionDef):
             continue

@@ -39,15 +39,44 @@ function booleanField(payload: Record<string, unknown>, key: string): boolean {
 }
 
 function changePasswordBody(
+  initial: boolean,
   currentPassword: string,
   nextPassword: string,
 ): string {
   return JSON.stringify(
-    Object.fromEntries([
-      ["current_password", currentPassword],
-      ["new_password", nextPassword],
-    ]),
+    Object.fromEntries(
+      initial
+        ? [["new_password", nextPassword]]
+        : [
+            ["current_password", currentPassword],
+            ["new_password", nextPassword],
+          ],
+    ),
   );
+}
+
+function dialogCopy(t: T, initial: boolean) {
+  return initial
+    ? {
+        trigger: t("settings.general.passwordDialog.setTrigger"),
+        title: t("settings.general.passwordDialog.setTitle"),
+        description: t("settings.general.passwordDialog.setDescription", {
+          minLength: MIN_PASSWORD_LENGTH,
+        }),
+        submit: t("settings.general.passwordDialog.setSubmit"),
+        submitting: t("settings.general.passwordDialog.setting"),
+        done: t("settings.general.passwordDialog.setDone"),
+      }
+    : {
+        trigger: t("settings.general.passwordDialog.trigger"),
+        title: t("settings.general.passwordDialog.title"),
+        description: t("settings.general.passwordDialog.description", {
+          minLength: MIN_PASSWORD_LENGTH,
+        }),
+        submit: t("settings.general.passwordDialog.update"),
+        submitting: t("settings.general.passwordDialog.updating"),
+        done: t("settings.general.passwordDialog.updated"),
+      };
 }
 
 function hasStartedTooShortPassword(value: string): boolean {
@@ -64,11 +93,12 @@ function hasReusablePassword(currentPassword: string, nextPassword: string) {
 
 function passwordValidationMessage(
   t: T,
+  initial: boolean,
   currentPassword: string,
   nextPassword: string,
   confirmPassword: string,
 ): string {
-  if (currentPassword.length < MIN_PASSWORD_LENGTH) {
+  if (!initial && currentPassword.length < MIN_PASSWORD_LENGTH) {
     return t("settings.general.passwordDialog.currentTooShort", {
       minLength: MIN_PASSWORD_LENGTH,
     });
@@ -104,6 +134,7 @@ async function unauthorizedDetail(response: Response): Promise<string | null> {
 }
 
 function postChangePassword(
+  initial: boolean,
   currentPassword: string,
   nextPassword: string,
 ): Promise<Response> {
@@ -112,24 +143,40 @@ function postChangePassword(
   if (token) {
     headers.set("Authorization", `Bearer ${token}`);
   }
-  return fetch(apiUrl("/api/auth/change-password"), {
-    method: "POST",
-    headers,
-    body: changePasswordBody(currentPassword, nextPassword),
-  });
+  return fetch(
+    apiUrl(
+      initial
+        ? "/api/auth/desktop-initial-password"
+        : "/api/auth/change-password",
+    ),
+    {
+      method: "POST",
+      headers,
+      body: changePasswordBody(initial, currentPassword, nextPassword),
+    },
+  );
 }
 
 async function requestPasswordChange(
+  initial: boolean,
   currentPassword: string,
   nextPassword: string,
 ): Promise<Record<string, unknown>> {
-  let response = await postChangePassword(currentPassword, nextPassword);
+  let response = await postChangePassword(
+    initial,
+    currentPassword,
+    nextPassword,
+  );
   const detail = await unauthorizedDetail(response);
   if (response.status === 401 && detail !== WRONG_CURRENT_PASSWORD_DETAIL) {
     // Retry token/session 401s, but never turn the endpoint's
     // "wrong current password" validation into a session refresh/logout.
     if (await refreshSession()) {
-      response = await postChangePassword(currentPassword, nextPassword);
+      response = await postChangePassword(
+        initial,
+        currentPassword,
+        nextPassword,
+      );
     }
   }
   if (!response.ok) {
@@ -146,14 +193,25 @@ async function requestPasswordChange(
  * POST /api/auth/change-password endpoint. The forced first-login flow lives at
  * /change-password and bounces non-forced users to /login, so day-to-day changes
  * need their own self-contained entry point here.
+ *
+ * ``initial`` switches to the desktop route that sets the first password: the
+ * desktop app authenticates with a local secret and never saw the seeded
+ * password, so it has no current password to supply.
  */
-export function ChangePasswordDialog() {
+export function ChangePasswordDialog({
+  initial = false,
+  onDone,
+}: {
+  initial?: boolean;
+  onDone?: () => void;
+}) {
   const t = useT();
   const [open, setOpen] = useState(false);
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
   const [confirm, setConfirm] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const copy = dialogCopy(t, initial);
 
   const reset = () => {
     setCurrent("");
@@ -168,6 +226,7 @@ export function ChangePasswordDialog() {
   const samePassword = hasReusablePassword(current, next);
   const validationMessage = passwordValidationMessage(
     t,
+    initial,
     current,
     next,
     confirm,
@@ -182,7 +241,7 @@ export function ChangePasswordDialog() {
     }
     setSubmitting(true);
     try {
-      const data = await requestPasswordChange(current, next);
+      const data = await requestPasswordChange(initial, current, next);
       const accessToken = stringField(data, "access_token");
       const refreshToken = stringField(data, "refresh_token");
       if (!(accessToken && refreshToken)) {
@@ -191,9 +250,10 @@ export function ChangePasswordDialog() {
       // The endpoint rotates the JWT secret and returns fresh tokens.
       storeAuthTokens(accessToken, refreshToken);
       setMustChangePassword(booleanField(data, "must_change_password"));
-      toast.success(t("settings.general.passwordDialog.updated"));
+      toast.success(copy.done);
       reset();
       setOpen(false);
+      onDone?.();
     } catch (err) {
       toast.error(
         err instanceof Error && err.message
@@ -220,7 +280,7 @@ export function ChangePasswordDialog() {
     >
       <DialogTrigger asChild={true}>
         <Button variant="outline" size="sm" className="h-8">
-          {t("settings.general.passwordDialog.trigger")}
+          {copy.trigger}
         </Button>
       </DialogTrigger>
       <DialogContent
@@ -239,37 +299,33 @@ export function ChangePasswordDialog() {
       >
         <form onSubmit={submit}>
           <DialogHeader>
-            <DialogTitle>
-              {t("settings.general.passwordDialog.title")}
-            </DialogTitle>
-            <DialogDescription>
-              {t("settings.general.passwordDialog.description", {
-                minLength: MIN_PASSWORD_LENGTH,
-              })}
-            </DialogDescription>
+            <DialogTitle>{copy.title}</DialogTitle>
+            <DialogDescription>{copy.description}</DialogDescription>
           </DialogHeader>
           <div className="mt-4 space-y-3">
-            <div className="space-y-1.5">
-              <Label htmlFor="cp-current">
-                {t("settings.general.passwordDialog.currentPassword")}
-              </Label>
-              <Input
-                id="cp-current"
-                type="password"
-                autoComplete="current-password"
-                value={current}
-                onChange={(e) => setCurrent(e.target.value)}
-                minLength={MIN_PASSWORD_LENGTH}
-                disabled={submitting}
-              />
-              {currentTooShort ? (
-                <p className="text-xs text-destructive" aria-live="polite">
-                  {t("settings.general.passwordDialog.currentTooShort", {
-                    minLength: MIN_PASSWORD_LENGTH,
-                  })}
-                </p>
-              ) : null}
-            </div>
+            {initial ? null : (
+              <div className="space-y-1.5">
+                <Label htmlFor="cp-current">
+                  {t("settings.general.passwordDialog.currentPassword")}
+                </Label>
+                <Input
+                  id="cp-current"
+                  type="password"
+                  autoComplete="current-password"
+                  value={current}
+                  onChange={(e) => setCurrent(e.target.value)}
+                  minLength={MIN_PASSWORD_LENGTH}
+                  disabled={submitting}
+                />
+                {currentTooShort ? (
+                  <p className="text-xs text-destructive" aria-live="polite">
+                    {t("settings.general.passwordDialog.currentTooShort", {
+                      minLength: MIN_PASSWORD_LENGTH,
+                    })}
+                  </p>
+                ) : null}
+              </div>
+            )}
             <div className="space-y-1.5">
               <Label htmlFor="cp-new">
                 {t("settings.general.passwordDialog.newPassword")}
@@ -317,9 +373,7 @@ export function ChangePasswordDialog() {
           </div>
           <DialogFooter className="mt-5">
             <Button type="submit" disabled={disabled}>
-              {submitting
-                ? t("settings.general.passwordDialog.updating")
-                : t("settings.general.passwordDialog.update")}
+              {submitting ? copy.submitting : copy.submit}
             </Button>
           </DialogFooter>
         </form>

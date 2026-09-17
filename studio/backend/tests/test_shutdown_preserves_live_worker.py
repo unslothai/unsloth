@@ -23,6 +23,7 @@ class _FakeProc:
     def __init__(self, dies_on = None):
         self._alive = True
         self._dies_on = dies_on  # None | "join" | "terminate" | "kill"
+        self.pid = 424242
 
     def is_alive(self):
         return self._alive
@@ -42,6 +43,7 @@ class _FakeProc:
 
 def _bare_inference():
     o = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    o._subprocess_shutdown_lock = threading.Lock()
     o._stop_dispatcher = lambda: None
     o._cancel_generation = lambda: None
     o._drain_queue = lambda: []
@@ -107,6 +109,61 @@ class TestInferenceShutdownReturn:
         o._proc._alive = False
         assert o._shutdown_subprocess(timeout = 0.01) is True
         assert o._proc is None
+
+    def test_forced_shutdown_reaps_worker_tree(self, monkeypatch):
+        from utils import process_lifetime
+
+        o = _bare_inference()
+        o._proc = _FakeProc(dies_on = "terminate")
+        reaped = []
+        monkeypatch.setattr(
+            process_lifetime,
+            "terminate_pid",
+            lambda pid, timeout: reaped.append((pid, timeout)),
+        )
+
+        assert o._shutdown_subprocess(timeout = 0.01) is True
+        assert reaped == [(424242, 5)]
+
+    def test_concurrent_shutdowns_share_one_teardown(self):
+        o = _bare_inference()
+        o._proc = _FakeProc(dies_on = "join")
+        first_put = threading.Event()
+        second_put = threading.Event()
+        release = threading.Event()
+        puts = []
+
+        class _BlockingQueue:
+            def put(self, message):
+                puts.append(message)
+                if len(puts) == 1:
+                    first_put.set()
+                    assert release.wait(timeout = 5)
+                else:
+                    second_put.set()
+
+        o._cmd_queue = _BlockingQueue()
+        errors = []
+
+        def shutdown():
+            try:
+                o._shutdown_subprocess(timeout = 0.01)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        first = threading.Thread(target = shutdown)
+        second = threading.Thread(target = shutdown)
+        first.start()
+        assert first_put.wait(timeout = 5)
+        second.start()
+        assert not second_put.wait(timeout = 0.1)
+        release.set()
+        first.join(timeout = 5)
+        second.join(timeout = 5)
+
+        assert not first.is_alive() and not second.is_alive()
+        assert errors == []
+        assert len(puts) == 1
 
 
 class TestExportShutdownReturn:

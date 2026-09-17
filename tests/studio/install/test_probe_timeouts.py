@@ -6,6 +6,7 @@ shell test confirms the bash helper returns within the timeout when nvidia-smi h
 """
 
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -183,5 +184,103 @@ def test_has_usable_nvidia_gpu_returns_under_timeout():
         )
         # The probe must have returned (not hung): NONE without /proc, DETECTED via /proc fallback.
         assert proc.stdout.strip() in {"NONE", "DETECTED"}
+    finally:
+        shutil.rmtree(workdir, ignore_errors = True)
+
+
+# Highest-wins runs every ROCm version source on every AMD host, so a hang in any one of
+# them hangs the installer: rpm was bounded when that landed, dpkg-query, hipconfig and
+# amd-smi were not, and dpkg-query decides on Debian, which ships no rocm-core.
+
+# Matched against the EXECUTION line only, so a helper stays free to resolve the tool some
+# other way (a $ROCM_PATH/bin path, a variable) without the assertion going stale.
+_ROCM_SOURCE_PROBES = [
+    ("_rocm_tag_from_amd_smi", r"amd-smi\s+version\b"),
+    ("_rocm_tag_from_hipconfig", r"--version\b"),
+    ("_rocm_tag_from_dpkg", r"dpkg-query\s+-W\b"),
+    ("_rocm_tag_from_rpm", r"\brpm\s+-q\b"),
+]
+
+
+def _exec_lines(body: str, pattern: str) -> list:
+    """Lines that run the probe: matches `pattern` and is not a comment or a lookup guard."""
+    return [
+        line
+        for line in body.splitlines()
+        if re.search(pattern, line)
+        and not line.lstrip().startswith("#")
+        and "command -v" not in line
+        and not re.search(r"\[\s*-x\s", line)
+    ]
+
+
+class TestRocmVersionSourcesBounded:
+    def _src(self) -> str:
+        return INSTALL_SH.read_text(encoding = "utf-8")
+
+    @pytest.mark.parametrize("fn_name,pattern", _ROCM_SOURCE_PROBES)
+    def test_source_probe_is_bounded(self, fn_name, pattern):
+        body = _extract_sh_function_body(self._src(), fn_name)
+        assert body, f"install.sh must define {fn_name}"
+        lines = _exec_lines(body, pattern)
+        assert lines, f"{fn_name} no longer runs a probe matching {pattern}"
+        for line in lines:
+            assert "_run_bounded" in line, f"{fn_name} runs an unbounded probe: {line.strip()}"
+
+    @pytest.mark.parametrize("pattern", [r"amd-smi\s+version\b", r"--version\b"])
+    def test_radeon_wheel_url_probes_are_bounded(self, pattern):
+        body = _extract_sh_function_body(self._src(), "get_radeon_wheel_url")
+        assert body, "install.sh must define get_radeon_wheel_url"
+        lines = _exec_lines(body, pattern)
+        assert lines, f"get_radeon_wheel_url no longer runs a probe matching {pattern}"
+        for line in lines:
+            assert (
+                "_run_bounded" in line
+            ), f"get_radeon_wheel_url runs an unbounded probe: {line.strip()}"
+
+
+@pytest.mark.skipif(not _have_timeout(), reason = "`timeout` binary not available")
+@pytest.mark.parametrize("hanging_tool", ["dpkg-query", "hipconfig", "amd-smi"])
+def test_detect_rocm_version_tag_returns_when_a_source_hangs(hanging_tool):
+    """A wedged version source must make _detect_rocm_version_tag decline, not hang the install."""
+    src = INSTALL_SH.read_text(encoding = "utf-8")
+    parts = [
+        _extract_sh_function_body(src, name)
+        for name in (
+            "_run_bounded",
+            "_rocm_tag_from_amd_smi",
+            "_rocm_tag_from_version_file",
+            "_rocm_tag_from_hipconfig",
+            "_rocm_tag_from_dpkg",
+            "_rocm_tag_from_rpm",
+            "_highest_rocm_tag",
+            "_detect_rocm_version_tag",
+        )
+    ]
+    assert all(parts)
+
+    workdir = tempfile.mkdtemp(prefix = "rocm_probe_timeout_")
+    try:
+        fake_dir = Path(workdir, "bin")
+        fake_dir.mkdir()
+        hanging = fake_dir / hanging_tool
+        hanging.write_text("#!/bin/sh\nsleep 30\n")
+        hanging.chmod(hanging.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+
+        real_bins = {
+            Path(shutil.which(c)).parent for c in ("timeout", "awk", "grep", "sort", "tr", "sh")
+        }
+        path_env = os.pathsep.join([str(fake_dir)] + [str(p) for p in real_bins])
+
+        script = "\n".join(parts) + '\n_detect_rocm_version_tag\necho "RC=$?"\n'
+        proc = subprocess.run(
+            ["sh", "-c", script],
+            env = {"PATH": path_env},
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            text = True,
+            timeout = 25,  # internal bound is 10s per probe, the fake sleeps 30s
+        )
+        assert "RC=0" in proc.stdout
     finally:
         shutil.rmtree(workdir, ignore_errors = True)

@@ -8,13 +8,18 @@ handler (shut down iff the seeded admin password is still unchanged). The
 threading.Timer itself is not exercised; the handler is invoked directly.
 """
 
+import time
 from types import SimpleNamespace
 
 from auth.bootstrap_timeout import (
     DEFAULT_BOOTSTRAP_TIMEOUT_SECONDS,
     _format_duration,
+    arm_bootstrap_timeout,
+    bootstrap_deadline_remaining_seconds,
     bootstrap_timeout_seconds,
+    clear_bootstrap_deadline,
     enforce_bootstrap_password_deadline,
+    record_bootstrap_deadline,
     should_arm_bootstrap_timeout,
 )
 
@@ -183,3 +188,52 @@ def test_shutdown_message_uses_formatted_duration():
     )
     assert any("60 minutes" in m for m in logged)
     assert not any("minute(s)" in m for m in logged)
+
+
+def test_no_deadline_reported_when_nothing_armed():
+    clear_bootstrap_deadline()
+    assert bootstrap_deadline_remaining_seconds() is None
+
+
+def test_recorded_deadline_counts_down():
+    record_bootstrap_deadline(3600)
+    try:
+        remaining = bootstrap_deadline_remaining_seconds()
+        assert remaining is not None
+        # Allow for the clock moving between the two calls.
+        assert 3595 <= remaining <= 3600
+    finally:
+        clear_bootstrap_deadline()
+
+
+def test_a_disabled_timeout_records_no_deadline():
+    """None means not time-boxed, which is a different answer from an expired 0."""
+    record_bootstrap_deadline(0)
+    assert bootstrap_deadline_remaining_seconds() is None
+
+
+def test_an_expired_deadline_floors_at_zero_rather_than_going_negative():
+    """The timer and this clock are read separately, so a caller can land in the gap."""
+    record_bootstrap_deadline(1)
+    try:
+        import auth.bootstrap_timeout as bt
+        bt._deadline_at = time.monotonic() - 30
+        assert bootstrap_deadline_remaining_seconds() == 0
+    finally:
+        clear_bootstrap_deadline()
+
+
+def test_arming_publishes_the_deadline():
+    """Arming is the only thing that starts the clock, so it must be what records it."""
+    clear_bootstrap_deadline()
+    timer = arm_bootstrap_timeout(
+        _fake_storage(requires_change = True),
+        lambda: None,
+        timeout_seconds = 1800,
+    )
+    try:
+        remaining = bootstrap_deadline_remaining_seconds()
+        assert remaining is not None and 1795 <= remaining <= 1800
+    finally:
+        timer.cancel()
+        clear_bootstrap_deadline()

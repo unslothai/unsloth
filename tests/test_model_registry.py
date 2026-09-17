@@ -6,7 +6,8 @@ import sys
 from dataclasses import dataclass
 
 import pytest
-from huggingface_hub import ModelInfo as HfModelInfo
+from huggingface_hub import HfApi
+from huggingface_hub.errors import HfHubHTTPError, RepositoryNotFoundError
 
 from unsloth.registry import register_models, search_models
 from unsloth.registry._deepseek import register_deepseek_models
@@ -16,7 +17,6 @@ from unsloth.registry._mistral import register_mistral_models
 from unsloth.registry._phi import register_phi_models
 from unsloth.registry._qwen import register_qwen_models
 from unsloth.registry.registry import MODEL_REGISTRY, QUANT_TAG_MAP, QuantType
-from unsloth.utils.hf_hub import get_model_info
 
 MODEL_NAMES = [
     "llama",
@@ -42,12 +42,41 @@ class ModelTestParam:
     register_models: callable
 
 
+class HubUnavailable(Exception):
+    """The Hub could not answer, so the registry cannot be judged from here."""
+
+
+def _model_is_missing(api: HfApi, model_id: str) -> bool:
+    """True when the Hub says the repo does not exist.
+
+    Only RepositoryNotFoundError means "not on the Hub". The suite runs
+    unauthenticated in CI, where the Hub answers a private/deleted repo with
+    401 "Invalid username or password" and huggingface_hub maps that to
+    RepositoryNotFoundError. A *gated* repo is not in that bucket: its metadata
+    is public, so model_info returns 200 and this returns False.
+
+    Anything else (429 rate limit, 5xx, DNS/TLS/timeouts) is a broken
+    connection to the Hub, not a broken registry, and must not be reported as
+    129 missing models.
+    """
+    try:
+        api.model_info(model_id, expand = ["lastModified"])
+    except RepositoryNotFoundError:
+        return True
+    except Exception as exc:
+        raise HubUnavailable(f"{model_id}: {type(exc).__name__}: {exc}") from exc
+    return False
+
+
 def _test_model_uploaded(model_ids: list[str]):
+    api = HfApi()
     missing_models = []
     for _id in model_ids:
-        model_info: HfModelInfo = get_model_info(_id)
-        if not model_info:
-            missing_models.append(_id)
+        try:
+            if _model_is_missing(api, _id):
+                missing_models.append(_id)
+        except HubUnavailable as exc:
+            pytest.skip(f"Hugging Face Hub unavailable: {exc}")
 
     return missing_models
 
@@ -108,7 +137,40 @@ def _run_registry_child(body: str) -> subprocess.CompletedProcess:
     )
 
 
-def test_importing_registry_does_not_register_models():
+_REGISTRY_LIFECYCLE = (
+    "import unsloth.registry\n"
+    "from unsloth.registry import register_models\n"
+    "from unsloth.registry.registry import MODEL_REGISTRY\n"
+    "print('REGISTRY_SIZE', len(MODEL_REGISTRY))\n"
+    "register_models()\n"
+    "orgs = sorted({m.org for m in MODEL_REGISTRY.values()})\n"
+    "deepseek = [k for k in MODEL_REGISTRY if 'deepseek' in k.lower()]\n"
+    "print('ORGS', orgs)\n"
+    "print('NUM_DEEPSEEK', len(deepseek))"
+)
+
+
+@pytest.fixture(scope = "module")
+def registry_lifecycle():
+    """One child interpreter for both questions below, shared at module scope.
+
+    They ran two children with the same argv, the same inherited environment and
+    the same prelude, differing only in what they did after the import: one read
+    ``MODEL_REGISTRY`` straight away, the other called ``register_models()`` first.
+    That is one interpreter's worth of work, because the second child's own body
+    already begins from a bare import, so reading the size BEFORE it calls
+    ``register_models()`` observes exactly what the first child observed. Each was
+    ~15s, almost all of it ``import unsloth``, or three quarters of this file.
+
+    Still a fresh interpreter, which is the property both tests need: it is
+    independent of any ``register_models()`` the in-process tests above ran
+    against the shared registry. Module-scoped, not session-scoped, because
+    nothing outside this file wants it.
+    """
+    return _run_registry_child(_REGISTRY_LIFECYCLE)
+
+
+def test_importing_registry_does_not_register_models(registry_lifecycle):
     """Importing the registry must not populate MODEL_REGISTRY on its own.
 
     ``_deepseek`` used to call ``register_deepseek_models(...)`` at module
@@ -116,11 +178,7 @@ def test_importing_registry_does_not_register_models():
     import side effect, unlike every other family which only registers on
     demand.
     """
-    result = _run_registry_child(
-        "import unsloth.registry\n"
-        "from unsloth.registry.registry import MODEL_REGISTRY\n"
-        "print('REGISTRY_SIZE', len(MODEL_REGISTRY))"
-    )
+    result = registry_lifecycle
     assert result.returncode == 0, (
         f"registry import subprocess exited {result.returncode}\n"
         f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
@@ -129,7 +187,7 @@ def test_importing_registry_does_not_register_models():
     assert size_lines == ["REGISTRY_SIZE 0"], result.stdout + result.stderr
 
 
-def test_register_models_registers_no_upstream_originals():
+def test_register_models_registers_no_upstream_originals(registry_lifecycle):
     """``register_models()`` must register each family's ``unsloth``-org models
     and must NOT leak upstream vendor "original" models.
 
@@ -142,16 +200,7 @@ def test_register_models_registers_no_upstream_originals():
     registered via the normal path. Runs in a fresh interpreter so it is
     independent of other tests' registry mutations.
     """
-    result = _run_registry_child(
-        "import unsloth.registry\n"
-        "from unsloth.registry import register_models\n"
-        "from unsloth.registry.registry import MODEL_REGISTRY\n"
-        "register_models()\n"
-        "orgs = sorted({m.org for m in MODEL_REGISTRY.values()})\n"
-        "deepseek = [k for k in MODEL_REGISTRY if 'deepseek' in k.lower()]\n"
-        "print('ORGS', orgs)\n"
-        "print('NUM_DEEPSEEK', len(deepseek))"
-    )
+    result = registry_lifecycle
     assert result.returncode == 0, (
         f"register_models subprocess exited {result.returncode}\n"
         f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
@@ -162,3 +211,60 @@ def test_register_models_registers_no_upstream_originals():
     # Deepseek is still registered via the normal path, just without originals.
     deepseek_lines = [line for line in out.splitlines() if line.startswith("NUM_DEEPSEEK")]
     assert deepseek_lines and int(deepseek_lines[0].split()[1]) > 0, out + result.stderr
+
+
+class _FakeApi:
+    def __init__(self, error):
+        self.error = error
+
+    def model_info(
+        self,
+        model_id,
+        expand = None,
+    ):
+        if self.error is not None:
+            raise self.error
+        return object()
+
+
+def _hub_error(cls, message):
+    """Build a hub exception without calling its ``__init__``.
+
+    ``HfHubHTTPError.__init__`` takes ``response`` as an optional positional on
+    huggingface_hub 0.x and as a *required* keyword-only httpx Response on 1.x,
+    and RepositoryNotFoundError inherits it. Bypassing ``__init__`` keeps these
+    fixtures working on both, which the repo supports.
+    """
+    error = cls.__new__(cls)
+    Exception.__init__(error, message)
+    return error
+
+
+def test_missing_repo_is_reported_missing():
+    """A repo the Hub says does not exist is a registry error."""
+    api = _FakeApi(_hub_error(RepositoryNotFoundError, "404 Client Error. Repository Not Found"))
+    assert _model_is_missing(api, "unsloth/does-not-exist")
+
+
+def test_present_repo_is_not_reported_missing():
+    assert not _model_is_missing(_FakeApi(None), "unsloth/Qwen2.5-7B")
+
+
+@pytest.mark.parametrize(
+    "make_error",
+    [
+        lambda: _hub_error(HfHubHTTPError, "429 Client Error: Too Many Requests"),
+        lambda: ConnectionError("Failed to establish a new connection"),
+        lambda: TimeoutError("read timed out"),
+    ],
+    ids = ["rate_limited", "connection_refused", "timeout"],
+)
+def test_unreachable_hub_skips_instead_of_reporting_missing(monkeypatch, make_error):
+    """A hub outage must not be reported as every registered model missing."""
+    error = make_error()
+    with pytest.raises(HubUnavailable):
+        _model_is_missing(_FakeApi(error), "unsloth/Qwen2.5-7B")
+
+    monkeypatch.setattr(sys.modules[__name__], "HfApi", lambda: _FakeApi(error))
+    with pytest.raises(pytest.skip.Exception):
+        _test_model_uploaded(["unsloth/Qwen2.5-7B"])

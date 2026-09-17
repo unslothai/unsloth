@@ -5,7 +5,9 @@
 
 import importlib.util
 import json
+import queue
 import sys
+import threading
 import types
 from pathlib import Path
 
@@ -28,6 +30,47 @@ def _load_worker_module():
 
 
 worker = _load_worker_module()
+
+
+def test_worker_stop_poller_keeps_listening_until_cancel():
+    stop_queue = queue.Queue()
+    save_seen = threading.Event()
+    received = []
+
+    def on_stop(save):
+        received.append(save)
+        if save:
+            save_seen.set()
+
+    stop_thread = worker._start_worker_stop_poller(stop_queue, on_stop, timeout = 0.01)
+    stop_queue.put({"type": "stop", "save": True})
+
+    assert save_seen.wait(timeout = 2)
+    assert stop_thread.is_alive() is True
+
+    stop_queue.put({"type": "stop", "save": False})
+    stop_thread.join(timeout = 2)
+
+    assert stop_thread.is_alive() is False
+    assert received == [True, False]
+    assert stop_queue.empty()
+
+
+def test_later_cancel_overrides_inflight_mlx_save_stop():
+    stop_queue = queue.Queue()
+    stop_queue.put({"type": "stop", "save": True})
+    stop_queue.put({"type": "stop", "save": False})
+
+    stop_save, stop_requested, _, is_stop_requested, stop_thread = worker._start_mlx_stop_poller(
+        stop_queue
+    )
+    stop_thread.join(timeout = 2)
+
+    assert stop_thread.is_alive() is False
+    assert stop_requested[0] is True
+    assert is_stop_requested() is True
+    assert stop_save[0] is False
+    assert stop_queue.empty()
 
 
 class _FakeTrainer:

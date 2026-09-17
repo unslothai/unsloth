@@ -41,7 +41,6 @@ def _write(path: Path, content: dict) -> Path:
     return path
 
 
-# Lockfile fixtures
 def _v3_lockfile(packages: dict) -> dict:
     return {
         "name": "unsloth-theme",
@@ -63,7 +62,6 @@ def _v2_lockfile(packages: dict, dependencies: dict) -> dict:
     }
 
 
-# Tests
 def test_no_new_install_scripts_exit_0(tmp_path: Path):
     """If base == head, nothing new can have been added."""
     same = _v3_lockfile(
@@ -130,7 +128,6 @@ def test_existing_dep_with_postinstall_ignored(tmp_path: Path):
         },
     }
     head_pkgs = dict(base_pkgs)
-    # Add an unrelated non-install-script dep in head.
     head_pkgs["node_modules/lodash"] = {
         "version": "4.17.21",
         "resolved": "https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz",

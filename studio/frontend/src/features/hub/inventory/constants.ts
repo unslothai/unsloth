@@ -6,6 +6,7 @@ export const LOCAL_MODEL_SOURCE = {
   HF_CACHE: "hf_cache",
   LMSTUDIO: "lmstudio",
   OLLAMA: "ollama",
+  HERMES: "hermes",
   CUSTOM: "custom",
 } as const;
 
@@ -14,6 +15,7 @@ export const LOCAL_MODEL_SOURCES = [
   LOCAL_MODEL_SOURCE.HF_CACHE,
   LOCAL_MODEL_SOURCE.LMSTUDIO,
   LOCAL_MODEL_SOURCE.OLLAMA,
+  LOCAL_MODEL_SOURCE.HERMES,
   LOCAL_MODEL_SOURCE.CUSTOM,
 ] as const;
 export type LocalSource = (typeof LOCAL_MODEL_SOURCES)[number];

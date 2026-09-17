@@ -9,6 +9,13 @@ import {
   InputGroupInput,
 } from "@/components/ui/input-group";
 import { Progress } from "@/components/ui/progress";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -17,14 +24,17 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { FolderBrowser } from "@/features/model-picker";
+import { cn } from "@/lib/utils";
 import {
   AlertCircleIcon,
-  ArrowRight01Icon,
   CancelCircleIcon,
   CheckmarkCircle02Icon,
   FolderSearchIcon,
   Key01Icon,
 } from "@hugeicons/core-free-icons";
+import {
+  ChevronRightIcon,
+} from "lucide-react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -34,6 +44,11 @@ import {
   type ExportMethod,
   findMergedFormat,
 } from "../constants";
+import {
+  GGUF_SHARD_SIZE_PRESETS,
+  type GgufShardMode,
+  isValidGgufShardSize,
+} from "../lib/gguf-shard-size";
 import { getExportLogLineClass } from "../lib/log-style";
 import {
   type ExportDestination,
@@ -113,6 +128,11 @@ export interface ExportRunPanelProps {
   onHfTokenChange: (v: string) => void;
   privateRepo: boolean;
   onPrivateRepoChange: (v: boolean) => void;
+  supportsGgufSharding: boolean;
+  ggufShardMode: GgufShardMode;
+  onGgufShardModeChange: (v: GgufShardMode) => void;
+  ggufShardSize: string;
+  onGgufShardSizeChange: (v: string) => void;
   /** Kick off the export (the page assembles params and calls the store). */
   onStart: () => void;
   /** Collapse the panel; only offered before a run or after a terminal one. */
@@ -140,6 +160,11 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
     onHfTokenChange,
     privateRepo,
     onPrivateRepoChange,
+    supportsGgufSharding,
+    ggufShardMode,
+    onGgufShardModeChange,
+    ggufShardSize,
+    onGgufShardSizeChange,
     onStart,
     onClose,
   } = props;
@@ -212,6 +237,13 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
     (v) => findMergedFormat(v)?.label ?? v,
   );
   const showProgress = isExporting || isTerminal;
+  const shardSizeValid =
+    !supportsGgufSharding ||
+    ggufShardMode === "single" ||
+    isValidGgufShardSize(ggufShardSize);
+  const customShardSize = !GGUF_SHARD_SIZE_PRESETS.some(
+    (preset) => preset === ggufShardSize,
+  );
 
   return (
     <div className="flex flex-col gap-4 rounded-2xl border border-border/50 bg-muted/20 p-4">
@@ -316,9 +348,94 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
             </div>
           )}
 
+          {supportsGgufSharding && (
+            <fieldset className="flex flex-col gap-1.5">
+              <legend className="text-xs font-medium text-muted-foreground">
+                Full-precision GGUF files
+              </legend>
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  variant={ggufShardMode === "single" ? "dark" : "outline"}
+                  onClick={() => onGgufShardModeChange("single")}
+                  aria-pressed={ggufShardMode === "single"}
+                  className="flex-1"
+                >
+                  Single file
+                </Button>
+                <Button
+                  type="button"
+                  variant={ggufShardMode === "split" ? "dark" : "outline"}
+                  onClick={() => onGgufShardModeChange("split")}
+                  aria-pressed={ggufShardMode === "split"}
+                  className="flex-1"
+                >
+                  Split into shards
+                </Button>
+              </div>
+              {ggufShardMode === "split" ? (
+                <>
+                  <Select
+                    value={customShardSize ? "custom" : ggufShardSize}
+                    onValueChange={(value) =>
+                      onGgufShardSizeChange(value === "custom" ? "" : value)
+                    }
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue placeholder="Choose a shard size" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {GGUF_SHARD_SIZE_PRESETS.map((preset) => (
+                        <SelectItem key={preset} value={preset}>
+                          {preset.replace("GB", " GB").replace("MB", " MB")}
+                        </SelectItem>
+                      ))}
+                      <SelectItem value="custom">Custom</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  {customShardSize && (
+                    <Input
+                      className={cn(
+                        "font-mono text-ui-12",
+                        !shardSizeValid &&
+                          "border-destructive focus-visible:ring-destructive",
+                      )}
+                      value={ggufShardSize}
+                      onChange={(event) =>
+                        onGgufShardSizeChange(event.target.value)
+                      }
+                      spellCheck={false}
+                      aria-invalid={!shardSizeValid}
+                      aria-describedby="gguf-shard-size-help"
+                      maxLength={24}
+                      placeholder="e.g. 512MB or 6GB"
+                    />
+                  )}
+                  <p
+                    id="gguf-shard-size-help"
+                    className={cn(
+                      "text-ui-11",
+                      shardSizeValid
+                        ? "text-muted-foreground/70"
+                        : "text-destructive",
+                    )}
+                  >
+                    {shardSizeValid
+                      ? "F16 and BF16 outputs use this limit. Quantized outputs and companion files stay single-file."
+                      : "Enter a positive whole number in MB or GB, such as 512MB or 4GB."}
+                  </p>
+                </>
+              ) : (
+                <p className="text-ui-11 text-muted-foreground/70">
+                  F16 and BF16 outputs stay in one file regardless of size.
+                </p>
+              )}
+            </fieldset>
+          )}
+
           {destination === "hub" && (
             <div className="flex flex-col gap-4 px-0.5">
-                  <div className="grid grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <div className="flex flex-col gap-1.5">
                       <label className="text-xs font-medium text-muted-foreground">
                         Username / Org
@@ -353,7 +470,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
                         className="flex items-center gap-1 text-ui-11 text-emerald-600 hover:text-emerald-700 transition-colors"
                       >
                         Get token
-                        <HugeiconsIcon icon={ArrowRight01Icon} className="size-3" />
+                        <ChevronRightIcon className="size-3" />
                       </a>
                     </div>
                     <InputGroup>
@@ -497,6 +614,16 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
             </span>
           </div>
         )}
+        {summaryMethod === "gguf" && summary?.ggufShardSize && (
+          <div className="flex justify-between">
+            <span>Full-precision files</span>
+            <span className="font-medium text-foreground">
+              {summary.ggufShardSize === "0"
+                ? "Single file"
+                : `Shards up to ${summary.ggufShardSize}`}
+            </span>
+          </div>
+        )}
       </div>
 
       {/* Progress */}
@@ -605,7 +732,9 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
             <Button variant="outline" onClick={onClose}>
               Cancel
             </Button>
-            <Button onClick={onStart}>Start Export</Button>
+            <Button onClick={onStart} disabled={!shardSizeValid}>
+              Start Export
+            </Button>
           </>
         )}
         {isExporting && (

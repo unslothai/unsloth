@@ -471,6 +471,7 @@ def test_build_external_messages_passes_input_document_for_anthropic_and_openai(
     # Both providers' stream helpers translate input_document (Anthropic ->
     # {type:"document"}, OpenAI Responses -> {type:"input_file"}), so the
     # part round-trips through the builder unchanged on those routes.
+
     from models.inference import ChatMessage
     from routes.inference import _build_external_messages
 
@@ -507,6 +508,7 @@ def test_build_external_messages_strips_input_document_for_unmapped_providers():
     # `messages` verbatim, so an `input_document` part fails the upstream
     # validator. The builder must strip it for any provider whose stream
     # helper doesn't translate it.
+
     from models.inference import ChatMessage
     from routes.inference import _build_external_messages
 
@@ -538,6 +540,7 @@ def test_build_external_messages_strips_input_document_for_unmapped_providers():
 def test_build_external_messages_strips_input_document_when_provider_type_unknown():
     # Defensive: legacy callers without provider_type must not leak the
     # part to an unknown destination.
+
     from models.inference import ChatMessage
     from routes.inference import _build_external_messages
 

@@ -52,13 +52,19 @@ def python_runtime_dirs() -> list[str]:
         pass
 
     for root in search_roots:
-        if not root.is_dir():
+        # A sys.path entry this user cannot stat makes is_dir() raise, and the
+        # caller turns that into an empty dir list, dropping every CUDA wheel dir.
+        # Kept in sync with install_llama_prebuilt.py's python_runtime_dirs.
+        try:
+            if not root.is_dir():
+                continue
+        except (OSError, ValueError):
             continue
-        candidates.extend(root.glob("nvidia/*/lib"))  # Linux convention
-        candidates.extend(root.glob("nvidia/*/bin"))  # legacy modular Windows wheels
+        candidates.extend(root.glob("nvidia/*/lib"))
+        candidates.extend(root.glob("nvidia/*/bin"))
         candidates.extend(root.glob("nvidia/*/bin/x86_64"))  # CUDA 13 Windows wheel layout
         candidates.extend(root.glob("nvidia/*/bin/x64"))
-        candidates.extend(root.glob("nvidia/*/Library/bin"))  # conda-style repacks
+        candidates.extend(root.glob("nvidia/*/Library/bin"))
         candidates.extend(root.glob("nvidia/*/Library/bin/x86_64"))
         candidates.extend(root.glob("nvidia/*/Library/bin/x64"))
         candidates.extend(root.glob("torch/lib"))

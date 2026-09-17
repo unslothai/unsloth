@@ -54,10 +54,9 @@ function readStoredPalette(): Palette {
   return isPalette(stored) ? stored : "standard";
 }
 
-// In-memory source of truth so a selected value survives even when
-// localStorage is blocked (private browsing). Without it the snapshots would
-// re-read empty storage and revert React state to the default while the DOM
-// already changed.
+// In-memory source of truth so a selected value survives even when localStorage is blocked (private
+// browsing). Without it the snapshots would re-read empty storage and revert React state to the
+// default while the DOM already changed.
 let currentTheme: Theme = readStoredTheme();
 let currentPalette: Palette = readStoredPalette();
 

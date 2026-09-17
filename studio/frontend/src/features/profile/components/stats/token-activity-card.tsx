@@ -7,8 +7,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { ProfileStatsDay } from "../../api/profile-stats";
 import {
   type ActivityMode,
+  activitySummaryForMode,
   formatCompactNumber,
-  formatFullNumber,
+  formatProfileCount,
   heatLevel,
   parseDayKey,
   seriesForMode,
@@ -187,6 +188,7 @@ function DayColumn({
   dateFormatter: Intl.DateTimeFormat;
 }) {
   const t = useT();
+  const locale = useLocale();
 
   return (
     <div className="flex flex-col gap-[3px]">
@@ -199,8 +201,12 @@ function DayColumn({
             key={cell.key}
             tone={heatLevel(cell.value, peak)}
             title={t("settings.profile.stats.cellTooltip", {
-              tokens: formatFullNumber(cell.day.tokens),
-              messages: formatFullNumber(cell.day.messages),
+              tokens: formatProfileCount(cell.day.tokens, "token", locale),
+              messages: formatProfileCount(
+                cell.day.messages,
+                "message",
+                locale,
+              ),
               date: dateFormatter.format(parseDayKey(cell.day.date)),
             })}
           />
@@ -221,6 +227,7 @@ function BarColumn({
   dateFormatter: Intl.DateTimeFormat;
 }) {
   const t = useT();
+  const locale = useLocale();
   const summary = columnSummary(column);
   const height = barHeight(summary.value, peak);
   // The bar is scaled by summary.value, which in cumulative mode is the
@@ -228,7 +235,7 @@ function BarColumn({
   const title = summary.firstDay
     ? t("settings.profile.stats.weekTooltip", {
         date: dateFormatter.format(parseDayKey(summary.firstDay)),
-        tokens: formatFullNumber(summary.tokens),
+        tokens: formatProfileCount(summary.tokens, "token", locale),
       })
     : "";
 
@@ -284,14 +291,9 @@ export function TokenActivityCard({ daily }: { daily: ProfileStatsDay[] }) {
           ),
     [grid, shaded],
   );
-  const visibleTotal = useMemo(
-    () =>
-      grid.reduce(
-        (sum, column) =>
-          column.reduce((total, cell) => total + (cell.day?.tokens ?? 0), sum),
-        0,
-      ),
-    [grid],
+  const summaryTotal = useMemo(
+    () => activitySummaryForMode(grid, mode),
+    [grid, mode],
   );
 
   const dateFormatter = useMemo(
@@ -307,9 +309,14 @@ export function TokenActivityCard({ daily }: { daily: ProfileStatsDay[] }) {
   return (
     <StatsCard
       title={t("settings.profile.stats.activityTitle")}
-      description={t("settings.profile.stats.activityDescription", {
-        total: formatCompactNumber(visibleTotal),
-        weeks: grid.length,
+      description={t(`settings.profile.stats.activityDescription.${mode}`, {
+        total: formatProfileCount(
+          summaryTotal,
+          "token",
+          locale,
+          formatCompactNumber(summaryTotal, locale),
+        ),
+        weeks: formatProfileCount(grid.length, "week", locale),
       })}
       action={
         <div className="hub-tab-toggle inline-flex h-8 w-fit items-center rounded-full">

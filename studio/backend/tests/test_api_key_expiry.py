@@ -165,15 +165,31 @@ def test_cache_does_not_bypass_revocation():
 
 
 def test_cache_does_not_bypass_expiry():
+    # Same shape as test_cache_does_not_bypass_revocation: warm the cache on a key that is
+    # comfortably valid, then expire it in the row and re-validate. Expiring it by wall
+    # clock instead would race the first call against the KDF, which on a loaded runner can
+    # outlast any margin short enough to keep the sleep cheap.
     seed_user()
-    # Expires between the two calls: the first warms the cache, the second is still rejected.
-    near = (datetime.now(timezone.utc) + timedelta(milliseconds = 600)).isoformat()
-    raw = make_key(near)
-    assert storage.validate_api_key(raw) == storage.DEFAULT_ADMIN_USERNAME
-    import time
+    raw, row = storage.create_api_key(
+        username = storage.DEFAULT_ADMIN_USERNAME,
+        name = "expire-after-cache",
+        expires_at = iso_from_now(days = 1),
+    )
+    assert storage.validate_api_key(raw) == storage.DEFAULT_ADMIN_USERNAME  # cached
+    cache_id = storage._api_key_cache_id(raw)
+    assert cache_id in storage._api_key_hash_cache  # the second call takes the cache path
 
-    time.sleep(0.8)
-    assert storage.validate_api_key(raw) is None
+    conn = storage.get_connection()
+    try:
+        conn.execute(
+            "UPDATE api_keys SET expires_at = ? WHERE id = ?",
+            (iso_from_now(days = -1), int(row["id"])),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    assert storage.validate_api_key(raw) is None  # cache hit still re-checks expires_at
 
 
 def test_unknown_key_not_cached():

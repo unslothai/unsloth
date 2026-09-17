@@ -50,8 +50,7 @@ class ParsedUpdate:
 _RE_SAMPLERS = re.compile(
     r"Preparing samplers to generate (?P<rows>\d+) records across (?P<cols>\d+) columns"
 )
-# Current data-designer phrasing for the same sampling stage (the line above is
-# kept for older builds). No column count is reported here, so only rows is set.
+# Newer data-designer phrasing for the same stage; no column count is reported here.
 _RE_SAMPLING_SEED = re.compile(
     r"Sampling (?P<rows>\d+) records from .*?seed dataset", re.IGNORECASE
 )

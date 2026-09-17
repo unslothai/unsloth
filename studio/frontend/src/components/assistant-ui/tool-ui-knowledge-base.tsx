@@ -9,13 +9,22 @@ import {
 } from "@assistant-ui/react";
 import { FileTextIcon, LibraryBigIcon } from "lucide-react";
 import { Spinner } from "@/components/ui/spinner";
-import { memo, useEffect, useMemo, useState } from "react";
+
+import { useToolAwaitingApproval } from "@/features/chat";
+import { stringifyToolResult } from "@/lib/strip-ansi";
+import { memo, useMemo } from "react";
 import { Badge } from "./badge";
+import {
+  isToolCallRunning,
+  knowledgeBaseToolName,
+  toolArgText,
+} from "./tool-arg-text";
 import {
   ToolFallbackContent,
   ToolFallbackRoot,
   ToolFallbackTrigger,
 } from "./tool-fallback";
+import { useToolActivityOpen } from "./use-tool-activity-open";
 import { useDocumentPreviewStore } from "@/features/rag/components/preview-store";
 
 import { type Citation, parseCitations } from "./citation-utils";
@@ -73,9 +82,12 @@ const KnowledgeBaseToolUIImpl: ToolCallMessagePartComponent = ({
   args,
   result,
   status,
+  toolCallId,
 }) => {
-  const query = (args as { query?: string })?.query ?? "";
-  const isRunning = status?.type === "running";
+  const query = toolArgText((args as { query?: unknown })?.query);
+  const isRunning = isToolCallRunning(status);
+
+  const resultText = result == null ? "" : stringifyToolResult(result);
   const citations = useMemo(() => parseCitations(result), [result]);
   // Citations render in RagSourcesGroup; this block keeps a one-line summary.
   const docCount = useMemo(
@@ -91,16 +103,19 @@ const KnowledgeBaseToolUIImpl: ToolCallMessagePartComponent = ({
         (p as { text: string }).text.length > 0,
     ),
   );
-  const [open, setOpen] = useState(isRunning);
-  useEffect(() => {
-    if (isRunning) setOpen(true);
-    else if (hasText) setOpen(false);
-  }, [isRunning, hasText]);
+  // Ask permission gates every local tool call, and what is being approved
+  // lives inside the content while Allow/Deny render outside it.
+  const awaitingApproval = useToolAwaitingApproval(toolCallId);
+  const [open, setOpen] = useToolActivityOpen(isRunning, hasText);
 
   return (
-    <ToolFallbackRoot open={open} onOpenChange={setOpen}>
+    <ToolFallbackRoot
+      open={open}
+      onOpenChange={setOpen}
+      awaitingApproval={awaitingApproval}
+    >
       <ToolFallbackTrigger
-        toolName={query ? `Searched documents for "${query}"` : "Knowledge search"}
+        toolName={knowledgeBaseToolName({ isRunning, query })}
         status={status}
         icon={LibraryBigIcon}
       />
@@ -122,11 +137,9 @@ const KnowledgeBaseToolUIImpl: ToolCallMessagePartComponent = ({
             {citations.length === 1 ? "" : "s"} from {docCount} document
             {docCount === 1 ? "" : "s"}. See Document Sources below.
           </div>
-        ) : result ? (
+        ) : resultText ? (
           <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/50 p-2 text-xs">
-            {typeof result === "string"
-              ? result
-              : JSON.stringify(result, null, 2)}
+            {resultText}
           </pre>
         ) : (
           <div className="text-sm text-muted-foreground">No matching passages.</div>

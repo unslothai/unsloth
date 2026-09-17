@@ -42,8 +42,8 @@ export function ChatTemplateEditorDialog({
   const [draft, setDraft] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [validating, setValidating] = useState(false);
-  // Bumped whenever the dialog closes so a validation still in flight cannot
-  // apply a template the user has already dismissed.
+  // Bumped whenever the dialog closes so a validation still in flight cannot apply a template the
+  // user has already dismissed.
   const validationToken = useRef(0);
   const renderedDraft = draft ?? value ?? defaultTemplate ?? "";
 
@@ -74,8 +74,7 @@ export function ChatTemplateEditorDialog({
     const token = validationToken.current;
     try {
       const result = await validateChatTemplate(renderedDraft);
-      // Dialog was closed (or reopened) while validating; drop the result so a
-      // discarded template is never applied.
+      // Dialog was closed (or reopened) while validating; drop the result so a discarded template is never applied.
       if (token !== validationToken.current) {
         return;
       }
@@ -114,7 +113,7 @@ export function ChatTemplateEditorDialog({
           </DialogTitle>
           <DialogDescription>
             {readOnly
-              ? "This is the model's chat template. Custom templates apply to GGUF models for now, so it is view only for safetensors models."
+              ? "This is the model's chat template. This model's backend cannot take a custom one, so it is view only."
               : "Override the model's chat template with custom Jinja. The change applies when the model loads. Saving an empty template or one that matches the default clears the override."}
           </DialogDescription>
         </DialogHeader>
@@ -126,7 +125,7 @@ export function ChatTemplateEditorDialog({
             setError(null);
           }}
           readOnly={readOnly}
-          className="min-h-[20rem] max-h-[50vh] overflow-y-auto border-0 font-mono text-xs leading-5 corner-squircle focus-visible:ring-0"
+          className="min-h-[20rem] max-h-[50dvh] overflow-y-auto border-0 font-mono text-xs leading-5 corner-squircle focus-visible:ring-0"
           rows={14}
           spellCheck={false}
           placeholder={defaultLoading ? "Loading model default..." : ""}

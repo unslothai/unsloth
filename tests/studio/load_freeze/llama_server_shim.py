@@ -100,8 +100,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_raw(srv.config.tok_status, srv.config.tok_body)
                 return
             content = str(body.get("content", ""))
-            # tok_response_map injects a token count per input text (e.g. the
-            # one-token cases for csm / bicodec / dac detection branches).
+            # tok_response_map injects a token count per input text (e.g. the one-token cases for csm / bicodec / dac
+            # detection branches).
             if content in srv.config.tok_response_map:
                 tokens = list(srv.config.tok_response_map[content])
             else:

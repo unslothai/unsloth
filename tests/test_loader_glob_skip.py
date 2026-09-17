@@ -29,8 +29,7 @@ class TestGlobSkippedWhenNotBothConfigs(unittest.TestCase):
 
         if supports_llama32 and is_model and is_peft:
             if is_local_dir:
-                # Local path branch (os.path.exists in real code)
-                both_exist = True  # simulate both files present locally
+                both_exist = True
             else:
                 files = glob_mock(f"{model_name}/*.json")
                 files = list(os.path.split(x)[-1] for x in files)
@@ -38,8 +37,6 @@ class TestGlobSkippedWhenNotBothConfigs(unittest.TestCase):
                     both_exist = True
 
         return both_exist, glob_mock.called
-
-    # --- Cases where glob should NOT be called ---
 
     def test_glob_skipped_when_is_model_false(self):
         both_exist, glob_called = self._run_both_exist_block(
@@ -81,8 +78,6 @@ class TestGlobSkippedWhenNotBothConfigs(unittest.TestCase):
         self.assertFalse(glob_called, "glob should not be called when SUPPORTS_LLAMA32=False")
         # both_exist set by the old-style check: (is_model and is_peft) and not SUPPORTS_LLAMA32
         self.assertTrue(both_exist)
-
-    # --- Cases where glob SHOULD be called ---
 
     def test_glob_called_when_both_true_and_supports_llama32(self):
         both_exist, glob_called = self._run_both_exist_block(

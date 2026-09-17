@@ -33,10 +33,9 @@ def _has_torch_dtype_kwarg() -> bool:
         import transformers
         from packaging.version import Version
 
-        # Compare on the release tuple so a pre-release of the rename version
-        # (``4.56.0.dev0``/``rc1``, which sort *below* ``4.56.0``) still counts as
-        # new and picks ``dtype`` -- those builds already accept it, and picking
-        # ``torch_dtype`` there would re-emit the very warning this suppresses.
+        # Compare on the release tuple so a pre-release of the rename version (4.56.0.dev0, which sorts BELOW 4.56.0)
+        # still picks ``dtype``, which those builds already accept.
+        # ``rc1`` sorts below as well, and picking ``torch_dtype`` there would re-emit the very warning this suppresses.
         return Version(transformers.__version__).release < (4, 56, 0)
     except Exception:
         return False

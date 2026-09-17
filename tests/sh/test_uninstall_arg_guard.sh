@@ -7,9 +7,8 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SCRIPT_DIR/_harness.sh"
 SOURCE_UNINSTALL_SH="$SCRIPT_DIR/../../scripts/uninstall.sh"
-PASS=0
-FAIL=0
 BODY_MARKER="__UNSLOTH_TEST_BODY_REACHED__"
 
 _TMP_ROOT=$(mktemp -d)
@@ -31,7 +30,6 @@ XDG_RUNTIME_DIR="$_TMP_ROOT/run"
 export XDG_RUNTIME_DIR
 mkdir -p "$XDG_RUNTIME_DIR"
 
-ok()   { echo "  PASS: $1"; PASS=$((PASS + 1)); }
 nope() { echo "  FAIL: $1"; FAIL=$((FAIL + 1)); }
 
 check() {
@@ -82,6 +80,11 @@ make_home() {
              "$FIXTURE_HOME/.local/share/unsloth" \
              "$FIXTURE_HOME/.local/bin"
     : > "$FIXTURE_HOME/.unsloth/studio/unsloth_studio/bin/unsloth"
+    # What install.sh leaves behind, because the uninstaller's ownership gate reads it before it
+    # deletes the root: the marker at install.sh:3190, and the venv the marker sits in.
+    : > "$FIXTURE_HOME/.unsloth/studio/unsloth_studio/.unsloth-studio-owned"
+    : > "$FIXTURE_HOME/.unsloth/studio/unsloth_studio/pyvenv.cfg"
+    : > "$FIXTURE_HOME/.unsloth/studio/unsloth_studio/bin/python"
     : > "$FIXTURE_HOME/.unsloth/studio/auth/.desktop_secret"
     ln -s "$FIXTURE_HOME/.unsloth/studio/unsloth_studio/bin/unsloth" "$FIXTURE_HOME/.local/bin/unsloth"
 }
@@ -120,8 +123,19 @@ for _flag in --help -h; do
     run_uninstall "$FIXTURE_HOME" "$_flag"
     check "$_flag exits 0" "0" "$RC"
     assert_says "$_flag prints usage" "Unsloth Studio uninstaller" "$OUT"
+    # Inside the loop: make_home mints a fresh fixture per iteration, so a check
+    # placed after the loop only ever sees the last flag's home and --help could
+    # wipe an install unnoticed.
+    assert_fixture "$_flag keeps the install" "$FIXTURE_HOME" present
 done
-assert_fixture "help keeps the install" "$FIXTURE_HOME" present
+
+# The piped help form has to be spelled out, because the obvious one never
+# works: where -h is accepted it is the shell's own hashall option, so
+# `... | sh -h` uninstalls with no arguments; where it is not, the shell exits.
+# Its own run, not the loop's leftover $OUT, so a failure names the right check.
+make_home
+run_uninstall "$FIXTURE_HOME" --help
+assert_says "usage documents the piped help form" "sh -s -- --help" "$OUT"
 
 echo "=== unknown arguments: abort before touching anything ==="
 
@@ -140,10 +154,14 @@ assert_fixture "a rejected positional argument keeps the install" "$FIXTURE_HOME
 make_home
 run_uninstall "$FIXTURE_HOME" --dry-run --help
 check "'--dry-run --help' exits 2" "2" "$RC"
+# An exit code alone would pass even if the guard rejected the argument only
+# after the removal had already started.
+assert_fixture "'--dry-run --help' keeps the install" "$FIXTURE_HOME" present
 
 make_home
 run_uninstall "$FIXTURE_HOME" --help --dry-run
 check "'--help --dry-run' exits 0" "0" "$RC"
+assert_fixture "'--help --dry-run' keeps the install" "$FIXTURE_HOME" present
 
 echo "=== no arguments: the guard must not have broken the uninstall ==="
 
@@ -162,6 +180,18 @@ else
     check "no arguments still uninstalls (exit 0)" "0" "$RC"
     assert_fixture "no arguments removes the install" "$FIXTURE_HOME" gone
 fi
+
+echo "=== behaviour: the documented piped help form reaches the guard ==="
+
+# Portable counterpart to the Linux-only pipe-buffer case below: `sh -s --` is
+# the only piped spelling that gets arguments to the script rather than to the
+# shell, so it is the one the usage text points at and the one that has to work
+# everywhere.
+make_home
+OUT=$(HOME="$FIXTURE_HOME" sh -s -- --help < "$UNINSTALL_SH" 2>&1) || true
+assert_says     "'sh -s -- --help' prints usage"               "Unsloth Studio uninstaller" "$OUT"
+assert_not_says "'sh -s -- --help' never starts the uninstall" "$BODY_MARKER" "$OUT"
+assert_fixture  "'sh -s -- --help' keeps the install" "$FIXTURE_HOME" present
 
 echo "=== behaviour: a piped --help must not break the writer ==="
 

@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useEffect, useState } from "react";
+import { getHfEndpoint, useHfEndpoint } from "@/lib/hf-endpoint";
 import { LruMap } from "@/features/hub/lib/lru-map";
 import { fetchWithTimeout } from "@/features/hub/lib/network";
 import { useOnlineStatus } from "@/features/hub/hooks/use-online-status";
@@ -58,10 +59,15 @@ function release(): void {
   waiting.shift()?.();
 }
 
+// Keyed by endpoint too: a hit is held 24 hours and a 404 permanently, so a default-host entry would outlive a late mirror.
+function avatarKey(name: string): string {
+  return `${getHfEndpoint()}::${name}`;
+}
+
 // Expired transient misses report "no entry" so the caller refetches, but the
 // entry is kept so its failure count can escalate the next backoff.
 function readCache(name: string): AvatarCacheEntry | null {
-  const entry = cache.get(name);
+  const entry = cache.get(avatarKey(name));
   if (!entry) return null;
   if (entry.kind === "miss-transient" && Date.now() >= entry.until) {
     return null;
@@ -76,7 +82,7 @@ function readCachedUrl(name: string): string | null {
 }
 
 function transientMiss(name: string): AvatarCacheEntry {
-  const prev = cache.get(name);
+  const prev = cache.get(avatarKey(name));
   const failures = prev?.kind === "miss-transient" ? prev.failures + 1 : 1;
   const ttl = Math.min(
     TRANSIENT_MISS_BASE_TTL_MS * 2 ** (failures - 1),
@@ -89,8 +95,8 @@ async function fetchAvatarUrl(
   name: string,
 ): Promise<{ url: string | null; transient: boolean }> {
   const candidates = [
-    `https://huggingface.co/api/organizations/${encodeURIComponent(name)}/overview`,
-    `https://huggingface.co/api/users/${encodeURIComponent(name)}/overview`,
+    `${getHfEndpoint()}/api/organizations/${encodeURIComponent(name)}/overview`,
+    `${getHfEndpoint()}/api/users/${encodeURIComponent(name)}/overview`,
   ];
 
   let sawTransient = false;
@@ -108,7 +114,7 @@ async function fetchAvatarUrl(
         if (data.avatarUrl) {
           const resolved = data.avatarUrl.startsWith("http")
             ? data.avatarUrl
-            : `https://huggingface.co${data.avatarUrl}`;
+            : `${getHfEndpoint()}${data.avatarUrl}`;
           return { url: resolved, transient: false };
         }
         continue;
@@ -125,7 +131,8 @@ async function fetchAvatarUrl(
 }
 
 function loadAvatar(name: string): Promise<string | null> {
-  const existing = inflight.get(name);
+  const key = avatarKey(name);
+  const existing = inflight.get(key);
   if (existing) return existing;
   const promise = acquire()
     .then(() => fetchAvatarUrl(name))
@@ -133,22 +140,22 @@ function loadAvatar(name: string): Promise<string | null> {
     .then(
       ({ url, transient }) => {
         if (url) {
-          cache.set(name, { kind: "url", url, expiresAt: Date.now() + URL_TTL_MS });
+          cache.set(key, { kind: "url", url, expiresAt: Date.now() + URL_TTL_MS });
         } else if (transient) {
-          cache.set(name, transientMiss(name));
+          cache.set(key, transientMiss(name));
         } else {
-          cache.set(name, { kind: "miss-permanent" });
+          cache.set(key, { kind: "miss-permanent" });
         }
-        inflight.delete(name);
+        inflight.delete(key);
         return url;
       },
       () => {
-        cache.set(name, transientMiss(name));
-        inflight.delete(name);
+        cache.set(key, transientMiss(name));
+        inflight.delete(key);
         return null;
       },
     );
-  inflight.set(name, promise);
+  inflight.set(key, promise);
   return promise;
 }
 
@@ -158,6 +165,7 @@ export function useHfOwnerAvatar(
 ): string | null {
   const key = owner?.trim() ?? "";
   const online = useOnlineStatus();
+  const hfEndpoint = useHfEndpoint();
   const [state, setState] = useState<{ key: string; url: string | null }>(() => {
     return { key, url: readCachedUrl(key) };
   });
@@ -224,7 +232,7 @@ export function useHfOwnerAvatar(
       if (retryTimer != null) clearTimeout(retryTimer);
       if (fetchTimer != null) clearTimeout(fetchTimer);
     };
-  }, [key, online, enabled]);
+  }, [key, online, enabled, hfEndpoint]);
 
   return url;
 }

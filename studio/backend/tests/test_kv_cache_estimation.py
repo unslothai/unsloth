@@ -29,10 +29,18 @@ if _BACKEND_DIR not in sys.path:
 # loggers
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
+# __path__ so `loggers.media_progress` still resolves: a bare ModuleType shadows the whole
+# package, so the submodule import dies with "'loggers' is not a package" (#10995).
+_loggers_stub.__path__ = [str(Path(_BACKEND_DIR) / "loggers")]
 sys.modules.setdefault("loggers", _loggers_stub)
 
-# structlog
+# structlog. Carries get_logger because this stub is process-wide: whichever test
+# module is imported first wins the setdefault, and utils/prebuilt/freshness_flow
+# calls structlog.get_logger at import time. A bare module here fails that import
+# for every later module on a runner without the real package, which is how this
+# file's stub was breaking test_llama_cpp_mtp_detection in the same pytest run.
 _structlog_stub = _types.ModuleType("structlog")
+_structlog_stub.get_logger = lambda *a, **k: __import__("logging").getLogger("stub")
 sys.modules.setdefault("structlog", _structlog_stub)
 
 # httpx -- only stub when the real library is missing. Unconditional stubbing
@@ -71,7 +79,8 @@ except ImportError:
     )
     sys.modules["httpx"] = _httpx_stub
 
-from core.inference.llama_cpp import _CTX_FIT_VRAM_FRACTION, LlamaCppBackend
+from core.inference.llama_cpp import _CTX_FIT_VRAM_FRACTION, _FIT_MIN_CTX, LlamaCppBackend
+from core.inference import llama_cpp as lc
 
 # Helpers
 
@@ -199,6 +208,14 @@ class TestGGUFParserNewFields:
             ("_key_length_mla", "attention.key_length_mla", 256),
             ("_ssm_inner_size", "ssm.inner_size", 6144),
             ("_ssm_state_size", "ssm.state_size", 128),
+            ("_ssm_group_count", "ssm.group_count", 16),
+            ("_ssm_conv_kernel", "ssm.conv_kernel", 4),
+            ("_feed_forward_length", "feed_forward_length", 12288),
+            ("_expert_used_count", "expert_used_count", 8),
+            ("_expert_feed_forward_length", "expert_feed_forward_length", 512),
+            ("_expert_shared_feed_forward_length", "expert_shared_feed_forward_length", 512),
+            ("_expert_shared_count", "expert_shared_count", 1),
+            ("_embedding_length_per_layer_input", "embedding_length_per_layer_input", 256),
         ],
     )
     def test_field_parsed(self, field, gguf_key, value):
@@ -219,6 +236,8 @@ class TestGGUFParserNewFields:
             "_kv_value_length_swa",
             "_ssm_inner_size",
             "_ssm_state_size",
+            "_ssm_group_count",
+            "_ssm_conv_kernel",
         ]:
             assert getattr(b, attr) is None
 
@@ -245,6 +264,14 @@ class TestGGUFParserNewFields:
         # get a safe upper bound.
         assert b._n_kv_heads == 8
         assert b._sliding_window_pattern == [True, True, True, True, True, False]
+
+    def test_per_layer_feed_forward_length_keeps_the_widest(self):
+        # Gemma 4 E2B stores one FFN width per layer; the compute buffer is set by
+        # the widest.
+        b = _backend_from_gguf(
+            "gemma4", {"block_count": 3, "feed_forward_length": [6144, 12288, 6144]}
+        )
+        assert b._feed_forward_length == 12288
 
 
 class TestArchSwaPatternDefaults:
@@ -410,6 +437,8 @@ class TestArchSwaPatternDefaults:
             "attention.value_length_swa": 64,
             "ssm.inner_size": 4096,
             "ssm.state_size": 128,
+            "ssm.group_count": 16,
+            "ssm.conv_kernel": 4,
         }
         b = _backend_from_gguf("testarch", fields)
         assert b._context_length == 131072
@@ -428,6 +457,8 @@ class TestArchSwaPatternDefaults:
         assert b._kv_value_length_swa == 64
         assert b._ssm_inner_size == 4096
         assert b._ssm_state_size == 128
+        assert b._ssm_group_count == 16
+        assert b._ssm_conv_kernel == 4
 
 
 _SWA_FIELDS = {
@@ -444,8 +475,6 @@ class TestDynamicSwaResolver:
     """4-tier resolver: GGUF metadata, on-disk cache, bootstrap, HF fetch."""
 
     def _isolate_cache(self, monkeypatch, tmp_path):
-        from core.inference import llama_cpp as lc
-
         monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
         monkeypatch.setattr(lc, "_SWA_CACHE", None)
         return tmp_path
@@ -493,7 +522,6 @@ class TestDynamicSwaResolver:
 
     def test_bootstrap_tier_used_when_no_cache(self, monkeypatch, tmp_path):
         self._isolate_cache(monkeypatch, tmp_path)
-        from core.inference import llama_cpp as lc
 
         def boom(*a, **kw):
             raise AssertionError("HF fetch must not run when bootstrap covers the arch")
@@ -521,7 +549,6 @@ class TestDynamicSwaResolver:
 
     def test_hf_fetch_populates_cache(self, monkeypatch, tmp_path):
         self._isolate_cache(monkeypatch, tmp_path)
-        from core.inference import llama_cpp as lc
 
         calls = []
 
@@ -542,7 +569,6 @@ class TestDynamicSwaResolver:
 
     def test_hf_fetch_falls_back_to_other_candidates(self, monkeypatch, tmp_path):
         self._isolate_cache(monkeypatch, tmp_path)
-        from core.inference import llama_cpp as lc
 
         monkeypatch.setattr(
             lc,
@@ -561,7 +587,6 @@ class TestDynamicSwaResolver:
     def test_offline_env_skips_network(self, monkeypatch, tmp_path):
         self._isolate_cache(monkeypatch, tmp_path)
         monkeypatch.setenv("UNSLOTH_STUDIO_OFFLINE", "1")
-        from core.inference import llama_cpp as lc
 
         def boom(*a, **kw):
             raise AssertionError("HF fetch must not run when offline=1")
@@ -576,7 +601,6 @@ class TestDynamicSwaResolver:
 
     def test_hf_fetch_failure_falls_through_silently(self, monkeypatch, tmp_path):
         self._isolate_cache(monkeypatch, tmp_path)
-        from core.inference import llama_cpp as lc
 
         monkeypatch.setattr(lc, "_fetch_swa_entry_from_hf", lambda repo_id: None)
         # Force failure into Tier 3; bypass Tier 2.5.
@@ -594,8 +618,6 @@ class TestTransformersIntrospection:
     """Tier 2.5: default-init the matching Config; on failure, parse via inspect."""
 
     def _isolate_cache(self, monkeypatch, tmp_path):
-        from core.inference import llama_cpp as lc
-
         monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
         monkeypatch.setattr(lc, "_SWA_CACHE", None)
         return tmp_path
@@ -616,8 +638,6 @@ class TestTransformersIntrospection:
         assert _resolve_swa_entry_from_transformers("cohere2") == 4
 
     def test_falls_back_to_inspect_when_default_init_raises(self, monkeypatch):
-        from core.inference import llama_cpp as lc
-
         class _FakeBrokenConfig:
             """Class with sliding_window_pattern: int = 7 in its docstring."""
 
@@ -637,7 +657,6 @@ class TestTransformersIntrospection:
         assert lc._resolve_swa_entry_from_transformers("brokenarch") == 7
 
     def test_returns_none_when_transformers_unavailable(self, monkeypatch):
-        from core.inference import llama_cpp as lc
         import sys
 
         orig_import = (
@@ -664,7 +683,6 @@ class TestTransformersIntrospection:
     def test_full_resolver_uses_transformers_before_hf_fetch(self, monkeypatch, tmp_path):
         # Bootstrap empty: Tier 2.5 must answer before Tier 3 fires.
         self._isolate_cache(monkeypatch, tmp_path)
-        from core.inference import llama_cpp as lc
 
         monkeypatch.setattr(lc, "_BOOTSTRAP_SWA_DEFAULTS", {})
 
@@ -954,6 +972,22 @@ class TestHybridMambaEstimation:
         # fai=0 -> n_attn = n_layers (all layers)
         expected = 64 * 4096 * 4 * (256 + 256) * 2
         assert result == expected
+
+    def test_qwen_recurrent_state_and_mtp_rollback_copies(self):
+        b = self._hybrid_backend(
+            _n_layers = 65,
+            _nextn_predict_layers = 1,
+            _ssm_group_count = 16,
+            _ssm_conv_kernel = 4,
+        )
+        per_slot = 48 * ((4 - 1) * (6144 + 2 * 16 * 128) + 128 * 6144) * 4
+        assert b._mamba_recurrent_state_bytes() == per_slot
+        assert per_slot / (1024 * 1024) == pytest.approx(149.625)
+        assert b._mamba_recurrent_state_bytes(n_parallel = 4) == 4 * per_slot
+        assert b._mamba_recurrent_state_bytes(n_parallel = 4, n_rs_seq = 2) == 12 * per_slot
+
+        kv_only = 16 * _runtime_kv_cells(4096, slots = 4) * 4 * (256 + 256) * 2
+        assert b._estimate_kv_cache_bytes(4096, "f16", n_parallel = 4) == (kv_only + 4 * per_slot)
 
 
 # E. Path 3: Sliding Window Estimation
@@ -1639,7 +1673,11 @@ class TestServerFlags:
     def test_fit_threads_swa_full_through_estimator(self):
         # SWA model, generous budget; both should fit but cache size differs.
         b = self._swa_backend()
-        ctx = 8192
+        # Above the fit floor, so the search has somewhere to shrink TO. Spelled
+        # 8192 this sat exactly on the floor once it moved there, and the assert
+        # below stopped testing that swa_full costs more: the fit could not return
+        # anything smaller than the request, whatever the estimator said.
+        ctx = 2 * _FIT_MIN_CTX
         kv_default = b._estimate_kv_cache_bytes(ctx, "f16")
         kv_full = b._estimate_kv_cache_bytes(ctx, "f16", swa_full = True)
         assert kv_full > kv_default

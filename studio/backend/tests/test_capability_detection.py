@@ -56,8 +56,9 @@ def _write_model_dir(
 
 # load_model_config default
 class TestLoadModelConfigDefault:
+    @patch("utils.models.model_config.cache_reads_authorized", return_value = True)
     @patch("transformers.AutoConfig.from_pretrained")
-    def test_default_off_with_token(self, fp):
+    def test_default_off_with_token(self, fp, _cache_auth):
         load_model_config("org/m", token = "hf_x")
         assert fp.call_args.kwargs["trust_remote_code"] is False
 
@@ -75,8 +76,9 @@ class TestLoadModelConfigDefault:
         load_model_config("org/m", use_auth = True)
         assert fp.call_args.kwargs["trust_remote_code"] is False
 
+    @patch("utils.models.model_config.cache_reads_authorized", return_value = True)
     @patch("transformers.AutoConfig.from_pretrained")
-    def test_explicit_true_forwarded(self, fp):
+    def test_explicit_true_forwarded(self, fp, _cache_auth):
         load_model_config("org/m", token = "t", trust_remote_code = True)
         assert fp.call_args.kwargs["trust_remote_code"] is True
 

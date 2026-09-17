@@ -6,7 +6,7 @@
 Run in a short-lived subprocess (``python _vulkan_probe.py <bindir>``) so the
 Vulkan instance never lives in the long-running backend process. Loads the
 bundled ggml Vulkan backend from ``<bindir>`` and prints one
-``<idx>\\t<free_bytes>\\t<is_igpu>\\t<total_bytes>\\t<name>`` line per device to
+``<idx>\\t<free_bytes>\\t<is_igpu>\\t<total_bytes>\\t<name>\\t<type_known>`` line per device to
 stdout. Indices are ggml's own Vulkan device ordinals, which need not match
 nvidia-smi order. ``is_igpu`` (from ggml's device type) is ``1`` for an
 integrated GPU sharing system RAM. ``total_bytes`` is the device-local heap;
@@ -26,17 +26,23 @@ import sys
 _GGML_BACKEND_DEVICE_TYPE_IGPU = 2
 
 
-def _igpu_flags_and_names(base, lib, count: int) -> tuple[list[bool], list[str]]:
-    """Per-device integrated-GPU flags and descriptions via ggml's backend registry.
+def _igpu_flags_and_names(base, lib, count: int) -> tuple[list[bool], list[str], list[bool]]:
+    """Per-device integrated-GPU flags, descriptions, and whether the type was READ.
 
     The Vulkan reg enumerates devices in the same order as
     ``ggml_backend_vk_get_device_memory`` (each context uses ``ctx->device =
     i``), so reg index == device ordinal. Returns all-False / empty-name on any
     failure so the reader never over-caps a discrete card and the memory
     readings still get through.
+
+    The third list says whether each flag is an ANSWER. Without it "not integrated"
+    and "could not tell" are the same value, which is safe for a caller that only
+    skips a page-lock and wrong for one choosing a loader: a DirectIO decision taken
+    on an unread type buffers an iGPU's host-backed weights.
     """
     flags = [False] * count
     names = [""] * count
+    known = [False] * count
     try:
         lib.ggml_backend_vk_reg.restype = ctypes.c_void_p
         lib.ggml_backend_vk_reg.argtypes = []
@@ -48,17 +54,16 @@ def _igpu_flags_and_names(base, lib, count: int) -> tuple[list[bool], list[str]]
         base.ggml_backend_dev_type.argtypes = [ctypes.c_void_p]
         reg = lib.ggml_backend_vk_reg()
         if not reg:
-            return flags, names
+            return flags, names, known
         dev_count = base.ggml_backend_reg_dev_count(reg)
     except Exception:
-        # Best-effort: any failure degrades to "discrete"/"unnamed" so the
-        # memory readings still get through instead of crashing the probe.
-        return flags, names
+        # Best-effort: any failure degrades to "discrete"/"unnamed" so the memory readings still get through instead of
+        # crashing the probe.
+        return flags, names, known
 
-    # Bound outside the type-detection try above: a ggml-base without the
-    # description symbol (older/custom build) must degrade to unnamed devices,
-    # not abort before the iGPU flags are read (which would count an iGPU's
-    # shared RAM as VRAM).
+    # Bound outside the type-detection try above: a ggml-base without the description symbol (older/custom build) must
+    # degrade to unnamed devices, not abort before the iGPU flags are read (which would count an iGPU's shared RAM as
+    # VRAM).
     name_functions = []
     for symbol in ("ggml_backend_dev_description", "ggml_backend_dev_name"):
         try:
@@ -78,6 +83,7 @@ def _igpu_flags_and_names(base, lib, count: int) -> tuple[list[bool], list[str]]
             continue
         try:
             flags[i] = base.ggml_backend_dev_type(dev) == _GGML_BACKEND_DEVICE_TYPE_IGPU
+            known[i] = True
         except Exception:
             pass
         for function in name_functions:
@@ -90,7 +96,7 @@ def _igpu_flags_and_names(base, lib, count: int) -> tuple[list[bool], list[str]]
                 name = raw_name.decode("utf-8", errors = "replace")
                 names[i] = name.replace("\t", " ").replace("\r", " ").replace("\n", " ").strip()
                 break
-    return flags, names
+    return flags, names, known
 
 
 def main() -> int:
@@ -98,17 +104,15 @@ def main() -> int:
         return 0
     bindir = sys.argv[1]
 
-    # Device names can be non-ASCII (localized drivers); the platform-default
-    # stdout encoding (e.g. cp1252) would raise on them and lose the whole
-    # inventory. The reader decodes UTF-8 with the same error mode.
+    # Device names can be non-ASCII (localized drivers); the platform-default stdout encoding (e.g. cp1252) would raise
+    # on them and lose the whole inventory. The reader decodes UTF-8 with the same error mode.
     try:
         sys.stdout.reconfigure(encoding = "utf-8", errors = "replace")
     except Exception:
         pass
 
-    # Hold add_dll_directory's handle for the rest of main() (the documented
-    # idiom) so bindir stays on the search path while the sibling ggml DLLs
-    # resolve below.
+    # Hold add_dll_directory's handle for the rest of main() (the documented idiom) so bindir stays on the search path
+    # while the sibling ggml DLLs resolve below.
     _dll_dir = None
     if sys.platform == "win32":
         base_name, vk_name = "ggml-base.dll", "ggml-vulkan.dll"
@@ -129,8 +133,8 @@ def main() -> int:
                 return os.path.join(directory, entry)
         return None
 
-    # RTLD_GLOBAL exposes ggml-base's symbols to ggml-vulkan on POSIX. getattr
-    # falls back to 0 where the flag doesn't exist (Windows CDLL ignores mode).
+    # RTLD_GLOBAL exposes ggml-base's symbols to ggml-vulkan on POSIX. getattr falls back to 0 where the flag doesn't
+    # exist (Windows CDLL ignores mode).
     _rtld_global = getattr(ctypes, "RTLD_GLOBAL", 0)
     base_path = _find_lib(bindir, base_name)
     vk_path = _find_lib(bindir, vk_name)
@@ -154,12 +158,15 @@ def main() -> int:
     ]
 
     count = lib.ggml_backend_vk_get_device_count()
-    igpu, names = _igpu_flags_and_names(base, lib, count)
+    igpu, names, known = _igpu_flags_and_names(base, lib, count)
     rows = []
     for i in range(count):
         free, total = ctypes.c_size_t(0), ctypes.c_size_t(0)
         lib.ggml_backend_vk_get_device_memory(i, ctypes.byref(free), ctypes.byref(total))
-        rows.append("%d\t%d\t%d\t%d\t%s" % (i, free.value, int(igpu[i]), total.value, names[i]))
+        rows.append(
+            "%d\t%d\t%d\t%d\t%s\t%d"
+            % (i, free.value, int(igpu[i]), total.value, names[i], int(known[i]))
+        )
     sys.stdout.write("\n".join(rows))
     return 0
 

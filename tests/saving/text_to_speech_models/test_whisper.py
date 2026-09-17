@@ -1,13 +1,34 @@
-from unsloth import FastLanguageModel, FastModel
-from transformers import WhisperForConditionalGeneration, WhisperProcessor
-import torch
-
 # ruff: noqa
+import sys as _sys
+from pathlib import Path as _Path
+
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
+from tests.utils.os_utils import require_opt_in as _require_opt_in
+
+_require_opt_in(
+    "UNSLOTH_RUN_SAVING_SCRIPTS",
+    "GPU + Hub saving script; its body runs at import.",
+)
+
+import pytest
+
+try:
+    from unsloth import FastLanguageModel, FastModel
+    from transformers import WhisperForConditionalGeneration, WhisperProcessor
+    import torch
+    from peft import PeftModel
+    import requests
+except ImportError as exc:
+    # Imported at collection time, so an absent runtime dep (triton on the Windows CI runner) is a collection error that
+    # reports no results at all.
+    pytest.skip(
+        f"requires the full unsloth runtime: {exc}",
+        allow_module_level = True,
+    )
+
 import sys
 from pathlib import Path
-from peft import PeftModel
 import warnings
-import requests
 
 
 REPO_ROOT = Path(__file__).parents[3]
@@ -22,19 +43,18 @@ require_python_package("soundfile")
 
 import soundfile as sf
 
-print(f"\n{'='*80}")
+print(f"\n{'=' * 80}")
 print("🔍 SECTION 1: Loading Model and LoRA Adapters")
-print(f"{'='*80}")
+print(f"{'=' * 80}")
 
 
 model, tokenizer = FastModel.from_pretrained(
     model_name = "unsloth/whisper-large-v3",
-    dtype = None,  # Leave as None for auto detection
-    load_in_4bit = False,  # Set to True to do 4bit quantization which reduces memory
+    dtype = None,
+    load_in_4bit = False,
     auto_model = WhisperForConditionalGeneration,
     whisper_language = "English",
     whisper_task = "transcribe",
-    # token = "hf_...", # use one if using gated models like meta-llama/Llama-2-7b-hf
 )
 
 
@@ -51,7 +71,6 @@ model = FastModel.get_peft_model(
     lora_alpha = 64,
     lora_dropout = 0,  # Supports any, but = 0 is optimized
     bias = "none",  # Supports any, but = "none" is optimized
-    # [NEW] "unsloth" uses 30% less VRAM, fits 2x larger batch sizes!
     use_gradient_checkpointing = "unsloth",  # True or "unsloth" for very long context
     random_state = 3407,
     use_rslora = False,  # We support rank stabilized LoRA
@@ -62,17 +81,17 @@ model = FastModel.get_peft_model(
 print("✅ Model and LoRA adapters loaded successfully!")
 
 
-print(f"\n{'='*80}")
+print(f"\n{'=' * 80}")
 print("🔍 SECTION 2: Checking Model Class Type")
-print(f"{'='*80}")
+print(f"{'=' * 80}")
 
 assert isinstance(model, PeftModel), "Model should be an instance of PeftModel"
 print("✅ Model is an instance of PeftModel!")
 
 
-print(f"\n{'='*80}")
+print(f"\n{'=' * 80}")
 print("🔍 SECTION 3: Checking Config Model Class Type")
-print(f"{'='*80}")
+print(f"{'=' * 80}")
 
 
 def find_lora_base_model(model_to_inspect):
@@ -92,9 +111,9 @@ assert (
 print("✅ config_model returns correct Base Model class:", str(base_model_class))
 
 
-print(f"\n{'='*80}")
+print(f"\n{'=' * 80}")
 print("🔍 SECTION 4: Saving and Merging Model")
-print(f"{'='*80}")
+print(f"{'=' * 80}")
 
 with warnings.catch_warnings():
     warnings.simplefilter("error")  # Treat warnings as errors
@@ -104,29 +123,26 @@ with warnings.catch_warnings():
     except Exception as e:
         assert False, f"Model saving/merging failed with exception: {e}"
 
-print(f"\n{'='*80}")
+print(f"\n{'=' * 80}")
 print("🔍 SECTION 5: Loading Model for Inference")
-print(f"{'='*80}")
+print(f"{'=' * 80}")
 
 
 model, tokenizer = FastModel.from_pretrained(
     model_name = "./whisper",
-    dtype = None,  # Leave as None for auto detection
-    load_in_4bit = False,  # Set to True to do 4bit quantization which reduces memory
+    dtype = None,
+    load_in_4bit = False,
     auto_model = WhisperForConditionalGeneration,
     whisper_language = "English",
     whisper_task = "transcribe",
-    # token = "hf_...", # use one if using gated models like meta-llama/Llama-2-7b-hf
 )
 
-# model = WhisperForConditionalGeneration.from_pretrained("./whisper")
-# processor = WhisperProcessor.from_pretrained("./whisper")
 
 print("✅ Model loaded for inference successfully!")
 
-print(f"\n{'='*80}")
+print(f"\n{'=' * 80}")
 print("🔍 SECTION 6: Downloading Sample Audio File")
-print(f"{'='*80}")
+print(f"{'=' * 80}")
 
 audio_url = "https://upload.wikimedia.org/wikipedia/commons/5/5b/Speech_12dB_s16.flac"
 audio_file = "Speech_12dB_s16.flac"
@@ -141,11 +157,17 @@ try:
         f.write(response.content)
     print("✅ Audio file downloaded successfully!")
 except Exception as e:
-    assert False, f"Failed to download audio file: {e}"
+    # Runs at import, so a failure here is a collection error and the whole file reports no results.
+    # Wikimedia rate-limits this URL (429 in a batch run) and a fixture we could not fetch says nothing about unsloth,
+    # so skip.
+    pytest.skip(
+        f"could not download the test audio fixture from {audio_url}: {e}",
+        allow_module_level = True,
+    )
 
-print(f"\n{'='*80}")
+print(f"\n{'=' * 80}")
 print("🔍 SECTION 7: Running Inference")
-print(f"{'='*80}")
+print(f"{'=' * 80}")
 
 
 from transformers import pipeline
@@ -164,12 +186,8 @@ whisper = pipeline(
 )
 audio_file = "Speech_12dB_s16.flac"
 transcribed_text = whisper(audio_file)
-# audio, sr = sf.read(audio_file)
-# input_features = processor(audio, return_tensors="pt").input_features
-# transcribed_text = model.generate(input_features=input_features)
 print(f"📝 Transcribed Text: {transcribed_text['text']}")
 
-# Assert the transcription contains the expected reference phrases.
 expected_phrases = [
     "birch canoe slid on the smooth planks",
     "sheet to the dark blue background",

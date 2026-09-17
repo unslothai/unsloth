@@ -91,6 +91,10 @@ def detect_install_source() -> str:
     return "pypi"
 
 
+def update_checks_disabled() -> bool:
+    return os.environ.get(DISABLE_ENV_VAR) == "1"
+
+
 def get_studio_install_source_status(current_version: str) -> dict[str, Any]:
     """Return install-source metadata without remote update checks."""
     install_source = detect_install_source()
@@ -119,7 +123,7 @@ def _is_version(value: str) -> bool:
 def get_studio_update_status(current_version: str) -> dict[str, Any]:
     """Return public, read-only update status for the web UI."""
     install_source = detect_install_source()
-    disabled = os.environ.get(DISABLE_ENV_VAR) == "1"
+    disabled = update_checks_disabled()
 
     # Dev-only: the popup is PyPI-install-only, so fake a version to review it
     # from a checkout. The documented opt-out still wins.

@@ -4,24 +4,24 @@
 import { Progress } from "@/components/ui/progress";
 import { Spinner } from "@/components/ui/spinner";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
 type ModelLoadDescriptionProps = {
   title?: string | null;
   message?: string | null;
   progressPercent?: number | null;
   progressLabel?: string | null;
+  // Extra classes for the root row (e.g. a titleless caller dropping min-h-12).
+  className?: string;
 };
 
 function clampProgress(value: number): number {
   return Math.max(0, Math.min(100, value));
 }
 
-/**
- * Split a composed progress label like "22.8 of 122.3 GB • 330.1 MB/s • 5m 9s
- * left" into a primary chunk (next to the percent) and a secondary chunk (its
- * own row), so neither line wraps raggedly once rate/ETA appears mid-download.
- * Labels without " • " return primary-only, so the secondary row doesn't render.
- */
+/** Split a composed progress label into a primary chunk, next to the percent, and a secondary chunk
+ *  on its own row, so neither line wraps raggedly once rate and ETA appear mid-download. Labels
+ *  without the separator return primary-only, so the secondary row does not render. */
 function splitProgressLabel(
   label: string | null | undefined,
 ): { primary: string; secondary: string } {
@@ -39,6 +39,7 @@ export function ModelLoadDescription({
   message,
   progressPercent,
   progressLabel,
+  className,
 }: ModelLoadDescriptionProps) {
   const hasProgress = typeof progressPercent === "number";
   // Split once at the top so the JSX below stays flat (no IIFE).
@@ -46,7 +47,7 @@ export function ModelLoadDescription({
     splitProgressLabel(progressLabel);
 
   return (
-    <div className="relative flex min-h-12 w-full items-stretch gap-2">
+    <div className={cn("relative flex min-h-12 w-full items-stretch gap-2", className)}>
       <div className="flex h-full shrink-0 items-center self-center">
         <Spinner className="size-3.5 text-muted-foreground" />
       </div>

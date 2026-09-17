@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useAppShellReadySignal } from "@/components/app-readiness";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -26,6 +27,7 @@ import {
 } from "@/components/ui/empty";
 import { ShineBorder } from "@/components/ui/shine-border";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { OPEN_LEARNING_RECIPES_ON_ARRIVAL_KEY } from "@/lib/navigation-intents";
 import { toastError } from "@/shared/toast";
 import {
   Album02Icon,
@@ -42,7 +44,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import type { ReactElement } from "react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   createRecipeDraft,
   createRecipeFromLearningRecipe,
@@ -51,9 +53,8 @@ import {
   useRecipes,
 } from "../data/recipes-db";
 import { LEARNING_RECIPES } from "../learning-recipes";
-
-const OPEN_LEARNING_RECIPES_ON_ARRIVAL_KEY =
-  "data-recipes:open-learning-recipes";
+import { GuidedTour, useGuidedTourController } from "@/features/tour";
+import { buildDataRecipesTourSteps } from "../tour";
 
 type TemplateCard = {
   title: string;
@@ -313,6 +314,7 @@ function LearningRecipeCards({
 }
 
 export function DataRecipesPage(): ReactElement {
+  const signalReady = useAppShellReadySignal();
   const navigate = useNavigate();
   const { recipes, ready } = useRecipes();
   const [creatingRecipe, setCreatingRecipe] = useState(false);
@@ -320,6 +322,23 @@ export function DataRecipesPage(): ReactElement {
   const [loadingTemplateId, setLoadingTemplateId] = useState<string | null>(
     null,
   );
+  const reloadReadySent = useRef(false);
+  const tourSteps = useMemo(
+    () => buildDataRecipesTourSteps({ ready, hasRecipes: recipes.length > 0 }),
+    [ready, recipes.length],
+  );
+  const tour = useGuidedTourController({
+    id: "data-recipes",
+    steps: tourSteps,
+  });
+
+  useEffect(() => {
+    if (!ready || reloadReadySent.current) {
+      return;
+    }
+    reloadReadySent.current = true;
+    signalReady();
+  }, [ready, signalReady]);
 
   useEffect(() => {
     if (sessionStorage.getItem(OPEN_LEARNING_RECIPES_ON_ARRIVAL_KEY) !== "1") {
@@ -401,6 +420,7 @@ export function DataRecipesPage(): ReactElement {
   return (
     <div className="min-h-[calc(100dvh-var(--studio-titlebar-height,0px))] bg-background">
       <main className="mx-auto w-full max-w-7xl px-5 py-8 sm:px-9">
+        <GuidedTour {...tour.tourProps} />
         <div className="flex items-center justify-between gap-4">
           <div>
             <h1 className="text-ui-30 font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-ui-34">
@@ -412,7 +432,7 @@ export function DataRecipesPage(): ReactElement {
           </div>
           <DropdownMenu>
             <DropdownMenuTrigger asChild={true}>
-              <Button type="button" disabled={isBusy}>
+              <Button type="button" data-tour="recipes-new" disabled={isBusy}>
                 <HugeiconsIcon icon={PlusSignIcon} className="size-4" />
                 New Recipe
                 <HugeiconsIcon
@@ -444,7 +464,10 @@ export function DataRecipesPage(): ReactElement {
 
         {ready ? (
           recipes.length === 0 ? (
-            <Empty className="mt-8 border border-dashed border-border/70 dark:border-none">
+            <Empty
+              data-tour="recipes-templates"
+              className="mt-8 border border-dashed border-border/70 dark:border-none"
+            >
               <EmptyHeader>
                 <EmptyMedia variant="icon">
                   <HugeiconsIcon icon={CookBookIcon} className="size-5" />
@@ -475,7 +498,7 @@ export function DataRecipesPage(): ReactElement {
               </EmptyContent>
             </Empty>
           ) : (
-            <div className="mt-8 space-y-2">
+            <div data-tour="recipes-list" className="mt-8 space-y-2">
               {recipes.map((recipe) => (
                 <div
                   key={recipe.id}

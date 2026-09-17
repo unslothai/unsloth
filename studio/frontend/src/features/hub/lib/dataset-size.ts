@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { getHfDatasetsServerBase, getHfEndpoint } from "@/lib/hf-endpoint";
 import { LruMap } from "./lru-map";
 import { fetchWithTimeout } from "./network";
 import { fingerprintToken } from "./token-fingerprint";
@@ -23,10 +24,9 @@ interface DatasetSizeApiResponse {
   };
 }
 
-// Transient (429/5xx/network) misses cache briefly so a rate-limited burst
-// doesn't pin the size to "unknown" until reload. "longlived" covers stable-ish
-// answers like datasets-server 404 ("not processed yet"); "permanent" is a
-// genuinely missing repo (HF models API 404).
+// Transient (429/5xx/network) misses cache briefly so a rate-limited burst doesn't pin the size to
+// "unknown" until reload. "longlived" covers stable-ish answers like datasets-server 404 ("not
+// processed yet"); "permanent" is a genuinely missing repo (HF models API 404).
 const TRANSIENT_MISS_TTL_MS = 60_000;
 const LONGLIVED_MISS_TTL_MS = 24 * 60 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 10_000;
@@ -213,14 +213,15 @@ export function fetchDatasetSize(
     typeof tokenOrSignal === "string" ? tokenOrSignal : undefined;
   const resolvedSignal =
     signal ?? (typeof tokenOrSignal === "string" ? undefined : tokenOrSignal);
-  const cacheKey = `${repoId}::${fingerprintToken(resolvedToken)}`;
+  // Server in the key: a 404 here is cached for 24 hours.
+  const cacheKey = `${getHfDatasetsServerBase()}::${repoId}::${fingerprintToken(resolvedToken)}`;
   return fetchCachedSize<DatasetSizeInfo>(
     cacheKey,
     datasetCache,
     datasetInflight,
     async (signal) => {
       const res = await fetchWithTimeout(
-        `https://datasets-server.huggingface.co/size?dataset=${encodeURIComponent(repoId)}`,
+        `${getHfDatasetsServerBase()}/size?dataset=${encodeURIComponent(repoId)}`,
         {
           signal,
           headers: resolvedToken
@@ -311,7 +312,8 @@ export function fetchModelSize(
   token?: string,
   signal?: AbortSignal,
 ): Promise<ModelSizeInfo | null> {
-  const cacheKey = `${repoId}::${fingerprintToken(token)}`;
+  // Endpoint in the key: a model 404 is cached for the whole session.
+  const cacheKey = `${getHfEndpoint()}::${repoId}::${fingerprintToken(token)}`;
   return fetchCachedSize<ModelSizeInfo>(
     cacheKey,
     modelCache,
@@ -319,7 +321,7 @@ export function fetchModelSize(
     async (signal) => {
       const path = repoId.split("/").map(encodeURIComponent).join("/");
       const res = await fetchWithTimeout(
-        `https://huggingface.co/api/models/${path}?blobs=true`,
+        `${getHfEndpoint()}/api/models/${path}?blobs=true`,
         {
           signal,
           headers: token ? { Authorization: `Bearer ${token}` } : undefined,

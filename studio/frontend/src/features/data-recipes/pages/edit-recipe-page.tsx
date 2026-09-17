@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useAppShellReadySignal } from "@/components/app-readiness";
 import { Button } from "@/components/ui/button";
 import { RecipeStudioPage, type RecipePayload } from "@/features/recipe-studio";
 import { useNavigate } from "@tanstack/react-router";
 import type { ReactElement } from "react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { getCachedRecipe, getRecipe, primeRecipeCache, saveRecipe } from "../data/recipes-db";
 import type { RecipeRecord } from "../types";
 
@@ -29,7 +30,7 @@ function RecipeLoadState({
 }): ReactElement {
   return (
     <div className="min-h-[calc(100dvh-var(--studio-titlebar-height,0px))] bg-background">
-      <main className="mx-auto flex min-h-[70vh] w-full max-w-4xl items-center justify-center px-6 py-8">
+      <main className="mx-auto flex min-h-[70dvh] w-full max-w-4xl items-center justify-center px-6 py-8">
         <div className="w-full rounded-2xl border bg-card p-8 text-center">
           <h1 className="text-lg font-semibold">{title}</h1>
           <p className="mt-2 text-sm text-muted-foreground">{description}</p>
@@ -43,7 +44,9 @@ function RecipeLoadState({
 }
 
 export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement {
+  const signalReady = useAppShellReadySignal();
   const navigate = useNavigate();
+  const reloadReadySent = useRef(false);
   const [loadState, setLoadState] = useState<LoadState>(() => {
     const cachedRecipe = getCachedRecipe(recipeId);
     if (cachedRecipe) {
@@ -76,6 +79,14 @@ export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement 
       active = false;
     };
   }, [recipeId]);
+
+  useEffect(() => {
+    if (loadState.status === "loading" || reloadReadySent.current) {
+      return;
+    }
+    reloadReadySent.current = true;
+    signalReady();
+  }, [loadState.status, signalReady]);
 
   const handlePersist = useCallback(
     async (input: { id: string | null; name: string; payload: RecipePayload }) => {

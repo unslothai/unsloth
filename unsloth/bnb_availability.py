@@ -1,11 +1,8 @@
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
-#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-#
 #     http://www.apache.org/licenses/LICENSE-2.0
-#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -40,8 +37,8 @@ _C_SYMBOLS = (
     "cdequantize_blockwise_fp16_nf4",
     "cdequantize_blockwise_bf16_nf4",
 )
-# 4bit inference is a gemv on xpu and a naive gemm elsewhere; probing the wrong pair
-# would write off a perfectly good wheel.
+# 4bit inference is a gemv on xpu and a naive gemm elsewhere; probing the wrong pair would write off
+# a perfectly good wheel.
 _C_SYMBOLS_XPU = (
     "cgemv_4bit_inference_fp16",
     "cgemv_4bit_inference_bf16",
@@ -70,8 +67,8 @@ def check_native_kernels(bnb, device_type):
         raise ImportError("Unsloth: `bitsandbytes` is not installed.")
     functional = getattr(bnb, "functional", None)
     if functional is None:
-        # A part-initialised bitsandbytes leaves the parent without the attribute while
-        # the submodule stays in sys.modules, which `import x.y as z` reads directly.
+        # A part-initialised bitsandbytes leaves the parent without the attribute while the submodule stays
+        # in sys.modules, which `import x.y as z` reads directly.
         import bitsandbytes.functional as functional
 
     lib = functional.lib

@@ -27,6 +27,22 @@ def test_alias_loopback_shows_canned_url(capsys, host):
     assert "http://127.0.0.1:8891" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize(
+    "host,loopback_url",
+    [
+        ("::0", "http://[::1]:8891"),
+        ("0:0:0:0:0:0:0:0", "http://[::1]:8891"),
+        ("0", "http://127.0.0.1:8891"),
+        ("::ffff:0.0.0.0", "http://127.0.0.1:8891"),
+    ],
+)
+def test_wildcard_aliases_show_reachable_urls(capsys, host, loopback_url):
+    print_studio_access_banner(port = 8891, bind_host = host, display_host = "192.168.1.24")
+    out = capsys.readouterr().out
+    assert loopback_url in out
+    assert "http://192.168.1.24:8891" in out
+
+
 def test_banner_prints_on_strict_cp1252_stdout(monkeypatch):
     buf = io.BytesIO()
     stdout = io.TextIOWrapper(buf, encoding = "cp1252", errors = "strict")

@@ -16,8 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-# Anchor: up to MAX interior words from the chunk's start, shrunk toward MIN
-# to recover a unique match.
+# Anchor: up to MAX interior words from the chunk's start, shrunk toward MIN to recover a unique match.
 MAX_ANCHOR_WORDS = 12
 MIN_ANCHOR_WORDS = 4
 
@@ -95,7 +94,7 @@ def _rects_from_words(page_words: list, indices: list[int], pw: float, ph: float
     for j in indices:
         w = page_words[j]
         x0, y0, x1, y1 = float(w[0]), float(w[1]), float(w[2]), float(w[3])
-        key = (w[5], w[6])  # block, line
+        key = (w[5], w[6])
         box = lines.get(key)
         if box is None:
             lines[key] = [x0, y0, x1, y1]

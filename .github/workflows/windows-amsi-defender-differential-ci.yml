@@ -1,0 +1,761 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# Will AMSI let the installer compile, and does Defender's file scanner flag its bytes?
+#
+# This is the lane that reproduces #10805's mechanism rather than approximating it. The user there
+# was not running the installer and watching it misbehave -- the script was refused before its first
+# statement ran, because PowerShell hands a script block to AMSI at COMPILE time. So the measurement
+# is compilation, which `[scriptblock]::Create` performs with none of an install's side effects: no
+# download, no venv, no registry, no shortcut. That makes it cheap enough to run on every candidate,
+# which the two-full-installs lane (windows-installer-differential-ci.yml) is not.
+#
+# It is differential. "install.ps1 compiles fine" is close to meaningless on its own; "the merge base
+# compiles and the candidate does not" is a finding, and so is the reverse.
+#
+# Every verdict here depends on a positive control, and both halves have one:
+#
+#   AMSI      Microsoft's documented test sample, assembled from fragments, submitted through the
+#             SAME code path in the SAME process as each measurement.
+#   Defender  EICAR, assembled from fragments, scanned through the same MpCmdRun invocation.
+#
+# If a control does not fire, the lane reports that it could not measure and passes with a warning.
+# It never reports clean. That distinction is not theoretical: release-desktop.yml's own comments
+# record three releases that shipped unscanned while their scan step was green, because a runner
+# whose scanner is not live looks exactly like a clean verdict.
+#
+# What this lane cannot answer: anything about Skyhigh, Bitdefender or Kaspersky, which are the
+# products that have actually flagged us. No hosted runner has them, and a Defender verdict is not a
+# proxy for another vendor's. See docs/windows-installer-av-shapes.md for what each detection was.
+
+name: "Windows: AMSI and Defender differential"
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'install.ps1'
+      - 'studio/setup.ps1'
+      - 'scripts/uninstall.ps1'
+      - '.github/scripts/Probe-AmsiParse.ps1'
+      - '.github/workflows/windows-amsi-defender-differential-ci.yml'
+  schedule:
+    # Definitions change daily and outside our control, so a periodic run against an unchanged tree
+    # is how a new signature that starts matching us gets noticed at all. It is also why this lane
+    # must not be a required check: a Microsoft definition push could otherwise block every merge.
+    - cron: '41 4 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  measure:
+    name: does the scanner refuse either side
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Exempt the comparison directory from on-access scanning
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          # BEFORE anything is written there, not before the scan. Real-time protection acts on
+          # open and on write, and -DisableRemediation governs only the explicit MpCmdRun scan, so
+          # a live provider could take a copy away while the layout step writes it or while the
+          # AMSI step reads it. The later Get-ChildItem loops would then simply not see that file,
+          # and another valid row could carry both halves to a clean verdict.
+          # release-desktop.yml:1437-1444 establishes its exclusions before copying for the same
+          # reason, and records that the verdict is unaffected because the explicit scan ignores
+          # file exclusions.
+          $root = Join-Path $env:RUNNER_TEMP 'sides'
+          New-Item -ItemType Directory -Force -Path $root | Out-Null
+          Add-MpPreference -ExclusionPath $root -ErrorAction Continue
+
+          # Verified, not assumed: Add-MpPreference is non-terminating here and a hosted image or
+          # tamper protection can refuse it without saying so. A refusal is not fatal -- the lane
+          # still measures, it just loses this protection -- but it has to be visible, because the
+          # symptom of losing it is a file quietly missing from the results.
+          $pref = Get-MpPreference -ErrorAction SilentlyContinue
+          if ($pref -and @($pref.ExclusionPath) -contains $root) {
+            Write-Host "on-access exclusion in place for $root"
+          } else {
+            Write-Host "::warning::could not exempt $root from on-access scanning. If real-time protection is live, a flagged copy can be quarantined before it is scanned and would then be reported as missing rather than as a detection."
+          }
+
+      - name: Lay out both sides of the comparison
+        id: sides
+        shell: pwsh
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $head = (git rev-parse HEAD).Trim()
+          if ($env:PR_BASE) {
+            # The merge base, not the base branch tip: comparing against a tip that has moved on
+            # attributes somebody else's merged change to this PR.
+            $base = (git merge-base $env:PR_BASE $head).Trim()
+          } else {
+            $base = (git rev-parse 'HEAD~1').Trim()
+          }
+          Write-Host "base $base"
+          Write-Host "head $head"
+
+          $root = Join-Path $env:RUNNER_TEMP 'sides'
+          foreach ($side in 'base', 'head') {
+            New-Item -ItemType Directory -Force -Path (Join-Path $root $side) | Out-Null
+          }
+
+          $files = @('install.ps1', 'studio/setup.ps1', 'scripts/uninstall.ps1')
+          $laid = 0
+          $manifest = @()
+          foreach ($f in $files) {
+            $leaf = ($f -replace '/', '_')
+            foreach ($pair in @(@($base, 'base'), @($head, 'head'))) {
+              $sha, $side = $pair
+              $dest = Join-Path (Join-Path $root $side) $leaf
+              # git show, not a second checkout: it costs nothing and cannot leave the working tree
+              # in a state the next step misreads.
+              git cat-file -e "${sha}:${f}" 2>$null
+              if ($LASTEXITCODE -ne 0) {
+                Write-Host "::notice::$f does not exist at $($sha.Substring(0,8)) ($side); skipping it on that side"
+                continue
+              }
+              # The blob is copied as a byte stream, never captured as PowerShell text, and that is
+              # the whole point of the lane rather than fussiness: it scans the bytes that ship.
+              # Capturing `git show` into a variable decodes the output into lines and the write
+              # back re-encodes them, which silently converts CRLF to LF, drops every trailing blank
+              # line but one, adds a final newline where there was none, and mangles anything that
+              # is not valid UTF-8. The scanner would then be judging a file this project never
+              # serves, and a clean verdict on it would not transfer to the one users get.
+              $psi = New-Object System.Diagnostics.ProcessStartInfo
+              $psi.FileName = 'git'
+              $psi.ArgumentList.Add('show')
+              $psi.ArgumentList.Add("${sha}:${f}")
+              $psi.RedirectStandardOutput = $true
+              $psi.UseShellExecute = $false
+              $proc = [System.Diagnostics.Process]::Start($psi)
+              $out = [System.IO.File]::Create($dest)
+              try {
+                $proc.StandardOutput.BaseStream.CopyTo($out)
+              } finally {
+                $out.Dispose()
+                $proc.WaitForExit()
+              }
+              if ($proc.ExitCode -ne 0) {
+                Write-Host "::error::could not read $f at $($sha.Substring(0,8)) ($side)"
+                exit 1
+              }
+              $manifest += [pscustomobject]@{ side = $side; leaf = $leaf }
+              $laid++
+            }
+          }
+          if ($laid -lt 2) {
+            Write-Host '::error::fewer than two files were laid out, so there is nothing to compare. Refusing to report a verdict.'
+            exit 1
+          }
+          # The EXPECTED set, written down. Both measurement loops used to enumerate whatever was
+          # still on disk, so a copy quarantined by real-time protection before they ran simply left
+          # the set: it became neither an unmeasured row nor a detection, and a surviving sibling
+          # could carry the job to a clean verdict. Recording what was laid out means an absent file
+          # is a measurable fact rather than a silence.
+          $manifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $root 'manifest.json') -Encoding utf8
+          Write-Host "laid out $laid file copies"
+          "base_sha=$base"   | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "head_sha=$head"   | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "root=$root"       | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "identical=$([int]($base -eq $head))" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Ask AMSI, under Windows PowerShell 5.1
+        id: amsi
+        shell: pwsh
+        env:
+          ROOT: ${{ steps.sides.outputs.root }}
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $script:UnslothVanished = @()
+          $script:UnslothUnknownExpected = @()
+          # Reads the layout manifest and returns what SHOULD be there, with anything missing
+          # reported rather than skipped. A quarantined copy is the case this exists for.
+          function Get-UnslothExpected {
+            param([Parameter(Mandatory = $true)][string]$Side)
+            $manifestPath = Join-Path $env:ROOT 'manifest.json'
+            if (-not (Test-Path -LiteralPath $manifestPath)) {
+              # Recorded, not only warned about. Enumerating survivors cannot notice that an expected
+              # candidate is absent, so a quarantined copy left its siblings to carry the run to a
+              # clean verdict. The expected set being unknown IS an unmeasured condition.
+              Write-Host '::warning::the layout manifest is missing, so the expected set is unknown and only surviving files can be measured'
+              $script:UnslothUnknownExpected += $Side
+              return @(Get-ChildItem -LiteralPath (Join-Path $env:ROOT $Side) -Filter '*.ps1' -ErrorAction SilentlyContinue)
+            }
+            $expected = @(Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json | Where-Object { $_.side -eq $Side })
+            $out = @()
+            foreach ($entry in $expected) {
+              $path = Join-Path (Join-Path $env:ROOT $Side) $entry.leaf
+              if (Test-Path -LiteralPath $path) {
+                $out += (Get-Item -LiteralPath $path)
+              } else {
+                $script:UnslothVanished += "$Side/$($entry.leaf)"
+              }
+            }
+            return $out
+          }
+
+          $probe = (Resolve-Path '.github/scripts/Probe-AmsiParse.ps1').Path
+          $out = Join-Path $env:RUNNER_TEMP 'amsi'
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+
+          # 5.1 specifically. It is what install.rs spawns (install.rs:433-440), what a clean Windows
+          # box ships, and what the #10805 reporter ran. pwsh 7 is a different host with a different
+          # AMSI integration, so its answer does not transfer.
+          $ps51 = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+          if (-not (Test-Path -LiteralPath $ps51)) {
+            Write-Host "::error::Windows PowerShell 5.1 is absent at $ps51; this runner cannot answer the question that matters"
+            exit 1
+          }
+
+          $rows = @()
+          $noResult = @()
+          foreach ($side in 'base', 'head') {
+            foreach ($file in (Get-UnslothExpected $side)) {
+              $json = Join-Path $out "$side-$($file.BaseName).json"
+              Write-Host "--- $side/$($file.Name)"
+              # -Control on every invocation, so the control fires in the same process as the
+              # measurement it vouches for. A control in a sibling process only shares a host
+              # configuration, which is a weaker claim than it looks.
+              & $ps51 -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned `
+                  -File $probe -Control -Path $file.FullName -OutFile $json
+              if (-not (Test-Path -LiteralPath $json)) {
+                # Not `continue` alone: dropping the row shrinks the measured set silently, and a
+                # head file that vanishes from the set leaves headBlocked at zero, which reads as
+                # clean. Record it so the verdict below has to account for it.
+                Write-Host "::warning::the probe wrote no result for $side/$($file.Name)"
+                $noResult += "$side/$($file.Name) [the probe wrote no result]"
+                continue
+              }
+              # Parsed under -ErrorAction Stop and then checked for the shape this lane reads. The
+              # step runs with $ErrorActionPreference = 'Continue', so a truncated or otherwise
+              # invalid file made ConvertFrom-Json emit a non-terminating error and return nothing,
+              # and the row went in with a null payload. Such a row iterates no results, so it is
+              # neither a block nor an unmeasured candidate: the file simply left the measured set,
+              # and any other process whose control fired then carried the job to a clean verdict.
+              $parsed = $null
+              try {
+                $parsed = Get-Content -Raw -LiteralPath $json -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+              } catch {
+                Write-Host "::warning::the probe's result for $side/$($file.Name) could not be parsed: $($_.Exception.Message)"
+                $noResult += "$side/$($file.Name) [the probe's result could not be parsed]"
+                continue
+              }
+              if ($null -eq $parsed -or -not $parsed.PSObject.Properties.Name.Contains('results') -or @($parsed.results).Count -eq 0) {
+                Write-Host "::warning::the probe's result for $side/$($file.Name) carries no results"
+                $noResult += "$side/$($file.Name) [the probe's result carries no results]"
+                continue
+              }
+              $rows += [pscustomobject]@{
+                side = $side
+                name = $file.Name
+                data = $parsed
+              }
+            }
+          }
+
+          # A copy that was laid out and is no longer there was not measured, and saying so is the
+          # whole point of tracking the expected set.
+          foreach ($v in $script:UnslothVanished) {
+            Write-Host "::warning::$v was laid out and is no longer on disk; it may have been quarantined before it could be compiled"
+            $noResult += "$v [the laid-out copy vanished before it was measured]"
+          }
+          foreach ($side in $script:UnslothUnknownExpected) {
+            $noResult += "$side/<unknown> [the layout manifest is missing, so a quarantined candidate cannot be distinguished from one that was never laid out]"
+          }
+
+          if ($rows.Count -eq 0) {
+            Write-Host '::error::the AMSI probe produced no results at all. Refusing to report a verdict.'
+            exit 1
+          }
+
+          # The control decides whether any of this means anything, and it decides it PER ROW.
+          # -Control runs in the same process as the file it vouches for, so its outcome is a
+          # property of that one measurement. A job-wide flag would let a process where AMSI never
+          # initialised borrow the credibility of one where it did, which is precisely how "no
+          # provider was listening" turns into "nothing was detected".
+          foreach ($row in $rows) {
+            $fired = @($row.data.results | Where-Object { $_.label -like 'control*' -and $_.blocked }).Count
+            $row | Add-Member -NotePropertyName controlFired -NotePropertyValue ([bool]$fired)
+          }
+
+          $blocked = @()
+          $unmeasured = @($noResult)
+          $didNotCompile = @()
+          foreach ($row in $rows) {
+            foreach ($r in $row.data.results) {
+              if ($r.label -like 'control*') { continue }
+              $where = "$($row.side)/$($row.name)"
+              # Order matters here, and the obvious order is wrong.
+              #
+              # A parse error is a property of the script, not of the scanner: the compiler rejects
+              # it whether or not an AMSI provider is listening. Classifying it BEFORE the control
+              # gate is therefore both valid and necessary, because gating it meant a syntax error
+              # in a process whose control happened to stay silent was filed as "not measured" and
+              # the run exited zero.
+              if ($r.blocked) {
+                # This one does depend on a live provider, so it is the control's to vouch for.
+                if ($row.controlFired) { $blocked += "$where [$($r.errorId)]" }
+                else { $unmeasured += "$where [reported blocked, but the control did not fire in this process]" }
+                continue
+              }
+              if ($r.missing)    { $unmeasured += "$where [the probe could not find the file]"; continue }
+              if ($r.unreadable) { $unmeasured += "$where [the probe could not read the file]"; continue }
+              # blocked=false with an errorId set is a compile failure, not a scanner verdict.
+              if ($r.errorId) { $didNotCompile += "$where [$($r.errorId)]"; continue }
+              # Compiled cleanly, and only a live control makes that mean anything.
+              if (-not $row.controlFired) {
+                $unmeasured += "$where [the control did not fire in this process]"
+              }
+            }
+          }
+
+          Write-Host ''
+          # Derived before any verdict is chosen, so whichever exit is taken can still report what
+          # the other axis saw. The compile-failure exit below used to run before these existed, and
+          # a run with one unparseable script and one genuinely refused script reported only the
+          # parse failure while the real detection went unmentioned.
+          $headUnmeasured = @($unmeasured | Where-Object { $_ -like 'head/*' })
+          $headBlocked = @($blocked | Where-Object { $_ -like 'head/*' })
+          $baseBlocked = @($blocked | Where-Object { $_ -like 'base/*' })
+
+          # Ahead of the control gate below, for the same reason the per-row loop classifies parse
+          # errors before it: whether a script compiles is a property of the script. With this after
+          # the gate, a candidate with a syntax error on a runner where no control fired anywhere
+          # was filed as "not measured" and the job exited zero, which is the case this verdict
+          # exists for.
+          $headDidNotCompile = @($didNotCompile | Where-Object { $_ -like 'head/*' })
+          if ($headDidNotCompile.Count) {
+            foreach ($c in $headDidNotCompile) { Write-Host "::error::the candidate did not compile: $c" }
+            # Both outcomes, not just the one that decides the exit code. A refusal by a live
+            # provider is the finding this lane exists to surface, and losing it because another
+            # file failed to parse would hide the more important of the two.
+            foreach ($b in $headBlocked) { Write-Host "::error::AMSI also refused the candidate: $b" }
+            Write-Host '::error::A shipped script that does not parse is a defect in its own right, and it also means AMSI never got to judge it. Not clean, and not merely unmeasured.'
+            "verdict=broken" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            exit 1
+          }
+
+          $controlFired = @($rows | Where-Object { $_.controlFired }).Count -gt 0
+          if (-not $controlFired) {
+            # Never clean. On this runner Defender is in passive mode with both drive roots excluded,
+            # so this is the expected outcome more often than not, and saying "no detections" would be
+            # reporting the absence of a scanner as the absence of a problem.
+            Write-Host '::warning::the AMSI positive control did NOT fire: Microsoft''s own test sample compiled without being refused.'
+            Write-Host '::warning::That means no AMSI provider is live in this process, so every input here would have come back clean whatever it contained.'
+            Write-Host '::warning::COULD NOT MEASURE. This is a missing scanner, not a clean verdict.'
+            "verdict=unmeasured" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            exit 0
+          }
+
+          Write-Host 'control: the AMSI test sample was refused, so a provider is live and this process can answer.'
+
+          # Incomplete coverage is a warning, never a reason to stop. Returning early on it meant a
+          # script that a live provider genuinely REFUSED went unreported whenever some other
+          # invocation happened to write no result, and the job stayed green on a real detection.
+          foreach ($u in $headUnmeasured) { Write-Host "::warning::could not measure $u" }
+
+          if ($headBlocked.Count -eq 0) {
+            if ($headUnmeasured.Count) {
+              Write-Host '::warning::Nothing on head was refused, but at least one candidate was never actually put to a live provider, so this is not a clean verdict.'
+              "verdict=unmeasured" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+              exit 0
+            }
+            Write-Host "AMSI: no script was refused on head$(if ($baseBlocked.Count) { ", and $($baseBlocked.Count) was refused on base -- an improvement" })."
+            "verdict=clean" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            exit 0
+          }
+          if ($headUnmeasured.Count) {
+            Write-Host '::warning::Coverage was incomplete as well, so the blocks below are what was seen, not necessarily all there is.'
+          }
+
+          # Causality is per SCRIPT, not per side. Comparing counts said "pre-existing" whenever the
+          # base had any block at all, even a block on a different file, and said "introduced"
+          # whenever it had none -- including when the corresponding base row was never validly
+          # measured, where the honest answer is that we do not know.
+          $baseState = @{}
+          foreach ($row in $rows | Where-Object { $_.side -eq 'base' }) {
+            $state = 'compiled'
+            if (-not $row.controlFired) { $state = 'unmeasured' }
+            else {
+              foreach ($r in $row.data.results) {
+                if ($r.label -like 'control*') { continue }
+                if ($r.blocked) { $state = 'blocked' }
+                elseif ($r.missing -or $r.unreadable) { $state = 'unmeasured' }
+                elseif ($r.errorId) { $state = 'unmeasured' }
+              }
+            }
+            $baseState[$row.name] = $state
+          }
+
+          foreach ($b in $headBlocked) {
+            Write-Host "::error::AMSI refused $b"
+            # "head/install.ps1 [id]" -> "install.ps1"
+            $script = ($b -replace '^head/', '') -replace ' \[.*$', ''
+            switch ($baseState[$script]) {
+              'blocked'    { Write-Host "::error::  the merge base is refused for $script too, so this is pre-existing rather than introduced. It is still a shipped script that will not compile for these users." }
+              'compiled'   { Write-Host "::error::  the merge base compiled $script and the candidate did not. This change introduced it." }
+              'unmeasured' { Write-Host "::error::  the merge base measurement for $script is not valid, so whether this is introduced or pre-existing cannot be said from this run." }
+              default      { Write-Host "::error::  there is no merge base row for $script at all, so causality cannot be assigned." }
+            }
+          }
+          "verdict=blocked" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          exit 1
+
+      - name: Ask Defender's file scanner
+        id: defender
+        if: always()
+        shell: pwsh
+        env:
+          ROOT: ${{ steps.sides.outputs.root }}
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $script:UnslothVanished = @()
+          $script:UnslothUnknownExpected = @()
+          # Reads the layout manifest and returns what SHOULD be there, with anything missing
+          # reported rather than skipped. A quarantined copy is the case this exists for.
+          function Get-UnslothExpected {
+            param([Parameter(Mandatory = $true)][string]$Side)
+            $manifestPath = Join-Path $env:ROOT 'manifest.json'
+            if (-not (Test-Path -LiteralPath $manifestPath)) {
+              # Recorded, not only warned about. Enumerating survivors cannot notice that an expected
+              # candidate is absent, so a quarantined copy left its siblings to carry the run to a
+              # clean verdict. The expected set being unknown IS an unmeasured condition.
+              Write-Host '::warning::the layout manifest is missing, so the expected set is unknown and only surviving files can be measured'
+              $script:UnslothUnknownExpected += $Side
+              return @(Get-ChildItem -LiteralPath (Join-Path $env:ROOT $Side) -Filter '*.ps1' -ErrorAction SilentlyContinue)
+            }
+            $expected = @(Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json | Where-Object { $_.side -eq $Side })
+            $out = @()
+            foreach ($entry in $expected) {
+              $path = Join-Path (Join-Path $env:ROOT $Side) $entry.leaf
+              if (Test-Path -LiteralPath $path) {
+                $out += (Get-Item -LiteralPath $path)
+              } else {
+                $script:UnslothVanished += "$Side/$($entry.leaf)"
+              }
+            }
+            return $out
+          }
+
+          $mp = Join-Path $env:ProgramFiles 'Windows Defender\MpCmdRun.exe'
+          if (-not (Test-Path -LiteralPath $mp)) {
+            Write-Host "::warning::MpCmdRun.exe is absent; the file-scan half could not run. This is a missing scanner, not a clean verdict."
+            exit 0
+          }
+
+          # The control first, and everything after it is conditional on it. Assembled from three
+          # fragments so this repository does not itself carry the EICAR signature, the same way
+          # release-desktop.yml does it.
+          #
+          # Inside $env:ROOT, which the earlier step exempted from on-access scanning, and that is
+          # deliberate. The candidates are measured ONLY through the explicit MpCmdRun scan, because
+          # they are exempt from on-access too, so a control that fires by being quarantined on write
+          # proves a live real-time provider and says nothing about the path the measurement uses. An
+          # on-demand scanner that silently skips files would still be trusted. Put somewhere it can
+          # survive, the control has to be found by the same command that reads the candidates.
+          # -DisableRemediation makes that command ignore file exclusions
+          # (release-desktop.yml:1295, :1440-1442), so the exemption does not weaken it.
+          $controlDir = Join-Path $env:ROOT 'defender-control'
+          New-Item -ItemType Directory -Force -Path $controlDir | Out-Null
+          $controlFile = Join-Path $controlDir 'control.txt'
+          $fired = $false
+          # A control only fires on something OBSERVED. The write and the scan are therefore in
+          # separate try blocks, and neither catch infers a Defender block from the mere fact that
+          # something threw: a permission or I/O failure under $RUNNER_TEMP, or MpCmdRun failing to
+          # launch, would otherwise be reported as live real-time protection and every candidate
+          # result after it trusted. An unavailable scanner reporting no hit is the exact failure
+          # this control exists to catch, so it must not be able to satisfy it.
+          # A benign file of the same size written the same way into the same directory, FIRST. An
+          # absent EICAR file only means Defender if an identical write that Defender has no opinion
+          # about succeeds; on its own, absence is equally explained by an ACL, a full disk or a
+          # transient I/O error. $ErrorActionPreference is 'Continue' in this step, so a
+          # non-terminating Set-Content failure does not even raise -- which is why the write is
+          # checked by looking for the file rather than by whether anything threw.
+          $canaryFile = Join-Path $controlDir 'canary.txt'
+          $canaryOk = $false
+          try {
+            Set-Content -LiteralPath $canaryFile -Encoding ascii -NoNewline -Value (
+              'X' * 68) -ErrorAction Stop
+            $canaryOk = (Test-Path -LiteralPath $canaryFile)
+          } catch {
+            Write-Host "::warning::could not write the benign canary: $($_.Exception.Message)"
+          }
+          if (-not $canaryOk) {
+            Write-Host '::warning::the control directory is not writable, so nothing about Defender can be concluded from a missing EICAR file.'
+            Write-Host '::warning::COULD NOT MEASURE on the Defender half: no positive control.'
+            Remove-Item -LiteralPath $controlDir -Recurse -Force -ErrorAction SilentlyContinue
+            exit 0
+          }
+
+          $wrote = $false
+          try {
+            Set-Content -LiteralPath $controlFile -Encoding ascii -NoNewline -Value (
+              'X5O!P%@AP[4\PZX54(P^)7CC)7}' + '$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!' + '$H+H*') `
+              -ErrorAction Stop
+            # Observed, not assumed. 'Continue' would otherwise carry a failed non-terminating write
+            # straight into $wrote = $true and the absence below would read as quarantine.
+            $wrote = (Test-Path -LiteralPath $controlFile)
+            if (-not $wrote) {
+              # Real-time protection took it despite the exclusion. That says a provider is live and
+              # says nothing about the on-demand command the candidates are read with, so it is NOT
+              # a fired control: it is a control that could not be run.
+              Write-Host '::warning::the EICAR control was removed on write even though its directory is exempt from on-access scanning, so the on-demand scan could not be exercised and there is no positive control for the path the candidates are measured through.'
+            }
+          } catch {
+            if (Test-Path -LiteralPath $controlFile) {
+              Write-Host "::warning::could not write the EICAR control and the file is still there, so this was not a Defender block: $($_.Exception.Message)"
+            } else {
+              Write-Host "::warning::the EICAR write was refused while the benign canary of the same size in the same directory succeeded, so a provider is live, but the on-demand scan could not be exercised and that is the path the candidates are measured through. ($($_.Exception.Message))"
+            }
+          }
+          if ($wrote) {
+            try {
+              # -DisableRemediation on the CONTROL too, so it is the same invocation the candidates
+              # get. It is not only about remediation: release-desktop.yml records that the flag makes
+              # the explicit scan ignore file exclusions (:1295, :1440-1442), and the hosted images
+              # this lane describes ship with both drive roots excluded. Without it the control scan
+              # of $RUNNER_TEMP can be skipped entirely, the control reads as silent, and the step
+              # exits without testing candidates whose own scans would have worked.
+              $controlOut = (& $mp -Scan -ScanType 3 -File $controlFile -DisableRemediation 2>&1 | Out-String)
+              $controlCode = $LASTEXITCODE
+              # The one thing that fires this control: the SAME command the candidates are read
+              # with reported the detection.
+              $fired = [bool](($controlOut -match 'found\s+\d+\s+threat') -or ($controlOut -match 'EICAR'))
+              if (-not $fired -and -not (Test-Path -LiteralPath $controlFile)) {
+                Write-Host '::warning::EICAR was removed between the write and the scan, so the on-demand scan never read it and the measurement path is unproven.'
+              } elseif (-not $fired) {
+                Write-Host "::warning::the control scan completed (exit $controlCode) and named no threat, so the file scanner is not detecting EICAR on this runner."
+              }
+            } catch {
+              # A launch failure is a control that did not run. Saying so is the whole point.
+              Write-Host "::warning::the control scan could not be run, so there is no positive control: $($_.Exception.Message)"
+            }
+          }
+          Remove-Item -LiteralPath $controlDir -Recurse -Force -ErrorAction SilentlyContinue
+
+          if (-not $fired) {
+            Write-Host '::warning::the EICAR positive control did NOT fire, so Defender is not scanning on this runner.'
+            Write-Host '::warning::COULD NOT MEASURE. Hosted images ship with real-time protection off, passive mode forced and both drive roots excluded; release-desktop.yml spends ~180 lines undoing exactly that, and this cheap lane deliberately does not.'
+            exit 0
+          }
+          Write-Host 'control: EICAR fired, so the file scanner is live and its verdicts mean something.'
+
+          # EICAR proves the LOCAL engine scans, and nothing more. This lane stamps mark-of-the-web
+          # on every candidate specifically so the cloud is consulted, and a
+          # zero-prevalence script is judged by cloud heuristics rather than by a local signature --
+          # which is the condition the #10805 reporter was under. With MAPS off or unreachable that
+          # half is simply absent, and an exit-0 scan would still read as clean.
+          #
+          # release-desktop.yml:1290-1343 makes the same distinction and verifies MAPS separately
+          # from EICAR, including MpCmdRun -ValidateMapsConnection. This lane is deliberately the
+          # cheap one and does not try to REPAIR the configuration, so it checks and labels instead:
+          # a Defender verdict that could not reach the cloud says so rather than claiming more.
+          $cloudReady = $false
+          $cloudNote = 'not determined'
+          try {
+            $pref = Get-MpPreference -ErrorAction Stop
+            # Reported, and deliberately NOT part of the gate. Block-at-first-sight only consults
+            # the cloud on an on-access OPEN (release-desktop.yml:1301-1305), and this lane never
+            # opens the copies: it exempts them from on-access scanning so a detection cannot
+            # quarantine the evidence before it is measured, and reads them through an explicit
+            # on-demand scan instead. What that scan needs is MAPS reporting and a reachable MAPS
+            # endpoint. Gating on this preference labelled a runner whose cloud the scan CAN reach
+            # as local-signatures-only, which is the opposite error from the one the gate is for.
+            $bafsNote = if ($pref.DisableBlockAtFirstSeen) {
+              'DisableBlockAtFirstSeen=true, so nothing would act on an on-access open; this lane does not use that path'
+            } else { 'block-at-first-sight is on' }
+            if ([int]$pref.MAPSReporting -eq 0) {
+              $cloudNote = "MAPSReporting is Disabled ($bafsNote)"
+            } else {
+              $mapsOut = (& $mp -ValidateMapsConnection 2>&1 | Out-String)
+              if ($LASTEXITCODE -eq 0 -and $mapsOut -notmatch 'fail') {
+                $cloudReady = $true
+                $cloudNote = "MAPSReporting=$($pref.MAPSReporting), connection validated ($bafsNote)"
+              } else {
+                $cloudNote = "ValidateMapsConnection exit $LASTEXITCODE ($bafsNote)"
+              }
+            }
+          } catch {
+            $cloudNote = "could not read Defender preferences: $($_.Exception.Message)"
+          }
+          if ($cloudReady) {
+            Write-Host "control: cloud-delivered protection is reachable ($cloudNote), so the on-demand scan below can consult the cloud rather than local signatures alone."
+            Write-Host 'note: this is an ON-DEMAND cloud scan, not block-at-first-sight. BAFS only consults the cloud on an on-access OPEN (release-desktop.yml:1301-1305), and this lane never opens the copies -- it also exempts them from on-access scanning so a detection cannot quarantine the evidence before it is measured. The low-prevalence cloud verdicts this lane is aimed at still reach an on-demand scan through MAPS.'
+          } else {
+            Write-Host "::warning::cloud-delivered protection is NOT available ($cloudNote)."
+            Write-Host '::warning::Any clean Defender result below is LOCAL SIGNATURES ONLY. The mark of the web is still stamped, but nothing consults the cloud, so the low-prevalence heuristics this lane is aimed at were not exercised.'
+          }
+          Write-Host ''
+
+          $flagged = @()
+          $unscanned = @()
+          # Per SCRIPT and per side, so the verdict below can say whether a detection is introduced
+          # by this change or already present on the merge base. Without it a signature that flags
+          # the base too reads exactly like a regression, and a base-only detection -- an
+          # improvement -- reads as a plain clean head. The AMSI half already works this way.
+          $defState = @{}
+          foreach ($side in 'base', 'head') {
+            foreach ($file in (Get-UnslothExpected $side)) {
+              # Mark of the web, so the cloud is consulted rather than treating a
+              # local file as trusted. A zero-prevalence script from the Internet zone is exactly what
+              # the reporter in #10805 had, and it is the condition the heuristics are harshest under.
+              #
+              # -Stream, and -Path rather than -LiteralPath. That is the only documented way to
+              # address an alternate data stream, and it is what release-desktop.yml:1470 already
+              # does. Appending ":Zone.Identifier" to -LiteralPath instead relies on the path being
+              # taken "exactly as typed", and if it does not bind, -ErrorAction SilentlyContinue
+              # swallows it: the mark is never applied, block-at-first-sight never consults the
+              # cloud, and the run still prints "clean". A silent downgrade of the very condition
+              # this step exists to create.
+              $stamped = $false
+              try {
+                "[ZoneTransfer]`r`nZoneId=3" |
+                  Set-Content -Path $file.FullName -Stream Zone.Identifier -Encoding Ascii -ErrorAction Stop
+                $stamped = $true
+              } catch {
+                Write-Host "::warning::could not stamp mark-of-the-web on $($file.Name): $($_.Exception.Message)"
+              }
+              if (-not $stamped) {
+                # Said out loud rather than swallowed. A scan of a MyComputer-zone file is a weaker
+                # test than the one this lane claims to run, and a reader has to know which they got.
+                Write-Host "::warning::$side/$($file.Name) was scanned WITHOUT mark-of-the-web, so the scan did not carry the zone information that makes the cloud treat it as downloaded content. This is a weaker scan than intended."
+              }
+              # -DisableRemediation, or a detection deletes the file and the next step reports it
+              # missing rather than flagged.
+              $text = (& $mp -Scan -ScanType 3 -File $file.FullName -DisableRemediation 2>&1 | Out-String)
+              # Captured immediately. A native command's exit code is not affected by
+              # $ErrorActionPreference and $LASTEXITCODE is overwritten by the next external call,
+              # so reading it later reads something else.
+              $code = $LASTEXITCODE
+              # Read the output AND the exit code. MpCmdRun has returned 0 with a threat named in its
+              # text, so the text alone is not enough; and a scan that never ran produces neither a
+              # match nor an error here, so the text alone would call it clean. 0 is the only
+              # documented clean code. This is the contract release-desktop.yml:1472-1489 already
+              # uses, reused rather than re-derived.
+              $hit = [bool]($text -match 'found\s+([1-9]\d*)\s+threat')
+              $state = if ($hit) { 'FLAGGED' } elseif ($code -ne 0) { "UNSCANNED (exit $code)" } else { 'clean' }
+              Write-Host ("  {0,-8} {1,-24} {2}" -f $side, $file.Name, $state)
+              $defState["$side|$($file.Name)"] = if ($hit) { 'flagged' } elseif ($code -ne 0) { 'unmeasured' } else { 'clean' }
+              if ($hit) {
+                $flagged += "$side/$($file.Name)"
+                ($text -split "`r?`n" | Where-Object { $_ -match 'Threat|found' } | Select-Object -First 5) |
+                  ForEach-Object { Write-Host "      $_" }
+              } elseif ($code -ne 0) {
+                Write-Host "::warning::MpCmdRun did not complete a scan of $side/$($file.Name) (exit $code)"
+                $unscanned += "$side/$($file.Name) [exit $code]"
+              }
+            }
+          }
+
+          foreach ($side in $script:UnslothUnknownExpected) {
+            $unscanned += "$side/<unknown> [the layout manifest is missing, so a quarantined candidate cannot be distinguished from one that was never laid out]"
+          }
+          foreach ($v in $script:UnslothVanished) {
+            Write-Host "::warning::$v was laid out and is no longer on disk; it may have been quarantined before it could be scanned"
+            $unscanned += "$v [the laid-out copy vanished before it was scanned]"
+            # "base/install.ps1" -> keyed the same way as a scanned row, as unmeasured. A file that
+            # vanished was not found clean, and leaving it out of the map made `default` below say
+            # "no base row at all", which is a different and wrong explanation.
+            if ($v -match '^(base|head)/(.+)$') { $defState["$($Matches[1])|$($Matches[2])"] = 'unmeasured' }
+          }
+
+          Write-Host ''
+          $s = (Get-MpComputerStatus -ErrorAction SilentlyContinue)
+          if ($s) {
+            # A verdict without the definition version is not reproducible, and a re-detection after a
+            # definition bump is a different event from one on the same definitions.
+            Write-Host "engine $($s.AMEngineVersion), definitions $($s.AntivirusSignatureVersion) ($($s.AntivirusSignatureLastUpdated)), AMRunningMode $($s.AMRunningMode)"
+          }
+
+          $headFlagged = @($flagged | Where-Object { $_ -like 'head/*' })
+          $headUnscanned = @($unscanned | Where-Object { $_ -like 'head/*' })
+          if ($headFlagged.Count -eq 0 -and $headUnscanned.Count) {
+            # Not "nothing was flagged". Nothing was scanned, which is the same sentence a reader
+            # would otherwise take as a clean result.
+            foreach ($u in $headUnscanned) { Write-Host "::warning::Defender could not scan $u" }
+            Write-Host '::warning::COULD NOT MEASURE on head: at least one candidate was never scanned, so there is no clean Defender verdict to report.'
+            exit 0
+          }
+          if ($headFlagged.Count -eq 0) {
+            if ($cloudReady) {
+              Write-Host 'Defender: nothing on head was flagged, with cloud-delivered protection reachable.'
+            } else {
+              Write-Host 'Defender: nothing on head was flagged BY LOCAL SIGNATURES. The cloud half was unavailable, so this is a weaker statement than it looks.'
+            }
+            # A base-only detection is the result this lane is trying to produce, and reporting it as
+            # a plain clean head throws away the only positive evidence the change ever gets.
+            foreach ($key in $defState.Keys | Where-Object { $_ -like 'base|*' }) {
+              if ($defState[$key] -ne 'flagged') { continue }
+              $name = ($key -split '\|', 2)[1]
+              if ($defState["head|$name"] -eq 'clean') {
+                Write-Host "Defender: $name is flagged on the merge base and clean on the candidate. That is an improvement, not a neutral result."
+              }
+            }
+            exit 0
+          }
+          # Causality is per SCRIPT, the same way the AMSI half assigns it. Reporting only the head
+          # side named this change as the cause of a signature that already flags the merge base.
+          $introduced = 0
+          foreach ($f in $headFlagged) {
+            Write-Host "::error::Defender flagged $f"
+            $name = ($f -replace '^head/', '') -replace ' \[.*$', ''
+            switch ($defState["base|$name"]) {
+              'flagged'    { Write-Host "::error::  the merge base is flagged for $name too, so this is pre-existing rather than introduced. It is still a shipped script Defender objects to." }
+              'clean'      { Write-Host "::error::  the merge base scanned clean for $name and the candidate did not. This change introduced it."; $introduced++ }
+              'unmeasured' { Write-Host "::error::  the merge base for $name was never validly scanned, so whether this is introduced or pre-existing cannot be said from this run." }
+              default      { Write-Host "::error::  there is no merge base scan for $name at all, so causality cannot be assigned." }
+            }
+          }
+          Write-Host "Defender: $($headFlagged.Count) detection(s) on head, $introduced of which the merge base does not share."
+          exit 1
+
+      - name: Upload the measurements
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: amsi-defender-differential
+          path: ${{ runner.temp }}/amsi/*.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Say plainly what was and was not measured
+        if: always()
+        shell: pwsh
+        env:
+          AMSI_VERDICT: ${{ steps.amsi.outputs.verdict }}
+          IDENTICAL: ${{ steps.sides.outputs.identical }}
+        run: |
+          # Last, and always. A run whose summary is only "green" teaches the next reader that this
+          # lane proves more than it does.
+          Write-Host '--- what this run establishes'
+          switch ($env:AMSI_VERDICT) {
+            'clean'      { Write-Host '  AMSI: a live provider accepted the candidate at compile time under Windows PowerShell 5.1.' }
+            'blocked'    { Write-Host '  AMSI: a live provider REFUSED a script. See the errors above.' }
+            # Distinct from "did not complete". The probe ran and answered; the answer is that a
+            # candidate does not compile, so AMSI never got to judge it and neither verdict applies.
+            'broken'     { Write-Host '  AMSI: not measured, because a candidate did not COMPILE. That is a defect in the script, not a scanner verdict.' }
+            # Several reasons reach here now, not just a dead provider: a per-row control that stayed
+            # silent, a file the probe could not read or find, or an invocation that wrote no result.
+            'unmeasured' { Write-Host '  AMSI: not measured. Either no provider was live in the probe process, or a candidate was never actually put to one. See the warnings above.' }
+            default      { Write-Host '  AMSI: the probe did not complete.' }
+          }
+          if ($env:IDENTICAL -eq '1') {
+            Write-Host '  the two sides were the same commit, so nothing differential was established.'
+          }
+          Write-Host '  NOT established: anything about Skyhigh, Bitdefender or Kaspersky, which are'
+          Write-Host '  the products that have actually flagged Unsloth. No hosted runner has them, and'
+          Write-Host '  one vendor''s verdict is not a proxy for another''s.'

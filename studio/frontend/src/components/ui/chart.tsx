@@ -153,6 +153,7 @@ const ChartStyle = ({ id, config }: { id: string; config: ChartConfig }) => {
 
   return (
     <style
+      data-reload-snapshot-style
       dangerouslySetInnerHTML={{
         __html: Object.entries(THEMES)
           .map(

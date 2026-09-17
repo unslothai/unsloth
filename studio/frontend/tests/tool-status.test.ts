@@ -21,6 +21,9 @@ test("sandbox tools keep the terminal glyph", () => {
     "Running Python...",
     "Running: ls -la",
     "Running command...",
+    // edit_file is as local as the other two, but reports "Editing: name".
+    "Editing: chart.py",
+    "Editing file...",
   ]) {
     assert.equal(toolStatusKind(status), "terminal", status);
   }

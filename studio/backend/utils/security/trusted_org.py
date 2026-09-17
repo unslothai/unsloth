@@ -23,8 +23,8 @@ logger = get_logger(__name__)
 # Orgs we auto-enable remote code for.
 TRUSTED_ORGS: frozenset[str] = frozenset({"unsloth", "nvidia"})
 
-# Keyed on (name, verify_remote, token) so an unauthenticated failure can't poison
-# a later authenticated lookup; token is hashed, never stored raw.
+# Keyed on (name, verify_remote, token) so an unauthenticated failure cannot poison a later
+# authenticated lookup; the token is hashed, never stored raw.
 _verdict_cache: dict[tuple[str, bool, str], bool] = {}
 
 
@@ -88,7 +88,6 @@ def _evaluate(name: str, hf_token: Optional[str], verify_remote: bool) -> bool:
     if not verify_remote or _env_offline():
         return True
 
-    # Online: confirm the id resolves to a trusted-org repo.
     try:
         from huggingface_hub import HfApi
 
@@ -106,7 +105,7 @@ def _evaluate(name: str, hf_token: Optional[str], verify_remote: bool) -> bool:
             resolved_id,
         )
         return False
-    except Exception as exc:  # network/404/auth -> fail closed
+    except Exception as exc:
         logger.warning(
             "is_trusted_org_repo(%s): Hub verification failed (%s) -> not trusted",
             name,

@@ -4,12 +4,20 @@
 import { toast } from "@/lib/toast";
 import { disposableTimeoutSignal } from "../lib/abort-signals";
 import { getActiveModelDownloads } from "./api";
-import { TRANSPORT, type TransportMode } from "./constants";
+import {
+  mismatchStartAction,
+  TRANSPORT,
+  type ResolvedTransport,
+  type TransportMode,
+} from "./constants";
 import {
   apiTransportStatusWithRetry,
   effectiveTransportMode,
 } from "./download-api-adapter";
-import type { DownloadRequest } from "./download-manager-types";
+import type {
+  DownloadRequest,
+  ManagedDownload,
+} from "./download-manager-types";
 import {
   findActiveJobForRepo,
   getState,
@@ -19,8 +27,13 @@ import {
   setConflict,
 } from "./download-manager-state";
 import { startJob } from "./poll-loop";
+import {
+  currentRoute,
+  currentStartToastSelectionEpoch,
+  showCallerToast,
+} from "./start-toast";
 import { runtimeRegistry } from "./runtime-registry";
-import { getTransportMode } from "./transport-preference";
+import { resolveTransportMode } from "./transport-preference";
 import { ACTIVE_STATES, TRANSPORT_STATUS_TIMEOUT_MS } from "./download-manager-config";
 
 function reportConflictStartError(error: unknown): void {
@@ -57,13 +70,13 @@ function hasActiveOrPendingStart(req: DownloadRequest): boolean {
   );
 }
 
-function asTransportMode(value: unknown): TransportMode | null {
+function asTransportMode(value: unknown): ResolvedTransport | null {
   return value === TRANSPORT.HTTP || value === TRANSPORT.XET ? value : null;
 }
 
 async function activeSiblingTransport(
   req: DownloadRequest,
-): Promise<TransportMode | null> {
+): Promise<ResolvedTransport | null> {
   if (req.kind !== "model" || !req.variant) return null;
   const timeout = disposableTimeoutSignal(TRANSPORT_STATUS_TIMEOUT_MS);
   const downloads = await getActiveModelDownloads(req.repoId, timeout.signal, {
@@ -80,23 +93,38 @@ async function activeSiblingTransport(
   return null;
 }
 
-// Outcome of a start request so callers can tell whether a transfer for this
-// exact request is actually live before telling the user it began. "started"
-// means a running/cancelling job exists for this key (a fresh start or an
-// already-active one). "conflict" means a transport partial conflict was
-// recorded and must be resolved from the Hub download card; "busy" means the
-// repo is occupied by a sibling variant/snapshot/pending start that is not this
-// transfer; "error" means the start failed or was refused.
+// Outcome of a start request so callers can tell whether a transfer for this exact request is
+// actually live before telling the user it began. "started" means a running/cancelling job exists
+// for this key (a fresh start or an already-active one). "conflict" means a transport partial
+// conflict was recorded and must be resolved from the Hub download card; "busy" means the repo is
+// occupied by a sibling variant/snapshot/pending start that is not this transfer; "error" means the
+// start failed or was refused.
 export type DownloadStartOutcome = "started" | "conflict" | "busy" | "error";
 
-// A start can no-op without throwing: the backend can refuse it (startJob
-// finalizes "error"), startJob's peer guard can skip it, or
-// hasActiveOrPendingStart can trip on a snapshot/peer/pending that is not this
-// request. Derive the outcome from the actual job state of this exact key so
+// A start can no-op without throwing: the backend can refuse it (startJob finalizes "error"),
+// startJob's peer guard can skip it, or hasActiveOrPendingStart can trip on a snapshot/peer/pending
+// that is not this request. Derive the outcome from the actual job state of this exact key so
 // callers never claim a download began when it did not.
 function isJobActiveFor(req: DownloadRequest): boolean {
   const job = getState().jobs[jobKeyOf(req.kind, req.repoId, req.variant)];
-  return Boolean(job && ACTIVE_STATES.has(job.state));
+  if (!job || !ACTIVE_STATES.has(job.state)) return false;
+  return !scopedFileSetDiffers(job, req);
+}
+
+// Every file set of one repo rides the same scope slot, so a live job on this key counts as this request's transfer only when it is fetching the
+// same files: adopting a sibling quant's job would report ready for files nobody fetched. A job with no recorded list is adoptable only when the
+// request is unscoped; the old permissive answer let a second browser profile report "started" for a checkpoint nobody was fetching.
+function scopedFileSetDiffers(
+  job: ManagedDownload,
+  req: DownloadRequest,
+): boolean {
+  if (!req.files || req.files.length === 0) return false;
+  if (!job.scopedFiles) return true;
+  const live = [...new Set(job.scopedFiles)].sort();
+  const wanted = [...new Set(req.files)].sort();
+  return (
+    live.length !== wanted.length || live.some((f, i) => f !== wanted[i])
+  );
 }
 
 async function runWithPendingStartGuard(
@@ -107,7 +135,14 @@ async function runWithPendingStartGuard(
   // Already active or pending for the repo: only report "started" when this
   // exact request is the live transfer; a peer/snapshot/pending start has not.
   if (hasActiveOrPendingStart(req)) {
-    return isJobActiveFor(req) ? "started" : "busy";
+    if (!isJobActiveFor(req)) return "busy";
+    // Returns "started" WITHOUT running the action, so startJob never announces;
+    // now the manager owns the message, this is the only feedback there is.
+    showCallerToast(
+      jobKeyOf(req.kind, req.repoId, req.variant),
+      req.callerToast,
+    );
+    return "started";
   }
   runtimeRegistry.pendingStartRepoKeys.add(startKey);
   try {
@@ -123,22 +158,31 @@ async function runWithPendingStartGuard(
 export async function requestStart(
   req: DownloadRequest,
 ): Promise<DownloadStartOutcome> {
+  // Before the preflight below, which is two round trips the user can navigate
+  // during; read after them it would name the page they moved to.
+  const originRoute = currentRoute();
+  const originSelectionEpoch = currentStartToastSelectionEpoch();
   return runWithPendingStartGuard(req, async () => {
-    let mode: TransportMode = getTransportMode();
+    const preferred: TransportMode = await resolveTransportMode();
+    let mode: TransportMode = preferred;
     try {
-      mode = await effectiveTransportMode(mode);
+      mode = await effectiveTransportMode(preferred);
     } catch (err) {
       console.warn(
         "Transport capability check failed; using the selected transport.",
         err,
       );
     }
-    let siblingTransport: TransportMode | null = null;
+    let siblingTransport: ResolvedTransport | null = null;
     let siblingProbed = false;
     try {
       siblingTransport = await activeSiblingTransport(req);
       siblingProbed = true;
-      if (siblingTransport && siblingTransport !== mode) {
+      if (
+        siblingTransport &&
+        siblingTransport !== mode &&
+        preferred !== TRANSPORT.AUTO
+      ) {
         toast.info("Another variant is already downloading", {
           description:
             siblingTransport === TRANSPORT.XET
@@ -150,45 +194,62 @@ export async function requestStart(
     } catch (err) {
       console.warn("Active download transport check failed.", err);
     }
+    let restartDisclosure = false;
+
     try {
       const status = await apiTransportStatusWithRetry(req);
+      const last = asTransportMode(status.last_transport);
+      const resolved = asTransportMode(mode);
+      if (status.has_partial && last && resolved && last !== resolved) {
+        const action = mismatchStartAction(
+          preferred,
+          resolved,
+          last,
+          status.resumable,
+        );
+        if (action === "conflict") {
+          setConflict(jobKeyOf(req.kind, req.repoId, req.variant), {
+            info: {
+              previous: last,
+              next: resolved,
+              resumable: status.resumable,
+            },
+            // Without the caller's line: resolved later from the Hub, where "it'll
+            // load automatically" is a promise chat cannot keep. The notice stands.
+            pending: { ...req, callerToast: undefined },
+          });
+          return "conflict";
+        }
+        mode = action;
+      }
       if (
         status.has_partial &&
-        status.last_transport &&
-        status.last_transport !== mode
+        (status.resumable === false || !status.last_transport)
       ) {
-        setConflict(jobKeyOf(req.kind, req.repoId, req.variant), {
-          info: {
-            previous: status.last_transport,
-            next: mode,
-            resumable: status.resumable,
-          },
-          pending: req,
-        });
-        return "conflict";
-      }
-      if (status.has_partial && !status.last_transport) {
-        toast.info("Restarting this download", {
-          description:
-            "An earlier partial download can't be resumed, so it will start again from the beginning.",
-        });
+        // Do not raise during preflight: the backend may still reject or attach
+        // this start. The accepted job owns and later dismisses the disclosure.
+        restartDisclosure = true;
       }
     } catch (err) {
       console.warn(
         "Transport status check failed; starting without partial-conflict preflight.",
         err,
       );
-      // Fail safe: Xet purges any partial unconditionally, so when the partial
-      // can't be verified we downgrade this one start to HTTP (resumes an HTTP
-      // partial, harmless for a fresh download); the Xet preference is kept for
-      // next time. Only downgrade once we confirmed no sibling variant is
-      // downloading, since a live sibling may be mid-transfer on Xet.
+      // Fail safe: Xet purges any partial unconditionally, so when the partial can't be verified we
+      // downgrade this one start to HTTP (resumes an HTTP partial, harmless for a fresh download);
+      // the Xet preference is kept for next time. Only downgrade once we confirmed no sibling
+      // variant is downloading, since a live sibling may be mid-transfer on Xet.
       if (mode === TRANSPORT.XET && siblingProbed && !siblingTransport) {
         toast.warning("Couldn't verify existing partial download", {
           description:
             "Starting with HTTP so an existing partial is not discarded. Switch transport to retry with Xet.",
         });
-        await startJob(req, { useXet: false });
+        await startJob(req, {
+          useXet: false,
+          originRoute,
+          originSelectionEpoch,
+          restartDisclosure,
+        });
         return isJobActiveFor(req) ? "started" : "error";
       }
       toast.warning("Couldn't verify existing partial download", {
@@ -196,7 +257,22 @@ export async function requestStart(
           "Starting with the selected transport. If a partial from another transport exists, it may be restarted from the beginning.",
       });
     }
-    await startJob(req, { useXet: mode === TRANSPORT.XET });
+    if (siblingProbed && siblingTransport && siblingTransport !== mode) {
+      toast.info("Another variant is already downloading", {
+        description:
+          siblingTransport === TRANSPORT.XET
+            ? "This repository is currently downloading with Xet. Switch to Xet or wait for it to finish."
+            : "This repository is currently downloading with HTTP. Switch to HTTP or wait for it to finish.",
+      });
+      return "busy";
+    }
+
+    await startJob(req, {
+      useXet: mode === TRANSPORT.XET,
+      originRoute,
+      originSelectionEpoch,
+      restartDisclosure,
+    });
     return isJobActiveFor(req) ? "started" : "error";
   });
 }

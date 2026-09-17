@@ -34,7 +34,10 @@ export function buildSeedConfig(
   const seedSourceType = config.seed_source_type ?? "hf";
   const path = config.hf_path.trim();
 
-  const endpoint = config.hf_endpoint?.trim() || "https://huggingface.co";
+  // Only an endpoint the user set. The seed is fetched BY THE BACKEND, which
+  // resolves its own HF_ENDPOINT when this is absent; sending the browser's value
+  // would ship a remote client's substitute into a backend-side fetch.
+  const endpoint = config.hf_endpoint?.trim() || null;
   const token = config.hf_token?.trim() || null;
 
   let selectionStrategy: Record<string, unknown> | null = null;

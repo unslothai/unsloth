@@ -1,0 +1,47 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# The Pester bootstrap guard runs on windows-latest inside the `pester` job of
+# studio-windows-inference-smoke.yml, which covers edits to that workflow.
+# It does not cover edits to the guard itself: that workflow has no job-level
+# path gating, so listing a .py file there would launch all eight Windows smoke
+# jobs, four of which download GGUF models and run for 30+ minutes.
+#
+# This runs the same guard on the same OS in about a minute, so a Windows-only
+# break in the guard is caught by the PR that introduces it.
+
+name: Pester guard
+
+on:
+  pull_request:
+    paths:
+      - 'tests/studio/test_pester_bootstrap_hardening.py'
+      - '.github/workflows/pester-guard-ci.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    name: Pester bootstrap guard
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Guard the Pester bootstrap
+        shell: bash
+        run: |
+          python -m pip install --quiet pyyaml pytest
+          python -m pytest tests/studio/test_pester_bootstrap_hardening.py -q

@@ -157,13 +157,13 @@ fn native_path_lease_re() -> &'static Regex {
 fn windows_studio_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r"(?i)\b[A-Z]:[\\/]Users[\\/][^\\/\r\n\s]+[\\/]\.unsloth[\\/]studio").unwrap()
+        Regex::new(r"(?i)\b[A-Z]:[\\/]Users[\\/][^\\/:\r\n\s]+[\\/]\.unsloth[\\/]studio").unwrap()
     })
 }
 
 fn windows_home_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"(?i)\b[A-Z]:[\\/]Users[\\/][^\\/\r\n\s]+").unwrap())
+    RE.get_or_init(|| Regex::new(r"(?i)\b[A-Z]:[\\/]Users[\\/][^\\/:\r\n\s]+").unwrap())
 }
 
 fn unix_studio_re() -> &'static Regex {
@@ -217,6 +217,40 @@ mod tests {
         assert!(!redacted.contains("alex@example.com"));
         assert!(redacted.contains("<studio_home>"));
         assert!(!redacted.contains("PRIVATE KEY-----\nabc"));
+    }
+
+    #[test]
+    fn windows_home_redaction_keeps_the_line_and_column_suffix() {
+        // A colon cannot appear inside a Windows path segment, but the Windows classes used to
+        // allow one, so a single-segment path swallowed whatever followed it. uv reports a bad
+        // requirements path as `<path>:<line>:<col>`, and issue #11012 arrived with the position
+        // and the file name already eaten, which is most of what made it expensive to diagnose.
+        // The Unix rules never had this because their class is [A-Za-z0-9._-].
+        let mut report = RedactionReport::default();
+        let redacted = redact_text(
+            "error: Unexpected '[' at C:\\Users\\Alex:1:1\n",
+            &mut report,
+        );
+        assert!(
+            !redacted.contains("Alex"),
+            "user name still present: {redacted}"
+        );
+        assert!(
+            redacted.contains("%USERPROFILE%:1:1"),
+            "line and column were redacted away: {redacted}"
+        );
+
+        // A deeper path was never affected, and must stay that way.
+        let mut report = RedactionReport::default();
+        let deep = redact_text(
+            "at C:\\Users\\Alex\\AppData\\Local\\Temp\\tmp1.tmp:1:1\n",
+            &mut report,
+        );
+        assert!(!deep.contains("Alex"), "user name still present: {deep}");
+        assert!(
+            deep.contains("\\AppData\\Local\\Temp\\tmp1.tmp:1:1"),
+            "{deep}"
+        );
     }
 
     #[test]

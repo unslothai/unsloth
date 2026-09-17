@@ -2,9 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useEffect, useMemo, useRef } from "react";
+import { useHfEndpoint } from "@/lib/hf-endpoint";
 import type { ChannelId } from "../lib/channels";
-import { fingerprintToken } from "../lib/token-fingerprint";
-import { useHubFeedStore } from "../stores/hub-feed-store";
+import { feedIdentity, useHubFeedStore } from "../stores/hub-feed-store";
 import type { HfModelResult } from "./use-hub-model-search";
 
 export function useFeedWriteBack(opts: {
@@ -15,9 +15,10 @@ export function useFeedWriteBack(opts: {
 }): void {
   const { channelId, results, isLoading, accessToken } = opts;
   const setChannelEntry = useHubFeedStore((s) => s.setChannelEntry);
+  const hfEndpoint = useHfEndpoint();
   const tokenFingerprint = useMemo(
-    () => fingerprintToken(accessToken),
-    [accessToken],
+    () => feedIdentity(hfEndpoint, accessToken),
+    [hfEndpoint, accessToken],
   );
   const writtenKeyRef = useRef<string | null>(null);
 

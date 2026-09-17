@@ -2,10 +2,19 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { MarkdownPreview } from "@/components/markdown/markdown-preview";
+import {
+  UPDATE_NOTES_BULLET_CLASS,
+  UPDATE_NOTES_EXPANDED_SCROLL_CLASS,
+  UPDATE_NOTES_FOOTER_CLASS,
+  UPDATE_NOTES_ITEM_CLASS,
+  UPDATE_NOTES_LEAD_CLASS,
+  UPDATE_NOTES_LINK_CLASS,
+  UPDATE_NOTES_ROOT_CLASS,
+  UPDATE_NOTES_SURFACE_CLASS,
+} from "@/components/update/update-notes-layout";
 import { useReleaseNotes } from "@/hooks/use-release-notes";
-import { resolveChangelogLinks } from "@/lib/changelog-links";
+import { resolveReleaseBodyLinks } from "@/lib/release-body-links";
 import { releaseNotesPreview } from "@/lib/release-notes-preview";
-import { cn } from "@/lib/utils";
 import {
   type ReactElement,
   type ReactNode,
@@ -15,18 +24,12 @@ import {
 } from "react";
 
 interface ReleaseNotesPanelProps {
-  // Notes are looked up for this exact version only.
+  // Version being offered. Carried through the lookup, not looked up by.
   version: string;
   // Collapsed previews the top bullets; expanded scrolls the full notes.
   open: boolean;
-  // Desktop updater's body, used only if CHANGELOG.md has no section here.
-  fallbackMarkdown?: string | null;
   releaseNotesUrl?: string | null;
-  className?: string;
 }
-
-const NOTES_LINK_CLASS =
-  "shrink-0 whitespace-nowrap text-ui-11 font-medium text-foreground underline underline-offset-2";
 
 function NotesMessage({
   children,
@@ -43,16 +46,22 @@ function NotesMessage({
   );
 }
 
-function ChangelogLink({ href }: { href: string }): ReactElement {
+function NotesLink({
+  href,
+  isRelease,
+}: {
+  href: string;
+  isRelease: boolean;
+}): ReactElement {
   return (
     <a
       href={href}
       target="_blank"
       rel="noopener noreferrer"
-      className={NOTES_LINK_CLASS}
+      className={UPDATE_NOTES_LINK_CLASS}
       data-testid="update-release-notes-link"
     >
-      Open changelog
+      {isRelease ? "Open release" : "Open changelog"}
     </a>
   );
 }
@@ -60,25 +69,18 @@ function ChangelogLink({ href }: { href: string }): ReactElement {
 export function ReleaseNotesPanel({
   version,
   open,
-  fallbackMarkdown = null,
   releaseNotesUrl = null,
-  className,
 }: ReleaseNotesPanelProps): ReactElement | null {
   // Fetched with the popup: the collapsed preview needs the notes too.
   const { state, notes, retry } = useReleaseNotes({ version, enabled: true });
   const scrollRef = useRef<HTMLElement | null>(null);
 
-  // The fallback stands in for "no section in the changelog", which the hook
-  // reports as ready. An error is retryable, and the desktop fallback is the
-  // updater's static blurb, so taking it there would hide Retry until cache expiry.
-  const source = notes?.matched
-    ? notes.markdown
-    : state === "error"
-      ? null
-      : (fallbackMarkdown ?? null);
+  // No fallback body: the updater's `notes` is latest.json's static download
+  // blurb, the same install boilerplate the backend now strips.
+  const source = notes?.matched ? notes.markdown : null;
   // Notes target the repository, so relative links must point back at it.
   const markdown = useMemo(
-    () => (source === null ? null : resolveChangelogLinks(source)),
+    () => (source === null ? null : resolveReleaseBodyLinks(source)),
     [source],
   );
 
@@ -95,10 +97,11 @@ export function ReleaseNotesPanel({
     }
   }, [open, markdown]);
 
-  // Caller's URL wins: the API returns only the generic changelog, while the
-  // desktop banner passes this version's release page.
-  const notesUrl = releaseNotesUrl ?? notes?.releaseNotesUrl;
-  const link = notesUrl ? <ChangelogLink href={notesUrl} /> : null;
+  // The page the notes are on wins, then the caller's URL, then the API's.
+  const notesUrl = notes?.htmlUrl ?? releaseNotesUrl ?? notes?.releaseNotesUrl;
+  const link = notesUrl ? (
+    <NotesLink href={notesUrl} isRelease={notesUrl === notes?.htmlUrl} />
+  ) : null;
 
   // Nothing previewable yet or ever: keep the collapsed popup compact.
   if (
@@ -113,23 +116,28 @@ export function ReleaseNotesPanel({
 
   return (
     <div
-      className={cn("mt-3 flex min-h-0 flex-col", className)}
+      // Clipped, not just capped: this is the one part of the card allowed to
+      // give up height, so its content must not paint over the buttons below.
+      className={UPDATE_NOTES_ROOT_CLASS}
+      // Lets the parent apply its floor only when this panel renders.
+      data-slot="update-release-notes"
       data-testid="update-release-notes-panel"
       data-notes-state={state}
       data-notes-version={version}
+      data-notes-tag={notes?.tag ?? undefined}
       data-notes-open={open}
     >
       {/* borderless fill, lighter than the card in dark mode */}
-      <div className="flex min-h-0 flex-col rounded-[14px] bg-muted/40 px-3 py-1 dark:bg-white/[0.06]">
+      <div className={UPDATE_NOTES_SURFACE_CLASS}>
         {markdown ? (
           open ? (
             <section
               ref={scrollRef}
               // biome-ignore lint/a11y/noNoninteractiveTabindex: keyboard-scrollable region
               tabIndex={0}
-              aria-label={`Release notes for version ${version}`}
+              aria-label={`Release notes for ${notes?.tag ?? `version ${version}`}`}
               // Long notes scroll here instead of pushing the buttons off screen.
-              className="hover-scrollbar max-h-64 min-h-0 flex-1 overflow-y-auto overscroll-contain py-3 pr-1"
+              className={UPDATE_NOTES_EXPANDED_SCROLL_CLASS}
               data-testid="update-release-notes-scroll"
             >
               <MarkdownPreview
@@ -140,7 +148,7 @@ export function ReleaseNotesPanel({
               />
               {notes?.truncated ? (
                 <p className="mt-2 text-ui-10 text-muted-foreground/80">
-                  Notes truncated. See the full changelog.
+                  Notes truncated. See the full release notes.
                 </p>
               ) : null}
             </section>
@@ -150,14 +158,14 @@ export function ReleaseNotesPanel({
         ) : (
           <NotesStatus
             state={state}
-            version={version}
+            release={notes?.tag ?? null}
             link={link}
             retry={retry}
           />
         )}
       </div>
       {open && markdown && link ? (
-        <div className="mt-2 flex justify-end px-1">{link}</div>
+        <div className={UPDATE_NOTES_FOOTER_CLASS}>{link}</div>
       ) : null}
     </div>
   );
@@ -176,21 +184,27 @@ function ReleaseNotesSummary({
 
   return (
     <ul
-      className="space-y-1 py-2 pr-1"
+      // Scrolls like the expanded notes: in a short window this list is
+      // taller than its slot, and unscrolled it paints over the buttons.
+      // biome-ignore lint/a11y/noNoninteractiveTabindex: keyboard-scrollable region
+      tabIndex={0}
+      // Unversioned: the notes are the release's, not the offered version's.
+      aria-label="Release notes summary"
+      className="hover-scrollbar min-h-0 flex-1 space-y-1 overflow-y-auto overscroll-contain py-2 pr-1"
       data-testid="update-release-notes-summary"
     >
       {items.map((item, index) => (
         <li
           // Two releases can carry the same bullet text, so index is the key.
           key={`${index}-${item.lead}`}
-          className="flex gap-1.5 text-ui-11 leading-snug text-muted-foreground"
+          className={UPDATE_NOTES_ITEM_CLASS}
         >
-          <span aria-hidden="true" className="text-muted-foreground/60">
+          <span aria-hidden="true" className={UPDATE_NOTES_BULLET_CLASS}>
             &bull;
           </span>
           <span className="line-clamp-2 min-w-0">
             {/* lead sentence carries the change */}
-            <span className="font-medium text-foreground">{item.lead}</span>
+            <span className={UPDATE_NOTES_LEAD_CLASS}>{item.lead}</span>
             {item.rest ? <span> {item.rest}</span> : null}
           </span>
         </li>
@@ -206,12 +220,13 @@ function ReleaseNotesSummary({
 
 function NotesStatus({
   state,
-  version,
+  release,
   link,
   retry,
 }: {
   state: ReturnType<typeof useReleaseNotes>["state"];
-  version: string;
+  // Tag of the release that was found, when one was.
+  release: string | null;
   link: ReactNode;
   retry: () => void;
 }): ReactElement {
@@ -223,12 +238,12 @@ function NotesStatus({
     return (
       <NotesMessage
         action={
-          // The changelog page may be reachable when the lookup is not.
+          // The release page may be reachable when the lookup is not.
           <span className="flex shrink-0 items-center gap-3">
             <button
               type="button"
               onClick={retry}
-              className={NOTES_LINK_CLASS}
+              className={UPDATE_NOTES_LINK_CLASS}
               data-testid="update-release-notes-retry"
             >
               Retry
@@ -242,10 +257,12 @@ function NotesStatus({
     );
   }
 
-  // Matched nothing: link out rather than show another release's notes.
+  // The release published no notes: link out rather than show the generated list.
   return (
     <NotesMessage action={link}>
-      No release notes published for {version} yet.
+      {release
+        ? `No release notes published for ${release} yet.`
+        : "No release notes published yet."}
     </NotesMessage>
   );
 }

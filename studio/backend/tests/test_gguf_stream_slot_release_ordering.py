@@ -28,6 +28,8 @@ from fastapi import FastAPI
 from auth.authentication import get_current_subject
 from core.inference import llama_admission
 import routes.inference as inference_route
+from .llama_backend_double import FakeLlamaCppBackend
+from .asgi_stream_helpers import wait_for_frame
 
 
 @pytest.fixture(autouse = True)
@@ -43,16 +45,11 @@ def _active_slots() -> int:
     return sum(queue.snapshot().active for queue in queues)
 
 
-class _OneSlotBackend:
+class _OneSlotBackend(FakeLlamaCppBackend):
     """A loaded 1-parallel GGUF backend, the shape CI runs."""
 
-    is_loaded = True
-    model_identifier = "test/model.gguf"
     base_url = "http://llama.test"
     effective_parallel_slots = 1
-    _is_audio = False
-    is_vision = False
-    supports_tools = False
 
     def __init__(self):
         self.closing = threading.Event()
@@ -182,7 +179,7 @@ def test_slot_is_free_before_the_done_frame_reaches_send(monkeypatch):
 
         task = asyncio.create_task(app(_scope(app, body), receive, send))
         try:
-            await asyncio.wait_for(finished.wait(), timeout = 20.0)
+            await wait_for_frame(finished, task, what = "the finishing frame")
         finally:
             task.cancel()
             await asyncio.gather(task, return_exceptions = True)
@@ -236,7 +233,7 @@ def test_error_sentinel_keeps_the_slot_until_the_generator_is_closed(monkeypatch
 
         task = asyncio.create_task(app(_scope(app, body), receive, send))
         try:
-            await asyncio.wait_for(saw_error.wait(), timeout = 20.0)
+            await wait_for_frame(saw_error, task, what = "the error sentinel")
             # Wait until cleanup reaches gen.close(), so llama-server still holds the slot.
             for _ in range(500):
                 if backend.closing.is_set():
@@ -294,7 +291,7 @@ def test_cancelled_stream_keeps_the_slot_until_the_generator_is_closed(monkeypat
 
         task = asyncio.create_task(app(_scope(app, body), receive, send))
         try:
-            await asyncio.wait_for(saw_done.wait(), timeout = 20.0)
+            await wait_for_frame(saw_done, task, what = "the [DONE] frame")
             for _ in range(50):
                 if _active_slots() == 0:
                     break
