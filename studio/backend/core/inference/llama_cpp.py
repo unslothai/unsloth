@@ -4713,9 +4713,9 @@ def _planned_flash_attn_state(
     ``--flash-attn`` in its ``--help`` emits nothing and rewrites a quantized V to f16
     (``_reset_quantized_v_cache``), which is exactly the padded arm.
 
-    The branches below are llama.cpp's own, in llama.cpp's own order
-    (``llama_init_from_model``, llama-context.cpp): Grok is forced off first, then AUTO is
-    upgraded for ``SPLIT_MODE_TENSOR``, then AUTO is upgraded for a quantized V cache.
+    The architecture is decided first here because llama.cpp decides it first:
+    ``llama_init_from_model`` forces flash attention off for ``LLM_ARCH_GROK`` above both
+    of its own upgrades, the ``SPLIT_MODE_TENSOR`` one and the quantized-V one.
     """
     if not supports_flash_attn:
         return False
