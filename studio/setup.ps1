@@ -2592,7 +2592,22 @@ $StudioHomeIsCustom = Test-StudioHomeIsCustom
 # even with $StudioHome left at the legacy path: $StudioHomeIsCustom is false there, and false
 # is what licenses the installers to replace and delete without the Unsloth-owned marker. The
 # Studio home itself, and the venvs under it, keep the other flag. Mirrors setup.sh.
-$RuntimeRootIsCustom = $StudioHomeIsCustom -or [bool](Get-MasterRootOverride)
+$RuntimeRootIsCustom = $StudioHomeIsCustom
+# Where the runtimes actually land, not merely whether a master root was named. Setting
+# UNSLOTH_HOME=%USERPROFILE%\.unsloth on an existing default install names the root that install
+# is already using, so nothing moves; classifying it custom anyway would demand an owner marker
+# from a legacy source-built .unsloth\llama.cpp that predates the marker, and
+# Assert-StudioOwnedOrAbsent would refuse an update that used to reuse that build. This is the
+# comparison setup.sh makes; taking any non-empty master root instead was a real divergence
+# between the two halves, not a spelling difference.
+$_masterRootForOwnership = Get-MasterRootOverride
+if ($_masterRootForOwnership) {
+    # Canonicalised the same way Get-MasterRootOverride canonicalises its answer, or a
+    # junctioned profile compares unequal to itself. Case-insensitively, since two Windows
+    # paths differing only in case are one directory.
+    $_legacyRuntimeRoot = Get-CanonicalDir -Path (Join-Path $env:USERPROFILE ".unsloth")
+    if ($_masterRootForOwnership -ine $_legacyRuntimeRoot) { $RuntimeRootIsCustom = $true }
+}
 $LlamaCppDir = Get-ManagedLlamaCppDir -StagingRoot $StageRoot
 $UnslothHome = Split-Path -Parent $LlamaCppDir
 

@@ -124,6 +124,29 @@ Environment:
         }
     }
 
+    # rmdir, which is what uninstall.sh uses for the same two paths: the directory goes only if
+    # it is empty, and nothing inside it is ever recursed into. Two reasons not to spell this as
+    # "list it, then _RemovePath":
+    #   * -ErrorAction SilentlyContinue makes an enumeration failure look like an empty
+    #     directory, so a master root whose ACL denies listing read as empty and was deleted
+    #     recursively, with the user's own files in it. Get-ChildItem -ErrorAction Stop keeps the
+    #     directory instead, which is the way the %TEMP% prune above already does it.
+    #   * the check and the delete are separate calls, so a file arriving in between was taken
+    #     by the -Recurse. Directory.Delete($path, $false) is one call that fails on a non-empty
+    #     directory, so there is no window.
+    function _RemoveDirIfEmpty {
+        param([string]$Path)
+        if ([string]::IsNullOrWhiteSpace($Path)) { return }
+        try {
+            if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return }
+            [System.IO.Directory]::Delete($Path, $false)
+            _Substep "removed: $Path" "Green"
+        } catch {
+            # Non-empty, unreadable or held open. All three mean "not ours to take".
+            _Substep "keeping non-empty directory: $Path" "Yellow"
+        }
+    }
+
     # The exact shape prebuilt_core.py leaves behind when it takes over an abandoned lock: one of
     # the component lock names, ".stale.", and the pid it moved aside. The leading dot alone was
     # not enough, since ".backup.install.lock.stale.copy" is dotted too, and in a user-chosen
@@ -1120,11 +1143,7 @@ Environment:
         }
         # The prebuilt installers SHARE <root>\.staging and prune it only when empty, so
         # anything left in it here is not ours: remove the directory only, never its contents.
-        $masterStaging = Join-Path $masterRoot ".staging"
-        if ((Test-Path -LiteralPath $masterStaging) -and
-            -not (Get-ChildItem -LiteralPath $masterStaging -Force -ErrorAction SilentlyContinue)) {
-            _RemovePath $masterStaging
-        }
+        _RemoveDirIfEmpty (Join-Path $masterRoot ".staging")
         if (Test-Path -LiteralPath $masterRoot) {
             # $script:StaleLockPattern, not a glob: the shape has to be the installer's own,
             # name and numeric pid both, or a user's file in their own root is taken.
@@ -1134,10 +1153,7 @@ Environment:
             }
         }
         # Only when nothing of the user's is left.
-        if ((Test-Path -LiteralPath $masterRoot) -and
-            -not (Get-ChildItem -LiteralPath $masterRoot -Force -ErrorAction SilentlyContinue)) {
-            _RemovePath $masterRoot
-        }
+        _RemoveDirIfEmpty $masterRoot
     }
     # Shared llama.cpp build + cache, siblings of studio under ~/.unsloth in default mode.
     if ($defaultLlamaCpp) { _RemovePath $defaultLlamaCpp }

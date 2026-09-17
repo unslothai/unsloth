@@ -41,6 +41,7 @@ print(json.dumps({{
     "cli": str(cli.STUDIO_HOME),
     "cli_is_custom": bool(cli._STUDIO_HOME_IS_CUSTOM),
     "backend": str(studio_root()),
+    "exported_studio_home": os.environ.get("UNSLOTH_STUDIO_HOME"),
     "cli_llama": os.environ.get("UNSLOTH_LLAMA_CPP_PATH"),
     "backend_llama": str((master or studio_root()) / "llama.cpp"),
 }}))
@@ -111,6 +112,40 @@ def test_a_plain_custom_root_still_keeps_llama_cpp_inside_it(tmp_path):
 
     assert result["cli_llama"] == str(explicit / "llama.cpp")
     assert result["cli_llama"] == result["backend_llama"]
+
+
+def test_a_master_root_the_cli_declined_is_still_told_to_the_backend(tmp_path):
+    """The one root the CLI picks that the backend would not pick for itself.
+
+    install.sh and install.ps1 do not read UNSLOTH_HOME yet, so _resolve_studio_home keeps an
+    exported-but-uninstalled master root off the legacy install that actually exists. That
+    fallback is not custom, and returning early on non-custom exported nothing at all, so
+    studio_root() in the backend went on honouring UNSLOTH_HOME with no install check: the CLI
+    ran the legacy venv while the backend under it wrote studio.db, auth and the pid file to
+    <master>/studio. The other tests here point the master root at an empty directory AND leave
+    the legacy root uninstalled, so the fallback is never entered by them.
+    """
+    home = tmp_path / "home"
+    # The sentinel _looks_like_installer_managed_studio_home reads.
+    conf = home / ".unsloth" / "studio" / "share" / "studio.conf"
+    conf.parent.mkdir(parents = True)
+    conf.write_text("installed\n", encoding = "utf-8")
+
+    result = _probe(
+        {
+            "HOME": str(home),
+            "USERPROFILE": str(home),
+            "UNSLOTH_HOME": str(tmp_path / "portable"),
+        }
+    )
+
+    legacy = str(home / ".unsloth" / "studio")
+    assert result["cli"] == legacy
+    # Not custom: the root is the Unsloth-owned legacy one, and false is what lets the
+    # installers replace the tree without an owner marker.
+    assert result["cli_is_custom"] is False
+    assert result["exported_studio_home"] == legacy
+    assert result["backend"] == legacy
 
 
 def test_a_legacy_install_still_keeps_llama_cpp_at_the_legacy_path(tmp_path):

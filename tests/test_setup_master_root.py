@@ -13,12 +13,17 @@ tests/test_managed_tools_master_root.py, which holds the resolvers to each other
 
 from __future__ import annotations
 
+import os
 import pathlib
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
+
+# tests/conftest.py puts tests/_shared on sys.path; see unsloth_pwsh_runner for why a bare
+# subprocess call to pwsh is not enough under xdist.
+from unsloth_pwsh_runner import PWSH, run_pwsh
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SETUP_SH = REPO_ROOT / "studio" / "setup.sh"
@@ -400,7 +405,11 @@ def test_every_runtime_ownership_guard_uses_the_runtime_flag():
             name in line for name in ("$NODE_DIR", "$LLAMA_CPP_DIR", "$WHISPER_CPP_DIR")
         ), line
     ps = SETUP_PS1.read_text(encoding = "utf-8")
-    assert "$RuntimeRootIsCustom = $StudioHomeIsCustom -or [bool](Get-MasterRootOverride)" in ps
+    # Seeded from the Studio flag and raised only when the master root is somewhere else, which
+    # is setup.sh's rule. Taking any non-empty master root instead is the divergence
+    # test_the_windows_legacy_root_named_explicitly_is_not_custom below runs for real.
+    assert "$RuntimeRootIsCustom = $StudioHomeIsCustom\n" in ps
+    assert "$_masterRootForOwnership -ine $_legacyRuntimeRoot" in ps
     for line in ps.splitlines():
         if "$StudioHomeIsCustom" not in line:
             continue
@@ -445,6 +454,141 @@ def test_the_legacy_root_named_explicitly_is_not_custom(tmp_path):
     # Non-vacuity: a root that really is elsewhere still takes the strict path.
     assert flag(str(tmp_path / "portable")) == "true"
     assert flag("") == "false"
+
+
+@pytest.mark.skipif(PWSH is None, reason = "needs pwsh")
+def test_the_windows_legacy_root_named_explicitly_is_not_custom(tmp_path):
+    """The Windows half of the test above, run rather than pattern-matched.
+
+    setup.ps1 read `$StudioHomeIsCustom -or [bool](Get-MasterRootOverride)`, so
+    UNSLOTH_HOME=%USERPROFILE%\\.unsloth turned the ownership guard on for a root a default
+    install is already using. Nothing moves there, and the guard then demands an owner marker
+    from a markerless source-built .unsloth\\llama.cpp, so Assert-StudioOwnedOrAbsent exits an
+    update that used to reuse that build. setup.sh adopts it, which made the two halves answer
+    differently for one environment.
+    """
+    profile = tmp_path / "profile"
+    (profile / ".unsloth" / "studio").mkdir(parents = True)
+    ps = SETUP_PS1.read_text(encoding = "utf-8")
+    # The derivation itself, from the flag it seeds to the line after it.
+    block = _slice(ps, "$RuntimeRootIsCustom = $StudioHomeIsCustom", "$LlamaCppDir = ")
+    script = tmp_path / "probe.ps1"
+    script.write_text(
+        "\n".join(
+            (
+                f"$txt = Get-Content -Raw '{SETUP_PS1}'",
+                # The shipped helpers, so a rewrite that keeps the words and changes the
+                # canonicalisation still fails here.
+                'foreach ($n in @("Get-PathState", "Test-AccessDeniedError", "Get-CanonicalDir",'
+                ' "Get-MasterRootOverride")) {',
+                '    $m = [regex]::Match($txt, "(?ms)^function $n \\{.*?^\\}")',
+                '    if (-not $m.Success) { Write-Output "EXTRACT-FAILED:$n"; exit 1 }',
+                "    Invoke-Expression $m.Value",
+                "}",
+                # Test-StudioHomeIsCustom closes over $StudioHome, so it is stated here rather
+                # than extracted: the point of this probe is the master-root comparison.
+                "$StudioHomeIsCustom = $false",
+                block,
+                "Write-Output $RuntimeRootIsCustom",
+            )
+        ),
+        encoding = "utf-8",
+    )
+
+    def flag(master: str) -> str:
+        out = run_pwsh(
+            [PWSH, "-NoProfile", "-File", str(script)],
+            env = {
+                "PATH": os.environ.get("PATH", ""),
+                "HOME": str(profile),
+                "USERPROFILE": str(profile),
+                "UNSLOTH_HOME": master,
+            },
+            capture_output = True,
+            text = True,
+            check = True,
+        ).stdout.strip()
+        assert "EXTRACT-FAILED" not in out, out
+        return out.splitlines()[-1].strip()
+
+    assert flag(str(profile / ".unsloth")) == "False"
+    # Non-vacuity, and the same two controls the bash test uses.
+    assert flag(str(tmp_path / "portable")) == "True"
+    assert flag("") == "False"
+
+
+@pytest.mark.skipif(PWSH is None, reason = "needs pwsh")
+def test_the_windows_uninstaller_only_removes_a_root_that_is_really_empty(tmp_path):
+    """The master root and its .staging go only when empty, and by an operation that cannot do
+    anything else.
+
+    Windows asked with Get-ChildItem -ErrorAction SilentlyContinue and then called _RemovePath,
+    which is Remove-Item -Recurse -Force, in the one directory this branch teaches users to
+    point at their own files. Two separate calls, so a file arriving between the two was taken
+    by the -Recurse; and a swallowed enumeration error read as an empty directory.
+    uninstall.sh uses rmdir for both paths, which is one call that refuses a non-empty
+    directory, and this file's own %TEMP% prune already asks with -ErrorAction Stop.
+
+    The behavioural halves below are what can be shown on a POSIX host: a recursive delete needs
+    to enumerate too, so an unlistable directory survives either version here and the ACL shape
+    that separates DELETE from LIST is Windows-only. What is checked instead is the mechanism,
+    which is what removes the race as well.
+    """
+    ps = UNINSTALL_PS1.read_text(encoding = "utf-8")
+    assert "function _RemoveDirIfEmpty" in ps
+    helper = _slice(ps, "    function _RemoveDirIfEmpty {", "\n    # The exact shape")
+    # One atomic call: no -Recurse anywhere in it, and no emptiness question asked separately.
+    assert "[System.IO.Directory]::Delete($Path, $false)" in helper
+    assert "-Recurse" not in helper, helper
+    assert "Get-ChildItem" not in helper, helper
+    # And both master-root sites go through it rather than keeping their own version.
+    master_block = _slice(ps, "$masterRoot = $masterRootToStop", "if ($defaultLlamaCpp)")
+    assert master_block.count("_RemoveDirIfEmpty") == 2, master_block
+    assert "-ErrorAction SilentlyContinue)) {\n            _RemovePath" not in master_block
+
+    script = tmp_path / "probe.ps1"
+    script.write_text(
+        "\n".join(
+            (
+                f"$txt = Get-Content -Raw '{UNINSTALL_PS1}'",
+                '$m = [regex]::Match($txt, "(?ms)^    function _RemoveDirIfEmpty \\{.*?^    \\}")',
+                'if (-not $m.Success) { Write-Output "EXTRACT-FAILED"; exit 1 }',
+                "Invoke-Expression $m.Value",
+                "function _Substep { param($a, $b) }",
+                "_RemoveDirIfEmpty $args[0]",
+                'Write-Output ("EXISTS=" + (Test-Path -LiteralPath $args[0]))',
+            )
+        ),
+        encoding = "utf-8",
+    )
+
+    def still_there(path: Path) -> bool:
+        out = run_pwsh(
+            [PWSH, "-NoProfile", "-File", str(script), str(path)],
+            env = {"PATH": os.environ.get("PATH", ""), "HOME": str(tmp_path)},
+            capture_output = True,
+            text = True,
+            check = True,
+        ).stdout
+        assert "EXTRACT-FAILED" not in out, out
+        assert "EXISTS=" in out, out
+        return out.strip().splitlines()[-1] == "EXISTS=True"
+
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    assert not still_there(empty), "an empty root is the one case that may be removed"
+
+    occupied = tmp_path / "occupied"
+    occupied.mkdir()
+    (occupied / "theirs.txt").write_text("mine", encoding = "utf-8")
+    assert still_there(occupied)
+    assert (occupied / "theirs.txt").is_file(), "a non-empty root must keep its contents"
+
+    # A directory holding only a subdirectory: rmdir refuses this too, and a -Recurse would not.
+    nested = tmp_path / "nested"
+    (nested / "child").mkdir(parents = True)
+    assert still_there(nested)
+    assert (nested / "child").is_dir()
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason = "needs bash")
@@ -688,8 +832,13 @@ def test_a_shared_staging_directory_is_pruned_not_deleted():
     ps = UNINSTALL_PS1.read_text(encoding = "utf-8")
     assert 'rmdir "$_mr_root/.staging"' in sh
     assert '_remove_path "$_mr_root/.staging"' not in sh
-    staging = _slice(ps, "$masterStaging = Join-Path $masterRoot", "# Shared llama.cpp build")
-    assert "Get-ChildItem -LiteralPath $masterStaging" in staging, staging
+    # The Windows equivalent of rmdir, for the same reason. Asking with Get-ChildItem and then
+    # calling _RemovePath is not it: see
+    # test_the_windows_uninstaller_only_removes_a_root_that_is_really_empty.
+    staging = _slice(
+        ps, '_RemoveDirIfEmpty (Join-Path $masterRoot ".staging")', "# Shared llama.cpp build"
+    )
+    assert "_RemovePath" not in staging, staging
 
 
 def test_the_windows_uninstaller_finds_a_master_root_from_the_note(tmp_path):

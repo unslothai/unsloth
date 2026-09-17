@@ -116,9 +116,18 @@ STUDIO_HOME, _STUDIO_HOME_IS_CUSTOM = _resolve_studio_home()
 
 
 def _ensure_studio_env_exported() -> None:
-    """Re-export UNSLOTH_STUDIO_HOME / UNSLOTH_LLAMA_CPP_PATH for custom roots only, per
-    subcommand rather than at import, so unrelated importers see no env changes."""
-    if not _STUDIO_HOME_IS_CUSTOM:
+    """Re-export UNSLOTH_STUDIO_HOME / UNSLOTH_LLAMA_CPP_PATH for custom roots, and for a master
+    root the resolver above declined, per subcommand rather than at import, so unrelated
+    importers see no env changes."""
+    # storage_roots.studio_root() honours UNSLOTH_HOME with no install check, so the fallback
+    # that keeps this CLI on an installed legacy root has to be told to the backend as well.
+    # Left unexported, `unsloth studio` runs the legacy venv while the backend inside it writes
+    # studio.db, auth and the pid file under <master>/studio, which is the split
+    # tests/test_unsloth_home_root_agreement.py exists to prevent. Exporting the root does not
+    # make it custom: the value equals the legacy path, so setup.sh's and setup.ps1's own
+    # comparisons keep their ownership flags false and the installers keep their licence to
+    # replace the tree without an owner marker.
+    if not _STUDIO_HOME_IS_CUSTOM and not (os.environ.get("UNSLOTH_HOME") or "").strip():
         return
     # Truthy-check, not setdefault: a blank UNSLOTH_STUDIO_HOME= must not win.
     if not os.environ.get("UNSLOTH_STUDIO_HOME"):
