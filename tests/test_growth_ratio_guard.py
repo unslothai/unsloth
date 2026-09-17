@@ -184,8 +184,9 @@ def test_a_confirmation_sized_from_a_mixed_estimate_still_stops_at_the_budget():
     the first sample is past the `--timeout=330` those CI invocations pass.
 
     So the elapsed deadline inside the sample is what stops it, not the prediction made
-    before it started: the loop gives up after three pairs and the run fails with a sentence
-    about an unfinished confirmation rather than with the runner's timeout.
+    before it started: the loop gives up after two of the seven pairs it was authorised and
+    the run fails with a sentence about an unfinished confirmation rather than with the
+    runner's timeout.
     """
     stalls = {0: 0.998, 1: 58.992, 2: 0.998, 3: 58.992, 4: 0.998, 5: 0.992}
     for index in range(6, 6 + 2 * 7):
@@ -193,7 +194,32 @@ def test_a_confirmation_sized_from_a_mixed_estimate_still_stops_at_the_budget():
     run, clock, calls = _shaped(1.0, stalls = stalls)
     with pytest.raises(AssertionError, match = "confirmation stopped after"):
         assert_linear(run, _build, "mixed estimate", 2, clock = clock)
-    assert calls["n"] == 6 + 6, f"the confirmation ran on past its budget: {calls['n']}"
+    assert calls["n"] == 6 + 4, f"the confirmation ran on past its budget: {calls['n']}"
+
+
+def test_the_budget_is_asked_before_a_pair_rather_than_after_it():
+    """A bound tested once a pair is already home is not a bound on that pair.
+
+    First-sample big legs of 39s, 59s and 59s against 1s small legs: the median ratio is 59
+    and the best big leg is 39s, so the sizing authorises three pairs. The confirmation's own
+    legs then arrive at 59s. Asked AFTER each pair, every one of the three is inside the
+    120s bound at the moment it finishes its predecessor, so all three run and the sample
+    costs 177s -- which on top of the first sample's 157s is past the `--timeout=330` these
+    CI invocations pass, the exact failure the bound was added to prevent.
+
+    Reserving room for one more pair at the cost of the worst seen stops it at two, so the
+    confirmation spends 118s of its 120 and the whole test lands around 275s.
+    """
+    stalls = {0: 0.998, 1: 38.992, 2: 0.998, 3: 58.992, 4: 0.998, 5: 58.992}
+    for index in range(6, 6 + 2 * 3):
+        stalls[index] = 0.0 if index % 2 == 0 else 58.992
+    run, clock, calls = _shaped(1.0, stalls = stalls)
+    with pytest.raises(AssertionError, match = "confirmation stopped after 2 of 3"):
+        assert_linear(run, _build, "pair that would overrun", 2, clock = clock)
+    assert calls["n"] == 6 + 4, f"a pair that could not fit was started anyway: {calls['n']}"
+    assert (
+        clock.now - 1000.0 < 330.0
+    ), f"the whole test would outlast the runner: {clock.now - 1000.0}"
 
 
 def test_an_aborted_confirmation_is_not_accepted_as_one():

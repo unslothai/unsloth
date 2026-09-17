@@ -41,9 +41,10 @@ def growth(
     `abort_over_s` bounds ONE BIG LEG; `budget_s` bounds THE WHOLE CALL. They are not the
     same guard and neither implies the other: `repeats` legs each just under `abort_over_s`
     is `repeats` times the cost that one leg was allowed, which is how a sample sized from a
-    previous reading still overran the runner's per-test timeout. This one is measured, not
-    predicted, so a sample that turns out slower than the reading it was sized from stops
-    when the time is gone rather than when someone's estimate said it would.
+    previous reading still overran the runner's per-test timeout. `budget_s` is measured
+    rather than predicted, and it is asked BEFORE each pair rather than after, reserving
+    room at the cost of the worst pair seen so far -- a bound tested only once a pair is
+    already home is not a bound on that pair.
 
     `build(n)` makes an input of size n and `run(text)` is the thing being measured.
 
@@ -97,10 +98,21 @@ def growth(
 
     small_text, big_text = build(units), build(units * factor)
     ratios, big, result = [], None, None
-    started = read_clock()
+    started, pair_costs = read_clock(), []
     for _ in range(repeats):
+        # Asked BEFORE the pair, not after it. A check that only fires once both legs are
+        # home cannot stop the pair that overran: three 59-second pairs under a 120-second
+        # bound run to 177, because each one is inside the bound at the moment it starts.
+        # So the loop reserves room for another pair at the cost of the WORST it has seen,
+        # which is the conservative reading -- contention only adds -- and the estimate
+        # comes from this sample rather than from a previous one.
+        if budget_s is not None and pair_costs:
+            if read_clock() - started + max(pair_costs) > budget_s:
+                break
+        pair_started = read_clock()
         small_elapsed, _ = once(small_text)
         big_elapsed, result = once(big_text)
+        pair_costs.append(read_clock() - pair_started)
         # The backstop below reads the BEST big time, not the worst. Contention only adds, so
         # the minimum is the closest this size got to its own cost, and the backstop should
         # fire on a path that is genuinely too slow rather than on a runner that stalled once.
@@ -111,12 +123,6 @@ def growth(
         # big leg is the minutes-long one, so finishing all `repeats` of it to report a
         # number the caller will reject anyway is the slow way to reach the same verdict.
         if abort_over_s is not None and big_elapsed > abort_over_s:
-            break
-        # Whole-call bound, checked on the same pair boundary so a stopped sample always
-        # holds a whole number of ratios. Nothing is raised here: `pairs_completed` says the
-        # sample is short and the verdict belongs to the caller, which is the same contract
-        # `abort_over_s` already has.
-        if budget_s is not None and read_clock() - started >= budget_s:
             break
 
     return _statistics.median(ratios), big, result, len(ratios)
