@@ -2607,22 +2607,31 @@ _RE_ESCALATION_TOKEN = re.compile(
     # The two RE_OBFUSCATION forms the list above did not otherwise cover. Without them a
     # first-party file approved for `exec(` also rides `exec(chr(101)+chr(118)+...)`: the
     # decoder raises the very finding the entry suppresses and contributes no token.
-    r"|\bchr\s*\(\s*\d+\s*\)[^\n]*\bchr\s*\(\s*\d+\s*\)"
-    r"|\brotate\s*=[^\n]*\blambda\b[^\n]*\bchr\b"
+    #
+    # Per CALL, not per adjacent pair. RE_OBFUSCATION is re.DOTALL and its chain alternative
+    # spans newlines, so a decoder written one call per line -- which is what a formatter
+    # produces from a long chain -- fired the check while a `[^\n]*` token pattern saw
+    # nothing. One token per call is newline-agnostic by construction, and it cannot pair
+    # two calls from unrelated evidence spans the way a spanning pattern can.
+    r"|\bchr\s*\(\s*\d+\s*\)"
+    # The rotation lambda spans lines for the same reason, so this crosses them too, but
+    # under a bound: unbounded `[\s\S]*` over evidence that is many spans joined would let a
+    # `rotate =` in one span reach a `chr` in another. The bound is generous, because the
+    # direction to be wrong in here is reopening an approval rather than keeping it.
+    r"|\brotate\s*=[\s\S]{0,400}?\blambda\b[\s\S]{0,400}?\bchr\b"
 )
 
-# A chr() chain is normalised to its ORDINALS, not to a category: the ordinals are the
-# payload. unsloth_zoo/compiler.py already ships `{chr(92)}{chr(92)}` in the training
-# banner, so a category token would be approved there on day one and would then cover
-# every other chain in the file. `chr-chain:92,92` covers exactly the banner.
-_RE_CHR_CALL = re.compile(r"chr\(\d+\)")
+# A chr() call is normalised to its ORDINAL, not to a category: the ordinal is the payload.
+# unsloth_zoo/compiler.py already ships `{chr(92)}{chr(92)}` in the training banner, so a
+# category token would be approved there on day one and would then cover every other chain
+# in the file. `chr:92` covers the banner and nothing a decoder could be built out of.
 
 
 def _normalise_escalation_token(raw: str) -> str:
     """One matched construct, reduced to the form the approval is keyed on."""
     token = re.sub(r"\s+", "", raw).lower()
     if token.startswith("chr("):
-        return "chr-chain:" + ",".join(m.group(0)[4:-1] for m in _RE_CHR_CALL.finditer(token))
+        return "chr:" + token[4:-1]
     if token.startswith("rotate="):
         return "rotate-lambda-chr"
     return token

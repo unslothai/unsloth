@@ -587,11 +587,10 @@ def test_the_high_churn_unsloth_zoo_entries_are_keyed_on_file_and_check():
         assert sorted(tokens) == sorted(
             sp._escalation_tokens(e["evidence"])
         ), f"{e['file']}: evidence_tokens disagrees with the evidence beside it"
-        # chr-chain:92,92 is the two `{chr(92)}` in compiler.py's training banner, which
-        # is what makes RE_OBFUSCATION fire on that file at all. It is pinned to those
-        # ordinals, so a decoder chain in the same file carries different ones and is not
-        # covered by it.
-        approved_family = {"exec(", "eval(", "__import__(", "compile(", "chr-chain:92,92"}
+        # chr:92 is the `{chr(92)}` in compiler.py's training banner, which is what makes
+        # RE_OBFUSCATION fire on that file at all. The token carries the ordinal, so a
+        # decoder chain in the same file spells different ones and is not covered by it.
+        approved_family = {"exec(", "eval(", "__import__(", "compile(", "chr:92"}
         assert set(tokens) <= approved_family, (
             f"{e['file']} was approved for generating and importing code. "
             f"{sorted(set(tokens) - approved_family)} is "
@@ -3071,14 +3070,43 @@ def test_a_coarse_approval_reopens_on_the_obfuscation_forms_the_check_itself_mat
 
 
 def test_the_banner_chr_chain_does_not_approve_another_one():
-    """compiler.py's approval covers `chr-chain:92,92`, the `{chr(92)}{chr(92)}` in the
-    training banner. The token carries the ordinals, so it is an approval of that chain
-    and not of chr() chains in that file."""
+    """compiler.py's approval covers `chr:92`, the `{chr(92)}` in the training banner. The
+    token carries the ordinal, so it is an approval of that character and not of chr()
+    chains in that file."""
     baseline = _shipped_baseline()
     key = sp._coarse_key("unsloth-zoo", "unsloth_zoo/compiler.py", _ZOO_CHECK)
-    assert "chr-chain:92,92" in baseline[key]
-    assert sp._escalation_tokens('f"{chr(92)}{chr(92)} banner"') == {"chr-chain:92,92"}
-    assert sp._escalation_tokens("exec(chr(101) + chr(118))") == {"exec(", "chr-chain:101,118"}
+    assert "chr:92" in baseline[key]
+    assert sp._escalation_tokens('f"{chr(92)}{chr(92)} banner"') == {"chr:92"}
+    assert sp._escalation_tokens("exec(chr(101) + chr(118))") == {"exec(", "chr:101", "chr:118"}
+
+
+def test_a_decoder_split_over_lines_is_read_the_same_as_one_on_a_single_line():
+    """RE_OBFUSCATION is re.DOTALL, so both obfuscation forms it matches span newlines.
+
+    A token pattern written with `[^\n]*` saw neither, which is what a formatter produces
+    from a long chain: one call per line. Both forms are read across lines now, the chr
+    chain per CALL so that newlines cannot come into it at all, and the rotation lambda
+    under a length bound so a `rotate =` in one evidence span cannot reach a `chr` in
+    another.
+    """
+    baseline = _shipped_baseline()
+    multiline_chain = _zoo_compiler_finding(
+        "    blob = (\n        chr(101)\n        + chr(118)\n        + chr(97)\n    )\n"
+        '    exec(blob + "(_P)")\n'
+    )
+    multiline_rotation = _zoo_compiler_finding(
+        '    rotate = lambda s: "".join(\n'
+        "        chr(ord(c) ^ 13)\n"
+        "        for c in s\n"
+        "    )\n"
+        "    exec(rotate(blob))\n"
+    )
+    for finding, what in (
+        (multiline_chain, "a chr() chain one call per line"),
+        (multiline_rotation, "a rotation lambda split over lines"),
+    ):
+        active, suppressed = sp._partition_baseline([finding], baseline)
+        assert active == [finding] and suppressed == [], f"{what} rode the coarse approval"
 
 
 def test_lossless_evidence_lifts_every_display_cap_and_only_for_tokens():
