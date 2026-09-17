@@ -56,15 +56,13 @@ NEWLY_ADMITTED = ("0.29.1", "1.0.0", "1.6.0", "1.7.0", "1.13.0")
 # what a user actually resolves.
 ZOO_TRL_CEILING_BEFORE_THE_LIFT = Version("0.24.0")
 
-# DEFERRED. The zoo release carrying the matching trl ceiling (unslothai/unsloth-zoo#1260)
-# is not on PyPI: 2026.9.4 is the newest published release, so naming anything above it in
-# pyproject.toml is a floor no release satisfies, which makes unsloth uninstallable rather
-# than merely under-delivered. The floor therefore stays at 2026.9.4 and the gate below
-# stays off. Set this to the release that ships #1260 and raise the pyproject floor to
-# match, in the same commit; the gate re-enables itself. The "exactly one zoo floor, and it
-# is a lower bound" half of that gate is not deferred: it lives in
-# tests/test_transformers_cap_sites.py and runs against the same pyproject today.
-ZOO_FLOOR_WITH_LIFTED_TRL_CAP = None
+# The zoo release carrying the matching trl ceiling (unslothai/unsloth-zoo#1260). 2026.9.5
+# is published and says `trl<=1.13.0`, so pyproject.toml names it as the floor and the gate
+# below is live rather than deferred. The transformers half of the same coordination is
+# still deferred, for its own reason: see ZOO_FLOOR_WITH_LIFTED_TRANSFORMERS_CAP in
+# tests/test_transformers_cap_sites.py. One floor serves both, so raising it again for
+# #1227 does not disturb this.
+ZOO_FLOOR_WITH_LIFTED_TRL_CAP = Version("2026.9.5")
 
 # Lanes deliberately NOT on the published cap. Each needs a reason, or "lower" is
 # indistinguishable from "forgotten", which is the bug this file is about. Keyed on
@@ -211,27 +209,15 @@ def test_the_declared_zoo_floor_can_supply_the_declared_trl_window() -> None:
     """Widening the window here does nothing while the resolvable zoo still caps TRL.
 
     unsloth_zoo publishes its own trl requirement and pip intersects the two, so a user
-    installing any extra gets the LOWER of the two ceilings. unsloth_zoo 2026.9.4 on PyPI
-    says `trl<=0.24.0`; under that intersection the guards the test above checks for
-    reachability are still unreachable, and asking for a newly admitted TRL by hand is a
-    resolver conflict rather than an install.
+    installing any extra gets the LOWER of the two ceilings. Every unsloth_zoo up to and
+    including 2026.9.4 says `trl<=0.24.0`; under that intersection the guards the test
+    above checks for reachability are still unreachable, and asking for a newly admitted
+    TRL by hand is a resolver conflict rather than an install.
 
     So a ceiling above what the old zoo admits is only real once the declared zoo floor
-    names a release that carries the matching lift.
-
-    DEFERRED while ZOO_FLOOR_WITH_LIFTED_TRL_CAP is None: see that constant. The body is
-    kept rather than deleted so raising the floor later is one edit, and so this docstring
-    stays as the written record of what the deferral costs.
+    names a release that carries the matching lift. 2026.9.5 is that release, it is on
+    PyPI, and pyproject.toml names it, so this gate was deferred and is now live.
     """
-    if ZOO_FLOOR_WITH_LIFTED_TRL_CAP is None:
-        pytest.skip(
-            "deferred: no unsloth_zoo release carrying the lifted trl ceiling "
-            "(unslothai/unsloth-zoo#1260) is published yet, and 2026.9.4 is the newest on "
-            "PyPI, so pyproject.toml holds the zoo floor there. Until it ships, the window "
-            "this file checks is wider than what pip actually resolves, and the two "
-            "rl_replacements guards stay unreachable on a default install. Re-enable by "
-            "setting ZOO_FLOOR_WITH_LIFTED_TRL_CAP to the release carrying #1260."
-        )
     ceiling = _ceiling(_declared_window())
     if ceiling <= ZOO_TRL_CEILING_BEFORE_THE_LIFT:
         pytest.skip(

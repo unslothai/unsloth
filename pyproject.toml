@@ -193,13 +193,16 @@ triton = [
 huggingfacenotorch = [
     # unsloth_zoo publishes its own transformers and trl windows and pip intersects the
     # two, so widening either range below only reaches users once a zoo release carries the
-    # same ceilings: 2026.9.4, the newest on PyPI, still says transformers<=5.5.0 and
-    # trl<=0.24.0. The release carrying both (unslothai/unsloth-zoo#1227 for transformers,
-    # #1260 for trl) is not published yet, and a floor no release satisfies makes the
-    # package uninstallable, so the floor stays at 2026.9.4 for now. Raise it to the
-    # release that ships #1227 and #1260, and re-enable the deferred gates named in
-    # tests/test_transformers_cap_sites.py and tests/test_trl_cap_sites.py, together.
-    "unsloth_zoo>=2026.9.4",
+    # same ceilings. The trl half is now satisfied: 2026.9.5 ships unslothai/unsloth-zoo#1260
+    # and says `trl<=1.13.0`, so the floor names it and the gate in
+    # tests/test_trl_cap_sites.py is live again.
+    # The transformers half is NOT. 2026.9.5 still says `transformers<=5.5.0` because
+    # unslothai/unsloth-zoo#1227 is still open, so pip keeps intersecting the wider window
+    # below down to 5.5.0 and the lift is advertised rather than delivered. A floor no
+    # release satisfies would make the package uninstallable, which is worse, so the floor
+    # stops at 2026.9.5 and the gate in tests/test_transformers_cap_sites.py stays
+    # deferred. Raise this again, and re-enable that one gate, when #1227 ships.
+    "unsloth_zoo>=2026.9.5",
     "wheel>=0.42.0",
     "packaging",
     "numpy",
@@ -272,7 +275,7 @@ audio-torch280 = [
 ]
 huggingface = [
     "unsloth[huggingfacenotorch]",
-    "unsloth_zoo>=2026.9.4",
+    "unsloth_zoo>=2026.9.5",
     "torchvision",
     "unsloth[triton]",
 ]
@@ -891,7 +894,7 @@ colab-ampere-torch220 = [
     "flash-attn>=2.6.3 ; ('linux' in sys_platform)",
 ]
 colab-new = [
-    "unsloth_zoo>=2026.9.4",
+    "unsloth_zoo>=2026.9.5",
     "packaging",
     "tyro",
     "transformers>=4.52.4,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.17.0",
