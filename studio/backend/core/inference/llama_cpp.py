@@ -7868,7 +7868,7 @@ class LlamaCppBackend:
             # without it re-sending the same selection would reload every time.
             return requested in ((self._gpu_ids or None), (self._requested_gpu_ids or None))
 
-        requested = sorted(int(x) for x in gpu_ids) if gpu_ids else None
+        requested = [int(x) for x in gpu_ids] if gpu_ids else None
         raw = self._requested_gpu_ids or None
         effective = self._gpu_ids or None
         return requested == raw or requested == effective
@@ -7883,7 +7883,7 @@ class LlamaCppBackend:
         if self._is_diffusion:
             self._requested_gpu_ids = [sorted(int(x) for x in gpu_ids)[0]] if gpu_ids else None
         else:
-            self._requested_gpu_ids = sorted(int(x) for x in gpu_ids) if gpu_ids else None
+            self._requested_gpu_ids = [int(x) for x in gpu_ids] if gpu_ids else None
         if self._last_load_intent is not None:
             self._last_load_intent = replace(
                 self._last_load_intent,
@@ -22751,7 +22751,7 @@ class LlamaCppBackend:
                     self._tensor_split = None
                     self._auto_tensor_split = None
                     self._auto_tensor_split_emitted = None
-                self._requested_gpu_ids = sorted(gpu_ids) if gpu_ids else None
+                self._requested_gpu_ids = [int(i) for i in gpu_ids] if gpu_ids else None
                 self._gpu_ids = list(self._requested_gpu_ids) if self._requested_gpu_ids else None
                 # Manual offload skips the TP planner but still emits --split-mode
                 # tensor at launch; drop it when fewer than 2 GPUs are in use --
@@ -25333,8 +25333,30 @@ class LlamaCppBackend:
                 # GPU picker: when no narrower subset was chosen (manual, or
                 # a failed/file-size selection), pin the whole picked set so the
                 # model can't spill onto an unpicked GPU.
-                if gpu_ids and gpu_indices is None:
-                    gpu_indices = sorted(gpu_ids)
+                if gpu_ids:
+                    _picked_order = [int(i) for i in gpu_ids]
+                    if gpu_indices is None:
+                        gpu_indices = _picked_order
+                    else:
+                        # A fit narrowed the pool. Only the survivors remain, but their
+                        # relative order is still the one the user dragged them into.
+                        _kept = {int(i) for i in gpu_indices}
+                        _before_reorder = [int(i) for i in gpu_indices]
+                        _reordered = [i for i in _picked_order if i in _kept] + [
+                            int(i) for i in gpu_indices if int(i) not in set(_picked_order)
+                        ]
+                        # _plan_tensor_parallel returned the shares positional over the
+                        # ascending gpu_indices, so reordering the devices without moving
+                        # the shares hands the roomier card's share to the smaller one --
+                        # exactly when a weighted split was needed. Veto rather than
+                        # half-apply, as _repoint_emitted_tensor_split does for the mask.
+                        if tp_tensor_split and len(tp_tensor_split) == len(_before_reorder):
+                            _share_by_id = dict(zip(_before_reorder, tp_tensor_split))
+                            if all(i in _share_by_id for i in _reordered):
+                                tp_tensor_split = [_share_by_id[i] for i in _reordered]
+                                gpu_indices = _reordered
+                        elif not tp_tensor_split:
+                            gpu_indices = _reordered
                 # Auto Vulkan fit prefers discrete GPUs and keeps that pool pinned.
                 elif (
                     is_vulkan_backend
@@ -25355,7 +25377,11 @@ class LlamaCppBackend:
                 # pick, so repeating it keeps matching.
                 if gpu_ids and not _paravirtual_cpu_forced:
                     effective_pin = gpu_indices if gpu_indices is not None else gpu_ids
-                    self._gpu_ids = sorted(int(idx) for idx in effective_pin)
+                    # Survivor order, not sorted: the block above put gpu_indices in the
+                    # order the user picked, and _runtime_matches_intent compares this
+                    # value positionally. Sorting here reports an effective pin that a
+                    # client round-tripping it would match against the opposite order.
+                    self._gpu_ids = [int(idx) for idx in effective_pin]
                 else:
                     self._gpu_ids = None
 
@@ -26497,9 +26523,7 @@ class LlamaCppBackend:
                     # pins below, but recording it would misreport an explicit pin and
                     # make dedupe miss the loaded server; mirrors the CUDA/ROCm branch.
                     self._gpu_ids = (
-                        sorted(int(x) for x in _vulkan_pin_ids)
-                        if (gpu_ids and _vulkan_pin_ids)
-                        else None
+                        [int(x) for x in _vulkan_pin_ids] if (gpu_ids and _vulkan_pin_ids) else None
                     )
                 elif gpu_ids:
                     # Physical pin: the fit-selected subset when the fit ran, else the raw
@@ -26510,8 +26534,12 @@ class LlamaCppBackend:
                         if gpu_indices is not None
                         else [int(x) for x in gpu_ids]
                     )
+                    # Survivor order, not sorted. This is the authoritative record and it
+                    # overwrites the one above, so sorting here put the order back and
+                    # /status reported a pin a client could round-trip into a match
+                    # against the opposite order.
                     self._gpu_ids = (
-                        sorted(int(x) for x in _effective_pin_ids) if _effective_pin_ids else None
+                        [int(x) for x in _effective_pin_ids] if _effective_pin_ids else None
                     )
                 else:
                     self._gpu_ids = None
@@ -26519,7 +26547,7 @@ class LlamaCppBackend:
                 # Also record the RAW requested pin (before the fit narrowed it). Load
                 # dedupe compares this so a [0, 1] narrowed to [0] and re-sent as [0, 1]
                 # still matches, while /status keeps echoing the effective pin (#7239).
-                self._requested_gpu_ids = sorted(int(x) for x in gpu_ids) if gpu_ids else None
+                self._requested_gpu_ids = [int(x) for x in gpu_ids] if gpu_ids else None
 
                 if is_vulkan_backend and _vulkan_pin_ids is not None:
                     cmd += LlamaCppBackend._vulkan_pin_args(_vulkan_pin_ids)
@@ -27457,7 +27485,11 @@ class LlamaCppBackend:
                     # and gpu_indices is ascending at every producer. Keep a mask that
                     # deliberately reorders the same cards.
                     _pin_ids = list(gpu_indices)
-                    _inherited_order = self._inherited_child_gpu_order(_pin_ids)
+                    # A dragged picker order is the more explicit and more recent of
+                    # the two, so it wins over whatever the environment was masked to.
+                    _inherited_order = (
+                        None if gpu_ids else self._inherited_child_gpu_order(_pin_ids)
+                    )
                     if _inherited_order is not None:
                         # A user --tensor-split is positional over the order they
                         # expected, so reordering under it re-weights the wrong cards.
@@ -27475,6 +27507,18 @@ class LlamaCppBackend:
                                 _pin_ids,
                             )
                             _pin_ids = _inherited_order
+                            # The emitted fingerprint was recorded from the pre-rewrite
+                            # value, so /status would pair each share with the wrong
+                            # device and the repeat check would compare against a split
+                            # the child never ran.
+                            if "--tensor-split" in cmd and gpu_memory_mode != "manual":
+                                _rewritten = cmd[cmd.index("--tensor-split") + 1]
+                                try:
+                                    self._auto_tensor_split_emitted = self._auto_split_fingerprint(
+                                        [float(x) for x in str(_rewritten).split(",")]
+                                    )
+                                except (TypeError, ValueError):
+                                    self._auto_tensor_split_emitted = None
                     # Mask on AMD at the ROCr/HSA layer: HIP-only masking still
                     # enumerates every agent first, which segfaults on a deselected
                     # unsupported GPU (e.g. gfx1036 iGPU under a gfx103X prebuilt).

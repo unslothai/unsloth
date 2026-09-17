@@ -60,13 +60,13 @@ function sameList(
   return a.length === b.length && a.every((item, index) => item === b[index]);
 }
 
-/** Placement is a set, not an order: the backend narrows and reorders it at fit time. */
-function sameGpuSet(
+/** Placement is an ordered list: position decides which card the model is given first,
+ *  so the same set in a different order is a different placement and must reload. */
+function sameGpuPlacement(
   left: readonly number[] | null | undefined,
   right: readonly number[] | null | undefined,
 ): boolean {
-  const sort = (ids: readonly number[]) => [...ids].sort((a, b) => a - b);
-  return sameList(sort(left ?? []), sort(right ?? []));
+  return sameList(left ?? [], right ?? []);
 }
 
 /** What a config field resolves to when left unset. These four are not per-model, so omitting them
@@ -446,13 +446,13 @@ const SETTING_CHECKS: SettingCheck[] = [
         s.is_diffusion === true && reconciled?.length
           ? [Math.min(...reconciled)]
           : reconciled;
-      if (sameGpuSet(pick, s.requested_gpu_ids)) {
+      if (sameGpuPlacement(pick, s.requested_gpu_ids)) {
         return true;
       }
       // Either pool, as matches_gpu_ids accepts either: fitting may narrow the request to the smallest
       // subset that holds the model. Guarded on a non-empty echo, since an absent one is no
       // placement rather than Automatic.
-      return Boolean(s.gpu_ids?.length) && sameGpuSet(pick, s.gpu_ids);
+      return Boolean(s.gpu_ids?.length) && sameGpuPlacement(pick, s.gpu_ids);
     },
   },
   {

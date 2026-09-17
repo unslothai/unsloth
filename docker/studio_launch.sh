@@ -42,6 +42,12 @@ if [[ "$jupyter_port_digits" =~ ^[0-9]+$ ]] && (( 10#$jupyter_port_digits == UNS
     printf "       Leave JupyterLab on 8888 and map the host side instead: -p 9000:8888\n" >&2
     exit 1
 fi
+export UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S="${UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S:-120}"
+if ! [[ "$UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S" =~ ^[0-9]+$ ]]; then
+    printf "\033[1;31mERROR:\033[0m UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S=%s is not a number of seconds.\n" "$UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S" >&2
+    exit 1
+fi
+export UNSLOTH_STUDIO_STOP_WAIT_S=$(( 10#$UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S + 30 ))
 # tests run this on the host; everything past here writes /etc/profile.d, /root/.jupyter, /workspace
 [[ "${UNSLOTH_STUDIO_LAUNCH_CHECK_ONLY:-0}" == 1 ]] && exit 0
 export UNSLOTH_STUDIO_HOME="${UNSLOTH_STUDIO_HOME:-/opt/unsloth-studio}"

@@ -68,6 +68,8 @@ ENV UNSLOTH_STUDIO_HOME=/opt/unsloth-studio \
     JUPYTER_PORT=8888 \
     UNSLOTH_STUDIO_PORT=8000 \
     UNSLOTH_ENABLE_SSHD=false \
+    UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S=120 \
+    UNSLOTH_STUDIO_STOP_WAIT_S=150 \
     DEBIAN_FRONTEND=noninteractive
 
 # install.sh needs curl + git; supervisor + openssh-server run the service

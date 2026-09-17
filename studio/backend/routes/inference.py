@@ -25975,11 +25975,6 @@ async def produce_openai_chat_completions(
     except Exception:
         _sf_probe_messages = None
 
-    # Transformers vision generation drops both reasoning fields; MLX forwards them.
-    _sf_vision_drops_reasoning = image is not None and not _sf_model_info.get("is_mlx", False)
-    _sf_gate_enable_thinking = None if _sf_vision_drops_reasoning else payload.enable_thinking
-    _sf_gate_reasoning_effort = None if _sf_vision_drops_reasoning else payload.reasoning_effort
-
     def _sf_response_protocol(
         tools = None,
         template = None,
@@ -26006,8 +26001,8 @@ async def produce_openai_chat_completions(
             logger.debug("safetensors_prefill_template_selection_failed", exc_info = True)
         parse_think = _sf_parse_think_markers(
             features,
-            _sf_gate_enable_thinking,
-            _sf_gate_reasoning_effort,
+            payload.enable_thinking,
+            payload.reasoning_effort,
         )
         reasoning_prefilled = _sf_reasoning_prefill_mode(
             features,

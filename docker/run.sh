@@ -42,6 +42,12 @@
 #   UNSLOTH_STUDIO_VOLUME=unsloth-studio    named volume for Studio's data (accounts,
 #                                           chats, outputs) at /opt/unsloth-studio;
 #                                           set it empty to run without one
+#   UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S=120  how long a training run gets to save a
+#                                           checkpoint on docker stop; --stop-timeout is
+#                                           set 30s above it
+#   UNSLOTH_STUDIO_TRAINING_STOP_TIMEOUT_S=600  when the training stop watchdog gives up
+#                                           on a saving worker; raise it alongside the
+#                                           budget above, which it caps
 # --rocm only:
 #   UNSLOTH_ROCM=1                          same as a leading --rocm
 #   HSA_OVERRIDE_GFX_VERSION                force a gfx target (e.g. 10.3.0)
@@ -310,6 +316,9 @@ declare -a ENV_FORWARD=(-e HF_HUB_ENABLE_HF_TRANSFER=1)
 [[ -n "${UNSLOTH_STUDIO_PASSWORD:-}"    ]] && ENV_FORWARD+=(-e UNSLOTH_STUDIO_PASSWORD)
 [[ -n "${UNSLOTH_STUDIO_PORT:-}"        ]] && ENV_FORWARD+=(-e UNSLOTH_STUDIO_PORT)
 [[ -n "${UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT:-}" ]] && ENV_FORWARD+=(-e UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT)
+# both, or raising only the shutdown budget waits on a save the watchdog kills at its own cap
+[[ -n "${UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S:-}" ]] && ENV_FORWARD+=(-e UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S)
+[[ -n "${UNSLOTH_STUDIO_TRAINING_STOP_TIMEOUT_S:-}" ]] && ENV_FORWARD+=(-e UNSLOTH_STUDIO_TRAINING_STOP_TIMEOUT_S)
 [[ -n "${PUBLIC_KEY:-}"                 ]] && ENV_FORWARD+=(-e PUBLIC_KEY)
 [[ -n "${SSH_KEY:-}"                    ]] && ENV_FORWARD+=(-e SSH_KEY)
 [[ -n "${UNSLOTH_JUPYTER_CLOUDFLARE:-}" ]] && ENV_FORWARD+=(-e UNSLOTH_JUPYTER_CLOUDFLARE)
@@ -318,6 +327,14 @@ declare -a ENV_FORWARD=(-e HF_HUB_ENABLE_HF_TRANSFER=1)
 # helper the documentation recommends.
 [[ -n "${UNSLOTH_STUDIO_SECURE:-}" ]]     && ENV_FORWARD+=(-e UNSLOTH_STUDIO_SECURE)
 [[ -n "${UNSLOTH_STUDIO_CLOUDFLARE:-}" ]] && ENV_FORWARD+=(-e UNSLOTH_STUDIO_CLOUDFLARE)
+
+STOP_BUDGET="${UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S:-120}"
+if ! [[ "$STOP_BUDGET" =~ ^[0-9]+$ ]]; then
+    printf "\033[1;31mERROR:\033[0m UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S=%s is not a number of seconds.\n" "$STOP_BUDGET" >&2
+    exit 1
+fi
+# 10# as in studio_launch.sh: a leading zero must not read as octal
+STOP_TIMEOUT=$(( 10#$STOP_BUDGET + 30 ))
 
 declare -a PORT_FLAGS=()
 if [[ -n "${UNSLOTH_PORTS:-}" ]]; then
@@ -336,6 +353,7 @@ fi
 exec docker run --rm ${TTY_FLAG[@]+"${TTY_FLAG[@]}"} \
     ${GPU_FLAG[@]+"${GPU_FLAG[@]}"} \
     --ipc=host \
+    --stop-timeout "$STOP_TIMEOUT" \
     --ulimit memlock=-1 \
     --ulimit stack=67108864 \
     -v "$HF_CACHE":/workspace/.cache/huggingface \

@@ -21,7 +21,7 @@ That starts the container and follows its startup, which ends after about a minu
 
 Those ports publish on every interface, which is fine on a laptop and not on a cloud host. Three ways to close that, in order of least work:
 
-- `-e UNSLOTH_STUDIO_SECURE=1`, with `-p 8000:8000` dropped and 8888 changed to `-p 127.0.0.1:8888:8888`: Studio is served only over a Cloudflare HTTPS link, printed in the log, and binds to loopback inside the container so no raw port exists. It fails closed, so no tunnel means no link rather than serving in the clear. Move JupyterLab too, or it stays published on every interface over plain HTTP, which is a shell on your GPU box with its password in the clear. On a new volume the public page will not hand out the generated first-boot password, so set one first (see below). `UNSLOTH_STUDIO_CLOUDFLARE=1` keeps the local port as well.
+- `-e UNSLOTH_STUDIO_SECURE=1`, with `-p 8000:8000` dropped and 8888 changed to `-p 127.0.0.1:8888:8888`: Studio is served only over a Cloudflare HTTPS link, printed in the log, and binds to loopback inside the container so no raw port exists. It fails closed, so no tunnel means no link rather than serving in the clear. Move JupyterLab too, or it stays published on every interface over plain HTTP, which is a shell on your GPU box with its password in the clear. On a new volume the public page will not hand out the generated first-boot password, on purpose; read it from the log, where it is printed for exactly this case, or set one yourself with `UNSLOTH_STUDIO_PASSWORD`. `UNSLOTH_STUDIO_CLOUDFLARE=1` keeps the local port as well.
 - Publish to `127.0.0.1` and tunnel: `-p 127.0.0.1:8000:8000 -p 127.0.0.1:8888:8888`, then `ssh -L 8000:localhost:8000 -L 8888:localhost:8888 user@your-host`.
 - Keep the ports and set real passwords with `-e UNSLOTH_STUDIO_PASSWORD=...` and `-e JUPYTER_PASSWORD=...`.
 
@@ -138,6 +138,7 @@ Turing has no bfloat16; Unsloth falls back to float16 there. These images are CU
 | `UNSLOTH_SKIP_NOTEBOOK_REFRESH=1` | Do not refresh the notebooks from GitHub on start; the copy baked into the image is still used. |
 | `UNSLOTH_SKIP_NOTEBOOK_SYNC=1` | Do not set up the notebooks at all: nothing is created at `/workspace/unsloth-notebooks` or `/workspace/Unsloth Notebooks`. |
 | `HF_TOKEN`, `WANDB_API_KEY` | Forwarded to Hugging Face and Weights and Biases. |
+| `UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S` | How long a training run gets to save a checkpoint when the container stops. Default `120`, and capped by `UNSLOTH_STUDIO_TRAINING_STOP_TIMEOUT_S` (default `600`). |
 
 On a CPU-only host a non-login `docker exec` is built from the image, not the container's first process, so `docker exec <c> python -c "import unsloth"` still asks for a GPU. Use `bash -lc '...'` or pass `-e UNSLOTH_ALLOW_CPU=1`.
 
@@ -162,6 +163,20 @@ Studio's code ships in the image under `/opt/unsloth-studio-app` and is linked i
 
 - A volume from before that split holds an old image's code. The first start of a newer image moves it aside to `/opt/unsloth-studio/.unsloth-studio-legacy/` and links the new code in; nothing is deleted. Delete it once the new image works (`docker exec <c> rm -rf /opt/unsloth-studio/.unsloth-studio-legacy`), along with the 9 GB uv cache at `/opt/unsloth-studio/cache/uv`, or start with `-e UNSLOTH_STUDIO_KEEP_LEGACY=0` to skip keeping it. Going back to a pre-split image needs those entries moved back, or `docker run --rm -v unsloth-studio:/opt/unsloth-studio --entrypoint unsloth-studio-home <current image> --restore`.
 - Use a named volume, not a bind mount of a Windows or macOS host directory: the Studio home needs symlinks, and Docker Desktop's file sharing may refuse to create them, stopping the container at start. A Linux directory, including one inside a WSL 2 distribution, works.
+
+## Stopping while training
+
+On `docker stop` and `docker restart`, Studio stops a running training job at the next step and saves a checkpoint before it exits, so the run can be resumed from the Training page. Docker only waits 10 seconds by default, which is not enough for a large model, so give it the budget:
+
+```bash
+docker stop -t 150 <container>
+```
+
+or `stop_grace_period: 150s` in Compose. `docker/run.sh` sets this for you. `UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S` (default 120) is the time Studio itself waits for the save; the container's own limit is 30 seconds above it.
+
+A save is also bounded by the training stop watchdog, which force-terminates a worker that has not finished after `UNSLOTH_STUDIO_TRAINING_STOP_TIMEOUT_S` (default 600). Raising the shutdown budget past that does nothing on its own; raise both, and `docker/run.sh` forwards both.
+
+A host shutdown is not covered: the daemon stops every container under its own `--shutdown-timeout` (15 seconds by default), so a save that takes longer is cut short. Stop the container yourself before shutting the host down.
 
 ## Updating inside a running container
 
