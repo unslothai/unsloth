@@ -234,6 +234,50 @@ def test_a_saved_backend_still_replaces_a_resident_auto_backend(monkeypatch):
     assert isinstance(embeddings._get_backend("org/embedder"), _SentinelLlamaBackend)
 
 
+def test_a_replaced_backend_asks_the_hardware_again(monkeypatch):
+    """The kept answer is tied to the object it was kept for, and that tie is what makes a
+    rebuild re-ask. Without it the tuple answers for a backend that is no longer published,
+    so a host whose hardware moved keeps being told what it had before the rebuild."""
+    asked = _resolve_auto_for(monkeypatch)
+    _patch_llama_backend(monkeypatch, binary = "/fake/llama-server")
+
+    first = embeddings._get_backend("org/embedder")
+    assert asked == ["probe"]
+
+    # A GGUF repo name resolves without the hardware, so the rebuild caches nothing of its own.
+    monkeypatch.setattr(embeddings, "_model_names_gguf_repo", lambda _model: True)
+    second = embeddings._get_backend("org/embedder")
+    assert second is not first
+    assert asked == ["probe"]
+
+    # Back to a plain model: the published backend is no longer the one the answer was kept
+    # for, so auto must go and ask rather than answer from the replaced backend's probe.
+    monkeypatch.setattr(embeddings, "_model_names_gguf_repo", lambda _model: False)
+    assert embeddings._resolve_auto_for_model("org/embedder") == "sentence-transformers"
+    assert asked == ["probe", "probe"]
+
+
+def test_a_resolution_that_never_asked_the_hardware_keeps_nothing(monkeypatch):
+    """``_get_backend`` clears the per-thread answer before resolving, and that clear is
+    load-bearing: the identity and active-backend probes also resolve ``auto`` outside the
+    lock, so without it a build that short-circuited the hardware would publish the answer
+    an earlier, unrelated call had left behind."""
+    asked = _resolve_auto_for(monkeypatch)
+    _patch_llama_backend(monkeypatch, binary = "/fake/llama-server")
+
+    # An out-of-lock caller resolves auto first, with no backend published yet.
+    embeddings.active_backend_is_llama("org/embedder")
+    assert asked == ["probe"]
+
+    # Now build for a model that never reaches the hardware question.
+    monkeypatch.setattr(embeddings, "_model_names_gguf_repo", lambda _model: True)
+    built = embeddings._get_backend("org/embedder")
+    assert isinstance(built, _SentinelLlamaBackend)
+
+    # Nothing was kept, because this build asked the hardware nothing.
+    assert embeddings._resident_hardware is None
+
+
 def test_encode_is_serialized(monkeypatch):
     probe = _ConcurrencyProbe()
     monkeypatch.setattr(embeddings, "_get", lambda model_name = None: _FakeModel(probe))
