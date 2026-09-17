@@ -16096,6 +16096,10 @@ def _check_signal_escape_patterns(code: str):
             # A client built on a base URL sends there even when the call passes a bare path.
             **{f"{c}": (None, "base_url", "url") for c in ("httpx.Client", "httpx.AsyncClient")},
             "aiohttp.ClientSession": (0, "base_url", "url"),
+            **{
+                f"{c}.ws_connect": (0, "url", "url")
+                for c in ("aiohttp.ClientSession", "aiohttp.client.ClientSession")
+            },
             **{f"{c}.send": (0, "request", "url") for c in ("httpx.Client", "httpx.AsyncClient")},
             **{f"{client}.urlopen": (1, "url", "url") for client in _POOL_CLIENTS},
             **{f"{client}.connection_from_url": (0, "url", "url") for client in _POOL_CLIENTS},
@@ -16109,17 +16113,14 @@ def _check_signal_escape_patterns(code: str):
     _CONNECTING_CLIENT_FQ = frozenset(
         {"socket.socket", "paramiko.SSHClient", "paramiko.client.SSHClient"}
     )
+    _UPLOAD_VERBS = ("post", "put", "patch", "delete", "request")
     _UPLOAD_HTTP_METHODS = (
-        "requests.post",
-        "requests.put",
-        "requests.patch",
-        "requests.delete",
-        "requests.request",
-        "httpx.post",
-        "httpx.put",
-        "httpx.patch",
-        "httpx.delete",
-        "httpx.request",
+        # Uploading through a session is the same upload as through the module function.
+        *(
+            f"{owner}.{verb}"
+            for owner in ("requests", "requests.api", "httpx", *_VERB_CLIENTS)
+            for verb in _UPLOAD_VERBS
+        ),
         "urllib.request.urlopen",
         "urllib.request.Request",
     )
@@ -16760,7 +16761,10 @@ def _check_signal_escape_patterns(code: str):
                         else None
                     )
                     _add_name_store(scope, alias.asname or alias.name, value, node)
-            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            elif isinstance(node, ast.ClassDef):
+                # The node itself, so `class Sub(Base)` can find Base's attribute stores.
+                _add_name_store(scope, node.name, node, node)
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 _add_name_store(scope, node.name, None, node)
             elif isinstance(node, ast.ExceptHandler) and node.name:
                 _add_name_store(scope, node.name, None, node, certain = False)
@@ -16834,18 +16838,14 @@ def _check_signal_escape_patterns(code: str):
         """Drop the stores a later one in the same straight line has already replaced."""
         read_at = _position(read)
         around = _blocks_around(read)
-        live = []
-        for value, pos, block, _certain in stores:
-            # A store in the same body, after this one and before the read, always runs in
-            # between, but only if it is guaranteed to bind at all. Branches, loop bodies and
-            # walrus expressions replace nothing.
-            superseded = block in around and any(
-                other_certain and other_block == block and pos < other_pos < read_at
-                for _v, other_pos, other_block, other_certain in stores
-            )
-            if not superseded:
-                live.append(value)
-        return live
+        # A store in the same body, after this one and before the read, always runs in between,
+        # but only if it is guaranteed to bind at all. Branches, loop bodies and walrus
+        # expressions replace nothing. One pass per block, not one scan per store.
+        latest: dict = {}
+        for _value, pos, block, certain in stores:
+            if certain and block in around and pos < read_at and pos > latest.get(block, (0, 0)):
+                latest[block] = pos
+        return [value for value, pos, block, _certain in stores if latest.get(block, (0, 0)) <= pos]
 
     def _name_values(name: ast.Name) -> "list | None":
         """Return the stores visible to this name read."""
@@ -16885,12 +16885,31 @@ def _check_signal_escape_patterns(code: str):
             current = _scope_parent.get(id(current))
         return values if found else None
 
+    def _base_classes(cls: ast.ClassDef) -> list:
+        return [
+            value
+            for base in cls.bases
+            if isinstance(base, ast.Name)
+            for value in _name_values(base) or []
+            if isinstance(value, ast.ClassDef)
+        ]
+
     def _attr_values(expr: ast.Attribute) -> "list | None":
         """Return the stores for an `obj.attr` receiver, nearest owning scope first."""
         scope = _node_scope.get(id(expr), tree)
         cls = _enclosing_class(scope)
         if cls is not None:
-            return _attr_stores.get((id(cls), expr.value.id, expr.attr))
+            # A subclass reads what its bases set on self, so walk the inheritance chain.
+            values: list = []
+            pending, seen = [cls], {id(cls)}
+            while pending:
+                current = pending.pop(0)
+                values.extend(_attr_stores.get((id(current), expr.value.id, expr.attr)) or [])
+                for base in _base_classes(current):
+                    if id(base) not in seen:
+                        seen.add(id(base))
+                        pending.append(base)
+            return values or None
         current: ast.AST | None = scope
         while current is not None:
             values = _attr_stores.get((id(current), expr.value.id, expr.attr))

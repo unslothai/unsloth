@@ -420,6 +420,23 @@ class TestNetworkTargetResolution:
                 f"import aiohttp\naiohttp.ClientSession('http://{_H}').get('/')",
                 id = "aiohttp_session_base_url",
             ),
+            # A subclass reads what its bases set on self.
+            pytest.param(
+                "import paramiko\nclass Base:\n    def __init__(self):\n"
+                "        self.client = paramiko.SSHClient()\n"
+                f"class Sub(Base):\n    def go(self):\n        self.client.connect(hostname='{_H}')",
+                id = "inherited_client_attribute",
+            ),
+            pytest.param(
+                "import requests\nclass A:\n    def __init__(self):\n        self.s = requests.Session()\n"
+                f"class B(A):\n    pass\nclass C(B):\n    def go(self):\n        self.s.get('http://{_H}/')",
+                id = "inherited_session_two_levels",
+            ),
+            # A websocket is a connection like any other.
+            pytest.param(
+                f"import aiohttp\naiohttp.ClientSession().ws_connect('http://{_H}/')",
+                id = "aiohttp_ws_connect",
+            ),
             # A client kept on an attribute sends just like one kept in a name.
             pytest.param(
                 "import requests\nclass A:\n    def __init__(self):\n"
@@ -648,6 +665,11 @@ class TestNetworkTargetResolution:
             "import httpx\nhttpx.Client(base_url='https://pypi.org/').get('/')",
             "import httpx\nhttpx.Client().get('https://pypi.org/x')",
             "import requests\nrequests.options('https://pypi.org/')",
+            "import aiohttp\naiohttp.ClientSession().ws_connect('https://pypi.org/')",
+            "import requests\nrequests.Session().post('https://huggingface.co/', json={'a': 1})",
+            # A base class that holds no client leaves the subclass receiver uninspected.
+            "import requests\nclass Base:\n    def __init__(self):\n        self.s = get_db()\n"
+            "class Sub(Base):\n    def go(self):\n        self.s.connect(host='localhost')",
             "import requests\nclass A:\n    def __init__(self):\n        self.session = requests.Session()\n"
             "    def go(self):\n        self.session.get('https://pypi.org/')",
             "import httpx\nc = httpx.Client()\nc.send(c.build_request('GET', 'https://pypi.org/'))",
@@ -680,6 +702,7 @@ class TestNetworkTargetResolution:
             "import requests\ns = requests.Session()\ns.get(input())",
             "import httpx\nhttpx.Client(base_url=input()).get('/')",
             "import httpx\nc = httpx.Client()\nc.send(r)",
+            "import aiohttp\naiohttp.ClientSession().ws_connect(input())",
             "import requests\nclass A:\n    def __init__(self):\n        self.session = requests.Session()\n"
             "    def go(self):\n        self.session.get(input())",
             "import requests\nrequests.get('https://pypi.org/', proxies={'https': input()})",
@@ -787,6 +810,17 @@ class TestUploadDenylist:
                 'httpx.post("https://huggingface.co/api/repos/upload", '
                 'files={"f": open("x.bin", "rb")})',
                 id = "httpx_post_files_blocked",
+            ),
+            # Uploading through a session is the same upload as through the module function.
+            pytest.param(
+                "import requests\n"
+                'requests.Session().post("https://huggingface.co/", files={"x": open("r.txt")})',
+                id = "requests_session_post_files_blocked",
+            ),
+            pytest.param(
+                "import httpx\n"
+                'httpx.Client().post("https://huggingface.co/", files={"x": open("r.txt")})',
+                id = "httpx_client_post_files_blocked",
             ),
         ],
     )
