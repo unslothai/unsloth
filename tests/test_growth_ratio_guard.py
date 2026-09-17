@@ -132,7 +132,7 @@ def test_growth_reports_the_best_big_time_not_the_worst():
     cost. A backstop reading the worst would fire on a runner that stalled once.
     """
     run, clock, _ = _shaped(1.0, stalls = {1: 50.0})
-    _, big, _ = growth(run, _build, 2, repeats = 3, clock = clock)
+    _, big, _, _ = growth(run, _build, 2, repeats = 3, clock = clock)
     assert big == pytest.approx(_UNIT * 8), f"the stalled leg was the big time: {big}"
 
 
@@ -141,3 +141,18 @@ def test_a_path_slow_enough_to_trip_the_backstop_fails_on_the_backstop():
     run, clock, _ = _shaped(1.0, stalls = {1: 120.0})
     with pytest.raises(AssertionError, match = "path took"):
         assert_linear(run, _build, "glacial", 2, clock = clock)
+
+
+def test_an_aborted_confirmation_is_not_accepted_as_one():
+    """A confirmation that stopped after one pair is not a reading, however low its ratio.
+
+    The shape: the first sample is over the bar, then the retry's first pair has BOTH legs
+    stalled -- the big one past the 60s backstop, which cuts the loop, and the small one
+    enough to drag that pair's ratio under the tolerance. Reading the median of that one
+    ratio, and taking the better of the two samples' big times, accepted a superlinear path
+    on a sample that never finished. The stalls here are sized so the surviving ratio really
+    is under 6, so the row fails for the abort and not for the ratio.
+    """
+    run, clock, _ = _shaped(2.0, stalls = {1: 40.0, 3: 40.0, 6: 30.0, 7: 70.0})
+    with pytest.raises(AssertionError, match = "while re-measuring|confirmation stopped after"):
+        assert_linear(run, _build, "aborted confirmation", 2, clock = clock)

@@ -29,7 +29,12 @@ def growth(
     abort_over_s: float = None,
     clock = None,
 ):
-    """How much more `factor` times the input costs. Returns (ratio, big_seconds, big_result).
+    """How much more `factor` times the input costs.
+
+    Returns (ratio, best_big_seconds, big_result, pairs_completed). `pairs_completed` is
+    less than `repeats` only when `abort_over_s` cut the loop short, and a caller that
+    treats the ratio as a verdict has to look at it: one aborted pair whose small leg was
+    also slow can report a ratio under the bar from a sample that never finished.
 
     `build(n)` makes an input of size n and `run(text)` is the thing being measured.
 
@@ -98,7 +103,7 @@ def growth(
         if abort_over_s is not None and big_elapsed > abort_over_s:
             break
 
-    return _statistics.median(ratios), big, result
+    return _statistics.median(ratios), big, result, len(ratios)
 
 
 def assert_linear(
@@ -124,7 +129,7 @@ def assert_linear(
     budget = 60.0
     # Passed down rather than checked here: on a path slow enough to trip it, every repeat
     # is another minute spent measuring something already known to be too slow.
-    ratio, big, result = growth(run, build, units, factor, abort_over_s = budget, clock = clock)
+    ratio, big, result, _ = growth(run, build, units, factor, abort_over_s = budget, clock = clock)
     # Backstop: a regression bad enough to make the ratio unmeasurable still has to fail, and
     # fail quickly, rather than run until the job's own timeout kills it with no explanation.
     assert big < budget, f"{label} path took {big:.1f}s on {units * factor} units"
@@ -141,7 +146,7 @@ def assert_linear(
         # median comes back over the bar as surely as its first, while a contention spike does
         # not survive being asked again on a bigger sample. The cost is paid only on the
         # reading that would otherwise have failed, so a green run still takes three pairs.
-        confirm, big_again, result = growth(
+        confirm, big_again, result, pairs = growth(
             run,
             build,
             units,
@@ -150,8 +155,18 @@ def assert_linear(
             abort_over_s = budget,
             clock = clock,
         )
-        big = min(big, big_again)
-        assert big < budget, f"{label} path took {big:.1f}s on {units * factor} units"
+        # The confirmation stands on its OWN reading, not on min(big, big_again). Taking the
+        # better of the two samples hid the case that matters: the retry aborts after one pair
+        # because its big leg blew the budget, and that same pair's small leg was slow enough
+        # to put the ratio under the bar, so a superlinear path passed on a sample that never
+        # finished. Both halves are now required of the confirmation itself.
+        assert (
+            big_again < budget
+        ), f"{label} path took {big_again:.1f}s on {units * factor} units while re-measuring"
+        assert pairs == repeats_on_retry, (
+            f"{label} path: the confirmation stopped after {pairs} of {repeats_on_retry} pairs, "
+            "so its ratio is not a reading of anything"
+        )
         assert confirm < tolerance, (
             f"{label} path is not linear: {factor}x the input cost {confirm:.1f}x the time "
             f"over {repeats_on_retry} pairs, after {ratio:.1f}x over 3 "
