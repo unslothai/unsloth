@@ -1007,9 +1007,27 @@ class InferenceOrchestrator:
         self._retire_stderr_capture()
 
     def _retire_stderr_capture(self) -> None:
+        """Close the sink, after one last chance to keep what is in it.
+
+        A worker killed by a native fault BETWEEN requests has no waiter: nothing reaches
+        `_subprocess_crash_message`, so the replay that exists for a forwarding thread the
+        signal ended never runs, and the next load closed the only remaining copy here. The
+        liveness check that load performs says "Inference subprocess is not running" and
+        nothing about the cause. So a capture belonging to a worker that is gone, and that
+        has not been written out, is written out now.
+        """
         capture = getattr(self, "_stderr_capture", None)
         if capture is None:
             return
+        proc = getattr(self, "_proc", None)
+        try:
+            worker_is_gone = proc is None or not proc.is_alive()
+        except Exception:  # noqa: BLE001 -- a handle in teardown; treat it as gone
+            worker_is_gone = True
+        if worker_is_gone:
+            self._log_worker_stderr_once(
+                getattr(proc, "pid", None), getattr(proc, "exitcode", None),
+            )
         try:
             capture.close()
         except Exception:

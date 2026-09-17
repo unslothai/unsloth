@@ -1147,6 +1147,57 @@ def test_a_live_replacements_own_crash_is_still_written_to_the_log(monkeypatch):
     assert len(written) == 2, written
 
 
+def test_a_worker_that_died_between_requests_is_replayed_before_its_sink_closes(monkeypatch):
+    """A native fault between requests has no waiter.
+
+    Nothing reaches `_subprocess_crash_message`, so the replay that exists for a forwarding
+    thread the signal ended never runs, and the next load retired the capture -- closing the
+    only remaining copy of the cause. What the user saw was the load's own liveness check:
+    "Inference subprocess is not running", and nothing about why.
+    """
+    import importlib.util as _ilu
+
+    spec = _ilu.spec_from_file_location(
+        "inference_orchestrator_idle_retire_under_test",
+        Path(_BACKEND_DIR) / "core/inference/orchestrator.py",
+    )
+    module = _ilu.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    written: "list[tuple]" = []
+    monkeypatch.setattr(
+        module.logger, "error", lambda *args, **kwargs: written.append(args), raising = False,
+    )
+
+    closed: "list[bool]" = []
+
+    class _ClosableCapture(_FixedCapture):
+        def close(self):
+            closed.append(True)
+
+    orchestrator = module.InferenceOrchestrator.__new__(module.InferenceOrchestrator)
+    orchestrator._stderr_capture = _ClosableCapture(
+        "Fatal Python error: Segmentation fault\n"
+    )
+    orchestrator._proc = SimpleNamespace(
+        pid = 7331, exitcode = -11, is_alive = lambda: False,
+    )
+
+    orchestrator._retire_stderr_capture()
+    assert closed == [True]
+    assert written, "the capture of a worker that died unattended was closed unread"
+    assert "Fatal Python error: Segmentation fault" in str(written[0])
+    assert orchestrator._stderr_capture is None
+
+    # A worker that is still running has said nothing final, and its sink is retired without
+    # being treated as a crash.
+    written.clear()
+    orchestrator._stderr_capture = _ClosableCapture("loading shards: 40%\n")
+    orchestrator._proc = SimpleNamespace(pid = 7332, exitcode = None, is_alive = lambda: True)
+    orchestrator._retire_stderr_capture()
+    assert written == [], written
+
+
 def test_a_request_queued_behind_the_crash_is_not_given_its_last_words(monkeypatch):
     """Compare mode keeps several mailboxes in flight while the subprocess runs the commands
     one at a time.

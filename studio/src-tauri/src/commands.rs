@@ -497,7 +497,8 @@ pub async fn check_backend_present(
     // app has a backend on that port: with one, a stall is our own process holding the GIL
     // and relaunching would kill work in flight; without one, there is nothing of ours to
     // wait for and the relaunch verdict stands.
-    backend_presence(port, we_manage_a_backend_on(state.inner(), port)).await
+    let state = state.inner();
+    backend_presence(port, || we_manage_a_backend_on(state, port)).await
 }
 
 /// The body of `check_backend_present`, without the Tauri state.
@@ -505,12 +506,24 @@ pub async fn check_backend_present(
 /// Separated so a test can drive both answers for *we_manage_it* against a real socket: a
 /// `tauri::State` cannot be built outside a running app, and a test that re-spells the rule
 /// over hand-made structs asserts its own arithmetic.
-async fn backend_presence(port: u16, we_manage_it: bool) -> Result<bool, String> {
+///
+/// *we_manage_it* is a closure, and it is called AFTER the probe rather than before it. The
+/// probe can take the full budget, and the two weak readings are only allowed to count
+/// because the thing on the port can only be our own process: a managed backend that exits
+/// or is replaced during a ten-second timeout would otherwise be reported as running on the
+/// strength of an ownership answer taken before it died.
+async fn backend_presence(
+    port: u16,
+    we_manage_it: impl Fn() -> bool,
+) -> Result<bool, String> {
     match check_health_inner(port, HEALTH_PROBE_TIMEOUT).await {
-        Ok(liveness) => Ok(backend_is_present(&liveness, we_manage_it)),
+        Ok(liveness) => Ok(backend_is_present(&liveness, we_manage_it())),
         Err(e) => {
             info!("Backend presence check on port {} failed: {}", port, e);
-            Ok(backend_is_present(&liveness_from_probe_error(&e), we_manage_it))
+            Ok(backend_is_present(
+                &liveness_from_probe_error(&e),
+                we_manage_it(),
+            ))
         }
     }
 }
@@ -1774,6 +1787,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ownership_is_read_after_the_probe_not_before_it() {
+        // The probe can take the full ten-second budget, and the two weak readings are only
+        // allowed to count because the thing on the port can only be OUR process. A managed
+        // backend that exits or is replaced while the probe is outstanding was still reported
+        // as running, on the strength of an ownership answer taken before it died.
+        //
+        // The closure answers "we manage it" only once the request has actually reached the
+        // server, so it can only return true if it was called AFTER the probe.
+        let probe_arrived = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("probe test needs a loopback port");
+        let port = listener.local_addr().unwrap().port();
+        let seen = std::sync::Arc::clone(&probe_arrived);
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let mut buffer = [0; 2048];
+                let Ok(_) = stream.read(&mut buffer).await else {
+                    return;
+                };
+                seen.store(true, std::sync::atomic::Ordering::SeqCst);
+                let response = "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                let _ = stream.write_all(response.as_bytes()).await;
+            }
+        });
+
+        let asked = std::sync::Arc::clone(&probe_arrived);
+        assert_eq!(
+            super::backend_presence(port, move || asked.load(std::sync::atomic::Ordering::SeqCst))
+                .await,
+            Ok(true),
+            "ownership was read before the probe, so a backend that changed under it would \
+             still have been reported as running"
+        );
+    }
+
+    #[tokio::test]
     async fn a_managed_backend_that_answers_unhealthily_is_still_present() {
         // A backend that is up but not serving liveness yet -- still building its app, or
         // shedding load -- answers a non-2xx, and the probe collapsed that onto the same
@@ -1782,13 +1832,13 @@ mod tests {
         // kills the process that was answering.
         let port = answering_test_backend("503 Service Unavailable", "").await;
         assert_eq!(
-            super::backend_presence(port, true).await,
+            super::backend_presence(port, || true).await,
             Ok(true),
             "a managed backend answering 503 was reported absent"
         );
         // Not ours and not a healthy Unsloth reply: that says nothing about our backend, so
         // the relaunch verdict stands, exactly as before.
-        assert_eq!(super::backend_presence(port, false).await, Ok(false));
+        assert_eq!(super::backend_presence(port, || false).await, Ok(false));
     }
 
     #[tokio::test]
@@ -1797,11 +1847,11 @@ mod tests {
         // the parse error made presence indistinguishable from a refused connection.
         let port = answering_test_backend("200 OK", "not json at all").await;
         assert_eq!(
-            super::backend_presence(port, true).await,
+            super::backend_presence(port, || true).await,
             Ok(true),
             "a managed backend answering an unparseable body was reported absent"
         );
-        assert_eq!(super::backend_presence(port, false).await, Ok(false));
+        assert_eq!(super::backend_presence(port, || false).await, Ok(false));
 
         // And it is not reported as ALIVE: presence is the weaker question, and a caller
         // asking "may I use this backend" must still get no.
@@ -1846,7 +1896,7 @@ mod tests {
         // actually be spent for the error to be a timeout.
         let port = stalling_test_backend().await;
         assert_eq!(
-            super::backend_presence(port, true).await,
+            super::backend_presence(port, || true).await,
             Ok(true),
             "a backend holding the port and not answering was reported absent, which is the \
              relaunch prompt this command was added to prevent"
@@ -1861,7 +1911,7 @@ mod tests {
         // than relaunch is the failure mode this arm has to avoid.
         let port = stalling_test_backend().await;
         assert_eq!(
-            super::backend_presence(port, false).await,
+            super::backend_presence(port, || false).await,
             Ok(false),
             "a stalled port with no managed backend behind it was reported as present"
         );
@@ -1879,7 +1929,7 @@ mod tests {
             port
         };
         assert_eq!(
-            super::backend_presence(port, true).await,
+            super::backend_presence(port, || true).await,
             Ok(false),
             "a closed port must still read as an absent backend"
         );
