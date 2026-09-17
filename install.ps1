@@ -7853,6 +7853,7 @@ exit 0
     # Reset per run: under `irm | iex` the script scope IS the caller's session.
     $script:NvidiaPresenceOnly = $false
     $script:NvidiaPresenceCudaFloor = $null
+    $script:NvidiaPresenceDriverRelease = $null
 
     function Test-NvidiaSmiHasGpu {
         param([Parameter(Mandatory = $true)][string]$Exe)
@@ -8205,23 +8206,39 @@ exit 0
     # 560.94. The NVIDIA release is the last five digits with a point before the final two, which is
     # the mapping NVIDIA's own release notes describe. Anything that does not look like that answers
     # $null rather than a guess.
-    function Get-NvidiaDriverCudaFloor {
+    # The NVIDIA release number behind a driver version string, or $null when none can be read.
+    # Split out of Get-NvidiaDriverCudaFloor so a caller can tell "no version at all" apart from "a
+    # version, and it is below every row of the table". Those are different machines: the first is
+    # unknown, the second is known to be too old for every CUDA wheel offered, and the floor helper
+    # answers $null for both.
+    function Get-NvidiaDriverRelease {
         param([string]$DriverVersion)
         if ([string]::IsNullOrWhiteSpace($DriverVersion)) { return $null }
-        $release = $null
         # The Windows display-driver form, four dotted fields.
         $m = [regex]::Match($DriverVersion, '^\s*\d+\.\d+\.(\d+)\.(\d+)\s*$')
         if ($m.Success) {
             $digits = ($m.Groups[1].Value + $m.Groups[2].Value)
             if ($digits.Length -ge 5) {
                 $tail = $digits.Substring($digits.Length - 5)
-                $release = [int]$tail.Substring(0, 3)
+                return [int]$tail.Substring(0, 3)
             }
-        } else {
-            # An already-NVIDIA-shaped version, which is what nvidia-smi and Linux report.
-            $m2 = [regex]::Match($DriverVersion, '^\s*(\d+)\.')
-            if ($m2.Success) { $release = [int]$m2.Groups[1].Value }
+            return $null
         }
+        # An already-NVIDIA-shaped version, which is what nvidia-smi and Linux report. Three digits
+        # at least: NVIDIA has shipped release numbers in the hundreds for its whole modern history,
+        # so "1.2.3" is a malformed string rather than release 1. That matters now the caller acts on
+        # a low release by choosing CPU wheels, and nonsense must read as unknown, not as ancient.
+        $m2 = [regex]::Match($DriverVersion, '^\s*(\d+)\.')
+        if ($m2.Success) {
+            $parsed = [int]$m2.Groups[1].Value
+            if ($parsed -ge 100) { return $parsed }
+        }
+        return $null
+    }
+
+    function Get-NvidiaDriverCudaFloor {
+        param([string]$DriverVersion)
+        $release = Get-NvidiaDriverRelease -DriverVersion $DriverVersion
         if ($null -eq $release) { return $null }
         # Highest floor first, the same order and values as _DRIVER_MAJOR_CUDA.
         foreach ($row in @(
@@ -8234,6 +8251,21 @@ exit 0
     }
 
     # The floor for whichever healthy NVIDIA adapter the bus reports, or $null.
+    # The release number of the first healthy NVIDIA adapter, whatever the table makes of it.
+    # Same walk and same health gate as Get-NvidiaAdapterCudaFloor; only the answer differs.
+    function Get-NvidiaAdapterDriverRelease {
+        param($Scan = $null)
+        if ($null -eq $Scan) { $Scan = Invoke-BoundedVideoControllerScan }
+        foreach ($adapter in @($Scan.Adapters)) {
+            if ("$($adapter.PNPDeviceID)" -notmatch '(?i)ven_10de') { continue }
+            if ($null -eq $adapter.ConfigManagerErrorCode) { continue }
+            if ([int]$adapter.ConfigManagerErrorCode -ne 0) { continue }
+            $release = Get-NvidiaDriverRelease -DriverVersion "$($adapter.DriverVersion)"
+            if ($null -ne $release) { return $release }
+        }
+        return $null
+    }
+
     function Get-NvidiaAdapterCudaFloor {
         param($Scan = $null)
         if ($null -eq $Scan) { $Scan = Invoke-BoundedVideoControllerScan }
@@ -8273,6 +8305,9 @@ exit 0
             $HasNvidiaSmi = $true
             $script:NvidiaPresenceOnly = $true
             $script:NvidiaPresenceCudaFloor = Get-NvidiaAdapterCudaFloor -Scan $presenceScan
+                        # Recorded separately, because the floor answers $null both for a driver too old for
+                        # the table and for no readable version at all, and those two want opposite answers.
+                        $script:NvidiaPresenceDriverRelease = Get-NvidiaAdapterDriverRelease -Scan $presenceScan
             Write-StudioLine "   NVIDIA GPU found on the PCI bus; nvidia-smi and the driver library are both unavailable" -ForegroundColor Gray
         }
     }
@@ -9138,10 +9173,20 @@ exit 0
                         $major = 12; $minor = 6
                         substep "no source could name the GPU's compute capability, so the family stops at cu126; set UNSLOTH_TORCH_INDEX_FAMILY to override" "Yellow"
                     }
+                } elseif ($null -ne $script:NvidiaPresenceDriverRelease -and
+                          $script:NvidiaPresenceDriverRelease -lt 450) {
+                    # A version WAS readable and it is below every row of the table. Pre-R450
+                    # drivers carry no CUDA runtime any currently offered wheel can use, so
+                    # handing this host a CUDA family downloads gigabytes that cannot run. The
+                    # previous behaviour here was CPU, and CPU remains the honest answer; the
+                    # only thing that changes is that it is no longer silent.
+                    substep "an NVIDIA GPU is present but its driver ($script:NvidiaPresenceDriverRelease series) predates R450 and carries no usable CUDA runtime; installing CPU wheels. Update the NVIDIA driver and re-run to get CUDA" "Yellow"
+                    return "$baseUrl/cpu"
                 } else {
-                    # A GPU, but not even a driver version to floor against. cu126 is the same
-                    # conservative family the unreadable-banner branch just below already picks,
-                    # and it is a far better answer than CPU on a machine with a working card.
+                    # A GPU, and either no readable driver version or one this installer cannot
+                    # place. cu126 is the same conservative family the unreadable-banner branch
+                    # just below already picks, and it is a far better answer than CPU on a
+                    # machine with a working card.
                     $major = 12; $minor = 6
                     substep "an NVIDIA GPU is present but no source could name its CUDA version; defaulting to cu126. Set UNSLOTH_TORCH_INDEX_FAMILY to override" "Yellow"
                 }

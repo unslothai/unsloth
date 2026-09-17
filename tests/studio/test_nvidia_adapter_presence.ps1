@@ -48,7 +48,8 @@ function Get-FunctionText($file, $name) {
 $strip = { param($t) (($t -split "`n") | ForEach-Object { $_.TrimStart() }) -join "`n" }
 $shared = @(
     "Invoke-BoundedVideoControllerScan", "Test-NvidiaAdapterPresent",
-    "Test-OtherVendorAdapterPresent", "Get-NvidiaDriverCudaFloor", "Get-NvidiaAdapterCudaFloor"
+    "Test-OtherVendorAdapterPresent", "Get-NvidiaDriverRelease", "Get-NvidiaDriverCudaFloor",
+    "Get-NvidiaAdapterDriverRelease", "Get-NvidiaAdapterCudaFloor"
 )
 foreach ($name in $shared) {
     Check "install.ps1 and setup.ps1 carry the same $name" (
@@ -56,7 +57,8 @@ foreach ($name in $shared) {
 }
 
 foreach ($name in @("Test-NvidiaAdapterPresent", "Test-OtherVendorAdapterPresent",
-                    "Get-NvidiaDriverCudaFloor", "Get-NvidiaAdapterCudaFloor")) {
+                    "Get-NvidiaDriverRelease", "Get-NvidiaDriverCudaFloor",
+                    "Get-NvidiaAdapterDriverRelease", "Get-NvidiaAdapterCudaFloor")) {
     Invoke-Expression (Get-FunctionText $setupPs1 $name)
 }
 
@@ -184,6 +186,34 @@ foreach ($case in @(
 
 # Read out of the adapter inventory, and only from a HEALTHY NVIDIA one.
 $script:FakeAdapters = @(Adapter "NVIDIA GeForce RTX 4090" "PCI\VEN_10DE&DEV_2684" 0 "32.0.15.7020")
+# The release parse on its own. This is what lets the caller tell "no version at all" apart from
+# "a version, and it is below every row of the table": the floor helper answers $null for both,
+# and they want opposite wheels.
+foreach ($case in @(
+    @{ V = "32.0.15.6094"; R = 560; N = "a Windows display-driver version" },
+    @{ V = "30.0.14.4568"; R = 445; N = "a pre-R450 Windows version" },
+    @{ V = "580.65.06";    R = 580; N = "an nvidia-smi style version" },
+    @{ V = "445.68";       R = 445; N = "a pre-R450 nvidia-smi style version" },
+    @{ V = "";             R = $null; N = "an empty version" },
+    @{ V = "not a version"; R = $null; N = "an unparseable version" },
+    @{ V = "1.2.3";        R = $null; N = "a three-field version" },
+    # Three digits at least. The caller now acts on a low release by choosing CPU wheels, so a
+    # malformed string must read as unknown rather than as an ancient driver.
+    @{ V = "99.1";         R = $null; N = "a two-digit release" },
+    @{ V = "100.1";        R = 100;  N = "the lowest release shape NVIDIA actually ships" }
+)) {
+    $got = Get-NvidiaDriverRelease -DriverVersion $case.V
+    Check "$($case.N) reads as release $($case.R)" ($got -eq $case.R)
+}
+# And the two disagree exactly where they should: a readable pre-R450 version has a release but
+# no floor, which is the whole distinction the wheel branch now depends on.
+Check "a pre-R450 driver has a release but no floor" (
+    (Get-NvidiaDriverRelease -DriverVersion "30.0.14.4568") -eq 445 -and
+    $null -eq (Get-NvidiaDriverCudaFloor -DriverVersion "30.0.14.4568"))
+Check "an unreadable version has neither" (
+    $null -eq (Get-NvidiaDriverRelease -DriverVersion "junk") -and
+    $null -eq (Get-NvidiaDriverCudaFloor -DriverVersion "junk"))
+
 $floor = Get-NvidiaAdapterCudaFloor
 Check "the floor is read from the healthy NVIDIA adapter" (
     $null -ne $floor -and $floor[0] -eq 12 -and $floor[1] -eq 8)
@@ -259,6 +289,25 @@ Check "setup.ps1 still returns empty for unknown rather than flooring" (
     $setupTag -notmatch 'NvidiaPresenceCudaFloor')
 Check "and install.ps1 is where the floor is consumed" (
     (Get-FunctionText $installPs1 "Get-TorchIndexUrl") -match 'NvidiaPresenceCudaFloor')
+
+# The routing rows above set $script:NvidiaPresenceDriverRelease directly, so nothing in them
+# exercises the promotion site that is supposed to RECORD it. Without this, deleting that
+# recording leaves every row green while every real host reports no release at all, and the
+# pre-R450 branch becomes unreachable. Found exactly that way: the mutation passed.
+foreach ($file in @($installPs1, $setupPs1)) {
+    $text = [System.IO.File]::ReadAllText($file)
+    $leaf = Split-Path -Leaf $file
+    Check "$leaf records the driver release at the promotion site" (
+        $text -match '\$script:NvidiaPresenceDriverRelease = Get-NvidiaAdapterDriverRelease')
+    Check "$leaf records it beside the floor, from the same scan" (
+        $text -match 'Get-NvidiaAdapterCudaFloor -Scan \$presenceScan[\s\S]{0,400}?Get-NvidiaAdapterDriverRelease -Scan \$presenceScan')
+    Check "$leaf initialises the release to null" (
+        $text -match '\$script:NvidiaPresenceDriverRelease = \$null')
+}
+Check "install.ps1 is where the release is consumed" (
+    (Get-FunctionText $installPs1 "Get-TorchIndexUrl") -match 'NvidiaPresenceDriverRelease')
+Check "setup.ps1 does not act on it, for the same reason it does not floor" (
+    (Get-FunctionText $setupPs1 "Get-PytorchCudaTag") -notmatch 'NvidiaPresenceDriverRelease')
 
 # ------------------------------------------------- job 2b, the registry fallback is last resort
 #
@@ -362,13 +411,23 @@ foreach ($case in @(
     @{ N = "presence-only with a 12.6 driver";      Exe = $null; Inv = $null; Pres = $true;  Floor = @(12,6); Want = "cu126"; Loud = $true },
     @{ N = "presence-only with a 13.0 driver";      Exe = $null; Inv = $null; Pres = $true;  Floor = @(13,0); Want = "cu126"; Loud = $true },
     @{ N = "presence-only with an 11.0 driver";     Exe = $null; Inv = $null; Pres = $true;  Floor = @(11,0); Want = "cu118"; Loud = $true },
-    @{ N = "presence-only with no driver version";  Exe = $null; Inv = $null; Pres = $true;  Floor = $null;   Want = "cu126"; Loud = $true }
+    @{ N = "presence-only with no driver version";  Exe = $null; Inv = $null; Pres = $true;  Floor = $null;   Want = "cu126"; Loud = $true },
+    # A version WAS readable and it is below every row of the table. Pre-R450 drivers carry no
+    # CUDA runtime any offered wheel can use, so a CUDA family here downloads gigabytes that
+    # cannot run. CPU is the honest answer, and it is the answer this host got before the
+    # promotion existed; the only change is that it is no longer silent.
+    @{ N = "presence-only on a pre-R450 driver"; Exe = $null; Inv = $null; Pres = $true; Floor = $null; Release = 445; Want = "cpu"; Loud = $true },
+    @{ N = "presence-only on R450 exactly";      Exe = $null; Inv = $null; Pres = $true; Floor = @(11,0); Release = 450; Want = "cu118"; Loud = $true },
+    # Unknown is NOT too old: a driver whose version could not be read at all keeps the
+    # conservative CUDA family rather than being demoted to CPU with it.
+    @{ N = "presence-only with an unreadable driver version"; Exe = $null; Inv = $null; Pres = $true; Floor = $null; Release = $null; Want = "cu126"; Loud = $true }
 )) {
     $NvidiaSmiExe = $case.Exe
     $script:Inv = $case.Inv
     $script:Banner = ""
     $script:NvidiaPresenceOnly = $case.Pres
     $script:NvidiaPresenceCudaFloor = $case.Floor
+    $script:NvidiaPresenceDriverRelease = $case.Release
     $script:Said = ""
     $leaf = ("" + (Get-TorchIndexUrl)) -replace '^.*/', ''
     Check "$($case.N) selects $($case.Want)" ($leaf -eq $case.Want)
@@ -383,6 +442,7 @@ $script:Inv = $null
 $script:Banner = ""
 $script:NvidiaPresenceOnly = $true
 $script:NvidiaPresenceCudaFloor = @(13,0)
+$script:NvidiaPresenceDriverRelease = 580
 $script:Said = ""
 $null = Get-TorchIndexUrl
 Check "the capped row explains the cap" ($script:Said -match 'compute capability')
@@ -406,6 +466,7 @@ foreach ($case in @(
     $script:Banner = $case.Banner
     $script:NvidiaPresenceOnly = $false
     $script:NvidiaPresenceCudaFloor = $null
+    $script:NvidiaPresenceDriverRelease = $null
     $script:Said = ""
     $leaf = ("" + (Get-TorchIndexUrl)) -replace '^.*/', ''
     Check "unchanged: $($case.N) still selects $($case.Want)" ($leaf -eq $case.Want)
