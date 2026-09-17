@@ -632,3 +632,54 @@ def test_a_stale_marker_without_hooks_re_engages(monkeypatch):
     assert apply_step_cache(_pipe(t), mode = "fbcache") == TC_FBCACHE
     assert t.is_cache_enabled is True
     assert t.enable_calls == 1
+
+
+class _CleanupAlsoFailsTransformer:
+    """``enable_cache`` hooks some blocks and THEN raises, so the cache reads as enabled only after the
+    attempt; the cleanup ``disable_cache`` raises too, leaving those hooks live. ``is_cache_enabled``
+    reports that honestly, and it is the only signal the recovery branch has to go on."""
+
+    def __init__(self, *, enabled_after_failure = True):
+        self.enabled_after_failure = enabled_after_failure
+        self.attempted = False
+        self.disable_attempted = False
+
+    @property
+    def is_cache_enabled(self):
+        # Uncached until the part-way failure, so the re-entry guard at the top is not the path here.
+        return self.attempted and self.enabled_after_failure
+
+    def enable_cache(self, config):
+        self.attempted = True
+        raise RuntimeError("block signature not recognised")
+
+    def disable_cache(self):
+        self.disable_attempted = True
+        raise RuntimeError("cannot unhook")
+
+    def cache_context(self, *_a, **_k):
+        raise AssertionError("not used")
+
+
+def test_a_failed_cleanup_keeps_the_marker_rather_than_claiming_uncached(monkeypatch):
+    """If disable_cache ALSO raises, hooks may still be live. Clearing the marker there would let the
+    CUDA graph wrapper capture a cache-hooked forward: wrong output, where keeping it only forces eager."""
+    _stub_diffusers(monkeypatch)
+    t = _CleanupAlsoFailsTransformer(enabled_after_failure = True)
+    t._unsloth_step_cache = "fbcache@0.1"
+
+    assert apply_step_cache(_pipe(t), mode = "fbcache") is None
+    assert t.disable_attempted is True
+    # Preserved: the transformer is still caching, so nothing downstream may treat it as uncached.
+    assert t._unsloth_step_cache == "fbcache@0.1"
+
+
+def test_a_failed_cleanup_that_did_unhook_still_clears_the_marker(monkeypatch):
+    """disable_cache raising but the model reporting the cache OFF means the hooks went anyway, so the
+    marker must come off; leaving it would force eager on a transformer that does not cache."""
+    _stub_diffusers(monkeypatch)
+    t = _CleanupAlsoFailsTransformer(enabled_after_failure = False)
+    t._unsloth_step_cache = "fbcache@0.1"
+
+    assert apply_step_cache(_pipe(t), mode = "fbcache") is None
+    assert t._unsloth_step_cache is None

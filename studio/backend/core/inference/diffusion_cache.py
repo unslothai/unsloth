@@ -256,13 +256,21 @@ def apply_step_cache(
     except Exception as exc:  # noqa: BLE001 - incompatible model -> run uncached
         # enable_cache can fail part-hooked; restore armed compiled inners FIRST
         _restore_hooked_block_inners(transformer)
+        disabled = True
         try:
             transformer.disable_cache()
-        except Exception:  # noqa: BLE001
-            pass
-        # The marker has to come off with the hooks. It is read as "this transformer step-caches" well away from
-        # here (the CUDA graph wrapper short-circuits to eager on it), so a marker left set by a failed engage
-        # sends a transformer that is NOT caching down the caching path for the rest of the process.
+        except Exception:  # noqa: BLE001 - hooks may still be live; the marker below is what says so
+            disabled = False
+        # The marker has to track the HOOKS, not this function's intent. It is read as "this transformer
+        # step-caches" well away from here (the CUDA graph wrapper short-circuits to eager on it), so it
+        # comes off only once the hooks are known to be gone. The two ways to be wrong are not equally
+        # bad: a marker left set on an uncached transformer forces eager and costs speed, while a marker
+        # cleared over live hooks lets the graph wrapper capture a cache-hooked forward, which is wrong
+        # output. So when disable_cache itself raised, keep the marker unless the model still says the
+        # cache is off, and let the slow path be the one we fall back to.
+        if not disabled and getattr(transformer, "is_cache_enabled", False):
+            _warn(logger, mode, exc)
+            return None
         try:
             transformer._unsloth_step_cache = None
         except Exception:  # noqa: BLE001 - marker is best-effort
