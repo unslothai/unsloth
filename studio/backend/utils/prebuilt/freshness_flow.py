@@ -13,6 +13,8 @@ from typing import Any, Callable, Optional
 
 import structlog
 
+from utils.update_status import update_checks_disabled
+
 logger = structlog.get_logger(__name__)
 
 # 24h TTL keeps the GitHub call off the hot path and within rate limits.
@@ -302,7 +304,7 @@ def check_freshness(
 
     installed_full = compare_tag(marker)
     repo = out["published_repo"]
-    if not repo or not installed_full:
+    if not repo or not installed_full or update_checks_disabled():
         return out
     latest = latest_release(repo)
     out["latest_tag"] = latest
