@@ -2088,26 +2088,14 @@ function Install-UnslothStudio {
     try { $defaultProfile = [Environment]::GetFolderPath("UserProfile") } catch {}
     $tauriProfile = if ($defaultProfile) { $defaultProfile } else { $env:USERPROFILE }
 
-    # Every native declaration in this script goes through here, never Add-Type.
-    #
-    # Add-Type on Windows PowerShell 5.1 (the interpreter the desktop app spawns) has
-    # no in-process compiler: -TypeDefinition and -MemberDefinition alike write C# to
-    # %TEMP% and run csc.exe, which security software blocks and which failed outright
-    # with CS2001 when %TEMP% was unusable (issue #9140). Reflection emit builds the
-    # same interop stubs in memory: no compiler process, no source, no DLL, empty
-    # assembly Location. Available on .NET Framework 4 and .NET 5+, so 5.1 and 7 take
-    # the same path. Which product blocked what:
+    # This script declares no native method at all. Add-Type compiles through csc.exe, which
+    # security software blocks and which failed outright when %TEMP% was unusable (issue
+    # #9140); reflection emit avoided the compiler but was the largest single contributor to a
+    # behavioural verdict on the shipped file. Every entry point is reached through a child
+    # interpreter and ctypes now. Which product blocked what:
     # tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD)
-    #
-    # Throws rather than reporting: each caller wants a different answer to "the native
-    # side is unavailable", and the two cosmetic ones must not print the resolver's
-    # warning.
-    #
-    
-    
-    
-    
-    # os.path.realpath is GetFinalPathNameByHandleW on Windows, and that is the only exact
+
+    # pathlib.Path.resolve is GetFinalPathNameByHandleW on Windows, and that is the only exact
     # answer for a path: it follows junctions, symlinks and SUBST drives, expands 8.3 aliases
     # and reports the on-disk spelling, none of which GetFullPath does. Where no interpreter
     # can be reached, Get-StudioLexicalPath carries the run and the identity is inexact.
@@ -7728,7 +7716,7 @@ exit 0
 
     # The same inventory with nothing emitted: CPython's ctypes makes the identical NVML and CUDA
     # driver calls, and the interop leaves the scanned surface rather than moving within it.
-    # A second source BENEATH the emitted one, never ahead of it: "" whenever no interpreter is
+    # The only source now, and it declines rather than guesses: "" whenever no interpreter is
     # available or the probe itself says nothing.
     # Get-NvidiaProbePythonExe is deliberately per-file. The installer has its early read-only
     # interpreter ladder; setup.ps1 has the venv a previous run already built.
@@ -7872,8 +7860,8 @@ def main():
 main()
 '@
         # Cmdlets only. Constrained Language Mode refuses New-Object ProcessStartInfo and
-        # [Process]::Start, and CLM is one of the two policies that make the emitted rung decline,
-        # so this launcher has to work on exactly the hosts that need it most.
+        # [Process]::Start, and CLM is one of the policies that used to leave a locked-down host with
+        # no GPU detection at all, so this launcher has to work on the hosts that need it most.
         $tempRoot = if ($env:TEMP) { $env:TEMP } elseif ($env:TMPDIR) { $env:TMPDIR } else { "/tmp" }
         $stem = Join-Path $tempRoot ("unsloth-nvprobe-" + [guid]::NewGuid().ToString("N"))
         $scriptFile = "$stem.py"

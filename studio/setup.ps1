@@ -1045,7 +1045,7 @@ function Get-NvidiaNvmlLibraryPath {
 
 # The same inventory with nothing emitted: CPython's ctypes makes the identical NVML and CUDA
 # driver calls, and the interop leaves the scanned surface rather than moving within it.
-# A second source BENEATH the emitted one, never ahead of it: "" whenever no interpreter is
+# The only source now, and it declines rather than guesses: "" whenever no interpreter is
 # available or the probe itself says nothing.
 # Get-NvidiaProbePythonExe is deliberately per-file. The installer has its early read-only
 # interpreter ladder; setup.ps1 has the venv a previous run already built.
@@ -1189,8 +1189,8 @@ def main():
 main()
 '@
     # Cmdlets only. Constrained Language Mode refuses New-Object ProcessStartInfo and
-    # [Process]::Start, and CLM is one of the two policies that make the emitted rung decline,
-    # so this launcher has to work on exactly the hosts that need it most.
+    # [Process]::Start, and CLM is one of the policies that used to leave a locked-down host with
+    # no GPU detection at all, so this launcher has to work on the hosts that need it most.
     $tempRoot = if ($env:TEMP) { $env:TEMP } elseif ($env:TMPDIR) { $env:TMPDIR } else { "/tmp" }
     $stem = Join-Path $tempRoot ("unsloth-nvprobe-" + [guid]::NewGuid().ToString("N"))
     $scriptFile = "$stem.py"
@@ -2057,13 +2057,8 @@ function Ensure-VCRedist {
 # ─────────────────────────────────────────────
 $Rule = [string]::new([char]0x2500, 52)
 
-# Native declarations are emitted, never compiled. Add-Type on Windows PowerShell 5.1 has no
-# in-process compiler: -TypeDefinition and -MemberDefinition alike write C# to %TEMP% and run
-# csc.exe, and security software blocks the result. Reflection emit builds the same stub in
-# memory: no compiler process, no source, no DLL, empty assembly Location. install.ps1 carries
-# the same helper for the same reason, and which product blocked what is recorded in
-# tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD)
-
+# This script declares no native method at all, and neither does install.ps1. Which product
+# blocked what is recorded in tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD).
 
 function Enable-StudioVirtualTerminal {
     if ($env:NO_COLOR) { return $false }
