@@ -1916,14 +1916,38 @@ mod tests {
         panic!("every port in the probe window was already bound")
     }
 
+    /// What the kernel actually said, and how long it took to say it.
+    ///
+    /// Carried into the assertion message because the two ways this can fail need opposite
+    /// fixes: an answer that is not `ConnectionRefused` means the classifier is wrong for
+    /// this platform, while a refusal that arrives late means only the budget is.
+    async fn describe_connect(port: u16, budget: Duration) -> String {
+        let target =
+            std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port));
+        let started = std::time::Instant::now();
+        let settled = tokio::time::timeout(budget, tokio::net::TcpStream::connect(target)).await;
+        let elapsed = started.elapsed();
+        match settled {
+            Err(_) => format!("no answer inside {budget:?} (waited {elapsed:?})"),
+            Ok(Ok(_)) => format!("accepted after {elapsed:?}"),
+            Ok(Err(error)) => format!(
+                "kind={:?} raw_os_error={:?} after {elapsed:?} ({error})",
+                error.kind(),
+                error.raw_os_error(),
+            ),
+        }
+    }
+
     #[tokio::test]
     async fn a_closed_port_nobody_here_owns_is_gone() {
         // The whole point of the command: this is the answer that lets the webview stop
         // sleeping out a 10.5s ladder against a backend that is not coming back.
         let port = a_closed_port_below_the_ephemeral_range().await;
+        let observed = describe_connect(port, super::REFUSAL_PROBE_TIMEOUT).await;
         assert!(
             super::backend_is_gone(port, super::REFUSAL_PROBE_TIMEOUT, || false).await,
-            "a refused loopback connect on a port nothing here owns is not reported as gone"
+            "a refused loopback connect on a port nothing here owns is not reported as gone. \
+             Port {port} answered: {observed}"
         );
     }
 
