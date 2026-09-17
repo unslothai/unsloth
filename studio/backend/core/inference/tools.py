@@ -16677,6 +16677,13 @@ def _check_signal_escape_patterns(code: str):
             current = _scope_parent.get(id(current))
         return None
 
+    def _is_network_fq(fq: str) -> bool:
+        return bool(fq) and (
+            fq in _NETWORK_TARGET_ARGS
+            or fq in _CONNECTING_CLIENT_FQ
+            or any(fq.startswith(p) for p in _NETWORK_FQ_PREFIXES)
+        )
+
     def _resolved_fq(func: ast.AST, seen: frozenset = frozenset()) -> str:
         parts: list[str] = []
         cur = func
@@ -16694,9 +16701,10 @@ def _check_signal_escape_patterns(code: str):
                 else:
                     bases.append("")
             # Rebinding the name elsewhere does not undo the import this call can reach, so a
-            # store naming a network module outranks the stores that resolve to nothing.
+            # store that lands on a network call outranks every store that does not. Picking by
+            # module root instead would let `import socket as r` shadow `import requests as r`.
             base = next(
-                (b for b in bases if b and b.split(".")[0] in _NETWORK_MODULE_ROOTS),
+                (b for b in bases if _is_network_fq(".".join([b, *parts]))),
                 bases[0] if len(set(bases)) == 1 else "",
             )
             if base:
@@ -16801,7 +16809,8 @@ def _check_signal_escape_patterns(code: str):
     def _holds_client(expr: ast.AST, depth: int = 0) -> str:
         """Return whether expr is always, sometimes, or never a tracked client."""
         if depth > 16:
-            return "no"
+            # Running out of depth says nothing about the receiver, so ask rather than skip it.
+            return "maybe"
         if isinstance(expr, ast.NamedExpr):
             return _holds_client(expr.value, depth + 1)
         if isinstance(expr, ast.Call):

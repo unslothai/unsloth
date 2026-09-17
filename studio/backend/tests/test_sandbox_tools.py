@@ -265,6 +265,15 @@ class TestNetworkTargetResolution:
                 f"import requests as r\nfor _ in range(2):\n    r.get('http://{_H}/')\n    r = object()",
                 id = "module_alias_rebound_in_loop",
             ),
+            # The store that lands on a network call wins over a shadowing network import.
+            pytest.param(
+                f"import socket as r\nimport requests as r\nr.get('http://{_H}/')",
+                id = "alias_shadowed_by_other_network_module",
+            ),
+            pytest.param(
+                f"import urllib.request as n\nimport requests as n\nn.get('http://{_H}/')",
+                id = "alias_shadowed_by_unrelated_network_call",
+            ),
         ],
     )
     def test_known_untrusted_host_blocked(self, code):
@@ -310,6 +319,10 @@ class TestNetworkTargetResolution:
             "import requests\nsub = input()\nrequests.get(f'https://{sub}.huggingface.co/')",
             "import socket\nwith socket.socket() as s:\n    s.connect((input(), 22))",
             "import requests\nrequests.get(*[input()])",
+            # Exhausting the client-alias depth limit asks; it must not disable the check.
+            "import paramiko\nc0 = paramiko.SSHClient()\n"
+            + "".join(f"c{i + 1} = c{i}\n" for i in range(17))
+            + "c17.connect(hostname='203.0.113.5')",
         ],
     )
     def test_unresolved_host_runs_but_asks_in_auto_mode(self, code):
