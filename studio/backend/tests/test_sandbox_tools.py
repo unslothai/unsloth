@@ -371,6 +371,30 @@ class TestNetworkTargetResolution:
                 f"import paramiko\nc, = (paramiko.SSHClient(),)\nc.connect(hostname='{_H}')",
                 id = "client_unpack",
             ),
+            # A conditional produces one of its branches, so every branch is checked.
+            pytest.param(
+                f"import requests\nfetch = requests.get if flag else print\nfetch('http://{_H}/')",
+                id = "conditional_callee_alias",
+            ),
+            pytest.param(
+                f"import requests\n(requests.get if flag else print)('http://{_H}/')",
+                id = "conditional_callee_inline",
+            ),
+            pytest.param(
+                f"import paramiko\nclient = paramiko.SSHClient() if flag else get_db()\n"
+                f"client.connect(hostname='{_H}')",
+                id = "conditional_client",
+            ),
+            pytest.param(
+                f"import requests\nurl = 'http://{_H}/' if flag else 'https://pypi.org/'\n"
+                "requests.get(url)",
+                id = "conditional_url",
+            ),
+            pytest.param(
+                f"import requests, os\nurl = os.environ.get('U') or 'http://{_H}/'\n"
+                "requests.get(url)",
+                id = "or_default_url",
+            ),
             # Competing aliases are checked under each signature, not just the first.
             pytest.param(
                 f"import requests\nf = requests.get\nf = requests.request\nf('GET', 'http://{_H}/')",
@@ -438,6 +462,8 @@ class TestNetworkTargetResolution:
             "import urllib3\nurllib3.util.parse_url('https://example.com/')",
             "import requests\nf = requests.get\nf = requests.request\nf('GET', 'https://pypi.org/simple/')",
             "import requests\nfetch, = (requests.get,)\nfetch('https://pypi.org/simple/')",
+            "import requests\nurl = 'https://pypi.org/' if flag else 'https://huggingface.co/'\nrequests.get(url)",
+            "import requests\nfetch = requests.get if flag else requests.post\nfetch('https://pypi.org/')",
             # Two functions with a same-named attribute receiver do not contaminate each other.
             "import paramiko\ndef a(obj):\n    obj.client = paramiko.SSHClient()\n"
             "def b(obj):\n    obj.client = get_db()\n    obj.client.connect(host='localhost')",

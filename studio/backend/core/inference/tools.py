@@ -16745,6 +16745,14 @@ def _check_signal_escape_patterns(code: str):
             current = _scope_parent.get(id(current))
         return None
 
+    def _alternatives(expr: ast.AST) -> list:
+        """Expand a conditional into the values it may produce."""
+        if isinstance(expr, ast.IfExp):
+            return [*_alternatives(expr.body), *_alternatives(expr.orelse)]
+        if isinstance(expr, ast.BoolOp):
+            return [alt for value in expr.values for alt in _alternatives(value)]
+        return [expr]
+
     def _is_network_fq(fq: str) -> bool:
         return bool(fq) and (
             fq in _NETWORK_TARGET_ARGS
@@ -16775,6 +16783,9 @@ def _check_signal_escape_patterns(code: str):
         return result
 
     def _resolve_fqs(func: ast.AST, depth: int) -> list:
+        if isinstance(func, (ast.IfExp, ast.BoolOp)):
+            branches = [fq for alt in _alternatives(func) for fq in _resolved_fqs(alt, depth + 1)]
+            return list(dict.fromkeys(branches)) or [""]
         parts: list[str] = []
         cur = func
         while isinstance(cur, ast.Attribute):
@@ -16786,13 +16797,15 @@ def _check_signal_escape_patterns(code: str):
             for value in _name_values(cur) or []:
                 if isinstance(value, tuple):
                     bases.append(value[1])
-                # Follow assigned module and function aliases.
-                elif isinstance(value, (ast.Name, ast.Attribute)):
-                    inner = _resolved_fqs(value, depth + 1)
-                    gave_up = gave_up or _UNRESOLVED_FQ in inner
-                    bases.extend(fq for fq in inner if fq != _UNRESOLVED_FQ)
-                else:
-                    bases.append("")
+                    continue
+                for alt in _alternatives(value) if isinstance(value, ast.AST) else [value]:
+                    # Follow assigned module and function aliases.
+                    if isinstance(alt, (ast.Name, ast.Attribute, ast.IfExp, ast.BoolOp)):
+                        inner = _resolved_fqs(alt, depth + 1)
+                        gave_up = gave_up or _UNRESOLVED_FQ in inner
+                        bases.extend(fq for fq in inner if fq != _UNRESOLVED_FQ)
+                    else:
+                        bases.append("")
             # Rebinding the name elsewhere does not undo the import this call can reach, so every
             # store that lands on a network call is kept and checked. Picking one by module root
             # would let `import socket as r` shadow `import requests as r`, and picking one
@@ -16889,6 +16902,8 @@ def _check_signal_escape_patterns(code: str):
     ) -> list:
         """Resolve a URL, host string, or (host, port) target to [(resolved, host)]."""
         expr, _seen = _bound_value(expr, frozenset())
+        if isinstance(expr, (ast.IfExp, ast.BoolOp)) and depth <= 8:
+            return [r for alt in _alternatives(expr) for r in _target_hosts(alt, kind, depth + 1)]
         if (
             kind == "url"
             and isinstance(expr, ast.Call)
@@ -16952,7 +16967,9 @@ def _check_signal_escape_patterns(code: str):
         if isinstance(expr, ast.Call):
             fqs = _resolved_fqs(expr.func)
             return "yes" if any(fq in _CONNECTING_CLIENT_FQ for fq in fqs) else "no"
-        if isinstance(expr, ast.Name):
+        if isinstance(expr, (ast.IfExp, ast.BoolOp)):
+            values = _alternatives(expr)
+        elif isinstance(expr, ast.Name):
             values = _name_values(expr)
         elif (
             isinstance(expr, ast.Attribute)
