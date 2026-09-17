@@ -269,6 +269,34 @@ def test_a_background_job_in_the_rc_neither_stalls_nor_loses_the_environment(tmp
     assert env.get("ROCM_PATH") == "/opt/rocm"
 
 
+def _wait_for_exit(pid: int, seconds: float = 5.0) -> bool:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return True
+        time.sleep(0.1)
+    return False
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "no POSIX shell on Windows")
+def test_a_successful_read_still_takes_the_shells_children_with_it(tmp_path):
+    """The shell exits cleanly here, so nothing raises and nothing times out.
+
+    What it started does not exit with it, and one orphan adopted by init per
+    backend start is the cost of reading the environment, not something the user
+    asked this probe to leave behind.
+    """
+    pidfile = tmp_path / "child.pid"
+    shell = _shim(tmp_path, f"sleep 300 &\necho $! > {pidfile}\nexport ROCM_PATH=/opt/rocm\n")
+    assert dse.read_login_shell_env(shell = shell).get("ROCM_PATH") == "/opt/rocm"
+    child = int(pidfile.read_text().strip())
+    if not _wait_for_exit(child):
+        os.kill(child, signal.SIGKILL)
+        raise AssertionError(f"pid {child} outlived the shell that started it")
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason = "no POSIX shell on Windows")
 def test_the_timeout_takes_the_shells_children_with_it(tmp_path):
     """A shell that hangs must not leave its children running on every launch."""
@@ -276,15 +304,9 @@ def test_the_timeout_takes_the_shells_children_with_it(tmp_path):
     shell = _shim(tmp_path, f"sleep 300 &\necho $! > {pidfile}\nsleep 300\n")
     assert dse.read_login_shell_env(shell = shell, timeout = 2.0) == {}
     child = int(pidfile.read_text().strip())
-    deadline = time.monotonic() + 5.0
-    while time.monotonic() < deadline:
-        try:
-            os.kill(child, 0)
-        except OSError:
-            return
-        time.sleep(0.1)
-    os.kill(child, signal.SIGKILL)
-    raise AssertionError(f"pid {child} outlived the shell that started it")
+    if not _wait_for_exit(child):
+        os.kill(child, signal.SIGKILL)
+        raise AssertionError(f"pid {child} outlived the shell that started it")
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "no POSIX shell on Windows")

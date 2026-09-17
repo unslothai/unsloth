@@ -192,12 +192,21 @@ def read_login_shell_env(shell: "str | None" = None, timeout: float = 15.0) -> d
         except Exception as error:
             logger.debug("login shell environment unavailable: %s", error)
             return {}
+        # start_new_session makes the shell its own session leader, so its pgid is
+        # its pid. Kept before the wait below reaps it, because getpgid on a reaped
+        # pid raises.
+        group = process.pid
         try:
             returncode = process.wait(timeout = timeout)
         except Exception as error:
             logger.debug("login shell did not finish: %s", error)
-            _terminate_group(process)
-            return {}
+            returncode = None
+        finally:
+            # On EVERY path, not only the timeout. An rc that backgrounds an agent
+            # or a daemon leaves it running here after the shell itself exits
+            # cleanly, and that would be one orphan adopted by init per launch.
+            # This probe is not the login session those were meant to outlive.
+            _terminate_group(group, process)
         if returncode != 0:
             logger.debug("login shell exited %s", returncode)
             return {}
@@ -219,17 +228,13 @@ def read_login_shell_env(shell: "str | None" = None, timeout: float = 15.0) -> d
     return out
 
 
-def _terminate_group(process) -> None:
-    """Kill the shell and anything it started. Never raises."""
-    for kill in (
-        lambda: os.killpg(os.getpgid(process.pid), signal.SIGKILL),
-        process.kill,
-    ):
-        try:
-            kill()
-            break
-        except Exception:
-            continue
+def _terminate_group(group: int, process) -> None:
+    """Kill the shell's session and anything left in it. Never raises."""
+    try:
+        os.killpg(group, signal.SIGKILL)
+    except Exception:
+        # Already empty, or a platform without process groups.
+        pass
     try:
         process.wait(timeout = 5)
     except Exception:
