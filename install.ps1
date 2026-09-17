@@ -2548,6 +2548,27 @@ function Install-UnslothStudio {
                 try { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue } catch { }
                 return ""
             }
+            # The gap between creating the directory and raising its label is the rest of the
+            # race. Until the label lands the directory carries the medium one it inherited from
+            # %TEMP%, and a same-user process watching that root can drop its own early.py or
+            # nvprobe.py in. Writing our program over that file does not help: an existing file
+            # keeps its own DACL, so the attacker can rewrite it again between our write and the
+            # launch, and an elevated run then executes it with the administrator token.
+            #
+            # Nothing can be planted once the label is on, so anything in here now was planted
+            # inside that window. The directory is refused rather than emptied: this one is
+            # cheap to give up, the caller treats "" as the rung declining, and the next call
+            # gets a fresh name.
+            if ($labelled) {
+                $planted = $true
+                try {
+                    $planted = @(Get-ChildItem -LiteralPath $dir -Force -ErrorAction Stop).Count -ne 0
+                } catch { $planted = $true }
+                if ($planted) {
+                    try { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+                    return ""
+                }
+            }
         }
         return $dir
     }
@@ -2988,6 +3009,33 @@ function Install-UnslothStudio {
         }
     }
 
+    # The deepest ancestor of $Path that exists, and the part below it that does not.
+    #
+    # The probe above needs two directories to compare, and on a first install neither root has
+    # been created yet, which is exactly the run the comparison has to get right. Two spellings of
+    # one root differ only ABOVE the segments this installer would create itself, so the existing
+    # ancestors are what to compare and the remaining segments have to match as text.
+    function Split-StudioExistingAncestor {
+        param([string]$Path)
+        if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
+        $current = $Path
+        $tail = ""
+        # Bounded: a malformed path can leave Split-Path returning something that never shortens.
+        for ($hop = 0; $hop -lt 64; $hop++) {
+            if ([string]::IsNullOrWhiteSpace($current)) { break }
+            if (Test-Path -LiteralPath $current -PathType Container) {
+                return [pscustomobject]@{ Root = $current; Tail = $tail }
+            }
+            $leaf = Split-Path -Leaf $current
+            $parent = Split-Path -Parent $current
+            if ([string]::IsNullOrWhiteSpace($parent) -or $parent -eq $current) { break }
+            if ([string]::IsNullOrWhiteSpace($leaf)) { break }
+            $tail = if ($tail) { Join-Path $leaf $tail } else { $leaf }
+            $current = $parent
+        }
+        return $null
+    }
+
     # Custom Unsloth roots are not supported with --tauri (the desktop app uses
     # the Windows profile folder). Pass through if the override is that same root.
     if ($TauriMode -and $envOverride) {
@@ -3012,8 +3060,25 @@ function Install-UnslothStudio {
         # Unequal strings are only proof of different directories when both sides resolved
         # exactly. They did not here whenever the interpreter could not be reached, so ask the
         # filesystem before refusing an install.
-        if ($_tauriOverride -ne $_legacyTauriRoot -and
-            -not (Test-StudioSameDirectoryByProbe -Left $_tauriOverride -Right $_legacyTauriRoot)) {
+        $_tauriSameRoot = $false
+        if ($_tauriOverride -eq $_legacyTauriRoot) {
+            $_tauriSameRoot = $true
+        } else {
+            $_tauriSameRoot = Test-StudioSameDirectoryByProbe -Left $_tauriOverride -Right $_legacyTauriRoot
+        }
+        if (-not $_tauriSameRoot) {
+            # Neither root exists yet on a first install, and that is when this matters most: the
+            # probe needs two directories and has none, so it answers no and a valid override is
+            # refused. Compare the deepest ancestors that DO exist, and require the segments below
+            # them to match, since those are the ones this installer creates itself.
+            $_tauriLeft = Split-StudioExistingAncestor -Path $_tauriOverride
+            $_tauriRight = Split-StudioExistingAncestor -Path $_legacyTauriRoot
+            if ($_tauriLeft -and $_tauriRight -and [string]::Equals(
+                    $_tauriLeft.Tail, $_tauriRight.Tail, [System.StringComparison]::OrdinalIgnoreCase)) {
+                $_tauriSameRoot = Test-StudioSameDirectoryByProbe -Left $_tauriLeft.Root -Right $_tauriRight.Root
+            }
+        }
+        if (-not $_tauriSameRoot) {
             Write-StudioLine "ERROR: $envOverrideVar is not supported with --tauri." -ForegroundColor Red
             Write-StudioLine "       The desktop app uses the Windows profile .unsloth\studio root." -ForegroundColor Red
             Write-StudioLine "       Run install.ps1 without --tauri for custom-root shell installs," -ForegroundColor Yellow

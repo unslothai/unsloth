@@ -333,6 +333,13 @@ foreach ($file in @($installPs1, $setupPs1)) {
         $dirFn -match 'Test-Path -LiteralPath \$dir -PathType Container')
     Check "$leaf cleans up a directory the pattern created elsewhere" (
         $dirFn -match 'Remove-Item -LiteralPath \$createdPath')
+    # Until the label lands the directory carries the medium one it inherited from %TEMP%, so a
+    # same-user process can plant early.py or nvprobe.py inside it in that window. Writing over
+    # that file leaves the attacker's DACL on it, so it can be rewritten again before the launch.
+    # Nothing can be planted afterwards, so anything present once the label is on was planted
+    # during the window and the directory has to be refused.
+    Check "$leaf refuses a directory something was planted in before the label landed" (
+        $dirFn -match 'Get-ChildItem -LiteralPath \$dir -Force' -and $dirFn -match '\$planted')
     Check "$leaf refuses an unlabelled directory when it is elevated" (
         $dirFn -match 'Test-StudioChildScriptDirectoryElevated' -and
         $dirFn -match 'Remove-Item[^\r\n]*\$dir')
@@ -378,6 +385,29 @@ try {
     if ($null -eq $savedTemp) { Remove-Item Env:TEMP -ErrorAction SilentlyContinue } else { $env:TEMP = $savedTemp }
     if ($null -eq $savedTmpdir) { Remove-Item Env:TMPDIR -ErrorAction SilentlyContinue } else { $env:TMPDIR = $savedTmpdir }
     Remove-Item -LiteralPath $bracketRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# Driven rather than read: stub the label as applied and the directory as non-empty, and the
+# helper has to decline. This is a Windows-only branch, so $env:OS is set for the call.
+$savedOs = $env:OS
+try {
+    $env:OS = "Windows_NT"
+    function Test-StudioChildScriptDirectoryElevated { return $false }
+    function Get-ChildItem {
+        param($LiteralPath, [switch]$Force, $ErrorAction)
+        return @([pscustomobject]@{ Name = "early.py" })
+    }
+    # icacls is absent on this host, and the branch under test is gated on the label having
+    # been applied, so stand in for the executable and leave the exit code at success.
+    function icacls.exe { $global:LASTEXITCODE = 0 }
+    $plantedAnswer = New-StudioChildScriptDirectory
+    Check "a directory with something already in it is refused" (
+        [string]::IsNullOrWhiteSpace($plantedAnswer))
+} finally {
+    Remove-Item Function:Get-ChildItem -ErrorAction SilentlyContinue
+    Remove-Item Function:icacls -ErrorAction SilentlyContinue
+    Remove-Item Function:Test-StudioChildScriptDirectoryElevated -ErrorAction SilentlyContinue
+    if ($null -eq $savedOs) { Remove-Item Env:OS -ErrorAction SilentlyContinue } else { $env:OS = $savedOs }
 }
 
 # Run it: a directory really is created, really is fresh, and really is cleaned up.

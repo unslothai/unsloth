@@ -1127,6 +1127,27 @@ function New-StudioChildScriptDirectory {
             try { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue } catch { }
             return ""
         }
+        # The gap between creating the directory and raising its label is the rest of the
+        # race. Until the label lands the directory carries the medium one it inherited from
+        # %TEMP%, and a same-user process watching that root can drop its own early.py or
+        # nvprobe.py in. Writing our program over that file does not help: an existing file
+        # keeps its own DACL, so the attacker can rewrite it again between our write and the
+        # launch, and an elevated run then executes it with the administrator token.
+        #
+        # Nothing can be planted once the label is on, so anything in here now was planted
+        # inside that window. The directory is refused rather than emptied: this one is
+        # cheap to give up, the caller treats "" as the rung declining, and the next call
+        # gets a fresh name.
+        if ($labelled) {
+            $planted = $true
+            try {
+                $planted = @(Get-ChildItem -LiteralPath $dir -Force -ErrorAction Stop).Count -ne 0
+            } catch { $planted = $true }
+            if ($planted) {
+                try { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+                return ""
+            }
+        }
     }
     return $dir
 }

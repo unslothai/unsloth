@@ -349,10 +349,43 @@ if ($probeFn) {
     Remove-Item -LiteralPath $probeRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+# ---- and it still answers before either root has been created ----
+#
+# On a first install neither .unsloth\studio directory exists, which is precisely the run this is
+# for: the probe needs two directories and has none, so it answers no and a valid override is
+# refused. The deepest existing ancestors are what to compare, with the segments below them
+# matched as text, because those are the ones the installer creates itself.
+$ancestorFn = Get-InstallFunctionSource -Path $installPath -Name "Split-StudioExistingAncestor"
+Check "install.ps1 defines Split-StudioExistingAncestor" ($null -ne $ancestorFn)
+if ($ancestorFn) {
+    Invoke-Expression $ancestorFn
+    $ancRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-anc-" + [guid]::NewGuid().ToString("N"))
+    $null = New-Item -ItemType Directory -Path $ancRoot -Force
+    $missing = Join-Path $ancRoot (Join-Path "not-there" "either")
+    $split = Split-StudioExistingAncestor -Path $missing
+    Check "the deepest existing ancestor is found" ($split -and $split.Root -eq $ancRoot)
+    Check "and the part that does not exist is kept whole" (
+        $split -and $split.Tail -eq (Join-Path "not-there" "either"))
+    $here = Split-StudioExistingAncestor -Path $ancRoot
+    Check "a path that exists is its own ancestor, with nothing below it" (
+        $here -and $here.Root -eq $ancRoot -and $here.Tail -eq "")
+    Check "a path with no existing ancestor at all answers nothing" (
+        $null -eq (Split-StudioExistingAncestor -Path (Join-Path "/nonexistent-root-xyz" "a")))
+    Check "an empty path answers nothing" ($null -eq (Split-StudioExistingAncestor -Path ""))
+    Remove-Item -LiteralPath $ancRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# The gate has to use it, and only after the direct probe has already said no.
+$installTextForGate = [System.IO.File]::ReadAllText($installPath)
+Check "the --tauri gate falls back to comparing existing ancestors" (
+    $installTextForGate -match 'Split-StudioExistingAncestor -Path \$_tauriOverride')
+Check "and requires the segments below them to match" (
+    $installTextForGate -match '\$_tauriLeft\.Tail, \$_tauriRight\.Tail')
+
 # The gate itself has to consult it, or the helper above is dead code.
 $installText = [System.IO.File]::ReadAllText($installPath)
 Check "the --tauri gate asks it before refusing an override" (
-    $installText -match 'if \(\$_tauriOverride -ne \$_legacyTauriRoot -and[\r\n\s]*-not \(Test-StudioSameDirectoryByProbe')
+    $installText -match 'Test-StudioSameDirectoryByProbe -Left \$_tauriOverride -Right \$_legacyTauriRoot')
 
 # Structural self-check, kept because the mistake it catches has happened here: a check
 # added after the gate below runs, prints FAIL, and the file still exits 0, so CI records
