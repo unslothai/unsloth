@@ -662,9 +662,7 @@ def test_the_default_memo_yields_the_moment_the_layer_publishes_a_name(name):
 
     setattr(layer, name, torch.device("cpu") if name == "_per_layer_device" else "cpu")
     device, buffer_index = _utils.per_layer_device(layer)
-    assert device == torch.device("cpu"), (
-        f"the memo survived {name} being published on the layer"
-    )
+    assert device == torch.device("cpu"), f"the memo survived {name} being published on the layer"
     assert buffer_index == 0
 
 

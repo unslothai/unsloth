@@ -2553,8 +2553,8 @@ _PER_LAYER_DEVICE_MEMO = "_unsloth_resolved_layer_device"
 
 # What the memo's third slot says the answer was derived from, and therefore what the fast
 # path has to re-check by identity before it is allowed to answer from it.
-_MEMO_FROM_DEVICE  = 0
-_MEMO_FROM_INDEX   = 1
+_MEMO_FROM_DEVICE = 0
+_MEMO_FROM_INDEX = 1
 _MEMO_FROM_DEFAULT = 2
 
 
