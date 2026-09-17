@@ -414,6 +414,14 @@ def _torch_requires_rocm_metapackage(venv_dir: Path) -> bool:
     return False
 
 
+# The single gfx arch this install carries kernels for, published for the backend.
+# Read by studio/backend/utils/desktop_shell_env.py, which imports ROCm variables a
+# desktop launch never received out of the login shell: that profile is where the
+# #7331 override lives, so the backend needs the same arbiter this guard uses, not
+# just the outcome of running it against a GUI environment that never had the value.
+ROCM_INSTALLED_ARCH_ENV = "UNSLOTH_ROCM_INSTALLED_ARCH"
+
+
 def _installed_rocm_single_arch(venv_dir: Path) -> Optional[str]:
     """gfx arch the ROCm runtime in *venv_dir* ACTIVELY carries kernels for, or None. Read from the
     `rocm` meta-package: globbing for rocm_sdk_libraries_gfx* would read an ORPHAN. None also
@@ -472,9 +480,14 @@ def _clear_hsa_override_contradicting_install(venv_dir: Path) -> Optional[str]:
 def _clear_hsa_override_before_launch(silent: bool = False) -> Optional[str]:
     """Run the #7331 spoof clear for whichever entry point is about to launch. Idempotent."""
     _venv = STUDIO_HOME / "unsloth_studio"
-    _arch = _clear_hsa_override_contradicting_install(
-        Path(sys.prefix) if sys.prefix.startswith(str(_venv)) else _venv
-    )
+    _root = Path(sys.prefix) if sys.prefix.startswith(str(_venv)) else _venv
+    _arch = _clear_hsa_override_contradicting_install(_root)
+    # Published whether or not anything was cleared here: on a desktop launch the GUI
+    # environment never carried the override, so the clear above is a no-op and the
+    # contradicting value is still sitting in the profile the backend is about to read.
+    _installed = _installed_rocm_single_arch(_root)
+    if _installed and platform.system() != "Windows":
+        os.environ[ROCM_INSTALLED_ARCH_ENV] = _installed
     if _arch is not None and not silent:
         typer.echo(
             f"Cleared HSA_OVERRIDE_GFX_VERSION: this install carries {_arch} kernels "

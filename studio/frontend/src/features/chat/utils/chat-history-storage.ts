@@ -250,12 +250,20 @@ function sortMessages(messages: MessageRecord[]): MessageRecord[] {
 }
 
 export function isExpectedBackgroundChatStorageError(error: unknown): boolean {
+  // The transport marker rather than the copy, which is how a merely busy backend came to
+  // be reported as an unexpected error when the copy changed.
+  if (
+    error instanceof Error &&
+    (error as { unslothTransportFailure?: boolean }).unslothTransportFailure ===
+      true
+  ) {
+    return true;
+  }
   return (
     error instanceof Error &&
     (error.message === "Invalid or expired token" ||
       error.message === "Not authenticated" ||
-      error.message === "Request failed (401)" ||
-      error.message === "Unsloth isn't running -- please relaunch it.")
+      error.message === "Request failed (401)")
   );
 }
 
