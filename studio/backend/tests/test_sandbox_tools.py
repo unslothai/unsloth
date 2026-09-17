@@ -420,6 +420,30 @@ class TestNetworkTargetResolution:
                 f"import aiohttp\naiohttp.ClientSession('http://{_H}').get('/')",
                 id = "aiohttp_session_base_url",
             ),
+            # A request built ahead of the call still carries its URL.
+            pytest.param(
+                f"import httpx\nc = httpx.Client()\nr = c.build_request('GET', 'http://{_H}/')\n"
+                "c.send(r)",
+                id = "httpx_client_send_built_request",
+            ),
+            pytest.param(
+                f"import httpx\nhttpx.Client().send(httpx.Request('GET', 'http://{_H}/'))",
+                id = "httpx_send_request_object",
+            ),
+            # An explicit proxy is the socket destination, not the request URL.
+            pytest.param(
+                "import requests\nrequests.get('https://pypi.org/', "
+                f"proxies={{'https': 'http://{_H}:8080'}})",
+                id = "requests_proxies_mapping",
+            ),
+            pytest.param(
+                f"import httpx\nhttpx.get('https://pypi.org/', proxy='http://{_H}:8080')",
+                id = "httpx_proxy_keyword",
+            ),
+            pytest.param(
+                f"import httpx\nhttpx.Client(proxy='http://{_H}:8080').get('https://pypi.org/')",
+                id = "httpx_client_proxy_keyword",
+            ),
             # A parameter default is a value the name can hold.
             pytest.param(
                 f"import requests\ndef fetch(f=requests.get):\n    f('http://{_H}/')\nfetch()",
@@ -584,6 +608,8 @@ class TestNetworkTargetResolution:
             "import httpx\nhttpx.Client().stream('GET', 'https://pypi.org/')",
             "import httpx\nhttpx.Client(base_url='https://pypi.org/').get('/')",
             "import httpx\nhttpx.Client().get('https://pypi.org/x')",
+            "import httpx\nc = httpx.Client()\nc.send(c.build_request('GET', 'https://pypi.org/'))",
+            "import requests\nrequests.get('https://pypi.org/', proxies={'https': 'https://pypi.org'})",
             "import requests\ns = requests.Session()\ns.headers.update({'a': 'b'})",
             # Two functions with a same-named attribute receiver do not contaminate each other.
             "import paramiko\ndef a(obj):\n    obj.client = paramiko.SSHClient()\n"
@@ -611,6 +637,8 @@ class TestNetworkTargetResolution:
             "import requests\nurl = 'https://pypi.org/simple/'\nrequests.get(url)\nurl = input()",
             "import requests\ns = requests.Session()\ns.get(input())",
             "import httpx\nhttpx.Client(base_url=input()).get('/')",
+            "import httpx\nc = httpx.Client()\nc.send(r)",
+            "import requests\nrequests.get('https://pypi.org/', proxies={'https': input()})",
             # A caller can override the default, so the unknown value survives beside it.
             "import requests\ndef fetch(url='https://pypi.org/'):\n    requests.get(url)",
             # A store with no value is an unknown host, so a known store cannot silence it.

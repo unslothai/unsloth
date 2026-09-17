@@ -16051,6 +16051,18 @@ def _check_signal_escape_patterns(code: str):
         "aiohttp.ClientSession",
     )
     _POOL_CLIENTS = ("urllib3.PoolManager", "urllib3.ProxyManager")
+    # Request objects built ahead of the call: where the URL sits in the builder.
+    _REQUEST_BUILDERS = {
+        "urllib.request.Request": (0, "url"),
+        "requests.Request": (1, "url"),
+        "requests.models.Request": (1, "url"),
+        "httpx.Request": (1, "url"),
+        "httpx.Client.build_request": (1, "url"),
+        "httpx.AsyncClient.build_request": (1, "url"),
+        "requests.Session.prepare_request": (0, "request"),
+    }
+    # An explicit proxy is the socket destination, whatever the request URL says.
+    _PROXY_KEYWORDS = ("proxy", "proxies")
     _NETWORK_TARGET_ARGS.update(
         {
             **{
@@ -16070,6 +16082,7 @@ def _check_signal_escape_patterns(code: str):
             # A client built on a base URL sends there even when the call passes a bare path.
             **{f"{c}": (None, "base_url", "url") for c in ("httpx.Client", "httpx.AsyncClient")},
             "aiohttp.ClientSession": (0, "base_url", "url"),
+            **{f"{c}.send": (0, "request", "url") for c in ("httpx.Client", "httpx.AsyncClient")},
             **{f"{client}.urlopen": (1, "url", "url") for client in _POOL_CLIENTS},
             **{f"{client}.connection_from_url": (0, "url", "url") for client in _POOL_CLIENTS},
             **{
@@ -17038,16 +17051,27 @@ def _check_signal_escape_patterns(code: str):
         expr, _seen = _bound_value(expr, frozenset())
         if isinstance(expr, (ast.IfExp, ast.BoolOp)) and depth <= 8:
             return [r for alt in _alternatives(expr) for r in _target_hosts(alt, kind, depth + 1)]
-        if (
-            kind == "url"
-            and isinstance(expr, ast.Call)
-            and "urllib.request.Request" in _resolved_fqs(expr.func)
-        ):
-            # urlopen(Request(url, headers=...)) connects to the Request's URL.
-            present, inner = _call_target(expr, 0, "url")
-            if not present or inner is None:
-                return [(False, None)]
-            return _target_hosts(inner, "url", depth + 1)
+        if kind == "url" and isinstance(expr, ast.Call):
+            # urlopen(Request(url, ...)) and client.send(build_request(m, url)) connect to the
+            # URL the request was built with.
+            builder = next(
+                (
+                    _REQUEST_BUILDERS[fq]
+                    for fq in _resolved_fqs(expr.func)
+                    if fq in _REQUEST_BUILDERS
+                ),
+                None,
+            )
+            if builder is not None:
+                present, inner = _call_target(expr, *builder)
+                if not present or inner is None:
+                    return [(False, None)]
+                return _target_hosts(inner, "url", depth + 1)
+        if isinstance(expr, ast.Dict) and depth <= 8:
+            # A proxy mapping sends to its values.
+            if not expr.values:
+                return [(True, None)]
+            return [r for v in expr.values for r in _target_hosts(v, kind, depth + 1)]
         if isinstance(expr, (ast.Tuple, ast.List)):
             if not expr.elts:
                 return [(True, None)]
@@ -17243,11 +17267,13 @@ def _check_signal_escape_patterns(code: str):
                     )
                 )
                 if specs:
-                    self._check_target(
-                        node,
-                        [(*_call_target(node, pos, kw), kind) for pos, kw, kind in specs],
-                        connects = True,
-                    )
+                    targets = [(*_call_target(node, pos, kw), kind) for pos, kw, kind in specs]
+                    targets += [
+                        (True, kw.value, "url")
+                        for kw in node.keywords or []
+                        if kw.arg in _PROXY_KEYWORDS
+                    ]
+                    self._check_target(node, targets, connects = True)
                 elif node.args:
                     # Non-connecting constructors keep the existing literal-target check.
                     self._check_target(node, [(True, node.args[0], "url")], connects = False)
