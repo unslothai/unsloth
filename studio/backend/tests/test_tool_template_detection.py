@@ -176,6 +176,12 @@ def test_guard_spellings(template, detected):
          "{% endif %}{{ intro }}", True),
         ("{% set intro = '' %}{% if enable_thinking %}{% set intro = 'Think.' %}"
          "{% endif %}{{ intro }}", False),
+        # A loop's inline filter is a guard like any other. The marker scan matched
+        # this spelling of the tool-role check, so missing it loses tool support.
+        ("{% for m in messages if m.role == 'tool' %}{{ m.content }}{% endfor %}", True),
+        ('{% for m in messages if m["role"] == "tool" %}{{ m.content }}{% endfor %}', True),
+        ("{% for m in messages if m.role != 'tool' %}{{ m.content }}{% endfor %}", False),
+        ('{% for m in messages if m.role == "user" %}{{ m.content }}{% endfor %}', False),
         # `{% with %}` binds for its block and for nothing else.
         ("{% with catalog = tools %}{{ catalog|tojson }}{% endwith %}", True),
         ("{% with tools = none %}{{ tools|tojson }}{% endwith %}", False),

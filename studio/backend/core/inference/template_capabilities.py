@@ -190,9 +190,14 @@ def _scan(body, aliases, guarded):
             _join(aliases, arms, exhaustive = bool(node.else_))
         elif isinstance(node, nodes.For):
             over_catalog = _reads_catalog(node.iter, aliases)
+            # `{% for m in messages if m.role == 'tool' %}` keeps its guard in the
+            # loop's own filter, where an `{% if %}` would otherwise hold it.
+            filtered = node.test is not None and (
+                _reads_catalog(node.test, aliases) or _checks_tool_role(node.test)
+            )
             # Each item is catalog data, so the loop variable carries it.
             bound = _bound_names(node.target) if over_catalog else frozenset()
-            if _scan_maybe(node.body, aliases, guarded or over_catalog, bound):
+            if _scan_maybe(node.body, aliases, guarded or over_catalog or filtered, bound):
                 return True
             if _scan_maybe(node.else_, aliases, guarded):
                 return True
