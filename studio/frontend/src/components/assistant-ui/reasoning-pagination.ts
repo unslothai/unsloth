@@ -297,6 +297,17 @@ function pageStart(
         break;
       }
       const candidate = found + separator.length;
+      // A START MUST STAY STRICTLY BELOW `end`, so that every page holds at
+      // least one character. `Earlier` sets the next page's end to this start
+      // (reasoning.tsx, showEarlierPage), so a start that reaches `end` yields
+      // an empty page whose own start is the same offset again: the chain stops
+      // advancing and every character before it becomes unreachable by paging.
+      // `indexOf` only moves forward, so once one candidate is too far they all
+      // are. Reachable when `maxCharacters <= BOUNDARY_SEARCH_CHARACTERS`,
+      // which lets `searchEnd` reach `end` and a separator land just under it.
+      if (candidate >= end) {
+        break;
+      }
       if (!isInsideFence(candidate, fences)) {
         return candidate;
       }
@@ -304,7 +315,15 @@ function pageStart(
     }
   }
 
-  return avoidBrokenSurrogate(markdown, target);
+  const start = avoidBrokenSurrogate(markdown, target);
+  if (start < end) {
+    return start;
+  }
+  // `maxCharacters` smaller than a surrogate pair. `avoidBrokenSurrogate` moved
+  // forward off a low half and landed on `end`; `target` is the high half, so
+  // stepping back one keeps the character whole rather than emitting an empty
+  // page or a page that opens on a lone low surrogate.
+  return Math.max(0, target - 1);
 }
 
 function selectReasoningPageWithFences(

@@ -291,6 +291,7 @@ jobs:
             tests/saving/test_gguf_single_pass_export.py \
             tests/saving/test_offline_gguf_vlm_tokenizer_7481.py \
             tests/saving/test_is_vlm_detection.py \
+            tests/saving/test_save_method_lora_routing.py \
             tests/utils/test_attention_masks.py \
             tests/utils/test_packing.py \
             tests/utils/test_trunc_normal_patch.py \
@@ -334,6 +335,14 @@ jobs:
         # without a corresponding zoo / unsloth-side workaround.
         run: |
           python -m pytest -v --tb=short tests/test_import_fixes_drift.py
+
+      - name: triton-absent import guard (HARD GATE)
+        # PyPI ships no Windows `triton` wheel, so the unconditional module-level import
+        # in _gpu_init.py killed `import unsloth` on a CPU-only Windows install. Named
+        # here because nothing else in the repo collects this file, so a deleted guard
+        # would leave CI green.
+        run: |
+          python -m pytest -v --tb=short tests/test_triton_optional_import.py
 
       - name: public-api surface drift detectors (9 tests, HARD GATE)
         # Companion to test_import_fixes_drift.py: that file catches
@@ -397,6 +406,10 @@ jobs:
         # against simulated CPU counts and memory so the result is identical on
         # a 4-vCPU runner and a 192-core box.
         #
+        # The drift guard is named explicitly (these jobs collect paths, not
+        # trees): it is the only leg with a transformers past the `>=4.51,<5.5`
+        # pin, and the wording it exists to survive landed in 5.10.
+        #
         # The Unsloth file runs here rather than in studio-backend-ci, which
         # installs studio.txt and so has no unsloth_zoo at all. Note the policy
         # module is not on unsloth_zoo main either until the companion PR lands,
@@ -409,7 +422,8 @@ jobs:
             tests/utils/test_dataset_num_proc.py \
             tests/utils/test_train_on_responses_only_num_proc.py
           PYTHONPATH=studio/backend python -m pytest -v --tb=short \
-            studio/backend/tests/test_dataset_map_num_proc.py
+            studio/backend/tests/test_dataset_map_num_proc.py \
+            studio/backend/tests/test_compressed_tensors_signature_drift.py
 
       - name: unsloth Bucket-A — CPU tests not in Repo tests (CPU)
         # CPU tests across 6 files under tests/saving/, tests/utils/, tests/python/
@@ -428,6 +442,7 @@ jobs:
             tests/saving/test_gguf_single_pass_export.py \
             tests/saving/test_offline_gguf_vlm_tokenizer_7481.py \
             tests/saving/test_is_vlm_detection.py \
+            tests/saving/test_save_method_lora_routing.py \
             tests/utils/test_attention_masks.py \
             tests/utils/test_packing.py \
             tests/utils/test_trunc_normal_patch.py \

@@ -90,11 +90,12 @@ def _run(
     env: dict | None = None,
     wait: str = "3",
     services_up: bool = True,
+    curl: str | None = None,
 ) -> subprocess.CompletedProcess:
     """Run the shipped script against *home*, with curl stubbed: the ready probes
     must never reach a real Studio on the test host."""
     bin_dir = home / "stub-bin"
-    _stub(bin_dir, "curl", "exit 0\n" if services_up else "exit 7\n")
+    _stub(bin_dir, "curl", curl or ("exit 0\n" if services_up else "exit 7\n"))
     # the admin row is "committed" unless the test parks a not-initialized marker
     _stub(
         bin_dir, "unsloth-studio-run", f'[[ -e "{home / "not-initialized"}" ]] && exit 1\nexit 0\n'
@@ -178,6 +179,43 @@ def test_services_that_never_answer_are_reported_not_hidden(tmp_path: Path):
     assert res.returncode == 0
     assert "startup incomplete" in res.stdout, res.stdout
     assert res.stdout.count("not answering") == 2
+
+
+@behavioural
+def test_the_ready_probes_bypass_a_container_wide_proxy(tmp_path: Path):
+    log = tmp_path / "curl.log"
+    res = _run(
+        tmp_path,
+        env = {"UNSLOTH_STUDIO_PASSWORD_STATE": "stored", "STUB_LOG": str(log)},
+        curl = 'echo "$*" >> "$STUB_LOG"\nexit 0\n',
+    )
+    assert res.returncode == 0, res.stderr
+    calls = log.read_text().splitlines()
+    assert any(c.endswith("--noproxy * http://127.0.0.1:8000/api/health") for c in calls), calls
+    assert any(c.endswith("--noproxy * http://127.0.0.1:8888/login") for c in calls), calls
+
+
+@behavioural
+def test_the_jupyter_tunnel_probe_bypasses_a_container_wide_proxy(tmp_path: Path):
+    bin_dir = tmp_path / "stub-bin"
+    log = tmp_path / "curl.log"
+    _stub(bin_dir, "curl", 'echo "$*" >> "$STUB_LOG"\nexit 0\n')
+    # the script's first candidate, so a real /usr/local/bin/cloudflared is never run
+    _stub(tmp_path / "bin", "cloudflared", 'echo "STUB-CLOUDFLARED $*"\n')
+    e = _clean_env(bin_dir)
+    e.update(UNSLOTH_JUPYTER_CLOUDFLARE = "1", UNSLOTH_STUDIO_HOME = str(tmp_path), STUB_LOG = str(log))
+    res = subprocess.run(
+        ["bash", str(DOCKER / "unsloth_jupyter_tunnel.sh")],
+        capture_output = True,
+        text = True,
+        env = e,
+        timeout = 60,
+    )
+    assert res.returncode == 0, res.stderr
+    assert "STUB-CLOUDFLARED tunnel" in res.stdout, res.stdout
+    assert log.read_text().splitlines() == [
+        "-fsS -o /dev/null --noproxy * http://localhost:8888/login"
+    ]
 
 
 @behavioural

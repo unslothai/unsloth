@@ -323,7 +323,6 @@ import {
   ChevronRightIcon,
   Columns2Icon,
   SlidersHorizontalIcon,
-  FastForwardIcon,
   GitBranchIcon,
   GlobeIcon,
   HeadphonesIcon,
@@ -6835,7 +6834,8 @@ const ComposerRightControls: FC<{
               className="aui-composer-send ml-1.5 size-9 rounded-full"
               aria-label="Resume queue"
             >
-              <QueueResumeIcon />
+              {/* Solid glyph, so it is smaller than the stroked send arrow. */}
+              <QueueResumeIcon className="size-4" />
             </TooltipIconButton>
           ) : queueEntry?.dispatched && !queueEntry.paused ? (
             <Button
@@ -7278,8 +7278,8 @@ const ContinueMessageBarForLastMessage: FC = () => {
           className="h-7 shrink-0 gap-1.5 text-xs"
           onClick={handleContinue}
         >
-          <FastForwardIcon strokeWidth={1.75} className="size-3.5" />
-          Continue
+          <QueueResumeIcon className="size-3.5" />
+          Resume
         </Button>
       )}
     </div>

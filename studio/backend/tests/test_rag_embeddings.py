@@ -40,6 +40,12 @@ def _shared_setup_2(monkeypatch, tmp_path):
     )
     embeddings._model = None
     embeddings._name = None
+    # _get publishes what it loaded into these globals and nothing here puts them back, so
+    # the fake model outlived the test: a later test in the same xdist worker that asks
+    # backend_is_loaded() reads them and is told something is resident. Snapshot them AFTER
+    # the reset above, so teardown restores None rather than whatever arrived leaked.
+    monkeypatch.setattr(embeddings, "_model", None)
+    monkeypatch.setattr(embeddings, "_name", None)
 
     embeddings._get("Org/Embedder")
 
@@ -959,12 +965,44 @@ def test_the_security_gate_scans_the_snapshot_that_is_actually_loaded(monkeypatc
     assert scanned == [str(snapshot)]
 
 
-def test_the_residency_probe_does_not_wait_on_a_model_load(monkeypatch):
+def test_the_shared_load_setup_does_not_strand_module_weights(tmp_path):
+    """The three loads driven through _shared_setup_2 outlived the test that asked for
+    them, so the next test in the same xdist worker to call backend_is_loaded() was
+    answered from this file's fake model and told something was resident.
+
+    Driven through a nested monkeypatch context so the restore this asserts is
+    observable from inside the test rather than only at its teardown.
+    """
+    with pytest.MonkeyPatch.context() as mp:
+        _shared_setup_1(mp)
+        mp.setattr(embeddings, "_device", lambda: "cpu")
+        _shared_setup_2(mp, tmp_path)
+        # Non-vacuity: there is no strand to clean up unless the setup really loaded.
+        assert embeddings._model is not None, "the setup loaded nothing, so this proves nothing"
+        assert embeddings._name == "Org/Embedder"
+
+    assert embeddings._model is None
+    assert embeddings._name is None
+
+
+@pytest.mark.parametrize("resident", [False, True])
+def test_the_residency_probe_does_not_wait_on_a_model_load(monkeypatch, resident):
     """Both locks are held across a whole model load, so a probe taking either
-    made GET, PUT, reset and unload wait it out."""
+    made GET, PUT, reset and unload wait it out.
+
+    Run for a resident model as well as an empty one: what is being claimed is that the
+    probe ANSWERS under the load locks, and an answer of False is only evidence of that
+    if False is also the right answer.
+    """
     import threading
 
     embeddings._reset_backend()
+    # _reset_backend drops the published backend, not the module-level weights, and
+    # backend_is_loaded deliberately falls through to those when no backend is published.
+    # So the answer below depends on globals this test never set: state them rather than
+    # inherit whatever ran earlier in this xdist worker.
+    monkeypatch.setattr(embeddings, "_model", object() if resident else None)
+    monkeypatch.setattr(embeddings, "_name", "org/embedder" if resident else None)
     answered = threading.Event()
     result = {}
 
@@ -980,7 +1018,7 @@ def test_the_residency_probe_does_not_wait_on_a_model_load(monkeypatch):
         # Answered while the construction locks are still held by this thread.
         assert answered.wait(timeout = 5), "the status probe blocked on the load locks"
 
-    assert result == {"any": False, "named": False}
+    assert result == {"any": resident, "named": resident}
 
 
 def test_a_dead_llama_process_is_not_reported_as_loaded(monkeypatch):

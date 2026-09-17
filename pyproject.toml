@@ -213,6 +213,15 @@ studio = [
 ]
 
 triton = [
+    # Not raised past 3.0.0 on purpose. torch pins triton exactly, and the oldest
+    # torch supported here, 2.6.0, requires `triton==3.2.0`, so any floor above
+    # that makes torch 2.6.0 unresolvable rather than safe, and a marker cannot
+    # be written against another distribution's version. The two triton defects
+    # that were reported through us are handled where the version is actually
+    # known: the sm_75 cut cross entropy miscompile in triton 3.3.0 and 3.3.1
+    # (#2491) by the gate in unsloth_zoo/loss_utils.py, and the missing
+    # PY_SSIZE_T_CLEAN in a repackaged driver shim (#2760) by
+    # check_triton_py_ssize_t_clean() in unsloth/import_fixes.py.
     "triton>=3.0.0 ; ('linux' in sys_platform)",
     # triton-windows has win_arm64 wheels from 3.8.0.post28, so a floor works here, not a marker.
     "triton-windows ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
@@ -251,7 +260,21 @@ huggingface = [
 # studio/backend/requirements/no-torch-runtime.txt, not plain pip resolution.
 # Kept byte-identical to main so the two branches can be diffed for drift.
 huggingfacenotorch = [
-    "unsloth_zoo>=2026.9.4",
+    # unsloth_zoo.compiler embeds its own copy of the empty-logits sentinel in the code it
+    # generates for the compiled trainers, so fixing _utils.py here never reached the compiled
+    # path while an older zoo stayed resolvable: 2026.9.4 hands FSDP2 mixed precision a
+    # sentinel that answers `__dataclass_fields__` and then dies in `dataclasses.replace`.
+    # 2026.9.5 carries the matching fix (unslothai/unsloth-zoo#1259), so the floor moves to it
+    # and the compiled path is covered for the first time rather than resting on the eager
+    # fix alone. The compiled-path probes in tests/test_empty_logits_compiled_path_probes.py
+    # gate on the INSTALLED zoo rather than on this pin, so they start running by themselves
+    # wherever 2026.9.5 or newer is the zoo actually present.
+    #
+    # This does NOT lift the transformers ceiling below. 2026.9.5 still declares
+    # `transformers<=5.5.0` in its own metadata, so the resolver intersects our transformers
+    # range down to 5.5.0 whatever this file says. That one waits on
+    # unslothai/unsloth-zoo#1227 and a later zoo release.
+    "unsloth_zoo>=2026.9.5",
     "wheel>=0.42.0",
     "packaging",
     "numpy",
@@ -330,6 +353,13 @@ audio-torch280 = [
     "soundfile>=0.12.1 ; python_version >= '3.9' and python_version < '3.14' and (((sys_platform == 'linux' or sys_platform == 'win32') and (platform_machine == 'x86_64' or platform_machine == 'AMD64')) or (sys_platform == 'darwin' and platform_machine == 'arm64'))",
     "av>=12.3.0 ; python_version >= '3.9' and python_version < '3.14' and (((sys_platform == 'linux' or sys_platform == 'win32') and (platform_machine == 'x86_64' or platform_machine == 'AMD64')) or (sys_platform == 'darwin' and platform_machine == 'arm64'))",
 ]
+huggingface = [
+    "unsloth[huggingfacenotorch]",
+    "unsloth_zoo>=2026.9.5",
+    "torchvision",
+    "unsloth[triton]",
+]
+
 # xFormers' win_amd64 wheels are per-CUDA-family, not just per-torch: the
 # xformers/_C.pyd is linked against ONE exact (torch, CUDA) pair, and next to any
 # other pair torch.ops.load_library raises and xformers/_cpp_lib.py downgrades to
@@ -833,7 +863,7 @@ colab-ampere-torch220 = [
     "unsloth[flashattention]",
 ]
 colab-new = [
-    "unsloth_zoo>=2026.9.4",
+    "unsloth_zoo>=2026.9.5",
     "packaging",
     "tyro",
     "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.5.0",
