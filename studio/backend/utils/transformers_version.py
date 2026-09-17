@@ -117,31 +117,40 @@ def _hf_proxy_opener(url: str):
     import urllib.request
 
     try:
-        from utils.utils import hf_proxy_for_endpoint, hf_proxy_usable_by_urllib
+        from utils.utils import (
+            AuthSafeRedirectHandler,
+            hf_proxy_for_endpoint,
+            hf_proxy_usable_by_urllib,
+        )
 
         proxy = hf_proxy_for_endpoint(url)
         scheme = urllib.parse.urlparse(url).scheme or "https"
         if proxy:
             if not hf_proxy_usable_by_urllib(proxy):
                 return None
-            return urllib.request.build_opener(urllib.request.ProxyHandler({scheme: proxy}))
+            return urllib.request.build_opener(
+                urllib.request.ProxyHandler({scheme: proxy}), AuthSafeRedirectHandler()
+            )
         if any(urllib.request.getproxies().get(key) for key in (scheme, "all")):
             # The Hub client bypasses the proxy for this host; force a direct opener so
             # urllib's coarser NO_PROXY parsing cannot send the request through it anyway.
-            return urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            return urllib.request.build_opener(
+                urllib.request.ProxyHandler({}), AuthSafeRedirectHandler()
+            )
     except Exception:
         pass
     return None
 
 
 def _hf_urlopen(req, timeout: int):
-    """``urlopen`` through the same proxy huggingface_hub would use for this request."""
-    import urllib.request
+    """``urlopen`` through the same proxy huggingface_hub would use for this request,
+    with redirects that cannot carry the Authorization header off-origin."""
+    from utils.utils import auth_safe_open
 
     opener = _hf_proxy_opener(req.full_url)
     if opener is not None:
         return opener.open(req, timeout = timeout)
-    return urllib.request.urlopen(req, timeout = timeout)
+    return auth_safe_open(req, timeout = timeout)
 
 
 def hf_endpoint_unreachable(
