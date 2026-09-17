@@ -504,7 +504,9 @@ def _matrix_module(urlopen):
     import importlib.util
     import urllib.request
 
-    path = Path(__file__).resolve().parent / "version_compat" / "test_transformers_pinned_symbols.py"
+    path = (
+        Path(__file__).resolve().parent / "version_compat" / "test_transformers_pinned_symbols.py"
+    )
     spec = importlib.util.spec_from_file_location("_matrix_under_test", path)
     module = importlib.util.module_from_spec(spec)
     original = urllib.request.urlopen
@@ -530,9 +532,9 @@ def test_a_pypi_outage_keeps_every_load_bearing_tag() -> None:
 
     module = _matrix_module(refuses)
 
-    assert set(module._ALWAYS).issubset(module.TRANSFORMERS_TAGS), (
-        "a PyPI outage dropped a load-bearing tag from the matrix"
-    )
+    assert set(module._ALWAYS).issubset(
+        module.TRANSFORMERS_TAGS
+    ), "a PyPI outage dropped a load-bearing tag from the matrix"
     # The frozen list is still the body of it, so the outage does not shrink coverage.
     assert set(module._TAGS_FALLBACK).issubset(module.TRANSFORMERS_TAGS)
     assert module.TRANSFORMERS_TAGS[-1] == "main"
@@ -590,13 +592,13 @@ def test_the_declared_ceiling_stays_in_the_matrix_after_a_patch_release() -> Non
 
     module = _matrix_module(releases)
 
-    assert module._declared_ceiling_tag() == ("v5.17.0",), (
-        "the anchor is no longer read from pyproject's transformers cap"
-    )
+    assert module._declared_ceiling_tag() == (
+        "v5.17.0",
+    ), "the anchor is no longer read from pyproject's transformers cap"
     assert "v5.17.1" in module.TRANSFORMERS_TAGS, "the newest patch is still measured"
-    assert "v5.17.0" in module.TRANSFORMERS_TAGS, (
-        "a patch release evicted the declared ceiling from the matrix"
-    )
+    assert (
+        "v5.17.0" in module.TRANSFORMERS_TAGS
+    ), "a patch release evicted the declared ceiling from the matrix"
 
 
 def test_the_matrix_is_shared_between_xdist_workers(tmp_path, monkeypatch) -> None:
@@ -624,9 +626,7 @@ def test_the_matrix_is_shared_between_xdist_workers(tmp_path, monkeypatch) -> No
             return False
 
     def succeeds(*args, **kwargs):
-        return _Response(
-            _json.dumps({"releases": {"5.17.0": [{"yanked": False}]}}).encode("utf-8")
-        )
+        return _Response(_json.dumps({"releases": {"5.17.0": [{"yanked": False}]}}).encode("utf-8"))
 
     def refuses(*args, **kwargs):
         raise urllib.error.URLError("this worker's read timed out")
@@ -637,9 +637,9 @@ def test_the_matrix_is_shared_between_xdist_workers(tmp_path, monkeypatch) -> No
     # The worker whose own read fails must still collect what the first one published,
     # rather than the fallback list.
     second = _matrix_module(refuses)
-    assert second.TRANSFORMERS_TAGS == first.TRANSFORMERS_TAGS, (
-        "a failed read gave one worker a different matrix, which aborts an xdist run"
-    )
+    assert (
+        second.TRANSFORMERS_TAGS == first.TRANSFORMERS_TAGS
+    ), "a failed read gave one worker a different matrix, which aborts an xdist run"
     assert "v5.17.0" in second.TRANSFORMERS_TAGS
 
 
@@ -682,17 +682,17 @@ def test_a_pinned_patch_release_is_not_evicted_by_a_later_one() -> None:
 
     module = _matrix_module(releases)
 
-    assert "v5.10.3" in module.TRANSFORMERS_TAGS, (
-        "the newest 5.10 patch is still measured (PyPI 5.10.4 is tagged v5.10.3 upstream)"
-    )
+    assert (
+        "v5.10.3" in module.TRANSFORMERS_TAGS
+    ), "the newest 5.10 patch is still measured (PyPI 5.10.4 is tagged v5.10.3 upstream)"
     assert "v5.10.1" in module.TRANSFORMERS_TAGS, "a later patch evicted the pinned 5.10.1"
     assert "v5.15.1" in module.TRANSFORMERS_TAGS
 
     # The pins this repo names as newly admitted are the ones that must survive eviction.
     for version in ("5.10.1", "5.15.1"):
-        assert "v" + version in module._ALWAYS, (
-            f"{version} is in NEWLY_ADMITTED but is not anchored in the matrix"
-        )
+        assert (
+            "v" + version in module._ALWAYS
+        ), f"{version} is in NEWLY_ADMITTED but is not anchored in the matrix"
 
 
 def test_an_import_lane_pins_the_declared_ceiling() -> None:
@@ -705,26 +705,24 @@ def test_an_import_lane_pins_the_declared_ceiling() -> None:
     """
     import yaml
 
-    workflow = yaml.safe_load(
-        (WORKFLOWS / "version-compat-ci.yml").read_text(encoding = "utf-8")
-    )
+    workflow = yaml.safe_load((WORKFLOWS / "version-compat-ci.yml").read_text(encoding = "utf-8"))
     job = workflow["jobs"]["zoo-imports-under-spoof"]
     lanes = {lane["slug"]: lane for lane in job["strategy"]["matrix"]["include"]}
 
-    assert "ceiling" in lanes, (
-        "no import lane pins the declared ceiling, so only the floor is exercised"
-    )
+    assert (
+        "ceiling" in lanes
+    ), "no import lane pins the declared ceiling, so only the floor is exercised"
     pins = " ".join(lanes["ceiling"]["pkg_pins"].split())
-    assert f"'transformers=={TESTED_CEILING}'" in pins, (
-        f"the ceiling lane does not pin transformers=={TESTED_CEILING}; it reads {pins}"
-    )
+    assert (
+        f"'transformers=={TESTED_CEILING}'" in pins
+    ), f"the ceiling lane does not pin transformers=={TESTED_CEILING}; it reads {pins}"
 
     # The canary is the lane allowed to resolve outside the window, and it is the only one.
     assert lanes["latest"].get("continue_on_error") is True
     for slug in ("floor", "ceiling"):
-        assert lanes[slug].get("continue_on_error") is None, (
-            f"the {slug} lane is inside the declared window, so it must stay blocking"
-        )
+        assert (
+            lanes[slug].get("continue_on_error") is None
+        ), f"the {slug} lane is inside the declared window, so it must stay blocking"
 
 
 def test_the_ceiling_lane_moves_with_the_declared_window() -> None:
@@ -733,9 +731,7 @@ def test_the_ceiling_lane_moves_with_the_declared_window() -> None:
     window no longer tops out at."""
     import yaml
 
-    workflow = yaml.safe_load(
-        (WORKFLOWS / "version-compat-ci.yml").read_text(encoding = "utf-8")
-    )
+    workflow = yaml.safe_load((WORKFLOWS / "version-compat-ci.yml").read_text(encoding = "utf-8"))
     lanes = {
         lane["slug"]: lane
         for lane in workflow["jobs"]["zoo-imports-under-spoof"]["strategy"]["matrix"]["include"]
@@ -760,9 +756,7 @@ def test_no_two_import_lanes_mint_the_same_pip_cache_key() -> None:
     """
     import yaml
 
-    workflow = yaml.safe_load(
-        (WORKFLOWS / "version-compat-ci.yml").read_text(encoding = "utf-8")
-    )
+    workflow = yaml.safe_load((WORKFLOWS / "version-compat-ci.yml").read_text(encoding = "utf-8"))
     lanes = workflow["jobs"]["zoo-imports-under-spoof"]["strategy"]["matrix"]["include"]
     interpreters = [lane["python"] for lane in lanes]
     assert len(interpreters) == len(set(interpreters)), (
@@ -793,9 +787,9 @@ def test_a_published_matrix_still_carries_the_anchors(tmp_path, monkeypatch) -> 
 
     module = _matrix_module(refuses)
 
-    assert set(module._ALWAYS).issubset(module.TRANSFORMERS_TAGS), (
-        "the published matrix was returned without its anchors"
-    )
+    assert set(module._ALWAYS).issubset(
+        module.TRANSFORMERS_TAGS
+    ), "the published matrix was returned without its anchors"
     assert module._declared_ceiling_tag()[0] in module.TRANSFORMERS_TAGS
     # What the file did carry is still honoured, so sharing still does its job.
     assert "v5.17.0" in module.TRANSFORMERS_TAGS
@@ -808,7 +802,9 @@ def test_the_declared_ceiling_anchor_uses_the_tag_upstream_pushed() -> None:
     on the symbol it meant to test."""
     import importlib.util
 
-    path = Path(__file__).resolve().parent / "version_compat" / "test_transformers_pinned_symbols.py"
+    path = (
+        Path(__file__).resolve().parent / "version_compat" / "test_transformers_pinned_symbols.py"
+    )
     spec = importlib.util.spec_from_file_location("_ceiling_under_test", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -816,6 +812,6 @@ def test_the_declared_ceiling_anchor_uses_the_tag_upstream_pushed() -> None:
     for release, tag in module._TAG_OVERRIDES.items():
         assert module._TAG_OVERRIDES.get(release) == tag
         # The derivation has to consult the same table the matrix does.
-        assert "_TAG_OVERRIDES" in inspect.getsource(module._declared_ceiling_tag), (
-            "the ceiling anchor is built as 'v' + version and ignores the override table"
-        )
+        assert "_TAG_OVERRIDES" in inspect.getsource(
+            module._declared_ceiling_tag
+        ), "the ceiling anchor is built as 'v' + version and ignores the override table"

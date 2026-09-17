@@ -63,6 +63,7 @@ def _declared_ceiling_tag() -> tuple[str, ...]:
     # pushed and every check against it would fail on the fetch rather than on the symbol.
     return (_TAG_OVERRIDES.get(ceiling, "v" + ceiling),)
 
+
 # PyPI version -> the tag that actually carries it, where upstream disagrees with itself.
 # Upstream tagged PyPI 5.10.4 as v5.10.3 (that tag's __init__ says 5.10.4); there is no
 # v5.10.4 tag and no 5.10.3 on PyPI, so the tag name is not "v" + the release name.
