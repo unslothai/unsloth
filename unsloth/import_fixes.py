@@ -1313,6 +1313,56 @@ def _hf_xet_extension_is_missing(spec):
     return True
 
 
+def _disable_xet_on_already_imported_huggingface_hub():
+    """Turn Xet off in an ALREADY imported huggingface_hub, and report which bindings were changed.
+
+    The environment variable alone is not enough. huggingface_hub >= 0.34 evaluates
+    ``HF_HUB_DISABLE_XET`` ONCE, at import time, in constants.py:
+
+        HF_HUB_DISABLE_XET: bool = _is_true(os.environ.get("HF_HUB_DISABLE_XET"))
+
+    so a user whose first line is `import transformers` (or anything else that reaches the Hub)
+    has already frozen it to False by the time unsloth runs, and setting the variable afterwards
+    is read by nobody: every download still routes to Xet and still dies. Readers go through the
+    module attribute (`if xet_file_data is not None and not constants.HF_HUB_DISABLE_XET`), never
+    a local copy, so rebinding the attribute does take effect for the rest of the process.
+
+    Only modules already in sys.modules are touched, and only where the attribute already exists:
+      * huggingface_hub < 0.31 never had the variable, so nothing is found and nothing is created,
+      * 0.31 to 0.33 read os.environ per call, so nothing is found and the variable alone suffices,
+      * 0.34 and later have the frozen constant, which is what gets rebound.
+    Every huggingface_hub module is scanned rather than constants.py alone, so a future
+    `from .constants import HF_HUB_DISABLE_XET` (which would copy the value into a second module)
+    is covered without having to notice it first.
+    """
+    if "huggingface_hub" not in sys.modules:
+        # Nothing has been frozen yet, so the environment variable is still read in time. Do not
+        # import the Hub just to patch it: that would move the cost of the Hub import into every
+        # unsloth import.
+        return ()
+
+    patched = []
+    for name, module in list(sys.modules.items()):
+        if module is None:
+            continue
+        if name != "huggingface_hub" and not name.startswith("huggingface_hub."):
+            continue
+        try:
+            current = getattr(module, "HF_HUB_DISABLE_XET")
+        except Exception:
+            # Missing on this version, or a lazy __getattr__ that raises. Either way there is no
+            # binding here to fix, and we must not invent one.
+            continue
+        if current is True:
+            continue
+        try:
+            setattr(module, "HF_HUB_DISABLE_XET", True)
+        except Exception:
+            continue
+        patched.append(name)
+    return tuple(patched)
+
+
 def fix_broken_hf_xet_wheel():
     """Route Hugging Face downloads over plain HTTPS when hf_xet is installed but unimportable."""
     if os.environ.get("HF_HUB_DISABLE_XET", "").strip() != "":
@@ -1358,7 +1408,11 @@ def fix_broken_hf_xet_wheel():
     except Exception as error:
         failure = f"{type(error).__name__}: {error}"
 
+    # The variable is what child processes (download workers, spawned trainers) inherit, so it is
+    # still set first and unconditionally. It is not enough on its own for THIS process, though,
+    # if something already imported the Hub and froze the constant; see the helper.
     os.environ["HF_HUB_DISABLE_XET"] = "1"
+    _disable_xet_on_already_imported_huggingface_hub()
     logger.warning(
         f"Unsloth: `hf_xet` is installed but cannot be imported ({failure}) because {suspicion} "
         f"(wheel platform tag(s): {', '.join(_hf_xet_wheel_platform_tags()) or 'unknown'}). "

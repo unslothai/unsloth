@@ -20,7 +20,9 @@ import importlib.machinery
 import importlib.util
 import platform
 import struct
+import sys
 import sysconfig
+import types
 from pathlib import Path
 
 import pytest
@@ -345,6 +347,177 @@ def test_never_overrides_an_explicit_setting(monkeypatch, user_value):
 
     IF.fix_broken_hf_xet_wheel()
     assert IF.os.environ["HF_HUB_DISABLE_XET"] == user_value
+
+
+def _fake_hub_modules(monkeypatch, bindings):
+    """Put a fake huggingface_hub package into sys.modules.
+
+    `bindings` maps a module suffix ("" for the package itself, "constants", ...) to the value its
+    HF_HUB_DISABLE_XET attribute should start at, or to `_UNBOUND` for a module that does not
+    define the flag at all (which is every module on huggingface_hub < 0.34).
+    """
+    modules = {}
+    for suffix, value in bindings.items():
+        name = "huggingface_hub" + (f".{suffix}" if suffix else "")
+        module = types.ModuleType(name)
+        if value is not _UNBOUND:
+            module.HF_HUB_DISABLE_XET = value
+        monkeypatch.setitem(sys.modules, name, module)
+        modules[suffix] = module
+    return modules
+
+
+_UNBOUND = object()
+
+
+def test_patches_the_frozen_constant_when_the_hub_is_already_imported(monkeypatch):
+    """REGRESSION. The environment variable alone fixes nothing once the Hub has been imported.
+
+    huggingface_hub >= 0.34 evaluates HF_HUB_DISABLE_XET exactly once, at import time, in
+    constants.py. A user whose script starts with `import transformers` has already frozen it to
+    False before unsloth runs, so setting the variable afterwards is read by nobody: every download
+    still routes to Xet and still dies on the unimportable hf_xet. Measured on huggingface_hub
+    1.31.0 with transformers 5.17.0 imported first and a win_arm64 hf_xet in a win-amd64
+    interpreter: env HF_HUB_DISABLE_XET=1, constants.HF_HUB_DISABLE_XET still False,
+    is_xet_available() still True, the transfer went through xet_get and raised.
+    """
+    monkeypatch.delenv("HF_HUB_DISABLE_XET", raising = False)
+    _fake_host(monkeypatch, "win-arm64")
+    monkeypatch.setattr(IF, "_hf_xet_wheel_platform_tags", lambda: ("win_amd64",))
+    _install_fake_environment(monkeypatch, hf_xet_present = True, import_error = _WRONG_ARCHITECTURE)
+    modules = _fake_hub_modules(monkeypatch, {"": _UNBOUND, "constants": False})
+
+    IF.fix_broken_hf_xet_wheel()
+
+    assert IF.os.environ.get("HF_HUB_DISABLE_XET") == "1", "the variable must still be set too"
+    assert modules["constants"].HF_HUB_DISABLE_XET is True, (
+        "the already frozen constant was left False, so this process still routes to Xet"
+    )
+
+
+def test_patches_every_module_that_binds_the_flag(monkeypatch):
+    """Readers today all go through `constants.HF_HUB_DISABLE_XET`, so rebinding constants.py is
+    enough. A module that ever does `from .constants import HF_HUB_DISABLE_XET` would hold its own
+    copy, which no amount of patching constants.py would reach, so patch by attribute rather than
+    by hardcoded module name. Scanned across huggingface_hub 0.24.7, 0.30.2, 0.33.5, 0.34.4, 0.36.2
+    and 1.31.0 (with transformers loaded): constants.py is the only binding that exists so far.
+    """
+    monkeypatch.delenv("HF_HUB_DISABLE_XET", raising = False)
+    _fake_host(monkeypatch, "win-arm64")
+    monkeypatch.setattr(IF, "_hf_xet_wheel_platform_tags", lambda: ("win_amd64",))
+    _install_fake_environment(monkeypatch, hf_xet_present = True, import_error = _WRONG_ARCHITECTURE)
+    modules = _fake_hub_modules(
+        monkeypatch,
+        {
+            "": _UNBOUND,
+            "constants": False,
+            "file_download": False,      # a hypothetical `from .constants import ...` copy
+            "utils._xet": False,         # ditto
+            "utils._runtime": _UNBOUND,  # reads constants.X, holds no copy: must stay unbound
+        },
+    )
+    # A look-alike top level package must not be touched by the prefix match.
+    decoy = types.ModuleType("huggingface_hubby")
+    decoy.HF_HUB_DISABLE_XET = False
+    monkeypatch.setitem(sys.modules, "huggingface_hubby", decoy)
+
+    IF.fix_broken_hf_xet_wheel()
+
+    for suffix in ("constants", "file_download", "utils._xet"):
+        assert modules[suffix].HF_HUB_DISABLE_XET is True, f"{suffix} kept its stale copy"
+    assert not hasattr(modules["utils._runtime"], "HF_HUB_DISABLE_XET")
+    assert not hasattr(modules[""], "HF_HUB_DISABLE_XET")
+    assert decoy.HF_HUB_DISABLE_XET is False, "patched an unrelated package by prefix"
+
+
+def test_does_not_invent_the_flag_on_hub_versions_that_never_had_it(monkeypatch):
+    """HF_HUB_DISABLE_XET arrived in huggingface_hub 0.31.0, and 0.31 to 0.33 read os.environ on
+    every call rather than freezing it, so for all of those the variable alone is the whole fix.
+    Creating the attribute there would put a value into a namespace upstream does not own.
+    Executed against 0.24.7, 0.30.2 and 0.33.5: attribute still absent afterwards, downloads still
+    took plain HTTPS.
+    """
+    monkeypatch.delenv("HF_HUB_DISABLE_XET", raising = False)
+    _fake_host(monkeypatch, "win-arm64")
+    monkeypatch.setattr(IF, "_hf_xet_wheel_platform_tags", lambda: ("win_amd64",))
+    _install_fake_environment(monkeypatch, hf_xet_present = True, import_error = _WRONG_ARCHITECTURE)
+    modules = _fake_hub_modules(monkeypatch, {"": _UNBOUND, "constants": _UNBOUND})
+
+    IF.fix_broken_hf_xet_wheel()
+
+    assert IF.os.environ.get("HF_HUB_DISABLE_XET") == "1"
+    assert not hasattr(modules["constants"], "HF_HUB_DISABLE_XET")
+
+
+def test_does_not_import_huggingface_hub_just_to_patch_it(monkeypatch):
+    """The normal ordering, where unsloth runs first. Nothing is frozen yet, the variable is read
+    in time, and importing the Hub here would move its cost into every unsloth import."""
+    monkeypatch.delitem(sys.modules, "huggingface_hub", raising = False)
+    for name in [n for n in sys.modules if n.startswith("huggingface_hub.")]:
+        monkeypatch.delitem(sys.modules, name, raising = False)
+
+    assert IF._disable_xet_on_already_imported_huggingface_hub() == ()
+    assert "huggingface_hub" not in sys.modules
+
+
+@pytest.mark.parametrize("scenario", ("healthy", "absent", "explicit"))
+def test_leaves_the_frozen_constant_alone_when_the_fix_does_not_fire(monkeypatch, scenario):
+    """The in-memory patch rides on exactly the same verdict as the environment variable: a healthy
+    hf_xet, no hf_xet, or a user who chose for themselves must all come out untouched."""
+    modules = _fake_hub_modules(monkeypatch, {"": _UNBOUND, "constants": False})
+    _fake_host(monkeypatch, "win-arm64")
+    monkeypatch.setattr(IF, "_hf_xet_wheel_platform_tags", lambda: ("win_amd64",))
+
+    if scenario == "healthy":
+        monkeypatch.delenv("HF_HUB_DISABLE_XET", raising = False)
+        _install_fake_environment(monkeypatch, hf_xet_present = True, import_error = None)
+    elif scenario == "absent":
+        monkeypatch.delenv("HF_HUB_DISABLE_XET", raising = False)
+        _install_fake_environment(monkeypatch, hf_xet_present = False, import_error = None)
+    else:
+        monkeypatch.setenv("HF_HUB_DISABLE_XET", "0")
+        _install_fake_environment(
+            monkeypatch, hf_xet_present = True, import_error = _WRONG_ARCHITECTURE
+        )
+
+    IF.fix_broken_hf_xet_wheel()
+
+    assert modules["constants"].HF_HUB_DISABLE_XET is False
+
+
+def test_patching_is_idempotent_and_reports_only_real_changes(monkeypatch):
+    modules = _fake_hub_modules(monkeypatch, {"": _UNBOUND, "constants": False})
+
+    assert IF._disable_xet_on_already_imported_huggingface_hub() == ("huggingface_hub.constants",)
+    assert modules["constants"].HF_HUB_DISABLE_XET is True
+    # Already True, so a second pass reports nothing changed.
+    assert IF._disable_xet_on_already_imported_huggingface_hub() == ()
+
+
+def test_patching_survives_hostile_modules(monkeypatch):
+    """sys.modules is not a tidy place: lazy packages raise from __getattr__, None entries linger
+    from failed imports, and a module can refuse setattr. None of that may take the fix down, and
+    a bad neighbour must not stop the module that actually matters from being patched."""
+    modules = _fake_hub_modules(monkeypatch, {"": _UNBOUND, "constants": False})
+
+    class Exploding(types.ModuleType):
+        def __getattr__(self, item):
+            raise RuntimeError("lazy import blew up")
+
+    class ReadOnly(types.ModuleType):
+        HF_HUB_DISABLE_XET = False
+
+        def __setattr__(self, item, value):
+            raise AttributeError("read only module")
+
+    monkeypatch.setitem(sys.modules, "huggingface_hub.lazy", Exploding("huggingface_hub.lazy"))
+    monkeypatch.setitem(sys.modules, "huggingface_hub.frozen", ReadOnly("huggingface_hub.frozen"))
+    monkeypatch.setitem(sys.modules, "huggingface_hub.gone", None)
+
+    patched = IF._disable_xet_on_already_imported_huggingface_hub()
+
+    assert patched == ("huggingface_hub.constants",)
+    assert modules["constants"].HF_HUB_DISABLE_XET is True
 
 
 def test_runs_before_anything_imports_huggingface_hub():
