@@ -3725,10 +3725,9 @@ _ensure_rocm_probe_env() {
 # one vendor, so this SWAPS the stack rather than adding to it. Mirrors
 # install_python_stack._rocm_torch_explicitly_requested; keep the two in step.
 _rocm_torch_explicitly_requested() {
-    # Trimmed, because the Python twin reads the same variable through .strip() and an
-    # env file or launcher can hand this one " true ". Untrimmed, install.sh keeps CUDA
-    # and exports an authoritative CUDA backend, which then stops the Python half
-    # honouring the identical value -- the two would disagree about one string.
+    # Trimmed, because the Python twin reads the same variable through .strip() and a
+    # launcher can hand this one " true ". Untrimmed, install.sh keeps CUDA and exports an
+    # authoritative CUDA backend, which then stops the Python half honouring that value.
     case "$(printf '%s' "${UNSLOTH_FORCE_ROCM_TORCH:-}" \
             | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]')" in
         1|true|yes|on) return 0 ;;
@@ -3757,18 +3756,18 @@ _has_amd_rocm_gpu() {
 }
 
 # AMD silicon this host can point at WITHOUT trusting a declared arch.
-# _infer_linux_amd_gfx_arch returns UNSLOTH_ROCM_GFX_ARCH before it looks at any hardware,
-# so it cannot answer "is there a card": a stale or copied-in arch would otherwise let the
-# request hand a working CUDA stack to a GPU that is not present. These are the same two
-# evidence sources that function applies on its own non-declared path.
+# _infer_linux_amd_gfx_arch returns UNSLOTH_ROCM_GFX_ARCH before it looks at any hardware, so
+# it cannot answer "is there a card": a stale arch would otherwise let the request hand a
+# working CUDA stack to a GPU that is not present. Same evidence sources that function uses
+# on its own non-declared path.
 _amd_hardware_corroborated() {
     _amd_gpu_present_via_pci && return 0
     # WSL enumerates no PCI display device, so /dev/dxg plus librocdxg is the only evidence
-    # available there. Neither names a vendor, though: /dev/dxg is the generic WSL GPU
-    # bridge an NVIDIA passthrough creates too, and librocdxg is a file an uninstalled ROCm
-    # leaves behind. With no NVIDIA card in the box that reading still beats declining, since
-    # there is no working stack to lose. Beside one there is, so the runtime has to name an
-    # agent itself -- "physical" mode, so a declared arch cannot answer for the silicon.
+    # there, and neither names a vendor: /dev/dxg is the generic WSL GPU bridge an NVIDIA
+    # passthrough creates too, and librocdxg is left behind by an uninstalled ROCm. With no
+    # NVIDIA card that reading still beats declining, since there is no working stack to
+    # lose; beside one, the runtime has to name an agent itself -- hence "physical" mode,
+    # which a declared arch cannot answer for.
     if [ -e /dev/dxg ] || grep -qi microsoft /proc/version 2>/dev/null; then
         for _ahc_d in /opt/rocm/lib /opt/rocm/lib64 /opt/rocm-*/lib /opt/rocm-*/lib64; do
             { [ -e "$_ahc_d/librocdxg.so" ] || [ -e "$_ahc_d/librocdxg.so.1" ]; } || continue
@@ -3801,10 +3800,9 @@ _amd_gfx_has_wheel_route() {
 # is that wheel. _GENERIC_ROCM_WHEEL_GFX was measured on rocm7.0 and up, but the tag comes
 # from the installed ROCm version, so a stale /opt/rocm beside a current amdgpu resolves a
 # wheel that predates the card. Same table as _GENERIC_WHEEL_GFX_MIN_ROCM in
-# install_python_stack.py; only gfx950 reaches this, every other arch with a floor having a
-# per-arch index above. No readable version answers NO rather than "unknown": the wheel
-# still cannot run the card, and reading absence of evidence as support preserves exactly
-# the build that cannot run.
+# install_python_stack.py; only gfx950 reaches this, every other floored arch having a
+# per-arch index above. An unreadable version answers NO rather than "unknown": reading
+# absence of evidence as support preserves exactly the build that cannot run.
 _amd_generic_tag_carries_gfx() {
     case "$1" in
         gfx950|gfx1150|gfx1151) _agtc_min_major=7; _agtc_min_minor=0 ;;
@@ -3830,11 +3828,10 @@ _amd_generic_tag_carries_gfx() {
 # tag, which opens solely when gfx906 is the sole arch. install_python_stack.py's
 # _MIXED_HOST_UNROUTABLE says the same.
 # True when a set visible-device mask exposes NO GPU at either layer. ROCr filters BENEATH
-# HIP, so an empty or -1 mask on either leaves nothing to target however the other reads:
-# HIP_VISIBLE_DEVICES=0 over ROCR_VISIBLE_DEVICES=-1 still exposes no device.
+# HIP, so an empty or -1 mask on either leaves nothing to target however the other reads.
 # CUDA_VISIBLE_DEVICES is the HIP alias and is read only when HIP itself is unset. ${VAR+x},
-# not ${VAR:-}: a SET-but-empty mask hides every device where an unset one hides nothing, and
-# the two must not read alike. Mirrors _visible_masks_select_no_gpu in install_python_stack.py.
+# not ${VAR:-}: a SET-but-empty mask hides every device where an unset one hides nothing.
+# Mirrors _visible_masks_select_no_gpu in install_python_stack.py.
 _amd_visible_masks_select_no_gpu() {
     if [ -n "${HIP_VISIBLE_DEVICES+x}" ]; then
         _avm_hip=HIP_VISIBLE_DEVICES
@@ -3853,10 +3850,8 @@ _amd_visible_masks_select_no_gpu() {
 }
 
 # One mask layer applied to a per-DEVICE list, in mask order: the survivors, renumbered.
-#
 # Never deduplicated, because an ordinal names a device rather than an architecture: on
-# [gfx1010, gfx1010, gfx1100], ordinal 1 is the second gfx1010, and collapsing the pair
-# would answer for the gfx1100 instead.
+# [gfx1010, gfx1010, gfx1100], ordinal 1 is the second gfx1010.
 #
 # CUDA and HIP read left to right and stop at the first entry naming no device, so what
 # survives is the PREFIX of resolvable ordinals. A non-numeric entry cannot be resolved here
@@ -3864,9 +3859,9 @@ _amd_visible_masks_select_no_gpu() {
 #
 # A third argument of "rocr" also ends the prefix at a REPEATED ordinal: ROCr's filter
 # (ROCR-Runtime, core/inc/amd_filter_device.h) terminates on an index that "maps to a device
-# that has been previously selected", so ROCR_VISIBLE_DEVICES=0,0 exposes ONE device, and
-# printing it twice would let the HIP layer resolve an ordinal against a device the runtime
-# never surfaced. clr documents no such rule, so the HIP layer does not get one.
+# that has been previously selected", so ROCR_VISIBLE_DEVICES=0,0 exposes ONE device and
+# printing it twice would let the HIP layer index a device the runtime never surfaced. clr
+# documents no such rule, so the HIP layer does not get one.
 _amd_mask_survivors() {
     printf '%s\n' "$1" | awk -v vis="$2" -v layer="${3:-}" '
         NF { vals[n++] = $0 }
@@ -3885,20 +3880,16 @@ _amd_mask_survivors() {
 }
 
 # The single arch the runtime will hand torch, from a per-device arch list in enumeration
-# order. Empty when the masks name nothing this can resolve.
+# order. Empty when the masks name nothing this can resolve. Resolved here rather than by a
+# probe, which is the point: rocminfo honours only ROCR_VISIBLE_DEVICES and amd-smi honours
+# neither, so either one run under a HIP mask answers on the very card the mask hid.
 #
-# Resolved here rather than delegated to a probe, which is the whole point: rocminfo honours
-# only ROCR_VISIBLE_DEVICES and amd-smi honours neither, so running either with a HIP mask in
-# place returns the WHOLE machine and answers on the very card the mask hid.
-#
-# The two layers COMPOSE, in this order: ROCr filters the physical list and renumbers what
-# is left, then HIP indexes those survivors. Applying only one reads
-# ROCR_VISIBLE_DEVICES=1 HIP_VISIBLE_DEVICES=0 as the first physical card when the runtime
-# hands over the second. _runtime_gfx_target composes them the same way.
-#
+# The two layers COMPOSE, in this order: ROCr filters the physical list and renumbers what is
+# left, then HIP indexes those survivors. Applying only one reads ROCR_VISIBLE_DEVICES=1
+# HIP_VISIBLE_DEVICES=0 as the first physical card when the runtime hands over the second.
 # The FIRST survivor, not any of them: HIP remaps runtime ordinal 0 onto the head of the
-# mask, so HIP_VISIBLE_DEVICES=1,0 targets the second physical card by default. Judging the
-# whole exposed set would pass on a card the runtime is not going to select.
+# mask, so HIP_VISIBLE_DEVICES=1,0 targets the second physical card. _runtime_gfx_target in
+# install_python_stack.py composes them the same way.
 _amd_runtime_gfx_target() {
     _argt_list="$1"
     if [ -n "${ROCR_VISIBLE_DEVICES:-}" ]; then
@@ -3933,18 +3924,16 @@ _amd_gfx_is_shadowing_integrated() {
 # _resolve_amd_gfx's #7776 preference in install_python_stack.py.
 #
 # The wheel family is picked for ONE arch, so letting the APU decide strands the discrete
-# card: on gfx90c ahead of gfx1200 the request found no route at all and fell back to CUDA,
-# and on gfx1036 ahead of gfx1100 it installed gfx103X-all for the iGPU. Both halves of this
-# feature have to agree, because install.sh exports the family it chose and
-# _ensure_rocm_torch returns on its first line for a non-ROCm one -- so the shell deciding
-# CUDA here is final, and the Python preference never runs.
+# card: on gfx90c ahead of gfx1200 the request found no route and fell back to CUDA, and on
+# gfx1036 ahead of gfx1100 it installed gfx103X-all for the iGPU. The shell's choice is
+# final -- install.sh exports the family and _ensure_rocm_torch returns on its first line for
+# a non-ROCm one -- so the Python preference never gets to correct it.
 #
-# A set mask is the user naming a device and is honoured verbatim, exactly as
-# _visible_devices_pinned gates the Python rule. gfx906 is not a candidate: its only route
-# is the rocm6.3 legacy tag, which opens solely when it is the sole arch, so naming it on a
-# mixed host installs a rocm7.x wheel with no gfx906 kernels and strands BOTH cards.
-# Deposing a routable APU for one no index carries is the same trade, so an unroutable
-# sibling is taken only when the integrated pick has no route either.
+# A set mask is the user naming a device and is honoured verbatim, as _visible_devices_pinned
+# gates the Python rule. gfx906 is not a candidate: its only route is the rocm6.3 legacy tag,
+# which opens solely when it is the sole arch, so naming it on a mixed host installs a rocm7.x
+# wheel with no gfx906 kernels and strands BOTH cards. Deposing a routable APU for an
+# unroutable sibling is the same trade, so that is done only when the APU has no route either.
 _amd_prefer_discrete_gfx() {
     _apdg_devs="$1"
     _apdg_sel="$2"
@@ -3981,23 +3970,20 @@ _amd_request_has_a_wheel_route() {
     # miss, so there is nothing for the request to swap TO and CUDA stays.
     _amd_visible_masks_select_no_gpu && return 1
     # A DECLARED arch decides, when there is one. _probe_amd_gfx_arch's default mode returns
-    # UNSLOTH_ROCM_GFX_ARCH before it looks at any hardware and get_torch_index_url is what
-    # installs from it, so judging the physical inventory instead can pass on a routable
-    # sibling while the wheels are chosen for the declared card. Corroborated first, because
-    # the variable answers on a host with no AMD GPU at all -- that is the whole reason
-    # _amd_hardware_corroborated exists. Masks are not applied to it: hiding every device is
-    # a statement about this run and was answered above, while the arch names what to build
-    # for. _runtime_gfx_target resolves it in the same order.
+    # UNSLOTH_ROCM_GFX_ARCH before it looks at hardware and get_torch_index_url installs from
+    # it, so judging the physical inventory instead can pass on a routable sibling while the
+    # wheels are chosen for the declared card. Corroborated first, because the variable
+    # answers on a host with no AMD GPU at all. Masks are not applied to it: the arch names
+    # what to build for. _runtime_gfx_target resolves it in the same order.
     _arwr_decl=$(printf '%s' "${UNSLOTH_ROCM_GFX_ARCH:-}" \
         | tr '[:upper:]' '[:lower:]' | sed 's/:.*$//' | tr -d '[:space:]')
     if [ -n "$_arwr_decl" ]; then
         _amd_hardware_corroborated || _kfd_gfx_targets 2>/dev/null | grep -q . || return 1
         # The arch names what to BUILD for; whether the runtime exposes a device to build it
-        # for is the other question, and this return sits above the mask resolution below.
-        # A declared arch beside HIP_VISIBLE_DEVICES=7 approved the swap on a host where HIP
-        # hands torch nothing. Only when a mask is set AND a device list is knowable: an
-        # unknowable one leaves the declared arch alone rather than declining on no evidence.
-        # _runtime_gfx_target does the same in install_python_stack.py.
+        # for is the other question. A declared arch beside HIP_VISIBLE_DEVICES=7 approved the
+        # swap on a host where HIP hands torch nothing. Only when a mask is set AND a device
+        # list is knowable: an unknowable one leaves the declared arch alone rather than
+        # declining on no evidence. _runtime_gfx_target does the same.
         if [ -n "${HIP_VISIBLE_DEVICES+x}" ] || [ -n "${ROCR_VISIBLE_DEVICES+x}" ] || \
            [ -n "${CUDA_VISIBLE_DEVICES+x}" ]; then
             _arwr_dd=$(_amd_ordered_gfx_devices 2>/dev/null | sed 's/:.*$//' \
@@ -4085,16 +4071,13 @@ _amd_request_has_a_wheel_route() {
     return 0
 }
 
-# One place answers "does the NVIDIA card still win here", so the index selection and
-# the per-arch reroutes cannot disagree about it. The reroutes below run at top level
-# and probe afresh, so get_torch_index_url clearing its own _nvidia_detected does not
-# reach them: without this, a request on a mixed host whose ROCm version is unreadable
-# takes the cpu index that the reroute exists to rewrite, and the reroute then declines,
-# leaving CPU torch beside a working NVIDIA card (#10450).
-#
-# A route test, not a presence test, so a request on a pure NVIDIA box still answers
-# "NVIDIA wins" and the CUDA path is unchanged -- and so does a request beside a card no
-# index can serve, which presence alone would have handed the CUDA install to.
+# One place answers "does the NVIDIA card still win here", so the index selection and the
+# per-arch reroutes cannot disagree. The reroutes run at top level and probe afresh, so
+# get_torch_index_url clearing its own _nvidia_detected does not reach them: without this, a
+# request on a mixed host whose ROCm version is unreadable takes the cpu index the reroute
+# exists to rewrite, the reroute then declines, and CPU torch is left beside a working
+# NVIDIA card (#10450). A route test rather than a presence test, so a pure NVIDIA box, and
+# a request beside a card no index can serve, both still answer "NVIDIA wins".
 _nvidia_gpu_wins_over_amd() {
     _has_usable_nvidia_gpu || return 1
     if _rocm_torch_explicitly_requested && _amd_request_has_a_wheel_route; then
@@ -4757,15 +4740,12 @@ get_torch_index_url() {
             _smi="/usr/bin/nvidia-smi"
         fi
     fi
-    # An explicit request hands the AMD branch below the same host it would judge on a
-    # machine with no NVIDIA card. It still has to find a card and a supported arch, so
-    # a request on a pure NVIDIA box selects nothing and falls through to CUDA.
-    #
-    # Here rather than only in _has_amd_rocm_gpu, because THIS is the decision that
-    # matters: the index chosen here is what install.sh exports as
-    # UNSLOTH_TORCH_BACKEND, and _ensure_rocm_torch returns on its first line for a
-    # "cuda" backend. Relaxing the AMD probe alone left the request unable to swap
-    # anything at all (#10450).
+    # An explicit request hands the AMD branch below the same host it would judge with no
+    # NVIDIA card present. It still has to find a card and a supported arch, so a request on
+    # a pure NVIDIA box selects nothing and falls through to CUDA. Here rather than only in
+    # _has_amd_rocm_gpu because THIS is the deciding step: the index chosen here is exported
+    # as UNSLOTH_TORCH_BACKEND, and _ensure_rocm_torch returns on its first line for a "cuda"
+    # one, so relaxing the AMD probe alone swapped nothing at all (#10450).
     if [ "$_nvidia_detected" -eq 1 ] && _rocm_torch_explicitly_requested && \
        _amd_request_has_a_wheel_route; then
         echo "[INFO] UNSLOTH_FORCE_ROCM_TORCH is set and an AMD GPU is present -- selecting ROCm PyTorch over CUDA." >&2
@@ -5474,21 +5454,19 @@ case "$TORCH_INDEX_URL" in
             _amd_probed_gfx_first=$(_amd_sole_index_arch "$_amd_probe_out") \
                 || _amd_probed_gfx_first=""
             # A measured-bad arch anywhere in the inventory disqualifies the whole family, at
-            # the source not at each consumer: gfx1033 shares gfx103X-all with gfx1030-gfx1036,
-            # so the shared-family arm below would otherwise rewrite the cpu index the gate
-            # just chose back to ROCm wheels.
+            # the source not at each consumer: gfx1033 shares gfx103X-all with
+            # gfx1030-gfx1036, so the shared-family arm below would otherwise rewrite the cpu
+            # index the gate just chose back to ROCm wheels.
             #
             # PRESENCE is the rule only while the selected card is unknown, exactly as in the
             # miscomputing-arch gate inside get_torch_index_url. An honoured request has
             # already resolved the one card this run hands torch, so disqualifying the family
-            # for a sibling the mask hid takes the cpu index for a routable gfx1030 and the
-            # CUDA fallback then undoes the request entirely: the same failure that gate was
-            # changed to avoid, one layer later.
+            # for a sibling the mask hid would take the cpu index for a routable gfx1030 and
+            # the CUDA fallback would then undo the request entirely.
             #
             # Re-derived rather than read: _AMD_REQUEST_TARGET_GFX is assigned inside
-            # get_torch_index_url, which runs in a command substitution, so the assignment
-            # never reaches this shell. The predicate is idempotent and its probes are
-            # memoised, and it is asked only on a run that set the request.
+            # get_torch_index_url, which runs in a command substitution, so it never reaches
+            # this shell. The predicate is idempotent and its probes are memoised.
             _amd_reroute_target=""
             if _rocm_torch_explicitly_requested && _amd_request_has_a_wheel_route; then
                 _amd_reroute_target="${_AMD_REQUEST_TARGET_GFX:-}"
@@ -5608,15 +5586,12 @@ if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
     esac
 fi
 
-# The request buys a swap, never a downgrade. The AMD branch answers with the cpu index
-# for a ROCm too old for wheels, an arch no index covers, or a non-x86_64 host, and the
-# reroutes above were the last chance to turn a cpu index into per-arch wheels. Still cpu
-# here means the request found nothing to serve, and leaving it would replace a working
-# CUDA install with CPU torch -- the one outcome this feature must not have.
-#
-# Asked of the resolved index rather than of the preconditions, so it cannot drift out of
-# step with the branch that made the choice, and answered by the same selector with the
-# request suppressed rather than by a second copy of the CUDA logic.
+# The request buys a swap, never a downgrade. The AMD branch answers with the cpu index for
+# a ROCm too old for wheels, an arch no index covers, or a non-x86_64 host, and the reroutes
+# above were the last chance to turn that into per-arch wheels. Still cpu here means the
+# request found nothing to serve, and leaving it would replace a working CUDA install with
+# CPU torch. Asked of the RESOLVED index so it cannot drift from the branch that chose it,
+# and answered by the same selector with the request suppressed rather than a second copy.
 if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
    _rocm_torch_explicitly_requested && _has_usable_nvidia_gpu; then
     if ! _torch_index_url_is_rocm "$TORCH_INDEX_URL"; then
