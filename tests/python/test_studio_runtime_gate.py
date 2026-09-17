@@ -19,6 +19,18 @@ import pytest
 from unsloth_cli import _studio_runtime_gate as gate
 
 
+def _shared_setup_1(monkeypatch, payload):
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode = 0,
+            stdout = json.dumps(payload),
+            stderr = "",
+        ),
+    )
+
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 STUDIO_COMMAND = REPO_ROOT / "unsloth_cli" / "commands" / "studio.py"
 
@@ -225,15 +237,7 @@ def test_idle_scan_excludes_verified_launcher_and_blocks_another_managed_image(
             "ExecutablePath": str(managed_launcher),
         },
     ]
-    monkeypatch.setattr(
-        subprocess,
-        "run",
-        lambda *args, **kwargs: SimpleNamespace(
-            returncode = 0,
-            stdout = json.dumps(payload),
-            stderr = "",
-        ),
-    )
+    _shared_setup_1(monkeypatch, payload)
     gate.ensure_managed_environment_is_idle(studio_home)
     payload.append(
         {
@@ -282,15 +286,7 @@ def test_idle_scan_excludes_the_venv_python_redirector(tmp_path, monkeypatch):
         },
     ]
     monkeypatch.setattr(sys, "executable", str(managed_python))
-    monkeypatch.setattr(
-        subprocess,
-        "run",
-        lambda *args, **kwargs: SimpleNamespace(
-            returncode = 0,
-            stdout = json.dumps(payload),
-            stderr = "",
-        ),
-    )
+    _shared_setup_1(monkeypatch, payload)
     gate.ensure_managed_environment_is_idle(studio_home)
 
     # Tauri runs the redirector directly, with no shim above it.
@@ -341,15 +337,7 @@ def test_idle_scan_does_not_exclude_managed_parent_of_updater(tmp_path, monkeypa
             "ExecutablePath": str(managed_python),
         },
     ]
-    monkeypatch.setattr(
-        subprocess,
-        "run",
-        lambda *args, **kwargs: SimpleNamespace(
-            returncode = 0,
-            stdout = json.dumps(payload),
-            stderr = "",
-        ),
-    )
+    _shared_setup_1(monkeypatch, payload)
 
     with pytest.raises(RuntimeError, match = rf"PID {managed_parent_pid}"):
         gate.ensure_managed_environment_is_idle(studio_home)
@@ -376,15 +364,7 @@ def test_idle_scan_blocks_exact_outer_shim(tmp_path, monkeypatch):
             "ExecutablePath": str(outer_shim),
         },
     ]
-    monkeypatch.setattr(
-        subprocess,
-        "run",
-        lambda *args, **kwargs: SimpleNamespace(
-            returncode = 0,
-            stdout = json.dumps(payload),
-            stderr = "",
-        ),
-    )
+    _shared_setup_1(monkeypatch, payload)
     with pytest.raises(RuntimeError, match = rf"PID {consumer_pid}"):
         gate.ensure_managed_environment_is_idle(studio_home)
 

@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from loggers import get_logger
+from utils.account_context import current_account_id
 
 logger = get_logger(__name__)
 
@@ -54,7 +55,7 @@ _RETRY_AFTER_S = 30
 # cannot hold the slot
 _FAILED_HOLD_S = 3 * _RETRY_AFTER_S
 _MAX_LISTED_VARIANTS = 8
-# Probe the selected weight because speech GGUFs need not publish tokenizer sidecars.
+# Probe the selected weight: speech GGUFs need not publish tokenizer sidecars.
 _REMOTE_GGUF_SPEECH_PROBE_BYTES = 32 * 1024**2
 _REMOTE_GGUF_SPEECH_PROBE_TIMEOUT_S = _CODE_PROBE_TIMEOUT_S - 2.0
 
@@ -78,11 +79,12 @@ class _Active:
     expected_bytes: int = 0
     monitor_id: Optional[str] = None
     started_at: float = 0.0
-    # held until a retry surfaces it: Retry-After is far longer than the watcher poll
     # Set when the worker failed. Held until a retry surfaces it: Retry-After is far longer than the watcher poll, so
     # the client would restart the same failing download.
     error: Optional[str] = None
     failed_at: float = 0.0
+    # Who asked: another account's busy answer names no repo or quant.
+    account_id: Optional[str] = None
 
 
 _lock = threading.Lock()
@@ -370,7 +372,7 @@ def _enough_disk(need_bytes: int) -> tuple[bool, int]:
 
 
 def _gb(num_bytes: int) -> str:
-    return f"{num_bytes / 1024**3:.1f} GB"
+    return f"{num_bytes / 1e9:.1f} GB"
 
 
 async def _job_state(repo_id: str, variant: Optional[str]) -> tuple[str, Optional[str]]:
@@ -430,8 +432,6 @@ async def _watch(active: _Active, hf_token: Optional[str]) -> None:
             state, error = await _job_state(active.repo_id, active.variant)
             if state in ("running", "cancelling", "unknown"):
                 if timed_out:
-                    # a running worker still owns the slot, and releasing on the clock alone would admit a second
-                    # multi-GB download beside it
                     # A running worker still owns the slot: releasing on the clock alone would admit a second multi-GB
                     # download beside it. "unknown" cannot confirm it is alive, so release then, or a broken probe
                     # wedges us.
@@ -560,7 +560,9 @@ async def maybe_auto_download(
             busy = current
         else:
             adopted = None
-            provisional = _Active(repo_id = repo_id, started_at = time.time())
+            provisional = _Active(
+                repo_id = repo_id, started_at = time.time(), account_id = current_account_id()
+            )
             _active = provisional
 
     if busy is not None:
@@ -569,13 +571,14 @@ async def maybe_auto_download(
         # a 2nd download.
         if not await _is_downloadable_model(repo_id, hf_token):
             return None
+        if busy.account_id == current_account_id():
+            what = f"Already downloading '{_public_label(busy.repo_id, busy.variant)}'."
+        else:
+            what = "Another download is in progress."
         return AutoDownloadRefusal(
             status = 503,
             code = "model_download_busy",
-            message = (
-                f"Already downloading '{_public_label(busy.repo_id, busy.variant)}'. "
-                f"Retry '{requested_model}' once it finishes."
-            ),
+            message = f"{what} Retry '{requested_model}' once it finishes.",
             retry_after = _RETRY_AFTER_S,
         )
 
@@ -780,7 +783,6 @@ async def _admit_and_start(
             default = (None, False),
         )
         if definitive and (audio_type is None or audio_type in GGUF_TTS_AUDIO_TYPES):
-            # Prefer the selected weight; use a supported sidecar only when it is inconclusive.
             sidecar_audio_type = audio_type
             main_files = sorted(getattr(plan, "main_filenames", ()) or ())
             probed_audio_type, probed_definitive = await _bounded_probe(
@@ -876,7 +878,6 @@ def _bare_quant_alias(wanted: str, lowered: dict[str, str]) -> Optional[str]:
     target = (wanted or "").strip().lower()
     if not target:
         return None
-    # PATH-qualified keys only: an H3 root stem's bare quant names both partitions
     # PATH-qualified keys only, not is_qualified_gguf_variant_key: an H3 root stem's bare quant names both partitions,
     # so it must miss rather than serve one of them.
     matches = [
@@ -967,10 +968,9 @@ async def _dispatch(
         return busy
 
     monitor_id = api_monitor.record_lifecycle(
-        # only /v1 reaches auto-download, but that is not API-key traffic
         # Reason "api" since only /v1 reaches auto-download, but that is not API-key traffic: Unsloth's chat calls /v1
-        # on a JWT, and marking its download would pop the overlay mid-chat. So attribution comes from the request, plus
-        # its caller, since the row is shared.
+        # on a JWT, and marking its download would pop the overlay mid-chat. So attribution comes from the request,
+        # plus its caller, since the row is shared.
         event = "download",
         model = label,
         reason = "api",
@@ -986,7 +986,14 @@ async def _dispatch(
             tracked = active
         else:
             # Released underneath us: track the job we started, but never stomp a newer owner.
-            tracked = _Active(repo_id, variant, expected_bytes, monitor_id, time.time())
+            tracked = _Active(
+                repo_id,
+                variant,
+                expected_bytes,
+                monitor_id,
+                time.time(),
+                account_id = active.account_id,
+            )
             if _active is None:
                 _active = tracked
 

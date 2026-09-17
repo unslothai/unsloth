@@ -26,9 +26,8 @@ const INDENTED_CODE_INDENT = 4;
 
 // At most three leading spaces: deeper is indented code, not a fence.
 const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
-// An ATX heading needs a space, tab or line end after the marker, as in
-// _HEADING_PATTERN. `\s` would match a non-breaking space and eat prose, and a
-// bare `##` is an empty heading that still ends a bullet.
+// An ATX heading needs a space, tab or line end after the marker, as in _HEADING_PATTERN. A whitespace class would
+// match a non-breaking space and eat prose, and a bare `##` is an empty heading that still ends a bullet.
 const HEADING = /^#{1,6}(?:[ \t]|$)/;
 const BULLET = /^(?:[-*+]|(\d{1,9})[.)])[ \t]+(.*)$/;
 // At most three leading spaces, as everywhere else: deeper is indented code,
@@ -259,17 +258,14 @@ interface ContentLine {
 }
 
 /**
- * `line` with its comments removed, whether a comment block stays open, and
- * whether an inline comment runs on into the line below.
+ * `line` with its comments removed, whether a comment block stays open, and whether an inline comment runs on into
+ * the line below.
  *
- * Only a comment starting a line opens a block, which hides whole lines to the
- * one holding `-->`. One written mid-sentence is inline HTML belonging to its
- * paragraph, so its `-->` may arrive on a later line and only the text up to it
- * is hidden. `closesBelow` says one does; without it the opener is ordinary text
- * and hides nothing below.
- *
- * "Starting a line" is read inside the container, so `blockOpen` comes from the
- * item's content rather than the raw line.
+ * Only a comment starting a line opens a block, which hides whole lines to the one holding `-->`. One written
+ * mid-sentence is inline HTML belonging to its paragraph, so its `-->` may arrive on a later line and only the
+ * text up to it is hidden. `closesBelow` says one does; without it the opener is ordinary text and hides nothing
+ * below. "Starting a line" is read inside the container, so `blockOpen` comes from the item's content rather than
+ * the raw line.
  */
 function stripCommentSpans(
   line: string,
@@ -360,12 +356,10 @@ function opensHtmlBlock(line: string, afterParagraph: boolean): boolean {
 }
 
 /**
- * The line as list tracking sees it. A comment or raw block renders nothing, but
- * the line opening one is still a block at its own column, so it closes a list
- * item it sits left of. Only the column survives, since the text it hides is not
- * Markdown. A line inside a block already open is that block's content, so it
- * keeps neither. A marker the hidden block is the content of survives with the
- * column, so the item it opens is still tracked.
+ * The line as list tracking sees it. A comment or raw block renders nothing, but the line opening one is still a
+ * block at its own column, so it closes a list item it sits left of. Only the column survives, since the text it
+ * hides is not Markdown. A line inside a block already open is that block's content, so it keeps neither. A marker
+ * the hidden block is the content of survives with the column, so the item it opens is still tracked.
  */
 function structuralLine(
   line: string,
@@ -459,9 +453,8 @@ function visibleContent(
   // written at the column it happens to start in.
   const hidden = state.inComment || state.inRawHtml !== null;
   const carried = state.runOn;
-  // A comment is an HTML block too, so one written as a list item's first content
-  // opens inside that item exactly as a fence does: read past a marker on the
-  // same line rather than from the margin.
+  // A comment is an HTML block too, so one written as a list item's first content opens inside that
+  // item exactly as a fence does: read past a marker on the same line rather than from the margin.
   const content = itemContent(line, state.afterParagraph);
   const opensComment =
     !(state.inComment || carried) && COMMENT_BLOCK_OPEN.test(content);
@@ -499,11 +492,8 @@ function visibleContent(
   return { text: visible, structural };
 }
 
-/**
- * Marker of a fence the line scanner skipped because it is indented. Only a line
- * within three columns of its item's content column is one: deeper than that it
- * is an indented code block, which a dedented bullet ends.
- */
+/** Marker of a fence the line scanner skipped because it is indented. Only a line within three columns of its
+ * item's content column is one: deeper than that it is an indented code block, which a dedented bullet ends. */
 function opensDeepFence(line: ContentLine): string | null {
   if (
     line.indent < INDENTED_CODE_INDENT ||
@@ -515,12 +505,9 @@ function opensDeepFence(line: ContentLine): string | null {
   return fence ? (fence[1] ?? null) : null;
 }
 
-/**
- * True when `line` is the first one outside the deep fence opened with `marker`
- * at `column`. A fence inside a list item runs only to the end of that item, so a
- * line left of the item's content column closes both, as `fence_column` does on
- * the backend.
- */
+/** True when `line` is the first one outside the deep fence opened with `marker` at `column`. A fence inside a
+ * list item runs only to the end of that item, so a line left of the item's content column closes both, as
+ * `fence_column` does on the backend. */
 function endsDeepFence(
   marker: string,
   column: number,
@@ -543,11 +530,8 @@ function closesDeepFence(marker: string, line: ContentLine): boolean {
   );
 }
 
-/**
- * Cells of a GFM table row, or null when the line holds no pipe at all. The
- * optional leading and trailing pipes are delimiters, not empty cells, and a
- * `\|` is literal text inside one.
- */
+/** Cells of a GFM table row, or null when the line holds no pipe at all. The optional leading and trailing pipes
+ * are delimiters, not empty cells, and an escaped pipe is literal text inside one. */
 function tableCells(text: string): string[] | null {
   if (!text.includes("|")) {
     return null;
@@ -589,11 +573,9 @@ function delimiterWidth(text: string): number | null {
     : null;
 }
 
-/**
- * Line indices that belong to a GFM table. A table needs a header row and a
- * delimiter row of the same width, and runs to a blank line or another block. Its
- * cells render as a grid, not prose, so the preview drops them like a code block.
- */
+/** Line indices that belong to a GFM table. A table needs a header row and a delimiter row of the same width, and
+ * runs to a blank line or another block. Its cells render as a grid, not prose, so the preview drops them like a
+ * code block. */
 function opensTable(
   header: ContentLine | undefined,
   delimiter: ContentLine | undefined,
@@ -674,11 +656,8 @@ function inBlock(state: ScanState): boolean {
   );
 }
 
-/**
- * A fence, comment or HTML block inside a list item runs only to the end of that
- * item, so a line dedented out of the item closes both. Lazy continuation reaches
- * into none of them, so any content left of the item ends it.
- */
+/** A fence, comment or HTML block inside a list item runs only to the end of that item, so a line dedented out of
+ * the item closes both. Lazy continuation reaches into none of them, so any content left of the item ends it. */
 function closeDedentedBlock(line: string, state: ScanState): void {
   if (state.blockColumn === 0 || !inBlock(state)) {
     return;
@@ -774,10 +753,8 @@ function contentLines(markdown: string): ContentLine[] {
   return lines;
 }
 
-/**
- * Split a bullet at its first sentence boundary. Conservative: the next
- * sentence must start like one, so "unsloth.ai in the docs" is not a break.
- */
+/** Split a bullet at its first sentence boundary. Conservative: the next sentence must start like one, so
+ * "unsloth.ai in the docs" is not a break. */
 function splitLeadSentence(text: string): ReleaseNotesPreviewItem {
   SENTENCE_BREAK.lastIndex = 0;
   let match = SENTENCE_BREAK.exec(text);
@@ -973,10 +950,8 @@ function collectBullets(markdown: string): {
   return { bullets: collector.bullets, prose: collector.prose };
 }
 
-/**
- * Top-level bullets of a release section, in document order. Nested bullets are
- * detail and are skipped; prose is used when a release has no bullets.
- */
+/** Top-level bullets of a release section, in document order. Nested bullets are detail and are skipped; prose is
+ * used when a release has no bullets. */
 export function releaseNotesPreview(
   markdown: string | null | undefined,
   limit: number = RELEASE_NOTES_PREVIEW_ITEMS,

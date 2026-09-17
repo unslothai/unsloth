@@ -24,12 +24,26 @@ name: Windows Unsloth GGUF CI
 on:
   pull_request:
     paths:
-      - 'studio/**'
-      - 'unsloth/**'
+      # What the phases exercise: the backend's OpenAI and Anthropic surfaces over the
+      # Windows llama.cpp prebuilt, the installer chain and the CLI. studio/frontend/**
+      # stays because install.ps1 builds the bundle and the dist cache key hashes it. Not
+      # unsloth/** or studio/src-tauri: --no-torch, and the Tauri shell is never built.
+      - 'studio/backend/**'
+      - 'studio/frontend/**'
+      - 'studio/setup.ps1'
+      - 'studio/install_*.py'
+      # install_node_prebuilt.py trusts the archives pinned here (setup.sh:1243).
+      - 'studio/node_prebuilt_pins.json'
+      - 'studio/prebuilt_core.py'
+      - 'studio/install_manifest.py'
       - 'unsloth_cli/**'
       - 'install.ps1'
+      # The pre-install gate parses it and runs its uninstall unit test.
+      - 'scripts/uninstall.ps1'
       - '.github/actions/frontend-dist-restore/action.yml'
       - '.github/actions/frontend-dist-save/action.yml'
+      - '.github/actions/uv-cache-restore/action.yml'
+      - '.github/actions/uv-cache-save/action.yml'
       - 'pyproject.toml'
       - 'tests/studio_setup_ps1/**'
       # The PowerShell unit tests this workflow runs live here. Without this a
@@ -37,12 +51,18 @@ on:
       # runs them. Scoped to *.ps1 so python-only changes under tests/studio do
       # not pull in the GGUF smoke jobs.
       - 'tests/studio/*.ps1'
+      # The Pester phase runs this guard by name.
+      - 'tests/studio/test_pester_bootstrap_hardening.py'
       - '.github/workflows/studio-windows-inference-smoke.yml'
       # Every server boot in this workflow shells out to that script, so an edit
       # to it changes what this workflow actually runs.
       - '.github/scripts/boot-studio-api-only.sh'
       # Same for the /api/health wait that runs after a boot.
       - '.github/scripts/wait-for-health.sh'
+      # Every model download in every phase goes through it.
+      - '.github/scripts/hf-download-with-retry.sh'
+      # Phase 1 drives both SDKs through this script.
+      - '.github/scripts/studio_smoke/multi_turn_chat.py'
   push:
     branches: [main]
   workflow_dispatch:
@@ -207,6 +227,13 @@ jobs:
       # inputs are byte-identical; the action's own reasoning, and the assertion that
       # a hit was actually REUSED rather than rebuilt, live in
       # .github/actions/frontend-dist-restore and -save.
+      # The uv download cache, which install-unsloth-local restores for the Linux and
+      # macOS jobs and this hand-written pwsh install never had. install.ps1 preserves the
+      # UV_CACHE_DIR the action exports; the key lives in .github/actions/uv-cache-restore.
+      - name: Restore the uv download cache
+        id: uv-cache
+        uses: ./.github/actions/uv-cache-restore
+
       - name: Restore the built frontend
         id: fe-dist
         uses: ./.github/actions/frontend-dist-restore
@@ -250,6 +277,13 @@ jobs:
         with:
           cache-hit: ${{ steps.fe-dist.outputs.cache-hit }}
           key: ${{ steps.fe-dist.outputs.key }}
+
+      # Paired with the uv restore above: pruned to built wheels, saved on main only.
+      - name: Save the uv download cache
+        uses: ./.github/actions/uv-cache-save
+        with:
+          cache-hit: ${{ steps.uv-cache.outputs.cache-hit }}
+          key: ${{ steps.uv-cache.outputs.key }}
 
       - name: Assert install.ps1 used the Windows llama.cpp prebuilt
         id: assert-prebuilt

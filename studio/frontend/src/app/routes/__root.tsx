@@ -4,6 +4,7 @@
 import { useAppShellReadySignal } from "@/components/app-readiness";
 import { AppSidebar } from "@/components/app-sidebar";
 import { Navbar } from "@/components/navbar";
+import { SidebarEdgeTrigger } from "@/components/sidebar-edge-trigger";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { videoNavHint } from "@/config/hardware-verdict";
@@ -35,6 +36,7 @@ import {
 } from "@/features/settings";
 import { useTrainingUnloadGuard } from "@/features/training";
 import { TransformersUpgradeDialog } from "@/features/transformers-upgrade";
+import { useIsMobileShell } from "@/hooks/use-mobile";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { type TranslationKey, useT } from "@/i18n";
 import {
@@ -97,9 +99,8 @@ function ReloadSnapshotReady() {
   return null;
 }
 
-// reload-snapshot.js runs outside React during pageswap. Mirror the in-memory
-// privacy state onto the document so Temporary Chat is never serialized even
-// briefly into sessionStorage.
+// reload-snapshot.js runs outside React during pageswap. Mirror the in-memory privacy state onto
+// the document so Temporary Chat is never serialized even briefly into sessionStorage.
 function ReloadSnapshotPrivacy() {
   const incognito = useChatRuntimeStore((state) => state.incognito);
 
@@ -310,9 +311,8 @@ function RootLayout() {
     (s) => s.isChatOnly() && !s.capabilitiesUnknown(),
   );
   const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
-  // Video is the other row the sidebar grays out, on the two verdicts its
-  // pipelines cannot run on at all. Same hint the row reads, so the two cannot
-  // disagree about which hosts they are.
+  // Video is the other row the sidebar grays out, on the two verdicts its pipelines cannot run on
+  // at all. Same hint the row reads, so the two cannot disagree about which hosts they are.
   const videoDisabled =
     videoNavHint(chatOnlyMeasured, chatOnlyReason) !== undefined;
   // Exact match: a prefix would treat /chatty as chat, hiding its not-found UI.
@@ -342,12 +342,11 @@ function RootLayout() {
     }),
     [rawThread, rawCompare, rawNew, rawProject],
   );
-  // Freeze the last /chat search and latch "mounted" via render-phase setState
-  // (React's "adjust state during render" pattern), avoiding effects/refs.
-  // Empty until /chat is visited: location.search is the raw URL's, not the
-  // matched route's, so seeding it would let another route's ?project= stand
-  // in for a chat the user has never opened. The adjustment below fills it on
-  // the first /chat render, so landing straight on /chat loses nothing.
+  // Freeze the last /chat search and latch "mounted" via render-phase setState (React's "adjust
+  // state during render" pattern), avoiding effects/refs. Empty until /chat is visited:
+  // location.search is the raw URL's, not the matched route's, so seeding it would let another
+  // route's ?project= stand in for a chat the user has never opened. The adjustment below fills it
+  // on the first /chat render, so landing straight on /chat loses nothing.
   const [frozenChatSearch, setFrozenChatSearch] = useState<ChatSearch>({});
   const [chatMounted, setChatMounted] = useState(isChatRoute);
   if (isChatRoute && frozenChatSearch !== liveChatSearch) {
@@ -387,6 +386,13 @@ function RootLayout() {
   // Chat, Images, Video and Audio each render their own full-height shell, so all four want the chat-style layout: no outer pt-14 inset, no outer
   // scroll. Keying off isChatRoute alone pushed the picker down and clipped the gallery. Container padding/overflow only; keep-alive stays per route.
   const isChatLike = isChatRoute || isImagesRoute || isVideoRoute || isAudioRoute;
+  // Reserves the navbar the shell actually rendered. Read off the same hook
+  // Navbar uses, not the `md` breakpoint: a narrowed desktop window keeps the
+  // desktop navbar, and a CSS rule would reserve the mobile one's 56px and
+  // leave --studio-titlebar-height at 0 for the pages sized off it.
+  const nonChatTopInset = useIsMobileShell()
+    ? "pt-14"
+    : "pt-[var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))] [--studio-titlebar-height:var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))]";
 
   useTrainingUnloadGuard();
   // Global export driver: streams worker logs and tracks status from any route
@@ -450,13 +456,12 @@ function RootLayout() {
   }) => {
     clearNewChatDraft(); // fresh chat starts empty, no bleed from the last one
     const chatRuntime = useChatRuntimeStore.getState();
-    // The project on screen, which on Chat is the runtime's. The page keeps
-    // that in step with the route, the inferred ones included: a thread or a
-    // compare pair opened without ?project= still belongs to its project, and
-    // the page's own New chat button starts the next chat there. Reading the
-    // search param instead would leave that project without being asked to.
-    // Off Chat the page is hidden rather than unmounted, so its project is one
-    // the user cannot see and a new chat belongs to none.
+    // The project on screen, which on Chat is the runtime's. The page keeps that in step with the
+    // route, the inferred ones included: a thread or a compare pair opened without ?project= still
+    // belongs to its project, and the page's own New chat button starts the next chat there.
+    // Reading the search param instead would leave that project without being asked to. Off Chat
+    // the page is hidden rather than unmounted, so its project is one the user cannot see and a new
+    // chat belongs to none.
     const openProjectId = isChatRoute ? chatRuntime.activeProjectId : null;
     const projectId = options?.standalone ? null : openProjectId;
     chatRuntime.setActiveThreadId(null);
@@ -498,11 +503,10 @@ function RootLayout() {
   useShortcut("switchToHub", goTo("/hub"), {
     enabled: routeShortcutEnabled,
   });
-  // Train is the one workspace the chat-only guard turns away, so its chord is
-  // the one that has to ask first: firing it on a host without the hardware
-  // would bounce off /studio and land the user on /chat, away from whatever
-  // they had open. The sidebar disables the row on the same measured check,
-  // and only once measured, since the guess is what the row waits out too.
+  // Train is the one workspace the chat-only guard turns away, so its chord is the one that has to
+  // ask first: firing it on a host without the hardware would bounce off /studio and land the user
+  // on /chat, away from whatever they had open. The sidebar disables the row on the same measured
+  // check, and only once measured, since the guess is what the row waits out too.
   useShortcut("switchToTrain", goTo("/studio"), {
     enabled: routeShortcutEnabled && !chatOnlyMeasured,
   });
@@ -565,13 +569,14 @@ function RootLayout() {
           className="!min-h-0 h-[calc(100dvh-var(--studio-titlebar-height,0px))] overflow-hidden"
         >
           <AppSidebar />
+          <SidebarEdgeTrigger />
           <SidebarInset
             className={isChatLike ? "overflow-hidden" : "overflow-y-auto"}
           >
             <Navbar />
             <div
               {...{ [FIND_SCOPE_ATTRIBUTE]: "" }}
-              className={`relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col ${isChatLike ? "overflow-hidden" : "overflow-visible"} ${isChatLike ? "" : "pt-14 md:pt-[var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))] md:[--studio-titlebar-height:var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))]"}`}
+              className={`relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col ${isChatLike ? "overflow-hidden" : "overflow-visible"} ${isChatLike ? "" : nonChatTopInset}`}
             >
               {/* The find bar floats over this region and searches it: the workspace on screen,
                   without the sidebar, the navbar, or the off-route workspaces parked here under

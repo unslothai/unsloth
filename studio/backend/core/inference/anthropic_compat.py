@@ -40,6 +40,50 @@ def anthropic_tool_use_id(upstream_id = None) -> str:
     return f"toolu_{uuid.uuid4().hex[:24]}"
 
 
+TOOL_RESULT_IMAGE_OMITTED = "[image omitted: this model cannot view images]"
+DOCUMENT_OMITTED = "[document omitted: only text documents can be read]"
+DOCUMENT_IMAGE_OMITTED = "[image omitted: images inside documents are not read]"
+
+
+def _anthropic_block_texts(content: Any) -> list[str]:
+    if isinstance(content, str):
+        return [content]
+    if not isinstance(content, list):
+        return []
+    texts = []
+    for b in content:
+        if not isinstance(b, dict):
+            continue
+        if b.get("type") == "text" and isinstance(b.get("text"), str):
+            texts.append(b["text"])
+        elif b.get("type") == "image":
+            texts.append(DOCUMENT_IMAGE_OMITTED)
+    return texts
+
+
+def anthropic_reference_block_text(block: dict) -> str:
+    btype = block.get("type")
+    source = block.get("source")
+    if btype == "search_result":
+        labels = {"Title": block.get("title"), "Source": source}
+        body = _anthropic_block_texts(block.get("content"))
+    elif btype == "document":
+        labels = {"Title": block.get("title"), "Context": block.get("context")}
+        stype = source.get("type") if isinstance(source, dict) else None
+        if stype == "text" and isinstance(source.get("data"), str):
+            body = [source["data"]]
+        elif stype == "content":
+            body = _anthropic_block_texts(source.get("content"))
+        else:
+            body = [DOCUMENT_OMITTED]
+    else:
+        return ""
+    header = [
+        f"{label}: {value}" for label, value in labels.items() if isinstance(value, str) and value
+    ]
+    return "\n".join([*header, *body])
+
+
 def _anthropic_image_block_to_openai_part(block: dict) -> Optional[dict]:
     """Translate one Anthropic ``image`` block to an OpenAI ``image_url`` part.
 
@@ -49,11 +93,13 @@ def _anthropic_image_block_to_openai_part(block: dict) -> Optional[dict]:
 
     Returns ``None`` when the source is malformed so the caller can skip it.
     """
-    source = block.get("source") or {}
+    source = block.get("source")
+    if not isinstance(source, dict):
+        return None
     stype = source.get("type")
     if stype == "base64":
         data = source.get("data")
-        if not data:
+        if not isinstance(data, str) or not data:
             return None
         media_type = source.get("media_type") or "image/jpeg"
         return {
@@ -62,7 +108,7 @@ def _anthropic_image_block_to_openai_part(block: dict) -> Optional[dict]:
         }
     if stype == "url":
         url = source.get("url")
-        if not url:
+        if not isinstance(url, str) or not url:
             return None
         return {"type": "image_url", "image_url": {"url": url}}
     return None
@@ -72,12 +118,16 @@ def anthropic_messages_to_openai(
     messages: list[dict],
     system: Optional[Union[str, list]] = None,
     preserve_thinking: bool = False,
+    tool_result_images: bool = True,
 ) -> list[dict]:
     """Convert Anthropic messages + system to OpenAI-format message dicts.
 
     User messages with ``image`` blocks are emitted as OpenAI multimodal
     content arrays (``[{type: "text", ...}, {type: "image_url", ...}]``) so
     they flow through llama-server's native vision pathway.
+
+    ``tool_result_images=False`` turns tool-result images into a text note for a
+    text-only model; clients resend history, so rejecting would fail every later turn.
 
     ``preserve_thinking`` keeps replayed assistant ``thinking`` blocks as
     ``reasoning_content`` on the converted message, so templates that render
@@ -109,7 +159,6 @@ def anthropic_messages_to_openai(
             continue
 
         if role == "assistant":
-            # text + tool_use (no images in Anthropic's model), plus replayed thinking when preservation is requested
             # Assistant content: text + tool_use (no images in Anthropic's model), plus replayed thinking when
             # preservation is requested.
             text_parts: list[str] = []
@@ -155,6 +204,8 @@ def anthropic_messages_to_openai(
                 btype = b.get("type", "")
                 if btype == "text":
                     user_parts.append({"type": "text", "text": b["text"]})
+                elif reference := anthropic_reference_block_text(b):
+                    user_parts.append({"type": "text", "text": reference})
                 elif btype == "image":
                     part = _anthropic_image_block_to_openai_part(b)
                     if part is not None:
@@ -163,14 +214,33 @@ def anthropic_messages_to_openai(
                 elif btype == "tool_result":
                     tc = b.get("content", "")
                     if isinstance(tc, list):
-                        tc = " ".join(
-                            p["text"] for p in tc if isinstance(p, dict) and p.get("type") == "text"
+                        parts = []
+                        for item in tc:
+                            if not isinstance(item, dict):
+                                continue
+                            if item.get("type") == "text":
+                                parts.append({"type": "text", "text": item["text"]})
+                            elif reference := anthropic_reference_block_text(item):
+                                parts.append({"type": "text", "text": reference})
+                            elif item.get("type") == "image":
+                                if not tool_result_images:
+                                    parts.append(
+                                        {"type": "text", "text": TOOL_RESULT_IMAGE_OMITTED}
+                                    )
+                                    continue
+                                part = _anthropic_image_block_to_openai_part(item)
+                                if part is not None:
+                                    parts.append(part)
+                        tc = (
+                            parts
+                            if any(p["type"] == "image_url" for p in parts)
+                            else "\n".join(p["text"] for p in parts)
                         )
                     tool_results.append(
                         {
                             "role": "tool",
                             "tool_call_id": b["tool_use_id"],
-                            "content": str(tc),
+                            "content": tc if isinstance(tc, list) else str(tc),
                         }
                     )
 
@@ -219,12 +289,21 @@ def fold_tool_results_into_user(messages: list[dict]) -> list[dict]:
         response["content"] = msg.get("content", "")
         if tool_call_id:
             response["tool_call_id"] = tool_call_id
-        out.append(
-            {
-                "role": "user",
-                "content": json.dumps({"tool_response": response}, indent = 2),
-            }
-        )
+        content = response["content"]
+        images = []
+        if isinstance(content, list):
+            images = [p for p in content if isinstance(p, dict) and p.get("type") == "image_url"]
+        if images:
+            # Images must be real parts; the rest of the result stays inside the tool_response
+            # wrapper, so tool text never reads as user text and the archive still matches it.
+            response["content"] = [p for p in content if p not in images]
+            folded_content = [
+                {"type": "text", "text": json.dumps({"tool_response": response}, indent = 2)},
+                *images,
+            ]
+        else:
+            folded_content = json.dumps({"tool_response": response}, indent = 2)
+        out.append({"role": "user", "content": folded_content})
     return out
 
 
@@ -418,7 +497,6 @@ def anthropic_tool_choice_to_openai(tc: Any) -> Any:
 
 
 def build_anthropic_sse_event(event_type: str, data: dict) -> str:
-    """Format a single Anthropic SSE event."""
     return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
 
 
@@ -469,7 +547,6 @@ class AnthropicStreamEmitter:
         self._open_tool_use_id: Optional[str] = None
         self._open_tool_args_sent: bool = False
         self._prev_text: str = ""
-        # the generator folds reasoning_content into the cumulative text as <think>...</think> markup
         # <think> routing: the generator folds reasoning_content into the cumulative text as <think>...</think> markup
         # (the UI chat parses it), but Anthropic clients expect typed thinking blocks. Split the markup back out: text
         # inside the tags streams as thinking_delta in a "thinking" content block, everything else as ordinary text.
@@ -484,16 +561,14 @@ class AnthropicStreamEmitter:
         # <think> is the model quoting the tag and must stay literal.
         self._think_consumed: bool = False
         self._turn_has_text: bool = False
-        # "wrapped" counts the leading <think> tags the generator opened from reasoning_content
         # Live provenance from the generator: "wrapped" counts the leading <think> tags IT opened from
         # reasoning_content. When provided, a leading tag is only parsed as reasoning if a generator wrap is available
         # -- a model answering with literal <think> markup (and no genuine trace) keeps it as text. None falls back to
         # the leading-tag heuristic (test doubles / callers without provenance).
         self._think_provenance = think_provenance
         self._wraps_consumed: int = 0
-        # the block spans exactly the wrap's N reasoning chars
-        # Active wrap entry ({"len": N} from the generator) while a provenance -backed thinking block streams: the block
-        # spans exactly N reasoning chars, so a literal "</think>" INSIDE the trace never ends it early.
+        # Active wrap entry ({"len": N} from the generator) while a provenance-backed thinking block streams: the
+        # block spans exactly N reasoning chars, so a literal "</think>" INSIDE the trace never ends it early.
         self._active_wrap: Optional[dict] = None
         self._wrap_chars: int = 0
         self._close_skip: int = 0
@@ -622,7 +697,6 @@ class AnthropicStreamEmitter:
                     break
                 if i:
                     events.extend(self._emit_text_delta(data[:i]))
-                    # consumed: the run before the tag has already been delivered
                     # Consumed: whatever happens to the tag below, the run before it has already been delivered.
                     # Re-including it in the literal-text branch below sent it to the client twice.
                     data = data[i:]
@@ -709,12 +783,11 @@ class AnthropicStreamEmitter:
 
     def _emit_thinking_delta(self, text: str) -> list[str]:
         if not self._thinking_block_open:
-            # a whitespace-only trace is not a thought
             # A trace that is only whitespace is not a thought: Qwen3-style templates render "<think>\n\n</think>" on
             # every reply when thinking is off, and llama-server parses that into reasoning_content, so an empty
             # thinking block would be attached to ordinary answers. The non-streaming reducer already drops those, so
-            # hold the leading whitespace run and only open the block once real reasoning arrives; the held run is then
-            # emitted with it so the trace stays verbatim.
+            # hold the leading whitespace run and only open the block once real reasoning arrives; the held run is
+            # then emitted with it so the trace stays verbatim.
             held = self._thinking_ws_hold + text
             if not held.strip():
                 self._thinking_ws_hold = held
@@ -822,9 +895,8 @@ class AnthropicStreamEmitter:
                 },
             )
         )
-        # the next content delta opens a fresh block lazily
-        # Reset text tracking for the next synthesis turn; the next content delta opens a fresh text (or thinking) block
-        # lazily, and the new turn may legitimately open with its own leading <think> block.
+        # Reset text tracking for the next synthesis turn; the next content delta opens a fresh text (or thinking)
+        # block lazily, and the new turn may legitimately open with its own leading <think> block.
         self._prev_text = ""
         self._tag_buf = ""
         self._thinking_ws_hold = ""
@@ -974,12 +1046,9 @@ class AnthropicPassthroughEmitter:
         delta = choice.get("delta") or {}
         finish_reason = choice.get("finish_reason")
 
-        # llama-server splits <think> into reasoning_content whenever it can parse the model's reasoning format (it does
-        # so for tool-calling turns, i.e.
-        # ── Reasoning ── llama-server splits <think> into reasoning_content whenever it can parse the model's reasoning
-        # format (it does so for tool-calling turns, which is every Claude Code turn). Reading only `content` drops the
+        # Reasoning: llama-server splits <think> into reasoning_content whenever it can parse the model's reasoning
+        # format, which it does for tool-calling turns, i.e. every Claude Code turn. Reading only `content` drops the
         # entire thinking trace, so the model appears not to think at all.
-        # ── Reasoning ──
         reasoning = delta.get("reasoning_content")
         if reasoning:
             if not self._reasoning_as_thinking:
@@ -1001,27 +1070,22 @@ class AnthropicPassthroughEmitter:
                         },
                     )
                 )
-        # checked unconditionally, not elif: one chunk can carry the final reasoning fragment AND same-chunk content
-        # Reconstructed literal block ends where the answer resumes -- checked unconditionally (not elif): one chunk can
-        # carry the final reasoning fragment AND same-chunk content/tool output, and the closing tag must land between
-        # them.
+        # Reconstructed literal block ends where the answer resumes -- checked unconditionally (not elif): one chunk
+        # can carry the final reasoning fragment AND same-chunk content/tool output, and the closing tag must land
+        # between them.
         if self._reasoning_text_open and (
             delta.get("content") or delta.get("tool_calls") or finish_reason
         ):
             self._reasoning_text_open = False
             events.extend(self._emit_text_delta("</think>"))
 
-        # grammar mode worked: flush anything the healer held (it preceded the call in the model's output) and relay
-        # verbatim from here
-        # ── Structured tool calls take precedence over healing ── Grammar mode worked: flush anything the healer held
-        # (it preceded the call in the model's output) and relay verbatim from here on.
-        # ── Structured tool calls take precedence over healing ──
+        # Structured tool calls take precedence over healing. Grammar mode worked: flush anything the healer held (it
+        # preceded the call in the model's output) and relay verbatim from here on.
         if delta.get("tool_calls") and self._healer is not None and not self._healer.dormant:
             for kind, value in self._healer.structured_tool_call_seen():
                 if kind == "text" and value:
                     events.extend(self._emit_text_delta(value))
 
-        # ── Text content ──
         content = delta.get("content")
         if content and self._healer is not None and not self._healer.dormant:
             # Route text through the healer: held/promoted portions become synthetic tool_use blocks, the rest streams
@@ -1034,7 +1098,6 @@ class AnthropicPassthroughEmitter:
         elif content:
             events.extend(self._emit_text_delta(content))
 
-        # ── Tool calls (streaming deltas) ──
         tool_calls = delta.get("tool_calls") or []
         for tc in tool_calls:
             tc_idx = tc.get("index", 0)
@@ -1092,7 +1155,6 @@ class AnthropicPassthroughEmitter:
                     )
                 )
 
-        # ── Finish reason ──
         if finish_reason:
             self._stop_reason = openai_finish_to_anthropic_stop(finish_reason)
 

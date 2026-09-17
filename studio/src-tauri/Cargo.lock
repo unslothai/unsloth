@@ -5734,6 +5734,8 @@ dependencies = [
  "libc",
  "log",
  "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
  "open",
  "process-wrap",
  "rand 0.10.2",

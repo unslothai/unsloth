@@ -44,6 +44,11 @@ on:
       - 'install.sh'
       - 'pyproject.toml'
       - '.github/actions/install-unsloth-local/action.yml'
+      # Reached through install-unsloth-local, which uses the dist and uv cache pairs.
+      - '.github/actions/frontend-dist-restore/action.yml'
+      - '.github/actions/frontend-dist-save/action.yml'
+      - '.github/actions/uv-cache-restore/action.yml'
+      - '.github/actions/uv-cache-save/action.yml'
       - '.github/scripts/boot-studio-api-only.sh'
       - '.github/scripts/wait-for-health.sh'
       # The Chromium install step shells out to this, so an edit to it changes what

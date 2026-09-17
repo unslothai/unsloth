@@ -4,17 +4,14 @@
 // Compile the SHIPPED module into a browser script, so the byte-for-byte proof runs against the
 // TypeScript that is actually in the tree rather than against a hand-kept copy of it. Proving a
 // reference implementation proves the reference implementation; what reaches a user is
-// studio/frontend/src/components/assistant-ui/thread-fast-copy.ts, so that is what is built.
-//
-// Usage: node scripts/build-fast-copy-bundle.mjs <out-dir>, from studio/frontend.
-// It lives here rather than beside its caller in tests/studio because node resolves a bare
-// `import ... from "vite"` against the IMPORTING FILE's directory, and vite is installed
-// under studio/frontend/node_modules.
+// studio/frontend/src/components/assistant-ui/thread-fast-copy.ts, so that is what is built. Usage:
+// node scripts/build-fast-copy-bundle.mjs <out-dir>, from studio/frontend. It lives here rather
+// than beside its caller in tests/studio because node resolves a bare `import ... from "vite"`
+// against the IMPORTING FILE's directory, and vite is installed under studio/frontend/node_modules.
 // Writes <out-dir>/fastcopy.js, an IIFE bundle exposing the module's exports as `SBFastCopy`.
-//
 // `configFile: false` so studio/frontend/vite.config.ts (the app build: react plugin, chunking,
-// asset pipeline) is not applied to a one-module library build. `copyPublicDir: false` because
-// the app's public/ is tens of megabytes of images the proof never loads.
+// asset pipeline) is not applied to a one-module library build. `copyPublicDir: false` because the
+// app's public/ is tens of megabytes of images the proof never loads.
 
 import path from "node:path";
 import { fileURLToPath } from "node:url";

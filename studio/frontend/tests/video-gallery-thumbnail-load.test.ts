@@ -182,7 +182,7 @@ test("archived video rows reuse still posters", () => {
   assert.ok(archived.includes("fetchGalleryVideoThumbnail(row.id)"));
   assert.ok(archived.includes("videoThumbnailQueue.run(() =>"));
   assert.ok(!archived.includes("fetchGalleryVideoSignedUrl"));
-  const row = between(archived, "{rows.map((row) => (", "{hasMore ? (");
+  const row = between(archived, "{displayed.map((row) => (", "{hasMore || filtered.length > visibleCount ? (");
   assert.ok(row.includes("<img"));
   assert.ok(row.includes("src={thumbs[row.id]}"));
   assert.ok(!row.includes("<video"));

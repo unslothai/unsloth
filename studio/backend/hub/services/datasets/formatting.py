@@ -5,6 +5,11 @@
 
 from __future__ import annotations
 
+from core.training.account_jobs import (
+    account_hf_token,
+    account_path,
+    visible_cached_path,
+)
 import base64
 import errno
 import io
@@ -123,9 +128,18 @@ def _serialize_binary_value(data):
         return f"<binary data, {len(data)} bytes>"
 
 
+def _is_sample_sequence(samples) -> bool:
+    # A list from the JSON path or a numpy array straight from the decoder; never text, bytes or a nested cell.
+    return hasattr(samples, "__len__") and not isinstance(
+        samples, (str, bytes, bytearray, memoryview, dict)
+    )
+
+
 def _serialize_decoded_audio(value):
     """Summarise a decoded Audio cell the way binary cells are summarised."""
-    samples = value.get("array") or []
+    samples = value.get("array")
+    if samples is None:
+        samples = []
     rate = value.get("sampling_rate")
     try:
         seconds = len(samples) / rate if rate else None
@@ -162,7 +176,7 @@ def _serialize_preview_value(value):
             return _serialize_binary_value(raw)
         # A decoded Audio cell becomes one float per sample under the soundfile fallback, so ten preview
         # rows of a few seconds each are tens of MB of JSON and the client dies rendering it.
-        if "sampling_rate" in value and isinstance(value.get("array"), (list, tuple)):
+        if "sampling_rate" in value and _is_sample_sequence(value.get("array")):
             return _serialize_decoded_audio(value)
         return {str(key): _serialize_preview_value(item) for key, item in value.items()}
 
@@ -302,6 +316,21 @@ def _load_processed_hf_preview_slice(
     return preview_slice, total_rows
 
 
+def _cached_preview_visible(request: CheckFormatRequest) -> bool:
+    # A cache hit is not authorization: the shared cache holds other accounts' private repos.
+    from hub.services.models import account_access
+
+    if not account_access.managed_account():
+        return True
+    if account_access.model_visible(request.dataset_name, repo_type = "dataset"):
+        return True
+    local_path = getattr(request, "local_path", None)
+    return bool(local_path) and account_access.model_visible(
+        str(local_path),
+        repo_type = "dataset",
+    )
+
+
 def _load_any_cached_hf_preview_slice(
     request: CheckFormatRequest,
     preview_size: int,
@@ -312,6 +341,8 @@ def _load_any_cached_hf_preview_slice(
     # sentinel. Neither reaches the network, so read first and gate the answer: reading our
     # own disk is not the leak, handing it back is. Gating first probed /auth-check for a
     # prefer-local request that had ruled the network out and then missed the cache anyway.
+    if not _cached_preview_visible(request):
+        return None
     cached_preview = _load_cached_hf_preview_slice(request, preview_size)
     if cached_preview is None:
         try:
@@ -355,6 +386,9 @@ def check_format_response(
     its previous implementation used, preserving source column order when the
     only data filename has no split label.
     """
+    hf_token = account_hf_token(hf_token)
+    account_path(request.dataset_name, reference = True)
+    visible_cached_path(getattr(request, "local_path", None), "dataset")
     try:
         from itertools import islice
 
@@ -577,6 +611,9 @@ def ai_assist_mapping_response(
     a conversion strategy, then validate it. Falls back to simple column
     classification if the advisor fails.
     """
+    hf_token = account_hf_token(hf_token)
+    account_path(request.dataset_name, reference = True)
+    visible_cached_path(getattr(request, "local_path", None), "dataset")
     try:
         from hub.utils.llm_assist import llm_conversion_advisor
 
