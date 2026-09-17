@@ -2235,7 +2235,7 @@ def test_the_route_tells_the_selection_which_card_it_picked(fake_settings):
     from core.inference import diffusion_engine_router as router
 
     body = inspect.getsource(router.select_and_activate_engine)
-    assert "_selected_card(gpu_ids)" in body
+    assert "_selected_card(gpu_ordinal)" in body
     assert (
         "preferred_accelerator(\n            _install_accelerator_for(backend), selected_card\n        )"
         in body
@@ -2245,7 +2245,27 @@ def test_the_route_tells_the_selection_which_card_it_picked(fake_settings):
 
     route_source = inspect.getsource(inference_routes)
     call = route_source.split("                select_and_activate_engine,", 1)[1][:600]
-    assert "gpu_ids = request.gpu_ids" in call, call
+    # The ordinal the route ALREADY resolved, never the id list: re-resolving re-ranks a multi-card
+    # pick by free VRAM, so selection could answer for a card this load does not run on.
+    assert "gpu_ordinal = gpu_ordinal" in call, call
+    assert "gpu_ids = request.gpu_ids" not in call, call
+
+
+def test_the_selection_never_re_ranks_a_multi_card_pick_for_itself(monkeypatch):
+    """Ranking is what turns several ids into one ordinal, and free VRAM moves as the load stages."""
+    from core.inference import diffusion_device
+    from core.inference import diffusion_engine_router as router
+    from core.inference import sd_cpp_backend
+
+    monkeypatch.setattr(
+        diffusion_device,
+        "resolve_selected_cuda_ordinal",
+        lambda *_a, **_k: pytest.fail("selection re-resolved the ordinal for itself"),
+        raising = False,
+    )
+    monkeypatch.setattr(sd_cpp_backend, "selected_card_identity", lambda ordinal: f"Card {ordinal}")
+    assert router._selected_card(1) == "Card 1"
+    assert router._selected_card(None) is None
 
 
 def test_the_backend_resolution_asks_about_the_card_this_load_selected(fake_settings, monkeypatch):
@@ -2313,3 +2333,136 @@ def test_the_video_failure_handler_passes_the_cards_ordinal(fake_settings):
     handler = source.rindex("_note_sd_cpp_accelerator_failure(")
     window = source[handler : handler + 220]
     assert "gpu_ordinal = state.gpu_ordinal" in window, window
+
+
+_CARD_A = "AMD Radeon RX 7900 XTX@gfx1100"
+_CARD_B = "AMD Radeon RX 9070 XT@gfx1201"
+
+
+def test_one_cards_decisive_failure_is_not_proof_about_another(fake_settings):
+    """A record naming several cards carried ONE verdict, so the first ambiguous error on an
+    otherwise-working card inherited the other card's proof and diverted it on the spot."""
+    from core.inference import sd_cpp_backend
+
+    sd_cpp_backend.note_accelerator_runtime_failure("rocm", proven = True, card = _CARD_A)
+    sd_cpp_backend.note_accelerator_runtime_failure("rocm", proven = False, card = _CARD_B)
+    assert sd_cpp_backend.accelerator_runtime_failed("rocm", _CARD_A) is True
+    assert sd_cpp_backend.accelerator_runtime_failed("rocm", _CARD_B) is False
+    # B's own second strike is B's own evidence, and that does convict it.
+    sd_cpp_backend.note_accelerator_runtime_failure("rocm", proven = False, card = _CARD_B)
+    assert sd_cpp_backend.accelerator_runtime_failed("rocm", _CARD_B) is True
+
+
+def test_one_ambiguous_failure_on_each_of_two_cards_convicts_neither(fake_settings):
+    """Shared strike counts let one ambiguous failure per card satisfy the two-strike threshold for both."""
+    from core.inference import sd_cpp_backend
+
+    assert sd_cpp_backend._AMBIGUOUS_FAILURE_STRIKES == 2
+    sd_cpp_backend.note_accelerator_runtime_failure("rocm", proven = False, card = _CARD_A)
+    sd_cpp_backend.note_accelerator_runtime_failure("rocm", proven = False, card = _CARD_B)
+    assert sd_cpp_backend.accelerator_runtime_failed("rocm", _CARD_A) is False
+    assert sd_cpp_backend.accelerator_runtime_failed("rocm", _CARD_B) is False
+    # A caller that cannot name its card is still answered with the host-wide tally, as before.
+    assert sd_cpp_backend.accelerator_runtime_failed("rocm") is True
+
+
+def test_the_per_card_tallies_survive_the_store(fake_settings):
+    """Dropped on the way out, the next process reads the union back and diverts the working card."""
+    from core.inference import sd_cpp_backend
+
+    sd_cpp_backend.note_accelerator_runtime_failure("rocm", proven = True, card = _CARD_A)
+    sd_cpp_backend.note_accelerator_runtime_failure("rocm", proven = False, card = _CARD_B)
+    # The next process has only the store.
+    sd_cpp_backend._accelerator_runtime_failures.clear()
+    assert sd_cpp_backend.accelerator_runtime_failed("rocm", _CARD_A) is True
+    assert sd_cpp_backend.accelerator_runtime_failed("rocm", _CARD_B) is False
+
+
+def test_a_record_written_before_the_per_card_tallies_still_applies(fake_settings):
+    """Back-compat: a record with cards but no per-card notes keeps the verdict it was saved with."""
+    from core.inference import sd_cpp_backend
+
+    record = sd_cpp_backend._normalise_failure_record(
+        "rocm", {"strikes": 1, "proven": True, "fingerprint": {}, "cards": [_CARD_A]}
+    )
+    assert "per_card" not in record, record
+    assert sd_cpp_backend._record_diverts(record, {}, _CARD_A) is True
+    assert sd_cpp_backend._record_diverts(record, {}, _CARD_B) is False
+
+
+def test_two_launch_failures_on_one_card_do_not_divert_another(fake_settings, monkeypatch):
+    from core.inference import sd_cpp_backend
+
+    monkeypatch.setattr(sd_cpp_backend, "_installed_accelerator_of", lambda _b: "rocm")
+    for _ in range(sd_cpp_backend._AMBIGUOUS_FAILURE_STRIKES):
+        sd_cpp_backend.note_unlaunchable_accelerator_build(
+            "/opt/sd/rocm/sd-server", card = _CARD_A
+        )
+    assert sd_cpp_backend.accelerator_runtime_failed("rocm", _CARD_A) is True
+    assert sd_cpp_backend.accelerator_runtime_failed("rocm", _CARD_B) is False
+
+
+def test_the_router_counts_its_launch_failures_against_the_card_it_selected(fake_settings):
+    """Both router-side recorders: a cards-less note reads as host-wide and moves every card."""
+    from core.inference import diffusion_engine_router as router
+
+    body = inspect.getsource(router.select_and_activate_engine)
+    calls = body.count("note_unlaunchable_accelerator_build(")
+    assert calls == 2, body
+    assert body.count("card = selected_card") == calls, body
+
+
+def test_the_h3_load_scopes_its_record_lookup_to_the_card_it_selected(fake_settings):
+    """The render failures this path writes are card-scoped, so reading them back must be too."""
+    from core.inference import video as video_mod
+
+    source = inspect.getsource(video_mod)
+    load = source[source.index("allow_install = _install_allowed()") :]
+    assert "selected_card = selected_card_identity(gpu_ordinal)" in load
+    assert (
+        "preferred_accelerator(_install_accelerator_for(target.backend), selected_card)" in load
+    )
+    start = 0
+    guarded = 0
+    while True:
+        found = load.find("usable_or_recorded_failure(", start)
+        if found < 0:
+            break
+        window = load[found : found + 260]
+        assert "selected_card" in window, window
+        guarded += 1
+        start = found + 1
+    assert guarded == load.count("ensure_h3_sd_cpp_binary("), guarded
+    note = load.index("note_accelerator_runtime_failure(")
+    assert "card = selected_card" in load[note : note + 400], load[note : note + 400]
+
+
+def test_a_cancelled_workers_card_does_not_leak_into_the_replacement_load(fake_settings):
+    """``unload`` clears ``_loading`` before the cancelled worker exits, so a replacement load's
+    thread can write this while the old worker is still inside ``_run_load``; shared, whichever
+    wrote last decided the accelerator for both."""
+    from core.inference import sd_cpp_backend
+
+    backend = sd_cpp_backend.SdCppDiffusionBackend.__new__(sd_cpp_backend.SdCppDiffusionBackend)
+    seen: dict = {}
+    ready = {_CARD_A: threading.Event(), _CARD_B: threading.Event()}
+    go = threading.Event()
+
+    def worker(card):
+        backend._loading_card = card
+        ready[card].set()
+        go.wait(10)
+        seen[card] = backend._loading_card
+
+    first = threading.Thread(target = worker, args = (_CARD_A,))
+    first.start()
+    assert ready[_CARD_A].wait(10)
+    second = threading.Thread(target = worker, args = (_CARD_B,))
+    second.start()
+    assert ready[_CARD_B].wait(10)
+    go.set()
+    first.join(10)
+    second.join(10)
+    assert seen == {_CARD_A: _CARD_A, _CARD_B: _CARD_B}, seen
+    # Off a load thread -- a generation re-resolving sd-cli -- the last load's card still stands.
+    assert backend._loading_card == _CARD_B

@@ -194,15 +194,18 @@ def begin_load_on(expected_engine: Any, start: Callable[[], Any]) -> Any:
         return start()
 
 
-def _selected_card(gpu_ids) -> Optional[str]:
+def _selected_card(gpu_ordinal) -> Optional[str]:
     """The card this request picked, or ``None``, meaning every record applies. A recorded failure
-    is about a CARD: one ROCm bundle can carry one host card's gfx target and not another's."""
-    if not gpu_ids:
+    is about a CARD: one ROCm bundle can carry one host card's gfx target and not another's.
+
+    Takes the ordinal the caller already RESOLVED, never the id list. Ranking by free VRAM is what
+    turns several ids into one ordinal, and free VRAM moves the moment a checkpoint lands, so
+    re-deriving it here could name a different card from the one the load then runs on."""
+    if gpu_ordinal is None:
         return None
     try:
-        from core.inference.diffusion_device import resolve_selected_cuda_ordinal
         from core.inference.sd_cpp_backend import selected_card_identity
-        return selected_card_identity(resolve_selected_cuda_ordinal(gpu_ids))
+        return selected_card_identity(gpu_ordinal)
     except Exception:  # noqa: BLE001
         return None
 
@@ -212,7 +215,7 @@ def select_and_activate_engine(
     *,
     hf_token: Optional[str] = None,
     model_kind: Optional[str] = None,
-    gpu_ids: Optional[Any] = None,
+    gpu_ordinal: Optional[int] = None,
 ) -> Any:
     """Pick + activate the engine for loading ``fam`` on this host; return the engine.
 
@@ -242,7 +245,7 @@ def select_and_activate_engine(
     server_binary = None
     if policy_eligible and fam_ok:
         # Once, per card, so server and CLI cannot disagree: a card whose ROCm build will not start (#9278, #8814) must not divert the others.
-        selected_card = _selected_card(gpu_ids)
+        selected_card = _selected_card(gpu_ordinal)
         install_accelerator = preferred_accelerator(
             _install_accelerator_for(backend), selected_card
         )
@@ -271,7 +274,9 @@ def select_and_activate_engine(
                 "sd-server at %s is present but not runnable; not using it", server_binary
             )
             # Counted here, not in the load: the router runs first, so a build it rejects never reaches the recorders there.
-            note_unlaunchable_accelerator_build(server_binary)
+            # Against the CARD being selected: a cards-less note is read as host-wide, so a launch
+            # failure met while selecting one card would move every other card to Vulkan.
+            note_unlaunchable_accelerator_build(server_binary, card = selected_card)
             server_binary = None
         # sd-cli is the one-shot fallback: always LOCATE an existing binary, but auto-INSTALL only when there is no
         # usable server. Probe runnability first, else a present but non-runnable binary passes as available and fails
@@ -284,7 +289,7 @@ def select_and_activate_engine(
         )
         if binary and SdCppEngine(binary = binary).version() is None:
             logger.warning("sd-cli at %s is present but not runnable; not using it", binary)
-            note_unlaunchable_accelerator_build(binary)
+            note_unlaunchable_accelerator_build(binary, card = selected_card)
             binary = None
 
     native_available = bool(binary or server_binary) and policy_eligible and fam_ok

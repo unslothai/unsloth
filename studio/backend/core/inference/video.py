@@ -1739,6 +1739,7 @@ class VideoBackend:
             fallback_accelerator_for,
             note_accelerator_runtime_failure,
             preferred_accelerator,
+            selected_card_identity,
             sd_cpp_accelerator_device_verdict,
             sd_cpp_device_name_for_ordinal,
             sd_cpp_supports_graph_cut,
@@ -1782,14 +1783,20 @@ class VideoBackend:
         # on disk (managed or user-supplied) is still discovered and used; when there is none, the ensure returns None
         # and the refusal below names it, which is the honest answer for a load that was told not to fetch anything.
         allow_install = _install_allowed() and not local_files_only
+        # Once, for this load: this path RECORDS its render failures against
+        # ``selected_card_identity(gpu_ordinal)``, so reading the record back without it let a
+        # failure on one card send every later H3 load on this host to Vulkan -- including a load
+        # that explicitly picked another card whose ROCm build works.
+        selected_card = selected_card_identity(gpu_ordinal)
         # Kept as a variable: the rung finally committed is what the failure note is keyed on.
-        accelerator = preferred_accelerator(_install_accelerator_for(target.backend))
+        accelerator = preferred_accelerator(_install_accelerator_for(target.backend), selected_card)
         binary = usable_or_recorded_failure(
             ensure_h3_sd_cpp_binary(
                 allow_install = allow_install,
                 accelerator = accelerator,
             ),
             accelerator,
+            selected_card,
         )
         native_device = target.device
         # What the accelerator decision below was made on, or None when it was never asked (a CPU or MPS target never
@@ -1824,6 +1831,7 @@ class VideoBackend:
                     fallback_binary = usable_or_recorded_failure(
                         ensure_h3_sd_cpp_binary(allow_install = allow_install, accelerator = fallback),
                         fallback,
+                        selected_card,
                     )
                     fallback_verdict: Optional[bool] = None
                     if fallback_binary:
@@ -1844,6 +1852,7 @@ class VideoBackend:
                             accelerator,
                             proven = accelerator_probe_ran and accelerator_verdict is not None,
                             fingerprint = failed_fingerprint,
+                            card = selected_card,
                         )
                         binary = fallback_binary
                         accelerator = fallback
@@ -1872,6 +1881,7 @@ class VideoBackend:
             binary = usable_or_recorded_failure(
                 ensure_h3_sd_cpp_binary(allow_install = allow_install, accelerator = "cpu"),
                 "cpu",
+                selected_card,
             )
             native_device = "cpu"
             # This rung replaces the binary and runs no claimed probe, so this class is the decision's.

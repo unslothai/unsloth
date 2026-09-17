@@ -37250,8 +37250,11 @@ async def load_diffusion_model_gated(
                 fam,
                 hf_token = request.hf_token,
                 model_kind = kind,
-                # A recorded failure is about one CARD; without this, one bad card diverts them all.
-                gpu_ids = request.gpu_ids,
+                # A recorded failure is about one CARD; without this, one bad card diverts them
+                # all. The ordinal ALREADY resolved above, not request.gpu_ids: resolving twice
+                # re-ranks a multi-card pick by free VRAM, which the staging below moves, so
+                # selection could answer for a different card from the one this load runs on.
+                gpu_ordinal = gpu_ordinal,
             )
         )
         # predict_engine is selection's read-only twin: it never installs, so a host whose sd-cli

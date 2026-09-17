@@ -987,6 +987,24 @@ def _normalise_failure_record(key: str, value: object) -> Optional[dict]:
     cards = [str(card).strip() for card in (value.get("cards") or []) if str(card).strip()]
     if cards:
         record["cards"] = sorted(set(cards))
+    # And the per-card tallies, for the same reason: read back as one accelerator-wide verdict, a
+    # decisive failure on one card would convict every other card the record also names.
+    per_card: dict[str, dict] = {}
+    stored_per_card = value.get("per_card")
+    for name, entry in (stored_per_card if isinstance(stored_per_card, dict) else {}).items():
+        name = str(name).strip()
+        if not name or not isinstance(entry, dict):
+            continue
+        try:
+            entry_strikes = int(entry.get("strikes", 0) or 0)
+        except (TypeError, ValueError):
+            entry_strikes = 0
+        per_card[name] = {
+            "strikes": max(entry_strikes, 0),
+            "proven": bool(entry.get("proven", False)),
+        }
+    if per_card:
+        record["per_card"] = per_card
     return record
 
 
@@ -1060,13 +1078,32 @@ def note_accelerator_runtime_failure(
     cards = [c for c in ((previous or {}).get("cards") or []) if c]
     if card and card not in cards:
         cards = sorted([*cards, card])
+    # The tallies are kept PER CARD as well. Unioned into the accelerator-wide pair alone, one
+    # decisive failure on card A made A's proof apply to card B the moment B was appended, and two
+    # ambiguous failures on two different cards satisfied the two-strike threshold for both.
+    previous_per_card = (previous or {}).get("per_card")
+    per_card = {
+        name: dict(entry)
+        for name, entry in (previous_per_card if isinstance(previous_per_card, dict) else {}).items()
+        if isinstance(entry, dict)
+    }
+    if card:
+        seen = per_card.get(card) or {}
+        per_card[card] = {
+            "strikes": int(seen.get("strikes", 0) or 0) + 1,
+            "proven": bool(proven) or bool(seen.get("proven", False)),
+        }
     record = {
         "strikes": strikes,
+        # The accelerator-wide pair stays the union: it is what a caller that cannot name its card
+        # is answered with, and what the settings report shows for the host.
         "proven": bool(proven) or bool((previous or {}).get("proven", False)),
         "fingerprint": fingerprint,
     }
     if cards:
         record["cards"] = cards
+    if per_card:
+        record["per_card"] = per_card
     if previous == record:
         return
     records[klass] = record
@@ -1103,6 +1140,13 @@ def _record_diverts(
         _accelerator_fingerprint() if fingerprint is None else fingerprint,
     ):
         return False
+    # This card's OWN evidence whenever the record carries it: a decisive failure on another card
+    # is not proof about this one, and the strikes that convict a host must have been struck here.
+    own = (record.get("per_card") or {}).get(card) if card else None
+    if isinstance(own, dict):
+        if own.get("proven"):
+            return True
+        return int(own.get("strikes", 0) or 0) >= _AMBIGUOUS_FAILURE_STRIKES
     if record.get("proven"):
         return True
     return int(record.get("strikes", 0) or 0) >= _AMBIGUOUS_FAILURE_STRIKES
@@ -1829,8 +1873,16 @@ def _assert_pick_is_not_speech(
     assert_pick_is_not_speech(repo_id, gguf_filename, hf_token, allow_network)
 
 
+# "this thread never ran a load", which is not the same answer as "its load selected no card".
+_UNREAD_LOADING_CARD = object()
+
+
 class SdCppDiffusionBackend:
     """Native sd.cpp backend with the diffusers ``DiffusionBackend`` method surface."""
+
+    # Class-level defaults so an instance built with ``__new__`` answers before any load ran.
+    _loading_cards = None
+    _committed_loading_card: Optional[str] = None
 
     def __init__(self, engine: Optional[SdCppEngine] = None) -> None:
         self._lock = threading.Lock()
@@ -1854,7 +1906,7 @@ class SdCppDiffusionBackend:
         # use; the load retries it once the tree is free.
         self._deferred_accelerator_install = False
         # Every accelerator resolution in the load asks about it, so a heterogeneous host is not moved over a failure on a different card.
-        self._loading_card: Optional[str] = None
+        self._loading_card = None
         # Servers taken out of _state/_pending_server whose stop() has not returned yet. unload() deliberately stops
         # outside the lock (terminate can take seconds), so between the clear and the stop the fields say idle while
         # the process is still running its own executable.
@@ -1866,6 +1918,29 @@ class SdCppDiffusionBackend:
     @property
     def is_loaded(self) -> bool:
         return self._state is not None
+
+    def _loading_card_store(self) -> threading.local:
+        """Lazily, so an instance built with ``__new__`` (the unit-test seam) still answers."""
+        store = getattr(self, "_loading_cards", None)
+        if store is None:
+            store = threading.local()
+            self._loading_cards = store
+        return store
+
+    @property
+    def _loading_card(self) -> Optional[str]:
+        """The card THIS worker's load selected. Per worker, not per backend: ``unload`` clears
+        ``_loading`` before the cancelled worker exits, so a replacement load's thread can be
+        running while the old one is still in ``_run_load``, and one shared field let whichever
+        wrote last decide the accelerator for both. Off a load thread -- a generation re-resolving
+        sd-cli -- there is no own answer, so the last committed load's card stands, as before."""
+        own = getattr(self._loading_card_store(), "card", _UNREAD_LOADING_CARD)
+        return self._committed_loading_card if own is _UNREAD_LOADING_CARD else own
+
+    @_loading_card.setter
+    def _loading_card(self, value: Optional[str]) -> None:
+        self._loading_card_store().card = value
+        self._committed_loading_card = value
 
     def _reserve_stop(self, count: int = 1) -> None:
         """Claim ``count`` pending stops. MUST be called under ``_lock`` in the same block that
