@@ -14883,11 +14883,6 @@ async def load_model_gated(
     return mid-load and hide a late failure in an unread body. This blocks until the
     model is resident and raises the real exception.
     """
-    # A one-off `X-Unsloth-HF-Token` on a LOAD pulls the repo into the same cache and is
-    # kept nowhere, so the provenance is recorded here too: without it the offline fallback
-    # reads an empty credential set as "nothing here needed one" for a repo that did.
-    _note_load_fetched_with_a_request_token(request.model_path, request.hf_token)
-
     # A sidecar install that has reserved the swap must not lose to a load that
     # then gets unloaded by the pre-swap teardown. Rechecked under the gate: an
     # install can reserve while this request queues on the gate, so the pre-gate
@@ -14998,6 +14993,17 @@ async def _load_model_impl(
         request = request.model_copy(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
         )
+    # A one-off `X-Unsloth-HF-Token` on a LOAD pulls the repo into the same cache and is kept
+    # nowhere, so the provenance is recorded where the request is: without it the offline
+    # fallback reads an empty credential set as "nothing here needed one" for a repo that did.
+    #
+    # HERE rather than at the route, and after the access check above: the record is a claim
+    # about a fetch, and a load that is refused fetches nothing. At the route it was written
+    # before the attempt was even registered, so a caller could name any repo it liked, be
+    # refused, and still have the name written -- and a public repo named that way is then
+    # withheld from every tokenless offline caller. This is also the path preview and
+    # auto-switch take, which the route call never covered.
+    _note_load_fetched_with_a_request_token(request.model_path, request.hf_token)
     from core.inference.llama_cpp import LlamaServerNotFoundError
 
     def _raise_if_scoped_load_cancelled() -> None:

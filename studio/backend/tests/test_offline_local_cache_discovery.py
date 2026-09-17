@@ -450,8 +450,16 @@ def test_every_route_that_can_fetch_with_a_one_off_token_records_it():
         "proc = spawn()"
     )
 
-    text_load = inspect.getsource(inference_routes.load_model_gated)
+    # The text load records inside the impl, after the access check and before the fetch, so
+    # a refused load marks nothing and preview and auto-switch are covered as well.
+    text_load = inspect.getsource(inference_routes._load_model_impl)
     assert "_note_load_fetched_with_a_request_token(request.model_path" in text_load
+    assert text_load.index("require_model_access") < text_load.index(
+        "_note_load_fetched_with_a_request_token"
+    )
+    assert "_note_load_fetched_with_a_request_token" not in inspect.getsource(
+        inference_routes.load_model_gated
+    ), "the route records again, before the load is admitted"
     image_load = inspect.getsource(inference_routes.load_diffusion_model_gated)
     assert "_note_load_fetched_with_a_request_token(request.model_path" in image_load
     video_load = inspect.getsource(video_routes.load_video_model_gated)
@@ -470,17 +478,21 @@ def test_only_a_credential_the_host_does_not_hold_is_recorded(monkeypatch):
     credential is the operator either way -- the tokenless branch already refuses on a host
     that holds any credential at all.
     """
-    written: list = []
-    monkeypatch.setattr(hf_tokens, "_as_owner", lambda call, *a, **k: written.append(a))
+    calls: list = []
+    monkeypatch.setattr(hf_tokens, "_as_owner", lambda call, *a, **k: calls.append(a))
     monkeypatch.setattr(hf_tokens, "_host_hf_credentials", lambda: (True, ("hf_theoperators",)))
+    # The entry WRITES, not the read of the current map that precedes them: both go through
+    # `_as_owner`, and only the write carries a key and a value.
+    written = [call for call in calls if len(call) == 3]
 
     hf_tokens.note_repo_fetched_with_a_request_token(None, "acme/private", "model")
     hf_tokens.note_repo_fetched_with_a_request_token(False, "acme/private", "model")
     hf_tokens.note_repo_fetched_with_a_request_token("hf_theoperators", "acme/private", "model")
-    assert written == []
+    assert [call for call in calls if len(call) == 3] == []
 
     hf_tokens.note_repo_fetched_with_a_request_token("hf_someoneelses", "acme/private", "model")
-    assert len(written) == 1, written
+    written = [call for call in calls if len(call) == 3]
+    assert len(written) == 1, calls
     assert written[0][1] == hf_tokens._request_token_repo_key("acme/private", "model")
 
 
@@ -1180,3 +1192,49 @@ def test_two_different_host_credentials_authorize_neither_of_them(monkeypatch, t
     # The same credential in both stores is one credential, and is unaffected.
     _saved_ui_credential(monkeypatch, OPERATOR_TOKEN)
     assert cache_reads_authorized(OPERATOR_TOKEN, repo_id = ON_DISK) is True
+
+
+def test_a_repo_already_recorded_is_not_written_again(monkeypatch):
+    """The map is a SET of repos, and every write rewrites the whole JSON value."""
+    writes: list = []
+    monkeypatch.setattr(hf_tokens, "_host_hf_credentials", lambda: (True, ("hf_theoperators",)))
+    monkeypatch.setattr(
+        hf_tokens,
+        "_recorded_request_token_repos",
+        lambda: {hf_tokens._request_token_repo_key("acme/private", "model"): {"at": 1.0}},
+    )
+    monkeypatch.setattr(hf_tokens, "_as_owner", lambda call, *a, **k: writes.append(a))
+
+    hf_tokens.note_repo_fetched_with_a_request_token("hf_someoneelses", "acme/private", "model")
+    assert writes == []
+    hf_tokens.note_repo_fetched_with_a_request_token("hf_someoneelses", "acme/other", "model")
+    assert len(writes) == 1
+
+
+def test_the_provenance_map_is_bounded_and_says_so_when_it_is_full(monkeypatch):
+    """The repo id comes from the caller, so the map cannot grow on request. Past the cap
+    nothing more is written, and a repo that is not in a FULL map is unknown rather than
+    known-public: it may be the entry that did not fit, and only a refusal is safe there."""
+    writes: list = []
+    full = {
+        f"model:acme/repo-{index}": {"at": 1.0}
+        for index in range(hf_tokens._REQUEST_TOKEN_REPOS_MAX)
+    }
+    monkeypatch.setattr(hf_tokens, "_host_hf_credentials", lambda: (True, ("hf_theoperators",)))
+    monkeypatch.setattr(hf_tokens, "_recorded_request_token_repos", lambda: full)
+    monkeypatch.setattr(hf_tokens, "_as_owner", lambda call, *a, **k: writes.append(a))
+
+    hf_tokens.note_repo_fetched_with_a_request_token("hf_someoneelses", "acme/new", "model")
+    assert writes == [], "the map kept growing on a caller-supplied repo id"
+    assert hf_tokens._repo_was_fetched_with_a_request_token("acme/new", "model") is None
+    assert hf_tokens._repo_was_fetched_with_a_request_token("acme/repo-0", "model") is True
+    # And a caller with no credential is refused for it, rather than served.
+    monkeypatch.setattr(hf_tokens, "_host_hf_credentials", lambda: (True, ()))
+    assert (
+        hf_tokens._caller_populated_the_cache(None, repo_id = "acme/new", repo_type = "model") is False
+    )
+
+
+def test_a_map_below_the_cap_still_answers_no_for_a_repo_it_does_not_hold(monkeypatch):
+    monkeypatch.setattr(hf_tokens, "_recorded_request_token_repos", lambda: {})
+    assert hf_tokens._repo_was_fetched_with_a_request_token("acme/other", "model") is False

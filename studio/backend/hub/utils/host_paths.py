@@ -38,6 +38,7 @@ import os
 import re
 import secrets
 import threading
+import time
 from collections import OrderedDict
 from contextvars import ContextVar
 from hashlib import sha256
@@ -246,7 +247,21 @@ def host_paths_visible(via_api_key: Any) -> bool:
 # oldest-first, because a long-lived server lists a great many rows; a reference that has
 # aged out simply does not resolve, and the load fails the way an unknown model does.
 _REFERENCE_LIMIT = 8192
-_reference_paths: "OrderedDict[str, str]" = OrderedDict()
+# One redacted row costs more than one entry -- the path identity and the encoded
+# inventory_id are both referenced -- and the local inventory has no row limit, so a single
+# listing can issue more references than the table holds. Evicting by count alone then drops
+# entries belonging to the response being built RIGHT NOW: those rows go out carrying `ref:`
+# identities that no longer resolve, and the load, validate or training request the caller
+# makes with them fails on a row it was just shown. Two concurrent listings do it to each
+# other at half the size.
+#
+# So an entry is not evicted while it is young enough to be in a response still being
+# assembled, and the table is allowed to grow past its limit rather than break one. The hard
+# ceiling is what bounds it: past that the oldest goes whatever its age, which is the old
+# behaviour and still leaves a listing far larger than any real inventory intact.
+_REFERENCE_PIN_SECONDS = 120.0
+_REFERENCE_CEILING = 65536
+_reference_paths: "OrderedDict[str, tuple[str, float]]" = OrderedDict()
 _reference_lock = threading.Lock()
 
 
@@ -257,11 +272,18 @@ def cache_reference(value: Any) -> Optional[str]:
         return None
     digest = hmac.new(_REFERENCE_KEY, os.fsencode(text), sha256).hexdigest()
     reference = f"{_REFERENCE_PREFIX}{digest[:32]}"
+    now = time.monotonic()
     with _reference_lock:
-        _reference_paths[reference] = text
+        _reference_paths[reference] = (text, now)
         _reference_paths.move_to_end(reference)
         while len(_reference_paths) > _REFERENCE_LIMIT:
-            _reference_paths.popitem(last = False)
+            oldest, (_path, issued) = next(iter(_reference_paths.items()))
+            if (
+                now - issued < _REFERENCE_PIN_SECONDS
+                and len(_reference_paths) <= _REFERENCE_CEILING
+            ):
+                break
+            _reference_paths.pop(oldest, None)
     return reference
 
 
@@ -347,7 +369,8 @@ def resolve_host_path_reference(value: Any) -> Optional[str]:
     if not text or not text.startswith(_REFERENCE_PREFIX):
         return None
     with _reference_lock:
-        return _reference_paths.get(text)
+        entry = _reference_paths.get(text)
+    return entry[0] if entry else None
 
 
 def redact_host_paths(payload: Any, *, via_api_key: bool) -> Any:

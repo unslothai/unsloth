@@ -558,14 +558,44 @@ def note_repo_fetched_with_a_request_token(
             return
         from storage.studio_db import upsert_app_setting_map_entry
 
+        key = _request_token_repo_key(repo_id, repo_type)
+        recorded = _recorded_request_token_repos()
+        if isinstance(recorded, dict):
+            # Already known: the map is a SET of repos, so re-writing it says nothing and
+            # every write rewrites the whole JSON value.
+            if key in recorded:
+                return
+            # Bounded, because the repo id comes from the caller. Past the cap nothing more is
+            # added; the read side answers "cannot say" for a repo it does not find in a full
+            # map, which refuses the tokenless offline fallback rather than serving a repo
+            # whose provenance may be the entry that did not fit.
+            if len(recorded) >= _REQUEST_TOKEN_REPOS_MAX:
+                logger.debug("the request-token provenance map is full; not recording %s", key)
+                return
         _as_owner(
             upsert_app_setting_map_entry,
             _REQUEST_TOKEN_REPOS_SETTING_KEY,
-            _request_token_repo_key(repo_id, repo_type),
+            key,
             {"at": time.time()},
         )
     except Exception:  # noqa: BLE001 -- a download must never fail on its own bookkeeping
         logger.debug("could not record the credential a download used", exc_info = True)
+
+
+_REQUEST_TOKEN_REPOS_MAX = 4096
+
+
+def _recorded_request_token_repos() -> "Optional[dict]":
+    """The provenance map as stored, ``{}`` when the store holds none, ``None`` when it could
+    not be read or is not a map."""
+    try:
+        from storage.studio_db import get_app_setting
+        recorded = _as_owner(get_app_setting, _REQUEST_TOKEN_REPOS_SETTING_KEY, None)
+    except Exception:  # noqa: BLE001
+        return None
+    if recorded is None:
+        return {}
+    return recorded if isinstance(recorded, dict) else None
 
 
 def _repo_was_fetched_with_a_request_token(
@@ -574,16 +604,16 @@ def _repo_was_fetched_with_a_request_token(
     """True / False / ``None`` for "the record could not be read"."""
     if not repo_id:
         return None
-    try:
-        from storage.studio_db import get_app_setting
-        recorded = _as_owner(get_app_setting, _REQUEST_TOKEN_REPOS_SETTING_KEY, None)
-    except Exception:  # noqa: BLE001
-        return None
+    recorded = _recorded_request_token_repos()
     if recorded is None:
-        return False  # the store answered, and it holds nothing
-    if not isinstance(recorded, dict):
         return None
-    return _request_token_repo_key(repo_id, repo_type) in recorded
+    if _request_token_repo_key(repo_id, repo_type) in recorded:
+        return True
+    if len(recorded) >= _REQUEST_TOKEN_REPOS_MAX:
+        # The map stopped taking entries at the cap, so "not in it" no longer means "not
+        # fetched with one": a repo that was may be the entry that did not fit. Cannot say.
+        return None
+    return False
 
 
 def _caller_populated_the_cache(

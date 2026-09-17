@@ -951,11 +951,23 @@ def test_a_referenced_local_row_is_still_loadable(monkeypatch):
 
 def test_a_reference_table_that_fills_up_drops_the_oldest(monkeypatch):
     """A long-lived server lists a great many rows. The table is bounded, and a reference
-    that has aged out does not resolve rather than resolving to the wrong thing."""
+    that has aged out does not resolve rather than resolving to the wrong thing.
+
+    Aged out, not merely outnumbered: an entry young enough to be in a response that is still
+    being assembled is kept, or a listing longer than the table breaks its own rows."""
+    clock = {"now": 0.0}
+    # Hermetic: the table is process-global, so references another test issued would sit in
+    # it, under real monotonic timestamps this fake clock cannot age out.
+    host_paths._reference_paths.clear()
+    monkeypatch.setattr(host_paths.time, "monotonic", lambda: clock["now"])
     monkeypatch.setattr(host_paths, "_REFERENCE_LIMIT", 4)
     first = host_paths.cache_reference("/host/first")
     for index in range(6):
         host_paths.cache_reference(f"/host/filler-{index}")
+    assert host_paths.resolve_host_path_reference(first) == "/host/first"
+    clock["now"] = host_paths._REFERENCE_PIN_SECONDS + 1.0
+    for index in range(6):
+        host_paths.cache_reference(f"/host/later-{index}")
     assert host_paths.resolve_host_path_reference(first) is None
     newest = host_paths.cache_reference("/host/newest")
     assert host_paths.resolve_host_path_reference(newest) == "/host/newest"
@@ -1975,3 +1987,35 @@ def test_a_local_diffusion_base_is_still_trainable_by_an_api_key_caller():
         ).base_model
         == "ref:nope"
     )
+
+
+def test_a_listing_bigger_than_the_reference_table_still_resolves_its_own_rows():
+    """One redacted row costs more than one entry -- the path identity and the encoded
+    inventory_id -- and the local inventory has no row limit, so a big listing issued more
+    references than the table held and evicted the rows of the response being built. Those
+    went out with `ref:` identities that no longer resolved, so the load, validate or
+    training request the caller made with them failed on a row it had just been shown."""
+    from hub.utils import host_paths
+
+    host_paths._reference_paths.clear()
+    issued = [
+        host_paths.cache_reference(f"/srv/models/row-{index}.gguf")
+        for index in range(host_paths._REFERENCE_LIMIT + 2000)
+    ]
+    unresolved = [
+        reference
+        for reference in issued
+        if host_paths.resolve_host_path_reference(reference) is None
+    ]
+    assert unresolved == [], len(unresolved)
+
+
+def test_the_table_is_still_bounded_at_its_ceiling(monkeypatch):
+    """The pin is an age, not a promise: past the hard ceiling the oldest goes anyway."""
+    from hub.utils import host_paths
+
+    host_paths._reference_paths.clear()
+    monkeypatch.setattr(host_paths, "_REFERENCE_CEILING", host_paths._REFERENCE_LIMIT + 10)
+    for index in range(host_paths._REFERENCE_LIMIT + 500):
+        host_paths.cache_reference(f"/srv/ceiling/row-{index}.gguf")
+    assert len(host_paths._reference_paths) <= host_paths._REFERENCE_CEILING + 1
