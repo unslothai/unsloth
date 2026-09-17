@@ -35,11 +35,8 @@ export function getApiBase(): string {
 }
 
 /**
- * The port the backend is currently expected on, or null when none is known yet.
- *
- * Read by the Tauri transport-failure path so it can ask the Rust side for a second opinion
- * before telling the user to relaunch. The placeholder base above is port 0, which never
- * connects and is therefore not a port worth probing, so it reads as "no port yet".
+ * The port the backend is currently expected on, or null when none is known yet. The
+ * placeholder base above is port 0, which reads as "no port yet".
  */
 export function getApiPort(): number | null {
   const match = LOOPBACK_BASE_PORT.exec(apiBase)

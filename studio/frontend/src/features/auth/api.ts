@@ -29,22 +29,11 @@ let refreshInflight: Promise<boolean> | null = null;
 let refreshInflightToken: string | null = null;
 let logoutGeneration = 0;
 
-// Sized against the launcher, not against a guess. src-tauri/src/commands.rs spends
-// HEALTH_PROBE_TIMEOUT (10s) on a single liveness probe and three of those before its
-// watchdog will call a backend dead, so a ladder that ran out after 250+750+1500ms was the
-// first thing in the app to give up: it put "Unsloth isn't running" in front of a backend the
-// launcher still considered perfectly alive. That is what a kernel-level loopback filter
-// produces, and what a multi-GPU warm-up produces on its own (#10520). These delays sum to
-// 10.5s, just past that per-probe budget, so the webview can no longer be the one to quit
-// first. Guarded against drift by `the_frontend_retry_ladder_outlives_one_probe_budget` in
-// src-tauri/src/commands.rs.
+// #10520: sums to 10.5s, just past the launcher's 10s HEALTH_PROBE_TIMEOUT. Guarded by
+// `the_frontend_retry_ladder_outlives_one_probe_budget` in src-tauri/src/commands.rs.
 const TAURI_FETCH_RETRY_DELAYS_MS = [250, 750, 1500, 3000, 5000] as const;
-// The long ladder is for requests it is safe to send twice. A network error is not an
-// answer: the backend may have COMMITTED the request and lost the connection before the
-// response headers reached the webview, and retrying a POST then creates a second API key,
-// project or job. Those keep the ladder this file had before the startup fix, so the change
-// that made the UI wait for a slow backend does not also double the exposure on mutations.
-// PUT and DELETE are idempotent by HTTP semantics and stay on the long one with GET.
+// A network error is not an answer: retrying a committed POST creates a second API key,
+// project or job, so non-idempotent methods keep the shorter ladder.
 const TAURI_FETCH_RETRY_DELAYS_UNSAFE_MS = [250, 750, 1500] as const;
 const IDEMPOTENT_METHODS = new Set(["GET", "HEAD", "OPTIONS", "PUT", "DELETE"]);
 
@@ -164,29 +153,8 @@ export const BACKEND_NOT_RUNNING_MESSAGE =
 export const BACKEND_NOT_ANSWERING_MESSAGE =
   "Unsloth is running but did not answer in time. It may still be starting up. Please try again in a moment.";
 
-/**
- * Ask the Rust side whether the backend it manages is still there.
- *
- * The `check_health` command probes /api/liveness from the native process with the
- * launcher's own budget and with proxies disabled, so it answers in cases where the
- * webview's own fetch was starved or refused: a firewall that filters loopback per process,
- * a proxy configuration the webview honours, or a backend whose event loop is held by the
- * GIL while the ML stack imports. Any failure to ask at all reads as "no second opinion",
- * which leaves the original verdict in place.
- *
- * `check_backend_present` and not `check_health`: the latter returns `liveness.alive`, so a
- * probe that ran out of budget is indistinguishable from a refused connection. That last case
- * is precisely the one this function exists for. A backend holding the GIL through the ML
- * imports outlasts the retry ladder plus the 10s probe and answers nothing, and reading that
- * as death is how a live backend gets a "relaunch it" verdict. `probe_timed_out` is the
- * distinction the watchdog already keeps, for the same reason: silence from a closed port is
- * death, silence from an accepted connection is a stall.
- */
-// The port is carried WITH the promise, not read again when the answer comes back. The probe
-// budget is 10s and `setApiBase` can move the port inside it -- a backend restart, an adopted
-// launcher on a different port -- after which sharing the pending answer reports the previous
-// backend's liveness as the new one's: a live backend called absent, or a dead one called
-// present, until the old probe lands.
+/** `check_backend_present` and NOT `check_health`: the latter reports a probe that ran out of budget exactly as a refused connection. */
+// The port is carried WITH the promise: `setApiBase` can move it inside the 10s budget.
 let nativeHealthInflight: { port: number; probe: Promise<boolean> } | null = null;
 
 async function nativeBackendIsAlive(): Promise<boolean> {
@@ -197,13 +165,7 @@ async function nativeBackendIsAlive(): Promise<boolean> {
   if (port === null) {
     return false;
   }
-  // Single flight. The condition this runs under takes out every panel at once: a hub with
-  // chat, training and settings polling loses all of them in the same tick, and each loss
-  // would otherwise open its own probe. On the firewall host those probes are the ones that
-  // actually wait out the launcher's budget rather than being refused immediately, so a
-  // shared answer is the difference between one 10s probe and one per panel. Not cached
-  // beyond the call: the answer is about right now, and the next failure deserves a fresh one.
-  // Shared only with a caller asking about the SAME port, for the reason above.
+  // Single flight: one 10s probe rather than one per panel. Not cached beyond the call.
   if (nativeHealthInflight !== null && nativeHealthInflight.port === port) {
     return nativeHealthInflight.probe;
   }
@@ -222,8 +184,7 @@ async function nativeBackendIsAlive(): Promise<boolean> {
   try {
     return await probe;
   } finally {
-    // Identity, not the port: a probe for a newer port started while this one was pending
-    // owns the slot now, and clearing it by port number would throw away its answer.
+    // Identity, not the port: a probe for a newer port owns the slot now.
     if (nativeHealthInflight === inflight) {
       nativeHealthInflight = null;
     }
@@ -232,8 +193,7 @@ async function nativeBackendIsAlive(): Promise<boolean> {
 
 async function asTransportFailure(err: unknown): Promise<unknown> {
   // fetch TypeError = offline | backend down | CORS/DNS. Tagged so callers tell "never reached"
-  // from "rejected"; the web build distinguishes offline, and under Tauri the launcher is
-  // asked before the app claims the backend is gone.
+  // from "rejected"; under Tauri the launcher is asked before claiming the backend is gone.
   if (!(err instanceof TypeError)) return err;
   if (
     !isTauri &&
@@ -247,10 +207,8 @@ async function asTransportFailure(err: unknown): Promise<unknown> {
       { unslothTransportFailure: true },
     );
   }
-  // A failed fetch in the webview is not proof the backend died, and "please relaunch it" is
-  // an instruction that throws away a running backend, an in-flight generation and, on the
-  // reported host, the only session the user could get. Only tell them that when the native
-  // side cannot see the backend either.
+  // A failed fetch in the webview is not proof the backend died, and "please relaunch it"
+  // throws away a running backend and whatever it has in flight.
   if (await nativeBackendIsAlive()) {
     return Object.assign(new Error(BACKEND_NOT_ANSWERING_MESSAGE), {
       unslothTransportFailure: true,

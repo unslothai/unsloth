@@ -2652,10 +2652,7 @@ def test_auth_retries_tag_transport_failures_like_the_first_attempt():
     tagger = src.split("async function asTransportFailure", 1)[1].split("\n}\n", 1)[0]
     assert "err instanceof TypeError" in tagger
     assert "navigator.onLine === false" in tagger
-    # Every error this helper raises carries the tag, and nothing outside it carries one.
-    # Counted against the helper's own raises rather than pinned to a number: #10520 added a
-    # third message, for a backend the launcher can still see, and a fixed count would have
-    # read that as a regression while the property it stands for still held.
+    # Counted against the helper's own raises, not pinned to a number that a new message would trip.
     assert tagger.count("unslothTransportFailure: true") == tagger.count("new Error(")
     assert tagger.count("unslothTransportFailure: true") >= 2
     assert src.count("unslothTransportFailure: true") == tagger.count(
@@ -2664,9 +2661,7 @@ def test_auth_retries_tag_transport_failures_like_the_first_attempt():
     retry = src.split("async function retryWithCurrentToken", 1)[1]
     retry = retry.split("\n}\n", 1)[0]
     assert "fetchWithTauriNetworkRetry" in retry
-    # Awaited since #10520: the helper asks the native health check before it decides which
-    # message to raise, so a call site that dropped the await would throw a pending promise
-    # and the tag would never be seen.
+    # Awaited since #10520: dropping the await throws a pending promise and the tag is never seen.
     assert "throw await asTransportFailure(err);" in retry
     first = src.split("export async function authFetch", 1)[1]
     assert "throw await asTransportFailure(err);" in first

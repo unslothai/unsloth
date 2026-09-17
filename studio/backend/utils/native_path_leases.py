@@ -28,9 +28,7 @@ from pathlib import Path
 from typing import Any, Callable, Collection, Iterable, Iterator, Mapping
 
 LEASE_SECRET_ENV = "UNSLOTH_STUDIO_NATIVE_PATH_LEASE_SECRET"
-# Reserved child keyword argument naming the file a worker mirrors its stderr into; see
-# utils/worker_stderr.py. Spelled out here rather than imported, so this module keeps its
-# stdlib-only import graph. tests/test_inference_worker_stderr_tail.py pins the two together.
+# Spelled out, not imported from utils/worker_stderr.py, to keep this module's import graph stdlib only.
 STDERR_MIRROR_KWARG = "unsloth_stderr_mirror_path"
 _MAX_NATIVE_PATH_REDACTIONS = 100
 _MAX_NATIVE_PATH_LABELS = 10_000
@@ -123,11 +121,7 @@ def run_without_native_path_secret(
 ) -> Any:
     """Run a multiprocessing child target without the native path lease secret."""
 
-    # First, before anything else can raise: the sink exists so a child that dies before it
-    # reaches its entrypoint is still explainable. Every worker's stderr is the parent's
-    # inherited handle, so a hard exit leaves the parent with an exit status and no cause
-    # (#7843). A reserved kwarg rather than an environment variable, because several workers
-    # can be spawned at once and a process-wide variable would cross their sinks over.
+    # First, before anything else can raise, so a child dying before its entrypoint is explainable (#7843).
     _stderr_mirror_path = kwargs.pop(STDERR_MIRROR_KWARG, None)
     if _stderr_mirror_path:
         try:

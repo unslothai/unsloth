@@ -1173,19 +1173,9 @@ pub(crate) fn owned_backend_snapshot(
     Ok(snapshot)
 }
 
-/// Whether the handle that names *port* still refers to a process that EXISTS.
-///
-/// The snapshot only says the handle names the port, and a handle outlives the process it
-/// names: a child that exited is cleared by whoever notices, and until then another process
-/// can bind the freed port. Presence is then decided about a stranger -- the weak readings
-/// (a reply that is not a healthy Unsloth one, or silence) are only allowed to count because
-/// they can only be OUR process, and that premise is exactly what goes stale here.
-///
-/// `try_wait` is the answer for a child we spawned: it is non-blocking, and `Some(status)`
-/// means the process has already exited, so whatever holds the port now is not it. For an
-/// adopted backend there is no child handle, so the pid is checked instead. Anything this
-/// cannot read leaves the handle trusted, which is the direction that keeps a running
-/// backend from being declared dead.
+/// Whether the handle that names *port* still refers to a process that EXISTS: a handle
+/// outlives its process, and another process can bind the freed port.
+/// Anything this cannot read leaves the handle trusted, so a running backend is never declared dead.
 pub(crate) fn owned_backend_on_port_is_running(state: &BackendState, port: u16) -> bool {
     let mut proc = match state.lock() {
         Ok(guard) => guard,
@@ -1204,14 +1194,8 @@ pub(crate) fn owned_backend_on_port_is_running(state: &BackendState, port: u16) 
     }
 }
 
-/// Whether *pid* is a process that still exists and has not already exited.
-///
-/// For an adopted backend, where there is no child handle to `try_wait` on. Both readings
-/// are the positive-evidence kind: `pid_is_not_dead` is false only when the pid is PROVABLY
-/// gone, so a process owned by another user, or one this app may not query, still counts as
-/// running; and a zombie has exited and is only waiting to be reaped, which `kill(pid, 0)`
-/// alone cannot see. Anything uncertain leaves the backend trusted, which is the direction
-/// that keeps a live backend from being declared dead.
+/// Whether *pid* still exists: false only when the pid is PROVABLY gone. A zombie has exited
+/// but is unreaped, which `kill(pid, 0)` alone cannot see.
 pub(crate) fn backend_pid_is_running(pid: u32) -> bool {
     crate::desktop_backend_owner::pid_is_not_dead(pid)
         && !crate::process_identity::is_zombie(pid)
@@ -6104,9 +6088,6 @@ mod exit_status_after_stdout_closed_tests {
     }
 }
 
-// The premise the weak liveness readings rest on: "a reply that is not a healthy Unsloth
-// one, or silence, can only be OUR backend". A handle outlives the process it names, so
-// that premise goes stale the moment our child exits and something else binds the port.
 #[cfg(test)]
 mod owned_backend_liveness_tests {
     use super::*;
@@ -6200,9 +6181,7 @@ mod owned_backend_liveness_tests {
     #[test]
     fn an_adopted_pid_that_is_gone_is_not_running() {
         assert!(backend_pid_is_running(std::process::id()));
-        // A real process, run to completion, so this is a pid that is PROVABLY gone rather
-        // than a number picked for being unlikely. A pid merely unreadable stays trusted,
-        // which is what `pid_is_not_dead` is written to guarantee.
+        // A real process run to completion, so this pid is PROVABLY gone; an unreadable pid stays trusted by design.
         let mut child = spawn_owned(&DEAD_CHILD);
         let pid = child.id();
         let _ = child.wait();

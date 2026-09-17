@@ -250,11 +250,8 @@ function sortMessages(messages: MessageRecord[]): MessageRecord[] {
 }
 
 export function isExpectedBackgroundChatStorageError(error: unknown): boolean {
-  // The transport marker rather than one of the messages authFetch can raise. A background
-  // sync whose request never left the app is expected however it was worded: the backend is
-  // gone, the backend is up but did not answer in time, or the web build is offline. Reading
-  // the tag instead of the copy also stops this list going stale the next time that copy
-  // changes, which is how a merely busy backend came to be reported as an unexpected error.
+  // The transport marker rather than the copy, which is how a merely busy backend came to
+  // be reported as an unexpected error when the copy changed.
   if (
     error instanceof Error &&
     (error as { unslothTransportFailure?: boolean }).unslothTransportFailure ===

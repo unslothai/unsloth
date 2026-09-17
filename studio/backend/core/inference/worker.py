@@ -1119,13 +1119,9 @@ def run_inference_process(
         service_name = "unsloth-studio-inference-worker",
         env = os.getenv("ENVIRONMENT_TYPE", "production"),
     )
-    # Immediately after, and only in the worker: the parent reads this process's stderr to
-    # explain a crash, and a record is prefixed on its first line only. The traceback this
-    # module logs below with `exc_info = True` for a request failure it RECOVERS from is
-    # therefore bare at column 0, indistinguishable from the traceback of a process that
-    # died -- so on a shared worker it was handed to the NEXT caller as their crash. Marking
-    # every continuation line is what makes the two tellable apart, at the writer, where the
-    # answer is actually known.
+    # Must follow setup_logging: the traceback logged below with `exc_info = True` for a
+    # RECOVERED failure is otherwise indistinguishable from a dying process's, and on a
+    # shared worker the parent hands it to the NEXT caller as their crash.
     from utils.worker_stderr import mark_log_record_continuations
 
     mark_log_record_continuations()

@@ -1,11 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// #10520. On the reported host a per-process firewall filter delayed the loopback handshake
-// and Unsloth Desktop answered with "Unsloth isn't running -- please relaunch it." while the
-// backend was listening and healthy. Two causes, one per suite below: the webview's fetch
-// retry ladder ran out long before the launcher's own liveness budget, and the verdict was
-// reached without ever asking the launcher.
+// #10520: a firewall filter delayed the loopback handshake and Desktop said "Unsloth isn't running" about a healthy backend.
 
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -24,10 +20,8 @@ type AuthApi = {
   BACKEND_NOT_ANSWERING_MESSAGE: string;
 };
 
-/** The stub map api.ts needs, with the Tauri-specific parts under the caller's control. */
 function loadAuthApi(options: {
   port: number | null;
-  /** For the one test where the port MOVES while a probe is pending, as setApiBase can. */
   getPort?: () => number | null;
   checkHealth?: (port: number) => boolean | Promise<boolean>;
   onInvoke?: (command: string, args: Record<string, unknown>) => void;
@@ -68,7 +62,6 @@ function loadAuthApi(options: {
   );
 }
 
-/** A port nothing is listening on yet, and a server that starts accepting later. */
 async function reserveLoopbackPort(): Promise<number> {
   const probe = createServer();
   const port = await new Promise<number>((resolve, reject) => {
@@ -92,11 +85,7 @@ function listenAfter(server: Server, port: number, delayMs: number): void {
   }, delayMs).unref();
 }
 
-// The launcher spends 10s on a single liveness probe (HEALTH_PROBE_TIMEOUT in
-// src-tauri/src/commands.rs) and three of those before it will call a backend dead. The
-// ladder this exercises must reach past the old 250 + 750 + 1500ms, so the host below starts
-// accepting at 3s: inside the new ladder, outside the old one. The Rust-side guard
-// `the_frontend_retry_ladder_outlives_one_probe_budget` pins the arithmetic itself.
+// The host below starts accepting at 3s: inside the new ladder, outside the old 250 + 750 + 1500ms one.
 const SLOW_LOOPBACK_ACCEPT_DELAY_MS = 3_000;
 const OLD_LADDER_ATTEMPTS = 4;
 
@@ -144,8 +133,6 @@ test("a backend the launcher still sees is not reported as not running", async (
       checkHealth: () => true,
       onInvoke: (_command, args) => probed.push(args),
     });
-    // retryNetworkErrors off: the ladder is the other suite's subject, and this one is about
-    // the verdict reached once it has run out.
     const error = await authApi
       .authFetch("/api/models", undefined, { retryNetworkErrors: false })
       .then(
@@ -157,7 +144,6 @@ test("a backend the launcher still sees is not reported as not running", async (
     assert.equal(error.message, authApi.BACKEND_NOT_ANSWERING_MESSAGE);
     assert.notEqual(error.message, authApi.BACKEND_NOT_RUNNING_MESSAGE);
     assert.ok(!/relaunch/i.test(error.message));
-    // Still tagged as a transport failure, so nothing blames the model for it.
     assert.equal(
       (error as { unslothTransportFailure?: boolean }).unslothTransportFailure,
       true,
@@ -236,8 +222,7 @@ test("no validated port yet means nothing is asked and nothing is claimed", asyn
   };
 
   try {
-    // The placeholder base the app carries before server-port arrives is port 0, which
-    // never connects; probing it would answer "dead" about a backend that has not started.
+    // The placeholder base before server-port arrives is port 0, which never connects.
     const authApi = loadAuthApi({
       port: null,
       checkHealth: () => true,
@@ -259,9 +244,7 @@ test("no validated port yet means nothing is asked and nothing is claimed", asyn
 });
 
 test("panels that all lose the backend at once share one native probe", async () => {
-  // The failure this guards is the whole hub losing its connection in the same tick. Each
-  // lost poll asks the same question about the same backend, and on the reported host that
-  // question is the slow one: it waits out the launcher's budget rather than being refused.
+  // The whole hub loses its connection in the same tick and each probe waits out the launcher's budget.
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => {
     throw new TypeError("fetch failed");
@@ -305,7 +288,6 @@ test("panels that all lose the backend at once share one native probe", async ()
       assert.equal(error.message, authApi.BACKEND_NOT_ANSWERING_MESSAGE);
     }
 
-    // Released once it answers: the next failure is a new question about a later moment.
     const later = await call();
     assert.equal(probes, 2);
     assert.ok(later instanceof Error);
@@ -316,11 +298,7 @@ test("panels that all lose the backend at once share one native probe", async ()
 });
 
 test("updating an existing install does not go through the changed path", async () => {
-  // An Unsloth that is already installed has to be able to reach a newer one, and the update
-  // it runs deliberately stops the backend (start_backend_update in src-tauri/src/commands.rs
-  // does exactly that). A flow that talked to the backend over HTTP while it was down would
-  // now wait out a wider ladder and a native probe before it failed, so pin what it actually
-  // uses: Tauri commands and events, nothing this change touches.
+  // The update deliberately stops the backend, so pin that this flow uses commands and events, not HTTP.
   const update = await readFile(
     new URL("../src/hooks/use-tauri-update.ts", import.meta.url),
     "utf8",
@@ -335,10 +313,7 @@ test("updating an existing install does not go through the changed path", async 
     "the update flow now issues its own fetch, which the transport path wraps",
   );
 
-  // The second opinion is asked for with a command the installed launcher already registers
-  // and already answers in this exact shape, so a webview that is newer than the shell it
-  // runs in is not asking for anything new. A shell old enough not to have it rejects the
-  // invoke, which is the case "a presence probe that throws" above covers.
+  // A webview newer than its shell asks for nothing new; the rejected invoke is covered above.
   const backend = await readFile(
     new URL("../src/hooks/use-tauri-backend.ts", import.meta.url),
     "utf8",
@@ -349,8 +324,7 @@ test("updating an existing install does not go through the changed path", async 
     "utf8",
   );
   assert.ok(main.includes("commands::check_health,"));
-  // The auth path asks the presence command instead, because check_health collapses a stalled
-  // probe onto false and that is the verdict this whole file exists to stop showing.
+  // check_health collapses a stalled probe onto false, the verdict this file exists to stop showing.
   assert.ok(main.includes("commands::check_backend_present,"));
   const authApiSrc = await readFile(
     new URL("../src/features/auth/api.ts", import.meta.url),
@@ -363,9 +337,7 @@ test("updating an existing install does not go through the changed path", async 
 });
 
 test("the background chat storage filter accepts every transport verdict", async () => {
-  // A background sync that could not reach a busy backend is exactly as expected as one
-  // that could not reach a stopped backend. Read as source, because the module pulls in the
-  // Dexie database that only a browser build can load.
+  // Read as source: the module pulls in the Dexie database only a browser build can load.
   const source = await readFile(
     new URL(
       "../src/features/chat/utils/chat-history-storage.ts",
@@ -391,10 +363,7 @@ test("the background chat storage filter accepts every transport verdict", async
 });
 
 test("a POST is not retried on the long ladder", async () => {
-  // A network error is not an answer. The backend may have committed the request and lost
-  // the connection before the response headers arrived, so every extra attempt is another
-  // chance at a duplicate API key, project or job. The startup fix lengthened the ladder for
-  // the GETs the UI makes while a slow backend warms up; it must not lengthen it here.
+  // A network error is not an answer: the backend may have committed the request, so a retry can duplicate it.
   const port = 61797;
   const originalFetch = globalThis.fetch;
   let attempts = 0;
@@ -422,10 +391,7 @@ test("a POST is not retried on the long ladder", async () => {
 });
 
 test("a probe pending against the old port is not the answer about the new one", async () => {
-  // setApiBase can move the port inside a probe's 10s budget: the backend restarts, or the
-  // app adopts a launcher listening somewhere else. Sharing the pending promise then reports
-  // the PREVIOUS backend's liveness as the new one's -- a live backend called absent, or a
-  // dead one called present -- for the rest of that budget.
+  // setApiBase can move the port inside a probe's 10s budget, so a shared pending promise reports the PREVIOUS backend.
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => {
     throw new TypeError("fetch failed");
@@ -447,9 +413,9 @@ test("a probe pending against the old port is not the answer about the new one",
         if (asked.length === 1) {
           releaseFirst?.();
           await new Promise((resolve) => setTimeout(resolve, 60));
-          return false; // the old backend is gone, which is why the port moved
+          return false;
         }
-        return true; // the new one is up
+        return true;
       },
     });
     const call = () =>
@@ -469,7 +435,6 @@ test("a probe pending against the old port is not the answer about the new one",
     assert.deepEqual(asked, [61810, 61811], "the new port was never probed");
     assert.ok(second instanceof Error);
     assert.equal(second.message, authApi.BACKEND_NOT_ANSWERING_MESSAGE);
-    // And the caller that asked about the old port still gets the old port's answer.
     assert.ok(firstError instanceof Error);
     assert.equal(firstError.message, authApi.BACKEND_NOT_RUNNING_MESSAGE);
   } finally {
