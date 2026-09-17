@@ -136,6 +136,9 @@ _SHARED_PAYLOAD = {
         "libggml-base.dylib",
         "libggml-cpu.dylib",
         "libmtmd.dylib",
+        # The macOS half of the same split; the real b11007 arm64 bundle ships both.
+        "libllama-server-impl.dylib",
+        "libllama-quantize-impl.dylib",
     ],
 }
 _BACKEND_PAYLOAD = {
@@ -313,6 +316,12 @@ def required_runtime_files(platform: str, backend: str, marker: dict) -> list[st
         if not owed:
             files.remove("libllama-server-impl.so")
             files.remove("libllama-quantize-impl.so")
+    if platform == "macos":
+        build = ILP._release_build_number(marker.get("tag"))
+        owed = source in {"published", "upstream"} and (build is None or build >= _IMPL_SPLIT_BUILD)
+        if not owed:
+            files.remove("libllama-server-impl.dylib")
+            files.remove("libllama-quantize-impl.dylib")
     files += _BACKEND_PAYLOAD.get((platform, backend), [])
     if backend == "vulkan" and source == "published":
         files += _PUBLISHED_PAYLOAD[platform]
@@ -551,6 +560,36 @@ def test_removing_a_file_this_install_kind_does_not_owe_stays_healthy(tmp_path):
         cudart = False,
     )
     assert ILP.installed_runtime_health(unpaired, host = WINDOWS) == (True, "")
+
+
+def test_the_split_dylibs_are_owed_on_a_post_split_macos_bundle(tmp_path):
+    """macOS carries the same split: the real b11007 arm64 bundle ships
+    libllama-server-impl.dylib and libllama-quantize-impl.dylib, and dyld cannot start
+    llama-server without them. Every other group stayed satisfied, so this was the one
+    platform where the probe answered Ready on a runtime that could not run.
+    """
+    post = build_tree(
+        tmp_path / "post",
+        host = MACOS_ARM64,
+        marker = shape_with_backend(S12_REAL, "metal"),
+        backend = "metal",
+    )
+    assert ILP.installed_runtime_health(post, host = MACOS_ARM64) == (True, "")
+    (_runtime_dir(post, MACOS_ARM64) / "libllama-server-impl.dylib").unlink()
+    assert ILP.installed_runtime_health(post, host = MACOS_ARM64) == (
+        False,
+        "llama_runtime_payload_incomplete",
+    )
+
+    # The control in the loop direction: a pre-split bundle never shipped them, so demanding
+    # them there would reinstall forever.
+    pre = build_tree(
+        tmp_path / "pre",
+        host = MACOS_ARM64,
+        marker = shape_with_backend(S1, "metal"),  # upstream b6099, before build 9283
+        backend = "metal",
+    )
+    assert ILP.installed_runtime_health(pre, host = MACOS_ARM64) == (True, "")
 
 
 # ---------------------------------------------------------------------------

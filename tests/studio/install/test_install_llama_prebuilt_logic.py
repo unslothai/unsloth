@@ -2419,6 +2419,9 @@ def write_macos_install_shape(
     # one whole library rather than of the whole payload.
     for name in ("libllama-common.0.dylib", "libggml-base.0.dylib", "libggml-cpu.0.dylib"):
         (runtime_dir / name).write_bytes(b"DLL")
+    # The macOS half of the impl split, shipped unversioned; same reason as the Linux shape.
+    (runtime_dir / "libllama-server-impl.dylib").write_bytes(b"DLL")
+    (runtime_dir / "libllama-quantize-impl.dylib").write_bytes(b"DLL")
     if include_libllama:
         (runtime_dir / "libllama.0.dylib").write_bytes(b"DLL")
     if include_libggml:

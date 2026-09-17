@@ -524,6 +524,10 @@ def _macos_payload(runtime_dir: Path) -> None:
         (runtime_dir / f"{stem}.{version}.dylib").write_text("x", encoding = "utf-8")
         os.symlink(f"{stem}.{version}.dylib", runtime_dir / f"{stem}.0.dylib")
         os.symlink(f"{stem}.0.dylib", runtime_dir / f"{stem}.dylib")
+    # The entrypoint impl split, which the same bundle ships UNVERSIONED: plain files, no
+    # libX.0 chain. Listing it was incomplete before, not the bundle.
+    for stem in ("libllama-server-impl", "libllama-quantize-impl"):
+        (runtime_dir / f"{stem}.dylib").write_text("x", encoding = "utf-8")
 
 
 def _macos_tree(tmp_path: Path) -> Path:

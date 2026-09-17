@@ -7582,6 +7582,26 @@ def _linux_split_entrypoint_groups(
     return [["libllama-server-impl.so*"], ["libllama-quantize-impl.so*"]]
 
 
+def _macos_split_entrypoint_groups(
+    source_label: str | None, tag: str | None = None
+) -> list[list[str]]:
+    """The macOS half of the same upstream split, gated by the same rule.
+
+    The bundle carries these: llama-b11007-mix-3e83366-bin-macos-arm64.tar.gz ships
+    libllama-server-impl.dylib and libllama-quantize-impl.dylib beside the two
+    entrypoints, and _PREBUILT_TREE_EVIDENCE already reads the first as proof of a
+    prebuilt macOS tree. Without them here every library group and both executable
+    checks passed while dyld could not start the entrypoint, so
+    installed_runtime_health answered Ready on the one platform this probe is for.
+
+    Delegates the gate rather than repeating it, so the build floor cannot drift from
+    the Linux and Windows halves it was measured on.
+    """
+    if not _linux_split_entrypoint_groups(source_label, tag):
+        return []
+    return [["libllama-server-impl*.dylib"], ["libllama-quantize-impl*.dylib"]]
+
+
 def runtime_payload_health_groups(
     install_kind: str,
     *,
@@ -7639,7 +7659,7 @@ def runtime_payload_health_groups(
             ["libggml-base.dylib", "libggml-base.*.dylib"],
             ["libggml-cpu.dylib", "libggml-cpu.*.dylib"],
             ["libmtmd.dylib", "libmtmd.*.dylib"],
-        ]
+        ] + _macos_split_entrypoint_groups(source_label, tag)
     if install_kind == "linux-rocm":
         return [
             ["libllama-common.so*"],
