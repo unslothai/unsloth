@@ -143,6 +143,37 @@ def test_a_path_slow_enough_to_trip_the_backstop_fails_on_the_backstop():
         assert_linear(run, _build, "glacial", 2, clock = clock)
 
 
+def test_a_confirmation_that_would_outlast_the_job_is_not_started():
+    """The retry must not cost more than the runner will wait, or the message is a timeout.
+
+    Seven pairs of a big leg just under the 60s backstop is ~420s, and the four pytest
+    invocations in .github/workflows/studio-backend-ci.yml pass `--timeout=330`: the worker
+    is killed mid-confirmation and reports a bare timeout, so the shape that was measured
+    never reaches anyone. Shaped here as a big leg of 40s with a ratio over the bar, which
+    is the regression this describes and not a contended runner. The row pins BOTH halves:
+    it fails as a linearity failure naming the first sample, and it does not pay for a
+    second one -- three pairs is six legs, and nothing past six may run.
+    """
+    run, clock, calls = _shaped(1.0, stalls = {1: 40.0, 3: 40.0, 5: 40.0})
+    with pytest.raises(AssertionError, match = "does not fit in"):
+        assert_linear(run, _build, "slow and superlinear", 2, clock = clock)
+    assert calls["n"] == 6, f"a confirmation it cannot afford was started anyway: {calls['n']}"
+
+
+def test_a_confirmation_it_can_only_partly_afford_is_still_taken():
+    """The other arm: short of seven pairs is a weaker vote, not a reason to skip the retry.
+
+    A big leg of 20s affords five pairs of the 120s budget but not seven, and the path is
+    linear once the stalls stop, so it must still pass -- on five pairs, rather than on the
+    ratio being forgiven. Without this the row above could be satisfied by refusing every
+    confirmation that is not free.
+    """
+    run, clock, calls = _shaped(1.0, stalls = {1: 20.0, 3: 20.0, 5: 20.0})
+    assert assert_linear(run, _build, "affordable in part", 2, clock = clock) == _build(8)
+    # Six legs of the first sample, then five pairs rather than seven.
+    assert calls["n"] == 6 + 10, f"the confirmation ran {(calls['n'] - 6) // 2} pairs"
+
+
 def test_an_aborted_confirmation_is_not_accepted_as_one():
     """A confirmation that stopped after one pair is not a reading, however low its ratio.
 

@@ -115,6 +115,7 @@ def assert_linear(
     factor: int = 4,
     tolerance: float = 6.0,
     repeats_on_retry: int = 7,
+    confirm_budget_s: float = 120.0,
     clock = None,
 ):
     """`run(build(n))` must cost ~`factor`x, not ~`factor ** 2`x, for `factor`x the input.
@@ -125,6 +126,11 @@ def assert_linear(
     being guarded against that leg is `factor ** 2`x slower again. A guard whose broken case
     takes a minute at the old size would then take a quarter of an hour, and the job's own
     timeout kills it before the ratio below can say why.
+
+    `confirm_budget_s` caps what the re-measurement below may SPEND, for the same reason the
+    paragraph above exists: a red run has to arrive as this function's message and not as the
+    runner's timeout, or nobody learns which shape was measured. It bounds the whole second
+    sample, where the 60s backstop bounds one leg of it.
     """
     budget = 60.0
     # Passed down rather than checked here: on a path slow enough to trip it, every repeat
@@ -146,12 +152,31 @@ def assert_linear(
         # median comes back over the bar as surely as its first, while a contention spike does
         # not survive being asked again on a bigger sample. The cost is paid only on the
         # reading that would otherwise have failed, so a green run still takes three pairs.
+        #
+        # How many pairs it can AFFORD is a separate question from how many it wants. The
+        # per-leg backstop above bounds one leg, not the sample: a regression that holds each
+        # big leg just under 60s still costs ~7 * 60s here, and the four invocations in
+        # .github/workflows/studio-backend-ci.yml pass `--timeout=330`, so the worker would be
+        # killed mid-confirmation and report a bare timeout instead of the linearity failure
+        # this guard exists to name. Contention is the same size in every pair, so a shorter
+        # confirmation is a weaker vote but still a reading; the small leg is estimated from
+        # the ratio already measured, which is the only reading of it available here.
+        pair_cost = big * (1.0 + 1.0 / max(ratio, 1.0))
+        affordable = repeats_on_retry if pair_cost <= 0 else int(confirm_budget_s // pair_cost)
+        # Below three pairs a median is not outvoting anything, so there is nothing worth
+        # spending the time on: the sample already taken is the verdict, and it says so.
+        assert affordable >= 3, (
+            f"{label} path is not linear: {factor}x the input cost {ratio:.1f}x the time over 3 "
+            f"pairs (linear is ~{factor}, quadratic is ~{factor ** 2}), and at {big:.1f}s per big "
+            f"leg a second sample does not fit in {confirm_budget_s:.0f}s, so this reading stands"
+        )
+        pairs_wanted = min(repeats_on_retry, affordable)
         confirm, big_again, result, pairs = growth(
             run,
             build,
             units,
             factor,
-            repeats = repeats_on_retry,
+            repeats = pairs_wanted,
             abort_over_s = budget,
             clock = clock,
         )
@@ -163,13 +188,13 @@ def assert_linear(
         assert (
             big_again < budget
         ), f"{label} path took {big_again:.1f}s on {units * factor} units while re-measuring"
-        assert pairs == repeats_on_retry, (
-            f"{label} path: the confirmation stopped after {pairs} of {repeats_on_retry} pairs, "
+        assert pairs == pairs_wanted, (
+            f"{label} path: the confirmation stopped after {pairs} of {pairs_wanted} pairs, "
             "so its ratio is not a reading of anything"
         )
         assert confirm < tolerance, (
             f"{label} path is not linear: {factor}x the input cost {confirm:.1f}x the time "
-            f"over {repeats_on_retry} pairs, after {ratio:.1f}x over 3 "
+            f"over {pairs_wanted} pairs, after {ratio:.1f}x over 3 "
             f"(linear is ~{factor}, quadratic is ~{factor ** 2})"
         )
     return result
