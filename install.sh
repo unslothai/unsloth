@@ -5787,6 +5787,9 @@ if [ "$_MIGRATED" = true ]; then
     substep "upgrading unsloth in migrated environment..."
     if [ "$SKIP_TORCH" = true ]; then
         # No-torch: --no-deps throughout (PyPI metadata still hard-deps torch).
+        # --no-deps means unsloth's own metadata is never read, so this spec IS the zoo floor
+        # for this path. Keep it equal to the unsloth_zoo floor in pyproject.toml
+        # (tests/test_installer_zoo_floor_parity.py enforces that).
         run_install_cmd_retry "install unsloth (migrated no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
             "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.5"
@@ -6009,6 +6012,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     substep "installing unsloth (this may take a few minutes)..."
     _build_unsloth_torch_overrides
     if [ "$SKIP_TORCH" = true ]; then
+        # --no-deps: this spec IS the zoo floor here. Kept equal to pyproject.toml's.
         run_install_cmd_retry "install unsloth (no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --upgrade-package unsloth --upgrade-package unsloth-zoo \
             "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.5"

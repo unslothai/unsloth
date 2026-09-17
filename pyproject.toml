@@ -201,15 +201,23 @@ triton = [
 
 huggingfacenotorch = [
     # unsloth_zoo.compiler embeds its own copy of the empty-logits sentinel in the code it
-    # generates for the compiled trainers, so fixing _utils.py here does not reach the
-    # compiled path while an older zoo is resolvable: 2026.9.4 still hands FSDP2 mixed
-    # precision a sentinel that answers `__dataclass_fields__` and dies in
-    # `dataclasses.replace`. 2026.9.5 is the first release carrying the matching fix
-    # (unslothai/unsloth-zoo#1259), and it is now on PyPI, so the floor names it. The same
-    # release also exports `grpo_vision_chunks`, which both vision GRPO logprob paths in
-    # unsloth/models/rl_replacements.py refuse to run without. The compiled-path probes in
-    # tests/test_empty_logits_compiled_path_probes.py gate on the INSTALLED zoo, not on this
-    # pin, so they run wherever the installed zoo is new enough.
+    # generates for the compiled trainers, so fixing _utils.py here never reached the compiled
+    # path while an older zoo stayed resolvable: 2026.9.4 hands FSDP2 mixed precision a
+    # sentinel that answers `__dataclass_fields__` and then dies in `dataclasses.replace`.
+    # 2026.9.5 carries the matching fix (unslothai/unsloth-zoo#1259), so the floor moves to it
+    # and the compiled path is covered for the first time rather than resting on the eager
+    # fix alone. The compiled-path probes in tests/test_empty_logits_compiled_path_probes.py
+    # gate on the INSTALLED zoo rather than on this pin, so they start running by themselves
+    # wherever 2026.9.5 or newer is the zoo actually present.
+    #
+    # This branch needs that same floor for a second, independent reason: 2026.9.5 is also the
+    # first release to export `grpo_vision_chunks`, which both vision GRPO logprob paths in
+    # unsloth/models/rl_replacements.py refuse to run without.
+    #
+    # This does NOT lift the transformers ceiling below. 2026.9.5 still declares
+    # `transformers<=5.5.0` in its own metadata, so the resolver intersects our transformers
+    # range down to 5.5.0 whatever this file says. That one waits on
+    # unslothai/unsloth-zoo#1227 and a later zoo release.
     "unsloth_zoo>=2026.9.5",
     "wheel>=0.42.0",
     "packaging",
