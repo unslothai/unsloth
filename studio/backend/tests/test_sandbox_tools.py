@@ -327,6 +327,24 @@ class TestNetworkTargetResolution:
                 f"from urllib3.util import connection\nconnection.create_connection(('{_H}', 80))",
                 id = "urllib3_util_connection",
             ),
+            # The proxy is the socket destination, so it is checked like any other host.
+            pytest.param(
+                f"import urllib3\nurllib3.proxy_from_url('http://{_H}:3128/')"
+                ".request('GET', 'https://pypi.org/')",
+                id = "urllib3_proxy_from_url",
+            ),
+            pytest.param(
+                f"import urllib3\nurllib3.ProxyManager(proxy_url='http://{_H}:3128/')",
+                id = "urllib3_proxy_manager_keyword",
+            ),
+            pytest.param(
+                f"import urllib3\nurllib3.connection_from_url('http://{_H}/')",
+                id = "urllib3_connection_from_url",
+            ),
+            pytest.param(
+                f"import urllib3\nurllib3.HTTPSConnectionPool(host='{_H}')",
+                id = "urllib3_connection_pool_host_keyword",
+            ),
             # Competing aliases are checked under each signature, not just the first.
             pytest.param(
                 f"import requests\nf = requests.get\nf = requests.request\nf('GET', 'http://{_H}/')",
@@ -358,6 +376,13 @@ class TestNetworkTargetResolution:
     def test_metadata_host_by_keyword_blocked(self):
         _blocked(
             "import requests\nrequests.get(url='http://169.254.169.254/latest/')",
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    def test_metadata_host_as_proxy_blocked(self):
+        _blocked(
+            "import urllib3\nurllib3.proxy_from_url('http://169.254.169.254/')"
+            ".request('GET', 'https://pypi.org/')",
             expect_phrase = "Blocked: cloud-metadata host",
         )
 
