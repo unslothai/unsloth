@@ -99,9 +99,7 @@ def test_a_cp1252_character_at_the_very_end_is_not_trimmed_away():
     """
     assert decode_worker_stderr(b"RuntimeError: caf\xe9") == "RuntimeError: café"
     # And the leading edge is still trimmed, because the window DOES open mid-character.
-    assert decode_worker_stderr("é at the start".encode("utf-8")[1:]).endswith(
-        " at the start"
-    )
+    assert decode_worker_stderr("é at the start".encode("utf-8")[1:]).endswith(" at the start")
     # A caller that really is mid-stream can still drop the severed bytes outright.
     truncated = "RuntimeError: é".encode("utf-8")[:-1]
     assert decode_worker_stderr(truncated, ends_at_eof = False) == "RuntimeError: "
