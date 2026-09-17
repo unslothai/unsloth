@@ -34491,6 +34491,7 @@ class LlamaCppBackend:
         # Hold a leading ``{`` well past the 32-char XML cap until it balances (mirrors safetensors).
         _MAX_BARE_JSON_BUFFER = 16384
         _append_budget_exhausted_nudge = True
+        _limit_notice_in_user_turn = False
         # RAG: cap knowledge-base searches per assistant turn. The controller is
         # tool-agnostic, so this gate stays in the loop.
         _kb_search_count = 0
@@ -36276,6 +36277,7 @@ class LlamaCppBackend:
                 # Collapse exact-duplicate calls and cap the count for the TEXTUAL
                 # fallback (mirrors the safetensors loop; see _MAX_TOOL_CALLS_PER_TURN).
                 _over_cap: list = []
+                _limit_notice_in_user_turn = False
                 if tool_calls and not has_structured_tc and len(tool_calls) > 1:
                     _seen_keys: set = set()
                     _last_workspace_key = None
@@ -37291,6 +37293,7 @@ class LlamaCppBackend:
                             }
                         else:
                             conversation.append({"role": "user", "content": _limit_text})
+                        _limit_notice_in_user_turn = True
 
                 # Close provisional cards not resolved by execution/no-op handling.
                 for _pid, _pname in provisional_started_tool_calls.items():
@@ -37357,7 +37360,14 @@ class LlamaCppBackend:
         # continuing to request tools.
         if max_tool_iterations > 0 and _append_budget_exhausted_nudge:
             if not _attach_internal_feedback_to_tool_result(BUDGET_EXHAUSTED_NUDGE):
-                conversation.append({"role": "user", "content": BUDGET_EXHAUSTED_NUDGE})
+                # Two user turns in a row break strict templates (Gemma), so ride the notice's turn.
+                if _limit_notice_in_user_turn and conversation[-1].get("role") == "user":
+                    conversation[-1] = {
+                        **conversation[-1],
+                        "content": f"{conversation[-1]['content']}\n\n{BUDGET_EXHAUSTED_NUDGE}",
+                    }
+                else:
+                    conversation.append({"role": "user", "content": BUDGET_EXHAUSTED_NUDGE})
 
         # Clear status.
         yield {"type": "status", "text": ""}

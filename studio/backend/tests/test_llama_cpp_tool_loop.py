@@ -5053,6 +5053,7 @@ def test_gguf_over_cap_notice_is_not_folded_into_an_unrelated_tools_result(monke
 
 def test_gguf_over_cap_notice_for_several_tools_is_not_folded_into_one_tools_result(monkeypatch):
     from core.inference.llama_cpp import _MAX_TOOL_CALLS_PER_TURN
+    from core.inference.tool_call_parser import BUDGET_EXHAUSTED_NUDGE
 
     blocks = "".join(
         '<tool_call>{"name":"web_search","arguments":{"query":"q%d"}}</tool_call>' % i
@@ -5078,6 +5079,11 @@ def test_gguf_over_cap_notice_for_several_tools_is_not_folded_into_one_tools_res
     (holder,) = [m for m in messages if "more tool call(s)" in (m.get("content") or "")]
     assert holder["role"] == "user"
     assert "python" in holder["content"] and '"q8"' in holder["content"]
+    assert holder == messages[-1]
+    assert BUDGET_EXHAUSTED_NUDGE in holder["content"]
+    assert not any(
+        a.get("role") == "user" and b.get("role") == "user" for a, b in zip(messages, messages[1:])
+    )
 
 
 def test_gguf_over_cap_does_not_ask_for_a_retry_when_the_range_check_ends_the_loop(monkeypatch):
