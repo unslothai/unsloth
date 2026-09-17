@@ -69,7 +69,7 @@ def _the_chunker_is_required() -> bool:
 
 @pytest.mark.skip(
     reason = f"unsloth_zoo {ZOO_FLOOR_WITH_THE_VISION_CHUNKER} is not on PyPI yet, so the floor "
-             "is deferred rather than declared. Drop this skip with the release."
+    "is deferred rather than declared. Drop this skip with the release."
 )
 def test_the_declared_zoo_floor_carries_the_chunker_the_vision_paths_require() -> None:
     if not _the_chunker_is_required():
