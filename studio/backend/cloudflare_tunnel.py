@@ -20,6 +20,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections import deque
 from pathlib import Path
 from typing import Callable, Optional, Tuple
 
@@ -31,7 +32,10 @@ _REGISTERED_MARKER = "Registered tunnel connection"
 
 _RELEASE_BASE = "https://github.com/cloudflare/cloudflared/releases/latest/download"
 
-_READY_TIMEOUT = 15.0
+_READY_TIMEOUT = 30.0
+# No URL means the trycloudflare.com request itself failed or stalled, which is usually transient.
+_NO_URL_RETRY_DELAYS = (2.0, 5.0)
+_OUTPUT_TAIL_LINES = 8
 _DOWNLOAD_TIMEOUT = 60
 
 # A registered edge connection does not mean the hostname resolves yet, so the URL is fetched once before it is
@@ -489,6 +493,10 @@ class CloudflareTunnel:
         self.on_exit: Optional[Callable[["CloudflareTunnel"], None]] = None
         self._reader_exited = False
         self._runtime_active = False
+        self._tail: deque = deque(maxlen = _OUTPUT_TAIL_LINES)
+
+    def output_tail(self) -> str:
+        return "\n".join(self._tail)
 
     def start(self) -> None:
         cmd = [
@@ -537,6 +545,7 @@ class CloudflareTunnel:
         try:
             if proc.stdout is not None:
                 for line in proc.stdout:
+                    self._tail.append(line.rstrip())
                     # stdout closed -> cloudflared has exited. Record why, and unblock any waiters at once
                     # instead of letting them wait out the full timeout.
                     if self.url is None:
@@ -873,7 +882,10 @@ def start_studio_tunnel(
             _set_failed(generation, managed_by, port, "cloudflared is unavailable")
             return None
 
-        for protocol in (None, "http2"):
+        protocols = [None, "http2"]
+        no_url_delays = list(_NO_URL_RETRY_DELAYS)
+        while protocols:
+            protocol = protocols[0]
             with _active_lock:
                 if _shutdown_requested or generation != _tunnel_generation:
                     _active_tunnel = None
@@ -941,6 +953,15 @@ def start_studio_tunnel(
                     return None
                 return url
             saw_url = tunnel.url is not None
+            retry_no_url = not saw_url and bool(no_url_delays)
+            tail = tunnel.output_tail() if hasattr(tunnel, "output_tail") else ""
+            logging.getLogger(__name__).warning(
+                "cloudflared attempt failed (protocol=%s, url=%s, registered=%s)%s",
+                protocol or "auto",
+                saw_url,
+                registered,
+                f":\n{tail}" if tail else "",
+            )
             with _active_lock:
                 was_active = _active_tunnel is tunnel
                 if was_active:
@@ -961,9 +982,9 @@ def start_studio_tunnel(
                 elif generation == _tunnel_generation and _active_tunnel is tunnel:
                     if stopped:
                         _active_tunnel = None
-                        # Reset from "stopping" before the http2 retry, or stop_studio_tunnel() early-returns and stops
+                        # Reset from "stopping" before a retry, or stop_studio_tunnel() early-returns and stops
                         # nothing.
-                        if _tunnel_state == "stopping" and protocol is None:
+                        if _tunnel_state == "stopping" and (protocol is None or retry_no_url):
                             _tunnel_state = "starting"
                     else:
                         _active_tunnel = tunnel
@@ -973,12 +994,16 @@ def start_studio_tunnel(
                 return None
             if not stopped:
                 return None
+            if retry_no_url:
+                time.sleep(no_url_delays.pop(0))
+                continue
             if not saw_url:
                 _set_failed(generation, managed_by, port, "cloudflared did not produce a URL")
                 return None
             if registered:
                 _set_failed(generation, managed_by, port, "Cloudflare URL was not reachable")
                 return None
+            protocols.pop(0)
         _set_failed(generation, managed_by, port, "cloudflared did not register a connection")
         return None
 

@@ -875,6 +875,7 @@ def _stub_public_probe(monkeypatch, request):
     if not request.node.name.startswith("test_start_studio_tunnel"):
         return
     monkeypatch.setattr(ct, "verify_public_url", lambda url, **kw: True)
+    monkeypatch.setattr(ct, "_NO_URL_RETRY_DELAYS", ())
 
 
 def test_start_studio_tunnel_no_binary(monkeypatch):
@@ -1194,6 +1195,71 @@ def test_start_studio_tunnel_no_http2_retry_when_no_url(monkeypatch):
     monkeypatch.setattr(ct, "CloudflareTunnel", _Stub)
     assert ct.start_studio_tunnel(8080) is None
     assert attempts == [None]
+
+
+def _no_url_stub(attempts, succeed_on = None):
+    class _Stub:
+        def __init__(
+            self,
+            port,
+            binary,
+            protocol = None,
+            origin_host = "localhost",
+        ):
+            self.url = None
+            attempts.append(protocol)
+
+        def start(self):
+            if succeed_on is not None and len(attempts) >= succeed_on:
+                self.url = "https://words.trycloudflare.com"
+
+        def wait_for_ready(self, timeout):
+            return self.url
+
+        def stop(self):
+            pass
+
+    return _Stub
+
+
+def test_start_studio_tunnel_retries_when_no_url(monkeypatch):
+    attempts, slept = [], []
+    monkeypatch.setattr(ct, "ensure_cloudflared", lambda: "/bin/cloudflared")
+    monkeypatch.setattr(ct, "CloudflareTunnel", _no_url_stub(attempts, succeed_on = 2))
+    monkeypatch.setattr(ct, "_NO_URL_RETRY_DELAYS", (2.0, 5.0))
+    monkeypatch.setattr(ct.time, "sleep", slept.append)
+    try:
+        assert ct.start_studio_tunnel(8080) == "https://words.trycloudflare.com"
+        assert attempts == [None, None]
+        assert slept == [2.0]
+        assert ct.get_studio_tunnel_status()["state"] == "online"
+    finally:
+        ct.stop_studio_tunnel()
+
+
+def test_start_studio_tunnel_no_url_retries_are_bounded(monkeypatch):
+    attempts, slept = [], []
+    monkeypatch.setattr(ct, "ensure_cloudflared", lambda: "/bin/cloudflared")
+    monkeypatch.setattr(ct, "CloudflareTunnel", _no_url_stub(attempts))
+    monkeypatch.setattr(ct, "_NO_URL_RETRY_DELAYS", (2.0, 5.0))
+    monkeypatch.setattr(ct.time, "sleep", slept.append)
+    assert ct.start_studio_tunnel(8080) is None
+    assert attempts == [None, None, None]
+    assert slept == [2.0, 5.0]
+    status = ct.get_studio_tunnel_status()
+    assert status["state"] == "error"
+    assert status["error"] == "cloudflared did not produce a URL"
+
+
+def test_start_studio_tunnel_no_url_retry_aborts_on_stop(monkeypatch):
+    attempts = []
+    monkeypatch.setattr(ct, "ensure_cloudflared", lambda: "/bin/cloudflared")
+    monkeypatch.setattr(ct, "CloudflareTunnel", _no_url_stub(attempts))
+    monkeypatch.setattr(ct, "_NO_URL_RETRY_DELAYS", (2.0, 5.0))
+    monkeypatch.setattr(ct.time, "sleep", lambda _s: ct.stop_studio_tunnel())
+    assert ct.start_studio_tunnel(8080) is None
+    assert attempts == [None]
+    assert ct.get_studio_tunnel_status()["state"] == "off"
 
 
 def test_start_studio_tunnel_both_protocols_fail_registration(monkeypatch):
