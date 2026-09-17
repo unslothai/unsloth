@@ -172,10 +172,7 @@ def _drop_hf_stdout_callbacks(trainer) -> None:
 
 
 def _metadata_lookup_name(
-    model_name: str,
-    lookup_name: str,
-    local_files_only: bool,
-    model_revision: Optional[str],
+    model_name: str, lookup_name: str, local_files_only: bool, model_revision: Optional[str]
 ) -> str:
     """Return the repo whose config and tokenizer the loader will read."""
     if local_files_only or model_revision is not None or lookup_name != model_name:
@@ -183,7 +180,9 @@ def _metadata_lookup_name(
     mirror = unsloth_16bit_mirror(model_name)
     if mirror is None:
         return lookup_name
-    logger.info("Reading %s config and tokenizer from %s, the repo Unsloth loads", model_name, mirror)
+    logger.info(
+        "Reading %s config and tokenizer from %s, the repo Unsloth loads", model_name, mirror
+    )
     return mirror
 
 

@@ -205,7 +205,9 @@ def test_gated_repo_without_access_or_a_public_copy_is_refused(mapper, monkeypat
 
     assert error.value.status_code == 422
     assert error.value.detail["code"] == "hf_model_access_denied"
-    assert session.urls and session.urls[0].endswith("/api/models/google/gemma-2-2b-jpn-it/auth-check")
+    assert session.urls and session.urls[0].endswith(
+        "/api/models/google/gemma-2-2b-jpn-it/auth-check"
+    )
 
 
 @pytest.mark.parametrize(
