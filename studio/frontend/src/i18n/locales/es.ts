@@ -62,9 +62,9 @@ export const es = {
     announceMoveFailed: "La cola cambió antes de poder mover este mensaje. Inténtalo de nuevo.",
     announceDragReset: "La cola cambió. Arrastra de nuevo para reordenar los mensajes restantes.",
     editingHint: "Editando el mensaje",
-    queueingOffHint: "Los mensajes nuevos detienen la respuesta actual y se ejecutan a continuación.",
-    queueingOnHint: "Los mensajes nuevos esperan su turno y se ejecutan en orden.",
-    queueingHintShared: "Los mensajes en cola se conservan.",
+    queueingOffHint: "Los mensajes nuevos interrumpen y se ejecutan a continuación.",
+    queueingOnHint: "Los mensajes nuevos esperan su turno.",
+    queueingHintShared: "La cola se conserva.",
   },
   picker: {
     onDevice: "En el dispositivo",

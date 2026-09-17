@@ -2303,24 +2303,25 @@ class FastBaseModel:
             loftq_config, lora_dropout, bias, init_lora_weights, model
         )
 
-        # Auto-detect MoE models and populate target_parameters for expert layers. Prefer the caller's ORIGINAL explicit leaf list over the scoped regex so an attention-only request does not train experts, but only while MLP and language families are both in scope: with finetune_mlp_modules or finetune_language_layers False the scoped regex already dropped the experts.
-        if target_parameters is None:
-            _moe_targets = _select_moe_detection_targets(
-                _moe_detect_target,
-                target_modules,
-                finetune_mlp_modules = finetune_mlp_modules,
-                finetune_language_layers = finetune_language_layers,
-            )
-            target_parameters = get_moe_target_parameters(model, _moe_targets)
-
-        # Per-expert Linear layouts (gpt-oss bnb-4bit) target experts via target_modules, not fused Parameters. Extend either form PEFT accepts: a leaf list, or a regex string.
+        # Prefer the caller's ORIGINAL explicit leaf list over the scoped regex so an attention-only request does not train experts, but only while MLP and language families are both in scope: with finetune_mlp_modules or finetune_language_layers False the scoped regex already dropped the experts.
         _moe_module_detect = _select_moe_detection_targets(
             _moe_detect_target,
             target_modules,
             finetune_mlp_modules = finetune_mlp_modules,
             finetune_language_layers = finetune_language_layers,
         )
+
+        # Per-expert Linear layouts (gpt-oss bnb-4bit) target experts via target_modules, not fused Parameters. Extend either form PEFT accepts: a leaf list, or a regex string.
         _moe_module_targets = get_moe_target_modules(model, _moe_module_detect)
+
+        # Auto-detect MoE models and populate target_parameters for expert layers.
+        if target_parameters is None:
+            target_parameters = get_moe_target_parameters(
+                model,
+                _moe_module_detect,
+                moe_module_targets = _moe_module_targets,
+            )
+
         if _moe_module_targets:
             if isinstance(target_modules, (list, tuple)):
                 target_modules = list(target_modules) + [

@@ -64,9 +64,9 @@ export const en = {
     announceDragReset:
       "The queue changed. Drag again to reorder the remaining prompts.",
     editingHint: "Editing message",
-    queueingOffHint: "New messages stop the current response and run next.",
-    queueingOnHint: "New messages wait their turn and run in order.",
-    queueingHintShared: "Queued prompts are kept.",
+    queueingOffHint: "New messages interrupt and run next.",
+    queueingOnHint: "New messages wait their turn.",
+    queueingHintShared: "The queue is kept.",
   },
   picker: {
     onDevice: "On Device",
