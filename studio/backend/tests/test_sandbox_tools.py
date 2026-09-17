@@ -371,6 +371,32 @@ class TestNetworkTargetResolution:
                 f"import paramiko\nc, = (paramiko.SSHClient(),)\nc.connect(hostname='{_H}')",
                 id = "client_unpack",
             ),
+            # A store the read can still reach is not superseded, whatever the source order.
+            pytest.param(
+                f"import requests\nurl = 'http://{_H}/'\nif flag:\n    url = 'https://pypi.org/'\n"
+                "requests.get(url)",
+                id = "branch_store_does_not_supersede",
+            ),
+            pytest.param(
+                f"import requests\nurl = 'http://{_H}/'\nfor _ in x:\n    url = 'https://pypi.org/'\n"
+                "requests.get(url)",
+                id = "loop_store_does_not_supersede",
+            ),
+            pytest.param(
+                f"import requests\nurl = 'http://{_H}/'\ntry:\n    url = 'https://pypi.org/'\n"
+                "except ValueError:\n    requests.get(url)",
+                id = "try_body_store_does_not_supersede",
+            ),
+            pytest.param(
+                f"import requests\nurl = 'https://pypi.org/'\ndef f():\n    requests.get(url)\n"
+                f"url = 'http://{_H}/'\nf()",
+                id = "store_after_the_read_does_not_supersede",
+            ),
+            pytest.param(
+                f"import requests\nurl = 'http://{_H}/'\nurl = 'https://pypi.org/'\nwhile c:\n"
+                f"    requests.get(url)\n    url = 'http://{_H}/'",
+                id = "loop_rebinding_survives_a_superseded_store",
+            ),
             # A conditional produces one of its branches, so every branch is checked.
             pytest.param(
                 f"import requests\nfetch = requests.get if flag else print\nfetch('http://{_H}/')",
@@ -464,6 +490,13 @@ class TestNetworkTargetResolution:
             "import requests\nfetch, = (requests.get,)\nfetch('https://pypi.org/simple/')",
             "import requests\nurl = 'https://pypi.org/' if flag else 'https://huggingface.co/'\nrequests.get(url)",
             "import requests\nfetch = requests.get if flag else requests.post\nfetch('https://pypi.org/')",
+            # An unconditional rebinding replaces the earlier value for every later read.
+            "import requests\nurl = 'http://203.0.113.5/'\nurl = 'https://pypi.org/'\nrequests.get(url)",
+            "import requests\nurl = 'http://203.0.113.5/'\nurl = 'https://pypi.org/'\nif x:\n    requests.get(url)",
+            "import requests\nurl = 'http://203.0.113.5/'\nurl = 'https://pypi.org/'\ndef f():\n    requests.get(url)\nf()",
+            "import requests\nf = requests.get\nf = print\nf('http://203.0.113.5/')",
+            # A short starred unpack has no matching source; it must not raise.
+            "import requests\nif False:\n    a, *b, c = ()\nprint('ok')",
             # Two functions with a same-named attribute receiver do not contaminate each other.
             "import paramiko\ndef a(obj):\n    obj.client = paramiko.SSHClient()\n"
             "def b(obj):\n    obj.client = get_db()\n    obj.client.connect(host='localhost')",

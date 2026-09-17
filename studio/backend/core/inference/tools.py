@@ -16502,6 +16502,10 @@ def _check_signal_escape_patterns(code: str):
         for p in (*_NETWORK_FQ_PREFIXES, *_NETWORK_TARGET_ARGS, *_CONNECTING_CLIENT_FQ)
     )
     _ALIAS_DEPTH_CAP = 256
+    _BLOCK_FIELDS = ("body", "orelse", "finalbody")
+    _ROOT_BLOCK = (0, "root")
+    _node_block: dict[int, tuple] = {}
+    _block_parent: dict[tuple, tuple | None] = {_ROOT_BLOCK: None}
     _UNRESOLVED_FQ = "<unresolved>"
     _fq_cache: dict[int, list] = {}
     _fq_active: set = set()
@@ -16510,7 +16514,7 @@ def _check_signal_escape_patterns(code: str):
     _scope_parent: dict[int, ast.AST | None] = {id(tree): None}
     _node_scope: dict[int, ast.AST] = {}
     _declared: dict[tuple[int, str], str] = {}
-    _raw_name_stores: list[tuple[ast.AST, str, object, tuple]] = []
+    _raw_name_stores: list[tuple[ast.AST, str, object, tuple, object]] = []
     _name_stores: dict[tuple[int, str], list] = {}
     _attr_stores: dict[tuple[int, str, str], list] = {}
     _model_state: dict[str, bool] = {}
@@ -16542,7 +16546,7 @@ def _check_signal_escape_patterns(code: str):
 
     def _add_name_store(scope: ast.AST, name: str, value, at: ast.AST) -> None:
         # Resolve scopes after collecting bindings so nonlocal can find its owner.
-        _raw_name_stores.append((scope, name, value, _position(at)))
+        _raw_name_stores.append((scope, name, value, _position(at), _node_block.get(id(at))))
 
     def _first_splat(elts: list) -> int:
         return next((i for i, e in enumerate(elts) if isinstance(e, ast.Starred)), len(elts))
@@ -16556,10 +16560,13 @@ def _check_signal_escape_patterns(code: str):
             head = min(splat, _first_splat(sources))
             tail = splat < len(target.elts) and _first_splat(sources) == len(sources)
             for index, elt in enumerate(target.elts):
+                # Too few sources is a runtime ValueError, not something to resolve, so those
+                # targets simply take no value.
+                from_end = len(sources) - len(target.elts) + index
                 if index < head:
                     source = sources[index]
-                elif tail and index > splat:
-                    source = sources[len(sources) - len(target.elts) + index]
+                elif tail and index > splat and head <= from_end < len(sources):
+                    source = sources[from_end]
                 else:
                     source = None
                 _record_store(elt, source, scope, handled)
@@ -16601,11 +16608,12 @@ def _check_signal_escape_patterns(code: str):
 
     def _build_scope_model() -> None:
         outer_scope_of: dict[int, ast.AST] = {}
-        pending: list = [(tree, tree)]
+        pending: list = [(tree, tree, _ROOT_BLOCK)]
         while pending:
-            node, scope = pending.pop()
+            node, scope, block = pending.pop()
             scope = outer_scope_of.get(id(node), scope)
             _node_scope[id(node)] = scope
+            _node_block[id(node)] = block
             if isinstance(node, (ast.Global, ast.Nonlocal)):
                 kind = "global" if isinstance(node, ast.Global) else "nonlocal"
                 for name in node.names:
@@ -16616,8 +16624,16 @@ def _check_signal_escape_patterns(code: str):
                 inner = node
                 for part in _evaluated_outside(node):
                     outer_scope_of[id(part)] = scope
-            for child in ast.iter_child_nodes(node):
-                pending.append((child, inner))
+            for field, value in ast.iter_fields(node):
+                # Statements in a body run one after another, so they share a block. Anything
+                # else, an except handler included, may be skipped and starts its own.
+                child_block = block
+                if field in _BLOCK_FIELDS and isinstance(value, list):
+                    child_block = (id(node), field)
+                    _block_parent[child_block] = block
+                for child in value if isinstance(value, list) else [value]:
+                    if isinstance(child, ast.AST):
+                        pending.append((child, inner, child_block))
         handled: set = set()
         for node in _tree_nodes(tree):
             scope = _node_scope.get(id(node), tree)
@@ -16681,12 +16697,12 @@ def _check_signal_escape_patterns(code: str):
                 _record_store(node, None, _node_scope.get(id(node), tree), handled)
         binding = {
             (id(scope), name)
-            for scope, name, _value, _pos in _raw_name_stores
+            for scope, name, _value, _pos, _block in _raw_name_stores
             if _declared.get((id(scope), name)) is None
         }
-        for scope, name, value, pos in _raw_name_stores:
+        for scope, name, value, pos, block in _raw_name_stores:
             key = (id(_store_scope(scope, name, binding)), name)
-            _name_stores.setdefault(key, []).append((value, pos))
+            _name_stores.setdefault(key, []).append((value, pos, block))
 
     def _scope_model_ready() -> bool:
         if "built" not in _model_state:
@@ -16705,6 +16721,31 @@ def _check_signal_escape_patterns(code: str):
             _model_state["built"] = wanted
         return _model_state["built"]
 
+    def _blocks_around(node: ast.AST) -> set:
+        """Return the block holding this node and every block enclosing it."""
+        blocks = set()
+        block = _node_block.get(id(node))
+        while block is not None:
+            blocks.add(block)
+            block = _block_parent.get(block)
+        return blocks
+
+    def _reaching(stores: list, read: ast.Name) -> list:
+        """Drop the stores a later one in the same straight line has already replaced."""
+        read_at = _position(read)
+        around = _blocks_around(read)
+        live = []
+        for value, pos, block in stores:
+            # A store in the same body, after this one and before the read, always runs in
+            # between. Branches and loop bodies the read sits outside of are left alone.
+            superseded = block in around and any(
+                other_block == block and pos < other_pos < read_at
+                for _v, other_pos, other_block in stores
+            )
+            if not superseded:
+                live.append(value)
+        return live
+
     def _name_values(name: ast.Name) -> "list | None":
         """Return the stores visible to this name read."""
         if not _scope_model_ready():
@@ -16712,7 +16753,7 @@ def _check_signal_escape_patterns(code: str):
         scope = _node_scope.get(id(name), tree)
         if _declared.get((id(scope), name.id)) == "global":
             stores = _name_stores.get((id(tree), name.id))
-            return None if stores is None else [value for value, _pos in stores]
+            return None if stores is None else _reaching(stores, name)
         read_at = _position(name)
         current: ast.AST | None = scope
         while current is not None:
@@ -16723,11 +16764,11 @@ def _check_signal_escape_patterns(code: str):
                 if isinstance(current, ast.ClassDef):
                     # A class body runs top down, so a read before its first local store sees the
                     # enclosing scope instead.
-                    stores = [(v, pos) for v, pos in stores if pos < read_at]
+                    stores = [s for s in stores if s[1] < read_at]
                     if not stores:
                         current = _scope_parent.get(id(current))
                         continue
-                return [value for value, _pos in stores]
+                return _reaching(stores, name)
             current = _scope_parent.get(id(current))
         return None
 
