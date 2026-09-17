@@ -62,9 +62,9 @@ export const zhCN = {
     announceMoveFailed: "移动前队列已发生变更。请重试。",
     announceDragReset: "队列已变更。请重新拖动以排序其余消息。",
     editingHint: "正在编辑消息",
-    queueingOffHint: "新消息会停止当前回复并优先执行。",
+    queueingOffHint: "新消息会打断当前回复并优先执行。",
     queueingOnHint: "新消息会排队并按顺序执行。",
-    queueingHintShared: "已排队的消息会保留。",
+    queueingHintShared: "队列会保留。",
   },
   picker: {
     onDevice: "本机",

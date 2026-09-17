@@ -62,9 +62,9 @@ export const ar = {
     announceMoveFailed: "تغيّر الطابور قبل التمكن من نقل هذه الرسالة. حاول مرة أخرى.",
     announceDragReset: "تغيّر الطابور. اسحب مرة أخرى لإعادة ترتيب الرسائل المتبقية.",
     editingHint: "جارٍ تعديل الرسالة",
-    queueingOffHint: "الرسائل الجديدة توقف الرد الحالي وتُنفَّذ بعده.",
-    queueingOnHint: "الرسائل الجديدة تنتظر دورها وتُنفَّذ بالترتيب.",
-    queueingHintShared: "تبقى الرسائل الموجودة في الطابور.",
+    queueingOffHint: "الرسائل الجديدة تقاطع الرد وتُنفَّذ بعده.",
+    queueingOnHint: "الرسائل الجديدة تنتظر دورها.",
+    queueingHintShared: "يبقى الطابور كما هو.",
   },
   picker: {
     onDevice: "على الجهاز",
