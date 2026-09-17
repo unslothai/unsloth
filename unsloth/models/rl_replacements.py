@@ -952,6 +952,96 @@ def _unsloth_grpo_vision_inputs(source):
     }
 
 
+def _unsloth_grpo_split_vision_by_sample(batch):
+    """TRL only splits the tile and image indexed vision tensors per sample from its own
+    split_pixel_values_by_grid, and before TRL 1.1.0 that function knows only the
+    image_grid_thw layout. Every other layout is left flat, and _prepare_inputs then
+    shuffles and slices the batch by sample index, so an LFM2-VL or Gemma batch has its
+    tiles reordered away from the samples they belong to. This mirrors the current
+    trl.trainer.utils.split_pixel_values_by_grid so an older TRL keeps them together."""
+
+    def _counts(value):
+        if value is None:
+            return None
+        if hasattr(value, "tolist"):
+            value = value.tolist()
+        try:
+            return [int(count) for count in value]
+        except TypeError:
+            return None
+
+    pixel_values = batch.get("pixel_values", None)
+    if pixel_values is None or isinstance(pixel_values, list):
+        # Absent, or TRL split it already.
+        return batch
+    if batch.get("image_grid_thw", None) is not None:
+        # The grid layout is TRL's own, in every version that persists it.
+        return batch
+    num_images = _counts(batch.get("num_images", None))
+    if not num_images:
+        return batch
+    rows = pixel_values.shape[0]
+    num_tiles = _counts(batch.get("num_tiles", None))
+    split = dict(batch)
+    for _position_key in ("image_position_ids", "pixel_position_ids"):
+        _position_ids = batch.get(_position_key, None)
+        if _position_ids is None or isinstance(_position_ids, list):
+            continue
+        if rows != sum(num_images) or _position_ids.shape[0] != sum(num_images):
+            continue
+        split["pixel_values"] = list(torch.split(pixel_values, num_images, dim = 0))
+        split[_position_key] = list(torch.split(_position_ids, num_images, dim = 0))
+        return split
+    if num_tiles and rows == sum(num_tiles):
+        split["pixel_values"] = list(torch.split(pixel_values, num_tiles, dim = 0))
+        for _tile_key in ("pixel_attention_mask", "spatial_shapes"):
+            _tiled = batch.get(_tile_key, None)
+            if (
+                _tiled is not None
+                and not isinstance(_tiled, list)
+                and _tiled.shape[0] == sum(num_tiles)
+            ):
+                split[_tile_key] = list(torch.split(_tiled, num_tiles, dim = 0))
+        return split
+    if rows != sum(num_images):
+        # One padded row per sample already (Idefics, SmolVLM): TRL leaves this alone.
+        return batch
+    split["pixel_values"] = list(torch.split(pixel_values, num_images, dim = 0))
+    _image_sizes = batch.get("image_sizes", None)
+    if (
+        _image_sizes is not None
+        and not isinstance(_image_sizes, list)
+        and _image_sizes.shape[0] == sum(num_images)
+    ):
+        split["image_sizes"] = list(torch.split(_image_sizes, num_images, dim = 0))
+    return split
+
+
+def _unsloth_grpo_unsplit_vision(batch):
+    """Undo _unsloth_grpo_split_vision_by_sample once this step's slice has been taken, so
+    the forward sees the layout the processor produced. TRL's own unsplit only merges
+    pixel_values and image_grid_thw before 1.1.0."""
+    merged = None
+    for key in (
+        "pixel_values",
+        "pixel_attention_mask",
+        "spatial_shapes",
+        "image_sizes",
+        "image_position_ids",
+        "pixel_position_ids",
+    ):
+        value = batch.get(key, None)
+        if not isinstance(value, list) or len(value) == 0:
+            continue
+        if not hasattr(value[0], "shape"):
+            # num_images and num_tiles are plain counts, not tensors to merge.
+            continue
+        if merged is None:
+            merged = dict(batch)
+        merged[key] = torch.cat(value, dim = 0)
+    return batch if merged is None else merged
+
+
 # A list cell reaches the processor as [[[img, img]]], which it rejects. unsloth#3605.
 def _unsloth_grpo_image_cell(value):
     if value is None:
@@ -993,6 +1083,31 @@ def grpo_trainer__prepare_inputs(function_name, function):
         "self.accelerator.unwrap_model(self.model)",
         "self.accelerator.unwrap_model(self.model, keep_fp32_wrapper = False)",
     )
+
+    # Keep every tile with its own sample across the shuffle and the slice. unsloth#6960.
+    _split_anchor = re.search(
+        r"\n([ \t]+)generation_batch = split_pixel_values_by_grid\(generation_batch\)\n",
+        function,
+    )
+    _unsplit_anchor = "unsplit_pixel_values_by_grid(batch) for batch in generation_batches"
+    if _split_anchor is not None and _unsplit_anchor in function:
+        _spacing = _split_anchor.group(1)
+        function = function.replace(
+            _split_anchor.group(0),
+            _split_anchor.group(0)
+            + f"{_spacing}generation_batch = _unsloth_grpo_split_vision_by_sample(generation_batch)\n",
+        )
+        function = function.replace(
+            _unsplit_anchor,
+            "_unsloth_grpo_unsplit_vision(unsplit_pixel_values_by_grid(batch)) "
+            "for batch in generation_batches",
+        )
+    elif "split_pixel_values_by_grid" in function:
+        _warn_once(
+            "grpo_split_vision_by_sample",
+            "Unsloth: the GRPO batch splitting changed shape, so a multi tile vision "
+            "batch is being shuffled by sample index without its tiles.",
+        )
     return function
 
 
@@ -1225,6 +1340,13 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         )
 
     _output_extras = """
+        try:
+            _unsloth_vision_output = _unsloth_grpo_vision_inputs(forward_kwargs)
+        except NameError:
+            _unsloth_vision_output = {}
+        for _vision_key, _vision_value in _unsloth_vision_output.items():
+            if _vision_value is not None and _vision_key not in output:
+                output[_vision_key] = _vision_value
         if max_left_pad is not None:
             output["max_left_pad"] = torch.tensor(prompt_ids.shape[0] * [max_left_pad]).unsqueeze(-1)
         try:
@@ -2362,6 +2484,8 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_hidden_state
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_mm_token_id))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_fix_mm_token_type_ids))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_vision_inputs))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_split_vision_by_sample))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_unsplit_vision))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_image_cell))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_reject_grpo_image_list))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_clear_stateful_mrope))

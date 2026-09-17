@@ -457,3 +457,216 @@ def test_the_gradient_gate_runs_before_every_accumulated_loss_call():
     ]
     assert calls, "no accumulated-loss call to gate"
     assert all(gate < index for index in calls), (gate, calls)
+
+
+def _persisted_vision_output(forward_kwargs, output):
+    """Run the block the output rewrite injects, on the batch dict it is given."""
+    import textwrap
+
+    from unsloth.models.rl_replacements import (
+        _unsloth_grpo_vision_inputs,
+        grpo_trainer__generate_and_score_completions,
+    )
+
+    source = (
+        '        if "image_sizes" in forward_kwargs:\n'
+        '            output["image_sizes"] = forward_kwargs["image_sizes"]\n'
+        "        if images is not None:\n"
+        '            output["num_images"] = num_images\n'
+        "        return output\n"
+    )
+    patched = grpo_trainer__generate_and_score_completions(
+        "_generate_and_score_completions", source
+    )
+    lines = patched.splitlines()
+    start = next(i for i, line in enumerate(lines) if "_unsloth_vision_output = _unsloth" in line)
+    stop = next(i for i, line in enumerate(lines) if "output[_vision_key] = _vision_value" in line)
+    block = textwrap.dedent("\n".join(lines[start - 1 : stop + 1]))
+    namespace = {
+        "_unsloth_grpo_vision_inputs": _unsloth_grpo_vision_inputs,
+        "forward_kwargs": forward_kwargs,
+        "output": output,
+    }
+    exec(compile(block, "<output-extras>", "exec"), namespace)
+    return output
+
+
+def test_every_vision_kwarg_reaches_the_training_batch():
+    """TRL 0.24.0's output block copies five vision keys, so spatial_shapes, num_tiles and
+    the position ids never reach compute_loss and the gradient forward runs without them."""
+    already = object()
+    forward_kwargs = {
+        "pixel_values": already,
+        "spatial_shapes": "shapes",
+        "num_tiles": [2, 3],
+        "image_position_ids": "positions",
+        "token_type_ids": "types",
+    }
+    output = {"pixel_values": already, "num_images": [1, 1]}
+    persisted = _persisted_vision_output(forward_kwargs, output)
+    for key, value in forward_kwargs.items():
+        assert persisted[key] == value, key
+    assert persisted["pixel_values"] is already, "an already saved key was overwritten"
+    assert persisted["num_images"] == [1, 1]
+
+
+def test_a_key_the_processor_did_not_produce_is_not_invented():
+    persisted = _persisted_vision_output({"pixel_values": "pixels"}, {})
+    assert persisted == {"pixel_values": "pixels"}, persisted
+
+
+def test_the_tiles_of_a_sample_survive_the_shuffle_and_the_slice():
+    """_prepare_inputs shuffles and slices the batch by sample index, so a tile indexed
+    tensor has to be a list per sample while that happens."""
+    import torch
+
+    trl_utils = pytest.importorskip("trl.trainer.utils")
+    from unsloth.models.rl_replacements import (
+        _unsloth_grpo_split_vision_by_sample,
+        _unsloth_grpo_unsplit_vision,
+    )
+
+    num_tiles = [2, 3, 1]
+    owners = torch.tensor([0, 0, 1, 1, 1, 2])
+    batch = {
+        "prompt_ids": torch.arange(3).unsqueeze(-1),
+        "advantages": torch.zeros(3),
+        "num_images": [1, 1, 1],
+        "num_tiles": num_tiles,
+        "pixel_values": owners.reshape(-1, 1).float(),
+        "spatial_shapes": owners.reshape(-1, 1).clone(),
+        "pixel_attention_mask": owners.reshape(-1, 1).clone(),
+    }
+    torch.manual_seed(0)
+    split = _unsloth_grpo_split_vision_by_sample(batch)
+    assert isinstance(split["pixel_values"], list), "the tile axis was left flat"
+    shuffled = trl_utils.shuffle_sequence_dict(split)
+    chunks = trl_utils.split_tensor_dict(shuffled, 1)
+    restored = _unsloth_grpo_unsplit_vision(trl_utils.unsplit_pixel_values_by_grid(chunks[0]))
+
+    assert restored["pixel_values"].shape[0] == len(owners)
+    at = 0
+    seen = []
+    for prompt, tiles in zip(restored["prompt_ids"].tolist(), restored["num_tiles"]):
+        sample = prompt[0]
+        seen.append(sample)
+        assert tiles == num_tiles[sample], (sample, tiles)
+        for key in ("pixel_values", "spatial_shapes", "pixel_attention_mask"):
+            rows = restored[key][at : at + tiles].flatten().tolist()
+            assert rows == [sample] * tiles, (key, sample, rows)
+        at += tiles
+    assert sorted(seen) == [0, 1, 2], seen
+
+
+def test_the_gemma_position_ids_are_split_by_image_not_by_tile():
+    import torch
+
+    from unsloth.models.rl_replacements import _unsloth_grpo_split_vision_by_sample
+
+    batch = {
+        "num_images": [2, 1],
+        "pixel_values": torch.arange(3).reshape(3, 1).float(),
+        "image_position_ids": torch.arange(3).reshape(3, 1),
+    }
+    split = _unsloth_grpo_split_vision_by_sample(batch)
+    assert [tensor.shape[0] for tensor in split["pixel_values"]] == [2, 1]
+    assert [tensor.flatten().tolist() for tensor in split["image_position_ids"]] == [[0, 1], [2]]
+
+
+def test_the_grid_layout_is_left_to_trl():
+    """TRL splits image_grid_thw itself in every version that persists it; splitting it
+    twice would hand the forward a list of lists."""
+    import torch
+
+    from unsloth.models.rl_replacements import _unsloth_grpo_split_vision_by_sample
+
+    batch = {
+        "num_images": [1, 1],
+        "image_grid_thw": torch.tensor([[1, 2, 2], [1, 2, 2]]),
+        "pixel_values": torch.zeros(8, 1),
+    }
+    assert _unsloth_grpo_split_vision_by_sample(batch) is batch
+
+
+def test_a_padded_row_per_sample_is_left_alone():
+    """Idefics and SmolVLM pad to one row per sample, which TRL slices correctly already."""
+    import torch
+
+    from unsloth.models.rl_replacements import _unsloth_grpo_split_vision_by_sample
+
+    batch = {
+        "num_images": [2, 2],
+        "pixel_values": torch.zeros(2, 2, 3, 4),
+    }
+    assert _unsloth_grpo_split_vision_by_sample(batch) is batch
+
+
+def test_a_batch_trl_already_split_is_not_split_again():
+    import torch
+
+    from unsloth.models.rl_replacements import _unsloth_grpo_split_vision_by_sample
+
+    batch = {"num_images": [1, 1], "pixel_values": [torch.zeros(2, 1), torch.zeros(3, 1)]}
+    assert _unsloth_grpo_split_vision_by_sample(batch) is batch
+
+
+def test_the_counts_are_not_merged_as_if_they_were_tensors():
+    import torch
+
+    from unsloth.models.rl_replacements import _unsloth_grpo_unsplit_vision
+
+    batch = {"num_images": [1, 1], "num_tiles": [2, 3], "pixel_values": [torch.zeros(2, 1)]}
+    restored = _unsloth_grpo_unsplit_vision(batch)
+    assert restored["num_images"] == [1, 1]
+    assert restored["num_tiles"] == [2, 3]
+    assert restored["pixel_values"].shape == (2, 1)
+
+
+def test_prepare_inputs_splits_before_the_shuffle_and_merges_after_the_slice():
+    from unsloth.models.rl_replacements import grpo_trainer__prepare_inputs
+
+    source = (
+        "    def _prepare_inputs(self, generation_batch):\n"
+        "        if self._step % generate_every == 0:\n"
+        "            generation_batch = self._generate_and_score_completions(generation_batch)\n"
+        "            generation_batch = split_pixel_values_by_grid(generation_batch)\n"
+        "            generation_batch = shuffle_sequence_dict(generation_batch)\n"
+        "            generation_batches = split_tensor_dict(generation_batch, 2)\n"
+        "            self._buffered_inputs = ["
+        "unsplit_pixel_values_by_grid(batch) for batch in generation_batches]\n"
+    )
+    patched = grpo_trainer__prepare_inputs("_prepare_inputs", source)
+    lines = patched.splitlines()
+    split_at = next(i for i, l in enumerate(lines) if "split_pixel_values_by_grid(" in l)
+    ours_at = next(i for i, l in enumerate(lines) if "_unsloth_grpo_split_vision_by_sample" in l)
+    shuffle_at = next(i for i, l in enumerate(lines) if "shuffle_sequence_dict(" in l)
+    assert split_at < ours_at < shuffle_at, (split_at, ours_at, shuffle_at)
+    assert lines[ours_at].startswith(" " * 12), lines[ours_at]
+    assert (
+        "_unsloth_grpo_unsplit_vision(unsplit_pixel_values_by_grid(batch))" in patched
+    ), "the slice is handed back still split"
+
+
+def test_a_prepare_inputs_that_changed_shape_says_so():
+    from unsloth.models import rl_replacements
+
+    said = []
+    original = rl_replacements._warn_once
+    rl_replacements._warn_once = lambda where, message: said.append(where)
+    try:
+        patched = rl_replacements.grpo_trainer__prepare_inputs(
+            "_prepare_inputs",
+            "        generation_batch = split_pixel_values_by_grid(generation_batch)\n",
+        )
+    finally:
+        rl_replacements._warn_once = original
+    assert "_unsloth_grpo_split_vision_by_sample" not in patched
+    assert said == ["grpo_split_vision_by_sample"], said
+
+
+def test_both_halves_travel_with_the_generated_module():
+    from unsloth.models.rl_replacements import RL_PRE_ITEMS
+
+    pre = "\n".join(RL_PRE_ITEMS["grpo_trainer"])
+    assert "def _unsloth_grpo_split_vision_by_sample(" in pre
+    assert "def _unsloth_grpo_unsplit_vision(" in pre
