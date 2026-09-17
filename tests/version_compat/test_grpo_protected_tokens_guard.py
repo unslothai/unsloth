@@ -1,31 +1,36 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-"""The injected GRPO prompt-trim block must not require TRL's vision token ids.
+"""The injected GRPO prompt-trim block must only replace a block that can host it.
 
 `grpo_trainer__generate_and_score_completions` in `unsloth/models/rl_replacements.py`
 substitutes a `if self.max_prompt_length is not None:` block into TRL's
-`_generate_and_score_completions`. That block builds a `protected` list of vision token
-ids. `GRPOTrainer` only sets `image_token_id`, `vision_start_token_id` and
-`vision_end_token_id` on part of the TRL range, but the substitution fires on any TRL whose
-source the regex matches, which is wider. Measured across the declared window:
+`_generate_and_score_completions`. What it substitutes is a TRL 0.20.0+ block: it calls
+`truncate_with_protected_tokens` and reads `self.pad_token`, `self.image_token` and three
+vision token ids. The regex that selects the block matches TRL releases that have none of
+those, and the declared window `trl>=0.18.2,!=0.19.0,<=0.24.0` still admits two of them.
+Driving the real substitution against each release's actual source:
 
-    trl 0.18.2   injected, attributes ABSENT  -> AttributeError before this fix
-    trl 0.19.1   injected, attributes ABSENT  -> AttributeError before this fix
-    trl 0.20.0   injected, attributes present
-    trl 0.21.0   injected, attributes present
-    trl 0.22.0   injected, attributes present
-    trl 0.22.2   injected, attributes present
-    trl 0.23.0   injected, attributes present
-    trl 0.23.1   injected, attributes present
-    trl 0.24.0   NOT injected (the regex no longer matches), attributes absent
-    trl 1.13.0   NOT injected, attributes absent
+    trl 0.18.2   block matched, helper + pad_token + image_token + ids ABSENT
+    trl 0.19.1   block matched, helper + pad_token + image_token + ids ABSENT
+    trl 0.20.0   block matched, all present
+    trl 0.21.0   block matched, all present
+    trl 0.22.0   block matched, all present
+    trl 0.22.2   block matched, all present
+    trl 0.23.0   block matched, all present
+    trl 0.23.1   block matched, all present
+    trl 0.24.0   block NOT matched (the regex no longer matches)
+    trl 1.13.0   block NOT matched
 
-So the break is the bottom of the declared window, not the ceiling. `getattr(..., None)`
-makes the emitted block work on all ten, because the next emitted line already drops None.
+So the break is the bottom of the declared window, not the ceiling: on 0.18.2 and 0.19.1 the
+substitution replaced working native slicing with code naming four symbols that do not exist
+there, and GRPO training with `max_prompt_length` set died inside generated code. TRL's own
+call to `truncate_with_protected_tokens` inside the block it is about to lose is the exact
+discriminator between the two groups, so the substitution is now gated on it and those two
+releases keep TRL's own slicing. `getattr(..., None)` for the three ids stays as belt and
+braces for a fork or subclass that does not set one.
 
-This test reads the substitution's OUTPUT and executes the `protected` lines it emits
-against an object with none of the three attributes, so it fails on any platform and any
-transformers, and it does not need the affected TRL installed to prove the point.
+This test reads the substitution's OUTPUT and executes the statements it emits, so it fails
+on any platform and any transformers, and it does not need the affected TRL installed.
 """
 
 from __future__ import annotations
@@ -55,10 +60,10 @@ import _zoo_aggressive_cuda_spoof as _spoof  # noqa: E402
 _spoof.apply()
 
 
-# The shape trl 0.18.2 and 0.19.1 ship: the block the regex looks for, with two top-level
-# statements and eight spaces of indent, and no vision token ids anywhere. Held here as a
-# fixture rather than read from the installed TRL, so the test covers the affected versions
-# on a runner that has a different one.
+# The two block shapes that matter, held here as fixtures rather than read from the installed
+# TRL so this covers both groups on a runner that has neither. Both match the selecting regex
+# and both carry exactly two statements at the block indent, which is the rest of the guard.
+# They differ only in what 0.18.2 and 0.19.1 do not have: TRL's own call to the helper.
 _TRL_0_18_BLOCK = """
     def _generate_and_score_completions(self, inputs):
         device = self.accelerator.device
@@ -66,6 +71,22 @@ _TRL_0_18_BLOCK = """
         if self.max_prompt_length is not None:
             prompt_ids = prompt_ids[:, -self.max_prompt_length :]
             prompt_mask = prompt_mask[:, -self.max_prompt_length :]
+        if self.use_vllm:
+            pass
+        return inputs
+"""
+
+_TRL_0_22_BLOCK = """
+    def _generate_and_score_completions(self, inputs):
+        device = self.accelerator.device
+        prompts = [x["prompt"] for x in inputs]
+        if self.max_prompt_length is not None:
+            protected = [self.image_token_id, self.vision_start_token_id, self.vision_end_token_id]
+            protected = [token for token in protected if token is not None]
+            prompt_ids, prompt_mask = truncate_with_protected_tokens(
+                prompt_ids, prompt_mask, self.max_prompt_length, protected
+            )
+            prompts_text = [re.sub(rf"^({re.escape(self.pad_token)})+", "", text) for text in prompts_text]
         if self.use_vllm:
             pass
         return inputs
@@ -98,19 +119,36 @@ def _protected_lines(emitted: str) -> str:
     return "\n".join(line[len(indent) :] for line in match.group(0).split("\n"))
 
 
-def test_the_substitution_still_fires_on_the_affected_shape() -> None:
-    """Vacuity guard: everything below is about the emitted block, so a regex that stopped
-    matching would make all of it pass while testing nothing."""
-    emitted = _injected(_TRL_0_18_BLOCK)
-    assert "protected" in emitted, (
-        "the prompt-trim substitution did not fire on the trl 0.18.2 block shape, so the "
+def test_the_pre_0_20_block_is_left_alone() -> None:
+    """The regression: 0.18.2 and 0.19.1 have no truncate_with_protected_tokens, no
+    self.pad_token and no self.image_token, so the injected block cannot run there. TRL's
+    own slicing has to survive untouched."""
+    source = _TRL_0_18_BLOCK
+    emitted = _injected(source)
+    assert "truncate_with_protected_tokens" not in emitted, (
+        "the substitution fired on a block with no truncate_with_protected_tokens in it, so "
+        "the emitted call has no definition to reach and training raises NameError"
+    )
+    assert (
+        "prompt_ids = prompt_ids[:, -self.max_prompt_length :]" in emitted
+    ), "TRL's own prompt slicing was removed on a release that cannot host the replacement"
+    for absent in ("self.pad_token", "self.image_token", "protected"):
+        assert absent not in emitted, f"{absent!r} was injected into a release that lacks it"
+
+
+def test_the_substitution_still_fires_on_the_0_20_shape() -> None:
+    """Vacuity guard: everything below is about the emitted block, so a guard that stopped
+    matching the supported shape would make all of it pass while testing nothing."""
+    emitted = _injected(_TRL_0_22_BLOCK)
+    assert 'getattr(self, "image_token_id", None)' in emitted, (
+        "the prompt-trim substitution did not fire on the trl 0.20.0+ block shape, so the "
         "rest of this file proves nothing about it"
     )
 
 
 def test_the_emitted_block_runs_without_the_vision_token_ids() -> None:
-    """The regression: attribute access here raised AttributeError mid-training."""
-    lines = _protected_lines(_injected(_TRL_0_18_BLOCK))
+    """Belt and braces: a trainer that sets none of the three must not raise."""
+    lines = _protected_lines(_injected(_TRL_0_22_BLOCK))
     scope = {"self": _TrainerWithoutVisionIds()}
     exec(lines, scope)  # noqa: S102 - executing our own generated source is the point
     assert scope["protected"] == [], (
@@ -120,7 +158,7 @@ def test_the_emitted_block_runs_without_the_vision_token_ids() -> None:
 
 
 def test_the_ids_are_still_protected_when_trl_does_set_them() -> None:
-    """The fix must not quietly stop protecting vision tokens where they exist."""
+    """The guard must not quietly stop protecting vision tokens where they exist."""
 
     class _TrainerWithVisionIds:
         max_prompt_length = 8
@@ -128,7 +166,7 @@ def test_the_ids_are_still_protected_when_trl_does_set_them() -> None:
         vision_start_token_id = 151652
         vision_end_token_id = 151653
 
-    lines = _protected_lines(_injected(_TRL_0_18_BLOCK))
+    lines = _protected_lines(_injected(_TRL_0_22_BLOCK))
     scope = {"self": _TrainerWithVisionIds()}
     exec(lines, scope)  # noqa: S102
     assert scope["protected"] == [151655, 151652, 151653], (
@@ -144,7 +182,7 @@ def test_one_missing_id_does_not_discard_the_others() -> None:
         max_prompt_length = 8
         image_token_id = 151655
 
-    lines = _protected_lines(_injected(_TRL_0_18_BLOCK))
+    lines = _protected_lines(_injected(_TRL_0_22_BLOCK))
     scope = {"self": _TrainerWithOneId()}
     exec(lines, scope)  # noqa: S102
     assert scope["protected"] == [151655], f"got {scope['protected']!r}"
