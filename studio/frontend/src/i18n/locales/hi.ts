@@ -62,9 +62,9 @@ export const hi = {
     announceMoveFailed: "इस संदेश को खिसकाने से पहले कतार बदल गई। फिर कोशिश करें।",
     announceDragReset: "कतार बदल गई। बाकी संदेशों का क्रम बदलने के लिए फिर से खींचें।",
     editingHint: "संदेश संपादित हो रहा है",
-    queueingOffHint: "नए संदेश मौजूदा उत्तर रोककर अगले चलते हैं।",
-    queueingOnHint: "नए संदेश अपनी बारी का इंतज़ार कर क्रम से चलते हैं।",
-    queueingHintShared: "कतार के संदेश बने रहते हैं।",
+    queueingOffHint: "नए संदेश बीच में आकर अगले चलते हैं।",
+    queueingOnHint: "नए संदेश अपनी बारी का इंतज़ार करते हैं।",
+    queueingHintShared: "कतार बनी रहती है।",
   },
   picker: {
     onDevice: "डिवाइस पर",
