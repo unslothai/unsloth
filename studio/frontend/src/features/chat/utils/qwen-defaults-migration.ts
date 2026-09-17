@@ -135,11 +135,10 @@ function migrateStoredModelDefaults(
   const migratedByModel: Record<string, PersistedInferenceParams> = {};
   const patchByModel: Record<string, PersistedInferenceParams> = {};
   const storedEntries = Object.entries(stored ?? {});
-  // Prefer an exact key when legacy storage holds two spellings; otherwise
-  // normalize the sole case-insensitive match to the checkpoint spelling, which
-  // is how replay indexes the map. normalizeModelIdentity, not toLowerCase: it
-  // preserves case for POSIX paths, which can name two different files. Opaque
-  // ids compare exactly and have no legacy spellings to reconcile.
+  // Prefer an exact key when legacy storage holds two spellings; otherwise normalize the sole
+  // case-insensitive match to the checkpoint spelling, which is how replay indexes the map.
+  // normalizeModelIdentity, not toLowerCase: it preserves case for POSIX paths, which can name two
+  // different files. Opaque ids compare exactly and have no legacy spellings to reconcile.
   const activeIdentity = normalizeModelIdentity(activeCheckpoint);
   const activeIsOpaque = isOpaqueModelRef(activeCheckpoint);
   // Only the sole alias, checked rather than assumed: with two spellings one
@@ -230,8 +229,7 @@ export function migrateLegacyQwenDefaults(
   const globalChanges = migrateGlobal
     ? changedDefaults(settings.inferenceParams ?? {}, currentGlobalDefaults)
     : null;
-  // An already-current global produces {}, which is truthy and would be sent as
-  // an empty patch.
+  // An already-current global produces {}, which is truthy and would be sent as an empty patch.
   const globalPatch =
     globalChanges && Object.keys(globalChanges).length > 0
       ? globalChanges

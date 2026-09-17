@@ -733,7 +733,6 @@ _SELF_TESTS = {
         "import os\nimport sys\ndef f(x):\n    return x._b + sys.argv[0]\n",
         None,
     ),
-    # --- the __all__ re-export skip, and its scoping ---
     "reexport_in_package_init_is_allowed": (
         'from .a import A\n__all__ = ["A"]\n',
         'from .a import A\nfrom .b import B\n__all__ = ["A", "B"]\n',
@@ -752,7 +751,6 @@ _SELF_TESTS = {
         "BLOCKER",
         "pkg/__init__.py",
     ),
-    # --- quoted annotations are annotations ---
     # A TYPE_CHECKING import reached only through a forward reference IS used.
     "forward_ref_string_annotation_counts_as_a_use": (
         "from typing import TYPE_CHECKING, Optional\ndef f(x) -> Optional[int]:\n    return x\n",

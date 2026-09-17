@@ -18,7 +18,7 @@ RESIDENT = {"id": "unsloth/Qwen3-8B", "loaded": True}
 
 
 class FakeServer:
-    """Serves /v1/models and /api/inference/status; records every load payload."""
+    """Serves the loaded-model listing and /api/inference/status; records every load payload."""
 
     def __init__(self, models, status):
         self.models = models
@@ -36,7 +36,9 @@ class FakeServer:
         error = None,
     ):
         self.requests.append((method, url))
-        if url.endswith("/v1/models"):
+        # Both spellings: the CLI asks for the resident listing and falls back to
+        # /v1/models against a server too old to serve it.
+        if url.endswith(("/api/inference/loaded-models", "/v1/models")):
             return {"data": [dict(m) for m in self.models]}
         if url.endswith("/api/inference/status"):
             return dict(self.status)
@@ -359,7 +361,7 @@ def test_hf_cache_resident_matches_the_advertised_repo_id(monkeypatch):
 
 
 def test_status_names_the_resident_even_when_the_catalog_lags(monkeypatch):
-    """A status id absent from /v1/models still names the resident."""
+    """A status id absent from the listing still names the resident."""
     server = FakeServer(
         [{"id": "unsloth/whisper-large", "loaded": True}],
         {

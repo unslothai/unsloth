@@ -74,7 +74,6 @@ _TRANSPORT_ERRORS = (
     httpx.WriteError,
 )
 
-# the port binds only after the model loads, so any 200 means ready
 # Readiness probe: the port binds only after the model loads, so any 200 means ready. Use trivial /v1/models, not the
 # capabilities endpoint (which can block).
 _READY_PATH = "/v1/models"
@@ -513,8 +512,6 @@ class SdCppServer:
             if self._stdout_thread is not None:
                 self._stdout_thread.join(timeout = 2)
                 self._stdout_thread = None
-
-    # ── generation ───────────────────────────────────────────────────────────
 
     def img_gen(
         self,

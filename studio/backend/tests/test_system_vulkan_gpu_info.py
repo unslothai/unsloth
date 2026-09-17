@@ -6,6 +6,12 @@ from types import SimpleNamespace
 import main
 
 
+def _shared_setup_1(monkeypatch):
+    from core.inference.llama_cpp import LlamaCppBackend
+    monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda: True))
+    monkeypatch.setattr(main, "_system_gpu_cache", None)
+
+
 def test_system_gpu_info_preserves_vulkan_visibility_metrics(monkeypatch):
     import utils.hardware as hardware
 
@@ -46,10 +52,7 @@ def test_system_gpu_info_preserves_vulkan_visibility_metrics(monkeypatch):
         },
     )
 
-    from core.inference.llama_cpp import LlamaCppBackend
-
-    monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda: True))
-    monkeypatch.setattr(main, "_system_gpu_cache", None)
+    _shared_setup_1(monkeypatch)
 
     gpu, inference_gpu = main._get_cached_system_gpu_info(SimpleNamespace(debug = lambda *args: None))
 
@@ -95,10 +98,7 @@ def test_system_gpu_info_withholds_gguf_pin_when_the_vulkan_probe_enumerates_not
     )
     monkeypatch.setattr(hardware, "get_vulkan_inference_gpu_info", lambda: None)
 
-    from core.inference.llama_cpp import LlamaCppBackend
-
-    monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda: True))
-    monkeypatch.setattr(main, "_system_gpu_cache", None)
+    _shared_setup_1(monkeypatch)
 
     gpu, _ = main._get_cached_system_gpu_info(SimpleNamespace(debug = lambda *args: None))
 
@@ -204,10 +204,7 @@ def test_system_gpu_info_does_not_merge_metrics_across_backend_index_spaces(monk
         },
     )
 
-    from core.inference.llama_cpp import LlamaCppBackend
-
-    monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda: True))
-    monkeypatch.setattr(main, "_system_gpu_cache", None)
+    _shared_setup_1(monkeypatch)
 
     gpu, inference_gpu = main._get_cached_system_gpu_info(SimpleNamespace(debug = lambda *args: None))
 

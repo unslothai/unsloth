@@ -49,12 +49,32 @@ def installed_ruff_version(python: str = sys.executable) -> str | None:
     return match.group(1) if match else None
 
 
+def ruff_unavailable_reason(python: str = sys.executable) -> str | None:
+    """Why `python -m ruff` cannot run here, or None when it can.
+
+    Separate from the version question because the answers differ. A ruff that
+    runs but reports a version this cannot parse is survivable; a ruff that does
+    not run at all is not, and the pre-pass below has already rewritten every
+    file it was given by the time `ruff format` says so.
+    """
+    try:
+        out = subprocess.run(
+            [python, "-m", "ruff", "--version"], capture_output = True, text = True, timeout = 60
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"{type(exc).__name__}: {exc}"
+    if out.returncode != 0:
+        return (out.stderr or out.stdout).strip() or f"`ruff --version` exited {out.returncode}"
+    return None
+
+
 def version_mismatch(pinned: str | None, installed: str | None) -> bool:
     """Whether running this ruff would produce formatting the hook then undoes.
 
-    An unreadable pin or an unreadable ruff is not a mismatch: the format below
-    fails loudly enough on its own, and refusing on a question we could not ask
-    would break the hook wherever the config moves.
+    An unreadable pin or an unreadable version string is not a mismatch:
+    refusing on a question we could not ask would break the hook wherever the
+    config moves. A ruff that cannot run at all is caught before this, by
+    ruff_unavailable_reason.
     """
     return bool(pinned and installed and pinned != installed)
 
@@ -97,12 +117,30 @@ def main(argv: list[str]) -> int:
         print(f"run_ruff_format: {error}", file = sys.stderr)
         return 2
 
-    # Checked before anything is rewritten. ruff's own formatting is not stable
-    # across releases -- 0.9 changed which half of an `assert cond, "msg"` gets
-    # wrapped -- so running this with a newer ruff silently produces a style the
-    # pinned hook reformats back, and the commit fails pre-commit on files that
-    # are otherwise correct. It reached main twice before this check existed.
     pinned = pinned_ruff_version(CONFIG.read_text(encoding = "utf-8")) if CONFIG.exists() else None
+
+    # Both checks are made before anything is rewritten, because the pre-pass is
+    # itself a rewrite. Without this first one, a missing or broken ruff let the
+    # pre-pass strip every magic comma it was given and only then die on `ruff
+    # format`, leaving files in a shape the hook rejects -- the opposite of what
+    # a full run produces, and blamed on the next person to touch them. The
+    # override below is deliberately not honoured here: no ruff formats nothing.
+    unavailable = ruff_unavailable_reason()
+    if unavailable is not None:
+        print(
+            f"run_ruff_format: cannot run `python -m ruff` ({unavailable}).\n"
+            f"  Refusing before rewriting anything: the passes either side of ruff would "
+            f"leave the files half-formatted.\n"
+            f"  Fix: pip install ruff=={pinned or '<the pin in .pre-commit-config.yaml>'}",
+            file = sys.stderr,
+        )
+        return 1
+
+    # ruff's own formatting is not stable across releases -- 0.9 changed which
+    # half of an `assert cond, "msg"` gets wrapped -- so running this with a newer
+    # ruff silently produces a style the pinned hook reformats back, and the
+    # commit fails pre-commit on files that are otherwise correct. It reached main
+    # twice before this check existed.
     installed = installed_ruff_version()
     if version_mismatch(pinned, installed) and not os.environ.get(ANY_VERSION_ENV):
         print(

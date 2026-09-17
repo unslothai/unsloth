@@ -16,6 +16,56 @@ import pytest
 from core.rag import config, embeddings
 
 
+def _shared_setup_1(monkeypatch):
+    observed = {}
+
+    class FakeSentenceTransformer:
+        def __init__(self, name, **kwargs):
+            observed.update(kwargs)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "sentence_transformers",
+        SimpleNamespace(SentenceTransformer = FakeSentenceTransformer),
+    )
+    monkeypatch.setattr(embeddings, "_install_torchao_stub_once", lambda: None)
+    monkeypatch.setattr(embeddings, "_guard_model_security", lambda *_a, **_k: None)
+    return observed
+
+
+def _shared_setup_2(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.active_hf_hub_cache",
+        lambda: str(tmp_path / "selected-hub"),
+    )
+    embeddings._model = None
+    embeddings._name = None
+    # _get publishes what it loaded into these globals and nothing here puts them back, so
+    # the fake model outlived the test: a later test in the same xdist worker that asks
+    # backend_is_loaded() reads them and is told something is resident. Snapshot them AFTER
+    # the reset above, so teardown restores None rather than whatever arrived leaked.
+    monkeypatch.setattr(embeddings, "_model", None)
+    monkeypatch.setattr(embeddings, "_name", None)
+
+    embeddings._get("Org/Embedder")
+
+
+def _shared_setup_3(monkeypatch):
+    monkeypatch.setattr(
+        embeddings,
+        "get_device",
+        lambda: embeddings.DeviceType.CUDA,
+    )
+
+
+def _shared_setup_4(monkeypatch):
+    monkeypatch.setattr(
+        embeddings,
+        "_resolve_auto_for_model",
+        lambda model = None: "sentence-transformers",
+    )
+
+
 # A child that dies of SIGSEGV is still handed to the host's core_pattern handler
 # (apport on Ubuntu), which reads the whole core before the child is reaped. Marking
 # the child non-dumpable first keeps the SIGSEGV this test needs and writes no core.
@@ -276,14 +326,7 @@ def test_sentence_transformer_load_uses_live_cache(monkeypatch, tmp_path):
     monkeypatch.setattr(embeddings, "_install_torchao_stub_once", lambda: None)
     monkeypatch.setattr(embeddings, "_guard_model_security", lambda *_a, **_k: None)
     monkeypatch.setattr(embeddings, "_device", lambda: "cpu")
-    monkeypatch.setattr(
-        "utils.hf_cache_settings.active_hf_hub_cache",
-        lambda: str(tmp_path / "selected-hub"),
-    )
-    embeddings._model = None
-    embeddings._name = None
-
-    embeddings._get("Org/Embedder")
+    _shared_setup_2(monkeypatch, tmp_path)
 
     assert observed["name"] == "Org/Embedder"
     assert observed["cache_folder"] == str(tmp_path / "selected-hub")
@@ -301,11 +344,7 @@ def test_device_defaults_to_cpu_on_an_accelerator_host(monkeypatch):
     would carry it for the rest of the session.
     """
     monkeypatch.setattr(embeddings.config, "EMBED_DEVICE", "auto")
-    monkeypatch.setattr(
-        embeddings,
-        "get_device",
-        lambda: embeddings.DeviceType.CUDA,
-    )
+    _shared_setup_3(monkeypatch)
     assert embeddings._device() == "cpu"
 
 
@@ -316,11 +355,7 @@ def test_device_opts_in_to_the_accelerator(monkeypatch):
     for the generic ``gpu``; matching only ``gpu`` handed both of them CPU from a setting
     that named their hardware.
     """
-    monkeypatch.setattr(
-        embeddings,
-        "get_device",
-        lambda: embeddings.DeviceType.CUDA,
-    )
+    _shared_setup_3(monkeypatch)
     for requested in ("gpu", "GPU", " cuda ", "rocm", "hip", "xpu", "mps", "metal"):
         monkeypatch.setattr(embeddings.config, "EMBED_DEVICE", requested)
         assert embeddings._device() == "cuda", requested
@@ -341,11 +376,7 @@ def test_device_opt_in_on_apple_stays_on_cpu(monkeypatch):
 
 
 def test_unrecognized_device_setting_falls_back_without_raising(monkeypatch):
-    monkeypatch.setattr(
-        embeddings,
-        "get_device",
-        lambda: embeddings.DeviceType.CUDA,
-    )
+    _shared_setup_3(monkeypatch)
     for requested in ("", "   ", "banana", "auto", None):
         monkeypatch.setattr(embeddings.config, "EMBED_DEVICE", requested)
         assert embeddings._device() == "cpu", requested
@@ -360,19 +391,7 @@ def test_cpu_never_loads_float16(monkeypatch, tmp_path):
     llama-server, so the failure would surface as a silent change of embedding space
     against an index nobody reindexed rather than as an error.
     """
-    observed = {}
-
-    class FakeSentenceTransformer:
-        def __init__(self, name, **kwargs):
-            observed.update(kwargs)
-
-    monkeypatch.setitem(
-        sys.modules,
-        "sentence_transformers",
-        SimpleNamespace(SentenceTransformer = FakeSentenceTransformer),
-    )
-    monkeypatch.setattr(embeddings, "_install_torchao_stub_once", lambda: None)
-    monkeypatch.setattr(embeddings, "_guard_model_security", lambda *_a, **_k: None)
+    observed = _shared_setup_1(monkeypatch)
     monkeypatch.setattr(
         "utils.hf_cache_settings.active_hf_hub_cache",
         lambda: str(tmp_path / "hub"),
@@ -402,57 +421,19 @@ def test_cpu_never_loads_float16(monkeypatch, tmp_path):
 
 
 def test_opted_in_accelerator_loads_float16(monkeypatch, tmp_path):
-    observed = {}
-
-    class FakeSentenceTransformer:
-        def __init__(self, name, **kwargs):
-            observed.update(kwargs)
-
-    monkeypatch.setitem(
-        sys.modules,
-        "sentence_transformers",
-        SimpleNamespace(SentenceTransformer = FakeSentenceTransformer),
-    )
-    monkeypatch.setattr(embeddings, "_install_torchao_stub_once", lambda: None)
-    monkeypatch.setattr(embeddings, "_guard_model_security", lambda *_a, **_k: None)
+    observed = _shared_setup_1(monkeypatch)
     monkeypatch.setattr(embeddings, "_load_device", lambda: "cuda")
-    monkeypatch.setattr(
-        "utils.hf_cache_settings.active_hf_hub_cache",
-        lambda: str(tmp_path / "selected-hub"),
-    )
-    embeddings._model = None
-    embeddings._name = None
-
-    embeddings._get("Org/Embedder")
+    _shared_setup_2(monkeypatch, tmp_path)
 
     assert observed["device"] == "cuda"
     assert list(observed["model_kwargs"].values()) == ["float16"]
 
 
 def test_accelerator_fallback_loads_float32_on_cpu(monkeypatch, tmp_path):
-    observed = {}
-
-    class FakeSentenceTransformer:
-        def __init__(self, name, **kwargs):
-            observed.update(kwargs)
-
-    monkeypatch.setitem(
-        sys.modules,
-        "sentence_transformers",
-        SimpleNamespace(SentenceTransformer = FakeSentenceTransformer),
-    )
-    monkeypatch.setattr(embeddings, "_install_torchao_stub_once", lambda: None)
-    monkeypatch.setattr(embeddings, "_guard_model_security", lambda *_a, **_k: None)
+    observed = _shared_setup_1(monkeypatch)
     monkeypatch.setattr(embeddings, "_load_device", lambda: "cpu")
     monkeypatch.setattr(embeddings, "_device", lambda: "cuda")
-    monkeypatch.setattr(
-        "utils.hf_cache_settings.active_hf_hub_cache",
-        lambda: str(tmp_path / "selected-hub"),
-    )
-    embeddings._model = None
-    embeddings._name = None
-
-    embeddings._get("Org/Embedder")
+    _shared_setup_2(monkeypatch, tmp_path)
 
     assert observed["device"] == "cpu"
     assert list(observed["model_kwargs"].values()) == ["float32"]
@@ -610,11 +591,7 @@ def test_explicit_llama_backend_disallows_st_resolution(monkeypatch):
 def test_forced_llama_fallback_is_scoped_to_the_model_that_failed(monkeypatch):
     monkeypatch.setattr(embeddings.config, "EMBED_BACKEND", "auto")
     monkeypatch.setattr(embeddings, "_forced_backends", {"org/failed": "llama-server"})
-    monkeypatch.setattr(
-        embeddings,
-        "_resolve_auto_for_model",
-        lambda model = None: "sentence-transformers",
-    )
+    _shared_setup_4(monkeypatch)
 
     assert embeddings.sentence_transformers_fallback_allowed("org/failed") is False
     assert embeddings.sentence_transformers_fallback_allowed("org/new-model") is True
@@ -625,11 +602,7 @@ def test_forced_llama_fallback_is_scoped_to_the_model_that_failed(monkeypatch):
 def test_runtime_preflight_predicts_the_supported_llama_fallback(monkeypatch):
     monkeypatch.setattr(embeddings.config, "EMBED_BACKEND", "auto")
     monkeypatch.setattr(embeddings, "_forced_backends", {})
-    monkeypatch.setattr(
-        embeddings,
-        "_resolve_auto_for_model",
-        lambda model = None: "sentence-transformers",
-    )
+    _shared_setup_4(monkeypatch)
     monkeypatch.setattr(embeddings, "sentence_transformers_runtime_available", lambda: False)
     monkeypatch.setattr(embeddings, "_llama_server_runtime_available", lambda: True)
 
@@ -639,11 +612,7 @@ def test_runtime_preflight_predicts_the_supported_llama_fallback(monkeypatch):
 def test_runtime_preflight_keeps_st_when_no_fallback_exists(monkeypatch):
     monkeypatch.setattr(embeddings.config, "EMBED_BACKEND", "auto")
     monkeypatch.setattr(embeddings, "_forced_backends", {})
-    monkeypatch.setattr(
-        embeddings,
-        "_resolve_auto_for_model",
-        lambda model = None: "sentence-transformers",
-    )
+    _shared_setup_4(monkeypatch)
     monkeypatch.setattr(embeddings, "sentence_transformers_runtime_available", lambda: False)
     monkeypatch.setattr(embeddings, "_llama_server_runtime_available", lambda: False)
 
@@ -996,12 +965,44 @@ def test_the_security_gate_scans_the_snapshot_that_is_actually_loaded(monkeypatc
     assert scanned == [str(snapshot)]
 
 
-def test_the_residency_probe_does_not_wait_on_a_model_load(monkeypatch):
+def test_the_shared_load_setup_does_not_strand_module_weights(tmp_path):
+    """The three loads driven through _shared_setup_2 outlived the test that asked for
+    them, so the next test in the same xdist worker to call backend_is_loaded() was
+    answered from this file's fake model and told something was resident.
+
+    Driven through a nested monkeypatch context so the restore this asserts is
+    observable from inside the test rather than only at its teardown.
+    """
+    with pytest.MonkeyPatch.context() as mp:
+        _shared_setup_1(mp)
+        mp.setattr(embeddings, "_device", lambda: "cpu")
+        _shared_setup_2(mp, tmp_path)
+        # Non-vacuity: there is no strand to clean up unless the setup really loaded.
+        assert embeddings._model is not None, "the setup loaded nothing, so this proves nothing"
+        assert embeddings._name == "Org/Embedder"
+
+    assert embeddings._model is None
+    assert embeddings._name is None
+
+
+@pytest.mark.parametrize("resident", [False, True])
+def test_the_residency_probe_does_not_wait_on_a_model_load(monkeypatch, resident):
     """Both locks are held across a whole model load, so a probe taking either
-    made GET, PUT, reset and unload wait it out."""
+    made GET, PUT, reset and unload wait it out.
+
+    Run for a resident model as well as an empty one: what is being claimed is that the
+    probe ANSWERS under the load locks, and an answer of False is only evidence of that
+    if False is also the right answer.
+    """
     import threading
 
     embeddings._reset_backend()
+    # _reset_backend drops the published backend, not the module-level weights, and
+    # backend_is_loaded deliberately falls through to those when no backend is published.
+    # So the answer below depends on globals this test never set: state them rather than
+    # inherit whatever ran earlier in this xdist worker.
+    monkeypatch.setattr(embeddings, "_model", object() if resident else None)
+    monkeypatch.setattr(embeddings, "_name", "org/embedder" if resident else None)
     answered = threading.Event()
     result = {}
 
@@ -1017,7 +1018,7 @@ def test_the_residency_probe_does_not_wait_on_a_model_load(monkeypatch):
         # Answered while the construction locks are still held by this thread.
         assert answered.wait(timeout = 5), "the status probe blocked on the load locks"
 
-    assert result == {"any": False, "named": False}
+    assert result == {"any": resident, "named": resident}
 
 
 def test_a_dead_llama_process_is_not_reported_as_loaded(monkeypatch):

@@ -2,8 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """``general.*`` reader for GGUF headers, used by ``detect_mmproj_file`` to
-pair weights and projectors via ``general.base_model.0.repo_url``. ~30 ms
-per file, cached by resolved path and platform file identity."""
+pair weights and projectors via ``general.base_model.0.repo_url``."""
 
 from __future__ import annotations
 
@@ -46,23 +45,23 @@ _METADATA_CACHE: Dict[_CacheKey, Optional[Dict[str, str]]] = {}
 _CACHE_LOCK = threading.Lock()
 _CACHE_MAX_ENTRIES = 4096
 
-# Separate cache for single bool capability keys (e.g. clip.has_audio_encoder),
-# keyed by (file cache key, wanted key). None = key absent / file unreadable.
+# Separate cache for single bool capability keys (e.g. clip.has_audio_encoder), keyed by (file cache key, wanted key). None = key absent / file unreadable.
 _BOOL_CACHE: Dict[Tuple[_CacheKey, str], Optional[bool]] = {}
 
 _STRING_CACHE: Dict[Tuple[_CacheKey, str], Optional[str]] = {}
 
 _TTS_AUDIO_TYPE_CACHE: Dict[_CacheKey, Optional[str]] = {}
 
-# Whether the GGUF tensor table contains a sequence-classification head. None
-# means the file could not be read or parsed, so callers can fail closed.
+# Whether the GGUF tensor table contains a sequence-classification head. None means the file could not be read or parsed, so callers can fail closed.
 _CLASSIFIER_HEAD_CACHE: Dict[_CacheKey, Optional[bool]] = {}
 
-# GGUF header dims for the staged UI in one cached pass (context_length, layer_count, moe_layer_count) so the staged
-# sheet can size every slider before the model loads.
-# None = unreadable / not a GGUF, and the native ``{arch}.context_length`` the UI shows before a load is read from here
-# via read_gguf_context_length.
+# Whether the GGUF tensor table lists one exact tensor name, keyed by (file cache key, tensor name). None = unreadable, so callers can fail open. Backs the MTP drafter launchability check, which the memory-estimate route asks on every settings change.
+_NAMED_TENSOR_CACHE: Dict[Tuple[_CacheKey, str], Optional[bool]] = {}
+
+# GGUF header dims for the staged UI in one cached pass (context_length, layer_count, moe_layer_count) so the staged sheet can size every slider before the model loads. None = unreadable / not a GGUF; the native ``{arch}.context_length`` the UI shows before a load is read from here via read_gguf_context_length.
 _DIMS_CACHE: Dict[_CacheKey, Optional[Dict[str, Optional[int]]]] = {}
+# Read on its own: the only caller wants just this number, on every settings change.
+_N_EMBD_CACHE: Dict[_CacheKey, Optional[int]] = {}
 
 
 # Cache the embedded speculative-head count separately for discovery, launch, and sizing.
@@ -164,11 +163,7 @@ def _parse_gguf_header(path: str) -> Optional[Dict[str, str]]:
 
 
 def read_gguf_staged_dims(path: str) -> Optional[Dict[str, Optional[int]]]:
-    """GGUF header dims for the staged-load UI in one cached pass:
-    ``{"context_length", "layer_count", "moe_layer_count"}``. Each may be None
-    when absent (moe_layer_count is 0 for a dense model). Returns ``None`` if not
-    a GGUF / unreadable. Cached by (path, mtime, size). Lets the staged sheet size
-    the context, GPU-layers and MoE sliders before the model loads."""
+    """GGUF header dims for the staged-load UI in one cached pass: ``{"context_length", "layer_count", "moe_layer_count"}``. Each may be None when absent (moe_layer_count is 0 for a dense model), and the result is ``None`` if not a GGUF or unreadable. Cached by (path, mtime, size). Lets the staged sheet size the context, GPU-layers and MoE sliders before the model loads."""
     key = _cache_key(path)
     if key is None:
         return None
@@ -186,21 +181,34 @@ def read_gguf_staged_dims(path: str) -> Optional[Dict[str, Optional[int]]]:
     return result
 
 
+def read_gguf_embedding_length(path: str) -> Optional[int]:
+    """Return the cached ``{arch}.embedding_length`` value, if readable."""
+    key = _cache_key(path)
+    if key is None:
+        return None
+    with _CACHE_LOCK:
+        if key in _N_EMBD_CACHE:
+            return _N_EMBD_CACHE[key]
+    parsed = _parse_gguf_arch_uints(path, frozenset({"embedding_length"}))
+    result = (parsed or {}).get("embedding_length")
+    with _CACHE_LOCK:
+        while len(_N_EMBD_CACHE) >= _CACHE_MAX_ENTRIES:
+            try:
+                _N_EMBD_CACHE.pop(next(iter(_N_EMBD_CACHE)))
+            except StopIteration:
+                break
+        _N_EMBD_CACHE[key] = result
+    return result
+
+
 def read_gguf_context_length(path: str) -> Optional[int]:
-    """Native training context length (``{arch}.context_length``), or ``None``.
-    Thin accessor over read_gguf_staged_dims."""
+    """Native training context length (``{arch}.context_length``), or ``None``. Thin accessor over read_gguf_staged_dims."""
     dims = read_gguf_staged_dims(path)
     return dims["context_length"] if dims else None
 
 
 def _parse_gguf_arch_uints(path: str, wanted_suffixes: frozenset[str]) -> Optional[Dict[str, int]]:
-    """Walk a GGUF header once and return requested architecture-namespaced
-    uint (vtype 4/10) keys, e.g. ``{"block_count": 32}``.
-
-    GGUF does not guarantee KV order, so matching uints are buffered until
-    ``general.architecture`` identifies the active namespace. Returns ``None``
-    if the file is unreadable/not GGUF, otherwise a possibly partial dict.
-    """
+    """Walk a GGUF header once and return requested architecture-namespaced uint (vtype 4/10) keys, e.g. ``{"block_count": 32}``. GGUF does not guarantee KV order, so matching uints are buffered until ``general.architecture`` identifies the active namespace. Returns ``None`` if the file is unreadable or not GGUF, otherwise a possibly partial dict."""
     arch: Optional[str] = None
     buffered: Dict[str, int] = {}
     found: Dict[str, int] = {}
@@ -283,12 +291,7 @@ def _parse_gguf_arch_uints(path: str, wanted_suffixes: frozenset[str]) -> Option
 
 
 def read_gguf_nextn_predict_layers(path: str) -> Optional[int]:
-    """Return the selected architecture's embedded NextN/MTP layer count.
-
-    ``0`` is a real headless verdict. ``None`` means the key is absent or the
-    header is unreadable, so callers that suppress a separate drafter can do so
-    only on a positive value.
-    """
+    """The selected architecture's embedded NextN/MTP layer count. ``0`` is a real headless verdict; ``None`` means the key is absent or the header is unreadable, so callers that suppress a separate drafter can do so only on a positive value."""
     key = _cache_key(path)
     if key is None:
         return None
@@ -326,9 +329,7 @@ def _parse_gguf_staged_dims(path: str) -> Optional[Dict[str, Optional[int]]]:
     # A real context/layer count is positive; treat 0/garbage as absent so the UI never builds a slider with max < min.
     context_length = ctx if ctx and ctx > 0 else None
     layer_count = block if block and block > 0 else None
-    # MoE layer count = block_count - leading dense layers, only when experts
-    # exist; else 0 (dense -> slider hidden). Mirrors n_moe_layers in
-    # core/inference/llama_cpp.py.
+    # MoE layer count = block_count - leading dense layers, only when experts exist, else 0 (dense, slider hidden). Mirrors n_moe_layers in core/inference/llama_cpp.py.
     if not vals.get("expert_count") or not block:
         moe_layer_count: Optional[int] = 0
     else:
@@ -357,9 +358,7 @@ _FIXED_VTYPE_SIZES: Dict[int, int] = {
 
 
 def _skip_gguf_value(f, vtype: int) -> bool:
-    """Advance past one GGUF value. ``f.seek(.., 1)`` past EOF is legal on a
-    regular file, so truncation is caught on the next read; return False only
-    for unknown types or sanity-bound overflow."""
+    """Advance past one GGUF value. ``f.seek(.., 1)`` past EOF is legal on a regular file, so truncation is caught on the next read; return False only for unknown types or sanity-bound overflow."""
     if vtype == 8:  # STRING
         slen_bytes = f.read(8)
         if len(slen_bytes) < 8:
@@ -483,9 +482,124 @@ def _gguf_has_classifier_head(path: str) -> Optional[bool]:
     return False if results and all(result is False for result in results) else None
 
 
+def _parse_gguf_has_named_tensor(path: str, wanted_name: str) -> Optional[bool]:
+    """Whether the GGUF tensor table lists exactly ``wanted_name``.
+
+    Same stream and bounds as ``_parse_gguf_has_classifier_head``, which matches a
+    prefix; this matches a full name, without mapping the tensor data in.
+    """
+    try:
+        with open(path, "rb") as f:
+            head = f.read(24)
+            if len(head) < 24:
+                return None
+            magic, _version, tensor_count, kv_count = struct.unpack("<IIQQ", head)
+            if magic != _GGUF_MAGIC or tensor_count > 1 << 20 or kv_count > 1 << 20:
+                return None
+
+            for _ in range(kv_count):
+                klen_bytes = f.read(8)
+                if len(klen_bytes) < 8:
+                    return None
+                klen = struct.unpack("<Q", klen_bytes)[0]
+                if klen > 1 << 20 or len(f.read(klen)) < klen:
+                    return None
+                vtype_bytes = f.read(4)
+                if len(vtype_bytes) < 4 or not _skip_gguf_value(
+                    f, struct.unpack("<I", vtype_bytes)[0]
+                ):
+                    return None
+
+            wanted = wanted_name.encode("utf-8")
+            for _ in range(tensor_count):
+                nlen_bytes = f.read(8)
+                if len(nlen_bytes) < 8:
+                    return None
+                nlen = struct.unpack("<Q", nlen_bytes)[0]
+                if nlen > 1 << 20:
+                    return None
+                name_bytes = f.read(nlen)
+                ndim_bytes = f.read(4)
+                if len(name_bytes) < nlen or len(ndim_bytes) < 4:
+                    return None
+                n_dimensions = struct.unpack("<I", ndim_bytes)[0]
+                if n_dimensions > 16:
+                    return None
+                # dimensions (u64 each), ggml type (u32), and data offset (u64)
+                trailer_size = n_dimensions * 8 + 4 + 8
+                if len(f.read(trailer_size)) < trailer_size:
+                    return None
+                if name_bytes == wanted:
+                    return True
+    except OSError as e:
+        logger.debug(f"_parse_gguf_has_named_tensor: cannot open {path}: {e}")
+        return None
+    except Exception as e:
+        logger.debug(f"_parse_gguf_has_named_tensor: parse failure on {path}: {e}")
+        return None
+    return False
+
+
+def _gguf_shard_has_named_tensor(path: str, wanted_name: str) -> Optional[bool]:
+    """Cached single-shard tensor-name lookup, keyed by (path, mtime, size, name)."""
+    fkey = _cache_key(path)
+    if fkey is None:
+        return None
+    ckey = (fkey, wanted_name)
+    with _CACHE_LOCK:
+        if ckey in _NAMED_TENSOR_CACHE:
+            return _NAMED_TENSOR_CACHE[ckey]
+    result = _parse_gguf_has_named_tensor(path, wanted_name)
+    with _CACHE_LOCK:
+        while len(_NAMED_TENSOR_CACHE) >= _CACHE_MAX_ENTRIES:
+            try:
+                _NAMED_TENSOR_CACHE.pop(next(iter(_NAMED_TENSOR_CACHE)))
+            except StopIteration:
+                break
+        _NAMED_TENSOR_CACHE[ckey] = result
+    return result
+
+
+def mtp_drafter_loads_standalone(path: str) -> bool:
+    """Can llama-server open *path* as a ``--model-draft``?
+
+    A draft head is opened as a complete model unless it can borrow the target's
+    embeddings, so one carrying neither its own ``token_embd.weight`` nor
+    ``<arch>.nextn_shared_target_tensors`` ends the launch with
+    ``check_tensor_dims: tensor 'token_embd.weight' not found``. Measured against the
+    shipped llama.cpp: the metadata flag is what admits a head into
+    ``borrow_shared_tensor``. Only that one tensor decides, since the rest of the
+    borrowable set is per-architecture (``qwen4exp`` creates no ``output_norm``), so a
+    stricter refusal would reject heads that work.
+
+    Split-aware like ``_gguf_has_classifier_head``: llama-server opens sibling shards
+    implicitly, so a tensor absent from shard 1 may live in shard 2. Fails open on
+    anything it cannot see, leaving the verdict to llama-server.
+    """
+    from utils.models.model_config import colocated_split_shards
+
+    try:
+        shards, complete = colocated_split_shards(Path(path))
+    except Exception as e:
+        logger.debug(f"mtp_drafter_loads_standalone: cannot enumerate shards for {path}: {e}")
+        return True
+    if not complete or not shards:
+        return True
+
+    carries = [_gguf_shard_has_named_tensor(str(shard), "token_embd.weight") for shard in shards]
+    if any(result is True for result in carries):
+        return True
+    if any(result is None for result in carries):
+        return True
+
+    architecture = read_gguf_architecture(path)
+    if architecture and _read_gguf_bool(path, f"{architecture}.nextn_shared_target_tensors"):
+        return True
+    return False
+
+
 def _parse_gguf_bool(path: str, wanted_key: str) -> Optional[bool]:
-    """Bool value of ``wanted_key`` (GGUF vtype 7), or ``None`` if absent /
-    unreadable. Mirrors ``_parse_gguf_header`` for a single bool key."""
+    """Bool value of ``wanted_key`` (GGUF vtype 7), or ``None`` if absent or unreadable. Mirrors ``_parse_gguf_header`` for a single bool key."""
     try:
         with open(path, "rb") as f:
             head = f.read(24)
@@ -757,9 +871,7 @@ def read_gguf_chat_template(path: str) -> Optional[str]:
 
 
 def read_gguf_architecture(path: str) -> Optional[str]:
-    """``general.architecture``, or ``None`` when absent / unreadable / not a GGUF.
-
-    Reads only the requested key instead of walking the rest of the header."""
+    """``general.architecture``, or ``None`` when absent / unreadable / not a GGUF. Reads only the requested key instead of walking the rest of the header."""
     architecture = _read_gguf_string(path, "general.architecture")
     if isinstance(architecture, str) and architecture.strip():
         return architecture.strip()
@@ -767,20 +879,20 @@ def read_gguf_architecture(path: str) -> Optional[str]:
 
 
 def read_mmproj_audio_capability(path: str) -> Optional[bool]:
-    """``clip.has_audio_encoder`` from an mmproj GGUF (e.g. Gemma 4's
-    gemma4ua): ``True``/``False`` if present, ``None`` if absent/unreadable.
-    Flags audio-input models independently of tokenizer token names."""
+    """``clip.has_audio_encoder`` from an mmproj GGUF (e.g. Gemma 4's gemma4ua): ``True``/``False`` if present, ``None`` if absent or unreadable. Flags audio-input models independently of tokenizer token names."""
     return _read_gguf_bool(path, "clip.has_audio_encoder")
 
 
 def read_mmproj_projector_type(path: str) -> Optional[str]:
-    """``clip.projector_type`` from an mmproj GGUF, or None if absent/unreadable.
-
-    The family name llama.cpp keys its per-projector image-token limits on
-    (``qwen3vl_merger``, ``gemma3``, ``pixtral``, ...), so a caller sizing the KV an
-    image will occupy can look the ceiling up instead of assuming one.
-    """
+    """``clip.projector_type`` from an mmproj GGUF, or None if absent or unreadable. The family name llama.cpp keys its per-projector image-token limits on (``qwen3vl_merger``, ``gemma3``, ``pixtral``, ...), so a caller sizing the KV an image will occupy can look the ceiling up instead of assuming one."""
     return _read_gguf_string(path, "clip.projector_type")
+
+
+def read_mmproj_vision_projector_type(path: str) -> Optional[str]:
+    """Return the image tower family, falling back to the single-tower key."""
+    return _read_gguf_string(path, "clip.vision.projector_type") or _read_gguf_string(
+        path, "clip.projector_type"
+    )
 
 
 def read_mmproj_vision_capability(path: str) -> Optional[bool]:
@@ -790,21 +902,14 @@ def read_mmproj_vision_capability(path: str) -> Optional[bool]:
 
 
 def mmproj_capabilities(path: str) -> Tuple[bool, bool]:
-    """``(declares_audio_encoder, accepts_image)`` for the projector at *path*.
-
-    A projector serving both modalities declares both (Qwen2.5-Omni), so an audio-only
-    declaration (ultravox, Voxtral, Qwen3-ASR) is evidence of no vision tower. One
-    declaring neither -- an older convert, or a file this reader could not open -- is
-    unknown rather than audio-only and stays image-capable.
-    """
+    """``(declares_audio_encoder, accepts_image)`` for the projector at *path*. A projector serving both modalities declares both (Qwen2.5-Omni), so an audio-only declaration (ultravox, Voxtral, Qwen3-ASR) is evidence of no vision tower. One declaring neither, an older convert or a file this reader could not open, is unknown rather than audio-only and stays image-capable."""
     vision = read_mmproj_vision_capability(path)
     audio = read_mmproj_audio_capability(path)
     return audio is True, (vision is True or audio is not True)
 
 
 def mmproj_accepts_image(path: str) -> bool:
-    """Whether images may be sent to the model this projector serves; see
-    :func:`mmproj_capabilities`."""
+    """Whether images may be sent to the model this projector serves; see :func:`mmproj_capabilities`."""
     return mmproj_capabilities(path)[1]
 
 
@@ -907,9 +1012,7 @@ def _weight_url_looks_like_derivative_of_projector(weight_url: str, projector_ur
 def pairing_score(
     weight_meta: Optional[Dict[str, str]], mmproj_meta: Optional[Dict[str, str]]
 ) -> int:
-    """Pairing confidence: 100 = base_model URL match, 90 = derivative URL,
-    80 = basename + org, 60 = basename, -1 = definitive mismatch,
-    0 = decide from filename."""
+    """Pairing confidence: 100 = base_model URL match, 90 = derivative URL, 80 = basename + org, 60 = basename, -1 = definitive mismatch, 0 = decide from filename."""
     if not weight_meta or not mmproj_meta:
         return 0
 
@@ -945,10 +1048,7 @@ def pairing_score(
     return 0
 
 
-# GGUF architectures that intrinsically identify embedding models. Generic ``bert`` is
-# deliberately absent: without pooling_type its required CLS/MEAN pooling cannot be recovered. A
-# ``cls.*`` tensor makes an encoder a reranker instead, so matches are gated on the tensor table.
-# The values are GGUF ``general.architecture`` strings, as llama.cpp defines them.
+# GGUF ``general.architecture`` strings that intrinsically identify embedding models. Generic ``bert`` is deliberately absent: without pooling_type its required CLS/MEAN pooling cannot be recovered, and a ``cls.*`` tensor makes an encoder a reranker instead, so matches are gated on the tensor table.
 GGUF_EMBEDDING_ARCHITECTURES: frozenset[str] = frozenset(
     {
         "modern-bert",
@@ -1017,17 +1117,12 @@ def is_gguf_embedding_model(
 
     arch = (architecture or meta.get("general.architecture") or "").strip().lower()
     if arch == "bert":
-        # A classifier head can prove that generic BERT is a reranker
-        # llama-server otherwise defaults to NONE and /v1/embeddings returns HTTP 400.
+        # A classifier head can prove that generic BERT is a reranker; llama-server otherwise defaults to NONE and /v1/embeddings returns HTTP 400.
         return False
     if is_gguf_embedding_architecture(arch):
-        # Generic BERT-family architectures also back cross-encoder rerankers.
-        # Their standardized cls.* tensors are intrinsic evidence of that role;
-        # an unreadable tensor table stays unclassified rather than guessing.
+        # Generic BERT-family architectures also back cross-encoder rerankers, and their standardized cls.* tensors are intrinsic evidence of that role; an unreadable tensor table stays unclassified rather than guessing.
         return _gguf_has_classifier_head(gguf_path) is False
     return any(_has_embedding_name_hint(value) for value in name_candidates)
 
 
-# Deliberately not re-exported: importing anything from THIS package runs utils.models.__init__,
-# which pulls in model_config and therefore PyYAML, while core.inference.llama_cpp needs the
-# verdict at import time. Import it from utils.gguf_archs.
+# Deliberately not re-exported: importing anything from THIS package runs utils.models.__init__, which pulls in model_config and therefore PyYAML, while core.inference.llama_cpp needs the verdict at import time. Import it from utils.gguf_archs.

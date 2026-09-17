@@ -35,6 +35,13 @@ DEPS_PATH = REPO_ROOT / "unsloth_cli" / "_studio_deps.py"
 MANIFEST_PATH = REPO_ROOT / "studio" / "install_manifest.py"
 REQUIREMENTS = REPO_ROOT / "studio" / "backend" / "requirements"
 
+# `install_python_stack._filter_requirements` writes `.{stem}-filtered-XXXX.txt` BESIDE its
+# source, which is this very directory, so the tests that exercise it create and delete files
+# here while these copy it. Under xdist that is two workers on one directory, and copytree
+# raised "No such file or directory" for a name that existed when it listed the tree and was
+# gone by the time it read it. Never a real requirement, so skip them rather than racing.
+_GENERATED_FILTERS = shutil.ignore_patterns(".*-filtered-*.txt")
+
 
 def _load(path: pathlib.Path, name: str):
     spec = importlib.util.spec_from_file_location(name, path)
@@ -97,7 +104,11 @@ def _make_venv(
     site_packages = root / "lib" / "python3.11" / "site-packages"
     (site_packages / "studio" / "backend").mkdir(parents = True)
     shutil.copy(MANIFEST_PATH, site_packages / "studio" / "install_manifest.py")
-    shutil.copytree(REQUIREMENTS, site_packages / "studio" / "backend" / "requirements")
+    shutil.copytree(
+        REQUIREMENTS,
+        site_packages / "studio" / "backend" / "requirements",
+        ignore = _GENERATED_FILTERS,
+    )
     if extra_requirement:
         studio_txt = site_packages / "studio" / "backend" / "requirements" / "studio.txt"
         studio_txt.write_text(
@@ -651,3 +662,58 @@ def test_an_editable_checkouts_egg_info_is_not_a_second_record(tmp_path, monkeyp
     monkeypatch.syspath_prepend(str(checkout))
 
     assert deps.installed_metadata_conflicts(names = ("unsloth",)) == []
+
+
+def test_a_generated_filter_file_does_not_travel_into_the_fake_venv(tmp_path):
+    """The requirements directory is shared with a writer, so the copy must tolerate it.
+
+    `_filter_requirements` writes `.{stem}-filtered-XXXX.txt` beside its source, and its source
+    is the real tree these fixtures copy. Two xdist workers then touch one directory: the file
+    is listed and deleted before it is read, and `copytree` fails the whole fixture with
+    `shutil.Error: [Errno 2] No such file or directory`. Skipping it by name removes the race
+    AND keeps a scratch file out of a tree that is supposed to mirror the shipped requirements.
+    """
+    source = tmp_path / "requirements"
+    source.mkdir()
+    (source / "studio.txt").write_text("torch\n", encoding = "utf-8")
+    (source / ".extras-filtered-_30x7ggm.txt").write_text("torch\n", encoding = "utf-8")
+    (source / ".studio-filtered-abcd1234.txt").write_text("torch\n", encoding = "utf-8")
+
+    destination = tmp_path / "copied"
+    shutil.copytree(source, destination, ignore = _GENERATED_FILTERS)
+
+    assert (destination / "studio.txt").exists()
+    copied = sorted(path.name for path in destination.iterdir())
+    assert copied == ["studio.txt"], copied
+
+
+def test_the_real_requirements_copy_survives_a_file_vanishing_mid_copy(tmp_path):
+    """The failure as it actually arrived, rather than only the names it leaves behind.
+
+    Deleting the generated file between the listing and the read is what the other worker does,
+    and it is the step that raised. Without the ignore this raises `shutil.Error`; with it the
+    file is never scheduled for copying, so there is nothing to lose the race to.
+    """
+    source = tmp_path / "requirements"
+    source.mkdir()
+    (source / "studio.txt").write_text("torch\n", encoding = "utf-8")
+    vanishing = source / ".extras-filtered-_30x7ggm.txt"
+    vanishing.write_text("torch\n", encoding = "utf-8")
+
+    def _delete_then_copy(src, dst, *args, **kwargs):
+        # Stand in for the other worker: the name was listed, now it is gone. Passed as
+        # `copy_function` rather than patched onto `shutil`, because copytree binds copy2 as a
+        # default argument at definition, so patching the module attribute does nothing and
+        # this test would pass without exercising anything.
+        vanishing.unlink(missing_ok = True)
+        return shutil.copy2(src, dst, *args, **kwargs)
+
+    shutil.copytree(
+        source,
+        tmp_path / "copied",
+        ignore = _GENERATED_FILTERS,
+        copy_function = _delete_then_copy,
+    )
+
+    assert (tmp_path / "copied" / "studio.txt").exists()
+    assert not (tmp_path / "copied" / vanishing.name).exists()

@@ -308,10 +308,9 @@ function discoverGgufModels(
     models.push(model);
   };
   for (const model of items) {
-    // /api/models/list reports the backend's raw identifier, which for a native
-    // grant is the host path that status deliberately withholds. The resident
-    // model reaches the picker through status instead, so drop path-shaped ids
-    // rather than leak one into the list and into the copied command.
+    // /api/models/list reports the backend's raw identifier, which for a native grant is
+    // the host path status deliberately withholds. The resident model reaches the picker
+    // through status instead, so drop path-shaped ids rather than leak one into the command.
     if (!model.is_gguf || looksLikePath(model.id)) {
       continue;
     }
@@ -330,17 +329,14 @@ function discoverGgufModels(
   return { models, variants };
 }
 
-// Scanned local GGUFs (./models, LM Studio, custom folders) that the caches above
-// miss. The id is the load id, i.e. the on-disk path for anything outside the active
-// cache, so label the row by repo id when there is one but keep the path to load by.
-// model_format is only set by the scanners that compute it: _scan_hf_cache leaves it
-// unset, so a custom scan folder holding an HF cache layout would vanish from the
-// picker on an exclusive check. Treat unset as unknown and fall back to the name.
+// Scanned local GGUFs (./models, LM Studio, custom folders) the caches above miss. The id is
+// the load id, i.e. the on-disk path outside the active cache, so label by repo id when there
+// is one but keep the path to load by. model_format is set only by the scanners that compute
+// it (_scan_hf_cache leaves it unset), so treat unset as unknown and fall back to the name.
 function isLocalGguf(model: LocalModelInfo): boolean {
-  // The scanners set this only for a directory holding a primary, non-mmproj GGUF
-  // and no other weights, so an unset format means "not GGUF", not "unknown". Do not
-  // guess from the name: a safetensors folder called Foo-GGUF would load the
-  // transformers backend and then fail the GGUF-only agents.
+  // The scanners set this only for a directory holding a primary, non-mmproj GGUF and no other
+  // weights, so an unset format means "not GGUF", not "unknown". Do not guess from the name: a
+  // safetensors folder called Foo-GGUF would load transformers and then fail the GGUF-only agents.
   return (model.model_format ?? "").toLowerCase() === "gguf";
 }
 
@@ -349,9 +345,8 @@ function localGgufEntries(
 ): { id: string; label: string }[] {
   const entries: { id: string; label: string }[] = [];
   for (const model of models) {
-    // partial marks an interrupted sharded download: variant discovery would treat
-    // the shards it has as complete and build a command that fails on load. The
-    // cached repo row still offers it, and _repo_gguf_load_id withholds the path.
+    // partial marks an interrupted sharded download: variant discovery would treat the shards it
+    // has as complete and build a command that fails on load. The cached repo row still offers it.
     if (model.partial || !(model.id && isLocalGguf(model))) {
       continue;
     }
@@ -408,7 +403,6 @@ function activeGgufSelection(
   };
 }
 
-/** Official provider or agent logo when available, else a monogram tile. */
 function AgentIcon({
   logo,
   icon,
@@ -659,11 +653,10 @@ export function AgentsTab() {
     return p.startsWith("win") || p.includes("windows");
   });
   const origin = typeof window !== "undefined" ? window.location.origin : "";
-  // Browser commands target the viewed origin; a desktop window origin is a Tauri URL
-  // the CLI cannot reach, so use the backend URL from /api/health (getApiBase until it
-  // lands). The command then runs wherever that CLI is: a loopback base is this Unsloth's
-  // own host, so deviceType decides, and it reports wsl where the browser would claim
-  // Windows. For any other base the client platform is only the initial guess.
+  // Browser commands target the viewed origin; a desktop window origin is a Tauri URL the CLI
+  // cannot reach, so use the backend URL from /api/health (getApiBase until it lands). A loopback
+  // base is this Unsloth's own host, so deviceType decides and reports wsl where the browser would
+  // claim Windows. For any other base the client platform is only the initial guess.
   const studioBase = isTauri ? (serverUrl ?? getApiBase()) : origin;
   const inferredCommandOs: ExampleOs = (
     isLoopbackBase(studioBase)
@@ -706,7 +699,6 @@ export function AgentsTab() {
   const [cachedLoadIds, setCachedLoadIds] = useState<Record<string, string>>(
     {},
   );
-  // Display names for scanned models, keyed by the path that identifies them.
   const [modelLabels, setModelLabels] = useState<Record<string, string>>({});
   // The model /api/inference/status reports as resident, so the command attaches to it
   // rather than remapping to another cached copy.
@@ -812,10 +804,9 @@ export function AgentsTab() {
   const visibleModels = matchingModels.slice(0, MODEL_RESULT_LIMIT);
   const preferredVariant = knownVariants[selectedModel] ?? null;
   const selectedAgentDetails = detailsFor(selectedAgent);
-  // A GGUF outside the active cache does not resolve by repo id, so name its
-  // snapshot path; `unsloth start` now also matches a path by the basename
-  // /v1/models advertises for it. The resident model is exempt: it already
-  // loaded by id, and cached-gguf keeps the largest copy across caches, whose
+  // A GGUF outside the active cache does not resolve by repo id, so name its snapshot path;
+  // `unsloth start` also matches a path by the basename /v1/models advertises. The resident model
+  // is exempt: it loaded by id, and cached-gguf keeps the largest copy across caches, whose
   // snapshot could switch cache or quant under it.
   const selectedModelIsActive =
     activeStatusModel != null &&
@@ -986,7 +977,6 @@ export function AgentsTab() {
         }));
       })
       .catch(() => {
-        // The example model keeps the builder useful if discovery fails.
       });
     return () => {
       cancelled = true;
@@ -1042,10 +1032,9 @@ export function AgentsTab() {
     });
   }, []);
 
-  // The resident GGUF went away (unloaded, or replaced by a transformer model).
-  // Following it means letting go too, or the command would name a stale model and
-  // switch the shared server back. A native-grant label is not even loadable, so it
-  // leaves the list entirely. An explicit pick still wins.
+  // The resident GGUF went away (unloaded, or replaced by a transformer model). Following it means
+  // letting go too, or the command would name a stale model and switch the shared server back. A
+  // native-grant label is not even loadable, so it leaves the list entirely. An explicit pick wins.
   const dropActiveModel = useCallback(
     (attachOnly: string | null, wasActive: string | null) => {
       if (attachOnly) {
@@ -1096,10 +1085,9 @@ export function AgentsTab() {
     ],
   );
 
-  // Another client, or a load that finishes after this tab opens, can change what
-  // is resident on a shared server. Keep tracking it rather than pinning the model
-  // seen at mount, or the command would name a stale one and switch the server
-  // back, unloading it for every attached session. An explicit pick still wins.
+  // Another client, or a load finishing after this tab opens, can change what is resident on a
+  // shared server. Keep tracking it rather than pinning the model seen at mount, or the command
+  // would switch the server back, unloading it for every attached session. An explicit pick wins.
   useEffect(() => {
     let cancelled = false;
     const sync = () => {
@@ -1133,11 +1121,9 @@ export function AgentsTab() {
     if (!(restored && discoveredKeys && statusSettled)) return;
     const active = activeModelRef.current;
     restoredModel.current = null;
-    // modelKey both sides: discovery folds repo-id case, so an exact match
-    // would retire a valid pick just for a different spelling.
-    // A path is never in discoveredKeys (the catalog drops path ids and a scan
-    // root may not cover it), but `unsloth start --model <path>` is valid, so
-    // absence there is not evidence.
+    // modelKey both sides: discovery folds repo-id case, so an exact match would retire a valid pick
+    // for a different spelling. A path is never in discoveredKeys (the catalog drops path ids and a
+    // scan root may not cover it), but `unsloth start --model <path>` is valid, so absence is not evidence.
     if (
       looksLikePath(restored) ||
       isHuggingFaceRepo(restored) ||
@@ -1150,9 +1136,8 @@ export function AgentsTab() {
     modelSelectionChanged.current = false;
     chosenVariant.current = null;
     setStoredModel(null, null);
-    // adopt straight away rather than parking on the example model: the next
-    // poll is STATUS_POLL_MS away, and a command copied meanwhile would switch
-    // a shared server off whatever is loaded.
+    // adopt straight away rather than parking on the example model: the next poll is STATUS_POLL_MS
+    // away, and a command copied meanwhile would switch a shared server off whatever is loaded.
     if (active) {
       adoptActiveModel(active);
       return;
@@ -1164,9 +1149,8 @@ export function AgentsTab() {
   useEffect(() => {
     let cancelled = false;
 
-    // A scanned directory is not repo-shaped but still has a path to enumerate, and
-    // after discovery that path IS the identity. Only a standalone .gguf file, which
-    // is one quant by definition, is genuinely variantless.
+    // A scanned directory is not repo-shaped but still has a path to enumerate, and after discovery
+    // that path IS the identity. Only a standalone .gguf file is genuinely variantless.
     const localDir =
       cachedLoadId ??
       (looksLikePath(selectedModel) &&
@@ -1174,9 +1158,8 @@ export function AgentsTab() {
         ? selectedModel
         : null);
     if (!(isHuggingFaceRepo(selectedModel) || localDir)) {
-      // A loose .gguf is one quant already. Status can record a quant parsed from its
-      // filename, and restoring that would add --gguf-variant, which a bare file path
-      // cannot resolve, so it stays null here.
+      // A loose .gguf is one quant already. Status can record a quant parsed from its filename, and
+      // restoring that would add --gguf-variant, which a bare file path cannot resolve.
       const standaloneFile = selectedModel.toLowerCase().endsWith(".gguf");
       queueMicrotask(() => {
         if (cancelled) {
@@ -1207,9 +1190,8 @@ export function AgentsTab() {
         }
         // Clear a prior failure once a later request (e.g. after adding a token) succeeds.
         setVariantsFailed(false);
-        // Drop partial quants: an interrupted split download still lists a quant, and
-        // naming it builds a command that resolves the shards it has and then fails on
-        // the missing ones.
+        // Drop partial quants: an interrupted split download still lists a quant, and naming it builds
+        // a command that resolves the shards it has and then fails on the missing ones.
         const uniqueVariants = Array.from(
           new Map(
             info.variants
@@ -1221,12 +1203,9 @@ export function AgentsTab() {
         const available = new Set(
           uniqueVariants.map((variant) => variant.quant),
         );
-        // Authoritative for this repo: drop a remembered quant it no longer
-        // offers, or adoptActiveModel re-imposes it on the next poll.
-        // Stop adoptActiveModel re-imposing a quant this repo will not serve.
-        // In-memory only: `partial` here means "still downloading", and an
-        // offline reply lists just the cache, so neither is grounds to delete
-        // the user's saved quant. Dropping the ref re-runs this next mount.
+        // Authoritative for this repo: drop a remembered quant it no longer offers, or adoptActiveModel
+        // re-imposes it on the next poll. In-memory only: `partial` here means "still downloading", and
+        // an offline reply lists just the cache, so neither is grounds to delete the user's saved quant.
         const remembered = rememberedVariant(selectedModel);
         if (remembered && !available.has(remembered)) {
           chosenVariant.current = null;
