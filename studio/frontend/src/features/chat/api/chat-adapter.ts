@@ -285,6 +285,7 @@ import {
   budgetImpliesTruncation,
   CONTINUE_INSTRUCTION,
   createContinuationMerger,
+  hasRenderableContent,
   incompleteLabel,
   type IncompleteReason,
   readIncompleteInfo,
@@ -2599,10 +2600,10 @@ const DEFAULT_CHAT_MODEL_LABEL = "Gemma 4 E2B";
 
 function formatDownloadBytes(bytes: number): string {
   if (!(bytes > 0)) return "";
-  const gb = bytes / 1024 ** 3;
+  const gb = bytes / 1000 ** 3;
   return gb >= 1
     ? `${gb.toFixed(1)} GB`
-    : `${Math.max(1, Math.round(bytes / 1024 ** 2))} MB`;
+    : `${Math.max(1, Math.round(bytes / 1000 ** 2))} MB`;
 }
 
 /** Fetch the default through the Hub download manager rather than inline in /load: that gives
@@ -4245,6 +4246,8 @@ export function createOpenAIStreamAdapter(
                     researchExternalProvider.providerType,
                     researchExternalSelection.modelId,
                   ),
+                  supportsReasoning: runtime.supportsReasoning,
+                  supportsReasoningOff: runtime.supportsReasoningOff,
                 }
               : undefined,
           temperature: params.temperature,
@@ -7843,16 +7846,18 @@ export function createOpenAIStreamAdapter(
         );
 
         reasoningDurationTracker.finishGroup();
-        const finalIncompleteReason = resolveIncompleteReason(
-          incompleteReason,
-          contextWindowExceeded,
-        );
+        const finalContent = [
+          ...buildAssistantContent(mergeContinuation(cumulativeText, { final: true })),
+          ...sourceParts,
+          ...documentCitationParts,
+        ];
+        const finalIncompleteReason =
+          resolveIncompleteReason(incompleteReason, contextWindowExceeded) ??
+          // A run can stop cleanly on its first token and leave nothing behind.
+          // Saved as complete that is a blank bubble with no way out.
+          (hasRenderableContent(finalContent) ? null : "empty");
         yield {
-          content: [
-            ...buildAssistantContent(mergeContinuation(cumulativeText, { final: true })),
-            ...sourceParts,
-            ...documentCitationParts,
-          ],
+          content: finalContent,
           metadata: {
             timing: finalTiming,
             custom: {

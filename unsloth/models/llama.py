@@ -3404,13 +3404,19 @@ class FastLlamaModel:
         # Does not get lora yet, so take the name from model, not base model.
         is_classification = "Classification" in str(type(model))
 
+        # Per-expert Linear expert layouts (gpt-oss bnb-4bit) are Linear modules, not fused Parameters,
+        # so target them via target_modules. Resolved before the Parameter detection below so the
+        # two share one walk of the model; neither call mutates anything.
+        _moe_module_targets = get_moe_target_modules(model, target_modules)
+
         # Auto-detect MoE models and populate target_parameters for expert layers.
         if target_parameters is None:
-            target_parameters = get_moe_target_parameters(model, target_modules)
+            target_parameters = get_moe_target_parameters(
+                model,
+                target_modules,
+                moe_module_targets = _moe_module_targets,
+            )
 
-        # Per-expert Linear expert layouts (gpt-oss bnb-4bit) are Linear modules, not fused Parameters,
-        # so target them via target_modules.
-        _moe_module_targets = get_moe_target_modules(model, target_modules)
         if _moe_module_targets:
             _added = [t for t in _moe_module_targets if t not in final_modules]
             final_modules.extend(_added)

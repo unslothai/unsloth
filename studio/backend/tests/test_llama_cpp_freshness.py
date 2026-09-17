@@ -371,6 +371,24 @@ def test_check_prebuilt_freshness_fails_open_when_github_unreachable(monkeypatch
     assert info["latest_tag"] is None
 
 
+def test_check_prebuilt_freshness_skips_github_when_update_checks_disabled(monkeypatch, tmp_path):
+    install_dir = tmp_path / "llama.cpp"
+    _write_marker(install_dir, tag = "b9190")
+    bin_path = _fake_binary(install_dir)
+
+    def _fetch(repo, timeout = 5.0):
+        raise AssertionError("fetched a release despite UNSLOTH_DISABLE_UPDATE_CHECK=1")
+
+    monkeypatch.setattr(fr, "_fetch_latest_release_tag", _fetch)
+    monkeypatch.setenv("UNSLOTH_DISABLE_UPDATE_CHECK", "1")
+    info = fr.check_prebuilt_freshness(str(bin_path))
+    assert info["has_marker"] is True
+    assert info["installed_tag"] == "b9190"
+    assert info["latest_tag"] is None
+    assert info["behind"] is False
+    assert info["stale"] is False
+
+
 def test_check_prebuilt_freshness_handles_unparseable_install_timestamp(monkeypatch, tmp_path):
     install_dir = tmp_path / "llama.cpp"
     _write_marker(install_dir, tag = "b9190", installed_at_utc = "not-a-date")
