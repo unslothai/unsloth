@@ -545,6 +545,13 @@ def _remote_untrainable_model_format(
                 ),
             ) from error
 
+    if load_in_4bit and getattr(info, "gated", False):
+        from utils.transformers_version import latest_tier_active_for
+
+        # The start flips a latest-sidecar model to a 16-bit load, which has its own mapping.
+        if latest_tier_active_for(repo_id, account_hf_token(hf_token)):
+            load_in_4bit = False
+
     # Gated model metadata is public, so verify access to its files separately.
     if getattr(info, "gated", False) and unsloth_public_mirror(repo_id, load_in_4bit) is None:
         from urllib.parse import quote

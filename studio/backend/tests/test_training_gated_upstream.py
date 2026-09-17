@@ -361,3 +361,21 @@ def test_load_model_gate_checks_the_repo_the_loader_fetches(mapper, monkeypatch)
     trainer = trainer_mod.UnslothTrainer()
     assert trainer.load_model("google/gemma-3-270m-it", load_in_4bit = False) is False
     assert checked == ["unsloth/gemma-3-270m-it"]
+
+
+@pytest.mark.parametrize("sidecar,checked", [(False, False), (True, True)])
+def test_the_latest_sidecar_flip_is_folded_into_the_mode(mapper, monkeypatch, sidecar, checked):
+    import utils.transformers_version as tv
+
+    session = _Session(_http_error(401))
+    _route(monkeypatch, gated = "manual", session = session)
+    monkeypatch.setattr(tv, "latest_tier_active_for", lambda *a, **kw: sidecar)
+
+    model = "meta-llama/Meta-Llama-3-70B-Instruct"
+    if checked:
+        with pytest.raises(HTTPException) as error:
+            tr._remote_untrainable_model_format(model, None)
+        assert error.value.detail["code"] == "hf_model_access_denied"
+    else:
+        assert tr._remote_untrainable_model_format(model, None) is None
+    assert bool(session.urls) is checked
