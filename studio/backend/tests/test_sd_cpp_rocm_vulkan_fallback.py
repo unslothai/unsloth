@@ -2894,5 +2894,5 @@ def test_constructing_the_backend_does_not_claim_a_card_for_its_thread():
 
     # And the load clears it on the way out, on every path.
     run_load = inspect.getsource(sd_cpp_backend.SdCppDiffusionBackend._run_load)
-    finally_block = run_load[run_load.rindex("finally:"):]
+    finally_block = run_load[run_load.rindex("finally:") :]
     assert "_clear_loading_card()" in finally_block
