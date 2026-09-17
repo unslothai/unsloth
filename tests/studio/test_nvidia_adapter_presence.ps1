@@ -401,6 +401,76 @@ if ($nvArm.Success) {
     Check "and says why, rather than silently installing CPU wheels" (
         $arm -match 'predates R450')
 }
+# The bus-only host whose driver IS in the table. install.ps1 selects from the floor and setup did
+# not, so the two routers disagreed by two whole families: an R450 to R524 driver maps to CUDA 11.0
+# and install.ps1 picks cu118, while setup fell through to cu126, which that driver cannot load.
+if ($nvArm.Success) {
+    $arm = $nvArm.Value
+    Check "setup.ps1 selects from the recorded floor" (
+        $arm -match '\$script:NvidiaPresenceCudaFloor')
+    # Only when nothing cu* is installed. An existing cu130 venv must not be pulled back to a
+    # FLOOR: that is the do-not-wipe escape (#9255), and it is why Get-PytorchCudaTag still
+    # returns empty rather than guessing.
+    Check "and only when no CUDA family is already installed" (
+        $arm -match '-not \(Test-CudaFamilyLeaf \$installedTorchTag\)[\s\S]{0,80}?NvidiaPresenceCudaFloor')
+    # Through the shared ladder, never by formatting the digits: CUDA 11.0 is served by cu118, and
+    # a leaf built from the digits would be "cu110", an index nothing publishes.
+    Check "through the shared ladder rather than by formatting the digits" (
+        $arm -match 'Get-CudaFamilyForVersion -Major \$floorMajor' -and
+        $arm -notmatch 'cu\$floorMajor')
+    # And the same pre-Turing cap install.ps1 applies, since nothing here named a capability.
+    Check "and applies the same pre-Turing cap" (
+        $arm -match '\$floorMajor -gt 12 -or \(\$floorMajor -eq 12 -and \$floorMinor -gt 6\)')
+    Check "and the pre-R450 arm still decides first" (
+        $arm.IndexOf('NvidiaPresenceDriverRelease') -lt $arm.IndexOf('NvidiaPresenceCudaFloor'))
+}
+
+# One ladder, two callers, and it must be the SAME ladder install.ps1 uses or the two installers
+# hand one host different wheels. Compared as normalised text, then driven for real.
+$ladderFn = Get-FunctionText $setupPs1 "Get-CudaFamilyForVersion"
+Check "setup.ps1 names the ladder once (bites)" ($ladderFn.Length -gt 50)
+$ladderRows = [regex]::Matches($ladderFn, '(?m)^\s*(?:if|elseif|return)[^\r\n]*cu\d+[^\r\n]*$')
+$installLadder = [regex]::Matches(
+    (Get-FunctionText $installPs1 "Get-TorchIndexUrl"), '(?m)^\s*(?:if|elseif)[^\r\n]*\$family = "cu\d+"[^\r\n]*$')
+Check "install.ps1's inline ladder was found (bites)" ($installLadder.Count -ge 5)
+$norm = {
+    param($text)
+    (($text -replace '(?i)\$Major', '$major') -replace '(?i)\$Minor', '$minor') -replace '\s+', ' '
+}
+$setupConds = @($ladderRows | ForEach-Object {
+    $m = [regex]::Match($_.Value, '\((?<c>[^)]*(?:\([^)]*\)[^)]*)*)\)\s*\{')
+    if ($m.Success) { (& $norm $m.Groups['c'].Value).Trim() }
+})
+$installConds = @($installLadder | ForEach-Object {
+    $m = [regex]::Match($_.Value, '\((?<c>[^)]*(?:\([^)]*\)[^)]*)*)\)\s*\{')
+    if ($m.Success) { (& $norm $m.Groups['c'].Value).Trim() }
+})
+Check "both ladders have the same number of rungs" ($setupConds.Count -eq $installConds.Count)
+Check "and the rungs test the same conditions in the same order" (
+    ($setupConds -join '|') -eq ($installConds -join '|'))
+
+# Driven, because identical text is not the same as the same answer. These are the versions the
+# driver floor table actually produces, plus the boundaries either side of every rung.
+Invoke-Expression $ladderFn
+foreach ($row in @(
+    @{ M = 10; N = 2; Want = "cpu" },
+    @{ M = 11; N = 0; Want = "cu118" },
+    @{ M = 11; N = 8; Want = "cu118" },
+    @{ M = 12; N = 0; Want = "cu124" },
+    @{ M = 12; N = 5; Want = "cu124" },
+    @{ M = 12; N = 6; Want = "cu126" },
+    @{ M = 12; N = 7; Want = "cu126" },
+    @{ M = 12; N = 8; Want = "cu128" },
+    @{ M = 12; N = 9; Want = "cu128" },
+    @{ M = 13; N = 0; Want = "cu130" }
+)) {
+    Check "CUDA $($row.M).$($row.N) is served by $($row.Want)" (
+        (Get-CudaFamilyForVersion -Major $row.M -Minor $row.N) -eq $row.Want)
+}
+# The one that made this a bug rather than a nicety: an R450 to R524 driver.
+Check "an R450 driver's floor lands on cu118, not a cu110 that does not exist" (
+    (Get-CudaFamilyForVersion -Major 11 -Minor 0) -eq "cu118")
+
 Check "install.ps1 answers the same way for the same host" (
     (Get-FunctionText $installPs1 "Get-TorchIndexUrl") -match '(?s)NvidiaPresenceDriverRelease -lt 450[\s\S]{0,1200}?/cpu')
 

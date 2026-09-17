@@ -153,7 +153,7 @@ function Get-NvidiaLibraryInventory { param([int]$TimeoutSec = 10) return $scrip
 Write-Host ""
 Write-Host "=== studio/setup.ps1 ==="
 foreach ($src in (Get-HelperSources $setupPs1 @("Get-NvidiaCu126Verdict", "Get-CudaFamilyCappedForPreTuring",
-        "Get-PytorchCudaTag", "Get-CudaComputeCapability", "Get-LlamaUpdateFailReason",
+        "Get-CudaFamilyForVersion", "Get-PytorchCudaTag", "Get-CudaComputeCapability", "Get-LlamaUpdateFailReason",
         "Get-PrebuiltMarkerBackend", "Get-GpuPrebuiltToKeepOverSourceBuild"))) {
     Invoke-Expression $src
 }

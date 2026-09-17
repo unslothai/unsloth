@@ -1300,6 +1300,24 @@ function Get-NvidiaLibraryInventory {
 # ── END SHARED WITH install.ps1 (Get-NvidiaLibraryInventory) ──
 
 # Detect driver's max CUDA version from nvidia-smi and return the highest
+# A CUDA version to the PyTorch family that serves it. One function because two callers need the
+# same answer: Get-PytorchCudaTag, which reads the version from nvidia-smi or the driver library,
+# and the bus-only router, which reads a FLOOR off the display driver. Character for character the
+# ladder install.ps1's Get-TorchIndexUrl uses, and a test asserts the two stay identical: they are
+# the same decision made from different sources, and disagreeing by a family means one installer
+# hands a host wheels the other would not.
+#
+# PyTorch 2.10 offers: cu124, cu126, cu128, cu130. Anything below CUDA 11 gets "cpu".
+function Get-CudaFamilyForVersion {
+    param([int]$Major, [int]$Minor)
+    if ($Major -ge 13)                        { return "cu130" }
+    elseif ($Major -eq 12 -and $Minor -ge 8)  { return "cu128" }
+    elseif ($Major -eq 12 -and $Minor -ge 6)  { return "cu126" }
+    elseif ($Major -ge 12) { return "cu124" }
+    elseif ($Major -ge 11) { return "cu118" }
+    return "cpu"
+}
+
 # compatible PyTorch CUDA index tag (e.g. "cu128").
 # PyTorch on Windows ships CPU-only by default from PyPI; CUDA wheels live at
 # https://download.pytorch.org/whl/<tag>. The tag must not exceed the driver's
@@ -1331,13 +1349,8 @@ function Get-PytorchCudaTag {
         $minor = $inventory.CudaMinor
         $caps = $inventory.ComputeCaps
     }
-    # PyTorch 2.10 offers: cu124, cu126, cu128, cu130
-    if ($major -ge 13)                        { $family = "cu130" }
-    elseif ($major -eq 12 -and $minor -ge 8)  { $family = "cu128" }
-    elseif ($major -eq 12 -and $minor -ge 6)  { $family = "cu126" }
-    elseif ($major -ge 12) { $family = "cu124" }
-    elseif ($major -ge 11) { $family = "cu118" }
-    else { return "cpu" }
+    $family = Get-CudaFamilyForVersion -Major $major -Minor $minor
+    if ($family -eq "cpu") { return "cpu" }
     return (Get-CudaFamilyCappedForPreTuring $family $smiExe $caps)
 }
 
@@ -7247,6 +7260,33 @@ if ($PinnedTorchIndexUrl) {
         # incomplete venv reaches this arm without install.ps1 ever having chosen for it.
         $CuTag = "cpu"
         substep "an NVIDIA GPU is present but its driver ($script:NvidiaPresenceDriverRelease series) predates R450 and carries no usable CUDA runtime; installing CPU wheels. Update the NVIDIA driver and re-run to get CUDA" "Yellow"
+    }
+    if (-not $CuTag -and -not (Test-CudaFamilyLeaf $installedTorchTag) -and
+        $script:NvidiaPresenceCudaFloor) {
+        # A bus-only host whose display driver IS in the table. install.ps1 selects from the floor
+        # here and setup did not, so the two routers disagreed by two whole families: an R450 to
+        # R524 driver maps to CUDA 11.0 and install.ps1 picks cu118, while this arm fell through to
+        # cu126, which that driver cannot load.
+        #
+        # Only when nothing is installed. An existing cu* venv still wins, because the floor is a
+        # FLOOR and a working cu130 environment must not be pulled back to it: that is the
+        # do-not-wipe escape (#9255), and it is why Get-PytorchCudaTag still returns empty rather
+        # than guessing. The floor decides a fresh install, not an update.
+        $floorMajor = [int]$script:NvidiaPresenceCudaFloor[0]
+        $floorMinor = [int]$script:NvidiaPresenceCudaFloor[1]
+        # The same pre-Turing cap install.ps1 applies, and for the same reason. Nothing here named
+        # the GPU's compute capability, so a floor of 12.8 or 13.0 would pick a family whose torch
+        # wheels start at sm_75, and a pre-Turing card (a V100 is sm_70) would install torch and
+        # fail at the first kernel with no kernel image available. cu126 is the widest family still
+        # built for sm_70, and it is also what the no-floor branch below already gives.
+        if ($floorMajor -gt 12 -or ($floorMajor -eq 12 -and $floorMinor -gt 6)) {
+            $floorMajor = 12; $floorMinor = 6
+        }
+        # Through the shared ladder, never by formatting "cu$major$minor": CUDA 11.0 is served by
+        # cu118, not by a cu110 that does not exist, and install.ps1 answers cu118 for exactly this
+        # host. A leaf built from the digits would have invented an index nothing publishes.
+        $CuTag = Get-CudaFamilyForVersion -Major $floorMajor -Minor $floorMinor
+        substep "nvidia-smi and the NVIDIA driver library are both unavailable; the display driver supports at least CUDA $floorMajor.$floorMinor, installing torch $CuTag" "Yellow"
     }
     if (-not $CuTag) {
         # Unknown driver version: the installed family, else the widest wheel.
