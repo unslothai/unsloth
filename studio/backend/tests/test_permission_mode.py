@@ -3256,6 +3256,33 @@ def test_auto_mode_prompts_on_dangerous_mcp_work(name):
     assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}{name}", {"code": "x"}) is True
 
 
+# An MCP name may separate its terms with any character the spec allows, and those names now ship to the
+# model under an alias instead of being dropped. The classifier reads the raw name, so a verb behind a "."
+# or a " " has to weigh exactly as much as the same verb behind a "_".
+@pytest.mark.parametrize(
+    "dotted, underscored",
+    [
+        ("get_file.delete", "get_file_delete"),
+        ("read_file.secret", "read_file_secret"),
+        ("delete.catalog-entity", "delete_catalog_entity"),
+        ("fetch:api.key", "fetch_api_key"),
+        ("get file/secret", "get_file_secret"),
+        ("catalog.get-catalog-entity", "catalog_get_catalog_entity"),
+        ("list.issues", "list_issues"),
+        ("search.catalog-entities", "search_catalog_entities"),
+    ],
+)
+def test_a_separator_never_changes_what_an_mcp_name_classifies_as(dotted, underscored):
+    from core.inference.tools import _mcp_specs_for_server
+
+    server = {"id": "0123456789abcdef", "display_name": "S"}
+    specs = _mcp_specs_for_server(server, [{"name": dotted}])
+    alias = specs[0]["function"]["name"]
+    plain = f"{MCP_TOOL_PREFIX}{server['id']}__{underscored}"
+    assert is_high_risk_tool_call(alias, {}) is is_high_risk_tool_call(plain, {})
+    assert is_potentially_unsafe_tool_call(alias, {}) is is_potentially_unsafe_tool_call(plain, {})
+
+
 # The reported sandbox escape (HF discussion #107, Desktop v0.1.808-beta): the session sandbox directory is a working
 # directory, not an OS boundary, so an ABSOLUTE path in a tool call reaches the user's real filesystem with their own
 # permissions. Deletion already prompted; reading and overwriting did not. These are the reporter's own operations,

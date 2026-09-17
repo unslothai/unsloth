@@ -20,6 +20,52 @@ export const hi = {
     settings: "संदेश इनपुट की सेटिंग",
     preview: "फ़ॉर्मैट किया हुआ पूर्वावलोकन",
   },
+  promptQueue: {
+    loading: "कतार के संदेश लोड हो रहे हैं",
+    listLabel: "कतार के संदेश",
+    regionLabel: "संदेश कतार, {total} में से {current}",
+    itemLabel: "कतार का संदेश {total} में से {position}: {prompt}",
+    reorderInstructions: "क्रम बदलने के लिए हैंडल को खींचें। हैंडल पर फ़ोकस होने पर ऊपर या नीचे तीर से एक स्थान खिसकाएँ, या Home या End से शुरुआत या अंत में ले जाएँ।",
+    dragTooltip: "क्रम बदलने के लिए खींचें",
+    reorderLabel: "कतार के संदेश {total} में से {position} का क्रम बदलें",
+    paused: "रुका हुआ",
+    steer: "दिशा बदलें",
+    steerTooltip: "उत्तर रोककर यह संदेश अगला भेजें",
+    steerLabel: "कतार के संदेश {position} से दिशा बदलें",
+    removeTooltip: "कतार से हटाएँ",
+    removeLabel: "कतार का संदेश {position} हटाएँ",
+    moreTooltip: "और विकल्प",
+    moreLabel: "कतार के संदेश {position} के लिए और विकल्प",
+    editItem: "संदेश संपादित करें",
+    copyItem: "संदेश कॉपी करें",
+    editLabel: "कतार का संदेश {position} संपादित करें",
+    cancel: "रद्द करें",
+    save: "सहेजें",
+    turnOffQueueing: "कतार बंद करें",
+    turnOnQueueing: "कतार चालू करें",
+    resume: "कतार फिर से शुरू करें",
+    queueButton: "संदेश कतार में जोड़ें",
+    steerButton: "उत्तर की दिशा बदलें",
+    sendTooltip: "संदेश भेजें ({shortcut})",
+    sendLabel: "संदेश भेजें",
+    followUpTooltip: "{action} ({send}) · विपरीत के लिए {opposite}",
+    announceUpdated: "कतार का संदेश अपडेट हो गया।",
+    announceEditFailed: "कतार बदल जाने के कारण यह संदेश अब संपादित नहीं किया जा सकता।",
+    announceRemoved: "संदेश कतार से हटा दिया गया।",
+    announceSteered: "यह संदेश अगला उत्तर की दिशा बदलेगा।",
+    announceSteerFailed: "यह संदेश उत्तर की दिशा नहीं बदल सका। कतार जाँचें और फिर कोशिश करें।",
+    announceCopied: "संदेश कॉपी हो गया।",
+    announceCopyFailed: "यह संदेश कॉपी नहीं हो सका। फिर कोशिश करें।",
+    announceQueueingOn: "नए अगले संदेश मौजूदा उत्तर के बाद कतार में जुड़ेंगे।",
+    announceQueueingOff: "नए अगले संदेश मौजूदा उत्तर की दिशा बदलेंगे।",
+    announceMoved: "संदेश {total} में से {position} स्थान पर ले जाया गया।",
+    announceMoveFailed: "इस संदेश को खिसकाने से पहले कतार बदल गई। फिर कोशिश करें।",
+    announceDragReset: "कतार बदल गई। बाकी संदेशों का क्रम बदलने के लिए फिर से खींचें।",
+    editingHint: "संदेश संपादित हो रहा है",
+    queueingOffHint: "नए संदेश मौजूदा उत्तर रोककर अगले चलते हैं।",
+    queueingOnHint: "नए संदेश अपनी बारी का इंतज़ार कर क्रम से चलते हैं।",
+    queueingHintShared: "कतार के संदेश बने रहते हैं।",
+  },
   picker: {
     onDevice: "डिवाइस पर",
     huggingFace: "Hugging Face",
@@ -1430,6 +1476,31 @@ export const hi = {
       },
     },
     chat: {
+      groups: {
+        conversations: { title: "बातचीत" },
+        files: { title: "फ़ाइलें और पेस्ट" },
+        display: { title: "दिखावट" },
+        composer: { title: "संदेश बॉक्स" },
+        menu: { title: "चैट मेन्यू" },
+        advanced: { title: "उन्नत" },
+        contextTitle: "संदर्भ",
+      },
+      projectAttachmentsHint:
+        "हर चैट के अटैचमेंट मेन्यू से इस सेटिंग को अलग से बदलें।",
+      rememberParamsPerModelHint:
+        "बंद होने पर सभी मॉडल एक ही सेटिंग इस्तेमाल करते हैं।",
+      autoCompactHint:
+        "उपलब्ध VRAM के बजाय आपके तय किए गए संदर्भ की लंबाई का उपयोग करता है।",
+      pastedTextShortDescription:
+        "{count} या अधिक अक्षरों वाला पेस्ट किया गया टेक्स्ट .txt अटैचमेंट बन जाता है। छोटा टेक्स्ट संदेश बॉक्स में रहता है।",
+      pastedTextOffDescription:
+        "पेस्ट किया गया सारा टेक्स्ट संदेश बॉक्स में रहता है, चाहे उसकी लंबाई कितनी भी हो।",
+      compactionDescriptionInherit:
+        "सर्वर की संदर्भ नीति का पालन करें।",
+      compactionDescriptionCheckpoint:
+        "सबसे हाल का संवाद और स्थायी निर्देश बनाए रखें।",
+      compactionDescriptionRolling:
+        "पुराने संवाद हटाकर हाल का इतिहास और चुनी गई अतिरिक्त खाली जगह बनाए रखें।",
       projectsSection: "प्रोजेक्ट अनुभाग दिखाएँ",
       projectsSectionDescription:
         "प्रोजेक्ट चैट को प्रोजेक्ट शीर्षक के नीचे समूहित करता है। बंद करने पर वे हाल ही के अंतर्गत दिखती हैं।",
@@ -1459,7 +1530,8 @@ export const hi = {
         exportChat: "चैट एक्सपोर्ट करें",
       },
       pastedTextThreshold: "लंबे पेस्ट को संक्षिप्त करें",
-      pastedTextThresholdDescription: "इससे लंबा चिपकाया गया टेक्स्ट संदेश बॉक्स भरने के बजाय .txt अटैचमेंट बन जाता है। {shortcut} दबाने पर यह फिर भी संदेश बॉक्स में चिपकेगा।",
+      pastedTextThresholdDescription:
+        "सीधे संदेश बॉक्स में पेस्ट करने के लिए {shortcut} दबाएँ।",
       pastedTextThresholdOff: "बंद",
       showResponseModel: "जवाब देने वाला मॉडल दिखाएँ",
       showResponseModelDescription:
@@ -1469,13 +1541,13 @@ export const hi = {
         'चैट बॉक्स के नीचे "LLMs can make mistakes" दिखाएं।',
       projectAttachments: "प्रोजेक्ट भर में फ़ाइलें साझा करें",
       projectAttachmentsDescription:
-        "किसी प्रोजेक्ट से जुड़ी चैट में संलग्न फ़ाइलों के लिए डिफ़ॉल्ट: उन्हें पूरे प्रोजेक्ट के लिए इंडेक्स करें ताकि उसकी हर चैट उनका उपयोग कर सके. हर चैट इसे अटैच मेनू से बदल सकती है.",
+        "नए चैट अटैचमेंट प्रोजेक्ट की हर चैट में उपलब्ध कराएँ।",
       rememberParamsPerModel: "हर मॉडल के लिए सेटिंग्स याद रखें",
       rememberParamsPerModelDescription:
-        "मॉडल बदलने पर उस मॉडल के साथ आपने आखिरी बार जो तापमान, प्रॉम्प्ट और अन्य सेटिंग्स इस्तेमाल की थीं, वे वापस आ जाती हैं। बंद होने पर सभी मॉडलों के लिए एक ही सेट रहता है।",
+        "हर मॉडल के साथ आखिरी बार इस्तेमाल किए गए प्रॉम्प्ट, तापमान और अन्य सेटिंग्स वापस लाएँ।",
       autoCompact: "लंबी चैट को अपने आप कॉम्पैक्ट करें",
       autoCompactDescription:
-        "जब लोकल GGUF चैट सेट की गई कॉन्टेक्स्ट लंबाई तक पहुँच जाए, तो त्रुटि लौटाने के बजाय पुराने टर्न हटा दें। यह खाली VRAM पर आधारित नहीं है।",
+        "लोकल GGUF चैट की कॉन्टेक्स्ट सीमा भरने पर पुराने टर्न हटाएँ।",
       compactionStyle: "कॉन्टेक्स्ट भरने पर",
       compactionStyleDescription:
         "सर्वर डिफ़ॉल्ट से UNSLOTH_CONTEXT_POLICY बना रहता है। बातचीत रीसेट करने पर नवीनतम टर्न और स्थायी निर्देश रहते हैं। स्लाइडिंग विंडो सबसे पुराने टर्न हटाती है और हाल का अधिक इतिहास रख सकती है।",
@@ -1508,7 +1580,7 @@ export const hi = {
         title: "वेब खोज",
         images: "वेब खोज से छवियाँ दिखाएँ",
         imagesDescription:
-          "वेब खोज को छवियाँ लौटाने दें और उत्तर में सूचीबद्ध हर चीज़ के लिए एक छवि लाएँ। थंबनेल Unsloth द्वारा लाए और छोटे किए जाते हैं, इसलिए ब्राउज़र कभी छवि होस्ट से संपर्क नहीं करता।",
+          "खोज के नतीजों में छवियाँ शामिल करें।",
       },
       artifacts: {
         title: "Canvas",
