@@ -44,9 +44,9 @@ foreach ($name in @(
     Invoke-Expression $fn[0].Extent.Text
 }
 
-# The two rungs above the new one, forced off. This is the state it exists to improve.
-function Initialize-StudioProcessImageNativeType { return $false }
-function Get-StudioNativeProcessImagePath { param([int]$ProcessId) return $null }
+# The emitted rung that used to sit at the top is gone. Get-Process, which is the rung above this
+# one now, and the WMI rung below it are both forced off: this is the state the ctypes rung exists
+# to improve, and on a host where either of them answers nothing here ever runs.
 function Get-Process { param($Id, $ErrorAction) throw "no such process" }
 function Get-CimInstance { param($ClassName, $ErrorAction) throw "WMI is unavailable" }
 function Write-StudioLine { param([string]$Line, [string]$ForegroundColor = "") }
@@ -430,25 +430,25 @@ Check "the probe declares CloseHandle's argument type" (
 Check "the probe asks for the limited-information right only" ($probeText -match "OpenProcess\(0x1000,")
 # EnumProcesses reports the bytes it used. Equal to the buffer size means it may have run out, so
 # only a strictly smaller figure proves the enumeration was complete.
-# Exactness. This rung and the native rung must return the SAME string for the same process, or
-# Test-StudioProtectedPathMatch compares a path from one against a path recorded by the other and
-# sees a difference that is not there. They agree by construction only if the underlying call is
-# identical: same access right, same flags argument (0 is the Win32 path form; 1 would return
-# \Device\HarddiskVolume1\... instead), same buffer size. Read both out of the file and compare.
-$nativeInit = ($ast.FindAll({ param($n)
-    $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
-    $n.Name -eq "Get-StudioNativeProcessImagePath" }, $true)[0]).Extent.Text
-# The native rung names the constant rather than inlining it, so follow the name to its value.
-$nativeRight = if ($nativeInit -match '\$queryLimitedInformation\s*=\s*\[uint32\](0x[0-9a-fA-F]+)') { $Matches[1] } else { "" }
-Check "the native rung asks for the same access right the probe does" (
-    $nativeRight -eq "0x1000" -and
-    $nativeInit -match "OpenProcess\(\s*\r?\n?\s*\`$queryLimitedInformation," -and
+# Exactness. There is no longer a native rung to agree WITH: the emitted
+# UnslothStudioProcessImageV1 type is gone and this ctypes probe is the only caller of
+# OpenProcess and QueryFullProcessImageNameW in the installer. What still matters is that the
+# call it makes is the one the native rung used to make, because Test-StudioProtectedPathMatch
+# compares paths this returns against paths recorded by earlier installs that used the native
+# rung. Same access right, same flags argument (0 is the Win32 path form; 1 would return
+# \Device\HarddiskVolume1\... instead), same buffer size. Those three constants are pinned
+# here directly rather than by comparison, since there is nothing left to compare against.
+Check "the probe asks for PROCESS_QUERY_LIMITED_INFORMATION, as the native rung did" (
     $probeText -match "OpenProcess\(0x1000,")
-Check "both pass flags 0, so both get the Win32 path form and not the device form" (
-    $nativeInit -match "QueryFullProcessImageNameW\(\s*\`$handle,\s*\[uint32\]0," -and
+Check "it passes flags 0, so it gets the Win32 path form and not the device form" (
     $probeText -match "QueryFullProcessImageNameW\(h,0,")
-Check "both size the buffer the same" (
-    $nativeInit -match "32768" -and $probeText -match "create_unicode_buffer\(32768\)")
+Check "it sizes the buffer as the native rung did" (
+    $probeText -match "create_unicode_buffer\(32768\)")
+# And the rung it replaced really is gone, rather than merely unreferenced by this test.
+$installWhole = [System.IO.File]::ReadAllText($installPs1)
+Check "no emitted process-image type remains" ($installWhole -notmatch "UnslothStudioProcessImageV1")
+Check "no native process-image helper remains" (
+    $installWhole -notmatch "Get-StudioNativeProcessImagePath|Initialize-StudioProcessImageNativeType")
 
 Check "the probe grows its buffer until the enumeration is provably complete" (
     $probeText -match "b\.value\s*<\s*ctypes\.sizeof\(a\)")

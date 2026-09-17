@@ -172,8 +172,9 @@ jobs:
               $seen.Compilers | ForEach-Object { Write-Host "COMPILER: $_" }
               throw ("the installer spawned $($seen.Compilers.Count) compiler process(es). This is " +
                      "the chain that was blocked in the field: a windowless PowerShell launching " +
-                     "csc.exe and dropping a DLL in TEMP. Declare native methods with " +
-                     "New-StudioEmittedNativeType.")
+                     "csc.exe and dropping a DLL in TEMP. Nothing in the installer declares a " +
+                     "native method any more: reach the entry point through a child interpreter " +
+                     "and ctypes, as the path resolver and the GPU inventory do.")
           }
           if ($seen.TempLibraries) {
               $seen.TempLibraries | ForEach-Object { Write-Host "TEMP DLL: $_" }

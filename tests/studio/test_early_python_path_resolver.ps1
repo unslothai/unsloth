@@ -1,17 +1,19 @@
 #!/usr/bin/env pwsh
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# When the native path resolver cannot answer, ask Python before giving up on an exact identity.
+# Ask Python for an exact path identity, which is the only way the installer asks for one now.
 #
-# os.path.realpath calls GetFinalPathNameByHandleW on Windows, so it follows junctions, symlinks
-# and SUBST drives, expands 8.3 names and reports the stored casing: the same answer the native
-# helper gives. unsloth_cli/_studio_runtime_gate.py already derives the runtime lock name from
-# os.path.realpath, so an answer from this rung agrees with a running Unsloth by construction
-# rather than by two implementations happening to match.
+# pathlib.Path.resolve calls GetFinalPathNameByHandleW on Windows, so it follows junctions, symlinks
+# and SUBST drives, expands 8.3 names and reports the stored casing: the same answer the emitted
+# CreateFileW / GetFinalPathNameByHandleW rung used to give, from the same system call.
+# unsloth_cli/_studio_runtime_gate.py already derives the runtime lock name from the same
+# expression, so an answer from this rung agrees with a running Unsloth by construction rather than
+# by two implementations happening to match.
 #
-# The rung is strictly additive. It runs only where the native resolver already returned nothing,
-# which is what happens under Constrained Language Mode, under WDAC Dynamic Code Security, and on
-# any host where kernel32 will not resolve. A host that resolves natively is untouched.
+# This rung was additive when it was added, sitting under an emitted resolver. That resolver is gone
+# -- it was the largest single contributor to a behavioural antivirus verdict on the shipped
+# installer -- so this is the top rung, and the lexical answer with Exact = $false is what sits
+# below it.
 # Run: pwsh -NoProfile -File tests/studio/test_early_python_path_resolver.ps1
 
 $ErrorActionPreference = "Stop"
@@ -32,7 +34,10 @@ $wanted = @(
     "Remove-StudioTrailingNewline",
     "Invoke-StudioEarlyPythonScriptViaCmdlets", "Get-StudioPythonFinalPath",
     "Resolve-StudioLinkTarget", "Get-StudioSubstTarget", "Get-StudioLexicalPath",
-    "Resolve-StudioFinalPathInfo"
+    "Resolve-StudioFinalPathInfo",
+    # Called by Resolve-StudioFinalPathInfo on the rung below this one. Extracted rather than
+    # stubbed: whether the degradation is announced is part of what the ladder owes its caller.
+    "Write-StudioFinalPathDegraded"
 )
 $extracted = @{}
 foreach ($name in $wanted) {
@@ -45,10 +50,8 @@ foreach ($name in $wanted) {
 }
 
 
-# The native rung, forced off. This is the state the new rung exists to improve: on a host where
-# it works nothing below this file's premise ever runs.
-function Initialize-StudioFinalPathNativeType { return $false }
-function Get-StudioNativeFinalPath { param([string]$Path) return $null }
+# The emitted rung that used to sit above this one is gone, so nothing needs forcing off: the
+# interpreter IS the exact rung now, and the lexical answer is what sits below it.
 function Write-StudioLine { param([string]$Line, [string]$ForegroundColor = "") }
 
 # The list above is hand-written, and install.ps1 moves under it: splitting a body out into a

@@ -202,13 +202,19 @@ Check "the probe still sends the global SHCNE_ASSOCCHANGED broadcast" (
 Check "the probe declares SHChangeNotify's signature" (
     $probeText -match "SHChangeNotify\.argtypes" -and $probeText -match "LPCWSTR")
 
-# The rung above is untouched: this is a fallback, not a replacement. If the type can be defined,
-# the installer must still use it and never reach the child.
+# This is now the ONLY rung, not a fallback. The emitted UnslothShellIconRefresh type it used to
+# sit behind is gone, and with it the hosts where the refresh simply did not happen: under
+# Constrained Language Mode or WDAC the type could not be defined at all, so the icon stayed
+# stale until something else invalidated Explorer's cache. ctypes reaches the same shell32 entry
+# point everywhere.
 $source = Get-Content -LiteralPath $installPs1 -Raw
-Check "the type-defining rung is still tried first" (
-    $source -match "UnslothShellIconRefresh`" -as \[type\]")
-Check "the child is reached only from the catch of that rung" (
-    $source -match "(?s)\}\s*catch\s*\{[^}]*?Invoke-StudioPythonShellIconRefresh")
+Check "no emitted shell-icon type is left to try first" ($source -notmatch "UnslothShellIconRefresh")
+Check "the refresh goes straight through the child interpreter" (
+    $source -match "Invoke-StudioPythonShellIconRefresh")
+# Cosmetic, and it must stay that way: a failure here cannot be allowed to fail an install.
+# Single-quoted, so PowerShell does not eat the `$ as an escape and quietly change the pattern.
+Check "the call is still wrapped so a failure cannot fail the install" (
+    $source -match '(?s)try \{[^{}]*Invoke-StudioPythonShellIconRefresh[^{}]*\} catch \{\}')
 
 if ($failures -gt 0) {
     Write-Host "$failures check(s) failed" -ForegroundColor Red

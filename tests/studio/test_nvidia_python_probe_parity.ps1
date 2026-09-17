@@ -64,7 +64,6 @@ Write-Host "=== the two copies agree ==="
 
 $blockNames = @(
     "Get-NvidiaNvmlLibraryPath",
-    "Get-NvidiaLibraryProbeType",
     "Read-NvidiaLibraryRawViaPython",
     "Read-NvidiaLibraryRaw",
     "Get-NvidiaLibraryInventory"
@@ -91,8 +90,11 @@ Write-Host "=== the embedded probe matches studio/nvidia_probe.py ==="
 
 $referenceProbe = [System.IO.File]::ReadAllText($probePy)
 
-# Every native symbol the emitted type imports, and the two attribute numbers. If the embedded
-# probe and nvidia_probe.py ever disagree on one of these, they are probing different things.
+# Every native symbol the probe calls, and the two attribute numbers. If the embedded probe and
+# nvidia_probe.py ever disagree on one of these, they are probing different things.
+#
+# Two implementations now, not three: the emitted type that carried the same import list is
+# gone, and comparing against its old index would compare the probe with itself.
 $symbols = @(
     "nvmlInit_v2", "nvmlShutdown", "nvmlSystemGetCudaDriverVersion_v2",
     "nvmlDeviceGetCount_v2", "nvmlDeviceGetHandleByIndex_v2", "nvmlDeviceGetCudaComputeCapability",
@@ -101,8 +103,6 @@ $symbols = @(
 foreach ($symbol in $symbols) {
     Check "both the embedded probe and nvidia_probe.py call $symbol" `
         (($installProbe -match [regex]::Escape($symbol)) -and ($referenceProbe -match [regex]::Escape($symbol)))
-    Check "the emitted type imports $symbol too, so all three agree" `
-        ($installParts[1] -match [regex]::Escape($symbol))
 }
 
 # CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR / _MINOR. A wrong number here returns a
@@ -117,8 +117,6 @@ Check "the embedded probe unpacks the version as major*1000 + minor*10" `
     ($installProbe -match 'packed // 1000, \(packed % 1000\) // 10')
 Check "nvidia_probe.py unpacks the version identically" `
     ($referenceProbe -match 'packed // 1000, \(packed % 1000\) // 10')
-Check "the emitted rung unpacks the version identically" `
-    (($installParts[3] -match 'Floor\(\$ver / 1000\)') -and ($installParts[3] -match 'Floor\(\(\$ver % 1000\) / 10\)'))
 
 Check "the embedded probe is stdlib-only" `
     (($installProbe -match '(?m)^import ctypes, os, sys$') -and ($installProbe -notmatch '(?m)^\s*(import|from)\s+(?!ctypes|os|sys)'))
@@ -126,18 +124,25 @@ Check "the embedded probe is stdlib-only" `
 Write-Host ""
 Write-Host "=== the rung stays underneath the emitted one ==="
 
-$rawBlock = & $strip $setupParts[3]
-Check "the emitted rung is attempted first" `
-    ($rawBlock.IndexOf("Get-NvidiaLibraryProbeType") -lt $rawBlock.IndexOf("Read-NvidiaLibraryRawViaPython"))
-Check "Python is only reached when the emitted rung returned nothing" `
-    ($rawBlock -match 'if \(\$native\) \{ return \$native \}')
-# One budget, not two: a driver that wedges the full timeout inside the emitted rung must not
-# then buy a second timeout's worth of child process. Without this the worst case doubles.
-Check "both rungs share one deadline" ($rawBlock -match '\$deadline = \(Get-Date\)\.AddMilliseconds\(\$TimeoutMs\)')
-Check "Python gets only what the emitted rung left" ($rawBlock -match 'Read-NvidiaLibraryRawViaPython -TimeoutMs \$remainingMs')
-Check "an exhausted budget skips the child process entirely" ($rawBlock -match 'if \(\$remainingMs -lt 2000\) \{ return "" \}')
+$rawBlock = & $strip $setupParts[2]
+# ONE rung. The emitted UnslothNvidiaProbeV2 type is gone, so there is no first rung to sit
+# behind, no shared deadline to split and no leftover budget to pass on. The reader hands the
+# whole timeout to the interpreter and does nothing else.
+Check "the reader delegates straight to the Python rung" `
+    ($rawBlock -match 'Read-NvidiaLibraryRawViaPython -TimeoutMs \$TimeoutMs')
+Check "the whole budget goes to it, not a remainder" ($rawBlock -notmatch 'remainingMs')
+Check "there is no emitted rung left to attempt first" ($rawBlock -notmatch 'Get-NvidiaLibraryProbeType|\$native')
+Check "a throw in the rung is an empty answer, not a failed install" ($rawBlock -match 'catch \{ return "" \}')
+# The apparatus is gone from both files, not merely unused by this reader.
+foreach ($file in @($installPs1, $setupPs1)) {
+    $whole = [System.IO.File]::ReadAllText($file)
+    Check "$(Split-Path -Leaf $file) defines no emitted native types at all" (
+        $whole -notmatch 'New-StudioEmittedNativeType|New-StudioDynamicAssembly|DefinePInvokeMethod')
+    Check "$(Split-Path -Leaf $file) no longer carries the capability gate they needed" (
+        $whole -notmatch 'Test-StudioCanDefineNativeTypes')
+}
 
-$pyBlock = & $strip $setupParts[2]
+$pyBlock = & $strip $setupParts[1]
 # The banned constructs are NAMED in this rung's own comments, explaining why they are absent.
 # Matching the raw text would fail on the explanation rather than on the code, so the CLM rows
 # below run against comment-free source. (Found the honest way: they failed on the comments.)
@@ -277,9 +282,9 @@ Write-Host ""
 Write-Host "=== behaviour, driven through the real functions ==="
 
 Invoke-Expression ($setupParts[0])   # Get-NvidiaNvmlLibraryPath
-Invoke-Expression ($setupParts[2])   # Read-NvidiaLibraryRawViaPython
-Invoke-Expression ($setupParts[3])   # Read-NvidiaLibraryRaw
-Invoke-Expression ($setupParts[4])   # Get-NvidiaLibraryInventory
+Invoke-Expression ($setupParts[1])   # Read-NvidiaLibraryRawViaPython
+Invoke-Expression ($setupParts[2])   # Read-NvidiaLibraryRaw
+Invoke-Expression ($setupParts[3])   # Get-NvidiaLibraryInventory
 # The emitted rung declines, which is the whole point: this is what a Constrained Language Mode
 # or WDAC host sees, and the capabilities below are recovered with nothing emitted.
 function Get-NvidiaLibraryProbeType { return $null }

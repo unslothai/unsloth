@@ -105,10 +105,43 @@ is real: a windowless PowerShell spawned by a GUI binary, running a compiler, wr
 content to %TEMP%. The same call also failed outright with CS2001 where %TEMP% was unusable (#9140),
 so this is a robustness fix as much as a detection one.
 
-System.Reflection.Emit builds the identical interop stubs in memory: no compiler process, no source
+System.Reflection.Emit built the identical interop stubs in memory: no compiler process, no source
 file, no DLL, and an empty Assembly.Location. windows-no-compiler-ci.yml is the standing proof --
 4688 process auditing unioned with a live FileSystemWatcher over every temp root, with a positive
-control, requiring zero compiler launches across a full install.
+control, requiring zero compiler launches across a full install. That requirement has not moved; what
+went away is the emit apparatus that replaced the compiler.
+
+### And then no emit either
+
+Emit fixed the compiler shape and did not fix the engine verdict. A controlled pair measured it: the
+same install.ps1 with and without the apparatus, both first-seen so both got a fresh pass, same engine
+build v2021.2.0+4045, same definitions 20260916, 74 engines reporting and zero timeouts on each.
+
+| Sample | Size | Verdict |
+|---|---|---|
+| with the apparatus | 629,894 B | malicious, BehavesLike.PS.Suspicious.jr, 1 / 60 |
+| without it | 594,150 B | undetected, 0 / 61 |
+
+A 550 byte file containing nothing but a DefinePInvokeMethod call scans 0 / 62, and identical-length
+comment filler in place of the apparatus also scans clean, so this is aggregate threshold scoring
+rather than a construct match: the apparatus is the largest single contributor pushing the file over
+the line, not something independently malicious-looking. Both halves of it were independently
+sufficient, so partial removal bought nothing and only full removal could help.
+
+Two things that did NOT move the verdict, both measured rather than assumed. A valid Authenticode
+signature from a Microsoft issued CA: same family, same suffix, on a matched pair. And VirusTotal does
+not parse the signature block on a .ps1 at all, so signer identity is not an input for these assets,
+only for the .exe bundles. Signing is still worth having for AllSigned and RemoteSigned hosts, for
+WDAC and Smart App Control, and as the artifact a false-positive submission asks for.
+
+What replaced the four emitted types imports nothing. Path identity goes through a child interpreter
+running pathlib.Path.resolve, which is GetFinalPathNameByHandleW on Windows, so the exact answer is
+the same string the emitted CreateFileW / GetFinalPathNameByHandleW rung returned. The process image
+lookup and the shell icon refresh call the same entry points through ctypes, and the NVIDIA inventory
+reaches NVML and the CUDA driver API the same way. AMSI does not scan CPython, so the interop left the
+scanned surface rather than moving within it. Where no interpreter can be reached, the path resolver
+answers lexically and reports Exact = $false, which makes the caller take BOTH runtime locks: the
+degradation fails closed.
 
 ## No .vbs launcher
 
@@ -1072,15 +1105,17 @@ def test_the_compiler_window_is_cut_to_size_by_timecreated() -> None:
     )
 
 
-def test_the_native_resolver_still_has_a_lexical_fallback() -> None:
-    """The point of the change is the acquisition, not the ladder: a host where emit fails must
-    degrade exactly as one that could not compile already did.
+def test_the_path_resolver_still_has_a_lexical_fallback() -> None:
+    """The point of the change is the acquisition, not the ladder: a host that cannot reach the
+    exact rung must degrade exactly as one that could not compile already did.
     """
     text = _text("install.ps1")
     assert "Write-StudioFinalPathDegraded" in text
     assert "Get-StudioLexicalPath" in text
-    # Constrained Language Mode forbids defining types at all, by emit as by Add-Type.
-    assert '$languageMode -ne "FullLanguage"' in text
+    # The exact rung is a child interpreter now, and every host that has none lands on the
+    # lexical answer. The kill switch reaches the same branch, which is how it is tested.
+    assert "Get-StudioPythonFinalPath" in text
+    assert "UNSLOTH_EARLY_PYTHON_PROBE" in text
 
 
 # ---------------------------------------------------------------------------
