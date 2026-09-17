@@ -33,6 +33,7 @@ INSTALL_PS1 = ROOT / "install.ps1"
 # adding it here too: a name that is not listed is simply not checked.
 CLM_REACHABLE = (
     "Invoke-StudioEarlyPythonScriptViaCmdlets",
+    "New-StudioChildScriptDirectory",
     "Get-StudioEarlyPython",
     "Invoke-StudioEarlyPython",
     "Get-StudioPythonFinalPath",

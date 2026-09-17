@@ -1031,6 +1031,34 @@ function Get-NvidiaProbePythonExe {
 # ── BEGIN SHARED WITH install.ps1 (Get-NvidiaLibraryInventory) ──
 # nvml.dll sits in System32 with current drivers and under NVSMI with older ones; a bare
 # name reaches only the former, so name the file, as studio/nvidia_probe.py does.
+# A directory for a program this installer is about to hand a child interpreter.
+#
+# Writing the program into the shared %TEMP% and then naming that path to Start-Process leaves a
+# time-of-check to time-of-use gap: any process of the same user can watch the directory and
+# swap the file between the write and the launch. That only becomes a privilege question when
+# THIS shell is elevated, and then it is the whole of one, because the child runs our program
+# with the administrator token.
+#
+# A fresh directory nothing else can predict the name of, then a mandatory integrity label of
+# High on it. An unelevated process of the same user runs at medium integrity and cannot write
+# into a High-labelled directory. A DACL cannot express that: the attacker is the owner, and an
+# owner can always rewrite its own DACL. icacls is the in-box tool for the label and stays
+# reachable under Constrained Language Mode, where the managed ACL APIs do not. On an unelevated
+# run the label cannot be raised and the call simply fails, which costs nothing, since an
+# unelevated child has no token worth stealing.
+#
+# New-Item with -ErrorAction Stop, not -Force: it must FAIL on a directory that already exists,
+# or a pre-created one carrying an attacker's ACL would be adopted instead of refused.
+function New-StudioChildScriptDirectory {
+    $tempRoot = if ($env:TEMP) { $env:TEMP } elseif ($env:TMPDIR) { $env:TMPDIR } else { "/tmp" }
+    $dir = Join-Path $tempRoot ("unsloth-child-" + [guid]::NewGuid().ToString("N"))
+    try { $null = New-Item -ItemType Directory -Path $dir -ErrorAction Stop } catch { return "" }
+    if ($env:OS -eq "Windows_NT") {
+        try { $null = & icacls.exe "$dir" /setintegritylevel "(OI)(CI)H" 2>&1 } catch { }
+    }
+    return $dir
+}
+
 function Get-NvidiaNvmlLibraryPath {
     $dirs = @()
     if ($env:SystemRoot) { $dirs += (Join-Path $env:SystemRoot "System32") }
@@ -1191,8 +1219,9 @@ main()
     # Cmdlets only. Constrained Language Mode refuses New-Object ProcessStartInfo and
     # [Process]::Start, and CLM is one of the policies that used to leave a locked-down host with
     # no GPU detection at all, so this launcher has to work on the hosts that need it most.
-    $tempRoot = if ($env:TEMP) { $env:TEMP } elseif ($env:TMPDIR) { $env:TMPDIR } else { "/tmp" }
-    $stem = Join-Path $tempRoot ("unsloth-nvprobe-" + [guid]::NewGuid().ToString("N"))
+    $probeDir = New-StudioChildScriptDirectory
+    if (-not $probeDir) { return "" }
+    $stem = Join-Path $probeDir "nvprobe"
     $scriptFile = "$stem.py"
     $outFile = "$stem.out"
     $errFile = "$stem.err"
@@ -1238,6 +1267,9 @@ main()
         $raw = "$(Get-Content -LiteralPath $outFile -Raw -ErrorAction SilentlyContinue)"
     } catch { return "" }
     finally {
+        # The directory, not just the three files: it is ours, nothing else may be in it, and
+        # leaving an empty one behind per probe would litter %TEMP% on every run.
+        Remove-Item -LiteralPath $probeDir -Recurse -Force -ErrorAction SilentlyContinue
         foreach ($stale in @($scriptFile, $outFile, $errFile)) {
             Remove-Item -LiteralPath $stale -Force -ErrorAction SilentlyContinue
         }

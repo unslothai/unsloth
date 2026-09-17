@@ -2459,6 +2459,7 @@ function Install-UnslothStudio {
         $scriptFile = $null
         $outFile = $null
         $errFile = $null
+        $childDir = $null
         $proc = $null
         try {
             # The script goes to a file rather than through -c. Start-Process builds one command
@@ -2469,8 +2470,13 @@ function Install-UnslothStudio {
             # reading a path off it is a property read on a type Constrained Language Mode does
             # not allow, so every path below would have thrown on a locked-down host. [guid] and
             # [string] are both on the allowed list, and Join-Path is a cmdlet.
-            $tempRoot = if ($env:TEMP) { $env:TEMP } elseif ($env:TMPDIR) { $env:TMPDIR } else { "/tmp" }
-            $stem = Join-Path $tempRoot ("unsloth-early-" + [guid]::NewGuid().ToString("N"))
+            # A private directory, not the shared %TEMP% root. Same reason as the other
+            # launcher: the program is written, closed, and then named to Start-Process, and a
+            # same-user process that swaps it in that gap runs its own code with whatever token
+            # this shell holds.
+            $childDir = New-StudioChildScriptDirectory
+            if (-not $childDir) { return $null }
+            $stem = Join-Path $childDir "early"
             $scriptFile = "$stem.py"
             $outFile = "$stem.out"
             $errFile = "$stem.err"
@@ -2544,12 +2550,24 @@ function Install-UnslothStudio {
             # an on-access scanner opening it, and a single silent Remove-Item that fails leaves
             # the machine dirtier than this run found it. The loop costs nothing when the first
             # attempt works, which is every ordinary call.
+            #
+            # The files before the directory that holds them: removing a directory whose contents
+            # are still open fails as surely as removing the open file does, so the retry has to
+            # sit on the files or the private directory is what gets left behind instead.
             foreach ($f in @($scriptFile, $outFile, $errFile)) {
                 if (-not $f) { continue }
                 for ($attempt = 0; $attempt -lt 10; $attempt++) {
                     if (-not (Test-Path -LiteralPath $f)) { break }
                     Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue
                     if (-not (Test-Path -LiteralPath $f)) { break }
+                    Start-Sleep -Milliseconds 100
+                }
+            }
+            if ($childDir) {
+                for ($attempt = 0; $attempt -lt 10; $attempt++) {
+                    if (-not (Test-Path -LiteralPath $childDir)) { break }
+                    Remove-Item -LiteralPath $childDir -Recurse -Force -ErrorAction SilentlyContinue
+                    if (-not (Test-Path -LiteralPath $childDir)) { break }
                     Start-Sleep -Milliseconds 100
                 }
             }
@@ -2642,30 +2660,54 @@ function Install-UnslothStudio {
         if ($wanted.Count -eq 0) { return }
         $exe = Get-StudioEarlyPython
         if (-not $exe) { return }
-        $tempRoot = if ($env:TEMP) { $env:TEMP } elseif ($env:TMPDIR) { $env:TMPDIR } else { "/tmp" }
-        $listFile = Join-Path $tempRoot ("unsloth-paths-" + [guid]::NewGuid().ToString("N") + ".txt")
+        # The list is data rather than a program, but it decides which running processes the
+        # installer believes are using a protected root. A same-user process that rewrites it
+        # between the write and the read makes a live managed environment look idle, which is the
+        # same harm as the failed-batch case below, so it gets the same private directory.
+        $listDir = New-StudioChildScriptDirectory
+        if (-not $listDir) { return }
+        $listFile = Join-Path $listDir "paths.txt"
         try { Set-Content -LiteralPath $listFile -Value $wanted -Encoding UTF8 -ErrorAction Stop }
-        catch { return }
+        catch { Remove-Item -LiteralPath $listDir -Recurse -Force -ErrorAction SilentlyContinue; return }
         # Character for character the expression Invoke-StudioEarlyPython uses, including
         # strict=True and the version gate, because a batched answer that differed from the
         # single-path one would be a second implementation of path identity.
+        # utf-8-sig, not utf-8. Windows PowerShell 5.1 is the interpreter the desktop app
+        # spawns, and there -Encoding UTF8 means UTF-8 WITH a BOM: "any Unicode encoding, except
+        # UTF7, always creates a BOM" (about_Character_Encoding, 5.1). Read as plain utf-8 the
+        # BOM becomes part of the FIRST path, resolve() rejects it, and that one entry silently
+        # loses its exact identity on every Windows host. utf-8-sig strips a BOM when there is
+        # one and is plain utf-8 when there is not, so both hosts read the same list.
+        #
+        # One line per input, including the ones that fail, so an empty answer means "asked and
+        # unresolvable" while NO output at all means the child never ran. Those two want opposite
+        # handling below and a silent batch cannot tell them apart.
         $probe = "import pathlib,sys" + [char]10 +
             "sys.exit(2) if sys.version_info < (3,8) else None" + [char]10 +
             "out=[]" + [char]10 +
-            "with open(sys.argv[1],'r',encoding='utf-8') as fh:" + [char]10 +
+            "with open(sys.argv[1],'r',encoding='utf-8-sig') as fh:" + [char]10 +
             "    for line in fh:" + [char]10 +
             "        p=line.rstrip('\r\n')" + [char]10 +
             "        if not p: continue" + [char]10 +
             "        try:" + [char]10 +
             "            out.append(p+'|'+str(pathlib.Path(p).resolve(strict=True)))" + [char]10 +
             "        except Exception:" + [char]10 +
-            "            pass" + [char]10 +
+            "            out.append(p+'|')" + [char]10 +
             "sys.stdout.buffer.write('\n'.join(out).encode('utf-8'))"
         $raw = ""
         try { $raw = Invoke-StudioEarlyPythonScript -Exe $exe -Script $probe -ScriptArgs @($listFile) -TimeoutMs 30000 }
         catch { $raw = "" }
-        finally { Remove-Item -LiteralPath $listFile -Force -ErrorAction SilentlyContinue }
+        finally { Remove-Item -LiteralPath $listDir -Recurse -Force -ErrorAction SilentlyContinue }
         $answers = @{}
+        # Which paths the child actually answered about, which is not the same question as which
+        # ones it resolved. A child that never started, or that hit the timeout, says nothing at
+        # all; treating that silence as "every one of these paths is unresolvable" would switch
+        # the single-path rung off for the whole run, and the process scan would then compare
+        # lexical spellings, so an executable reached through a junction or a SUBST drive stops
+        # matching its protected root, the live managed process is not seen, and the installer
+        # overwrites an environment in use. This map is the only thing standing between those two
+        # cases: nothing enters the cache that the child did not speak to.
+        $reported = @{}
         foreach ($line in ("$raw" -split "`r?`n")) {
             if ([string]::IsNullOrWhiteSpace($line)) { continue }
             # The first separator, because the pipe is not legal in a Windows path so the left
@@ -2674,6 +2716,9 @@ function Install-UnslothStudio {
             if ($split -lt 1) { continue }
             $requested = $line.Substring(0, $split)
             $answer = $line.Substring($split + 1)
+            # Reported either way: the child answers for every path it was given, so this is the
+            # record that it was really asked rather than lost in a truncated pipe.
+            $reported[$requested] = $true
             if ([string]::IsNullOrWhiteSpace($answer)) { continue }
             # The same two checks the single-path rung applies to its own answer. A relative
             # answer is not an identity, and a path that does not exist cannot be the resolution
@@ -2683,10 +2728,15 @@ function Install-UnslothStudio {
             $answers[$requested] = $answer
         }
         foreach ($candidate in $wanted) {
-            if ($answers.ContainsKey($candidate)) { $script:StudioPythonFinalPathCache[$candidate] = $answers[$candidate] }
-            # A path the child could not resolve is recorded as $null rather than left absent, so
-            # the miss is not re-asked once per protected root.
-            else { $script:StudioPythonFinalPathCache[$candidate] = $null }
+            if ($answers.ContainsKey($candidate)) {
+                $script:StudioPythonFinalPathCache[$candidate] = $answers[$candidate]
+            } elseif ($reported.ContainsKey($candidate)) {
+                # Asked, and the child said it cannot be resolved. Recorded as $null rather than
+                # left absent, so the miss is not re-asked once per protected root.
+                $script:StudioPythonFinalPathCache[$candidate] = $null
+            }
+            # Neither: the child answered, but not about this path. Left uncached, so the
+            # single-path rung still gets its turn.
         }
     }
 
@@ -7809,6 +7859,34 @@ exit 0
     # ── BEGIN SHARED WITH studio/setup.ps1 (Get-NvidiaLibraryInventory) ──
     # nvml.dll sits in System32 with current drivers and under NVSMI with older ones; a bare
     # name reaches only the former, so name the file, as studio/nvidia_probe.py does.
+    # A directory for a program this installer is about to hand a child interpreter.
+    #
+    # Writing the program into the shared %TEMP% and then naming that path to Start-Process leaves a
+    # time-of-check to time-of-use gap: any process of the same user can watch the directory and
+    # swap the file between the write and the launch. That only becomes a privilege question when
+    # THIS shell is elevated, and then it is the whole of one, because the child runs our program
+    # with the administrator token.
+    #
+    # A fresh directory nothing else can predict the name of, then a mandatory integrity label of
+    # High on it. An unelevated process of the same user runs at medium integrity and cannot write
+    # into a High-labelled directory. A DACL cannot express that: the attacker is the owner, and an
+    # owner can always rewrite its own DACL. icacls is the in-box tool for the label and stays
+    # reachable under Constrained Language Mode, where the managed ACL APIs do not. On an unelevated
+    # run the label cannot be raised and the call simply fails, which costs nothing, since an
+    # unelevated child has no token worth stealing.
+    #
+    # New-Item with -ErrorAction Stop, not -Force: it must FAIL on a directory that already exists,
+    # or a pre-created one carrying an attacker's ACL would be adopted instead of refused.
+    function New-StudioChildScriptDirectory {
+        $tempRoot = if ($env:TEMP) { $env:TEMP } elseif ($env:TMPDIR) { $env:TMPDIR } else { "/tmp" }
+        $dir = Join-Path $tempRoot ("unsloth-child-" + [guid]::NewGuid().ToString("N"))
+        try { $null = New-Item -ItemType Directory -Path $dir -ErrorAction Stop } catch { return "" }
+        if ($env:OS -eq "Windows_NT") {
+            try { $null = & icacls.exe "$dir" /setintegritylevel "(OI)(CI)H" 2>&1 } catch { }
+        }
+        return $dir
+    }
+
     function Get-NvidiaNvmlLibraryPath {
         $dirs = @()
         if ($env:SystemRoot) { $dirs += (Join-Path $env:SystemRoot "System32") }
@@ -7969,8 +8047,9 @@ main()
         # Cmdlets only. Constrained Language Mode refuses New-Object ProcessStartInfo and
         # [Process]::Start, and CLM is one of the policies that used to leave a locked-down host with
         # no GPU detection at all, so this launcher has to work on the hosts that need it most.
-        $tempRoot = if ($env:TEMP) { $env:TEMP } elseif ($env:TMPDIR) { $env:TMPDIR } else { "/tmp" }
-        $stem = Join-Path $tempRoot ("unsloth-nvprobe-" + [guid]::NewGuid().ToString("N"))
+        $probeDir = New-StudioChildScriptDirectory
+        if (-not $probeDir) { return "" }
+        $stem = Join-Path $probeDir "nvprobe"
         $scriptFile = "$stem.py"
         $outFile = "$stem.out"
         $errFile = "$stem.err"
@@ -8016,6 +8095,9 @@ main()
             $raw = "$(Get-Content -LiteralPath $outFile -Raw -ErrorAction SilentlyContinue)"
         } catch { return "" }
         finally {
+            # The directory, not just the three files: it is ours, nothing else may be in it, and
+            # leaving an empty one behind per probe would litter %TEMP% on every run.
+            Remove-Item -LiteralPath $probeDir -Recurse -Force -ErrorAction SilentlyContinue
             foreach ($stale in @($scriptFile, $outFile, $errFile)) {
                 Remove-Item -LiteralPath $stale -Force -ErrorAction SilentlyContinue
             }

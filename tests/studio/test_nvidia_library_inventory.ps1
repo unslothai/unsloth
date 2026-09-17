@@ -54,17 +54,17 @@ $setupPs1 = Join-Path $root "studio\setup.ps1"
 
 Write-Host ""
 Write-Host "=== shared inventory helper ==="
-$blockNames = @("Get-NvidiaNvmlLibraryPath", "Read-NvidiaLibraryRawViaPython", "Read-NvidiaLibraryRaw", "Get-NvidiaLibraryInventory")
+$blockNames = @("New-StudioChildScriptDirectory", "Get-NvidiaNvmlLibraryPath", "Read-NvidiaLibraryRawViaPython", "Read-NvidiaLibraryRaw", "Get-NvidiaLibraryInventory")
 $installParts = @(Get-HelperSources $installPs1 $blockNames)
 $setupParts = @(Get-HelperSources $setupPs1 $blockNames)
-$installBlock = $installParts[3]
-$setupBlock = $setupParts[3]
-$setupPath = $setupParts[0]
-$readBlock = $setupParts[2]
+$installBlock = $installParts[4]
+$setupBlock = $setupParts[4]
+$setupPath = $setupParts[1]
+$readBlock = $setupParts[3]
 # The NVML and CUDA calls moved from a PowerShell reader over an emitted type into the embedded
 # Python probe, so the semantic checks below read THAT rather than $readBlock, which is now a
 # thin wrapper. Same assertions, same meaning, pointed at where the code actually lives.
-$viaPythonBlock = $setupParts[1]
+$viaPythonBlock = $setupParts[2]
 $probeBody = ""
 $probeAt = $viaPythonBlock.IndexOf("`$probeSource = @'")
 if ($probeAt -ge 0) {

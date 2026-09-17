@@ -34,7 +34,9 @@ $ast = [System.Management.Automation.Language.Parser]::ParseFile($installPs1, [r
 if ($errors) { $errors | ForEach-Object { $_.ToString() }; throw "install.ps1 has parse errors" }
 foreach ($name in @(
     "Remove-StudioTrailingNewline", "Invoke-StudioEarlyPythonScript",
-    "Invoke-StudioEarlyPythonScriptViaCmdlets", "Invoke-StudioEarlyPython", "Get-StudioEarlyPython",
+    "Invoke-StudioEarlyPythonScriptViaCmdlets", "Invoke-StudioEarlyPython",
+    "New-StudioChildScriptDirectory", "Get-StudioEarlyPython",
+    "New-StudioChildScriptDirectory",
     "Get-StudioPythonProcessImageTable", "Get-StudioProcessImagePath"
 )) {
     $fn = $ast.FindAll({ param($n)
@@ -237,6 +239,7 @@ Check "the cmdlet launcher kills a hung child too" (
 # calls on System.IO.Path and on Int32, and it throws rather than returning null, so the ladder
 # did not degrade, it failed. Every function between the entry point and the answer runs here.
 $clmFunctions = (@(
+    "New-StudioChildScriptDirectory",
     "Remove-StudioTrailingNewline", "Invoke-StudioEarlyPythonScript",
     "Invoke-StudioEarlyPythonScriptViaCmdlets", "Invoke-StudioEarlyPython",
     "Get-StudioEarlyPython", "Get-StudioPythonFinalPath", "Get-StudioPythonProcessImageTable"

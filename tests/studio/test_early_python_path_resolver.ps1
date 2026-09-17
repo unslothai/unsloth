@@ -33,6 +33,7 @@ $wanted = @(
     "Get-StudioEarlyPython", "Invoke-StudioEarlyPython", "Invoke-StudioEarlyPythonScript",
     "Remove-StudioTrailingNewline",
     "Invoke-StudioEarlyPythonScriptViaCmdlets", "Get-StudioPythonFinalPath",
+    "New-StudioChildScriptDirectory",
     "Resolve-StudioLinkTarget", "Get-StudioSubstTarget", "Get-StudioLexicalPath",
     "Resolve-StudioFinalPathInfo", "Resolve-StudioFinalPathsInOneChild",
     # Called by Resolve-StudioFinalPathInfo on the rung below this one. Extracted rather than
@@ -361,6 +362,78 @@ try {
     $script:SingleCalls = 0
     $null = Get-StudioPythonFinalPath -Path $missing
     Check "and is not re-asked" ($script:SingleCalls -eq 0)
+
+    # A batch that FAILS is not a batch of misses, and telling them apart is the whole point of
+    # the child answering for every path it was given. A child that never started or hit the
+    # timeout says nothing; caching that as "all unresolvable" switches the single-path rung off
+    # for the rest of the run, and the process scan then compares lexical spellings, so an
+    # executable reached through a junction stops matching its protected root and the installer
+    # overwrites an environment that is in use.
+    $script:StudioPythonFinalPathCache = $null
+    $script:RealScript = ${function:Invoke-StudioEarlyPythonScript}
+    function Invoke-StudioEarlyPythonScript {
+        param([string]$Exe, [string]$Script, [string[]]$ScriptArgs = @(), [int]$TimeoutMs = 10000)
+        return ""
+    }
+    Resolve-StudioFinalPathsInOneChild -Paths $batchPaths
+    $cachedAfterFailure = 0
+    if ($null -ne $script:StudioPythonFinalPathCache) { $cachedAfterFailure = $script:StudioPythonFinalPathCache.Count }
+    Check "a silent child caches nothing at all" ($cachedAfterFailure -eq 0)
+    ${function:Invoke-StudioEarlyPythonScript} = $script:RealScript
+    $script:SingleCalls = 0
+    $null = Get-StudioPythonFinalPath -Path $batchPaths[0]
+    Check "so the single-path rung still gets its turn" ($script:SingleCalls -eq 1)
+
+    # And a child that answers about only SOME of what it was asked leaves the rest uncached,
+    # rather than inferring a miss from an absence. A truncated pipe is not evidence.
+    $script:StudioPythonFinalPathCache = $null
+    function Invoke-StudioEarlyPythonScript {
+        param([string]$Exe, [string]$Script, [string[]]$ScriptArgs = @(), [int]$TimeoutMs = 10000)
+        return ($script:PartialAnswer)
+    }
+    $script:PartialAnswer = "$($batchPaths[0])|$($batchPaths[0])"
+    Resolve-StudioFinalPathsInOneChild -Paths $batchPaths
+    Check "a partial answer caches only what was answered" (
+        $script:StudioPythonFinalPathCache.Count -eq 1 -and
+        $script:StudioPythonFinalPathCache.ContainsKey($batchPaths[0]))
+    Check "and leaves the unanswered paths for the single rung" (
+        -not $script:StudioPythonFinalPathCache.ContainsKey($batchPaths[1]))
+    ${function:Invoke-StudioEarlyPythonScript} = $script:RealScript
+
+    # The BOM. Windows PowerShell 5.1 is the interpreter the desktop app spawns, and there
+    # -Encoding UTF8 means UTF-8 WITH a BOM: "any Unicode encoding, except UTF7, always creates a
+    # BOM" (about_Character_Encoding, 5.1). Read as plain utf-8 the BOM joins the FIRST path,
+    # resolve() rejects it, and exactly one entry per batch silently loses its exact identity on
+    # every Windows host. This engine writes no BOM, so the behaviour cannot be reproduced here;
+    # what is checked is that the reader tolerates one either way, run for real.
+    $bomFile = Join-Path $batchDir "with-bom.txt"
+    $bomBytes = [byte[]](0xEF, 0xBB, 0xBF) + [System.Text.Encoding]::UTF8.GetBytes(($batchPaths -join "`n"))
+    [System.IO.File]::WriteAllBytes($bomFile, $bomBytes)
+    $readerProbe = Get-FunctionTextOrEmpty $installPs1 "Resolve-StudioFinalPathsInOneChild"
+    Check "the reader strips a byte order mark" ($readerProbe -match "encoding='utf-8-sig'")
+    Check "and does not read the list as plain utf-8" ($readerProbe -notmatch "encoding='utf-8'\)")
+    # Run it: the same expression against a real BOM-prefixed file must resolve every line,
+    # including the first, or the check above is only spelling.
+    $bomScript = "import pathlib,sys" + [char]10 +
+        "n=0" + [char]10 +
+        "with open(sys.argv[1],'r',encoding='utf-8-sig') as fh:" + [char]10 +
+        "    for line in fh:" + [char]10 +
+        "        p=line.rstrip('\r\n')" + [char]10 +
+        "        if not p: continue" + [char]10 +
+        "        try:" + [char]10 +
+        "            pathlib.Path(p).resolve(strict=True)" + [char]10 +
+        "            n+=1" + [char]10 +
+        "        except Exception:" + [char]10 +
+        "            pass" + [char]10 +
+        "sys.stdout.buffer.write(str(n).encode('utf-8'))"
+    $bomCount = Invoke-StudioEarlyPythonScript -Exe $exe -Script $bomScript -ScriptArgs @($bomFile) -TimeoutMs 30000
+    Check "a BOM-prefixed list resolves every line, first one included" (
+        "$bomCount".Trim() -eq "$($batchPaths.Count)")
+    # The control that makes it bite: plain utf-8 must LOSE the first line.
+    $bomScriptPlain = $bomScript -replace "utf-8-sig", "utf-8"
+    $plainCount = Invoke-StudioEarlyPythonScript -Exe $exe -Script $bomScriptPlain -ScriptArgs @($bomFile) -TimeoutMs 30000
+    Check "and plain utf-8 really does lose it (bites)" (
+        "$plainCount".Trim() -eq "$($batchPaths.Count - 1)")
 
     # The list goes through a file, not argv: a few hundred image paths pass the 32767 character
     # Windows command line limit, and that would fail the whole batch rather than one path.

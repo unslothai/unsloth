@@ -63,6 +63,7 @@ Write-Host ""
 Write-Host "=== the two copies agree ==="
 
 $blockNames = @(
+    "New-StudioChildScriptDirectory",
     "Get-NvidiaNvmlLibraryPath",
     "Read-NvidiaLibraryRawViaPython",
     "Read-NvidiaLibraryRaw",
@@ -124,7 +125,7 @@ Check "the embedded probe is stdlib-only" `
 Write-Host ""
 Write-Host "=== the rung stays underneath the emitted one ==="
 
-$rawBlock = & $strip $setupParts[2]
+$rawBlock = & $strip $setupParts[3]
 # ONE rung. The emitted UnslothNvidiaProbeV2 type is gone, so there is no first rung to sit
 # behind, no shared deadline to split and no leftover budget to pass on. The reader hands the
 # whole timeout to the interpreter and does nothing else.
@@ -142,7 +143,7 @@ foreach ($file in @($installPs1, $setupPs1)) {
         $whole -notmatch 'Test-StudioCanDefineNativeTypes')
 }
 
-$pyBlock = & $strip $setupParts[1]
+$pyBlock = & $strip $setupParts[2]
 # The banned constructs are NAMED in this rung's own comments, explaining why they are absent.
 # Matching the raw text would fail on the explanation rather than on the code, so the CLM rows
 # below run against comment-free source. (Found the honest way: they failed on the comments.)
@@ -281,10 +282,11 @@ foreach ($row in @(
 Write-Host ""
 Write-Host "=== behaviour, driven through the real functions ==="
 
-Invoke-Expression ($setupParts[0])   # Get-NvidiaNvmlLibraryPath
-Invoke-Expression ($setupParts[1])   # Read-NvidiaLibraryRawViaPython
-Invoke-Expression ($setupParts[2])   # Read-NvidiaLibraryRaw
-Invoke-Expression ($setupParts[3])   # Get-NvidiaLibraryInventory
+Invoke-Expression ($setupParts[0])   # New-StudioChildScriptDirectory
+Invoke-Expression ($setupParts[1])   # Get-NvidiaNvmlLibraryPath
+Invoke-Expression ($setupParts[2])   # Read-NvidiaLibraryRawViaPython
+Invoke-Expression ($setupParts[3])   # Read-NvidiaLibraryRaw
+Invoke-Expression ($setupParts[4])   # Get-NvidiaLibraryInventory
 # The emitted rung declines, which is the whole point: this is what a Constrained Language Mode
 # or WDAC host sees, and the capabilities below are recovered with nothing emitted.
 function Get-NvidiaLibraryProbeType { return $null }
@@ -293,6 +295,39 @@ $script:PythonExe = ""
 function Get-NvidiaProbePythonExe { return $script:PythonExe }
 
 Check "no interpreter means no answer, not an error" ((Read-NvidiaLibraryRawViaPython -TimeoutMs 5000) -eq "")
+
+# ---- where the program is written ----
+#
+# The program is written, closed, and then its PATHNAME is handed to Start-Process. Anything of
+# the same user watching the directory can swap the file in that gap, and when this shell is
+# elevated the child then runs that file with the administrator token. A directory of our own
+# closes it: a name nothing can predict, and a High mandatory integrity label that a medium
+# integrity process of the same user cannot write through. A DACL cannot express this, because
+# the attacker is the OWNER and an owner can always rewrite its own DACL.
+foreach ($file in @($installPs1, $setupPs1)) {
+    $leaf = Split-Path -Leaf $file
+    $dirFn = @(Get-HelperSources $file @("New-StudioChildScriptDirectory"))[0]
+    Check "$leaf carries the private child-script directory" ($dirFn.Length -gt 100)
+    Check "$leaf refuses a directory that already exists" (
+        $dirFn -match 'New-Item -ItemType Directory[^\r\n]*-ErrorAction Stop' -and
+        $dirFn -notmatch 'New-Item -ItemType Directory[^\r\n]*-Force')
+    Check "$leaf raises the integrity label rather than trusting a DACL" (
+        $dirFn -match 'icacls' -and $dirFn -match 'setintegritylevel')
+    # And every launcher in the file uses it, rather than naming the shared root itself. The
+    # shared-root spelling is what the finding was about, so its absence is the check.
+    $whole = [System.IO.File]::ReadAllText($file)
+    Check "$leaf writes no child program straight into the shared temp root" (
+        $whole -notmatch '\$stem = Join-Path \$tempRoot')
+}
+# Run it: a directory really is created, really is fresh, and really is cleaned up.
+$madeDir = New-StudioChildScriptDirectory
+Check "the directory is created" (-not [string]::IsNullOrWhiteSpace($madeDir))
+if ($madeDir) {
+    Check "and it is empty, so nothing was adopted" (
+        @(Get-ChildItem -LiteralPath $madeDir -Force -ErrorAction SilentlyContinue).Count -eq 0)
+    Check "and two calls never collide" ($madeDir -ne (New-StudioChildScriptDirectory))
+    Remove-Item -LiteralPath $madeDir -Recurse -Force -ErrorAction SilentlyContinue
+}
 
 $python = $null
 foreach ($name in @("python3", "python")) {
