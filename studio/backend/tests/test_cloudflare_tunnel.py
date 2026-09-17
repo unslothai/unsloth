@@ -1271,7 +1271,13 @@ def test_start_studio_tunnel_no_url_retries_stop_at_the_budget(monkeypatch):
     attempts, waits, clock = [], [], [0.0]
 
     class _Stub:
-        def __init__(self, port, binary, protocol = None, origin_host = "localhost"):
+        def __init__(
+            self,
+            port,
+            binary,
+            protocol = None,
+            origin_host = "localhost",
+        ):
             self.url = None
             attempts.append(protocol)
 
@@ -1323,7 +1329,13 @@ def test_start_studio_tunnel_no_url_retry_does_not_sleep_after_stop(monkeypatch)
     attempts, slept = [], []
 
     class _Stub:
-        def __init__(self, port, binary, protocol = None, origin_host = "localhost"):
+        def __init__(
+            self,
+            port,
+            binary,
+            protocol = None,
+            origin_host = "localhost",
+        ):
             self.url = None
             attempts.append(protocol)
 
