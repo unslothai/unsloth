@@ -134,18 +134,14 @@ def _opt_out_script(installed: list[tuple[str, str]], can_download: bool) -> str
     -- and the cases below are about both, so the swap cannot be a paraphrase here.
     """
     source = INSTALL_PS1.read_text(encoding = "utf-8")
-    resolver = _extract(
-        r"    function Resolve-WindowsOnArmX64Python \{.*?\n    \}\n", source
-    )
+    resolver = _extract(r"    function Resolve-WindowsOnArmX64Python \{.*?\n    \}\n", source)
     base = _resolver_script(installed, can_download)
     tail = base.index("# The caller's ARM64 swap")
     return base[:tail] + (
         "function Write-StudioLine { param([Parameter(ValueFromRemainingArguments = $true)]$Rest) }\n"
-        "function step { param($a, $b, $c) }\n"
-        + resolver
-        + "\n$found = Find-CompatiblePython\n"
-        "if ($found -and $found.Arch -ne \"x86_64\") { $found = Resolve-WindowsOnArmX64Python $found }\n"
-        "if ($found) { Write-Output \"$($found.Version)|$($found.Arch)\" } else { Write-Output \"none\" }\n"
+        "function step { param($a, $b, $c) }\n" + resolver + "\n$found = Find-CompatiblePython\n"
+        'if ($found -and $found.Arch -ne "x86_64") { $found = Resolve-WindowsOnArmX64Python $found }\n'
+        'if ($found) { Write-Output "$($found.Version)|$($found.Arch)" } else { Write-Output "none" }\n'
     )
 
 
@@ -177,7 +173,10 @@ def test_the_arm64_opt_out_selects_a_native_interpreter(installed, can_download,
     environment["UNSLOTH_ALLOW_ARM64_PYTHON"] = "1"
     result = run_pwsh(
         [
-            "pwsh", "-NoProfile", "-NonInteractive", "-Command",
+            "pwsh",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
             _opt_out_script(installed, can_download),
         ],
         check = True,
@@ -295,7 +294,7 @@ if ($found) {{ Write-Output "$($found.Version)|$($found.Arch)" }} else {{ Write-
     ],
 )
 def test_the_existing_environments_base_interpreter_is_the_last_arm64_python(
-    cfg, arch, present, expected,
+    cfg, arch, present, expected
 ):
     """UNSLOTH_ALLOW_ARM64_PYTHON with no ARM64 interpreter registered on the machine.
 
@@ -307,7 +306,10 @@ def test_the_existing_environments_base_interpreter_is_the_last_arm64_python(
     """
     result = run_pwsh(
         [
-            "pwsh", "-NoProfile", "-NonInteractive", "-Command",
+            "pwsh",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
             _venv_base_script(cfg, arch, present),
         ],
         check = True,

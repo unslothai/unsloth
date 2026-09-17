@@ -2,31 +2,22 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 #
-# install.sh persists a PATH entry by appending a line to a shell rc file (or a
-# fish_add_path line to ~/.config/fish/conf.d/unsloth.fish). Written as a PREPEND,
-# that line lands after whatever conda's own init block put in the same file, so
-# every later shell resolves out of our directory before the active conda
-# environment's -- an ordering that outlives the activation it was created under.
-# That is the POSIX half of #5871, whose Windows half is the registry write guarded
-# in tests/python/test_installer_conda_path_guard.py.
+# The POSIX half of #5871. install.sh persists a PATH entry into a shell rc file (or
+# ~/.config/fish/conf.d/unsloth.fish); written as a PREPEND it lands after conda's own init
+# block, so every later shell resolves out of our directory first, an ordering that outlives
+# the activation. The Windows half is tests/python/test_installer_conda_path_guard.py.
 #
-# The properties, in the order they are checked:
+# Checked, in order:
 #
-#   1. Outside conda the written line is unchanged: PATH prepend, exactly as before.
-#   2. Inside an active conda environment the same directory is registered at the
-#      BACK, so conda keeps priority.
-#   3. Either spelling counts as already present. Without that, a machine that
-#      installed once inside conda and once outside it collects two lines for the
-#      same directory, and a fish user collects two fish_add_path calls.
-#   4. The advice printed when the rc file cannot be written matches the line that
-#      would have been written, or the manual fix reintroduces the defect by hand.
+#   1. Outside conda the written line is unchanged.
+#   2. Inside conda the same directory is registered at the BACK.
+#   3. Either spelling counts as present, so no machine collects two lines.
+#   4. The advice printed when the rc file cannot be written matches what would have been
+#      written, or the manual fix reintroduces the defect by hand.
 #
-# studio/setup.sh carries a third copy of the same write and is covered at the end of
-# this file, because it runs in its own process right after install.sh: a guard in
-# install.sh alone leaves the breakage reachable from the next step of the same install.
-#
-# The functions are extracted from the installers and run, rather than restated here, so
-# these cases track them instead of a copy of them.
+# studio/setup.sh carries a third copy and is covered at the end: it runs in its own process
+# right after install.sh. The functions are extracted from the installers and run rather
+# than restated, so these cases track them instead of a copy.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -36,8 +27,7 @@ INSTALL_SH="$REPO_ROOT/install.sh"
 
 echo "=== test_install_conda_path_guard ==="
 
-# Both persisters plus the regex they share, delimited by the file's own top-level
-# function braces. Asserted non-empty below, so a rename is loud rather than vacuous.
+# Both persisters plus the regex they share. Asserted non-empty below, so a rename is loud.
 extract_function() {
     awk -v name="$1" '
         $0 == name "() {" { grab = 1 }
@@ -49,13 +39,10 @@ extract_function() {
 PATH_LINE_RE_SRC=$(grep -n "^_PATH_LINE_RE=" "$INSTALL_SH" | head -n1 | cut -d: -f2-)
 LOGIN_FN=$(extract_function _persist_login_path_dir)
 FISH_FN=$(extract_function _persist_fish_path_dir)
-# The predicate both writers ask. Extracted rather than restated, so a change to WHICH
-# environment variables count as an active conda reaches these cases.
+# The predicate both writers ask, extracted rather than restated so a change reaches here.
 CONDA_FN=$(extract_function _unsloth_conda_env_active)
-# The migration helper both writers call when a previous run left the prepend spelling
-# behind. Without it in the harness every repoint call is a `command not found` inside a
-# conditional, so the migration path would be exercised by nothing and the cases below
-# would still report a pass.
+# The migration helper both writers call. Without it in the harness every repoint call is a
+# `command not found` inside a conditional and the cases below still pass.
 REPOINT_FN=$(extract_function _unsloth_repoint_rc_line)
 
 for _chunk_label in _PATH_LINE_RE _persist_login_path_dir _persist_fish_path_dir _unsloth_conda_env_active _unsloth_repoint_rc_line; do
@@ -72,8 +59,7 @@ for _chunk_label in _PATH_LINE_RE _persist_login_path_dir _persist_fish_path_dir
     fi
 done
 
-# The two reporters the functions call. `step` and `substep` print in install.sh; here
-# they are captured so assertion 4 can read the advice that was offered.
+# `step` and `substep` print in install.sh; captured so assertion 4 can read the advice.
 HARNESS=$(cat <<'EOF'
 step()    { echo "STEP $1 $2"; }
 substep() { echo "SUBSTEP $1"; }
@@ -96,9 +82,8 @@ run_login() {
         HOME="$WORK"
         SHELL="${4:-/bin/bash}"
         unset CONDA_PREFIX CONDA_DEFAULT_ENV
-        # $3 names WHICH variable carries the activation: a shell hook that exports only
-        # CONDA_DEFAULT_ENV still leaves the caller inside conda's PATH ordering, which is
-        # why install.ps1 reads both and these installers have to agree with it.
+        # $3 names WHICH variable carries the activation: a hook exporting only
+        # CONDA_DEFAULT_ENV still leaves the caller inside conda's ordering.
         if [ -n "$2" ]; then eval "${3:-CONDA_PREFIX}=\"\$2\"; export ${3:-CONDA_PREFIX}"; fi
         _persist_login_path_dir "$WORK/.local/bin" '$HOME/.local/bin' "~/.local/bin" '\.local/bin' "${RC_FILE:-$WORK/.bashrc}"
     )
@@ -121,30 +106,27 @@ run_login 'export PATH="$PATH:$HOME/.local/bin"' ""
 assert_not_contains "append already there: no prepend added" "$RC_CONTENTS" 'export PATH="$HOME/.local/bin:$PATH"'
 assert_eq "append already there: exactly one PATH line" "1" "$(printf '%s\n' "$RC_CONTENTS" | grep -c 'local/bin')"
 
-# Seeded WITH the marker the installer writes above its own line: that comment is the
-# ownership record, and the migration only ever touches the line directly under it.
+# Seeded WITH the marker the installer writes: that comment is the ownership record.
 run_login '# Added by Unsloth installer
 export PATH="$HOME/.local/bin:$PATH"' "/opt/anaconda3"
 assert_eq "prepend already there: exactly one PATH line" "1" "$(printf '%s\n' "$RC_CONTENTS" | grep -c 'local/bin')"
-# And that one line is the APPEND. Counting lines alone passes whether the stale prepend
-# was repointed or simply accepted as present, which is the defect #5871 reports: the
-# migration is the whole reason the conda arm does not stop at the presence check.
+# And that one line is the APPEND: counting lines alone passes whether the stale prepend was
+# repointed or merely accepted as present, which is #5871.
 assert_contains "stale prepend inside conda: rewritten as the append" "$RC_CONTENTS" \
     'export PATH="$PATH:$HOME/.local/bin"'
 assert_not_contains "stale prepend inside conda: the prepend is gone" "$RC_CONTENTS" \
     'export PATH="$HOME/.local/bin:$PATH"'
 
-# An identical line the USER wrote, with no marker above it, is not ours to move. It is a
-# line people write by hand all the time, and rewriting one moves every executable in that
-# directory behind the rest of PATH for good, in every later shell, conda or not.
+# An identical line the USER wrote, with no marker above it, is not ours to move: rewriting
+# one would push every executable in that directory behind the rest of PATH for good.
 run_login 'export PATH="$HOME/.local/bin:$PATH"' "/opt/anaconda3"
 assert_contains "unmarked user line inside conda: left alone" "$RC_CONTENTS" \
     'export PATH="$HOME/.local/bin:$PATH"'
 assert_eq "unmarked user line inside conda: no second line added" "1" \
     "$(printf '%s\n' "$RC_CONTENTS" | grep -c 'local/bin')"
 
-# The same stale prepend OUTSIDE conda is left exactly as it is: repointing there would
-# reorder a line for a user who never had a conda ordering problem.
+# The same stale prepend OUTSIDE conda is left alone: reordering it would change PATH for a
+# user who never had the problem.
 run_login '# Added by Unsloth installer
 export PATH="$HOME/.local/bin:$PATH"' ""
 assert_contains "stale prepend outside conda: left alone" "$RC_CONTENTS" \
@@ -178,10 +160,9 @@ else
 fi
 rm -rf "$WORK"
 
-# 5. CONDA_DEFAULT_ENV alone. A shell hook can export it without CONDA_PREFIX, and the
-#    caller is still inside conda's PATH ordering. install.ps1 has always read both; the
-#    POSIX writers used to read only CONDA_PREFIX, so the same user got a prepend on Linux
-#    and an append on Windows.
+# 5. CONDA_DEFAULT_ENV alone, which a hook can export without CONDA_PREFIX. install.ps1 has
+#    always read both; the POSIX writers read only CONDA_PREFIX, so the same user got a
+#    prepend on Linux and an append on Windows.
 run_login "" "myenv" CONDA_DEFAULT_ENV
 assert_contains "CONDA_DEFAULT_ENV alone: writes a PATH append" "$RC_CONTENTS" 'export PATH="$PATH:$HOME/.local/bin"'
 assert_not_contains "CONDA_DEFAULT_ENV alone: does not prepend" "$RC_CONTENTS" 'export PATH="$HOME/.local/bin:$PATH"'
@@ -194,8 +175,7 @@ RC_NAME=.zshrc run_login "" "" CONDA_PREFIX /bin/zsh
 assert_contains "zsh rc, no conda: prepends" "$RC_CONTENTS" 'export PATH="$HOME/.local/bin:$PATH"'
 
 # ── fish ───────────────────────────────────────────────────────────────────────────
-# fish reads none of the POSIX rc files, so it has its own writer and its own defect:
-# fish_add_path prepends by default and -a is the documented append.
+# fish reads none of the POSIX rc files: its own writer, and fish_add_path prepends.
 run_fish() {
     WORK=$(mktemp -d)
     mkdir -p "$WORK/.config/fish/conf.d"
@@ -218,10 +198,8 @@ run_fish() {
 run_fish "" ""
 assert_contains "fish, no conda: prepends" "$FISH_CONTENTS" "fish_add_path '$FISH_DIR'"
 
-# -a ALONE is not an append to PATH: without --path, fish_add_path edits $fish_user_paths,
-# which fish documents as prepended to PATH, so a bare -a still sits ahead of conda. The
-# conda arm therefore has to carry -P as well, and these assertions are exact so a
-# regression back to the bare spelling fails here.
+# -a ALONE is not an append to PATH: without --path it edits $fish_user_paths, which fish
+# prepends to PATH. The assertions are exact so a regression to the bare spelling fails here.
 run_fish "" "/opt/anaconda3"
 assert_contains "fish, active conda: appends to PATH itself" "$FISH_CONTENTS" \
     "fish_add_path -a -P -m '$FISH_DIR'"
@@ -236,14 +214,10 @@ run_fish "" "/opt/anaconda3"
 assert_eq "fish, active conda: no bare -a line" "0" \
     "$(printf '%s\n' "$FISH_CONTENTS" | grep -cxF "fish_add_path -a '$FISH_DIR'")"
 
-# Both stale spellings, met from inside conda, are rewritten to the -a -P line rather than
-# accepted by the presence check below them. Written here rather than through run_fish
-# because the seeded line has to name the throwaway HOME the function is about to be given.
-# The -a -P spelling without -m is in the list for a reason of its own: a machine that met
-# an older installer already has the directory in the universal $fish_user_paths, fish
-# expands that into the front of PATH at every startup, and fish leaves a directory that is
-# already included where it is unless --move is given. So that line appended nothing and the
-# stale prepend survived; it has to be migrated like the other two.
+# Both stale spellings are rewritten rather than accepted by the presence check. Seeded here
+# rather than through run_fish because the line has to name the throwaway HOME. The -a -P
+# spelling without -m is in the list too: fish leaves a directory already in
+# $fish_user_paths where it is unless --move is given, so that line appended nothing.
 for _stale in "fish_add_path '%s/.local/bin'" "fish_add_path -a '%s/.local/bin'" \
               "fish_add_path -a -P '%s/.local/bin'"; do
     WORK=$(mktemp -d)

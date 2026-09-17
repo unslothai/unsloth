@@ -6315,46 +6315,28 @@ _path_has_dir() {
 }
 
 # fish reads none of the POSIX rc files, so an `export` line is a no-op for a fish user: the next session resolves neither uv nor the shim. conf.d is fish's own drop-in directory and fish_add_path is idempotent by design. ~/.config, not XDG_CONFIG_HOME, because that is where astral's installer put its own fish file.
-# Is a conda environment ACTIVE in this shell? Mirrors Test-ActiveCondaEnvironment in
-# install.ps1, including the second variable: CONDA_PREFIX is what `conda activate` and the
-# Anaconda Prompt export, and CONDA_DEFAULT_ENV is read too because a shell hook that
-# exports only that one still leaves the caller inside conda's PATH ordering. Reading one
-# variable on POSIX and two on Windows would give the same user two different answers on
-# two machines. Parity is asserted in tests/python/test_installer_conda_path_guard.py.
-# Replace a line THIS installer wrote with the form the current run needs, in place.
-# A previous run outside conda persisted the PREPEND spelling, and the presence checks below
-# accept any spelling so a second line is never added, which means a rerun from inside a conda
-# environment would leave that prepend in the rc file for ever: exactly the ordering the append
-# exists to prevent (#5871). Only an exact whole-line match on what we write is touched; a PATH
-# line the user wrote is theirs. The content is copied back into the ORIGINAL file rather than
-# moved over it, so an rc file that is a symlink into a dotfiles repo keeps its link, and its
-# mode and owner are untouched. A file that cannot be rewritten is a warning, never a failure.
+# Is a conda environment ACTIVE in this shell? Both variables, matching install.ps1: a hook
+# exporting only CONDA_DEFAULT_ENV still leaves the caller inside conda's PATH ordering.
+# Replace a line THIS installer wrote with the form the current run needs, in place. A
+# previous run outside conda persisted the PREPEND spelling, and the presence checks below
+# accept any spelling, so without this the prepend would survive for ever (#5871). Only an
+# exact whole-line match on what we write is touched, and the content is copied back into the
+# ORIGINAL file so a symlinked rc keeps its link, mode and owner. A file that cannot be
+# rewritten is a warning, never a failure.
 _unsloth_repoint_rc_line() {
     [ -f "$1" ] || return 1
-    # OURS, not merely matching. `export PATH="$HOME/.local/bin:$PATH"` and
-    # `fish_add_path '$HOME/.local/bin'` are lines a user writes by hand all the time, and
-    # rewriting one of those moves every executable in that directory behind the rest of PATH
-    # for good, in every later shell, conda or not. Both installers write a
-    # `# Added by Unsloth ...` comment immediately above the line they add, so that marker is
-    # the ownership record and the line directly under it is the only one this touches. A line
-    # with no marker above it is the user's and is left exactly as it is.
+    # OURS, not merely matching: a hand-written `export PATH="$HOME/.local/bin:$PATH"` is a
+    # line users have too, and demoting theirs would move that whole directory behind the
+    # rest of PATH for good. The `# Added by Unsloth` marker above the line is the ownership
+    # record, so a line without one is left alone.
     _URRL_OLD="$2" awk '
         $0 == ENVIRON["_URRL_OLD"] && prev ~ /^# Added by Unsloth/ { found = 1 }
         { prev = $0 }
         END { exit(found ? 0 : 1) }
     ' "$1" 2>/dev/null || return 1
-    # Stage beside the real file, then rename onto it. `cat tmp > file` truncated the user's
-    # profile first and wrote it back afterwards: an interrupt or an I/O error anywhere in
-    # between left a half-written rc file, the failure branch then deleted the only complete
-    # copy, and the next login sourced the wreckage. A rename is atomic, so the file is
-    # either the old one or the new one and never neither.
-    #
-    # Onto the real file, not the name: a dotfile managed by chezmoi, stow or a dotfiles
-    # repo is a symlink, and renaming over the LINK replaces it with a regular file, which
-    # detaches the profile from whatever manages it. Resolving the chain instead means the
-    # link keeps pointing where it did. Walked by hand because `readlink -f` is a GNU
-    # extension and this runs on macOS too; the hop cap breaks cycles, and a link that
-    # cannot be read leaves the name as it was and fails the test below rather than guessing.
+    # Staged and renamed, because `cat tmp > file` truncates the profile first and an
+    # interrupt leaves wreckage. Onto the RESOLVED path: renaming over a chezmoi or stow
+    # symlink would replace it with a regular file. `readlink -f` is GNU-only, hence the walk.
     _urrl_real="$1"
     _urrl_hops=0
     while [ -L "$_urrl_real" ] && [ "$_urrl_hops" -lt 40 ]; do
@@ -6368,26 +6350,9 @@ _unsloth_repoint_rc_line() {
     done
     [ -f "$_urrl_real" ] || return 1
     _urrl_tmp="$_urrl_real.unsloth-tmp.$$"
-    # Created as a COPY, so the staged file carries the original's permission bits before a
-    # single line of it is rewritten: a 0600 rc file must not come back 0644 because the
-    # rename handed it whatever the umask says. The `>` that follows truncates that copy and
-    # leaves its mode alone.
-    #
-    # `-p`, which is the part that actually preserves them. Without it POSIX creates the
-    # destination with the SOURCE's mode as the mode argument -- and a mode argument is
-    # always modified by the file creation mask, so under `umask 077` a 0644 .bashrc is
-    # staged 0600 and the rename makes that permanent. `-p` is specified to duplicate the
-    # permission bits themselves, and a user ID or group ID it cannot duplicate is not an
-    # error there: it clears S_ISUID/S_ISGID and carries on. The plain `cp` is kept as a
-    # fallback for an implementation that refuses `-p` outright, since a mode that came back
-    # from the umask is still better than not repointing the line at all.
-    #
-    # Through the environment, not `-v`. POSIX awk decodes backslash escapes in a `-v`
-    # assignment, so a path holding a backslash -- which the writers deliberately escape
-    # before building the line -- arrives at awk as something else: the literal `grep -qxF`
-    # above matched, awk then matched nothing, and this renamed an unchanged file and
-    # reported the stale prepend as moved with conda still in front of it. ENVIRON is the
-    # spelling that hands the value over untouched.
+    # `cp -p` keeps the original's mode; without it the umask masks it and a 0644 .bashrc
+    # comes back 0600. ENVIRON, not `-v`: POSIX awk decodes backslash escapes in `-v`, so an
+    # escaped path arrived as something else and renamed an unchanged file.
     if { cp -p -- "$_urrl_real" "$_urrl_tmp" 2>/dev/null \
         || cp -- "$_urrl_real" "$_urrl_tmp" 2>/dev/null; } \
         && _URRL_OLD="$2" _URRL_NEW="$3" awk '
@@ -6397,8 +6362,7 @@ _unsloth_repoint_rc_line() {
         && mv -f -- "$_urrl_tmp" "$_urrl_real" 2>/dev/null; then
         return 0
     fi
-    # Nothing was written to the original on any of those failures, so the only thing to
-    # clean up is the staged copy.
+    # The original is untouched on every failure above; only the staged copy needs removing.
     rm -f -- "$_urrl_tmp" 2>/dev/null
     return 1
 }
@@ -6415,10 +6379,16 @@ _persist_fish_path_dir() {
     _pfp_file="$_pfp_dir_conf/unsloth.fish"
     # Single-quoted: an unquoted path with a space is two arguments to fish_add_path and neither exists. Inside fish single quotes only \\ and \' carry meaning.
     _pfp_quoted=$(printf '%s' "$_pfp_dir" | sed "s/\\\\/\\\\\\\\/g; s/'/\\\\'/g")
-    # fish_add_path PREPENDS, and that ordering outlives the conda activation it was written under, so from the next shell on this directory sits ahead of the active conda environment's own entries and conda resolves out of ours (#5871). install.ps1 makes the same choice for the Windows registry.
-    # -a ALONE IS NOT AN APPEND TO PATH. Without --path, fish_add_path edits $fish_user_paths, and fish's own documentation says so: "If $fish_user_paths is used, that means they are last in $fish_user_paths, which is itself prepended to PATH, so they still stay ahead of the system paths." Its worked example for this exact case is `fish_add_path --append --path /opt/fallback/bin`, with the note that it "needs --path/-P because otherwise it appends to $fish_user_paths, which is added to the front of $PATH". So the conda arm carries -P too, or the append does nothing conda can see. https://fishshell.com/docs/current/cmds/fish_add_path.html
-    # -P edits $PATH for the session rather than a universal variable, which is right here: this file lives in conf.d and is sourced by every shell, and conf.d is read in alphabetical order, so conda.fish has already run by the time unsloth.fish does.
-    # -m, and this is the whole reason the append works on a machine that met an older installer. A previous run wrote the bare `fish_add_path '<dir>'`, which put the directory in the UNIVERSAL $fish_user_paths; that variable is persisted and fish expands it into the front of PATH in every later shell, so by the time this line runs the directory is already IN PATH. fish documents what happens then: "If a directory is already included, it is not added again and stays in the same place unless the --move switch" -- so without -m the append is a no-op and the stale prepend survives for ever, which is the case the repointing above exists for. -m moves it to the end instead, and since fish re-expands $fish_user_paths at every startup and this line runs afterwards, every later shell corrects itself. Erasing the universal variable is the alternative and is worse: it is the user's, and other tools write to it. https://fishshell.com/docs/current/cmds/fish_add_path.html
+    # fish_add_path PREPENDS, and that ordering outlives the conda activation (#5871), so
+    # the conda arm appends. All three flags are load-bearing:
+    #   -a alone appends to $fish_user_paths, which fish prepends to PATH, so -P is what
+    #      makes it an append to PATH at all
+    #   -P edits $PATH for the session, which is right in conf.d: it is read alphabetically,
+    #      so conda.fish has already run
+    #   -m moves an entry already in PATH, which a bare `fish_add_path` from an older
+    #      install put there via the universal $fish_user_paths; without it the append is a
+    #      no-op and the stale prepend survives
+    # https://fishshell.com/docs/current/cmds/fish_add_path.html
     _pfp_line="fish_add_path '$_pfp_quoted'"
     if _unsloth_conda_env_active; then
         _pfp_line="fish_add_path -a -P -m '$_pfp_quoted'"
@@ -6434,7 +6404,9 @@ _persist_fish_path_dir() {
         done
     fi
     [ "$_pfp_mode" = "repoint" ] && return 0
-    # The exact line we would write, not any occurrence of the directory: /opt/uv-old must not pass for /opt/uv, and fish reads none of the POSIX files that would otherwise cover it. EVERY spelling counts as present, or a run outside conda would add a second line for a directory a run inside it already registered. The bare -a spelling is kept in the list because an install from before this fix wrote one, and a second line would not repair it anyway.
+    # The exact line we would write, not any occurrence of the directory: /opt/uv-old must
+    # not pass for /opt/uv. EVERY spelling counts as present, or a run outside conda adds a
+    # second line for a directory a run inside it already registered.
     if ! grep -v '^[[:space:]]*#' "$_pfp_file" 2>/dev/null \
         | grep -qxF -e "fish_add_path '$_pfp_quoted'" -e "fish_add_path -a '$_pfp_quoted'" -e "fish_add_path -a -P '$_pfp_quoted'" -e "fish_add_path -a -P -m '$_pfp_quoted'"; then
         # Same single-redirect, warning-not-failure contract as the POSIX arm. 2>/dev/null comes FIRST: redirections apply left to right, so the other order prints the shell's own "Permission denied" before the redirect can silence it.
@@ -6483,7 +6455,10 @@ _persist_login_path_dir() {
         _SHELL_PROFILE="$HOME/.profile"
     fi
     [ -n "$_SHELL_PROFILE" ] || return 0
-    # A persisted PREPEND jumps ahead of an active conda environment's own entries in every later shell, and that ordering outlives the activation, so conda ends up resolving binaries and DLLs out of our directory (#5871). Inside one, write the same line as an APPEND: the grep below matches either spelling, so a later run does not add a second line for the same directory. install.ps1 makes the same choice for the Windows registry.
+    # A persisted PREPEND outlives the activation and leaves conda resolving out of our
+    # directory in every later shell (#5871). Inside one, write the same line as an APPEND;
+    # the grep below matches either spelling, so no second line is added. install.ps1 makes
+    # the same choice for the Windows registry.
     _plp_line="export PATH=\"$_plp_literal:\$PATH\""
     if _unsloth_conda_env_active; then
         _plp_prepend="$_plp_line"

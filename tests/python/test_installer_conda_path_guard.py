@@ -3,20 +3,15 @@
 
 """No installer PATH write may demote an ACTIVE conda environment.
 
-A prepend into the persistent User PATH is an ordering that outlives the conda activation
-it was made under: from the next shell on, our directory sits ahead of the conda
-environment's own entries, so conda resolves binaries and DLLs out of ours. #5871 is that
-shape end to end, reported on Windows 11 with Anaconda: after installing Studio, `conda
-update --all --yes` leaves the base environment unusable with `ImportError: DLL load failed
-while importing _ctypes`, and it recurs on every reinstall of Anaconda.
+A prepend into the persistent User PATH outlives the activation it was made under, so from
+the next shell on conda resolves binaries and DLLs out of our directory. That is #5871:
+after installing Studio, `conda update --all --yes` leaves the Anaconda base unusable with
+`ImportError: DLL load failed while importing _ctypes`.
 
-The guard is one decision function per installer, and every persistent write routes through
-it, so a new call site cannot reintroduce the defect by passing -Position Prepend. Three
-things are asserted: the decision itself, that both PowerShell installers route through it,
-and that the choice of installer switch for a system Python follows the same rule.
-
-install.sh and studio/setup.sh carry the same defect in their rc-file and fish-config
-writes and take the same treatment; that half is tests/sh/test_install_conda_path_guard.sh.
+One decision function per installer, with every persistent write routed through it, so a
+new call site cannot reintroduce the defect. Asserted here: the decision, that both
+PowerShell installers use it, and that the system-Python installer switch follows it. The
+POSIX half is tests/sh/test_install_conda_path_guard.sh.
 """
 
 from __future__ import annotations
@@ -146,16 +141,13 @@ def test_every_persistent_path_write_routes_through_the_guard(path_label: str):
 def test_a_downgraded_prepend_still_repositions_an_existing_front_entry(path_label: str):
     """Declining to ADD is not the same as declining to DEMOTE.
 
-    The machine that matters here has run the installer once already, outside conda, so our
-    directory is at the FRONT of the User PATH. Rerun it from an activated environment and
-    Resolve-UserPathPosition turns the Prepend into an Append -- but an unconditional
-    "already present and appending, nothing to do" early return never rewrites the registry,
-    so the front entry survives and conda keeps resolving binaries and DLLs out of our
-    directory. The run says "conda keeps priority" while #5871 stays armed.
+    A machine that ran the installer once outside conda has our directory at the FRONT of
+    the User PATH. Rerunning inside conda downgrades the Prepend to an Append, but an
+    unconditional "already present, nothing to do" early return leaves that front entry in
+    place, so the run says "conda keeps priority" while #5871 stays armed.
 
-    Structural rather than behavioural because Add-ToUserPath writes through
-    [Microsoft.Win32.Registry], which does not exist off Windows, so the CI leg that could
-    execute this is the one place it cannot be checked by running it.
+    Structural, because Add-ToUserPath writes through [Microsoft.Win32.Registry], which does
+    not exist off Windows.
     """
     path, indent = _PS_FILES[path_label]
     body = _function(path, indent, "Add-ToUserPath")
@@ -173,13 +165,7 @@ def test_a_downgraded_prepend_still_repositions_an_existing_front_entry(path_lab
 
 @pytest.mark.parametrize("path_label", sorted(_PS_FILES))
 def test_the_two_installers_agree_on_the_guard(path_label: str):
-    """Both copies decide the same way. They are separate scripts, not a shared module.
-
-    setup.ps1 runs in its own process after install.ps1 hands off, so it has its own
-    Add-ToUserPath and its own copy of this decision. A fix applied to one and not the
-    other leaves the CUDA bin, MSVC and llama.cpp prepends in setup.ps1 still demoting
-    conda, which is the same reported breakage by another route.
-    """
+    """Both copies decide the same way. They are separate scripts, not a shared module."""
     path, indent = _PS_FILES[path_label]
     body = _function(path, indent, "Resolve-UserPathPosition")
     assert "Test-ActiveCondaEnvironment" in body
@@ -199,13 +185,7 @@ def test_the_two_installers_agree_on_the_guard(path_label: str):
 def test_the_system_python_install_follows_the_same_rule(
     shell: str, env: dict[str, str], expected: str
 ):
-    """The reporter's own diagnosis was the system-wide Python, not our own directories.
-
-    "The problem not from .venv unsloth_studio but from python (system wide) which
-    installed by unsloth installer, superseed the anaconda python." PrependPath=1 is a
-    documented python.org option that puts the new interpreter and its Scripts directory at
-    the front of the User PATH; AppendPath=1 is the same registration at the back.
-    """
+    """The reporter's own diagnosis was the system-wide Python, not our own directories."""
     script = (
         _function(INSTALL_PS1, "    ", "Test-ActiveCondaEnvironment")
         + _function(INSTALL_PS1, "    ", "Get-PythonInstallerPathSwitch")
@@ -228,14 +208,7 @@ def test_the_python_org_installer_arguments_use_the_switch_function():
 
 
 def test_winget_is_not_the_first_route_inside_an_active_conda_environment():
-    """winget's Python package hard-codes PrependPath=1, so it cannot be asked politely.
-
-    The manifest for Python.Python.3.13 carries `InstallAllUsers=0 PrependPath=1` for user
-    scope and `InstallAllUsers=1 PrependPath=1` for machine scope, so every winget install
-    of Python takes PATH priority regardless of what we pass. Inside a conda environment
-    the python.org route, whose switch we choose, is therefore tried first, and winget
-    stays the fallback it has always been: a failed install is worse than a warned PATH.
-    """
+    """winget's Python package hard-codes PrependPath=1, so it cannot be asked politely."""
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     start = source.index('substep "installing Python ${PythonVersion}..."')
     conda_first = source.index("if (Test-ActiveCondaEnvironment)", start)
@@ -276,14 +249,7 @@ def test_the_posix_installers_carry_the_same_guard(path: Path, funcs: tuple[str,
     "path", [INSTALL_SH, SETUP_SH_POSIX], ids = ["install.sh", "studio/setup.sh"]
 )
 def test_both_halves_call_the_same_environment_an_active_conda(path: Path):
-    """The PowerShell and POSIX halves must agree on WHICH variables mean "inside conda".
-
-    `conda activate` exports CONDA_PREFIX and CONDA_DEFAULT_ENV, but a shell hook can
-    export only the second and still leave the caller inside conda's PATH ordering.
-    install.ps1 has always read both. The POSIX writers read only CONDA_PREFIX, which gave
-    one user a prepend on Linux and an append on Windows for the same conda; asserting the
-    two name sets are equal is what keeps that from coming back, in either direction.
-    """
+    """The PowerShell and POSIX halves must agree on WHICH variables mean "inside conda"."""
     posix = path.read_text(encoding = "utf-8")
     body = re.search(r"\n_unsloth_conda_env_active\(\) \{.*?\n\}\n", posix, flags = re.DOTALL)
     assert body is not None, f"{path.name} no longer defines _unsloth_conda_env_active"
@@ -473,16 +439,11 @@ def test_the_refresh_consults_the_conda_helper_at_all():
 def test_a_name_only_activation_keeps_the_session_it_already_had(shell: str):
     """A hook that exports CONDA_DEFAULT_ENV and nothing that names a directory.
 
-    `Test-ActiveCondaEnvironment` accepts that shape deliberately: the caller IS inside
-    conda's ordering. But there is then nothing to test a PATH entry against, so the prefix
-    branch produced an empty front and the refresh rebuilt PATH as Machine, User, previous
-    -- putting the hook's entries behind the User PATH again, on the exact activation shape
-    the guard above says it recognises.
-
-    Guessing from the environment NAME would match any directory that happens to contain
-    it, which is the promote-a-stranger defect the boundary check exists to prevent. The
-    caller's existing PATH is kept whole and in front instead: it already holds conda's
-    ordering, whatever that is.
+    Test-ActiveCondaEnvironment accepts that shape on purpose, but nothing then identifies
+    which PATH entries are conda's, so the refresh would rebuild PATH as Machine, User,
+    previous and put the hook's entries behind the User PATH again. Guessing from the
+    environment NAME would promote any directory containing it, so the caller's PATH is kept
+    whole and in front instead.
     """
     previous = f"{CONDA_ROOT}\\envs\\ml\\Scripts;C:\\tools\\bin"
     script = _stub_registry(_refresh_preamble(previous))
@@ -621,7 +582,7 @@ def _shell_function(path: Path, name: str) -> str:
 def test_the_rc_repointer_rewrites_only_the_line_it_wrote(path: Path, tmp_path: Path):
     rc = tmp_path / "rc"
     rc.write_text(
-        '# Added by Unsloth installer\n'
+        "# Added by Unsloth installer\n"
         'export PATH="$HOME/.local/bin:$PATH"\n'
         "# a comment\n"
         'export PATH="/opt/mine:$PATH"\n'
@@ -643,7 +604,7 @@ def test_the_rc_repointer_rewrites_only_the_line_it_wrote(path: Path, tmp_path: 
     )
     assert "status=0" in out.stdout, (out.stdout, out.stderr)
     assert rc.read_text(encoding = "utf-8") == (
-        '# Added by Unsloth installer\n'
+        "# Added by Unsloth installer\n"
         'export PATH="$PATH:$HOME/.local/bin"\n'
         "# a comment\n"
         # The user's own line is untouched: only an exact match on what we write is ours.
@@ -865,9 +826,7 @@ def test_the_rc_repointer_rewrites_a_line_holding_a_backslash(path: Path, tmp_pa
     rc = tmp_path / "rc"
     old_line = 'export PATH="/opt/od\\\\d/bin:$PATH"'
     new_line = 'export PATH="$PATH:/opt/od\\\\d/bin"'
-    rc.write_text(
-        "# Added by Unsloth installer\n" + old_line + "\n# keep me\n", encoding = "utf-8"
-    )
+    rc.write_text("# Added by Unsloth installer\n" + old_line + "\n# keep me\n", encoding = "utf-8")
     script = (
         _shell_function(path, "_unsloth_repoint_rc_line")
         + "_unsloth_repoint_rc_line "
@@ -883,14 +842,7 @@ def test_the_rc_repointer_rewrites_a_line_holding_a_backslash(path: Path, tmp_pa
 
 def test_the_uv_repoint_pass_moves_the_home_relative_spelling_too():
     """The default uv destination IS ~/.local/bin, and the shim block writes that line
-    unexpanded as `$HOME/.local/bin`.
-
-    A repoint built only from the expanded path can never match it, so on every ordinary
-    machine the line the pass exists to move stayed in front of conda. The shim's own
-    repoint reaches one profile, whichever is selected now, which leaves a prepend a
-    previous run wrote to .profile in place for anyone who has since acquired a .bashrc or
-    changed shells -- and this loop already visits every startup file.
-    """
+    unexpanded as `$HOME/.local/bin`."""
     source = INSTALL_SH.read_text(encoding = "utf-8")
     start = source.index("_uv_repoint_literal=")
     block = source[start : source.index("_persist_fish_path_dir", start)]
@@ -899,25 +851,19 @@ def test_the_uv_repoint_pass_moves_the_home_relative_spelling_too():
     # Both spellings inside the per-profile loop, not only the expanded one.
     assert block.count("_persist_login_path_dir") == 2, block
     # $HOME stays unexpanded; only the rest of the path is escaped.
-    assert '${_UNSLOTH_UV_BIN_DIR#$HOME}' in block, block
+    assert "${_UNSLOTH_UV_BIN_DIR#$HOME}" in block, block
 
 
 def test_the_standalone_setup_repoints_the_home_relative_prepend_too():
-    """`studio/setup.sh` runs on its own during an update, after install.sh wrote the shim
-    line as `export PATH="$HOME/.local/bin:$PATH"`.
-
-    `_SETUP_LOGIN_PATH` holds the EXPANDED directory, which is what selects the repoint-only
-    branch, while the line in the profile says `$HOME`. Matching only the expanded form meant
-    the rewrite never fired and the stale prepend stayed ahead of the active conda
-    environment -- the whole thing that branch exists to fix.
-    """
+    """`studio/setup.sh` runs on its own during an update, after install.sh wrote the shim line
+    as `export PATH="$HOME/.local/bin:$PATH"`."""
     body = _shell_function(SETUP_SH_POSIX, "_setup_persist_uv_path")
     assert "_supp_export_home_prepend" in body, body
     assert "'$HOME'" in body, body
-    assert '${_supp_dir#$HOME}' in body, body
+    assert "${_supp_dir#$HOME}" in body, body
     # In the repoint-only branch AND in the present-already branch, which are the two places
     # a stale prepend is reachable.
-    assert body.count("_supp_export_home_prepend\"") >= 2, body
+    assert body.count('_supp_export_home_prepend"') >= 2, body
 
 
 @pytest.mark.parametrize(
@@ -934,11 +880,7 @@ def test_the_rc_repointer_leaves_a_line_the_user_wrote(path: Path, tmp_path: Pat
     an identical line without it is not ours to touch.
     """
     rc = tmp_path / "rc"
-    original = (
-        '# my own path\n'
-        'export PATH="$HOME/.local/bin:$PATH"\n'
-        'alias ll="ls -l"\n'
-    )
+    original = "# my own path\n" 'export PATH="$HOME/.local/bin:$PATH"\n' 'alias ll="ls -l"\n'
     rc.write_text(original, encoding = "utf-8")
     script = (
         _shell_function(path, "_unsloth_repoint_rc_line")

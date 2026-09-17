@@ -3227,22 +3227,16 @@ exit 1
     # ── Helper: refresh PATH from registry (deduplicating entries) ──
     # Merge order: venv Scripts (if active) > Machine > User > current $env:Path.
     # Dedup compares both raw and expanded forms (%VAR% vs literal).
-    # Every prefix an active conda session has put on PATH, deepest environment first.
-    # CONDA_PREFIX is the active environment. CONDA_PREFIX_1.. are the ones it was stacked
-    # on, which conda sets on every `conda activate` inside another environment and whose
-    # entries sit on PATH just as the active one's do. CONDA_EXE names the installation
-    # root's own Scripts directory, which is where `conda` itself lives and is on PATH for
-    # the whole session rather than only inside an environment.
+    # Every prefix an active conda session has put on PATH, deepest first: CONDA_PREFIX is
+    # the active environment, CONDA_PREFIX_1.. the ones it was stacked on, and CONDA_EXE
+    # names the installation root, which is on PATH for the whole session.
     function Get-ActiveCondaPrefixes {
         $prefixes = New-Object System.Collections.Generic.List[string]
         if (-not [string]::IsNullOrWhiteSpace($env:CONDA_PREFIX)) { $prefixes.Add($env:CONDA_PREFIX) }
-        # Enumerated, not a fixed list. `conda activate --stack` records the outer
-        # environments as CONDA_PREFIX_1, _2, _3, _4 ... with CONDA_SHLVL counting them, and
-        # a hard-coded tail of three silently dropped everything past the fourth
-        # environment: their PATH entries then sorted after Machine and User, which inverts
-        # the ordering the stack established. CONDA_SHLVL is the count conda itself keeps,
-        # and the loop carries on past a gap in case a shell has been left with one, with a
-        # ceiling so a bad value cannot spin.
+        # Enumerated from CONDA_SHLVL, not a fixed list: a hard-coded tail of three dropped
+        # everything past the fourth stacked environment, which sorted its PATH entries
+        # after Machine and User and inverted the ordering the stack established. The
+        # ceiling stops a bad value spinning.
         $levels = 0
         if (-not [string]::IsNullOrWhiteSpace($env:CONDA_SHLVL)) {
             [void][int]::TryParse($env:CONDA_SHLVL, [ref]$levels)
@@ -3255,10 +3249,9 @@ exit 1
         }
         if (-not [string]::IsNullOrWhiteSpace($env:_CONDA_ROOT)) { $prefixes.Add($env:_CONDA_ROOT) }
         if (-not [string]::IsNullOrWhiteSpace($env:CONDA_EXE)) {
-            # ...\<root>\Scripts\conda.exe -> ...\<root>. Trimmed with a regex rather than
-            # Split-Path, which is provider-aware: on a non-Windows PowerShell, which is
-            # where the tests for this run, it does not treat a backslash as a separator and
-            # hands back the whole string, so the root is never recognised.
+            # ...\<root>\Scripts\conda.exe -> ...\<root>. Regex rather than Split-Path, which
+            # is provider-aware and does not treat a backslash as a separator on the
+            # non-Windows PowerShell the tests run under.
             $scripts = $env:CONDA_EXE -replace '[\\/][^\\/]*$', ''
             $root = $scripts -replace '[\\/][^\\/]*$', ''
             if ($root -and $root -ne $env:CONDA_EXE) { $prefixes.Add($root) }
@@ -3266,9 +3259,8 @@ exit 1
         return $prefixes
     }
 
-    # Is $Path inside one of $Prefixes? Compared on a directory boundary, so a sibling
-    # directory whose name merely STARTS with a prefix ("C:\conda-backup" against
-    # "C:\conda") is not dragged to the front with it.
+    # Is $Path inside one of $Prefixes? On a directory boundary, so "C:\conda-backup" is not
+    # dragged to the front along with "C:\conda".
     function Test-PathUnderCondaPrefix {
         param([string]$Path, $Prefixes)
         if ([string]::IsNullOrWhiteSpace($Path) -or -not $Prefixes) { return $false }
@@ -3289,18 +3281,9 @@ exit 1
         $machine = [System.Environment]::GetEnvironmentVariable("Path", "Machine")
         $user    = [System.Environment]::GetEnvironmentVariable("Path", "User")
         $venvScripts = if ($env:VIRTUAL_ENV) { Join-Path $env:VIRTUAL_ENV "Scripts" } else { $null }
-        # An activated conda environment lives ONLY in the process PATH: nothing of it is in
-        # the Machine or User registry values, so rebuilding as machine + user + previous
-        # puts every conda entry behind the User PATH. Run through `irm | iex`, which is the
-        # documented command, that rebuilt PATH is the caller's own prompt and survives the
-        # installer, so `python` and `conda update` resolve the non-conda install first and
-        # the line telling the user conda keeps priority is false until the prompt is
-        # closed. The registry ordering the rest of this change fixes is the NEXT shell;
-        # this is the one they are standing in.
-        #
-        # Restored by position, not by rewriting anything: the conda entries already on PATH
-        # are moved back in front, in the order conda put them, and the dedup below drops
-        # the copies that then appear later in machine or user.
+        # An activated conda environment lives ONLY in the process PATH, so rebuilding as
+        # machine + user + previous demotes it, and under `irm | iex` that PATH is the
+        # caller's own prompt. Restored by position; the dedup below drops the copies.
         $condaFront = @()
         if (Test-ActiveCondaEnvironment) {
             $prefixes = Get-ActiveCondaPrefixes
@@ -3311,19 +3294,9 @@ exit 1
                     }
                 }
             } else {
-                # A hook that exports CONDA_DEFAULT_ENV and nothing that names a directory.
-                # Test-ActiveCondaEnvironment accepts that shape deliberately -- the caller
-                # IS inside conda's ordering -- but there is then nothing to test a PATH
-                # entry against, so WHICH entries are conda's cannot be established.
-                #
-                # Guessing from the environment NAME would match any directory that happens
-                # to contain it, which is the same promote-a-stranger defect the boundary
-                # check above exists to prevent. Instead the caller's existing PATH is kept
-                # whole and in front: it already has conda's ordering in it, whatever that
-                # ordering is, and putting the registry values behind it preserves the
-                # session exactly rather than reconstructing it. New entries registered by
-                # this run are still reachable, just not ahead of the environment, which is
-                # the same outcome the prefix branch produces and what appending was for.
+                # A hook exporting CONDA_DEFAULT_ENV and no directory: nothing names which
+                # entries are conda's, and guessing from the name would promote a stranger,
+                # so the caller's PATH is kept whole and in front.
                 $condaFront = @($env:Path)
             }
         }
@@ -3348,10 +3321,9 @@ exit 1
     }
 
     # ── Helper: is a conda environment ACTIVE in this session? ──
-    # CONDA_PREFIX is what `conda activate` and the Anaconda Prompt set, and it is the only
-    # signal that separates "conda is installed" from "we are running inside one of its
-    # environments". CONDA_DEFAULT_ENV is read too, because a shell hook that exports only
-    # that one still leaves the caller inside conda's PATH ordering.
+    # CONDA_PREFIX separates "conda is installed" from "we are inside one of its
+    # environments". CONDA_DEFAULT_ENV is read too: a hook that exports only that one still
+    # leaves the caller inside conda's PATH ordering.
     function Test-ActiveCondaEnvironment {
         foreach ($condaVar in @($env:CONDA_PREFIX, $env:CONDA_DEFAULT_ENV)) {
             if (-not [string]::IsNullOrWhiteSpace($condaVar)) { return $true }
@@ -3359,13 +3331,10 @@ exit 1
         return $false
     }
 
-    # The position a PERSISTENT PATH write may actually use. A prepend writes an ordering
-    # into the registry that outlives the conda activation it was made under, so from the
-    # next shell on our directory sits ahead of the conda environment's own entries and
-    # conda resolves binaries and DLLs out of ours. That is what corrupts an Anaconda base
-    # on its next `conda update` (#5871). Appending registers the same directory without
-    # demoting anything, which is all that is needed for `unsloth` to resolve in a new
-    # shell; the current run keeps its session-level prepend, and that dies with the process.
+    # The position a PERSISTENT PATH write may actually use. A prepend outlives the conda
+    # activation it was made under, so conda ends up resolving binaries and DLLs out of our
+    # directory, which is what corrupts an Anaconda base on its next `conda update` (#5871).
+    # An append registers the same directory without demoting anything.
     function Resolve-UserPathPosition {
         param(
             [ValidateSet('Append','Prepend')]
@@ -5376,12 +5345,9 @@ exit 0
         # there is, and the caller then bootstraps x64 or warns.
         # ARM64 first on a native host, so a leftover x64 interpreter does not capture the venv.
         # And when UNSLOTH_ALLOW_ARM64_PYTHON is set: the opt-out has to reach the SELECTION,
-        # not only the swap that follows it. On a machine that already has an x64 interpreter
-        # the swap never runs -- the selection is x64 already, so the guard on its
-        # architecture is false -- and the variable then did nothing at all: a fresh install
-        # built an x64 venv and a reinstall replaced the native ARM64 one, which is the
-        # opposite of what it asks for. -X64Only is Install-X64Python's own lookup and is
-        # never the place to honour it.
+        # not only the swap after it. On a machine that already has x64 the swap never runs,
+        # so the variable would do nothing at all. -X64Only is Install-X64Python's own lookup
+        # and is never the place to honour it.
         $preferArm64 = (-not $X64Only) -and (
             $script:WoaNativeCudaTorch -or
             ((Get-HostMachineArch) -eq "arm64" -and (Test-Arm64PythonOptOut))
@@ -5476,12 +5442,9 @@ exit 0
             $tag = Get-PythonPlatformTag $c.Path
             $c.Arch = if ($tag -eq "win-amd64") { "x86_64" } elseif ($tag -eq "win-arm64") { "arm64" } else { "unknown" }
         }
-        # The opt-out asks for a NATIVE interpreter, and the per-minor loop below answers the
-        # version preference first: with x64 3.13 and ARM64 3.12 installed it returns the x64
-        # 3.13 and stops, and the swap guard never runs on an x64 selection, so the variable
-        # produced an x64 environment after all. Sweep every supported minor for an ARM64
-        # build first, in the caller's own version order, and only fall through to the
-        # arch-blind loop when this host has none.
+        # The per-minor loop answers the VERSION preference first, so with x64 3.13 and
+        # ARM64 3.12 installed the opt-out still produced an x64 environment. Sweep every
+        # supported minor for an ARM64 build first, then fall through.
         if ($preferArm64) {
             foreach ($minor in $minors) {
                 $arm = $candidates |
@@ -5507,11 +5470,9 @@ exit 0
         return $null
     }
 
-    # Which PATH switch the python.org installer gets. PrependPath=1 registers the new
-    # interpreter and its Scripts directory at the FRONT of the User PATH; inside an active
-    # conda environment that is a permanent demotion of conda's own entries (#5871), so ask
-    # for the same registration at the back instead. AppendPath is the installer's own
-    # documented option, so python stays discoverable here either way.
+    # Which PATH switch the python.org installer gets. PrependPath=1 puts the interpreter at
+    # the FRONT of the User PATH, which inside an active conda environment permanently
+    # demotes conda's own entries (#5871). AppendPath registers it just as well.
     function Get-PythonInstallerPathSwitch {
         if (Test-ActiveCondaEnvironment) { return "AppendPath=1" }
         return "PrependPath=1"
@@ -5624,12 +5585,9 @@ exit 0
     # ── Windows on ARM: get an x64 CPython ──
     # --architecture x64 forces winget off the ARM64 build; python.org takes the same override.
     function Install-X64Python {
-        # Same ordering, and for the same reason, as the generic bootstrap below: winget's
-        # Python package hard-codes PrependPath=1, so inside an active conda environment a
-        # winget install puts Python in front of conda on PATH and there is no switch that
-        # asks it not to. python.org first there, python.org first here; without this, the
-        # Windows-on-ARM path reaches winget and recreates the corruption this change exists
-        # to prevent. winget stays as the fallback, because no x64 Python at all is a STOP.
+        # python.org first inside conda, same as the generic bootstrap below: winget's Python
+        # package hard-codes PrependPath=1 and offers no switch to ask otherwise, so a winget
+        # install recreates #5871. winget stays the fallback: no x64 Python at all is a STOP.
         $pythonOrgTried = $false
         if (Test-ActiveCondaEnvironment) {
             substep "conda environment active ($env:CONDA_PREFIX) -- installing x64 Python from python.org, which can be installed without taking PATH priority." "Yellow"
@@ -5663,36 +5621,24 @@ exit 0
         return (Find-CompatiblePython -X64Only)
     }
 
-    # "I want the native ARM64 interpreter." One reader, because the answer has to be the
-    # same at every point that would otherwise replace an ARM64 environment: the fresh
-    # selection below, and the mismatch re-check further down that fires on a MIGRATED venv.
-    # Read at each site rather than captured, so setting it between passes of the installer
-    # takes effect on the next one.
+    # "I want the native ARM64 interpreter." One reader, because both places that would
+    # otherwise replace an ARM64 environment have to agree: the fresh selection and the
+    # mismatch re-check on a migrated venv. Read at each site, not captured.
     function Test-Arm64PythonOptOut {
         return ($env:UNSLOTH_ALLOW_ARM64_PYTHON -in @('1', 'true', 'yes', 'on'))
     }
 
     # ── Windows on ARM: the interpreter handed to uv has to be x64 ──
-    # pyarrow (via datasets) and hf-transfer publish no win_arm64 wheel, so a native ARM64
-    # interpreter source-builds both and dies on CMake or Rust minutes into the run (#8495).
-    # Returns the interpreter to use, or $null when this host cannot be served at all, which
-    # is a STOP rather than a warning: continuing on ARM64 only moves the same failure to a
-    # place the user cannot read it in (#10875). UNSLOTH_ALLOW_ARM64_PYTHON=1 is the opt-out
-    # for anyone who has both wheels built and available locally.
+    # PyPI has no win_arm64 pyarrow (via datasets) or hf-transfer, so a native ARM64
+    # interpreter source-builds both and dies minutes in (#8495). $null means this host
+    # cannot be served, which is a STOP rather than a warning (#10875).
+    # UNSLOTH_ALLOW_ARM64_PYTHON=1 opts out.
     function Resolve-WindowsOnArmX64Python {
         param($SelectedPython)
         if (-not $SelectedPython) { return $null }
-        # Read BEFORE the x64 install is attempted, not only after it fails. Anyone who sets
-        # this has pyarrow and hf-transfer built for ARM64 already and asked for the native
-        # interpreter; downloading an x64 CPython they did not want and then using it is not
-        # an opt-out, and on a machine where that install succeeds, which is most of them,
-        # the variable would otherwise do nothing at all.
-        # ARM64 only. Discovery can hand this a 32-bit `win32` interpreter, or one whose
-        # platform probe failed and is therefore tagged "unknown", and both reach here as
-        # "not x64". Returning one of those under this variable would label it native ARM64
-        # and go on to install a stack a 32-bit Python cannot hold, while the variable's own
-        # promise -- the caller has pyarrow and hf-transfer built for ARM64 -- says nothing
-        # about it. Anything else continues to the x64 bootstrap below, or fails closed there.
+        # Read BEFORE the x64 install is attempted, or the variable does nothing on the
+        # machines where that install succeeds. ARM64 only: discovery reports 32-bit `win32`
+        # and probe-failed "unknown" interpreters as "not x64" too.
         if ((Test-Arm64PythonOptOut) -and ($SelectedPython.Arch -eq "arm64")) {
             Write-StudioLine "[WARN] UNSLOTH_ALLOW_ARM64_PYTHON is set, so keeping native ARM64 Python $($SelectedPython.Version)." -ForegroundColor Yellow
             Write-StudioLine "       pyarrow (via datasets) and hf-transfer publish no win_arm64 wheels, so they will be" -ForegroundColor Yellow
@@ -5719,19 +5665,10 @@ exit 0
 
     function Get-StudioVenvBasePython {
         param([Parameter(Mandatory = $true)][string]$VenvDir)
-        # The ARM64 interpreter the EXISTING environment was built from, when the machine no
-        # longer registers one of its own.
-        #
-        # UNSLOTH_ALLOW_ARM64_PYTHON asks for the native environment to be kept, and the
-        # selection honours it by preferring an ARM64 build -- but only among the
-        # interpreters discovery can see. Remove the ARM64 CPython that built the venv (an
-        # upgrade, a cleanup) and there is nothing left to prefer: the selection returns the
-        # x64 interpreter, the environment is rebuilt on it, and the ARM64 tree is only
-        # PRESERVED beside it, while the opt-out's own message said it would not be rebuilt
-        # on x64. pyvenv.cfg still names that base interpreter, so if it is on disk the
-        # opt-out has something to honour after all.
-        #
-        # Read here, before the reinstall moves the environment to its rollback path.
+        # The ARM64 interpreter the EXISTING environment was built from, for when the machine
+        # registers none of its own: the selection can only prefer what discovery sees, so
+        # the opt-out would rebuild on x64 anyway. pyvenv.cfg still names it. Read before the
+        # reinstall moves the environment aside.
         $cfg = Join-Path $VenvDir "pyvenv.cfg"
         if (-not (Test-Path -LiteralPath $cfg -PathType Leaf)) { return $null }
         $venvHome = $null
@@ -5749,9 +5686,8 @@ exit 0
             if (-not $exe) { continue }
             if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { continue }
             if (Test-IsCondaPython $exe) { continue }
-            # ARM64 only, and a supported minor only: this is the opt-out's interpreter, so
-            # anything that is not provably native is no better than the x64 selection it
-            # would replace.
+            # ARM64 and a supported minor only: anything not provably native is no better
+            # than the x64 selection it would replace.
             if ((Get-PythonPlatformTag $exe) -ne "win-arm64") { continue }
             $out = (& $exe --version 2>&1 | Out-String)
             if ($out -notmatch "Python ((3\.1[1-3])\.\d+)") { continue }
@@ -5764,11 +5700,9 @@ exit 0
     }
 
     # Does an environment we are about to REUSE still match the interpreter we chose? The
-    # swap above only ever changes a FRESH selection, so a venv migrated from an older
-    # install keeps whatever interpreter it was built with, and on Windows on ARM that is
-    # native ARM64 CPython, which cannot resolve pyarrow or hf-transfer (#8495, #10875).
-    # True only when an x64 interpreter is in hand to rebuild with, so a host deliberately
-    # served by native ARM64 wheels is left alone.
+    # swap above only changes a FRESH selection, so a migrated venv keeps whatever built it,
+    # which on Windows on ARM is native ARM64 CPython (#8495, #10875). True only with an x64
+    # interpreter in hand, so a host served by native ARM64 wheels is left alone.
     function Test-StudioVenvArchMismatch {
         param(
             [Parameter(Mandatory = $true)][string]$VenvPython,
@@ -5776,12 +5710,9 @@ exit 0
             [string]$RecordedTag = $null
         )
         if ((Get-HostMachineArch) -ne "arm64") { return $false }
-        # The interpreter may be gone by the time this runs. An ordinary reinstall moves the
-        # whole environment to its rollback path BEFORE the x64 Python is chosen, so
-        # $VenvPython no longer exists here and probing it would answer "no mismatch" for
-        # every existing install: the rebuild would then go ahead on ARM64 and the tree would
-        # be deleted with the ordinary rollback instead of preserved. $RecordedTag is the tag
-        # read before that move.
+        # The interpreter may be gone: a reinstall moves the environment to its rollback path
+        # BEFORE the x64 Python is chosen, so probing $VenvPython here would answer "no
+        # mismatch" for every existing install. $RecordedTag is the tag read before that move.
         $tag = $null
         if (Test-Path -LiteralPath $VenvPython -PathType Leaf) {
             $tag = Get-PythonPlatformTag $VenvPython
@@ -5791,17 +5722,13 @@ exit 0
         # Asked before the opt-out, so the message below is only printed when there really is
         # a native ARM64 environment to keep.
         if ($tag -ne "win-arm64") { return $false }
-        # The opt-out has to be honoured HERE too, not only where a fresh interpreter is
-        # chosen. Resolve-WindowsOnArmX64Python never runs when the ordinary probe already
-        # found an x64 Python on the machine, so on a host that has both interpreters the
-        # variable would never be read and this branch would replace the very ARM64
-        # environment the user asked to keep, discarding whatever they installed into it.
+        # Honoured HERE too: Resolve-WindowsOnArmX64Python never runs when the ordinary probe
+        # already found x64, so on a host with both interpreters this branch would otherwise
+        # replace the very ARM64 environment the user asked to keep.
         if (Test-Arm64PythonOptOut) {
-            # Two different outcomes, so two different sentences. With an ARM64 interpreter in
-            # hand the environment really is not rebuilt on x64. With none -- the machine
-            # registers no ARM64 Python and the one this environment was built from is gone --
-            # the reinstall has already moved the tree aside and the new one IS built on x64,
-            # and saying otherwise is the only thing the variable would have changed.
+            # Two outcomes, so two sentences: with an ARM64 interpreter the environment is
+            # really not rebuilt on x64, and with none the reinstall has already moved the
+            # tree aside and the new one IS on x64.
             if ($SelectedPython -and $SelectedPython.Arch -eq "x86_64") {
                 substep "windows on arm: UNSLOTH_ALLOW_ARM64_PYTHON is set, but no ARM64 Python is left on" "Yellow"
                 substep "this machine, so the new environment is built on x64; the ARM64 one is kept." "Yellow"
@@ -5831,11 +5758,9 @@ exit 0
         $pythonPackageId = "Python.Python.$PythonVersion"
         $wingetExit = $null
 
-        # winget's Python package hard-codes PrependPath=1 in its own manifest, so there is
-        # no way to ask it for a registration that leaves an active conda environment in
-        # front. Inside one, take the python.org route first, where this installer chooses
-        # the switch itself; winget stays as the fallback it has always been, because a
-        # failed install is worse than a PATH we warn about.
+        # winget's Python package hard-codes PrependPath=1 with no switch to ask otherwise,
+        # so inside conda take the python.org route first, where we choose the switch. winget
+        # stays the fallback: a failed install is worse than a PATH we warn about.
         $pythonOrgTried = $false
         if (Test-ActiveCondaEnvironment) {
             substep "conda environment active ($env:CONDA_PREFIX) -- installing Python from python.org, which can be installed without taking PATH priority." "Yellow"

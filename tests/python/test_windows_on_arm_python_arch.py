@@ -3,24 +3,19 @@
 
 """Windows on ARM has to end up on an x64 interpreter, or stop.
 
-pyarrow (reached through `datasets`) and hf-transfer publish no `win_arm64` wheel, at any
-version, so a native ARM64 CPython source-builds both and dies on CMake or Rust minutes
-into the install. Measured on a real windows-11-arm runner with native ARM64 CPython
-3.12.10:
+PyPI publishes no `win_arm64` wheel for pyarrow (reached through `datasets`) or
+hf-transfer, at any version, so a native ARM64 CPython source-builds both and dies on CMake
+or Rust minutes in. Measured on a windows-11-arm runner with ARM64 CPython 3.12.10:
 
     ERROR: Could not find a version that satisfies the requirement pyarrow (from versions: none)
     *** CMake configuration failed
-    ERROR: Failed building wheel for pyarrow
-    ERROR: Could not find a version that satisfies the requirement hf-transfer (from versions: none)
 
-The same probe on x64 Windows resolved both, so it is the interpreter architecture and not
-the package set. install.ps1 already swaps a freshly selected ARM64 interpreter for x64.
-The two holes these tests close are what it does when that swap CANNOT be made, and the
-fact that the swap only ever looks at a FRESH selection, so an environment migrated from an
-older install is reused on whatever interpreter it was built with.
+The same probe on x64 resolved both, so it is the interpreter architecture. install.ps1
+already swaps a freshly selected ARM64 interpreter for x64; these tests close what it does
+when that swap CANNOT be made, and the fact that it only looks at a FRESH selection, so a
+migrated environment is reused on whatever built it.
 
-Provenance: #8495 (Snapdragon X2 Elite, Windows and Linux), #10875 (ARM64 desktop installer
-fails on pyarrow while the CLI succeeds).
+Provenance: #8495, #10875.
 """
 
 from __future__ import annotations
@@ -174,13 +169,7 @@ Write-Host ("CHOSEN=" + $(if ($chosen) {{ $chosen.Arch }} else {{ "none" }}))
 @pytest.mark.parametrize("shell", POWERSHELLS)
 @pytest.mark.parametrize("value", ["1", "true", "YES", "on"])
 def test_the_opt_out_is_read_before_the_x64_install_is_attempted(shell: str, value: str):
-    """The opt-out has to opt out on a machine where the x64 install would SUCCEED.
-
-    Read only after Install-X64Python fails, the variable does nothing at all on any host
-    that can reach python.org, which is most of them: an interpreter the user did not ask
-    for is downloaded, installed and then used. Someone who sets this has pyarrow and
-    hf-transfer built for ARM64 already.
-    """
+    """The opt-out has to opt out on a machine where the x64 install would SUCCEED."""
     script = (
         _preamble("arm64", "win-arm64", x64_available = True)
         + f"""
@@ -253,13 +242,7 @@ def test_a_reused_environment_is_re_checked_for_its_interpreter_architecture(
     venv_exists: bool,
     expected: bool,
 ):
-    """The swap only covers a fresh selection, so reuse has to be re-checked separately.
-
-    #8495: "the x64 swap only covers a fresh interpreter selection, so any reuse path on
-    Windows ARM64 still lands on native ARM64 CPython". install.ps1 reaches its
-    `step "venv" "using migrated environment"` line with a venv built by whichever
-    installer created it, which on these machines predates the swap entirely.
-    """
+    """The swap only covers a fresh selection, so reuse has to be re-checked separately."""
     venv_python = tmp_path / "python.exe"
     if venv_exists:
         venv_python.write_text("", encoding = "utf-8")
@@ -285,12 +268,10 @@ def test_the_opt_out_also_protects_an_existing_arm64_environment(
 ):
     """The opt-out has to be read HERE, not only where a fresh interpreter is chosen.
 
-    Resolve-WindowsOnArmX64Python never runs when the ordinary probe already found an x64
-    Python on the machine, which is an ARM64 box that has both interpreters installed. On
-    such a host UNSLOTH_ALLOW_ARM64_PYTHON was never consulted at all, and this branch then
-    moved aside the very native ARM64 environment the user had asked to keep. The rebuild
-    is not a migration: the new venv is on a different architecture, so nothing the user
-    installed into the old one is carried over.
+    Resolve-WindowsOnArmX64Python never runs when the ordinary probe already found x64, so
+    on an ARM64 box with both interpreters the variable was never consulted and this branch
+    moved aside the very environment the user asked to keep. The rebuild is not a migration:
+    nothing installed into the old venv carries over.
     """
     venv_python = tmp_path / "python.exe"
     venv_python.write_text("", encoding = "utf-8")
@@ -463,13 +444,7 @@ function Find-CompatiblePython {{
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
 def test_the_x64_bootstrap_skips_winget_inside_conda(shell: str):
-    """Inside conda, python.org is what installs the x64 interpreter.
-
-    The regression this pins: winget runs first, succeeds (it usually does), and its
-    PrependPath=1 manifest registers Python ahead of the active conda environment, which is
-    the PATH corruption the rest of this change prevents. The stub writes WINGET-CALLED, so
-    "python.org answered" is not mistaken for "winget was never reached".
-    """
+    """Inside conda, python.org is what installs the x64 interpreter."""
     script = (
         _x64_bootstrap_preamble(
             conda_active = True,
@@ -501,12 +476,7 @@ Write-Host ("PYTHON-ORG-CALLS=" + $script:PythonOrgCalls)
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
 def test_the_x64_bootstrap_still_falls_back_to_winget_inside_conda(shell: str):
-    """A warned-about PATH beats no x64 Python at all.
-
-    Windows on ARM without an x64 interpreter is a STOP, so python.org failing has to fall
-    through to winget rather than give up, and it has to say what that costs. The fallback
-    must not re-run the python.org download it just watched fail.
-    """
+    """A warned-about PATH beats no x64 Python at all."""
     script = (
         _x64_bootstrap_preamble(
             conda_active = True,
@@ -587,13 +557,11 @@ function Remove-StudioVenvTreeWithRetry {{
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
 def test_the_preserved_arm64_environment_survives_a_successful_install(tmp_path: Path, shell: str):
-    """The rebuild tells the user the ARM64 environment is kept so they can copy packages
-    out of it. Nothing else in the run acts on that promise.
+    """The rebuild promises the ARM64 environment is kept so packages can be copied out.
 
-    Complete-StudioVenvRollback deletes the backup on success, which is correct for every
-    other rollback: same architecture, same packages, no reason to keep a duplicate. The
-    architecture rebuild is the one case where the old tree holds packages the new one
-    cannot have, and deleting it discards them AND the message that says otherwise.
+    Complete-StudioVenvRollback deletes the backup on success, which is right for every
+    other rollback but wrong for this one: the old tree holds packages the new architecture
+    cannot have, and deleting it discards them and the message that said otherwise.
     """
     home = tmp_path / "studio"
     backup = home / "unsloth_studio.rollback.20260101000000.4242"
@@ -657,13 +625,8 @@ Complete-StudioVenvRollback
 
 
 def test_the_preserved_tree_leaves_the_swept_rollback_namespace():
-    """Remove-StaleStudioVenvRollbacks globs unsloth_studio.rollback.*, and preserves an
-    entry only while its owning PID is alive.
-
-    A copy kept under that name is therefore deleted by the next run of the installer once
-    this process has exited, which is a slower version of the same bug. Naming it
-    unsloth_studio.arm64.* is what makes the promise hold past the current session.
-    """
+    """Remove-StaleStudioVenvRollbacks globs unsloth_studio.rollback.*, and preserves an entry
+    only while its owning PID is alive."""
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     complete = source.index("function Complete-StudioVenvRollback")
     block = source[complete : source.index("\n    }\n", complete)]
@@ -793,14 +756,7 @@ def test_the_opt_out_keeps_the_environment_it_says_it_keeps():
 
 
 def test_the_opt_out_reaches_the_interpreter_selection():
-    """On a host that already has an x64 Python the swap never runs.
-
-    `Find-CompatiblePython` prefers x64 on an ARM64 host, so the selection is x64 already and
-    the guard below it -- which is where the opt-out was read -- is false. The variable
-    therefore did nothing: a fresh install built an x64 venv and a reinstall replaced the
-    native ARM64 one. It now ranks the candidates, and `Resolve-WindowsOnArmX64Python` keeps
-    what it picks.
-    """
+    """On a host that already has an x64 Python the swap never runs."""
     body = _function("Find-CompatiblePython")
     assert (
         "Test-Arm64PythonOptOut" in body

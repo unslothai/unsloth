@@ -218,12 +218,11 @@ function Refresh-Environment {
     # Merge: venv Scripts (if active) > active conda > Machine > User > current $env:Path.
     # Dedup raw+expanded.
     $venvScripts = if ($env:VIRTUAL_ENV) { Join-Path $env:VIRTUAL_ENV 'Scripts' } else { $null }
-    # An activated conda environment lives ONLY in the process PATH: nothing of it is in the
-    # Machine or User registry values, so rebuilding as machine + user + previous puts every
-    # conda entry behind the User PATH. This function runs after CMake or Python is
-    # registered, and direct execution of this script shares the caller's PowerShell process,
-    # so without this the demotion outlives the setup as well. Mirrors install.ps1's
-    # Refresh-SessionPath; the parity is asserted in tests/python/test_installer_conda_path_guard.py.
+    # An activated conda environment lives ONLY in the process PATH, so rebuilding as
+    # machine + user + previous puts every conda entry behind the User PATH. Running this
+    # script directly shares the caller's process, so the demotion would outlive the setup.
+    # Mirrors install.ps1's Refresh-SessionPath; parity is asserted in
+    # tests/python/test_installer_conda_path_guard.py.
     $condaFront = @()
     if (Test-ActiveCondaEnvironment) {
         $prefixes = Get-ActiveCondaPrefixes
@@ -260,9 +259,8 @@ function Refresh-Environment {
 }
 
 # ── Helper: is a conda environment ACTIVE in this session? ──
-# Mirrors install.ps1. CONDA_PREFIX is what `conda activate` and the Anaconda Prompt set,
-# and it is the only signal that separates "conda is installed" from "we are running inside
-# one of its environments".
+# Mirrors install.ps1. CONDA_PREFIX separates "conda is installed" from "we are inside one
+# of its environments".
 function Test-ActiveCondaEnvironment {
     foreach ($condaVar in @($env:CONDA_PREFIX, $env:CONDA_DEFAULT_ENV)) {
         if (-not [string]::IsNullOrWhiteSpace($condaVar)) { return $true }
@@ -275,13 +273,9 @@ function Test-ActiveCondaEnvironment {
 function Get-ActiveCondaPrefixes {
     $prefixes = New-Object System.Collections.Generic.List[string]
     if (-not [string]::IsNullOrWhiteSpace($env:CONDA_PREFIX)) { $prefixes.Add($env:CONDA_PREFIX) }
-    # Enumerated, not a fixed list. `conda activate --stack` records the outer
-    # environments as CONDA_PREFIX_1, _2, _3, _4 ... with CONDA_SHLVL counting them, and
-    # a hard-coded tail of three silently dropped everything past the fourth
-    # environment: their PATH entries then sorted after Machine and User, which inverts
-    # the ordering the stack established. CONDA_SHLVL is the count conda itself keeps,
-    # and the loop carries on past a gap in case a shell has been left with one, with a
-    # ceiling so a bad value cannot spin.
+    # Enumerated from CONDA_SHLVL, not a fixed list: a hard-coded tail of three dropped
+    # everything past the fourth stacked environment and inverted its ordering. The ceiling
+    # stops a bad value spinning.
     $levels = 0
     if (-not [string]::IsNullOrWhiteSpace($env:CONDA_SHLVL)) {
         [void][int]::TryParse($env:CONDA_SHLVL, [ref]$levels)
@@ -294,10 +288,8 @@ function Get-ActiveCondaPrefixes {
     }
     if (-not [string]::IsNullOrWhiteSpace($env:_CONDA_ROOT)) { $prefixes.Add($env:_CONDA_ROOT) }
     if (-not [string]::IsNullOrWhiteSpace($env:CONDA_EXE)) {
-        # ...\<root>\Scripts\conda.exe -> ...\<root>. Trimmed with a regex rather than
-        # Split-Path, which is provider-aware: on a non-Windows PowerShell, which is where
-        # the tests for this run, it does not treat a backslash as a separator and hands back
-        # the whole string, so the root is never recognised.
+        # ...\<root>\Scripts\conda.exe -> ...\<root>. Regex rather than Split-Path, which is
+        # provider-aware and keeps backslashes on the non-Windows PowerShell the tests use.
         $scripts = $env:CONDA_EXE -replace '[\\/][^\\/]*$', ''
         $root = $scripts -replace '[\\/][^\\/]*$', ''
         if ($root -and $root -ne $env:CONDA_EXE) { $prefixes.Add($root) }
@@ -305,9 +297,8 @@ function Get-ActiveCondaPrefixes {
     return $prefixes
 }
 
-# Is $Path inside one of $Prefixes? Compared on a directory boundary, so a sibling directory
-# whose name merely STARTS with a prefix ("C:\conda-backup" against "C:\conda") is not
-# dragged to the front with it.
+# Is $Path inside one of $Prefixes? On a directory boundary, so "C:\conda-backup" is not
+# dragged to the front along with "C:\conda".
 function Test-PathUnderCondaPrefix {
     param([string]$Path, $Prefixes)
     if ([string]::IsNullOrWhiteSpace($Path) -or -not $Prefixes) { return $false }
@@ -324,10 +315,9 @@ function Test-PathUnderCondaPrefix {
     return $false
 }
 
-# The position a PERSISTENT PATH write may actually use. A prepend writes an ordering into
-# the registry that outlives the conda activation it was made under, so from the next shell
-# on our directory sits ahead of the conda environment's own entries (#5871). Mirrors
-# install.ps1; the parity is asserted in tests/python/test_installer_conda_path_guard.py.
+# The position a PERSISTENT PATH write may actually use: a prepend outlives the activation
+# it was made under and leaves our directory ahead of conda's own entries (#5871). Mirrors
+# install.ps1; parity is asserted in tests/python/test_installer_conda_path_guard.py.
 function Resolve-UserPathPosition {
     param(
         [ValidateSet('Append','Prepend')]
