@@ -609,3 +609,75 @@ def test_a_non_meta_layer_is_unchanged_by_the_meta_guard():
     device, buffer_index = per_layer_device(_Layer(device = torch.device("cuda:1"), index = 1))
     assert device == torch.device("cuda:1")
     assert buffer_index == 1
+
+
+def test_the_fast_path_spells_the_memo_name_the_constant_holds():
+    """The fast path reads the memo as an attribute, which is what makes it cheaper than a
+    `__dict__` subscript, but that spelling is a literal and the write still goes through
+    the constant. Renaming one without the other turns every read into a silent miss, which
+    costs throughput and nothing else, so nothing would fail without this."""
+    from unsloth.models import _utils
+
+    source = (REPOSITORY_ROOT / "unsloth/models/_utils.py").read_text(encoding = "utf-8")
+    fast_path = source.split("def per_layer_device(")[1].split("\n    published =")[0]
+    assert f"module.{_utils._PER_LAYER_DEVICE_MEMO}" in fast_path, (
+        "the fast path does not read the attribute _PER_LAYER_DEVICE_MEMO names, so the "
+        "memo is written and never read"
+    )
+
+
+def test_a_layer_that_publishes_nothing_is_memoised_from_the_default():
+    """The shape that had no memo at all: three failed `nn.Module.__getattr__` scans per
+    layer per token. The answer comes from `default` and nothing on the module, so there is
+    nothing about the layer that can stale it."""
+    from unsloth.models import _utils
+
+    layer = _Layer(parameter_device = "cpu")
+    first = _utils.per_layer_device(layer)
+    memo = layer.__dict__.get(_utils._PER_LAYER_DEVICE_MEMO)
+    if not default_device_is_usable():
+        assert memo is None, (
+            "with no usable default the answer came off the layer's own parameters, which "
+            "move with the layer, and memoising that sends activations to a dead device"
+        )
+        return
+    assert memo is not None, "the unpublished shape was left unmemoised"
+    assert memo[2] == _utils._MEMO_FROM_DEFAULT
+    assert _utils.per_layer_device(layer) == first
+
+
+@pytest.mark.parametrize("name", ["_per_layer_device_index", "_per_layer_device"])
+def test_the_default_memo_yields_the_moment_the_layer_publishes_a_name(name):
+    """unsloth_zoo running `verify_and_set_device` on a layer that had not been through it
+    must be followed, not answered from the memo taken before it."""
+    from unsloth.models import _utils
+
+    if not default_device_is_usable():
+        pytest.skip("no usable default device, so this shape is never memoised")
+
+    layer = _Layer(parameter_device = "cpu")
+    _utils.per_layer_device(layer)
+    _utils.per_layer_device(layer)
+    assert layer.__dict__[_utils._PER_LAYER_DEVICE_MEMO][2] == _utils._MEMO_FROM_DEFAULT
+
+    setattr(layer, name, torch.device("cpu") if name == "_per_layer_device" else "cpu")
+    device, buffer_index = _utils.per_layer_device(layer)
+    assert device == torch.device("cpu"), (
+        f"the memo survived {name} being published on the layer"
+    )
+    assert buffer_index == 0
+
+
+def test_a_parameter_derived_answer_is_never_memoised(monkeypatch):
+    """The other half of the same rule: with no usable default the answer is read off the
+    layer's own parameters, and those move when the layer does."""
+    from unsloth.models import _utils
+
+    monkeypatch.setattr(_utils, "_device_type_is_usable", lambda device_type: device_type == "cpu")
+    layer = _Layer(parameter_device = "cpu")
+    device, _ = _utils.per_layer_device(layer)
+    assert device == torch.device("cpu")
+    assert _utils._PER_LAYER_DEVICE_MEMO not in layer.__dict__, (
+        "a parameter-derived answer was memoised; the layer can move without any published "
+        "value changing, so the next token would go to the device it left"
+    )
