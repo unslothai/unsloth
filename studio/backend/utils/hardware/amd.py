@@ -1191,8 +1191,7 @@ def the_vulkan_loader_override_to_blame() -> "str | None":
         # Clearing one filter repairs this only if the OTHER one still leaves a manifest, so
         # that is the test rather than a fixed precedence.
         select_is_it = select and any(
-            not any(_vulkan_glob_matches(p, PurePath(path).name) for p in disable)
-            for path in paths
+            not any(_vulkan_glob_matches(p, PurePath(path).name) for p in disable) for path in paths
         )
         disable_is_it = disable and any(
             not select or any(_vulkan_glob_matches(p, PurePath(path).name) for p in select)
