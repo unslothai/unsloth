@@ -66,6 +66,10 @@ test("disk free space and download progress use decimal units", async () => {
     training,
     /import \{[^}]*\bformatBytes\b[^}]*\} from "@\/features\/hub"/,
   );
+  assert.match(
+    training,
+    /import \{[^}]*\bformatRate\b[^}]*\} from "@\/features\/hub"/,
+  );
   for (const source of [folders, resources, training]) {
     assert.doesNotMatch(source, /function formatBytes\b/);
   }

@@ -25,8 +25,8 @@ import {
   type DownloadProgressResponse,
 } from "@/features/chat/api/chat-api";
 import { useTransferStats } from "@/features/chat/hooks/use-transfer-stats";
-import { formatEta, formatRate } from "@/features/chat/utils/format-transfer";
-import { formatBytes } from "@/features/hub";
+import { formatEta } from "@/features/chat/utils/format-transfer";
+import { formatBytes, formatRate } from "@/features/hub";
 import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
 import {
   EMPTY_DOWNLOAD_STATE,
@@ -191,7 +191,7 @@ function ResourceRow({
 }: ResourceRowProps): ReactElement | null {
   const t = useT();
   // Rolling-window rate + ETA from the cumulative-byte series the poll hook
-  // produces, so we show "5.2 / 20.7 GB • 85.3 MB/s • 3m 12s left", not just the pair.
+  // produces, so we show "5.2 GB / 21 GB • 85 MB/s • 3m 12s left", not just the pair.
   const stats = useTransferStats(state.downloadedBytes, state.totalBytes);
 
   if (!resourceRowHasContent(state, preparation)) return null;
