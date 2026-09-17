@@ -950,20 +950,15 @@ class UnslothTrainer:
             if hf_token:
                 os.environ["HF_TOKEN"] = hf_token
 
-            # Skip the upstream gate check when Unsloth will load a public mirror.
-            if (
-                "/" in model_name
-                and not local_files_only
-                and not _env_offline()
-                and metadata_name == lookup_name
-            ):
+            # Gate-check the repo Unsloth will fetch, which may be a public mirror of it.
+            if "/" in model_name and not local_files_only and not _env_offline():
                 try:
                     from huggingface_hub import model_info as hf_model_info
 
                     model_info_kwargs = {"token": hf_token or None}
                     if model_revision:
                         model_info_kwargs["revision"] = model_revision
-                    info = hf_model_info(model_name, **model_info_kwargs)
+                    info = hf_model_info(metadata_name, **model_info_kwargs)
                     # model_info works on gated repos (metadata is public); info.gated flags acceptance.
                     if info.gated and not hf_token:
                         friendly = (

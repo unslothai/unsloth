@@ -340,3 +340,24 @@ def test_the_start_route_passes_the_requested_load_mode(mapper, monkeypatch):
     )
     tr._reject_untrainable_model_request(request, hf_token = None)
     assert seen == {"load_in_4bit": False}
+
+
+def test_load_model_gate_checks_the_repo_the_loader_fetches(mapper, monkeypatch):
+    import huggingface_hub
+
+    checked = []
+
+    def probe(name, *a, **kw):
+        return None, True
+
+    def model_info(name, **kw):
+        checked.append(name)
+        return SimpleNamespace(gated = "manual")
+
+    monkeypatch.setattr(trainer_mod, "detect_audio_type_checked", probe)
+    monkeypatch.setattr(trainer_mod, "is_vision_model", lambda name, **kw: False)
+    monkeypatch.setattr(huggingface_hub, "model_info", model_info)
+
+    trainer = trainer_mod.UnslothTrainer()
+    assert trainer.load_model("google/gemma-3-270m-it", load_in_4bit = False) is False
+    assert checked == ["unsloth/gemma-3-270m-it"]
