@@ -21,21 +21,35 @@ export interface SoleQuantEntry<T> {
   quant: T | null;
 }
 
-/** Collapse a Hub row only after a Hub-aware response verified every dependency. */
-export function verifiedSoleHubVariant<T extends { downloaded?: boolean }>(
+/** Collapse a Hub row only after a Hub-aware response verified every dependency.
+ *
+ *  Counts the quants on disk, not the quants the repo offers. A dependency-aware answer is a
+ *  Hub answer, which lists every published quant, so counting listed quants never matched a
+ *  repo holding one. The local answer lists only what is on disk but cannot resolve
+ *  dependencies, so the two conditions could not hold together. */
+export function verifiedSoleHubVariant<
+  T extends {
+    downloaded?: boolean;
+    partial?: boolean;
+    update_available?: boolean;
+    pending_drafter_filename?: string | null;
+  },
+>(
   variants: readonly T[],
   resolvedLocally: boolean,
   dependenciesResolved: boolean,
 ): T | null {
-  if (
-    resolvedLocally ||
-    !dependenciesResolved ||
-    variants.length !== 1 ||
-    variants[0].downloaded !== true
-  ) {
-    return null;
-  }
-  return variants[0];
+  if (resolvedLocally || !dependenciesResolved) return null;
+  // A torn quant keeps the expander, where resume lives.
+  if (variants.some((v) => v.partial === true)) return null;
+  const downloaded = variants.filter((v) => v.downloaded === true);
+  if (downloaded.length !== 1) return null;
+  const sole = downloaded[0];
+  // Drafter still missing: not loadable yet, so not collapsible.
+  if (sole.pending_drafter_filename) return null;
+  // Only the expander carries the update action, so an update must keep it.
+  if (sole.update_available === true) return null;
+  return sole;
 }
 
 /** Identity of one repo's probe. Moves when that repo's variants cache is invalidated, the row

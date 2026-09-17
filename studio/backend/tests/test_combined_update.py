@@ -305,6 +305,47 @@ def test_status_survives_whisper_probe_failure(monkeypatch, tmp_path):
     assert st["whisper"] is None
 
 
+def test_status_skips_github_when_update_checks_disabled(monkeypatch, tmp_path):
+    _setup_llama(monkeypatch, tmp_path)
+    _setup_whisper(monkeypatch, tmp_path)
+
+    def _network(*args, **kwargs):
+        raise AssertionError("reached GitHub despite UNSLOTH_DISABLE_UPDATE_CHECK=1")
+
+    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", _network)
+    monkeypatch.setattr(wfresh, "_fetch_latest_release_tag", _network)
+    monkeypatch.setattr(upd, "_pending_backend_migration", _network)
+    monkeypatch.setattr(wupd, "_resolve_prebuilt_for_host", _network)
+    monkeypatch.setattr(wupd.sys, "platform", "darwin")
+    monkeypatch.setenv("UNSLOTH_DISABLE_UPDATE_CHECK", "1")
+
+    st = upd.get_update_status(force_refresh = True)
+    assert st["update_available"] is False
+    assert st["update_component"] is None
+    assert st["backend_migration_available"] is False
+    assert st["supported"] is True
+    assert st["installed_tag"] == "b9493"
+    assert st["latest_tag"] is None
+    assert st["whisper"]["installed_tag"] == "v1.9.1-unsloth.1"
+    assert st["whisper"]["update_available"] is False
+
+
+def test_whisper_source_build_skips_probe_when_update_checks_disabled(monkeypatch, tmp_path):
+    binary = tmp_path / "whisper.cpp" / "build" / "bin" / "whisper-server"
+    binary.parent.mkdir(parents = True)
+    binary.write_text("stub")
+    monkeypatch.setattr(wupd, "_find_binary", lambda: str(binary))
+
+    def _resolve(**kwargs):
+        raise AssertionError("probed for a prebuilt despite UNSLOTH_DISABLE_UPDATE_CHECK=1")
+
+    monkeypatch.setattr(wupd, "_resolve_prebuilt_for_host", _resolve)
+    monkeypatch.setenv("UNSLOTH_DISABLE_UPDATE_CHECK", "1")
+    st = wupd.get_update_status(force_refresh = True)
+    assert st["update_available"] is False
+    assert st["source_build"] is False
+
+
 # --- whisper chained_phase_plan: silent skips ---
 
 

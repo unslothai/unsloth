@@ -1031,7 +1031,7 @@ _CC_PER_TOKEN = 1536  # 6 MiB at 4096, the rate the bundled estimator produces
 def _split_rate_backend(tmp_path, *, memory, **kwargs):
     backend, gguf = _backend(tmp_path, memory = memory, **kwargs)
     backend._compute_buffer_ctx_bytes = (
-        lambda n_ctx, n_ubatch = None, cache_type_kv = None, *, layer_split = False: (
+        lambda n_ctx, n_ubatch = None, cache_type_kv = None, *, layer_split = False, **_kw: (
             n_ctx * _CC_PER_TOKEN * (LlamaCppBackend._CTX_COMPUTE_SPLIT_MULT if layer_split else 1)
         )
     )

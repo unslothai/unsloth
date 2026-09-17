@@ -8,6 +8,7 @@ import {
 
 import {
   type ProviderRegistryEntry,
+  fetchModelCatalog,
   listProviderConfigs,
   listProviderModelCapabilities,
   listProviderRegistry,
@@ -15,7 +16,9 @@ import {
   updateProviderConfig,
 } from "./api/providers-api";
 import {
+  modelsDevCatalogFetchedAt,
   providerModelCatalogFetchedAt,
+  setModelsDevCatalog,
   setProviderModelCatalog,
 } from "./model-catalog";
 import {
@@ -338,6 +341,19 @@ export async function refreshProviderModelCatalogs(
   providers: readonly ExternalProviderConfig[],
   isCurrent?: () => boolean,
 ): Promise<void> {
+  const modelsDevAge = modelsDevCatalogFetchedAt();
+  if (
+    providers.length > 0 &&
+    (modelsDevAge == null || Date.now() - modelsDevAge * 1000 >= MODEL_CATALOG_TTL_MS)
+  ) {
+    try {
+      const catalog = await fetchModelCatalog();
+      if (isCurrent && !isCurrent()) return;
+      setModelsDevCatalog(catalog);
+    } catch {
+      // Offline: the bundled snapshot answers until the next sync.
+    }
+  }
   for (const provider of providers) {
     const providerType = provider.providerType;
     if (!usesProviderCatalogEndpoint(provider)) continue;

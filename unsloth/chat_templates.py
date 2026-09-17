@@ -2883,16 +2883,17 @@ def create_stopping_criteria(tokenizer, stop_word = "eos_token"):
                 self.length = self.stop_token.shape[0]
             self.single_match = self.length == 1
 
-        def __call__(self, input_ids: LongTensor, scores: FloatTensor) -> bool:
-            input_ids = input_ids.ravel()
+        def __call__(self, input_ids: LongTensor, scores: FloatTensor):
+            single_sequence = input_ids.ndim == 1
+            if single_sequence:
+                input_ids = input_ids.unsqueeze(0)
             if self.stop_token.device != input_ids.device:
                 self.stop_token = self.stop_token.to(input_ids.device)
-            last_token = input_ids[-1]
-            if self.single_match and (last_token == self.stop_token): return True
-
-            if input_ids.shape[0] >= self.length and \
-                (input_ids[-self.length:] == self.stop_token).all(): return True
-            return False
+            if input_ids.shape[-1] < self.length:
+                matches = torch.zeros(input_ids.shape[0], dtype = torch.bool, device = input_ids.device)
+            else:
+                matches = (input_ids[:, -self.length:] == self.stop_token).all(dim = -1)
+            return matches.item() if single_sequence else matches
     stopping_criteria = StoppingCriteriaList([StoppingCriteriaSub(stops = stop_word)])
     return stopping_criteria
 

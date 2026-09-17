@@ -2183,6 +2183,9 @@ export function ChatPage({
   search,
   active,
 }: { search: ChatSearch; active: boolean }): ReactElement {
+  const showContextWindowUsage = useChatPreferencesStore(
+    (s) => s.showContextWindowUsage,
+  );
   const navigate = useNavigate();
 
   const settingsOpen = useChatRuntimeStore((s) => s.settingsPanelOpen);
@@ -3571,7 +3574,17 @@ export function ChatPage({
     },
     { enabled: active && fastModeSupported },
   );
-  const { isMobile, pinned } = useSidebar();
+  const { isMobile, pinned, setPinned } = useSidebar();
+  // The tour's orientation step spotlights the nav, so show it for that step and put the user's
+  // own pin setting back on the way out; it is persisted, so a tour must not rewrite it.
+  const sidebarWasPinnedRef = useRef(pinned);
+  const showSidebarForTour = useCallback(() => {
+    sidebarWasPinnedRef.current = pinned;
+    setPinned(true);
+  }, [pinned, setPinned]);
+  const restoreSidebarAfterTour = useCallback(() => {
+    if (!sidebarWasPinnedRef.current) setPinned(false);
+  }, [setPinned]);
 
   const enterCompare = useCallback(() => {
     viewBeforeCompareRef.current = { ...search };
@@ -3903,6 +3916,7 @@ export function ChatPage({
     () =>
       // eslint-disable-next-line react-hooks/refs -- buildChatTourSteps stores callbacks without invoking them during render.
       buildChatTourSteps({
+        canShowNav: !isMobile,
         canCompare,
         openModelSelector,
         closeModelSelector,
@@ -3910,21 +3924,33 @@ export function ChatPage({
         closeSettings,
         enterCompare,
         exitCompare,
-      }),
+      }).map((step) =>
+        step.target === "navbar"
+          ? {
+              ...step,
+              onEnter: showSidebarForTour,
+              onExit: restoreSidebarAfterTour,
+            }
+          : step,
+      ),
     [
       canCompare,
       closeModelSelector,
       closeSettings,
       enterCompare,
       exitCompare,
+      isMobile,
       openModelSelector,
       openSettings,
+      restoreSidebarAfterTour,
+      showSidebarForTour,
     ],
   );
 
   const tour = useGuidedTourController({
     id: "chat",
     steps: tourSteps,
+    enabled: active,
   });
 
   useEffect(() => {
@@ -4113,7 +4139,9 @@ export function ChatPage({
             ) : null}
           </div>
           <div className="pointer-events-auto ml-auto flex items-center gap-1">
-            {view.mode === "single" && (contextUsage || contextWindowKnown) ? (
+            {showContextWindowUsage &&
+            view.mode === "single" &&
+            (contextUsage || contextWindowKnown) ? (
               <ContextUsageBar
                 used={contextUsage?.totalTokens ?? null}
                 // null on external providers; the bar handles that.
