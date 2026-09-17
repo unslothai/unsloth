@@ -370,6 +370,49 @@ Check "with nothing working the hard bound still stops the walk" ($script:Probed
 Check "and it spends the HARD budget, not the soft one, before giving up" ($spent -ge 2)
 Check "control: giving up empty-handed really reports no GPU" ($HasNvidiaSmi -eq $false)
 
+# ------------------------------- the Windows-on-ARM picker must answer with a WORKING binary
+#
+# Get-WoaNvidiaSmiPath fed the first candidate that EXISTS to Test-WoaNvidiaPresent and
+# Get-WoaDriverCudaVersion, both of which treat a non-answer as "no NVIDIA on this machine".
+# Handing back a broken copy therefore does not cost a retry, it declines the native ARM64 CUDA
+# stack outright. Two searched locations made that unlikely; a longer list makes it likely, since
+# every location added is another chance the first entry is stale.
+$woaFn = Get-FunctionText $installPs1 "Get-WoaNvidiaSmiPath"
+$script:WoaNvidiaSmiProbed = $false
+$script:WoaNvidiaSmiPath = $null
+$script:WoaProbes = @()
+function Get-Command { param($Name, $ErrorAction) return $null }   # nothing on PATH
+function Invoke-NvidiaSmiBounded {
+    param($Exe, $Arguments)
+    $script:WoaProbes += $Exe
+    if ($Exe -like "*working*") { $global:LASTEXITCODE = 0; return "GPU 0: NVIDIA GeForce RTX 4090" }
+    $global:LASTEXITCODE = 1
+    return ""
+}
+function Get-NvidiaSmiCandidatePaths {
+    return @("C:\stale\nvidia-smi.exe", "C:\working\nvidia-smi.exe")
+}
+Invoke-Expression $woaFn
+$woaAnswer = Get-WoaNvidiaSmiPath
+Check "the ARM64 picker skips a stale copy and returns one that answers" (
+    $woaAnswer -eq "C:\working\nvidia-smi.exe")
+Check "it really probed rather than pattern-matching the name" ($script:WoaProbes.Count -ge 2)
+
+# Memoised: the two callers each probe, and walking the list twice costs a process spawn per
+# entry. A second call must not re-probe.
+$before = $script:WoaProbes.Count
+$null = Get-WoaNvidiaSmiPath
+Check "a second call is served from the memo" ($script:WoaProbes.Count -eq $before)
+
+# And when NOTHING answers it still hands back the first that exists, which is what it did
+# before this change, so a host where the probe cannot run is no worse off than it was.
+$script:WoaNvidiaSmiProbed = $false
+$script:WoaNvidiaSmiPath = $null
+function Invoke-NvidiaSmiBounded { param($Exe, $Arguments) $global:LASTEXITCODE = 1; return "" }
+Check "with nothing answering it falls back to the first existing copy" (
+    (Get-WoaNvidiaSmiPath) -eq "C:\stale\nvidia-smi.exe")
+Remove-Item Function:\Get-Command -ErrorAction SilentlyContinue
+
 if ($failures -gt 0) {
     Write-Host "$failures check(s) failed" -ForegroundColor Red
     exit 1

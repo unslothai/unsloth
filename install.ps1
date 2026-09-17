@@ -1148,13 +1148,45 @@ function Install-UnslothStudio {
     # ── END SHARED WITH studio/setup.ps1 (Get-NvidiaSmiCandidatePaths) ──
 
     # One list, because the presence probe and the driver-version probe must agree: a host only the first finds reports a GPU with no driver version, and the CUDA-major guard is then skipped.
+    # Reset per run: under `irm | iex` the script scope IS the caller's session, so a second
+    # invocation in one shell would otherwise reuse the first run's answer.
+    $script:WoaNvidiaSmiProbed = $false
+    $script:WoaNvidiaSmiPath = $null
+
     function Get-WoaNvidiaSmiPath {
+        # Memoised because the two callers each probe, and without this the whole candidate list
+        # would be walked twice with a bounded process spawn per entry.
+        if ($script:WoaNvidiaSmiProbed) { return $script:WoaNvidiaSmiPath }
+        $script:WoaNvidiaSmiProbed = $true
         $exe = $null
         try { $exe = (Get-Command nvidia-smi -ErrorAction SilentlyContinue).Source } catch { $exe = $null }
-        if ($exe) { return $exe }
+        if ($exe) { $script:WoaNvidiaSmiPath = $exe; return $exe }
         $found = @(Get-NvidiaSmiCandidatePaths)
-        if ($found.Count -gt 0) { return $found[0] }
-        return $null
+        if ($found.Count -eq 0) { return $null }
+        # The first candidate that ANSWERS, not the first that exists.
+        #
+        # Both callers immediately probe what this returns, and treat a non-answer as "no NVIDIA
+        # here": Test-WoaNvidiaPresent returns false and Get-WoaDriverCudaVersion returns null,
+        # which between them decide whether the native ARM64 CUDA stack is installed at all. So
+        # handing back a broken copy does not cost a retry, it declines the whole route.
+        #
+        # That was survivable when two locations were searched and is not now that the list is
+        # longer: every location added is another chance that the first entry is a stale copy
+        # sitting in front of a working one. Same reason the main detection loop stopped taking
+        # the first listing candidate.
+        foreach ($p in $found) {
+            try {
+                $listing = Invoke-NvidiaSmiBounded $p @('-L')
+                if ($LASTEXITCODE -eq 0 -and $listing -match '(?m)^\s*GPU\s+\d+') {
+                    $script:WoaNvidiaSmiPath = $p
+                    return $p
+                }
+            } catch {}
+        }
+        # Nothing answered. Hand back the first that exists, which is what this did before, so a
+        # host where the probe cannot run is no worse off than it was.
+        $script:WoaNvidiaSmiPath = $found[0]
+        return $found[0]
     }
 
     function Test-WoaNvidiaPresent {
