@@ -97,7 +97,12 @@ for shell in sh bash; do
         "none" "$(env -i PATH="$BARE_PATH" HOME="$HOME_DIR" UV_INSTALL_DIR="$BROKEN" "$shell" "$PROBE")"
 
     # A uv that never answers: the probe is bounded, so a miss is reported, not a hang.
-    if command -v timeout >/dev/null 2>&1; then
+    # Not gated on `command -v timeout`. It was, and stock macOS has none, so on the only
+    # platform that actually takes the watchdog branch the whole block was skipped: 27
+    # assertions there against 43 on Linux, and the fallback bound asserted nowhere but on
+    # hosts that never use it. The helper bounds itself either way, and the elapsed-time
+    # checks below are what makes that a test rather than a hope.
+    if true; then
         HANG="$CASE/hangs"
         mkdir -p "$HANG"
         printf '#!/bin/sh\nsleep 60\n' > "$HANG/uv"
