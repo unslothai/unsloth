@@ -2172,3 +2172,48 @@ def test_a_dataset_handle_that_was_never_issued_resolves_to_nothing():
         local_datasets = [forged],
     )
     assert replayed.local_datasets == [forged], "a forged handle resolved to a host path"
+
+
+def test_a_caller_named_path_is_echoed_not_referenced():
+    """A reference stands in for a path the caller may not learn, so it cannot stand in for
+    one the caller NAMED.
+
+    `GET /api/models/config/{model_name:path}` builds its answer out of the identifier asked
+    about, so referencing that identifier computes a reference for any string the caller
+    chooses. The reference is one stable HMAC for the life of the process, so that is an
+    online oracle for every other reference the caller holds: guess a home directory and a
+    cache root, ask about it here, and a matching reference confirms the guess. The 256-bit
+    per-process key defeats an offline attack on the digest and does nothing about this.
+    """
+    victim = f"{HOST_ROOT}/models--acme--private/snapshots/deadbeef"
+    held = cache_reference(victim)
+
+    def answer(caller_supplied):
+        return redact_host_paths(
+            {"id": caller_supplied, "model_name": caller_supplied, "config": {}},
+            via_api_key = True,
+            echo = (caller_supplied,),
+        )
+
+    for guess in (f"{HOST_ROOT}/models--acme--private/snapshots/beef", victim):
+        out = answer(guess)
+        assert out["id"] == guess, "the caller's own identifier came back altered"
+        assert out["id"] != held, "the reference function answered for a caller-chosen string"
+
+    # Without the echo it IS the oracle, so this test is not vacuous.
+    assert redact_host_paths({"id": victim}, via_api_key = True)["id"] == held
+
+    # And a path the caller never named is still referenced, which is the point of the module.
+    out = redact_host_paths(
+        {"id": "acme/lora", "base_model": victim}, via_api_key = True, echo = ("acme/lora",)
+    )
+    assert out["base_model"] == held
+    assert response_leaks_host_path(out, [HOST_ROOT]) is None
+
+
+def test_the_config_route_passes_the_caller_identifier_as_echo():
+    """The helper only helps where it is wired in."""
+    import inspect
+
+    source = inspect.getsource(models_routes.get_model_config)
+    assert "echo = (model_name,)" in source

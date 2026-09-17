@@ -2383,10 +2383,17 @@ async def get_model_config(
         # `base_model_name_or_path` is another absolute local path, which this lookup reports
         # verbatim, so the ordinary config lookup handed back host layout the caller only had
         # one reference for.
+        # `echo` is the identifier the CALLER named. The details are built out of it, so
+        # referencing it would compute a reference for any string the caller chooses, and
+        # since the reference is one stable HMAC for the life of the process that is an
+        # online oracle confirming every other reference they hold: guess a home directory
+        # and a cache root, ask about it here, and a matching reference confirms the guess.
+        # Handed back as written instead, which tells the caller only what they typed.
         from hub.utils.host_paths import redact_host_paths, restore_inventory_handles
         return redact_host_paths(
             restore_inventory_handles(await asyncio.to_thread(_resolve, model_name)),
             via_api_key = via_api_key,
+            echo = (model_name,),
         )
 
     except HTTPException:

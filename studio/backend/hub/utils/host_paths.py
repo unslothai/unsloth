@@ -386,19 +386,25 @@ def resolve_host_path_reference(value: Any) -> Optional[str]:
     return entry[0] if entry else None
 
 
-def redact_host_paths(payload: Any, *, via_api_key: bool) -> Any:
+def redact_host_paths(payload: Any, *, via_api_key: bool, echo: Iterable[Any] = ()) -> Any:
     """Return *payload* with every host path removed, if this caller may not see them.
 
     Walks dicts and sequences so one call covers a route that answers a row, a list of rows or
     a response object with rows nested inside it. Returns the payload unchanged for a caller
     that may see paths, including the identical object, so the browser session pays nothing.
+
+    ``echo`` holds the values THIS CALLER supplied in this request, and they are returned as
+    written rather than referenced. See ``_echoed``: referencing a caller's own input is what
+    turns a route that answers about a named model into an oracle for the reference function.
     """
     if host_paths_visible(via_api_key):
         return payload
-    return _redact(payload, redact_ambiguous_path = False)
+    return _redact(payload, redact_ambiguous_path = False, echo = _echo_set(echo))
 
 
-def redact_inventory_host_paths(payload: Any, *, via_api_key: bool) -> Any:
+def redact_inventory_host_paths(
+    payload: Any, *, via_api_key: bool, echo: Iterable[Any] = ()
+) -> Any:
     """``redact_host_paths`` plus the ambiguous ``path`` field.
 
     For the routes whose ``path`` is documented as a directory on this host: the scan folder
@@ -406,7 +412,11 @@ def redact_inventory_host_paths(payload: Any, *, via_api_key: bool) -> Any:
     """
     if host_paths_visible(via_api_key):
         return payload
-    return _redact(payload, redact_ambiguous_path = True)
+    return _redact(payload, redact_ambiguous_path = True, echo = _echo_set(echo))
+
+
+def _echo_set(echo: Iterable[Any]) -> frozenset:
+    return frozenset(text for text in (_as_text(value) for value in echo) if text)
 
 
 def response_leaks_host_path(
@@ -426,10 +436,25 @@ def response_leaks_host_path(
     return _find_leak(payload, needles, ambiguous_is_path = True, ignore = frozenset(ignore))
 
 
-def _redact(payload: Any, *, redact_ambiguous_path: bool) -> Any:
+def _echoed(value: Any, echo: frozenset) -> bool:
+    """Whether *value* is one this caller just sent, and so is theirs to be handed back.
+
+    A reference stands in for a path the caller may not learn. It cannot do that for a path
+    the caller NAMED: the answer to `GET /api/models/config/{model_name:path}` is built out of
+    the identifier that was asked about, so referencing it computes `ref(x)` for any `x` the
+    caller chooses. Since the reference is one stable HMAC for the life of the process, that
+    is an online confirmation oracle for every other reference the caller holds -- guess a
+    cache root and a home directory, submit it here, and a matching reference confirms the
+    guess. Echoing it back instead tells the caller only what they already typed.
+    """
+    text = _as_text(value)
+    return bool(text) and text in echo
+
+
+def _redact(payload: Any, *, redact_ambiguous_path: bool, echo: frozenset = frozenset()) -> Any:
     dumped = _dump_model(payload)
     if dumped is not None:
-        return _redact(dumped, redact_ambiguous_path = redact_ambiguous_path)
+        return _redact(dumped, redact_ambiguous_path = redact_ambiguous_path, echo = echo)
     if isinstance(payload, Mapping):
         out: dict[Any, Any] = {}
         reference: Optional[str] = None
@@ -441,16 +466,18 @@ def _redact(payload: Any, *, redact_ambiguous_path: bool) -> Any:
                 (identity_is_a_path and key in HOST_PATH_ROW_IDENTITY_FIELDS)
                 or _identity_value_is_a_path(value)
             ):
-                out[key] = _referenced_identity(value)
+                out[key] = value if _echoed(value, echo) else _referenced_identity(value)
                 continue
             if key in HOST_PATH_IDENTITY_LIST_FIELDS and isinstance(value, (list, tuple)):
                 out[key] = [
-                    _referenced_identity(item) if _identity_value_is_a_path(item) else item
+                    _referenced_identity(item)
+                    if _identity_value_is_a_path(item) and not _echoed(item, echo)
+                    else item
                     for item in value
                 ]
                 continue
             if identity_is_a_path and key == HOST_PATH_ENCODED_IDENTITY_FIELD:
-                out[key] = _referenced_inventory_id(value)
+                out[key] = value if _echoed(value, echo) else _referenced_inventory_id(value)
                 continue
             if (
                 key == HOST_PATH_CONDITIONAL_FIELD
@@ -463,14 +490,16 @@ def _redact(payload: Any, *, redact_ambiguous_path: bool) -> Any:
                 # than blanked, because unlike the inventory row above there is nothing else
                 # in this answer naming the base, and the reference is the handle the caller
                 # can hand back.
-                out[key] = _referenced_identity(value)
+                out[key] = value if _echoed(value, echo) else _referenced_identity(value)
                 continue
             if key in HOST_PATH_HANDLE_FIELDS:
                 # Referenced only where the value really is a path on this host. A relative
                 # output directory names no layout, and blanking it would take away an
                 # identifier for nothing.
                 out[key] = (
-                    _referenced_identity(value) if _identity_value_is_a_path(value) else value
+                    _referenced_identity(value)
+                    if _identity_value_is_a_path(value) and not _echoed(value, echo)
+                    else value
                 )
                 continue
             if (
@@ -480,13 +509,19 @@ def _redact(payload: Any, *, redact_ambiguous_path: bool) -> Any:
             ):
                 # Only the row-level cache directory earns a reference: one per scan root would
                 # say "these two rows came from the same root", which is host layout again.
-                if key in {"cache_path", "repo_path"} and reference is None:
+                if (
+                    key in {"cache_path", "repo_path"}
+                    and reference is None
+                    and not _echoed(value, echo)
+                ):
                     reference = cache_reference(value)
                 out[key] = None if value is None else ""
                 continue
             if key in HOST_PATH_HANDLE_LIST_FIELDS and isinstance(value, (list, tuple)):
                 out[key] = [
-                    _referenced_identity(item) if _identity_value_is_a_path(item) else item
+                    _referenced_identity(item)
+                    if _identity_value_is_a_path(item) and not _echoed(item, echo)
+                    else item
                     for item in value
                 ]
                 continue
@@ -498,14 +533,17 @@ def _redact(payload: Any, *, redact_ambiguous_path: bool) -> Any:
                 # a run ended, and the path inside it is usually one clause of it.
                 out[key] = redact_paths_in_text(value)
                 continue
-            out[key] = _redact(value, redact_ambiguous_path = redact_ambiguous_path)
+            out[key] = _redact(value, redact_ambiguous_path = redact_ambiguous_path, echo = echo)
         # After the walk, not during it: the field is declared on the response models, so a
         # model dump carries it as None and writing it inside the loop let that None win.
         if reference is not None and not out.get(CACHE_REFERENCE_FIELD):
             out[CACHE_REFERENCE_FIELD] = reference
         return out
     if isinstance(payload, (list, tuple)):
-        redacted = [_redact(item, redact_ambiguous_path = redact_ambiguous_path) for item in payload]
+        redacted = [
+            _redact(item, redact_ambiguous_path = redact_ambiguous_path, echo = echo)
+            for item in payload
+        ]
         if not isinstance(payload, tuple):
             return redacted
         # A NamedTuple is a tuple whose constructor takes the fields one by one, so rebuilding
