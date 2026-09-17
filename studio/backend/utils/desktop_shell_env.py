@@ -22,15 +22,16 @@ broken and Web is fine" rather than like a ROCm problem.
 
 The rule here is parity, not policy:
 
-  * a variable is imported only if it is **absent** from this process. Started
-    from a terminal, every one of them is already set and this is a no-op, so
-    both launch modes end in the same environment rather than in two new ones.
+  * it runs only on the launch that loses the environment, the one the desktop
+    app marks with ``UNSLOTH_DESKTOP_MANAGED=1``. A terminal launch, a service
+    and a container read no shell and set nothing, so they are unchanged by
+    construction rather than by an allowlist that happens not to overlap.
+  * and only when the host has an AMD GPU, read from the KFD topology and vendor
+    checked, so an NVIDIA, Intel or Apple host takes the same early return.
+  * a variable is imported only if it is **absent** from this process, so the two
+    launch modes end in the same environment rather than in two new ones.
   * only the names in ``ROCM_SHELL_ENV_ALLOWLIST`` are considered, and every one
     of them is AMD/ROCm specific.
-  * the login shell is spawned only when this host has an AMD GPU, read from the
-    kernel. On an NVIDIA, Intel or Apple host nothing is read, nothing is set,
-    and no shell runs, so those paths are untouched by construction rather than
-    by an allowlist that happens not to overlap.
 
 Not needed on Windows: the desktop app there inherits the user environment
 normally, and there is no login shell to read.
@@ -40,14 +41,24 @@ from __future__ import annotations
 
 import logging
 import os
+import shlex
+import signal
 import subprocess
 import sys
+import tempfile
 
 logger = logging.getLogger(__name__)
 
 # Set this to "1" to keep the desktop app's environment exactly as the desktop
 # session handed it over.
 DISABLE_ENV_VAR = "UNSLOTH_DISABLE_SHELL_ENV_IMPORT"
+
+# Set by the desktop app on every CLI child it owns (src-tauri/src/process.rs,
+# DESKTOP_MANAGED_ENV). This module exists because that launch loses the shell
+# environment, so this is the launch it runs on: `unsloth studio` from a terminal
+# already has the variables, and a service or container launch gets the same
+# startup it got before this module existed, with no shell spawned.
+DESKTOP_MANAGED_ENV = "UNSLOTH_DESKTOP_MANAGED"
 
 # AMD/ROCm runtime knobs only. Deliberately no ``CUDA_*``, no ``ONEAPI_*``, no
 # ``PYTORCH_*`` general switches and no ``UNSLOTH_*``: the point of this module
@@ -82,13 +93,16 @@ ROCM_SHELL_ENV_ALLOWLIST: tuple[str, ...] = (
     "HSA_ENABLE_DXG_DETECTION",
     "HSA_XNACK",
     "HSA_FORCE_FINE_GRAIN_PCIE",
-    "HSA_TOOLS_LIB",
     "AMD_SERIALIZE_KERNEL",
     "GPU_MAX_HW_QUEUES",
 )
+# Deliberately NOT here: HSA_TOOLS_LIB. The HSA runtime dlopens whatever it names,
+# so importing it would load a library into the backend rather than tune it.
 
-_DELIMITER = "__UNSLOTH_SHELL_ENV__"
-_SHELL_COMMAND = f"printf %s {_DELIMITER}; env -0; printf %s {_DELIMITER}"
+# AMD's PCI vendor id. NVIDIA's open kernel module registers KFD nodes too, with
+# 4318, so AMD ownership is confirmed rather than assumed -- the same guard as
+# hardware.py::_linux_kfd_reports_an_amd_gpu and install_python_stack.
+_AMD_VENDOR_ID = "4098"
 
 
 def host_has_amd_gpu() -> bool:
@@ -96,8 +110,9 @@ def host_has_amd_gpu() -> bool:
 
     Read from the KFD topology rather than from torch, because this runs before
     torch is imported and importing it here would both cost seconds and create a
-    device context on a machine that may not want one. A node whose
-    ``gfx_target_version`` is 0 is a CPU node, and every host has those.
+    device context on a machine that may not want one. A node counts only when it
+    is a GPU (``gfx_target_version`` above 0, every host has CPU nodes at 0) AND
+    AMD owns it, since an NVIDIA open-driver host presents GPU nodes here too.
     """
     if not sys.platform.startswith("linux"):
         return False
@@ -112,65 +127,104 @@ def host_has_amd_gpu() -> bool:
                     text = handle.read()
             except OSError:
                 continue
-            for line in text.splitlines():
-                key, _, value = line.partition(" ")
-                if key != "gfx_target_version":
-                    continue
-                try:
-                    if int(value.strip()) > 0:
-                        return True
-                except ValueError:
-                    pass
-                break
+            if _node_is_an_amd_gpu(text):
+                return True
     except Exception:
         return False
     return False
 
 
+def _node_is_an_amd_gpu(properties: str) -> bool:
+    """Whether one KFD node's ``properties`` file describes an AMD GPU."""
+    fields = {}
+    for line in properties.splitlines():
+        key, _, value = line.partition(" ")
+        fields[key] = value.strip()
+    try:
+        if int(fields.get("gfx_target_version", "0")) <= 0:
+            return False
+    except ValueError:
+        return False
+    return fields.get("vendor_id") == _AMD_VENDOR_ID
+
+
 def read_login_shell_env(shell: "str | None" = None, timeout: float = 15.0) -> dict:
     """The environment an interactive login shell would have handed us.
 
-    ``-ilc`` is what makes ``~/.bashrc`` and ``~/.zshrc`` run; a non-interactive
-    shell skips them and this would read back the environment we already have.
+    ``-i`` is what makes ``~/.zshrc`` run, and ``-l`` the profile chain; bash
+    reads ``~/.bashrc`` only because the stock ``~/.profile`` sources it, so a
+    host that has replaced that file gets whatever its own profile exports.
+
     ``env -0`` rather than ``env``, because a value containing a newline splits a
-    line-based parse and silently corrupts the variable after it.
+    line-based parse and silently corrupts the variable after it, and into a FILE
+    rather than a pipe: an rc file that backgrounds a job (an agent, a daemon)
+    leaves that child holding the capture pipe, so reading stdout would wait for
+    the child rather than for the shell, spend the whole timeout and then discard
+    an environment the shell had already written correctly.
 
     Returns ``{}`` on any failure. A shell that is slow, missing, or noisy is not
     a reason to fail a launch: the caller's fallback is the status quo.
     """
     shell = shell or os.environ.get("SHELL") or "/bin/sh"
-    try:
-        completed = subprocess.run(
-            [shell, "-ilc", _SHELL_COMMAND],
-            capture_output = True,
-            timeout = timeout,
-            # Oh My Zsh's auto-update prompt can block the shell forever.
-            env = {**os.environ, "DISABLE_AUTO_UPDATE": "true"},
-            stdin = subprocess.DEVNULL,
-        )
-    except Exception as error:
-        logger.debug("login shell environment unavailable: %s", error)
-        return {}
-    if completed.returncode != 0:
-        logger.debug("login shell exited %s", completed.returncode)
-        return {}
-
-    raw = completed.stdout.decode("utf-8", "replace")
-    # Login shells print banners, motd and the occasional progress bar. The
-    # delimiters bound our own output inside all of it.
-    parts = raw.split(_DELIMITER)
-    if len(parts) < 3:
-        logger.debug("login shell output was not delimited as expected")
-        return {}
+    with tempfile.TemporaryDirectory(prefix = "unsloth-shell-env-") as work:
+        target = os.path.join(work, "env")
+        try:
+            process = subprocess.Popen(
+                [shell, "-ilc", f"env -0 > {shlex.quote(target)}"],
+                stdin = subprocess.DEVNULL,
+                stdout = subprocess.DEVNULL,
+                stderr = subprocess.DEVNULL,
+                # Oh My Zsh's auto-update prompt can block the shell forever.
+                env = {**os.environ, "DISABLE_AUTO_UPDATE": "true"},
+                # Its own group, so the timeout below can take the shell's
+                # children with it instead of orphaning them onto init.
+                start_new_session = True,
+            )
+        except Exception as error:
+            logger.debug("login shell environment unavailable: %s", error)
+            return {}
+        try:
+            returncode = process.wait(timeout = timeout)
+        except Exception as error:
+            logger.debug("login shell did not finish: %s", error)
+            _terminate_group(process)
+            return {}
+        if returncode != 0:
+            logger.debug("login shell exited %s", returncode)
+            return {}
+        try:
+            with open(target, "rb") as handle:
+                raw = handle.read()
+        except OSError as error:
+            logger.debug("login shell wrote no environment: %s", error)
+            return {}
 
     out: dict = {}
-    for record in parts[1].split("\0"):
-        if not record:
-            continue
+    # surrogateescape, not replace: this is how os.environ itself carries a byte
+    # that is not valid UTF-8, so a path with one round trips instead of picking
+    # up a replacement character.
+    for record in raw.decode("utf-8", "surrogateescape").split("\0"):
         name, sep, value = record.partition("=")
         if sep and name:
             out[name] = value
     return out
+
+
+def _terminate_group(process) -> None:
+    """Kill the shell and anything it started. Never raises."""
+    for kill in (
+        lambda: os.killpg(os.getpgid(process.pid), signal.SIGKILL),
+        process.kill,
+    ):
+        try:
+            kill()
+            break
+        except Exception:
+            continue
+    try:
+        process.wait(timeout = 5)
+    except Exception:
+        pass
 
 
 def select_missing_vars(
@@ -201,20 +255,23 @@ def import_rocm_env_from_login_shell(
 ) -> dict:
     """Fill in the ROCm variables a desktop launch dropped. Returns what it set.
 
-    Safe to call more than once: the second call finds every name already
-    present and imports nothing.
+    Never overwrites a name this process already carries, so calling it twice
+    imports nothing the second time.
     """
     environ = os.environ if environ is None else environ
     if str(environ.get(DISABLE_ENV_VAR, "")).strip() == "1":
         return {}
-    if not sys.platform.startswith(("linux", "darwin")):
+    # Every gate below leaves a launch byte-identical to the release before this
+    # module existed. Not a desktop launch: nothing was lost, so nothing is read
+    # and no shell runs, which is what keeps web mode, a service and a container
+    # unchanged rather than merely allowlisted.
+    if str(environ.get(DESKTOP_MANAGED_ENV, "")).strip() != "1":
         return {}
-    # The gate that keeps every other vendor's path byte-identical: no AMD GPU,
-    # no shell spawned, nothing read, nothing set.
+    if not sys.platform.startswith("linux"):
+        return {}
     if not host_has_amd_gpu():
         return {}
-    # Nothing to gain from a shell when every name is already set, and it costs
-    # a few hundred milliseconds of startup.
+    # Nothing to gain from a shell when every name is already set.
     if all(name in environ for name in ROCM_SHELL_ENV_ALLOWLIST):
         return {}
 
@@ -225,6 +282,6 @@ def import_rocm_env_from_login_shell(
         logger.info(
             "Imported ROCm environment from the login shell (desktop launches do "
             "not inherit it): %s",
-            ", ".join(f"{k}={v}" for k, v in sorted(imported.items())),
+            ", ".join(sorted(imported)),
         )
     return imported

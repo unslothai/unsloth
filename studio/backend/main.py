@@ -29,9 +29,10 @@ os.environ.setdefault("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")
 # and kept on the `unsloth studio` one. #9926 is that difference: identical model
 # and machine, SIGSEGV from the app and a clean run from a terminal.
 #
-# Before every platform block below, because those read ROCM_PATH / HIP_PATH, and
-# long before torch. A no-op unless this host has an AMD GPU AND the variable is
-# absent, so a terminal launch and every non-AMD host are unchanged.
+# Here because HSA reads HSA_OVERRIDE_GFX_VERSION and USE_CK when torch first
+# touches the GPU, which is far below this. A no-op unless the desktop app owns
+# this process AND the host has an AMD GPU AND the variable is absent, so a
+# terminal launch and every non-AMD host are unchanged.
 _backend_dir = str(_Path(__file__).parent)
 if _backend_dir not in sys.path:
     sys.path.insert(0, _backend_dir)
