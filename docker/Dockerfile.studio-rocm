@@ -73,11 +73,14 @@ RUN set -eux \
     UNSLOTH_PYTHON=3.12 \
     UNSLOTH_ALLOW_CPU=1 \
     bash install.sh --local \
-    # Fail loud unless the Studio venv torch exactly matches the base, version and
-    # ROCm build tag both: a mismatch means install.sh re-resolved somewhere else
-    # and the image would ship two different ROCm runtimes.
- && BASE_TORCH="$(/opt/unsloth-venv/bin/python -c "from importlib.metadata import version; print(version('torch'))")" \
- && "${UNSLOTH_STUDIO_HOME}/unsloth_studio/bin/python" -c "import sys; from importlib.metadata import version; v = version('torch'); assert v == '${BASE_TORCH}', 'Studio venv torch ' + v + ' does not match base venv torch ${BASE_TORCH}'; assert '+rocm' in v, 'Studio venv torch ' + v + ' is not a ROCm build'; print('Studio venv python %d.%d torch' % sys.version_info[:2], v, '== base')" \
+    # Assert the ROCm leaf, not the exact version: Studio's installer pins
+    # torch>=2.11,<2.12 while the base resolves whatever the ROCm index serves
+    # (2.12.1 today), so equality is unreachable here. The CUDA image can demand it
+    # because both sides land on the same wheel. What must hold is that Studio did
+    # not quietly fall back to CPU or CUDA wheels, and that both venvs run the same
+    # ROCm. The cost is two torch copies in one image; deduping them is a follow-up.
+ && BASE_ROCM="$(/opt/unsloth-venv/bin/python -c "from importlib.metadata import version; print(version('torch').split('+')[1])")" \
+ && "${UNSLOTH_STUDIO_HOME}/unsloth_studio/bin/python" -c "import sys; from importlib.metadata import version; v = version('torch'); assert '+rocm' in v, 'Studio venv torch ' + v + ' is not a ROCm build'; assert v.split('+')[1] == '${BASE_ROCM}', 'Studio venv torch ' + v + ' is not the base venv ROCm leaf ${BASE_ROCM}'; print('Studio venv python %d.%d torch' % sys.version_info[:2], v, 'on base ROCm leaf ${BASE_ROCM}')" \
     # The UI is the point of this image, so a missing frontend build is fatal here
     # rather than a 404 at runtime.
  && test -f "${UNSLOTH_STUDIO_HOME}/src/studio/frontend/dist/index.html" \
