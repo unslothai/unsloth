@@ -25,13 +25,17 @@ Hermetic: no network. The live-PyPI leg of the guard is exercised on hardware, n
 
 from __future__ import annotations
 
+import os
 import pathlib
 import re
 import shutil
-import subprocess
+import sys
 import textwrap
 
 import pytest
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "_shared"))
+from unsloth_pwsh_runner import run_pwsh  # noqa: E402
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 INSTALL_PS1 = REPO_ROOT / "install.ps1"
@@ -80,14 +84,58 @@ def _drop_list_block(source: str) -> str:
 PRELUDE = "\n".join(_function(INSTALL_SRC, name) for name in HELPERS)
 
 
-def _run(script: str) -> str:
-    proc = subprocess.run(
+#: Everything Test-WoaResolveReachesPyPI consults before it is told anything. The session
+#: running pytest supplies all of them for free -- a developer with UV_OFFLINE exported, a
+#: sibling suite that sets one and forgets to unset it, or a uv.toml / [tool.uv] anywhere
+#: above the working directory -- and each one silently decides the answer these tests are
+#: asserting on. Scrubbed here so the only resolver policy in a case is the one it sets.
+_UV_POLICY_ENV = (
+    "UV_OFFLINE",
+    "UV_NO_INDEX",
+    "UV_DEFAULT_INDEX",
+    "UV_INDEX_URL",
+    "UV_INDEX",
+    "UV_EXTRA_INDEX_URL",
+    "UV_CONFIG_FILE",
+    "UV_NO_CONFIG",
+    "PIP_NO_INDEX",
+    "PIP_INDEX_URL",
+    "PIP_EXTRA_INDEX_URL",
+    # Get-WoaUvConfigIndexPolicy reads %APPDATA%\uv\uv.toml and the ProgramData copy.
+    "APPDATA",
+    "ProgramData",
+)
+
+#: Matched case-folded, because the one mixed-case name above is the one that would survive
+#: a literal match on the platform it matters on: CPython's `os.environ` puts every key
+#: through `.upper()` on `nt` ("Where Env Var Names Must Be UPPERCASE", os.py), so Windows
+#: hands `ProgramData` to the comprehension below as `PROGRAMDATA`, it compares unequal, and
+#: the child keeps reading %PROGRAMDATA%\uv\uv.toml -- uv's system-level config, and the one
+#: file that can turn a row asserting True into a machine-dependent False.
+_UV_POLICY_ENV_FOLDED = frozenset(name.upper() for name in _UV_POLICY_ENV)
+
+
+def _scrubbed_environ(environ = None) -> dict[str, str]:
+    """`environ` (default: this session's) minus every resolver-policy variable."""
+    items = (os.environ if environ is None else environ).items()
+    return {key: value for key, value in items if key.upper() not in _UV_POLICY_ENV_FOLDED}
+
+
+def _run(script: str, *, cwd: str | pathlib.Path | None = None) -> str:
+    env = _scrubbed_environ()
+    # run_pwsh, not subprocess.run: the scrub above keeps HOME, so without the runner's own
+    # XDG_CACHE_HOME every worker still shares one ~83 KB pwsh startup-profile cache and ~1
+    # startup in 500 dies reading a half-written copy. run_pwsh layers its private cache
+    # directory onto the env dict handed to it and leaves every other key exactly as scrubbed.
+    proc = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", PRELUDE + "\n" + script],
         capture_output = True,
         text = True,
         encoding = "utf-8",
         errors = "replace",
         timeout = 120,
+        env = env,
+        cwd = None if cwd is None else str(cwd),
     )
     assert proc.returncode == 0, f"pwsh failed: {proc.stdout}\n{proc.stderr}"
     return proc.stdout.strip()
@@ -140,6 +188,42 @@ def test_a_wheel_is_usable_only_where_it_actually_imports(wheel, py_tag, abi_tag
     assert out == str(usable), f"{wheel} on {py_tag}/{abi_tag}: expected {usable}, got {out}"
 
 
+@pytest.fixture
+def no_uv_config_dir(tmp_path):
+    """A working directory with no uv config anywhere above it.
+
+    Get-WoaUvConfigIndexPolicy walks from the current directory to the filesystem root, so
+    running from the repo (or from under a checkout that grows a `[tool.uv]` table) would
+    let a file decide an answer these rows attribute to their env dict. Asserted rather than
+    assumed: if such a file does appear above the tmp dir, this names it instead of turning
+    one parametrisation into an inexplicable False.
+    """
+    work = tmp_path / "neutral"
+    work.mkdir()
+    for parent in [work, *work.parents]:
+        assert not (parent / "uv.toml").is_file(), f"a uv.toml above the tmp dir: {parent}"
+        pyproject = parent / "pyproject.toml"
+        if pyproject.is_file():
+            text = pyproject.read_text(encoding = "utf-8", errors = "replace")
+            assert not re.search(
+                r"(?m)^\s*\[+tool\.uv(\.|\])", text
+            ), f"a [tool.uv] table above the tmp dir: {pyproject}"
+    return work
+
+
+@pytest.mark.parametrize("spelling", ["ProgramData", "PROGRAMDATA", "programdata"])
+def test_the_scrub_drops_program_data_however_the_platform_spelled_it(spelling):
+    """The scrub has to survive Windows re-casing the name on the way in.
+
+    Runs everywhere because it is the Windows spelling that is untestable on Windows here:
+    a Linux session has no ProgramData to leak, so a literal-match scrub passes this suite
+    green on CI and quietly stops working on the only platform install.ps1 ships to. Feeding
+    the three spellings a real environment block can carry states the requirement directly.
+    """
+    scrubbed = _scrubbed_environ({spelling: r"C:\ProgramData", "PATH": "/usr/bin"})
+    assert scrubbed == {"PATH": "/usr/bin"}, f"{spelling} survived the scrub: {scrubbed}"
+
+
 @requires_pwsh
 @pytest.mark.parametrize(
     ("env", "reaches"),
@@ -161,9 +245,15 @@ def test_a_wheel_is_usable_only_where_it_actually_imports(wheel, py_tag, abi_tag
         ({"UV_NO_INDEX": "false"}, True),
     ],
 )
-def test_pypi_counts_only_when_the_resolve_would_reach_it(env, reaches):
+def test_pypi_counts_only_when_the_resolve_would_reach_it(no_uv_config_dir, env, reaches):
+    """What the environment alone says. Every OTHER source of the same answer -- the
+    inherited UV_*/PIP_* policy, %APPDATA%, and any uv.toml or [tool.uv] above the working
+    directory -- is removed by `_run` and `no_uv_config_dir`, so a row that says True is
+    measuring its own env dict and not the session pytest happens to be running in. The
+    config half of the same question is `test_a_uv_config_decides_whether_pypi_is_in_the_resolve`.
+    """
     sets = "".join(f'$env:{key} = "{value}"; ' for key, value in env.items())
-    assert _run(sets + "Test-WoaResolveReachesPyPI") == str(reaches)
+    assert _run(sets + "Test-WoaResolveReachesPyPI", cwd = no_uv_config_dir) == str(reaches)
 
 
 @requires_pwsh
