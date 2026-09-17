@@ -354,6 +354,25 @@ foreach ($file in @($installPs1, $setupPs1)) {
     Check "$leaf initialises the release to null" (
         $text -match '\$script:NvidiaPresenceDriverRelease = \$null')
 }
+
+# setup.ps1 alone carries the rejection latch, and the bus promotion has to set it for the same
+# reason the driver-library promotion above it does: reaching that block means discovery already
+# walked every candidate path and every one was absent, hung, or reported no GPU. Left false,
+# Get-CudaComputeCapability and Get-PytorchCudaTag rediscover that same executable, which costs up
+# to two more bounded waits and can select a family from a banner detection already rejected.
+$setupWhole = [System.IO.File]::ReadAllText($setupPs1)
+$busBlock = [regex]::Match($setupWhole, '(?s)if \(-not \$HasNvidiaSmi\) \{\s*\$presenceScan = Invoke-BoundedVideoControllerScan.*?\n\}')
+Check "setup.ps1's bus promotion block was found (bites)" ($busBlock.Success)
+if ($busBlock.Success) {
+    Check "the bus promotion marks nvidia-smi rejected" (
+        $busBlock.Value -match '\$script:NvidiaSmiRejected = \$true')
+    Check "and still records presence-only separately" (
+        $busBlock.Value -match '\$script:NvidiaPresenceOnly = \$true')
+}
+Check "the driver-library promotion already did, which is the precedent" (
+    $setupWhole -match '(?s)Get-NvidiaLibraryInventory\)\) \{[\s\S]{0,600}?\$script:NvidiaSmiRejected = \$true')
+Check "install.ps1 has no rejection latch to set (bites)" (
+    ([System.IO.File]::ReadAllText($installPs1)) -notmatch 'NvidiaSmiRejected')
 Check "install.ps1 is where the release is consumed" (
     (Get-FunctionText $installPs1 "Get-TorchIndexUrl") -match 'NvidiaPresenceDriverRelease')
 Check "setup.ps1's tag helper does not act on it, for the same reason it does not floor" (

@@ -3216,10 +3216,16 @@ if (-not $HasNvidiaSmi) {
         -not (Test-OtherVendorAdapterPresent -Scan $presenceScan)) {
         $HasNvidiaSmi = $true
         $script:NvidiaPresenceOnly = $true
+        # Same as the driver-library promotion just above. Reaching here means discovery
+        # already walked every candidate path and every one of them was absent, hung or
+        # reported no GPU. Leaving the flag false lets Get-CudaComputeCapability and
+        # Get-PytorchCudaTag rediscover that same executable, which costs up to two more
+        # bounded waits and can select a family from a banner detection already rejected.
+        $script:NvidiaSmiRejected = $true
         $script:NvidiaPresenceCudaFloor = Get-NvidiaAdapterCudaFloor -Scan $presenceScan
-                    # Recorded separately, because the floor answers $null both for a driver too old for
-                    # the table and for no readable version at all, and those two want opposite answers.
-                    $script:NvidiaPresenceDriverRelease = Get-NvidiaAdapterDriverRelease -Scan $presenceScan
+        # Recorded separately, because the floor answers $null both for a driver too old for
+        # the table and for no readable version at all, and those two want opposite answers.
+        $script:NvidiaPresenceDriverRelease = Get-NvidiaAdapterDriverRelease -Scan $presenceScan
         Write-StudioLine "   NVIDIA GPU found on the PCI bus; nvidia-smi and the driver library are both unavailable" -ForegroundColor Gray
     }
 }
