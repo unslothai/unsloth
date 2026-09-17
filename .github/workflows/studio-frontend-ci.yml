@@ -576,7 +576,15 @@ jobs:
   windows:
     name: Frontend unit tests (Windows)
     runs-on: windows-latest
-    timeout-minutes: 15
+    # 30, not 15. The cap stopped fitting the job's own steps once the browser smokes
+    # joined it, and the overrun is deterministic rather than flaky: measured on run
+    # 35166979977, setup and npm ci 1m10s, unit tests 4m12s, browser install 32s,
+    # composer icons 39s, data settings in Chromium 4m21s, and then Firefox was cut off
+    # at 4m13s having needed about the same as Chromium. That is roughly 15m30s of work
+    # under a 15m cap, so every run that reaches the Firefox step dies there and reports
+    # itself as "cancelled" -- the failure mode the comment at the alignment job below
+    # already describes. The Linux sibling of this job allows 40.
+    timeout-minutes: 30
     defaults:
       run:
         shell: bash
