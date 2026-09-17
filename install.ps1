@@ -2789,15 +2789,28 @@ exit 1
         Join-Path $env:LOCALAPPDATA "Unsloth Studio"
     } else { $null }
 
+    # Cleared per invocation: script scope outlives a run, and under `irm | iex` one session can
+    # install twice. A stale $true makes the lock skip claiming a root it just created.
+    $script:StudioEnvRootPath = $null
+    $script:StudioEnvRootExisted = $false
+
     if ($envOverride) {
         # Tilde expansion: env vars aren't subject to it when quoted on assignment.
         if ($envOverride -eq "~" -or $envOverride -like "~/*" -or $envOverride -like "~\*") {
             $envOverride = (Join-Path $env:USERPROFILE $envOverride.Substring(1).TrimStart('/','\'))
         }
         try {
+            # BEFORE the create: this is the only moment anyone can still tell. The lock runs
+            # thousands of lines below and asks whether the root existed, which by then is yes for
+            # every env-mode root, so its ownership branch would never fire for the roots it was
+            # written for.
+            $script:StudioEnvRootPath = $envOverride
+            $script:StudioEnvRootExisted = [System.IO.Directory]::Exists($envOverride)
             # .NET API: New-Item -Path treats brackets as wildcards (no -LiteralPath on PS 5.1).
             [System.IO.Directory]::CreateDirectory($envOverride) | Out-Null
             $StudioHome = (Resolve-Path -LiteralPath $envOverride).Path
+            # Re-recorded against the resolved spelling, which is what the lock is handed.
+            $script:StudioEnvRootPath = $StudioHome
         } catch {
             Write-StudioLine "ERROR: $envOverrideVar=$envOverride cannot be created or accessed." -ForegroundColor Red
             # Same as the --tauri rejection above: still before the lock finally.
@@ -2888,6 +2901,10 @@ exit 1
     # The emptiness test is inline, not Test-DirectoryHasEntries, which is defined below this
     # function's first caller: the name error would land in the catch and skip the claim in
     # silence. An unreadable root counts as occupied, so failure means "do not claim".
+    # Above its earliest reader, not beside the lock helpers: Write-StudioRootOwnerMarker filters
+    # this name out of its emptiness test thousands of lines earlier, and a $null filters nothing.
+    $script:StudioInstallLockFileName = ".unsloth-install.lock"
+
     function Write-StudioRootOwnerMarker {
         param([Parameter(Mandatory = $true)][string]$Root)
         try {
@@ -2898,7 +2915,10 @@ exit 1
             if (Test-Path -LiteralPath $Root) {
                 $occupied = $true
                 try {
+                    # The lock's own file is not occupancy: it is created in this root before
+                    # anything else, so counting it makes a fresh root look like somebody else's.
                     $occupied = @(Get-ChildItem -LiteralPath $Root -Force -ErrorAction Stop |
+                        Where-Object { $_.Name -ne $script:StudioInstallLockFileName } |
                         Select-Object -First 1).Count -gt 0
                 } catch { $occupied = $true }
                 $claimable = (
@@ -2920,8 +2940,23 @@ exit 1
             # Get-Item -Force, not Test-Path: the latter follows a dangling link and answers
             # false, after which WriteAllText follows the link and writes outside the root.
             Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
-            if (Get-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue) { return }
-            [System.IO.File]::WriteAllText($marker, "")
+            # CreateNew, not check-then-write: the pair left a window to plant a link at the name
+            # and have the write truncate its target. Residual, stated rather than implied away: a
+            # DANGLING link is still followed and creates a zero-byte file at its target, which
+            # cannot destroy an existing one. FILE_FLAG_OPEN_REPARSE_POINT is the complete answer
+            # and .NET does not expose it here.
+            $markerStream = $null
+            try {
+                $markerStream = [System.IO.File]::Open($marker,
+                    [System.IO.FileMode]::CreateNew,
+                    [System.IO.FileAccess]::Write,
+                    [System.IO.FileShare]::None)
+            } catch {
+                # No marker is fine; the venv writes its own later.
+                return
+            } finally {
+                if ($markerStream) { try { $markerStream.Dispose() } catch {} }
+            }
         } catch { }
     }
 
@@ -3760,16 +3795,99 @@ exit 1
         param([Parameter(Mandatory = $true)][AllowNull()][AllowEmptyString()][string]$Path)
 
         if ([string]::IsNullOrWhiteSpace($Path)) { return "" }
-        $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
-        if (-not $item) { return "" }
-        # Non-filesystem providers do not expose FileSystemInfo attributes.
-        if ($item -isnot [System.IO.FileSystemInfo]) { return "" }
-        if (-not ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) { return "" }
-        $target = $null
-        try { $target = $item.Target } catch { $target = $null }
-        # PS 5.1 exposes .Target as a collection; PS 7 as a string.
-        if ($target) { return " (it is a link to $(@($target) -join ', '))" }
-        return " (it is a link)"
+
+        # Read attributes through the filesystem API rather than Get-Item. Getting
+        # attributes needs only FILE_READ_ATTRIBUTES, which survives the ACLs that
+        # deny reading the directory itself, so Get-Item returns nothing in exactly
+        # the case this detail is meant to describe and the caller silently loses
+        # every hint below.
+        $attrs = $null
+        try { $attrs = [System.IO.File]::GetAttributes($Path) } catch { $attrs = $null }
+        if ($null -eq $attrs) { return "" }
+
+        # Ordered by how much each one changes the fix. takeown/icacls cannot help
+        # with any of the first three, so name them before falling back to ACLs.
+        # On a directory this attribute only means new descendants are encrypted
+        # by default, so listing it never needs the key and a denial there is an
+        # ACL. Only a file's own streams are unreadable without the certificate.
+        $isDirectory = ([int]$attrs -band [int][System.IO.FileAttributes]::Directory) -ne 0
+        if (-not $isDirectory -and ($attrs -band [System.IO.FileAttributes]::Encrypted)) {
+            return " (it is EFS-encrypted, so it stays unreadable even elevated unless the encrypting account or its recovery certificate is available)"
+        }
+        # Offline plus either recall attribute is a cloud placeholder, typically
+        # OneDrive Files On-Demand that cannot hydrate.
+        # RECALL_ON_OPEN (0x40000) and RECALL_ON_DATA_ACCESS (0x400000) are absent
+        # from the FileAttributes enum on Windows PowerShell 5.1, so test the bits.
+        $offline = ([int]$attrs -band [int][System.IO.FileAttributes]::Offline) -ne 0
+        $recall = ([int]$attrs -band (0x00040000 -bor 0x00400000)) -ne 0
+        if ($offline -or $recall) {
+            return " (it is a cloud placeholder, e.g. OneDrive Files On-Demand, that cannot be hydrated right now)"
+        }
+        if ($attrs -band [System.IO.FileAttributes]::ReparsePoint) {
+            $target = $null
+            try {
+                $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+                if ($item -is [System.IO.FileSystemInfo]) { $target = $item.Target }
+            } catch { $target = $null }
+            # PS 5.1 exposes .Target as a collection; PS 7 as a string.
+            if ($target) { return " (it is a link to $(@($target) -join ', '))" }
+            return " (it is a link)"
+        }
+        return ""
+    }
+
+    # Which security software could be denying this path, as a possibility.
+    #
+    # Worth naming because takeown and icacls cannot clear a filter-driver block
+    # and elevation does not either, so a user whose antivirus is holding the
+    # folder is otherwise sent round the takeown loop for as long as they are
+    # willing. Nothing readable from here attributes the specific denial though,
+    # so this names the candidate and the log that settles it and never
+    # contradicts the ACL advice it follows.
+    #
+    # Defender's Controlled folder access modes are 0 Disabled, 1 Enabled,
+    # 2 AuditMode, 3 BlockDiskModificationOnly, 4 AuditDiskModificationOnly. Only
+    # 1 gates file access; 3 and 4 are direct disk-sector writes rather than
+    # files, so neither explains a denied folder.
+    #
+    # When Defender is not it, name whichever antivirus is registered and running
+    # instead: third-party suites ship the same feature under their own names
+    # (Bitdefender Safe Files and Ransomware Remediation, for instance), and the
+    # user cannot act on advice that does not say which product to open.
+    #
+    # Answers "" whenever it cannot tell, so a machine with no Defender module
+    # and no SecurityCenter registration reads the same as one that says no.
+    function Get-SecuritySoftwareNote {
+        $mode = $null
+        try {
+            if (Get-Command Get-MpPreference -ErrorAction SilentlyContinue) {
+                $mode = [int](Get-MpPreference -ErrorAction Stop).EnableControlledFolderAccess
+            }
+        } catch { $mode = $null }
+        if ($mode -eq 1) {
+            return "Controlled folder access is ON here, and it gates writes to protected folders whatever your privileges are, so where it is the cause takeown and icacls will not clear it: Windows Defender Operational events 1123 and 1124 say whether it stopped this path, and Virus & threat protection > Ransomware protection > Allow an app is where to allow Unsloth"
+        }
+        # SecurityCenter2 is the registration every consumer antivirus makes, and
+        # it is absent on Server SKUs, so this stays best-effort. productState
+        # packs the running state in 0xF000: 0x1000 on, 0x2000 snoozed, 0 off.
+        # A product that is not running cannot be holding the folder and naming it
+        # sends the user to the wrong console; a state we cannot read proves
+        # nothing either way, so it is kept.
+        $others = @()
+        try {
+            $others = @(Get-CimInstance -Namespace "root/SecurityCenter2" -ClassName AntiVirusProduct -ErrorAction Stop |
+                Where-Object { $state = $_.productState -as [uint32]; ($null -eq $state) -or (($state -band 0xF000) -eq 0x1000) } |
+                ForEach-Object { [string]$_.displayName } |
+                Where-Object { $_ -and $_ -notmatch "Windows Defender" -and $_ -notmatch "Microsoft Defender" })
+        } catch { $others = @() }
+        if ($others.Count -gt 0) {
+            $names = ($others | Select-Object -Unique) -join ", "
+            return "$names is running here, and its ransomware or protected-folder feature can deny a path whatever your privileges are. If takeown and icacls do not clear this, look in $names for a block on this folder, and add an exclusion for it and for Unsloth"
+        }
+        if ($mode -eq 2) {
+            return "Controlled folder access is in audit mode, so it is logging rather than blocking and is not the cause here; Windows Defender Operational events 1123 and 1124 name whatever it did stop"
+        }
+        return ""
     }
 
     # Print guidance; returns the failure reason as its only pipeline output.
@@ -3798,6 +3916,10 @@ exit 1
         substep "takeown /F `"$Path`" /R /D Y" "Yellow"
         substep "icacls `"$Path`" /reset /T" "Yellow"
         substep "Antivirus or Controlled folder access can deny this path too; allow or exclude it, then retry" "Yellow"
+        # After the generic line, since this one either confirms it or rules it
+        # out, and an empty answer must leave the generic advice standing.
+        $securitySoftware = Get-SecuritySoftwareNote
+        if ($securitySoftware) { substep $securitySoftware "Yellow" }
         if ($UserSupplied) {
             return "Access denied reading $Label at $Path. Restore access with takeown/icacls, or point UNSLOTH_LOCAL_LLAMA_CPP_DIR at a readable build, then re-run setup."
         }
@@ -3864,10 +3986,71 @@ exit 1
         Write-StudioLine ""
         # A denied custom home cannot be claimed as an Unsloth-managed cache.
         $homeIsCustom = Test-StudioHomeIsCustom
-        # Preserve user-supplied wording when either override names this tree.
+        # Preserve user-supplied wording when either override names this tree, or
+        # names a build inside it: moving or deleting this folder takes that build
+        # with it, and the later --with-llama-cpp-dir check then aborts on a path
+        # we made disappear.
         $suppliedDir = if ($WithLlamaCppDir) { $WithLlamaCppDir } else { $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR }
-        $userSupplied = (-not [string]::IsNullOrWhiteSpace($suppliedDir)) -and
-            ((Get-CanonicalDir -Path $suppliedDir) -eq (Get-CanonicalDir -Path $dir))
+        # Walking the ancestors beats comparing the two canonical strings: an
+        # override that does not exist yet cannot be resolved, so a prefix test
+        # would compare a resolved path against an unresolved one and miss.
+        $userSupplied = $false
+        if (-not [string]::IsNullOrWhiteSpace($suppliedDir)) {
+            $canonicalDir = [string](Get-CanonicalDir -Path $dir)
+            $probe = [string](Get-CanonicalDir -Path $suppliedDir)
+            while (-not [string]::IsNullOrWhiteSpace($probe)) {
+                if ([string](Get-CanonicalDir -Path $probe) -eq $canonicalDir) {
+                    $userSupplied = $true
+                    break
+                }
+                $parent = ""
+                try { $parent = [string](Split-Path -Parent $probe) } catch { $parent = "" }
+                if ($parent -eq $probe) { break }
+                $probe = $parent
+            }
+        }
+
+        # Only the default branch below tells the user to delete this folder, so
+        # only that case may move it. A user-supplied build is not ours to touch,
+        # and an unreadable custom home cannot be confirmed as a managed cache.
+        # Renaming needs DELETE on the folder plus write on its parent, neither of
+        # which is read access, so this recovers denials that takeown and icacls
+        # do not: the folder is a managed cache that setup reinstalls anyway.
+        # Setup never makes this a link, so a link here is something the user
+        # arranged, pointing at a build we were not told about. Moving it would
+        # silently change which tree they run without touching the one they were
+        # protecting, so it is left alone and named in the guidance instead.
+        $isLink = $false
+        try {
+            $linkAttrs = [System.IO.File]::GetAttributes($dir)
+            $isLink = ([int]$linkAttrs -band [int][System.IO.FileAttributes]::ReparsePoint) -ne 0
+        } catch {
+            # Unreadable attributes prove nothing, and "proves nothing" must not
+            # mean "movable": fall through to the guidance rather than guess.
+            $isLink = $true
+        }
+        if (-not $userSupplied -and -not $homeIsCustom -and -not $isLink) {
+            $asideDir = "$dir.denied-$(Get-Date -Format 'yyyyMMddHHmmss')"
+            $moved = $false
+            try {
+                Move-Item -LiteralPath $dir -Destination $asideDir -ErrorAction Stop
+                $moved = $true
+            } catch {
+                # Expected when the denial also covers rename; fall through to guidance.
+            }
+            if ($moved) {
+                step "permissions" "llama.cpp install at $dir could not be read, so it was moved aside" "Yellow"
+                substep "Moved to $asideDir; it is a managed cache and setup reinstalls it" "Yellow"
+                substep "Delete the moved folder once access is restored, it is no longer used" "Yellow"
+                Write-StudioLine ""
+                return $null
+            }
+            # This runs before the install lock, so a second run can have moved
+            # the folder in between. Re-probe rather than report a denial for a
+            # path that is no longer there and stop an install that can proceed.
+            if ((Get-LlamaCppInstallReadState -Path $dir) -ne "Denied") { return $null }
+        }
+
         $reason = Write-PathAccessDenied -Path $dir -Label "llama.cpp install" `
             -UserSupplied:$userSupplied -OwnershipUnverified:$homeIsCustom
         substep "Stopping here, before phase 1: nothing has been downloaded or installed" "Yellow"
@@ -5188,6 +5371,183 @@ exit 0
         try { $Mutex.ReleaseMutex() } catch {} finally { $Mutex.Dispose() }
     }
 
+    # Mutex AND file, because they exclude different things. The mutex is named from a hash of the
+    # resolved path, so two spellings of one directory fail to exclude each other whenever the
+    # resolver is inexact; a file inside the destination has no such problem, because the
+    # filesystem resolves the alias. Both are kept: a released installer only knows the mutex, so
+    # dropping it would stop an old run and a new one seeing each other during an upgrade.
+
+    function Enter-StudioInstallLock {
+        param([Parameter(Mandatory = $true)][string]$Path)
+        $mutex = Enter-StudioInstallMutex -Path $Path
+        if ($null -eq $mutex) { return $null }
+        $stream = $null
+        try {
+            # Race-safe: concurrent creators both succeed, and only one opens the file exclusively
+            # below. A throw here surfaces as the caller's install-lock error.
+            $existedBefore = [System.IO.Directory]::Exists($Path)
+            # An env-mode root is created thousands of lines above, so the check just above answers
+            # yes for every one of them; that site recorded what it found, so prefer its answer for
+            # this same directory.
+            #
+            # One direction only. It may say "I created this root, so treat it as new", never the
+            # opposite: a record claiming the root existed cannot be true while the root is absent
+            # now, so it is a leftover from an earlier run in the same session.
+            if ($script:StudioEnvRootPath -and
+                $script:StudioEnvRootPath.Equals($Path, [System.StringComparison]::OrdinalIgnoreCase) -and
+                -not $script:StudioEnvRootExisted) {
+                $existedBefore = $false
+            }
+            $null = [System.IO.Directory]::CreateDirectory($Path)
+            $lockPath = Join-Path $Path $script:StudioInstallLockFileName
+            # A link planted at the lock path is not a lock, it is a way to point our exclusive
+            # handle at somebody else's file: File.Open follows it, so the target would be held
+            # open with FileShare.None for the whole install even though nothing is written to it.
+            # Remove the link itself, never its target, then let the open below create a real
+            # file. Get-Item -Force rather than Test-Path, which follows a dangling link and
+            # answers false; Write-StudioRootOwnerMarker guards the same hazard the same way.
+            $existingLock = $null
+            try {
+                $existingLock = Get-Item -LiteralPath $lockPath -Force -ErrorAction SilentlyContinue
+            } catch { $existingLock = $null }
+            if ($existingLock -and
+                ($existingLock.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                # A detected link that will NOT go must stop the install, not be shrugged off.
+                #
+                # Not an empty catch: a link that can be inspected but not deleted would carry on
+                # into File.Open, which follows it, and a zero-byte target passes the length check
+                # too. The throw reaches the outer handler, which drops the mutex and reports a
+                # lock-creation failure rather than a phantom second installer.
+                try {
+                    Remove-Item -LiteralPath $lockPath -Force -ErrorAction Stop
+                } catch {
+                    throw "A link is planted at the install lock path $lockPath and cannot be removed."
+                }
+            }
+            # A HARD link carries no reparse attribute, so the check above cannot see it and
+            # File.Open follows it. The discriminator is the opened stream's Length: nothing is
+            # ever written here, so ours is always zero bytes and a planted alias worth denying
+            # access to is not. Read from the handle, which also closes the check-to-open window.
+            #
+            # At most one repair, and CreateNew rather than OpenOrCreate: the mutex only serialises
+            # identical spellings, so if somebody re-created the entry in between, this must fail
+            # rather than hand out a second lock.
+            $repaired = $false
+            while ($true) {
+                if ($repaired) { $mode = [System.IO.FileMode]::CreateNew }
+                else { $mode = [System.IO.FileMode]::OpenOrCreate }
+                try {
+                    $stream = [System.IO.File]::Open(
+                        $lockPath,
+                        $mode,
+                        [System.IO.FileAccess]::ReadWrite,
+                        [System.IO.FileShare]::None)
+                } catch [System.IO.IOException] {
+                    # Only a sharing or lock violation means "another installer holds it"; a
+                    # storage fault reported that way would send the user hunting a second
+                    # installer that does not exist. HResult's low 16 bits carry the Win32 code: 32
+                    # ERROR_SHARING_VIOLATION, 33 ERROR_LOCK_VIOLATION. Off Windows .NET implements
+                    # FileShare with flock and reports errno 11 (EAGAIN) instead, measured rather
+                    # than assumed. 80, 183 and 17 are how the CreateNew reopen reports losing the
+                    # race, which means the same thing to the caller.
+                    $code = $_.Exception.HResult -band 0xFFFF
+                    $lost = $repaired -and ($code -eq 80 -or $code -eq 183 -or $code -eq 17)
+                    if (-not $lost -and $code -ne 32 -and $code -ne 33 -and $code -ne 11) { throw }
+                    if ($stream) { $stream.Dispose() }
+                    Exit-StudioInstallMutex -Mutex $mutex
+                    return $null
+                }
+                # The reparse test above ran on the PATHNAME, so a link can be swapped in before
+                # this open, and a zero-byte target slips past the Length test below. Re-read now
+                # the handle is held. This narrows the window rather than closing it: closing it
+                # needs FILE_FLAG_OPEN_REPARSE_POINT, and removing native imports is the point of
+                # this workstream. The residual needs a root another user can already write to.
+                if ($stream.Length -eq 0) {
+                    $entry = $null
+                    try { $entry = Get-Item -LiteralPath $lockPath -Force -ErrorAction Stop } catch { $entry = $null }
+                    if ($entry -and (($entry.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)) {
+                        $stream.Dispose()
+                        $stream = $null
+                        throw "A link was planted at the install lock path $lockPath while it was being opened."
+                    }
+                    break
+                }
+                if ($repaired) {
+                    # A file this run just created cannot be non-empty. Fail loudly, not in a loop.
+                    throw "The install lock file at $lockPath is not empty after being replaced."
+                }
+                # Move the entry ASIDE rather than delete it, and let the reopen create a real file
+                # at the freed name.
+                #
+                # Deleting a planted hard link costs only its own directory entry, which is why it
+                # looked safe, but an ORDINARY non-empty file at this name loses its contents
+                # merely because somebody started the installer. Refusing instead lets a planted
+                # hard link block every install. The discriminator is the link count and .NET does
+                # not expose it here, so there is no cheap way to tell them apart. A rename needs
+                # no discrimination: the planted link leaves the lock
+                # path either way, and the ordinary file keeps its bytes under a name that says
+                # what happened to it.
+                $stream.Dispose()
+                $stream = $null
+                $displaced = "$lockPath.displaced-" + (Get-Date -Format "yyyyMMddHHmmss") +
+                    "-" + [guid]::NewGuid().ToString("N").Substring(0, 8)
+                try {
+                    Move-Item -LiteralPath $lockPath -Destination $displaced -Force -ErrorAction Stop
+                } catch {
+                    # Same discrimination and the same codes as the open below: only a sharing or
+                    # lock violation is a concurrent install. The code is dug out of the exception
+                    # chain because a cmdlet failure arrives wrapped.
+                    $mvCode = 0
+                    $mvEx = $_.Exception
+                    while ($mvEx) {
+                        if ($mvEx -is [System.IO.IOException]) {
+                            $mvCode = $mvEx.HResult -band 0xFFFF
+                            break
+                        }
+                        $mvEx = $mvEx.InnerException
+                    }
+                    Exit-StudioInstallMutex -Mutex $mutex
+                    if ($mvCode -ne 32 -and $mvCode -ne 33 -and $mvCode -ne 11) { throw }
+                    return $null
+                }
+                $repaired = $true
+            }
+            # Residual, stated plainly: a hard link to a genuinely EMPTY file is indistinguishable
+            # from our own and is used as the lock. Nothing is written to it, so the only thing
+            # denied for the install is access to a zero-byte file.
+            # Nothing is written to the handle on purpose: holding it open exclusively IS the
+            # lock, and File.Open follows a link, so a planted lock file would have its TARGET
+            # truncated merely by starting the installer.
+            # The lock is now the first thing that can create the root, so without this marker a
+            # run that died before the first real write leaves a root scripts/uninstall.ps1's
+            # _IsStudioRoot refuses to remove as somebody else's.
+            #
+            # Only when this call created the directory: a UNSLOTH_STUDIO_HOME pointed at one the
+            # user already had must never be claimed, or uninstall would delete it.
+            #
+            # Through the helper, not a bare WriteAllText, which follows a planted link just as
+            # File.Open does. The helper removes the entry and confirms its absence first, with
+            # Get-Item -Force so a dangling link is not mistaken for nothing there.
+            if (-not $existedBefore) {
+                Write-StudioRootOwnerMarker -Root $Path
+            }
+            return [pscustomobject]@{ Mutex = $mutex; Stream = $stream; Path = $lockPath }
+        } catch {
+            if ($stream) { try { $stream.Dispose() } catch {} }
+            Exit-StudioInstallMutex -Mutex $mutex
+            throw
+        }
+    }
+
+    function Exit-StudioInstallLock {
+        param($Lock)
+        if ($null -eq $Lock) { return }
+        # Closing the handle IS the release, so a dead process leaves nothing to clean up. The
+        # file stays: deleting it would race another installer that has just opened it.
+        if ($Lock.Stream) { try { $Lock.Stream.Dispose() } catch {} }
+        Exit-StudioInstallMutex -Mutex $Lock.Mutex
+    }
+
     function Test-StudioProtectedPathMatch {
         param(
             [Parameter(Mandatory = $true)][string]$Candidate,
@@ -5393,12 +5753,12 @@ exit 0
         }
     }
     try {
-        $studioInstallMutex = Enter-StudioInstallMutex -Path $StudioHome
+        $studioInstallLock = Enter-StudioInstallLock -Path $StudioHome
     } catch {
         Write-StudioLine "[ERROR] Could not create the Unsloth install lock: $($_.Exception.Message)" -ForegroundColor Red
         return (Exit-InstallFailure "Could not create the Unsloth install lock")
     }
-    if ($null -eq $studioInstallMutex) {
+    if ($null -eq $studioInstallLock) {
         Write-StudioLine "[ERROR] Another Unsloth Studio install or repair is already running." -ForegroundColor Red
         Write-StudioLine "        Wait for it to finish, then re-run install.ps1." -ForegroundColor Yellow
         return (Exit-InstallFailure "Another Unsloth Studio install or repair is already running")
@@ -10336,7 +10696,7 @@ sys.exit(2 if conflict else (0 if installed else 1))
         for ($i = $studioRuntimeMutexes.Count - 1; $i -ge 0; $i--) {
             Exit-StudioInstallMutex -Mutex $studioRuntimeMutexes[$i]
         }
-        Exit-StudioInstallMutex -Mutex $studioInstallMutex
+        Exit-StudioInstallLock -Lock $studioInstallLock
         # Matters for `irm | iex`, where these are the user's own session variables.
         Restore-StudioTempEnvironment
     }

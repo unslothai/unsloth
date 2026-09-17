@@ -2125,6 +2125,7 @@ fn main() {
             commands::start_managed_server,
             commands::stop_server,
             commands::check_health,
+            commands::check_backend_present,
             commands::get_server_logs,
             commands::open_logs_dir,
             commands::open_models_dir,

@@ -14,6 +14,7 @@ import signal
 from loggers import get_logger
 import multiprocessing as mp
 import queue
+import re
 import threading
 import time
 import uuid
@@ -44,6 +45,134 @@ def __getattr__(name: str):
 
 
 logger = get_logger(__name__)
+
+# Delimited, not a whitelist: a whitelist stopped at the apostrophe in `/home/o'connor/`.
+_PATH_COMPONENT = r"[^\s\\/](?:(?:(?![A-Za-z]:[\\/])[^\\/\n\",;])*[^\s\\/])?"
+# Second alternative: the root-level case (`/model.gguf`, `\\server\share`) has no trailing separator.
+_ABSOLUTE_PATH_RE = re.compile(
+    r"(?<![\w:/])(?:\\\\[^\\/\s]+[\\/]|[A-Za-z]:[\\/]|/)"
+    r"(?:(?:" + _PATH_COMPONENT + r"[\\/])+[^\s\\/]*|[^\s\\/\",;]+[\\/]?)"
+)
+
+
+def _shorten_path(match: "re.Match[str]") -> str:
+    text = match.group(0)
+    tail = text.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+    return f".../{tail}" if tail else "..."
+
+
+# A line written by a logger; `decode_bicodec` logs 500 characters of generated text this way.
+_LOG_RECORD_RE = re.compile(
+    r"""^\s*(?:
+        \d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}   # a leading ISO timestamp
+      | \[?(?:DEBUG|INFO|WARNING|WARN|ERROR|CRITICAL|FATAL)\b
+      | [\w]+(?:\.[\w]+)+\s*:                     # a dotted logger name before the colon
+    )""",
+    re.VERBOSE,
+)
+
+# Only the writer can tell a logged traceback from a dying process's; the bytes are identical. See `utils.worker_stderr`.
+_LOG_CONTINUATION_PREFIX = "    | "
+_LOG_RECORD_START_MARK = "\x1f"
+
+
+def _looks_like_a_log_record(line: str) -> bool:
+    """The mark is the reliable half; the patterns are the fallback for a producer that bypassed that handler."""
+    if line.startswith(_LOG_CONTINUATION_PREFIX) or line.startswith(_LOG_RECORD_START_MARK):
+        return True
+    return bool(_LOG_RECORD_RE.match(line))
+
+
+# Errs towards dropping: a missed diagnostic costs a detail, a kept content line leaves the host.
+_DIAGNOSTIC_START_RE = re.compile(
+    r"""^(?:
+        Traceback\ \(most\ recent\ call\ last\):
+      | terminate\ called
+      | what\(\):
+      | Fatal\ Python\ error:
+      | (?:Current\ )?[Tt]hread\ 0x
+      | Stack\ \(most\ recent\ call\ first\):
+      | Segmentation\ fault | Bus\ error | Illegal\ instruction
+      | Floating\ point\ exception | Aborted | Killed | Trace/breakpoint\ trap
+      | \*\*\*                                     # *** stack smashing detected ***
+      | double\ free | free\(\) | malloc\(\) | munmap_chunk | corrupted\ (?:size|double-linked)
+      | std::(?:bad_alloc|terminate) | libc\+\+abi
+      | GGML_ASSERT | CUDA\ error | HIP\ error | cudaError
+      | [A-Za-z_][\w.]*(?:Error|Exception|Exit|Interrupt|Abort|Fault|Signal)\s*:
+    )""",
+    re.VERBOSE,
+)
+
+
+_TRACEBACK_HEADER = "Traceback (most recent call last):"
+
+
+def _starts_a_new_diagnostic(line: str) -> bool:
+    return bool(_DIAGNOSTIC_START_RE.match(line))
+
+
+def _diagnostic_lines_only(lines: "list[str]") -> "list[str]":
+    """Line by line is not a filter, because a log record is not always one line."""
+    kept: "list[str]" = []
+    inside_a_diagnostic = False
+    for line in lines:
+        if line.startswith(_LOG_CONTINUATION_PREFIX):
+            # Another thread logging mid-abort does not end the abort.
+            continue
+        if _looks_like_a_log_record(line):
+            inside_a_diagnostic = False
+            continue
+        if _starts_a_new_diagnostic(line):
+            inside_a_diagnostic = True
+            kept.append(line)
+            continue
+        if inside_a_diagnostic and (not line.strip() or line[:1] in (" ", "\t")):
+            kept.append(line)
+            continue
+        inside_a_diagnostic = False
+    return kept
+
+
+def _crash_lines(lines: "list[str]") -> "list[str]":
+    """The last traceback, unless a diagnostic follows it: `logger.exception` for a RECOVERED failure leaves one too."""
+    starts = [
+        index for index, line in enumerate(lines) if line.lstrip().startswith(_TRACEBACK_HEADER)
+    ]
+    if not starts:
+        return lines
+    header = starts[-1]
+    end = len(lines)
+    for index in range(header + 1, len(lines)):
+        line = lines[index]
+        if line.strip() and line[:1] not in (" ", "\t"):
+            end = index + 1
+            break
+    after = lines[end:]
+    return after if after else lines[header:]
+
+
+def _redact_worker_output(text: str) -> str:
+    """Three redactors because none subsumes another: native path leases, token shapes, filesystem layout."""
+    if not text:
+        return ""
+    redacted = text
+    try:
+        from utils.native_path_leases import redact_native_paths
+        redacted = redact_native_paths(redacted)
+    except Exception:  # noqa: BLE001 -- a redactor that cannot run must not lose the others
+        pass
+    try:
+        from hub.utils.download_registry import scrub_secrets
+        redacted = scrub_secrets(redacted)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        # `redact_log_text` is idempotent, so it runs after `scrub_secrets`.
+        from utils.log_redaction import redact_log_text
+        redacted = redact_log_text(redacted)
+    except Exception:  # noqa: BLE001
+        pass
+    return _ABSOLUTE_PATH_RE.sub(_shorten_path, redacted)
 
 
 class _LoadCancelled(Exception):
@@ -235,6 +364,8 @@ class InferenceOrchestrator:
 
     def __init__(self):
         self._proc: Optional[mp.Process] = None
+        # Retired when the next worker is spawned; read long after _proc has been cleared.
+        self._stderr_capture: Any = None
         self._cmd_queue: Any = None
         self._resp_queue: Any = None
         self._subprocess_shutdown_lock = threading.Lock()
@@ -439,6 +570,17 @@ class InferenceOrchestrator:
             else get_hf_cache_paths().child_env({})
         )
 
+        # Retired here, not at shutdown: a crash message outlives _shutdown_subprocess clearing _proc.
+        self._retire_stderr_capture()
+        self._worker_stopped_deliberately = False
+        try:
+            from utils.worker_stderr import WorkerStderrCapture
+            self._stderr_capture = WorkerStderrCapture(prefix = "unsloth-inference-worker-")
+        except Exception as exc:
+            # No sink is the old behaviour; never a failed spawn.
+            logger.debug("Could not open a worker stderr mirror: %s", exc)
+            self._stderr_capture = None
+
         with (
             child_environment_for_spawn(cache_env),
             native_path_secret_removed_for_child_start(),
@@ -454,16 +596,22 @@ class InferenceOrchestrator:
             # rely on from here on: snapshotting it after start() would capture the None
             # and lose the only reference to a live child, which is the orphan this
             # change exists to prevent.
+            _child_kwargs: dict = {
+                "cmd_queue": self._cmd_queue,
+                "resp_queue": self._resp_queue,
+                "cancel_event": self._cancel_event,
+                "drain_event": self._drain_event,
+                "config": config,
+            }
+            if self._stderr_capture is not None:
+                from utils.native_path_leases import STDERR_MIRROR_KWARG
+
+                # Consumed by run_without_native_path_secret; it never reaches the entrypoint.
+                _child_kwargs[STDERR_MIRROR_KWARG] = self._stderr_capture.path
             _spawned_proc = _CTX.Process(
                 target = run_without_native_path_secret,
                 args = ("core.inference.worker", "run_inference_process", cache_env),
-                kwargs = {
-                    "cmd_queue": self._cmd_queue,
-                    "resp_queue": self._resp_queue,
-                    "cancel_event": self._cancel_event,
-                    "drain_event": self._drain_event,
-                    "config": config,
-                },
+                kwargs = _child_kwargs,
                 daemon = True,
             )
             self._proc = _spawned_proc
@@ -606,6 +754,9 @@ class InferenceOrchestrator:
         handle and refuse the destructive sidecar swap."""
         self._stop_dispatcher()  # before killing subprocess
         if self._proc is None or not self._proc.is_alive():
+            # Already gone: a nonzero status is an unwaited crash and keeps its replay.
+            exitcode = getattr(self._proc, "exitcode", 0) if self._proc is not None else 0
+            self._worker_stopped_deliberately = exitcode == 0
             self._proc = None
             return True
 
@@ -656,6 +807,8 @@ class InferenceOrchestrator:
             )
             return False
 
+        # Without this flag every model switch replayed a healthy worker's stderr at ERROR.
+        self._worker_stopped_deliberately = True
         self._proc = None
         self._cmd_queue = None
         self._resp_queue = None
@@ -755,12 +908,90 @@ class InferenceOrchestrator:
 
     def _cleanup(self):
         self._shutdown_subprocess(timeout = 5.0)
+        self._retire_stderr_capture()
+
+    def _retire_stderr_capture(self) -> None:
+        """A native fault BETWEEN requests has no waiter, so nothing reaches `_subprocess_crash_message`."""
+        capture = getattr(self, "_stderr_capture", None)
+        if capture is None:
+            return
+        proc = getattr(self, "_proc", None)
+        try:
+            worker_is_gone = proc is None or not proc.is_alive()
+        except Exception:  # noqa: BLE001 -- a handle in teardown; treat it as gone
+            worker_is_gone = True
+        # `_shutdown_subprocess_locked` has already cleared `_proc`, so the flag is all that still knows.
+        if worker_is_gone and not getattr(self, "_worker_stopped_deliberately", False):
+            self._log_worker_stderr_once(
+                getattr(proc, "pid", None),
+                getattr(proc, "exitcode", None),
+            )
+        try:
+            capture.close()
+        except Exception:
+            pass
+        self._stderr_capture = None
+
+    def _public_worker_stderr_tail(self) -> str:
+        """Spans the worker's WHOLE lifetime and goes out verbatim through `GenStreamError(public = True)`."""
+        raw = self._worker_stderr_tail()
+        if not raw:
+            return ""
+        # Filtered FIRST, then searched: searching raw selected logger-written traceback headers.
+        kept = _crash_lines(_diagnostic_lines_only(raw.splitlines()))
+        block = "\n".join(kept).strip()
+        if not block:
+            return ""
+        return _redact_worker_output(block)
+
+    def _log_worker_stderr_once(
+        self,
+        pid,
+        exitcode,
+        *,
+        worker_exited: bool = True,
+    ) -> None:
+        """The RAW tail, at most once per worker; *worker_exited* is False for a still-live replacement."""
+        capture = getattr(self, "_stderr_capture", None)
+        if capture is None:
+            return
+        logged = getattr(self, "_stderr_tail_logged", None)
+        if isinstance(logged, tuple) and logged[0] is capture:
+            # Already replayed for a real exit, or this is a second non-terminal call.
+            if logged[1] or not worker_exited:
+                return
+        # Marked before the read, so a failure here cannot become a log line per call.
+        self._stderr_tail_logged = (capture, bool(worker_exited))
+        raw = self._worker_stderr_tail()
+        if not raw:
+            return
+        raw = raw.replace(_LOG_RECORD_START_MARK, "")
+        logger.error(
+            "Inference worker stderr (pid=%s, exitcode=%s):\n%s",
+            pid,
+            exitcode,
+            raw,
+        )
+
+    def _worker_stderr_tail(self) -> str:
+        capture = getattr(self, "_stderr_capture", None)
+        if capture is None:
+            return ""
+        try:
+            return capture.tail()
+        except Exception:
+            return ""
 
     def _ensure_subprocess_alive(self) -> bool:
         return self._proc is not None and self._proc.is_alive()
 
-    def _subprocess_crash_message(self, context: str) -> str:
-        """Return a user-facing crash message with the worker exit status."""
+    def _subprocess_crash_message(
+        self,
+        context: str,
+        *,
+        with_worker_output: bool = False,
+    ) -> str:
+        """``with_worker_output`` defaults to FALSE: the opposite default discloses a traceback to a merely QUEUED request."""
         context_label = {
             "wait": "loading the model",
             "generation": "generating a response",
@@ -769,13 +1000,24 @@ class InferenceOrchestrator:
         }.get(context, context)
         message = f"The inference worker stopped unexpectedly while {context_label}."
 
-        if self._proc is None:
+        proc = self._proc
+        if proc is None:
+            # A concurrent teardown can clear `_proc`; the bytes outlive the handle.
+            self._log_worker_stderr_once(None, None)
             return f"{message} Details: process missing."
 
-        exitcode = self._proc.exitcode
-        pid = self._proc.pid
+        exitcode = proc.exitcode
+        pid = proc.pid
         if exitcode is None:
+            # NOT terminal: the capture belongs to the live replacement, whose crash must stay replayable.
+            self._log_worker_stderr_once(pid, None, worker_exited = False)
             return f"{message} Details: pid={pid}."
+
+        # What the worker said before it went (#7843), narrowed to what a client may see.
+        tail = self._public_worker_stderr_tail() if with_worker_output else ""
+        details = f"\n\nWorker error output:\n{tail}" if tail else ""
+        # The operator's unredacted copy: the worker's forwarding daemon thread can die first.
+        self._log_worker_stderr_once(pid, exitcode)
 
         if exitcode < 0:
             signum = -exitcode
@@ -790,9 +1032,12 @@ class InferenceOrchestrator:
                     " This usually means the system killed it under memory pressure. "
                     "Try a smaller model, lower context length, or close other GPU-heavy apps."
                 )
-            return f"{message}{suffix} Details: pid={pid}, signal={sig_name}, exitcode={exitcode}."
+            return (
+                f"{message}{suffix} Details: pid={pid}, signal={sig_name}, "
+                f"exitcode={exitcode}.{details}"
+            )
 
-        return f"{message} Details: pid={pid}, exitcode={exitcode}."
+        return f"{message} Details: pid={pid}, exitcode={exitcode}.{details}"
 
     def _send_cmd(self, cmd: dict) -> None:
         if self._cmd_queue is None:
@@ -840,7 +1085,11 @@ class InferenceOrchestrator:
 
             if resp is None:
                 if not self._ensure_subprocess_alive():
-                    raise RuntimeError(self._subprocess_crash_message("wait"))
+                    raise RuntimeError(
+                        self._subprocess_crash_message(
+                            "wait", with_worker_output = self._owns_worker(cancel_event)
+                        )
+                    )
                 continue
 
             rtype = resp.get("type", "")
@@ -1058,18 +1307,18 @@ class InferenceOrchestrator:
         initial_resp_queue = self._resp_queue
         while True:
             if self._proc is not initial_proc or self._resp_queue is not initial_resp_queue:
-                yield GenStreamError(
-                    f"Error: {self._subprocess_crash_message(crash_context)}",
-                    public = True,
-                )
+                # No tail here whatever the lists say: the capture is the REPLACEMENT's.
+                detail = self._subprocess_crash_message(crash_context)
+                yield GenStreamError(f"Error: {detail}", public = True)
                 return
             resp = read_one(read_timeout)
             if resp is None:
                 if not self._ensure_subprocess_alive():
-                    yield GenStreamError(
-                        f"Error: {self._subprocess_crash_message(crash_context)}",
-                        public = True,
+                    # Only the request the worker was RUNNING gets its last words; the rest were queued behind it.
+                    detail = self._subprocess_crash_message(
+                        crash_context, with_worker_output = self._owns_worker(cancel_event)
                     )
+                    yield GenStreamError(f"Error: {detail}", public = True)
                     return
                 continue
 
@@ -1457,7 +1706,12 @@ class InferenceOrchestrator:
                 resp = self._read_resp(timeout = min(remaining, 1.0))
                 if resp is None:
                     if not self._ensure_subprocess_alive():
-                        raise RuntimeError(self._subprocess_crash_message("sharing chat turn"))
+                        raise RuntimeError(
+                            self._subprocess_crash_message(
+                                "sharing chat turn",
+                                with_worker_output = self._owns_worker(None),
+                            )
+                        )
                     continue
 
                 rtype = resp.get("type", "")
@@ -2013,7 +2267,12 @@ class InferenceOrchestrator:
                 candidate = read_one(timeout = min(1.0, deadline - time.monotonic()))
                 if candidate is None:
                     if not self._ensure_subprocess_alive():
-                        raise RuntimeError(self._subprocess_crash_message("count"))
+                        # A count takes no part in the claim bookkeeping.
+                        raise RuntimeError(
+                            self._subprocess_crash_message(
+                                "count", with_worker_output = self._owns_worker(None)
+                            )
+                        )
                     continue
                 # _direct_reader already drops a reply whose mailbox is gone; this is the backstop.
                 if (
@@ -2580,7 +2839,10 @@ class InferenceOrchestrator:
                         if resp is None:
                             if not self._ensure_subprocess_alive():
                                 raise RuntimeError(
-                                    self._subprocess_crash_message("audio generation")
+                                    self._subprocess_crash_message(
+                                        "audio generation",
+                                        with_worker_output = self._owns_worker(cancel_event),
+                                    )
                                 )
                             continue
 
