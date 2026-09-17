@@ -1192,11 +1192,15 @@ def _the_loader_would_have_a_driver_without(cleared: "frozenset[str]") -> bool:
             if remaining
             else _searched_vulkan_icd_manifest_paths()
         )
-    disable = [] if "VK_LOADER_DRIVERS_DISABLE" in cleared else _vulkan_override_patterns(
-        "VK_LOADER_DRIVERS_DISABLE"
+    disable = (
+        []
+        if "VK_LOADER_DRIVERS_DISABLE" in cleared
+        else _vulkan_override_patterns("VK_LOADER_DRIVERS_DISABLE")
     )
-    select = [] if "VK_LOADER_DRIVERS_SELECT" in cleared else _vulkan_override_patterns(
-        "VK_LOADER_DRIVERS_SELECT"
+    select = (
+        []
+        if "VK_LOADER_DRIVERS_SELECT" in cleared
+        else _vulkan_override_patterns("VK_LOADER_DRIVERS_SELECT")
     )
     for path in candidates:
         name = PurePath(path).name

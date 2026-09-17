@@ -4602,8 +4602,13 @@ def test_the_no_driver_diagnosis_stays_primary_when_a_sibling_node_is_open(
     _nodes(monkeypatch, present = ["/dev/kfd", "/dev/dri/renderD128"], openable = set())
     # The sibling that makes the closed node a second finding.
     monkeypatch.setattr(amd, "a_non_amd_render_node_is_open", lambda: True)
-    for _var in ("VK_DRIVER_FILES", "VK_ICD_FILENAMES", "VK_ADD_DRIVER_FILES",
-                 "VK_LOADER_DRIVERS_SELECT", "VK_LOADER_DRIVERS_DISABLE"):
+    for _var in (
+        "VK_DRIVER_FILES",
+        "VK_ICD_FILENAMES",
+        "VK_ADD_DRIVER_FILES",
+        "VK_LOADER_DRIVERS_SELECT",
+        "VK_LOADER_DRIVERS_DISABLE",
+    ):
         monkeypatch.delenv(_var, raising = False)
     monkeypatch.setattr(
         LlamaCppBackend,
@@ -5582,7 +5587,12 @@ def test_the_installer_kfd_arm_consults_the_same_fallback():
     assert "-eq 1 ]; then" in _arm and "continue" in _arm
 
 
-def _loader_blame(monkeypatch, manifests: dict, searched = (), **env: str) -> "str | None":
+def _loader_blame(
+    monkeypatch,
+    manifests: dict,
+    searched = (),
+    **env: str,
+) -> "str | None":
     """Which override amd.py blames for a loader that can load none of its manifests.
 
     The dict value says whether that manifest still resolves to a library, which is the
@@ -5706,10 +5716,7 @@ def test_a_forced_list_whose_manifest_is_fine_still_asks_for_a_reinstall(monkeyp
     manifest that is present and permitted and has simply lost its library is the reinstall
     case: clearing the variable leaves the loader reading that same unusable manifest.
     """
-    assert (
-        _loader_blame(monkeypatch, {__file__: False}, VK_DRIVER_FILES = __file__)
-        is None
-    )
+    assert _loader_blame(monkeypatch, {__file__: False}, VK_DRIVER_FILES = __file__) is None
 
     # The other half of the same rule: the list hides an ordinary search that WOULD have
     # found a usable driver, so clearing it is the repair after all.
@@ -5744,9 +5751,7 @@ def test_a_stale_forced_path_is_named_beside_the_filter_that_also_blocks_it(monk
     # The control in each direction, so this is not "always say both": with only one of
     # the two in force, that one is named on its own.
     assert (
-        _loader_blame(
-            monkeypatch, gone, searched = found, VK_DRIVER_FILES = "/gone/radeon.json"
-        )
+        _loader_blame(monkeypatch, gone, searched = found, VK_DRIVER_FILES = "/gone/radeon.json")
         == "VK_DRIVER_FILES"
     )
     assert (
