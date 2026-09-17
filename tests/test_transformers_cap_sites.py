@@ -64,12 +64,12 @@ NEWLY_ADMITTED = ("5.6.0", "5.10.1", "5.14.1", "5.15.1", "5.16.1", "5.17.0")
 # indistinguishable from "forgotten", which is the bug this file is about. Keyed on
 # (workflow, exact requirement string), never the workflow alone: a filename-level
 # exemption blinds the scan to every OTHER transformers requirement in that same file.
-PINNED_BY_DESIGN = {
-    ("version-compat-ci.yml", "transformers<=5.5.0"): (
-        "example only: no lane spells this today. The entry keeps the shape honest and is "
-        "what a future deliberate range cap would look like"
-    ),
-}
+# Empty on purpose. A placeholder entry is not free: it pre-authorises the exact string it
+# names, so reintroducing `transformers<=5.5.0` in that workflow would be found by the scan
+# and then skipped by the exemption, and the gate would stay green with nobody writing down
+# why. The test below keeps the dict honest by requiring every entry to match a requirement
+# some lane actually spells today.
+PINNED_BY_DESIGN: dict[tuple[str, str], str] = {}
 
 # The ceiling every unsloth_zoo up to and including 2026.9.4 publishes, and the first
 # release expected to carry the lift. pip intersects unsloth's window with the zoo's, so
@@ -123,9 +123,21 @@ def _declared_window() -> SpecifierSet:
 
 
 def _ceiling(window: SpecifierSet) -> Version:
-    tops = [Version(str(spec.version)) for spec in window if spec.operator in ("<=", "<")]
+    """The TIGHTEST upper bound, which is the one that decides what resolves.
+
+    `max` was wrong: raising a cap by adding a bound without removing the old one, as in
+    `<=5.17.0,<=5.18.0`, still resolves at 5.17.0, and reporting 5.18.0 let the assertions
+    below pass on exactly the stale cap this file exists to catch. At equal versions `<`
+    excludes more than `<=`, so it wins the tie.
+    """
+    tops = [
+        (Version(str(spec.version)), spec.operator)
+        for spec in window
+        if spec.operator in ("<=", "<")
+    ]
     assert tops, f"the transformers window declares no upper bound at all: {window}"
-    return max(tops)
+    version, _operator = min(tops, key = lambda pair: (pair[0], pair[1] == "<="))
+    return version
 
 
 def _pyproject_zoo() -> list[Requirement]:
@@ -335,6 +347,26 @@ def test_no_workflow_lane_sits_below_the_declared_ceiling() -> None:
         f"these workflow lanes cap transformers below the {ceiling} the package publishes, "
         f"so they test a range users do not get: {unexplained}. Either widen the lane or "
         f"add it to PINNED_BY_DESIGN with the reason."
+    )
+
+
+def test_every_exemption_names_a_lane_that_exists_today() -> None:
+    """A dormant exemption is a pre-authorisation, not documentation.
+
+    An entry for a requirement no lane spells cannot be checked by anything, and the day
+    that string comes back the scan finds it and skips it, which is the failure this file
+    exists to prevent. So an exemption has to describe a lane that is really there.
+    """
+    spelled = {
+        (path.name, raw.strip())
+        for path in sorted(WORKFLOWS.glob("*.yml"))
+        for raw, _req in _workflow_transformers_specs(path)
+    }
+    dormant = sorted(key for key in PINNED_BY_DESIGN if key not in spelled)
+    assert not dormant, (
+        f"PINNED_BY_DESIGN exempts requirements no workflow spells today: {dormant}. "
+        f"Each of those silently pre-authorises that exact string if it is reintroduced. "
+        f"Delete the entry; add it back when a lane genuinely needs it."
     )
 
 
