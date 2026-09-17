@@ -455,6 +455,29 @@ def _entrypoint(
 
 
 @_posix_shell
+def _fake_rocm_torch(tmp_path, libnames):
+    """A ROCm torch on a supported arch whose lib/ holds exactly `libnames`."""
+    fake = tmp_path / "fake"
+    (fake / "torch" / "cuda").mkdir(parents = True)
+    (fake / "torch" / "lib").mkdir()
+    for name in libnames:
+        (fake / "torch" / "lib" / name).write_text("")
+    (fake / "torch" / "__init__.py").write_text(
+        "__version__ = '2.11.0+rocm7.2'\n"
+        "class version:\n    hip = '7.2.53211'\n"
+        "from . import cuda\n"
+    )
+    (fake / "torch" / "cuda" / "__init__.py").write_text(
+        "class _P:\n    gcnArchName = 'gfx1201'\n"
+        "def is_available(): return True\n"
+        "def device_count(): return 1\n"
+        "def get_device_name(i): return 'AMD Radeon AI PRO R9700'\n"
+        "def get_device_properties(i): return _P()\n"
+        "def is_bf16_supported(): return True\n"
+    )
+    return f'PYTHONPATH="{fake}" exec python3 "$@"\n'
+
+
 class TestRocmEntrypoint:
     def test_no_kfd_refuses_and_names_docker_desktop(self, tmp_path):
         rc, ran, err = _entrypoint(tmp_path, kfd = False)
@@ -510,6 +533,32 @@ class TestRocmEntrypoint:
         )
         assert rc == 1 and not ran
         assert "librocdxg" in err, err
+
+    def _dxg_with_torch(self, tmp_path, libnames):
+        lib = tmp_path / "dxglib"
+        lib.mkdir()
+        (lib / "librocdxg.so.1").write_text("")
+        return _entrypoint(
+            tmp_path,
+            kfd = False,
+            dxg = True,
+            python_body = _fake_rocm_torch(tmp_path, libnames),
+            env_extra = {"UNSLOTH_ROCM_DXG_LIBDIRS": str(lib)},
+        )
+
+    def test_dxg_refuses_a_torch_bundling_librocprofiler_sdk(self, tmp_path):
+        """That library enumerates GPUs from a KFD topology WSL does not have, and aborts."""
+        rc, ran, err = self._dxg_with_torch(
+            tmp_path, ["librocprofiler-register.so", "librocprofiler-sdk.so"],
+        )
+        assert rc == 1 and not ran, err
+        assert "librocprofiler-sdk.so" in err, err
+
+    def test_dxg_accepts_a_torch_carrying_only_librocprofiler_register(self, tmp_path):
+        """torch 2.11+rocm7.2 ships -register.so and runs on the bridge (measured on an
+        R9700), so matching every "rocprof" name refused a build that works."""
+        rc, ran, err = self._dxg_with_torch(tmp_path, ["librocprofiler-register.so"])
+        assert rc == 0 and ran, err
 
     def test_a_failing_torch_check_stops_before_the_command(self, tmp_path):
         rc, ran, _ = _entrypoint(tmp_path, python_body = "cat > /dev/null\nexit 1\n")

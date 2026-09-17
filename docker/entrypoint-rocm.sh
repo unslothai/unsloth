@@ -158,20 +158,22 @@ if hip_ver is None:
     sys.exit(1)
 
 # BEFORE the first torch.cuda call, which is where this would otherwise abort with a
-# glog FATAL and no explanation. A torch that bundles rocprofiler enumerates GPUs from
-# the KFD sysfs topology; on the DXG bridge there is none, so it finds zero agents,
-# disagrees with the two HSA found, and calls abort(). AMD's per-arch wheels ship no
-# rocprofiler, so a per-arch image is the build that works here.
+# glog FATAL and no explanation. librocprofiler-sdk enumerates GPUs from the KFD sysfs
+# topology; on the DXG bridge there is none, so it finds zero agents, disagrees with the
+# HSA agents that are there, and calls abort(). Match that library alone: the
+# librocprofiler-register.so beside it is harmless, and torch 2.11+rocm7.2 ships it and
+# runs here, so matching "rocprof" refuses a build that works.
 if os.environ.get("UNSLOTH_ROCM_DEV_PATH") == "dxg":
     _lib = os.path.join(os.path.dirname(torch.__file__), "lib")
-    _prof = sorted(f for f in os.listdir(_lib) if "rocprof" in f) if os.path.isdir(_lib) else []
+    _prof = sorted(f for f in os.listdir(_lib) if f.startswith("librocprofiler-sdk")) if os.path.isdir(_lib) else []
     if _prof:
         print("ERROR: this image cannot use the WSL2 DXG bridge.")
         print()
         print(f"Its torch bundles {', '.join(_prof)}, which enumerates GPUs through the")
         print("KFD sysfs topology that WSL does not have; it aborts rather than falling back.")
-        print("Use a per-arch image, whose AMD wheels carry no rocprofiler:")
+        print("Two builds do work here: AMD's per-arch wheels, which bundle no rocprofiler,")
         print("  ROCM_GFX=<your gfx, e.g. gfx1201> bash docker/build.sh --rocm")
+        print("or a torch before 2.12 from the same index, which ships only -register.so.")
         print("UNSLOTH_SKIP_GPU_CHECK=1 reaches the abort itself rather than avoiding it.")
         sys.exit(1)
 
