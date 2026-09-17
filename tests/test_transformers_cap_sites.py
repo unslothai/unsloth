@@ -72,16 +72,16 @@ NEWLY_ADMITTED = ("5.6.0", "5.10.1", "5.14.1", "5.15.1", "5.16.1", "5.17.0")
 # some lane actually spells today.
 PINNED_BY_DESIGN: dict[tuple[str, str], str] = {}
 
-# The ceiling every unsloth_zoo up to and including 2026.9.4 publishes. pip intersects
+# The ceiling every unsloth_zoo up to and including 2026.9.5 publishes. pip intersects
 # unsloth's window with the zoo's, so this is what decides whether the window above is
 # what a user actually resolves.
 ZOO_TRANSFORMERS_CEILING_BEFORE_THE_LIFT = Version("5.5.0")
 
 # DEFERRED. The zoo release carrying the matching transformers ceiling
-# (unslothai/unsloth-zoo#1227) is not on PyPI: 2026.9.4 is the newest published release, so
+# (unslothai/unsloth-zoo#1227) is not on PyPI: 2026.9.5 is the newest published release, so
 # naming anything above it in pyproject.toml is a floor no release satisfies, which makes
 # unsloth uninstallable rather than merely under-delivered. The floor therefore stays at
-# 2026.9.4 and the gate below stays off. Set this to the release that ships #1227 and raise
+# 2026.9.5 and the gate below stays off. Set this to the release that ships #1227 and raise
 # the pyproject floor to match, in the same commit; the gate re-enables itself.
 ZOO_FLOOR_WITH_LIFTED_TRANSFORMERS_CAP = None
 
@@ -169,7 +169,7 @@ def test_the_declared_zoo_floor_can_supply_the_declared_transformers_window() ->
     """Widening the window here does nothing while the resolvable zoo still caps lower.
 
     unsloth_zoo publishes its own transformers requirement and pip intersects the two, so
-    a user installing any extra gets the LOWER of the two ceilings. unsloth_zoo 2026.9.4
+    a user installing any extra gets the LOWER of the two ceilings. unsloth_zoo 2026.9.5
     on PyPI says `transformers<=5.5.0`, which is exactly the cap this PR lifts, so
     without a matching zoo floor the lift is advertised and not delivered: the bnb-4bit
     `quant_state` failures and the Gemma 4 E4B LoRA fix stay out of reach, and asking for
@@ -182,7 +182,7 @@ def test_the_declared_zoo_floor_can_supply_the_declared_transformers_window() ->
     if ZOO_FLOOR_WITH_LIFTED_TRANSFORMERS_CAP is None:
         pytest.skip(
             "deferred: no unsloth_zoo release carrying the lifted transformers ceiling "
-            "(unslothai/unsloth-zoo#1227) is published yet, and 2026.9.4 is the newest on "
+            "(unslothai/unsloth-zoo#1227) is published yet, and 2026.9.5 is the newest on "
             "PyPI, so pyproject.toml holds the zoo floor there. Until it ships, the window "
             "this file checks is wider than what pip actually resolves. Re-enable by "
             "setting ZOO_FLOOR_WITH_LIFTED_TRANSFORMERS_CAP to the release carrying #1227."
@@ -235,7 +235,7 @@ def test_pyproject_declares_one_unsloth_zoo_floor() -> None:
     Whatever the floor is, there has to be exactly one of it and it has to be a lower
     bound. Two different floors across the extras means one is what users hit and the
     other is what CI reads, and an unbounded `unsloth_zoo` admits every old release there
-    has ever been. Both are true at 2026.9.4, so this keeps running while the gate above
+    has ever been. Both are true at 2026.9.5, so this keeps running while the gate above
     is deferred, and it is what stops the deferral from silently costing all coverage.
     """
     reqs = _pyproject_zoo()

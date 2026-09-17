@@ -200,21 +200,23 @@ triton = [
 ]
 
 huggingfacenotorch = [
-    # 2026.9.5 is the newest published release and matches what main requires. It settles one
-    # of the two reasons this floor is tracked, and leaves the other outstanding. A floor no
-    # published release satisfies would make the package uninstallable, so this never leads.
+    # unsloth_zoo.compiler embeds its own copy of the empty-logits sentinel in the code it
+    # generates for the compiled trainers, so fixing _utils.py here never reached the compiled
+    # path while an older zoo stayed resolvable: 2026.9.4 hands FSDP2 mixed precision a
+    # sentinel that answers `__dataclass_fields__` and then dies in `dataclasses.replace`.
+    # 2026.9.5 carries the matching fix (unslothai/unsloth-zoo#1259), so the floor moves to it
+    # and the compiled path is covered for the first time rather than resting on the eager
+    # fix alone. The compiled-path probes in tests/test_empty_logits_compiled_path_probes.py
+    # gate on the INSTALLED zoo rather than on this pin, so they start running by themselves
+    # wherever 2026.9.5 or newer is the zoo actually present.
     #
-    # 1. OUTSTANDING. unsloth_zoo publishes its own transformers window and pip intersects the
-    #    two, so the lift below only reaches users once a zoo release carries the same ceiling.
-    #    2026.9.5 still says transformers<=5.5.0; the fix is unslothai/unsloth-zoo#1227, which
-    #    is unmerged and unreleased. Raise this floor to the release that ships it and
-    #    re-enable the deferred gate in tests/test_transformers_cap_sites.py in one commit.
-    # 2. SETTLED by 2026.9.5. unsloth_zoo.compiler embeds its own copy of the empty-logits
-    #    sentinel in the code it generates for the compiled trainers, and every release before
-    #    this one handed FSDP2 mixed precision a sentinel that answers `__dataclass_fields__`
-    #    and dies in `dataclasses.replace`. 2026.9.5 carries the fix, unslothai/unsloth-zoo#1259.
-    #    Its probes in tests/test_empty_logits_compiled_path_probes.py gate on the INSTALLED
-    #    zoo rather than on this pin, so they began running on their own when it shipped.
+    # 2026.9.5 does NOT make the wider transformers window this branch declares below
+    # resolvable. It still says `transformers<=5.5.0` in its own metadata, and pip intersects
+    # the two requirements, so users keep resolving 5.5.0 whatever this file says: the lift is
+    # advertised and not delivered until unslothai/unsloth-zoo#1227 merges and ships. Raise
+    # this floor to the release carrying it and re-enable the deferred gate in
+    # tests/test_transformers_cap_sites.py in the same commit. A floor no published release
+    # satisfies makes unsloth uninstallable, so the floor never leads the release.
     "unsloth_zoo>=2026.9.5",
     "wheel>=0.42.0",
     "packaging",
