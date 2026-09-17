@@ -911,8 +911,28 @@ def resolve_encoder_attention_implementation(
     return None
 
 
+# Outcome of the most recent `_run_temporary_patches` pass, keyed by phase, as
+# {"completed": [patch, ...], "raised": [(patch, exception), ...]}. A temporary
+# patch that raises is warned about rather than propagated, so without this a
+# whole patch silently dropping out leaves CI green; the regression gate in
+# tests/test_temporary_patch_coverage.py reads it and fails on a non-empty
+# "raised" bucket. Which patches legitimately decline depends on the installed
+# transformers/TRL/PEFT, so only "raised" is a defect, never the membership of
+# "completed".
+TEMPORARY_PATCH_OUTCOMES = {}
+
+
 def _run_temporary_patches(phase):
     import inspect
+
+    # Bookkeeping is one list append per patch, storing the callables as they
+    # are so nothing is formatted on the success path, and the per-phase entry
+    # is replaced rather than extended so repeated model loads cannot grow it.
+    # Nothing here can raise, which matters because this loop runs inside
+    # `import unsloth`.
+    completed = []
+    raised = []
+    TEMPORARY_PATCH_OUTCOMES[phase] = {"completed": completed, "raised": raised}
     for temporary_patch in TEMPORARY_PATCHES:
         # Two separate questions, kept separate. inspect.signature raises
         # ValueError or TypeError for a callable whose signature it cannot read,
@@ -933,12 +953,15 @@ def _run_temporary_patches(phase):
             else:
                 temporary_patch()
         except Exception as exception:
+            raised.append((temporary_patch, exception))
             logger.warning(
                 f"Unsloth: temporary patch "
                 f"{getattr(temporary_patch, '__name__', temporary_patch)} failed in "
                 f"phase {phase} and was skipped. "
                 f"({type(exception).__name__}: {exception})"
             )
+        else:
+            completed.append(temporary_patch)
 
 
 _run_temporary_patches("init")
