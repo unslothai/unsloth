@@ -437,25 +437,51 @@ def _flex_attention_gpu_is_supported():
 # ---------------------------------------------------------------------------------------------
 # head_dim > 128: no flash kernel exists, and torch SDPA silently degrades
 # ---------------------------------------------------------------------------------------------
-# SDPA's FLASH and CUDNN backends refuse head_dim > 128. FlashAttention does reach 256, but not
-# where we need it: FA3 goes to 256 on sm90 while its build targets 8.0/9.0a only, so the hub
-# build refuses Blackwell outright, and FA4 does define a dedicated (256, 256) sm100 kernel with a
-# backward, but it is not loadable today (the kernels-community build's metadata fails to parse,
-# and the source path imports flash_attn_2_cuda). Recheck this when FA4 packaging settles.
-# SDPA therefore falls to memory-efficient, which on Blackwell
-# dispatches an *sm80* CUTLASS kernel: 21.2% of the CUDA step on Qwen3.5-2B, 12.9% on 35B-A3B, and
-# 2.2-4.8x slower than an unconstrained kernel. Flex has no head-dim ceiling, and its BlockMask from
-# masking_utils.flex_attention_mask carries causality, the 2D padding mask and packed-sequence
-# boundaries exactly as sdpa_mask does, so no packing correctness is re-implemented here.
+# On torch 2.13 and earlier, SDPA's FLASH and CUDNN backends refuse head_dim > 128, so a masked
+# batch at head_dim 256 falls to memory-efficient, which on Blackwell dispatches an *sm80* CUTLASS
+# kernel (`fmha_cutlassB_bf16_aligned_128x64_k65536_sm80`): 21.2% of the CUDA step on Qwen3.5-2B,
+# 12.9% on 35B-A3B, and 8.82x the unmasked cost at T=8192. Flex has no head-dim ceiling, and its
+# BlockMask from masking_utils.flex_attention_mask carries causality, the 2D padding mask and
+# packed-sequence boundaries exactly as sdpa_mask does, so no packing correctness is
+# re-implemented here.
 #
-# Affects Qwen3.5 / 3.6 / Qwen3-Next (head_dim 256) and Gemma 4 (256, 512 on its KV-shared
-# layers); head_dim <= 128 (Llama, Qwen2/3, Mistral, gpt-oss) never enters this path.
+# The other backends, checked rather than assumed, on a B200 (sm100):
+#   FA2   head_dim <= 256, real non-JIT sm_100 cubin from kernels-community/flash-attn2. Refuses
+#         512. Padded batches need the varlen entry point, so it is not a drop-in here.
+#   FA3   no sm_100 cubin at the newest published version (build targets 8.0, 9.0a). check_arch
+#         =False makes the import succeed and the kernel still absent, so it is not an escape.
+#   FA4   DOES have a dedicated (256, 256) sm100 2-CTA kernel and it is the fastest arm measured
+#         at head_dim <= 256 (63% over SDPA at 256, ~0 ms one-off). Not reachable from the Hub
+#         build, which calls a cute.core symbol removed in nvidia-cutlass-dsl 4.6.0; a source
+#         checkout works. Refuses head_dim 512 and sliding windows. A follow-up, not a default.
+#   cuDNN is what plain SDPA already picks at head_dim <= 128, masked or not, with no sdpa_kernel
+#         call needed; forcing FLASH there would be a 2.2-2.9x regression. torch 2.14 raises its
+#         ceiling to 256 on sm100, which is what _sdpa_reaches_cudnn_at_head_dim_256 gates on.
+#
+# Affects Qwen3.5 / 3.6 / Qwen3-Next (head_dim 256); head_dim <= 128 (Llama, Qwen2/3, Mistral,
+# gpt-oss) never enters this path, and Gemma 4 is excluded below for a reason of its own.
 _SDPA_FLASH_MAX_HEAD_DIM = 128
 _FLEX_LARGE_HEAD_DIM_ENV_VAR = "UNSLOTH_FLEX_ATTENTION_FOR_LARGE_HEAD_DIM"
-# head_dim > 128 but keeping SDPA. gemma2 measured SLOWER under flex (14.35 vs 13.19 ms fwd+bwd,
-# 4-layer probe): its 4096-token sliding window already bounds the quadratic term, and its real
-# route is models/gemma2.py. gemma3 never reaches here, it picks flex further up the ladder.
-_FLEX_LARGE_HEAD_DIM_EXCLUDED_MODELS = ("gemma2",)
+# head_dim > 128 but keeping SDPA.
+#
+# gemma2 measured SLOWER under flex (14.35 vs 13.19 ms fwd+bwd, 4-layer probe): its 4096-token
+# sliding window already bounds the quadratic term, and its real route is models/gemma2.py.
+# gemma3 never reaches here, it picks flex further up the ladder.
+#
+# gemma4 is excluded because there is no per-LAYER attention implementation. 25 of its 30 decoder
+# layers are sliding (window 1024, head_dim 256) and 5 are full attention (global_head_dim 512),
+# but every layer reads the same `config._attn_implementation`, so routing the decoder to flex
+# routes the sliding layers too. Those layers are already served better than flex by
+# unsloth_zoo's gemma4_flash_sliding router, which puts flash-attn-2 with window_size=(w-1, 0)
+# under the "sdpa" key: 2.285 ms against flex's 3.283 ms at the Gemma 4 sliding shape, and a
+# 1-step break-even against flex's 78. Switching the decoder to flex does not merely lose that,
+# it silently DISABLES it, because those layers stop looking up "sdpa" at all, taking the banded
+# SDPA fallback and the UNSLOTH_GEMMA4_FLASH_SLIDING knob with it. Trading 25 layers of a
+# 1-step-break-even kernel for 5 layers of a 74-step one is a loss on any run Unsloth's notebooks
+# actually make. Recovering the 5 global layers needs a windowed router under the
+# "flex_attention" key too, which is a separate change; see the flex kernel_options note below
+# for the other half of what those layers need.
+_FLEX_LARGE_HEAD_DIM_EXCLUDED_MODELS = ("gemma2", "gemma4", "gemma4_text")
 # Both markers are required: the first routes attention through the interface flex registers into,
 # the second means the mask is a real BlockMask from create_causal_mask, not a dense 4D tensor.
 _FLEX_INTERFACE_MARKERS = ("ALL_ATTENTION_FUNCTIONS", "create_causal_mask")
@@ -754,6 +780,25 @@ def _text_sub_config(config):
     return text_config
 
 
+def _is_same_config(config, other_config):
+    """Identity, seen through a transparent proxy.
+
+    `get_text_config` does not always hand back the object that is actually stored on the
+    parent: unsloth_zoo wraps Gemma 4's in a read-only proxy to hide `num_kv_shared_layers`
+    when it is 0, so a plain `is` test against `config.text_config` fails and the caller cannot
+    name the field it just got. A forwarding proxy has no instance dict of its own, so `vars()`
+    resolves to the wrapped config's, which identifies it without knowing the proxy's type.
+    """
+    if config is other_config:
+        return True
+    if config is None or other_config is None:
+        return False
+    try:
+        return vars(config) is vars(other_config)
+    except TypeError:
+        return False
+
+
 def _flex_attn_impl_for(config, other_attn_implementation):
     """`flex_attention` for the decoder, `other_attn_implementation` for every other sub-config.
 
@@ -776,10 +821,12 @@ def _flex_attn_impl_for(config, other_attn_implementation):
         if (
             isinstance(field_name, str)
             and field_name.endswith("_config")
-            and child_config is text_config
+            and _is_same_config(child_config, text_config)
         ):
             return {"": other_attn_implementation, field_name: "flex_attention"}
-    return "flex_attention"
+    # A text sub-config we could not name. Returning the plain string here would put flex on
+    # every sibling, which is the exact regression this function exists to prevent, so decline.
+    return None
 
 
 def _flex_support_anchor_class(model_class):
@@ -1305,12 +1352,13 @@ def resolve_attention_implementation(
         and not _is_flash_excluded(model_type)
     )
     supports_flex_attention = _supports_flex_attention(model_class, config, model_type)
-    # A decoder head dim above 128 leaves NO flash kernel reachable (SDPA's FLASH and CUDNN backends
-    # both cap at 128, FA3 has no sm100 build, FA4's sm100 path asserts head_dim <= 128), so SDPA
-    # silently drops to its sm80 CUTLASS memory-efficient kernel. Flex has no such ceiling, so opt
-    # the architecture into it even when Transformers has not blessed it yet -- the flag is unset on
-    # brand-new archs (qwen3_5, qwen3_5_moe) whose attention is nonetheless 100% the generic
-    # interface. Done before the ladder because every branch below reads supports_flex_attention.
+    # Above head_dim 128 a MASKED batch has no flash kernel reachable, and SDPA drops to its sm80
+    # CUTLASS memory-efficient kernel: 8.82x the unmasked cost at head_dim 256, T=8192. Flex has no
+    # such ceiling, so opt the architecture into it even when Transformers has not blessed it yet --
+    # the flag is unset on brand-new archs (qwen3_5, qwen3_5_moe) whose attention is nonetheless
+    # 100% the generic interface. _prefers_flex_for_head_dim decides which head dims and which torch
+    # versions that is still true for. Done before the ladder because every branch below reads
+    # supports_flex_attention.
     prefers_flex_for_head_dim = _prefers_flex_for_head_dim(config)
     if prefers_flex_for_head_dim and not supports_flex_attention:
         if _enable_flex_attention_support(model_class, model_type):
