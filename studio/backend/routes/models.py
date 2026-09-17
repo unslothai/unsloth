@@ -2177,6 +2177,18 @@ async def _require_model_access_or_caller_token(
         await asyncio.to_thread(account_access.authorize_download, model_name, "model", hf_token)
 
 
+def _tensor_split_can_launch(tensor_parallel, flash_attn) -> bool:
+    """Whether a load asking for a tensor split can actually take one.
+
+    llama.cpp returns nullptr for "SPLIT_MODE_TENSOR requires flash_attn to be enabled", so
+    such a load falls back to a layer split. Only a RESOLVED False refuses; None is "not
+    resolved", not evidence the child runs without flash attention.
+    """
+    if not tensor_parallel:
+        return False
+    return flash_attn is not False
+
+
 @router.get("/config/{model_name:path}")
 async def get_model_config(
     model_name: str,
@@ -3752,6 +3764,38 @@ async def get_kv_cache_estimate(
         False,
         description = "Load a vision GGUF without its mmproj, freeing the projector's VRAM",
     ),
+    flash_attn: Optional[bool] = Query(
+        None,
+        description = (
+            "Flash attention state to price. Omit to resolve it the way the launch does "
+            "(the build's capability, LLAMA_ARG_FLASH_ATTN, a last-wins -fa in the extra "
+            "arguments, and a quantized V cache which forces it on). It is not a detail: "
+            "with flash attention off llama.cpp floors the V axis at f16 and pads "
+            "variable-width V tensors, which is a 1.44x KV cache at q8_0 and 2.28x at q4_0"
+        ),
+    ),
+    kv_unified: Optional[bool] = Query(
+        None,
+        description = (
+            "--kv-unified state to price; omit to resolve it as the launch does. Changes "
+            "the sliding-window allowance on an SWA model, which is per slot when unified"
+        ),
+    ),
+    swa_full: Optional[bool] = Query(
+        None,
+        description = (
+            "--swa-full state to price; omit to resolve it as the launch does. Collapses "
+            "an SWA model's two cache sizes into one full-context cache"
+        ),
+    ),
+    no_mmproj_offload: Optional[bool] = Query(
+        None,
+        description = (
+            "--no-mmproj-offload state to price; omit to resolve it as the launch does. "
+            "A projector on the host is not VRAM, so pricing the wrong side moves the "
+            "total by the whole mmproj"
+        ),
+    ),
     request: Request = None,  # type: ignore[assignment]
     current_subject: str = Depends(get_current_subject),
 ):
@@ -3888,6 +3932,65 @@ async def get_kv_cache_estimate(
             except Exception as e:
                 logger.debug(f"cache type resolution failed for '{repo_id}': {e}")
 
+            # Taking the estimator's defaults while the loader resolved the same knobs
+            # differently is why one model and cache type reported two KV caches (#10489).
+            # An asked-for value is spelled as the extra argument a load would carry and
+            # re-resolved by the launch's own helpers, never taken verbatim.
+            # isinstance(..., bool): called in process, an omitted argument arrives as the
+            # ``Query`` default object, which is truthy.
+            _asked_flash_attn = flash_attn if isinstance(flash_attn, bool) else None
+            _asked_kv_unified = kv_unified if isinstance(kv_unified, bool) else None
+            _asked_swa_full = swa_full if isinstance(swa_full, bool) else None
+            _asked_no_mmproj = no_mmproj_offload if isinstance(no_mmproj_offload, bool) else None
+            _plan_extra_args: list[str] = []
+            if _asked_flash_attn is not None:
+                _plan_extra_args += ["--flash-attn", "on" if _asked_flash_attn else "off"]
+            if _asked_kv_unified is not None:
+                _plan_extra_args += ["--kv-unified" if _asked_kv_unified else "--no-kv-unified"]
+            if _asked_swa_full:
+                # Enable-only: llama.cpp has no --no-swa-full, so a false leaves the env to
+                # answer.
+                _plan_extra_args += ["--swa-full"]
+            if _asked_no_mmproj is not None:
+                _plan_extra_args += [
+                    "--no-mmproj-offload" if _asked_no_mmproj else "--mmproj-offload"
+                ]
+            _planner_extras = _plan_extra_args or None
+
+            _plan_kwargs: dict = {}
+            try:
+                from core.inference.llama_cpp import (
+                    _kv_unified_from_args,
+                    _planned_flash_attn_state,
+                    _planned_main_cache_types as _plan_cache_types,
+                    _swa_full_from_args_or_env,
+                )
+
+                _plan_caps = {}
+                try:
+                    _plan_caps = LlamaCppBackend.probe_server_capabilities() or {}
+                except Exception as e:
+                    logger.debug(f"capability probe failed for '{repo_id}': {e}")
+                _plan_kwargs = {
+                    "flash_attn": _planned_flash_attn_state(
+                        _planner_extras,
+                        planned_cache_types = _plan_cache_types(cache_type_kv, _planner_extras),
+                        # An unreadable probe keeps the managed default.
+                        supports_flash_attn = bool(_plan_caps.get("supports_flash_attn", True)),
+                        tensor_parallel = bool(tensor_parallel),
+                        architecture = getattr(be, "_architecture", None),
+                    ),
+                    # The loader's own default: unified only for >1 slot, only if supported.
+                    "kv_unified": _kv_unified_from_args(
+                        _planner_extras,
+                        default = (n_parallel or 1) > 1
+                        and bool(_plan_caps.get("supports_kv_unified", False)),
+                    ),
+                    "swa_full": _swa_full_from_args_or_env(_planner_extras),
+                }
+            except Exception as e:
+                logger.debug(f"attention plan resolution failed for '{repo_id}': {e}")
+
             # Probe failures keep the unflagged default rather than assuming zero.
             _cc_caps: dict = {}
             _total_ram_mib: Optional[int] = None
@@ -3914,6 +4017,7 @@ async def get_kv_cache_estimate(
                 n_parallel = n_parallel,
                 ctx_checkpoints = _effective_checkpoints,
                 n_ubatch = n_ubatch,
+                **_plan_kwargs,
             )
 
             # Report the host-resident checkpoint share separately from GPU cache bytes.
@@ -3925,6 +4029,7 @@ async def get_kv_cache_estimate(
                     n_parallel = n_parallel,
                     ctx_checkpoints = 0,
                     n_ubatch = n_ubatch,
+                    **_plan_kwargs,
                 )
                 kv_checkpoint = max(0, int(kv) - int(_kv_without))
 
@@ -4000,6 +4105,18 @@ async def get_kv_cache_estimate(
                         projector = int(_Be._get_gguf_size_bytes(mmproj) * _Be._MMPROJ_VRAM_SAFETY)
                 except Exception as e:
                     logger.debug(f"mmproj estimate failed for '{repo_id}' {quant}: {e}")
+            # The RESOLVED placement, not the query value: the env alone can put the
+            # projector on the host, and the frontend adds projectorBytes onto its GPU
+            # weights segment, so the bar was charged for memory that never reaches the card.
+            try:
+                from core.inference.llama_cpp import _resolved_mmproj_offload
+                _mmproj_offloaded = _resolved_mmproj_offload(_planner_extras)
+            except Exception as e:  # noqa: BLE001 -- cannot resolve -> the asked value stands
+                logger.debug(f"could not resolve the mmproj placement: {e}")
+                _mmproj_offloaded = None if _asked_no_mmproj is None else not _asked_no_mmproj
+            if _mmproj_offloaded is False:
+                # The projector is in HOST memory, with vision still on.
+                projector = None
 
             # Only the MTP modes reserve memory; ngram is free. "auto" may or may not resolve to MTP, and the estimator
             # returns None when it does not. Guarded separately: the MTP path reads more metadata than the KV path, and
@@ -4091,6 +4208,8 @@ async def get_kv_cache_estimate(
                             # 16. Blank is not zero: _build_speculative_flags emits its own default when the field is unset (2 with a
                             # GPU, 3 without) and the rollback state is multiplied by it. An explicit 0 is still honoured.
                             spec_draft_n_max = _effective_draft_n_max,
+                            # Same estimator, so it must get the same resolved plan.
+                            **_plan_kwargs,
                         )
                         # Plus the draft decode graph's floor, which the helper leaves to
                         # the loader's soft overhead.
@@ -4131,6 +4250,18 @@ async def get_kv_cache_estimate(
                     _effective_tp = _effective_tensor_parallel(None, bool(tensor_parallel))
                 except Exception as e:
                     logger.debug(f"tensor mode resolution failed for '{repo_id}': {e}")
+                if _effective_tp and not _tensor_split_can_launch(
+                    _effective_tp, _plan_kwargs.get("flash_attn")
+                ):
+                    logger.debug(
+                        f"'{repo_id}': flash attention is off, so the launch cannot take a tensor "
+                        "split; pricing the layer split it would fall back to"
+                    )
+                    _effective_tp = False
+                    # Into the extras as well, not only the boolean: the breakdown re-resolves
+                    # the split through a helper that reads an inherited
+                    # LLAMA_ARG_SPLIT_MODE=tensor, which would turn a bare False back on.
+                    _planner_extras = list(_planner_extras or []) + ["--split-mode", "layer"]
                 _planner_devices = 1
                 if _effective_tp:
                     from routes.inference import (
@@ -4143,6 +4274,9 @@ async def get_kv_cache_estimate(
                             None, _cached_inference_devices(), tensor_parallel = True
                         ),
                     )
+                # The planner resolves its plan from extra arguments, which is why the plan
+                # was built in that vocabulary: without it, gpu_bytes and kv_bytes in ONE
+                # response describe two different loads.
                 _cfg = _cached_estimate_config(repo_id, quant, None, False)
                 if _cfg is not None and _cfg is not _ESTIMATE_NOT_ON_DISK:
                     _cfg = _localized_estimate_config(_cfg, path)
@@ -4159,8 +4293,11 @@ async def get_kv_cache_estimate(
                         spec_draft_cache_type = spec_draft_cache_type,
                         n_batch = n_batch,
                         n_ubatch = n_ubatch,
-                        tensor_parallel = tensor_parallel,
+                        # The RESOLVED split: _gguf_memory_breakdown re-resolves it, so the
+                        # raw toggle turned tensor mode straight back on.
+                        tensor_parallel = _effective_tp,
                         n_devices = _planner_devices,
+                        llama_extra_args = _planner_extras,
                     )
                     if _b is not None:
                         # `or None` would fold a real zero into "no answer". Zero is meaningful: inherited placement such as
@@ -4187,8 +4324,10 @@ async def get_kv_cache_estimate(
                             spec_draft_cache_type = spec_draft_cache_type,
                             n_batch = n_batch,
                             n_ubatch = n_ubatch,
-                            tensor_parallel = tensor_parallel,
+                            # A floor priced for an impossible placement is not a floor.
+                            tensor_parallel = _effective_tp,
                             n_devices = _planner_devices,
+                            llama_extra_args = _planner_extras,
                         )
                         if _floor is not None:
                             planner_floor = min(int(_floor.gpu_bytes), planner_gpu)
