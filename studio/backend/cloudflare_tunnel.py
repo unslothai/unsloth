@@ -40,11 +40,12 @@ _NO_URL_RETRY_DELAYS = (2.0, 5.0)
 # burns a full _READY_TIMEOUT per attempt, so stop once the sequence has cost this much. This bounds the
 # no-URL retries only: minting a URL leaves this loop for the pre-existing registration and
 # verify_public_url phases, which cost the same with or without a retry and carry their own deadlines.
-_NO_URL_RETRY_BUDGET = 30.0
-# How long stop() gives cloudflared to honour SIGTERM before killing it. The retry budget reserves one
-# of these for the attempt it authorizes, so the attempt's own teardown cannot carry the sequence past
-# the budget. (A SIGKILL the process survives is unbounded by anything here.)
+_NO_URL_RETRY_BUDGET = 35.0
+# How long stop() waits for cloudflared after SIGTERM, and again after SIGKILL.
 _STOP_TERM_GRACE = 5.0
+# Both of those waits can elapse -- SIGTERM ignored, then a kill the process is slow to die from -- so
+# the budget reserves the pair for the attempt it authorizes rather than guessing which one is paid.
+_STOP_WORST_CASE = 2 * _STOP_TERM_GRACE
 _OUTPUT_TAIL_LINES = 8
 _DOWNLOAD_TIMEOUT = 60
 
@@ -1020,7 +1021,7 @@ def start_studio_tunnel(
                 # further attempt have to fit as well, or the budget would bound only where the retry
                 # was authorized and not the sequence it pays for.
                 spent = time.monotonic() - no_url_started
-                reserved = no_url_delays[0] + timeout + _STOP_TERM_GRACE
+                reserved = no_url_delays[0] + timeout + _STOP_WORST_CASE
                 if spent + reserved <= _NO_URL_RETRY_BUDGET:
                     with _active_lock:
                         # A Stop that landed during the attempt above must not pay out the delay: this
