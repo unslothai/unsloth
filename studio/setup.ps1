@@ -2999,6 +2999,32 @@ if (-not $HasNvidiaSmi) {
         Write-StudioLine "   Found nvidia-smi at $(Split-Path $firstListing -Parent)" -ForegroundColor Gray
     }
 }
+# The registry fallback the Intel path already uses, for a host whose WMI repository cannot answer.
+# Guarded per subkey, so one unreadable entry does not discard the rest.
+#
+# It hands back the ENTRY, not a yes/no. The presence check only needs the yes, but the version
+# ladder needs what the entry says: a machine in this fallback has a readable DriverVersion right
+# here, and discarding it left the floor unknown and sent the host to the cu126 default, which an
+# R450 to R524 driver cannot load. Same spelling of the version as Win32_VideoController reports,
+# so Get-NvidiaDriverRelease reads both without a second form to parse.
+function Get-NvidiaRegistryAdapter {
+    $classKey = "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
+    try {
+        $subs = @(Get-ChildItem -LiteralPath $classKey -ErrorAction SilentlyContinue)
+    } catch { return $null }
+    foreach ($sub in $subs) {
+        try {
+            # Numeric subkeys only: "Properties" is ACL-restricted and is not an adapter.
+            if ("$($sub.PSChildName)" -notmatch '^\d+$') { continue }
+            $props = Get-ItemProperty -LiteralPath $sub.PSPath -ErrorAction SilentlyContinue
+            if ($props -and "$($props.MatchingDeviceId)" -match '(?i)ven_10de') {
+                return [pscustomobject]@{ DriverVersion = "$($props.DriverVersion)" }
+            }
+        } catch {}
+    }
+    return $null
+}
+
 # Is there an NVIDIA display adapter on this machine, judged by PCI vendor ID and nothing else.
 #
 # Read this as the answer to "is a GPU present", because that is what $HasNvidiaSmi means to
@@ -3013,6 +3039,7 @@ if (-not $HasNvidiaSmi) {
 #   ConfigManagerErrorCode 0 only. A driver record outliving its card, a disabled adapter and one
 #   with a device problem all still appear in the inventory. Those count as absent, which is the
 #   conservative direction: such a machine keeps exactly the detection it has today.
+
 function Test-NvidiaAdapterPresent {
     param($Scan = $null)
     if ($null -eq $Scan) { $Scan = Invoke-BoundedVideoControllerScan }
@@ -3029,21 +3056,7 @@ function Test-NvidiaAdapterPresent {
     # class keys outlive removed hardware and carry no ConfigManagerErrorCode, so a stale entry
     # would read as a verified healthy GPU and promote $HasNvidiaSmi for a card that is gone.
     if ($Scan.Ok) { return $false }
-    # The same registry fallback the Intel path already uses, for a host whose WMI repository
-    # cannot answer. Guarded per subkey, so one unreadable entry does not discard the rest.
-    $classKey = "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
-    try {
-        $subs = @(Get-ChildItem -LiteralPath $classKey -ErrorAction SilentlyContinue)
-    } catch { return $false }
-    foreach ($sub in $subs) {
-        try {
-            # Numeric subkeys only: "Properties" is ACL-restricted and is not an adapter.
-            if ("$($sub.PSChildName)" -notmatch '^\d+$') { continue }
-            $props = Get-ItemProperty -LiteralPath $sub.PSPath -ErrorAction SilentlyContinue
-            if ($props -and "$($props.MatchingDeviceId)" -match '(?i)ven_10de') { return $true }
-        } catch {}
-    }
-    return $false
+    return ($null -ne (Get-NvidiaRegistryAdapter))
 }
 
 # Is a healthy AMD or Intel display adapter also present. Same rules, different vendor IDs.
@@ -3186,6 +3199,13 @@ function Get-NvidiaAdapterDriverRelease {
         $release = Get-NvidiaDriverRelease -DriverVersion "$($adapter.DriverVersion)"
         if ($null -ne $release) { return $release }
     }
+    # WMI could not answer at all, so the presence check found this adapter in the class key
+    # and its version is the only one there is. Reading it here is what keeps an old driver on
+    # the family it can actually load instead of the unknown-version default.
+    if (-not $Scan.Ok) {
+        $registryAdapter = Get-NvidiaRegistryAdapter
+        if ($registryAdapter) { return (Get-NvidiaDriverRelease -DriverVersion "$($registryAdapter.DriverVersion)") }
+    }
     return $null
 }
 
@@ -3198,6 +3218,13 @@ function Get-NvidiaAdapterCudaFloor {
         if ([int]$adapter.ConfigManagerErrorCode -ne 0) { continue }
         $floor = Get-NvidiaDriverCudaFloor -DriverVersion "$($adapter.DriverVersion)"
         if ($floor) { return $floor }
+    }
+    # WMI could not answer at all, so the presence check found this adapter in the class key
+    # and its version is the only one there is. Reading it here is what keeps an old driver on
+    # the family it can actually load instead of the unknown-version default.
+    if (-not $Scan.Ok) {
+        $registryAdapter = Get-NvidiaRegistryAdapter
+        if ($registryAdapter) { return (Get-NvidiaDriverCudaFloor -DriverVersion "$($registryAdapter.DriverVersion)") }
     }
     return $null
 }

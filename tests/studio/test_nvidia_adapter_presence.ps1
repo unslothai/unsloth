@@ -50,7 +50,8 @@ $shared = @(
     "Invoke-BoundedVideoControllerScan", "Test-NvidiaAdapterPresent",
     "Test-OtherVendorAdapterPresent", "Get-XpuCapableNameRegex",
     "Get-NvidiaDriverRelease", "Get-NvidiaDriverCudaFloor",
-    "Get-NvidiaAdapterDriverRelease", "Get-NvidiaAdapterCudaFloor"
+    "Get-NvidiaAdapterDriverRelease", "Get-NvidiaAdapterCudaFloor",
+    "Get-NvidiaRegistryAdapter"
 )
 foreach ($name in $shared) {
     Check "install.ps1 and setup.ps1 carry the same $name" (
@@ -59,7 +60,8 @@ foreach ($name in $shared) {
 
 foreach ($name in @("Test-NvidiaAdapterPresent", "Test-OtherVendorAdapterPresent", "Get-XpuCapableNameRegex",
                     "Get-NvidiaDriverRelease", "Get-NvidiaDriverCudaFloor",
-                    "Get-NvidiaAdapterDriverRelease", "Get-NvidiaAdapterCudaFloor")) {
+                    "Get-NvidiaAdapterDriverRelease", "Get-NvidiaAdapterCudaFloor",
+                    "Get-NvidiaRegistryAdapter")) {
     Invoke-Expression (Get-FunctionText $setupPs1 $name)
 }
 
@@ -543,6 +545,65 @@ foreach ($file in @($installPs1, $setupPs1)) {
     Check "$(Split-Path -Leaf $file) gates the registry fallback on a failed scan" (
         (Get-FunctionText $file "Test-NvidiaAdapterPresent") -match 'if \(\$Scan\.Ok\) \{ return \$false \}')
 }
+
+# ------------------------------------------ the fallback's own entry names a driver version too
+#
+# The presence check is not the only reader. A host in this fallback has WMI down, so
+# $Scan.Adapters is empty and the floor had nothing to read: the routing below then took the
+# unknown-version default of cu126, which an R450 to R524 driver cannot load. The class-key entry
+# carries DriverVersion in the same spelling Win32_VideoController reports it, so the answer was
+# there all along and was being discarded after the presence check.
+function Get-ItemProperty {
+    param([string]$LiteralPath, $ErrorAction)
+    if ("$LiteralPath" -eq "fake::0000") {
+        # 31.0.15.3699 is the Windows display-driver form of NVIDIA release 536.99, which is the
+        # form both WMI and this key report. R536 sits between the 535 and 545 rows, so its floor
+        # is CUDA 12.2: a row that only a version READ FROM THE REGISTRY can produce.
+        return [pscustomobject]@{
+            MatchingDeviceId = "PCI\\VEN_10DE&DEV_1DB1"
+            DriverVersion = "31.0.15.3699"
+        }
+    }
+    return $null
+}
+$script:FakeAdapters = @()
+$script:FakeScanOk = $false
+Check "the failed-scan fallback still reports the GPU" ((Test-NvidiaAdapterPresent) -eq $true)
+$regRelease = Get-NvidiaAdapterDriverRelease
+Check "and the registry entry's driver release is read, not discarded" ($regRelease -eq 536)
+$regFloor = @(Get-NvidiaAdapterCudaFloor)
+Check "and it becomes a CUDA floor of 12.2 rather than nothing" (
+    $regFloor.Count -eq 2 -and [int]$regFloor[0] -eq 12 -and [int]$regFloor[1] -eq 2)
+
+# Bites control: an entry with no DriverVersion is still unknown, not a guess.
+function Get-ItemProperty {
+    param([string]$LiteralPath, $ErrorAction)
+    if ("$LiteralPath" -eq "fake::0000") {
+        return [pscustomobject]@{ MatchingDeviceId = "PCI\\VEN_10DE&DEV_1DB1" }
+    }
+    return $null
+}
+Check "an entry with no version stays unknown" ($null -eq (Get-NvidiaAdapterDriverRelease))
+Check "and yields no floor" ($null -eq (Get-NvidiaAdapterCudaFloor))
+
+# And a scan that ANSWERED never reaches the registry for a version either: the same evidence rule
+# the presence check follows, or a stale key would set the family for a card that is gone.
+function Get-ItemProperty {
+    param([string]$LiteralPath, $ErrorAction)
+    if ("$LiteralPath" -eq "fake::0000") {
+        return [pscustomobject]@{
+            MatchingDeviceId = "PCI\\VEN_10DE&DEV_1DB1"
+            DriverVersion = "31.0.15.3699"
+        }
+    }
+    return $null
+}
+$script:FakeAdapters = @()
+$script:FakeScanOk = $true
+$script:RegistryConsulted = $false
+Check "a scan that answered takes no version from the registry" (
+    $null -eq (Get-NvidiaAdapterDriverRelease))
+Check "and never consulted it" ($script:RegistryConsulted -eq $false)
 
 # The OTHER half of the same exclusivity question, which for a while read a different source.
 # Test-NvidiaAdapterPresent fell back to the class keys when WMI could not answer and
