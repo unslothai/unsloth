@@ -2539,6 +2539,183 @@ if DEVICE_COUNT == 1 and int(os.environ.get("WORLD_SIZE", "1")) <= 1:
     accelerate.accelerator.Accelerator.distributed_type = property(lambda self: DistributedType.NO)
 
 
+_PER_LAYER_DEVICE_MISSING = object()
+
+# A single object, because the checks below test it by identity to mean "no instance dict".
+_NO_INSTANCE_DICT = {}
+
+# Not spelled `_per_layer_device*`: that prefix is what unsloth_zoo publishes and the readers
+# grep for. The fast path spells this one out, so a rename must change both (asserted).
+_PER_LAYER_DEVICE_MEMO = "_unsloth_resolved_layer_device"
+
+# Memo slot 3: what the answer came from, hence what the fast path re-checks by identity.
+_MEMO_FROM_DEVICE = 0
+_MEMO_FROM_INDEX = 1
+_MEMO_FROM_DEFAULT = 2
+
+
+@functools.lru_cache(maxsize = None)
+def _device_type_is_usable(device_type: str) -> bool:
+    """No `torch.<type>.is_available` (`meta` included) means taken at its word."""
+    if device_type == "cpu":
+        return True
+    is_available = getattr(getattr(torch, device_type, None), "is_available", None)
+    if is_available is None:
+        return True
+    try:
+        return bool(is_available())
+    except Exception:
+        return False
+
+
+def _as_torch_device(value):
+    """A bare `torch.device(0)` is WRONG: with no accelerator torch 2.6 raises and torch 2.11
+    returns `cuda:0`. Probing the backend makes both return None here."""
+    try:
+        device = torch.device(value)
+    except (RuntimeError, TypeError, ValueError):
+        return None
+    if not _device_type_is_usable(device.type):
+        return None
+    return device
+
+
+@functools.lru_cache(maxsize = None)
+def _resolved_published_index(index, default):
+    """None means "needs the module": the caller falls through to the unmemoised routes."""
+    if index.__class__ is bool or not isinstance(index, (int, str)):
+        return None
+    device = _as_torch_device(index)
+    if device is None:
+        return None
+    buffer_index = device.index
+    if buffer_index is None:
+        if device.type == "meta":
+            return None
+        # Unindexed device: keep the callers' per-device tuple subscript in range.
+        buffer_index = index if index.__class__ is int else default
+    return device, buffer_index
+
+
+def _device_of_parameters(module):
+    for parameter in module.parameters():
+        return parameter.device
+    return None
+
+
+def _non_meta_device_of_parameters(module):
+    device = _device_of_parameters(module)
+    if device is not None and device.type == "meta":
+        return None
+    return device
+
+
+def _accelerate_execution_device(module):
+    """`AlignDevicesHook.pre_forward` sends args to `execution_device`, so for an offloaded or
+    meta layer that field, not its parameters, says where it runs."""
+    execution_device = getattr(getattr(module, "_hf_hook", None), "execution_device", None)
+    if execution_device is None:
+        return None
+    device = _as_torch_device(execution_device)
+    if device is None or device.type == "meta":
+        return None
+    return device
+
+
+def per_layer_device(module, default = 0):
+    """Where this decoder layer lives, as (device, buffer_index); gemma, gemma2 and cohere
+    still need the index, to subscript a per-device tuple. Probed, not version-gated: an older
+    unsloth_zoo publishes only the index and leaves it None on an accelerator layer, the
+    "Invalid target device: None" of unslothai/unsloth#3538. meta is excluded everywhere,
+    since moving an activation there destroys it silently. A layer genuinely on CPU with
+    accelerator-resident buffers is NOT fixed here and still raises."""
+    try:
+        source, resolved, derived_from = module._unsloth_resolved_layer_device
+        if default == 0:
+            if derived_from == _MEMO_FROM_INDEX:
+                if source is module._per_layer_device_index:
+                    return resolved
+            elif derived_from == _MEMO_FROM_DEVICE:
+                if source is module._per_layer_device:
+                    return resolved
+            # _MEMO_FROM_DEFAULT: derived from `default` alone, so only publishing one of the
+            # two names can stale it.
+            elif (
+                "_per_layer_device_index" not in module.__dict__
+                and "_per_layer_device" not in module.__dict__
+            ):
+                return resolved
+    except (AttributeError, TypeError, ValueError):
+        pass
+
+    # Instance dictionary, not getattr: `nn.Module.__getattr__` scans _parameters, _buffers
+    # and _modules before raising. The getattr fallback keeps class attributes working.
+    published = getattr(module, "__dict__", _NO_INSTANCE_DICT)
+    device = published.get("_per_layer_device")
+    index = published.get("_per_layer_device_index", _PER_LAYER_DEVICE_MISSING)
+    if device is None and index is _PER_LAYER_DEVICE_MISSING:
+        device = getattr(module, "_per_layer_device", None)
+        index = getattr(module, "_per_layer_device_index", _PER_LAYER_DEVICE_MISSING)
+
+    if device is None and (index.__class__ is int or index.__class__ is str):
+        # Exact class, not isinstance: bool must not key the memo (False hashes equal to 0),
+        # and an unhashable value must fall through rather than raise.
+        resolved = _resolved_published_index(index, default)
+        if resolved is not None:
+            if default == 0 and published is not _NO_INSTANCE_DICT:
+                # Memoisable because it depends on the published value alone, so the fast
+                # path's identity check is a complete invalidation.
+                published[_PER_LAYER_DEVICE_MEMO] = (index, resolved, _MEMO_FROM_INDEX)
+            return resolved
+
+    # Recorded before the fallbacks below overwrite what it is asking about.
+    published_nothing = device is None and index is _PER_LAYER_DEVICE_MISSING
+    if not isinstance(device, torch.device):
+        device = None
+    if device is None:
+        if index is None:
+            device = _device_of_parameters(module)
+        elif isinstance(index, (int, str)) and not isinstance(index, bool):
+            device = _as_torch_device(index)
+    from_default = False
+    if device is None:
+        # `torch.device(default)` may not be constructible, and a device is still owed.
+        device = _as_torch_device(default)
+        if device is None:
+            device = _non_meta_device_of_parameters(module) or torch.device("cpu")
+        else:
+            from_default = True
+
+    buffer_index = device.index
+    if buffer_index is None and device.type == "meta":
+        device = (
+            _accelerate_execution_device(module) or _as_torch_device(default) or torch.device("cpu")
+        )
+        # Module-derived however it was spelled, so it must not be memoised.
+        from_default = False
+        buffer_index = device.index
+    if buffer_index is None:
+        buffer_index = index if isinstance(index, int) and not isinstance(index, bool) else default
+    if default == 0 and published is not _NO_INSTANCE_DICT:
+        # Only when the answer IS the published object: a parameter- or hook-derived device
+        # moves without it changing, and memoising that sends activations to a dead device.
+        published_device = published.get("_per_layer_device")
+        if published_device is not None and published_device is device:
+            published[_PER_LAYER_DEVICE_MEMO] = (
+                published_device,
+                (device, buffer_index),
+                _MEMO_FROM_DEVICE,
+            )
+        elif published_nothing and from_default:
+            # `from_default` is the whole condition, for the same reason.
+            published[_PER_LAYER_DEVICE_MEMO] = (
+                None,
+                (device, buffer_index),
+                _MEMO_FROM_DEFAULT,
+            )
+    return device, buffer_index
+
+
 def move_to_device(target_device, *tensors):
     """Move tensors to target_device (returns same objects if already there)."""
     if isinstance(target_device, int):

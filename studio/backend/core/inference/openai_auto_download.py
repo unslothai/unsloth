@@ -372,7 +372,7 @@ def _enough_disk(need_bytes: int) -> tuple[bool, int]:
 
 
 def _gb(num_bytes: int) -> str:
-    return f"{num_bytes / 1024**3:.1f} GB"
+    return f"{num_bytes / 1e9:.1f} GB"
 
 
 async def _job_state(repo_id: str, variant: Optional[str]) -> tuple[str, Optional[str]]:
