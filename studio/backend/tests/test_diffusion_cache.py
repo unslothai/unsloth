@@ -553,7 +553,9 @@ def test_enable_failure_restores_inners_before_partial_disable(monkeypatch):
 
     t = _T()
     assert apply_step_cache(_pipe(t), mode = "fbcache") is None
-    assert order == ["restore-walk", "disable"]
+    # Two walks: the pre-engage probe that asks whether FBCache's hooks were ALREADY installed by
+    # someone else, then the restore. What this pins is that the restore precedes disable_cache.
+    assert order == ["restore-walk", "restore-walk", "disable"]
 
 
 # ── stale child-registry cache invalidation (mid-session enable) ────────────────────
@@ -1015,3 +1017,52 @@ def test_an_adopted_cache_gets_the_post_enable_integration(monkeypatch):
 
     assert apply_step_cache(_pipe(_CachedByHand()), mode = "fbcache") == TC_FBCACHE
     assert ran == ["invalidate", "compile"]
+
+
+def test_a_cache_installed_through_the_low_level_api_is_not_torn_down(monkeypatch):
+    """``diffusers.hooks.apply_first_block_cache`` is public and hooks WITHOUT setting
+    ``_cache_config``, so a caller who used it leaves live hooks behind ``is_cache_enabled is
+    False``. Our engage then raises out of ``register_hook`` ("Hook with name ... already exists")
+    having changed nothing, and the recovery must not read the absent config as permission to remove
+    hooks that are not ours and are working."""
+    registry = _stub_diffusers(monkeypatch)
+    import core.inference.diffusion_cache as dc
+
+    monkeypatch.setattr(dc, "_first_block_cache_is_hooked", lambda t: True)
+
+    class _HookedTheOtherWay:
+        # No _cache_config: the low-level API never sets one.
+        is_cache_enabled = False
+
+        def enable_cache(self, config):
+            raise ValueError("Hook with name fbc_leader_block_hook already exists in the registry.")
+
+        def disable_cache(self):
+            raise AssertionError("must not be reached: there is no config for diffusers to act on")
+
+        def cache_context(self, *_a, **_k):
+            raise AssertionError("not used")
+
+    t = _HookedTheOtherWay()
+    # Reports the cache that is actually running, exactly as a live MagCache is reported.
+    assert apply_step_cache(_pipe(t), mode = "fbcache") == TC_FBCACHE
+    assert registry.removed == []  # and the working hooks were never touched
+
+
+def test_the_hook_probe_sees_the_names_the_low_level_api_installs(monkeypatch):
+    """The probe above is the whole basis for that decision, so it is pinned against the real hook
+    names rather than a stub: a rename upstream must fail here, not silently start tearing down
+    other people's caches again."""
+    _stub_diffusers(monkeypatch)
+    import types as _types
+
+    from diffusers.hooks.first_block_cache import _FBC_BLOCK_HOOK, _FBC_LEADER_BLOCK_HOOK
+    from core.inference.diffusion_cache import _first_block_cache_is_hooked
+
+    bare = _types.SimpleNamespace(modules = lambda: [_types.SimpleNamespace()])
+    assert _first_block_cache_is_hooked(bare) is False
+
+    for name in (_FBC_LEADER_BLOCK_HOOK, _FBC_BLOCK_HOOK):
+        block = _types.SimpleNamespace(_diffusers_hook = _types.SimpleNamespace(hooks = {name: object()}))
+        hooked = _types.SimpleNamespace(modules = lambda block = block: [_types.SimpleNamespace(), block])
+        assert _first_block_cache_is_hooked(hooked) is True

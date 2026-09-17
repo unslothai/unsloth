@@ -172,6 +172,30 @@ def _unhook_first_block_cache(transformer: Any) -> bool:
     return True
 
 
+def _first_block_cache_is_hooked(transformer: Any) -> bool:
+    """Whether FBCache's hook names are registered ANYWHERE under *transformer* right now.
+
+    Asked before an engage, so a failure afterwards can tell "our own half-finished install" from
+    "someone else's working cache". ``diffusers.hooks.apply_first_block_cache`` is public and hooks
+    without touching ``_cache_config``, so a caller who used it leaves live hooks behind
+    ``is_cache_enabled is False``; our ``enable_cache`` then raises out of ``register_hook``
+    ("Hook with name ... already exists"), having changed nothing. Conservative on failure: False
+    means only that nothing is KNOWN to be hooked, and the recovery removes hooks either way.
+    """
+    try:
+        from diffusers.hooks.first_block_cache import _FBC_BLOCK_HOOK, _FBC_LEADER_BLOCK_HOOK
+
+        names = (_FBC_LEADER_BLOCK_HOOK, _FBC_BLOCK_HOOK)
+        for module in transformer.modules():
+            registry = getattr(module, "_diffusers_hook", None)
+            hooks = getattr(registry, "hooks", None) or {} if registry is not None else {}
+            if any(name in hooks for name in names):
+                return True
+    except Exception:  # noqa: BLE001 - private names, or not a torch module: cannot tell
+        return False
+    return False
+
+
 def _restore_hooked_block_inners(transformer: Any) -> None:
     """Undo ``_compile_hooked_block_inners``: restore the bound methods and clear the markers.
     MUST run before ``disable_cache`` -- ``remove_hook`` splices ``original_forward`` back into
@@ -307,6 +331,10 @@ def apply_step_cache(
                 transformer._unsloth_step_cache = None
             except Exception:  # noqa: BLE001 - marker is best-effort
                 pass
+    # Asked BEFORE the engage, because afterwards a hooked transformer is ambiguous: our own partial
+    # install and someone else's finished one look the same from here. Outside the try so the
+    # recovery below can always read it.
+    hooked_before = _first_block_cache_is_hooked(transformer)
     try:
         try:
             from diffusers import FirstBlockCacheConfig
@@ -329,6 +357,15 @@ def apply_step_cache(
             logger.info("diffusion.cache: %s engaged (threshold=%s)", mode, thr)
         return mode
     except Exception as exc:  # noqa: BLE001 - incompatible model -> run uncached
+        if hooked_before:
+            # FBCache was already installed by someone who went through the low-level
+            # apply_first_block_cache rather than enable_cache, which is why _cache_config was None
+            # and this engage was ever attempted. register_hook refuses a duplicate name before
+            # changing anything, so those hooks are intact and working: there is nothing of ours to
+            # clean up, and tearing them down would cost a healthy cache for a call that failed
+            # precisely because the cache is there. Report what IS running, as a live MagCache is.
+            _warn(logger, mode, exc)
+            return mode
         # enable_cache can fail part-hooked; restore armed compiled inners FIRST
         _restore_hooked_block_inners(transformer)
         disabled = True
