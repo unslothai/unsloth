@@ -378,7 +378,16 @@ test("editing the live model's effort reaches the chat now", () => {
   // instead of leaving the cleared level in force, and a level the model rejects cannot get in.
   assert.match(
     settingsDialog,
-    /if \(isLiveModel\) \{\s*setReasoningEffort\(\s*resolveExternalReasoningEffort\(\{/,
+    /if \(isLiveModel\) \{\s*useChatRuntimeStore\.setState\(\{\s*reasoningEffort: resolveExternalReasoningEffort\(\{/,
+  );
+  // setState, not the action: setReasoningEffort persists the value through
+  // setScalarSettingVersion as the chat-wide preference, which is the setting a per-model pin
+  // exists to override. The pin itself is stored by setModelReasoningEffort.
+  assert.doesNotMatch(settingsDialog, /state\.setReasoningEffort/);
+  const runtime = readSrc("features/chat/stores/chat-runtime-store.ts");
+  assert.match(
+    runtime,
+    /const writeGlobal = \(\) => \{\s*scalarSettingMutationVersions\[key\] \+= 1;\s*saveSettingsPatch\(\{ \[key\]: value \}\);/,
   );
   assert.match(settingsDialog, /current: chatEffort,\s*pinned,/);
 });

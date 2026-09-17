@@ -85,9 +85,6 @@ export function ConnectedModelSettingsDialog({
   const isLiveModel = useChatRuntimeStore(
     (state) => state.params.checkpoint === checkpointId,
   );
-  const setReasoningEffort = useChatRuntimeStore(
-    (state) => state.setReasoningEffort,
-  );
   const chatEffort = useChatRuntimeStore((state) => state.reasoningEffort);
   const pinnedEffort = useModelReasoningEffortStore(
     (state) => state.effortByModel[checkpointId],
@@ -156,15 +153,20 @@ export function ConnectedModelSettingsDialog({
       // before that, so the live model's level has to be set here or the edit would not apply
       // until the user switched away and back. Through the same resolver the switch uses, so
       // clearing the pin falls back to the default rather than leaving the cleared level in force.
+      //
+      // setState, not setReasoningEffort: that action persists the value through
+      // setScalarSettingVersion as the chat-wide preference, which is the setting this per-model
+      // pin exists to override. The pin is stored by setModelReasoningEffort above; all this
+      // does is apply it to the model on screen, the way the normalization effect does.
       if (isLiveModel) {
-        setReasoningEffort(
-          resolveExternalReasoningEffort({
+        useChatRuntimeStore.setState({
+          reasoningEffort: resolveExternalReasoningEffort({
             caps: reasoning,
             providerType,
             current: chatEffort,
             pinned,
           }),
-        );
+        });
       }
     }
     onOpenChange(false);
