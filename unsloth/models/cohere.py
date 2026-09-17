@@ -15,6 +15,7 @@ from .llama import (
     original_apply_o,
 )
 from ._utils import __version__
+from ._utils import move_to_device, per_layer_device
 from unsloth_zoo.hf_utils import dtype_from_config
 from unsloth_zoo.utils import _get_dtype, Version
 from ..utils.packing import get_packed_info_from_kwargs
@@ -445,8 +446,8 @@ def CohereModel_fast_forward_inference(
 
     next_decoder_cache = []
     for idx, decoder_layer in enumerate(self.model.layers):
-        device_index = getattr(decoder_layer, "_per_layer_device_index", 0)
-        hidden_states, position_ids = move_to_device(device_index, hidden_states, position_ids)
+        layer_device, device_index = per_layer_device(decoder_layer)
+        hidden_states, position_ids = move_to_device(layer_device, hidden_states, position_ids)
         residual = hidden_states
         hidden_states = fast_layernorm_inference(
             decoder_layer.input_layernorm, hidden_states, out_weights[device_index]

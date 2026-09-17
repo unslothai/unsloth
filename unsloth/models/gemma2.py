@@ -15,6 +15,7 @@ from .llama import (
     original_apply_o,
 )
 from ._utils import __version__
+from ._utils import move_to_device, per_layer_device
 from unsloth_zoo.utils import _get_dtype, Version
 from unsloth_zoo.hf_utils import dtype_from_config
 from ..utils.packing import get_packed_info_from_kwargs
@@ -485,8 +486,8 @@ def Gemma2Model_fast_forward_inference(
     next_decoder_cache = []
     for idx, decoder_layer in enumerate(self.model.layers):
         # For pipeline parallelism every tensor must be on the same device; this movement happens once per GPU in PP.
-        device_index = getattr(decoder_layer, "_per_layer_device_index", 0)
-        hidden_states, position_ids = move_to_device(device_index, hidden_states, position_ids)
+        layer_device, device_index = per_layer_device(decoder_layer)
+        hidden_states, position_ids = move_to_device(layer_device, hidden_states, position_ids)
 
         use_sliding_window = idx % 2 == 0
 
