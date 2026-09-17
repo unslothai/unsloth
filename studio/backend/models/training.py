@@ -97,12 +97,35 @@ def _parse_lr(v: Any) -> float:
     return lr
 
 
+def _resolve_inventory_handles(values):
+    """Every entry of a list field that may carry an opaque handle.
+
+    Resume replays a referenced history payload, so the entries come back as handles.
+    """
+    if not isinstance(values, (list, tuple)):
+        return values
+    return [_resolve_inventory_handle(item) if isinstance(item, str) else item for item in values]
+
+
+def _resolve_inventory_handle(value: str) -> str:
+    """`models.inference.resolve_inventory_handle`, imported lazily: `models.inference` is large
+    and this module is imported by the CLI, where the loader schemas are not needed."""
+    try:
+        from models.inference import resolve_inventory_handle
+    except Exception:  # noqa: BLE001 -- a resolver that cannot import must not fail a run
+        return value
+    return resolve_inventory_handle(value)
+
+
 class TrainingStartRequest(BaseModel):
     """Request schema for starting training"""
 
     model_name: str = Field(
         ..., description = "Model identifier (e.g., 'unsloth/llama-3-8b-bnb-4bit')"
     )
+    # Training consumes the same identity the picker was shown. See
+    # `models.inference.resolve_inventory_handle`.
+    _resolve_the_handle = field_validator("model_name")(_resolve_inventory_handle)
     project_name: Optional[str] = Field(
         None,
         max_length = 80,
@@ -169,6 +192,11 @@ class TrainingStartRequest(BaseModel):
     )
     local_eval_datasets: List[str] = Field(
         default_factory = list, description = "List of local eval dataset paths"
+    )
+    # The history detail references each of these for an API-key caller, and Resume replays that
+    # payload, so the handles come back here.
+    _resolve_the_dataset_handles = field_validator("local_datasets", "local_eval_datasets")(
+        _resolve_inventory_handles
     )
     format_type: str = Field(..., description = "Dataset format type")
     subset: Optional[str] = None
@@ -570,6 +598,11 @@ class TrainingStartRequest(BaseModel):
     resume_from_checkpoint: Optional[str] = Field(
         None, description = "Saved training output directory to resume from"
     )
+    # The history detail hands an API-key caller an opaque handle for the directory it may
+    # resume from, and Resume is that handle coming back.
+    _resolve_the_resume_handle = field_validator("resume_from_checkpoint")(
+        _resolve_inventory_handle
+    )
 
     gpu_ids: Optional[List[int]] = Field(
         None,
@@ -818,8 +851,14 @@ class DiffusionTrainingStartRequest(BaseModel):
     model_config = ConfigDict(protected_namespaces = ())
 
     base_model: str = Field(..., description = "HF repo id or local path to a trainable base")
+    # Unresolved, family detection and `_assert_trusted_base_model` read `ref:...` as a Hub id,
+    # so a local diffusion base could not be trained through the API at all.
+    _resolve_the_base_handle = field_validator("base_model")(_resolve_inventory_handle)
     data_dir: str = Field(..., description = "Folder of training images (+ captions)")
     output_dir: str = Field(..., description = "Directory to write the LoRA .safetensors into")
+    # A diffusion Resume replays the stored config, whose `output_dir` is the run's folder on
+    # this host and so answers an API-key caller as a handle.
+    _resolve_the_output_handle = field_validator("output_dir")(_resolve_inventory_handle)
     model_family: Optional[str] = Field(
         None,
         description = "Explicit trainer family (sdxl / flux.1 / ...); omitted = detect from base_model",
@@ -962,6 +1001,11 @@ class DiffusionTrainingStartRequest(BaseModel):
             "configuration and precision. train_steps is then the TARGET TOTAL, so resuming a "
             "checkpoint at step 11 with train_steps=500 trains steps 12..500."
         ),
+    )
+    # Same handle, on the diffusion half: its Resume replays `checkpoint_path` or the run's
+    # output directory, and both answer from the detail route as references.
+    _resolve_the_resume_handle = field_validator("resume_from_checkpoint")(
+        _resolve_inventory_handle
     )
     resumed_from_job_id: Optional[str] = Field(
         None,

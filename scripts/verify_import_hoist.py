@@ -271,6 +271,13 @@ class _Builder(ast.NodeVisitor):
                 # AugAssign target is also a load
                 if isinstance(node, ast.AugAssign):
                     self._record_loads(t, scope)
+                else:
+                    # A subscript or attribute target LOADS everything but the outermost
+                    # binding: `overrides[dependency] = fn` reads both names, and Python
+                    # marks exactly those Name nodes Load. Missing them read a name used
+                    # only that way as never used at all.
+                    if not isinstance(t, ast.Name):
+                        self._record_loads(t, scope)
             return
         if isinstance(node, (ast.For, ast.AsyncFor)):
             self._visit_expr(node.iter, scope)
@@ -769,6 +776,25 @@ _SELF_TESTS = {
         "    from .m import T\n"
         "def f(x) -> Optional[\"Optional['T']\"]:\n"
         "    return x\n",
+        None,
+    ),
+    # A name used only as a subscript KEY of an assignment target is used. FastAPI route tests
+    # are written this way -- `app.dependency_overrides[dep] = lambda: ...`.
+    "a_subscript_key_on_the_left_hand_side_is_a_use": (
+        "app = {}\n",
+        "from .deps import dependency\napp = {}\napp[dependency] = 1\n",
+        None,
+    ),
+    # The object being subscripted is loaded too, so an import used only there is a use.
+    "a_subscripted_object_on_the_left_hand_side_is_a_use": (
+        "def f(k, v):\n    return k, v\n",
+        "from .deps import registry\ndef f(k, v):\n    registry[k] = v\n",
+        None,
+    ),
+    # And an attribute target: `mod.attr = x` reads `mod`.
+    "an_attribute_target_loads_the_object": (
+        "def f(v):\n    return v\n",
+        "from .deps import settings\ndef f(v):\n    settings.value = v\n",
         None,
     ),
     # The other direction: Literal['T'] is a VALUE, so it must NOT credit an import T.

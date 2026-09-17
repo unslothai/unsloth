@@ -563,9 +563,17 @@ def load_model_config(
         # `False` is falsy: without this it falls past both branches to the ambient call.
         # Passed as the sentinel rather than via without_hf_auth(), which mutates HF_TOKEN
         # process-wide and would strip a concurrent download's credential.
-        # token=False denies auth, not the cache, so offline it would read a cached private
-        # config.json anyway; with no network this caller gets nothing instead.
-        if local_files_only or _env_offline():
+        # token=False denies auth, not the cache: AutoConfig resolves a cached config.json
+        # without ever consulting the credential, so the read has to be gated here. The
+        # shared rule refuses only what disk could answer AND this caller may not read, so a
+        # public repo on disk stays available and a private one does not.
+        if not is_local_path(model_name) and cached_read_refused(
+            token,
+            repo_id = model_name,
+            is_cached = lambda: _config_json_already_cached(model_name, revision),
+            # The caller's own cache-only contract, as in the explicit-token gate below.
+            offline = bool(local_files_only),
+        ):
             raise OSError(
                 f"config.json for {model_name} is not available to an unauthorized caller"
             )
@@ -2546,7 +2554,7 @@ def detect_gguf_model(path: str, model_root: Optional[str] = None) -> Optional[s
             is_dir = False  # stat() unavailable in the lock window
         if not is_dir:
             return str(_local_gguf_load_path(p))
-        # Directory named "*.gguf": fall through to the dir scan below.
+    # Directory named "*.gguf": fall through to the dir scan below.
 
     # Case 2: directory containing .gguf files (skip mmproj / MTP drafter)
     if p.is_dir():
