@@ -420,6 +420,19 @@ class TestNetworkTargetResolution:
                 f"import aiohttp\naiohttp.ClientSession('http://{_H}').get('/')",
                 id = "aiohttp_session_base_url",
             ),
+            # The lowercase session factory is the same client as the class.
+            pytest.param(
+                f"import requests\nrequests.session().get('http://{_H}/')",
+                id = "requests_session_factory_inline",
+            ),
+            pytest.param(
+                f"import requests\ns = requests.session()\ns.get('http://{_H}/')",
+                id = "requests_session_factory_name",
+            ),
+            pytest.param(
+                f"import aiohttp\naiohttp.request('GET', 'http://{_H}/')",
+                id = "aiohttp_module_request",
+            ),
             # The raw connection classes take a host like the pools do.
             pytest.param(
                 f"import urllib3\nurllib3.connection.HTTPConnection('{_H}').request('GET', '/')",
@@ -705,6 +718,8 @@ class TestNetworkTargetResolution:
             "import httpx\nhttpx.Client(base_url='https://pypi.org/').get('/')",
             "import httpx\nhttpx.Client().get('https://pypi.org/x')",
             "import requests\nrequests.options('https://pypi.org/')",
+            "import requests\ns = requests.session()\ns.get('https://pypi.org/')",
+            "import aiohttp\naiohttp.request('GET', 'https://pypi.org/')",
             # An explicit None is a disabled proxy, not an unknown destination.
             "import httpx\nhttpx.Client(proxy=None).get('https://pypi.org/')",
             "import requests\nrequests.get('https://pypi.org/', proxies={'https': None})",
@@ -874,6 +889,11 @@ class TestUploadDenylist:
                 "import httpx\n"
                 'httpx.Client().post("https://huggingface.co/", files={"x": open("r.txt")})',
                 id = "httpx_client_post_files_blocked",
+            ),
+            pytest.param(
+                "import requests\n"
+                's = requests.session()\ns.post("https://huggingface.co/", files={"x": open("r.txt")})',
+                id = "requests_session_factory_post_files_blocked",
             ),
         ],
     )

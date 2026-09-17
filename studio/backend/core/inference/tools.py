@@ -15993,6 +15993,13 @@ def _check_signal_escape_patterns(code: str):
         "requests.request",
         "requests.Session",
         "requests.sessions.Session",
+        # The lowercase factory needs to be an entry point in its own right, so that a session
+        # held in a name resolves the same way an inline one does.
+        "requests.session",
+        "requests.sessions.session",
+        "requests.api.session",
+        "aiohttp.request",
+        "aiohttp.client.request",
         "http.client.HTTPConnection",
         "http.client.HTTPSConnection",
         "httpx.get",
@@ -16026,7 +16033,7 @@ def _check_signal_escape_patterns(code: str):
         },
         **{
             f"{module}.request": (1, "url", "url")
-            for module in ("requests", "requests.api", "httpx")
+            for module in ("requests", "requests.api", "httpx", "aiohttp", "aiohttp.client")
         },
         "urllib3.request": (1, "url", "url"),
         "urllib3.connection_from_url": (0, "url", "url"),
@@ -16059,6 +16066,10 @@ def _check_signal_escape_patterns(code: str):
     _VERB_CLIENTS = (
         "requests.Session",
         "requests.sessions.Session",
+        # requests exposes the session factory under a lowercase name as well.
+        "requests.session",
+        "requests.sessions.session",
+        "requests.api.session",
         "httpx.Client",
         "httpx.AsyncClient",
         "aiohttp.ClientSession",
