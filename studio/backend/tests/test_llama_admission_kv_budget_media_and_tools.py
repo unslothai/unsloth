@@ -553,8 +553,8 @@ class TestAToolResultScreenshotIsNotPricedByItsBase64:
 
 class TestEveryBlockTheTranslationDropsIsPricedTheSameWay:
     """`tool_result` content is an untyped list, so an image is only one of the block types
-    that reach it. A document, a search result and a nested `tool_result` are dropped by
-    the same translation filter, and each was charged its base64 as prompt text -- the
+    that reach it. A PDF document, a malformed search result and a nested `tool_result` send
+    at most a short note, and each was charged its base64 as prompt text -- the
     whole of a 32768-token cache for a request that sends a couple of hundred characters.
     """
 
@@ -640,6 +640,41 @@ class TestEveryBlockTheTranslationDropsIsPricedTheSameWay:
                 assert "the tool answered" in str(
                     estimate_messages
                 ), f"{where}: the text beside it IS sent, so dropping it under-reserves"
+
+    def test_search_result_and_document_text_is_charged_where_it_is_sent(self):
+        search_result = {
+            "type": "search_result",
+            "source": "kb://vault",
+            "title": "Vault",
+            "content": [{"type": "text", "text": "PURPLE-ELEPHANT-42 " * 200}],
+        }
+        document = {
+            "type": "document",
+            "source": {"type": "text", "media_type": "text/plain", "data": "MEMO-BODY " * 200},
+            "title": "Memo",
+        }
+        for block, header in (
+            (search_result, "Title: Vault\nSource: kb://vault\n"),
+            (document, "Title: Memo\n"),
+        ):
+            for payload in (
+                self._request(block, text_first = True),
+                AnthropicMessagesRequest(
+                    model = "default",
+                    max_tokens = 128,
+                    messages = [{"role": "user", "content": [block]}],
+                ),
+            ):
+                sent = anthropic_messages_to_openai([m.model_dump() for m in payload.messages])
+                rendered = sent[-1]["content"].rsplit("the tool answered\n", 1)[-1]
+                estimate_messages, image_parts = _openai_llama_admission_messages_for_estimate(
+                    payload.messages
+                )
+                assert rendered.startswith(header)
+                assert rendered in str(estimate_messages).replace("\\n", "\n")
+                assert image_parts == 0
+                cost = _openai_llama_admission_tokens(payload, budget = 1_000_000, capacity = 4)
+                assert cost > len(rendered) // 8
 
     def test_a_tool_result_the_translation_does_forward_is_still_charged(self):
         """The other side of the boundary: string `tool_result` content is forwarded
