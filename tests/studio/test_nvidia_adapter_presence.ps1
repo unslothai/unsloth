@@ -402,7 +402,31 @@ if ($nvArm.Success) {
         $preR450 -ge 0 -and $cu126 -ge 0 -and $preR450 -lt $cu126)
     Check "and says why, rather than silently installing CPU wheels" (
         $arm -match 'predates R450')
+    # Saying "installing CPU wheels" is not installing them. The CPU arm installs the bare torch
+    # range when nothing pinned it, and an installed +cu build satisfies that range, so uv keeps
+    # the very wheel this arm just said the driver cannot load. The stale-venv pass cannot rescue
+    # it either: the expected family reads as unknown here, so $script:PinChangedForceReinstall
+    # stays false. Same flag mechanism the ROCm and XPU fallbacks already use.
+    Check "and marks the demotion so the CPU arm really replaces the CUDA wheel" (
+        $arm -match '(?s)-lt 450\)? \{[^}]*NvidiaPreR450CpuFallback = \$true')
+    Check "and only when a CUDA wheel is actually installed" (
+        $arm -match 'Test-CudaFamilyLeaf \$installedTorchTag\) \{ \$script:NvidiaPreR450CpuFallback = \$true \}')
 }
+# The flag has to be READ where the wheels are installed, or setting it changes nothing. Anchored
+# on the CPU arm's own force list, beside the two fallbacks that set theirs for the same reason.
+$cpuArm = [regex]::Match($setupText, '(?s)substep "installing PyTorch \(CPU-only\)\.\.\.".{0,3000}')
+Check "setup.ps1's CPU install arm was found (bites)" ($cpuArm.Success)
+if ($cpuArm.Success) {
+    Check "the CPU arm force-reinstalls after a pre-R450 demotion" (
+        $cpuArm.Value -match 'if \(\$script:NvidiaPreR450CpuFallback\) \{ \$cpuForce = @\("--force-reinstall"\) \}')
+    Check "the same way it does after the ROCm and XPU fallbacks (bites)" (
+        $cpuArm.Value -match 'if \(\$ROCmCpuFallback\) \{ \$cpuForce = @\("--force-reinstall"\) \}')
+}
+# Reset per run, like the rest of the presence state: under `irm | iex` the script scope is the
+# caller's own session, and a flag left set from a previous run would force a reinstall that this
+# run never asked for.
+Check "the flag starts false on every run" (
+    $setupText -match '(?m)^\$script:NvidiaPreR450CpuFallback = \$false$')
 # The bus-only host whose driver IS in the table. install.ps1 selects from the floor and setup did
 # not, so the two routers disagreed by two whole families: an R450 to R524 driver maps to CUDA 11.0
 # and install.ps1 picks cu118, while setup fell through to cu126, which that driver cannot load.
@@ -574,6 +598,60 @@ Check "and the registry entry's driver release is read, not discarded" ($regRele
 $regFloor = @(Get-NvidiaAdapterCudaFloor)
 Check "and it becomes a CUDA floor of 12.2 rather than nothing" (
     $regFloor.Count -eq 2 -and [int]$regFloor[0] -eq 12 -and [int]$regFloor[1] -eq 2)
+
+# Several NVIDIA subkeys, and the first one does not name a version. A machine with retained
+# driver configurations carries exactly that, and returning the first match would report the GPU
+# and lose the floor, which is the whole reason this hands back an entry rather than a yes/no.
+function Get-ChildItem {
+    param([string]$LiteralPath, [switch]$Directory, [string]$Filter, $ErrorAction)
+    if ("$LiteralPath" -match 'Control\\Class') {
+        $script:RegistryConsulted = $true
+        return @(
+            [pscustomobject]@{ PSChildName = "0000"; PSPath = "fake::0000" },
+            [pscustomobject]@{ PSChildName = "0001"; PSPath = "fake::0001" }
+        )
+    }
+    return @()
+}
+function Get-ItemProperty {
+    param([string]$LiteralPath, $ErrorAction)
+    if ("$LiteralPath" -eq "fake::0000") {
+        return [pscustomobject]@{ MatchingDeviceId = "PCI\\VEN_10DE&DEV_1DB1" }
+    }
+    if ("$LiteralPath" -eq "fake::0001") {
+        return [pscustomobject]@{
+            MatchingDeviceId = "PCI\\VEN_10DE&DEV_1DB1"
+            DriverVersion = "31.0.15.3699"
+        }
+    }
+    return $null
+}
+$script:FakeAdapters = @()
+$script:FakeScanOk = $false
+Check "a later entry that names a version wins over an earlier one that does not" (
+    (Get-NvidiaAdapterDriverRelease) -eq 536)
+Check "and presence is unaffected by which entry answered" ((Test-NvidiaAdapterPresent) -eq $true)
+
+# And with NO entry naming a version, the versionless one is still the presence answer.
+function Get-ItemProperty {
+    param([string]$LiteralPath, $ErrorAction)
+    if ("$LiteralPath" -match '^fake::000[01]$') {
+        return [pscustomobject]@{ MatchingDeviceId = "PCI\\VEN_10DE&DEV_1DB1" }
+    }
+    return $null
+}
+Check "with no version anywhere the GPU is still found" ((Test-NvidiaAdapterPresent) -eq $true)
+Check "and the release stays unknown" ($null -eq (Get-NvidiaAdapterDriverRelease))
+
+# Back to one subkey for the rows below.
+function Get-ChildItem {
+    param([string]$LiteralPath, [switch]$Directory, [string]$Filter, $ErrorAction)
+    if ("$LiteralPath" -match 'Control\\Class') {
+        $script:RegistryConsulted = $true
+        return @([pscustomobject]@{ PSChildName = "0000"; PSPath = "fake::0000" })
+    }
+    return @()
+}
 
 # Bites control: an entry with no DriverVersion is still unknown, not a guess.
 function Get-ItemProperty {

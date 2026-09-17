@@ -2900,6 +2900,7 @@ $script:NvidiaSmiWedged = $false
 $script:NvidiaPresenceOnly = $false
 $script:NvidiaPresenceCudaFloor = $null
 $script:NvidiaPresenceDriverRelease = $null
+$script:NvidiaPreR450CpuFallback = $false
 
 function Test-NvidiaSmiHasGpu {
     param([Parameter(Mandatory = $true)][string]$Exe)
@@ -3012,17 +3013,25 @@ function Get-NvidiaRegistryAdapter {
     try {
         $subs = @(Get-ChildItem -LiteralPath $classKey -ErrorAction SilentlyContinue)
     } catch { return $null }
+    # The first NVIDIA entry answers presence, but the first is not always the one that names a
+    # version: a machine with retained driver configurations carries several NVIDIA subkeys and
+    # the earliest can have no DriverVersion at all. Returning that one would report the GPU and
+    # lose the floor, which is the whole reason this hands back an entry. So the walk continues
+    # for one that names a version, and the versionless match is kept only as the fallback.
+    $fallback = $null
     foreach ($sub in $subs) {
         try {
             # Numeric subkeys only: "Properties" is ACL-restricted and is not an adapter.
             if ("$($sub.PSChildName)" -notmatch '^\d+$') { continue }
             $props = Get-ItemProperty -LiteralPath $sub.PSPath -ErrorAction SilentlyContinue
-            if ($props -and "$($props.MatchingDeviceId)" -match '(?i)ven_10de') {
-                return [pscustomobject]@{ DriverVersion = "$($props.DriverVersion)" }
-            }
+            if (-not $props) { continue }
+            if ("$($props.MatchingDeviceId)" -notmatch '(?i)ven_10de') { continue }
+            $entry = [pscustomobject]@{ DriverVersion = "$($props.DriverVersion)" }
+            if (-not [string]::IsNullOrWhiteSpace($entry.DriverVersion)) { return $entry }
+            if ($null -eq $fallback) { $fallback = $entry }
         } catch {}
     }
-    return $null
+    return $fallback
 }
 
 # Is there an NVIDIA display adapter on this machine, judged by PCI vendor ID and nothing else.
@@ -7286,6 +7295,13 @@ if ($PinnedTorchIndexUrl) {
         # the two routers must agree: a host that runs setup.ps1 directly against a new or
         # incomplete venv reaches this arm without install.ps1 ever having chosen for it.
         $CuTag = "cpu"
+        # A CUDA wheel already here has to be REPLACED, not left. The CPU arm installs the bare
+        # torch range when nothing pinned it, and an installed +cu build satisfies that range, so
+        # uv keeps the very wheel this branch just said the driver cannot load and the run reports
+        # success having changed nothing. The stale-venv pass cannot force it either: it reads the
+        # expected family as unknown here, so $script:PinChangedForceReinstall stays false. Same
+        # mechanism as the ROCm and XPU fallbacks, which set their own flag for the same reason.
+        if (Test-CudaFamilyLeaf $installedTorchTag) { $script:NvidiaPreR450CpuFallback = $true }
         substep "an NVIDIA GPU is present but its driver ($script:NvidiaPresenceDriverRelease series) predates R450 and carries no usable CUDA runtime; installing CPU wheels. Update the NVIDIA driver and re-run to get CUDA" "Yellow"
     }
     if (-not $CuTag -and -not (Test-CudaFamilyLeaf $installedTorchTag) -and
@@ -7663,6 +7679,8 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
     # Same for a wheel that no longer imports. Nothing else here distinguishes it: the tag is
     # rescued from disk and still reads "cpu", so the range is satisfied and it is kept.
     if ($script:TorchImportDefinitivelyFailed) { $cpuForce = @("--force-reinstall") }
+    # Same for a pre-R450 demotion: the installed +cu wheel satisfies the bare CPU range too.
+    if ($script:NvidiaPreR450CpuFallback) { $cpuForce = @("--force-reinstall") }
     # A PINNED cpu index installs the bounded trio (parity with _CPU_TORCH_PKG_SPEC): the /cpu
     # index serves newer torch and _ensure_cpu_torch keeps any CPU build. Unpinned keeps the bare trio.
     $cpuTorchSpec = "torch"; $cpuVisionSpec = "torchvision"; $cpuAudioSpec = "torchaudio"

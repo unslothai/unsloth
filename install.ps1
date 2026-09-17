@@ -8142,17 +8142,25 @@ exit 0
         try {
             $subs = @(Get-ChildItem -LiteralPath $classKey -ErrorAction SilentlyContinue)
         } catch { return $null }
+        # The first NVIDIA entry answers presence, but the first is not always the one that names a
+        # version: a machine with retained driver configurations carries several NVIDIA subkeys and
+        # the earliest can have no DriverVersion at all. Returning that one would report the GPU and
+        # lose the floor, which is the whole reason this hands back an entry. So the walk continues
+        # for one that names a version, and the versionless match is kept only as the fallback.
+        $fallback = $null
         foreach ($sub in $subs) {
             try {
                 # Numeric subkeys only: "Properties" is ACL-restricted and is not an adapter.
                 if ("$($sub.PSChildName)" -notmatch '^\d+$') { continue }
                 $props = Get-ItemProperty -LiteralPath $sub.PSPath -ErrorAction SilentlyContinue
-                if ($props -and "$($props.MatchingDeviceId)" -match '(?i)ven_10de') {
-                    return [pscustomobject]@{ DriverVersion = "$($props.DriverVersion)" }
-                }
+                if (-not $props) { continue }
+                if ("$($props.MatchingDeviceId)" -notmatch '(?i)ven_10de') { continue }
+                $entry = [pscustomobject]@{ DriverVersion = "$($props.DriverVersion)" }
+                if (-not [string]::IsNullOrWhiteSpace($entry.DriverVersion)) { return $entry }
+                if ($null -eq $fallback) { $fallback = $entry }
             } catch {}
         }
-        return $null
+        return $fallback
     }
 
     # Is there an NVIDIA display adapter on this machine, judged by PCI vendor ID and nothing else.
