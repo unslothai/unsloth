@@ -106,9 +106,23 @@ _UV_POLICY_ENV = (
     "ProgramData",
 )
 
+#: Matched case-folded, because the one mixed-case name above is the one that would survive
+#: a literal match on the platform it matters on: CPython's `os.environ` puts every key
+#: through `.upper()` on `nt` ("Where Env Var Names Must Be UPPERCASE", os.py), so Windows
+#: hands `ProgramData` to the comprehension below as `PROGRAMDATA`, it compares unequal, and
+#: the child keeps reading %PROGRAMDATA%\uv\uv.toml -- uv's system-level config, and the one
+#: file that can turn a row asserting True into a machine-dependent False.
+_UV_POLICY_ENV_FOLDED = frozenset(name.upper() for name in _UV_POLICY_ENV)
+
+
+def _scrubbed_environ(environ = None) -> dict[str, str]:
+    """`environ` (default: this session's) minus every resolver-policy variable."""
+    items = (os.environ if environ is None else environ).items()
+    return {key: value for key, value in items if key.upper() not in _UV_POLICY_ENV_FOLDED}
+
 
 def _run(script: str, *, cwd: str | pathlib.Path | None = None) -> str:
-    env = {key: value for key, value in os.environ.items() if key not in _UV_POLICY_ENV}
+    env = _scrubbed_environ()
     # run_pwsh, not subprocess.run: the scrub above keeps HOME, so without the runner's own
     # XDG_CACHE_HOME every worker still shares one ~83 KB pwsh startup-profile cache and ~1
     # startup in 500 dies reading a half-written copy. run_pwsh layers its private cache
@@ -195,6 +209,19 @@ def no_uv_config_dir(tmp_path):
                 r"(?m)^\s*\[+tool\.uv(\.|\])", text
             ), f"a [tool.uv] table above the tmp dir: {pyproject}"
     return work
+
+
+@pytest.mark.parametrize("spelling", ["ProgramData", "PROGRAMDATA", "programdata"])
+def test_the_scrub_drops_program_data_however_the_platform_spelled_it(spelling):
+    """The scrub has to survive Windows re-casing the name on the way in.
+
+    Runs everywhere because it is the Windows spelling that is untestable on Windows here:
+    a Linux session has no ProgramData to leak, so a literal-match scrub passes this suite
+    green on CI and quietly stops working on the only platform install.ps1 ships to. Feeding
+    the three spellings a real environment block can carry states the requirement directly.
+    """
+    scrubbed = _scrubbed_environ({spelling: r"C:\ProgramData", "PATH": "/usr/bin"})
+    assert scrubbed == {"PATH": "/usr/bin"}, f"{spelling} survived the scrub: {scrubbed}"
 
 
 @requires_pwsh

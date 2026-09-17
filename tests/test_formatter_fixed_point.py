@@ -293,7 +293,7 @@ def test_the_formatter_invocation_fits_in_a_windows_command_line():
     """The guard below must be able to START on Windows, not only pass on Linux.
 
     It used to pass every tracked file as one argv. That is ~2650 paths and, under a Windows
-    tmp_path, roughly 378,000 characters against CreateProcess's 32,767 -- 11.5x over, so the
+    tmp_path, roughly 325,000 characters against CreateProcess's 32,767 -- 9.9x over, so the
     call died with `[WinError 206] The filename or extension is too long` before ruff opened a
     single file. It had never been caught because every job that schedules this file is
     ubuntu-24.04, where execve's ARG_MAX is ~2 MB and the same argv fits with room to spare.
@@ -364,7 +364,7 @@ def test_every_tracked_python_file_is_already_formatted(tmp_path):
         copies.append(str(target))
 
     # Batched, and through the same builder the Windows-limit test above measures. One call with
-    # all ~2650 paths on it is 11.5x over Windows' CreateProcess cap and dies with WinError 206.
+    # all ~2650 paths on it is 9.9x over Windows' CreateProcess cap and dies with WinError 206.
     for argv in formatter_argvs(copies):
         run = subprocess.run(argv, capture_output = True, text = True)
         assert run.returncode == 0, f"the formatter itself failed:\n{run.stdout}\n{run.stderr}"
