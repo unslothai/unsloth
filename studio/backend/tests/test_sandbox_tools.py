@@ -420,6 +420,15 @@ class TestNetworkTargetResolution:
                 f"import aiohttp\naiohttp.ClientSession('http://{_H}').get('/')",
                 id = "aiohttp_session_base_url",
             ),
+            # A swap resolves its right-hand side against the bindings it is replacing.
+            pytest.param(
+                f"import requests\nf = print\ng = requests.get\nf, g = g, f\nf('http://{_H}/')",
+                id = "swapped_alias",
+            ),
+            pytest.param(
+                f"import requests\nurl = 'http://{_H}/'; requests.get(url)",
+                id = "store_and_read_on_one_line",
+            ),
             # A subclass reads what its bases set on self.
             pytest.param(
                 "import paramiko\nclass Base:\n    def __init__(self):\n"
@@ -665,6 +674,7 @@ class TestNetworkTargetResolution:
             "import httpx\nhttpx.Client(base_url='https://pypi.org/').get('/')",
             "import httpx\nhttpx.Client().get('https://pypi.org/x')",
             "import requests\nrequests.options('https://pypi.org/')",
+            "import requests\nurl = 'http://203.0.113.5/'; url = 'https://pypi.org/'; requests.get(url)",
             "import aiohttp\naiohttp.ClientSession().ws_connect('https://pypi.org/')",
             "import requests\nrequests.Session().post('https://huggingface.co/', json={'a': 1})",
             # A base class that holds no client leaves the subclass receiver uninspected.

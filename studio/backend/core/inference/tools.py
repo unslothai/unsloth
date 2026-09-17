@@ -16614,6 +16614,14 @@ def _check_signal_escape_patterns(code: str):
     def _position(node: ast.AST) -> tuple:
         return (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
 
+    def _end_position(node: ast.AST) -> tuple:
+        # A binding takes effect once the whole statement has run, which is what makes
+        # `f, g = g, f` resolve its right-hand side against the bindings it replaces.
+        return (
+            getattr(node, "end_lineno", None) or getattr(node, "lineno", 0),
+            getattr(node, "end_col_offset", None) or getattr(node, "col_offset", 0),
+        )
+
     def _add_name_store(
         scope: ast.AST,
         name: str,
@@ -16621,10 +16629,11 @@ def _check_signal_escape_patterns(code: str):
         at: ast.AST,
         *,
         certain: bool = True,
+        position = None,
     ) -> None:
         # Resolve scopes after collecting bindings so nonlocal can find its owner.
         _raw_name_stores.append(
-            (scope, name, value, _position(at), _node_block.get(id(at)), certain)
+            (scope, name, value, position or _position(at), _node_block.get(id(at)), certain)
         )
 
     def _first_splat(elts: list) -> int:
@@ -16637,6 +16646,7 @@ def _check_signal_escape_patterns(code: str):
         handled: set,
         *,
         certain: bool = True,
+        position = None,
     ) -> None:
         if isinstance(target, (ast.Tuple, ast.List)):
             sources = value.elts if isinstance(value, (ast.Tuple, ast.List)) else []
@@ -16655,9 +16665,9 @@ def _check_signal_escape_patterns(code: str):
                     source = sources[from_end]
                 else:
                     source = None
-                _record_store(elt, source, scope, handled, certain = certain)
+                _record_store(elt, source, scope, handled, certain = certain, position = position)
         elif isinstance(target, ast.Starred):
-            _record_store(target.value, None, scope, handled, certain = certain)
+            _record_store(target.value, None, scope, handled, certain = certain, position = position)
         elif isinstance(target, ast.Name):
             handled.add(id(target))
             # `f = f`, `url = url + x`: the value is built from the earlier binding, so it adds
@@ -16666,7 +16676,14 @@ def _check_signal_escape_patterns(code: str):
                 isinstance(n, ast.Name) and n.id == target.id and isinstance(n.ctx, ast.Load)
                 for n in ast.walk(value)
             )
-            _add_name_store(scope, target.id, value, target, certain = certain and not reads_itself)
+            _add_name_store(
+                scope,
+                target.id,
+                value,
+                target,
+                certain = certain and not reads_itself,
+                position = position,
+            )
         elif isinstance(target, ast.Attribute):
             handled.add(id(target))
             if isinstance(target.value, ast.Name):
@@ -16731,19 +16748,32 @@ def _check_signal_escape_patterns(code: str):
             scope = _node_scope.get(id(node), tree)
             if isinstance(node, ast.Assign):
                 for target in node.targets:
-                    _record_store(target, node.value, scope, handled)
+                    _record_store(target, node.value, scope, handled, position = _end_position(node))
             elif isinstance(node, ast.AnnAssign) and node.value is not None:
-                _record_store(node.target, node.value, scope, handled)
+                _record_store(node.target, node.value, scope, handled, position = _end_position(node))
             elif isinstance(node, ast.NamedExpr):
                 # A walrus inside a comprehension binds in the scope around it.
                 while isinstance(scope, _COMPREHENSION_NODES):
                     scope = _scope_parent.get(id(scope)) or tree
                 # A walrus is an expression: `False and (f := print)` never binds.
-                _record_store(node.target, node.value, scope, handled, certain = False)
+                _record_store(
+                    node.target,
+                    node.value,
+                    scope,
+                    handled,
+                    certain = False,
+                    position = _end_position(node),
+                )
             elif isinstance(node, (ast.With, ast.AsyncWith)):
                 for item in node.items:
                     if item.optional_vars is not None:
-                        _record_store(item.optional_vars, item.context_expr, scope, handled)
+                        _record_store(
+                            item.optional_vars,
+                            item.context_expr,
+                            scope,
+                            handled,
+                            position = _end_position(item.context_expr),
+                        )
             elif isinstance(node, ast.Import):
                 for alias in node.names:
                     root = alias.name.split(".")[0]
