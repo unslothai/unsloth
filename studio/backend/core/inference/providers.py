@@ -207,8 +207,8 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "display_name": "DeepSeek",
         "base_url": "https://api.deepseek.com/v1",
         "default_models": [
-            "deepseek-chat",
-            "deepseek-reasoner",
+            "deepseek-flash",
+            "deepseek-v4-pro",
         ],
         "supports_streaming": True,
         "supports_vision": False,
@@ -216,7 +216,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "studio_tools": True,
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
-        "notes": "OpenAI-compatible API. deepseek-chat = V3, deepseek-reasoner = R1 thinking mode.",
+        "notes": "OpenAI-compatible API. deepseek-flash and deepseek-v4-pro take thinking on/off plus reasoning_effort low/high/max.",
     },
     "mistral": {
         "display_name": "Mistral AI",

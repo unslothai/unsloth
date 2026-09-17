@@ -62,9 +62,9 @@ export const zhCN = {
     announceMoveFailed: "移动前队列已发生变更。请重试。",
     announceDragReset: "队列已变更。请重新拖动以排序其余消息。",
     editingHint: "正在编辑消息",
-    queueingOffHint: "新消息会停止当前回复并优先执行。",
+    queueingOffHint: "新消息会打断当前回复并优先执行。",
     queueingOnHint: "新消息会排队并按顺序执行。",
-    queueingHintShared: "已排队的消息会保留。",
+    queueingHintShared: "队列会保留。",
   },
   picker: {
     onDevice: "本机",
@@ -1272,6 +1272,8 @@ export const zhCN = {
           sourceBuild: "此 llama.cpp 由源码编译，无法在这里切换后端。",
           customPath: "已选择自定义 llama.cpp 文件夹。其构建决定计算后端。",
           unresolved: "无法检查可用的后端。请检查网络连接后重试。",
+          updateChecksDisabled:
+            "更新检查已禁用（UNSLOTH_DISABLE_UPDATE_CHECK=1），因此不会查询可用的后端。",
         },
         // 不显示：用于设置搜索的额外词条。
         llamaBackendKeywords:
