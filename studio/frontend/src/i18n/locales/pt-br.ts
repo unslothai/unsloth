@@ -20,6 +20,52 @@ export const ptBR = {
     settings: "Configurações de composição",
     preview: "Prévia formatada",
   },
+  promptQueue: {
+    loading: "Carregando mensagens na fila",
+    listLabel: "Mensagens na fila",
+    regionLabel: "Fila de mensagens, {current} de {total}",
+    itemLabel: "Mensagem na fila {position} de {total}: {prompt}",
+    reorderInstructions: "Arraste a alça para reordenar. Com a alça em foco, use Para cima ou Para baixo para mover uma posição, ou Home ou End para ir ao início ou ao fim.",
+    dragTooltip: "Arraste para reordenar",
+    reorderLabel: "Reordenar a mensagem na fila {position} de {total}",
+    paused: "Pausada",
+    steer: "Redirecionar",
+    steerTooltip: "Interromper a resposta e enviar esta mensagem em seguida",
+    steerLabel: "Redirecionar com a mensagem na fila {position}",
+    removeTooltip: "Remover da fila",
+    removeLabel: "Remover a mensagem na fila {position}",
+    moreTooltip: "Mais opções",
+    moreLabel: "Mais opções para a mensagem na fila {position}",
+    editItem: "Editar mensagem",
+    copyItem: "Copiar mensagem",
+    editLabel: "Editar a mensagem na fila {position}",
+    cancel: "Cancelar",
+    save: "Salvar",
+    turnOffQueueing: "Desativar o enfileiramento",
+    turnOnQueueing: "Ativar o enfileiramento",
+    resume: "Retomar a fila",
+    queueButton: "Enfileirar mensagem",
+    steerButton: "Redirecionar a resposta",
+    sendTooltip: "Enviar mensagem ({shortcut})",
+    sendLabel: "Enviar mensagem",
+    followUpTooltip: "{action} ({send}) · {opposite} para o oposto",
+    announceUpdated: "Mensagem na fila atualizada.",
+    announceEditFailed: "Esta mensagem não pode mais ser editada porque a fila mudou.",
+    announceRemoved: "Mensagem removida da fila.",
+    announceSteered: "Esta mensagem vai redirecionar a resposta em seguida.",
+    announceSteerFailed: "Não foi possível redirecionar a resposta com esta mensagem. Verifique a fila e tente de novo.",
+    announceCopied: "Mensagem copiada.",
+    announceCopyFailed: "Não foi possível copiar esta mensagem. Tente de novo.",
+    announceQueueingOn: "Novas mensagens de acompanhamento entrarão na fila depois da resposta atual.",
+    announceQueueingOff: "Novas mensagens de acompanhamento vão redirecionar a resposta atual.",
+    announceMoved: "Mensagem movida para a posição {position} de {total}.",
+    announceMoveFailed: "A fila mudou antes que esta mensagem pudesse ser movida. Tente de novo.",
+    announceDragReset: "A fila mudou. Arraste de novo para reordenar as mensagens restantes.",
+    editingHint: "Editando a mensagem",
+    queueingOffHint: "Mensagens novas interrompem e são executadas em seguida.",
+    queueingOnHint: "Mensagens novas esperam a vez.",
+    queueingHintShared: "A fila é mantida.",
+  },
   picker: {
     onDevice: "No dispositivo",
     huggingFace: "Hugging Face",
@@ -1439,6 +1485,29 @@ export const ptBR = {
       },
     },
     chat: {
+      groups: {
+        conversations: { title: "Conversas" },
+        files: { title: "Arquivos e colagem" },
+        display: { title: "Exibição" },
+        composer: { title: "Caixa de mensagem" },
+        menu: { title: "Menu do chat" },
+        advanced: { title: "Avançado" },
+        contextTitle: "Contexto",
+      },
+      projectAttachmentsHint:
+        "Altere esta configuração para cada chat pelo menu de anexos.",
+      rememberParamsPerModelHint:
+        "Quando desativado, todos os modelos usam as mesmas configurações.",
+      autoCompactHint: "Usa o tamanho de contexto definido, não a VRAM disponível.",
+      pastedTextShortDescription:
+        "Texto colado com {count} caracteres ou mais vira um anexo .txt. Textos menores ficam na caixa de mensagem.",
+      pastedTextOffDescription:
+        "Todo o texto colado fica na caixa de mensagem, independentemente do tamanho.",
+      compactionDescriptionInherit: "Segue a política de contexto do servidor.",
+      compactionDescriptionCheckpoint:
+        "Mantém a última troca de mensagens e as instruções permanentes.",
+      compactionDescriptionRolling:
+        "Remove os turnos mais antigos para manter o histórico recente e o espaço extra selecionado.",
       projectsSection: "Mostrar a seção Projetos",
       projectsSectionDescription:
         "Agrupa as conversas de projeto sob um título Projetos. Desative para listá-las em Recentes.",
@@ -1468,7 +1537,8 @@ export const ptBR = {
         exportChat: "Exportar chat",
       },
       pastedTextThreshold: "Condensar colagens longas",
-      pastedTextThresholdDescription: "Texto colado maior que isso vira um anexo .txt em vez de encher a caixa de mensagem. Pressione {shortcut} para colar na caixa de mensagem mesmo assim.",
+      pastedTextThresholdDescription:
+        "Pressione {shortcut} para colar diretamente na caixa de mensagem.",
       pastedTextThresholdOff: "Desativado",
       showResponseModel: "Mostrar o modelo da resposta",
       showResponseModelDescription:
@@ -1478,13 +1548,13 @@ export const ptBR = {
         'Mostra "LLMs podem cometer erros" abaixo da caixa de chat.',
       projectAttachments: "Compartilhar arquivos em todo o projeto",
       projectAttachmentsDescription:
-        "Padrao para arquivos anexados em um chat que pertence a um projeto: indexa-los para o projeto inteiro para que qualquer chat possa usa-los. Cada chat pode alterar isso pelo menu de anexos.",
+        "Disponibiliza novos anexos para todos os chats do projeto.",
       rememberParamsPerModel: "Lembrar as configurações por modelo",
       rememberParamsPerModelDescription:
-        "Ao trocar de modelo, a temperatura, o prompt e as demais configurações usadas por último com aquele modelo são restauradas. Desativado, um único conjunto de configurações vale para todos os modelos.",
+        "Restaura o último prompt, a temperatura e as outras configurações usadas com cada modelo.",
       autoCompact: "Compactar automaticamente chats longos",
       autoCompactDescription:
-        "Quando um chat GGUF local atingir o tamanho de contexto definido, descarte turnos antigos em vez de retornar um erro. Isso não depende da VRAM livre.",
+        "Remove turnos antigos quando um chat GGUF local atinge o limite de contexto.",
       compactionStyle: "Quando o contexto estiver cheio",
       compactionStyleDescription:
         "Usar o padrão do servidor preserva UNSLOTH_CONTEXT_POLICY. Redefinir a conversa mantém o turno mais recente e as instruções permanentes. Uma janela deslizante descarta os turnos mais antigos e pode manter mais histórico recente.",
@@ -1521,7 +1591,7 @@ export const ptBR = {
         title: "Busca na web",
         images: "Mostrar imagens da busca na web",
         imagesDescription:
-          "Permite que a busca na web retorne imagens e busca uma para cada item que uma resposta lista. As miniaturas são baixadas e redimensionadas pelo Unsloth, então o navegador nunca acessa os servidores de imagens.",
+          "Inclui imagens nos resultados de busca.",
       },
       artifacts: {
         title: "Canvas",

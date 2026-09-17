@@ -2856,12 +2856,14 @@ def _preflight_gated_base(base_model: str, hf_token: Optional[str]) -> None:
     ):
         return
     from utils.hf_endpoint import get_hf_endpoint
+    from utils.utils import auth_safe_open
 
     url = f"{get_hf_endpoint()}/{repo}/resolve/main/model_index.json"
     headers = {"Authorization": f"Bearer {hf_token}"} if hf_token else {}
     req = urllib.request.Request(url, method = "HEAD", headers = headers)
+    # Not urlopen: a mirror's cross-host 302 would carry this token off-origin.
     try:
-        urllib.request.urlopen(req, timeout = 5)
+        auth_safe_open(req, timeout = 5)
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
             raise HTTPException(
