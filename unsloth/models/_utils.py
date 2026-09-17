@@ -491,6 +491,38 @@ def _text_attention_head_dim(config):
     return max(head_dims) if len(head_dims) != 0 else None
 
 
+# torch 2.14 raises cuDNN's SDPA head-dim ceiling to 256 on sm100 AND lets it accept an explicit
+# mask, which is the whole reason head_dim 256 needed flex. Kernel names on identical inputs
+# (scripts/attn_version_gate_probe.py), head_dim 256 with a mask:
+#     torch 2.13.0+cu130  ->  fmha_cutlass...sm80   (the slow fallback)
+#     torch 2.14.0+cu130  ->  cudnn_..._sdpa_sm100_flash_fprop_...
+# Timed (scripts/attn_d256_mask_version_ab.py, Qwen3.5-2B, T=8192, fwd+bwd, reproduced twice to
+# within 1%): masked SDPA 63.892 ms -> 9.332 ms, which matches torch 2.13's FlexAttention at
+# 9.255 ms while paying none of flex's 4.5 s compile. So on 2.14 the routing buys nothing.
+#
+# Deliberately narrow. The measurement is Blackwell-only, and cuDNN's ceiling is per architecture,
+# so an unmeasured card keeps today's behaviour rather than inheriting a conclusion drawn on sm100.
+_CUDNN_LARGE_HEAD_DIM_TORCH_VERSION = "2.14"
+_CUDNN_LARGE_HEAD_DIM_MIN_CAPABILITY = (10, 0)
+
+
+def _sdpa_reaches_cudnn_at_head_dim_256():
+    """True when plain SDPA already dispatches cuDNN for a MASKED head_dim 256 on this box."""
+    try:
+        if Version(torch.__version__.split("+")[0]) < Version(_CUDNN_LARGE_HEAD_DIM_TORCH_VERSION):
+            return False
+        if getattr(torch.version, "hip", None):
+            return False
+        if not torch.cuda.is_available():
+            return False
+        return all(
+            torch.cuda.get_device_capability(index) >= _CUDNN_LARGE_HEAD_DIM_MIN_CAPABILITY
+            for index in range(torch.cuda.device_count())
+        )
+    except Exception:
+        return False
+
+
 def _prefers_flex_for_head_dim(config):
     """True when the decoder's head dim puts every flash kernel out of reach.
 
@@ -498,38 +530,55 @@ def _prefers_flex_for_head_dim(config):
     model_type, are both read from the config, so a model that needs flex gets it
     without the caller knowing anything about attention backends.
 
-    ON by default for those models. Measured on Qwen3.5-2B, a B200, 40 steps, cold
-    Inductor cache, per-step wall clock:
+    What actually costs SDPA the flash kernel above head_dim 128 is being handed an explicit
+    MASK, not the head dim itself. That matters because it decides how much the routing is
+    worth. Measured on a B200, torch 2.13, fwd+bwd, as sdpa(mask) / sdpa(no mask):
 
-        seqlen   sdpa steady   flex steady   speedup   extra compile   break-even
-          2048      184.6 ms      189.7 ms     0.97x         +2.2 s      never
-          4096      207.4 ms      201.5 ms     1.03x         +6.9 s    ~1170 steps
-          8192      432.6 ms      237.1 ms     1.82x         +0.7 s      ~step 5
+        head_dim   T=2048   T=4096   T=8192   backend under the mask
+              64    1.98x    3.10x    4.45x   cuDNN
+             128    1.31x    2.18x    2.88x   cuDNN
+             256    5.63x    7.66x    8.82x   fmha_cutlass -- flash disqualified
+             512    1.45x    1.71x    1.84x   fmha_cutlass
 
-    The 2048 figure is inside the ~3% run-to-run noise floor, so read it as neutral
-    rather than as a regression; the cost there is the one-off compile, not the step.
-    At 8192 the quadratic term dominates and flex repays that compile by ~step 5,
-    which is why the default favours it: the downside is seconds, the upside is 1.8x.
+    A mask costs something everywhere, because it denies the kernel the causal block-skipping
+    it gets from is_causal. head_dim 256 is the outlier, and roughly 3x worse, because it is
+    the only row where the mask changes the BACKEND, from flash to the sm80 cutlass fallback.
+    That discontinuity is what this routing is for.
 
-    One caveat the numbers above do not show, because it is a property of the BATCH and
-    not of the config, so this load-time decision cannot see it. What actually costs SDPA
-    the flash kernel above head_dim 128 is being handed an explicit mask, not the head dim
-    itself. Measured on a B200, torch 2.13, head_dim 256, fwd+bwd:
+    Under Unsloth the mask is effectively always present: unsloth_zoo wraps create_causal_mask
+    in torch.compile, and _ignore_causal_mask_sdpa opens with `if is_tracing(padding_mask):
+    return False`, so the skip that would return None never fires. test_flex_large_head_dim_
+    fallback.py::test_our_compiled_wrapper_is_what_defeats_the_skip pins that. So the masked
+    column, where flex wins, is the column Unsloth training actually runs.
 
-        seqlen   sdpa + mask   sdpa is_causal   flex
-          2048      4.711 ms        0.671 ms   0.838 ms
-          4096     16.877 ms        1.993 ms   2.161 ms
-          8192     63.114 ms        6.782 ms   7.494 ms
+    Steady state at T=8192, fwd+bwd, masked (median ms), against today's SDPA fallback:
 
-    `create_causal_mask` returns None for an unpadded batch, so SDPA gets is_causal=True
-    and reaches `pytorch_flash::flash_fwd_kernel<...256...>`; a padded or packed batch
-    materialises a mask and drops to `fmha_cutlassF...sm80`. So flex is a large win on
-    padded/packed training, which is the common case, and a ~25% loss on attention for a
-    perfectly uniform-length batch. Set the env var to "0" for that case.
+        shape                            sdpa      flex   flex gain
+        Qwen3.5-2B      (256)          64.298     9.255      +85.6%
+        Qwen3.5-35B-A3B (256)          64.047     9.793      +84.7%
+        Gemma 4 global  (512)         125.891    65.961      +47.6%
 
-    UNSLOTH_FLEX_ATTENTION_FOR_LARGE_HEAD_DIM overrides the config in either
-    direction, "0" to keep SDPA on a short-sequence or unpadded run, "1" to force flex on
-    a model this would otherwise leave alone.
+    The cost is FlexAttention's cold Inductor compile, and it is not small: 4.0-11.9 s per
+    distinct (shape, sequence length), measured with both the Inductor and the Triton cache
+    redirected before `import torch`. Break-even against SDPA is 74-83 steps at head_dim 256
+    and above, and 2 300-3 100 steps at head_dim <= 128, so flex does NOT repay its warmup
+    inside a 60-step finetune in any configuration measured, and a variable-length run pays
+    the compile again per length. It is the right default for the long runs the 85% figure
+    above describes, and the wrong one for a short notebook run.
+
+    UNSLOTH_FLEX_ATTENTION_FOR_LARGE_HEAD_DIM overrides the config in either direction: "0"
+    to keep SDPA on a short run, "1" to force flex on a model this would otherwise leave
+    alone. That is the knob for the break-even above.
+
+    Two head-dim bands, because they are not the same question:
+
+      * 128 < head_dim <= 256 -- flex ONLY while SDPA cannot reach cuDNN with a mask. torch
+        2.14 raises cuDNN's ceiling to 256 on sm100 and lets it take a mask, at which point
+        plain masked SDPA runs the same shape in 9.332 ms against flex's 9.255 ms and pays
+        none of the compile. See _sdpa_reaches_cudnn_at_head_dim_256.
+      * head_dim > 256 -- flex on every torch version, since no cuDNN build takes the head dim
+        and the alternative stays fmha_cutlass. This band also REQUIRES kernel_options; see
+        patch_flex_attention_kernel_options, without which the run faults outright.
     """
     _override = os.environ.get(_FLEX_LARGE_HEAD_DIM_ENV_VAR)
     if _override is not None and _override.strip() != "":
@@ -543,7 +592,13 @@ def _prefers_flex_for_head_dim(config):
     if _config_get(config, "model_type", "").lower() in _FLEX_LARGE_HEAD_DIM_EXCLUDED_MODELS:
         return False
     head_dim = _text_attention_head_dim(config)
-    return head_dim is not None and head_dim > _SDPA_FLASH_MAX_HEAD_DIM
+    if head_dim is None or head_dim <= _SDPA_FLASH_MAX_HEAD_DIM:
+        return False
+    # Above 256 no version of cuDNN takes the head dim, so flex is the only alternative to the
+    # sm80 cutlass fallback and the gate below must not remove it.
+    if head_dim > _FLEX_KERNEL_OPTIONS_SAFE_HEAD_DIM:
+        return True
+    return not _sdpa_reaches_cudnn_at_head_dim_256()
 
 
 # ---------------------------------------------------------------------------------------------
