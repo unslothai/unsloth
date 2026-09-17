@@ -14,6 +14,13 @@ from _playwright_robust import start_vite, stop_process, wait_for_smoke_page
 PAGE = "/smoke-prompt-queue-actions.html"
 ENTRY = "/smoke-prompt-queue-actions-main.tsx"
 
+# `wait_for_smoke_page` proves vite ANSWERS, by fetching the raw HTML. The first navigation
+# is what makes it WORK: vite transforms the page's whole module graph on demand, and the
+# default `wait_until = "load"` waits out every one of those requests, which on a cold
+# Windows runner runs past playwright's 30s default. The `wait_for` at the end of `seed`
+# already carries 60s for the same reason; this is the navigation ahead of it.
+NAV_TIMEOUT_MS = 90_000
+
 # The queue view must not fall back to English while Settings shows the
 # translated Queue/Steer wording from the same catalog.
 JA = {
@@ -32,7 +39,7 @@ def seed(
     locale = "en",
     shortcut = "enter",
 ):
-    page.goto(base + PAGE)
+    page.goto(base + PAGE, wait_until = "domcontentloaded", timeout = NAV_TIMEOUT_MS)
     page.evaluate(
         """([locale, shortcut]) => {
             localStorage.setItem("unsloth_locale", locale);
@@ -43,7 +50,7 @@ def seed(
         }""",
         [locale, shortcut],
     )
-    page.reload()
+    page.reload(wait_until = "domcontentloaded", timeout = NAV_TIMEOUT_MS)
     page.get_by_role("button", name = "Reset fixture", exact = True).wait_for(
         state = "visible", timeout = 60_000
     )
