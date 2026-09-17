@@ -3680,15 +3680,10 @@ def test_the_loader_prices_the_attention_mode_it_launches(
 ):
     """Compute AND KV follow the launch's attention mode, off one resolved state.
 
-    This used to also assert ``False in calls["kv"]``: the KV cache was priced with flash
-    attention off whatever the argv said, as a pre-emptive reserve for the crash recovery
-    that relaunches without it. That pin described a load that was not going to happen and
-    is what #9697 / #10489 are about -- with flash attention off the estimator floors V at
-    f16 and pads it model-wide, which is a 1.44x cache at q8_0 and 2.28x at q4_0 against
-    the one the child allocates. The cushion it stood in for is still there, and narrower:
-    ``_reserved_flash_attn_state`` holds the reading down only where a no-flash respawn
-    cannot be re-placed (a user's own ``--fit off``, or a layer count llama.cpp's fitter
-    refuses to move), which is neither of the cases here.
+    The KV cache used to be pinned to flash attention off whatever the argv said, which
+    priced a load that was not going to happen (#9697, #10489). The reserve it stood in for
+    is narrower now: ``_reserved_flash_attn_state`` only holds the reading down where a
+    no-flash respawn cannot be re-placed, which is neither of the cases here.
     """
     backend, gguf, calls = _recording_compute_backend(tmp_path, monkeypatch)
 

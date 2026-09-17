@@ -10724,8 +10724,7 @@ def _gguf_runtime_bytes(
         # is not conservative, it prices a launch that cannot happen -- the False arm
         # pads V to f16 and charges the whole quantized saving back. Measured on
         # llama-server b10632, Qwen3-0.6B at 32k with -ctk/-ctv q4_0: 2296 MiB reserved
-        # against 1008 MiB allocated, identical on the CPU and Vulkan builds. The pair
-        # itself goes to the resolver below, which reads the V axis out of it.
+        # against 1008 MiB allocated, identical on the CPU and Vulkan builds.
         # the loader raises --batch-size to max(slots, 2) before launch, and llama.cpp
         # caps the micro-batch against it, so budget from the emitted value. Diffusion
         # takes neither flag, and SWA metadata prices the KV against the micro-batch,
@@ -10798,12 +10797,7 @@ def _gguf_runtime_bytes(
         # tensors to the model-wide maximum (_max_kv_value_width), which on an
         # architecture whose global and SWA layers disagree about n_embd_v_gqa
         # inflates the whole cache and can call a load that fits an overflow. Resolved
-        # the way the launch resolves it: the managed default, narrowed by the
-        # capability probe, then llama.cpp's own env-then-last-wins-argv rule. A
-        # quantized V still forces it on top of all that, because llama-context.cpp
-        # turns it on itself rather than refusing the load. Ahead of every one of those,
-        # an architecture llama.cpp will not run with flash attention at all (Grok) is
-        # priced without it.
+        # the way the launch resolves it, Grok's forced-off exception first.
         _fa_supported = True
         try:
             _fa_caps = LlamaCppBackend.probe_server_capabilities()
@@ -10815,17 +10809,12 @@ def _gguf_runtime_bytes(
         except Exception as _fa_exc:
             logger.debug("flash-attention capability probe failed: %s", _fa_exc)
         # Shared with load_model so the estimate and the launch cannot answer differently
-        # (#9697, #10489). The old two-step form let a quantized V force flash attention on
-        # even on a build with no --flash-attn to emit.
+        # (#9697, #10489).
         flash_attn = _planned_flash_attn_state(
             llama_extra_args,
             planned_cache_types = planned_cache_types,
             supports_flash_attn = _fa_supported,
-            # The caller's toggle; the helper folds the extras and the inherited
-            # LLAMA_ARG_SPLIT_MODE on top, the same way load_model does.
             tensor_parallel = bool(tensor_parallel),
-            # From the header this probe already read: llama.cpp forces flash attention
-            # off for Grok before it reads anything else, so the estimate must too.
             architecture = getattr(probe, "_architecture", None),
             env = os.environ,
         )

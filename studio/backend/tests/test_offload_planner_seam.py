@@ -1559,9 +1559,7 @@ def test_flash_disabled_v_padding_reaches_the_layer_weights():
     is what _estimate_kv_cache_bytes charges via _max_kv_value_width. V goes
     constant while K stays per-layer, so an unpadded vector prices a ratio the
     total does not have. Reached whenever the resolved launch runs without flash
-    attention (_planned_flash_attn_state: a build without the flag, an explicit
-    off in the extras, LLAMA_ARG_FLASH_ATTN), which is exactly when llama.cpp
-    pads, so a spill plan's total and this vector move together."""
+    attention (_planned_flash_attn_state), which is exactly when llama.cpp pads."""
     b = _swa_backend()
     # SWA layers wider than global ones, so the model-wide max is the SWA width
     # and the padding actually moves: n_embd_v_gqa_max = 8 * 256.

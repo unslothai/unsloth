@@ -29,15 +29,8 @@ if _BACKEND_DIR not in sys.path:
 # loggers
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
-# __path__ so `loggers.media_progress` still resolves to the real submodule. A bare
-# ModuleType shadows the whole package rather than just its __init__, so once this
-# stub wins the setdefault, `from loggers.media_progress import ...` (routes/inference.py
-# at module level, reached from routes.models) dies with "'loggers' is not a package" --
-# which is why importing this module before routes.models made
-# test_kv_cache_estimate_route.py uncollectable on its own. Same fix, and the same
-# reason, as test_preview_routes.py (#10995). tests/conftest.py settles the real
-# package first (#11028), but that guard skips itself when `import loggers` raises, so
-# the stub carrying its own __path__ is what makes the order stop mattering.
+# __path__ so `loggers.media_progress` still resolves: a bare ModuleType shadows the whole
+# package, so the submodule import dies with "'loggers' is not a package" (#10995).
 _loggers_stub.__path__ = [str(Path(_BACKEND_DIR) / "loggers")]
 sys.modules.setdefault("loggers", _loggers_stub)
 

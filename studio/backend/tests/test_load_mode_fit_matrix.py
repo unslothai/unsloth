@@ -2139,10 +2139,8 @@ def test_the_no_flash_rung_recomputes_the_memory_record():
     import inspect
 
     src = inspect.getsource(B.load_model)
-    # Anchored on the DEFINITION, as the sibling pin at the top of this file already
-    # is. The bare name also appears in the comments that explain why a plan may be
-    # sized for the launch rather than for this respawn, and one of those sits earlier
-    # in load_model, so slicing from the first mention sliced a comment.
+    # Anchored on the DEFINITION: the bare name also appears in comments earlier in
+    # load_model, so slicing from the first mention sliced a comment.
     helper = src[src.index("def _drop_fit_load_mode_for_no_flash(") :]
     # Bounded at the next definition, so this proves the recompute is in the
     # helper and not merely somewhere later in load_model.
@@ -2282,12 +2280,8 @@ def _no_flash_fit_rewriter(
     manual_gpu_layers = None,
     env = None,
 ):
-    """The nested `_enable_managed_fit_for_no_flash` as a callable, bound to `extra_args`.
-
-    It closes over load_model's locals, so it cannot be imported; compiling its own source
-    with just that one name supplied runs the REAL rewrite rather than a restatement of it,
-    which is what makes the cases below observe behaviour instead of text.
-    """
+    """The nested `_enable_managed_fit_for_no_flash` as a callable: it closes over
+    load_model's locals, so compiling its source is the only way to run the REAL rewrite."""
     from core.inference.llama_cpp import LlamaCppBackend as B
     from core.inference import llama_cpp as B_module
     from core.inference.llama_cpp import logger, _flag_name
@@ -2311,17 +2305,13 @@ def _no_flash_fit_rewriter(
 def test_the_no_flash_retry_re_enables_unsloths_own_fitter():
     """A managed `--fit off` is flipped back on for the respawn.
 
-    The reserve is sized for the attention the FIRST process runs with, and that is only
-    safe because the no-flash respawn is re-placed: FA off pads V and floors it at f16, so
-    the child needs the placement the fit would have chosen for the bigger cache. An auto
-    placement that fits appends `--fit off`, the respawn inherits it, and
-    `_fit_off_retry_eligible` refuses to turn fitting on for any argv naming the flag, so
-    without the flip the retry re-lands on the smaller-cache placement and OOMs.
+    The reserve is only safe because the respawn is re-placed, and it inherits the auto
+    placement's `--fit off` that `_fit_off_retry_eligible` will not override, so without the
+    flip the retry re-lands on the smaller-cache placement and OOMs.
     """
     rewrite = _no_flash_fit_rewriter(None)
     out = rewrite(["llama-server", "--fit", "off", "--flash-attn", "off"])
     assert out[out.index("--fit") + 1] == "on"
-    # An already-on fitter, and an argv that never named the flag, are both untouched.
     on = ["llama-server", "--fit", "on"]
     assert rewrite(on) == on
     bare = ["llama-server", "--flash-attn", "off"]
@@ -2329,29 +2319,20 @@ def test_the_no_flash_retry_re_enables_unsloths_own_fitter():
 
 
 def test_the_no_flash_fit_flip_leaves_a_user_fit_alone():
-    """The user's own `--fit off` survives the respawn, in both spellings.
-
-    Theirs is appended after Unsloth's and wins by last-arg either way, so the flip would
-    be a no-op -- except where Unsloth added no token at all and the only `--fit` present
-    is theirs, which is exactly the argv this refuses to touch. A user-disabled fitter is
-    the case `_reserved_flash_attn_state` holds the reserve down for instead.
-    """
+    """The user's own `--fit off` survives the respawn, in both spellings: theirs wins by
+    last-arg anyway, except where the only `--fit` present is theirs."""
     for user_tokens in (["--fit", "off"], ["--fit=off"], ["-fit", "off"]):
         rewrite = _no_flash_fit_rewriter(user_tokens)
         # Unsloth's token present as well: the last value is still the user's "off".
         both = rewrite(["llama-server", "--fit", "off", *user_tokens])
         assert both == ["llama-server", "--fit", "off", *user_tokens]
-        # And the argv where the only --fit is the user's is not rewritten into "on".
         theirs = rewrite(["llama-server", *user_tokens])
         assert theirs == ["llama-server", *user_tokens]
 
 
 def test_the_no_flash_retry_re_places_at_both_respawns():
-    """Both --flash-attn off arms re-enable the fitter, each before its own spawn.
-
-    Checked at the source, like the load-mode strip above, because these arms only run
-    behind a real crash.
-    """
+    """Both --flash-attn off arms re-enable the fitter, each before its own spawn. Checked
+    at the source because these arms only run behind a real crash."""
     from core.inference.llama_cpp import LlamaCppBackend as B
     import inspect
 
@@ -2366,20 +2347,16 @@ def test_the_no_flash_retry_re_places_at_both_respawns():
 def test_a_fixed_layer_count_keeps_the_no_flash_retry_on_its_placement():
     """Manual mode's `--fit off` is not an auto placement's, and must not be flipped.
 
-    A Manual load emits `--gpu-layers N --fit off`, which is token for token what an auto
-    placement that fits emits for the fitter. The difference is what the flip would buy:
-    `common_params_fit_impl` throws "n_gpu_layers already set by user" (common/fit.cpp:377)
-    for any count but llama.cpp's own -1 default and the caller downgrades it to a warning,
-    so the retry keeps the fixed placement whatever the fit flag says. Flipping it and then
-    pricing the reserve as if a re-placement were coming is how the padded flash-attention-off
-    cache lands on a placement chosen for the unpadded one.
+    Manual emits `--gpu-layers N --fit off`, token for token what an auto placement emits,
+    but `common_params_fit_impl` throws "n_gpu_layers already set by user"
+    (common/fit.cpp:377) for any count but -1, so the retry keeps the fixed placement and
+    the flip would only buy a reserve priced for a re-placement that cannot happen.
     """
     rewrite = _no_flash_fit_rewriter(None, manual_gpu_layers = 20)
     fixed = ["llama-server", "--gpu-layers", "20", "--fit", "off"]
     assert rewrite(fixed) == fixed
 
-    # The count in the argv decides even without Unsloth's own record of it, since
-    # llama.cpp reads the tokens and not this process's idea of the mode.
+    # The argv count decides on its own: llama.cpp reads the tokens, not this process.
     assert _no_flash_fit_rewriter(None)(fixed) == fixed
     # And an inherited count, which the fitting path emits no -ngl to lose to.
     inherited = _no_flash_fit_rewriter(None, env = {"LLAMA_ARG_N_GPU_LAYERS": "20"})
@@ -2391,11 +2368,8 @@ def test_a_fixed_layer_count_keeps_the_no_flash_retry_on_its_placement():
 
 
 def test_the_reserve_holds_for_a_placement_the_fitter_will_not_move():
-    """The other half of the same case, on the estimate rather than the argv.
-
-    With no re-placement available the reserve has to price the padded, f16-floored V the
-    retry would run with, exactly as it does for a user's own `--fit off`.
-    """
+    """The other half of the same case, on the estimate rather than the argv: with no
+    re-placement available the reserve prices the padded, f16-floored V."""
     from core.inference.llama_cpp import _placement_is_fitter_proof, _reserved_flash_attn_state
 
     assert _reserved_flash_attn_state(True, None, gpu_layers = 20, env = {}) is False
@@ -2406,7 +2380,6 @@ def test_the_reserve_holds_for_a_placement_the_fitter_will_not_move():
     assert _reserved_flash_attn_state(True, ["-ngl", "-1"], env = {}) is True
     assert _reserved_flash_attn_state(True, None, env = {}) is True
 
-    # The predicate itself, on the spellings llama.cpp accepts.
     assert _placement_is_fitter_proof(["--gpu-layers=20"], env = {}) is True
     assert _placement_is_fitter_proof(["--n-gpu-layers", "0"], env = {}) is True
     assert _placement_is_fitter_proof(["-ngl", "auto"], env = {}) is False

@@ -3787,8 +3787,7 @@ _FIT_FLOOR_MIN_CTX = 256
 # the ceiling that assumed one.
 _LLAMA_FIT_MIN_CTX = 4096
 
-# _plan_tensor_parallel's no-KV fallback. Named separately because it is a GUESS: it may
-# shrink Auto, but may not overrule a hand-set context nor be published as a ceiling (#9653).
+# _plan_tensor_parallel's no-KV fallback. A GUESS: may shrink Auto, never a request (#9653).
 _TP_UNMEASURED_CTX = 4096
 
 # Auto only reaches this path when no discrete-GPU subset can hold the model.
@@ -4672,29 +4671,13 @@ def _kv_unified_from_args(
     return enabled
 
 
-# Architectures llama.cpp refuses to run with flash attention, whatever the launch asks
-# for. llama-context.cpp, at the top of llama_init_from_model:
-#
-#     if (params.flash_attn_type != LLAMA_FLASH_ATTN_TYPE_DISABLED
-#             && model->arch == LLM_ARCH_GROK) {
-#         LLAMA_LOG_WARN("flash_attn is not compatible with Grok - forcing off");
-#         params.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;
-#     }
-#
-# Grok's attention softcaps the KQ logits (30 * tanh(kq / 30), llama-graph.cpp's
-# LLM_ARCH_GROK branch), which the fused kernel does not carry. The value is the GGUF's
-# own general.architecture string, so compare it the way it is stored.
+# llama_init_from_model forces flash attention off for LLM_ARCH_GROK whatever the launch
+# asks for: Grok softcaps the KQ logits, which the fused kernel does not carry.
 _FLASH_ATTN_INCOMPATIBLE_ARCHITECTURES = frozenset({"grok"})
 
 
 def _architecture_forces_flash_attn_off(architecture: Optional[str]) -> bool:
-    """Whether llama.cpp will disable flash attention for this architecture on its own.
-
-    Not a preference and not a conservative reading: the child really does run without it,
-    so the estimate has to price the padded, f16-floored V layout or it describes a
-    different server. Unknown or unread architectures answer False and keep the managed
-    default, the same way an unreadable capability probe does.
-    """
+    """Whether llama.cpp will disable flash attention for this architecture on its own."""
     return str(architecture or "").strip().lower() in _FLASH_ATTN_INCOMPATIBLE_ARCHITECTURES
 
 
@@ -4707,47 +4690,27 @@ def _planned_flash_attn_state(
     architecture: Optional[str] = None,
     env: Optional[Mapping[str, str]] = None,
 ) -> bool:
-    """One answer for the estimate and for the argv: ``_estimate_kv_cache_bytes`` floors V at
-    f16 and pads it model-wide when flash attention is off, so resolving the two separately
-    prices a different load, not a conservative one (#9697, #10489). A build with no
-    ``--flash-attn`` in its ``--help`` emits nothing and rewrites a quantized V to f16
-    (``_reset_quantized_v_cache``), which is exactly the padded arm.
-
-    The architecture is decided first here because llama.cpp decides it first:
-    ``llama_init_from_model`` forces flash attention off for ``LLM_ARCH_GROK`` above both
-    of its own upgrades, the ``SPLIT_MODE_TENSOR`` one and the quantized-V one.
-    """
+    """One answer for the estimate and for the argv: the estimator floors V at f16 and pads
+    it model-wide when flash attention is off, so resolving the two separately prices a
+    different load, not a conservative one (#9697, #10489)."""
     if not supports_flash_attn:
         return False
     if _architecture_forces_flash_attn_off(architecture):
-        # Ahead of every rule below, exactly as llama-context.cpp puts it ahead of both
-        # upgrades: "flash_attn is not compatible with Grok - forcing off". Nothing a
-        # later branch does can put it back, so neither can anything here.
+        # Ahead of every rule below, as llama.cpp puts it ahead of both its own upgrades.
         return False
     v_type = (planned_cache_types[1] if planned_cache_types else "f16") or "f16"
     quantized_v = str(v_type).strip().lower() not in {"f16", "bf16", "f32"}
     if quantized_v:
         # Not a choice: llama.cpp turns it on itself rather than refusing the load.
         return True
-    # Prepended, not merely read from extra_args: ``load_model`` appends a managed
-    # ``--flash-attn on``, so LLAMA_ARG_FLASH_ATTN=off loses to it and only the user's own
-    # extras beat it. Reading the env directly sized the padded cache for a child running
-    # with flash attention ON (#9697, #10489).
+    # Prepended because ``load_model`` appends a managed ``--flash-attn on``: the env loses
+    # to it and only the user's own extras beat it (#9697, #10489).
     effective_args = ["--flash-attn", "on", *(str(arg) for arg in extra_args or ())]
     if _asked_for_auto_flash_attn(effective_args, env = env):
         if _effective_tensor_parallel(extra_args, tensor_parallel, env):
-            # Not undecided here. llama.cpp upgrades AUTO to ENABLED under SPLIT_MODE_TENSOR
-            # rather than deciding it per load -- the branch directly above the quantized-KV
-            # guard in llama-context.cpp, the same one that returns nullptr for
-            # "SPLIT_MODE_TENSOR requires flash_attn to be enabled". Sizing the padded V
-            # layout for a load that will run with flash attention on prices a cache the
-            # child never allocates, and the published context is then smaller than what it
-            # can actually hold. The split mode is read from the extras, the toggle and the
-            # inherited LLAMA_ARG_SPLIT_MODE through the same helper the launch uses, so the
-            # estimate and the argv cannot disagree about which mode is running.
+            # Not undecided: llama.cpp upgrades AUTO to ENABLED under SPLIT_MODE_TENSOR.
             return True
-        # ``auto`` is decided at load time, silently, and can come back no. Size for the
-        # answer that costs more.
+        # ``auto`` is decided at load time and can come back no; size for the costlier answer.
         return False
     return _flash_attn_enabled_from_args(effective_args, default = True, env = env)
 
@@ -4755,12 +4718,8 @@ def _planned_flash_attn_state(
 def _user_fit_disabled(
     extra_args: Optional[Iterable[str]] = None, *, env: Optional[Mapping[str, str]] = None
 ) -> bool:
-    """Whether the USER has turned llama.cpp's fitter off, last-wins.
-
-    Unsloth's own ``--fit`` token is added before the extras and a retry rewrites that one, so
-    only a user's later value survives a re-place. Read the same way the launch reads it:
-    ``--fit off``, ``--fit=off`` or an inherited ``LLAMA_ARG_FIT`` that says the same thing.
-    """
+    """Whether the USER has turned llama.cpp's fitter off, last-wins: Unsloth's own token
+    comes first and a retry rewrites it, so only a user's later value survives a re-place."""
     values = [str(arg) for arg in extra_args] if extra_args else []
     asked: Optional[str] = None
     inherited = (os.environ if env is None else env).get("LLAMA_ARG_FIT")
@@ -4783,21 +4742,9 @@ def _placement_is_fitter_proof(
     gpu_layers: Optional[int] = None,
     env: Optional[Mapping[str, str]] = None,
 ) -> bool:
-    """Whether a layer count llama.cpp's fitter refuses to move owns this placement.
-
-    ``common_params_fit_impl`` throws "n_gpu_layers already set by user"
-    (common/fit.cpp:377) for any value but llama.cpp's own default of -1
-    (llama-model.cpp:2453), and the caller downgrades that to a warning
-    (common/fit.cpp:805), so the launch proceeds with the count exactly as given.
-    Turning the fitter back on for a respawn therefore buys nothing on such a launch:
-    the placement is the same one either way. A count comes from Unsloth's Manual mode
-    (``gpu_layers >= 0``, emitted as ``--gpu-layers N --fit off``), from a pass-through
-    ``-ngl`` in the extras, or from an inherited ``LLAMA_ARG_N_GPU_LAYERS``, which the
-    fitting path never emits an ``-ngl`` to lose to.
-
-    ``auto`` and ``-1`` are that default rather than an override, so they leave the
-    fitter free and do not count.
-    """
+    """Whether a layer count llama.cpp's fitter refuses to move owns this placement:
+    ``common_params_fit_impl`` throws "n_gpu_layers already set by user" (common/fit.cpp:377)
+    for any value but -1, so re-enabling the fitter for a respawn buys nothing."""
     if gpu_layers is not None and gpu_layers >= 0:
         return True
     values = [str(arg) for arg in extra_args] if extra_args else []
@@ -4824,17 +4771,9 @@ def _reserved_flash_attn_state(
 ) -> bool:
     """``planned``, held to the conservative reading where a respawn cannot be re-placed.
 
-    The planned state is what the FIRST process runs with, and it is the right answer for the
-    argv. It is not always the right answer for the RESERVE: a hard crash on a problematic
-    flash-attention kernel respawns with flash attention off, which pads V model-wide and
-    floors it at f16, and that respawn is normally re-placed by llama.cpp's fitter. A user's
-    own ``--fit off`` wins by last-arg over the token the retry rewrites, so there is no
-    re-placement to save it, and the larger cache lands on a placement chosen for the smaller
-    one -- an OOM at startup, repeatedly, on a total the estimate called safe.
-
-    Tensor mode is excluded because it cannot take that recovery at all: llama.cpp requires
-    flash attention under SPLIT_MODE_TENSOR, so there is no no-flash respawn to reserve for,
-    and pricing the padded layout there would refuse loads that fit.
+    A flash-attention crash respawns with it off, which pads V model-wide, so where the
+    fitter cannot re-place that respawn the larger cache lands on a placement chosen for the
+    smaller one. Tensor mode has no such respawn, and pricing it would refuse loads that fit.
     """
     if not planned:
         return planned
@@ -4842,9 +4781,6 @@ def _reserved_flash_attn_state(
         return planned
     if _user_fit_disabled(extra_args, env = env):
         return False
-    # And the placement llama.cpp's fitter will not move, for the same reason: the retry
-    # rewrites the fit token back on, but a count the user fixed makes that a no-op, so the
-    # padded cache lands on the placement priced for the unpadded one.
     if _placement_is_fitter_proof(extra_args, gpu_layers = gpu_layers, env = env):
         return False
     return planned
@@ -14558,13 +14494,9 @@ class LlamaCppBackend:
     def _unmeasured_context_notice(
         requested_ctx: int, cache_type_kv: Optional[str] = None
     ) -> Optional[str]:
-        """Advisory for a hand-set context launched with no KV estimate behind it.
-
-        A GGUF with no attention dimensions cannot be priced, so both short-context fallbacks
-        (``_TP_UNMEASURED_CTX``, ``_metal_floor_ctx``) used to overrule a 262,144-token
-        request down to 4,096 and publish that as ``max_context_length`` (#9653). Deliberately
-        an advisory and not a refusal: refusing on a guess blocks loads that work today.
-        """
+        """Advisory for a hand-set context with no KV estimate behind it: the short-context
+        fallbacks used to cut a 262,144-token request to 4,096 and publish it (#9653). Not a
+        refusal, which on a guess blocks live loads."""
         if requested_ctx <= 0:
             return None
         kv_hint = (
@@ -15292,11 +15224,9 @@ class LlamaCppBackend:
         # layer's V is padded to hparams.n_embd_v_gqa_max() over the WHOLE model,
         # which is what _estimate_kv_cache_bytes charges (_max_kv_value_width). The
         # V half goes constant while K stays per-layer, so an unpadded vector
-        # prices a ratio the total does not have. Reached whenever the resolved launch runs
-        # without flash attention (_planned_flash_attn_state), which is when V is padded.
-        # bpe_v is floored at
-        # f16 for a quantised cache, and with V constant that asymmetry moves the
-        # ratio too, so carry both rather than cancelling one.
+        # prices a ratio the total does not have. bpe_v is floored at f16 for a quantised
+        # cache, and with V constant that asymmetry moves the ratio too, so carry both
+        # rather than cancelling one.
         bpe_k = _kv_bytes_per_elem(cache_type_kv)
         bpe_v = bpe_k if flash_attn else max(bpe_k, _kv_bytes_per_elem("f16"))
         padded_v_width = None if flash_attn else self._max_kv_value_width(val_len, val_len_swa)
@@ -20336,9 +20266,8 @@ class LlamaCppBackend:
         so an asymmetric pair keeps both terms conservative. Defaults to
         ``cache_type_kv`` when unset, which is the symmetric case.
 
-        ``explicit_ctx`` only matters when the KV cache cannot be sized at all: the fallback
-        is then a guess, so it may shrink Auto but must neither overrule the request nor
-        publish a ceiling below what launched (#9653). A real KV estimate binds either way.
+        ``explicit_ctx`` only matters when the KV cache cannot be sized: the fallback is then
+        a guess, so it may shrink Auto but never overrule a request (#9653).
         """
 
         # Per-GPU usable budget: free - (1-frac)*total, else (unknown total, e.g. a
@@ -20437,11 +20366,8 @@ class LlamaCppBackend:
         )
 
         def _cc_ctx(ctx: int) -> int:
-            # The same resolved state ``_kv_at`` above prices with. Tensor mode normally
-            # answers True (llama.cpp requires flash attention for SPLIT_MODE_TENSOR), but
-            # not always: a build with no ``--flash-attn`` and an architecture llama.cpp
-            # refuses to run with it both resolve False, and the mask this buffer carries
-            # is f32 rather than f16 there.
+            # The same resolved state ``_kv_at`` prices with: tensor mode usually answers
+            # True, but not always, and the mask this buffer carries is f32 when it does not.
             return n_dev * self._compute_buffer_ctx_bytes(
                 ctx, n_ubatch, cc_cache_type, flash_attn = flash_attn
             )
@@ -20482,7 +20408,7 @@ class LlamaCppBackend:
         effective_ctx = min(_fit_ctx(target_ctx), max_available_ctx)
         if not self._can_estimate_kv() and explicit_ctx and target_ctx > 0:
             # The min() above would apply a guess to a typed context: 262,144 requested came
-            # back as 4,096 for the launch AND as max_context_length (#9653).
+            # back as 4,096, for the launch and for max_context_length (#9653).
             effective_ctx = target_ctx
             max_available_ctx = max(max_available_ctx, effective_ctx)
 
@@ -20610,7 +20536,7 @@ class LlamaCppBackend:
             effective_ctx,
             n_ubatch,
             scratch_cache_type_kv or cache_type_kv,
-            # Same state as the KV above, for the same reason.
+            # Same state as the KV above.
             flash_attn = flash_attn,
         )
         total_bytes = model_size + kv_bytes + mtp_bytes + max(0, soft_overhead_bytes)
@@ -22971,24 +22897,15 @@ class LlamaCppBackend:
                     None if _cache_type_from_env else cache_type_kv,
                     extra_args,
                 )
-                # Unsloth's own fixed count, when Manual mode pinned one. Auto leaves it
-                # negative, which is llama.cpp's default and no override at all.
+                # Auto leaves this negative, which is llama.cpp's default and no override.
                 _manual_gpu_layers = gpu_layers if gpu_memory_mode == "manual" else None
-                # After the cache pair, because a quantized V forces flash attention on.
-                # NOT pinned False to pre-reserve the cache a hard-crash recovery would
-                # relaunch with: tensor mode cannot take that recovery (llama.cpp requires
-                # flash attention for SPLIT_MODE_TENSOR) and elsewhere the no-flash respawn
-                # goes back through _spawn_and_wait, which hands placement to --fit.
-                # The architecture goes in because llama.cpp disables flash attention for
-                # Grok itself, above every other rule; the KV cache AND the compute buffers
-                # below both price off this one state, so that exception reaches both.
+                # After the cache pair, because a quantized V forces flash attention on. NOT
+                # pinned False for the no-flash recovery: --fit re-places that respawn.
                 planned_flash_attn = _reserved_flash_attn_state(
                     _planned_flash_attn_state(
                         extra_args,
                         planned_cache_types = _planned_cache_pair,
                         supports_flash_attn = bool(server_caps.get("supports_flash_attn", True)),
-                        # The toggle as it stands here; the helper resolves the extras and the
-                        # inherited env on top of it, exactly as the line below does.
                         tensor_parallel = tensor_parallel,
                         architecture = self._architecture,
                     ),
@@ -22998,15 +22915,9 @@ class LlamaCppBackend:
                 )
 
                 def _replan_env(_current_tp: bool) -> "Optional[Mapping[str, str]]":
-                    """The environment the CHILD will see once this decision is final.
-
-                    A downgrade is authoritative: the launch clears a non-layer inherited
-                    LLAMA_ARG_SPLIT_MODE (and its paired tensor split) before spawning, so the
-                    child runs the layer plan whatever the parent's environment says. Resolving
-                    the attention against the parent's copy turned tensor mode straight back on
-                    inside the helper, and a user ``-fa auto`` then priced the unpadded V of a
-                    load that will decide the question again, on its own, under a layer split.
-                    """
+                    """The environment the CHILD will see: the launch clears a non-layer
+                    inherited LLAMA_ARG_SPLIT_MODE, which otherwise turns tensor mode back
+                    on inside the helper."""
                     if _current_tp:
                         return None
                     inherited = (os.environ.get("LLAMA_ARG_SPLIT_MODE") or "").strip().lower()
@@ -23019,14 +22930,8 @@ class LlamaCppBackend:
                     }
 
                 def _replanned_flash_attn(_current_tp: bool) -> bool:
-                    """Re-resolve the planned attention after a tensor-mode downgrade.
-
-                    llama.cpp requires flash attention under SPLIT_MODE_TENSOR, so AUTO
-                    plans it ON whenever the split resolves to tensor. Every downgrade
-                    below takes that requirement away again, and the KV and compute
-                    estimates priced after one would otherwise keep budgeting for an
-                    unpadded V that a layer split with AUTO attention off does not get.
-                    """
+                    """Re-resolve the planned attention after a tensor-mode downgrade: AUTO
+                    plans it ON under tensor, so a stale plan budgets a V layer never gets."""
                     _env = _replan_env(_current_tp)
                     return _reserved_flash_attn_state(
                         _planned_flash_attn_state(
@@ -23061,8 +22966,8 @@ class LlamaCppBackend:
                         )
                     tensor_parallel = False
                     tensor_split = None
-                    # Same rule as the later drops: the plan was made while the toggle still
-                    # said tensor, which is the one state that forces AUTO attention on.
+                    # The plan was made under tensor, the one state forcing AUTO on. Same
+                    # for every later downgrade.
                     planned_flash_attn = _replanned_flash_attn(tensor_parallel)
                 # Record the requested strategy for /status and the load
                 # response. 'manual' has no fallback, so the request value is the
@@ -23494,7 +23399,6 @@ class LlamaCppBackend:
                         # otherwise reach llama-server. Strip it like the TP
                         # downgrade does.
                         extra_args = strip_split_mode_only(extra_args)
-                        # The split is layer now, so re-price the attention with it.
                         planned_flash_attn = _replanned_flash_attn(tensor_parallel)
                     elif gpu_memory_mode == "manual":
                         # Manual offload (--gpu-layers + --fit off): no automatic
@@ -23516,7 +23420,6 @@ class LlamaCppBackend:
                         # those.
                         if tensor_parallel or split_mode_override == "tensor":
                             extra_args = strip_split_mode_only(extra_args)
-                            # The split is layer now, so re-price the attention with it.
                             planned_flash_attn = _replanned_flash_attn(tensor_parallel)
 
                     # Will MTP engage? If so, auto-fit reserves draft-model VRAM.
@@ -23859,11 +23762,7 @@ class LlamaCppBackend:
                         # per-device rate also steps up once split, unless llama.cpp
                         # declines the pipeline parallelism that causes the step.
                         # A nonzero ``slots`` prices that candidate count and its micro-batch.
-                        # The same resolved state the KV cache is priced with, read at call
-                        # time rather than captured: a tensor-mode downgrade re-plans it
-                        # (_replanned_flash_attn), and a compute buffer still priced for the
-                        # tensor plan would charge an f16 KQ mask to a layer split that runs
-                        # AUTO attention off and allocates the f32 one.
+                        # Read at call time: a tensor-mode downgrade re-plans it.
                         return max(1, n_gpus) * self._compute_buffer_ctx_bytes(
                             ctx,
                             _ubatch_for_slots(slots) if slots else _effective_ubatch,
@@ -23960,7 +23859,6 @@ class LlamaCppBackend:
                         # than let the layer planner settle on the first card it fits.
                         _layer_min_gpus = max(_layer_min_gpus, len(gpus))
                         extra_args = strip_split_mode_only(extra_args)
-                        # The split is layer now, so re-price the attention with it.
                         planned_flash_attn = _replanned_flash_attn(tensor_parallel)
                     if tensor_parallel and self._tensor_split_aborts(
                         binary, model_identifier, _planned_cache_pair
@@ -23978,7 +23876,6 @@ class LlamaCppBackend:
                         _layer_min_gpus = max(_layer_min_gpus, len(gpus))
                         # An extras --split-mode tensor would re-engage tensor mode.
                         extra_args = strip_split_mode_only(extra_args)
-                        # The split is layer now, so re-price the attention with it.
                         planned_flash_attn = _replanned_flash_attn(tensor_parallel)
 
                     # Tensor mode replicates a compute buffer on every GPU, so drop
@@ -24029,7 +23926,6 @@ class LlamaCppBackend:
                         if len(gpus) >= 2:
                             _layer_min_gpus = max(_layer_min_gpus, len(gpus))
                         extra_args = strip_split_mode_only(extra_args)
-                        # The split is layer now, so re-price the attention with it.
                         planned_flash_attn = _replanned_flash_attn(tensor_parallel)
 
                     # Normalize the speculative reserve BEFORE anything prices it.
@@ -24607,7 +24503,6 @@ class LlamaCppBackend:
                             if len(tp_gpus) >= 2:
                                 _layer_min_gpus = max(_layer_min_gpus, len(tp_gpus))
                             extra_args = strip_split_mode_only(extra_args)
-                            # The split is layer now, so re-price the attention with it.
                             planned_flash_attn = _replanned_flash_attn(tensor_parallel)
                             # Layer split now, so the withheld verdict applies -- but not
                             # when a GPU drafter is still in play. The drafter-drop probe
@@ -24680,14 +24575,12 @@ class LlamaCppBackend:
                             # would otherwise size placement against a fraction the
                             # ranking above never used.
                             vram_fraction = _vram_frac,
-                            # Only read when the KV cache cannot be sized.
                             explicit_ctx = explicit_ctx,
                         )
                         use_fit = False
                         _tp_planned = True
                         if explicit_ctx and not self._can_estimate_kv():
-                            # Tensor mode emits --fit off, so llama.cpp will not reduce
-                            # this either: nothing downstream will catch an over-commit.
+                            # Tensor mode emits --fit off, so nothing downstream catches it.
                             self._record_load_warning(
                                 self._unmeasured_context_notice(effective_ctx, cache_type_kv)
                             )
@@ -24952,8 +24845,8 @@ class LlamaCppBackend:
                         # The other measured verdict: nothing fits, so there is no ceiling
                         # to name and every explicit request over-commits.
                         _apple_nothing_fits = False
-                        # No measurement at all: the floor below is a guess, so it may
-                        # neither refuse nor be published as a ceiling (#9653).
+                        # No measurement: the floor below is a guess, so it may neither
+                        # refuse nor be published as a ceiling (#9653).
                         _apple_ctx_unmeasured = False
                         # Reserve the flat MTP fraction up front like the discrete
                         # _pin_fraction, so an unsized MTP draft (e.g. Qwen3.6-MTP, #6529)
@@ -25078,9 +24971,8 @@ class LlamaCppBackend:
                         if not explicit_ctx:
                             effective_ctx = max_available_ctx
                         elif _apple_ctx_unmeasured:
-                            # This arm never overruled the request, but published the floor
-                            # anyway: /v1/models answered max_context_length 4,096 for a load
-                            # launched at 262,144 (#9653).
+                            # This arm never overruled the request but published the floor:
+                            # max_context_length 4,096 for a load launched at 262,144 (#9653).
                             max_available_ctx = max(max_available_ctx, effective_ctx)
                             self._record_load_warning(
                                 self._unmeasured_context_notice(effective_ctx, cache_type_kv)
@@ -28165,26 +28057,10 @@ class LlamaCppBackend:
                 def _enable_managed_fit_for_no_flash(fa_cmd: list) -> list:
                     """Unsloth's own ``--fit off`` back to ``on`` for a --flash-attn off respawn.
 
-                    The reserve is sized for the attention the FIRST process runs with, and
-                    what makes that safe is that the no-flash respawn is re-placed: turning
-                    flash attention off pads V model-wide and floors it at f16, and on an MLA
-                    model takes K down with it, so the child needs a placement the fit priced
-                    for a bigger cache. An ordinary auto placement that fits appends a managed
-                    ``--fit off``, the respawn inherits it, and `_fit_off_retry_eligible`
-                    refuses to enable fitting for any command that names the flag at all -- so
-                    without this the retry lands on the placement chosen for the smaller cache
-                    and OOMs at startup, repeatedly, which is the case the reserve exists for.
-
-                    Unsloth's own token, which is added before the extras, exactly as the
-                    fit-off crash retry above rewrites it. Skipped entirely when the user
-                    named the flag themselves: their later value wins by last-arg either way,
-                    so the rewrite would change nothing except in the one case where Unsloth
-                    added no token at all and the first ``--fit`` in the argv is theirs. A
-                    user-disabled fitter is the case `_reserved_flash_attn_state` holds the
-                    reserve down for instead, so nothing here needs to reach it, and so is a
-                    layer count llama.cpp's fitter refuses to move: Manual mode's own
-                    ``--gpu-layers N`` carries a managed ``--fit off`` that looks exactly like
-                    an auto placement's, but flipping it re-places nothing.
+                    The reserve is only safe because the respawn gets re-placed, and it
+                    inherits a managed ``--fit off`` that `_fit_off_retry_eligible` will not
+                    override, so without this it OOMs on the smaller-cache placement. Skipped
+                    where the flip buys nothing: a user's own ``--fit``, or a fixed count.
                     """
                     if "--fit" not in fa_cmd:
                         return fa_cmd
@@ -28192,11 +28068,6 @@ class LlamaCppBackend:
                         _flag_name(str(token)) in {"-fit", "--fit"} for token in (extra_args or ())
                     ):
                         return fa_cmd
-                    # A count the fitter refuses to move makes the flip a no-op -- Manual
-                    # mode's own `--gpu-layers N`, a pass-through `-ngl`, or an inherited
-                    # LLAMA_ARG_N_GPU_LAYERS -- so the respawn keeps the fixed placement it
-                    # was given and `_reserved_flash_attn_state` prices the padded cache
-                    # against it rather than against a re-placement that cannot happen.
                     if _placement_is_fitter_proof(fa_cmd, gpu_layers = _manual_gpu_layers, env = env):
                         return fa_cmd
                     index = fa_cmd.index("--fit")
@@ -29936,9 +29807,7 @@ class LlamaCppBackend:
                     0,
                     int(self._DEFAULT_N_UBATCH if _launched_ubatch is None else _launched_ubatch),
                 )
-                # What the child is RUNNING, not what the argv asked for: the same
-                # architecture rule the plan above resolved with, named once so the two
-                # cannot drift.
+                # What the child is RUNNING: the same architecture rule the plan above used.
                 self._flash_attn_enabled = _flash_attn_enabled_from_args(
                     _last_spawn_cmd, default = not _flash_attn_known_off, env = env
                 ) and not _architecture_forces_flash_attn_off(self._architecture)

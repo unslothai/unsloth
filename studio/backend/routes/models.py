@@ -2180,14 +2180,9 @@ async def _require_model_access_or_caller_token(
 def _tensor_split_can_launch(tensor_parallel, flash_attn) -> bool:
     """Whether a load asking for a tensor split can actually take one.
 
-    llama.cpp refuses the pair: "SPLIT_MODE_TENSOR requires flash_attn to be enabled" returns
-    nullptr, so a request for tensor mode with flash attention off cannot launch tensor at all
-    and the loader falls back to a layer split. Pricing the tensor placement for it multiplies
-    the per-device compute buffers by a card count the launch never uses, and describes a
-    process that cannot run.
-
-    Only a RESOLVED False refuses. None is "not resolved", which is not evidence that the
-    child will run without it, and an estimate is not the place to invent one.
+    llama.cpp returns nullptr for "SPLIT_MODE_TENSOR requires flash_attn to be enabled", so
+    such a load falls back to a layer split. Only a RESOLVED False refuses; None is "not
+    resolved", not evidence the child runs without flash attention.
     """
     if not tensor_parallel:
         return False
@@ -3937,12 +3932,11 @@ async def get_kv_cache_estimate(
             except Exception as e:
                 logger.debug(f"cache type resolution failed for '{repo_id}': {e}")
 
-            # Taking the estimator's defaults here while the loader resolved the same knobs
+            # Taking the estimator's defaults while the loader resolved the same knobs
             # differently is why one model and cache type reported two KV caches (#10489).
-            # An asked-for value is expressed as the extra argument a load would carry and
-            # re-resolved by the launch's own helpers, never taken verbatim, so the route
-            # cannot answer for a load that cannot happen.
-            # isinstance(..., bool): called in process an omitted argument arrives as the
+            # An asked-for value is spelled as the extra argument a load would carry and
+            # re-resolved by the launch's own helpers, never taken verbatim.
+            # isinstance(..., bool): called in process, an omitted argument arrives as the
             # ``Query`` default object, which is truthy.
             _asked_flash_attn = flash_attn if isinstance(flash_attn, bool) else None
             _asked_kv_unified = kv_unified if isinstance(kv_unified, bool) else None
@@ -3954,8 +3948,8 @@ async def get_kv_cache_estimate(
             if _asked_kv_unified is not None:
                 _plan_extra_args += ["--kv-unified" if _asked_kv_unified else "--no-kv-unified"]
             if _asked_swa_full:
-                # Enable-only, like the flag: llama.cpp has no --no-swa-full, so an explicit
-                # false leaves the environment to answer, as a launch would.
+                # Enable-only: llama.cpp has no --no-swa-full, so a false leaves the env to
+                # answer.
                 _plan_extra_args += ["--swa-full"]
             if _asked_no_mmproj is not None:
                 _plan_extra_args += [
@@ -3983,13 +3977,7 @@ async def get_kv_cache_estimate(
                         planned_cache_types = _plan_cache_types(cache_type_kv, _planner_extras),
                         # An unreadable probe keeps the managed default.
                         supports_flash_attn = bool(_plan_caps.get("supports_flash_attn", True)),
-                        # The route's own toggle; the helper folds the extras and the
-                        # inherited split-mode env on top of it.
                         tensor_parallel = bool(tensor_parallel),
-                        # From the header this backend already read. llama.cpp forces
-                        # flash attention off for Grok ahead of every other rule, so a
-                        # route that answered otherwise would publish a context the
-                        # server cannot hold.
                         architecture = getattr(be, "_architecture", None),
                     ),
                     # The loader's own default: unified only for >1 slot, only if supported.
@@ -4003,8 +3991,6 @@ async def get_kv_cache_estimate(
             except Exception as e:
                 logger.debug(f"attention plan resolution failed for '{repo_id}': {e}")
 
-            # ctx_checkpoints is not a rounding error: each saved checkpoint is an SWA snapshot per slot, so a
-            # 4-slot SWA model at 32k measures 5.82 GiB with none and 11.82 GiB at the llama.cpp default of 32.
             # Probe failures keep the unflagged default rather than assuming zero.
             _cc_caps: dict = {}
             _total_ram_mib: Optional[int] = None
@@ -4119,15 +4105,9 @@ async def get_kv_cache_estimate(
                         projector = int(_Be._get_gguf_size_bytes(mmproj) * _Be._MMPROJ_VRAM_SAFETY)
                 except Exception as e:
                     logger.debug(f"mmproj estimate failed for '{repo_id}' {quant}: {e}")
-            # The RESOLVED placement, not the query value. The query value is None whenever
-            # the caller omitted the parameter, which is every existing client, and the
-            # launch resolver still puts the projector on the host when
-            # LLAMA_ARG_NO_MMPROJ_OFFLOAD is set in the environment or
-            # LLAMA_ARG_MMPROJ_OFFLOAD is off. Reading only what was asked left the itemised
-            # projector populated on exactly that path, and the frontend adds projectorBytes
-            # onto its GPU weights segment, so the VRAM bar was charged for memory that never
-            # reaches the card. Same helper and same precedence -- environment first, argv on
-            # top -- as the launch, so the route cannot answer for a load that cannot happen.
+            # The RESOLVED placement, not the query value: the env alone can put the
+            # projector on the host, and the frontend adds projectorBytes onto its GPU
+            # weights segment, so the bar was charged for memory that never reaches the card.
             try:
                 from core.inference.llama_cpp import _resolved_mmproj_offload
                 _mmproj_offloaded = _resolved_mmproj_offload(_planner_extras)
@@ -4278,10 +4258,9 @@ async def get_kv_cache_estimate(
                         "split; pricing the layer split it would fall back to"
                     )
                     _effective_tp = False
-                    # Spelled into the extras as well, not only into the boolean. The breakdown
-                    # re-resolves the split through the same helper the launch uses, and that
-                    # helper reads an inherited LLAMA_ARG_SPLIT_MODE=tensor, so a False alone
-                    # would be turned straight back into tensor mode inside it.
+                    # Into the extras as well, not only the boolean: the breakdown re-resolves
+                    # the split through a helper that reads an inherited
+                    # LLAMA_ARG_SPLIT_MODE=tensor, which would turn a bare False back on.
                     _planner_extras = list(_planner_extras or []) + ["--split-mode", "layer"]
                 _planner_devices = 1
                 if _effective_tp:
@@ -4295,9 +4274,9 @@ async def get_kv_cache_estimate(
                             None, _cached_inference_devices(), tensor_parallel = True
                         ),
                     )
-                # The planner resolves its plan from extra arguments, which is why the
-                # asked-for plan was built in that vocabulary: without handing it over,
-                # gpu_bytes and kv_bytes in ONE response describe two different loads.
+                # The planner resolves its plan from extra arguments, which is why the plan
+                # was built in that vocabulary: without it, gpu_bytes and kv_bytes in ONE
+                # response describe two different loads.
                 _cfg = _cached_estimate_config(repo_id, quant, None, False)
                 if _cfg is not None and _cfg is not _ESTIMATE_NOT_ON_DISK:
                     _cfg = _localized_estimate_config(_cfg, path)
@@ -4314,11 +4293,8 @@ async def get_kv_cache_estimate(
                         spec_draft_cache_type = spec_draft_cache_type,
                         n_batch = n_batch,
                         n_ubatch = n_ubatch,
-                        # The RESOLVED split, not the request boolean. _gguf_memory_breakdown
-                        # re-resolves this through _effective_tensor_parallel, so handing it the
-                        # raw toggle turned tensor mode straight back on for the very request the
-                        # launch cannot run it for, and gpu_bytes and compute_bytes then used the
-                        # tensor formula while the device count beside them said one card.
+                        # The RESOLVED split: _gguf_memory_breakdown re-resolves it, so the
+                        # raw toggle turned tensor mode straight back on.
                         tensor_parallel = _effective_tp,
                         n_devices = _planner_devices,
                         llama_extra_args = _planner_extras,
@@ -4348,8 +4324,7 @@ async def get_kv_cache_estimate(
                             spec_draft_cache_type = spec_draft_cache_type,
                             n_batch = n_batch,
                             n_ubatch = n_ubatch,
-                            # The same resolved split as the breakdown above: a floor priced
-                            # for a placement the launch cannot take is not a floor.
+                            # A floor priced for an impossible placement is not a floor.
                             tensor_parallel = _effective_tp,
                             n_devices = _planner_devices,
                             llama_extra_args = _planner_extras,

@@ -3,11 +3,9 @@
 
 """A context nobody could measure is not a ceiling, and must not overrule a request.
 
-Two arms fall back to a short context when the GGUF carries no attention dimensions
-(``_TP_UNMEASURED_CTX`` and the Metal ``_metal_floor_ctx``). Both applied it to an explicit
-request and published it, so 256k selected came back as ``"context_length": 4096,
-"max_context_length": 4096, "native_context_length": 262144`` (#9653). A guess cuts both
-ways: it will not refuse against that number, so it may not overrule one either. Auto keeps
+Two arms fall back to a short context when the GGUF carries no attention dimensions, and
+both applied it to an explicit request and published it, so 256k came back as 4096 (#9653).
+A guess will not refuse against that number, so it may not overrule one either. Auto keeps
 the conservative fallback.
 """
 
@@ -146,8 +144,7 @@ class TestTheNotice:
 
 
 class TestTheMetalArm:
-    """Simulated: a non-zero ``_apple_metal_memory_budget_bytes`` with an empty GPU probe.
-    No Metal device is exercised."""
+    """Simulated with an empty GPU probe; no Metal device is exercised."""
 
     def _launch_unmeasurable(self, tmp_path, monkeypatch, **kwargs):
         return _metal_launch(
@@ -162,7 +159,6 @@ class TestTheMetalArm:
         )
 
     def test_an_explicit_request_reaches_llama_server(self, tmp_path, monkeypatch):
-        """The control: this arm never refused here, only mispublished the ceiling."""
         captured = self._launch_unmeasurable(tmp_path, monkeypatch, n_ctx = NATIVE)
         assert _ctx_values(captured["cmd"])[-1] == str(NATIVE)
 

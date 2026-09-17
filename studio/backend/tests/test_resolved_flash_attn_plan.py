@@ -5,10 +5,8 @@
 
 ``load_model`` used to pin ``planned_flash_attn = False`` while emitting ``--flash-attn on``,
 so every placement figure described a load that was not going to happen (#9697, #10489). The
-crash-recovery cushion that pin gave is not lost: tensor mode cannot take the FA-off recovery
-at all (llama.cpp requires flash attention for ``SPLIT_MODE_TENSOR``, pinned by
-``test_tensor_quant_kv_platform_matrix.py``), and elsewhere the no-flash respawn re-enters
-``_spawn_and_wait``, which hands placement back to llama.cpp with ``--fit on``.
+cushion that pin gave is not lost: tensor mode cannot take the FA-off recovery at all, and
+elsewhere the respawn re-enters ``_spawn_and_wait``, which re-places it with ``--fit on``.
 """
 
 from __future__ import annotations
@@ -70,8 +68,7 @@ class TestTheResolver:
         assert _planned_flash_attn_state(["-fa", "off", "--flash-attn", "on"]) is True
 
     def test_the_environment_loses_to_the_managed_flag(self):
-        """llama.cpp reads LLAMA_ARG_FLASH_ATTN before argv (arg.cpp set_env), so with no
-        user ``-fa`` the managed ``--flash-attn on`` wins and the child runs WITH it."""
+        """The env is read before argv (arg.cpp set_env), so the managed on wins."""
         assert _planned_flash_attn_state(env = {"LLAMA_ARG_FLASH_ATTN": "0"}) is True
 
     def test_a_user_off_still_beats_the_managed_flag(self):
@@ -87,8 +84,7 @@ class TestTheResolver:
 
     @pytest.mark.parametrize("v_type", ["q8_0", "q4_0", "q5_1", "iq4_nl"])
     def test_a_quantized_v_cache_forces_it_on(self, v_type):
-        """llama.cpp logs "enabling flash_attn since it is required for quantized V cache"
-        and turns it on itself, so an explicit off does not survive."""
+        """llama.cpp turns it on itself, so an explicit off does not survive."""
         assert (
             _planned_flash_attn_state(["--flash-attn", "off"], planned_cache_types = ("f16", v_type))
             is True
@@ -102,8 +98,7 @@ class TestTheResolver:
         )
 
     def test_a_quantized_v_cannot_force_a_build_that_has_no_flag(self):
-        """The launch rewrites V to f16 instead (_reset_quantized_v_cache), so forcing "on"
-        here would under-reserve."""
+        """The launch rewrites V to f16 instead, so forcing "on" would under-reserve."""
         assert (
             _planned_flash_attn_state(
                 planned_cache_types = ("q8_0", "q8_0"), supports_flash_attn = False
@@ -118,8 +113,7 @@ def _tensor_backend(tmp_path, *, free_mib: int):
         vulkan = False,
         memory = [(0, free_mib, free_mib), (1, free_mib, free_mib)],
     )
-    # The harness turns KV estimation off; this file needs the arithmetic, so seed a real
-    # shape (Qwen3-0.6B).
+    # The harness turns KV estimation off; seed a real shape (Qwen3-0.6B) for arithmetic.
     backend._can_estimate_kv = lambda: True
     backend._n_layers = 28
     backend._embedding_length = 1024
@@ -190,8 +184,7 @@ class TestTheTensorPlanPricesTheLaunch:
         assert backend.max_context_length == _ctx_of(captured["cmd"])
 
     def test_an_unquantized_cache_is_unaffected(self, tmp_path):
-        """Asserted on the arithmetic at the chosen context, not against a second hand-built
-        plan: the loader charges overheads a bare planner call does not."""
+        """On the arithmetic, not a hand-built plan: the loader charges extra overheads."""
         backend, gguf = _tensor_backend(tmp_path, free_mib = 12000)
         captured = _placement._launch(
             backend, gguf, n_ctx = NATIVE, cache_type_kv = "f16", tensor_parallel = True
@@ -231,7 +224,6 @@ class TestTheSizingCallsSeeTheResolvedState:
         )
 
     def test_an_explicit_off_in_the_extras_is_priced_off(self, tmp_path):
-        """The resolution is not "always on"."""
         seen = self._seen_flash_attn(
             tmp_path,
             n_ctx = NATIVE,
@@ -246,18 +238,15 @@ def test_the_state_is_still_named_planned_flash_attn():
     import inspect
 
     source = inspect.getsource(inspect.unwrap(LlamaCppBackend.load_model))
-    # Through the reserve wrapper now, which only ever holds the planned reading DOWN where a
-    # no-flash respawn cannot be re-placed; the planner it wraps is still the thing that
-    # decides the state.
+    # Through the reserve wrapper now, which only holds a reading DOWN.
     assert "planned_flash_attn = _reserved_flash_attn_state(" in source
     assert "_planned_flash_attn_state(" in source
     assert "planned_flash_attn = False" not in source
 
 
 class TestAutoIsNotAnAnswer:
-    """``auto`` is decided at load time and decided against, silently, whenever the backend,
-    model or cache pair cannot take it, so reading it as "on" under-reserves by up to 2.28x.
-    """
+    """``auto`` is decided at load time and silently decided against whenever the backend,
+    model or cache pair cannot take it, so reading it as "on" under-reserves."""
 
     def test_an_explicit_auto_prices_the_padded_cache(self):
         assert _planned_flash_attn_state(["--flash-attn", "auto"]) is False
@@ -267,13 +256,11 @@ class TestAutoIsNotAnAnswer:
         assert _planned_flash_attn_state(["-fa", "-1"]) is False
 
     def test_an_inherited_auto_is_overridden_by_the_managed_flag(self):
-        """The managed ``--flash-attn on`` is appended after the environment is read, so an
-        inherited auto never reaches the child. Only a USER auto in the extras survives."""
+        """The managed flag is appended after the env is read, so only a USER auto survives."""
         assert _planned_flash_attn_state(None, env = {"LLAMA_ARG_FLASH_ATTN": "auto"}) is True
         assert (
             _planned_flash_attn_state(["-fa", "auto"], env = {"LLAMA_ARG_FLASH_ATTN": "1"}) is False
         )
-        # And the extras still beat the environment, in both directions.
         assert (
             _planned_flash_attn_state(["-fa", "on"], env = {"LLAMA_ARG_FLASH_ATTN": "auto"}) is True
         )
@@ -286,30 +273,21 @@ class TestAutoIsNotAnAnswer:
         assert _planned_flash_attn_state(["-fa", "on", "-fa", "auto"]) is False
 
     def test_a_quantized_v_cache_still_forces_it_on(self):
-        """The one thing auto cannot undo."""
         assert (
             _planned_flash_attn_state(["-fa", "auto"], planned_cache_types = ("q8_0", "q4_0")) is True
         )
 
     def test_tensor_split_decides_auto_rather_than_leaving_it_open(self):
-        """The one other thing auto cannot undo.
-
-        llama.cpp upgrades AUTO to ENABLED under SPLIT_MODE_TENSOR: the branch immediately
-        above the quantized-KV guard in llama-context.cpp, the same one whose failure path
-        is "SPLIT_MODE_TENSOR requires flash_attn to be enabled". Pricing the padded,
-        f16-floored V layout there charges a cache the child never allocates, and the
-        context published from it is smaller than what the load can really hold.
-        """
-        # The toggle, a user --split-mode in the extras, and the inherited env, which are
-        # the three ways the launch itself decides the mode.
+        """llama.cpp upgrades AUTO to ENABLED under SPLIT_MODE_TENSOR, so pricing the
+        padded V there charges a cache the child never allocates."""
+        # The three ways the launch decides the mode: toggle, extras, inherited env.
         assert _planned_flash_attn_state(["-fa", "auto"], tensor_parallel = True) is True
         assert _planned_flash_attn_state(["-fa", "auto", "--split-mode", "tensor"], env = {}) is True
         assert (
             _planned_flash_attn_state(["-fa", "auto"], env = {"LLAMA_ARG_SPLIT_MODE": "tensor"})
             is True
         )
-        # And an explicit split mode in the extras last-wins over the toggle, so a layer
-        # split is still undecided however the toggle was set.
+        # An extras split mode last-wins over the toggle, so layer stays undecided.
         assert (
             _planned_flash_attn_state(
                 ["-fa", "auto", "--split-mode", "layer"], tensor_parallel = True, env = {}
@@ -317,8 +295,7 @@ class TestAutoIsNotAnAnswer:
             is False
         )
         assert _planned_flash_attn_state(["-fa", "auto"], env = {}) is False
-        # A user OFF is not silently flipped on: llama.cpp refuses that pair outright, and
-        # the refusal is the launch guard's job, not the estimate's.
+        # A user OFF is not silently flipped on: refusing the pair is the launch's job.
         assert _planned_flash_attn_state(["-fa", "off"], tensor_parallel = True) is False
 
     def test_the_managed_launch_is_unaffected(self):
@@ -327,15 +304,8 @@ class TestAutoIsNotAnAnswer:
 
 
 class TestTheDowngradesRePlanTheAttention:
-    """The plan is made once, near the top of the load; the split is decided later.
-
-    Tensor mode is dropped at six points after that (a quantized KV cache this build
-    refuses under tensor, a model that aborted on tensor earlier this session, fewer
-    than two usable GPUs, a pooled budget that cannot hold the weights, and the two
-    manual branches). Each one takes away the reason AUTO was planned ON, and the KV
-    and compute estimates priced afterwards read the plan, so a stale True budgets an
-    unpadded V the layer split will not get.
-    """
+    """The plan is made once near the top of the load and the split is decided later, so a
+    stale True budgets an unpadded V the layer split will not get."""
 
     def _load_model_body(self):
         import ast
@@ -347,19 +317,12 @@ class TestTheDowngradesRePlanTheAttention:
         return ast.parse(textwrap.dedent(source)).body[0]
 
     def test_every_tensor_downgrade_re_plans_the_attention(self):
-        """Not only the ones that strip the extras.
-
-        The three manual guards (gpu_layers=0 with nothing to split, fewer than two GPUs in
-        use, and Auto layers handing placement to --fit) set the toggle to False on their own.
-        Manual placement runs with --fit off, so a plan that still says flash attention is on
-        under-prices the V layout of a model that grows without it and the child can OOM at
-        startup on a total the estimate called safe.
-        """
+        """Not only the ones that strip the extras: the three manual guards set the toggle
+        to False on their own, and Manual placement runs with --fit off."""
         import ast
 
         func = self._load_model_body()
-        # Only the downgrades that happen AFTER the plan is made. The virtualised-Metal
-        # placement drops the toggle before it, where there is nothing to re-plan yet.
+        # Only downgrades AFTER the plan is made; virtualised Metal drops it before.
         planned_at = min(
             node.lineno
             for node in ast.walk(func)
@@ -391,7 +354,6 @@ class TestTheDowngradesRePlanTheAttention:
                         "a tensor downgrade at line "
                         f"{statement.lineno} does not re-plan the attention"
                     )
-        # And there are several of them, so a walk that found none cannot pass.
         assert checked >= 6, checked
 
     def test_every_split_mode_strip_re_plans_the_attention(self):
@@ -419,7 +381,6 @@ class TestTheDowngradesRePlanTheAttention:
                     assert (
                         getattr(following.targets[0], "id", None) == "planned_flash_attn"
                     ), ast.dump(following)
-        # Every one of them, and there is more than one.
         assert strips >= 6, strips
 
     def test_the_re_plan_reads_the_current_split(self):
@@ -438,25 +399,21 @@ class TestTheDowngradesRePlanTheAttention:
             and getattr(node.func, "id", None) == "_planned_flash_attn_state"
         )
         passed = {kw.arg: kw.value for kw in call.keywords}
-        # The downgraded boolean, not the request toggle the first plan was made from.
         assert getattr(passed["tensor_parallel"], "id", None) == "_current_tp"
-        # And the stripped extras, read at call time rather than captured.
         assert getattr(call.args[0], "id", None) == "extra_args"
 
 
 class TestTheReserveWhenTheFitterIsOff:
-    """The planned state is what the first process runs with. The reserve has to survive the
-    respawn as well, and a user's own `--fit off` is what takes the re-placement away."""
+    """The reserve has to survive the respawn too, and a user's own `--fit off` is what
+    takes the re-placement away."""
 
     def test_a_user_fit_off_keeps_the_conservative_reserve(self):
         from core.inference.llama_cpp import _reserved_flash_attn_state
 
-        # The ordinary managed launch is unchanged: fitting is on, so a no-flash respawn is
-        # re-placed and there is nothing to hold back for.
+        # The ordinary managed launch is unchanged: fitting is on, so the respawn re-places.
         assert _reserved_flash_attn_state(True, None, env = {}) is True
         assert _reserved_flash_attn_state(True, ["--ctx-size", "4096"], env = {}) is True
-        # With the fitter off by the user's own argument, the respawn lands on the placement
-        # this reserve chose, and the padded, f16-floored V is what it will be holding.
+        # With the fitter off, the respawn lands on the placement this reserve chose.
         assert _reserved_flash_attn_state(True, ["--fit", "off"], env = {}) is False
         assert _reserved_flash_attn_state(True, ["--fit=off"], env = {}) is False
         assert _reserved_flash_attn_state(True, None, env = {"LLAMA_ARG_FIT": "off"}) is False
@@ -467,9 +424,8 @@ class TestTheReserveWhenTheFitterIsOff:
         )
 
     def test_tensor_mode_keeps_its_answer(self):
-        """It cannot take the no-flash recovery at all: llama.cpp requires flash attention
-        under SPLIT_MODE_TENSOR, so there is no respawn to reserve for and pricing the padded
-        layout would refuse loads that fit."""
+        """No no-flash respawn to reserve for under SPLIT_MODE_TENSOR, and pricing the
+        padded layout would refuse loads that fit."""
         from core.inference.llama_cpp import _reserved_flash_attn_state
 
         assert (
@@ -481,8 +437,7 @@ class TestTheReserveWhenTheFitterIsOff:
         )
 
     def test_a_false_plan_is_never_raised(self):
-        """This only ever holds a reading DOWN. A plan that already says no flash attention is
-        the conservative one."""
+        """This only holds a reading DOWN; an off is already the conservative one."""
         from core.inference.llama_cpp import _reserved_flash_attn_state
 
         assert _reserved_flash_attn_state(False, ["--fit", "off"], env = {}) is False
@@ -502,14 +457,9 @@ class TestTheReserveWhenTheFitterIsOff:
 
 
 class TestTheReplanIsAuthoritative:
-    """A downgrade decided by a latch or a capacity check strips the extras, never the env.
-
-    Tensor mode can arrive through an inherited LLAMA_ARG_SPLIT_MODE, and the helper resolves
-    the split from the extras, the toggle AND that variable. So a re-plan carrying the
-    downgraded False still met a tensor answer inside the helper, and a user `-fa auto` priced
-    the unpadded V of a load that will decide the question again, on its own, under the layer
-    split the launch really spawns -- the launch clears that variable for exactly this reason.
-    """
+    """A downgrade strips the extras, never the env, but the helper also resolves an
+    inherited LLAMA_ARG_SPLIT_MODE, so a re-plan carrying the downgraded False still met a
+    tensor answer inside it. The launch clears that variable for exactly this reason."""
 
     def _load_model_body(self):
         import ast
@@ -533,8 +483,6 @@ class TestTheReplanIsAuthoritative:
         text = ast.dump(helper)
         assert "LLAMA_ARG_SPLIT_MODE" in text
         assert "LLAMA_ARG_TENSOR_SPLIT" in text
-        # And the re-plan uses it, on both the plan and the reserve, or the scrub reaches
-        # neither answer.
         replan = next(
             node
             for node in ast.walk(func)
@@ -553,7 +501,6 @@ class TestTheReplanIsAuthoritative:
             assert "env" in passed, ast.dump(call)
 
     def test_the_helper_answers_layer_once_the_variable_is_gone(self):
-        """The behaviour the scrub buys, on the helper itself."""
         from core.inference.llama_cpp import _planned_flash_attn_state
 
         inherited = {"LLAMA_ARG_SPLIT_MODE": "tensor"}
@@ -561,5 +508,4 @@ class TestTheReplanIsAuthoritative:
         assert (
             _planned_flash_attn_state(["-fa", "auto"], tensor_parallel = False, env = inherited) is True
         )
-        # And the one the child will really run under.
         assert _planned_flash_attn_state(["-fa", "auto"], tensor_parallel = False, env = {}) is False

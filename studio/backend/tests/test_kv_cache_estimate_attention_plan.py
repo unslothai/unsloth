@@ -31,7 +31,7 @@ from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
 N_CTX = 32768
 
 # Equal K/V widths, so the only flash-attention term that can move the total is the f16
-# floor on the V axis.
+# floor on V.
 _PLAIN_GQA = {
     "context_length": 131072,
     "block_count": 32,
@@ -42,8 +42,8 @@ _PLAIN_GQA = {
     "attention.value_length": 128,
 }
 
-# Gemma-class: sliding-window layers carry a narrower V, which flash attention off pads to
-# the model-wide maximum, so even an f16 cache moves.
+# Gemma-class: narrower V on the sliding-window layers, padded to the model-wide maximum
+# when flash attention is off, so even an f16 cache moves.
 _RAGGED_SWA = {
     "context_length": 131072,
     "block_count": 30,
@@ -79,8 +79,8 @@ def _call_route(
     caps: dict | None = None,
     **overrides,
 ):
-    """Every parameter is passed explicitly: called in process, an omitted one arrives as
-    its ``Query`` object rather than the None FastAPI would have resolved."""
+    """All passed explicitly: called in process an omitted one arrives as its ``Query``
+    object rather than the None FastAPI would have resolved."""
     monkeypatch.setattr(
         models_routes,
         "_resolve_quant_gguf",
@@ -134,7 +134,6 @@ class TestFlashAttention:
         assert off["kv_bytes"] > on["kv_bytes"]
 
     def test_omitting_it_resolves_to_what_the_launch_emits(self, monkeypatch, ragged):
-        """The managed default is on, so an omitted plan must not price the off."""
         default = _call_route(monkeypatch, path = ragged)
         assert (
             default["kv_bytes"]
@@ -165,9 +164,8 @@ class TestFlashAttention:
 
 class TestTheOtherTwoLayoutKnobs:
     def test_swa_full_collapses_the_two_cache_sizes(self, monkeypatch, ragged):
-        # Net of checkpoints: a blank --ctx-checkpoints now means llama.cpp's default rather
-        # than zero, and --swa-full zeroes the checkpoint share (see the next test), so the
-        # totals can move the other way while the attention cache itself still grows.
+        # Net of checkpoints: --swa-full zeroes the checkpoint share, so the totals can move
+        # the other way while the attention cache itself still grows.
         compact = _call_route(monkeypatch, path = ragged)
         full = _call_route(monkeypatch, path = ragged, swa_full = True)
         # The share is None, not 0, when nothing is reserved.
@@ -176,15 +174,14 @@ class TestTheOtherTwoLayoutKnobs:
         assert full_attn > compact_attn
 
     def test_swa_full_drops_the_checkpoint_share(self, monkeypatch, ragged):
-        """--swa-full leaves no sliding window to snapshot, so --ctx-checkpoints allocates
-        nothing and any reported share is memory nobody reserves."""
+        """No sliding window left to snapshot, so any reported share is memory nobody
+        reserves."""
         compact = _call_route(monkeypatch, path = ragged, ctx_checkpoints = 8)
         full = _call_route(monkeypatch, path = ragged, ctx_checkpoints = 8, swa_full = True)
         assert compact["kv_checkpoint_bytes"]
         assert not full["kv_checkpoint_bytes"]
 
     def test_the_unified_cache_is_an_input(self, monkeypatch, ragged):
-        """Per slot when unified, one window otherwise."""
         unified = _call_route(monkeypatch, path = ragged, n_parallel = 4, kv_unified = True)
         split = _call_route(monkeypatch, path = ragged, n_parallel = 4, kv_unified = False)
         assert unified["kv_bytes"] != split["kv_bytes"]
@@ -200,7 +197,6 @@ class TestTheOtherTwoLayoutKnobs:
 
 class TestTheContract:
     def test_the_new_parameters_are_all_optional(self):
-        """An old caller sends none of them."""
         import inspect
 
         signature = inspect.signature(models_routes.get_kv_cache_estimate)
