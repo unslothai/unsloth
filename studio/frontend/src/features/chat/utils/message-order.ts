@@ -31,6 +31,7 @@ export function createParentResolver(): (
 
 export function orderBySelectedBranch<T extends ParentLinkedMessage>(
   messages: T[],
+  headId?: string | null,
 ): T[] {
   const sorted = messages.slice().sort((a, b) => {
     const createdAtDelta = (a.createdAt ?? 0) - (b.createdAt ?? 0);
@@ -55,7 +56,9 @@ export function orderBySelectedBranch<T extends ParentLinkedMessage>(
 
   const chain: T[] = [];
   const seen = new Set<string>();
-  let currentId: string | null = sorted.at(-1)?.id ?? null;
+  // undefined follows the newest message; null is a live branch with nothing saved yet.
+  let currentId: string | null =
+    headId === undefined ? (sorted.at(-1)?.id ?? null) : headId;
   while (currentId != null && !seen.has(currentId)) {
     seen.add(currentId);
     const message = byId.get(currentId);
@@ -71,11 +74,11 @@ export function orderBySelectedBranch<T extends ParentLinkedMessage>(
 // follow the newest parent chain because response slots can predate the next user message.
 export function orderByParentChain<T extends ParentLinkedMessage>(
   messages: T[],
-  options: { includeSiblings?: boolean } = {},
+  options: { includeSiblings?: boolean; headId?: string | null } = {},
 ): T[] {
-  const { includeSiblings = true } = options;
+  const { includeSiblings = true, headId } = options;
   if (!includeSiblings) {
-    return orderBySelectedBranch(messages);
+    return orderBySelectedBranch(messages, headId);
   }
   const byId = new Map<string, T>(
     messages.map((message) => [message.id, message]),

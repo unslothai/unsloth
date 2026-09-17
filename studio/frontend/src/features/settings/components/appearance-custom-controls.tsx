@@ -16,6 +16,13 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { type TranslationKey, useT } from "@/i18n";
@@ -880,6 +887,36 @@ export function FontSmoothingSwitch() {
 }
 
 /* ------------------------------ Interface ------------------------------- */
+
+export function ChatWidthSelect() {
+  const t = useT();
+  const chatWidth = useAppearanceCustomStore((s) => s.customization.chatWidth);
+  const patch = useAppearanceCustomStore((s) => s.patch);
+  return (
+    <Select
+      value={chatWidth}
+      onValueChange={(value) => {
+        if (value === "standard" || value === "wide" || value === "full") {
+          patch({ chatWidth: value });
+        }
+      }}
+    >
+      <SelectTrigger
+        className="w-40"
+        aria-label={t("settings.appearance.custom.chatWidth.label")}
+      >
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {(["standard", "wide", "full"] as const).map((width) => (
+          <SelectItem key={width} value={width}>
+            {t(`settings.appearance.custom.chatWidth.${width}`)}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
 
 export function ContrastSliderRow() {
   const t = useT();

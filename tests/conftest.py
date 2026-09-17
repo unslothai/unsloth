@@ -49,6 +49,9 @@ import types
 
 import pytest
 
+# A test that hides nvidia-smi to fake a CPU host must not find the real GPUs through NVML.
+os.environ.setdefault("UNSLOTH_NVIDIA_LIBRARY_PROBE", "0")
+
 
 @pytest.fixture(autouse = True)
 def _contain_installer_venv_root(tmp_path_factory, monkeypatch):

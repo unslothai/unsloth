@@ -26,6 +26,7 @@ export {
   notifyChatHistoryUpdated,
   removeScanFolder,
   revealCachedModel,
+  validateModel,
   type BrowseFoldersResponse,
   type CachedGgufRepo,
   type CachedModelRepo,
@@ -134,6 +135,7 @@ export {
 export {
   adoptPreStreamRunReservation,
   cancelPreStreamRunReservations,
+  cancelPreStreamRunForThreadIds,
   findPreStreamRunReservation,
   hasPreStreamRunReservation,
   preStreamRunThreadIdsForAdapter,
@@ -234,6 +236,7 @@ export { YoutubeTranscriptPrompt } from "./components/youtube-transcript-prompt"
 export {
   formatMcpToolName,
   mcpServerFromProvenance,
+  mcpToolFromProvenance,
 } from "./utils/mcp-tool-name";
 export {
   PASTED_TEXT_PREVIEW_MAX_CHARS,
@@ -257,6 +260,7 @@ export {
   getStoredChatThread,
   isThreadIncognito,
   listStoredChatMessages,
+  listStoredChatProjects,
   listStoredChatThreads,
   markThreadIncognito,
 } from "./utils/chat-history-storage";
@@ -386,3 +390,12 @@ export {
   useSkillsCatalog,
   type SkillRecord,
 } from "./api/skills-api";
+export {
+  composerSubmitIntent,
+  composerFollowUpBehavior,
+  composerShortcutLabels,
+  steeringInsertionIndex,
+  type ComposerSendShortcut,
+  type ComposerFollowUpBehavior,
+  type ComposerSubmitIntent,
+} from "./utils/composer-preferences";

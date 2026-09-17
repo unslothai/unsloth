@@ -1488,6 +1488,11 @@ html[data-chat-font] .aui-root {
 		@apply rounded-[11px] border-transparent bg-black px-2.5 py-1.5 text-ui-11 font-medium leading-snug text-white shadow-md;
 	}
 
+	/* Queue hints must not block menu actions. */
+	[data-radix-popper-content-wrapper]:has(> .prompt-queue-option-tooltip) {
+		pointer-events: none;
+	}
+
 	/* Dialog popups: borderless; chatbox shadow in light, flat card
 	   surface in dark. */
 	.dialog-soft-surface {
@@ -3145,6 +3150,18 @@ html[data-chat-font] .aui-root {
 	background: oklch(0.67 0 0 / 0.5);
 }
 
+/* Avoid iOS Safari focus zoom. Important in the base layer, because an important
+   declaration in an earlier layer beats important utilities such as text-ui-13!. */
+@layer base {
+	@media (hover: none) and (pointer: coarse) {
+		input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [type="file"], [type="button"], [type="submit"], [type="reset"], [type="image"]),
+		textarea,
+		select {
+			font-size: max(16px, 1rem * var(--ui-font-scale, 1)) !important;
+		}
+	}
+}
+
 /* Composer textarea: keep the scroll thumb faint until the user hovers or
    drags the thumb itself, so a tall draft never shows a heavy dark rail. */
 .composer-input,
@@ -3249,8 +3266,10 @@ html[data-chat-font] .aui-root {
 .aui-thread-viewport {
 	scrollbar-color: oklch(0.5 0 0 / 0.54) var(--sidebar);
 	/* Reserve scrollbar space always so absolute-positioned overlays (topbar)
-	   can stop flush with the gutter edge without covering the scrollbar. */
-	scrollbar-gutter: stable;
+	   can stop flush with the gutter edge without covering the scrollbar.
+	   both-edges: a one-sided gutter pushes the centred column off-centre by
+	   half the scrollbar, and away from the dock, which sits outside here. */
+	scrollbar-gutter: stable both-edges;
 }
 
 /* An unregistered custom property always inherits, so writing
@@ -3758,4 +3777,11 @@ html[data-chat-font] .aui-root {
 .dark .find-bar-surface {
 	background-color: #2c2c2c;
 	box-shadow: 0 4px 20px 6px var(--background);
+}
+
+@layer components {
+	/* Align the arrow with page content while retaining its hit area. */
+	.settings-back-button {
+		margin-inline-start: -0.75rem;
+	}
 }

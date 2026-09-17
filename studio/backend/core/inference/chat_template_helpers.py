@@ -1017,7 +1017,7 @@ def neutralize_control_markup_in_messages(
     cache: dict = None,
     markup = None,
 ) -> list:
-    """Neutralize control markup in message content and tool-result names (#7066). User / system /
+    """Neutralize control markup in message content and names (#7066). User / system /
     tool turns lose every marker; assistant turns lose only turn boundaries and keep the think /
     channel / tool markup replayed history legitimately holds. Returns the same list object when
     nothing changed, so the prompt stays byte-for-byte what it was. Pass a ``sweep_cache()`` when
@@ -1082,7 +1082,7 @@ def neutralize_control_markup_in_messages(
             if new_result_id != result_id:
                 updates["tool_call_id"] = new_result_id
         name = msg.get("name")
-        if role == "tool" and isinstance(name, str) and name:
+        if isinstance(name, str) and name:
             new_name = neutralize_control_markup(name, markup)
             if new_name != name:
                 updates["name"] = new_name
@@ -2924,14 +2924,14 @@ def messages_with_attached_image(
     system_prompt: str = "",
     fallback_user_text: str = "",
     structured_content: bool = False,
-    image: bool = True,
+    image: int = 1,
     video: bool = False,
 ) -> list:
     """The conversation to render for a turn that carries attached media.
 
-    Prepends *system_prompt* as a leading system turn, then injects an ``{"type": "image"}`` or
-    ``{"type": "video"}`` part into the LAST user turn and leaves every other turn -- assistant
-    ``tool_calls`` and ``role="tool"`` results included -- exactly as the caller sent it.
+    Prepends *system_prompt* as a leading system turn, then injects *image* ``{"type": "image"}``
+    parts, or a ``{"type": "video"}`` part, into the LAST user turn and leaves every other turn --
+    assistant ``tool_calls`` and ``role="tool"`` results included -- exactly as the caller sent it.
     Rebuilding from the newest user TEXT instead dropped the folded system instruction and the
     tool history an OpenAI tool loop replays (#10092). Nothing the caller owns is mutated: callers
     still read those dicts after generation, and a retry re-renders the same list.
@@ -2976,11 +2976,11 @@ def messages_with_attached_image(
             ("image", image, count_structured_images),
             ("video", video, count_structured_videos),
         )
-        if wanted
-        and not any(
+        if not any(
             isinstance(m, dict) and isinstance(m.get("content"), list) and counter(m["content"])
             for m in conversation
         )
+        for _ in range(int(wanted))
     ]
     if not parts and not fallback_user_text:
         return conversation

@@ -13,6 +13,11 @@ import os, importlib.util, platform, sys
 
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
+# Opt into ROCm AOTriton kernels PyTorch still gates as experimental; it keeps its own hardware
+# checks and reads this lazily at the SDPA probe, so no torch import here. `setdefault` preserves
+# an explicit override, including "0".
+os.environ.setdefault("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")
+
 # Before transformers, which reads sentencepiece availability during its own import. On Windows
 # the extension is never imported at all: a code integrity policy can refuse it by reputation,
 # and any probe to find out whether this machine will is itself the refusal the user sees. See
@@ -148,6 +153,18 @@ def _is_mlx_available():
 _IS_MLX = _is_mlx_available()
 
 if _IS_MLX:
+    # Same reason again, and first because it is what turns the bare AttributeError into a
+    # diagnosis: this branch imports transformers below, so an Apple Silicon host carrying the
+    # old-torch/new-transformers pair hits #8933 here exactly as a CUDA host does, and
+    # _gpu_init.py, the only other installation site, is never reached on this path. The
+    # triton shim check is deliberately NOT mirrored: it is a CUDA/ROCm/XPU driver shim and
+    # there is no triton on this platform to inspect.
+    try:
+        from .import_fixes import patch_torch_missing_attribute_error as _patch_torch_attr
+        _patch_torch_attr()
+        del _patch_torch_attr
+    except Exception:
+        pass
     # _gpu_init does this on the GPU path and the MLX path never reaches it, so torchao 0.18 + torch <
     # 2.10 dies on `ScalingType`.
     try:

@@ -258,6 +258,46 @@ def test_no_tools_request_untouched(monkeypatch):
     assert choice["message"].get("tool_calls") is None
 
 
+def test_participant_names_reach_the_local_backend(monkeypatch):
+    backend = _ScriptedBackend(_fixed("ok"))
+    payload = _request(
+        stream = False,
+        messages = [
+            ChatMessage(role = "user", name = "alice", content = "hi"),
+            ChatMessage(role = "assistant", name = "researcher", content = "hello"),
+            ChatMessage(role = "user", name = "bob", content = "again"),
+        ],
+    )
+    _call(payload, monkeypatch, backend)
+    assert [(m["role"], m.get("name")) for m in backend.calls[0]["messages"]] == [
+        ("user", "alice"),
+        ("assistant", "researcher"),
+        ("user", "bob"),
+    ]
+
+
+def test_a_named_system_message_does_not_restructure_the_request(monkeypatch):
+    """Moving it into the history is what changes how much of a thread the vision path renders."""
+    sent = []
+    for name in (None, "supervisor"):
+        backend = _ScriptedBackend(_fixed("ok"))
+        _call(
+            _request(
+                stream = False,
+                messages = [
+                    ChatMessage(role = "system", name = name, content = "be brief"),
+                    ChatMessage(role = "user", content = "hi"),
+                ],
+            ),
+            monkeypatch,
+            backend,
+        )
+        sent.append(backend.calls[0])
+    assert sent[0]["messages"] == sent[1]["messages"] == [{"role": "user", "content": "hi"}]
+    assert sent[0]["system_prompt"] == sent[1]["system_prompt"]
+    assert sent[1]["system_prompt"].endswith("be brief")
+
+
 def test_prose_around_call_retained(monkeypatch):
     text = "Let me look:\n" + _CALL_XML + "\ndone"
     backend = _ScriptedBackend(_fixed(text))

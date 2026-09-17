@@ -66,7 +66,14 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { Braces, ChevronDown, ExternalLink } from "lucide-react";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { type CSSProperties, Fragment, type ReactNode } from "react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { OpenAICodeExecSection } from "./components/openai-code-exec-section";
 import { PermissionModeDropdown } from "./permission-mode-select";
 import { resyncInferenceStatusAfterServerModelChange } from "./hooks/use-chat-model-runtime";
@@ -101,9 +108,11 @@ import {
   type ProviderCapabilities,
   getExternalMaxOutputTokens,
   getExternalMinOutputTokens,
+  modelCatalogVersion,
   providerSupportsBuiltinCodeExecution,
   providerSupportsFastMode,
   resolveExternalMaxTokensClamp,
+  subscribeModelCatalog,
 } from "./provider-capabilities";
 import {
   isLocalModelPath,
@@ -547,6 +556,18 @@ export function ChatSettingsPanel({
   const disableVision = useChatRuntimeStore((s) => s.disableVision);
   const specDraftNMax = useChatRuntimeStore((s) => s.specDraftNMax);
   const nParallel = useChatRuntimeStore((s) => s.nParallel);
+  // subscribe to the same requested values that preset capture snapshots.
+  const reasoningBudget = useChatRuntimeStore((s) =>
+    s.reasoningBudget === s.loadedReasoningBudget
+      ? (s.loadedReasoningBudgetRequested ?? s.reasoningBudget)
+      : s.reasoningBudget,
+  );
+  const reasoningBudgetMessage = useChatRuntimeStore(
+    (s) =>
+      s.reasoningBudgetMessage === s.loadedReasoningBudgetMessage
+        ? (s.loadedReasoningBudgetMessageRequested ?? s.reasoningBudgetMessage)
+        : s.reasoningBudgetMessage,
+  );
   const nBatch = useChatRuntimeStore((s) => s.nBatch);
   const nUbatch = useChatRuntimeStore((s) => s.nUbatch);
   const speculativeType = useChatRuntimeStore((s) => s.speculativeType);
@@ -732,6 +753,8 @@ export function ChatSettingsPanel({
     speculativeType,
     specDraftNMax,
     nParallel,
+    reasoningBudget,
+    reasoningBudgetMessage,
     nBatch,
     nUbatch,
     params.maxSeqLength,
@@ -755,6 +778,8 @@ export function ChatSettingsPanel({
       speculativeType,
       specDraftNMax,
       nParallel,
+      reasoningBudget,
+      reasoningBudgetMessage,
       nBatch,
       nUbatch,
       params.maxSeqLength,
@@ -788,6 +813,8 @@ export function ChatSettingsPanel({
   const externalSelection = currentCheckpoint
     ? parseExternalModelId(currentCheckpoint)
     : null;
+  // The OpenRouter cap comes from the live catalog, which can land after this panel renders.
+  useSyncExternalStore(subscribeModelCatalog, modelCatalogVersion);
   const maxTokensMax = isExternalModel
     ? getExternalMaxOutputTokens(
         externalProviderType,

@@ -40,6 +40,17 @@ for _dir in (_BACKEND_DIR, _STUDIO_DIR):
 # setup.sh/setup.ps1 invoke this by path, so its directory is sys.path[0].
 import install_manifest  # noqa: E402
 
+try:
+    import nvidia_probe as _nvidia_probe  # noqa: E402
+except Exception:  # an older checkout beside a newer setup script
+    _nvidia_probe = None
+
+
+def _nvidia_library_inventory():
+    """The NVML / CUDA driver inventory, or None. A seam, so tests can hide the real host."""
+    return _nvidia_probe.probe() if _nvidia_probe is not None else None
+
+
 from backend.utils.wheel_utils import (
     flash_attn_package_version,
     flash_attn_wheel_url,
@@ -72,20 +83,80 @@ _PLATFORM_HAS_TORCHCODEC_WHEEL = (
 PLATFORM_LACKS_TORCHCODEC_WHEEL = not _PLATFORM_HAS_TORCHCODEC_WHEEL
 
 
+def _machine_arch_from_registry() -> str:
+    """The machine-scope PROCESSOR_ARCHITECTURE, which an emulated process cannot
+    misreport. Every per-process signal follows the process: under x64 emulation on
+    ARM64 Windows the process copy says AMD64, PROCESSOR_ARCHITEW6432 is unset (it is a
+    WOW64-only variable), and platform.machine() says AMD64 too. Empty when unreadable
+    or off Windows."""
+    if not IS_WINDOWS:
+        return ""
+    try:
+        import winreg
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+        ) as key:
+            return str(winreg.QueryValueEx(key, "PROCESSOR_ARCHITECTURE")[0] or "")
+    except Exception:
+        return ""
+
+
 def _is_windows_arm64() -> bool:
-    """Windows on ARM, machine arch rather than process arch: platform.machine() reports
-    AMD64 under an emulated x64 Python, and PROCESSOR_ARCHITEW6432 is ARM64 in exactly
-    that case. Mirrors Get-HostMachineArch in install.ps1 / setup.ps1."""
+    """Windows on ARM, machine arch rather than process arch. The registry value leads
+    because the per-process signals all say AMD64 under an emulated x64 Python; they stay
+    as fallbacks for a native interpreter. Mirrors Get-HostMachineArch in install.ps1 /
+    setup.ps1. Wheel availability is an interpreter question, not a machine one: see
+    ``_is_win_arm64_interpreter``."""
     if not IS_WINDOWS:
         return False
     return any(
         (value or "").strip().lower() in {"arm64", "aarch64"}
         for value in (
+            _machine_arch_from_registry(),
             os.environ.get("PROCESSOR_ARCHITEW6432"),
             os.environ.get("PROCESSOR_ARCHITECTURE"),
             platform.machine(),
         )
     )
+
+
+@functools.lru_cache(maxsize = None)
+def _is_win_arm64_interpreter() -> bool:
+    """Windows on ARM, the arch of THIS INTERPRETER rather than of the machine.
+
+    The distinction decides which wheels exist. ``_is_windows_arm64`` above answers
+    for the machine, and is true even under an emulated x64 Python -- which is what
+    every install predating native ARM64 support is running, because install.ps1
+    deliberately fetched an x64 interpreter there. Such a venv wants the x64 wheels
+    and gets them: ``platform_machine == "ARM64"`` in a requirement marker is the
+    INTERPRETER's arch, so the marker rows and this predicate have to agree or the
+    same machine is served two different answers.
+
+    ``sysconfig.get_platform()`` is what pip and uv tag wheels with, so it is the
+    same authority; ``platform.machine()`` is the fallback and reports AMD64 under
+    emulation, which is the answer we want there.
+    """
+    if not IS_WINDOWS:
+        return False
+    try:
+        tag = (sysconfig.get_platform() or "").strip().lower()
+        if tag:
+            return tag == "win-arm64"
+    except Exception:
+        pass
+    return (platform.machine() or "").strip().lower() in {"arm64", "aarch64"}
+
+
+def _windows_arm64_has_torchaudio() -> bool:
+    """Does the CUDA index this install used publish a win_arm64 torchaudio?
+
+    NVIDIA's GA out-of-tree channel does (2.11.0+cu134); its nightly channel and
+    download.pytorch.org do not. install.ps1 answers this in UNSLOTH_WOA_HAS_TORCHAUDIO.
+    Unset means "assume not": asking for a wheel that does not exist makes the whole trio
+    unresolvable, while skipping one that does costs only audio support.
+    """
+    return (os.environ.get("UNSLOTH_WOA_HAS_TORCHAUDIO") or "").strip() == "1"
 
 
 # ── ROCm / AMD GPU support ─────────────────────────────────────────────────────
@@ -431,7 +502,7 @@ def _macos_release_major() -> "int | None":
 
 # The pinned MLX versions publish macosx_14_0_arm64 wheels, no sdist and no cp39, so
 # macOS 13 and Python 3.9 have nothing to resolve to (`uv pip install --python-platform
-# aarch64-apple-darwin mlx==0.32.1`). Asked before the install, like
+# aarch64-apple-darwin mlx==0.32.2`). Asked before the install, like
 # _torchcodec_spec_is_installable: pip_install exits on failure, so trying would end an
 # install that today just comes up chat-only.
 _MLX_MIN_PYTHON = (3, 10)
@@ -1911,9 +1982,14 @@ _WIN_GPU_NAME_ARCH_TABLE: "list[tuple[str, str]]" = [
     (r"RX 7600|RX 7700S|RX 7650|PRO W7600|PRO W7500", "gfx1102"),  # Navi 33
     # RDNA 3 iGPU (Phoenix / Hawk Point)
     (r"780M|760M|740M|Phoenix|Hawk Point|Z1 Extreme|Z2 Extreme", "gfx1103"),
-    (r"RX 6900|RX 6800|RX 6750|RX 6700|PRO W6800|PRO W6900", "gfx1030"),  # Navi 21
+    # RDNA 2 refresh numbers (6950 / 6850M / 6550M) matched nothing and took CPU torch (#10468).
+    # 6850M XT is Navi 22, filed here like 6750 / 6700: every RDNA 2 row resolves to gfx103X-all.
+    (r"RX 6950|RX 6900|RX 6850|RX 6800|RX 6750|RX 6700|PRO W6800|PRO W6900", "gfx1030"),  # Navi 21
     (r"RX 6650|RX 6600|PRO W6600|PRO W6650", "gfx1032"),  # Navi 23
-    (r"RX 6500|RX 6400|RX 6300|PRO W6400|PRO W6500", "gfx1034"),  # Navi 24
+    (
+        r"RX 6550|RX 6500|RX 6450|RX 6400|RX 6300|PRO W6400|PRO W6500|PRO W6300",
+        "gfx1034",
+    ),  # Navi 24
 ]
 
 
@@ -2533,7 +2609,18 @@ def _has_usable_nvidia_gpu() -> bool:
                 return True
         except OSError:
             pass
-    return False
+    # Last: the driver's own libraries, which ship without the nvidia-smi utility.
+    inventory = _nvidia_library_inventory()
+    if inventory is None or not inventory.devices:
+        return False
+    if inventory.source != "nvml" or cvd is None:
+        return True  # the CUDA driver rows already honour the mask
+    # NVML rows are physical: an explicit index or GPU- UUID mask must name one of them.
+    # A mask they cannot name (a MIG UUID) is left usable, as the probes above leave it.
+    tokens = [t.strip().lower() for t in cvd.split(",") if t.strip()]
+    if not all(t.isdigit() or t.startswith("gpu-") for t in tokens):
+        return True
+    return any(row["index"] in tokens or row["uuid"].lower() in tokens for row in inventory.devices)
 
 
 # Which probe answered the last _detect_amd_gfx_codes() call: only rocminfo is subject
@@ -2719,6 +2806,11 @@ _GENERIC_WHEEL_GFX_MIN_ROCM: "dict[str, tuple[int, int]]" = {
     "gfx950": (7, 0),
     "gfx1150": (7, 0),
     "gfx1151": (7, 0),
+    # gfx1102 (Navi 33 / RX 7600): rocm6.3 is the first family whose rocBLAS / hipBLASLt
+    # Tensile libraries carry it (rocm6.0-6.2 stop at gfx1030/gfx1100/gfx1101). Without an
+    # entry here the tag check reads "support unknown" and leaves an RX 7600 on a wheel that
+    # has no kernels for it.
+    "gfx1102": (6, 3),
     "gfx1200": (6, 4),
     "gfx1201": (6, 4),
 }
@@ -3087,8 +3179,7 @@ def _hsa_spoofed_physical_gfx(
         re-probe."""
         if physical == [inferred_gfx]:
             _safe_print(
-                f"   {source} reports {inferred_gfx} -- {probed} is a spoof of the "
-                f"physical arch.\n"
+                f"   {source} reports {inferred_gfx} -- {probed} is a spoof of the physical arch.\n"
             )
             return inferred_gfx
         # Say so rather than leaving "Checking whether..." hanging: on a real gfx1100
@@ -3452,21 +3543,27 @@ def _span_covers(span: "tuple[int, int]", sms: "list[int]") -> bool:
     return all(span[0] <= sm <= span[1] for sm in sms)
 
 
-def _cap_cuda_family_for_pre_turing(family: str, exe: "str | None") -> str:
+def _cap_cuda_family_for_pre_turing(
+    family: str,
+    exe: "str | None",
+    sms: "list[int] | None" = None,
+) -> str:
     """Use cu126 when it covers every physical GPU missed by the selected family.
 
     CUDA_VISIBLE_DEVICES is intentionally ignored. Non-x86_64 hosts retain the
-    driver-derived family because their wheel matrices differ.
+    driver-derived family because their wheel matrices differ. `sms` is the inventory
+    already in hand (the library probe); otherwise it is read from `exe`.
     """
     if platform.machine().lower() not in ("x86_64", "amd64"):
         return family
     span = _cuda_family_sm_range(family)
-    if span is None or exe is None:
+    if span is None or (exe is None and sms is None):
         return family
     if span[0] <= _CU126_SM_RANGE[0]:
         return family  # nothing lower to fall back to
     floor = span[0]
-    sms = _nvidia_compute_sms(exe)
+    if sms is None:
+        sms = _nvidia_compute_sms(exe)
     if not sms or all(sm >= floor for sm in sms):
         return family  # no GPU here sits under the family's floor
     if not _span_covers(_CU126_SM_RANGE, sms):
@@ -3484,16 +3581,32 @@ def _cap_cuda_family_for_pre_turing(family: str, exe: "str | None") -> str:
     return "cu126"
 
 
-def _detect_cuda_torch_index_url() -> str:
+def _torch_family_for_cuda_version(major: int, minor: int) -> str:
+    """install.sh::get_torch_index_url's CUDA ladder, from the driver's CUDA version."""
+    if major >= 13:
+        return "cu130"
+    if major == 12 and minor >= 8:
+        return "cu128"
+    if major == 12 and minor >= 6:
+        return "cu126"
+    if major >= 12:
+        return "cu124"
+    if major >= 11:
+        return "cu118"
+    return "cpu"  # ancient driver: no usable CUDA wheels
+
+
+def _detect_cuda_torch_index_url(*, known_only: bool = False) -> str | None:
     """Return the pytorch.org CUDA wheel index URL for the host's NVIDIA driver.
 
     Mirrors install.sh::get_torch_index_url's CUDA ladder so `studio update` repairs
     to the same wheel family a fresh install would pick. Honours the explicit
     overrides first (UNSLOTH_TORCH_INDEX_URL / _FAMILY) so a headless / CI install
     never lets the host GPU decide. Otherwise probes nvidia-smi (parsing both "CUDA
-    Version:" and "CUDA UMD Version:"), defaulting to cu126 when unreadable. The
-    driver version is only an upper bound, so the GPU architectures can cap the
-    result at cu126 (see _cap_cuda_family_for_pre_turing).
+    Version:" and "CUDA UMD Version:"), then the driver library, defaulting to cu126
+    when neither answers, or to None with known_only. The driver version is only an
+    upper bound, so the GPU architectures can cap the result at cu126 (see
+    _cap_cuda_family_for_pre_turing).
     """
     _override_url = os.environ.get("UNSLOTH_TORCH_INDEX_URL", "").strip()
     if _override_url:
@@ -3501,7 +3614,6 @@ def _detect_cuda_torch_index_url() -> str:
     _override_family = os.environ.get("UNSLOTH_TORCH_INDEX_FAMILY", "").strip()
     if _override_family:
         return f"{_PYTORCH_WHL_BASE}/{_override_family.strip('/')}"
-    tag = "cu126"  # default when the driver CUDA version cannot be read
     # Every candidate until one ANSWERS, the way _has_usable_nvidia_gpu does. Taking the
     # first that merely exists loses to a stale nvidia-smi on PATH: the presence probe
     # walks past it to the working Program Files copy and confirms the GPU, while this one
@@ -3531,21 +3643,41 @@ def _detect_cuda_torch_index_url() -> str:
         m = re.search(r"CUDA(?: UMD)? Version:\s*(\d+)\.(\d+)", result.stdout)
         if m is None:
             continue
-        major, minor = int(m.group(1)), int(m.group(2))
-        if major >= 13:
-            tag = "cu130"
-        elif major == 12 and minor >= 8:
-            tag = "cu128"
-        elif major == 12 and minor >= 6:
-            tag = "cu126"
-        elif major >= 12:
-            tag = "cu124"
-        elif major >= 11:
-            tag = "cu118"
-        else:
-            tag = "cpu"  # ancient driver: no usable CUDA wheels
+        tag = _torch_family_for_cuda_version(int(m.group(1)), int(m.group(2)))
         return f"{_PYTORCH_WHL_BASE}/{_cap_cuda_family_for_pre_turing(tag, exe)}"
-    return f"{_PYTORCH_WHL_BASE}/{tag}"
+    # No nvidia-smi: the driver libraries carry the same version and the SMs the pre-Turing
+    # cap needs. Defaulting to cu126 gave Blackwell a kernel-less wheel; without SMs the
+    # caller's default stays, since cu128+ has none for Maxwell, Pascal or Volta either.
+    inventory = _nvidia_library_inventory()
+    if inventory is not None and inventory.cuda_driver_version:
+        sms = _inventory_compute_sms(inventory)
+        if sms:
+            family = _torch_family_for_cuda_version(*inventory.cuda_driver_version)
+            return f"{_PYTORCH_WHL_BASE}/{_cap_cuda_family_for_pre_turing(family, None, sms)}"
+    return None if known_only else f"{_PYTORCH_WHL_BASE}/cu126"
+
+
+def _inventory_compute_sms(inventory) -> "list[int]":
+    """Every sm_NN the driver library lists; empty when one row is unreadable, like
+    _nvidia_compute_sms."""
+    sms: list[int] = []
+    for row in inventory.devices:
+        m = re.fullmatch(r"(\d+)\.(\d+)", row.get("compute_cap", ""))
+        if m is None:
+            return []
+        sms.append(int(m.group(1)) * 10 + int(m.group(2)))
+    return sms
+
+
+def _host_compute_sms() -> "list[int] | None":
+    """The host's sm_NN list from nvidia-smi, else from the driver library; None when
+    neither can say."""
+    smi = _nvidia_smi_path()
+    sms = _nvidia_compute_sms(smi) if smi else None
+    if sms:
+        return sms
+    inventory = _nvidia_library_inventory()
+    return (_inventory_compute_sms(inventory) or None) if inventory is not None else None
 
 
 def _driver_cuda_torch_flavor_tag() -> str:
@@ -3746,7 +3878,14 @@ def _explicit_unknown_family_torch_index_url() -> "str | None":
     return url
 
 
-def _ensure_cuda_torch() -> None:
+def _deliberate_cpu_torch() -> bool:
+    """Someone chose CPU torch: an explicit CPU index pin, or a manifest that recorded cpu
+    as NAMED rather than selected and nothing in this run names a GPU family instead.
+    An unproven cpu record is not a choice."""
+    return _explicit_cpu_torch_index_pin() or _expected_torch_flavor_was_pinned("cpu")
+
+
+def _ensure_cuda_torch(*, probe_only: bool = False) -> "bool | None":
     """Repair a venv whose torch is a ROCm build on an NVIDIA host.
 
     Counterpart to _ensure_rocm_torch. A venv poisoned by the pre-fix KFD
@@ -3758,6 +3897,9 @@ def _ensure_cuda_torch() -> None:
     Also repairs a CUDA torch whose wheel family ships no kernels for the host's
     GPUs (a pre-Turing box that the driver-only ladder sent to cu128/cu130).
     Healthy CUDA torch and deliberate CPU-only torch are left untouched.
+
+    probe_only returns True where the repair would install and installs nothing, so the
+    fast-path escape that calls it cannot drift from what the repair actually does.
     """
     # Respect install.sh's backend: only "" (standalone update) or "cuda" force CUDA wheels.
     if _TORCH_BACKEND not in ("", "cuda"):
@@ -3793,6 +3935,8 @@ def _ensure_cuda_torch() -> None:
         # reinstall an already-installed torch, so reinstall from the pin (self-resolving).
         if not _cuda_pinned:
             return
+        if probe_only:
+            return True
         index_url = _detect_cuda_torch_index_url()
         _torch_pkg, _vision_pkg, _audio_pkg = _CUDA_TORCH_PKG_SPEC
         _safe_print(
@@ -3847,8 +3991,7 @@ def _ensure_cuda_torch() -> None:
         _span = _cuda_family_sm_range(_family, _installed_release)
         if _span is None:
             return  # untagged or unrecognised build: not this check's business
-        _smi = _nvidia_smi_path()
-        _sms = _nvidia_compute_sms(_smi) if _smi else None
+        _sms = _host_compute_sms()
         if not _sms or _span_covers(_span, _sms):
             return  # healthy CUDA torch this host can use
         # Never trade one partial family for another, or reinstall the same one forever.
@@ -3858,12 +4001,30 @@ def _ensure_cuda_torch() -> None:
         if _target_span is None or not _span_covers(_target_span, _sms):
             return
         _why = (
-            f"torch is {_family} but this host has GPUs outside its "
-            f"sm_{_span[0]}-{_span[1]} range"
+            f"torch is {_family} but this host has GPUs outside its sm_{_span[0]}-{_span[1]} range"
+        )
+    elif (
+        _marker == "cpu"
+        and not _deliberate_cpu_torch()
+        and _is_cuda_family_leaf(
+            _torch_index_leaf(_detect_cuda_torch_index_url(known_only = True) or "")
+        )
+    ):
+        # A CPU wheel nobody asked for on an NVIDIA host whose driver is known to run a CUDA
+        # wheel (the selector's cu126 default for an unreadable driver is not evidence): a
+        # dependency step resolved torch from PyPI, or the GPU was not detected at install
+        # time. The Windows flavour invariant catches this; Linux only recorded it.
+        _recorded = _RECORDED_TORCH_TAG or ""
+        _why = "torch is a CPU build on an NVIDIA host" + (
+            f" although this install recorded {_recorded}"
+            if _is_cuda_family_leaf(_recorded)
+            else ""
         )
     else:
         return  # healthy CUDA torch matching the pin, or a deliberate CPU wheel
 
+    if probe_only:
+        return True
     if index_url is None:
         index_url = _detect_cuda_torch_index_url()
     _torch_pkg, _vision_pkg, _audio_pkg = _CUDA_TORCH_PKG_SPEC
@@ -4875,6 +5036,10 @@ def _ensure_expected_torch_flavor(expected: "str | None" = None) -> bool:
     """
     if NO_TORCH:
         return True
+    if _is_win_arm64_interpreter() and _explicit_torch_index_url() is None:
+        _installed = _probe_installed_torch_version()
+        if _installed and _is_cuda_family_leaf(_torch_flavor_tag(_installed)):
+            return True
     # rocm/xpu/cpu fall THROUGH: an explicit GPU pin sets _TORCH_BACKEND, and rejecting it
     # here would skip the invariant on the hosts that asked for that family.
     if _TORCH_BACKEND not in ("", "cuda", "rocm", "xpu", "cpu"):
@@ -4949,9 +5114,9 @@ def _ensure_expected_torch_flavor(expected: "str | None" = None) -> bool:
     _torch_pkg, _vision_pkg, _audio_pkg = (
         _XPU_TORCH_PKG_SPEC if expected == "xpu" else _TORCH_FLAVOR_REPAIR_PKG_SPEC
     )
-    # No win_arm64 torchaudio wheel exists on any index ($WinArm64NoAudio in setup.ps1).
+    # Keyed on the INTERPRETER, not the machine: an emulated x64 venv installs win_amd64 wheels.
     _trio = [_torch_pkg, _vision_pkg, _audio_pkg]
-    if _is_windows_arm64():
+    if _is_win_arm64_interpreter() and not _windows_arm64_has_torchaudio():
         _trio = [_torch_pkg, _vision_pkg]
     _label_before = str(installed_version)
     # --force-reinstall, not install.ps1's uv-only --reinstall-package: pip_install falls
@@ -5021,6 +5186,21 @@ def _missing_torch_needs_dependency_pass() -> bool:
             ):
                 return True
     return False
+
+
+def _cuda_torch_needs_dependency_pass() -> bool:
+    """Return True when only the dependency pass can put CUDA torch back on this host.
+
+    The repair lives inside that pass, so an install whose GPU was hidden (or whose driver
+    was broken) at install time keeps its CPU wheel on every "up to date" update until the
+    package version happens to move. Answered by the repair in probe mode, so the two can
+    never disagree; Windows heals this at setup.ps1's stale-venv check and macOS has no
+    CUDA, and the repair already excludes both. Never installs, and fails closed.
+    """
+    try:
+        return bool(_ensure_cuda_torch(probe_only = True))
+    except Exception:  # noqa: BLE001 - a probe that cannot answer keeps the fast path
+        return False
 
 
 def _amd_torch_needs_dependency_pass() -> bool:
@@ -5296,10 +5476,8 @@ def _ensure_rocm_torch() -> None:
             _torch_pkg, _vision_pkg, _audio_pkg = _WINDOWS_ROCM_TORCH_PKG_SPECS.get(
                 gfx_arch, ("torch", "torchvision", "torchaudio")
             )
-            # Same win_arm64 exception setup.ps1 applies: no torchaudio wheel exists
-            # there, so asking for one makes the trio unresolvable.
             _rocm_trio = [_torch_pkg, _vision_pkg, _audio_pkg]
-            if _is_windows_arm64():
+            if _is_win_arm64_interpreter():
                 _rocm_trio = [_torch_pkg, _vision_pkg]
             # Nonfatal: a transient AMD-index failure must not abort the install.
             # --force-reinstall resolves before uninstalling, so a failed index keeps the
@@ -6296,6 +6474,35 @@ def run(
     return result
 
 
+# First line of the overrides file install.ps1 generates; setup.ps1's merge copies it first.
+WOA_OVERRIDES_HEADER = "# Generated by install.ps1 for Windows on ARM"
+
+
+def _woa_overrides_are_load_bearing() -> bool:
+    """Is this a native win_arm64 resolve whose correctness depends on UV_OVERRIDE?
+
+    install.ps1 writes those overrides to lift the released torch cap -- no win_arm64 CUDA
+    wheel satisfies it -- and to drop the packages with no win_arm64 build. pip has no
+    override mechanism at all: constraints only narrow a requirement, they cannot replace
+    one, so there is nothing to translate them into. Falling back to pip on this stack does
+    not recover, it silently resolves the wrong thing.
+
+    Judged by the generated file, not by the variable: a caller's own override on a run that
+    never configured the stack (--no-torch, a direct run) keeps the fallback every host has.
+    """
+    if not _is_win_arm64_interpreter():
+        return False
+    for path in os.environ.get("UV_OVERRIDE", "").split():
+        try:
+            with open(path, encoding = "utf-8", errors = "replace") as handle:
+                first = handle.readline()
+        except OSError:
+            continue
+        if first.lstrip("\ufeff").startswith(WOA_OVERRIDES_HEADER):
+            return True
+    return False
+
+
 def _report_failed_command(label: str, result: subprocess.CompletedProcess[bytes]) -> None:
     """Print a failed command's redacted output and exit with its code."""
     _step("error", f"{label} failed (exit code {result.returncode})", _red)
@@ -6361,6 +6568,761 @@ def _purge_recordless_distributions(output: "bytes | str | None") -> list[str]:
 
 # Packages to skip on Windows (require special build steps)
 WINDOWS_SKIP_PACKAGES = {"triton_kernels"}
+
+# No win_arm64 wheel and no sdist buildable without MSVC / Rust / LLVM / FFmpeg. All optional:
+#   tensorboard needs grpcio; librosa and openai-whisper need numba -> llvmlite (cp314 only).
+# Lowercase entries only: _filter_requirements lowercases the line and compares verbatim.
+WINDOWS_ARM64_SKIP_PACKAGES = {
+    "mecab",
+    "sqlite-vec",
+    "tiktoken",
+    "tensorboard",
+    "librosa",
+    "openai-whisper",
+    "torch-c-dlpack-ext",
+    "pytorch_tokenizers",
+    "hf_transfer",
+    "xformers",
+}
+
+
+def _wheel_matches_interpreter(filename: str) -> bool:
+    """Can THIS interpreter install the wheel named ``filename``?
+
+    A wheelhouse is not built for one interpreter: install.ps1 stages every win_arm64
+    wheel it finds, cp311 through cp314, as the wheelhouse published them. So a filename
+    is not proof on its own -- a cp311 tiktoken is invisible to a cp313 resolver, and
+    counting it as available drops the skip and sends the resolve to an sdist that cannot
+    build here. PEP 425: a wheel is installable when one of its (python, abi, platform)
+    triples is one the interpreter supports, and each filename field may be a
+    "."-separated set expanded as their cartesian product. Unparseable means not
+    installable, which only leaves the conservative skip in place.
+    """
+    stem = filename[:-4] if filename.lower().endswith(".whl") else filename
+    parts = stem.split("-")
+    if len(parts) < 5:
+        return False
+    py_tags, abi_tags, plat_tags = (set(field.split(".")) for field in parts[-3:])
+    this_platform = (sysconfig.get_platform() or "").replace("-", "_").replace(".", "_").lower()
+    if "any" not in plat_tags and this_platform not in plat_tags:
+        return False
+    major, minor = sys.version_info[:2]
+    free_threaded = bool(sysconfig.get_config_var("Py_GIL_DISABLED"))
+    this_cpython = f"cp{major}{minor}"
+    this_abi = f"{this_cpython}t" if free_threaded else this_cpython
+    for py_tag in py_tags:
+        for abi_tag in abi_tags:
+            # abi3 excluded HERE too: this branch shadows the one below (CPython #111506).
+            if py_tag == this_cpython and (
+                abi_tag in ("none", this_abi) or (abi_tag == "abi3" and not free_threaded)
+            ):
+                return True
+            if abi_tag == "none":
+                pure = re.fullmatch(r"py(\d)(\d*)", py_tag)
+                if pure and int(pure.group(1)) == major and int(pure.group(2) or 0) <= minor:
+                    return True
+            elif abi_tag == "abi3" and not free_threaded:
+                stable = re.fullmatch(r"cp(\d)(\d+)", py_tag)
+                if stable and int(stable.group(1)) == major and 2 <= int(stable.group(2)) <= minor:
+                    return True
+    return False
+
+
+@functools.lru_cache(maxsize = 1)
+def _find_links_wheel_versions() -> "dict[str, frozenset[str]]":
+    """Canonical name -> versions of the wheels in the configured find-links directories.
+
+    install.ps1 points UV_FIND_LINKS / PIP_FIND_LINKS at a local wheelhouse on Windows on
+    ARM, holding the wheels PyPI does not publish for win_arm64. Anything served there is
+    installable, so it must not also be filtered out as unavailable -- but only the wheels
+    tagged for this interpreter are, which is what the resolver will agree to.
+
+    The VERSIONS come back too, not just the names: every requirement these gate is
+    ``==``-pinned, and a wheelhouse holding tiktoken 0.12.0 against a ``tiktoken==0.13.0``
+    line satisfies nothing -- the resolver goes to PyPI, finds no win_arm64 wheel for the
+    pinned version, and falls to an sdist that cannot build here. That is the exact
+    failure the skip list exists to prevent, so the caller checks the pin.
+    """
+    versions: "dict[str, set[str]]" = {}
+    # UV_FIND_LINKS ONLY: uv does not consume PIP_FIND_LINKS. Comma-split, the way uv reads it.
+    for value, separator in ((os.environ.get("UV_FIND_LINKS"), ","),):
+        for entry in re.split(separator, value or ""):
+            entry = entry.strip().strip('"')
+            if not entry or "://" in entry:
+                continue  # a URL index cannot be listed cheaply; treat it as unknown
+            try:
+                for wheel in Path(entry).glob("*.whl"):
+                    if not _wheel_matches_interpreter(wheel.name):
+                        continue
+                    fields = wheel.name[:-4].split("-")
+                    if len(fields) < 5:
+                        continue  # not a wheel filename; _wheel_matches_interpreter agrees
+                    name = _canonical_dist_name(fields[0])
+                    versions.setdefault(name, set()).add(fields[1])
+            except OSError:
+                continue
+    return {name: frozenset(vers) for name, vers in versions.items()}
+
+
+def _find_links_wheel_names() -> frozenset[str]:
+    """Just the names from :func:`_find_links_wheel_versions`."""
+    return frozenset(_find_links_wheel_versions())
+
+
+_find_links_wheel_names.cache_clear = _find_links_wheel_versions.cache_clear  # type: ignore[attr-defined]
+
+
+def _parse_release(version: str) -> "tuple[int, ...] | None":
+    """The numeric release segment of a PEP 440 version, or None when it has none."""
+    match = re.match(r"^\s*v?(\d+(?:\.\d+)*)", version or "")
+    if not match:
+        return None
+    return tuple(int(part) for part in match.group(1).split("."))
+
+
+def _version_satisfies(version: str, specifier: str) -> "bool | None":
+    """Does ``version`` satisfy the PEP 440 specifier set ``specifier``?
+
+    None means "cannot tell" -- an epoch, an arbitrary-equality clause, anything this
+    deliberately small comparison does not model. The caller treats that as it treated
+    every version before this existed, so an exotic pin is no worse off than it was.
+    """
+    specifier = (specifier or "").strip()
+    if not specifier:
+        return True
+    for module_name in ("packaging.specifiers", "pip._vendor.packaging.specifiers"):
+        try:
+            module = importlib.import_module(module_name)
+        except Exception:
+            continue
+        try:
+            spec_set = module.SpecifierSet(specifier)
+            # Prereleases off unless the specifier names one; packaging's default admits 0.13.0rc1.
+            return bool(spec_set.contains(version, prereleases = bool(spec_set.prereleases)))
+        except Exception:
+            break
+    if not re.fullmatch(r"\s*v?\d+(?:\.\d+)*\s*", version or ""):
+        return False
+    got = _parse_release(version)
+    # "!" that is not part of "!=" is a PEP 440 epoch, which _parse_release does not model.
+    if got is None or "!" in (version or "") or "!" in specifier.replace("!=", ""):
+        return None
+    for clause in specifier.split(","):
+        clause = clause.strip()
+        if not clause:
+            continue
+        match = re.fullmatch(r"(==|!=|>=|<=|~=|>|<)\s*([^\s]+)", clause)
+        if not match:
+            return None
+        op, want_raw = match.group(1), match.group(2).rstrip(".*")
+        wildcard = match.group(2).endswith(".*")
+        want = _parse_release(want_raw)
+        if want is None:
+            return None
+        # Pad to a common length so 2.11 and 2.11.0 compare equal, as PEP 440 says.
+        width = max(len(got), len(want))
+        lhs = got + (0,) * (width - len(got))
+        rhs = want + (0,) * (width - len(want))
+        if wildcard:
+            # ==1.2.* / !=1.2.*: only the prefix is compared.
+            prefix = got[: len(want)] + (0,) * max(0, len(want) - len(got))
+            ok = prefix == want
+            if op == "==":
+                pass
+            elif op == "!=":
+                ok = not ok
+            else:
+                return None
+        elif op == "==":
+            ok = lhs == rhs
+        elif op == "!=":
+            ok = lhs != rhs
+        elif op == ">=":
+            ok = lhs >= rhs
+        elif op == "<=":
+            ok = lhs <= rhs
+        elif op == ">":
+            ok = lhs > rhs
+        elif op == "<":
+            ok = lhs < rhs
+        else:  # ~=X.Y[.Z] is ">=X.Y[.Z], ==X.Y.*" one level up
+            if len(want) < 2:
+                return None
+            ok = lhs >= rhs and got[: len(want) - 1] == want[: len(want) - 1]
+        if not ok:
+            return False
+    return True
+
+
+def _marker_is_active(marker: str) -> "bool | None":
+    """Does ``marker`` hold for THIS interpreter? None when it cannot be decided.
+
+    packaging is what pip and uv evaluate markers with, so borrowing it keeps the answer
+    identical to the resolver's; pip vendors a copy, which is the fallback for a venv
+    where packaging is not installed in its own right. Neither available means the
+    caller keeps every clause instead of picking one.
+    """
+    if not marker:
+        return True
+    for module_name in ("packaging.markers", "pip._vendor.packaging.markers"):
+        try:
+            module = importlib.import_module(module_name)
+        except Exception:
+            continue
+        try:
+            return bool(module.Marker(marker).evaluate())
+        except Exception:
+            return None
+    return None
+
+
+def _requirement_pins(req: "Path | None") -> "dict[str, list[str]]":
+    """Canonical name -> the version specifiers a requirements file states for it.
+
+    A name can appear more than once, split by marker -- extras.txt carries
+    ``MeCab==0.996.13`` and ``MeCab==0.996.5`` on complementary markers -- so keeping one
+    specifier per name let the row for another platform overwrite the row that actually
+    applies. Markers are evaluated for this interpreter and inactive rows dropped;
+    when they cannot be evaluated every clause is kept, and the caller takes any of them
+    as satisfied, which is no stricter than the name-only check that came before.
+    """
+    pins: "dict[str, list[str]]" = {}
+    if req is None:
+        return pins
+    try:
+        text = req.read_text(encoding = "utf-8-sig")
+    except OSError:
+        return pins
+    for line in text.splitlines():
+        line = line.split("#", 1)[0].strip()
+        if not line or line.startswith("-") or "@" in line:
+            continue
+        line, _, marker = line.partition(";")
+        if _marker_is_active(marker.strip()) is False:
+            continue
+        line = line.strip()
+        match = re.match(r"^([A-Za-z0-9][A-Za-z0-9._-]*)\s*(?:\[[^\]]*\])?\s*(.*)$", line)
+        if not match:
+            continue
+        pins.setdefault(_canonical_dist_name(match.group(1)), []).append(match.group(2).strip())
+    return pins
+
+
+# Skipped for their DEPENDENCIES: whisper's metadata needs tiktoken unconditionally, so filtering the direct line does not stop the sdist arriving transitively.
+WINDOWS_ARM64_SKIP_UNBLOCKED_BY = {
+    "tensorboard": ("grpcio",),
+    # soxr as well as the numba pair: librosa 0.11.0 requires soxr>=0.3.2 and soxr has never published a win_arm64 wheel, so un-skipping librosa would build it from an sdist.
+    "librosa": ("llvmlite", "numba", "soxr"),
+    "openai_whisper": ("llvmlite", "numba", "tiktoken"),
+}
+
+
+# The blocker versions the packages' OWN metadata demands: too old, and the extras pass fails.
+# {blocker: (specifier, package it was read from, that package's pinned version)}. llvmlite arrives through numba.
+WINDOWS_ARM64_BLOCKER_FLOORS: "dict[str, tuple[str, str, str]]" = {
+    "grpcio": (">=1.74.0", "tensorboard", "2.21.0"),
+    "numba": (">=0.51.0", "librosa", "0.11.0"),
+    "soxr": (">=0.3.2", "librosa", "0.11.0"),
+}
+
+
+# Excluded on win_arm64 by MARKER, so a hosted wheel has no requirement to satisfy. Floors given, because --no-deps otherwise takes whatever happens to be hosted.
+WINDOWS_ARM64_WHEELHOUSE_OPTIONALS = {
+    "hf-transfer": "",
+    "xformers": ">=0.0.22.post7",
+    "sqlite-vec": "",
+}
+
+
+def _wheelhouse_hosts(name: str) -> bool:
+    """Does the resolver's own find-links carry a wheel for this distribution?"""
+    return bool(_find_links_wheel_versions().get(_canonical_dist_name(name)))
+
+
+def _wheelhouse_best_version(name: str, floor: str) -> "str | None":
+    """The newest hosted version that clears ``floor``, or None if none does.
+
+    An unreadable comparison keeps the answer it would have had before this floor
+    existed, matching _windows_arm64_skip_packages: an exotic version is no worse off.
+    """
+    hosted = _find_links_wheel_versions().get(_canonical_dist_name(name)) or ()
+    usable = [
+        version
+        for version in hosted
+        if not floor or _version_satisfies(version, floor) is not False
+    ]
+    if not usable:
+        return None
+    try:
+        from packaging.version import Version
+        return max(usable, key = Version)
+    except Exception:
+        return sorted(usable)[-1]
+
+
+def _wheelhouse_torchcodec_version(torch_version: "str | None") -> "str | None":
+    """The hosted torchcodec inside the window this torch selects, or None.
+
+    win_arm64 only: elsewhere the platform's own wheel decides. An unknown torch has no
+    window, so it gets no answer either.
+    """
+    if not _is_win_arm64_interpreter() or not torch_version:
+        return None
+    spec = _select_torchcodec_spec(torch_version)
+    if spec is None:
+        return None
+    return _wheelhouse_best_version("torchcodec", spec.split("torchcodec", 1)[1])
+
+
+def _install_wheelhouse_optionals() -> None:
+    """Install the hosted optionals the metadata cannot ask for. Best effort.
+
+    --no-deps: the graph is already resolved and installed by the time this runs, and
+    xformers names torch, so resolving here could walk the win_arm64 CUDA build off to
+    whatever PyPI offers. A failure leaves the feature off, which is where it was.
+
+    Pinned to the selected version rather than installed by bare name, so the floor
+    checked here is the version that actually lands.
+    """
+    if not _is_win_arm64_interpreter():
+        return
+    for name, floor in WINDOWS_ARM64_WHEELHOUSE_OPTIONALS.items():
+        version = _wheelhouse_best_version(name, floor)
+        if version is None:
+            if _wheelhouse_hosts(name):
+                _note(f"windows on arm: the wheelhouse {name} is below {floor}; leaving it off")
+            # Nothing to refresh with, but the copy an earlier run installed is still resident.
+            if _canonical_dist_name(name) == "xformers":
+                _evict_xformers_built_for_another_torch()
+            continue
+        installed = pip_install_try(
+            f"Installing {name}=={version} from the Windows on ARM wheelhouse",
+            "--no-deps",
+            "--no-cache-dir",
+            f"{name}=={version}",
+            constrain = False,
+        )
+        if not installed:
+            _note(f"windows on arm: could not install the wheelhouse {name}; feature stays off")
+        # Checked even when the refresh failed: the copy an earlier torch left behind is still resident.
+        if _canonical_dist_name(name) == "xformers" and _evict_xformers_built_for_another_torch():
+            continue
+        if not installed:
+            continue
+        _note(f"windows on arm: installed {name}=={version} from the wheelhouse")
+
+
+def _evict_xformers_built_for_another_torch() -> bool:
+    """Remove a resident xFormers whose extension was built against another torch. True iff removed.
+
+    xFormers links its extension against ONE (torch, CUDA) pair; beside any other it is mute,
+    and a package install never uninstalls what an earlier run left behind.
+    """
+    built_for = _resident_xformers_build_torch()
+    resident = str(_probe_installed_torch_version() or "")
+    if not (built_for and resident and built_for != resident):
+        return False
+    _uninstall_distribution("xformers")
+    _note(
+        f"windows on arm: the wheelhouse xformers was built for torch "
+        f"{built_for}, not {resident} -- removed; attention uses torch SDPA"
+    )
+    return True
+
+
+WINDOWS_ARM64_PUBLIC_INDEX_WHEELS: "dict[str, dict[str, str]]" = {
+    "llvmlite": {"cp314": "0.49.0"},
+    "numba": {"cp314": "0.67.0"},
+}
+
+
+def _uv_config_files() -> "list[tuple[Path, str]]":
+    """The persistent configuration uv would discover, most specific first, as (path, table).
+
+    uv reads uv.toml or pyproject.toml [tool.uv] from the current directory or the nearest
+    parent (uv.toml wins over pyproject.toml in the same directory), then the user file
+    (%APPDATA%\\uv\\uv.toml on Windows, $XDG_CONFIG_HOME/uv/uv.toml elsewhere), then the
+    system file (%PROGRAMDATA%\\uv\\uv.toml, /etc/uv/uv.toml). UV_CONFIG_FILE names one file
+    instead of discovering; UV_NO_CONFIG discovers nothing. `table` is the prefix the index
+    keys sit under: "" for uv.toml, "tool.uv" for pyproject.toml.
+    """
+    if _uv_env_flag("UV_NO_CONFIG"):
+        return []
+    explicit = os.environ.get("UV_CONFIG_FILE", "").strip()
+    if explicit:
+        return [(Path(explicit), "")]
+    found: "list[tuple[Path, str]]" = []
+    here = Path.cwd()
+    for d in (here, *here.parents):
+        uv_toml = d / "uv.toml"
+        if uv_toml.is_file():
+            found.append((uv_toml, ""))
+            break
+        pyproject = d / "pyproject.toml"
+        if pyproject.is_file():
+            try:
+                text = pyproject.read_text(encoding = "utf-8")
+            except OSError:
+                text = ""
+            if re.search(r"(?m)^\s*\[+tool\.uv(\.|\])", text):
+                found.append((pyproject, "tool.uv"))
+                break
+    if IS_WINDOWS:
+        user = os.environ.get("APPDATA", "")
+        system = os.environ.get("PROGRAMDATA", "")
+        if user:
+            found.append((Path(user) / "uv" / "uv.toml", ""))
+        if system:
+            found.append((Path(system) / "uv" / "uv.toml", ""))
+    else:
+        xdg = os.environ.get("XDG_CONFIG_HOME", "") or str(Path.home() / ".config")
+        found.append((Path(xdg) / "uv" / "uv.toml", ""))
+        found.append((Path("/etc/uv/uv.toml"), ""))
+    return [(p, table) for p, table in found if p.is_file()]
+
+
+def _uv_config_index_policy() -> "dict[str, object]":
+    """{no_index, default_index, unreadable} from uv's discovered configuration.
+
+    Project outranks user outranks system for a scalar, so the first file that sets a key
+    decides it. Only the keys that decide where a resolve looks are read: no-index and
+    default-index (index-url is the older spelling), at the top level and under [pip], and
+    an [[index]] entry carrying default = true. A file this cannot parse is reported rather
+    than guessed at.
+    """
+    policy: "dict[str, object]" = {
+        "no_index": None,
+        "default_index": None,
+        "unreadable": False,
+        "extra_indexes": [],
+    }
+    try:
+        import tomllib
+    except ImportError:  # 3.10: the native path is 3.11+, so only the x64 fallback lands here
+        policy["unreadable"] = bool(_uv_config_files())
+        return policy
+    for path, table in _uv_config_files():
+        try:
+            with open(path, "rb") as fh:
+                data = tomllib.load(fh)
+        except (OSError, ValueError):
+            policy["unreadable"] = True
+            continue
+        section = data
+        for part in [p for p in table.split(".") if p]:
+            section = section.get(part, {}) if isinstance(section, dict) else {}
+        if not isinstance(section, dict):
+            continue
+        # uv pip (0.10.7): [pip] scalars beat top-level, and [[index]] default = true beats both.
+        pip_scope = section.get("pip", {}) if isinstance(section.get("pip"), dict) else {}
+        file_no_index = None
+        for scope in (pip_scope, section):
+            if file_no_index is None and isinstance(scope.get("no-index"), bool):
+                file_no_index = scope["no-index"]
+        file_default = None
+        extras: list[str] = []
+        indexes = section.get("index")
+        if isinstance(indexes, list):
+            for entry in indexes:
+                if not isinstance(entry, dict) or not isinstance(entry.get("url"), str):
+                    continue
+                if entry.get("explicit") is True:
+                    # uv: explicit serves only packages pinned via [tool.uv.sources]; with default = true it also removes PyPI as the default (not modelled: doubt).
+                    if entry.get("default") is True:
+                        policy["unreadable"] = True
+                    continue
+                if entry.get("default") is True:
+                    if file_default is None:
+                        file_default = entry["url"]
+                else:
+                    extras.append(entry["url"])
+        for scope in (pip_scope, section):
+            value = scope.get("extra-index-url")
+            if isinstance(value, str):
+                extras.append(value)
+            elif isinstance(value, list):
+                extras.extend(v for v in value if isinstance(v, str))
+        policy["extra_indexes"] = list(policy["extra_indexes"]) + extras
+        if file_default is None:
+            for scope in (pip_scope, section):
+                for key in ("default-index", "index-url"):
+                    if file_default is None and isinstance(scope.get(key), str):
+                        file_default = scope[key]
+        if policy["no_index"] is None and file_no_index is not None:
+            policy["no_index"] = file_no_index
+        if policy["default_index"] is None and file_default is not None:
+            policy["default_index"] = file_default
+    return policy
+
+
+def _url_is_public_pypi(url: str) -> bool:
+    """The host, not a substring: "https://pypi.org.corp.example/simple" and
+    ".../api/pypi/pypi.org/simple" both contain the name and neither is public PyPI."""
+    try:
+        from urllib.parse import urlsplit
+        host = urlsplit(url.strip()).hostname
+    except ValueError:
+        return False
+    return host is not None and host.lower() == "pypi.org"
+
+
+def _public_pypi_is_reachable() -> bool:
+    """Can this resolution actually reach public PyPI?
+
+    The table below records what PyPI publishes, which is only availability if PyPI is where
+    the resolve will look. Offline, or pointed at an exclusive corporate index, those wheels
+    are neither cached nor served: unblocking librosa there drops the skip and then fails the
+    whole extras pass on an unavailable numba, which is exactly what the skip prevents.
+
+    Judged for the resolver that runs the pass. uv reads UV_* and its configuration files and
+    ignores PIP_*; pip reads PIP_* and ignores UV_*. Mixing the two reported PyPI reachable
+    from a PIP_EXTRA_INDEX_URL that uv, the resolver in use, never consults. A default index
+    REPLACES PyPI; an extra index adds to it, so PyPI named there is still consulted.
+    Environment outranks uv's configuration files. Doubt resolves to False: that answer keeps
+    the skip, the other fails the extras pass.
+    """
+    if USE_UV:
+        return _uv_reaches_public_pypi()
+    return _pip_reaches_public_pypi()
+
+
+def _uv_env_flag(name: str) -> bool:
+    """uv's own boolish set, for every UV_* switch read out of the caller's environment.
+
+    Verified against uv 0.10.7, crates/uv-static/src/lib.rs
+    parse_boolish_environment_variable, which restates clap's str_to_bool: true is
+    y, yes, t, true, on, 1; false is n, no, f, false, off, 0; case-insensitive, and
+    anything else aborts uv rather than being guessed at.
+
+    `not in ("", "0", "false")`, which this used to be, read off, no, n and f as TRUE,
+    the exact opposite of uv's answer for them.
+
+    Stripped where uv is not: uv aborts on a padded value, so the resolve fails whatever
+    this returns, and stripping keeps the answer identical to setup.sh's
+    _uv_offline_requested and the two PowerShell Test-UvEnvFlag copies.
+    """
+    return os.environ.get(name, "").strip().lower() in ("1", "t", "true", "y", "yes", "on")
+
+
+def _pip_env_flag(name: str) -> bool:
+    """pip's rule, kept separate on purpose.
+
+    PIP_* are pip's variables and uv never reads them, so uv's parser has no authority
+    over them. pip routes them through ConfigOptionParser._update_defaults -> strtobool
+    (pip/_internal/utils/misc.py): true is y, yes, t, true, on, 1; false is n, no, f,
+    false, off, 0; case-insensitive and unstripped, with anything else exiting pip on
+    "is not a valid value". An empty value never reaches strtobool, because
+    _get_ordered_configuration_items drops falsy values first.
+
+    The literals coincide with uv's today. They are restated rather than shared anyway,
+    so that the day either project changes its mind this is a one-function edit instead
+    of a silent behaviour change in the other resolver.
+    """
+    return os.environ.get(name, "").strip().lower() in ("1", "t", "true", "y", "yes", "on")
+
+
+def _no_index_requested() -> bool:
+    """True when the operator asked us for no registry index. OUR convention, not uv's.
+
+    The distinction is not pedantic: for UV_NO_INDEX, uv 0.10.7 defines no such
+    environment variable. `--no-index` exists only as a command-line flag, it is absent from
+    `uv pip install --help`'s environment list beside UV_OFFLINE and UV_NO_CONFIG, and
+    grepping the 0.10.7 tree for the name returns nothing. uv ignores it however it is
+    spelled, so this is not a prediction about uv; it is us honouring a stated intent by
+    shaping the arguments we pass.
+
+    Read with uv's boolish set deliberately, not by inheritance: a caller sets this beside
+    UV_OFFLINE and UV_NO_CONFIG, which uv really does read, and one spelling across all
+    three is the point. It is a choice, and the test says so.
+
+    Deliberately NOT turned into a `--no-index` argument. That would make our behaviour and
+    uv's agree, which is the honest long-term answer, but it would also turn a resolve that
+    works today into one with no index at all: a behaviour change for existing users, and
+    its own change rather than part of a truthiness fix.
+    """
+    return _uv_env_flag("UV_NO_INDEX")
+
+
+def _uv_reaches_public_pypi() -> bool:
+    # Two different questions. UV_OFFLINE really does stop uv reaching a network;
+    # UV_NO_INDEX is ours and uv ignores it.
+    if _uv_is_offline() or _no_index_requested():
+        return False
+    extra_is_pypi = any(
+        _url_is_public_pypi(u)
+        for var in ("UV_INDEX", "UV_EXTRA_INDEX_URL")
+        for u in os.environ.get(var, "").split()
+    )
+    for var in ("UV_DEFAULT_INDEX", "UV_INDEX_URL"):
+        value = os.environ.get(var, "").strip()
+        if value:
+            return extra_is_pypi or _url_is_public_pypi(value)
+    policy = _uv_config_index_policy()
+    if policy["unreadable"] or policy["no_index"] is True:
+        return False
+    extra_is_pypi = extra_is_pypi or any(
+        _url_is_public_pypi(u) for u in policy["extra_indexes"] if isinstance(u, str)
+    )
+    default = policy["default_index"]
+    if isinstance(default, str) and not _url_is_public_pypi(default):
+        return extra_is_pypi
+    return True
+
+
+def _pip_reaches_public_pypi() -> bool:
+    """pip's policy: its environment first, then the configuration files it would read.
+
+    PIP_* outranks every file. Below that, `pip config list` reports the effective values from
+    the site, user and global files, an `[install]` key outranking its `[global]` twin for an
+    install. A `no-index` or an exclusive `index-url` set there replaces PyPI just as the
+    environment does. Doubt (a `pip config` that cannot be read) keeps the skip.
+    """
+    if _pip_env_flag("PIP_NO_INDEX"):
+        return False
+    extra_is_pypi = any(
+        _url_is_public_pypi(u) for u in os.environ.get("PIP_EXTRA_INDEX_URL", "").split()
+    )
+    value = os.environ.get("PIP_INDEX_URL", "").strip()
+    if value:
+        return extra_is_pypi or _url_is_public_pypi(value)
+    policy = _pip_config_index_policy()
+    if policy["unreadable"] or policy["no_index"] is True:
+        return False
+    extra_is_pypi = extra_is_pypi or any(_url_is_public_pypi(u) for u in policy["extra_index_urls"])
+    index_url = policy["index_url"]
+    if isinstance(index_url, str) and not _url_is_public_pypi(index_url):
+        return extra_is_pypi
+    return True
+
+
+def _pip_config_index_policy() -> "dict[str, object]":
+    """The index keys pip's configuration files set, read from `pip config list`.
+
+    Lines are `<section>.<key>='<value>'`; `:env:` entries mirror PIP_* variables the caller
+    already read, so they are skipped. `install.<key>` outranks `global.<key>`, as it does for
+    pip itself. A `pip config` that cannot run or be parsed is reported unreadable.
+    """
+    policy: "dict[str, object]" = {
+        "no_index": None,
+        "index_url": None,
+        "extra_index_urls": [],
+        "unreadable": False,
+    }
+    try:
+        done = subprocess.run(
+            [sys.executable, "-m", "pip", "config", "list"],
+            capture_output = True,
+            text = True,
+            timeout = 60,
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except (OSError, subprocess.SubprocessError):
+        policy["unreadable"] = True
+        return policy
+    if done.returncode != 0:
+        policy["unreadable"] = True
+        return policy
+    found: "dict[str, dict[str, str]]" = {"global": {}, "install": {}}
+    for line in done.stdout.splitlines():
+        m = re.match(r"^(global|install)\.([a-z-]+)=(.*)$", line.strip())
+        if not m:
+            continue
+        section, key, raw = m.groups()
+        raw = raw.strip()
+        if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "'\"":
+            raw = raw[1:-1]
+        found[section][key] = raw
+    for section in ("global", "install"):
+        keys = found[section]
+        if "no-index" in keys:
+            policy["no_index"] = keys["no-index"].strip().lower() in ("1", "true", "yes", "on")
+        if keys.get("index-url", "").strip():
+            policy["index_url"] = keys["index-url"].strip()
+        if "extra-index-url" in keys:
+            # pip prints the repr, so a multi-line value arrives with a literal backslash-n.
+            policy["extra_index_urls"] = [
+                u for u in re.split(r"\s+|\\n", keys["extra-index-url"]) if u
+            ]
+    return policy
+
+
+def _woa_pypi_provided_versions() -> "dict[str, set[str]]":
+    """{canonical name: versions} install.ps1 found PyPI publishing for THIS interpreter.
+
+    UNSLOTH_WOA_PYPI_PROVIDED carries space-separated `name==version` entries: the wheelhouse
+    wheels install.ps1 discarded because PyPI serves the same version. The managed copy is
+    gone, so find-links no longer answers for them; this is the only record that they resolve.
+    """
+    provided: "dict[str, set[str]]" = {}
+    for entry in os.environ.get("UNSLOTH_WOA_PYPI_PROVIDED", "").split():
+        name, sep, version = entry.partition("==")
+        if sep and name and version:
+            provided.setdefault(_canonical_dist_name(name), set()).add(version)
+    return provided
+
+
+def _public_index_win_arm64_versions(canonical: str) -> "set[str]":
+    """Versions the public index publishes a usable win_arm64 wheel of, for THIS build.
+
+    Empty off win_arm64, empty when the resolve cannot reach PyPI, and empty for an
+    interpreter the recorded wheel is not tagged for. The tag is judged by
+    _wheel_matches_interpreter rather than by comparing strings, so a free-threaded build does
+    not claim a wheel built for the GIL one. install.ps1's own probe is added on top.
+    """
+    if not _is_win_arm64_interpreter() or not _public_pypi_is_reachable():
+        return set()
+    return {
+        version
+        for tag, version in WINDOWS_ARM64_PUBLIC_INDEX_WHEELS.get(canonical, {}).items()
+        if _wheel_matches_interpreter(f"{canonical}-{version}-{tag}-{tag}-win_arm64.whl")
+    } | _woa_pypi_provided_versions().get(_canonical_dist_name(canonical), set())
+
+
+def _windows_arm64_skip_packages(req: "Path | None" = None) -> set[str]:
+    """WINDOWS_ARM64_SKIP_PACKAGES minus whatever the wheelhouse already provides, so
+    hosting a wheel is all it takes to re-enable one of these features here.
+
+    ``req`` is the requirements file about to be installed, when there is one. Its pins
+    decide whether a hosted wheel is actually usable: a name match is not enough, because
+    the resolver has to honour ``tiktoken==0.13.0`` and a staged 0.12.0 wheel leaves it
+    with the unbuildable sdist rather than the skip this list is here to keep.
+    """
+    available = _find_links_wheel_versions()
+    if not available and not any(
+        _public_index_win_arm64_versions(name)
+        for name in set(WINDOWS_ARM64_PUBLIC_INDEX_WHEELS) | set(_woa_pypi_provided_versions())
+    ):
+        return set(WINDOWS_ARM64_SKIP_PACKAGES)
+    pins = _requirement_pins(req)
+
+    def hosted(name: str) -> bool:
+        canonical = _canonical_dist_name(name)
+        versions = set(available.get(canonical) or ()) | _public_index_win_arm64_versions(canonical)
+        if not versions:
+            return False
+        clauses = [clause for clause in pins.get(canonical, []) if clause]
+        if not clauses:
+            floor = WINDOWS_ARM64_BLOCKER_FLOORS.get(canonical)
+            if floor is None:
+                return True
+            clauses = [floor[0]]
+        verdicts = [_version_satisfies(v, c) for v in versions for c in clauses]
+        if any(verdict is True for verdict in verdicts):
+            return True
+        return any(verdict is None for verdict in verdicts)
+
+    keep_skipping: set[str] = set()
+    for package in WINDOWS_ARM64_SKIP_PACKAGES:
+        canonical = _canonical_dist_name(package)
+        blockers = WINDOWS_ARM64_SKIP_UNBLOCKED_BY.get(canonical)
+        if blockers:
+            if all(hosted(b) for b in blockers):
+                continue
+        elif hosted(package):
+            continue
+        keep_skipping.add(package)
+    return keep_skipping
+
 
 # Skipped without torch (Intel Mac GGUF-only), plus librosa, whose numba chain fails (#5046).
 NO_TORCH_SKIP_PACKAGES = {
@@ -7405,10 +8367,10 @@ def _build_pip_cmd(args: tuple[str, ...]) -> list[str]:
 
         # Every current caller also names these as positionals or via -r, but a
         # future one might not, and pip would then upgrade nothing.
-        # By canonical project name: `--upgrade-package mlx` beside `mlx==0.32.1` is one project,
+        # By canonical project name: `--upgrade-package mlx` beside `mlx==0.32.2` is one project,
         # and pip refuses a double requirement where uv does not.
         def _project(requirement: str) -> str:
-            # _requirement_name stops at "==" and "@"; a range (mlx-vlm>=0.4.4,<0.7.0) needs the
+            # _requirement_name stops at "==" and "@"; a range (mlx-vlm>=0.4.4,<=0.7.1) needs the
             # rest.
             return _canonical_package_name(
                 re.split(r"[<>=!~;\[ ]", _requirement_name(requirement), maxsplit = 1)[0]
@@ -7614,7 +8576,7 @@ def _uv_is_offline() -> bool:
     uv's own boolish set, as both setup scripts read it. `not in (0, false)` also read `off`
     and `no` as offline, declining repairs with a message saying the opposite.
     """
-    return os.environ.get("UV_OFFLINE", "").strip().lower() in ("1", "t", "true", "y", "yes", "on")
+    return _uv_env_flag("UV_OFFLINE")
 
 
 def _uv_staging_plan(name: str) -> "tuple[str, dict[str, str]] | None":
@@ -8189,9 +9151,38 @@ def pip_install(
                 if VERBOSE and result.stdout:
                     _safe_print(_redact_install_output(result.stdout))
                 return
+            if _woa_overrides_are_load_bearing():
+                _step("error", f"{label} failed and pip cannot stand in for it", _red)
+                _safe_print(
+                    _red(
+                        "   The Windows on ARM stack resolves through UV_OVERRIDE, which pip has no "
+                        "equivalent for: overrides REPLACE a requirement, and pip constraints can "
+                        "only narrow one."
+                    )
+                )
+                _safe_print(
+                    _red(
+                        "   Falling back here would honour the released torch cap, which no "
+                        "win_arm64 CUDA wheel satisfies, and pull back the packages that have no "
+                        "win_arm64 build at all -- downgrading a working CUDA torch or failing "
+                        "later, with nothing to say why."
+                    )
+                )
+                _safe_print(_red("   Install uv and re-run, or re-run install.ps1."))
+                _report_failed_command(label, result)
             _safe_print(_red(f"   uv failed, falling back to pip..."))
             if result.stdout:
                 _safe_print(_redact_install_output(result.stdout))
+
+        elif _woa_overrides_are_load_bearing():
+            _step("error", f"{label} needs uv on the Windows on ARM stack", _red)
+            _safe_print(
+                _red(
+                    "   The native ARM64 resolve depends on UV_OVERRIDE, which pip cannot express. "
+                    "Install uv and re-run, or re-run install.ps1."
+                )
+            )
+            sys.exit(1)
 
         pip_cmd, pip_env = _pinned_cmd_and_env(
             _build_pip_cmd(args) + constraint_args_pip + req_args_pip
@@ -8274,9 +9265,41 @@ def _has_working_git() -> bool:
 
 # The MLX stack, one place; test_mlx_install.py compares it with utils/mlx_repair.py's
 # _MLX_INSTALL_SPECS.
-_MLX_PINS: tuple[str, ...] = ("mlx==0.32.1", "mlx-metal==0.32.1", "mlx-lm==0.31.3")
-_MLX_VLM_SPEC = "mlx-vlm>=0.4.4,<0.7.0"
+_MLX_PINS: tuple[str, ...] = ("mlx==0.32.2", "mlx-metal==0.32.2", "mlx-lm==0.31.3")
+_MLX_VLM_SPEC = "mlx-vlm>=0.4.4,<=0.7.1"
 _MLX_NAMES: tuple[str, ...] = tuple(spec.partition("==")[0] for spec in _MLX_PINS) + ("mlx-vlm",)
+
+
+def _mlx_vlm_spec_for_installed_zoo() -> str:
+    """_MLX_VLM_SPEC, intersected with the range the INSTALLED unsloth-zoo declares.
+
+    This step runs before the core phase, and on a fresh install (SKIP_STUDIO_BASE=1) the core
+    phase is skipped entirely, so the zoo install.sh already put down is the one that stays.
+    mlx-vlm 0.7.1 passes `cache` to gated_delta_update and a zoo predating that keyword does not
+    accept it, so admitting 0.7.1 beside such a zoo raises TypeError at the first Qwen3.5 VLM
+    training step, after mlx_stack_available() has cleared the chat-only gate. Reading what the
+    installed zoo itself declares keeps the two in step without naming a zoo version here, and it
+    widens on its own once a zoo declaring 0.7.1 is installed. Mirrors utils/mlx_repair.py's
+    _install_packages, which does the same for the unattended self-heal.
+    """
+    try:
+        from importlib.metadata import requires
+        from packaging.requirements import Requirement
+        from packaging.utils import canonicalize_name
+    except ImportError:
+        return _MLX_VLM_SPEC
+    try:
+        declared = requires("unsloth_zoo") or ()
+    except Exception:  # noqa: BLE001 - not installed, or unreadable metadata
+        return _MLX_VLM_SPEC
+    for raw in declared:
+        try:
+            requirement = Requirement(raw)
+        except Exception:  # noqa: BLE001 - a requirement string packaging cannot parse
+            continue
+        if canonicalize_name(requirement.name) == "mlx-vlm" and str(requirement.specifier):
+            return f"{_MLX_VLM_SPEC},{requirement.specifier}"
+    return _MLX_VLM_SPEC
 
 
 def _mlx_stack_is_current() -> bool:
@@ -8293,7 +9316,14 @@ def _mlx_stack_is_current() -> bool:
         return False
     try:
         from packaging.requirements import Requirement
-        if not Requirement(_MLX_VLM_SPEC).specifier.contains(installed, prereleases = True):
+
+        # The narrowed spec, not the static one: with an older zoo beside an already-installed
+        # 0.7.1 the static range reads as satisfied and the step skips the very install that
+        # would put mlx-vlm back where the zoo can drive it.
+        if not Requirement(_mlx_vlm_spec_for_installed_zoo()).specifier.contains(
+            installed,
+            prereleases = True,
+        ):
             return False
     except Exception:  # noqa: BLE001 - no packaging, or a version it cannot parse
         return False
@@ -8331,7 +9361,10 @@ def _mlx_closure_unmet() -> bool:
         _fd, _name = _tempfile.mkstemp(prefix = "unsloth-mlx-", suffix = ".txt", text = True)
         os.close(_fd)
         handle = Path(_name)
-        handle.write_text("\n".join([*_MLX_PINS, _MLX_VLM_SPEC]) + "\n", encoding = "utf-8")
+        handle.write_text(
+            "\n".join([*_MLX_PINS, _mlx_vlm_spec_for_installed_zoo()]) + "\n",
+            encoding = "utf-8",
+        )
         unmet = install_manifest.closure_unmet_requirements(handle, _installed_index())
         # An override REPLACES every requirement on the package it names, so the installed
         # version is the override's, not the one mlx-vlm's metadata asks for. Read raw, that
@@ -8383,7 +9416,8 @@ _MLX_IMPORTED_DEPENDENCIES = (
 def _mlx_health_fingerprint() -> dict:
     """What a recorded MLX verdict is only valid for."""
     return {
-        "pins": list(_MLX_PINS) + [_MLX_VLM_SPEC],
+        # The narrowed spec, so installing a different zoo invalidates a recorded verdict.
+        "pins": list(_MLX_PINS) + [_mlx_vlm_spec_for_installed_zoo()],
         "python": _installer_python_tag(),
         "mlx_vlm": _installed_distribution_version("mlx-vlm") or "",
         # Versions as installed; an older record without this key is probed once and rewritten.
@@ -8784,11 +9818,19 @@ def _effective_requirements(req: Path) -> "tuple[Path, list[Path]]":
     if IS_WINDOWS and WINDOWS_SKIP_PACKAGES:
         actual = _filter_requirements(actual, WINDOWS_SKIP_PACKAGES)
         temps.append(actual)
+    if _is_win_arm64_interpreter():
+        # Judged against the ORIGINAL file: the pins decide whether a hosted wheel is usable,
+        # and a copy already filtered above no longer carries the rows they sit on.
+        arm64_skip = _windows_arm64_skip_packages(req)
+        if arm64_skip:
+            actual = _filter_requirements(actual, arm64_skip)
+            temps.append(actual)
     if NO_TORCH and NO_TORCH_SKIP_PACKAGES:
         actual = _filter_requirements(actual, NO_TORCH_SKIP_PACKAGES)
         temps.append(actual)
-    if PLATFORM_LACKS_TORCHCODEC_WHEEL:
-        # Linux aarch64 / Windows ARM64 / Intel Mac have no torchcodec wheel.
+    if PLATFORM_LACKS_TORCHCODEC_WHEEL and not _wheelhouse_hosts("torchcodec"):
+        # Linux aarch64 / Windows ARM64 / Intel Mac have no torchcodec wheel, unless the
+        # win_arm64 wheelhouse hosts one -- step 13b installs that copy itself.
         actual = _filter_requirements(actual, {"torchcodec"})
         temps.append(actual)
     return actual, temps
@@ -9417,6 +10459,10 @@ def install_python_stack() -> int:
             base_total += 1  # torch flavor invariant (step 13w), Windows
     if IS_MAC_ARM and not NO_TORCH:
         base_total += 1  # MLX stack, same gate as the step itself
+        # The re-resolve after the core phase, which may have moved the unsloth-zoo whose
+        # declared mlx-vlm range the step above honoured. Same gate, so the slot is spent on
+        # every Apple Silicon run with torch, including the no-wheel branch.
+        base_total += 1  # MLX stack re-resolve
     if NO_TORCH and not skip_base:
         # no-torch runtime deps, which this build announces on its own slot inside the core
         # step rather than folding into it. Same gate as the step itself.
@@ -9537,6 +10583,9 @@ def install_python_stack() -> int:
     # and still needs MLX. Not on --no-torch: it declined the training stack. Pins stay
     # aligned with utils/mlx_repair.py and unsloth-zoo; UV_OVERRIDE (set at module load)
     # relaxes the mlx-vlm / mlx-lm transformers pin.
+    # None when the MLX step did not run at all, so the re-resolve after the core phase has
+    # nothing to compare against.
+    _mlx_vlm_spec_used: Optional[str] = None
     if IS_MAC_ARM and not NO_TORCH:
         # Both branches spend the slot, so the denominator does not depend on the host.
         if _mlx_pins_are_installable():
@@ -9559,8 +10608,9 @@ def install_python_stack() -> int:
                     # transitive dependency; _build_pip_cmd translates back for pip.
                     *[arg for name in _MLX_NAMES for arg in ("--upgrade-package", name)],
                     *_MLX_PINS,
-                    _MLX_VLM_SPEC,
+                    _mlx_vlm_spec_for_installed_zoo(),
                 )
+            _mlx_vlm_spec_used = _mlx_vlm_spec_for_installed_zoo()
         else:
             _progress("MLX stack (skipped, no wheel for this macOS or Python)")
             _note(
@@ -9658,6 +10708,26 @@ def install_python_stack() -> int:
             unsloth_spec,
             "unsloth-zoo",
         )
+
+    # The MLX step ran BEFORE the core phase, so it honoured the mlx-vlm range the OLD
+    # unsloth-zoo declared. A normal update then upgrades the zoo, and without this the machine
+    # keeps the narrower stack indefinitely: the startup self-heal will not correct it either,
+    # since 0.6.x satisfies _MLX_MIN_VERSIONS. Re-resolve only when the declared range actually
+    # moved, so the common update pays a metadata read and nothing else.
+    if IS_MAC_ARM and not NO_TORCH:
+        _mlx_vlm_spec_now = _mlx_vlm_spec_for_installed_zoo()
+        if _mlx_vlm_spec_used is None or _mlx_vlm_spec_now == _mlx_vlm_spec_used:
+            _progress("MLX stack (zoo unchanged, skipped)")
+        else:
+            _progress("MLX stack (re-resolved for the new zoo)")
+            _record_step("mlx", "ran")
+            pip_install(
+                "Installing MLX stack for the upgraded unsloth-zoo",
+                "--no-cache-dir",
+                *[arg for name in _MLX_NAMES for arg in ("--upgrade-package", name)],
+                *_MLX_PINS,
+                _mlx_vlm_spec_now,
+            )
 
     if not skip_base:
         base_requirements = _shared_base_requirements()
@@ -9936,6 +11006,10 @@ def install_python_stack() -> int:
         # beside a physical GPU.
         torch_flavor_tag = _expected_torch_flavor_tag()
 
+    # 13x. Optional win_arm64 features whose released metadata excludes them outright. After the
+    #      invariant above, so xformers is validated against the torch the install ends with.
+    _install_wheelhouse_optionals()
+
     # 13b. torchcodec, pinned to the venv's torch minor (_select_torchcodec_spec), which
     #      extras-no-deps.txt cannot do because markers cannot see torch. Must run after the
     #      repair above: that can move torch onto another minor, staling an earlier choice.
@@ -9943,14 +11017,38 @@ def install_python_stack() -> int:
     #      tolerate), so read the installed metadata before giving up: guessing here means
     #      downgrading a matching codec onto the default and recreating the mismatch.
     _codec_torch_ver = None
-    if not NO_TORCH and not PLATFORM_LACKS_TORCHCODEC_WHEEL:
+    _codec_hosted = None
+    if not NO_TORCH and (not PLATFORM_LACKS_TORCHCODEC_WHEEL or _wheelhouse_hosts("torchcodec")):
         _codec_torch_ver = _probe_installed_torch_version() or _installed_distribution_version(
             "torch"
         )
+    if not NO_TORCH and PLATFORM_LACKS_TORCHCODEC_WHEEL:
+        _codec_hosted = _wheelhouse_torchcodec_version(_codec_torch_ver)
     if NO_TORCH:
         _progress("torchcodec (skipped, no torch)")
+    elif _codec_hosted:
+        # The wheelhouse stands in for the wheel this platform lacks: --no-deps and pinned to
+        # the hosted version inside the resident torch's window, like the other hosted optionals.
+        _progress("torchcodec")
+        if pip_install_try(
+            f"Installing torchcodec=={_codec_hosted} from the Windows on ARM wheelhouse",
+            "--no-deps",
+            "--no-cache-dir",
+            f"torchcodec=={_codec_hosted}",
+            constrain = False,
+        ):
+            _note(f"windows on arm: installed torchcodec=={_codec_hosted} from the wheelhouse")
+        else:
+            _note(
+                "windows on arm: could not install the wheelhouse torchcodec -- audio decoding stays disabled"
+            )
     elif PLATFORM_LACKS_TORCHCODEC_WHEEL:
         _progress("torchcodec (skipped, no wheel for this platform)")
+        if _wheelhouse_hosts("torchcodec"):
+            _note(
+                f"windows on arm: the wheelhouse torchcodec is outside the window torch "
+                f"{_codec_torch_ver or 'unknown'} selects -- leaving audio decoding disabled"
+            )
     elif not _codec_torch_ver:
         _progress("torchcodec (skipped, torch version unknown)")
         _note("could not read the installed torch version -- leaving torchcodec alone")
@@ -10144,6 +11242,7 @@ def install_python_stack() -> int:
             expected_torch_tag = _recordable_torch_flavor_tag(torch_flavor_tag),
             expected_torch_tag_pinned = bool(_recordable_torch_flavor_tag(torch_flavor_tag))
             and _expected_torch_flavor_was_pinned(_recordable_torch_flavor_tag(torch_flavor_tag)),
+            woa_torch_index = os.environ.get("UNSLOTH_WOA_SELECTED_TORCH_INDEX"),
             # What the NEXT run may skip. Digested from the CURRENT REQ_ROOT, which the core step
             # may have replaced: a file that moved during this pass must not read as unchanged.
             extra = {
@@ -10207,6 +11306,9 @@ if __name__ == "__main__":
             f"probe={_TORCH_RUNTIME_PROBE!r}"
         )
         sys.exit(0 if _needs_pass else 1)
+    if sys.argv[1:] == ["--cuda-torch-needs-dependency-pass"]:
+        # Exit 0 forces the dependency pass; exit 1 keeps the fast path.
+        sys.exit(0 if _cuda_torch_needs_dependency_pass() else 1)
     if sys.argv[1:] == ["--missing-torch-needs-dependency-pass"]:
         # Exit 0 forces the dependency pass; exit 1 keeps the fast path.
         sys.exit(0 if _missing_torch_needs_dependency_pass() else 1)

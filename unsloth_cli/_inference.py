@@ -4,6 +4,7 @@
 """Model loading and streaming shared by `inference` and `chat`."""
 
 import asyncio
+import itertools
 import json
 import os
 import re
@@ -643,19 +644,80 @@ def _loopback_candidate_bases(base: str) -> list:
     return bases or [base]
 
 
+_STUDIO_SERVICE_MARKER = "Unsloth UI Backend"
+
+
+def _recorded_loopback_bases(address: Optional[str], port: str) -> list:
+    """Loopback bases for a server recorded at *address*. The wrong family reaches whoever else
+    holds that port number."""
+    import ipaddress
+
+    loopback, parsed_any = set(), False
+    for text in (address or "").split(","):
+        try:
+            ip = ipaddress.ip_address(text.strip())
+        except ValueError:
+            continue
+        parsed_any = True
+        if ip.is_unspecified:
+            loopback.add(ipaddress.ip_address("::1" if ip.version == 6 else "127.0.0.1"))
+        elif ip.is_loopback:
+            loopback.add(ip)
+    if not parsed_any:
+        loopback.add(ipaddress.ip_address("127.0.0.1"))
+    return [
+        f"http://[{ip.compressed}]:{port}" if ip.version == 6 else f"http://{ip.compressed}:{port}"
+        for ip in sorted(loopback, key = lambda ip: (ip.version, ip.compressed))
+    ]
+
+
+def _recorded_studio_bases(tried: list):
+    from unsloth_cli.commands.studio import (
+        PID_FILE_GLOB,
+        STUDIO_HOME,
+        _pid_alive,
+        _pid_is_studio_server,
+        _read_pid_record,
+    )
+
+    seen = set(tried)
+    try:
+        paths = sorted(STUDIO_HOME.glob(PID_FILE_GLOB))
+    except OSError:
+        return
+    for path in paths:
+        match = re.fullmatch(r"studio-(\d+)-\d+\.pid", path.name)
+        record = _read_pid_record(path) if match else None
+        if record is None:
+            continue
+        pid, created, address = record
+        if not _pid_alive(pid) or not _pid_is_studio_server(pid, [created]):
+            continue
+        for candidate in _recorded_loopback_bases(address, match.group(1)):
+            if candidate not in seen:
+                seen.add(candidate)
+                yield candidate
+
+
 def find_studio_server(timeout: float = 3.0) -> Optional[str]:
     import urllib.request
 
     base = os.environ.get("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888").rstrip("/")
+    candidates = _loopback_candidate_bases(base)
+    if not os.environ.get("UNSLOTH_STUDIO_URL"):
+        candidates = itertools.chain(candidates, _recorded_studio_bases(candidates))
     # Try the concrete loopback addresses in order and return the first that answers, so the rest of
     # the flow talks to that exact address.
-    for candidate in _loopback_candidate_bases(base):
+    for candidate in candidates:
         request = urllib.request.Request(
             f"{candidate}/api/health", headers = {"User-Agent": _USER_AGENT}
         )
         try:
-            with urllib.request.urlopen(request, timeout = timeout):
-                return candidate
+            with urllib.request.urlopen(request, timeout = timeout) as response:
+                # A live port is not Studio: a stranger answering every path would get our key.
+                body = json.loads(response.read(65536).decode() or "{}")
+                if body.get("service") == _STUDIO_SERVICE_MARKER:
+                    return candidate
         except Exception:
             continue
     return None

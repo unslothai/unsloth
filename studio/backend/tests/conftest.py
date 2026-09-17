@@ -42,6 +42,25 @@ _backend_root = Path(__file__).resolve().parent.parent
 if str(_backend_root) not in sys.path:
     sys.path.insert(0, str(_backend_root))
 
+# Settle the real ``loggers`` package before any test module is imported. 84 test files
+# stub it with a bare ``ModuleType``, which has no ``__path__`` and so is not a package: once
+# one wins the slot, ``from loggers.media_progress import ...`` (routes/inference.py, at module
+# level) dies with "'loggers' is not a package". Only bites when pytest is invoked from the
+# repo root, which is why the repo's own CI, run from studio/backend, never saw it.
+try:
+    import loggers  # noqa: E402
+except ImportError:
+    # loggers.handlers needs structlog, and some tests stub structlog to run without it. Where
+    # it is missing, the import this protects would die on structlog anyway.
+    pass
+else:
+    # A stub satisfies the import too: ``__path__`` is the whole difference. Also keeps the
+    # name used, which is what verify_import_hoist.py reads a module-level import for.
+    assert hasattr(loggers, "__path__"), (
+        f"the 'loggers' slot holds a non-package ({loggers!r}); a ModuleType stub from some "
+        "test module got there first, so `from loggers.media_progress import ...` will fail"
+    )
+
 # tests/_shared, as tests/conftest.py does for its own trees. Module scope, not a fixture:
 # a test module imports from it at collection, before any fixture runs.
 for _up in Path(__file__).resolve().parents:
@@ -65,6 +84,8 @@ os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
 os.environ.setdefault("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "0")
 # Avoid a cold torch subprocess in unrelated RAG tests. The probe tests re-enable it.
 os.environ.setdefault("UNSLOTH_STUDIO_DISABLE_DEVICE_PROBE", "1")
+# A test that hides nvidia-smi to fake a CPU host must not find the real GPUs through NVML.
+os.environ.setdefault("UNSLOTH_NVIDIA_LIBRARY_PROBE", "0")
 # settled_snapshot_device_memory spaces its retried VRAM reads a real second apart so a
 # transient tenant on a live card has time to clear. Under test the snapshots are stubs
 # whose answers do not change with time, so the wait buys nothing and the max() over the
