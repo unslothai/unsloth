@@ -231,7 +231,9 @@ def test_a_uid_with_no_passwd_entry_is_not_given_a_usermod(monkeypatch, linux):
     Fails before the fix, which fell back to USER and then to a literal $USER."""
     _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
     monkeypatch.setenv("USER", "root")
-    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: (["render"], [], [], [], [], [], [], []))
+    monkeypatch.setattr(
+        amd, "_groups_that_own", lambda paths: (["render"], [], [], [], [], [], [], [])
+    )
     _no_passwd_entry(monkeypatch)
     hint = amd.amd_node_permission_hint()
     assert "usermod -a -G" not in hint and "root" not in hint
@@ -244,7 +246,9 @@ def test_an_account_the_system_knows_still_gets_the_command(monkeypatch, linux):
     usermod", which removes what #10466 asked for."""
     _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
     monkeypatch.setenv("USER", "root")
-    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: (["render"], [], [], [], [], [], [], []))
+    monkeypatch.setattr(
+        amd, "_groups_that_own", lambda paths: (["render"], [], [], [], [], [], [], [])
+    )
     monkeypatch.setattr(amd, "_repair_account", lambda: "ada")
     hint = amd.amd_node_permission_hint()
     assert "sudo usermod -a -G render ada" in hint
@@ -792,7 +796,9 @@ def test_a_single_owning_group_is_not_pluralised(monkeypatch, linux):
     """A host where both nodes belong to one group gets one group named, and the sentence
     has to agree with the command rather than saying "groups" over a single name."""
     _nodes(monkeypatch, present = ["/dev/dri/renderD128"], openable = set())
-    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: (["render"], [], [], [], [], [], [], []))
+    monkeypatch.setattr(
+        amd, "_groups_that_own", lambda paths: (["render"], [], [], [], [], [], [], [])
+    )
     monkeypatch.setenv("USER", "ada")
     hint = amd.amd_node_permission_hint()
     assert "usermod -a -G render ada" in hint
@@ -1849,7 +1855,9 @@ def test_a_node_carrying_an_acl_is_not_answered_with_usermod(monkeypatch, tmp_pa
     monkeypatch.setattr(amd, "_has_an_access_acl", lambda path: True)
     _not_the_owner = os.getuid() + 1
     monkeypatch.setattr(amd.os, "getuid", lambda: _not_the_owner)
-    joinable, unnamed, no_group, acl, owned, _priv, _already, _ext = amd._groups_that_own([str(node)])
+    joinable, unnamed, no_group, acl, owned, _priv, _already, _ext = amd._groups_that_own(
+        [str(node)]
+    )
     assert acl == [str(node)]
     assert joinable == [] and unnamed == [] and no_group == []
 
@@ -1867,7 +1875,9 @@ def test_the_same_node_without_an_acl_is_still_prescribed_for(monkeypatch, tmp_p
     monkeypatch.setattr(amd, "_has_an_access_acl", lambda path: False)
     _not_the_owner = os.getuid() + 1
     monkeypatch.setattr(amd.os, "getuid", lambda: _not_the_owner)
-    joinable, unnamed, no_group, acl, owned, _priv, _already, _ext = amd._groups_that_own([str(node)])
+    joinable, unnamed, no_group, acl, owned, _priv, _already, _ext = amd._groups_that_own(
+        [str(node)]
+    )
     assert acl == []
     assert joinable or unnamed
 
@@ -1960,7 +1970,9 @@ def test_every_unnamed_gid_reaches_the_docker_repair(monkeypatch, linux):
 
     Fails before the fix, which interpolated unnamed[0] alone."""
     _nodes(monkeypatch, present = ["/dev/kfd", "/dev/dri/renderD128"], openable = set())
-    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: ([], [993, 994], [], [], [], [], [], []))
+    monkeypatch.setattr(
+        amd, "_groups_that_own", lambda paths: ([], [993, 994], [], [], [], [], [], [])
+    )
     monkeypatch.setenv("USER", "ada")
     hint = amd.amd_node_permission_hint()
     assert "--group-add 993 --group-add 994" in hint
@@ -2264,7 +2276,9 @@ def test_an_ordinary_owning_group_is_still_prescribed(monkeypatch, linux):
 def test_the_hint_for_a_privileged_owner_says_it_is_not_the_repair(monkeypatch, linux):
     """The sentence a user actually reads, since the buckets above only decide it."""
     _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
-    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: ([], [], [], [], [], ["root"], [], []))
+    monkeypatch.setattr(
+        amd, "_groups_that_own", lambda paths: ([], [], [], [], [], ["root"], [], [])
+    )
     hint = amd.amd_node_permission_hint()
     assert "usermod" not in hint
     assert "root" in hint and "udev" in hint
@@ -2632,7 +2646,9 @@ def test_an_unnamed_gid_hint_also_adds_the_account(monkeypatch, linux):
     a user who follows the sentence to the letter still cannot open the node. Both halves, and
     one per GID: with two unnamed GIDs the singular instruction repaired at most one node."""
     _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
-    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: ([], [993, 994], [], [], [], [], [], []))
+    monkeypatch.setattr(
+        amd, "_groups_that_own", lambda paths: ([], [993, 994], [], [], [], [], [], [])
+    )
     hint = amd.amd_node_permission_hint()
     assert "993, 994" in hint
     assert "each of them" in hint
@@ -3181,7 +3197,9 @@ def test_the_unnamed_gid_repair_is_a_command_a_shell_will_run(monkeypatch, linux
     sentence is meant to be pasted, so it must contain no shell metacharacter it does not
     mean. The name is derived from the GID, which by definition here has no group entry."""
     _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
-    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: ([], [993, 994], [], [], [], [], [], []))
+    monkeypatch.setattr(
+        amd, "_groups_that_own", lambda paths: ([], [993, 994], [], [], [], [], [], [])
+    )
     hint = amd.amd_node_permission_hint()
     assert "<" not in hint and ">" not in hint
     assert "sudo groupadd -g 993 amdgpu993 && sudo usermod -a -G amdgpu993 ada" in hint
@@ -4745,7 +4763,9 @@ def test_a_group_this_account_is_outside_is_still_prescribed(monkeypatch, linux)
     _stat_nodes(monkeypatch, {"/dev/kfd": (39, 0o660, 0)}, {39: "render"})
     monkeypatch.setattr(amd.os, "getgroups", lambda: [])
     monkeypatch.setattr(amd.os, "getgid", lambda: 1)
-    joinable, _unnamed, _no_group, _acl, _owned, _priv, already, _ext = amd._groups_that_own(["/dev/kfd"])
+    joinable, _unnamed, _no_group, _acl, _owned, _priv, already, _ext = amd._groups_that_own(
+        ["/dev/kfd"]
+    )
     assert joinable == ["render"]
     assert already == []
 
@@ -4757,7 +4777,9 @@ def test_an_unnamed_gid_this_account_already_holds_is_not_prescribed_either(monk
     branch for exactly that reason."""
     _stat_nodes(monkeypatch, {"/dev/kfd": (993, 0o660, 0)}, {})
     monkeypatch.setattr(amd.os, "getgroups", lambda: [993])
-    _joinable, unnamed, _no_group, _acl, _owned, _priv, already, _ext = amd._groups_that_own(["/dev/kfd"])
+    _joinable, unnamed, _no_group, _acl, _owned, _priv, already, _ext = amd._groups_that_own(
+        ["/dev/kfd"]
+    )
     assert already == ["993"]
     assert unnamed == []
 
@@ -4768,7 +4790,9 @@ def test_an_unnamed_gid_this_account_lacks_is_still_reported(monkeypatch, linux)
     _stat_nodes(monkeypatch, {"/dev/kfd": (993, 0o660, 0)}, {})
     monkeypatch.setattr(amd.os, "getgroups", lambda: [])
     monkeypatch.setattr(amd.os, "getgid", lambda: 1)
-    _joinable, unnamed, _no_group, _acl, _owned, _priv, already, _ext = amd._groups_that_own(["/dev/kfd"])
+    _joinable, unnamed, _no_group, _acl, _owned, _priv, already, _ext = amd._groups_that_own(
+        ["/dev/kfd"]
+    )
     assert unnamed == [993]
     assert already == []
 
@@ -4777,7 +4801,9 @@ def test_the_hint_for_a_group_already_held_names_the_cgroup_instead(monkeypatch,
     """The sentence a user actually reads, since the buckets above only decide it: no
     usermod, and a statement of what is left to look at."""
     _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
-    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: ([], [], [], [], [], [], ["render"], []))
+    monkeypatch.setattr(
+        amd, "_groups_that_own", lambda paths: ([], [], [], [], [], [], ["render"], [])
+    )
     hint = amd.amd_node_permission_hint()
     # The command, not the word: the sentence itself says usermod would change nothing.
     assert "usermod -a -G" not in hint
@@ -5127,7 +5153,9 @@ def test_a_name_the_shell_would_mangle_is_quoted(monkeypatch, linux):
     Fails before the fix, which interpolated the name raw."""
     _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
     monkeypatch.setattr(amd, "_repair_account", lambda: "DOMAIN\\ada")
-    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: (["render"], [], [], [], [], [], [], []))
+    monkeypatch.setattr(
+        amd, "_groups_that_own", lambda paths: (["render"], [], [], [], [], [], [], [])
+    )
     hint = amd.amd_node_permission_hint()
     assert "usermod -a -G render 'DOMAIN\\ada'" in hint
 
@@ -5149,7 +5177,9 @@ def test_an_ordinary_name_is_left_alone(monkeypatch, linux):
     user actually sees on a normal host must not grow quotes it does not need."""
     _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
     monkeypatch.setattr(amd, "_repair_account", lambda: "ada")
-    monkeypatch.setattr(amd, "_groups_that_own", lambda paths: (["render"], [], [], [], [], [], [], []))
+    monkeypatch.setattr(
+        amd, "_groups_that_own", lambda paths: (["render"], [], [], [], [], [], [], [])
+    )
     hint = amd.amd_node_permission_hint()
     assert "usermod -a -G render ada" in hint
     assert "'" not in hint

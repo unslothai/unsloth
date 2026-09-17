@@ -1391,7 +1391,14 @@ def _groups_that_own(paths: list) -> tuple:
     Best effort: a node that cannot be stat'd joins no bucket rather than raising.
     """
     joinable, unnamed, no_group, acl, owned, privileged, already, external = (
-        [], [], [], [], [], [], [], []
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
     )
     try:
         # The account's own gids, read once. getgroups() is the supplementary list and does
@@ -1688,8 +1695,8 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
         # and _explain_empty_gpu_probe reaches exactly that host, appending this sentence
         # after saying the closed node is not why the probe is empty.
         user = _repair_account()
-        joinable, unnamed, no_group, acl, owned, privileged, already, external = (
-            _groups_that_own(closed)
+        joinable, unnamed, no_group, acl, owned, privileged, already, external = _groups_that_own(
+            closed
         )
         if not any(_p != _KFD_NODE for _p in closed):
             _claim = "so ROCm cannot use the AMD card even though the driver is loaded"
