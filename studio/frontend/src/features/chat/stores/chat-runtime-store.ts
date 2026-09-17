@@ -119,6 +119,7 @@ export {
 export const CHAT_REASONING_ENABLED_KEY = "unsloth_chat_reasoning_enabled";
 export const CHAT_TOOLS_ENABLED_KEY = "unsloth_chat_tools_enabled";
 export const CHAT_CODE_TOOLS_ENABLED_KEY = "unsloth_chat_code_tools_enabled";
+const CHAT_KEEP_MODELS_LOADED_KEY = "unsloth_chat_keep_models_loaded";
 export const CHAT_IMAGE_TOOLS_ENABLED_KEY = "unsloth_chat_image_tools_enabled";
 export const CHAT_DEEP_RESEARCH_ENABLED_KEY =
   "unsloth_chat_deep_research_enabled";
@@ -2245,6 +2246,8 @@ type ChatRuntimeStore = {
   /** Whether the provider exposes server-side web_fetch (Anthropic `web_fetch_*`). Gates the
    *  composer's Fetch pill, independent of Search. */
   supportsBuiltinWebFetch: boolean;
+  /** Loading a model keeps the ones already loaded instead of replacing them. */
+  keepModelsLoaded: boolean;
   toolsEnabled: boolean;
   codeToolsEnabled: boolean;
   imageToolsEnabled: boolean;
@@ -2532,6 +2535,7 @@ type ChatRuntimeStore = {
   setReasoningEffort: (effort: ReasoningEffort) => void;
   setPreserveThinking: (value: boolean) => void;
   setToolsEnabled: (enabled: boolean, options?: { persist?: boolean }) => void;
+  setKeepModelsLoaded: (keep: boolean) => void;
   setCodeToolsEnabled: (enabled: boolean) => void;
   setImageToolsEnabled: (enabled: boolean) => void;
   setDeepResearchEnabled: (enabled: boolean) => void;
@@ -3954,6 +3958,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   supportsBuiltinImageGeneration: false,
   supportsBuiltinWebFetch: false,
   toolsEnabled: loadBool(CHAT_TOOLS_ENABLED_KEY, false),
+  keepModelsLoaded: loadBool(CHAT_KEEP_MODELS_LOADED_KEY, false),
   codeToolsEnabled: loadBool(CHAT_CODE_TOOLS_ENABLED_KEY, false),
   imageToolsEnabled: loadBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, false),
   deepResearchEnabled: loadBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false),
@@ -5043,6 +5048,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
     }),
+  setKeepModelsLoaded: (keepModelsLoaded) => {
+    writeStorageValue(CHAT_KEEP_MODELS_LOADED_KEY, String(keepModelsLoaded));
+    set({ keepModelsLoaded });
+  },
   setCodeToolsEnabled: (codeToolsEnabled) =>
     set((state) => {
       saveBool(CHAT_CODE_TOOLS_ENABLED_KEY, codeToolsEnabled);

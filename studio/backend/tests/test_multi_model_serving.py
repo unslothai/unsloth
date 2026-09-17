@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 import core.inference.orchestrator as orchestrator
 import routes.inference as inf
 from auth.authentication import get_current_subject
-from models.inference import LoadRequest, UnloadRequest
+from models.inference import InferenceStatusResponse, LoadRequest, UnloadRequest
 
 
 class FakeLlama:
@@ -45,7 +45,7 @@ class FakeOrchestrator:
 @pytest.fixture
 def backends(monkeypatch):
     primary = FakeLlama("org/A-GGUF", "Q4_K_M")
-    extra = inf._ExtraSlot(FakeLlama("org/B-GGUF", "Q8_0"), FakeOrchestrator())
+    extra = inf._ExtraSlot(FakeLlama("org/B-GGUF", "Q8_0"), FakeOrchestrator(), "owner")
     monkeypatch.setattr(inf, "_llama_cpp_backend", primary)
     monkeypatch.setattr(orchestrator, "_inference_backend", FakeOrchestrator())
     monkeypatch.setattr(inf, "_extra_slots", [extra])
@@ -70,7 +70,7 @@ def test_request_model_name_picks_the_backend(backends):
 
 
 def test_a_safetensors_slot_is_served_by_its_own_orchestrator(backends):
-    safetensors = inf._ExtraSlot(FakeLlama(), FakeOrchestrator("org/C"))
+    safetensors = inf._ExtraSlot(FakeLlama(), FakeOrchestrator("org/C"), "owner")
     inf._extra_slots.append(safetensors)
 
     async def run():
@@ -87,7 +87,7 @@ def test_loaded_models_lists_every_backend(backends):
     with TestClient(app) as client:
         data = client.get("/api/inference/loaded-models").json()["data"]
     assert {entry["id"] for entry in data} == {"org/A-GGUF", "org/B-GGUF"}
-    inf._extra_slots.append(inf._ExtraSlot(FakeLlama(), FakeOrchestrator("org/C")))
+    inf._extra_slots.append(inf._ExtraSlot(FakeLlama(), FakeOrchestrator("org/C"), "owner"))
     with TestClient(app) as client:
         data = client.get("/api/inference/loaded-models").json()["data"]
     assert [entry["id"] for entry in data] == ["org/A-GGUF", "org/B-GGUF", "org/C"]
@@ -133,3 +133,31 @@ def test_unload_drops_only_the_named_extra_slot(backends):
     assert response.status == "unloaded"
     assert primary.is_loaded and not extra.llama.is_loaded
     assert inf._extra_slots == []
+
+
+def test_a_managed_account_sees_only_its_own_slots(backends, monkeypatch):
+    primary, extra = backends
+    monkeypatch.setattr(inf.account_access, "managed_account", lambda: True)
+    monkeypatch.setattr(inf, "current_account_id", lambda: "someone-else")
+    assert _routed("org/B-GGUF") == (None, primary)
+    monkeypatch.setattr(inf, "current_account_id", lambda: "owner")
+    assert _routed("org/B-GGUF") == (extra, extra.llama)
+
+
+def test_idle_unload_spares_pinned_slots(backends):
+    _, extra = backends
+    inf.unload_extra_models(keep = lambda llama: True)
+    assert inf._extra_slots == [extra]
+    inf.unload_extra_models(keep = lambda llama: False)
+    assert inf._extra_slots == []
+
+
+def test_status_describes_the_named_slot_and_lists_the_rest(backends, monkeypatch):
+    async def slot_status(subject):
+        return InferenceStatusResponse(active_model = inf.get_llama_cpp_backend().model_identifier)
+
+    monkeypatch.setattr(inf, "_slot_status", slot_status)
+    named = asyncio.run(inf.get_status("s", model = "org/B-GGUF"))
+    assert (named.active_model, named.loaded) == ("org/B-GGUF", ["org/A-GGUF"])
+    primary = asyncio.run(inf.get_status("s"))
+    assert (primary.active_model, primary.loaded) == ("org/A-GGUF", ["org/B-GGUF"])

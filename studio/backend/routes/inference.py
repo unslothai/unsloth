@@ -66,7 +66,7 @@ import contextvars
 import threading
 import weakref
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import ExitStack, asynccontextmanager, contextmanager
+from contextlib import ExitStack, asynccontextmanager, contextmanager, nullcontext
 from dataclasses import dataclass, fields as dataclass_fields, replace
 
 
@@ -7533,6 +7533,7 @@ _llama_cpp_backend = LlamaCppBackend()
 class _ExtraSlot(NamedTuple):
     llama: LlamaCppBackend
     orchestrator: InferenceOrchestrator
+    account: str
 
 
 _extra_slots: list[_ExtraSlot] = []
@@ -7562,10 +7563,17 @@ def _slot_in_use(slot: _ExtraSlot) -> bool:
     return bool(slot.llama.is_active or slot.orchestrator.active_model_name)
 
 
+def _visible_extra_slots() -> list[_ExtraSlot]:
+    """A managed account sees only the slots it loaded."""
+    if not account_access.managed_account():
+        return list(_extra_slots)
+    return [slot for slot in _extra_slots if slot.account == current_account_id()]
+
+
 async def _route_to_extra_slot(requested: Optional[str]) -> Optional[_ExtraSlot]:
     """Point this request at the extra slot serving *requested*, if one does."""
     if isinstance(requested, str) and requested:
-        for slot in list(_extra_slots):
+        for slot in _visible_extra_slots():
             _route_to_slot(slot)
             if await asyncio.to_thread(_loaded_satisfies, requested):
                 return slot
@@ -7582,9 +7590,12 @@ def _drop_extra_slot(slot: _ExtraSlot) -> None:
     atexit.unregister(slot.orchestrator._cleanup)
 
 
-def unload_extra_models() -> None:
+def unload_extra_models(keep = None) -> None:
+    """Drop every extra slot, or for ``keep`` only the loaded ones it does not spare."""
     for slot in list(_extra_slots):
-        _drop_extra_slot(slot)
+        loaded = slot.llama.is_loaded or slot.orchestrator.active_model_name
+        if keep is None or (loaded and not keep(slot.llama)):
+            _drop_extra_slot(slot)
 
 
 # Serializes opt-in auto-switch loads so two requests can't race a swap. One
@@ -15075,9 +15086,13 @@ async def load_model_gated(
     # then gets unloaded by the pre-swap teardown. Rechecked under the gate: an
     # install can reserve while this request queues on the gate, so the pre-gate
     # check alone is only a fast path.
-    from core.inference.llama_keepwarm import inference_lifecycle_gate
+    from core.inference.llama_keepwarm import inference_lifecycle_gate, model_load_gate
 
     extra = await _select_load_slot(request)
+    # A new slot replaces nothing, so its load does not hold up inference on the other models.
+    new_slot = extra is not None and extra not in _extra_slots
+    if new_slot:
+        _extra_slots.append(extra)
     attempt = _begin_load_attempt(request, current_subject)
     with _scoped_load_attempts_lock:
         _pending_load_attempts[attempt.token] = attempt
@@ -15092,7 +15107,7 @@ async def load_model_gated(
         # Hold the lifecycle gate across the load so idle auto-unload can't unload the
         # model mid-load. Auto-switch calls the tracked impl directly since it already
         # holds this gate.
-        async with inference_lifecycle_gate():
+        async with model_load_gate(), nullcontext() if new_slot else inference_lifecycle_gate():
             _raise_if_sidecar_swap_in_progress()
             # The active-generation gate runs inside _load_model_impl, once it knows this is a real
             # reload, and still under the lifecycle gate so the check stays atomic with the teardown.
@@ -15110,8 +15125,6 @@ async def load_model_gated(
                     cancel = cancel,
                 ),
             )
-            if extra is not None and extra not in _extra_slots:
-                _extra_slots.append(extra)
         # Record provenance only once the model is resident, and here rather than
         # inside the impl so the already-loaded fast paths are covered too. Preview
         # keeps the False default: only an explicit UI load pins. Outside the gate:
@@ -15137,15 +15150,13 @@ async def _select_load_slot(request: LoadRequest) -> Optional[_ExtraSlot]:
     slot = await _route_to_extra_slot(requested)
     if slot is not None or not request.alongside:
         return slot
-    if account_access.policy.installation_has_managed_accounts():
-        raise HTTPException(
-            status_code = 400, detail = "Loading alongside is not available with managed accounts."
-        )
     orchestrator = _peek_inference_backend()
     occupied = _llama_cpp_backend.is_active or getattr(orchestrator, "active_model_name", None)
     if not occupied or await asyncio.to_thread(_loaded_satisfies, requested):
         return None
-    slot = _ExtraSlot(LlamaCppBackend(), await asyncio.to_thread(InferenceOrchestrator))
+    slot = _ExtraSlot(
+        LlamaCppBackend(), await asyncio.to_thread(InferenceOrchestrator), current_account_id()
+    )
     _route_to_slot(slot)
     return slot
 
@@ -15399,7 +15410,8 @@ async def _load_model_impl(
             _set_preview_resident(None)
             if ollama_advertised_id:
                 llama_backend._openai_advertised_id = ollama_advertised_id
-            account_access.join_resident("chat")
+            if replacing:
+                account_access.join_resident("chat")
             return _gguf_load_response(
                 llama_backend,
                 "already_loaded",
@@ -15464,7 +15476,8 @@ async def _load_model_impl(
                 # Owns no GPU, so the arbiter would cancel a generation for nothing.
                 if not _resident_audio_holds_no_gpu(backend):
                     await asyncio.to_thread(acquire_for_request, CHAT)
-                account_access.join_resident("chat")
+                if replacing:
+                    account_access.join_resident("chat")
                 return LoadResponse(
                     status = "already_loaded",
                     model = model_log_label if native_grant_backed else backend.active_model_name,
@@ -16043,11 +16056,12 @@ async def _load_model_impl(
             llama_backend._is_local_model = bool(native_grant_backed or config.is_local)
             if _gguf_is_audio:
                 logger.info(f"GGUF model detected as audio: audio_type={_gguf_audio}")
-            account_access.publish_resident(
-                "chat",
-                request.model_path,
-                model_log_label if native_grant_backed else public_model_identifier,
-            )
+            if replacing:
+                account_access.publish_resident(
+                    "chat",
+                    request.model_path,
+                    model_log_label if native_grant_backed else public_model_identifier,
+                )
 
             return _gguf_load_response(
                 llama_backend,
@@ -16229,11 +16243,12 @@ async def _load_model_impl(
         from core.inference.llama_keepwarm import note_model_loaded
 
         note_model_loaded()
-        account_access.publish_resident(
-            "chat",
-            request.model_path,
-            model_log_label if native_grant_backed else config.identifier,
-        )
+        if replacing:
+            account_access.publish_resident(
+                "chat",
+                request.model_path,
+                model_log_label if native_grant_backed else config.identifier,
+            )
 
         # Load inference configuration parameters
         inference_config = load_inference_config(config.identifier)
@@ -17229,6 +17244,7 @@ async def install_latest_transformers_route(
         # requests stay blocked in the middleware, so neither is subtracted here.
         from core.inference.llama_keepwarm import (
             inference_lifecycle_gate,
+            model_load_gate,
             note_model_unloaded,
             other_inference_request_count,
         )
@@ -17319,7 +17335,7 @@ async def install_latest_transformers_route(
         async def _gated_install() -> dict:
             # Held by THIS task, not the request coroutine: a cancelled POST unwinding an
             # `async with` here would drop the only guard /load honors mid-install.
-            async with inference_lifecycle_gate():
+            async with model_load_gate(), inference_lifecycle_gate():
                 _active_now = (
                     getattr(backend, "active_model_name", None),
                     getattr(backend, "load_generation", 0),
@@ -18338,7 +18354,21 @@ async def get_llama_flags(
 
 
 @router.get("/status", response_model = InferenceStatusResponse)
-async def get_status(current_subject: str = Depends(get_current_subject)):
+async def get_status(
+    current_subject: str = Depends(get_current_subject), model: Optional[str] = None
+):
+    """Status of the slot serving ``model`` (the primary one by default), listing every loaded model."""
+    slot = await _route_to_extra_slot(model)
+    response = await _slot_status(current_subject)
+    if isinstance(response, InferenceStatusResponse):
+        for other in (None, *_visible_extra_slots()):
+            if other is not slot:
+                entries = await asyncio.to_thread(_in_slot, other, _slot_model_objects)
+                response.loaded += [e["id"] for e in entries if e["id"] not in response.loaded]
+    return response
+
+
+async def _slot_status(current_subject: str):
     """
     Get current inference backend status.
     Reports whichever backend (Unsloth or llama-server) is active.
@@ -18595,6 +18625,9 @@ async def get_load_progress(current_subject: str = Depends(get_current_subject))
     if account_access.resident_hidden("chat"):
         return account_access.hidden_resident_response()
     try:
+        _route_to_slot(
+            next((s for s in _visible_extra_slots() if s.llama.is_active and not s.llama.is_loaded), None)
+        )
         llama_backend = get_llama_cpp_backend()
         progress = llama_backend.load_progress()
         if progress is None:
@@ -27723,7 +27756,9 @@ _OWNED_BY = "unsloth-studio"
 
 def _openai_model_objects() -> list[dict]:
     return [
-        entry for slot in (None, *_extra_slots) for entry in _in_slot(slot, _slot_model_objects)
+        entry
+        for slot in (None, *_visible_extra_slots())
+        for entry in _in_slot(slot, _slot_model_objects)
     ]
 
 

@@ -55,14 +55,20 @@ _kv_resume = None
 _lifecycle_lock = threading.Lock()
 
 
+# Loads run one at a time. A load into a new slot holds only this, so inference keeps starting.
+_load_lock = threading.Lock()
+
+
 @contextlib.asynccontextmanager
-async def _unload_gate(cancel_event: threading.Event | None = None):
+async def _unload_gate(
+    cancel_event: threading.Event | None = None, lock: threading.Lock = _lifecycle_lock
+):
     # Acquire off the loop: non-blocking first (the common uncontended case), else poll a non-blocking acquire off a
     # short sleep. Polling keeps the wait off this loop AND cancellation-safe -- a cancel lands during the sleep, when
     # the gate is not held, so it never leaks (mirrors the auto-switch swap gate).
     acquired = False
     try:
-        while not _lifecycle_lock.acquire(blocking = False):
+        while not lock.acquire(blocking = False):
             if cancel_event is not None and cancel_event.is_set():
                 raise asyncio.CancelledError()
             await asyncio.sleep(0.02)
@@ -72,7 +78,7 @@ async def _unload_gate(cancel_event: threading.Event | None = None):
         yield
     finally:
         if acquired:
-            _lifecycle_lock.release()
+            lock.release()
 
 
 _INFERENCE_PREFIXES = ("/v1/", "/api/inference/")
@@ -500,6 +506,10 @@ def inference_lifecycle_gate():
     return _unload_gate()
 
 
+def model_load_gate():
+    return _unload_gate(lock = _load_lock)
+
+
 def note_model_loaded(backend = None) -> None:
     """Stamp activity and synchronously drop any reload stash."""
     _note_activity()
@@ -836,8 +846,11 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
             ttl = await asyncio.to_thread(get_auto_unload_idle_seconds)
             if ttl <= 0:
                 continue
-            from routes.inference import get_llama_cpp_backend
+            from routes.inference import get_llama_cpp_backend, unload_extra_models
 
+            async with _unload_gate():
+                if _is_idle(ttl):
+                    await asyncio.to_thread(unload_extra_models, _user_pinned)
             backend = get_llama_cpp_backend()
             # track by (id, variant): a (re)loaded model counts as activity so it survives one TTL before its first
             # request

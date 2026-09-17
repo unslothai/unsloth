@@ -2640,6 +2640,8 @@ export function HubModelPicker({
   // resident. Same predicate as the header tick.
   const selectedCheckpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const residentCheckpoint = useChatRuntimeStore((s) => s.residentCheckpoint);
+  const keepModelsLoaded = useChatRuntimeStore((s) => s.keepModelsLoaded);
+  const setKeepModelsLoaded = useChatRuntimeStore((s) => s.setKeepModelsLoaded);
   const chatLoadedModelId = chatModelLoaded({
     checkpoint: selectedCheckpoint,
     isExternalModel: isExternalModelId(selectedCheckpoint),
@@ -6952,8 +6954,31 @@ export function HubModelPicker({
             )}
           </div>
         </div>
-        {onEject ? (
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-end pr-3.5 pb-[19px]">
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center justify-between px-3.5 pb-[19px]">
+          <Tooltip>
+            <TooltipTrigger asChild={true}>
+              <button
+                type="button"
+                role="checkbox"
+                aria-checked={keepModelsLoaded}
+                onClick={() => setKeepModelsLoaded(!keepModelsLoaded)}
+                className="pointer-events-auto flex cursor-pointer select-none items-center gap-1.5 rounded-md bg-popover px-3 py-2 text-xs text-muted-foreground transition-colors hover:text-foreground"
+              >
+                <Checkbox
+                  checked={keepModelsLoaded}
+                  tabIndex={-1}
+                  aria-hidden={true}
+                  className="pointer-events-none size-3.5 rounded-full [&_svg]:!size-2.5"
+                />
+                Keep other models loaded
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="top">
+              Loading a model keeps the loaded ones in memory, so you can switch
+              between them and call each one by name from the API.
+            </TooltipContent>
+          </Tooltip>
+          {onEject ? (
             <button
               type="button"
               onClick={onEject}
@@ -6963,8 +6988,8 @@ export function HubModelPicker({
               <HugeiconsIcon icon={RemoveCircleIcon} className="size-3.5" />
               Eject model
             </button>
-          </div>
-        ) : null}
+          ) : null}
+        </div>
       </div>
       <TransportConflictDialog
         conflict={updateTransportConflict}

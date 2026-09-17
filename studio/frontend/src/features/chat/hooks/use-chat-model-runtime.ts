@@ -488,7 +488,7 @@ async function syncInferenceStatusToStore(options?: {
     const selectedAtStart = useChatRuntimeStore.getState().params.checkpoint;
     const [listRes, statusRes, , idleUnloadArmed] = await Promise.all([
       listModels(),
-      getInferenceStatus(signal),
+      getInferenceStatus(signal, selectedAtStart),
       // Settled from this request alone. Read out of the aggregate below, a sibling
       // rejection discarded a good list yet still marked the inventory settled, so a
       // resident LoRA classified as a base model and pinned a new pair generalized.
@@ -915,7 +915,10 @@ export function useChatModelRuntime() {
       // nativePathToken is excluded: a leased file is named by a label two files can share, and only a
       // completed load writes the lease, so adopting would keep a stale token.
       if (!forceReload && !nativePathToken) {
-        const residentStatus = await getInferenceStatus().catch(() => null);
+        // Asked about the pick itself, so a model loaded alongside answers for it.
+        const readPickStatus = () =>
+          getInferenceStatus(undefined, modelId).catch(() => null);
+        const residentStatus = await readPickStatus();
         // Warm before reconciling the remembered GPU pick below: load-on-selection can run before any
         // GPU hook mounted, and a cold cache passes the pick through unvalidated.
         if (residentStatus && pendingConfig?.selectedGpuIds !== undefined) {
@@ -1040,7 +1043,7 @@ export function useChatModelRuntime() {
           // Read again, and judge again: a status fetched before those awaits describes the model that was
           // resident then, and adopting it would leave the picker naming this model while prompts went
           // to another. A failed read falls through to /load.
-          const confirmedStatus = await getInferenceStatus().catch(() => null);
+          const confirmedStatus = await readPickStatus();
           if (confirmedStatus && adoptable(confirmedStatus)) {
             // Same window as the confirm below: a rival load may have started during that GET, and it owns
             // the resident model now.
@@ -1639,7 +1642,8 @@ export function useChatModelRuntime() {
 
             cancelPreStreamRunReservations(stopDecision.preStreamRunTokens);
             requestLocalPromptQueueStop(stopDecision.promptQueueThreadIds);
-            if (currentCheckpoint) {
+            const keepModelsLoaded = useChatRuntimeStore.getState().keepModelsLoaded;
+            if (currentCheckpoint && !keepModelsLoaded) {
               // With chats generating, skip this preliminary unload: it cancels them ahead of /load's
               // preflight, so a rejected target truncates replies for a model that never loads. Idle,
               // unload first and free VRAM early.
@@ -1833,6 +1837,7 @@ export function useChatModelRuntime() {
               force_cancel_active: forceCancelActive,
 
               force_reload: forceReload,
+              alongside: keepModelsLoaded,
             });
             cpuFallbackReason = loadResponse.cpu_fallback_reason ?? null;
             mmprojFallbackReason = loadResponse.mmproj_fallback_reason ?? null;
