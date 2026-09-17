@@ -2541,18 +2541,14 @@ if DEVICE_COUNT == 1 and int(os.environ.get("WORLD_SIZE", "1")) <= 1:
 
 _PER_LAYER_DEVICE_MISSING = object()
 
-# Shared: `getattr(module, "__dict__", {})` would allocate a dict per layer per token.
+# A single object, because the checks below test it by identity to mean "no instance dict".
 _NO_INSTANCE_DICT = {}
 
-# Deliberately not spelled `_per_layer_device*`: unsloth_zoo publishes those two names and
-# this one is unsloth's own cache of what they resolve to, so the grep that keeps the five
-# readers in step with the publisher should not find it. The fast path spells this name out
-# as an attribute rather than subscripting with the constant, so the two must agree; the
-# assertion below is what keeps a rename from silently turning every read into a miss.
+# Not spelled `_per_layer_device*`: that prefix is what unsloth_zoo publishes and the readers
+# grep for. The fast path spells this one out, so a rename must change both (asserted).
 _PER_LAYER_DEVICE_MEMO = "_unsloth_resolved_layer_device"
 
-# What the memo's third slot says the answer was derived from, and therefore what the fast
-# path has to re-check by identity before it is allowed to answer from it.
+# Memo slot 3: what the answer came from, hence what the fast path re-checks by identity.
 _MEMO_FROM_DEVICE = 0
 _MEMO_FROM_INDEX = 1
 _MEMO_FROM_DEFAULT = 2
@@ -2560,8 +2556,7 @@ _MEMO_FROM_DEFAULT = 2
 
 @functools.lru_cache(maxsize = None)
 def _device_type_is_usable(device_type: str) -> bool:
-    """No `torch.<type>.is_available` (`meta` included) means taken at its word; memoisable
-    because the usable set cannot change in-process."""
+    """No `torch.<type>.is_available` (`meta` included) means taken at its word."""
     if device_type == "cpu":
         return True
     is_available = getattr(getattr(torch, device_type, None), "is_available", None)
@@ -2574,8 +2569,8 @@ def _device_type_is_usable(device_type: str) -> bool:
 
 
 def _as_torch_device(value):
-    """A bare `torch.device(0)` is WRONG: with no accelerator torch 2.6 raises and torch
-    2.11 returns `cuda:0`. Probing the backend makes both return None here."""
+    """A bare `torch.device(0)` is WRONG: with no accelerator torch 2.6 raises and torch 2.11
+    returns `cuda:0`. Probing the backend makes both return None here."""
     try:
         device = torch.device(value)
     except (RuntimeError, TypeError, ValueError):
@@ -2587,11 +2582,7 @@ def _as_torch_device(value):
 
 @functools.lru_cache(maxsize = None)
 def _resolved_published_index(index, default):
-    """The half of `per_layer_device` that depends only on the published value, memoised
-    because it runs once per layer per generated token and `torch.device(...)` plus the
-    `.type` probe behind it cost ~330 ns against a ~37 ns attribute read. Memoisable for the
-    same reason `_device_type_is_usable` is: the usable set cannot change in-process.
-    None means "needs the module", so the caller falls through to the unmemoised routes."""
+    """None means "needs the module": the caller falls through to the unmemoised routes."""
     if index.__class__ is bool or not isinstance(index, (int, str)):
         return None
     device = _as_torch_device(index)
@@ -2601,8 +2592,7 @@ def _resolved_published_index(index, default):
     if buffer_index is None:
         if device.type == "meta":
             return None
-        # No indexed accelerator, so no buffer of its own: the historical subscript keeps
-        # the per-device tuples in range.
+        # Unindexed device: keep the callers' per-device tuple subscript in range.
         buffer_index = index if index.__class__ is int else default
     return device, buffer_index
 
@@ -2621,8 +2611,8 @@ def _non_meta_device_of_parameters(module):
 
 
 def _accelerate_execution_device(module):
-    """`AlignDevicesHook.pre_forward` does `send_to_device(args, self.execution_device)`, so
-    for an offloaded or meta layer that field, not its parameters, says where it runs."""
+    """`AlignDevicesHook.pre_forward` sends args to `execution_device`, so for an offloaded or
+    meta layer that field, not its parameters, says where it runs."""
     execution_device = getattr(getattr(module, "_hf_hook", None), "execution_device", None)
     if execution_device is None:
         return None
@@ -2633,19 +2623,12 @@ def _accelerate_execution_device(module):
 
 
 def per_layer_device(module, default = 0):
-    """Where this decoder layer lives, as (device, buffer_index). Both halves: gemma,
-    gemma2 and cohere subscript a per-device tuple with the index, which a device cannot do.
-    Probed, not version-gated: an older unsloth_zoo publishes only the index and that index
-    is None on an accelerator layer it named without one, which is the "Invalid target
-    device: None" of unslothai/unsloth#3538. meta is excluded from every route because
-    moving an activation there destroys it silently. Does NOT fix a layer genuinely on CPU
-    while `temp_gates` / `out_weights` sit on an accelerator; that still ends in a loud
-    cross-device RuntimeError."""
-    # Fast path, and the only one that matters: the answer memoised on the layer, validated
-    # against whatever it was derived from, so re-placing a model invalidates it without a
-    # version counter. Attribute reads, not `module.__dict__[...]` subscripts: the memo sits
-    # in the instance dictionary either way, but one specialised LOAD_ATTR is cheaper than
-    # the `__dict__` descriptor plus a dict lookup, and this runs per layer per token.
+    """Where this decoder layer lives, as (device, buffer_index); gemma, gemma2 and cohere
+    still need the index, to subscript a per-device tuple. Probed, not version-gated: an older
+    unsloth_zoo publishes only the index and leaves it None on an accelerator layer, the
+    "Invalid target device: None" of unslothai/unsloth#3538. meta is excluded everywhere,
+    since moving an activation there destroys it silently. A layer genuinely on CPU with
+    accelerator-resident buffers is NOT fixed here and still raises."""
     try:
         source, resolved, derived_from = module._unsloth_resolved_layer_device
         if default == 0:
@@ -2655,24 +2638,18 @@ def per_layer_device(module, default = 0):
             elif derived_from == _MEMO_FROM_DEVICE:
                 if source is module._per_layer_device:
                     return resolved
-            # _MEMO_FROM_DEFAULT: the layer published neither name and the answer came from
-            # `default` alone, so nothing about the layer can stale it. It stops being the
-            # answer the moment the layer publishes one of the two names, which is what
-            # these two membership tests are; they cost far less than re-running the
-            # resolution, which for this shape means three failed `nn.Module.__getattr__`
-            # scans, about 2 us per layer per token.
+            # _MEMO_FROM_DEFAULT: derived from `default` alone, so only publishing one of the
+            # two names can stale it.
             elif (
                 "_per_layer_device_index" not in module.__dict__
                 and "_per_layer_device" not in module.__dict__
             ):
                 return resolved
     except (AttributeError, TypeError, ValueError):
-        # No instance dictionary, no memo yet, or the name it was derived from is gone.
         pass
 
     # Instance dictionary, not getattr: `nn.Module.__getattr__` scans _parameters, _buffers
-    # and _modules before raising, on a path run per layer per token. getattr fallback only
-    # when neither name is present, so a class attribute or property still works.
+    # and _modules before raising. The getattr fallback keeps class attributes working.
     published = getattr(module, "__dict__", _NO_INSTANCE_DICT)
     device = published.get("_per_layer_device")
     index = published.get("_per_layer_device_index", _PER_LAYER_DEVICE_MISSING)
@@ -2681,23 +2658,17 @@ def per_layer_device(module, default = 0):
         index = getattr(module, "_per_layer_device_index", _PER_LAYER_DEVICE_MISSING)
 
     if device is None and (index.__class__ is int or index.__class__ is str):
-        # The shape every published unsloth_zoo writes, and the one this reader is slowest
-        # on. Everything below it needs the module; this branch does not, so it is answered
-        # from the memo. Exact class, not isinstance: bool must not key the memo (False
-        # hashes equal to 0), and an unhashable value must fall through, not raise.
+        # Exact class, not isinstance: bool must not key the memo (False hashes equal to 0),
+        # and an unhashable value must fall through rather than raise.
         resolved = _resolved_published_index(index, default)
         if resolved is not None:
             if default == 0 and published is not _NO_INSTANCE_DICT:
-                # Only this route is memoised on the layer. It depends on the published
-                # value and nothing else, so the identity check on the fast path is a
-                # complete invalidation. The routes below read the module's parameters or
-                # its accelerate hook, which can move without the index changing, so a memo
-                # of those would go stale silently and send activations to a dead device.
+                # Memoisable because it depends on the published value alone, so the fast
+                # path's identity check is a complete invalidation.
                 published[_PER_LAYER_DEVICE_MEMO] = (index, resolved, _MEMO_FROM_INDEX)
             return resolved
 
-    # Recorded before the fallbacks below overwrite what it is asking about: this layer
-    # publishes neither name, under either lookup.
+    # Recorded before the fallbacks below overwrite what it is asking about.
     published_nothing = device is None and index is _PER_LAYER_DEVICE_MISSING
     if not isinstance(device, torch.device):
         device = None
@@ -2717,24 +2688,17 @@ def per_layer_device(module, default = 0):
 
     buffer_index = device.index
     if buffer_index is None and device.type == "meta":
-        # Behind `buffer_index is None` deliberately: an indexed device can never be meta,
-        # so only an unindexed layer pays the `.type` read once per layer per token.
         device = (
             _accelerate_execution_device(module) or _as_torch_device(default) or torch.device("cpu")
         )
-        # The hook is the module's, and accelerate moves an offloaded layer between runs, so
-        # whatever came out of this branch is module-derived however it was spelled.
+        # Module-derived however it was spelled, so it must not be memoised.
         from_default = False
         buffer_index = device.index
     if buffer_index is None:
-        # No indexed accelerator, so no buffer of its own: the historical subscript keeps
-        # the per-device tuples in range.
         buffer_index = index if isinstance(index, int) and not isinstance(index, bool) else default
     if default == 0 and published is not _NO_INSTANCE_DICT:
-        # The other memoisable route: a layer that publishes the device itself, which is
-        # what a current unsloth_zoo writes. Only when the answer IS the published object,
-        # so a parameter- or hook-derived one, which can move without the published value
-        # changing, is never memoised.
+        # Only when the answer IS the published object: a parameter- or hook-derived device
+        # moves without it changing, and memoising that sends activations to a dead device.
         published_device = published.get("_per_layer_device")
         if published_device is not None and published_device is device:
             published[_PER_LAYER_DEVICE_MEMO] = (
@@ -2743,11 +2707,7 @@ def per_layer_device(module, default = 0):
                 _MEMO_FROM_DEVICE,
             )
         elif published_nothing and from_default:
-            # Third memoisable route: nothing published and the answer came from `default`,
-            # which makes it independent of the module, so there is nothing about the layer
-            # that can stale it. `from_default` is the whole condition: a device read off
-            # the layer's own parameters DOES move with the layer, and memoising that is
-            # exactly how a reader ends up sending activations to a device the layer left.
+            # `from_default` is the whole condition, for the same reason.
             published[_PER_LAYER_DEVICE_MEMO] = (
                 None,
                 (device, buffer_index),

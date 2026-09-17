@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""`verify_and_set_device` recorded `device.index` verbatim and `torch.device("cpu").index`
-is None, so an offloaded layer ended `move_to_device` with "Invalid target device: None"
-(#3538). The five readers now go through `unsloth.models._utils.per_layer_device`.
-"""
+"""`verify_and_set_device` recorded `device.index` verbatim and `torch.device("cpu").index` is
+None, so an offloaded layer ended `move_to_device` with "Invalid target device: None" (#3538)."""
 
 from __future__ import annotations
 
@@ -41,9 +39,7 @@ def _device_or_none(value):
 
 @functools.lru_cache(maxsize = 1)
 def default_device_is_usable() -> bool:
-    """Measured, not asked: torch 2.6 raises from `torch.device(0)` with no accelerator
-    while torch 2.11 returns `cuda:0` and only fails at the move.
-    """
+    """Measured, not asked: torch 2.6 raises here, torch 2.11 returns `cuda:0` and fails later."""
     try:
         torch.zeros(1, device = torch.device(0))
         return True
@@ -103,10 +99,7 @@ def test_older_unsloth_zoo_integer_index_is_unchanged():
 
 @pytest.mark.skipif(not has_real_cuda(), reason = "needs two orderable accelerator ordinals")
 def test_a_boolean_index_is_not_an_accelerator_ordinal():
-    """`False` is not device 0: it takes the `default` route, like any value that is not an
-    index. A non-zero default is what makes this visible, since `int(False)` is 0 and the
-    two routes agree on the default of 0. `False` also hashes equal to 0, so admitting it
-    would key the published-index memo with an answer meant for a different value."""
+    """`False` hashes equal to 0, so as an ordinal it would key the memo for another value."""
     from unsloth.models._utils import per_layer_device
 
     layer = _Layer(index = False, parameter_device = "cpu")
@@ -116,9 +109,7 @@ def test_a_boolean_index_is_not_an_accelerator_ordinal():
 
 
 def test_a_boolean_index_does_not_poison_the_memo_for_zero():
-    """The order matters: resolve the bool first, then 0, and assert 0 still answers for
-    itself. Reversed, a shared memo entry would be masked by the correct value arriving
-    first."""
+    """Bool first, then 0: reversed, a shared memo entry is masked by the correct value."""
     from unsloth.models._utils import per_layer_device
 
     per_layer_device(_Layer(index = False, parameter_device = "cpu"))
@@ -131,9 +122,7 @@ def test_a_boolean_index_does_not_poison_the_memo_for_zero():
 
 
 def test_a_re_placed_layer_is_not_answered_from_the_memo():
-    """The memo is validated by identity against the published value it came from, so
-    unsloth_zoo re-running `verify_and_set_device` invalidates it with no explicit clear.
-    Without that check a moved model keeps sending activations to the old device."""
+    """unsloth_zoo re-running `verify_and_set_device` must invalidate it with no explicit clear."""
     from unsloth.models._utils import per_layer_device
 
     layer = _Layer(index = 0, parameter_device = "cpu")
@@ -145,8 +134,6 @@ def test_a_re_placed_layer_is_not_answered_from_the_memo():
 
 
 def test_a_published_device_is_memoised_too():
-    """A current unsloth_zoo publishes the device, not just the index, and that route has to
-    be answered from the memo as well or it pays the full resolution on every token."""
     from unsloth.models._utils import per_layer_device
 
     published = torch.device("cpu")
@@ -163,9 +150,7 @@ def test_a_published_device_is_memoised_too():
 
 
 def test_a_hook_derived_answer_is_never_memoised():
-    """A meta layer's real device comes from `AlignDevicesHook.execution_device`, and
-    accelerate moves an offloaded layer between runs without touching `_per_layer_device`.
-    Memoising that answer would keep sending activations to the device it left."""
+    """accelerate moves an offloaded layer between runs without touching `_per_layer_device`."""
     from unsloth.models._utils import per_layer_device
 
     class _Hook:
@@ -187,9 +172,7 @@ def test_a_hook_derived_answer_is_never_memoised():
 
 
 def test_the_memo_is_keyed_on_the_default_as_well_as_the_index():
-    """An unindexed device takes its buffer subscript from `default`, so the memo has to key
-    on both. Keyed on the index alone, the second call here answers with the first call's
-    subscript and a per-device tuple is read at the wrong offset."""
+    """Keyed on the index alone, a per-device tuple is read at the wrong offset."""
     from unsloth.models._utils import per_layer_device
 
     layer = _Layer(index = "cpu", parameter_device = "cpu")
@@ -202,8 +185,6 @@ def test_the_memo_is_keyed_on_the_default_as_well_as_the_index():
 
 
 def test_two_layers_on_different_devices_do_not_share_a_memo_entry():
-    """The memo is keyed on the published value, so a pipeline-parallel model must not have
-    every layer answer with whichever device was resolved first."""
     from unsloth.models._utils import per_layer_device
 
     first, _ = per_layer_device(_Layer(index = 0, parameter_device = "cpu"))
@@ -227,7 +208,6 @@ def test_older_unsloth_zoo_none_index_reads_the_layer_instead():
 
 
 def test_a_layer_with_no_attributes_keeps_the_historical_default():
-    """Every reader used to spell this `getattr(layer, ..., 0)`."""
     from unsloth.models._utils import per_layer_device
 
     layer = _Layer()
@@ -253,7 +233,6 @@ def test_an_unavailable_accelerator_is_not_a_usable_device():
 
 
 def test_a_default_pointing_at_a_missing_accelerator_reads_the_layer(monkeypatch):
-    """Spoofed rather than measured, so the assertion is the same on the GPU legs."""
     from unsloth.models import _utils
 
     monkeypatch.setattr(_utils, "_device_type_is_usable", lambda device_type: device_type == "cpu")
@@ -331,7 +310,6 @@ def test_cpu_offloaded_layer_no_longer_raises_invalid_target_device():
     assert hidden_states.device == torch.device("cpu")
     assert position_ids.device == torch.device("cpu")
 
-    # And the shape that used to reach move_to_device is still rejected loudly.
     with pytest.raises(ValueError, match = "Invalid target device"):
         move_to_device(None, hidden_states)
 
@@ -400,9 +378,8 @@ def _reader_scopes(source: str, path: str):
 
 @pytest.mark.parametrize("path", sorted(READERS))
 def test_no_reader_reads_a_name_it_never_binds(path):
-    """Dropping the index leaves the tuple subscripts on a name Python only reports at the
-    first decode step; symtable calls it an implicit global, so this catches it statically.
-    """
+    """Dropping the index leaves the subscripts on a name Python only reports at the first
+    decode step; symtable calls it an implicit global, so this catches it statically."""
     import builtins
     import importlib
     import symtable
@@ -473,7 +450,6 @@ def test_cuda_layer_path_is_unchanged():
 
 
 def test_the_backend_probe_is_asked_once_per_device_type():
-    """Reached per layer per token on an index-only zoo, and constant, so memoised."""
     from unsloth.models import _utils
 
     assert hasattr(
@@ -504,8 +480,7 @@ def test_the_backend_probe_is_asked_once_per_device_type():
 
 
 def test_the_published_attributes_are_read_without_a_failed_getattr():
-    """An index-only zoo leaves `_per_layer_device` missing on every layer, and
-    `nn.Module.__getattr__` scans _parameters, _buffers and _modules before raising."""
+    """`nn.Module.__getattr__` scans _parameters, _buffers and _modules before raising."""
     from unsloth.models._utils import per_layer_device
 
     class _Counting(_Layer):
@@ -516,7 +491,6 @@ def test_the_published_attributes_are_read_without_a_failed_getattr():
                 type(self).misses += 1
             return super().__getattr__(name)
 
-    # Current unsloth_zoo: both names published.
     layer = _Counting(device = torch.device("cpu"), index = "cpu")
     _Counting.misses = 0
     per_layer_device(layer)
@@ -533,7 +507,6 @@ def test_the_published_attributes_are_read_without_a_failed_getattr():
 
 
 def test_a_class_level_attribute_is_still_honoured():
-    """What the getattr fallback is for: a class attribute or a property."""
     from unsloth.models._utils import per_layer_device
 
     class _ClassAttribute(_Layer):
@@ -555,8 +528,7 @@ def test_a_class_level_attribute_is_still_honoured():
 
 
 def test_moving_an_activation_to_meta_destroys_it_silently():
-    """meta propagates through matmul instead of raising, so a decode that resolved to
-    meta runs to completion and returns nothing. Hence meta is excluded everywhere."""
+    """meta propagates through matmul instead of raising: the decode returns nothing."""
     activation = torch.ones(2, 4)
     moved = activation.to("meta")
     assert moved.device.type == "meta"
@@ -612,10 +584,7 @@ def test_a_non_meta_layer_is_unchanged_by_the_meta_guard():
 
 
 def test_the_fast_path_spells_the_memo_name_the_constant_holds():
-    """The fast path reads the memo as an attribute, which is what makes it cheaper than a
-    `__dict__` subscript, but that spelling is a literal and the write still goes through
-    the constant. Renaming one without the other turns every read into a silent miss, which
-    costs throughput and nothing else, so nothing would fail without this."""
+    """Read as a literal, written through the constant: a rename is a silent miss."""
     from unsloth.models import _utils
 
     source = (REPOSITORY_ROOT / "unsloth/models/_utils.py").read_text(encoding = "utf-8")
@@ -627,9 +596,6 @@ def test_the_fast_path_spells_the_memo_name_the_constant_holds():
 
 
 def test_a_layer_that_publishes_nothing_is_memoised_from_the_default():
-    """The shape that had no memo at all: three failed `nn.Module.__getattr__` scans per
-    layer per token. The answer comes from `default` and nothing on the module, so there is
-    nothing about the layer that can stale it."""
     from unsloth.models import _utils
 
     layer = _Layer(parameter_device = "cpu")
@@ -648,8 +614,7 @@ def test_a_layer_that_publishes_nothing_is_memoised_from_the_default():
 
 @pytest.mark.parametrize("name", ["_per_layer_device_index", "_per_layer_device"])
 def test_the_default_memo_yields_the_moment_the_layer_publishes_a_name(name):
-    """unsloth_zoo running `verify_and_set_device` on a layer that had not been through it
-    must be followed, not answered from the memo taken before it."""
+    """unsloth_zoo running `verify_and_set_device` late must be followed, not memo-answered."""
     from unsloth.models import _utils
 
     if not default_device_is_usable():
@@ -667,8 +632,7 @@ def test_the_default_memo_yields_the_moment_the_layer_publishes_a_name(name):
 
 
 def test_a_parameter_derived_answer_is_never_memoised(monkeypatch):
-    """The other half of the same rule: with no usable default the answer is read off the
-    layer's own parameters, and those move when the layer does."""
+    """With no usable default the answer comes off the layer's parameters, which move."""
     from unsloth.models import _utils
 
     monkeypatch.setattr(_utils, "_device_type_is_usable", lambda device_type: device_type == "cpu")
