@@ -28068,6 +28068,11 @@ class LlamaCppBackend:
                         _flag_name(str(token)) in {"-fit", "--fit"} for token in (extra_args or ())
                     ):
                         return fa_cmd
+                    # An inherited LLAMA_ARG_FIT=off is the user's too, and only manual mode
+                    # scrubs it: the flip would override it on the CLI, and the reserve
+                    # _user_fit_disabled already took prices this respawn where it lands.
+                    if _user_fit_disabled(extra_args, env = env):
+                        return fa_cmd
                     if _placement_is_fitter_proof(fa_cmd, gpu_layers = _manual_gpu_layers, env = env):
                         return fa_cmd
                     index = fa_cmd.index("--fit")

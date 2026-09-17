@@ -2294,6 +2294,7 @@ def _no_flash_fit_rewriter(
         "logger": logger,
         "_flag_name": _flag_name,
         "_placement_is_fitter_proof": B_module._placement_is_fitter_proof,
+        "_user_fit_disabled": B_module._user_fit_disabled,
         "extra_args": extra_args,
         "_manual_gpu_layers": manual_gpu_layers,
         "env": {} if env is None else env,
@@ -2328,6 +2329,29 @@ def test_the_no_flash_fit_flip_leaves_a_user_fit_alone():
         assert both == ["llama-server", "--fit", "off", *user_tokens]
         theirs = rewrite(["llama-server", *user_tokens])
         assert theirs == ["llama-server", *user_tokens]
+
+
+def test_an_inherited_fit_off_survives_the_no_flash_retry():
+    """LLAMA_ARG_FIT=off is the user's `--fit off`, and only manual mode scrubs it from the
+    child env, so outside manual the flip would put `--fit on` on the CLI and beat it.
+
+    `_user_fit_disabled` reads the same variable and already reserved the padded V cache for
+    this load, so the respawn lands on a placement priced for it and needs no re-place.
+    """
+    off = ["llama-server", "--fit", "off", "--flash-attn", "off"]
+    for value in ("off", "0", "false", "no", "disabled", " OFF "):
+        rewrite = _no_flash_fit_rewriter(None, env = {"LLAMA_ARG_FIT": value})
+        assert rewrite(off) == off, value
+
+    # Only an off. An inherited "on" leaves the managed placement re-placeable as before,
+    # and an empty value is not an answer.
+    for value in ("on", "1", ""):
+        rewrite = _no_flash_fit_rewriter(None, env = {"LLAMA_ARG_FIT": value})
+        assert rewrite(off)[off.index("--fit") + 1] == "on", value
+
+    # A user's own --fit token skips whatever the environment says, as it already did.
+    theirs = _no_flash_fit_rewriter(["--fit", "on"], env = {"LLAMA_ARG_FIT": "off"})
+    assert theirs(off) == off
 
 
 def test_the_no_flash_retry_re_places_at_both_respawns():
