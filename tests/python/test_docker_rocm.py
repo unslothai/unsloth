@@ -124,7 +124,16 @@ def _run_sh(
 def _image_and_cmd(argv):
     """The positional tail of `docker run`: image, then the container command."""
     # every option run.sh emits takes a value or is a known flag
-    flags_with_value = {"--device", "--group-add", "--ulimit", "-v", "-e", "-p", "--gpus"}
+    flags_with_value = {
+        "--device",
+        "--group-add",
+        "--ulimit",
+        "-v",
+        "-e",
+        "-p",
+        "--gpus",
+        "--stop-timeout",
+    }
     i = 0
     while i < len(argv):
         a = argv[i]

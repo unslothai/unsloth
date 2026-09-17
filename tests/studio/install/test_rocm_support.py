@@ -446,6 +446,13 @@ class TestRuntimePatterns:
             )
             assert name in runtime_patterns_for_choice(choice)
 
+    def test_fit_params_kept_on_macos(self):
+        for kind in ("macos-arm64", "macos-x64"):
+            choice = AssetChoice(
+                repo = "", tag = "", name = "", url = "", source_label = "", install_kind = kind
+            )
+            assert "llama-fit-params" in runtime_patterns_for_choice(choice)
+
 
 # TEST: install_llama_prebuilt.py -- HostInfo.has_rocm field
 
@@ -6118,7 +6125,12 @@ class TestHipSdkEnvPathResolution:
     def _assert_accepts_partial_hipinfo_output(source: str):
         hipout_idx = source.find("$hipOut = & $hipinfoExe.Source")
         assert hipout_idx != -1
-        hipinfo_block = source[hipout_idx : hipout_idx + 1600]
+        # Bound the probe at the `catch` closing its own try, not at a character
+        # count: the block grows whenever the hipinfo parse gains a branch, and a
+        # fixed slice then drops the diagnostic off the end and fails on correct code.
+        end_idx = source.find("} catch {", hipout_idx)
+        assert end_idx != -1
+        hipinfo_block = source[hipout_idx:end_idx]
         assert 'if ($hipOut -match "(?i)gcnArchName")' in hipinfo_block
         assert "$LASTEXITCODE -eq 0 -and $hipOut -match" not in hipinfo_block
         assert "but reported gcnArchName" in hipinfo_block

@@ -1678,11 +1678,11 @@ def test_no_rev_parse_fallback_can_echo_its_argument() -> None:
 
     `--verify --quiet` prints nothing on failure, so every rev-parse that has a fallback uses it.
     """
-    body = (
-        REPO / ".github" / "workflows" / "windows-installer-differential-ci.yml"
-    ).read_text(encoding = "utf-8")
-    step = body[body.index("name: Pick the two commits"):]
-    step = step[:step.index("- name:", 10)]
+    body = (REPO / ".github" / "workflows" / "windows-installer-differential-ci.yml").read_text(
+        encoding = "utf-8"
+    )
+    step = body[body.index("name: Pick the two commits") :]
+    step = step[: step.index("- name:", 10)]
     for line in step.splitlines():
         if "rev-parse" not in line or "||" not in line:
             continue

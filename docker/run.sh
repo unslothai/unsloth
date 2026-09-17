@@ -42,6 +42,12 @@
 #   UNSLOTH_STUDIO_VOLUME=unsloth-studio    named volume for Studio's data (accounts,
 #                                           chats, outputs) at /opt/unsloth-studio;
 #                                           set it empty to run without one
+#   UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S=120  how long a training run gets to save a
+#                                           checkpoint on docker stop; --stop-timeout is
+#                                           set 30s above it
+#   UNSLOTH_STUDIO_TRAINING_STOP_TIMEOUT_S=600  when the training stop watchdog gives up
+#                                           on a saving worker; raise it alongside the
+#                                           budget above, which it caps
 # --rocm only:
 #   UNSLOTH_ROCM=1                          same as a leading --rocm
 #   HSA_OVERRIDE_GFX_VERSION                force a gfx target (e.g. 10.3.0)
@@ -92,6 +98,9 @@ amd_dxg_flags() {
     printf '%s\n' -e HSA_ENABLE_DXG_DETECTION=1
     return 0
 }
+# Named once: the NVIDIA toolkit installer, both as the fallback download below
+# and in the message that tells you to run it yourself.
+TOOLKIT_URL="${UNSLOTH_TOOLKIT_URL:-https://raw.githubusercontent.com/unslothai/unsloth/main/docker/install_nvidia_toolkit.sh}"
 
 # --group-add needs NUMERIC gids: a name is resolved INSIDE the container, where
 # the host's video/render groups do not exist.
@@ -301,22 +310,34 @@ if [[ -n "$DOCKER_ERR" ]]; then
     printf "      Start the Docker daemon, or add yourself to the docker group (newgrp docker).\n\n" >&2
 elif [[ $ROCM -eq 0 && ${#GPU_FLAG[@]} -gt 0 ]] && host_has_nvidia \
         && ! grep -qi 'Runtimes:.*nvidia' <<<"$DOCKER_INFO"; then
+    # run.sh is also published on its own, so the sibling installer is missing
+    # whenever it was curled rather than cloned. Fetch it in that case: offering
+    # to run a path that does not exist is worse than not offering at all.
     INSTALLER="$(dirname "${BASH_SOURCE[0]}")/install_nvidia_toolkit.sh"
+    # Download it next to run.sh rather than into a scratch file: the path is then
+    # the one the message names, and a second run reuses it instead of refetching.
+    if [[ ! -f "$INSTALLER" ]]; then
+        curl -fsSL "$TOOLKIT_URL" -o "$INSTALLER" 2>/dev/null || { rm -f "$INSTALLER"; INSTALLER=""; }
+    fi
     printf "\033[1;33mWARN:\033[0m 'docker info' does not list 'nvidia' as a runtime: the NVIDIA\n" >&2
     printf "      Container Toolkit is not set up, so --gpus %s would fail at the daemon.\n" "$GPUS" >&2
     answer="${UNSLOTH_INSTALL_TOOLKIT:-}"
-    if [[ -z "$answer" && -t 0 && -t 1 ]]; then
+    if [[ -n "$INSTALLER" && -z "$answer" && -t 0 && -t 1 ]]; then
         read -r -p "      Install it now with sudo (bash $INSTALLER)? [Y/n] " answer </dev/tty || answer=n
         answer="${answer:-y}"
     fi
+    # Nothing on disk to run: a forced UNSLOTH_INSTALL_TOOLKIT=1 would otherwise
+    # select the branch below and `bash ""` would fail into `|| true`, leaving the
+    # user with no toolkit, no error, and a docker run that still lacks the runtime.
+    [[ -n "$INSTALLER" ]] || answer=n
     case "$answer" in
         1|[Yy]*)
             # -E keeps UNSLOTH_TOOLKIT_VERIFY and the proxy settings through env_reset; a failed, cancelled or driver-too-old install (exit 3) must not stop the docker run below.
             if [[ "$(id -u)" = 0 ]]; then bash "$INSTALLER" || true; else sudo -E bash "$INSTALLER" || true; fi
             ;;
         *)
-            printf "      Install it with one command (Linux, needs sudo):\n" >&2
-            printf "      curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/docker/install_nvidia_toolkit.sh -o install_nvidia_toolkit.sh && sudo -E bash install_nvidia_toolkit.sh\n\n" >&2
+            printf "      Install it with one command (Linux, needs root):\n" >&2
+            printf "      curl -fsSL %s -o install_nvidia_toolkit.sh && sudo -E bash install_nvidia_toolkit.sh\n\n" "$TOOLKIT_URL" >&2
             ;;
     esac
 fi
@@ -334,10 +355,27 @@ declare -a ENV_FORWARD=(-e HF_HUB_ENABLE_HF_TRANSFER=1)
 # read by studio_launch.sh; without these it uses a random password and no sshd
 [[ -n "${JUPYTER_PASSWORD:-}"           ]] && ENV_FORWARD+=(-e JUPYTER_PASSWORD)
 [[ -n "${UNSLOTH_STUDIO_PASSWORD:-}"    ]] && ENV_FORWARD+=(-e UNSLOTH_STUDIO_PASSWORD)
+[[ -n "${UNSLOTH_STUDIO_PORT:-}"        ]] && ENV_FORWARD+=(-e UNSLOTH_STUDIO_PORT)
 [[ -n "${UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT:-}" ]] && ENV_FORWARD+=(-e UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT)
+# both, or raising only the shutdown budget waits on a save the watchdog kills at its own cap
+[[ -n "${UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S:-}" ]] && ENV_FORWARD+=(-e UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S)
+[[ -n "${UNSLOTH_STUDIO_TRAINING_STOP_TIMEOUT_S:-}" ]] && ENV_FORWARD+=(-e UNSLOTH_STUDIO_TRAINING_STOP_TIMEOUT_S)
 [[ -n "${PUBLIC_KEY:-}"                 ]] && ENV_FORWARD+=(-e PUBLIC_KEY)
 [[ -n "${SSH_KEY:-}"                    ]] && ENV_FORWARD+=(-e SSH_KEY)
 [[ -n "${UNSLOTH_JUPYTER_CLOUDFLARE:-}" ]] && ENV_FORWARD+=(-e UNSLOTH_JUPYTER_CLOUDFLARE)
+# Studio's two exposure modes, read by studio_run.sh inside the container. The
+# allowlist is explicit, so leaving them out made both silently inert through the
+# helper the documentation recommends.
+[[ -n "${UNSLOTH_STUDIO_SECURE:-}" ]]     && ENV_FORWARD+=(-e UNSLOTH_STUDIO_SECURE)
+[[ -n "${UNSLOTH_STUDIO_CLOUDFLARE:-}" ]] && ENV_FORWARD+=(-e UNSLOTH_STUDIO_CLOUDFLARE)
+
+STOP_BUDGET="${UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S:-120}"
+if ! [[ "$STOP_BUDGET" =~ ^[0-9]+$ ]]; then
+    printf "\033[1;31mERROR:\033[0m UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S=%s is not a number of seconds.\n" "$STOP_BUDGET" >&2
+    exit 1
+fi
+# 10# as in studio_launch.sh: a leading zero must not read as octal
+STOP_TIMEOUT=$(( 10#$STOP_BUDGET + 30 ))
 
 declare -a PORT_FLAGS=()
 if [[ -n "${UNSLOTH_PORTS:-}" ]]; then
@@ -356,6 +394,7 @@ fi
 exec docker run --rm ${TTY_FLAG[@]+"${TTY_FLAG[@]}"} \
     ${GPU_FLAG[@]+"${GPU_FLAG[@]}"} \
     --ipc=host \
+    --stop-timeout "$STOP_TIMEOUT" \
     --ulimit memlock=-1 \
     --ulimit stack=67108864 \
     -v "$HF_CACHE":/workspace/.cache/huggingface \

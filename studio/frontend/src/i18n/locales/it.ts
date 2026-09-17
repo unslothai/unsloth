@@ -2,6 +2,67 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export const it = {
+  composerSettings: {
+    title: "Composizione dei messaggi",
+    plainText: "Composizione in testo semplice",
+    plainTextDescription: "Mantieni codice, Markdown e link come testo letterale. Disattiva per mostrare un’anteprima formattata.",
+    showContext: "Mostra l’utilizzo della finestra di contesto",
+    sendShortcut: "Scorciatoia di invio",
+    sendDescription: "Scegli se Invio invia un messaggio o inserisce una nuova riga.",
+    followUp: "Messaggi successivi",
+    followUpDescription: "Scegli cosa accade quando invii durante una risposta. Premi {shortcut} per fare il contrario per un messaggio.",
+    queue: "In coda",
+    steer: "Riorienta",
+    steerDescription: "Riorienta interrompe la risposta corrente e invia subito dopo il tuo messaggio successivo.",
+    settings: "Impostazioni di composizione",
+    preview: "Anteprima formattata",
+  },
+  promptQueue: {
+    loading: "Caricamento dei messaggi in coda",
+    listLabel: "Messaggi in coda",
+    regionLabel: "Coda dei messaggi, {current} di {total}",
+    itemLabel: "Messaggio in coda {position} di {total}: {prompt}",
+    reorderInstructions: "Trascina la maniglia per riordinare. Con la maniglia attiva, usa Su o Giù per spostare di una posizione, oppure Home o Fine per andare all’inizio o alla fine.",
+    dragTooltip: "Trascina per riordinare",
+    reorderLabel: "Riordina il messaggio in coda {position} di {total}",
+    paused: "In pausa",
+    steer: "Riorienta",
+    steerTooltip: "Interrompi la risposta e invia subito dopo questo messaggio",
+    steerLabel: "Riorienta con il messaggio in coda {position}",
+    removeTooltip: "Rimuovi dalla coda",
+    removeLabel: "Rimuovi il messaggio in coda {position}",
+    moreTooltip: "Altre opzioni",
+    moreLabel: "Altre opzioni per il messaggio in coda {position}",
+    editItem: "Modifica messaggio",
+    copyItem: "Copia messaggio",
+    editLabel: "Modifica il messaggio in coda {position}",
+    cancel: "Annulla",
+    save: "Salva",
+    turnOffQueueing: "Disattiva la coda",
+    turnOnQueueing: "Attiva la coda",
+    resume: "Riprendi la coda",
+    queueButton: "Metti il messaggio in coda",
+    steerButton: "Riorienta la risposta",
+    sendTooltip: "Invia messaggio ({shortcut})",
+    sendLabel: "Invia messaggio",
+    followUpTooltip: "{action} ({send}) · {opposite} per l’opposto",
+    announceUpdated: "Messaggio in coda aggiornato.",
+    announceEditFailed: "Questo messaggio non può più essere modificato perché la coda è cambiata.",
+    announceRemoved: "Messaggio rimosso dalla coda.",
+    announceSteered: "Questo messaggio riorienterà la risposta subito dopo.",
+    announceSteerFailed: "Non è stato possibile riorientare la risposta con questo messaggio. Controlla la coda e riprova.",
+    announceCopied: "Messaggio copiato.",
+    announceCopyFailed: "Non è stato possibile copiare questo messaggio. Riprova.",
+    announceQueueingOn: "I nuovi messaggi successivi verranno messi in coda dopo la risposta corrente.",
+    announceQueueingOff: "I nuovi messaggi successivi riorienteranno la risposta corrente.",
+    announceMoved: "Messaggio spostato alla posizione {position} di {total}.",
+    announceMoveFailed: "La coda è cambiata prima che questo messaggio potesse essere spostato. Riprova.",
+    announceDragReset: "La coda è cambiata. Trascina di nuovo per riordinare i messaggi rimanenti.",
+    editingHint: "Modifica del messaggio",
+    queueingOffHint: "I nuovi messaggi interrompono la risposta corrente e vengono eseguiti subito dopo.",
+    queueingOnHint: "I nuovi messaggi attendono il turno e vengono eseguiti in ordine.",
+    queueingHintShared: "I messaggi in coda vengono mantenuti.",
+  },
   common: {
     cancel: "Annulla",
     close: "Chiudi",
@@ -1409,6 +1470,30 @@ export const it = {
       },
     },
     chat: {
+      groups: {
+        conversations: { title: "Conversazioni" },
+        files: { title: "File e incolla" },
+        display: { title: "Visualizzazione" },
+        composer: { title: "Casella del messaggio" },
+        menu: { title: "Menu della chat" },
+        advanced: { title: "Avanzate" },
+        contextTitle: "Contesto",
+      },
+      projectAttachmentsHint:
+        "Modifica questa impostazione per ogni chat dal relativo menu degli allegati.",
+      rememberParamsPerModelHint:
+        "Quando è disattivata, tutti i modelli usano le stesse impostazioni.",
+      autoCompactHint:
+        "Usa la lunghezza del contesto impostata, non la VRAM disponibile.",
+      pastedTextShortDescription:
+        "Il testo incollato di almeno {count} caratteri diventa un allegato .txt. Il testo più breve resta nel campo del messaggio.",
+      pastedTextOffDescription:
+        "Tutto il testo incollato resta nel campo del messaggio, indipendentemente dalla lunghezza.",
+      compactionDescriptionInherit: "Segue la politica del contesto del server.",
+      compactionDescriptionCheckpoint:
+        "Mantiene l’ultimo scambio e le istruzioni permanenti.",
+      compactionDescriptionRolling:
+        "Rimuove i turni più vecchi per conservare la cronologia recente e lo spazio aggiuntivo selezionato.",
       projectsSection: "Mostra la sezione Progetti",
       projectsSectionDescription:
         "Raggruppa le chat di progetto sotto un titolo Progetti. Disattivalo per elencarle in Recenti.",
@@ -1439,7 +1524,8 @@ export const it = {
         exportChat: "Esporta chat",
       },
       pastedTextThreshold: "Condensa incolla lunghi",
-      pastedTextThresholdDescription: "Il testo incollato più lungo di questo valore diventa un allegato .txt invece di riempire il campo del messaggio. Premi {shortcut} per incollare comunque nel campo del messaggio.",
+      pastedTextThresholdDescription:
+        "Premi {shortcut} per incollare direttamente nel campo del messaggio.",
       pastedTextThresholdOff: "Disattivato",
       showResponseModel: "Mostra il modello della risposta",
       showResponseModelDescription:
@@ -1449,13 +1535,13 @@ export const it = {
         "Mostra «Gli LLM possono commettere errori» sotto il campo della chat.",
       projectAttachments: "Condividi i file nel progetto",
       projectAttachmentsDescription:
-        "Impostazione predefinita per i file allegati in una chat che appartiene a un progetto: indicizzarli per l'intero progetto in modo che ogni chat possa usarli. Ogni chat puo cambiarlo dal menu degli allegati.",
+        "Rende i nuovi allegati disponibili in tutte le chat del progetto.",
       rememberParamsPerModel: "Ricorda le impostazioni per modello",
       rememberParamsPerModelDescription:
-        "Cambiando modello vengono ripristinati temperatura, prompt e le altre impostazioni usate l'ultima volta con quel modello. Disattivato, resta un unico set di impostazioni per tutti i modelli.",
+        "Ripristina l’ultimo prompt, la temperatura e le altre impostazioni usate con ogni modello.",
       autoCompact: "Compatta automaticamente le chat lunghe",
       autoCompactDescription:
-        "Quando una chat GGUF locale raggiunge la lunghezza di contesto impostata, elimina i turni precedenti invece di restituire un errore. Questa impostazione non dipende dalla VRAM libera.",
+        "Rimuove i turni più vecchi quando una chat GGUF locale raggiunge il limite del contesto.",
       compactionStyle: "Quando il contesto è pieno",
       compactionStyleDescription:
         "Il valore predefinito del server mantiene UNSLOTH_CONTEXT_POLICY. Reimpostare la conversazione conserva l'ultimo turno e le istruzioni permanenti. Una finestra scorrevole elimina i turni più vecchi e può conservare più cronologia recente.",
@@ -1492,7 +1578,7 @@ export const it = {
         title: "Ricerca web",
         images: "Mostra immagini dalla ricerca web",
         imagesDescription:
-          "Consente alla ricerca web di restituire immagini e ne recupera una per ogni elemento elencato in una risposta. Le miniature vengono scaricate e ridimensionate da Unsloth, quindi il browser non contatta mai gli host delle immagini.",
+          "Include immagini nei risultati di ricerca.",
       },
       artifacts: {
         title: "Canvas",

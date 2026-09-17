@@ -652,6 +652,9 @@ _setup_cvd_hides_nvidia() {
 # and a mixed host steered to its AMD card keeps the ROCm route.
 # Present, mask or no mask. The usable probe is this plus the CUDA_VISIBLE_DEVICES check.
 _setup_has_physical_nvidia_gpu() {
+    # Reset here rather than in the usable wrapper: this is where the bounded -L call
+    # lives, and both entry points reach the probe through it.
+    _setup_nv_smi_wedged=""
     _setup_nvsmi=""
     if command -v nvidia-smi >/dev/null 2>&1; then
         _setup_nvsmi="nvidia-smi"
@@ -659,7 +662,15 @@ _setup_has_physical_nvidia_gpu() {
         _setup_nvsmi="/usr/bin/nvidia-smi"
     fi
     if [ -n "$_setup_nvsmi" ]; then
-        if _setup_run_smi "$_setup_nvsmi" -L 2>/dev/null \
+        # Captured rather than piped so `timeout`'s own 124 stays visible. A wedged
+        # driver still detects as a GPU through /proc below, and the banner must not
+        # then pay the 10s bound a second time asking a hung nvidia-smi for a name.
+        _setup_nv_l_rc=0
+        _setup_nv_l_out=$(_setup_run_smi "$_setup_nvsmi" -L 2>/dev/null) || _setup_nv_l_rc=$?
+        if [ "$_setup_nv_l_rc" = "124" ]; then
+            _setup_nv_smi_wedged=1
+        fi
+        if printf '%s\n' "$_setup_nv_l_out" \
            | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}'; then
             return 0
         fi
@@ -674,6 +685,121 @@ _setup_has_physical_nvidia_gpu() {
         _setup_run_smi python3 -I "$SCRIPT_DIR/nvidia_probe.py" >/dev/null 2>&1 && return 0
     fi
     return 1
+}
+
+# Row index of the GPU whose UUID starts with $1, or empty. NVIDIA allows a UUID to
+# be abbreviated to any unique leading portion, hence the prefix match.
+_setup_nv_idx_from_uuid() {
+    # NVIDIA accepts an abbreviation only when it is a UNIQUE leading portion, so a
+    # prefix matching two cards selects NO device. Counting instead of stopping at the
+    # first hit keeps the banner from naming one of them.
+    _setup_run_smi "$_setup_nvsmi" --query-gpu=uuid --format=csv,noheader 2>/dev/null \
+        | awk -v want="$1" '
+            NF { gsub(/^[[:space:]]+|[[:space:]]+$/,""); if (index($0, want) == 1) { hits++; idx = NR-1 } }
+            END { if (hits == 1) print idx }' || true
+}
+
+# Resolves the banner's NVIDIA fields into _setup_nv_name / _setup_nv_sm /
+# _setup_nv_driver, each empty when it could not be read. Mirrors install.sh's
+# _nv_banner_fields. Bounded, and fed the executable _setup_has_usable_nvidia_gpu
+# already resolved into $_setup_nvsmi: a wedged driver blocks nvidia-smi indefinitely,
+# and detection also succeeds via /usr/bin/nvidia-smi off PATH or via
+# /proc/driver/nvidia/gpus with no nvidia-smi at all.
+_setup_nv_banner_fields() {
+    _setup_nv_name=""; _setup_nv_sm=""; _setup_nv_driver=""
+    _setup_nv_row=""; _setup_nv_cc=""; _setup_nv_ambiguous=""
+    [ -n "${_setup_nvsmi:-}" ] || return 0
+    # Detection already waited out the full bound on this binary. Asking again cannot
+    # succeed and would double the stall, so the banner keeps the vendor-only wording.
+    [ -z "${_setup_nv_smi_wedged:-}" ] || return 0
+    # nvidia-smi ignores CUDA_VISIBLE_DEVICES, so its rows are the physical devices and
+    # the mask has to be resolved against them by hand.
+    _setup_nv_idx=0
+    # Set while nothing has IDENTIFIED a device: an ordinal, or a failed identity lookup
+    # that fell back to one. Only an ordinal is order-dependent.
+    _setup_nv_by_ordinal=1
+    _setup_nv_vis="${CUDA_VISIBLE_DEVICES:-}"
+    # Only the FIRST entry selects the device, and only IT decides the form of the mask.
+    # CUDA truncates enumeration at the first invalid index, so the documented `2,-1`
+    # means "device 2, then stop"; classifying the whole string would see the `-1`, call
+    # it non-numeric, and send a plain ordinal down the UUID path.
+    _setup_nv_tok="${_setup_nv_vis%%,*}"
+    case "$_setup_nv_tok" in
+        '') ;;
+        *[!0-9]*)
+            _setup_nv_by_ordinal=""
+            case "$_setup_nv_tok" in
+                MIG-GPU-*)
+                    # Pre-R470 MIG name, MIG-<GPU-UUID>/<gi>/<ci>: the parent UUID is
+                    # embedded, so it still matches a --query-gpu=uuid row.
+                    _setup_nv_tok="${_setup_nv_tok#MIG-}"; _setup_nv_tok="${_setup_nv_tok%%/*}"
+                    _setup_nv_idx=$(_setup_nv_idx_from_uuid "$_setup_nv_tok") ;;
+                MIG-*)
+                    # R470 and later give each MIG instance its OWN opaque UUID, which
+                    # carries nothing of the parent, so --query-gpu=uuid can never match
+                    # it. `nvidia-smi -L` nests the instances under their GPU.
+                    _setup_nv_idx=$(_setup_run_smi "$_setup_nvsmi" -L 2>/dev/null | awk -v want="$_setup_nv_tok" '
+                        /^GPU[[:space:]]+[0-9]+:/ { cur = $2 + 0 }
+                        index($0, want) > 0 { print cur; exit }' || true) ;;
+                *)
+                    _setup_nv_idx=$(_setup_nv_idx_from_uuid "$_setup_nv_tok") ;;
+            esac
+            # An identity mask that does not resolve means CUDA selected NO device: an
+            # abbreviation short enough to match two cards, or a UUID for a card that is
+            # not here. Row 0 is not a fallback for that -- it is a different card.
+            case "$_setup_nv_idx" in ''|*[!0-9]*) _setup_nv_idx=0; _setup_nv_ambiguous=1 ;; esac
+            ;;
+        *) _setup_nv_idx="$_setup_nv_tok" ;;
+    esac
+    # Canonicalise the ordinal before anything compares or subscripts with it.
+    # `[` parses with strtol and ERRORS on a value wider than a long, printing a
+    # shell diagnostic and skipping the range check below, so an absurd ordinal
+    # would have named row 0. Clamped rather than rejected: 9999 is past any real
+    # host, so it stays out of range and declines, which is the right answer.
+    _setup_nv_idx=$(printf '%s' "$_setup_nv_idx" \
+        | awk '{ n = $0 + 0; if (n < 0) n = 0; if (n > 9999) n = 9999; printf "%d", n }')
+    _setup_nv_all=$(_setup_run_smi "$_setup_nvsmi" --query-gpu=name,compute_cap,driver_version --format=csv,noheader 2>/dev/null || true)
+    _setup_nv_row=$(printf '%s\n' "$_setup_nv_all" \
+        | awk -v idx="$_setup_nv_idx" 'NF { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx+0] }')
+    [ -n "$_setup_nv_row" ] || return 0
+    # A numeric entry is a CUDA ordinal, and CUDA's default CUDA_DEVICE_ORDER=FASTEST_FIRST
+    # puts the fastest card at 0 and leaves the rest "unspecified", while nvidia-smi always
+    # lists in PCI order. So an ordinal identifies an nvidia-smi row only when the order is
+    # pinned to PCI_BUS_ID, or when the cards are interchangeable and every row gives the
+    # same answer anyway. Compared on name and compute_cap, not the driver, which is
+    # host-wide and identical on every row.
+    # CUDA stops enumerating at the first invalid index, so an ordinal past the last
+    # row exposes NO device at all. The awk above clamps to row 0 so the driver still
+    # reads, but row 0 is not the selected card -- nothing is.
+    _setup_nv_rowcount=$(printf '%s\n' "$_setup_nv_all" | awk 'NF { n++ } END { print n+0 }')
+    if [ -n "$_setup_nv_by_ordinal" ] && [ "$_setup_nv_idx" -ge "$_setup_nv_rowcount" ]; then
+        _setup_nv_ambiguous=1
+    fi
+    if [ -n "$_setup_nv_by_ordinal" ]; then
+        _setup_nv_order=$(printf '%s' "${CUDA_DEVICE_ORDER:-}" | tr '[:lower:]' '[:upper:]' | tr -d '[:space:]')
+        _setup_nv_models=$(printf '%s\n' "$_setup_nv_all" \
+            | awk -F, 'NF { k=$0; sub(/,[^,]*$/,"",k); if (!(k in s)) { s[k]; n++ } } END { print n+0 }')
+        if [ "$_setup_nv_order" != "PCI_BUS_ID" ] && [ "$_setup_nv_models" -gt 1 ]; then
+            _setup_nv_ambiguous=1
+        fi
+    fi
+    # Split from the right: nvidia-smi does not quote, so a comma in a device name
+    # would otherwise shift every field.
+    _setup_nv_driver=$(printf '%s' "$_setup_nv_row" | awk -F, 'NF>=3 { gsub(/^[[:space:]]+|[[:space:]]+$/,"",$NF); print $NF }')
+    _setup_nv_cc=$(printf '%s' "$_setup_nv_row" | awk -F, 'NF>=3 { gsub(/^[[:space:]]+|[[:space:]]+$/,"",$(NF-1)); print $(NF-1) }')
+    _setup_nv_name=$(printf '%s' "$_setup_nv_row" | awk -F, 'NF>=3 { out=$1; for(i=2;i<=NF-2;i++) out=out","$i; gsub(/^[[:space:]]+|[[:space:]]+$/,"",out); print out }')
+    # Short row: keep field 1 only, or the compute capability lands in the name.
+    [ -n "$_setup_nv_name" ] || _setup_nv_name=$(printf '%s' "$_setup_nv_row" | awk -F, '{ gsub(/^[[:space:]]+|[[:space:]]+$/,"",$1); print $1 }')
+    # An nvidia-smi too old for a field answers with a placeholder rather than failing.
+    case "$_setup_nv_name"   in '[N/A]'|'[Not Supported]'|'[Unknown Error]') _setup_nv_name="" ;; esac
+    case "$_setup_nv_driver" in '[N/A]'|'[Not Supported]'|'[Unknown Error]') _setup_nv_driver="" ;; esac
+    # Keep the driver, drop the identity: the banner falls back to the vendor-only wording
+    # rather than claiming a card that may not be the one CUDA will use.
+    if [ -n "$_setup_nv_ambiguous" ]; then _setup_nv_name=""; _setup_nv_cc=""; fi
+    case "$_setup_nv_cc" in
+        [0-9]*.[0-9]*) _setup_nv_sm="sm_$(printf '%s' "$_setup_nv_cc" | awk -F. '{ print ($1*10)+$2 }')" ;;
+    esac
+    return 0
 }
 
 _setup_has_usable_nvidia_gpu() {
@@ -2464,6 +2590,32 @@ if [ "$_SKIP_PYTHON_DEPS" = true ] && [ -x "$VENV_DIR/bin/python" ]; then
     fi
 fi
 
+# Same for an NVIDIA host left on a CPU wheel (GPU hidden or driver broken when it was
+# installed, a dependency step that resolved torch from PyPI, or a GPU added since). The
+# CUDA repair is inside the pass too, so without this the wheel survives every "up to
+# date" update. setup.ps1 heals this at its stale-venv check; this is the POSIX half.
+if [ "$_SKIP_PYTHON_DEPS" = true ] && [ -x "$VENV_DIR/bin/python" ]; then
+    _setup_cuda_torch_stale=false
+    if command -v timeout >/dev/null 2>&1; then
+        timeout -k 5 180 "$VENV_DIR/bin/python" \
+            "$SCRIPT_DIR/install_python_stack.py" --cuda-torch-needs-dependency-pass \
+            >/dev/null 2>&1 && _setup_cuda_torch_stale=true
+    elif "$VENV_DIR/bin/python" "$SCRIPT_DIR/install_python_stack.py" \
+            --cuda-torch-needs-dependency-pass >/dev/null 2>&1; then
+        _setup_cuda_torch_stale=true
+    fi
+    if [ "$_setup_cuda_torch_stale" = true ]; then
+        # Offline the pass can only fail, and failing it loses the verified install.
+        if [ "${_OFFLINE_FAST_PATH:-false}" = true ] || _uv_offline_requested; then
+            substep "installed PyTorch cannot use this NVIDIA GPU but UV_OFFLINE is set -- left for the next online update"
+        else
+            substep "installed PyTorch cannot use this NVIDIA GPU -- forcing dependency pass to repair..."
+            substep "   (set UNSLOTH_TORCH_BACKEND=cpu to keep a deliberate CPU install)"
+            _SKIP_PYTHON_DEPS=false
+        fi
+    fi
+fi
+
 if [ "$_SKIP_PYTHON_DEPS" = false ]; then
     install_python_stack
 else
@@ -2966,7 +3118,17 @@ if [ "$_setup_nvidia_usable" != true ]; then
 fi
 
 if [ "$_setup_nvidia_usable" = true ]; then
-    step "gpu" "NVIDIA GPU detected"
+    _setup_nv_banner_fields
+    if [ -n "$_setup_nv_name" ] && [ -n "$_setup_nv_sm" ]; then
+        step "gpu" "$_setup_nv_name ($_setup_nv_sm)"
+    elif [ -n "$_setup_nv_name" ]; then
+        step "gpu" "$_setup_nv_name"
+    else
+        step "gpu" "NVIDIA GPU detected"
+    fi
+    # An `if`, not `[ ... ] && substep ...`: the AND-list form leaves a non-zero status
+    # behind on the common path where there is no driver string to print.
+    if [ -n "$_setup_nv_driver" ]; then substep "Driver: $_setup_nv_driver"; fi
 elif [ "$_setup_amd_detected" = true ]; then
     _setup_vis="${HIP_VISIBLE_DEVICES:-${ROCR_VISIBLE_DEVICES:-}}"
     _setup_vis_idx=0
@@ -2977,14 +3139,14 @@ elif [ "$_setup_amd_detected" = true ]; then
     if [ -n "$_setup_amd_records" ]; then
         # Records already preserve device ordinals, including duplicate arches.
         _setup_amd_record=$(printf '%s\n' "$_setup_amd_records" | awk -v idx="$_setup_vis_idx" \
-            'NF { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx] }')
+            'NF { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx+0] }')
         _setup_gfx=${_setup_amd_record%%|*}
         _setup_mkt=${_setup_amd_record#*|}
     fi
     # Only pre-TARGET_GRAPHICS_VERSION amd-smi lands here: names but no arch in the record.
     if [ -z "$_setup_gfx" ]; then
         _setup_gfx=$(printf '%s\n' "$_setup_gfx_all" | awk -v idx="$_setup_vis_idx" \
-            'NF && !seen[$0]++ { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx] }')
+            'NF && !seen[$0]++ { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx+0] }')
     fi
     # UNSLOTH_ROCM_GFX_ARCH env override (mirrors setup.ps1)
     if [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ]; then
@@ -3072,7 +3234,11 @@ $_setup_unsup_pci
 EOF
         return 1
     }
-    if [ -n "$_setup_gfx" ]; then
+    # $_setup_mkt is the marketing name of the SAME record the arch came from, paired
+    # per GPU agent by _rocminfo_gpu_records and ordered by _amd_smi_hip_order.
+    if [ -n "$_setup_gfx" ] && [ -n "$_setup_mkt" ]; then
+        step "gpu" "$_setup_mkt ($_setup_gfx)"
+    elif [ -n "$_setup_gfx" ]; then
         step "gpu" "AMD ROCm ($_setup_gfx)"
     elif _setup_unsup_gfx=$(_setup_unsupported_gfx_any "$_setup_mkt"); then
         step "gpu" "AMD GPU detected ($_setup_unsup_gfx) -- no ROCm PyTorch wheels Unsloth installs"
@@ -3094,6 +3260,11 @@ EOF
         substep "GGUF chat can still use this GPU through Vulkan: export UNSLOTH_LLAMA_CPP_BACKEND=vulkan,"
         substep "then re-run the installer. It picks the llama.cpp bundle at install time, so setting"
         substep "it afterwards has no effect until you install or update again."
+    elif [ -n "$_setup_mkt" ]; then
+        # Name without an arch, as install.sh does. Deliberately BELOW the unsupported
+        # arm above: a card with no ROCm wheels also reaches here with a name, and
+        # naming it quietly would drop the warning that training will not run.
+        step "gpu" "$_setup_mkt"
     else
         step "gpu" "AMD ROCm"
     fi
@@ -3109,7 +3280,6 @@ EOF
         substep "ROCm: runtime detected (no SDK tree at $_setup_rocm_root)"
     fi
     [ -n "$_setup_rocm_ver" ] && substep "hipconfig: $_setup_rocm_ver"
-    [ -n "$_setup_mkt" ] && [ -n "$_setup_gfx" ] && substep "GPU: $_setup_mkt"
 elif [ "$_setup_xpu_ready" = true ]; then
     # Ranks below NVIDIA and AMD, as in setup.ps1: those hosts get their own wheels.
     step "gpu" "Intel GPU detected (XPU runtime)"
