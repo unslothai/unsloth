@@ -1249,7 +1249,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
 
     line_to_replace = 'batch_size = self.args.per_device_train_batch_size if mode == "train" else self.args.per_device_eval_batch_size'
 
-    replacement_lines = """
+    replacement_lines_head = """
         max_left_pad = None
         batch_size = self.args.per_device_train_batch_size if mode == "train" else self.args.per_device_eval_batch_size
         try:
@@ -1265,51 +1265,73 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
                 left_pad_tokens_per_prompt = calculate_pad_tokens_in_prompt(prompt_completion_ids, logits_to_keep, self.processing_class.pad_token_id)
                 max_left_pad = torch.max(left_pad_tokens_per_prompt).item()
         _use_gc = self.model._unsloth_gradient_checkpointing if hasattr(self.model, '_unsloth_gradient_checkpointing') else getattr(self.args, 'gradient_checkpointing', True)
-        self.model.for_training(use_gradient_checkpointing=_use_gc)
-        # TRL 0.22.x-0.23.x has neither `forward_kwargs` nor `num_images`: it hardcoded one image
-        # per example, counted nothing, and saved only four processor keys. The singular `image`
-        # column normalisation below lets a cell hold several, and every consumer of a multi image
-        # batch -- the shared chunker, and the per sample split in _prepare_inputs -- reads those
-        # counts, so without them a two image row is sliced as if it were two rows and the images
-        # are handed to the wrong samples. Built HERE rather than in the output block, because the
-        # no-grad old/reference logprob calls a few lines below take it too and the output block
-        # only runs once they have already returned. Counted off the same normalised cells the
-        # processor was given, so the two can never disagree; a row with no image counts zero.
+        self.model.for_training(use_gradient_checkpointing=_use_gc)"""
+
+    # TRL 0.22.x-0.23.x has neither `forward_kwargs` nor `num_images`: it hardcoded one image per
+    # example, counted nothing, and saved only four processor keys. The singular `image` column
+    # normalisation below lets a cell hold several, and every consumer of a multi image batch --
+    # the shared chunker, and the per sample split in _prepare_inputs -- reads those counts, so
+    # without them a two image row is sliced as if it were two rows and the images are handed to
+    # the wrong samples. Built at this anchor rather than in the output block, because the no-grad
+    # old/reference logprob calls a few lines below take it too and the output block only runs once
+    # they have already returned. Counted off the same normalised cells the processor was given, so
+    # the two can never disagree; a row with no image counts zero.
+    #
+    # Inserted only for the versions whose call sites it feeds. 0.24.0 and up leave prompt_inputs
+    # unbound here, so the try below would fall straight through, but not emitting it at all is
+    # what keeps their generated source byte for byte what it was.
+    _legacy_vision_prologue = """
         _unsloth_legacy_vision = {}
         try:
-            _unsloth_legacy_vision = _unsloth_grpo_vision_inputs(prompt_inputs)
+            # Gated the way TRL 0.24.0 gates forward_kwargs ("if images is not None"): a text only
+            # batch must forward nothing. Gemma 3's processor returns token_type_ids even with no
+            # images, and both PrefixGrouper and sequence packing are keyed on that name being
+            # absent, so copying it across would quietly cost a text run both fast paths.
             if has_images and images is not None:
+                _unsloth_legacy_vision = _unsloth_grpo_vision_inputs(prompt_inputs)
                 _unsloth_legacy_vision["num_images"] = [
                     len(_unsloth_cell) if _unsloth_cell else 0
                     for _unsloth_cell in (
                         _unsloth_grpo_image_cell(_unsloth_image) for _unsloth_image in images
                     )
                 ]
-            _unsloth_legacy_vision = {
-                _unsloth_key: _unsloth_value
-                for _unsloth_key, _unsloth_value in _unsloth_legacy_vision.items()
-                if _unsloth_value is not None
-            }
+                _unsloth_legacy_vision = {
+                    _unsloth_key: _unsloth_value
+                    for _unsloth_key, _unsloth_value in _unsloth_legacy_vision.items()
+                    if _unsloth_value is not None
+                }
+            if _unsloth_legacy_vision.get("pixel_values", None) is None:
+                # An image column whose cells are all empty: a text batch wearing one.
+                _unsloth_legacy_vision.pop("token_type_ids", None)
+                _unsloth_legacy_vision.pop("mm_token_type_ids", None)
             # TRL 0.24.0 extends these with zeros over the completion before the very same call
             # (grpo_trainer.py, "If token_type_ids are used, extend them with zeros"); 0.22.x-0.23.x
             # never forwarded them at all, so the processor's prompt length tensor would not fit a
-            # prompt+completion forward. Anything that still does not fit is dropped rather than
-            # sent: a truncated prompt leaves the processor's copy the wrong width.
+            # prompt+completion forward. Only the prompt width is widened; every other width is
+            # dropped rather than sent, including one that happens to equal prompt+completion, which
+            # on these versions can only be an untruncated prompt whose tokens sit at the wrong
+            # offsets after max_prompt_length moved them.
             for _unsloth_key in ("token_type_ids", "mm_token_type_ids"):
                 _unsloth_ids = _unsloth_legacy_vision.get(_unsloth_key, None)
                 if _unsloth_ids is None:
                     continue
-                if getattr(_unsloth_ids, "ndim", 0) != 2 or _unsloth_ids.shape[0] != prompt_completion_ids.shape[0]:
-                    _unsloth_legacy_vision.pop(_unsloth_key, None)
-                elif _unsloth_ids.shape[1] == prompt_ids.shape[1]:
+                if (
+                    getattr(_unsloth_ids, "ndim", 0) == 2
+                    and _unsloth_ids.shape[0] == prompt_completion_ids.shape[0]
+                    and _unsloth_ids.shape[1] == prompt_ids.shape[1]
+                ):
                     _unsloth_legacy_vision[_unsloth_key] = torch.cat(
                         [_unsloth_ids, _unsloth_ids.new_zeros(completion_ids.shape)], dim = 1
                     )
-                elif _unsloth_ids.shape[1] != prompt_completion_ids.shape[1]:
+                else:
                     _unsloth_legacy_vision.pop(_unsloth_key, None)
         except NameError:
-            # TRL 0.24.0 and up: no prompt_inputs/has_images here, and forward_kwargs carries these.
             _unsloth_legacy_vision = {}"""
+
+    _legacy_vision_trl = 'pixel_values=prompt_inputs.get("pixel_values")' in function
+    replacement_lines = replacement_lines_head + (
+        _legacy_vision_prologue if _legacy_vision_trl else ""
+    )
 
     function = function.replace(line_to_replace, replacement_lines)
 

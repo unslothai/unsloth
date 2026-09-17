@@ -455,3 +455,76 @@ def test_a_legacy_grid_batch_whose_counts_do_not_span_the_samples_is_left_alone(
     }
     already = _legacy_split_pixel_values_by_grid(batch)
     assert _unsloth_grpo_split_vision_by_sample(already) is already
+
+
+def test_a_text_only_legacy_batch_does_not_pick_up_a_tokenizers_token_type_ids():
+    """Gemma 3's processor returns token_type_ids with no images at all
+    (transformers/models/gemma3/processing_gemma3.py, return_mm_token_type_ids defaults True),
+    and both PrefixGrouper and sequence packing are keyed on that name being absent. TRL 0.24.0
+    builds forward_kwargs only inside `if images is not None`, so it never sees them either."""
+    import torch
+
+    processor_output = {
+        "input_ids": torch.zeros(2, 5, dtype = torch.long),
+        "attention_mask": torch.ones(2, 5, dtype = torch.long),
+        "token_type_ids": torch.zeros(2, 5, dtype = torch.long),
+    }
+    inputs = [{"prompt": "a"}, {"prompt": "b"}]
+    trainer, output = _run_legacy(processor_output, inputs, torch.zeros(2, 3, dtype = torch.long))
+    for call in trainer.calls:
+        assert "token_type_ids" not in call, call.keys()
+    assert "token_type_ids" not in output, sorted(output)
+
+
+def test_an_image_column_with_no_images_in_it_is_a_text_batch():
+    """`has_images` is only "the column exists". Every cell empty means the processor produced no
+    pixels, so the run is a text run and must keep its fast paths."""
+    import torch
+
+    processor_output = {
+        "input_ids": torch.zeros(2, 5, dtype = torch.long),
+        "attention_mask": torch.ones(2, 5, dtype = torch.long),
+        "token_type_ids": torch.zeros(2, 5, dtype = torch.long),
+    }
+    inputs = [{"prompt": "a", "image": None}, {"prompt": "b", "image": None}]
+    trainer, output = _run_legacy(processor_output, inputs, torch.zeros(2, 3, dtype = torch.long))
+    for call in trainer.calls:
+        assert "token_type_ids" not in call, call.keys()
+    assert "token_type_ids" not in output, sorted(output)
+
+
+def test_an_untruncated_token_type_ids_as_wide_as_prompt_plus_completion_is_dropped():
+    """max_prompt_length runs truncate_with_protected_tokens after the processor, which keeps the
+    image tokens but MOVES them. A processor copy whose width happens to equal prompt+completion
+    is still the untruncated one, so its marks sit at the wrong offsets."""
+    import torch
+
+    processor_output, inputs, completion_ids = _grid_batch()
+    # prompt_ids 5 wide, completion 3 wide: an 8 wide untruncated processor copy.
+    processor_output["token_type_ids"] = torch.ones(2, 8, dtype = torch.long)
+    trainer, output = _run_legacy(processor_output, inputs, completion_ids)
+    for call in trainer.calls:
+        assert "token_type_ids" not in call, call["token_type_ids"].shape
+    assert "token_type_ids" not in output, sorted(output)
+
+
+def test_a_modern_trl_gets_no_legacy_prologue_at_all():
+    """0.24.0 and up leave prompt_inputs unbound at the anchor, so the block would fall through
+    anyway; not emitting it keeps their generated source exactly what it was."""
+    from unsloth.models.rl_replacements import grpo_trainer__generate_and_score_completions
+
+    modern = (
+        "    def _generate_and_score_completions(self, inputs):\n"
+        '        batch_size = self.args.per_device_train_batch_size if mode == "train" '
+        "else self.args.per_device_eval_batch_size\n"
+        '        if "image_sizes" in forward_kwargs:\n'
+        '            output["image_sizes"] = forward_kwargs["image_sizes"]\n'
+        "        if images is not None:\n"
+        '            output["num_images"] = num_images\n'
+        "        return output\n"
+    )
+    patched = grpo_trainer__generate_and_score_completions(
+        "_generate_and_score_completions", modern
+    )
+    assert "_unsloth_legacy_vision" not in patched, patched
+    assert "max_left_pad = None" in patched, "the rest of the anchor rewrite still applies"
