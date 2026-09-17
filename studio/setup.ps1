@@ -3075,6 +3075,34 @@ function Test-OtherVendorAdapterPresent {
             "$($adapter.Name)" -notmatch (Get-XpuCapableNameRegex)) { continue }
         return $true
     }
+    # Mirrors Test-NvidiaAdapterPresent exactly, and it has to: that helper falls back to the
+    # class keys when WMI cannot answer, so without the same fallback here a host with a broken
+    # WMI repository saw NVIDIA through the registry and every alternative vendor as absent. On a
+    # hybrid NVIDIA plus Arc machine the promotion then fired, $HasNvidiaSmi suppressed the Intel
+    # branch further down, and the host lost the XPU wheels it gets today. The two halves of one
+    # exclusivity question cannot read different sources.
+    #
+    # The staleness that makes this fallback weak evidence cuts the safe way round here. A class
+    # key outliving removed hardware promotes a GPU that is gone on the NVIDIA side; on this side
+    # it only DECLINES a promotion, which leaves the host exactly where it is today.
+    if ($Scan.Ok) { return $false }
+    $classKey = "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
+    try {
+        $subs = @(Get-ChildItem -LiteralPath $classKey -ErrorAction SilentlyContinue)
+    } catch { return $false }
+    foreach ($sub in $subs) {
+        try {
+            if ("$($sub.PSChildName)" -notmatch '^\d+$') { continue }
+            $props = Get-ItemProperty -LiteralPath $sub.PSPath -ErrorAction SilentlyContinue
+            if (-not $props) { continue }
+            $match = "$($props.MatchingDeviceId)"
+            if ($match -match '(?i)ven_1002') { return $true }
+            # Same XPU-capability question as above, asked of DriverDesc because the registry has
+            # no Name. Get-IntelRegistryAdapterNames reads the same value for the Intel route.
+            if ($match -match '(?i)ven_8086' -and
+                "$($props.DriverDesc)" -match (Get-XpuCapableNameRegex)) { return $true }
+        } catch {}
+    }
     return $false
 }
 
@@ -7203,6 +7231,17 @@ if ($PinnedTorchIndexUrl) {
     $CuTag = if (Test-CudaFamilyLeaf $script:PreservedInstallerTorchTag) { $script:PreservedInstallerTorchTag } else { "cpu" }
 } elseif ($HasNvidiaSmi) {
     $CuTag = Get-PytorchCudaTag
+    if (-not $CuTag -and $null -ne $script:NvidiaPresenceDriverRelease -and
+        $script:NvidiaPresenceDriverRelease -lt 450) {
+        # A display driver version WAS readable and it is below every row of the table. The bus
+        # promotion above is what makes this reachable: setup can now set $HasNvidiaSmi from a
+        # PCI adapter alone, and the branch below would then hand a pre-R450 host cu126 wheels
+        # whose CUDA runtime its driver cannot load. install.ps1 already answers CPU here, and
+        # the two routers must agree: a host that runs setup.ps1 directly against a new or
+        # incomplete venv reaches this arm without install.ps1 ever having chosen for it.
+        $CuTag = "cpu"
+        substep "an NVIDIA GPU is present but its driver ($script:NvidiaPresenceDriverRelease series) predates R450 and carries no usable CUDA runtime; installing CPU wheels. Update the NVIDIA driver and re-run to get CUDA" "Yellow"
+    }
     if (-not $CuTag) {
         # Unknown driver version: the installed family, else the widest wheel.
         $CuTag = if (Test-CudaFamilyLeaf $installedTorchTag) { $installedTorchTag } else { "cu126" }

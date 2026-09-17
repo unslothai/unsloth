@@ -8218,6 +8218,34 @@ exit 0
                 "$($adapter.Name)" -notmatch (Get-XpuCapableNameRegex)) { continue }
             return $true
         }
+        # Mirrors Test-NvidiaAdapterPresent exactly, and it has to: that helper falls back to the
+        # class keys when WMI cannot answer, so without the same fallback here a host with a broken
+        # WMI repository saw NVIDIA through the registry and every alternative vendor as absent. On a
+        # hybrid NVIDIA plus Arc machine the promotion then fired, $HasNvidiaSmi suppressed the Intel
+        # branch further down, and the host lost the XPU wheels it gets today. The two halves of one
+        # exclusivity question cannot read different sources.
+        #
+        # The staleness that makes this fallback weak evidence cuts the safe way round here. A class
+        # key outliving removed hardware promotes a GPU that is gone on the NVIDIA side; on this side
+        # it only DECLINES a promotion, which leaves the host exactly where it is today.
+        if ($Scan.Ok) { return $false }
+        $classKey = "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
+        try {
+            $subs = @(Get-ChildItem -LiteralPath $classKey -ErrorAction SilentlyContinue)
+        } catch { return $false }
+        foreach ($sub in $subs) {
+            try {
+                if ("$($sub.PSChildName)" -notmatch '^\d+$') { continue }
+                $props = Get-ItemProperty -LiteralPath $sub.PSPath -ErrorAction SilentlyContinue
+                if (-not $props) { continue }
+                $match = "$($props.MatchingDeviceId)"
+                if ($match -match '(?i)ven_1002') { return $true }
+                # Same XPU-capability question as above, asked of DriverDesc because the registry has
+                # no Name. Get-IntelRegistryAdapterNames reads the same value for the Intel route.
+                if ($match -match '(?i)ven_8086' -and
+                    "$($props.DriverDesc)" -match (Get-XpuCapableNameRegex)) { return $true }
+            } catch {}
+        }
         return $false
     }
 
@@ -8330,9 +8358,9 @@ exit 0
             $HasNvidiaSmi = $true
             $script:NvidiaPresenceOnly = $true
             $script:NvidiaPresenceCudaFloor = Get-NvidiaAdapterCudaFloor -Scan $presenceScan
-                        # Recorded separately, because the floor answers $null both for a driver too old for
-                        # the table and for no readable version at all, and those two want opposite answers.
-                        $script:NvidiaPresenceDriverRelease = Get-NvidiaAdapterDriverRelease -Scan $presenceScan
+            # Recorded separately, because the floor answers $null both for a driver too old for
+            # the table and for no readable version at all, and those two want opposite answers.
+            $script:NvidiaPresenceDriverRelease = Get-NvidiaAdapterDriverRelease -Scan $presenceScan
             Write-StudioLine "   NVIDIA GPU found on the PCI bus; nvidia-smi and the driver library are both unavailable" -ForegroundColor Gray
         }
     }

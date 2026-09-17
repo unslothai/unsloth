@@ -356,8 +356,34 @@ foreach ($file in @($installPs1, $setupPs1)) {
 }
 Check "install.ps1 is where the release is consumed" (
     (Get-FunctionText $installPs1 "Get-TorchIndexUrl") -match 'NvidiaPresenceDriverRelease')
-Check "setup.ps1 does not act on it, for the same reason it does not floor" (
+Check "setup.ps1's tag helper does not act on it, for the same reason it does not floor" (
     (Get-FunctionText $setupPs1 "Get-PytorchCudaTag") -notmatch 'NvidiaPresenceDriverRelease')
+
+# But setup's ROUTER must, and for a while it did not. Get-PytorchCudaTag returns "" for a driver
+# it cannot place, and the arm below that answered cu126 for it. Once setup gained the same bus
+# promotion install.ps1 has, a pre-R450 host running setup.ps1 directly against a new or
+# incomplete venv reached that arm and was handed CUDA wheels its driver cannot load, while
+# install.ps1 answered CPU for the same machine. The two routers have to agree.
+#
+# Read as text because this is top-level script, not a function. Anchored on the ORDER, since an
+# arm placed after the cu126 fallback is dead code that reads exactly like a fix.
+$setupText = [System.IO.File]::ReadAllText($setupPs1)
+$nvArm = [regex]::Match($setupText, '(?s)\} elseif \(\$HasNvidiaSmi\) \{.*?\n\} elseif \(\$script:IsIntelXpu\)')
+Check "setup.ps1's NVIDIA routing arm was found (bites)" ($nvArm.Success)
+if ($nvArm.Success) {
+    $arm = $nvArm.Value
+    $preR450 = $arm.IndexOf('NvidiaPresenceDriverRelease')
+    $cu126 = $arm.IndexOf('"cu126"')
+    Check "setup.ps1 routes a pre-R450 presence-only host to CPU" (
+        $arm -match '\$script:NvidiaPresenceDriverRelease -lt 450' -and
+        $arm -match '(?s)-lt 450\)? \{[^}]*\$CuTag = "cpu"')
+    Check "and it decides before the cu126 fallback rather than after it" (
+        $preR450 -ge 0 -and $cu126 -ge 0 -and $preR450 -lt $cu126)
+    Check "and says why, rather than silently installing CPU wheels" (
+        $arm -match 'predates R450')
+}
+Check "install.ps1 answers the same way for the same host" (
+    (Get-FunctionText $installPs1 "Get-TorchIndexUrl") -match '(?s)NvidiaPresenceDriverRelease -lt 450[\s\S]{0,1200}?/cpu')
 
 # ------------------------------------------------- job 2b, the registry fallback is last resort
 #
@@ -427,6 +453,51 @@ Check "a failed scan with no NVIDIA in the registry is still absent" ((Test-Nvid
 foreach ($file in @($installPs1, $setupPs1)) {
     Check "$(Split-Path -Leaf $file) gates the registry fallback on a failed scan" (
         (Get-FunctionText $file "Test-NvidiaAdapterPresent") -match 'if \(\$Scan\.Ok\) \{ return \$false \}')
+}
+
+# The OTHER half of the same exclusivity question, which for a while read a different source.
+# Test-NvidiaAdapterPresent fell back to the class keys when WMI could not answer and
+# Test-OtherVendorAdapterPresent did not, so a broken WMI repository on a hybrid NVIDIA plus Arc
+# host saw NVIDIA and no alternative: the promotion fired, $HasNvidiaSmi suppressed the Intel
+# branch, and the machine lost the XPU wheels it gets today.
+foreach ($case in @(
+    @{ N = "an Arc in the class keys";        Id = "PCI\\VEN_8086&DEV_56A0"; Desc = "Intel(R) Arc(TM) A770 Graphics"; Want = $true },
+    @{ N = "a Data Center GPU";               Id = "PCI\\VEN_8086&DEV_0BD5"; Desc = "Intel(R) Data Center GPU Max 1100"; Want = $true },
+    @{ N = "integrated Intel UHD";            Id = "PCI\\VEN_8086&DEV_9A49"; Desc = "Intel(R) UHD Graphics"; Want = $false },
+    @{ N = "an AMD adapter of any kind";      Id = "PCI\\VEN_1002&DEV_744C"; Desc = "AMD Radeon RX 7900 XTX"; Want = $true },
+    @{ N = "an NVIDIA adapter, which is not an alternative"; Id = "PCI\\VEN_10DE&DEV_1DB1"; Desc = "NVIDIA Tesla V100"; Want = $false }
+)) {
+    $script:CaseId = $case.Id
+    $script:CaseDesc = $case.Desc
+    function Get-ItemProperty {
+        param([string]$LiteralPath, $ErrorAction)
+        return [pscustomobject]@{ MatchingDeviceId = $script:CaseId; DriverDesc = $script:CaseDesc }
+    }
+    $script:FakeAdapters = @()
+    $script:FakeScanOk = $false
+    $script:RegistryConsulted = $false
+    Check "registry fallback: $($case.N) reads as $(if ($case.Want) { 'an alternative' } else { 'no alternative' })" (
+        (Test-OtherVendorAdapterPresent) -eq $case.Want)
+    Check "  and the registry really was the source" ($script:RegistryConsulted -eq $true)
+}
+
+# Same last-resort gate as the NVIDIA side. A scan that ANSWERED is evidence either way, and a
+# stale class key must not be allowed to block a promotion the live inventory permits.
+$script:CaseId = "PCI\\VEN_1002&DEV_744C"
+$script:CaseDesc = "AMD Radeon RX 7900 XTX"
+$script:FakeAdapters = @(Adapter "NVIDIA GeForce RTX 4090" "PCI\VEN_10DE&DEV_2684" 0)
+$script:FakeScanOk = $true
+$script:RegistryConsulted = $false
+Check "a scan that answered is not second-guessed by the registry" ((Test-OtherVendorAdapterPresent) -eq $false)
+Check "and the registry was never consulted" ($script:RegistryConsulted -eq $false)
+
+foreach ($file in @($installPs1, $setupPs1)) {
+    Check "$(Split-Path -Leaf $file) gates the other-vendor fallback on a failed scan too" (
+        (Get-FunctionText $file "Test-OtherVendorAdapterPresent") -match 'if \(\$Scan\.Ok\) \{ return \$false \}')
+    # Read from the same shared pattern, not a second copy: DriverDesc is the registry's spelling
+    # of Name, and the question is still "will the XPU route serve this", not "is it Intel".
+    Check "$(Split-Path -Leaf $file) asks the shared XPU pattern of DriverDesc" (
+        (Get-FunctionText $file "Test-OtherVendorAdapterPresent") -match 'DriverDesc[\s\S]{0,60}Get-XpuCapableNameRegex')
 }
 
 # ------------------------------------------------------- job 3, the wheel it actually leads to
