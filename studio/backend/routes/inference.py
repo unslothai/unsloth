@@ -2040,7 +2040,11 @@ def _openai_llama_admission_messages_for_estimate(messages) -> tuple[list[dict],
                     continue
 
                 part_type = part.get("type")
-                # Match the native tool-result conversion: text and image blocks reach the wire.
+                if reference := anthropic_reference_block_text(part):
+                    estimate_content.append({"type": "text", "text": reference})
+                    continue
+
+                # Match the native tool-result conversion: only the blocks it renders reach the wire.
                 if part_type == "tool_result" and isinstance(part.get("content"), list):
                     part = dict(part)
                     tool_content = []
@@ -2049,6 +2053,8 @@ def _openai_llama_admission_messages_for_estimate(messages) -> tuple[list[dict],
                             continue
                         if block.get("type") == "text":
                             tool_content.append(block)
+                        elif reference := anthropic_reference_block_text(block):
+                            tool_content.append({"type": "text", "text": reference})
                         elif block.get("type") == "image":
                             image_parts += 1
                             tool_content.append(_openai_llama_admission_compact_image_part(block))
@@ -3296,6 +3302,7 @@ from models.inference import (
 )
 from core.inference.anthropic_compat import (
     anthropic_messages_to_openai,
+    anthropic_reference_block_text,
     fold_tool_results_into_user,
     anthropic_schema_client_tool_kind,
     anthropic_tools_to_openai,
