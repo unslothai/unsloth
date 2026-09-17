@@ -2740,6 +2740,11 @@ const SCALAR_SETTING_KEYS = [
 // Ids this browser holds a local answer for. Hydration keeps these and merges the rest, so a
 // pre-hydration edit cannot drop other models.
 const locallyRememberedModels = new Set<string>();
+// Per-model edits made before the settings response landed, held as PATCHES rather than rows.
+// The set above is overlaid wholesale, which is right for a row built from a hydrated entry but
+// not for one typed before there was an entry: that row names only the keys the user touched, so
+// replacing with it would drop the temperature, top-p or seed the response is about to bring.
+const modelParamEditsBeforeHydration = new Map<string, PersistedInferenceParams>();
 /** Deferred, not module scope: per-model-params is in the @/features/chat import cycle, so
  *  naming PERSISTED_INFERENCE_PARAM_KEYS here reads a const in its TDZ and throws at import
  *  time (as watchedStorageKeys() avoids). Memoized, or the `+= 1` bumps stop accumulating. */
@@ -3234,6 +3239,12 @@ function getHydratedSettingsState(
         hydrated[modelId] = local;
       }
     }
+    for (const [modelId, patch] of modelParamEditsBeforeHydration) {
+      hydrated[modelId] = { ...hydrated[modelId], ...patch };
+      // A complete row from here, so a later response takes the wholesale fence above.
+      locallyRememberedModels.add(modelId);
+    }
+    modelParamEditsBeforeHydration.clear();
     // The entry arriving for this model predates the fenced edit, so lay the edit over it or the
     // next defaults update replays the stale one.
     if (checkpoint) {
@@ -5019,14 +5030,24 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // can only set the keys it names, and gating it dropped an edit made while the initial
       // /api/chat/settings request was out.
       saveSettingsPatch({ inferenceParamsByModel: { [modelId]: patch } });
-      // The same fence, since trackParamsByModel files nothing before hydration: without it the
-      // response in flight rebuilds paramsByModel from the server and the edit is gone.
-      locallyRememberedModels.add(modelId);
+      // trackParamsByModel files nothing before hydration, so without this the response in flight
+      // rebuilds paramsByModel from the server and the edit is gone. Held as a patch: there is no
+      // entry to have built a row from yet.
+      if (!state.settingsHydrated) {
+        modelParamEditsBeforeHydration.set(modelId, {
+          ...modelParamEditsBeforeHydration.get(modelId),
+          ...patch,
+        });
+      }
       // Editing the live model must land on the live params, not just on the next switch back.
       const live = state.params.checkpoint === modelId;
+      const liveParams = live ? { ...state.params, ...patch } : null;
+      // And those keys are fenced the way a slider edit fences its own, or a response in flight
+      // puts the global set back over them.
+      if (liveParams) getChangedInferenceParams(liveParams, state.params);
       return {
-        paramsByModel: next,
-        ...(live ? { params: { ...state.params, ...patch } } : {}),
+        paramsByModel: trackParamsByModel(state, next, modelId) ?? next,
+        ...(liveParams ? { params: liveParams } : {}),
       };
     }),
   setReasoningEffort: (reasoningEffort) =>

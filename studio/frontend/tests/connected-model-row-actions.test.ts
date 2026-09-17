@@ -315,15 +315,33 @@ test("the store write merges per key and reaches the live params", () => {
   );
   // Editing the model that is loaded has to land now, not on the next switch back.
   assert.match(runtime, /const live = state\.params\.checkpoint === modelId;/);
-  // A save while the initial settings request is still out has to survive it. The write is not
-  // gated on hydration, since the patch can only set the keys it names, and the model is filed as
-  // locally remembered so the response in flight lays this edit over the server's copy instead of
-  // rebuilding paramsByModel without it.
-  assert.match(runtime, /locallyRememberedModels\.add\(modelId\);/);
-  // Which is the set hydration overlays, and the only thing that saves a pre-hydration edit.
+  // A save while the initial settings request is still out has to survive it, so the write is not
+  // gated on hydration: the patch can only set the keys it names and the server merges per key.
   assert.match(
     runtime,
-    /for \(const modelId of locallyRememberedModels\) \{\s*const local = state\.paramsByModel\[modelId\];/,
+    /\/\/ \/api\/chat\/settings request was out\.\s*saveSettingsPatch\(/,
+  );
+  // Held as a patch, not a row. locallyRememberedModels is overlaid wholesale, which would
+  // replace the server's entry with one naming only the keys the dialog touched and drop that
+  // model's temperature, top-p and seed.
+  assert.match(
+    runtime,
+    /if \(!state\.settingsHydrated\) \{\s*modelParamEditsBeforeHydration\.set\(modelId, \{/,
+  );
+  assert.match(
+    runtime,
+    /for \(const \[modelId, patch\] of modelParamEditsBeforeHydration\) \{\s*hydrated\[modelId\] = \{ \.\.\.hydrated\[modelId\], \.\.\.patch \};/,
+  );
+  // Complete once merged, so a later response takes the wholesale overlay.
+  assert.match(
+    runtime,
+    /locallyRememberedModels\.add\(modelId\);\s*\}\s*modelParamEditsBeforeHydration\.clear\(\);/,
+  );
+  // And the live keys are fenced the way a slider edit fences its own, or the response in flight
+  // puts the global set back over them.
+  assert.match(
+    runtime,
+    /if \(liveParams\) getChangedInferenceParams\(liveParams, state\.params\);/,
   );
 });
 
