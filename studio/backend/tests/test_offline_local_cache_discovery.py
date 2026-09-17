@@ -456,14 +456,22 @@ def test_every_route_that_can_fetch_with_a_one_off_token_records_it():
     text_load = inspect.getsource(inference_routes._load_model_impl)
     assert "_note_load_fetched_with_a_request_token(request.model_path" in text_load
     assert text_load.rindex("finally:") < text_load.index("_note_load_fetched_with_a_request_token")
-    assert "_cached_before_this_load is False and _repo_is_in_the_hub_cache" in text_load
+    assert "_load_fetched_bytes(" in text_load
+
+    # The media loads take their readings before the first fetch and record in the finally,
+    # for the same reason: recording at route entry marks a repo no fetch ever touched.
+    for media_load in (
+        inspect.getsource(inference_routes.load_diffusion_model_gated),
+        inspect.getsource(video_routes.load_video_model_gated),
+    ):
+        assert "_media_cached_before" in media_load and "_media_footprint_before" in media_load
+        assert media_load.rindex("finally:") < media_load.index(
+            "_note_load_fetched_with_a_request_token(_ref"
+        ), "a media load still records before it knows a fetch happened"
+
     assert "_note_load_fetched_with_a_request_token" not in inspect.getsource(
         inference_routes.load_model_gated
     ), "the route records again, before the load is admitted"
-    image_load = inspect.getsource(inference_routes.load_diffusion_model_gated)
-    assert "_note_load_fetched_with_a_request_token(request.model_path" in image_load
-    video_load = inspect.getsource(video_routes.load_video_model_gated)
-    assert "_note_load_fetched_with_a_request_token(request.model_path" in video_load
 
     # And the download service no longer records before admission.
     from hub.services.models import downloads
@@ -471,29 +479,65 @@ def test_every_route_that_can_fetch_with_a_one_off_token_records_it():
     assert "note_repo_fetched_with_a_request_token" not in inspect.getsource(downloads)
 
 
-def test_only_a_credential_the_host_does_not_hold_is_recorded(monkeypatch):
-    """The note is about a credential that LEAVES no trace on the host.
+def test_every_credentialed_fetch_is_recorded_not_only_a_foreign_one(monkeypatch):
+    """The read side asks this map on a host whose credential set is empty NOW.
 
-    An anonymous download says nothing about anybody, and a download with the host's own
-    credential is the operator either way -- the tokenless branch already refuses on a host
-    that holds any credential at all.
+    "Empty now" says nothing about what the host held when the bytes were fetched, so a
+    download under the operator's OWN credential has to be recorded too. Only a fetch that
+    really was anonymous records nothing, since a public repo says nothing about anybody.
     """
     calls: list = []
     monkeypatch.setattr(hf_tokens, "_as_owner", lambda call, *a, **k: calls.append(a))
     monkeypatch.setattr(hf_tokens, "_host_hf_credentials", lambda: (True, ("hf_theoperators",)))
-    # The entry WRITES, not the read of the current map that precedes them: both go through
-    # `_as_owner`, and only the write carries a key and a value.
-    written = [call for call in calls if len(call) == 3]
 
-    hf_tokens.note_repo_fetched_with_a_request_token(None, "acme/private", "model")
-    hf_tokens.note_repo_fetched_with_a_request_token(False, "acme/private", "model")
-    hf_tokens.note_repo_fetched_with_a_request_token("hf_theoperators", "acme/private", "model")
-    assert [call for call in calls if len(call) == 3] == []
+    def written():
+        # The entry WRITES, not the read of the current map that precedes them: both go
+        # through `_as_owner`, and only the write carries a key and a value.
+        return [call for call in calls if len(call) == 3]
+
+    hf_tokens.note_repo_fetched_with_a_request_token(False, "acme/public", "model")
+    assert written() == [], "an anonymous fetch says nothing about anybody"
+
+    # The two the host's own credential covers, which used to be dropped on the floor: the
+    # saved Studio token replayed in X-Unsloth-HF-Token, and the ambient path, where
+    # huggingface_hub resolves HF_TOKEN or the token file for `token = None`.
+    hf_tokens.note_repo_fetched_with_a_request_token("hf_theoperators", "acme/saved", "model")
+    hf_tokens.note_repo_fetched_with_a_request_token(None, "acme/ambient", "model")
+    assert [call[1] for call in written()] == [
+        hf_tokens._request_token_repo_key("acme/saved", "model"),
+        hf_tokens._request_token_repo_key("acme/ambient", "model"),
+    ]
 
     hf_tokens.note_repo_fetched_with_a_request_token("hf_someoneelses", "acme/private", "model")
-    written = [call for call in calls if len(call) == 3]
-    assert len(written) == 1, calls
-    assert written[0][1] == hf_tokens._request_token_repo_key("acme/private", "model")
+    assert written()[-1][1] == hf_tokens._request_token_repo_key("acme/private", "model")
+
+    # A host that holds nothing: the ambient fetch really was anonymous, and its cache must
+    # stay readable offline. That is the install this whole fallback exists for.
+    calls.clear()
+    monkeypatch.setattr(hf_tokens, "_host_hf_credentials", lambda: (True, ()))
+    hf_tokens.note_repo_fetched_with_a_request_token(None, "acme/public2", "model")
+    assert written() == []
+
+
+def test_a_deleted_credential_does_not_reopen_the_cache(monkeypatch):
+    """Download a private repo with the host's token, delete the token, go offline.
+
+    Without a record the credential-less caller reads "nothing here needed one" and is served
+    the private repo. With one it is refused, while every unrecorded repo on the same host
+    still reads.
+    """
+    monkeypatch.setattr(hf_tokens, "_ambient_hf_token", lambda: (True, None))
+    monkeypatch.setattr(hf_tokens, "_saved_studio_hf_token", lambda: (True, None))
+    monkeypatch.setattr(hf_tokens, "_repo_present_on_disk", lambda repo, repo_type: True)
+    monkeypatch.setattr(
+        hf_tokens,
+        "_recorded_request_token_repos",
+        lambda: {hf_tokens._request_token_repo_key("acme/private", "model"): {"at": 0}},
+    )
+    hf_tokens.reset_repo_access_cache()
+
+    assert not hf_tokens.public_cache_read_authorized(repo_id = "acme/private", offline = True)
+    assert hf_tokens.public_cache_read_authorized(repo_id = "acme/public", offline = True)
 
 
 def test_a_repo_that_was_never_refused_still_resolves_against_the_disk(monkeypatch, tmp_path):
@@ -1302,8 +1346,12 @@ def test_the_load_reads_the_base_after_the_fetch_not_before_it():
     from routes import inference as inference_routes
 
     impl = inspect.getsource(inference_routes._load_model_impl)
-    assert "_note_lora_base_fetched_with_a_request_token(request.model_path" in impl
-    assert impl.rindex("finally:") < impl.index("_note_lora_base_fetched_with_a_request_token")
+    assert "_note_lora_base_fetched_with_a_request_token(" in impl
+    assert impl.rindex("finally:") < impl.index("_note_lora_base_fetched_with_a_request_token(")
+    # ...and against the base this load found already cached, read BEFORE it ran: a base that
+    # was here all along was not fetched by this load.
+    assert "already_cached = _lora_base_before_this_load" in impl
+    assert impl.index("_lora_base_before_this_load = ") < impl.rindex("finally:")
 
 
 def test_only_a_repo_this_load_actually_pulled_is_recorded(monkeypatch):
@@ -1349,3 +1397,97 @@ def test_the_presence_probe_answers_none_for_anything_that_is_not_a_repo(monkeyp
 
     monkeypatch.setattr(_hf_tokens, "_repo_present_on_disk", _raises)
     assert inference_routes._repo_is_in_the_hub_cache("acme/model") is None
+
+
+def test_a_load_that_added_blobs_to_an_existing_repo_is_recorded(monkeypatch, tmp_path):
+    """Presence is not the test in either direction.
+
+    A repo can be in the cache from an earlier single-file fetch, or on an older revision,
+    and still have blobs pulled by this load under a one-off credential. Absence-to-presence
+    never fires for it, and without a record the next tokenless offline caller is authorized
+    for the bytes that were just fetched.
+    """
+    from routes import inference as inference_routes
+
+    blobs = tmp_path / "models--acme--private" / "blobs"
+    blobs.mkdir(parents = True)
+    (blobs / "a").write_bytes(b"x" * 10)
+    monkeypatch.setattr(
+        hf_cache_state,
+        "iter_repo_cache_dirs",
+        lambda repo_type, repo_id, **kw: iter([tmp_path / "models--acme--private"]),
+    )
+
+    before = inference_routes._hub_cache_footprint("acme/private")
+    assert before == (1, 10)
+    monkeypatch.setattr(inference_routes, "_repo_is_in_the_hub_cache", lambda ref: True)
+    assert not inference_routes._load_fetched_bytes("acme/private", True, before), (
+        "a pure cache hit was recorded as a fetch"
+    )
+
+    (blobs / "b").write_bytes(b"y" * 4096)  # the blob this load pulled
+    assert inference_routes._load_fetched_bytes("acme/private", True, before), (
+        "a credentialed refetch of an existing repo was lost"
+    )
+    assert not inference_routes._load_fetched_bytes("acme/private", True, None), (
+        "an unreadable footprint guessed instead of abstaining"
+    )
+
+    # The repo arriving is still recorded, which is the case that always worked.
+    assert inference_routes._load_fetched_bytes("acme/private", False, None)
+
+
+def test_refs_and_no_exist_markers_are_not_read_as_a_fetch(monkeypatch, tmp_path):
+    """A pure cache hit still makes a metadata round trip, and hub writes `refs/` and
+    `.no_exist` entries from it. Counting those reports a fetch for a load that fetched
+    nothing, which is the false record this exists to avoid."""
+    from routes import inference as inference_routes
+
+    repo_dir = tmp_path / "models--acme--public"
+    (repo_dir / "blobs").mkdir(parents = True)
+    (repo_dir / "blobs" / "a").write_bytes(b"x" * 32)
+    monkeypatch.setattr(
+        hf_cache_state,
+        "iter_repo_cache_dirs",
+        lambda repo_type, repo_id, **kw: iter([repo_dir]),
+    )
+    before = inference_routes._hub_cache_footprint("acme/public")
+
+    (repo_dir / "refs").mkdir()
+    (repo_dir / "refs" / "main").write_text("deadbeef")
+    (repo_dir / ".no_exist" / "deadbeef").mkdir(parents = True)
+    (repo_dir / ".no_exist" / "deadbeef" / "adapter_config.json").write_text("")
+    assert inference_routes._hub_cache_footprint("acme/public") == before
+
+
+def test_a_base_that_was_already_cached_is_not_marked_as_fetched(monkeypatch):
+    """A private adapter on a public base this host already had.
+
+    The load fetched the adapter, not the base. Marking the base withholds an ordinary public
+    model from every tokenless offline caller, permanently.
+    """
+    from routes import inference as inference_routes
+
+    recorded: list = []
+    monkeypatch.setattr(
+        transformers_version, "_adapter_base_from_hf_cache", lambda repo: "acme/public-base"
+    )
+    monkeypatch.setattr(inference_routes, "_repo_is_in_the_hub_cache", lambda ref: True)
+    monkeypatch.setattr(
+        inference_routes,
+        "_note_load_fetched_with_a_request_token",
+        lambda ref, token: recorded.append(ref),
+    )
+
+    before = inference_routes._lora_base_already_in_the_hub_cache("acme/adapter")
+    assert before == "acme/public-base"
+    inference_routes._note_lora_base_fetched_with_a_request_token(
+        "acme/adapter", "hf_someoneelses", already_cached = before
+    )
+    assert recorded == [], "a base that was already cached was recorded as fetched"
+
+    # A base this load really did pull in behind the adapter is still recorded.
+    inference_routes._note_lora_base_fetched_with_a_request_token(
+        "acme/adapter", "hf_someoneelses", already_cached = None
+    )
+    assert recorded == ["acme/public-base"]

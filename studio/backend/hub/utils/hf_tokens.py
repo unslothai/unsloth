@@ -540,22 +540,40 @@ def note_repo_fetched_with_a_request_token(
     repo_id: str,
     repo_type: Optional[str] = "model",
 ) -> None:
-    """Record that *repo_id* was fetched under a credential this host does not hold.
+    """Record that *repo_id* was fetched under a credential at all.
 
-    Called at the start of a download. A token that IS one of the host's credentials records
-    nothing: the tokenless branch already refuses on a host that holds any credential, and
-    the caller presenting that credential is the operator either way. Anonymous downloads
-    record nothing either, since a public repo says nothing about anybody.
+    Called at the start of a download. The read side consults this map on ONE branch: the
+    host's credential set is empty NOW and the caller presents none. "Empty now" says nothing
+    about what the host held when the bytes were fetched, so a download made under the
+    operator's OWN credential is recorded too. Skipping those is what let an operator
+    download a private repo with a saved or ambient token, delete that token, and leave a
+    cache a credential-less API-key caller is authorized for as soon as the Hub is unaskable.
+
+    ``token is None`` is the ambient path, and huggingface_hub resolves ``HF_TOKEN`` and the
+    token file implicitly for it, so it is a credentialed fetch whenever the host holds one.
+    A host that holds none really did fetch anonymously and records nothing -- that is the
+    tokenless offline install this fallback exists for, and its cache must stay readable. A
+    credential set that cannot be read records, because the fetch cannot be shown to have
+    been anonymous and an absent record authorizes.
+
+    The cost is one-sided by choice: a PUBLIC repo fetched under a credential that is later
+    removed is recorded too, and is then withheld from a tokenless offline caller. Recording
+    is already the behaviour for a public repo fetched with a foreign one-off token, and an
+    over-broad record withholds bytes the caller can still fetch from the Hub, where a
+    missing one hands over a private repo.
 
     Never raises. A record that could not be written is a record that is not there, and the
     read side treats an unreadable store as "cannot say", which refuses.
     """
-    if is_anonymous(token) or not isinstance(token, str) or not token or not repo_id:
+    if is_anonymous(token) or not repo_id:
+        return
+    if token is not None and (not isinstance(token, str) or not token):
         return
     try:
-        known, host_tokens = _host_hf_credentials()
-        if known and any(hmac.compare_digest(token, held) for held in host_tokens):
-            return
+        if token is None:
+            known, host_tokens = _host_hf_credentials()
+            if known and not host_tokens:
+                return
         from storage.studio_db import upsert_app_setting_map_entry
 
         key = _request_token_repo_key(repo_id, repo_type)
@@ -658,13 +676,15 @@ def _caller_populated_the_cache(
     and on a managed install the two are different principals. Rather than authorize the
     holder of one for repos the other downloaded, the fallback shuts.
 
-    What this still cannot see is history. The HF cache records no provenance per blob, so
-    "the host holds this credential now" is the closest available stand-in for "the bytes
-    were fetched under it". An operator who downloads a private repo and then DELETES every
-    credential leaves a cache whose contents a credential-less caller is authorized for.
-    Closing that needs provenance recorded at download time rather than inferred here, and
-    the branch cannot simply be dropped: it is the tokenless offline install, the majority
-    case and the reason for the PR.
+    History is not inferred from the credential set, because it cannot be: "the host holds
+    this credential now" says nothing about what it held when the bytes were fetched, and an
+    operator who downloads a private repo and then DELETES every credential would otherwise
+    leave a cache a credential-less caller is authorized for. So provenance is recorded at
+    download time instead -- every credentialed fetch, not only a foreign one-off token --
+    and the empty-credential branch consults it rather than standing alone. What the record
+    cannot cover is a cache filled before it existed; those entries read as "never recorded",
+    which authorizes. Failing closed on them instead would refuse the tokenless offline
+    install its own cache on first upgrade, which is the case this whole path exists for.
 
     Compared with ``compare_digest`` rather than ``==``: the comparison is on a secret, and
     an early-exit compare over a repeated request is a timing oracle for it. Every held

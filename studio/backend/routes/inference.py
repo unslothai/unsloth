@@ -14866,7 +14866,76 @@ def _repo_is_in_the_hub_cache(model_ref) -> Optional[bool]:
         return None
 
 
-def _note_lora_base_fetched_with_a_request_token(model_ref, hf_token) -> None:
+def _hub_cache_footprint(model_ref) -> Optional[tuple]:
+    """``(blob count, total blob bytes)`` for *model_ref*; ``None`` when it cannot be read.
+
+    Presence is not evidence of a fetch and absent-to-present is not the only fetch: a
+    snapshot that already exists still takes the blobs it is missing, and a revision that
+    moved adds a whole new snapshot beside the old one. Blob bytes see both.
+
+    Only ``blobs/`` is counted, deliberately. It holds the bytes that were actually
+    transferred, while ``refs/`` and the ``.no_exist`` markers are written by the metadata
+    round trip a pure cache hit also makes, so counting those would report a fetch for a load
+    that fetched nothing -- the false record this is here to avoid.
+    """
+    try:
+        from hub.utils.hf_cache_state import iter_repo_cache_dirs
+
+        repo = (model_ref or "").strip()
+        if not repo or "/" not in repo or repo.startswith((".", "/", "~")) or ":" in repo[:3]:
+            return None
+        count = total = 0
+        errors: list = []
+        for repo_dir in iter_repo_cache_dirs("model", repo, scan_errors = errors):
+            for blob in (repo_dir / "blobs").iterdir():
+                if blob.is_symlink() or not blob.is_file():
+                    continue
+                count += 1
+                total += blob.stat().st_size
+        # A root that could not be listed makes the comparison meaningless rather than equal.
+        return None if errors else (count, total)
+    except FileNotFoundError:
+        return (0, 0)
+    except Exception:  # noqa: BLE001 -- a load never fails on its own bookkeeping
+        return None
+
+
+def _load_fetched_bytes(model_ref, cached_before, footprint_before) -> bool:
+    """Whether this load brought *model_ref*'s bytes onto the host, or added to them.
+
+    The record is a claim that a fetch HAPPENED. Two shapes count: the repo arrived, and the
+    repo was already here and grew. Anything else -- a pure cache hit, an unreadable
+    footprint, a repo that never arrived -- is not evidence and records nothing, because a
+    record that is wrong withholds a public cached copy from every tokenless offline caller
+    for good.
+    """
+    if cached_before is False and _repo_is_in_the_hub_cache(model_ref):
+        return True
+    return bool(
+        cached_before is True
+        and footprint_before is not None
+        and _hub_cache_footprint(model_ref) != footprint_before
+    )
+
+
+def _lora_base_already_in_the_hub_cache(model_ref) -> Optional[str]:
+    """The adapter's base repo id when the base was on this host BEFORE the load ran.
+
+    Resolvable only once the adapter itself is cached; when it is not, this load is what
+    brings both in and the record taken afterwards is the right one.
+    """
+    try:
+        from utils.transformers_version import _adapter_base_from_hf_cache
+
+        base = _adapter_base_from_hf_cache(model_ref) if model_ref else None
+    except Exception:  # noqa: BLE001 -- a load never fails on its own bookkeeping
+        return None
+    return base if base and _repo_is_in_the_hub_cache(base) else None
+
+
+def _note_lora_base_fetched_with_a_request_token(
+    model_ref, hf_token, already_cached = None
+) -> None:
     """The same record for the BASE a LoRA load pulls in behind the adapter.
 
     A load of an adapter fetches its ``base_model_name_or_path`` too, under the same one-off
@@ -14883,9 +14952,17 @@ def _note_lora_base_fetched_with_a_request_token(model_ref, hf_token) -> None:
         base = _adapter_base_from_hf_cache(model_ref) if model_ref else None
     except Exception:  # noqa: BLE001 -- a load never fails on its own bookkeeping
         return
-    if base and base != model_ref and _repo_is_in_the_hub_cache(base):
-        # The base's own bytes have to be here: an adapter whose config names a base this host
-        # never pulled is not evidence that anything was fetched with this credential.
+    # The base's own bytes have to be here: an adapter whose config names a base this host
+    # never pulled is not evidence that anything was fetched with this credential. And a base
+    # that was ALREADY here before the load was not fetched by it either -- an adapter on a
+    # public base the host had all along is the ordinary LoRA load, and recording that base
+    # withholds it from every tokenless offline caller, permanently.
+    if (
+        base
+        and base != model_ref
+        and base != already_cached
+        and _repo_is_in_the_hub_cache(base)
+    ):
         _note_load_fetched_with_a_request_token(base, hf_token)
 
 
@@ -15039,14 +15116,16 @@ async def _load_model_impl(
     # that did need one.
     #
     # The record is a claim that a fetch HAPPENED, so it is written in the finally below and
-    # only for a repo whose bytes were not on this host when the load started. A typo, a repo
-    # that does not exist, an unsupported model, a cancellation -- none of them fetch anything
-    # and none of them record anything, and naming a repo that is already cached records
-    # nothing either, which is what keeps a public cached copy from being withheld from every
-    # tokenless offline caller by a caller who merely asked for it. A repo that really was
-    # pulled with a one-off credential was pulled by the load that FIRST cached it, and that is
-    # the load this records.
+    # only for a repo this load brought onto the host or added bytes to. A typo, a repo that
+    # does not exist, an unsupported model, a cancellation -- none of them fetch anything and
+    # none of them record anything, and a pure cache hit records nothing either, which is what
+    # keeps a public cached copy from being withheld from every tokenless offline caller by a
+    # caller who merely asked for it. Presence alone is not the test in either direction: a
+    # repo already here can still have its missing blobs pulled, or its revision moved, under
+    # a one-off credential, so the blob footprint is read before and after.
     _cached_before_this_load = _repo_is_in_the_hub_cache(request.model_path)
+    _cache_footprint_before = _hub_cache_footprint(request.model_path)
+    _lora_base_before_this_load = _lora_base_already_in_the_hub_cache(request.model_path)
     from core.inference.llama_cpp import LlamaServerNotFoundError
 
     def _raise_if_scoped_load_cancelled() -> None:
@@ -16185,15 +16264,20 @@ async def _load_model_impl(
         raise HTTPException(status_code = 500, detail = f"Failed to load model: {msg}")
     finally:
         gguf_load_stack.close()
-        # Now that the fetch has had its chance. A repo this load brought onto the host is
-        # recorded; one that was already here, or never arrived, is not. This runs for a load
-        # that failed part way too: the bytes it did pull are in the cache either way.
-        if _cached_before_this_load is False and _repo_is_in_the_hub_cache(request.model_path):
+        # Now that the fetch has had its chance. A repo this load brought onto the host, or
+        # added blobs to, is recorded; a pure cache hit and a repo that never arrived are not.
+        # This runs for a load that failed part way too: the bytes it did pull are in the
+        # cache either way.
+        if _load_fetched_bytes(
+            request.model_path, _cached_before_this_load, _cache_footprint_before
+        ):
             _note_load_fetched_with_a_request_token(request.model_path, request.hf_token)
         # The LoRA base, once the adapter's config is on disk. Before the fetch the adapter may
         # not be cached yet and its base is unknown, so the answer is taken here, where it is
-        # readable without a network call.
-        _note_lora_base_fetched_with_a_request_token(request.model_path, request.hf_token)
+        # readable without a network call -- against the base this load found already cached.
+        _note_lora_base_fetched_with_a_request_token(
+            request.model_path, request.hf_token, already_cached = _lora_base_before_this_load
+        )
         # Catch-all: an error or cancelled load would otherwise leave the row "loading".
         api_monitor.fail_open(_load_event, "Load did not complete")
 
@@ -36912,10 +36996,14 @@ async def load_diffusion_model_gated(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
         )
     # Same as the text load: a one-off token on an image load pulls the repo into the same
-    # cache and is kept nowhere, so the provenance is recorded where the request is.
-    _note_load_fetched_with_a_request_token(request.model_path, request.hf_token)
-    if request.base_repo:
-        _note_load_fetched_with_a_request_token(request.base_repo, request.hf_token)
+    # cache and is kept nowhere, so the provenance is recorded where the request is -- and, as
+    # there, only for a repo this load actually fetched. An unsupported model family, a
+    # cancelled load and an already-cached public pick all fetch nothing, and recording those
+    # withholds a public cached copy from every tokenless offline caller. The readings are
+    # taken here, before the first fetch, and the record in the finally below.
+    _media_repos = [ref for ref in (request.model_path, request.base_repo) if ref]
+    _media_cached_before = {ref: _repo_is_in_the_hub_cache(ref) for ref in _media_repos}
+    _media_footprint_before = {ref: _hub_cache_footprint(ref) for ref in _media_repos}
     from core.inference.diffusion import (
         get_diffusion_backend,
         resolve_local_single_file,
@@ -37152,6 +37240,12 @@ async def load_diffusion_model_gated(
     except RuntimeError as exc:
         # A load is already in progress.
         raise HTTPException(status_code = 409, detail = str(exc))
+    finally:
+        for _ref in _media_repos:
+            if _load_fetched_bytes(
+                _ref, _media_cached_before[_ref], _media_footprint_before[_ref]
+            ):
+                _note_load_fetched_with_a_request_token(_ref, request.hf_token)
 
 
 # Count of finished generations still writing their PNG/gallery records; generate-progress reports active while above 0. Mutated only on the event loop, so no lock.
