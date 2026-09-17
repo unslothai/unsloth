@@ -134,7 +134,20 @@ from transformers.models.auto.modeling_auto import MODEL_FOR_CAUSAL_LM_MAPPING
 from transformers import set_seed as transformers_set_seed
 from peft import LoraConfig, TaskType, get_peft_model as _get_peft_model
 from peft import PeftModelForCausalLM, PeftModelForSequenceClassification
-from ..save import patch_saving_functions
+# Deferred to first call: a module-scope bind out of `unsloth.save` closes an import cycle.
+# See the note in unsloth/models/vision.py and tests/test_cold_import_order.py.
+
+
+def patch_saving_functions(*args, **kwargs):
+    """Hand off to ``unsloth.save.patch_saving_functions``, imported on first call."""
+    from ..save import patch_saving_functions as _impl
+    return _impl(*args, **kwargs)
+
+
+# How unsloth/save.py tells its own shim from a function someone else put here.
+patch_saving_functions._unsloth_deferred_shim = True
+
+
 import re, os, inspect, math, sys
 import types
 
