@@ -31,6 +31,7 @@ an entry is a claim someone made and can be checked, a silent exemption is not.
 from __future__ import annotations
 
 import ast
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -39,13 +40,42 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TESTS_ROOT = REPO_ROOT / "tests"
 
-# Both test trees, because the race is a property of the interpreter's startup cache and
-# not of which directory the test lives in. studio/backend/tests runs under xdist in the
-# same job and reaches tests/_shared through its own conftest, so a direct spawn there is
-# the identical defect; it was invisible while this guard scanned tests/ alone, and
-# studio/backend/tests/test_setup_llama_cpp_backend.py duly died with SIGABRT in the
-# Backend-CI "rest" shard while every allowlisted file in tests/ stayed green.
-_SCAN_ROOTS = (TESTS_ROOT, REPO_ROOT / "studio" / "backend" / "tests")
+
+# DERIVED from the repo, not listed. The race is a property of the interpreter's startup
+# cache and not of which directory a test lives in, so the scope is "wherever tests are".
+#
+# This was `tests/` alone, and studio/backend/tests -- the LARGEST test tree in the repo at
+# 960 files -- was invisible, so studio/backend/tests/test_setup_llama_cpp_backend.py died
+# with SIGABRT in the Backend-CI "rest" shard while every allowlisted file in tests/ stayed
+# green. Naming that second tree fixed that instance and left the shape of the bug: three
+# more trees were still outside (unsloth_cli/tests at 25 files, studio/backend/hub/tests at
+# 15, unsloth/kernels/moe/tests at 3), and the next tree anyone adds would have been
+# invisible again. A hand-maintained list of test roots is a thing to forget, and forgetting
+# it is silent.
+#
+# `git ls-files`, not rglob: the question is which TRACKED files are tests, and a stray
+# test_*.py in a build directory or a vendored dependency is not this guard's business.
+def _test_roots() -> "tuple[Path, ...]":
+    """Every tracked directory holding a `test_*.py`, reduced to its topmost ancestors.
+
+    Reduced so that scanning is not quadratic over nested trees: `tests/` subsumes
+    `tests/studio/install`, and only the roots that nothing else contains are returned.
+    """
+    listed = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "ls-files", "-z", "test_*.py", "*/test_*.py"],
+        capture_output = True,
+        text = True,
+        check = True,
+    )
+    names = [name for name in listed.stdout.split("\0") if name]
+    assert names, "git ls-files found no test_*.py at all -- has the repo moved?"
+    dirs = {(REPO_ROOT / name).parent.resolve() for name in names}
+    # Keep a directory only if no OTHER directory in the set is one of its ancestors.
+    roots = {d for d in dirs if not any(other in d.parents for other in dirs)}
+    return tuple(sorted(roots))
+
+
+_SCAN_ROOTS = _test_roots()
 
 # The runner itself calls subprocess.run on a pwsh argv -- that is the whole point of it.
 _RUNNER = TESTS_ROOT / "_shared" / "unsloth_pwsh_runner.py"
@@ -299,6 +329,50 @@ class TestEveryPwshCallUsesTheSharedRunner:
         assert any(
             p.is_relative_to(backend) for p in scanned
         ), f"no file under {backend} was scanned"
+
+    def test_the_scan_reaches_every_directory_that_holds_a_test(self):
+        """No test tree may be outside this guard, and not because someone listed them all.
+
+        This is the durable half of the fix. Naming the second tree closed the instance that
+        had already cost a red shard and left the SHAPE of the bug: three more trees were
+        still outside -- unsloth_cli/tests (25 files), studio/backend/hub/tests (15),
+        unsloth/kernels/moe/tests (3) -- and the next one anyone adds would have been
+        invisible again, silently, because a guard that scans nothing reports nothing.
+
+        So the scope is derived from `git ls-files` and this asserts the derivation really
+        covers every tracked directory holding a `test_*.py`. A new tree is in scope on the
+        commit that creates it, with nobody having to remember this file exists.
+        """
+        listed = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "ls-files", "-z", "test_*.py", "*/test_*.py"],
+            capture_output = True,
+            text = True,
+            check = True,
+        )
+        holders = {
+            (REPO_ROOT / name).parent.resolve() for name in listed.stdout.split("\0") if name
+        }
+        assert len(holders) > 20, (
+            f"only {len(holders)} directories hold a test_*.py; the enumeration has gone "
+            "vacuous and this guard would pass while scanning almost nothing"
+        )
+        uncovered = sorted(
+            d for d in holders if not any(d == root or root in d.parents for root in _SCAN_ROOTS)
+        )
+        assert not uncovered, (
+            "these directories hold tests that this guard never scans, so a direct pwsh "
+            "spawn in them rejoins the startup-cache race unnoticed:\n  "
+            + "\n  ".join(str(d.relative_to(REPO_ROOT)) for d in uncovered)
+            + "\n  _SCAN_ROOTS is derived by _test_roots(); if that no longer reaches a "
+            "tree, fix the derivation rather than adding the tree by hand."
+        )
+        # And the derivation must not have quietly stopped producing files.
+        scanned = _scanned_files()
+        for root in _SCAN_ROOTS:
+            assert any(p.is_relative_to(root) for p in scanned), (
+                f"{root.relative_to(REPO_ROOT)} is a scan root but contributed no scanned "
+                "file, so listing it proves nothing"
+            )
 
     @pytest.mark.parametrize("rel", sorted(_ALLOWED_DIRECT_PWSH_CALLS))
     def test_every_allowlist_entry_is_still_needed(self, rel):

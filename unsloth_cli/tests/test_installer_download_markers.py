@@ -15,10 +15,14 @@ import select
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
 import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests" / "_shared"))
+from unsloth_pwsh_runner import run_pwsh  # noqa: E402
 
 pytestmark = pytest.mark.skipif(os.name == "nt", reason = "drives install.sh under /bin/sh")
 
@@ -253,7 +257,11 @@ def _run_ps1(
     with tempfile.TemporaryDirectory() as tmp:
         script = Path(tmp) / "probe.ps1"
         script.write_text(probe, encoding = "utf-8")
-        done = subprocess.run(
+        # run_pwsh, not subprocess.run: `env` here is a copy of _ENV and keeps HOME, so
+        # without the runner's own XDG_CACHE_HOME this shares one ~83 KB pwsh startup-profile
+        # cache with every other xdist worker and roughly 1 startup in 500 dies reading a
+        # half-written copy. That lands as SIGABRT on a test that never ran.
+        done = run_pwsh(
             [_PWSH, "-NoProfile", "-File", str(script)],
             capture_output = True,
             text = True,
