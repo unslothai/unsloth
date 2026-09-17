@@ -53,7 +53,7 @@ class LoadRequest(BaseModel):
     )
     alongside: bool = Field(
         False,
-        description = "Keep the loaded model and serve this GGUF next to it (GGUF only)",
+        description = "Keep the loaded model and serve this one next to it",
     )
     native_path_lease: Optional[str] = Field(
         None, description = "Frontend-visible signed native path grant"

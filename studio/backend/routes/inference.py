@@ -112,9 +112,11 @@ from core.inference.orchestrator import (
     AUDIO_GENERATION_MAX_TOKENS,
     GenStreamError,
     GenStreamErrorRaised,
+    InferenceOrchestrator,
     MINIMAX_MUSIC_MAX_FRAMES,
     MOSS_TTS_MAX_FRAMES,
     _summed_tool_loop_stats,
+    routed_inference_backend,
 )
 from core.inference.llama_admission import (
     LlamaAdmissionCancelled,
@@ -7526,9 +7528,14 @@ def _resolve_model_identifier_for_request(
 # GGUF inference backend (llama-server)
 _llama_cpp_backend = LlamaCppBackend()
 
-# GGUF models loaded alongside the primary one, each on its own llama-server.
-_extra_llama_backends: list[LlamaCppBackend] = []
-# The extra backend this request's model names; unset means the primary.
+# Models loaded alongside the primary one. A slot pairs its own llama.cpp backend and
+# orchestrator, as the primary pair does, and a request is routed to the slot its model names.
+class _ExtraSlot(NamedTuple):
+    llama: LlamaCppBackend
+    orchestrator: InferenceOrchestrator
+
+
+_extra_slots: list[_ExtraSlot] = []
 _routed_llama_backend: contextvars.ContextVar[Optional[LlamaCppBackend]] = contextvars.ContextVar(
     "routed_llama_backend", default = None
 )
@@ -7538,35 +7545,46 @@ def get_llama_cpp_backend() -> LlamaCppBackend:
     return _routed_llama_backend.get() or _llama_cpp_backend
 
 
-def _llama_backends() -> list:
-    current = get_llama_cpp_backend()
-    others = (_llama_cpp_backend, *_extra_llama_backends)
-    return [current, *(b for b in others if b is not current)]
+def _route_to_slot(slot: Optional[_ExtraSlot]) -> None:
+    _routed_llama_backend.set(slot.llama if slot else None)
+    routed_inference_backend.set(slot.orchestrator if slot else None)
 
 
-async def _route_to_extra_backend(requested: Optional[str]) -> bool:
-    """Point this request at the extra backend serving *requested*, if one does."""
-    _routed_llama_backend.set(None)
-    _extra_llama_backends[:] = [b for b in _extra_llama_backends if b.is_active]
-    if not isinstance(requested, str) or not requested:
-        return False
-    for extra in list(_extra_llama_backends):
-        if extra.is_loaded and await asyncio.to_thread(_loaded_satisfies, requested, extra):
-            _routed_llama_backend.set(extra)
-            return True
-    return False
+def _in_slot(slot: Optional[_ExtraSlot], fn):
+    def call():
+        _route_to_slot(slot)
+        return fn()
+
+    return contextvars.copy_context().run(call)
 
 
-def _drop_extra_backend(backend: LlamaCppBackend) -> None:
-    backend.unload_model()
-    atexit.unregister(backend._cleanup)
-    if backend in _extra_llama_backends:
-        _extra_llama_backends.remove(backend)
+def _slot_in_use(slot: _ExtraSlot) -> bool:
+    return bool(slot.llama.is_active or slot.orchestrator.active_model_name)
 
 
-def unload_extra_llama_backends() -> None:
-    for backend in list(_extra_llama_backends):
-        _drop_extra_backend(backend)
+async def _route_to_extra_slot(requested: Optional[str]) -> Optional[_ExtraSlot]:
+    """Point this request at the extra slot serving *requested*, if one does."""
+    if isinstance(requested, str) and requested:
+        for slot in list(_extra_slots):
+            _route_to_slot(slot)
+            if await asyncio.to_thread(_loaded_satisfies, requested):
+                return slot
+    _route_to_slot(None)
+    return None
+
+
+def _drop_extra_slot(slot: _ExtraSlot) -> None:
+    if slot in _extra_slots:
+        _extra_slots.remove(slot)
+    slot.llama.unload_model()
+    slot.orchestrator._cleanup()
+    atexit.unregister(slot.llama._cleanup)
+    atexit.unregister(slot.orchestrator._cleanup)
+
+
+def unload_extra_models() -> None:
+    for slot in list(_extra_slots):
+        _drop_extra_slot(slot)
 
 
 # Serializes opt-in auto-switch loads so two requests can't race a swap. One
@@ -8605,7 +8623,7 @@ def _resident_id_is_namespaced() -> bool:
     return any("/" in (public_model_id(c) or "") for c in candidates if c)
 
 
-def _loaded_satisfies(requested: str, llama_backend = None) -> bool:
+def _loaded_satisfies(requested: str) -> bool:
     """Whether what is serving right now actually answers to *requested*.
 
     A bare ``org/model`` is satisfied by any loaded quant of that repo; an explicit
@@ -8614,7 +8632,7 @@ def _loaded_satisfies(requested: str, llama_backend = None) -> bool:
     from core.inference.openai_auto_download import looks_like_quant, split_model_ref
 
     base, variant = split_model_ref(requested)
-    llama_backend = llama_backend or get_llama_cpp_backend()
+    llama_backend = get_llama_cpp_backend()
     if getattr(llama_backend, "is_loaded", False):
         candidates = [
             candidate
@@ -9194,7 +9212,7 @@ async def _maybe_auto_switch_model(
     """
     # The reload-only sentinel means an omitted model, not a name.
     named_model = requested_model if requested_model != _RELOAD_ONLY_MODEL else None
-    if await _route_to_extra_backend(named_model):
+    if await _route_to_extra_slot(named_model):
         return
     if account_access.managed_account():
         if named_model:
@@ -9981,6 +9999,8 @@ def release_chat_gpu_claim() -> bool:
     from core.inference.llama_cpp import chat_load_active
 
     def chat_idle() -> bool:
+        if any(map(_slot_in_use, _extra_slots)):
+            return False
         llama = get_llama_cpp_backend()
         # is_active, not is_loaded: a starting model holds VRAM, and an HF load has no process yet.
         if llama.is_active or chat_load_active():
@@ -15057,8 +15077,7 @@ async def load_model_gated(
     # check alone is only a fast path.
     from core.inference.llama_keepwarm import inference_lifecycle_gate
 
-    await _select_load_backend(request)
-    extra = _routed_llama_backend.get()
+    extra = await _select_load_slot(request)
     attempt = _begin_load_attempt(request, current_subject)
     with _scoped_load_attempts_lock:
         _pending_load_attempts[attempt.token] = attempt
@@ -15082,7 +15101,7 @@ async def load_model_gated(
                 fastapi_request,
                 current_subject,
                 attempt = attempt,
-                # An extra backend replaces nothing, so no running chat is in its way.
+                # An extra slot replaces nothing, so no running chat is in its way.
                 on_reload_confirmed = None
                 if extra is not None
                 else lambda *, cancel: _raise_or_cancel_active_generations(
@@ -15091,8 +15110,8 @@ async def load_model_gated(
                     cancel = cancel,
                 ),
             )
-            if extra is not None and extra.is_loaded and extra not in _extra_llama_backends:
-                _extra_llama_backends.append(extra)
+            if extra is not None and extra not in _extra_slots:
+                _extra_slots.append(extra)
         # Record provenance only once the model is resident, and here rather than
         # inside the impl so the already-loaded fast paths are covered too. Preview
         # keeps the False default: only an explicit UI load pins. Outside the gate:
@@ -15101,30 +15120,34 @@ async def load_model_gated(
         get_llama_cpp_backend()._loaded_by_user_action = user_initiated
         return response
     finally:
-        if extra is not None and not extra.is_loaded:
-            await asyncio.to_thread(_drop_extra_backend, extra)
+        if extra is not None and not _slot_in_use(extra):
+            await asyncio.to_thread(_drop_extra_slot, extra)
         with _scoped_load_attempts_lock:
             _pending_load_attempts.pop(attempt.token, None)
         _finish_load_attempt(attempt)
 
 
-async def _select_load_backend(request: LoadRequest) -> None:
-    """Aim this load at the extra backend already serving the model, or a new one for ``alongside``."""
+async def _select_load_slot(request: LoadRequest) -> Optional[_ExtraSlot]:
+    """Aim this load at the extra slot already serving the model, or a new one for ``alongside``."""
     requested = (
         f"{request.model_path}:{request.gguf_variant}"
         if request.gguf_variant
         else request.model_path
     )
-    if await _route_to_extra_backend(requested) or not request.alongside:
-        return
+    slot = await _route_to_extra_slot(requested)
+    if slot is not None or not request.alongside:
+        return slot
     if account_access.policy.installation_has_managed_accounts():
         raise HTTPException(
             status_code = 400, detail = "Loading alongside is not available with managed accounts."
         )
     orchestrator = _peek_inference_backend()
     occupied = _llama_cpp_backend.is_active or getattr(orchestrator, "active_model_name", None)
-    if occupied and not await asyncio.to_thread(_loaded_satisfies, requested):
-        _routed_llama_backend.set(LlamaCppBackend())
+    if not occupied or await asyncio.to_thread(_loaded_satisfies, requested):
+        return None
+    slot = _ExtraSlot(LlamaCppBackend(), await asyncio.to_thread(InferenceOrchestrator))
+    _route_to_slot(slot)
+    return slot
 
 
 def _restore_alias_if_failed_load_left_the_prior_model(
@@ -15337,6 +15360,8 @@ async def _load_model_impl(
         # ── Already-loaded check: skip reload if the exact model is active ──
         backend = await asyncio.to_thread(get_inference_backend)
         llama_backend = get_llama_cpp_backend()
+        # An extra slot loads next to what is serving, so no running chat is drained for it.
+        replacing = _routed_llama_backend.get() is None
 
         # Resolve once so dedupe, admission and launch use the same slot count.
         _n_parallel = _resolve_parallel_slots(request, fastapi_request)
@@ -15862,8 +15887,6 @@ async def _load_model_impl(
         if config.is_gguf:
             llama_backend = get_llama_cpp_backend()
             unsloth_backend = await asyncio.to_thread(get_inference_backend)
-            # An extra backend loads next to what is serving, so nothing is drained or unloaded.
-            replacing = _routed_llama_backend.get() is None
 
             # Fast path only: a swap can still be reserved during the drain.
             _raise_if_sidecar_swap_in_progress()
@@ -15899,7 +15922,7 @@ async def _load_model_impl(
                 _set_preview_resident(None)
 
             # Unload any active Unsloth model only after every hub conflict check.
-            if replacing and unsloth_backend.active_model_name:
+            if unsloth_backend.active_model_name:
                 logger.info(
                     f"Unloading Unsloth model '{unsloth_backend.active_model_name}' before loading GGUF"
                 )
@@ -16036,20 +16059,17 @@ async def _load_model_impl(
             )
 
         # ── Standard path: load via Unsloth/transformers ──────────
-        if _routed_llama_backend.get() is not None:
-            raise HTTPException(
-                status_code = 400, detail = "Only GGUF models can load alongside another model."
-            )
         backend = await asyncio.to_thread(get_inference_backend)
 
         # Same sidecar rejection as GGUF: fast path ahead of the drain, rechecked after.
         _raise_if_sidecar_swap_in_progress()
 
         llama_backend = get_llama_cpp_backend()
-        await _wait_for_model_switch_idle(
-            current_request_counted = current_request_counted,
-            cancel_pending = cancel_pending,
-        )
+        if replacing:
+            await _wait_for_model_switch_idle(
+                current_request_counted = current_request_counted,
+                cancel_pending = cancel_pending,
+            )
         _raise_if_sidecar_swap_in_progress()
 
         # Point of no return for the Unsloth path: cancel only once nothing can still reject the load.
@@ -16064,7 +16084,8 @@ async def _load_model_impl(
                 timeout_s = _POST_CANCEL_DRAIN_TIMEOUT_S,
             )
         # every rejection and drain has completed. the load now owns the slot for studio.
-        _set_preview_resident(None)
+        if replacing:
+            _set_preview_resident(None)
         # Unload any active GGUF model first, off-loop: a 600 GB teardown measures
         # 160s and on-loop would block _tunnel_safe_json's own padding.
         try:
@@ -17661,16 +17682,19 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
     Unload a model from memory.
     Routes to the correct backend (llama-server for GGUF, Unsloth otherwise).
     """
-    if request.cancel_load_request_id is None and await _route_to_extra_backend(
-        request.model_path
-    ):
+    extra = (
+        await _route_to_extra_slot(request.model_path)
+        if request.cancel_load_request_id is None
+        else None
+    )
+    if extra is not None:
         from core.inference.llama_keepwarm import inference_lifecycle_gate
 
-        extra = get_llama_cpp_backend()
-        _unloaded = _lifecycle_model_label(_llama_public_model_id(extra), extra.hf_variant)
         async with inference_lifecycle_gate():
-            await asyncio.to_thread(_drop_extra_backend, extra)
-        api_monitor.record_lifecycle(event = "unload", model = _unloaded, reason = "manual")
+            await asyncio.to_thread(_drop_extra_slot, extra)
+        api_monitor.record_lifecycle(
+            event = "unload", model = _lifecycle_model_label(request.model_path), reason = "manual"
+        )
         return UnloadResponse(status = "unloaded", model = request.model_path)
     if (
         request.cancel_load_request_id is None
@@ -27698,6 +27722,12 @@ _OWNED_BY = "unsloth-studio"
 
 
 def _openai_model_objects() -> list[dict]:
+    return [
+        entry for slot in (None, *_extra_slots) for entry in _in_slot(slot, _slot_model_objects)
+    ]
+
+
+def _slot_model_objects() -> list[dict]:
     """The model objects GET /v1/models exposes, one per loaded local backend still answering to
     the id it is advertised under.
 
@@ -27711,47 +27741,47 @@ def _openai_model_objects() -> list[dict]:
     models: list[dict] = []
     _created = int(time.time())
 
-    # Check GGUF backends
-    for llama_backend in _llama_backends():
-        # Claiming a re-pulled tag would displace the scanned row holding its weights, and the id
-        # about to be published is not always the tag the load recorded: an alias is its own name.
-        _resident_identifier = getattr(llama_backend, "model_identifier", None) or ""
-        _stale_ollama_resident = (
-            llama_backend.is_loaded
-            and is_ollama_manifest_ref(_resident_identifier)
-            and not _loaded_satisfies(_llama_public_model_id(llama_backend), llama_backend)
-        )
-        if llama_backend.is_loaded and not _stale_ollama_resident:
-            # Advertise the repo id an auto-switch load recorded, not the concrete
-            # on-disk load path, so /v1/models never leaks a host path or lists a
-            # model twice (path plus repo id).
-            entry = {
-                # Advertised id recorded by an auto-switch or Ollama load, else a clean public id,
-                # never the absolute .gguf path (which leaks the host filesystem layout).
-                "id": _llama_public_model_id(llama_backend),
-                "object": "model",
-                "created": _created,
-                "owned_by": _OWNED_BY,
-            }
-            _quant = getattr(llama_backend, "hf_variant", None)
-            if _quant and _quant_reference_resolves(entry["id"], _quant):
-                entry["quant"] = _quant
-            _ctx = _positive_int_or_none(getattr(llama_backend, "context_length", None))
-            if _ctx is not None:
-                entry["context_length"] = _ctx
-            _max_ctx = _positive_int_or_none(getattr(llama_backend, "max_context_length", None))
-            if _max_ctx is not None:
-                entry["max_context_length"] = _max_ctx
-            _native_ctx = _positive_int_or_none(getattr(llama_backend, "native_context_length", None))
-            if _native_ctx is not None:
-                entry["native_context_length"] = _native_ctx
-            # The same gate /v1/audio/speech applies: _audio_type alone also matches whisper
-            # (ASR) and audio_vlm (Gemma 3n chat), which that route rejects with a 400.
-            if getattr(llama_backend, "_is_audio", False) and (
-                getattr(llama_backend, "_audio_type", None) in _GGUF_TTS_AUDIO_TYPES
-            ):
-                entry["task"] = _TTS_MODEL_TASK
-            models.append(entry)
+    # Check GGUF backend
+    llama_backend = get_llama_cpp_backend()
+    # Claiming a re-pulled tag would displace the scanned row holding its weights, and the id
+    # about to be published is not always the tag the load recorded: an alias is its own name.
+    _resident_identifier = getattr(llama_backend, "model_identifier", None) or ""
+    _stale_ollama_resident = (
+        llama_backend.is_loaded
+        and is_ollama_manifest_ref(_resident_identifier)
+        and not _loaded_satisfies(_llama_public_model_id(llama_backend))
+    )
+    if llama_backend.is_loaded and not _stale_ollama_resident:
+        # Advertise the repo id an auto-switch load recorded, not the concrete
+        # on-disk load path, so /v1/models never leaks a host path or lists a
+        # model twice (path plus repo id).
+        entry = {
+            # Advertised id recorded by an auto-switch or Ollama load, else a clean public id,
+            # never the absolute .gguf path (which leaks the host filesystem layout).
+            "id": _llama_public_model_id(llama_backend),
+            "object": "model",
+            "created": _created,
+            "owned_by": _OWNED_BY,
+        }
+        _quant = getattr(llama_backend, "hf_variant", None)
+        if _quant and _quant_reference_resolves(entry["id"], _quant):
+            entry["quant"] = _quant
+        _ctx = _positive_int_or_none(getattr(llama_backend, "context_length", None))
+        if _ctx is not None:
+            entry["context_length"] = _ctx
+        _max_ctx = _positive_int_or_none(getattr(llama_backend, "max_context_length", None))
+        if _max_ctx is not None:
+            entry["max_context_length"] = _max_ctx
+        _native_ctx = _positive_int_or_none(getattr(llama_backend, "native_context_length", None))
+        if _native_ctx is not None:
+            entry["native_context_length"] = _native_ctx
+        # The same gate /v1/audio/speech applies: _audio_type alone also matches whisper
+        # (ASR) and audio_vlm (Gemma 3n chat), which that route rejects with a 400.
+        if getattr(llama_backend, "_is_audio", False) and (
+            getattr(llama_backend, "_audio_type", None) in _GGUF_TTS_AUDIO_TYPES
+        ):
+            entry["task"] = _TTS_MODEL_TASK
+        models.append(entry)
 
     # Describing residency must not construct an unused orchestrator: its cold
     # initialization runs device detection even when only llama.cpp is loaded.
@@ -32679,7 +32709,7 @@ async def anthropic_messages(
     JSON).
     """
     _admit_tool_access(payload)
-    await _route_to_extra_backend(_switch_model_for_payload(payload))
+    await _route_to_extra_slot(_switch_model_for_payload(payload))
     llama_backend = get_llama_cpp_backend()
 
     # Default-off parity: with no automatic load possible and nothing loaded, 503
