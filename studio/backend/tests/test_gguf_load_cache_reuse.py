@@ -595,7 +595,10 @@ class TestLoadReusesCachedCopy:
         assert out == f"/fake/{REPO}/gemma-test-Q4_K_M.gguf"
         variant, notice = backend._pending_variant_fallback
         assert variant == "Q4_K_M"
-        assert "Q8_0" in notice and "Q4_K_M (2.0 GB)" in notice
+        assert notice == (
+            "Not enough disk space to download Q8_0 (8.6 GB needed, 8.1 GB free), "
+            "so Q4_K_M (2.1 GB) was loaded instead."
+        )
 
     def test_low_disk_fallback_keeps_smallest_when_none_leaves_reserve(self, hf_cache):
         backend = LlamaCppBackend()

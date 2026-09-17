@@ -337,10 +337,10 @@ jobs:
           # Pin to the same versions update_all_notebooks.py installs in
           # generated notebooks. Keep these in lockstep with PIN_TRL /
           # PIN_TRANSFORMERS in unslothai/notebooks/update_all_notebooks.py.
-          # `triton` is added because unsloth/_gpu_init.py:232 does an
-          # unconditional `import triton`; the PyPI wheel installs cleanly
-          # on Linux x86_64 even without CUDA (same rationale as
-          # consolidated-tests-ci.yml line 192-205).
+          # `triton` because unsloth/kernels and unsloth_zoo's compiler and
+          # loss_utils import it at module scope, so `import unsloth` needs it
+          # even though _gpu_init.py treats it as optional. Same rationale as
+          # consolidated-tests-ci.yml line 192-205.
           # Pillow is listed explicitly as a defensive belt-and-braces
           # next to torchvision (vision_utils crashes ModuleNotFoundError
           # if torchvision skipped its Pillow dep for any reason).

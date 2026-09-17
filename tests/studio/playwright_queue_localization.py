@@ -207,6 +207,74 @@ def check_stuck_composition_recovers(page, base):
     print("PASS: a stuck composition recovers on timeout and on blur", flush = True)
 
 
+# Reads the glyph's painted box back into viewBox units, so the check does not
+# depend on the rendered icon size.
+GLYPH_GEOMETRY = """() => {
+    const item = [...document.querySelectorAll('[role="menuitem"]')]
+        .find((element) => element.textContent.trim() === 'Resume queue');
+    const svg = item.querySelector('svg'), path = svg.querySelector('path');
+    const box = svg.getBoundingClientRect(), glyph = path.getBoundingClientRect();
+    const units = 24 / box.width;
+    return {
+        dx: ((glyph.x + glyph.width / 2) - (box.x + box.width / 2)) * units,
+        dy: ((glyph.y + glyph.height / 2) - (box.y + box.height / 2)) * units,
+    };
+}"""
+
+
+def check_resume_icon_centred(page, base):
+    # The play glyph is not centred in its own viewBox, so the icon shifts it
+    # back. Without that the triangle sits right of the button's centre.
+    seed(page, base)
+    page.get_by_role("button", name = "Simulate paused queue", exact = True).click()
+    page.get_by_role("button", name = "More options for queued prompt 1", exact = True).click()
+    page.get_by_role("menuitem", name = "Resume queue", exact = True).wait_for()
+    offset = page.evaluate(GLYPH_GEOMETRY)
+    # The raw glyph is 0.15 units off centre, so this tolerance still catches it.
+    assert abs(offset["dx"]) < 0.05, offset
+    assert abs(offset["dy"]) < 0.05, offset
+    print("PASS: the resume glyph is centred in its icon box", flush = True)
+
+
+def check_queue_frame_clips_scrollbar(page, base):
+    # Scrollbars are painted outside the scroller's own radius, so a long queue
+    # squared off the top corners. The rounding has to clip from outside.
+    seed(page, base)
+    page.get_by_role("button", name = "Long queue", exact = True).click()
+    layout = page.evaluate(
+        """() => {
+            const scroller = document.querySelector('[aria-label^="Prompt queue"]');
+            const frame = scroller.parentElement;
+            const style = getComputedStyle(scroller), outer = getComputedStyle(frame);
+            const s = scroller.getBoundingClientRect(), f = frame.getBoundingClientRect();
+            return {
+                overflows: scroller.scrollHeight > scroller.clientHeight,
+                scrollerRadius: style.borderTopRightRadius,
+                scrollerOverflow: style.overflowY,
+                frameRadius: outer.borderTopRightRadius,
+                frameOverflow: outer.overflow,
+                frameBorder: parseFloat(outer.borderTopWidth),
+                insetRight: f.right - s.right,
+                insetTop: s.top - f.top,
+            };
+        }"""
+    )
+    assert layout["overflows"], layout
+    assert layout["scrollerOverflow"] == "auto", layout
+    # The scroller must not own the rounding, or it clips its own scrollbar.
+    assert layout["scrollerRadius"] == "0px", layout
+    assert layout["frameOverflow"] == "hidden", layout
+    assert parse_px(layout["frameRadius"]) > 0, layout
+    # The gutter sits inside the frame, so the rounded clip covers it.
+    assert layout["insetRight"] >= layout["frameBorder"] - 0.5, layout
+    assert layout["insetTop"] >= layout["frameBorder"] - 0.5, layout
+    print("PASS: the queue frame rounds and clips the scrollbar corner", flush = True)
+
+
+def parse_px(value):
+    return float(value.removesuffix("px"))
+
+
 def main():
     server = None
     try:
@@ -236,6 +304,8 @@ def main():
                 check_escape_during_ime(page, base)
                 check_candidate_confirming_enter(page, base)
                 check_stuck_composition_recovers(page, base)
+                check_resume_icon_centred(page, base)
+                check_queue_frame_clips_scrollbar(page, base)
                 assert not errors, errors
             finally:
                 browser.close()

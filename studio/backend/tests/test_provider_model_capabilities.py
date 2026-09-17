@@ -254,3 +254,116 @@ def test_null_efforts_accept_the_full_scale_while_omitted_efforts_remain_toggle_
     ]
     toggle = openrouter_model_capabilities({"id": "acme/reasoning", "reasoning": {}})
     assert toggle["reasoning"]["supported_efforts"] is None
+
+
+_RAW_MODELS_DEV = {
+    "openrouter": {
+        "models": {
+            "DeepSeek/DeepSeek-V4-Pro": {
+                "reasoning": True,
+                "reasoning_options": [
+                    {"type": "toggle"},
+                    {"type": "effort", "values": ["xhigh", "high", "turbo"]},
+                ],
+                "modalities": {"input": ["text"]},
+            },
+            "openai/gpt-4o": {"reasoning": False, "modalities": {"input": ["text", "image"]}},
+        }
+    },
+    "google": {
+        "models": {
+            "gemini-9-flash": {
+                "reasoning": True,
+                "reasoning_options": [],
+                "modalities": {"input": ["text", "image"]},
+            }
+        }
+    },
+    "unrelated": {"models": {"x": {"reasoning": True}}},
+}
+
+
+def test_models_dev_catalog_is_trimmed_and_remapped():
+    from core.inference.provider_model_capabilities import trim_models_dev_catalog
+
+    catalog = trim_models_dev_catalog(_RAW_MODELS_DEV)
+    assert set(catalog) == {"openrouter", "gemini"}
+    assert catalog["openrouter"]["deepseek/deepseek-v4-pro"] == {
+        "reasoning": True,
+        "toggle": True,
+        "efforts": ["high", "xhigh"],
+        "input": ["text"],
+    }
+    assert catalog["openrouter"]["openai/gpt-4o"] == {"input": ["text", "image"]}
+    assert catalog["gemini"]["gemini-9-flash"] == {"reasoning": True, "input": ["text", "image"]}
+
+
+class _FakeCatalogClient:
+    calls = 0
+    fail = False
+
+    async def get(
+        self,
+        url,
+        timeout = None,
+    ):
+        type(self).calls += 1
+        if type(self).fail:
+            raise RuntimeError("models.dev down")
+
+        class _Resp:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return _RAW_MODELS_DEV
+
+        return _Resp()
+
+
+@pytest.fixture
+def catalog_route(monkeypatch, tmp_path):
+    from core.inference import external_provider as ep
+
+    providers_route._model_catalog_cache = None
+    _FakeCatalogClient.calls = 0
+    _FakeCatalogClient.fail = False
+    monkeypatch.setattr(ep, "_client", lambda: _FakeCatalogClient())
+    monkeypatch.setattr(providers_route, "cache_root", lambda: tmp_path)
+
+    def call():
+        return asyncio.run(providers_route.get_model_catalog(_current_subject = "tester"))
+
+    yield call
+    providers_route._model_catalog_cache = None
+
+
+def test_model_catalog_route_fetches_once_and_persists_to_disk(
+    capability_route, catalog_route, tmp_path
+):
+    first = catalog_route()
+    assert first["providers"]["openrouter"]["deepseek/deepseek-v4-pro"]["efforts"] == [
+        "high",
+        "xhigh",
+    ]
+    assert (tmp_path / "model_catalog.json").exists()
+    assert catalog_route() == first
+    assert _FakeCatalogClient.calls == 1
+
+
+def test_model_catalog_route_serves_the_disk_copy_when_models_dev_is_down(catalog_route, tmp_path):
+    first = catalog_route()
+    providers_route._model_catalog_cache = None
+    stale = dict(first, fetched_at = first["fetched_at"] - 10 * 24 * 3600)
+    (tmp_path / "model_catalog.json").write_text(json.dumps(stale))
+    _FakeCatalogClient.fail = True
+    served = catalog_route()
+    assert served["providers"] == first["providers"]
+    assert served["fetched_at"] == stale["fetched_at"]
+
+
+def test_model_catalog_route_answers_503_offline_with_nothing_cached(catalog_route):
+    _FakeCatalogClient.fail = True
+    with pytest.raises(Exception) as excinfo:
+        catalog_route()
+    assert getattr(excinfo.value, "status_code", None) == 503
