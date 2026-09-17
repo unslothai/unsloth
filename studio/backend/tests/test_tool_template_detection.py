@@ -279,16 +279,21 @@ def test_a_guarded_branch_counts_even_without_naming_the_catalog():
 
 
 # ── robustness ──────────────────────────────────────────────────────────────
+# Named rather than generated: pytest puts the full id in PYTEST_CURRENT_TEST, and
+# Windows refuses an environment variable over 32767 characters, so the 5000-repeat
+# case errors at setup on windows-latest while passing everywhere else.
 @pytest.mark.parametrize(
     "template",
     [
-        "{% if tools %}",  # unterminated
-        "{{ tools",  # unterminated expression
-        "{%",
-        "{% if tools %}" * 400 + "x" + "{% endif %}" * 400,  # deeply nested
-        "{{ " + "(" * 300 + "tools" + ")" * 300 + " }}",  # deeply nested expression
-        "{{ tools|tojson }}" * 5000,  # very long
-        "{% unknown_tag %}{{ tools|tojson }}",
+        pytest.param("{% if tools %}", id = "unterminated_tag"),
+        pytest.param("{{ tools", id = "unterminated_expression"),
+        pytest.param("{%", id = "bare_tag_opener"),
+        pytest.param("{% if tools %}" * 400 + "x" + "{% endif %}" * 400,
+                     id = "deeply_nested_tags"),
+        pytest.param("{{ " + "(" * 300 + "tools" + ")" * 300 + " }}",
+                     id = "deeply_nested_expression"),
+        pytest.param("{{ tools|tojson }}" * 5000, id = "very_long"),
+        pytest.param("{% unknown_tag %}{{ tools|tojson }}", id = "unknown_tag"),
     ],
 )
 def test_hostile_templates_never_raise(template):
