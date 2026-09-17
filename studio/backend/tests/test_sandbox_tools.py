@@ -420,6 +420,12 @@ class TestNetworkTargetResolution:
                 f"import aiohttp\naiohttp.ClientSession('http://{_H}').get('/')",
                 id = "aiohttp_session_base_url",
             ),
+            # An opaque helper's name says nothing about what it returned, so the module name
+            # it was rebound over still stands.
+            pytest.param(
+                f"import requests as r\nrequests = identity(r)\nrequests.get('http://{_H}/')",
+                id = "module_rebound_through_opaque_helper",
+            ),
             # A walrus callee is the callable it assigns.
             pytest.param(
                 f"import requests\n(fetch := requests.get)('http://{_H}/')",

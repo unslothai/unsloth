@@ -17023,12 +17023,16 @@ def _check_signal_escape_patterns(code: str):
             while isinstance(cur, ast.NamedExpr):
                 cur = cur.value
         if isinstance(cur, ast.Call):
-            # An instance stands for the constructor that made it.
-            return list(
-                dict.fromkeys(
+            # An instance stands for the constructor that made it, but only when that lands on a
+            # known client: an opaque helper's name says nothing about what it returned.
+            instances = [
+                fq
+                for fq in (
                     ".".join([base, *parts]) for base in _resolved_fqs(cur.func, depth + 1) if base
                 )
-            ) or [""]
+                if _is_network_fq(fq)
+            ]
+            return list(dict.fromkeys(instances)) or [""]
         if isinstance(cur, ast.Name):
             bases: list[str] = []
             gave_up = False
@@ -17041,7 +17045,12 @@ def _check_signal_escape_patterns(code: str):
                     if isinstance(alt, (ast.Name, ast.Attribute, ast.IfExp, ast.BoolOp, ast.Call)):
                         inner = _resolved_fqs(alt, depth + 1)
                         gave_up = gave_up or _UNRESOLVED_FQ in inner
-                        bases.extend(fq for fq in inner if fq != _UNRESOLVED_FQ)
+                        found = [fq for fq in inner if fq != _UNRESOLVED_FQ]
+                        if isinstance(alt, ast.Call):
+                            # Same rule as above: a call result is only what its constructor
+                            # names when that is a known client.
+                            found = [fq for fq in found if _is_network_fq(".".join([fq, *parts]))]
+                        bases.extend(found or [""])
                     else:
                         bases.append("")
             # Rebinding the name elsewhere does not undo the import this call can reach, so every
