@@ -253,7 +253,12 @@ def select_and_activate_engine(
         # one that CAN do this: it stops the server and then runs the deferred install through
         # `_upgrade_server_after_teardown`. So while the tree is busy the native selection is
         # kept and the upgrade happens behind it.
-        upgrade_is_deferred = _managed_tree_in_use()
+        # Only where the replacement can actually happen. With installing switched off, or
+        # on a host that cannot fetch the Vulkan bundle, `_upgrade_server_after_teardown`
+        # hands back the same ROCm path and the load would start the known-failing build
+        # again -- so the bypass is limited to the case where there is an install to wait
+        # for, and everywhere else the condemned substitute is refused exactly as before.
+        upgrade_is_deferred = _managed_tree_in_use() and _install_allowed()
 
         def _accept(candidate):
             if candidate and upgrade_is_deferred:

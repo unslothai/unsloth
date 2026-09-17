@@ -556,15 +556,29 @@ def _physical_position_of(hip_index: int) -> "tuple[Optional[str], Optional[int]
     selected = next((d for d in devices if d.get("index") == physical_index), None)
     if selected is None:
         return None, None
-    identity = _card_identity(selected)
-    if identity is None:
-        return None, None
-    position = sum(
-        1
-        for device in devices
-        if device.get("index") < physical_index and _card_identity(device) == identity
-    )
+    # Counted on the NAME, because the name is what the matcher counts: `sd_cpp_device_named`
+    # indexes the Vulkan devices whose description matches, and it has nothing else to index
+    # by. Counting on `_card_identity` instead -- which carries the gfx target, for the
+    # fingerprint's purposes -- made a gfx1103 APU and a gfx1151 card that both call
+    # themselves `AMD Radeon(TM) Graphics` two different groups, so selecting the second gave
+    # position 0 and the pin named the first Vulkan device of that name.
     name = (selected.get("name") or "").strip() or None
+    if name is None:
+        # The grouping the matcher will use cannot be established from a row the OS did not
+        # name, so the tie-break is withheld rather than guessed. A card that is alone of its
+        # name is still pinned, by name.
+        return None, None
+    wanted = _normalized_card_name(name)
+    position = 0
+    for device in devices:
+        if device.get("index") >= physical_index:
+            continue
+        other = (device.get("name") or "").strip()
+        if not other:
+            # An unnamed row could be another card of this same name; nothing here can say.
+            return name, None
+        if _normalized_card_name(other) == wanted:
+            position += 1
     return name, position
 
 

@@ -1762,24 +1762,54 @@ def test_a_mask_this_cannot_read_declines_the_tie_break(monkeypatch):
     assert video_mod._physical_card_name(0) == ("AMD Radeon RX 7900 XTX", None)
 
 
-def test_an_unnamed_physical_card_still_answers_the_position(monkeypatch):
+def test_an_unnamed_physical_card_withholds_the_tie_break(monkeypatch):
     """The inventory answers from sysfs-drm with no marketing name on exactly the AMD hosts
-    this feature is about, so the position is counted on the same identity the fingerprint
-    uses, and the name torch reports is what goes to the matcher."""
+    this feature is about, and the matcher has nothing but the name to index Vulkan devices
+    by. So a row the OS did not name cannot establish the grouping the tie-break counts in,
+    and the position is withheld rather than guessed: `sd_cpp_device_named` then declines to
+    choose between identical cards instead of pinning the wrong one. A card alone of its name
+    is still pinned by that name."""
     from core.inference import video as video_mod
 
     _no_visibility_mask(monkeypatch)
     monkeypatch.setenv("HIP_VISIBLE_DEVICES", "1")
     _pinned_torch(monkeypatch, ["AMD Radeon(TM) Graphics"])
-    _pinned_inventory(
-        monkeypatch,
-        [
-            {"vendor": "amd", "index": 0, "name": None, "gfx_candidates": ["gfx11", "gfx1151"]},
-            {"vendor": "amd", "index": 1, "name": None, "gfx_candidates": ["gfx11", "gfx1151"]},
-        ],
-    )
+    _pinned_inventory(monkeypatch, [
+        {"vendor": "amd", "index": 0, "name": None, "gfx_candidates": ["gfx11", "gfx1151"]},
+        {"vendor": "amd", "index": 1, "name": None, "gfx_candidates": ["gfx11", "gfx1151"]},
+    ])
+
+    assert video_mod._physical_card_name(0) == ("AMD Radeon(TM) Graphics", None)
+
+
+def test_the_tie_break_counts_the_same_group_the_matcher_will(monkeypatch):
+    """AMD ships many gfx targets under one marketing name, and the matcher can only index
+    Vulkan devices by that name. Counting on the gfx-bearing identity instead made a gfx1103
+    APU and a gfx1151 card that both report `AMD Radeon(TM) Graphics` two groups, so
+    selecting the second gave position 0 and the pin named the first Vulkan device."""
+    from core.inference import video as video_mod
+
+    _no_visibility_mask(monkeypatch)
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "1")
+    _pinned_torch(monkeypatch, ["AMD Radeon(TM) Graphics"])
+    _pinned_inventory(monkeypatch, [
+        {
+            "vendor": "amd", "index": 0, "name": "AMD Radeon(TM) Graphics",
+            "gfx_candidates": ["gfx11", "gfx1103"],
+        },
+        {
+            "vendor": "amd", "index": 1, "name": "AMD Radeon(TM) Graphics",
+            "gfx_candidates": ["gfx11", "gfx1151"],
+        },
+    ])
 
     assert video_mod._physical_card_name(0) == ("AMD Radeon(TM) Graphics", 1)
+    # And a card of a DIFFERENT name before it does not count toward the group.
+    _pinned_inventory(monkeypatch, [
+        {"vendor": "amd", "index": 0, "name": "AMD Radeon RX 7600"},
+        {"vendor": "amd", "index": 1, "name": "AMD Radeon(TM) Graphics"},
+    ])
+    assert video_mod._physical_card_name(0) == ("AMD Radeon(TM) Graphics", 0)
 
 
 def test_a_strike_never_forgets_what_the_last_one_knew(monkeypatch):
@@ -2543,6 +2573,15 @@ def test_a_resident_server_does_not_cost_the_reload_its_native_engine(fake_setti
     # build has no teardown coming to fix it, so it is refused exactly as before.
     monkeypatch.setattr(router, "_managed_tree_in_use", lambda: False)
     assert router.select_and_activate_engine(family) == "diffusers"
+
+    # Nor does a busy tree help when there is no install to wait for: with installing
+    # switched off the deferred upgrade hands back the same ROCm path, and starting it is
+    # starting the known-failing build.
+    monkeypatch.setattr(router, "_managed_tree_in_use", lambda: True)
+    monkeypatch.setattr(router, "_install_allowed", lambda: False)
+    assert router.select_and_activate_engine(family) == "diffusers", (
+        "a deferred upgrade that can never install kept the condemned build"
+    )
 
 
 def test_the_router_counts_a_binary_it_rejects_for_not_launching(fake_settings, monkeypatch):
