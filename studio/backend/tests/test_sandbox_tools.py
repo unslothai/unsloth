@@ -5,6 +5,7 @@
 
 import os
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -294,8 +295,8 @@ class TestNetworkTargetResolution:
             # Exhausting the client-alias depth limit must not disable the check.
             pytest.param(
                 "import paramiko\nc0 = paramiko.SSHClient()\n"
-                + "".join(f"c{i + 1} = c{i}\n" for i in range(17))
-                + f"c17.connect(hostname='{_H}')",
+                + "".join(f"c{i + 1} = c{i}\n" for i in range(400))
+                + f"c400.connect(hostname='{_H}')",
                 id = "client_alias_chain_past_depth_limit",
             ),
             # Competing stores for the target may add a prompt, never drop the refusal.
@@ -410,6 +411,17 @@ class TestNetworkTargetResolution:
             ".request('GET', 'https://pypi.org/')",
             expect_phrase = "Blocked: cloud-metadata host",
         )
+
+    def test_branching_alias_chain_stays_linear(self):
+        """Alias resolution is memoized; re-expanding every store combination took minutes."""
+        code = (
+            "import requests\na0 = requests.get\n"
+            + "".join(f"a{i + 1} = a{i}\na{i + 1} = a{i}\n" for i in range(24))
+            + "a24('http://203.0.113.5/')"
+        )
+        started = time.monotonic()
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+        assert time.monotonic() - started < 5.0
 
     @pytest.mark.parametrize(
         "code",

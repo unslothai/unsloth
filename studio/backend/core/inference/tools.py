@@ -16501,6 +16501,11 @@ def _check_signal_escape_patterns(code: str):
         p.split(".")[0]
         for p in (*_NETWORK_FQ_PREFIXES, *_NETWORK_TARGET_ARGS, *_CONNECTING_CLIENT_FQ)
     )
+    _ALIAS_DEPTH_CAP = 256
+    _fq_cache: dict[int, list] = {}
+    _fq_active: set = set()
+    _client_cache: dict[int, str] = {}
+    _client_active: set = set()
     _scope_parent: dict[int, ast.AST | None] = {id(tree): None}
     _node_scope: dict[int, ast.AST] = {}
     _declared: dict[tuple[int, str], str] = {}
@@ -16746,8 +16751,26 @@ def _check_signal_escape_patterns(code: str):
             or any(fq.startswith(p) for p in _NETWORK_FQ_PREFIXES)
         )
 
-    def _resolved_fqs(func: ast.AST, seen: frozenset = frozenset()) -> list:
+    def _resolved_fqs(func: ast.AST, depth: int = 0) -> list:
         """Return every fully qualified name this call target may resolve to."""
+        # Memoized per node: without it, aliases with several stores each re-expand every
+        # combination and a few hundred bytes of source cost minutes.
+        key = id(func)
+        if key in _fq_cache:
+            return _fq_cache[key]
+        # An alias cycle, or a chain past the cap that would otherwise exhaust the interpreter
+        # stack, resolves to nothing, which is what every alias did before this analysis existed.
+        if key in _fq_active or depth > _ALIAS_DEPTH_CAP:
+            return []
+        _fq_active.add(key)
+        try:
+            result = _resolve_fqs(func, depth)
+        finally:
+            _fq_active.discard(key)
+        _fq_cache[key] = result
+        return result
+
+    def _resolve_fqs(func: ast.AST, depth: int) -> list:
         parts: list[str] = []
         cur = func
         while isinstance(cur, ast.Attribute):
@@ -16759,8 +16782,8 @@ def _check_signal_escape_patterns(code: str):
                 if isinstance(value, tuple):
                     bases.append(value[1])
                 # Follow assigned module and function aliases.
-                elif isinstance(value, (ast.Name, ast.Attribute)) and id(value) not in seen:
-                    bases.extend(_resolved_fqs(value, seen | {id(value)}))
+                elif isinstance(value, (ast.Name, ast.Attribute)):
+                    bases.extend(_resolved_fqs(value, depth + 1))
                 else:
                     bases.append("")
             # Rebinding the name elsewhere does not undo the import this call can reach, so every
@@ -16899,9 +16922,22 @@ def _check_signal_escape_patterns(code: str):
 
     def _holds_client(expr: ast.AST, depth: int = 0) -> str:
         """Return whether expr is always, sometimes, or never a tracked client."""
-        if depth > 16:
-            # Running out of depth says nothing about the receiver, so ask rather than skip it.
+        # Memoized for the same reason as _resolved_fqs. Both the cycle and the depth answer are
+        # "maybe": running out of analysis says nothing about the receiver, so ask.
+        key = id(expr)
+        if key in _client_cache:
+            return _client_cache[key]
+        if key in _client_active or depth > _ALIAS_DEPTH_CAP:
             return "maybe"
+        _client_active.add(key)
+        try:
+            state = _client_state(expr, depth)
+        finally:
+            _client_active.discard(key)
+        _client_cache[key] = state
+        return state
+
+    def _client_state(expr: ast.AST, depth: int) -> str:
         if isinstance(expr, ast.NamedExpr):
             return _holds_client(expr.value, depth + 1)
         if isinstance(expr, ast.Call):
