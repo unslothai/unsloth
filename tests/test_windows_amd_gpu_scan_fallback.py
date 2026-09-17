@@ -524,7 +524,7 @@ def test_the_installer_and_setup_agree_on_which_adapter_is_active(tmp_path):
 # ── runtime: install.ps1 leaves the caller's environment as it found it ───────────────────────
 
 
-# The block's fifteen save/restore pairs bar the ROCm handoff, which the arch parametrisation drives.
+# The block's save/restore pairs bar the ROCm handoff, which the arch parametrisation drives.
 _CALLER_ENV_NAMES = (
     "SKIP_STUDIO_BASE",
     "UNSLOTH_STUDIO_HOME",
@@ -540,6 +540,11 @@ _CALLER_ENV_NAMES = (
     "UNSLOTH_LOCAL_LLAMA_CPP_DIR",
     "UNSLOTH_INSTALL_ROLLBACK_MANAGED",
     "UNSLOTH_SETUP_PYTHON",
+    # Restored through the Set-Item loop rather than one line each; exercised the same way.
+    "UNSLOTH_WOA_HAS_TORCHAUDIO",
+    "UNSLOTH_WOA_TORCH_PRERELEASE",
+    "UNSLOTH_WOA_SELECTED_TORCH_INDEX",
+    "UNSLOTH_WOA_PYPI_PROVIDED",
 )
 
 # Distinct per variable, or a finally restoring everything from the wrong save reads as a pass.
@@ -868,6 +873,8 @@ def test_every_saved_variable_in_the_block_is_covered():
     # The restore side closes the anchor hole: a save PREPENDED above the anchor is invisible to
     # any save-side check, but its restore cannot escape the finally.
     restored = set(re.findall(r"\$env:(\w+) = \$previous\w+", block))
+    # ...and the Set-Item loop form, which restores a table of (name, flag, saved) triples.
+    restored |= set(re.findall(r'@\("(\w+)", \$hadPrevious\w+, \$previous\w+\)', block))
     assert restored == covered, (
         "the block restores variables this file does not claim to cover: "
         f"{sorted(restored - covered)} (a save prepended above the slice anchor looks like this); "
