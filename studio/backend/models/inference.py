@@ -3703,7 +3703,7 @@ class DiffusionLoadRequest(BaseModel):
             description = "Transformer compute dtype. UNSET or auto (the default) picks the "
             "fastest precision the hardware supports: the DENSE bf16 transformer "
             "is loaded instead of the GGUF and torchao-quantised onto the "
-            "low-precision tensor cores (data-center fp8, consumer/Ampere int8), "
+            "low-precision tensor cores (int8 first on every tier, then fp8 on sm_89+), "
             "falling back to the GGUF when the device, VRAM or disk cannot take "
             "it. none/off pins running the GGUF as-is; an explicit scheme forces "
             "that scheme. Dense path needs CUDA + bf16. An EXPLICIT scheme fails "
@@ -4197,6 +4197,13 @@ class DiffusionResolvedControl(BaseModel):
         "so a client reading an older backend's payload still parses.",
     )
     reason: str = Field("", description = "Short human-readable reason for the resolved value.")
+    artifact: Optional[str] = Field(
+        None,
+        description = "The hosted or local file the engaged value came from, as "
+        '"prequant:<repo>/<file>", when a pre-quantized checkpoint was seeded rather than the '
+        "weights being quantised in memory. Declared here or pydantic drops it and no API client "
+        "ever sees the provenance. Null on every other control and on a runtime quantise.",
+    )
 
 
 class DiffusionDownloadPlanEntry(BaseModel):
@@ -4637,7 +4644,7 @@ class VideoLoadRequest(BaseModel):
             None,
             description = "Quantise the dense DiT(s) on a full-pipeline load. On a diffusers "
             "pipeline load the dense bf16 transformer(s) are torchao-quantised in place onto "
-            "the low-precision tensor cores (data-center fp8, consumer/Ampere int8), which is "
+            "the low-precision tensor cores (int8 first on every tier, then fp8 on sm_89+), which is "
             "faster than running dense bf16. For a dual-expert MoE family (Wan2.2-A14B) BOTH "
             "experts are quantised with the same scheme. null/none/off keeps the DiT(s) at "
             "their loaded precision; an explicit scheme forces it. Needs CUDA + bf16; ignored "

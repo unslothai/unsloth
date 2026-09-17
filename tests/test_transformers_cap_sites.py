@@ -12,6 +12,7 @@ Reads files only, which is what lets it run on the Windows and macOS runners too
 
 from __future__ import annotations
 
+import inspect
 import re
 import sys
 from pathlib import Path
@@ -493,3 +494,327 @@ def test_a_stale_range_cap_is_caught_even_in_an_allowlisted_workflow(tmp_path, m
     assert "version-compat-ci.yml" in str(raised.value)
     assert "<=5.5.0" in str(raised.value)
     assert "==4.51.3" not in str(raised.value), "an exact pin is a point in the range, not a cap"
+
+
+def _matrix_module(urlopen):
+    """`tests/version_compat/test_transformers_pinned_symbols.py`, imported fresh with
+    `urllib.request.urlopen` replaced.
+
+    Imported under its own name, because the matrix is built at import: the substitution
+    has to be in place before the module body runs, and the real module may already be in
+    `sys.modules` from a full-suite run.
+    """
+    import importlib.util
+    import urllib.request
+
+    path = (
+        Path(__file__).resolve().parent / "version_compat" / "test_transformers_pinned_symbols.py"
+    )
+    spec = importlib.util.spec_from_file_location("_matrix_under_test", path)
+    module = importlib.util.module_from_spec(spec)
+    original = urllib.request.urlopen
+    urllib.request.urlopen = urlopen
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        urllib.request.urlopen = original
+    return module
+
+
+def test_a_pypi_outage_keeps_every_load_bearing_tag() -> None:
+    """The fallback list holds one tag per minor, so it does not carry the anchors.
+
+    `_ALWAYS` names the patches a specific check exists for: v5.5.0 is the Apple Silicon
+    ceiling and v5.16.0 is the tokenizers breakpoint. Returning `_TAGS_FALLBACK` unmerged
+    let a transient PyPI failure drop both and still report green on a smaller matrix.
+    """
+    import urllib.error
+
+    def refuses(*args, **kwargs):
+        raise urllib.error.URLError("pypi is unreachable")
+
+    module = _matrix_module(refuses)
+
+    assert set(module._ALWAYS).issubset(
+        module.TRANSFORMERS_TAGS
+    ), "a PyPI outage dropped a load-bearing tag from the matrix"
+    # The frozen list is still the body of it, so the outage does not shrink coverage.
+    assert set(module._TAGS_FALLBACK).issubset(module.TRANSFORMERS_TAGS)
+    assert module.TRANSFORMERS_TAGS[-1] == "main"
+
+
+def test_an_empty_release_index_keeps_every_load_bearing_tag() -> None:
+    """NEGATIVE CONTROL for the other fallback: a reachable PyPI that yields no usable
+    release takes a different return path, and it has to merge the anchors too."""
+    import io
+    import json as _json
+
+    class _Response(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self.close()
+            return False
+
+    def empty(*args, **kwargs):
+        return _Response(_json.dumps({"releases": {}}).encode("utf-8"))
+
+    module = _matrix_module(empty)
+
+    assert set(module._ALWAYS).issubset(module.TRANSFORMERS_TAGS)
+
+
+def test_the_declared_ceiling_stays_in_the_matrix_after_a_patch_release() -> None:
+    """The matrix keeps one tag per minor, so a 5.17.1 would evict 5.17.0.
+
+    5.17.0 is the exact maximum `transformers<=5.17.0` admits. Letting a later patch take
+    its slot would stop checking the supported ceiling and start checking a version no
+    user can resolve through the declared window. The anchor is derived from pyproject's
+    own cap, so lifting the cap moves it rather than leaving a stale literal behind.
+    """
+    import io
+    import json as _json
+
+    class _Response(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self.close()
+            return False
+
+    published = {
+        "5.17.0": [{"yanked": False}],
+        # The patch that has not shipped yet, which is what evicts the ceiling.
+        "5.17.1": [{"yanked": False}],
+    }
+
+    def releases(*args, **kwargs):
+        return _Response(_json.dumps({"releases": published}).encode("utf-8"))
+
+    module = _matrix_module(releases)
+
+    assert module._declared_ceiling_tag() == (
+        "v5.17.0",
+    ), "the anchor is no longer read from pyproject's transformers cap"
+    assert "v5.17.1" in module.TRANSFORMERS_TAGS, "the newest patch is still measured"
+    assert (
+        "v5.17.0" in module.TRANSFORMERS_TAGS
+    ), "a patch release evicted the declared ceiling from the matrix"
+
+
+def test_the_matrix_is_shared_between_xdist_workers(tmp_path, monkeypatch) -> None:
+    """Every xdist worker must collect the same parameters.
+
+    Each worker imports the matrix module and resolves the matrix itself during collection,
+    so four PyPI reads are four chances to disagree: one timing out while the others succeed
+    gives that worker the fallback list, the parameter sets diverge and xdist aborts the run
+    instead of executing the fallback matrix. With the cache path set, the first process to
+    resolve publishes the answer and the rest read it.
+    """
+    import io
+    import json as _json
+    import urllib.error
+
+    cache = tmp_path / "matrix.json"
+    monkeypatch.setenv("PYTEST_TRANSFORMERS_MATRIX_FILE", str(cache))
+
+    class _Response(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self.close()
+            return False
+
+    def succeeds(*args, **kwargs):
+        return _Response(_json.dumps({"releases": {"5.17.0": [{"yanked": False}]}}).encode("utf-8"))
+
+    def refuses(*args, **kwargs):
+        raise urllib.error.URLError("this worker's read timed out")
+
+    first = _matrix_module(succeeds)
+    assert cache.is_file(), "the resolved matrix was not published for the other workers"
+
+    # The worker whose own read fails must still collect what the first one published,
+    # rather than the fallback list.
+    second = _matrix_module(refuses)
+    assert (
+        second.TRANSFORMERS_TAGS == first.TRANSFORMERS_TAGS
+    ), "a failed read gave one worker a different matrix, which aborts an xdist run"
+    assert "v5.17.0" in second.TRANSFORMERS_TAGS
+
+
+def test_without_the_cache_a_failed_read_still_falls_back(tmp_path, monkeypatch) -> None:
+    """NEGATIVE CONTROL: the cache is a sharing mechanism, not a new dependency. With no
+    path set, a failed read still yields the frozen matrix rather than nothing."""
+    import urllib.error
+
+    monkeypatch.delenv("PYTEST_TRANSFORMERS_MATRIX_FILE", raising = False)
+
+    def refuses(*args, **kwargs):
+        raise urllib.error.URLError("pypi is unreachable")
+
+    module = _matrix_module(refuses)
+    assert set(module._TAGS_FALLBACK).issubset(module.TRANSFORMERS_TAGS)
+
+
+def test_a_pinned_patch_release_is_not_evicted_by_a_later_one() -> None:
+    """One tag per minor keeps the matrix bounded, but not at the cost of a pin users run.
+
+    Several notebooks pin 5.10.1, which this repo's own NEWLY_ADMITTED list names and
+    notebooks-ci.yml calls out. With 5.10.4 published, the (5, 10) slot becomes 5.10.4 and
+    5.10.1 stops being checked, so a symbol Unsloth needs that only arrived in a later 5.10
+    patch would leave those notebooks broken while this matrix stayed green.
+    """
+    import io
+    import json as _json
+
+    class _Response(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self.close()
+            return False
+
+    def releases(*args, **kwargs):
+        published = {version: [{"yanked": False}] for version in ("5.10.1", "5.10.4", "5.15.1")}
+        return _Response(_json.dumps({"releases": published}).encode("utf-8"))
+
+    module = _matrix_module(releases)
+
+    assert (
+        "v5.10.3" in module.TRANSFORMERS_TAGS
+    ), "the newest 5.10 patch is still measured (PyPI 5.10.4 is tagged v5.10.3 upstream)"
+    assert "v5.10.1" in module.TRANSFORMERS_TAGS, "a later patch evicted the pinned 5.10.1"
+    assert "v5.15.1" in module.TRANSFORMERS_TAGS
+
+    # The pins this repo names as newly admitted are the ones that must survive eviction.
+    for version in ("5.10.1", "5.15.1"):
+        assert (
+            "v" + version in module._ALWAYS
+        ), f"{version} is in NEWLY_ADMITTED but is not anchored in the matrix"
+
+
+def test_an_import_lane_pins_the_declared_ceiling() -> None:
+    """Something has to import the supported maximum, not just the supported minimum.
+
+    The `latest` lane is unpinned, so the day upstream publishes above the cap it resolves
+    a combination no user can install through the declared window, and the floor lane
+    becomes the only import-time evidence for a supported one. The static symbol suite
+    reads source and cannot see import-time breakage, so nothing else covers it.
+    """
+    import yaml
+
+    workflow = yaml.safe_load((WORKFLOWS / "version-compat-ci.yml").read_text(encoding = "utf-8"))
+    job = workflow["jobs"]["zoo-imports-under-spoof"]
+    lanes = {lane["slug"]: lane for lane in job["strategy"]["matrix"]["include"]}
+
+    assert (
+        "ceiling" in lanes
+    ), "no import lane pins the declared ceiling, so only the floor is exercised"
+    pins = " ".join(lanes["ceiling"]["pkg_pins"].split())
+    assert (
+        f"'transformers=={TESTED_CEILING}'" in pins
+    ), f"the ceiling lane does not pin transformers=={TESTED_CEILING}; it reads {pins}"
+
+    # The canary is the lane allowed to resolve outside the window, and it is the only one.
+    assert lanes["latest"].get("continue_on_error") is True
+    for slug in ("floor", "ceiling"):
+        assert (
+            lanes[slug].get("continue_on_error") is None
+        ), f"the {slug} lane is inside the declared window, so it must stay blocking"
+
+
+def test_the_ceiling_lane_moves_with_the_declared_window() -> None:
+    """NEGATIVE CONTROL: the pin is a literal in YAML, so it can go stale exactly the way
+    a cap can. A ceiling lane left on an older release is a lane testing a version the
+    window no longer tops out at."""
+    import yaml
+
+    workflow = yaml.safe_load((WORKFLOWS / "version-compat-ci.yml").read_text(encoding = "utf-8"))
+    lanes = {
+        lane["slug"]: lane
+        for lane in workflow["jobs"]["zoo-imports-under-spoof"]["strategy"]["matrix"]["include"]
+    }
+    pinned = re.search(r"'transformers==([0-9][^']*)'", lanes["ceiling"]["pkg_pins"])
+    assert pinned is not None
+    assert Version(pinned.group(1)) == TESTED_CEILING, (
+        f"the ceiling lane pins {pinned.group(1)} while the declared window tops out at "
+        f"{TESTED_CEILING}"
+    )
+
+
+def test_no_two_import_lanes_mint_the_same_pip_cache_key() -> None:
+    """Lanes in this job share a cache name and key-files, so the interpreter is all that
+    separates their keys.
+
+    The key is `pip-v2-<name>-<os>-<arch>-py<minor>-<hash>`. Two lanes on one interpreter
+    resolve to one key while installing different dependency sets, so whichever saves
+    first wins and the other lane re-downloads its wheels every run. The restore step
+    cannot take `${{ matrix.slug }}`, since tests/studio/test_pip_cache_naming.py requires
+    a literal lowercase name, so distinct interpreters are what keeps the lanes apart.
+    """
+    import yaml
+
+    workflow = yaml.safe_load((WORKFLOWS / "version-compat-ci.yml").read_text(encoding = "utf-8"))
+    lanes = workflow["jobs"]["zoo-imports-under-spoof"]["strategy"]["matrix"]["include"]
+    interpreters = [lane["python"] for lane in lanes]
+    assert len(interpreters) == len(set(interpreters)), (
+        f"two import lanes share an interpreter and so share one pip cache key: "
+        f"{[(lane['slug'], lane['python']) for lane in lanes]}"
+    )
+
+
+def test_a_published_matrix_still_carries_the_anchors(tmp_path, monkeypatch) -> None:
+    """Sharing the matrix between workers must not become a second source of truth.
+
+    The published file is how the workers agree on the PyPI half of the answer. It can
+    still be written by a different revision, left over from an earlier run, or pointed at
+    by hand, and returning it verbatim dropped the floor, the old ceiling, the notebook
+    pins and the declared ceiling while the suite reported green. That is the failure the
+    fallback merge exists to prevent, arriving through the cache instead.
+    """
+    import json as _json
+    import urllib.error
+
+    cache = tmp_path / "published.json"
+    # What a stale or foreign writer can leave behind: a list with none of the anchors.
+    cache.write_text(_json.dumps(["v5.17.0"]), encoding = "utf-8")
+    monkeypatch.setenv("PYTEST_TRANSFORMERS_MATRIX_FILE", str(cache))
+
+    def refuses(*args, **kwargs):
+        raise urllib.error.URLError("this worker reads the published file, not PyPI")
+
+    module = _matrix_module(refuses)
+
+    assert set(module._ALWAYS).issubset(
+        module.TRANSFORMERS_TAGS
+    ), "the published matrix was returned without its anchors"
+    assert module._declared_ceiling_tag()[0] in module.TRANSFORMERS_TAGS
+    # What the file did carry is still honoured, so sharing still does its job.
+    assert "v5.17.0" in module.TRANSFORMERS_TAGS
+
+
+def test_the_declared_ceiling_anchor_uses_the_tag_upstream_pushed() -> None:
+    """NEGATIVE CONTROL for the derivation: upstream does not always tag a release under
+    its own name, which is why _TAG_OVERRIDES exists. A ceiling landing on such a release
+    must resolve to the tag that was pushed, or every check fails on the fetch rather than
+    on the symbol it meant to test."""
+    import importlib.util
+
+    path = (
+        Path(__file__).resolve().parent / "version_compat" / "test_transformers_pinned_symbols.py"
+    )
+    spec = importlib.util.spec_from_file_location("_ceiling_under_test", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    for release, tag in module._TAG_OVERRIDES.items():
+        assert module._TAG_OVERRIDES.get(release) == tag
+        # The derivation has to consult the same table the matrix does.
+        assert "_TAG_OVERRIDES" in inspect.getsource(
+            module._declared_ceiling_tag
+        ), "the ceiling anchor is built as 'v' + version and ignores the override table"
