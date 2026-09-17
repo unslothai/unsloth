@@ -662,8 +662,8 @@ def _resolve_auto() -> str:
     return "sentence-transformers"
 
 
-# _resolve_auto's answer, kept with the backend it built: every encode, token count and identity check
-# resolves auto, and its GPU probe runs nvidia-smi or the Vulkan probe as a subprocess (#10390).
+# _resolve_auto's answer, kept with the backend it built: every encode, token count and identity
+# check resolves auto, and its GPU probe is a subprocess (#10390).
 _resident_hardware: tuple[object, str] | None = None
 _hardware_probe = threading.local()
 
@@ -678,7 +678,7 @@ def _resident_hardware_choice() -> str:
 
 
 def _keep_hardware_choice(backend) -> None:
-    """Called under _backend_lock by _get_backend, for the probe its own resolution made."""
+    """Keep the answer only when THIS call resolved it; see the clear in _get_backend."""
     global _resident_hardware
     choice = getattr(_hardware_probe, "choice", None)
     if choice is not None:
@@ -943,6 +943,8 @@ def _get_backend(model_name: str | None = None):
     with _backend_lock:
         model = model_name or config.effective_embedding_model()
         forced = _forced_backends.get(model)
+        # Load-bearing: the identity and active-backend probes also resolve auto outside this lock,
+        # so without the clear a build that short-circuited the hardware keeps their stale answer.
         _hardware_probe.choice = None
         key = forced or (_resolve_auto_for_model(model) if raw in _AUTO_ALIASES else raw)
         if _backend is not None and _backend_key == _backend_cache_key(raw, key):
