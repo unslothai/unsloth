@@ -273,6 +273,13 @@ async def load_video_model_gated(
         request = request.model_copy(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
         )
+    # Same as the text and image loads: a one-off token on a video load pulls the repo into
+    # the same cache and is kept nowhere, so the provenance is recorded where the request is.
+    from routes.inference import _note_load_fetched_with_a_request_token
+
+    _note_load_fetched_with_a_request_token(request.model_path, request.hf_token)
+    if request.base_repo:
+        _note_load_fetched_with_a_request_token(request.base_repo, request.hf_token)
     from core.inference.diffusion import resolve_local_single_file
     from core.inference.diffusion_device import (
         resolve_diffusion_device_target,

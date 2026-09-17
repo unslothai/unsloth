@@ -1153,6 +1153,15 @@ def launch_worker(
                 else None
             ),
         )
+    # The one-off `X-Unsloth-HF-Token` is handed to the downloader and kept nowhere, so a
+    # repo fetched with it can sit in the cache of a host whose credential set is empty --
+    # which is what the offline fallback reads as "everything here was public". Recorded
+    # HERE: this is the claimed launch path, after the in-flight check, the validation and
+    # the registry claim, so a request that was rejected cannot mark a repo it never
+    # fetched, and every downloader that goes through this lifecycle is covered at once.
+    from hub.utils import hf_tokens as _hf_tokens
+
+    _hf_tokens.note_repo_fetched_with_a_request_token(hf_token, repo_id, repo_type)
     try:
         proc = spawn()
     except Exception as e:

@@ -414,6 +414,55 @@ def test_a_repo_fetched_with_a_one_off_token_is_not_served_to_a_tokenless_caller
     assert public_cache_read_authorized(repo_id = "acme/other") is False
 
 
+def test_the_provenance_key_is_case_folded_like_every_other_repo_lookup():
+    """A download recorded as `Org/Private` is later asked for as `org/private`.
+
+    The authorization cache and the cache-directory walk both compare repo ids
+    case-insensitively, so a case-sensitive record missed while the disk lookup succeeded --
+    which is the tokenless caller being authorized for the private repo.
+    """
+    assert hf_tokens._request_token_repo_key("Org/Private", "model") == (
+        hf_tokens._request_token_repo_key("org/private", "MODEL")
+    )
+    assert hf_tokens._request_token_repo_key("org/private", "dataset") != (
+        hf_tokens._request_token_repo_key("org/private", "model")
+    )
+
+
+def test_every_route_that_can_fetch_with_a_one_off_token_records_it():
+    """The record is only sound if nothing writes the cache without leaving one.
+
+    The download lifecycle covers every spawned downloader, and it records in the CLAIMED
+    launch path, after the in-flight check, the validation and the registry claim, so a
+    request rejected with a 400 or a 409 cannot mark a repo it never fetched. The three load
+    routes fetch through their own loaders instead, so each records where the request is.
+    """
+    import inspect
+
+    from hub.services import download_lifecycle
+    from routes import inference as inference_routes
+    from routes import video as video_routes
+
+    lifecycle = inspect.getsource(download_lifecycle)
+    assert "note_repo_fetched_with_a_request_token(hf_token, repo_id, repo_type)" in lifecycle
+    # After the claim, before the spawn.
+    assert lifecycle.index("note_repo_fetched_with_a_request_token") < lifecycle.index(
+        "proc = spawn()"
+    )
+
+    text_load = inspect.getsource(inference_routes.load_model_gated)
+    assert "_note_load_fetched_with_a_request_token(request.model_path" in text_load
+    image_load = inspect.getsource(inference_routes.load_diffusion_model_gated)
+    assert "_note_load_fetched_with_a_request_token(request.model_path" in image_load
+    video_load = inspect.getsource(video_routes.load_video_model_gated)
+    assert "_note_load_fetched_with_a_request_token(request.model_path" in video_load
+
+    # And the download service no longer records before admission.
+    from hub.services.models import downloads
+
+    assert "note_repo_fetched_with_a_request_token" not in inspect.getsource(downloads)
+
+
 def test_only_a_credential_the_host_does_not_hold_is_recorded(monkeypatch):
     """The note is about a credential that LEAVES no trace on the host.
 

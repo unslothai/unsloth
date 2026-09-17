@@ -14849,6 +14849,26 @@ async def load_model(
     )
 
 
+def _note_load_fetched_with_a_request_token(model_ref, hf_token) -> None:
+    """Record a LOAD that may fetch *model_ref* under a credential this host does not hold.
+
+    A load auto-downloads through the model's own loader rather than through the download
+    lifecycle, so the record has to be made where the request is: the repo and the one-off
+    token are both here, and nothing downstream keeps the token. Recorded whether or not the
+    bytes turn out to be needed -- a repo already cached under that credential is exactly the
+    case the record is about -- and never for a local path, which is not a repo.
+    """
+    try:
+        from hub.utils import hf_tokens as _hf_tokens
+
+        repo = (model_ref or "").strip()
+        if not repo or "/" not in repo or repo.startswith((".", "/", "~")) or ":" in repo[:3]:
+            return
+        _hf_tokens.note_repo_fetched_with_a_request_token(hf_token, repo, "model")
+    except Exception:  # noqa: BLE001 -- a load never fails on its own bookkeeping
+        pass
+
+
 async def load_model_gated(
     request: LoadRequest,
     fastapi_request: Request,
@@ -14863,6 +14883,11 @@ async def load_model_gated(
     return mid-load and hide a late failure in an unread body. This blocks until the
     model is resident and raises the real exception.
     """
+    # A one-off `X-Unsloth-HF-Token` on a LOAD pulls the repo into the same cache and is
+    # kept nowhere, so the provenance is recorded here too: without it the offline fallback
+    # reads an empty credential set as "nothing here needed one" for a repo that did.
+    _note_load_fetched_with_a_request_token(request.model_path, request.hf_token)
+
     # A sidecar install that has reserved the swap must not lose to a load that
     # then gets unloaded by the pre-swap teardown. Rechecked under the gate: an
     # install can reserve while this request queues on the gate, so the pre-gate
@@ -36828,6 +36853,11 @@ async def load_diffusion_model_gated(
         request = request.model_copy(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
         )
+    # Same as the text load: a one-off token on an image load pulls the repo into the same
+    # cache and is kept nowhere, so the provenance is recorded where the request is.
+    _note_load_fetched_with_a_request_token(request.model_path, request.hf_token)
+    if request.base_repo:
+        _note_load_fetched_with_a_request_token(request.base_repo, request.hf_token)
     from core.inference.diffusion import (
         get_diffusion_backend,
         resolve_local_single_file,

@@ -487,7 +487,14 @@ _REQUEST_TOKEN_REPOS_SETTING_KEY = "hub_repos_fetched_with_a_request_token"
 
 
 def _request_token_repo_key(repo_id: str, repo_type: Optional[str]) -> str:
-    return f"{(repo_type or 'model').strip().lower()}:{repo_id.strip()}"
+    """The record's key, case-folded like everything else that identifies a repo here.
+
+    The authorization cache and `iter_repo_cache_dirs` both compare repo ids
+    case-insensitively, so a download recorded as `Org/Private` and later asked for as
+    `org/private` would miss the record while the disk lookup succeeded -- which is the
+    tokenless caller being authorized for the private repo.
+    """
+    return f"{(repo_type or 'model').strip().lower()}:{repo_id.strip().lower()}"
 
 
 def _as_owner(call, *args, **kwargs):
