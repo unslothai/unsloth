@@ -111,8 +111,10 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       tensorParallel: tensorParallel ?? false,
       disableVision: disableVision ?? false,
       chatTemplateOverride: chatTemplateOverride ?? null,
-      llamaExtraArgs:
-        loadedLlamaExtraArgs != null ? [...loadedLlamaExtraArgs] : null,
+      // Omit until the runtime reports args; null would block model-config-page hydration.
+      ...(loadedLlamaExtraArgs != null
+        ? { llamaExtraArgs: [...loadedLlamaExtraArgs] }
+        : {}),
     };
     if (!isGguf) {
       return base;
