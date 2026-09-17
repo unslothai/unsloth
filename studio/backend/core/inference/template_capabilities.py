@@ -111,12 +111,16 @@ def _rebound_names(node):
     return set()
 
 
-def _receiver_gaining_catalog(node, aliases):
-    """Names `catalog.append(tools)` fills. Handed tool data is assumed kept."""
+def _receiver_gaining_catalog(node, aliases, guarded = False):
+    """Names `catalog.append(tools)` fills. Handed tool data is assumed kept.
+
+    Under a tools guard the call runs only when tools exist, so the receiver holds
+    tool-conditional content whatever the argument was.
+    """
     if not (isinstance(node, nodes.Call) and isinstance(node.node, nodes.Getattr)):
         return set()
     arguments = list(node.args) + [keyword.value for keyword in node.kwargs]
-    if not any(_reads_catalog(argument, aliases) for argument in arguments):
+    if not guarded and not any(_reads_catalog(argument, aliases) for argument in arguments):
         return set()
     return _bound_names(node.node.node)
 
@@ -147,15 +151,22 @@ def _scan(body, aliases, guarded):
     for node in body:
         if isinstance(node, nodes.Output):
             for value in node.nodes:
-                if _is_payload(value) and (guarded or _reads_catalog(value, aliases)):
+                # `{{ m.content if m.role == 'tool' else '' }}` carries its tool-role
+                # check inside the expression, where an `{% if %}` would otherwise
+                # hold it. The marker scan matched that spelling.
+                if _is_payload(value) and (
+                    guarded
+                    or _reads_catalog(value, aliases)
+                    or _checks_tool_role(value)
+                ):
                     return True
         elif isinstance(node, nodes.ExprStmt):
             # `{% do catalog.append(tools) %}`
-            aliases |= _receiver_gaining_catalog(node.node, aliases)
+            aliases |= _receiver_gaining_catalog(node.node, aliases, guarded)
             continue
         elif isinstance(node, nodes.Assign):
             # `{% set _ = catalog.append(tools) %}`: the same mutation without `do`.
-            aliases |= _receiver_gaining_catalog(node.node, aliases)
+            aliases |= _receiver_gaining_catalog(node.node, aliases, guarded)
             if _reads_catalog(node.node, aliases) or guarded:
                 # LiquidAI's LFM2 fills `ns.system_prompt` inside the guard and
                 # renders it outside, so a namespace field has to carry the catalog.

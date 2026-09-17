@@ -176,6 +176,17 @@ def test_guard_spellings(template, detected):
          "{% endif %}{{ intro }}", True),
         ("{% set intro = '' %}{% if enable_thinking %}{% set intro = 'Think.' %}"
          "{% endif %}{{ intro }}", False),
+        # The tool-role check can sit inside the output expression itself, and a
+        # tools-gated branch can store its instructions through a side effect. The
+        # marker scan matched both spellings.
+        ("{{ message.content if message.role == 'tool' else '' }}", True),
+        ("{{ message.content if message.role != 'tool' else '' }}", False),
+        ("{{ message.content if message.role == 'user' else '' }}", False),
+        ("{% set ns = namespace(lines=[]) %}{% if tools %}"
+         "{% do ns.lines.append('You may call functions') %}{% endif %}"
+         "{{ ns.lines|join(',') }}", True),
+        ("{% set ns = namespace(lines=[]) %}{% if enable_thinking %}"
+         "{% do ns.lines.append('Think') %}{% endif %}{{ ns.lines|join(',') }}", False),
         # A loop's inline filter is a guard like any other. The marker scan matched
         # this spelling of the tool-role check, so missing it loses tool support.
         ("{% for m in messages if m.role == 'tool' %}{{ m.content }}{% endfor %}", True),
