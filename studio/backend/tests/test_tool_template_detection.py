@@ -164,6 +164,15 @@ def test_guard_spellings(template, detected):
         ("{% for t in tools %}{% endfor %}{{ t|tojson }}", False),
         ("{% for t in tools %}{% endfor %}"
          "{% for t in messages %}{{ t.content }}{% endfor %}", False),
+        # A tuple target binds and rebinds the same way a plain name does. Reading it
+        # only one way round would let `{% set tools, flag = none, false %}` keep the
+        # catalog it just threw away.
+        ("{% set tools, flag = none, false %}{{ tools|tojson }}", False),
+        ("{% set a, b = tools, none %}{% set a, b = none, none %}{{ a|tojson }}", False),
+        # `{% with %}` binds for its block and for nothing else.
+        ("{% with catalog = tools %}{{ catalog|tojson }}{% endwith %}", True),
+        ("{% with tools = none %}{{ tools|tojson }}{% endwith %}", False),
+        ("{% with tools = none %}x{% endwith %}{{ tools|tojson }}", True),
         # Handing the catalog to a container puts it in that container.
         ("{% set c = [] %}{% do c.append(tools) %}{{ c|tojson }}", True),
         ("{% set c = [] %}{% set _ = c.append(tools) %}{{ c|tojson }}", True),
@@ -189,6 +198,8 @@ def test_names_carrying_the_catalog(template, detected):
         "{% set a, b = tools, none %}{{ a|tojson }}",
         "{% if legacy %}{% set tools = none %}{% endif %}{{ tools|tojson }}",
         "{% macro unused() %}{% set tools = none %}{% endmacro %}{{ tools|tojson }}",
+        "{% with catalog = tools %}{{ catalog|tojson }}{% endwith %}",
+        "{% with tools = none %}x{% endwith %}{{ tools|tojson }}",
     ],
 )
 def test_positives_match_a_real_render(template):

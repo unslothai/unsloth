@@ -134,6 +134,19 @@ def _bound_names(node):
     return {node.name} if isinstance(node, (nodes.Name, nodes.NSRef)) else set()
 
 
+def _rebound_names(node):
+    """The names a target REBINDS, which is not every name it writes through.
+
+    `{% set ns.catalog = x %}` leaves the rest of `ns` alone, so it cannot un-hold the
+    catalog. A plain name does, and so does each plain name a tuple target unpacks into.
+    """
+    if isinstance(node, nodes.Name):
+        return {node.name}
+    if isinstance(node, nodes.Tuple):
+        return {name for item in node.items for name in _rebound_names(item)}
+    return set()
+
+
 def _receiver_gaining_catalog(node, aliases):
     """The names a call puts the catalog into, for `catalog.append(tools)` and friends.
 
@@ -148,15 +161,16 @@ def _receiver_gaining_catalog(node, aliases):
     return _bound_names(node.node.node)
 
 
-def _scan_maybe(body, aliases, guarded, bound = frozenset()):
+def _scan_maybe(body, aliases, guarded, bound = frozenset(), killed = frozenset()):
     """Walk a body that may not run, or may run with names of its own.
 
-    What the body learns is kept, what it unbinds is not:
-    `{% if legacy %}{% set tools = none %}{% endif %}{{ tools | tojson }}` renders the
-    catalog whenever the branch is skipped. `bound` names belong to the body alone -
-    a `{% for %}` variable is undefined after `{% endfor %}` - so they do not escape.
+    What the body learns is kept, what it unbinds is not: a `{% for %}` body may run
+    zero times, and a macro body does not run where it is written. `bound` and
+    `killed` are the body's own scope - a `{% for %}` variable is undefined after
+    `{% endfor %}`, and a `{% with %}` binding stops meaning anything at the
+    `{% endwith %}` - so neither escapes in either direction.
     """
-    local = set(aliases) | set(bound)
+    local = (set(aliases) | set(bound)) - set(killed)
     found = _scan(body, local, guarded)
     aliases |= local - (set(bound) - aliases)
     return found
@@ -168,7 +182,9 @@ def _join(aliases, arms, exhaustive):
     A name holds the catalog here if it does on any arm, since the walk cannot tell
     which one runs. Falling past every arm is itself a path, so the incoming set
     counts too unless an `{% else %}` makes the chain exhaustive - which is what lets
-    a rebinding on every arm still be a rebinding.
+    a rebinding on every arm still be a rebinding, and what keeps
+    `{% if legacy %}{% set tools = none %}{% endif %}{{ tools | tojson }}` a yes, since
+    skipping the branch leaves the catalog bound.
     """
     merged = set() if exhaustive else set(aliases)
     for arm in arms:
@@ -202,13 +218,13 @@ def _scan(body, aliases, guarded):
                 # `{% set ns.system_prompt = ns.system_prompt + tool %}` and renders
                 # `ns.system_prompt` outside the guard, so `ns` has to carry it.
                 aliases |= _bound_names(node.target)
-            elif isinstance(node.target, nodes.Name):
+            else:
                 # Kill. `{% set tools = item['tools'] %}` rebinds the name to something
                 # that is not the caller's catalog, so it stops being one - which is
-                # exactly what THUDM/glm-4-9b-chat and granite-guardian do. Only a
-                # plain name is killed; writing one field of a container says nothing
-                # about the rest of it.
-                aliases.discard(node.target.name)
+                # exactly what THUDM/glm-4-9b-chat does. Plain names only, tuple
+                # targets included: writing one field of a container says nothing
+                # about the rest of it, so it cannot un-hold the catalog.
+                aliases -= _rebound_names(node.target)
             continue
 
         if isinstance(node, nodes.If):
@@ -239,6 +255,18 @@ def _scan(body, aliases, guarded):
                 return True
             if _scan_maybe(node.else_, aliases, guarded):
                 return True
+        elif isinstance(node, nodes.With):
+            # `{% with catalog = tools %}` binds like a set but only for the block,
+            # and the block is the only place the name means anything.
+            bound = set()
+            killed = set()
+            for target, value in zip(node.targets, node.values):
+                if _reads_catalog(value, aliases):
+                    bound |= _bound_names(target)
+                else:
+                    killed |= _rebound_names(target)
+            if _scan_maybe(node.body, aliases, guarded, bound, killed):
+                return True
         elif hasattr(node, "body"):
             # Macros, blocks, filters, with, autoescape: the body can still render.
             # May-run, since a macro body does not run where it is written.
@@ -256,7 +284,9 @@ def template_supports_tools(template) -> bool:
     # run before the try as well, and lru_cache misses on a subclass regardless.
     if not isinstance(template, str):
         return False
-    return _analyse_template(str(template))
+    # `str.__str__` rather than `str(...)`, which would call a subclass override that
+    # can raise out here where there is no handler.
+    return _analyse_template(str.__str__(template))
 
 
 @lru_cache(maxsize = 128)
