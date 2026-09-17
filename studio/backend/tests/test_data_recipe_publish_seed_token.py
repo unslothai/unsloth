@@ -33,6 +33,9 @@ def _stub_data_designer(monkeypatch, seen):
             return lambda **kwargs: None
 
         def _upload_config_files(self, *, repo_id, metadata_path, builder_config_path):
+            # The real client gates each of the two files on .exists() on its own.
+            if metadata_path.exists():
+                seen["uploaded_metadata"] = metadata_path.name
             if builder_config_path.exists():
                 seen["uploaded"] = builder_config_path.read_text(encoding = "utf-8")
                 seen["uploaded_name"] = builder_config_path.name
@@ -109,5 +112,6 @@ def test_publish_keeps_the_seed_token_out_of_the_hub(monkeypatch, tmp_path, sour
 
 def test_publish_without_a_builder_config_uploads_none(monkeypatch, tmp_path):
     seen = _publish(monkeypatch, tmp_path, None)
+    assert seen["uploaded_metadata"] == "metadata.json"
     assert "uploaded" not in seen
     assert seen["card"] == "null"
