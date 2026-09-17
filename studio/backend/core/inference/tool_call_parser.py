@@ -1310,7 +1310,7 @@ def _strip_gemma_wrapperless_calls(text: str, enabled_tool_names: Optional[set] 
     # A blocked prefix in EITHER markerless format anchors, or the peer behind it is promoted
     # while its raw text stays in the content and the next iteration replays the call.
     floor = blocked_markerless_prefix_end(text, cursor, enabled_tool_names)
-    code_spans = None
+    code_spans, code_from = None, 0
     while cursor < n:
         m = _GEMMA_BARE_TC_RE.search(text, cursor)
         if not m:
@@ -1319,13 +1319,14 @@ def _strip_gemma_wrapperless_calls(text: str, enabled_tool_names: Optional[set] 
         # A blocked call is skipped markup, not a sentence: it holds its position so the
         # promotable call beside it stays anchored, and is still stripped.
         blocked = _markerless_blocked_execution(m.group(1), enabled_tool_names)
-        keep_as_prose = not _markerless_promotable(m.group(1), enabled_tool_names) or (
-            not _gemma_call_is_anchored(text, m.start(), floor)
-        )
-        if not keep_as_prose:
+        promotable = _markerless_promotable(m.group(1), enabled_tool_names)
+        quoted = False
+        if promotable:
             if code_spans is None:
-                code_spans = _tool_healing._code_spans(text)
-            keep_as_prose = _tool_healing._in_code(code_spans, m.start())
+                code_spans = _tool_healing._code_spans(text, code_from)
+            quoted = _tool_healing._in_code(code_spans, m.start())
+        parsed_as_call = promotable and not quoted
+        keep_as_prose = not parsed_as_call or not _gemma_call_is_anchored(text, m.start(), floor)
         brace = m.end() - 1
         # Same boundary scanner as the parser: strip exactly what it consumed.
         end = _gemma_body_brace_end(text, brace)
@@ -1343,6 +1344,9 @@ def _strip_gemma_wrapperless_calls(text: str, enabled_tool_names: Optional[set] 
         else:
             out.append(text[cursor : m.start()])
             floor = blocked_markerless_prefix_end(text, next_index, enabled_tool_names)
+        # Rescan past every call the parser promotes, kept unanchored or not, as the parser does.
+        if parsed_as_call and _tool_healing._in_code(code_spans, next_index):
+            code_spans, code_from = None, next_index
         cursor = next_index
     return "".join(out)
 
@@ -3260,7 +3264,7 @@ def _parse_gemma_tool_calls(
         _reh_cursor = _reh_end + 1
     # Monotonic index into the sorted spans: re-testing every span per match is quadratic.
     blocked_i = 0
-    code_spans = None
+    code_spans, code_from = None, 0
     while True:
         m = _GEMMA_BARE_TC_RE.search(content, cursor)
         if m is None:
@@ -3281,9 +3285,12 @@ def _parse_gemma_tool_calls(
         if not _markerless_promotable(name, enabled_tool_names):
             continue
         if code_spans is None:
-            code_spans = _tool_healing._code_spans(content)
+            code_spans = _tool_healing._code_spans(content, code_from)
         if _tool_healing._in_code(code_spans, m.start()):
             continue
+        # Its arguments are data: a code span they open must not hide the sibling call behind it.
+        if _tool_healing._in_code(code_spans, cursor):
+            code_spans, code_from = None, cursor
         body = content[body_start + 1 : end]
         try:
             args = _gemma_parse_stripped_body(body)
@@ -3605,8 +3612,8 @@ def promotable_gemma_call_pos(
     ``^[a-zA-Z0-9_-]{1,64}$``, MCP SEP-986). Sentinel-gated like ``_promotable_gemma_call_pos``.
     ``enabled_tool_names`` may be a zero-argument callable, resolved only once a candidate
     exists, so an ordinary completion never materializes a large MCP catalogue per chunk.
-    ``streaming`` holds back a call after an unclosed inline backtick on the still-open last
-    line: its closing backtick has not arrived yet, and draining there froze a quoted example."""
+    ``streaming`` also skips a call behind an inline backtick still open on the last line, whose
+    closer may be the next token."""
     # Widen, do not seek: an rfind window has to contain the whole sentinel, so a ``call``
     # straddling the boundary was missed and a short-named call went unseen.
     start = text.find(_GEMMA_BARE_SENTINEL, max(0, start - _MAX_GEMMA_PREFIX_TAIL))

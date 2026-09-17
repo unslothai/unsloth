@@ -392,7 +392,7 @@
       "_balanced_bracket_end": "core.tool_healing._balanced_bracket_end(src: 'str', start: 'int', *, braces_count: 'bool' = True) -> 'int | None'",
       "_balanced_json_span": "core.tool_healing._balanced_json_span(text: 'str', start: 'int') -> 'int | None'",
       "_build_markers": "core.tool_healing._build_markers(content: 'str')",
-      "_code_spans": "core.tool_healing._code_spans(text: 'str') -> 'list[tuple[int, int]]'",
+      "_code_spans": "core.tool_healing._code_spans(text: 'str', start: 'int' = 0) -> 'list[tuple[int, int]]'",
       "_decode_array_items": "core.tool_healing._decode_array_items(text: 'str', body_start: 'int', body_end: 'int')",
       "_func_close_index": "core.tool_healing._func_close_index(content: 'str', body_start: 'int', body: 'str') -> 'int'",
       "_gemma_arguments_to_json": "core.tool_healing._gemma_arguments_to_json(args_src: 'str') -> 'dict'",

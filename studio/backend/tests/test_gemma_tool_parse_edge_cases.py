@@ -468,7 +468,7 @@ def test_streaming_display_of_prose_call_never_shrinks():
     assert seen == prose
 
 
-_FENCED_EXAMPLES = [
+_CODE_QUOTED_EXAMPLES = [
     '```\ncall:web_search{query: "cats"}\n```',
     "```text\ncall:web_search{query:cats}\n```",
     "Here is the syntax:\n~~~\ncall:web_search{query:cats}\n~~~",
@@ -476,7 +476,7 @@ _FENCED_EXAMPLES = [
 ]
 
 
-@pytest.mark.parametrize("text", _FENCED_EXAMPLES)
+@pytest.mark.parametrize("text", _CODE_QUOTED_EXAMPLES)
 def test_wrapperless_call_quoted_in_markdown_code_is_documentation(text):
     en = {"web_search"}
     assert parse_tool_calls_from_text(text, enabled_tool_names = en) == []
@@ -506,6 +506,21 @@ def test_unfenced_wrapperless_call_is_still_promoted_beside_a_fence():
     assert _strip(text, en) == "```\ncall:web_search{query:dogs}\n```"
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        'call:web_search{query:"intro\n```py\nprint(1)"}\ncall:web_search{query:"y"}',
+        'call:web_search{query:"a``b"}\ncall:web_search{query:"y"} and ``tail``',
+        'Sure call:web_search{query:"a\n```\nx"}\ncall:web_search{query:"y"}',
+    ],
+)
+def test_code_opened_inside_a_call_argument_does_not_hide_the_next_call(text):
+    en = {"web_search"}
+    calls = parse_tool_calls_from_text(text, enabled_tool_names = en)
+    assert len(calls) == 2 and _args(calls[1]) == {"query": "y"}, calls
+    assert 'query:"y"' not in _strip(text, en)
+
+
 def test_native_token_gemma_call_inside_a_fence_is_still_a_call():
     text = '```\n<|tool_call>call:web_search{query:<|"|>cats<|"|>}<tool_call|>\n```'
     en = {"web_search"}
@@ -515,13 +530,22 @@ def test_native_token_gemma_call_inside_a_fence_is_still_a_call():
     assert "call:web_search" not in _strip(text, en)
 
 
-def test_wrapperless_call_after_a_longer_fence_quoting_a_fence_is_still_promoted():
-    text = '````md\n```py\nx=1\n```\n````\ncall:web_search{query:"b"}'
+@pytest.mark.parametrize(
+    "fenced",
+    [
+        "````md\n```py\nx=1\n```\n````",
+        "~~~~md\n~~~\nx=1\n~~~~",
+        "```md\n~~~\nx=1\n```",
+        "~~~md\n```\nx=1\n~~~",
+    ],
+)
+def test_wrapperless_call_after_a_fence_quoting_another_fence_is_still_promoted(fenced):
+    text = fenced + '\ncall:web_search{query:"b"}'
     en = {"web_search"}
     calls = parse_tool_calls_from_text(text, enabled_tool_names = en)
     assert [_args(c) for c in calls] == [{"query": "b"}]
     assert promotable_gemma_call_pos(text, en) == text.index("call:web_search")
-    assert _strip(text, en) == "````md\n```py\nx=1\n```\n````"
+    assert _strip(text, en) == fenced
 
 
 def test_inline_code_example_keeps_streaming_on_the_safetensors_loop():
@@ -554,13 +578,15 @@ def test_inline_code_example_keeps_streaming_on_the_safetensors_loop():
     contents = [e["text"] for e in events if e["type"] == "content"]
     assert calls == []
     assert contents[-1] == text
-    assert len(contents[-2]) > text.index("``.") + 2
+    assert len(contents[-2]) > text.index("``.") + 2, "stopped streaming at the inline example"
 
 
-def test_unclosed_inline_backtick_does_not_hide_a_call_once_its_line_ends():
+def test_streaming_hold_lasts_only_while_an_inline_run_is_open_on_the_last_line():
     text = 'Use `call:web_search{query:"x"}\n'
     en = {"web_search"}
     assert promotable_gemma_call_pos(text[:-1], en, streaming = True) == -1
     assert promotable_gemma_call_pos(text, en, streaming = True) == text.index("call:")
+    shorter_run = 'Use ``a`b call:web_search{query:"x"}'
+    assert promotable_gemma_call_pos(shorter_run, en, streaming = True) == -1
     closed = 'See `code` then call:web_search{query:"x"}'
     assert promotable_gemma_call_pos(closed, en, streaming = True) == closed.index("call:")
