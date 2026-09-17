@@ -126,8 +126,9 @@ def test_export_merged_maps_compressed_to_save_method():
 def test_compressed_hub_push_uploads_local_dir_without_recompressing():
     # A compressed / torchao Hub push must upload the built output_path, not re-quantize.
     m = _func_src("core/export/export.py", "export_merged_model")
-    assert "elif (is_compressed or is_torchao) and output_path and Path(output_path).is_dir():" in m
-    assert "hf_api.upload_folder(" in m and "folder_path = output_path" in m
+    assert "if output_path and Path(output_path).is_dir():" in m
+    assert "if not (is_compressed or is_torchao or save_dir_was_empty):" in m
+    assert "hf_api.upload_folder(" in m and "folder_path = upload_dir" in m
 
 
 # -- torchao portable FP8/INT8 (device-agnostic, no NVIDIA GPU) ---------------------------------

@@ -11,6 +11,7 @@ subprocess.poll() branch so a crashed llama-server surfaces a structured
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import threading
@@ -1610,3 +1611,140 @@ def test_no_kill_double_still_returns_the_legacy_shape():
         assert isinstance(node.value, ast.Lambda), ast.unparse(node)
         body = node.value.body
         assert isinstance(body, ast.Tuple) and len(body.elts) == 2, ast.unparse(node)
+
+
+class TestHealthWaitMeasuresStalls:
+    # Grow RSS, then idle.
+    _WORKER = (
+        "import sys, time\n"
+        "held = []\n"
+        "end = time.monotonic() + float(sys.argv[1])\n"
+        "while time.monotonic() < end:\n"
+        "    held.append(b'\\x01' * (4 << 20))\n"
+        "    time.sleep(0.05)\n"
+        "time.sleep(60)\n"
+    )
+
+    # Page mmap views without retaining RSS or calling read().
+    _MMAP_WORKER = (
+        "import mmap, os, sys, time\n"
+        "fd = os.open(sys.argv[1], os.O_RDONLY | getattr(os, 'O_BINARY', 0))\n"
+        "view = 16 << 20\n"
+        "end = time.monotonic() + float(sys.argv[2])\n"
+        "offset = 0\n"
+        "while time.monotonic() < end:\n"
+        "    if hasattr(os, 'posix_fadvise'):\n"
+        "        os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)\n"
+        "    with mmap.mmap(fd, view, access = mmap.ACCESS_READ, offset = offset) as m:\n"
+        "        sum(m[p] for p in range(0, view, mmap.PAGESIZE))\n"
+        "    offset = view - offset\n"
+        "    time.sleep(0.05)\n"
+        "time.sleep(60)\n"
+    )
+
+    def _wait_on_child(
+        self,
+        monkeypatch,
+        argv,
+        *,
+        healthy_after = None,
+        timeout = 0.6,
+    ):
+        monkeypatch.setattr(LlamaCppBackend, "_STARTUP_PROGRESS_SAMPLE_S", 0.1)
+        b = _make_backend()
+        b._process = subprocess.Popen([sys.executable, "-c", *argv])
+        started = time.monotonic()
+
+        def probe(*a, **kw):
+            if healthy_after is not None and time.monotonic() - started >= healthy_after:
+                return mock.Mock(status_code = 200)
+            return mock.Mock(status_code = 503)
+
+        monkeypatch.setattr(httpx, "get", probe)
+        try:
+            ok = b._wait_for_health(timeout = timeout, interval = 0.02)
+        finally:
+            import psutil
+
+            for descendant in psutil.Process(b._process.pid).children(recursive = True):
+                descendant.kill()
+            b._process.kill()
+            b._process.wait()
+        return b, ok, time.monotonic() - started
+
+    def test_a_load_that_keeps_working_outlives_the_timeout(self, monkeypatch):
+        b, ok, elapsed = self._wait_on_child(monkeypatch, [self._WORKER, "3.0"], healthy_after = 2.5)
+        assert ok is True
+        assert elapsed >= 2.5
+        assert not any("health check timed out" in ln for ln in b._stdout_lines)
+
+    def test_a_child_doing_nothing_still_times_out(self, monkeypatch):
+        b, ok, elapsed = self._wait_on_child(monkeypatch, [self._WORKER, "0.0"])
+        assert ok is False
+        assert elapsed < 3.0
+        assert any("no startup progress for 0.6s" in ln for ln in b._stdout_lines)
+
+    def test_a_load_that_stalls_times_out_one_timeout_after_its_last_work(self, monkeypatch):
+        b, ok, elapsed = self._wait_on_child(monkeypatch, [self._WORKER, "1.5"])
+        assert ok is False
+        assert 1.5 + 0.6 - 0.2 <= elapsed < 1.5 + 3.0
+        assert any("health check timed out" in ln for ln in b._stdout_lines)
+
+    def test_work_done_by_a_descendant_counts(self, monkeypatch):
+        shim = (
+            "import subprocess, sys, time\n"
+            "subprocess.Popen([sys.executable, '-c', sys.argv[1], '3.0'])\n"
+            "time.sleep(60)\n"
+        )
+        b, ok, elapsed = self._wait_on_child(monkeypatch, [shim, self._WORKER], healthy_after = 2.5)
+        assert ok is True
+        assert elapsed >= 2.5
+
+    def test_mmap_page_ins_with_flat_resident_memory_count(self, monkeypatch, tmp_path):
+        # Make page faults the only enabled progress signal.
+        monkeypatch.setattr(LlamaCppBackend, "_STARTUP_PROGRESS_MIN_CPU_FRACTION", 100.0)
+        monkeypatch.setattr(LlamaCppBackend, "_STARTUP_PROGRESS_MIN_BYTES", 1 << 40)
+        model = tmp_path / "model.gguf"
+        # Small writes avoid collapsing the file into 2 MiB cache folios.
+        with open(model, "wb") as f:
+            for _ in range(512):
+                f.write(os.urandom(64 << 10))
+        b, ok, elapsed = self._wait_on_child(
+            monkeypatch, [self._MMAP_WORKER, str(model), "3.0"], healthy_after = 2.5
+        )
+        assert ok is True
+        assert elapsed >= 2.5
+
+    def test_unreadable_counters_keep_the_fixed_deadline(self, monkeypatch):
+        monkeypatch.setattr(LlamaCppBackend, "_startup_work_sample", staticmethod(lambda p: None))
+        b, ok, elapsed = self._wait_on_child(monkeypatch, [self._WORKER, "3.0"])
+        assert ok is False
+        assert elapsed < 1.5
+
+    def test_cpu_after_an_unreadable_sample_is_measured_from_the_last_readable_one(
+        self, monkeypatch
+    ):
+        # 20 ms over 0.9s remains below the threshold.
+        samples = iter([(1.0, 0, 0, 0), *[None] * 8, (1.02, 0, 0, 0)])
+        monkeypatch.setattr(
+            LlamaCppBackend,
+            "_startup_work_sample",
+            staticmethod(lambda p: next(samples, None)),
+        )
+        b, ok, elapsed = self._wait_on_child(monkeypatch, [self._WORKER, "0.0"], timeout = 1.5)
+        assert ok is False
+        assert elapsed < 1.95
+
+    def test_resident_memory_regained_after_eviction_is_not_progress(self):
+        peak = (10.0, 500 << 20, 0, 0)
+        assert not LlamaCppBackend._made_startup_progress(peak, (10.0, 499 << 20, 0, 0), 5.0)
+        assert LlamaCppBackend._made_startup_progress(peak, (10.0, 502 << 20, 0, 0), 5.0)
+
+    def test_answering_health_probes_is_not_progress(self):
+        # Idle health probes stay below both thresholds.
+        before = (1.0, 100 << 20, 50 << 20, 1000)
+        assert not LlamaCppBackend._made_startup_progress(
+            before, (1.02, 100 << 20, 50 << 20, 1033), 5.0
+        )
+        assert LlamaCppBackend._made_startup_progress(before, (1.5, 100 << 20, 50 << 20, 1000), 5.0)
+        assert LlamaCppBackend._made_startup_progress(before, (1.0, 100 << 20, 50 << 20, 1064), 5.0)

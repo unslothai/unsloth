@@ -1306,12 +1306,7 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
 
 
 class TestRemoteGgufComputeReserve(unittest.TestCase):
-    """The compute reserve a remote GGUF estimate carries.
-
-    Every other caller here patches it to zero to assert exact GB totals, so its arithmetic goes
-    unasserted even though it decides whether a load is refused. These pin the shape, not the
-    magnitude: retuning a safety factor keeps them passing, dropping a term does not.
-    """
+    """Check the remote GGUF compute reserve without the other tests' zero-cost stub."""
 
     @classmethod
     def setUpClass(cls):
@@ -1329,26 +1324,55 @@ class TestRemoteGgufComputeReserve(unittest.TestCase):
         with patch.dict(os.environ, env, clear = True):
             return self.route._remote_gguf_compute_reserve_gb(max_seq_length = 4096, **kwargs)
 
-    def test_a_single_slot_still_reserves_an_output_buffer(self):
-        """llama-server allocates an output buffer for its one slot, but the old
-        max(0, n_parallel - 1) count reserved nothing there.
-
-        The total is spelled out absolutely rather than compared against a neighbouring call: the
-        reserve is linear in slot count, so any two samples are one buffer apart under both the
-        old formula and the new one, and only an absolute anchor sees the floor.
-        """
-        from core.inference.llama_cpp import LlamaCppBackend
+    def test_reserve_is_the_mask_plus_an_activation_ceiling(self):
+        """Charge the activation ceiling once per micro-batch and output rows per slot."""
+        from core.inference.llama_cpp import (
+            _ASSUMED_MAX_ACTIVATION_WIDTH,
+            _ASSUMED_MAX_VOCAB,
+            LlamaCppBackend,
+        )
 
         ubatch = LlamaCppBackend._DEFAULT_N_UBATCH
-        mask = 4096 * ubatch * 2 * LlamaCppBackend._CTX_COMPUTE_F16_MASK_SAFETY
-        per_slot = (
-            self.route._ASSUMED_MAX_VOCAB * ubatch * 4 * LlamaCppBackend._COMPUTE_BUFFER_SAFETY
+        mask = 4096 * ubatch * 2
+
+        def expected(slots):
+            rows = min(ubatch, slots * (1 + LlamaCppBackend._UNKNOWN_SPEC_DRAFT_N_MAX))
+            flat = _ASSUMED_MAX_ACTIVATION_WIDTH * ubatch * 4 + _ASSUMED_MAX_VOCAB * rows * 4
+            return (mask + flat * LlamaCppBackend._COMPUTE_BUFFER_SAFETY) / (1024**3)
+
+        self.assertAlmostEqual(self._reserve(n_parallel = 1), expected(1), places = 6)
+        self.assertAlmostEqual(self._reserve(n_parallel = 2), expected(2), places = 6)
+        # A second slot costs rows, far less than a second activation reserve.
+        self.assertLess(
+            self._reserve(n_parallel = 2) - self._reserve(n_parallel = 1),
+            _ASSUMED_MAX_ACTIVATION_WIDTH * ubatch * 4 / (1024**3) / 4,
         )
-        self.assertAlmostEqual(self._reserve(n_parallel = 1), (mask + per_slot) / (1024**3), places = 6)
-        # One more buffer for a second slot, pinning the count as well as the floor.
+
+    def test_an_older_build_reserves_a_row_per_micro_batch_token(self):
+        """Before ggml-org/llama.cpp#23861 the output rows cover the whole micro-batch,
+        which the remote guard charges when the binary reports such a build."""
+        from core.inference.llama_cpp import _ASSUMED_MAX_VOCAB, LlamaCppBackend
+
+        ubatch = LlamaCppBackend._DEFAULT_N_UBATCH
+        with patch.object(LlamaCppBackend, "reserves_micro_batch_outputs", lambda *a, **k: False):
+            current = self._reserve(n_parallel = 1)
+        with patch.object(LlamaCppBackend, "reserves_micro_batch_outputs", lambda *a, **k: True):
+            older = self._reserve(n_parallel = 1)
+        rows = (ubatch - (1 + LlamaCppBackend._UNKNOWN_SPEC_DRAFT_N_MAX)) * _ASSUMED_MAX_VOCAB * 4
         self.assertAlmostEqual(
-            self._reserve(n_parallel = 2), (mask + 2 * per_slot) / (1024**3), places = 6
+            older - current, rows * LlamaCppBackend._COMPUTE_BUFFER_SAFETY / (1024**3), places = 6
         )
+
+    def test_tensor_mode_replicates_the_whole_buffer_on_every_device(self):
+        """Tensor mode reserves the mask, activations and output rows on each device."""
+        from core.inference.llama_cpp import LlamaCppBackend
+        for older_build in (False, True):
+            with patch.object(
+                LlamaCppBackend, "reserves_micro_batch_outputs", lambda *a, _o = older_build, **k: _o
+            ):
+                single = self._reserve(n_parallel = 2)
+                tensor = self._reserve(n_parallel = 2, n_devices = 2, tensor_parallel = True)
+            self.assertAlmostEqual(tensor, 2 * single, places = 6)
 
     def test_diffusion_reserves_nothing(self):
         """The default micro-batch is a llama-server notion: a diffusion estimate has no ubatch to
@@ -2829,6 +2853,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 n_ubatch = None,
                 n_parallel = 1,
                 per_device_tensor = False,
+                vocab_ceiling = None,
             ):
                 seen["compute_n_ubatch"] = n_ubatch
                 return 0
@@ -2840,6 +2865,8 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 cache_type_kv = None,
                 *,
                 layer_split = False,
+                flash_attn = True,
+                n_parallel = 1,
             ):
                 return 0
 
