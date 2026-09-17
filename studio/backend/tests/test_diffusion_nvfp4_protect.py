@@ -18,13 +18,11 @@ REAL_SHAPES = ((3072, 3072), (18432, 3072), (15360, 256), (5120, 3072))
 
 
 class _CapableLayer:
-    """A stand-in for a converted flashinfer Linear: weak-referenceable, which is all the
-    controller's registry asks of it."""
+    """A stand-in for a converted flashinfer Linear: weak-referenceable is all the registry asks."""
 
 
 def _capable(ctl):
-    """Register one, which is what makes a controller willing to arm. The caller must keep the
-    returned object alive: the registry is weak."""
+    """Register one, which is what lets a controller arm. Keep the result alive: the registry is weak."""
     layer = _CapableLayer()
     ctl.register_layer(layer)
     return layer
@@ -571,8 +569,8 @@ def test_a_captured_block_gets_one_graph_per_branch(monkeypatch):
 
 
 def test_an_armed_controller_with_no_protect_capable_layer_refuses_and_says_so():
-    """Only ``NVFP4FlashInferLinear`` reads the controller, so a load that stayed on torchao runs
-    W4A4 at every step. Arming there would count protected steps nothing ran."""
+    """Only ``NVFP4FlashInferLinear`` reads the controller, so a torchao load runs W4A4 at every
+    step and arming there would count protected steps nothing ran."""
 
     class _Logger:
         def __init__(self):

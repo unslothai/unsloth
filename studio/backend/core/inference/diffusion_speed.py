@@ -396,9 +396,9 @@ def compiled_shapes_are_static(pipe: Any, speed_mode: Optional[str]) -> bool:
     """Whether this load's compiled artifacts are per-(width, height, batch).
 
     ``max`` compiles regional blocks dynamic=False and U-Net whole-module is always static;
-    ``default`` DiT compiles dynamic=True (one artifact across shapes) EXCEPT for a stream-merging
-    DiT, which is static there too (see ``_STREAM_MERGING_BLOCKS``). The compile-cache layer keys on
-    this to re-save its bundle when a session hits an uncovered shape."""
+    ``default`` DiT compiles dynamic=True (one artifact across shapes) EXCEPT a stream-merging DiT,
+    static there too (see ``_STREAM_MERGING_BLOCKS``). The compile-cache layer keys on this to
+    re-save its bundle when a session hits an uncovered shape."""
     mode = normalize_speed_mode(speed_mode)
     if mode == SPEED_MAX:
         return True
@@ -422,11 +422,11 @@ def _denoiser_dits(pipe: Any) -> list:
     return dits
 
 
-# Repeated blocks MEASURED to make inductor raise CantSplit under dynamic = True: concatenating the text and image streams gives two dynamic symbols and inductor's Mod never cancels an Add over an Add, so the split is unprovable. ``dynamic = False`` is the only escape (mark_static is overridden, ``dynamic = None`` crashes on the second shape).
+# Repeated blocks MEASURED to raise inductor's CantSplit under dynamic = True: merging the text and image streams gives two dynamic symbols and Mod never cancels an Add over an Add. ``dynamic = False`` is the only escape (mark_static is overridden, ``dynamic = None`` crashes on the second shape).
 # Stream merging is necessary but NOT sufficient, so nothing joins this set on code reading alone.
 _STREAM_MERGING_BLOCKS: frozenset[str] = frozenset({"FluxSingleTransformerBlock"})
 
-# The same cat matched on source. OFF by default because it over-flags: the escape hatch for a new family that crashes before its class can be named above.
+# The same cat matched on source. OFF by default since it over-flags: an escape hatch for a new family that crashes before its class is named above.
 _STREAM_MERGE_DETECT_ENV = "UNSLOTH_STATIC_STREAM_MERGE_DETECT"
 _STREAM_MERGE_SOURCE = re.compile(
     r"torch\.cat\(\s*\[\s*(?:encoder_hidden_states\s*,\s*hidden_states"
@@ -436,8 +436,8 @@ _STREAM_MERGE_SOURCE = re.compile(
 
 @lru_cache(maxsize = None)
 def _class_merges_streams(cls: type, broad: bool = False) -> bool:
-    """Whether one repeated-block CLASS is known to need a static compile. ``broad`` is an argument
-    rather than an env read inside the body, so the memo cannot outlive it."""
+    """Whether one repeated-block CLASS is known to need a static compile. ``broad`` is an argument,
+    not an env read in the body, so the memo cannot outlive it."""
     if cls.__name__ in _STREAM_MERGING_BLOCKS:
         return True
     if not broad:
@@ -451,8 +451,8 @@ def _class_merges_streams(cls: type, broad: bool = False) -> bool:
 
 
 def _dits_merge_streams(dits: list) -> bool:
-    """Whether ANY denoiser DiT's repeated blocks merge the streams, so that load's regional
-    compile must be static. One check per distinct block class, not per instance."""
+    """Whether ANY denoiser DiT's repeated blocks merge the streams, forcing a static regional
+    compile. One check per distinct block class, not per instance."""
     broad = os.environ.get(_STREAM_MERGE_DETECT_ENV) == "1"
     seen: set[type] = set()
     for transformer in dits:

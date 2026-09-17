@@ -1075,8 +1075,8 @@ def _planned_quant_scheme(
     prequant_path: Optional[str],
 ) -> Optional[str]:
     """The scheme the load will resolve, asked with the base and the hosted-checkpoint probe that
-    gate the auto rungs: a planner that leaves either out plans one scheme and the load takes
-    another, fetching a second denoiser inline past the plan's progress, disk and cancel staging."""
+    gate the auto rungs: leave either out and the plan and the load pick different schemes, which
+    fetches a second denoiser inline past the plan's progress, disk and cancel staging."""
     return select_transformer_quant_scheme(
         target,
         requested,
@@ -1845,7 +1845,7 @@ class DiffusionBackend:
                 target,
                 getattr(fam, "name", None),
                 base_repo = base_repo,
-                # Same probe as the retry uses below, so the two cannot disagree about which rungs exist.
+                # Same probe as the retry below, so both see the same rungs.
                 has_prequant = lambda candidate: usable_prequant_source(
                     fam, candidate, path_override = path_override, base_repo = base_repo
                 )
@@ -4965,7 +4965,7 @@ class DiffusionBackend:
         check_cancelled()
         fetch_base = fetch_base or prefer_ungated_mirror(base, hf_token)
         # 1. Pre-quantized checkpoint, when one is configured for the resolved scheme.
-        # The same call every planning site makes (usable_, not resolve_), so plan and load agree.
+        # usable_, not resolve_: the same call every planning site makes, so plan and load agree.
         scheme = _planned_quant_scheme(
             fam, target, mode, base_repo = base, prequant_path = prequant_path
         )
@@ -5007,7 +5007,7 @@ class DiffusionBackend:
                 check_cancelled()
                 if transformer is not None:
                     if scheme == TQ_NVFP4:
-                        # Autotune off the request path. Only the M = 1 modulation shapes are knowable here; the resolution-dependent ones are tuned in ``GraphedForward``'s warm-up, which runs before any capture.
+                        # Autotune off the request path: only M = 1 shapes are knowable here, the rest tune in ``GraphedForward``'s warm-up, before any capture.
                         from .diffusion_nvfp4_linear import nvfp4_prewarm
                         nvfp4_prewarm(transformer, (1,), logger = logger)
                     pipe = self._assemble_pipe(
@@ -6352,7 +6352,7 @@ class DiffusionBackend:
                 if "callback_on_step_end" in call_params:
                     kwargs["callback_on_step_end"] = _on_step
 
-                # The EFFECTIVE denoise steps: img2img at strength < 1 denoises a fraction of `steps`, and a negative index in the protect schedule has to land on a step the loop reaches.
+                # EFFECTIVE denoise steps: img2img at strength < 1 denoises a fraction of `steps`, and a negative protect index must land on a step the loop reaches.
                 strength_applied = effective_request_strength(
                     strength,
                     init_pil is not None,
@@ -6420,7 +6420,7 @@ class DiffusionBackend:
                     # __call__, so a raised call leaves a residual the next forward trips over.
                     if state.transformer_cache:
                         self._reset_step_cache(state.pipe)
-                    # Armed per CHUNK, not per generate: a batch that splits runs one denoise loop each, starting again at step 0. It counts scheduler.step, which a step cache does not skip.
+                    # Armed per CHUNK, not per generate: a split batch restarts at step 0. Counts scheduler.step, which a step cache does not skip.
                     protect_ctx = protect_generation(pipe, denoise_steps, logger = logger)
                     try:
                         # inference_mode is faster than no_grad and numerically identical here.
@@ -6731,6 +6731,7 @@ class DiffusionBackend:
             "device": state.device,
             "dtype": state.dtype,
             "model_kind": state.kind,
+            "gguf_filename": state.gguf_filename,
             "gguf_variant": (
                 extract_quant_token(state.gguf_filename)
                 if state.kind == "gguf" and state.gguf_filename
@@ -6770,10 +6771,9 @@ class DiffusionBackend:
 
 
 def _transformer_quant_backend(state: Any) -> Optional[str]:
-    """Which NVFP4 kernel path the loaded denoiser is actually running, or None.
-
-    Read from the MODULE TREE rather than from what the load intended: the same 'nvfp4' scheme
-    lands on either backend depending on the device and the artifact. Never raises."""
+    """Which NVFP4 kernel path the loaded denoiser is actually running, or None. Read from the
+    MODULE TREE, not from what the load intended: the same 'nvfp4' scheme lands on either backend
+    depending on the device and the artifact. Never raises."""
     if getattr(state, "transformer_quant", None) != TQ_NVFP4:
         return None
     try:

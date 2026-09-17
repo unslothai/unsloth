@@ -5,9 +5,9 @@
 
 A policy quantises a small, named set of layers to 4 bits and leaves the rest at fp8: a memory
 lever at fp8-parity quality, not a speed win, which is why nvfp4 sits BELOW fp8 in the image auto
-order. Everything FAILS CLOSED: layers are named by exact dotted SUFFIX (never substring) and every
-rule asserts a count, so a diffusers rename raises at build time instead of shipping an artifact
-whose per-layer precisions are not the measured ones.
+order. Everything FAILS CLOSED: layers are named by exact dotted SUFFIX (never substring) and
+every rule asserts a count, so a diffusers rename raises at build time instead of shipping
+precisions nobody measured.
 """
 
 from __future__ import annotations
@@ -16,12 +16,12 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional
 
-# Spelled out rather than imported so that reading the tables costs no import.
+# Spelled out rather than imported, so reading the tables costs no import.
 PRECISION_NVFP4 = "nvfp4"
 PRECISION_FP8 = "fp8"
 PRECISION_BF16 = "bf16"
 
-# The kind describes the SHAPE of the block, so it is versioned separately from the policy ids.
+# The kind describes the block's SHAPE, so it versions separately from the policy ids.
 NVFP4_POLICY_KEY = "nvfp4_policy"
 NVFP4_POLICY_KIND = "unsloth_nvfp4_layer_policy_v1"
 
@@ -52,8 +52,8 @@ class Rule:
 @dataclass(frozen = True)
 class Admit:
     """A linear the shared filter rejects that this policy quantises anyway. ``shape`` is asserted
-    exactly, since the floor is overridden for one measured layer; dropping the floor instead would
-    admit ``t_embedder.mlp.*``, which must stay bf16 (``TimestepEmbedder.forward`` reads
+    exactly, since the floor is overridden for one measured layer; dropping the floor would admit
+    ``t_embedder.mlp.*``, which must stay bf16 (``TimestepEmbedder.forward`` reads
     ``mlp[0].weight.dtype``)."""
 
     suffix: str
@@ -142,9 +142,9 @@ def policy_expected_counts(policy: NVFP4Policy) -> dict:
 
 
 def resolve_policy(family: Any, base_repo: Any = None) -> Optional[NVFP4Policy]:
-    """The policy for ``(family, base_repo)``, or None. Keyed on the BASE, not the family, and an
-    unnamed base answers None even when the family has exactly one policy today: otherwise the day
-    a second base is gated every anonymous load picks up the first one's precisions."""
+    """The policy for ``(family, base_repo)``, or None. Keyed on the BASE, and an unnamed base
+    answers None even where the family has one policy today: otherwise the day a second base is
+    gated every anonymous load picks up the first one's precisions."""
     fam = str(family or "").strip().lower()
     if not fam:
         return None
@@ -245,7 +245,7 @@ def policy_metadata(
 ) -> dict:
     """The metadata fragment an offline builder merges in after applying ``policy``. Sorted, so two
     builds diff byte for byte, and the fqn list is recorded rather than re-derived from a rule that
-    may have drifted."""
+    may have drifted since."""
     counts = Counter(assignment.values())
     return {
         NVFP4_POLICY_KEY: {
@@ -309,7 +309,7 @@ def policy_metadata_error(metadata: Any) -> Optional[str]:
     return None
 
 
-# By class NAME: torchao's subclasses are re-exported under several module paths and move between releases, and asking for the name keeps this module torch-lazy.
+# By class NAME: torchao re-exports these under several paths that move between releases, and the name keeps this module torch-lazy.
 _EXPECTED_WEIGHT_CLASS = {
     PRECISION_NVFP4: "NVFP4Tensor",
     PRECISION_FP8: "Float8Tensor",
@@ -346,10 +346,10 @@ def quantize_with_policy(
     fast_accum: Optional[bool] = None,
     logger: Any = None,
 ) -> dict:
-    """Apply ``policy`` to ``transformer`` in place. Returns the assignment it applied. Two
+    """Apply ``policy`` to ``transformer`` in place; returns the assignment applied. Two
     ``quantize_`` passes over disjoint fqn sets, NVFP4 first: after pass 1 those layers hold no
-    plain ``nn.Parameter``, so pass 2 requires one and no layer is quantised twice. A raise leaves
-    the module partly quantised and it must be discarded."""
+    plain ``nn.Parameter``, so pass 2 requires one and nothing is quantised twice. A raise leaves
+    the module partly quantised, so discard it."""
     import torch
     from torchao.quantization import quantize_
 
