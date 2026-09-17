@@ -198,7 +198,11 @@ class TestRunShRocm:
         are the device plus the runtime's opt-in, and librocdxg off the host (its cmake
         build needs Windows SDK headers, so no Linux image build can carry it)."""
         argv, stderr = _run_sh(
-            tmp_path, ["--rocm", "true"], kfd = False, dxg = True, librocdxg = True,
+            tmp_path,
+            ["--rocm", "true"],
+            kfd = False,
+            dxg = True,
+            librocdxg = True,
         )
         assert "/dev/dxg" in argv, argv
         assert "/dev/kfd" not in argv, argv
@@ -488,7 +492,9 @@ class TestRocmEntrypoint:
         lib.mkdir()
         (lib / "librocdxg.so.1").write_text("")
         rc, ran, err = _entrypoint(
-            tmp_path, kfd = False, dxg = True,
+            tmp_path,
+            kfd = False,
+            dxg = True,
             env_extra = {"UNSLOTH_ROCM_DXG_LIBDIRS": str(lib)},
         )
         assert rc == 0 and ran, err
@@ -497,7 +503,9 @@ class TestRocmEntrypoint:
     def test_dxg_without_the_bridge_library_refuses(self, tmp_path):
         """/dev/dxg alone cannot reach the card: the HSA runtime needs librocdxg."""
         rc, ran, err = _entrypoint(
-            tmp_path, kfd = False, dxg = True,
+            tmp_path,
+            kfd = False,
+            dxg = True,
             env_extra = {"UNSLOTH_ROCM_DXG_LIBDIRS": str(tmp_path / "empty")},
         )
         assert rc == 1 and not ran
