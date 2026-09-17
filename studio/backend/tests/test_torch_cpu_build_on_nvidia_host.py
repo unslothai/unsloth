@@ -52,6 +52,13 @@ def _shared_setup_1(monkeypatch, tmp_path):
     import sys
 
     monkeypatch.setitem(sys.modules, "torch", _fake_torch("cpu"))
+    # The fake above is only READ while the import is known good: TORCH_IMPORT_ERROR is a
+    # module global _has_torch() writes as a side effect, and _torch_reports_an_xpu_runtime()
+    # / _torch_reports_a_hip_runtime() / classify_torch_build() read the wheel off DISK
+    # whenever it is set. A sibling that watched a broken import leaves it non-None for the
+    # rest of the xdist worker, so pin it here rather than inherit it, as
+    # cpu_torch_on_an_nvidia_host already does.
+    monkeypatch.setattr(hw, "TORCH_IMPORT_ERROR", None)
     monkeypatch.setattr(hw.sys, "prefix", str(tmp_path))
     return sys
 
@@ -1225,6 +1232,46 @@ def test_a_nameless_intel_card_counts_once_xpu_was_actually_chosen(monkeypatch, 
     assert hw._devices_that_can_establish_a_mismatch(nameless) == nameless
 
 
+def test_a_leaked_import_error_is_what_stops_the_fake_torch_being_read(monkeypatch, tmp_path):
+    """Why _shared_setup_1 pins TORCH_IMPORT_ERROR: the assertion above is not self-contained.
+
+    _torch_reports_an_xpu_runtime() consults sys.modules only while that global is None;
+    set, it reads the wheel off disk and the fake +xpu torch above is never looked at, so
+    the nameless Intel card stops counting and the last assertion of the previous test
+    reads ``[] == [{...}]``. Nothing in this file writes the global -- _has_torch() does,
+    as a side effect, from whichever test in the xdist worker last watched an import fail,
+    which is why it went red under ``-n 4`` on one shard and green in every serial run.
+    """
+    sys = _shared_setup_1(monkeypatch, tmp_path)
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
+    (tmp_path / "unsloth_install_manifest.json").write_text(
+        '{"schema": 1, "expected_torch_tag": "cpu"}', encoding = "utf-8"
+    )
+    # The on-disk arm is pinned to a CPU wheel, so this does not turn on what torch the
+    # host running the suite happens to have installed.
+    monkeypatch.setattr(hw, "_installed_torch_label_on_disk", lambda: "2.11.0+cpu")
+    monkeypatch.setattr(
+        hw,
+        "_installed_torch_markers_on_disk",
+        lambda: {"cuda": None, "hip": None, "xpu": None},
+    )
+
+    nameless = [{"vendor": "intel", "name": None, "index": 0}]
+    xpu_torch = _fake_torch("cpu")
+    xpu_torch.__version__ = "2.9.0+xpu"
+    monkeypatch.setitem(sys.modules, "torch", xpu_torch)
+
+    # Pinned, as _shared_setup_1 leaves it: the fake in sys.modules is what answers.
+    assert hw._torch_reports_an_xpu_runtime() is True
+    assert hw._devices_that_can_establish_a_mismatch(nameless) == nameless
+
+    # Exactly what a sibling's _has_torch() leaves behind, and the verdict inverts.
+    monkeypatch.setattr(hw, "TORCH_IMPORT_ERROR", "OSError('undefined symbol: cudaGetDeviceCount')")
+    assert hw._torch_reports_an_xpu_runtime() is False
+    assert hw._devices_that_can_establish_a_mismatch(nameless) == []
+
+
 def test_an_accelerator_that_came_back_retires_the_cached_verdict(monkeypatch):
     """Only reason and detail are refreshed here; DEVICE and CHAT_ONLY are not.
 
@@ -1480,6 +1527,11 @@ def test_an_unimportable_torch_still_reports_the_cards(monkeypatch, tmp_path):
 
     monkeypatch.delitem(sys.modules, "torch", raising = False)
     monkeypatch.setattr(sys, "meta_path", [_Finder(), *sys.meta_path])
+    # _has_torch() below writes hw.TORCH_IMPORT_ERROR as a side effect and nothing puts it
+    # back, so snapshot-restore it: left set, it sends every later test in this worker down
+    # the on-disk arm of the same three readers. Snapshot rather than None -- nothing here
+    # owns the value.
+    monkeypatch.setattr(hw, "TORCH_IMPORT_ERROR", hw.TORCH_IMPORT_ERROR)
     # _has_torch() is NOT forced here: it reports False for a wheel that will not import,
     # and the early return on it used to keep this host from the on-disk fallback below.
     assert hw._has_torch() is False, "the premise: an unimportable torch reads as absent"
