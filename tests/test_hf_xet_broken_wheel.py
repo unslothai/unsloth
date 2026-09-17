@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.machinery
+import importlib.metadata
 import importlib.util
 import platform
 import struct
@@ -177,6 +178,11 @@ def _install_fake_environment(
     monkeypatch.setattr(IF.importlib, "import_module", fake_import_module)
 
 
+def _raise_package_not_found(name):
+    """What importlib.metadata.version() does for a distribution that is not installed."""
+    raise importlib.metadata.PackageNotFoundError(name)
+
+
 _WRONG_ARCHITECTURE = ImportError(
     "DLL load failed while importing hf_xet: %1 is not a valid Win32 application."
 )
@@ -231,6 +237,64 @@ def test_does_not_fire_when_hf_xet_is_absent(monkeypatch):
     _install_fake_environment(monkeypatch, hf_xet_present = False, import_error = None)
 
     IF.fix_broken_hf_xet_wheel()
+    assert "HF_HUB_DISABLE_XET" not in IF.os.environ
+
+
+def test_absence_is_decided_by_real_metadata_not_by_a_stub(monkeypatch):
+    """REGRESSION. The absent case must survive the REAL `_hf_xet_distribution_is_installed`.
+
+    Every other no-fire test replaces that helper with a lambda, so a helper that answered True
+    for a package nobody installed would leave them all green while a user with no hf_xet at all
+    got the "installed but cannot be imported" warning and HF_HUB_DISABLE_XET=1 exported to every
+    child process. Here the helper is left alone and importlib.metadata is asked for real.
+    """
+    monkeypatch.delenv("HF_HUB_DISABLE_XET", raising = False)
+    monkeypatch.delitem(IF.sys.modules, "hf_xet", raising = False)
+    monkeypatch.setattr(
+        IF, "importlib_version", _raise_package_not_found, raising = False
+    )
+
+    real_find_spec = importlib.util.find_spec
+
+    def fake_find_spec(name, package = None):
+        if name == "huggingface_hub":
+            return importlib.machinery.ModuleSpec("huggingface_hub", None)
+        if name == "hf_xet":
+            return None
+        return real_find_spec(name, package)
+
+    monkeypatch.setattr(importlib.util, "find_spec", fake_find_spec)
+
+    assert IF._hf_xet_distribution_is_installed() is False
+    IF.fix_broken_hf_xet_wheel()
+    assert "HF_HUB_DISABLE_XET" not in IF.os.environ
+
+
+def test_an_imported_hf_xet_short_circuits_before_any_lookup(monkeypatch):
+    """REGRESSION. hf_xet already in sys.modules must return before touching the import system.
+
+    Nothing can be fixed once the module is loaded, so the early return is what keeps repeat calls
+    free. Without it every call would walk find_spec and the distribution metadata again, which no
+    behavioural assertion elsewhere would notice, and raising from find_spec would not show it
+    either since the lookup sits inside a `except Exception: return`. So the calls are recorded
+    and the assertion is that there were none.
+    """
+    monkeypatch.delenv("HF_HUB_DISABLE_XET", raising = False)
+    monkeypatch.setitem(IF.sys.modules, "hf_xet", types.ModuleType("hf_xet"))
+
+    lookups = []
+
+    def recording_find_spec(name, package = None):
+        lookups.append(name)
+        return None
+
+    monkeypatch.setattr(importlib.util, "find_spec", recording_find_spec)
+    monkeypatch.setattr(
+        IF, "_hf_xet_distribution_is_installed", lambda: lookups.append("metadata") or False
+    )
+
+    IF.fix_broken_hf_xet_wheel()
+    assert lookups == []
     assert "HF_HUB_DISABLE_XET" not in IF.os.environ
 
 
