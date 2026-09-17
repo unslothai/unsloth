@@ -27,14 +27,23 @@ def growth(
     factor: int = 4,
     repeats: int = 3,
     abort_over_s: float = None,
+    budget_s: float = None,
     clock = None,
 ):
     """How much more `factor` times the input costs.
 
     Returns (ratio, best_big_seconds, big_result, pairs_completed). `pairs_completed` is
-    less than `repeats` only when `abort_over_s` cut the loop short, and a caller that
-    treats the ratio as a verdict has to look at it: one aborted pair whose small leg was
-    also slow can report a ratio under the bar from a sample that never finished.
+    less than `repeats` only when `abort_over_s` or `budget_s` cut the loop short, and a
+    caller that treats the ratio as a verdict has to look at it: one aborted pair whose
+    small leg was also slow can report a ratio under the bar from a sample that never
+    finished.
+
+    `abort_over_s` bounds ONE BIG LEG; `budget_s` bounds THE WHOLE CALL. They are not the
+    same guard and neither implies the other: `repeats` legs each just under `abort_over_s`
+    is `repeats` times the cost that one leg was allowed, which is how a sample sized from a
+    previous reading still overran the runner's per-test timeout. This one is measured, not
+    predicted, so a sample that turns out slower than the reading it was sized from stops
+    when the time is gone rather than when someone's estimate said it would.
 
     `build(n)` makes an input of size n and `run(text)` is the thing being measured.
 
@@ -88,6 +97,7 @@ def growth(
 
     small_text, big_text = build(units), build(units * factor)
     ratios, big, result = [], None, None
+    started = read_clock()
     for _ in range(repeats):
         small_elapsed, _ = once(small_text)
         big_elapsed, result = once(big_text)
@@ -101,6 +111,12 @@ def growth(
         # big leg is the minutes-long one, so finishing all `repeats` of it to report a
         # number the caller will reject anyway is the slow way to reach the same verdict.
         if abort_over_s is not None and big_elapsed > abort_over_s:
+            break
+        # Whole-call bound, checked on the same pair boundary so a stopped sample always
+        # holds a whole number of ratios. Nothing is raised here: `pairs_completed` says the
+        # sample is short and the verdict belongs to the caller, which is the same contract
+        # `abort_over_s` already has.
+        if budget_s is not None and read_clock() - started >= budget_s:
             break
 
     return _statistics.median(ratios), big, result, len(ratios)
@@ -161,6 +177,14 @@ def assert_linear(
         # this guard exists to name. Contention is the same size in every pair, so a shorter
         # confirmation is a weaker vote but still a reading; the small leg is estimated from
         # the ratio already measured, which is the only reading of it available here.
+        #
+        # The sizing below is an ESTIMATE and is deliberately not the guard. It is built from
+        # the first sample's BEST big leg and MEDIAN ratio, which are readings of different
+        # pairs, so a sample of 59s, 59s and 1s big legs offers a 1s pair cost and authorises
+        # all seven -- and if the confirmation's legs then come in at 40s it overruns anyway.
+        # The estimate exists to refuse a retry that obviously cannot fit and to keep a green
+        # run cheap; `budget_s` below is what actually stops the spending, because it is
+        # measured while the sample runs rather than predicted before it starts.
         pair_cost = big * (1.0 + 1.0 / max(ratio, 1.0))
         affordable = repeats_on_retry if pair_cost <= 0 else int(confirm_budget_s // pair_cost)
         # Below three pairs a median is not outvoting anything, so there is nothing worth
@@ -178,6 +202,7 @@ def assert_linear(
             factor,
             repeats = pairs_wanted,
             abort_over_s = budget,
+            budget_s = confirm_budget_s,
             clock = clock,
         )
         # The confirmation stands on its OWN reading, not on min(big, big_again). Taking the
@@ -190,7 +215,8 @@ def assert_linear(
         ), f"{label} path took {big_again:.1f}s on {units * factor} units while re-measuring"
         assert pairs == pairs_wanted, (
             f"{label} path: the confirmation stopped after {pairs} of {pairs_wanted} pairs, "
-            "so its ratio is not a reading of anything"
+            f"either on a big leg over {budget:.0f}s or on the {confirm_budget_s:.0f}s the whole "
+            "sample is allowed, so its ratio is not a reading of anything"
         )
         assert confirm < tolerance, (
             f"{label} path is not linear: {factor}x the input cost {confirm:.1f}x the time "

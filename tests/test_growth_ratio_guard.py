@@ -174,6 +174,28 @@ def test_a_confirmation_it_can_only_partly_afford_is_still_taken():
     assert calls["n"] == 6 + 10, f"the confirmation ran {(calls['n'] - 6) // 2} pairs"
 
 
+def test_a_confirmation_sized_from_a_mixed_estimate_still_stops_at_the_budget():
+    """Sizing the retry from the first sample is an estimate; the budget has to be measured.
+
+    The estimate reads the BEST big leg and the MEDIAN ratio, and those come from different
+    pairs. A first sample of 59s, 59s and 1s big legs against 1s small legs therefore offers
+    a one-second pair cost alongside a ratio of 59, and authorises all seven pairs. If the
+    confirmation's own legs then arrive at 40s, seven of them is about 290s, which on top of
+    the first sample is past the `--timeout=330` those CI invocations pass.
+
+    So the elapsed deadline inside the sample is what stops it, not the prediction made
+    before it started: the loop gives up after three pairs and the run fails with a sentence
+    about an unfinished confirmation rather than with the runner's timeout.
+    """
+    stalls = {0: 0.998, 1: 58.992, 2: 0.998, 3: 58.992, 4: 0.998, 5: 0.992}
+    for index in range(6, 6 + 2 * 7):
+        stalls[index] = 0.998 if index % 2 == 0 else 39.992
+    run, clock, calls = _shaped(1.0, stalls = stalls)
+    with pytest.raises(AssertionError, match = "confirmation stopped after"):
+        assert_linear(run, _build, "mixed estimate", 2, clock = clock)
+    assert calls["n"] == 6 + 6, f"the confirmation ran on past its budget: {calls['n']}"
+
+
 def test_an_aborted_confirmation_is_not_accepted_as_one():
     """A confirmation that stopped after one pair is not a reading, however low its ratio.
 
