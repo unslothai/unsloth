@@ -53,6 +53,8 @@ GGUF_QUANT_PREFERENCE = [
     "UD-IQ1_S",
     "Q4_K_M",
     "Q4_K_S",
+    "MXFP4_MOE",
+    "MXFP4",
     "Q5_K_M",
     "Q5_K_S",
     "Q6_K",
@@ -107,7 +109,7 @@ def is_imatrix_filename(path: str) -> bool:
 
 
 # dspark and dflash are the same DeepSeek V4 Flash drafter: the folder it ships in and the architecture it reports.
-_DRAFTER_KINDS = ("mtp", "dspark", "dflash")
+_DRAFTER_KINDS = ("mtp", "dspark", "dflash", "eagle3")
 
 # Directories only: mtp/ and dspark/ are always a publisher's companion folder, while dflash/ is a family name a user picks for real weights.
 _DRAFTER_DIR_KINDS = ("mtp", "dspark")

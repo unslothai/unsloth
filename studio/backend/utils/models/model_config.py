@@ -1780,7 +1780,7 @@ def _is_imatrix_path(path: str) -> bool:
 
 
 # Mirrors hub.utils.gguf._DRAFTER_KINDS. dflash/ holds real weights, so it is a drafter by prefix only.
-_DRAFTER_KINDS = ("mtp", "dspark", "dflash")
+_DRAFTER_KINDS = ("mtp", "dspark", "dflash", "eagle3")
 _DRAFTER_DIR_KINDS = ("mtp", "dspark")
 
 
@@ -2616,6 +2616,8 @@ _GGUF_QUANT_PREFERENCE = [
     # Standard quants (fallback for non-Unsloth repos)
     "Q4_K_M",
     "Q4_K_S",
+    "MXFP4_MOE",
+    "MXFP4",
     "Q5_K_M",
     "Q5_K_S",
     "Q6_K",

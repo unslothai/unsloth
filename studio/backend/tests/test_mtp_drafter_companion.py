@@ -86,6 +86,11 @@ DRAFTER_CASES = [
     ("laguna-xs21-dflash-q4.gguf", False),
     ("xdspark/model.gguf", False),
     ("dspark/README.md", False),
+    ("eagle3-gpt-oss-20b-Q8_0.gguf", True),
+    ("EAGLE3-gpt-oss-20b-BF16.gguf", True),
+    ("quants/eagle3-gpt-oss-20b-Q8_0.gguf", True),
+    ("Llama-3.1-8B-Eagle3-Q4_K_M.gguf", False),
+    ("eagle3/Llama-3.1-8B-Eagle3-Q4_K_M.gguf", False),
 ]
 
 
@@ -154,6 +159,39 @@ def test_variant_plans_carry_drafter_as_companion():
     assert q4.main_size_bytes == 4_000
     # Download size = main + mmproj + drafter.
     assert q4.download_size_bytes == 4_600
+
+
+GPT_OSS_FILES = [
+    "eagle3-gpt-oss-20b-BF16.gguf",
+    "eagle3-gpt-oss-20b-Q8_0.gguf",
+    "gpt-oss-20b-MXFP4.gguf",
+]
+
+
+def test_eagle3_draft_head_is_not_a_variant_or_the_default():
+    from hub.utils.gguf import is_reclaimable_drafter_path, pick_best_gguf
+    from utils.models.model_config import _pick_best_gguf
+
+    assert pick_best_gguf(GPT_OSS_FILES) == "gpt-oss-20b-MXFP4.gguf"
+    assert pick_best_gguf([name.lower() for name in GPT_OSS_FILES]) == "gpt-oss-20b-mxfp4.gguf"
+
+    plans = build_gguf_variant_plans(
+        [_sib(name, 1_000, f"sha-{i}") for i, name in enumerate(GPT_OSS_FILES)]
+    )
+    assert set(plans) == {"mxfp4"}
+    assert plans["mxfp4"].target_filenames == ("gpt-oss-20b-MXFP4.gguf",)
+
+    assert is_reclaimable_drafter_path("eagle3-gpt-oss-20b-Q8_0.gguf") is False
+    assert _pick_best_gguf(["model-BF16.gguf", "model-MXFP4_MOE.gguf"]) == "model-MXFP4_MOE.gguf"
+
+
+@pytest.mark.parametrize("mxfp4", ["model-MXFP4.gguf", "model-MXFP4_MOE.gguf"])
+def test_mxfp4_ranks_with_the_four_bit_quants(mxfp4):
+    from hub.utils.gguf import pick_best_gguf
+
+    assert pick_best_gguf(["model-BF16.gguf", "model-Q8_0.gguf", mxfp4]) == mxfp4
+    assert pick_best_gguf([mxfp4, "model-Q4_K_M.gguf"]) == "model-Q4_K_M.gguf"
+    assert pick_best_gguf([mxfp4, "model-UD-Q4_K_XL.gguf"]) == "model-UD-Q4_K_XL.gguf"
 
 
 def test_baked_in_repo_plans_unchanged():
