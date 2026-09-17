@@ -553,8 +553,8 @@ class TestAToolResultScreenshotIsNotPricedByItsBase64:
 
 class TestEveryBlockTheTranslationDropsIsPricedTheSameWay:
     """`tool_result` content is an untyped list, so an image is only one of the block types
-    that reach it. A document, a search result and a nested `tool_result` are dropped by
-    the same translation filter, and each was charged its base64 as prompt text -- the
+    that reach it. A PDF document, a malformed search result and a nested `tool_result` send
+    at most a short note, and each was charged its base64 as prompt text -- the
     whole of a 32768-token cache for a request that sends a couple of hundred characters.
     """
 
@@ -651,8 +651,12 @@ class TestEveryBlockTheTranslationDropsIsPricedTheSameWay:
         document = {
             "type": "document",
             "source": {"type": "text", "media_type": "text/plain", "data": "MEMO-BODY " * 200},
+            "title": "Memo",
         }
-        for block in (search_result, document):
+        for block, header in (
+            (search_result, "Title: Vault\nSource: kb://vault\n"),
+            (document, "Title: Memo\n"),
+        ):
             for payload in (
                 self._request(block, text_first = True),
                 AnthropicMessagesRequest(
@@ -666,7 +670,7 @@ class TestEveryBlockTheTranslationDropsIsPricedTheSameWay:
                 estimate_messages, image_parts = _openai_llama_admission_messages_for_estimate(
                     payload.messages
                 )
-                assert rendered.startswith(("Title: Vault", "MEMO-BODY"))
+                assert rendered.startswith(header)
                 assert rendered in str(estimate_messages).replace("\\n", "\n")
                 assert image_parts == 0
                 cost = _openai_llama_admission_tokens(payload, budget = 1_000_000, capacity = 4)

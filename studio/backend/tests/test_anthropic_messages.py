@@ -1147,6 +1147,7 @@ class TestAnthropicMessagesToOpenAI:
                             "type": "document",
                             "source": {"type": "text", "media_type": "text/plain", "data": "Memo."},
                         },
+                        {"type": "document", "source": {"type": "content", "content": "Notes."}},
                         {"type": "text", "text": "What is the code?"},
                     ],
                 }
@@ -1157,7 +1158,7 @@ class TestAnthropicMessagesToOpenAI:
             {
                 "role": "user",
                 "content": "Title: Vault\nSource: kb://vault\nPURPLE-ELEPHANT-42\n"
-                "Memo.\nWhat is the code?",
+                "Memo.\nNotes.\nWhat is the code?",
             }
         ]
 
@@ -4023,6 +4024,36 @@ def test_user_unknown_block_rejected_not_silently_dropped():
                 {"role": "user", "content": [{"type": "container_upload", "file_id": "f"}]},
             ],
         )
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        {"type": "base64", "media_type": "application/pdf", "data": "JVBERi0="},
+        {"type": "url", "url": "https://example.com/a.pdf"},
+        {"type": "file", "file_id": "file_1"},
+    ],
+)
+def test_user_unreadable_document_rejected_outside_tool_results(source):
+    from pydantic import ValidationError
+
+    document = {"type": "document", "source": source}
+    with pytest.raises(ValidationError, match = "unsupported document source type"):
+        AnthropicMessagesRequest(
+            model = "x",
+            max_tokens = 16,
+            messages = [{"role": "user", "content": [{"type": "text", "text": "Read"}, document]}],
+        )
+    AnthropicMessagesRequest(
+        model = "x",
+        max_tokens = 16,
+        messages = [
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "t1", "content": [document]}],
+            }
+        ],
+    )
 
 
 def test_user_translatable_blocks_still_accepted():

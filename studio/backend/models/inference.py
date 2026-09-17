@@ -3296,9 +3296,9 @@ class AnthropicToolResultBlock(BaseModel):
         return "" if v is None else v
 
 
-# Block types the converter translates explicitly. Anything else (thinking / redacted_thinking, a
-# provider block a resumed session replays, or a future type) is accepted as an unknown block and
-# dropped by the converter, rather than 400-ing the whole request on strict validation.
+# Block types with typed models. Anything else (a search_result or document, a provider block a
+# resumed session replays, or a future type) is accepted as an unknown block, which the converter
+# renders if it can and otherwise drops, rather than 400-ing the whole request on strict validation.
 _KNOWN_ANTHROPIC_BLOCK_TYPES = frozenset(
     {"text", "image", "tool_use", "tool_result", "thinking", "redacted_thinking"}
 )
@@ -3419,6 +3419,20 @@ class AnthropicMessage(BaseModel):
                 # value would raise TypeError, escaping as a 500 instead of a clean 400.
                 if not isinstance(btype, str) or btype not in _USER_ANTHROPIC_BLOCK_TYPES:
                     raise ValueError(f"unsupported content block type {btype!r} in a user message")
+                # A PDF, url or file document cannot be read. Only inside a tool result, which
+                # clients resend with history, does it degrade to a note instead of a 400.
+                if btype == "document":
+                    source = (
+                        block.get("source")
+                        if isinstance(block, dict)
+                        else getattr(block, "source", None)
+                    )
+                    stype = source.get("type") if isinstance(source, dict) else None
+                    if stype not in ("text", "content"):
+                        raise ValueError(
+                            f"unsupported document source type {stype!r}: only text and content "
+                            "documents can be read"
+                        )
         return data
 
 
