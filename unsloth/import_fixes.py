@@ -935,18 +935,36 @@ def _rope_scaling_setter_is_patched(owner = None):
     return bool(getattr(prop.fset, _ROPE_SCALING_PATCH_FLAG, False))
 
 
-def _rope_parameters_are_per_layer(config, parameters):
-    """Is this a per-layer-type rope dict rather than one global one?
+_ROPE_LABELS_UNSET = object()
 
-    transformers' own discriminator: per-layer exactly when the config declares
-    ``layer_types`` and every key is one of them. A global key written into such a dict
-    makes transformers read the whole thing as flat, so this is asked first.
+
+def _rope_nesting_labels(config):
+    """The keys ``rope_parameters`` is nested under, as transformers resolves them.
+
+    ``standardize_rope_params`` reads ``_rope_type_labels`` and only falls back to
+    ``layer_types``, because the two are not always the same axis: DeepSeek V4 keys its
+    rope by rope-type label (``main`` / ``compress``) while its ``layer_types`` names
+    attention blocks. Reading only ``layer_types`` mistook that config for a flat one.
     """
-    layer_types = getattr(config, "layer_types", None)
-    if not layer_types or not isinstance(parameters, dict) or not parameters:
+    labels = getattr(config, "_rope_type_labels", _ROPE_LABELS_UNSET)
+    if labels is _ROPE_LABELS_UNSET:
+        labels = getattr(config, "layer_types", None)
+    return labels
+
+
+def _rope_parameters_are_per_layer(config, parameters):
+    """Is this a nested per-label rope dict rather than one global one?
+
+    transformers' own discriminator, spelled the same way: nested exactly when the
+    config declares nesting labels and the keys are NOT disjoint from them. A global key
+    written into such a dict makes transformers read the whole thing as flat, so this is
+    asked first.
+    """
+    labels = _rope_nesting_labels(config)
+    if not labels or not isinstance(parameters, dict) or not parameters:
         return False
     try:
-        return set(parameters.keys()).issubset(set(layer_types))
+        return not set(parameters.keys()).isdisjoint(set(labels))
     except Exception:
         return False
 
@@ -954,10 +972,14 @@ def _rope_parameters_are_per_layer(config, parameters):
 def _rope_theta_snapshot(config):
     """The base(s) ``rope_parameters`` holds right now, in the shape it holds them.
 
-    A flat dict has one base. A per-layer dict has one per layer type (5.5's
-    ``T5Gemma2DecoderConfig``: 10000.0 sliding, 1000000.0 full), returned as
-    ``{layer_type: base}``; the outer dict has no ``rope_theta``, which is how both
-    bases used to be lost.
+    A flat dict has one base. A nested dict has one per label (``T5Gemma2DecoderConfig``:
+    10000.0 sliding, 1000000.0 full; ``DeepseekV4Config``: 10000.0 main, 160000.0
+    compress), returned as ``{label: base}``; the outer dict has no ``rope_theta``, which
+    is how those bases used to be lost.
+
+    A MAPPING return therefore means "these bases live one level down", and it is only
+    ever valid one level down. ``_carry_rope_theta_across_assignment`` must never let it
+    reach the scalar ``rope_theta`` slot.
     """
     parameters = getattr(config, "rope_parameters", None)
     if not isinstance(parameters, dict):
@@ -977,6 +999,11 @@ def _carry_per_layer_rope_theta(config, parameters, carried):
     A top-level ``rope_theta`` would make the dict read as flat, so the base goes back
     into each nested entry. Copies throughout, never the caller's dicts in place. An
     entry naming its own base is left alone.
+
+    ``None`` means "nothing was written", for any of three reasons: ``carried`` is not a
+    nested snapshot, every entry already names its own base, or the write was refused.
+    The caller distinguishes only the first, so it must not read ``None`` as "fall
+    through and treat ``carried`` as a scalar".
     """
     if not isinstance(carried, dict) or not carried:
         return None
@@ -1014,7 +1041,12 @@ def _carry_rope_theta_across_assignment(config, carried):
 
     The base is written to ``rope_parameters`` where 5.x keeps it, so the answer does
     not depend on ``standardize_rope_params`` running first and ``validate_rope`` and
-    ``save_pretrained`` see a complete dict. A per-layer dict is left alone.
+    ``save_pretrained`` see a complete dict. A nested per-label dict is left alone.
+
+    A base frequency is a NUMBER. ``carried`` may be a ``{label: base}`` mapping, which
+    is meaningful only one level down, so it is either restored there, collapsed to the
+    single base every label agreed on, or dropped. It is never written to the scalar
+    ``rope_theta`` slot.
 
     The config's ``rope_theta`` attribute (the 4.x slot) is written only when it is the
     only slot that can hold the base, which is the non-dict replacement of #2405, or
@@ -1030,6 +1062,15 @@ def _carry_rope_theta_across_assignment(config, carried):
         restored = _carry_per_layer_rope_theta(config, parameters, carried)
         if restored is not None:
             return restored
+        if isinstance(carried, dict):
+            # Nested parameters carrying nested bases, and nothing was restored: either
+            # every entry already names its own base (the common no-op, a config assigned
+            # its own rope_parameters back) or the write was refused. Either way the
+            # mapping belongs one level down, and there is no scalar to fall through
+            # with. Falling through would put the MAPPING in config.rope_theta, which
+            # serializes {"sliding_attention": 10000.0, "full_attention": 1000000.0}
+            # where a number belongs and makes a previously identical save differ.
+            return None
     elif isinstance(carried, dict):
         # Per-layer parameters replaced by a FLAT dict. Passing the mapping through would
         # write a dict where a number belongs. One base stands for it only when every
@@ -1046,6 +1087,15 @@ def _carry_rope_theta_across_assignment(config, carried):
     if base is None:
         base = carried
     if base is None:
+        return None
+    if isinstance(base, dict):
+        # Belt and braces for the defect above: a base frequency is a number. Whatever
+        # shape the config arrived in, a mapping is never written to the scalar slot.
+        # Reachable a second way: a config SAVED by the release that had the defect
+        # carries a mapping in its own rope_theta. Refuse and change nothing rather than
+        # pick a different candidate -- transformers reads that stale mapping straight
+        # into rope_parameters with or without us, so anything written here would be
+        # papering over a config that needs fixing at rest.
         return None
 
     readable = current is not None
