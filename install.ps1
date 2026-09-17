@@ -2994,6 +2994,13 @@ exit 1
     function Invoke-StudioPythonShellIconRefresh {
         param([string[]]$Paths = @(), [string]$Exe = "")
         if (-not ($env:OS -eq "Windows_NT")) { return $false }
+        # The kill switch first, and before the caller's interpreter rather than only inside
+        # discovery. UNSLOTH_EARLY_PYTHON_PROBE=0 means "do not spawn an interpreter on this
+        # host", which is a statement about the host and not about how the path was obtained.
+        # Get-StudioEarlyPython honours it, so routing around discovery to fix the fresh-install
+        # case also routed around the switch, and a host that had opted out got a child process
+        # anyway. The refresh is cosmetic, so opting out costs a stale icon and nothing else.
+        if ("$($env:UNSLOTH_EARLY_PYTHON_PROBE)".Trim() -eq "0") { return $false }
         # The caller's interpreter wins over discovery, and on the fresh-install case it is the
         # only one that works. Get-StudioEarlyPython latches its answer on first use, and its
         # first use is the install lock, which runs before Python is installed. On a host that

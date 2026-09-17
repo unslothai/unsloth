@@ -147,6 +147,34 @@ try {
     Check "New-StudioShortcuts passes its own interpreter to the refresh" (
         $shortcutFn -match '(?s)Invoke-StudioPythonShellIconRefresh[^\r\n]*[\r\n\s`]*-Paths \$createdShortcutPaths -Exe \$ManagedPythonPath')
 
+    # The kill switch must still win, even with an interpreter handed straight in.
+    #
+    # UNSLOTH_EARLY_PYTHON_PROBE=0 means "do not spawn an interpreter on this host". That is a
+    # statement about the host, not about how the path was obtained, and Get-StudioEarlyPython
+    # honours it. Passing $ManagedPythonPath to fix the fresh-install case routed around
+    # discovery and therefore around the switch, so a host that had opted out got a child process
+    # anyway. Driven both ways, because the fix is one line and easy to lose.
+    $savedProbe = $env:UNSLOTH_EARLY_PYTHON_PROBE
+    try {
+        $env:UNSLOTH_EARLY_PYTHON_PROBE = "0"
+        $script:RunnerCalls = 0
+        Check "with the probe disabled an explicit interpreter is still refused" (
+            (Invoke-StudioPythonShellIconRefresh -Paths $links -Exe "C:\Studio\venv\Scripts\python.exe") -eq $false)
+        Check "and no child process was started" ($script:RunnerCalls -eq 0)
+        # Whitespace and other values must not accidentally disable it.
+        $env:UNSLOTH_EARLY_PYTHON_PROBE = " 0 "
+        Check "the switch is read with surrounding whitespace trimmed" (
+            (Invoke-StudioPythonShellIconRefresh -Paths $links -Exe "C:\Studio\venv\Scripts\python.exe") -eq $false)
+        $env:UNSLOTH_EARLY_PYTHON_PROBE = "1"
+        $script:RunnerCalls = 0
+        Check "control: with the probe enabled the same call goes through" (
+            (Invoke-StudioPythonShellIconRefresh -Paths $links -Exe "C:\Studio\venv\Scripts\python.exe") -eq $true -and
+            $script:RunnerCalls -eq 1)
+    } finally {
+        if ($null -eq $savedProbe) { Remove-Item Env:UNSLOTH_EARLY_PYTHON_PROBE -ErrorAction SilentlyContinue }
+        else { $env:UNSLOTH_EARLY_PYTHON_PROBE = $savedProbe }
+    }
+
     $env:OS = "Linux"
     $script:RunnerCalls = 0
     Check "off Windows the rung declines: there is no shell32 there" (
