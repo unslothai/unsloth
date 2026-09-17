@@ -6,6 +6,10 @@ import {
   type NativeIntent,
 } from "@/features/native-intents";
 import { toast } from "@/lib/toast";
+import {
+  isBackendDownForDesktopUpdate,
+  isSilencedDesktopUpdateFailure,
+} from "@/lib/desktop-update-activity";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   PROJECT_SOURCES_CHANGED_EVENT,
@@ -280,6 +284,9 @@ export function useRagDocuments(
   const refresh = useCallback(
     async (opts?: { quiet?: boolean; silentErrors?: boolean }) => {
       if (!scopeKey) return true;
+      // Latched at issue, as the chat status refresh does: the update screen can come down
+      // while this read is still failing its way through the retry ladder.
+      const downWhenIssued = isBackendDownForDesktopUpdate();
       const requestId = ++refreshSeq.current;
       refreshInFlight.current = true;
       if (!opts?.quiet) setLoading(true);
@@ -310,6 +317,9 @@ export function useRagDocuments(
         // A superseded failure describes a scope no longer shown, and a host
         // without RAG 503s every one of these: no toast per composer opened.
         if (refreshSeq.current !== requestId) return true;
+        // The 4s indexing poll runs on the chat page, which stays mounted under the update
+        // screen, so without this the update's own dead backend toasts every tick.
+        if (isSilencedDesktopUpdateFailure(err, downWhenIssued)) return false;
         if (
           !opts?.silentErrors &&
           !useRagAvailabilityStore.getState().isUnavailable()
