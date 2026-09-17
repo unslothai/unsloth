@@ -274,6 +274,44 @@ try {
         Check "the launcher at offset $($v.Index) runs with -S as well as -I" (
             $v.Value -match '"-I",\s*"-S"')
     }
+    # ---- a miss recorded before $VenvDir existed is not final ----
+    #
+    # The --tauri path resolves the Studio-home override well before $VenvDir is assigned. On a
+    # host with no system Python that probe finds nothing, and the latch used to hold that answer
+    # for the whole run, so the rung could never reach the previous install's own interpreter
+    # once the variable appeared. Every consumer below it (the path resolver, the process-image
+    # table, the NVIDIA fallback) then stayed degraded on exactly the hosts they exist for.
+    #
+    # Driven with the interpreter this host really has, planted where a venv would put it, and
+    # with system discovery switched off so the venv rung is the only one that can answer.
+    $venvHome = Join-Path $tmp "venvhome"
+    $venvBin = if ($IsWindows -or $env:OS -eq "Windows_NT") { "Scripts" } else { "bin" }
+    $venvLeaf = if ($IsWindows -or $env:OS -eq "Windows_NT") { "python.exe" } else { "python3" }
+    New-Item -ItemType Directory -Force -Path (Join-Path $venvHome $venvBin) | Out-Null
+    Copy-Item -LiteralPath $exe -Destination (Join-Path $venvHome (Join-Path $venvBin $venvLeaf)) -Force
+    function Get-Command { param($Name, [switch]$All, $CommandType, $ErrorAction) return @() }
+    Remove-Variable -Name VenvDir -Scope Script -ErrorAction SilentlyContinue
+    Remove-Variable -Name VenvDir -Scope Global -ErrorAction SilentlyContinue
+    $script:StudioEarlyPythonProbed = $false
+    $script:StudioEarlyPython = $null
+    $script:StudioEarlyPythonProbedWithoutVenv = $false
+    Check "with no venv and no system Python the probe finds nothing" ($null -eq (Get-StudioEarlyPython))
+    Check "and it recorded that the venv was unknown when it looked" (
+        $script:StudioEarlyPythonProbedWithoutVenv -eq $true)
+    $global:VenvDir = $venvHome
+    $found = Get-StudioEarlyPython
+    Check "once the venv directory is known the venv interpreter is found after all" (
+        -not [string]::IsNullOrWhiteSpace($found))
+    Check "and it is the one inside the venv, not some other copy" (
+        "$found" -like ("*" + $venvBin + "*"))
+    # And exactly once more: the latch still holds, or every resolution spawns a probe.
+    $script:ReprobeCount = 0
+    function Test-Path { param($LiteralPath, $PathType, $ErrorAction) $script:ReprobeCount++; return $false }
+    $null = Get-StudioEarlyPython
+    Check "a hit is not probed again" ($script:ReprobeCount -eq 0)
+    Remove-Item Function:Test-Path -ErrorAction SilentlyContinue
+    Remove-Item Function:Get-Command -ErrorAction SilentlyContinue
+    Remove-Variable -Name VenvDir -Scope Global -ErrorAction SilentlyContinue
 } finally {
     Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }
