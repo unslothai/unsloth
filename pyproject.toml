@@ -191,6 +191,16 @@ triton = [
 ]
 
 huggingfacenotorch = [
+    # unsloth_zoo.compiler embeds its own copy of the empty-logits sentinel in the code it
+    # generates for the compiled trainers, so fixing _utils.py here does not reach the
+    # compiled path while an older zoo is resolvable: 2026.9.4, the newest on PyPI, still
+    # hands FSDP2 mixed precision a sentinel that answers `__dataclass_fields__` and dies in
+    # `dataclasses.replace`. The release carrying the matching fix
+    # (unslothai/unsloth-zoo#1259) is not published yet, and a floor no release satisfies
+    # makes the package uninstallable, so the floor stays at 2026.9.4 for now and the
+    # eager-path fix below stands on its own. Raise the floor once #1259 ships; the
+    # compiled-path probes in tests/test_empty_logits_compiled_path_probes.py gate on the
+    # INSTALLED zoo, not on this pin, so they start running on their own.
     "unsloth_zoo>=2026.9.4",
     "wheel>=0.42.0",
     "packaging",

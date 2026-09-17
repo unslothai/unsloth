@@ -3502,7 +3502,13 @@ class EmptyLogits:
         return
 
     def raise_getattr_error(self, attr):
-        return return_none if attr == "to" else raise_logits_error
+        if attr == "to":
+            return return_none
+        # unsloth#409: a catch-all __getattr__ answers hasattr() for every name, so FSDP2's
+        # output cast saw __dataclass_fields__ and called dataclasses.replace() on the sentinel.
+        if len(attr) > 4 and attr.startswith("__") and attr.endswith("__"):
+            raise AttributeError(f"{type(self).__name__!r} object has no attribute {attr!r}")
+        return raise_logits_error
 
     __getitem__ = raise_logits_error
     __getattr__ = raise_getattr_error
