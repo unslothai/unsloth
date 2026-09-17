@@ -23,8 +23,13 @@ import pathlib
 import re
 import shutil
 import subprocess
+import sys
 
 import pytest
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "_shared"))
+from unsloth_pwsh_runner import run_pwsh  # noqa: E402
+
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 INSTALL_PS1 = REPO_ROOT / "install.ps1"
@@ -184,7 +189,9 @@ def test_the_wheelhouse_override_is_normalised(source, configured, expected, why
         + _wheelhouse_assignment(source).strip()
         + '; Write-Output "<<<$script:WoaWheelhouse>>>"'
     )
-    done = subprocess.run(
+    # run_pwsh, not subprocess.run: see tests/_shared/unsloth_pwsh_runner.py. A pwsh that
+    # crashes at startup answered nothing; one that finishes is reported as it finished.
+    done = run_pwsh(
         [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output = True,
         text = True,

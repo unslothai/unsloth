@@ -16,8 +16,12 @@ import pathlib
 import re
 import shutil
 import subprocess
+import sys
 
 import pytest
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "_shared"))
+from unsloth_pwsh_runner import run_pwsh  # noqa: E402
 
 
 PACKAGE_ROOT = pathlib.Path(__file__).resolve().parents[3]
@@ -59,7 +63,10 @@ def _ps(
     **kwargs,
 ):
     """Run a PowerShell snippet and hand back the completed process."""
-    return subprocess.run(
+    # run_pwsh, not subprocess.run: pwsh can die at startup with `Stack overflow.`
+    # (PowerShell/PowerShell#24461), which is an interpreter crash rather than an answer.
+    # Every snippet in this harness goes through here, so one swap covers the whole file.
+    return run_pwsh(
         [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output = True,
         text = True,

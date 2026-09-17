@@ -25,13 +25,19 @@ Hermetic: no network. The live-PyPI leg of the guard is exercised on hardware, n
 
 from __future__ import annotations
 
+import os
 import pathlib
 import re
 import shutil
 import subprocess
+import sys
 import textwrap
 
 import pytest
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "_shared"))
+from unsloth_pwsh_runner import run_pwsh  # noqa: E402
+
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 INSTALL_PS1 = REPO_ROOT / "install.ps1"
@@ -80,14 +86,27 @@ def _drop_list_block(source: str) -> str:
 PRELUDE = "\n".join(_function(INSTALL_SRC, name) for name in HELPERS)
 
 
+# The child inherits this process's environment, and Test-WoaResolveReachesPyPI reads
+# exactly these variables. A neighbour test that leaves UV_OFFLINE or UV_INDEX_URL set on
+# the pytest process therefore changes this file's answers -- observed as the four
+# "reaches PyPI" cases failing only in a full-suite run and passing on their own. Each case
+# supplies the whole environment it means to test, so the ambient copies are removed.
+def _resolver_clean_env() -> dict:
+    return {key: value for key, value in os.environ.items() if not key.startswith(("UV_", "PIP_"))}
+
+
 def _run(script: str) -> str:
-    proc = subprocess.run(
+    # run_pwsh, not subprocess.run: a pwsh killed at startup (`Stack overflow.`,
+    # PowerShell/PowerShell#24461) returns no answer, and retrying that is not papering
+    # over a failure. A run that completes is returned untouched, whatever its exit code.
+    proc = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", PRELUDE + "\n" + script],
         capture_output = True,
         text = True,
         encoding = "utf-8",
         errors = "replace",
         timeout = 120,
+        env = _resolver_clean_env(),
     )
     assert proc.returncode == 0, f"pwsh failed: {proc.stdout}\n{proc.stderr}"
     return proc.stdout.strip()

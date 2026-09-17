@@ -33,6 +33,10 @@ import sys
 
 import pytest
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "_shared"))
+from unsloth_pwsh_runner import run_pwsh  # noqa: E402
+
+
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 SETUP_PS1 = REPO_ROOT / "studio" / "setup.ps1"
 SETUP_SRC = SETUP_PS1.read_text(encoding = "utf-8")
@@ -121,7 +125,8 @@ def _expected_kinds(*, arm64_venv: bool, nvidia: bool, rocm: bool, opt_out: bool
             "Write-Output ('<<<' + ($expectedKinds -join ',') + '>>>')",
         ]
     )
-    done = subprocess.run(
+    # run_pwsh, not subprocess.run: see tests/_shared/unsloth_pwsh_runner.py.
+    done = run_pwsh(
         [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output = True,
         timeout = 120,

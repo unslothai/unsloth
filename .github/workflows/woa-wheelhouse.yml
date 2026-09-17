@@ -169,8 +169,13 @@ jobs:
           Set-Content $bat -Value $t -Encoding ascii
           Select-String -Path $bat -Pattern '^set ARROW_' | ForEach-Object { $_.Line }
 
-      - name: Cache vcpkg packages
-        uses: actions/cache@v4
+      # Restore on any ref, save only from main. A read-write cache step writes an entry
+      # scoped to whatever ref it ran on, so a dispatch from a branch would write its own
+      # copy and evict the copy on main that every other run restores from. Splitting the
+      # step is how the rest of this repo does it (tests/studio/test_cache_budget_discipline.py).
+      - name: Restore cached vcpkg packages
+        id: vcpkg_cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: C:\vcpkg\installed
           key: vcpkg-arm64-static-md-trimmed-${{ inputs.arrow_tag }}-${{ hashFiles('arrow/ci/vcpkg/vcpkg.json') }}
@@ -197,6 +202,16 @@ jobs:
           echo vcpkg install failed, attempt %attempt% of 3; retrying in 60s
           timeout /t 60 /nobreak >nul
           goto again
+
+      # Saved before the wheel build, not after: the ports are what took the time, and a
+      # later failure in this job should not throw away 40 minutes of vcpkg output. Skipped
+      # on an exact hit, which would otherwise fail the save as a duplicate key.
+      - name: Save the vcpkg packages
+        if: github.ref == 'refs/heads/main' && steps.vcpkg_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: C:\vcpkg\installed
+          key: vcpkg-arm64-static-md-trimmed-${{ inputs.arrow_tag }}-${{ hashFiles('arrow/ci/vcpkg/vcpkg.json') }}
 
       - name: Build Arrow C++ and the pyarrow wheel
         shell: cmd
