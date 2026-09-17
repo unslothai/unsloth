@@ -352,7 +352,7 @@ def sd_cpp_lists_accelerator_device(binary: Optional[str]) -> bool:
 
 
 def accelerator_verdict_keeps_gpu(verdict: Optional[bool]) -> bool:
-    """"Could not tell" keeps the GPU: an unreadable probe is not evidence of no accelerator. One
+    """ "Could not tell" keeps the GPU: an unreadable probe is not evidence of no accelerator. One
     place, so a caller that also needs the raw verdict cannot drift from it."""
     return True if verdict is None else verdict
 

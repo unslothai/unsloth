@@ -498,7 +498,7 @@ def test_the_image_path_resolves_the_preferred_accelerator(
 
 
 def test_a_single_ambiguous_failure_never_diverts_a_working_rocm_host(fake_settings, monkeypatch):
-    """"hip error" / "unspecified launch failure" also come out of a driver reset, so one must leave a working host alone."""
+    """ "hip error" / "unspecified launch failure" also come out of a driver reset, so one must leave a working host alone."""
     from core.inference import sd_cpp_backend
     from core.inference import video as video_mod
 
@@ -1070,7 +1070,6 @@ def test_a_device_reporting_nothing_but_a_vendor_still_contributes(
 
 def test_an_empty_device_list_is_still_no_cards(unpinned_fingerprint, monkeypatch):
     from utils.hardware import hardware
-
     monkeypatch.setattr(hardware, "get_physical_gpu_inventory", lambda *, block = True: {})
     assert unpinned_fingerprint._host_fingerprint()["gpus"] is None
 
@@ -2198,7 +2197,6 @@ def test_a_second_card_failing_the_same_build_is_added_not_substituted(fake_sett
 
 def test_a_record_written_before_the_cards_were_named_still_diverts(fake_settings, monkeypatch):
     from core.inference import sd_cpp_backend
-
     sd_cpp_backend.note_accelerator_runtime_failure("rocm", proven = True)
     assert sd_cpp_backend.accelerator_runtime_failed("rocm", "Card B@gfx1100") is True
 
