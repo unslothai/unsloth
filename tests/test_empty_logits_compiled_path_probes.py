@@ -37,7 +37,7 @@ PROTOCOL_DUNDERS = (
 
 # The sentinel exactly as unsloth_zoo 2026.9.4 generated it, kept verbatim so the probes below
 # are shown to have teeth on every machine, whatever zoo happens to be installed.
-PRE_FIX_SENTINEL_SOURCE = '''
+PRE_FIX_SENTINEL_SOURCE = """
 LOGITS_ERROR_STRING = "Unsloth: Logits are empty, set UNSLOTH_RETURN_LOGITS"
 def raise_logits_error(*args, **kwargs): raise NotImplementedError(LOGITS_ERROR_STRING)
 def return_none(*args, **kwargs): return None
@@ -51,7 +51,7 @@ class EmptyLogits:
     def __reduce__(self): return (type(self), ())
     def __eq__(self, other): return type(other).__name__ == "EmptyLogits"
     __hash__ = object.__hash__
-'''
+"""
 
 
 def _zoo_floor() -> Version:
@@ -104,7 +104,7 @@ def _build(source: str):
     return namespace["EmptyLogits"]()
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope = "module")
 def generated_sentinel():
     compiler, installed = _installed_zoo()
     floor = _zoo_floor()
@@ -148,5 +148,5 @@ def test_these_probes_fail_on_the_sentinel_zoo_used_to_generate():
     way they stay quiet. Without this, a zoo that stopped shipping the fix would look green."""
     stale = _build(PRE_FIX_SENTINEL_SOURCE)
     assert hasattr(stale, "__dataclass_fields__")
-    with pytest.raises(TypeError, match="replace"):
+    with pytest.raises(TypeError, match = "replace"):
         _apply_to_tensors(lambda tensor: tensor, {"logits": stale})
