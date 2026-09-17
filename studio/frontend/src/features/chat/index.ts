@@ -201,6 +201,8 @@ export {
   isExternalModelId,
   parseExternalModelId,
 } from "./external-providers";
+// A provider catalogue lands async, so capability reads need to re-run when it does.
+export { modelCatalogVersion, subscribeModelCatalog } from "./model-catalog";
 export {
   type AttachmentText,
   assertDocumentAttachmentSize,

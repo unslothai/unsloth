@@ -2527,6 +2527,12 @@ type ChatRuntimeStore = {
     enabled: boolean,
     options?: { persist?: boolean },
   ) => void;
+  /** Write one model's remembered params directly, live or not. For the picker's per-model
+   *  editor; elsewhere an edit belongs to the loaded model and setParams covers it. */
+  setRememberedParamsForModel: (
+    modelId: string,
+    patch: PersistedInferenceParams,
+  ) => void;
   setLastOpenRouterChosenModel: (chosen: string | null) => void;
   setReasoningStyle: (style: ReasoningStyle) => void;
   setReasoningEffort: (effort: ReasoningEffort) => void;
@@ -5003,6 +5009,22 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       reasoningStyle,
       queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
     })),
+  setRememberedParamsForModel: (modelId, patch) =>
+    set((state) => {
+      if (!modelId || !hasKeys(patch)) return state;
+      const merged = { ...state.paramsByModel[modelId], ...patch };
+      const next = { ...state.paramsByModel, [modelId]: merged };
+      // Only the moved keys: the server merges per key, so a full snapshot clobbers other tabs.
+      if (state.settingsHydrated) {
+        saveSettingsPatch({ inferenceParamsByModel: { [modelId]: patch } });
+      }
+      // Editing the live model must land on the live params, not just on the next switch back.
+      const live = state.params.checkpoint === modelId;
+      return {
+        paramsByModel: trackParamsByModel(state, next, modelId) ?? next,
+        ...(live ? { params: { ...state.params, ...patch } } : {}),
+      };
+    }),
   setReasoningEffort: (reasoningEffort) =>
     set((state) => {
       setScalarSettingVersion(

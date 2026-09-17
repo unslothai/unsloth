@@ -161,6 +161,11 @@ function formatModelSummary(models: string[]): string {
 interface ChatProvidersSettingsProps {
   providers: ExternalProviderConfig[];
   onProvidersChange: (providers: ExternalProviderConfig[]) => void;
+  /** Open this connection's edit form on arrival instead of the list. Ignored until `providers`
+   *  carries the id. */
+  openProviderId?: string | null;
+  /** Called once honoured, so the request cannot replay on a later visit. */
+  onOpenProviderConsumed?: () => void;
 }
 
 export function codexCapabilitiesWithPlanModels(
@@ -230,6 +235,8 @@ export function resolveCodexPickerModels(
 export function ChatProvidersSettings({
   providers,
   onProvidersChange,
+  openProviderId = null,
+  onOpenProviderConsumed,
 }: ChatProvidersSettingsProps) {
   const providersRef = useRef(providers);
   const seededProviderTypeRef = useRef<string | null>(null);
@@ -1205,6 +1212,27 @@ export function ChatProvidersSettings({
       setManualModelIds("");
     }
   }
+
+  // Deep link at one connection. Waits for `providers` to carry the id, since this panel mounts
+  // before its first sync. The ref latches per id: editProvider sets state this would otherwise
+  // read as a new reason to run, and the user may have navigated back to the list since.
+  const openedProviderRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!openProviderId) {
+      openedProviderRef.current = null;
+      return;
+    }
+    if (openedProviderRef.current === openProviderId) return;
+    const provider = providers.find(
+      (candidate) => candidate.id === openProviderId,
+    );
+    if (!provider) return;
+    openedProviderRef.current = openProviderId;
+    void editProvider(provider);
+    onOpenProviderConsumed?.();
+    // editProvider is redeclared each render; the latch above is what fires this once per id.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openProviderId, providers, onOpenProviderConsumed]);
 
   async function deleteProvider(providerId: string) {
     setMutatingProvider(true);

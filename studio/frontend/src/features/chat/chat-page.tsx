@@ -21,6 +21,7 @@ import {
   SidebarModelConfig,
   useActiveModelConfig,
   useModelConfigHandoffStore,
+  pinnedReasoningEffort,
 } from "@/features/model-picker";
 import { ProjectComposer, Thread } from "@/components/assistant-ui/thread";
 import { usePlatformStore } from "@/config/env";
@@ -3215,8 +3216,12 @@ export function ChatPage({
           effortLevels.includes(reasoningCaps.defaultEffort)
             ? reasoningCaps.defaultEffort
             : null;
+        // A level pinned on the model's picker row wins over the defaults below. Null when the
+        // catalogue no longer offers it, so a withdrawn level falls back instead of failing.
+        const pinnedEffort = pinnedReasoningEffort(value, effortLevels);
         const nextReasoningEffort = reasoningCaps.supportsReasoning
-          ? (catalogDefaultEffort ??
+          ? ((pinnedEffort as typeof catalogDefaultEffort) ??
+            catalogDefaultEffort ??
             (isAnthropic
               ? anthropicTopEffort
               : isOpenAI
