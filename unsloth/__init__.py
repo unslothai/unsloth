@@ -12,7 +12,9 @@
 import os, importlib.util, platform, sys
 
 # Intra-card context-parallel FLA backend must stay off for single-process runs (Qwen3.5 / Next).
-# Do not set FLA_DISABLE_BACKEND_DISPATCH here — that bypasses TileLang dispatch on Hopper too.
+# unsloth_zoo patches the vendored fla copy; a separately pip-installed flash-linear-attention
+# can import before that injection and still see FLA_INTRACARD_CP unset. Do not set
+# FLA_DISABLE_BACKEND_DISPATCH here — that bypasses TileLang dispatch on Hopper too.
 from .launcher_world_size import world_size_from_env as _launcher_world_size
 
 if _launcher_world_size() <= 1:
