@@ -37,7 +37,9 @@ _READY_TIMEOUT = 15.0
 _NO_URL_RETRY_DELAYS = (2.0, 5.0)
 # run.py starts the tunnel inline before the CLI banner, so these retries are startup stall. A refused
 # request fails in milliseconds and still gets all of them; a network that swallows the request instead
-# burns a full _READY_TIMEOUT per attempt, so stop once the sequence has cost this much.
+# burns a full _READY_TIMEOUT per attempt, so stop once the sequence has cost this much. This bounds the
+# no-URL retries only: minting a URL leaves this loop for the pre-existing registration and
+# verify_public_url phases, which cost the same with or without a retry and carry their own deadlines.
 _NO_URL_RETRY_BUDGET = 30.0
 # How long stop() gives cloudflared to honour SIGTERM before killing it. The retry budget reserves one
 # of these for the attempt it authorizes, so the attempt's own teardown cannot carry the sequence past
