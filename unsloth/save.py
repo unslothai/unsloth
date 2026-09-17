@@ -5659,17 +5659,23 @@ def unsloth_generic_save(
         if state_dict is not None:
             _save_kwargs["state_dict"] = state_dict
 
-        # A push has no local folder to repair afterwards, unlike a save.
-        if state_dict is not None:
-            _mtp_tensor_names = list(state_dict.keys())
-        else:
-            # push_to_hub serialises the resident state dict, so None disarms the guard.
-            try:
-                _mtp_tensor_names = list(model.state_dict().keys())
-            except Exception:
-                # Cannot report its tensors: leave the config exactly as the caller had it.
-                _mtp_tensor_names = None
         if push_to_hub:
+            # A push has no local folder to repair afterwards, unlike a save, so the config
+            # has to match the tensors BEFORE they leave. Inside this branch, because that is
+            # the only consumer: a local save reconciles the written folder below, and reading
+            # the resident state dict for it was a second full collection on top of
+            # save_pretrained's own -- which on an offloaded or sharded model materialises
+            # every weight, and on a distributed one is a collective the other ranks are not
+            # making.
+            if state_dict is not None:
+                _mtp_tensor_names = list(state_dict.keys())
+            else:
+                # push_to_hub serialises the resident state dict, so None disarms the guard.
+                try:
+                    _mtp_tensor_names = list(model.state_dict().keys())
+                except Exception:
+                    # Cannot report its tensors: leave the config exactly as the caller had it.
+                    _mtp_tensor_names = None
             print(f"Unsloth: Pushing full fine-tuned model to '{save_directory}' ...")
             with _mtp_config_matching_tensors(model, _mtp_tensor_names):
                 model.push_to_hub(
@@ -7101,3 +7107,25 @@ def patch_saving_functions(model, vision = False):
         model.save_pretrained_gguf = types.MethodType(unsloth_save_pretrained_gguf, model)
         model.save_pretrained_torchao = types.MethodType(unsloth_save_pretrained_torchao, model)
     return model
+
+
+# Publish the deferred names back to unsloth.models. Those modules bind shims instead of
+# these names to avoid an import cycle (see unsloth/models/vision.py); this module and
+# `.models` are both complete by the time this runs, so hand the real objects over and the
+# attributes regain their identity, signature and docstring.
+_DEFERRED_INTO_MODELS = {
+    "unsloth.models.vision": ("patch_saving_functions",),
+    "unsloth.models.llama": ("patch_saving_functions",),
+    "unsloth.models.sentence_transformer": (
+        "unsloth_save_pretrained_torchao",
+        "unsloth_save_pretrained_gguf",
+    ),
+}
+for _module_name, _deferred_names in _DEFERRED_INTO_MODELS.items():
+    _module = sys.modules.get(_module_name)
+    if _module is None:
+        continue
+    for _deferred_name in _deferred_names:
+        # Only ever replace our own shim; anything else is left exactly as it is.
+        if getattr(getattr(_module, _deferred_name, None), "_unsloth_deferred_shim", False):
+            setattr(_module, _deferred_name, globals()[_deferred_name])
