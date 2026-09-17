@@ -5051,6 +5051,35 @@ def test_gguf_over_cap_notice_is_not_folded_into_an_unrelated_tools_result(monke
         )
 
 
+def test_gguf_over_cap_notice_for_several_tools_is_not_folded_into_one_tools_result(monkeypatch):
+    from core.inference.llama_cpp import _MAX_TOOL_CALLS_PER_TURN
+
+    blocks = "".join(
+        '<tool_call>{"name":"web_search","arguments":{"query":"q%d"}}</tool_call>' % i
+        for i in range(_MAX_TOOL_CALLS_PER_TURN + 1)
+    )
+    blocks += '<tool_call>{"name":"python","arguments":{"code":"print(1)"}}</tool_call>'
+    streams = [[_sse({"content": blocks}), _done()], [_sse({"content": "done"}), _done()]]
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
+    _record_tool_calls(monkeypatch, "OK")
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "go"}],
+            tools = [
+                {"type": "function", "function": {"name": "web_search"}},
+                {"type": "function", "function": {"name": "python"}},
+            ],
+            max_tool_iterations = 1,
+        )
+    )
+
+    messages = payloads[1]["messages"]
+    (holder,) = [m for m in messages if "more tool call(s)" in (m.get("content") or "")]
+    assert holder["role"] == "user"
+    assert "python" in holder["content"] and '"q8"' in holder["content"]
+
+
 def test_gguf_over_cap_does_not_ask_for_a_retry_when_the_range_check_ends_the_loop(monkeypatch):
     """The iteration range is a second exit; the notice must not ask for a retry there.
 

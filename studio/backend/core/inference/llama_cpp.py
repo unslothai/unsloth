@@ -37271,15 +37271,15 @@ class LlamaCppBackend:
                     )["content"]
                     # Same rule as _fold_target_matches above: a template labels the folded
                     # block with the result's own tool name, so a note about tool A inside
-                    # tool B's result reads as B's output. Fold only onto a result whose tool
-                    # the notice is actually about.
+                    # tool B's result reads as B's output. Fold only when every skipped call
+                    # belongs to the result's own tool.
                     _limit_names = {
                         (_tc.get("function") or {}).get("name") for _tc in _final_over_cap
                     }
                     _limit_foldable = (
                         bool(conversation)
                         and conversation[-1].get("role") == "tool"
-                        and conversation[-1].get("name") in _limit_names
+                        and _limit_names == {conversation[-1].get("name")}
                     )
                     if not (
                         _limit_foldable and _attach_internal_feedback_to_tool_result(_limit_text)
