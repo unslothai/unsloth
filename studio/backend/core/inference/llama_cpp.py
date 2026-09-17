@@ -30684,23 +30684,129 @@ class LlamaCppBackend:
 
     @staticmethod
     def _collect_descendants(pid):
-        """The server's own children, for the kill below. Empty when unreadable."""
+        """`(children, known)` for the kill below.
+
+        `known` is False when the walk could not be made at all: no Toolhelp snapshot, or
+        a root whose own identity cannot be read. An empty list then means "not
+        enumerable", not "none", and the difference decides whether this unload may drop
+        the record and the pidfile. Treating it as "none" terminates the leader, finds no
+        survivors and deletes the only handles on whatever the failed walk did not list.
+        """
         try:
-            from utils.process_lifetime import collect_descendants
-            return collect_descendants(pid)
+            from utils.process_lifetime import collect_descendants_known
+            return collect_descendants_known(pid)
         except Exception:
-            return []
+            # The import or the walk itself failed, which says nothing about the tree.
+            return [], False
+
+    @staticmethod
+    def _tree_kill_surviving_process(pid) -> bool:
+        """Last resort for a server still alive after terminate. True when it is gone.
+
+        ``owner_verified``: this is reached holding the Popen that spawned the pid, so
+        ownership is not in question even when the start time behind the lifetime
+        record can no longer be read.
+        """
+        if not _is_signalable_pid(pid):
+            return False
+        try:
+            from utils.process_lifetime import confirm_pid_exited, terminate_pid
+        except Exception:
+            return False
+        try:
+            terminate_pid(pid, timeout = 5.0, owner_verified = True)
+        except Exception as e:
+            logger.warning(f"Could not terminate surviving llama-server {pid}: {e}")
+        try:
+            # Not a bare `pid_is_running` read: every kill terminate_pid just made is
+            # asynchronous, and asking on the line after one answers its own latency. The
+            # two arms below it settle internally now, so this is belt and braces, but a
+            # read that decides whether to delete the last handle on a live server is worth
+            # spelling the same way everywhere.
+            gone = confirm_pid_exited(pid)
+        except Exception:
+            return False
+        if not gone:
+            logger.warning(
+                f"llama-server {pid} is still running after a tree kill; "
+                "keeping its record so the next launch can reap it"
+            )
+        return gone
+
+    @staticmethod
+    def _confirm_group_kill_landed(pid) -> bool:
+        """Did the killpg above actually take the leader with it. True when it is gone.
+
+        The cheap half of `_tree_kill_surviving_process`, for the POSIX case where the
+        expensive half is a second killpg over a group this teardown has already SIGKILLed.
+        No signal is sent from here: the only open question is whether the one already sent
+        has finished landing, and kills are asynchronous, so it is answered with a bounded
+        poll rather than a single read taken microseconds after the signal.
+
+        False keeps the lifetime record and the pidfile, exactly as a failed tree kill does,
+        so a server the group kill could not reach is still reapable by the next launch.
+        """
+        if not _is_signalable_pid(pid):
+            return False
+        try:
+            from utils.process_lifetime import confirm_pid_exited
+        except Exception:
+            return False
+        try:
+            gone = confirm_pid_exited(pid)
+        except Exception:
+            return False
+        if not gone:
+            logger.warning(
+                f"llama-server {pid} is still running after its process group was killed; "
+                "keeping its record so the next launch can reap it"
+            )
+        return gone
 
     @staticmethod
     def _terminate_descendants(collected):
-        """The diffusion shim's visual server, and anything else it started."""
+        """The diffusion shim's visual server, and anything else it started.
+
+        Returns the survivors as `(pid, identity)`: the ones still running when the sweep
+        gave up, each with the creation-time identity the sweep verified. A forced kill can
+        simply fail (access denied, a protected process, an uninterruptible driver ioctl),
+        and reading the attempt as the outcome is what lets the caller delete the record
+        and the pidfile out from under a worker that is still holding the GPU.
+        Each survivor is adopted WITH that identity, so it gets a lifetime record of its
+        own rather than depending on the leader's: the leader is usually gone by now, and
+        on Windows there is no process group standing in for it. The identity travels
+        because a survivor can exit between the sweep's last liveness check and the adopt,
+        and adopting the bare number would then record a stranger and, where a job object
+        is active, put it in a job that kills its members when the app closes.
+        """
         if not collected:
-            return
+            return []
         try:
-            from utils.process_lifetime import terminate_descendants
-            terminate_descendants(collected, timeout = 5.0)
+            from utils.process_lifetime import adopt_pid, terminate_descendants
+            survivors = terminate_descendants(collected, timeout = 5.0)
         except Exception as e:
             logger.debug(f"Could not terminate server descendants: {e}")
+            # Unknown, not none. The pids were collected, so they can still be named, and
+            # naming them is the whole point of this return value.
+            return list(collected)
+        for pid, identity in survivors:
+            try:
+                # from_snapshot: these pids came out of a walk, so a None identity here means
+                # the collector could not READ one, not that this process has just spawned
+                # the child. Capturing one now would record whatever holds the number at this
+                # moment, which is the recycled stranger the identity check exists to keep
+                # out -- and where a job object is active, put it in a job that kills its
+                # members when the app closes.
+                adopt_pid(pid, identity, from_snapshot = True)
+            except Exception:
+                pass
+        if survivors:
+            logger.warning(
+                f"llama-server descendants still running after the sweep: "
+                f"{[pid for pid, _ in survivors]}; "
+                "recorded so the next launch can reap them"
+            )
+        return survivors
 
     def _publish_healthy(self) -> bool:
         """Commit _healthy under the spawn lock, or refuse if this load is stale.
@@ -30819,7 +30925,7 @@ class LlamaCppBackend:
         # so the visual server has to be named while that link still exists.
         _pid = getattr(self._process, "pid", None)
         _pgid = self._leading_process_group(_pid)
-        _descendants = self._collect_descendants(_pid)
+        _descendants, _descendants_known = self._collect_descendants(_pid)
         if teardown:
             # Before the signal, and as the process itself: the reference stays set
             # across the waits below, and only identity says which child a teardown
@@ -30846,7 +30952,7 @@ class LlamaCppBackend:
             logger.warning(f"Error killing llama-server process: {e}")
         finally:
             self._kill_process_group(_pgid)
-            self._terminate_descendants(_descendants)
+            _surviving_descendants = self._terminate_descendants(_descendants)
             # getattr: teardown must tolerate a partially-built backend (failed
             # __init__ or a __new__-built instance), as with _llama_log_fh below.
             if getattr(self, "_stats_logger", None) is not None:
@@ -30858,6 +30964,59 @@ class LlamaCppBackend:
             # identity, so a recycled pid is never signalled either way.
             _killed_pid = getattr(self._process, "pid", None)
             _exited = getattr(self._process, "poll", lambda: None)() is not None
+            # The tree kill below tells the reaper the owner is known, which waives the
+            # "cannot prove this pid is still our child" refusal. That waiver is only
+            # true while we hold the handle that spawned the pid, so it is spent on a
+            # real child and nothing else: a stand-in _process carrying a pid and no
+            # poll() (tests use one to mean "a server is loaded", and one of them holds
+            # this process's own pid) reads as "still running" through no fault of its
+            # own, and signalling that number would take down whoever holds it now.
+            _owns_child = terminable and callable(getattr(self._process, "poll", None))
+            if _owns_child and _killed_pid is not None and not _exited:
+                if _pgid is not None and hasattr(os, "killpg"):
+                    # A real process group that `_kill_process_group` could actually
+                    # signal, which only POSIX ever reports here (_leading_process_group
+                    # answers None everywhere else, and that function's own no-op
+                    # condition is repeated so this cannot skip a kill that never
+                    # happened). killpg
+                    # SIGKILL went to this exact group eleven lines above, and the tree
+                    # kill's POSIX arm is killpg SIGTERM, a poll loop, then killpg
+                    # SIGKILL over the same group: no reach this teardown does not
+                    # already have, for a full /proc walk and up to five seconds more
+                    # with _teardown_lock held. Measured at +560 ms of lock hold on the
+                    # survivor path, which is time a lifecycle reopening behind the lock
+                    # spends blocked.
+                    #
+                    # What the call did buy is the read-back, and that is kept. killpg is
+                    # asynchronous like every other kill here, so asking on the next line
+                    # answers "not finished yet" and keeps the record and the pidfile for
+                    # a server that is already gone.
+                    _exited = self._confirm_group_kill_landed(_killed_pid)
+                else:
+                    # The terminate above is all Popen offers, and on Windows that is
+                    # TerminateProcess on the leader alone: a server that ignored it, or
+                    # that the escalation could not reach, is still holding the model's
+                    # mapping. taskkill /T /F is the only handle left on it there, and
+                    # nothing on this path used to reach for it (#9790).
+                    _exited = self._tree_kill_surviving_process(_killed_pid)
+            # A descendant the sweep could not kill keeps the leader's record too. It was
+            # adopted under its own pid above, but the record here is what the pidfile and
+            # the next launch's reap are keyed on, and dropping it while something of this
+            # server is still running is the state that leaves a worker on the GPU with
+            # nothing naming it.
+            if _surviving_descendants:
+                _exited = False
+            # And a tree that could not be enumerated is not a tree with nothing in it.
+            # The sweep above ran over whatever the failed walk returned, so "no survivors"
+            # here is a statement about a list that was never built. Keep the record: a
+            # leaked worker the next launch can reap costs a stale pidfile, and dropping it
+            # costs the only name anything has for a process still holding the GPU.
+            if not _descendants_known and _pid is not None:
+                logger.warning(
+                    "llama-server descendants could not be enumerated before the kill; "
+                    "keeping its record so the next launch can reap anything left"
+                )
+                _exited = False
             if _killed_pid is not None and _exited:
                 try:
                     from utils.process_lifetime import forget_pid
@@ -30865,7 +31024,13 @@ class LlamaCppBackend:
                 except Exception:
                     pass
             self._process = None
-            self._clear_server_pid()
+            # Same rule as the lifetime record above: the pidfile is the next launch's
+            # only handle on a server that outlived this kill, so it is removed once the
+            # exit is confirmed and not merely attempted. Without a child handle there is
+            # no exit to confirm and nothing was signalled, so the pidfile is dropped as
+            # it always was rather than kept forever by a stand-in that cannot answer.
+            if _killed_pid is None or _exited or not _owns_child:
+                self._clear_server_pid()
             # Clear healthy so a /load during the replacement's warm-up can't
             # short-circuit against the previous server's health (#5401).
             self._healthy = False

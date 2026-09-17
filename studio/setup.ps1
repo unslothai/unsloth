@@ -215,10 +215,33 @@ function Refresh-Environment {
     }
     $machinePath = [System.Environment]::GetEnvironmentVariable('Path', 'Machine')
     $userPath = [System.Environment]::GetEnvironmentVariable('Path', 'User')
-    # Merge: venv Scripts (if active) > Machine > User > current $env:Path. Dedup raw+expanded.
+    # Merge: venv Scripts (if active) > active conda > Machine > User > current $env:Path.
+    # Dedup raw+expanded.
     $venvScripts = if ($env:VIRTUAL_ENV) { Join-Path $env:VIRTUAL_ENV 'Scripts' } else { $null }
+    # An activated conda environment lives ONLY in the process PATH, so rebuilding as
+    # machine + user + previous puts every conda entry behind the User PATH. Running this
+    # script directly shares the caller's process, so the demotion would outlive the setup.
+    # Mirrors install.ps1's Refresh-SessionPath; parity is asserted in
+    # tests/python/test_installer_conda_path_guard.py.
+    $condaFront = @()
+    if (Test-ActiveCondaEnvironment) {
+        $prefixes = Get-ActiveCondaPrefixes
+        if ($prefixes) {
+            foreach ($entry in ($env:Path -split ";")) {
+                if (Test-PathUnderCondaPrefix -Path $entry -Prefixes $prefixes) {
+                    $condaFront += $entry
+                }
+            }
+        } else {
+            # A hook that exports CONDA_DEFAULT_ENV and nothing that names a directory: which
+            # entries are conda's cannot be established, so the caller's PATH is kept whole
+            # and in front rather than reconstructed. Same reasoning as install.ps1.
+            $condaFront = @($env:Path)
+        }
+    }
     $sources = @()
     if ($venvScripts) { $sources += $venvScripts }
+    $sources += $condaFront
     $sources += @($machinePath, $userPath, $env:Path)
     $merged = ($sources | Where-Object { $_ }) -join ';'
     $seen = @{}
@@ -235,6 +258,75 @@ function Refresh-Environment {
     $env:Path = $unique -join ";"
 }
 
+# ── Helper: is a conda environment ACTIVE in this session? ──
+# Mirrors install.ps1. CONDA_PREFIX separates "conda is installed" from "we are inside one
+# of its environments".
+function Test-ActiveCondaEnvironment {
+    foreach ($condaVar in @($env:CONDA_PREFIX, $env:CONDA_DEFAULT_ENV)) {
+        if (-not [string]::IsNullOrWhiteSpace($condaVar)) { return $true }
+    }
+    return $false
+}
+
+# Every directory the active conda installation owns: the environment itself, the stack of
+# environments it was activated on top of, and the base installation. Mirrors install.ps1.
+function Get-ActiveCondaPrefixes {
+    $prefixes = New-Object System.Collections.Generic.List[string]
+    if (-not [string]::IsNullOrWhiteSpace($env:CONDA_PREFIX)) { $prefixes.Add($env:CONDA_PREFIX) }
+    # Enumerated from CONDA_SHLVL, not a fixed list: a hard-coded tail of three dropped
+    # everything past the fourth stacked environment and inverted its ordering. The ceiling
+    # stops a bad value spinning.
+    $levels = 0
+    if (-not [string]::IsNullOrWhiteSpace($env:CONDA_SHLVL)) {
+        [void][int]::TryParse($env:CONDA_SHLVL, [ref]$levels)
+    }
+    if ($levels -lt 1) { $levels = 1 }
+    if ($levels -gt 64) { $levels = 64 }
+    for ($level = 1; $level -le $levels; $level++) {
+        $value = [Environment]::GetEnvironmentVariable("CONDA_PREFIX_$level")
+        if (-not [string]::IsNullOrWhiteSpace($value)) { $prefixes.Add($value) }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($env:_CONDA_ROOT)) { $prefixes.Add($env:_CONDA_ROOT) }
+    if (-not [string]::IsNullOrWhiteSpace($env:CONDA_EXE)) {
+        # ...\<root>\Scripts\conda.exe -> ...\<root>. Regex rather than Split-Path, which is
+        # provider-aware and keeps backslashes on the non-Windows PowerShell the tests use.
+        $scripts = $env:CONDA_EXE -replace '[\\/][^\\/]*$', ''
+        $root = $scripts -replace '[\\/][^\\/]*$', ''
+        if ($root -and $root -ne $env:CONDA_EXE) { $prefixes.Add($root) }
+    }
+    return $prefixes
+}
+
+# Is $Path inside one of $Prefixes? On a directory boundary, so "C:\conda-backup" is not
+# dragged to the front along with "C:\conda".
+function Test-PathUnderCondaPrefix {
+    param([string]$Path, $Prefixes)
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not $Prefixes) { return $false }
+    $candidate = [Environment]::ExpandEnvironmentVariables($Path).Trim().Trim('"').TrimEnd('\')
+    if (-not $candidate) { return $false }
+    foreach ($prefix in $Prefixes) {
+        $normalized = [Environment]::ExpandEnvironmentVariables($prefix).Trim().Trim('"').TrimEnd('\')
+        if (-not $normalized) { continue }
+        if ($candidate -ieq $normalized) { return $true }
+        if ($candidate.StartsWith($normalized + '\', [System.StringComparison]::OrdinalIgnoreCase)) {
+            return $true
+        }
+    }
+    return $false
+}
+
+# The position a PERSISTENT PATH write may actually use: a prepend outlives the activation
+# it was made under and leaves our directory ahead of conda's own entries (#5871). Mirrors
+# install.ps1; parity is asserted in tests/python/test_installer_conda_path_guard.py.
+function Resolve-UserPathPosition {
+    param(
+        [ValidateSet('Append','Prepend')]
+        [string]$Position = 'Append'
+    )
+    if ($Position -eq 'Prepend' -and (Test-ActiveCondaEnvironment)) { return 'Append' }
+    return $Position
+}
+
 # Direct registry access preserves REG_EXPAND_SZ (dotnet/runtime#1442).
 function Add-ToUserPath {
     param(
@@ -243,6 +335,13 @@ function Add-ToUserPath {
         [string]$Position = 'Append'
     )
     if (Get-Variable -Name StageRoot -ValueOnly -ErrorAction SilentlyContinue) { return $false }
+    # Every persistent PATH write goes through Resolve-UserPathPosition, so an active conda
+    # environment cannot be demoted by any call site.
+    # A downgraded request has to be able to MOVE an entry that a previous non-conda run left at the
+    # FRONT, not just decline to add one; see the same guard in install.ps1.
+    $requestedPosition = $Position
+    $Position = Resolve-UserPathPosition -Position $Position
+    $positionDowngraded = ($Position -ne $requestedPosition)
     try {
         $regKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
         try {
@@ -265,7 +364,8 @@ function Add-ToUserPath {
                 $kept.Add($entries[$i])
             }
             $alreadyPresent = $matchIndices.Count -gt 0
-            if ($alreadyPresent -and $Position -eq 'Append') { # Append: idempotent no-op
+            # Already at the back is still a no-op, caught by the $newPath -ceq $rawPath check below.
+            if ($alreadyPresent -and $Position -eq 'Append' -and -not $positionDowngraded) {
                 return $false
             }
             if ($alreadyPresent -and $Position -eq 'Prepend' -and # Prepend: no-op if already at front

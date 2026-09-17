@@ -7107,3 +7107,25 @@ def patch_saving_functions(model, vision = False):
         model.save_pretrained_gguf = types.MethodType(unsloth_save_pretrained_gguf, model)
         model.save_pretrained_torchao = types.MethodType(unsloth_save_pretrained_torchao, model)
     return model
+
+
+# Publish the deferred names back to unsloth.models. Those modules bind shims instead of
+# these names to avoid an import cycle (see unsloth/models/vision.py); this module and
+# `.models` are both complete by the time this runs, so hand the real objects over and the
+# attributes regain their identity, signature and docstring.
+_DEFERRED_INTO_MODELS = {
+    "unsloth.models.vision": ("patch_saving_functions",),
+    "unsloth.models.llama": ("patch_saving_functions",),
+    "unsloth.models.sentence_transformer": (
+        "unsloth_save_pretrained_torchao",
+        "unsloth_save_pretrained_gguf",
+    ),
+}
+for _module_name, _deferred_names in _DEFERRED_INTO_MODELS.items():
+    _module = sys.modules.get(_module_name)
+    if _module is None:
+        continue
+    for _deferred_name in _deferred_names:
+        # Only ever replace our own shim; anything else is left exactly as it is.
+        if getattr(getattr(_module, _deferred_name, None), "_unsloth_deferred_shim", False):
+            setattr(_module, _deferred_name, globals()[_deferred_name])
