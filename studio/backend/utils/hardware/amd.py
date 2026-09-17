@@ -1139,18 +1139,16 @@ def the_vulkan_loader_has_no_usable_driver() -> bool:
 def the_vulkan_loader_override_to_blame() -> "str | None":
     """The environment variable to name when the loader can load none of its manifests.
 
-    ``the_vulkan_loader_has_no_usable_driver`` answers the same question for three quite
-    different causes, and only two of them are repaired by installing a driver. A filter
-    that disables every manifest, and a forced list that replaces the search with paths
-    that do not resolve, are settings: reinstalling leaves the variable in place and the
-    probe just as empty, so the caller has to prescribe clearing it instead.
+    ``the_vulkan_loader_has_no_usable_driver`` answers for three causes and only one is
+    repaired by installing a driver. A filter that disables every manifest, and a forced
+    list pointing at paths that do not resolve, are settings: reinstalling leaves the
+    variable in place and the probe just as empty.
 
     Filters first, because they are applied last and absolutely -- they exclude drivers a
-    forced list named as well, so where they leave nothing the forced list is not what is
-    deciding. ``VK_LOADER_DRIVERS_SELECT`` before ``VK_LOADER_DRIVERS_DISABLE`` for the
-    same reason ``_vulkan_loader_allows`` reads them in that order: a set select list
-    answers alone. ``None`` where no override is responsible, which is the missing-library
-    and 32-bit-only case the reinstall sentence was written for.
+    forced list named as well. ``VK_LOADER_DRIVERS_SELECT`` before
+    ``VK_LOADER_DRIVERS_DISABLE``, for the reason ``_vulkan_loader_allows`` reads them in
+    that order: a set select list answers alone. ``None`` where no override is responsible,
+    which is the missing-library and 32-bit case the reinstall sentence was written for.
     """
     paths = _vulkan_icd_manifest_paths()
     if not paths:
@@ -1193,19 +1191,17 @@ def a_non_amd_render_node_is_open() -> bool:
 def amd_nodes_closed_to_this_user() -> list[str]:
     """AMD device nodes that exist on this host and this user cannot open.
 
-    Every AMD probe in this tree tests that the node EXISTS. On a stock Linux
-    distribution these are ``root:render`` mode 0660, so a user outside that group
-    passes all of them and then cannot open the device: HIP counts zero devices, the
-    Vulkan loader enumerates none, and both look exactly like owning no GPU. That is
-    the whole of #10466, where a fresh Strix Halo install ran on CPU until the account
-    was added to the render and video groups.
+    Every AMD probe in this tree tests that the node EXISTS. On a stock Linux distribution
+    these are ``root:render`` mode 0660, so a user outside that group passes all of them
+    and then cannot open the device: HIP counts zero devices, the Vulkan loader enumerates
+    none, and both look exactly like owning no GPU. That is the whole of #10466.
 
-    Only AMD-owned nodes count. Every vendor's render node has these permissions, so
-    an NVIDIA box reports the identical closed list and has no such problem.
+    Only AMD-owned nodes count, since every vendor's render node has these permissions and
+    an NVIDIA box would report an identical closed list with no such problem.
 
-    ``os.access`` rather than a trial ``open()``: opening ``/dev/kfd`` initialises KFD
-    state for the process, and this is called from probes that exist to avoid exactly
-    that. Empty off Linux, on a host with no AMD nodes, and for root.
+    ``os.access`` rather than a trial ``open()``: opening ``/dev/kfd`` initialises KFD state
+    for the process, which the probes calling this exist to avoid. Empty off Linux, on a
+    host with no AMD nodes, and for root.
     """
     if platform.system() != "Linux":
         return []
@@ -1299,23 +1295,20 @@ def _groups_that_own(paths: list) -> tuple:
 
     ``joinable``   membership WOULD open it, so ``usermod -a -G`` is the fix.
     ``unnamed``    GIDs with no entry in the group database, the container case
-                   ``docker/run.sh`` documents: ``--group-add`` passes the host's numeric
-                   gids and no name inside matches. usermod refuses a bare GID (shadow
-                   4.13: ``group '993' does not exist``, exit 6), so these are reported.
+                   ``docker/run.sh`` documents. usermod refuses a bare GID (shadow 4.13:
+                   ``group '993' does not exist``, exit 6), so these are reported.
     ``no_group``   the mode denies the group too, e.g. a udev rule leaving one
                    ``root:render 0600``. Joining render there changes nothing.
     ``acl``        a POSIX access ACL, where the mode's group bits are the ACL mask and
                    the real grant is undecidable from a stat.
     ``owned``      this account owns it, and POSIX stops at the owner class once the uid
                    matches, so no membership opens it however the group bits read.
-    ``privileged`` the owning group grants far more than the GPU, so this is a udev
-                   misconfiguration to report rather than a membership to prescribe.
-    ``already``    this account is ALREADY in the group and the node is still shut: a
-                   container device cgroup or an LSM denies it, and usermod would exit 0
-                   and change nothing.
+    ``privileged`` the owning group grants far more than the GPU: a udev misconfiguration
+                   to report rather than a membership to prescribe.
+    ``already``    already in the group and still shut, so a container device cgroup or an
+                   LSM denies it and usermod would exit 0 and change nothing.
 
-    Best effort: a node that cannot be stat'd joins no bucket rather than raising, since
-    this runs where things are already wrong.
+    Best effort: a node that cannot be stat'd joins no bucket rather than raising.
     """
     joinable, unnamed, no_group, acl, owned, privileged, already = ([], [], [], [], [], [], [])
     try:
@@ -1458,20 +1451,17 @@ def _selector_exposes_every_gpu(
 ) -> bool:
     """Whether every measured GPU survives this selector, so it excludes nothing.
 
-    HIP_VISIBLE_DEVICES=0,1 on a two-GPU host is a selector that selects the whole host:
-    the open sibling is still reachable, and reading it as a narrowing hands that host the
-    group repair in place of the driver diagnosis it needs.
+    HIP_VISIBLE_DEVICES=0,1 on a two-GPU host selects the whole host: the open sibling is
+    still reachable, and reading it as a narrowing hands that host the group repair in place
+    of the driver diagnosis it needs.
 
-    ``repeat_ends_the_list`` is ROCr's rule, not clr's: RvdFilter terminates on a token
-    that "maps to a device that has been previously selected", so ROCR_VISIBLE_DEVICES=0,0,1
-    surfaces ONE device, where clr's parser stops only on a token that is not its own index
-    written back out and leaves both. _post_rocr_device_count records the same source.
-
-    An unmappable token TERMINATES the list, it does not discard what came before it: clr
-    breaks out of the loop having already pushed every device it accepted, so
-    HIP_VISIBLE_DEVICES=0,1,-1 on a two-GPU host exposes both of them. So the prefix is
-    what decides this, and False for an unreadable count -- a host this cannot measure
-    answers nothing, and unmeasured goes on meaning narrowed.
+    ``repeat_ends_the_list`` is ROCr's rule, not clr's: RvdFilter terminates on a token that
+    "maps to a device that has been previously selected", so ROCR_VISIBLE_DEVICES=0,0,1
+    surfaces ONE device, where clr stops only on a token that is not its own index written
+    back out and leaves both. An unmappable token TERMINATES the list rather than discarding
+    what came before it, clr having already pushed every device it accepted, so
+    HIP_VISIBLE_DEVICES=0,1,-1 exposes both. The prefix decides this, and an unreadable
+    count answers False: unmeasured goes on meaning narrowed.
     """
     if not count:
         return False

@@ -12471,12 +12471,10 @@ class LlamaCppBackend:
             # loader with nothing to enumerate, and "the Vulkan probe reported no device"
             # then sends the user after a driver that is fine (#10466). A Vulkan binary is
             # asked only about the render node, never /dev/kfd, and keeps its own reason.
-            #
-            # Asked only of a build that can drive an AMD card, and only about the nodes
-            # that build opens: _is_vulkan_backend answers which backend the install defers
-            # to, so a CUDA-plus-Vulkan build counts as CUDA and a CPU-only build as
-            # neither. An install this probe cannot read stays eligible, so a detection
-            # miss does not lose the #10466 host.
+            # Only of a build that can drive an AMD card: _is_vulkan_backend answers which
+            # backend the install defers to, so a CUDA-plus-Vulkan build counts as CUDA. An
+            # install this probe cannot read stays eligible, so a detection miss does not
+            # lose the #10466 host.
             _is_vulkan = LlamaCppBackend._is_vulkan_backend(binary)
             _backends = LlamaCppBackend._installed_ggml_backends(binary)
             _amd_capable = not LlamaCppBackend._backend_lacks_gpu_lib(binary) and (
@@ -12504,17 +12502,14 @@ class LlamaCppBackend:
                 _raw = (os.environ.get("ROCR_VISIBLE_DEVICES") or "").strip()
                 if not _raw or not _amd_gpu_count:
                     return None
-                # ROCr's own rule, from RvdFilter's documentation in
-                # core/inc/amd_filter_device.h: it "builds the list of Gpu devices to
-                # surface using tokens that are Legal and NOT Terminating", an index
-                # terminates when its "value ... lies outside the interval
-                # [0 - (numGpuDevices - 1)]" OR "maps to a device that has been previously
-                # selected", and a token is Illegal when it "can't be evaluated into an
-                # instance of Device UUID or Enumeration Index". Every ending is therefore
-                # a PREFIX whose length is known -- including a repeated ordinal ("0,0"
-                # surfaces one device, not two) and an empty token ("0," ends after the
-                # first, leaving one survivor). Only a UUID is unknowable here, since the
-                # KFD count is an ordinal space and nothing in it can match one.
+                # ROCr's own rule, from RvdFilter in core/inc/amd_filter_device.h: it
+                # surfaces "tokens that are Legal and NOT Terminating", an index terminates
+                # when it "lies outside the interval [0 - (numGpuDevices - 1)]" OR "maps to
+                # a device that has been previously selected", and a token is Illegal when
+                # it "can't be evaluated into an instance of Device UUID or Enumeration
+                # Index". Every ending is a PREFIX of known length, including a repeated
+                # ordinal ("0,0" surfaces one device) and an empty token. Only a UUID is
+                # unknowable here: the KFD count is an ordinal space.
                 _survivors = 0
                 _selected: "set[int]" = set()
                 for _entry in _raw.split(","):
@@ -12569,17 +12564,15 @@ class LlamaCppBackend:
                 return int(first) >= _bound
 
             def _cannot_be_resolved(value: str) -> bool:
-                # ROCr accepts a UUID as well as an ordinal ("0,GPU-4b2c..."), and a UUID
-                # naming no device on this host stops the list exactly as a bad ordinal
-                # does. Nothing here can match one -- the KFD count is an ordinal space --
-                # so it is reported as unresolved rather than judged either way: calling it
-                # a blocker would invent a fault, and dropping it silently leaves the user
-                # with no mention of the one variable that may be hiding their card.
-                # Only the UUID form: every other non-index is Illegal to ROCr, which is a
-                # different answer and is decided by _is_an_illegal_rocr_selector. clr
-                # resolves a UUID too (rocdevice.cpp matches "GPU-" against each agent's
-                # HSA_AMD_AGENT_INFO_UUID), so the HIP layer gets the same answer rather
-                # than a silence that would be a suppression when the UUID names nothing.
+                # ROCr accepts a UUID as well as an ordinal ("0,GPU-4b2c..."), and one
+                # naming no device stops the list exactly as a bad ordinal does. Nothing
+                # here can match one, so it is reported as unresolved rather than judged:
+                # calling it a blocker invents a fault, and dropping it leaves the user
+                # unaware of the one variable that may be hiding their card. Only the UUID
+                # form -- every other non-index is Illegal to ROCr, which
+                # _is_an_illegal_rocr_selector decides. clr resolves a UUID too
+                # (rocdevice.cpp matches "GPU-" against HSA_AMD_AGENT_INFO_UUID), so the
+                # HIP layer gets the same answer.
                 first = value.split(",")[0].strip()
                 return first.lower().startswith("gpu-")
 
@@ -12613,22 +12606,16 @@ class LlamaCppBackend:
                     and not first.lower().startswith("gpu-")
                 )
 
-            # Which of the four this host actually reads, per variable rather than one
-            # rule applied to all of them alike. Reaching a node hint at all means an
-            # AMD-capable install and a closed AMD node, so the runtime being explained
-            # is HIP, and clr's own precedence holds: rocdevice.cpp reads
-            # HIP_VISIBLE_DEVICES when its FIRST BYTE is not NUL and CUDA_VISIBLE_DEVICES
-            # otherwise, so an empty CUDA mask behind a valid HIP one is never consulted
-            # and naming it sends the user after a change that fixes nothing -- while an
-            # empty HIP mask does not win, since clr's flag defaults to "" and cannot tell
-            # it from unset, so the CUDA value below it is what runs. ROCr sits
-            # BELOW that layer and composes with it rather than deferring
-            # (_rocm_visibility_masks_are_stacked), so an empty ROCr mask does blind the
-            # runtime while HIP wins above it; Windows has no ROCr layer at all.
-            # GPU_DEVICE_ORDINAL has its own predicate, and it reads whitespace as no
-            # filter. _active_gpu_visibility_mask is deliberately not the predicate
-            # here: it gates the same chain on torch being a ROCm build, which is the
-            # right question for torch's own device list and the wrong one for a HIP
+            # Which of the four this host actually reads, per variable rather than one rule
+            # for all. The runtime being explained is HIP, so clr's precedence holds:
+            # rocdevice.cpp reads HIP_VISIBLE_DEVICES when its FIRST BYTE is not NUL and
+            # CUDA_VISIBLE_DEVICES otherwise, so an empty CUDA mask behind a valid HIP one
+            # is never consulted -- while an empty HIP mask does not win, clr's flag
+            # defaulting to "" and unable to tell it from unset. ROCr sits BELOW that layer
+            # and composes rather than defers (_rocm_visibility_masks_are_stacked), so an
+            # empty ROCr mask does blind the runtime; Windows has no ROCr layer at all.
+            # _active_gpu_visibility_mask is deliberately not used: it gates the same chain
+            # on torch being a ROCm build, which is the wrong question for a HIP
             # llama-server sitting beside the CPU torch wheel this host tends to have.
             _hip_layer_var = (
                 "HIP_VISIBLE_DEVICES"
@@ -12674,20 +12661,15 @@ class LlamaCppBackend:
                     blocking.append(phrase)
                 elif _cannot_be_resolved(raw):
                     unresolved.append(phrase)
-            # The four above are the HIP/CUDA selectors, which a Vulkan build reads none
-            # of. GGML_VK_VISIBLE_DEVICES is the one it DOES read, and _run_vulkan_probe
-            # passes it through to ggml deliberately, so it is the only selector that can
-            # empty a Vulkan probe -- and reporting the node repair without it named a
-            # complete explanation that reopening the node does not deliver.
-            #
-            # Only the two ends are decidable here. ggml_vk_instance_init replaces commas
-            # with spaces and reads ordinals with `ss >> tmp` against the RAW
-            # vkEnumeratePhysicalDevices list, before CPU devices are dropped and ICDs
-            # deduplicated, so this process does not have the bound: a value whose first
-            # token has no integer prefix -- the empty string included -- extracts nothing
-            # and selects no device at all, while an ordinal past the raw end throws
-            # "Invalid device index" rather than hiding. Anything else is reported as
-            # unresolved, since naming it a blocker would invent a fault.
+            # The four above are the HIP/CUDA selectors, which a Vulkan build reads none of.
+            # GGML_VK_VISIBLE_DEVICES is the one it DOES read and _run_vulkan_probe passes
+            # it through deliberately, so it is the only selector that can empty a Vulkan
+            # probe. Only the two ends are decidable here: ggml_vk_instance_init reads
+            # ordinals with `ss >> tmp` against the RAW vkEnumeratePhysicalDevices list,
+            # before CPU devices are dropped and ICDs deduplicated, so this process does not
+            # have the bound. A first token with no integer prefix (the empty string
+            # included) selects nothing, while an ordinal past the raw end throws "Invalid
+            # device index" rather than hiding. Anything else is reported as unresolved.
             if _is_vulkan:
                 _vk_raw = os.environ.get("GGML_VK_VISIBLE_DEVICES")
                 if _vk_raw is not None:
@@ -12729,14 +12711,10 @@ class LlamaCppBackend:
                 # read, which keeps the behaviour it had before the check existed.
                 if not _is_vulkan:
                     return False
-                # Which drivers the loader would actually load decides this, and a forced
-                # list is only one of the three things that decide it: the search dirs it
-                # replaces, the driver filters applied on top of either, and whether each
-                # manifest still resolves to a library. A loader that can only load AMD
-                # never opens the other vendor's driver, so its open node is no path. A
-                # loader that can load that vendor is the opposite case and must NOT
-                # suppress: the AMD node is then not a path either, so it cannot be why the
-                # probe came back empty.
+                # Which drivers the loader would actually load decides this: a loader that
+                # can only load AMD never opens the other vendor's driver, so its open node
+                # is no path. One that can load that vendor is the opposite case and must
+                # NOT suppress.
                 try:
                     from utils.hardware.amd import (
                         a_non_amd_render_node_is_open,
@@ -12773,11 +12751,9 @@ class LlamaCppBackend:
 
             if node_hint:
                 # A mask hides devices whatever the node permissions are, so a host with
-                # both needs both fixes and the early return was hiding the second one.
-                # Only a mask that can hide EVERY device is a second blocker, though: a
-                # valid selector beside a closed node is not why the probe came back
-                # empty, and naming it sends the user after a change that fixes nothing.
-                # mask_note below is deliberately left listing all four -- there it
+                # both needs both fixes. Only a mask that can hide EVERY device counts as a
+                # second blocker: a valid selector beside a closed node is not why the probe
+                # came back empty. mask_note below still lists all four -- there it
                 # annotates what torch was looking at rather than claiming a repair.
                 if blocking:
                     node_hint = (
@@ -12790,18 +12766,14 @@ class LlamaCppBackend:
                         f"resolve, so whether it also hides the card is unknown; check it "
                         f"if the groups do not help."
                     )
-                # A second blocker the node repair cannot clear, and the only one this can
-                # state about the loader itself: manifests were found and not one of them
-                # is loadable, so the probe stays empty however the node is owned. Appended
-                # rather than returned, exactly like the mask sentences above -- the closed
-                # node is still true and still needs fixing.
+                # A second blocker the node repair cannot clear: manifests were found and
+                # not one is loadable, so the probe stays empty however the node is owned.
+                # Appended rather than returned, like the mask sentences above.
                 if _is_vulkan and _the_vulkan_loader_has_no_driver():
-                    # The repair depends on WHY, and the sentence used to prescribe the one
-                    # that cannot work for two of the three: a filter that disables every
-                    # manifest and a forced list pointing at paths that do not resolve are
-                    # environment settings, which reinstalling a driver leaves exactly as
-                    # they were. Named rather than described, so the user has something to
-                    # unset.
+                    # The repair depends on WHY. A filter that disables every manifest, and
+                    # a forced list pointing at paths that do not resolve, are environment
+                    # settings that reinstalling a driver leaves exactly as they were. Named
+                    # rather than described, so the user has something to unset.
                     _override = _the_loader_override_to_blame()
                     if _override:
                         node_hint = (
@@ -12816,13 +12788,11 @@ class LlamaCppBackend:
                             f"here: every ICD manifest it would read is missing its library "
                             f"or is 32-bit, so reinstall the Vulkan driver as well."
                         )
-                # A closed node explains an empty probe only when it is a node the runtime
-                # would have used. On a multi-AMD host one render node can be shut while a
-                # sibling is open, and the runtime then had a complete path and enumerated
-                # nothing anyway, so the closed one is a SECOND finding: returning it as the
-                # reason sends the user after a repair that leaves the probe just as empty.
-                # Asked per backend, since HIP also needs /dev/kfd and that node has no
-                # sibling. Still reported either way, because it is still true.
+                # A closed node explains an empty probe only when it is one the runtime would
+                # have used. On a multi-AMD host a render node can be shut while a sibling is
+                # open, and the runtime then had a complete path and enumerated nothing
+                # anyway, so the closed one is a SECOND finding. Asked per backend, since HIP
+                # also needs /dev/kfd and that node has no sibling.
                 if _closed_nodes_block_the_runtime() and not _another_vendor_has_an_open_node():
                     return node_hint
                 _second_finding = f" Separately, and not why the probe is empty: {node_hint}"

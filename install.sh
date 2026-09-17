@@ -3781,26 +3781,21 @@ _amd_render_node_vendor() {
 # account outside that group passes every -e test and then cannot open the device: HIP
 # counts no devices, the Vulkan loader enumerates none, and the install looks like a host
 # with no GPU (#10466). -r and -w, matching what the runtimes need; root prints nothing.
-#
-# AMD-owned nodes only. Render nodes are root:render for EVERY vendor, so an NVIDIA-only
-# box has the same closed list and none of the problem (CUDA opens /dev/nvidia* instead),
-# and the group advice would be wrong there. sysfs is world-readable, so ownership is
-# answered without the access being tested for.
+# AMD-owned nodes only: render nodes are root:render for EVERY vendor, so an NVIDIA-only
+# box has the same closed list and none of the problem, and the group advice would be wrong
+# there. sysfs is world-readable, so ownership is answered without testing the access.
 _amd_nodes_closed_to_this_user() {
     _anctu_amd_in_topology=""
     _amd_candidate_nodes | while IFS= read -r _node; do
         [ -e "$_node" ] || continue
         { [ -r "$_node" ] && [ -w "$_node" ]; } && continue
         if [ "$_node" = /dev/kfd ]; then
-            # vendor_id 4098 = 0x1002, the same AMD guard _has_amd_rocm_gpu uses:
-            # NVIDIA's open kernel module registers KFD nodes of its own.
-            #
-            # A topology that could not be READ is not one that named another vendor, and
-            # only the second is evidence. Where it is unknown, DRM confirms the same
-            # silicon independently, vendor read rather than assumed. Dropping the node
-            # there left the installer naming only the render node's group, and where the
-            # two carry different owning groups (video against render) that membership
-            # leaves KFD shut; the PCI branch further down then read the node as openable.
+            # vendor_id 4098 = 0x1002, the same AMD guard _has_amd_rocm_gpu uses: NVIDIA's
+            # open kernel module registers KFD nodes of its own. A topology that could not
+            # be READ is not one that named another vendor, and only the second is evidence,
+            # so where it is unknown DRM confirms the same silicon independently. Dropping
+            # the node there left the installer naming only the render node's group, which
+            # where the two differ (video against render) leaves KFD shut.
             # Mirrors utils/hardware/amd.py::amd_nodes_closed_to_this_user.
             _anctu_kfd_state=0
             _kfd_topology_amd_state || _anctu_kfd_state=$?
@@ -3847,14 +3842,13 @@ _an_amd_render_node_is_open() {
     return 1
 }
 
-# Whether KFD enumerates an AMD GPU node, the AMD-presence signal that survives a host
-# with no render node at all. vendor_id 4098 = 0x1002; the KFD CPU node reports 0 and
-# NVIDIA's open kernel module registers 4318. Mirrors
-# utils/hardware/amd.py::_kfd_topology_has_an_amd_gpu.
-# 0 = the topology names an AMD GPU, 1 = it was READ and names none, 2 = it could not be
-# read at all. The third is not the second: a container can map /dev/kfd while hiding
-# /sys/class/kfd, and collapsing the two drops the node from the closed list on exactly that
-# host. Mirrors utils/hardware/amd.py::_kfd_topology_amd_state.
+# Whether KFD enumerates an AMD GPU node, the AMD-presence signal that survives a host with
+# no render node at all. vendor_id 4098 = 0x1002; the KFD CPU node reports 0 and NVIDIA's
+# open kernel module registers 4318. Exit 0 = the topology names an AMD GPU, 1 = it was READ
+# and names none, 2 = it could not be read at all. The third is not the second: a container
+# can map /dev/kfd while hiding /sys/class/kfd, and collapsing the two drops the node from
+# the closed list on exactly that host.
+# Mirrors utils/hardware/amd.py::_kfd_topology_has_an_amd_gpu and _kfd_topology_amd_state.
 _kfd_topology_amd_state() {
     _ktas=$(awk '
         FNR == 1 { read_one = 1 }
@@ -5913,16 +5907,13 @@ esac
 # the bus -- and someone correctly installing CUDA wheels is not helped by being told to
 # install the ROCm kernel stack for a card this install does not use.
 #
-# The kernel-stack hint is suppressed by a closed /dev/kfd, not by any closed node: that
-# node existing is the evidence the stack IS loaded. A host whose /dev/kfd is ABSENT while
-# a render node is closed needs both repairs, and gets both.
-# Two arms rather than one for the same reason: /dev/kfd IS the amdkfd char device, so its
-# presence proves the kernel stack is loaded and a reinstall repairs nothing. The closed-node
-# guard alone does not separate the states -- a node that is absent is not closed either --
-# so an openable /dev/kfd reached a sentence saying there was none. Split rather than
-# excluded, since the diagnosis still holds where the userspace cannot read the card and
-# suppressing it there would withdraw the only repair on offer. Sibling arms, not a nested
-# `if`: the harnesses lift this block by walking back to the `if` above a sentence.
+# /dev/kfd IS the amdkfd char device, so its presence proves the kernel stack is loaded and
+# a reinstall repairs nothing; that is what suppresses the kernel-stack hint, rather than
+# any closed node. A host whose /dev/kfd is ABSENT while a render node is closed needs both
+# repairs and gets both, which is why these are two arms: a node that is absent is not
+# closed either, so one guard left an openable /dev/kfd reaching a sentence saying there was
+# none. Sibling arms, not a nested `if`: the harnesses lift this block by walking back to
+# the `if` above a sentence.
 #
 # The runtime half's needs_kfd, for the installer: /dev/kfd is opened by ROCm and nothing
 # else. SKIP_TORCH alone does not settle it, since --no-torch still installs a GGUF bundle
@@ -5953,15 +5944,12 @@ _torch_opens_amd_nodes() {
 }
 
 # An unset or `auto` request is not a decision here, but it is not a coin toss either:
-# install_llama_prebuilt resolves it, and _linux_published_attempts takes the CUDA bundle
-# under `if host.has_usable_nvidia:` and only reaches ROCm in the `elif host.has_rocm`
-# below it. So on a hybrid box with a usable NVIDIA GPU the automatic bundle opens no AMD
-# node, and the AMD-evidence gates cannot tell: the card IS there and its nodes ARE shut,
-# they are simply nothing this install will use.
-#
-# Listed as the values that ARE decisions rather than the two that are not: setup.sh warns
-# "Ignoring UNSLOTH_LLAMA_CPP_BACKEND=..." for anything outside this set and normalises it
-# away (is_requestable_backend -> None -> auto), so a typo lands on the automatic route.
+# _linux_published_attempts takes the CUDA bundle under `if host.has_usable_nvidia:` and
+# only reaches ROCm in the `elif host.has_rocm` below it. So on a hybrid box the automatic
+# bundle opens no AMD node, and the AMD-evidence gates cannot tell: the card IS there and
+# its nodes ARE shut, they are simply nothing this install will use. Listed as the values
+# that ARE decisions rather than the two that are not, because setup.sh normalises anything
+# outside this set away (is_requestable_backend -> None -> auto).
 _auto_bundle_opens_amd_nodes() {
     case "$(_requested_llama_backend)" in
         cpu|cuda|rocm|hip|vulkan) return 0 ;;
