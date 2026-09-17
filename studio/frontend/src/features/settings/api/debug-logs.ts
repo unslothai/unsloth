@@ -24,11 +24,13 @@ export interface DebugLogSource {
   sizeBytes: number;
   modifiedAt: number;
   isCurrent: boolean;
+  isRecentAttempt: boolean;
 }
 
 export interface DebugLogSources {
   sources: DebugLogSource[];
   defaultSourceId: string | null;
+  troubleshootingSourceIds: string[];
   fileLoggingDisabled: boolean;
   /** Where the logs live. Null on a backend older than this field. */
   logRoot: string | null;
@@ -71,8 +73,10 @@ export async function loadDebugLogSources(
       sizeBytes: Number(source.size_bytes ?? 0),
       modifiedAt: Number(source.modified_at ?? 0),
       isCurrent: Boolean(source.is_current),
+      isRecentAttempt: Boolean(source.is_recent_attempt),
     })),
     defaultSourceId: body.default_source_id ?? null,
+    troubleshootingSourceIds: (body.troubleshooting_source_ids ?? []).map(String),
     fileLoggingDisabled: Boolean(body.file_logging_disabled),
     logRoot: body.log_root ?? null,
   };
