@@ -91,4 +91,5 @@ export { useSettingsDialogStore } from "./stores/settings-dialog-store";
 export type { SettingsTab } from "./stores/settings-dialog-store";
 export type { Palette, ResolvedTheme, Theme } from "./stores/theme-store";
 
+export { useVoiceSettingsStore } from "./stores/voice-settings-store";
 export { isMacPlatform } from "./lib/keyboard-shortcuts";

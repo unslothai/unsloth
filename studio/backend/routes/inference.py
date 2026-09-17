@@ -1613,12 +1613,12 @@ try:
         _emitted_n_batch,
         _extra_args_draft_device_pin,
         _extra_args_n_ubatch,
-        _flash_attn_enabled_from_args,
         _hf_offline_if_unreachable,
         _hf_offline_if_unreachable_for,
         _kv_bytes_per_elem,
         _kv_unified_from_args,
         _metal_device_is_paravirtual,
+        _planned_flash_attn,
         _planned_main_cache_types,
         _planned_scratch_cache_type,
         _swa_full_from_args_or_env,
@@ -1675,12 +1675,12 @@ except ImportError:
         _emitted_n_batch,
         _extra_args_draft_device_pin,
         _extra_args_n_ubatch,
-        _flash_attn_enabled_from_args,
         _hf_offline_if_unreachable,
         _hf_offline_if_unreachable_for,
         _kv_bytes_per_elem,
         _kv_unified_from_args,
         _metal_device_is_paravirtual,
+        _planned_flash_attn,
         _planned_main_cache_types,
         _planned_scratch_cache_type,
         _swa_full_from_args_or_env,
@@ -10494,10 +10494,6 @@ def _cached_repo_gguf_bytes(repo: str, hint: str = "") -> int:
         return 0
 
 
-# Upper bound on any current tokenizer, used to rebuild the compute buffer when a
-# truncated header drops the token array. Above Llama 4 / Gemma 3 (256k), the widest shipping.
-_ASSUMED_MAX_VOCAB = 262144
-
 # Canonical speculative modes whose launch opens no drafter file at all:
 # _build_speculative_flags returns out of each before it reaches --model-draft.
 _SPEC_MODES_WITHOUT_A_DRAFTER = frozenset({"off", "ngram", "ngram-simple"})
@@ -10641,16 +10637,24 @@ def _gguf_runtime_bytes(
     over-reserves on purpose; a panel quoting a number to a user wants the other
     one, since a smaller ``-c`` in the extras is the context the user gets."""
     try:
-        from core.inference.llama_cpp import _batch_ubatch_for_mmproj
+        from core.inference.llama_cpp import _ASSUMED_MAX_VOCAB, _batch_ubatch_for_mmproj
+        from core.inference.llama_cpp import effective_ctx_checkpoints_for_caps
         from core.inference.llama_server_args import (
             parse_ctx_override,
-            resolve_ctx_checkpoints,
             resolve_requested_ctx,
         )
 
         probe = _probe_backend()
         probe._model_identifier = model_identifier
         probe._read_gguf_metadata(gguf_path)
+        # An older llama.cpp reserves an output row per micro-batch token; priced as
+        # the loader prices it. getattr: a stand-in backend has no probe.
+        try:
+            probe._reserves_micro_batch_outputs = bool(
+                getattr(LlamaCppBackend, "reserves_micro_batch_outputs", lambda: False)()
+            )
+        except Exception as _rows_exc:
+            logger.debug("llama-server build probe failed: %s", _rows_exc)
         # Price the same batch sizes used by load_model.
         n_batch, n_ubatch = _batch_ubatch_for_mmproj(
             0 if is_diffusion else launch_required_ubatch,
@@ -10715,7 +10719,6 @@ def _gguf_runtime_bytes(
         # llama-server b10632, Qwen3-0.6B at 32k with -ctk/-ctv q4_0: 2296 MiB reserved
         # against 1008 MiB allocated, identical on the CPU and Vulkan builds.
         planned_v_type = planned_cache_types[1]
-        v_forces_flash_attn = planned_v_type not in {"f16", "bf16", "f32"}
         # the loader raises --batch-size to max(slots, 2) before launch, and llama.cpp
         # caps the micro-batch against it, so budget from the emitted value. Diffusion
         # takes neither flag, and SWA metadata prices the KV against the micro-batch,
@@ -10766,46 +10769,44 @@ def _gguf_runtime_bytes(
             llama_extra_args,
             default = managed_kv_unified,
         )
-        _resolved_checkpoints = resolve_ctx_checkpoints(llama_extra_args, ctx_checkpoints)
-        if _resolved_checkpoints:
-            # A build predating both --ctx-checkpoints aliases has the request skipped
-            # by the command builder, which logs and moves on, so charging for the
-            # snapshots reserves memory the process never allocates. Same capability
-            # probe the builder itself asks, and the same default-deny on an
-            # unanswerable one: this figure also guards a running training job, so an
-            # unreadable probe keeps the charge rather than dropping it.
-            try:
-                _cc_caps = LlamaCppBackend.probe_server_capabilities()
-                # ``found`` is what separates "this build lacks the flag" from "no
-                # binary was read": the defaults dict reports every capability False,
-                # so keying on the flag alone would drop the charge whenever the probe
-                # simply could not run.
-                if _cc_caps.get("found") and not _cc_caps.get("ctx_checkpoints_flag"):
-                    _resolved_checkpoints = 0
-            except Exception as _cc_exc:
-                logger.debug("ctx-checkpoints capability probe failed: %s", _cc_exc)
+        # Resolve the same capability-dependent count that load_model emits.
+        _cc_caps: dict = {}
+        try:
+            _cc_caps = LlamaCppBackend.probe_server_capabilities() or {}
+        except Exception as _cc_exc:
+            logger.debug("ctx-checkpoints capability probe failed: %s", _cc_exc)
+        # Older lightweight probes may not provide the new sizing helpers.
+        _per_checkpoint = getattr(probe, "_rollback_state_bytes", lambda _n: 0)(1)
+        _host_mib = getattr(probe, "_host_memory_capacity_mib", lambda: None)()
+        _resolved_checkpoints = effective_ctx_checkpoints_for_caps(
+            _cc_caps,
+            llama_extra_args,
+            ctx_checkpoints,
+            per_checkpoint_bytes = _per_checkpoint,
+            n_parallel = slots,
+            total_host_bytes = (_host_mib * 1024 * 1024) if _host_mib else None,
+        )
         # load_model appends --flash-attn on to every launch whose build has the flag,
         # so the default here is ON, not off. The false arm pads variable-width V
         # tensors to the model-wide maximum (_max_kv_value_width), which on an
         # architecture whose global and SWA layers disagree about n_embd_v_gqa
-        # inflates the whole cache and can call a load that fits an overflow. Resolved
-        # the way the launch resolves it: the managed default, narrowed by the
-        # capability probe, then llama.cpp's own env-then-last-wins-argv rule. A
-        # quantized V still forces it on top of all that, because llama-context.cpp
-        # turns it on itself rather than refusing the load.
-        _fa_default = True
+        # inflates the whole cache and can call a load that fits an overflow.
+        # Resolved the way the launch resolves it, narrowed by the capability probe.
+        _fa_supported = True
         try:
             _fa_caps = LlamaCppBackend.probe_server_capabilities()
             # Same ``found`` test as the checkpoint probe above: the defaults dict
             # reports nothing supported, so keying on the flag alone would size every
             # unprobed host as flash-attention-less.
             if _fa_caps.get("found") and not _fa_caps.get("supports_flash_attn", True):
-                _fa_default = False
+                _fa_supported = False
         except Exception as _fa_exc:
             logger.debug("flash-attention capability probe failed: %s", _fa_exc)
-        flash_attn = (
-            _flash_attn_enabled_from_args(llama_extra_args, default = _fa_default, env = os.environ)
-            or v_forces_flash_attn
+        flash_attn = _planned_flash_attn(
+            llama_extra_args,
+            _fa_supported,
+            planned_v_type,
+            getattr(probe, "_architecture", None),
         )
         kv = probe._estimate_kv_cache_bytes(
             ctx,
@@ -10855,38 +10856,13 @@ def _gguf_runtime_bytes(
         devices = max(1, int(n_devices))
 
         def _flat_buffer(per_device_tensor: bool) -> int:
-            """Flat compute buffer, rebuilt when the header is short of a vocab size.
-
-            _estimate_compute_buffer_bytes returns 0 when vocab_size or embedding_length is
-            missing. Only the first is reachable: _vocab_size is set solely from the
-            tokenizer.ggml.tokens array length, which a truncated header drops while keeping
-            the dims. So rebuild from the real formula with a vocab ceiling rather than
-            substituting the loader's flat reserve. The loader can afford that reserve
-            because over-reserving there just shrinks the context; here it denies the load.
-            """
-            flat = probe._estimate_compute_buffer_bytes(
+            """Use a vocabulary ceiling when a truncated header omits the token array."""
+            return probe._estimate_compute_buffer_bytes(
                 n_ubatch = effective_ubatch,
                 n_parallel = slots,
                 per_device_tensor = per_device_tensor,
+                vocab_ceiling = _ASSUMED_MAX_VOCAB,
             )
-            if flat > 0:
-                return flat
-            # getattr: a bare backend double carries neither dims nor constants.
-            n_embd = getattr(probe, "_embedding_length", None) or 0
-            if n_embd <= 0:
-                return 0  # nothing to rebuild from; the total is floored below instead
-            ub = max(1, int(effective_ubatch or probe._DEFAULT_N_UBATCH))
-            act_scratch = 4 * n_embd * ub * 4
-            out_buffer = _ASSUMED_MAX_VOCAB * ub * 4
-            output_slots = (
-                slots if getattr(probe, "is_embedding_gguf", False) else max(0, slots - 1)
-            )
-            raw = (
-                2 * act_scratch + out_buffer * slots
-                if per_device_tensor
-                else act_scratch + out_buffer * output_slots
-            )
-            return int(raw * probe._COMPUTE_BUFFER_SAFETY)
 
         if tensor_parallel:
             # mirrors _plan_tensor_parallel: per-device buffer and ctx growth on every device
@@ -10911,6 +10887,8 @@ def _gguf_runtime_bytes(
                     effective_ubatch,
                     cache_type_for_scratch,
                     layer_split = devices > 1 and not pipeline_parallel_off,
+                    flash_attn = flash_attn,
+                    n_parallel = slots,
                 )
             )
         if compute <= 0:
@@ -10938,11 +10916,19 @@ def _estimate_gguf_kv_gb(
     is_diffusion: bool = False,
     model_identifier: Optional[str] = None,
     launch_required_ubatch: int = 0,
+    shared_memory_pool: bool = True,
 ) -> float:
     """``_gguf_runtime_bytes`` summed into GB, for the training guard.
 
     An unreadable header is 0 GB, as it always was: a cache the guard cannot size
     must not become a refusal on its own.
+
+    Context checkpoints leave this figure only when ``shared_memory_pool`` is False,
+    i.e. the caller has CONFIRMED the pool it checks against is separate from host
+    RAM. On an iGPU or a unified-memory APU the driver's "free VRAM" IS the host
+    heap, so dropping a host-resident allocation there admits a load beside training
+    that the one pool cannot hold. Defaults to keeping them, like the rest of this
+    guard, which refuses what it cannot size.
     """
     runtime = _gguf_runtime_bytes(
         gguf_path,
@@ -10959,7 +10945,12 @@ def _estimate_gguf_kv_gb(
         model_identifier = model_identifier,
         launch_required_ubatch = launch_required_ubatch,
     )
-    return (runtime.kv_bytes + runtime.compute_bytes) / (1024**3)
+    gpu_kv_bytes = (
+        runtime.kv_bytes
+        if shared_memory_pool
+        else max(0, runtime.kv_bytes - runtime.kv_checkpoint_bytes)
+    )
+    return (gpu_kv_bytes + runtime.compute_bytes) / (1024**3)
 
 
 def _remote_gguf_compute_reserve_gb(
@@ -10981,8 +10972,12 @@ def _remote_gguf_compute_reserve_gb(
 
     ``required_ubatch`` matches the post-download launch.
     """
-    # remote dims are unreadable; only the kq mask, linear in ubatch x ctx, can be sized here
-    from core.inference.llama_cpp import _batch_ubatch_for_mmproj
+    # remote dims are unreadable: the kq mask is sized exactly, the activations at a ceiling
+    from core.inference.llama_cpp import (
+        _ASSUMED_MAX_ACTIVATION_WIDTH,
+        _ASSUMED_MAX_VOCAB,
+        _batch_ubatch_for_mmproj,
+    )
     from core.inference.llama_server_args import parse_ctx_override
 
     n_batch, n_ubatch = _batch_ubatch_for_mmproj(
@@ -11029,34 +11024,74 @@ def _remote_gguf_compute_reserve_gb(
             and not _pipeline_parallel_disabled_by_args(llama_extra_args, n_layers = None)
             else 1
         )
-        mask_bytes = (
-            budget_ctx
-            * effective_ubatch
-            * 2
-            * LlamaCppBackend._CTX_COMPUTE_F16_MASK_SAFETY
-            * devices
-            * split_mult
+        mask_bytes = budget_ctx * effective_ubatch * 2 * devices * split_mult
+        # Unknown dimensions require an activation ceiling. Reserve output rows for the
+        # maximum assumed draft depth. Tensor mode replicates both on every device.
+        activation_bytes = _ASSUMED_MAX_ACTIVATION_WIDTH * effective_ubatch * 4
+        output_rows = min(
+            effective_ubatch,
+            max(1, n_parallel) * (1 + LlamaCppBackend._UNKNOWN_SPEC_DRAFT_N_MAX),
         )
-        # The mask is only the context-linear half. The flat half needs dims that are
-        # unreadable remotely, but its dominant term needs only a vocab ceiling:
-        # llama.cpp reserves n_vocab * ubatch * 4 per slot past the first (every slot
-        # under tensor mode), so n_batch = n_ubatch = 32768 on two slots is ~32 GiB the
-        # mask does not cover, and omitting it let the guard admit an uncached load that
-        # then OOMs the training job. The activation scratch needs embedding_length and
-        # stays uncharged: the small half, and over-reserving denies the load outright.
-        # Scaled per device only in tensor mode, mirroring the local branch. The remote
-        # header is unknown, so reserve as if it enables embeddings.
-        _out_slots = max(1, n_parallel)
-        out_buffer_bytes = (
-            _ASSUMED_MAX_VOCAB
-            * effective_ubatch
-            * 4
-            * _out_slots
-            * (devices if tensor_parallel else 1)
+        try:
+            if LlamaCppBackend.reserves_micro_batch_outputs():
+                output_rows = effective_ubatch
+        except Exception as _rows_exc:
+            logger.debug("llama-server build probe failed: %s", _rows_exc)
+        flat_bytes = (
+            (activation_bytes + _ASSUMED_MAX_VOCAB * output_rows * 4)
             * LlamaCppBackend._COMPUTE_BUFFER_SAFETY
+            * (devices if tensor_parallel else 1)
         )
-        return (mask_bytes + out_buffer_bytes) / (1024**3)
+        return (mask_bytes + flat_bytes) / (1024**3)
     return 0.0
+
+
+def _admission_pool_shares_host_ram(
+    *,
+    is_vulkan_backend: bool,
+    vulkan_gpu_memory: Optional[list] = None,
+    requested_gpu_ids: Optional[list[int]] = None,
+    gpu_ids_are_vulkan_ordinals: bool = False,
+) -> bool:
+    """Whether the pool the training guard checks against is also the host heap.
+
+    Fails CLOSED. An unreadable inventory, a selection this cannot map to devices,
+    or any candidate that turns out to be integrated all answer True, so a figure
+    that must not under-charge keeps its host-resident terms.
+    """
+    try:
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        if is_vulkan_backend:
+            # total 0 means integrated, as _shared_gpu_ids reads it. Narrowed to the pin
+            # only when it is confirmed to be in Vulkan's own index space; a physical id
+            # read as an ordinal would answer for the wrong adapter.
+            rows = list(vulkan_gpu_memory or [])
+            if gpu_ids_are_vulkan_ordinals and requested_gpu_ids:
+                pinned = {int(i) for i in requested_gpu_ids}
+                rows = [row for row in rows if int(row[0]) in pinned]
+            return not rows or any(int(total) <= 0 for _idx, _free, total in rows)
+        import torch
+
+        if LlamaCppBackend._torch_is_rocm(torch):
+            # An empty unified set means "no APU" and "could not read them" alike, since
+            # the classifier skips what it cannot query. Only the first is evidence.
+            if not LlamaCppBackend._rocm_classification_answered():
+                return True
+            unified = LlamaCppBackend._rocm_unified_memory_gpu_ids()
+        else:
+            # Jetson and DGX Spark are CUDA and unified too, but NEVER probe here:
+            # _integrated_cuda_gpu_ids pins ~700 MiB per card for the process, and
+            # training holds them. Cached answers only, else keep the charge.
+            if not LlamaCppBackend._integrated_cuda_probe_is_free():
+                return True
+            unified = LlamaCppBackend._integrated_cuda_gpu_ids()
+        if not unified:
+            return False
+        return not requested_gpu_ids or any(int(i) in unified for i in requested_gpu_ids)
+    except Exception as e:  # noqa: BLE001 -- an unreadable device keeps the charge
+        logger.debug("Could not classify the admission pool: %s", e)
+        return True
 
 
 def _estimate_gguf_required_gb(
@@ -11080,6 +11115,9 @@ def _estimate_gguf_required_gb(
     # every settings change. This skips that listing; the caller marks the total a
     # floor instead, exactly as it already does for a drafter it cannot weigh.
     local_only: bool = False,
+    # Passed straight to _estimate_gguf_kv_gb: only a caller that has confirmed a
+    # discrete pool may drop the host-resident checkpoint share.
+    shared_memory_pool: bool = True,
 ) -> Optional[float]:
     """Approximate GGUF VRAM (GB): quantized weights + companions, plus the KV
     cache for local files (unreadable pre-download for remote). None when nothing
@@ -11382,6 +11420,7 @@ def _estimate_gguf_required_gb(
                 launch_required_ubatch = _launch_required_ubatch_for_config(
                     config, llama_extra_args, disable_vision
                 ),
+                shared_memory_pool = shared_memory_pool,
             )
 
         repo = getattr(config, "gguf_hf_repo", None)
@@ -11484,6 +11523,8 @@ class _GgufMemoryBreakdown(NamedTuple):
     n_parallel: int
     layer_count: Optional[int]
     gpu_layers: Optional[int]
+    # Host-resident checkpoint share of kv_bytes. Keep last for positional callers.
+    kv_checkpoint_bytes: int = 0
 
 
 def _gguf_offloaded_layer_fraction(
@@ -12519,6 +12560,8 @@ def _gguf_memory_breakdown(
     # The part of that reserve allocated in the TARGET's context rather than the
     # drafter's, so it stays with the target when the two are placed apart.
     target_spec_bytes = 0
+    # The verification output rows in that reserve: target compute, not target KV.
+    target_verify_bytes = 0
     drafter_on_gpu = host_drafter_bytes == 0
     charged_drafter = _charged_drafter_path(
         config, host_drafter_bytes or gpu_drafter_bytes, extras = extras
@@ -12593,7 +12636,9 @@ def _gguf_memory_breakdown(
             n_ubatch = runtime.n_ubatch,
             flash_attn = bool(_draft_v_type) and _draft_v_type not in {"f16", "bf16", "f32"},
         )
-        drafter_runtime_bytes = (
+        # The draft context's decode graph is charged on top, as the loader charges it:
+        # the helper prices only what that graph grows beyond this floor.
+        drafter_runtime_bytes = getattr(probe, "_MTP_DRAFT_COMPUTE_BYTES", 0) + (
             probe._estimate_mtp_overhead_bytes(
                 runtime.n_ctx,
                 spec_draft_n_max = draft_n_max,
@@ -12625,6 +12670,10 @@ def _gguf_memory_breakdown(
                 probe._mamba_recurrent_state_bytes(runtime.n_parallel) * draft_n_max
             )
         target_spec_bytes = min(target_spec_bytes, drafter_runtime_bytes)
+        target_verify_bytes = min(
+            probe._spec_verify_rows_bytes(runtime.n_parallel, draft_n_max),
+            drafter_runtime_bytes - target_spec_bytes,
+        )
 
     layer_count = runtime.layer_count
     gpu_fraction = _gguf_offloaded_layer_fraction(
@@ -12700,7 +12749,8 @@ def _gguf_memory_breakdown(
     if gpu_fraction > 0.0:
         # Compute buffers land on the devices running layers.
         gpu_bytes += runtime.compute_bytes
-    # Target-side spec terms are target KV allocations and follow the target cache. The
+    # Target-side spec KV follows the target cache, and its verification rows follow the
+    # target's layers like the other compute buffers. The
     # drafter's own KV follows the drafter: a separate one does not inherit
     # --gpu-layers (llama.cpp overwrites it with the draft placement, default auto), so
     # at --gpu-layers 0 it is still on the GPU holding that cache. An embedded head is
@@ -12708,8 +12758,14 @@ def _gguf_memory_breakdown(
     # drafter_on_gpu said yes even for a CPU-placed target -- but it is part of the
     # target's tensors and takes the target's context, so it goes where the target goes.
     _drafter_on_gpu = (gpu_fraction > 0.0) if embedded_mtp else drafter_on_gpu
-    drafter_runtime_gpu_bytes = (target_spec_bytes if kv_on_gpu else 0) + (
-        (drafter_runtime_bytes - target_spec_bytes) if _drafter_on_gpu else 0
+    drafter_runtime_gpu_bytes = (
+        (target_spec_bytes if kv_on_gpu else 0)
+        + (target_verify_bytes if gpu_fraction > 0.0 else 0)
+        + (
+            (drafter_runtime_bytes - target_spec_bytes - target_verify_bytes)
+            if _drafter_on_gpu
+            else 0
+        )
     )
     gpu_bytes += drafter_runtime_gpu_bytes
     # The encoder's buffers sit with the projector, so --no-mmproj-offload takes them
@@ -12745,6 +12801,7 @@ def _gguf_memory_breakdown(
         n_parallel = runtime.n_parallel,
         layer_count = layer_count,
         gpu_layers = gpu_layers if gpu_memory_mode == "manual" else None,
+        kv_checkpoint_bytes = runtime.kv_checkpoint_bytes,
     )
 
 
@@ -14088,6 +14145,12 @@ def _guard_chat_load_against_training(
             # getattr for the same reason as the batch flags above: an older caller
             # hands this guard a bare request double that does not carry the field.
             disable_vision = bool(getattr(request, "disable_vision", False)),
+            shared_memory_pool = _admission_pool_shares_host_ram(
+                is_vulkan_backend = is_vulkan_backend,
+                vulkan_gpu_memory = vulkan_gpu_memory,
+                requested_gpu_ids = requested_gpu_ids,
+                gpu_ids_are_vulkan_ordinals = gpu_ids_are_vulkan_ordinals,
+            ),
         )
     # A confirmed-diffusion positive split puts only ngl/n_layers of the weights on the GPU (a
     # split the loader would drop was nulled above). Unknown classification keeps the full
@@ -18247,6 +18310,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                     llama_backend, _native_grant_backed, _model_id
                 ),
                 gguf_variant = llama_backend.hf_variant,
+                memory_warning = llama_backend.last_load_warning,
                 loading = _loading,
                 # Plus anything the Unsloth registry still holds: the GGUF load
                 # only unloaded the ACTIVE one, so a model cached behind it is
@@ -19786,6 +19850,7 @@ async def _transcribe_audio_result(
     engine: Optional[str] = None,
     request: Optional[Request] = None,
     device: Optional[str] = None,
+    on_progress = None,
 ) -> dict:
     """STT for already-decoded bytes, sidecar errors mapped to HTTP statuses.
     Returns the sidecar's result dict so callers own the response shape."""
@@ -19819,7 +19884,7 @@ async def _transcribe_audio_result(
         model,
     )
     sidecar = _stt_sidecar_for(serving_engine)
-    cancel_event = threading.Event() if request is not None else None
+    cancel_event = threading.Event() if request is not None or on_progress is not None else None
     disconnect_watcher = (
         asyncio.create_task(_await_stt_disconnect_then_cancel(request, sidecar, cancel_event))
         if request is not None and cancel_event is not None
@@ -19839,7 +19904,17 @@ async def _transcribe_audio_result(
         loaded = getattr(sidecar, "loaded_model", None)
         if loaded is not None and loaded == _stt_resolved_model_id(model, serving_engine):
             account_access.note_resident_account(f"stt:{serving_engine}", loaded)
-        if cancel_event is None:
+        if on_progress is not None and serving_engine in ("transformers", "mtmd"):
+            result = await asyncio.to_thread(
+                sidecar.transcribe,
+                raw,
+                model,
+                language,
+                fast,
+                cancel_event,
+                on_progress = on_progress,
+            )
+        elif cancel_event is None:
             result = await asyncio.to_thread(sidecar.transcribe, raw, model, language, fast)
         else:
             result = await asyncio.to_thread(
@@ -19934,6 +20009,8 @@ async def transcribe_audio_raw(
     # would silently put the model back on the GPU. 422 instead.
     device: Optional[Literal["auto", "cpu", "gpu"]] = None,
     current_subject: str = Depends(get_current_subject),
+    stream: bool = False,
+    title: str = Query("Recording", max_length = 255),
 ):
     """Transcribe a raw audio body without base64 or JSON conversion overhead."""
     chunks: list[bytes] = []
@@ -19943,6 +20020,19 @@ async def transcribe_audio_raw(
         if size > _MAX_AUDIO_RAW_BYTES:
             raise HTTPException(status_code = 413, detail = "Audio is too large.")
         chunks.append(chunk)
+    if stream:
+        from core.inference.transcript_stream import stream_transcript
+        raw = b"".join(chunks)
+        return StreamingResponse(
+            stream_transcript(
+                lambda on_progress: _transcribe_audio_result(
+                    raw, model, language, fast, engine, None, device, on_progress
+                ),
+                title,
+            ),
+            media_type = "application/x-ndjson",
+            headers = {"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+        )
     return JSONResponse(
         content = await _transcribe_audio_result(
             b"".join(chunks), model, language, fast, engine, request, device
@@ -25885,11 +25975,6 @@ async def produce_openai_chat_completions(
     except Exception:
         _sf_probe_messages = None
 
-    # Transformers vision generation drops both reasoning fields; MLX forwards them.
-    _sf_vision_drops_reasoning = image is not None and not _sf_model_info.get("is_mlx", False)
-    _sf_gate_enable_thinking = None if _sf_vision_drops_reasoning else payload.enable_thinking
-    _sf_gate_reasoning_effort = None if _sf_vision_drops_reasoning else payload.reasoning_effort
-
     def _sf_response_protocol(
         tools = None,
         template = None,
@@ -25916,8 +26001,8 @@ async def produce_openai_chat_completions(
             logger.debug("safetensors_prefill_template_selection_failed", exc_info = True)
         parse_think = _sf_parse_think_markers(
             features,
-            _sf_gate_enable_thinking,
-            _sf_gate_reasoning_effort,
+            payload.enable_thinking,
+            payload.reasoning_effort,
         )
         reasoning_prefilled = _sf_reasoning_prefill_mode(
             features,
@@ -37827,6 +37912,60 @@ async def clear_gallery_audio(current_subject: str = Depends(get_current_subject
             status_code = 503,
             detail = "Could not read the gallery's archive data, so clearing was stopped to "
             "avoid deleting archived clips.",
+        )
+    return {"removed": removed}
+
+
+@studio_router.get("/audio/transcripts")
+async def list_gallery_transcripts(
+    limit: int = Query(50, ge = 1, le = 200),
+    before: Optional[str] = Query(None, max_length = 100),
+    archived: bool = False,
+    current_subject: str = Depends(get_current_subject),
+):
+    from core.inference import transcript_gallery
+    return await asyncio.to_thread(transcript_gallery.list_transcripts, limit, before, archived)
+
+
+@studio_router.patch("/audio/transcripts/{transcript_id}")
+async def archive_gallery_transcript(
+    transcript_id: str,
+    patch: AudioGalleryFlagsPatch,
+    current_subject: str = Depends(get_current_subject),
+):
+    from core.inference import transcript_gallery
+
+    if patch.archived is None:
+        raise HTTPException(status_code = 422, detail = "Specify whether to archive this transcript.")
+    record = await asyncio.to_thread(transcript_gallery.set_archived, transcript_id, patch.archived)
+    if record is None:
+        raise HTTPException(status_code = 404, detail = "Transcript not found.")
+    return record
+
+
+@studio_router.delete("/audio/transcripts/{transcript_id}")
+async def delete_gallery_transcript(
+    transcript_id: str, current_subject: str = Depends(get_current_subject)
+):
+    from core.inference import transcript_gallery
+    if not await asyncio.to_thread(transcript_gallery.delete, transcript_id):
+        raise HTTPException(status_code = 404, detail = "Transcript not found.")
+    return {"deleted": True}
+
+
+@studio_router.delete("/audio/transcripts")
+async def clear_gallery_transcripts(current_subject: str = Depends(get_current_subject)):
+    from core.inference import transcript_gallery
+    from core.inference.gallery_flags import FlagsUnavailable
+
+    try:
+        removed = await asyncio.to_thread(transcript_gallery.clear)
+    except FlagsUnavailable as exc:
+        logger.warning("transcript_gallery.clear_blocked: %s", exc)
+        raise HTTPException(
+            status_code = 503,
+            detail = "Could not read the transcript archive data, so clearing was stopped "
+            "to avoid deleting archived transcripts.",
         )
     return {"removed": removed}
 
