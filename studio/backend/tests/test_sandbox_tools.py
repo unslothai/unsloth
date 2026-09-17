@@ -135,9 +135,208 @@ class TestUntrustedHostBlock:
     def test_untrusted_host_block_blocked(self, code):
         _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
 
-    def test_dynamic_url_not_statically_blocked(self):
-        # Static AST can't resolve runtime URLs; bash blocklist is the fallback.
-        _ok('import requests; url = "https://example.com/"; requests.get(url)')
+    def test_runtime_url_not_statically_blocked(self):
+        # A URL only known at runtime cannot be checked against the allowlist, so it is not refused.
+        _ok("import requests; requests.get(input())")
+
+
+_H = "203.0.113.5"
+
+
+class TestNetworkTargetResolution:
+    """The allowlist applies to a host however the call spells it (#10397)."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                f"import paramiko\nc = paramiko.SSHClient()\nc.connect(hostname='{_H}')",
+                id = "paramiko_hostname_keyword",
+            ),
+            pytest.param(
+                f"import paramiko\nh = '{_H}'\nc = paramiko.SSHClient()\nc.connect(h)",
+                id = "paramiko_host_bound_once",
+            ),
+            pytest.param(
+                f"from paramiko import SSHClient\nwith SSHClient() as c:\n    c.connect('{_H}', 22)",
+                id = "paramiko_from_import_with",
+            ),
+            pytest.param(
+                f"import paramiko\nparamiko.Transport(('{_H}', 22))", id = "paramiko_transport"
+            ),
+            pytest.param(
+                f"from fabric import Connection\nConnection('root@{_H}').run('id')",
+                id = "fabric_connection",
+            ),
+            pytest.param(
+                f"import asyncssh\nasyncssh.connect(host='{_H}')", id = "asyncssh_host_keyword"
+            ),
+            pytest.param(
+                f"import requests\nrequests.get(url='http://{_H}/')", id = "requests_url_keyword"
+            ),
+            pytest.param(
+                f"import requests\nrequests.request('GET', 'http://{_H}/')",
+                id = "requests_request_url",
+            ),
+            pytest.param(f"import requests as r\nr.get('http://{_H}/')", id = "module_alias"),
+            pytest.param(
+                f"import requests\nr = requests\nr.get(url='http://{_H}/')",
+                id = "module_assigned_alias",
+            ),
+            pytest.param(
+                f"import requests\nfetch = requests.get\nfetch('http://{_H}/')",
+                id = "function_assigned_alias",
+            ),
+            pytest.param(
+                f"import paramiko\nclient = paramiko.SSHClient()\nclient.connect(hostname='{_H}')",
+                id = "paramiko_client_name",
+            ),
+            pytest.param(
+                f"import paramiko\nclient = paramiko.SSHClient()\nssh = client\nssh.connect(hostname='{_H}')",
+                id = "paramiko_client_aliased",
+            ),
+            pytest.param(
+                f"import paramiko\nclient = paramiko.SSHClient()\ndef go():\n    client.connect(hostname='{_H}')",
+                id = "paramiko_module_client_in_function",
+            ),
+            pytest.param(
+                f"import paramiko\n(c := paramiko.SSHClient()).connect(hostname='{_H}')",
+                id = "paramiko_client_walrus",
+            ),
+            pytest.param(
+                "import paramiko\ndef outer():\n    client = paramiko.SSHClient()\n    def inner():\n"
+                f"        client.connect(hostname='{_H}')\n    inner()",
+                id = "paramiko_client_from_enclosing_function",
+            ),
+            pytest.param(
+                "import paramiko\nclient = paramiko.SSHClient()\n[None for client in ()]\n"
+                f"client.connect(hostname='{_H}')",
+                id = "comprehension_target_does_not_rebind",
+            ),
+            pytest.param(
+                "import paramiko\nclient = None\ndef setup():\n    global client\n    client = paramiko.SSHClient()\n"
+                f"def go():\n    client.connect(hostname='{_H}')",
+                id = "paramiko_global_client_after_none_placeholder",
+            ),
+            pytest.param(
+                f"import requests\ndef send():\n    fetch = requests.get\n    fetch('http://{_H}/')\n"
+                "def format_output():\n    fetch = print",
+                id = "function_alias_name_reused_in_other_function",
+            ),
+            # Python evaluates these in the scope around the function or comprehension, where r is still requests.
+            pytest.param(
+                f"import requests as r\ndef f(r=r.get('http://{_H}/')):\n    pass",
+                id = "default_argument_in_enclosing_scope",
+            ),
+            pytest.param(
+                f"import requests as r\n@r.get('http://{_H}/')\ndef f():\n    r = 1",
+                id = "decorator_in_enclosing_scope",
+            ),
+            pytest.param(
+                f"import requests as r\n[x for r in [r.get('http://{_H}/')]]",
+                id = "comprehension_first_iterable_in_enclosing_scope",
+            ),
+            pytest.param(
+                f"from urllib.request import Request, urlopen\nurlopen(Request('http://{_H}/'))",
+                id = "urlopen_request_object",
+            ),
+            pytest.param(f"from requests import get\nget('http://{_H}/')", id = "from_import"),
+            pytest.param(
+                f"import requests\nbase = 'http://{_H}'\nrequests.get(base + '/x')",
+                id = "concatenation",
+            ),
+            pytest.param(
+                f"import requests\nrequests.get(f'http://{_H}/{{input()}}')", id = "fstring_path"
+            ),
+            pytest.param(
+                f"import socket\nsocket.create_connection(address=('{_H}', 22))",
+                id = "socket_address_keyword",
+            ),
+        ],
+    )
+    def test_known_untrusted_host_blocked(self, code):
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
+    def test_metadata_host_by_keyword_blocked(self):
+        _blocked(
+            "import requests\nrequests.get(url='http://169.254.169.254/latest/')",
+            expect_phrase = "Blocked: cloud-metadata host",
+        )
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import requests\nrequests.get(url='https://huggingface.co/api/models')",
+            "import requests\nname = input()\nrequests.get(f'https://huggingface.co/api/models/{name}')",
+            "from requests import get\nget('https://pypi.org/simple/')",
+            "import urllib.request\nreq = urllib.request.Request('https://pypi.org/simple/', headers={})\nurllib.request.urlopen(req)",
+        ],
+    )
+    def test_known_trusted_host_runs_without_prompt(self, code):
+        _ok(code)
+        assert is_high_risk_tool_call("python", {"code": code}) is False
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import paramiko, sys\nc = paramiko.SSHClient()\nc.connect(sys.argv[1])",
+            "import paramiko\ndef deploy(host):\n    c = paramiko.SSHClient()\n    c.connect(hostname=host)",
+            "import paramiko\nclass Deploy:\n    def __init__(self):\n        self.client = paramiko.SSHClient()\n"
+            "    def run(self):\n        self.client.connect(self.host)",
+            "import paramiko\nclient = paramiko.SSHClient()\nssh = client\nssh.connect(hostname=input())",
+            # Ambiguous client receivers ask instead of blocking.
+            "import paramiko\ndef outer():\n    client = get_db()\n    def middle():\n        def inner():\n"
+            "            nonlocal client\n            client = paramiko.SSHClient()\n        inner()\n    middle()\n"
+            "    client.connect(hostname='203.0.113.5')",
+            "import paramiko\ndef outer():\n    client = paramiko.SSHClient()\n    def swap():\n        nonlocal client\n"
+            "        client = get_db()\n    swap()\n    client.connect(host='localhost')",
+            "import requests\nfetch = requests.get\nfetch(input())",
+            "from fabric import Connection\nConnection(input()).run('id')",
+            "import requests\nrequests.get(input())",
+            "import requests\nsub = input()\nrequests.get(f'https://{sub}.huggingface.co/')",
+            "import socket\nwith socket.socket() as s:\n    s.connect((input(), 22))",
+            "import requests\nrequests.get(*[input()])",
+        ],
+    )
+    def test_unresolved_host_runs_but_asks_in_auto_mode(self, code):
+        _ok(code)
+        assert is_high_risk_tool_call("python", {"code": code}) is True
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import sqlite3\nsqlite3.connect(input())",
+            "import paramiko, sqlite3\nsqlite3.connect(input())",
+            # A database driver's host= is not an SSH or socket client's, so a local database stays reachable.
+            "import psycopg2\npsycopg2.connect(host='localhost', dbname='x')",
+            "import pymysql\npymysql.connect(host='192.168.1.10')",
+            "import mysql.connector\nmysql.connector.connect(host='127.0.0.1')",
+            "import paramiko, mysql.connector\nmysql.connector.connect(host='127.0.0.1')",
+            "import paramiko, psycopg2\npsycopg2.connect(host=input())",
+            "import socket\ns = socket.socket(socket.AF_INET, socket.SOCK_STREAM)",
+            "import requests\ns = requests.Session()",
+            "button.connect(handler)",
+            # Importing paramiko does not make every .connect an SSH client's.
+            "import paramiko\nbutton.connect(handler)",
+            "import paramiko\nclient.connect(host='localhost')",
+            # A client in one function or class does not make the same name or attribute elsewhere a client.
+            "import paramiko\ndef a():\n    client = paramiko.SSHClient()\ndef b(client):\n    client.connect(host='localhost')",
+            "import paramiko\ndef a():\n    client = paramiko.SSHClient()\ndef b():\n    client = get_db()\n"
+            "    client.connect(host='localhost')",
+            "import paramiko\nclass A:\n    def __init__(self):\n        self.client = paramiko.SSHClient()\n"
+            "class B:\n    def go(self):\n        self.client.connect(host='localhost')",
+            # A class body's names are not visible to its methods, and a loop target rebinds a name.
+            "import paramiko\nclass A:\n    client = paramiko.SSHClient()\n    def go(self):\n"
+            "        client.connect(host='localhost')",
+            "import paramiko\nfor client in things:\n    client.connect(host='localhost')",
+            # A receiver that holds a client on only some paths is not refused for an allowlisted host.
+            "import paramiko\nclient = get_db()\nif flag:\n    client = paramiko.SSHClient()\n"
+            "client.connect(hostname='pypi.org')",
+        ],
+    )
+    def test_non_connecting_calls_do_not_ask(self, code):
+        _ok(code)
+        assert is_high_risk_tool_call("python", {"code": code}) is False
 
 
 class TestHostNormalization:

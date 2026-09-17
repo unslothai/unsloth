@@ -8366,7 +8366,11 @@ def _python_is_high_risk(code: str) -> bool:
         return False
     # _check_code_safety objecting means execution would be refused outright, so a confirmation first beats a silent
     # refusal.
-    if _check_code_safety(code) is not None:
+    safety_error, safety_info = _code_safety_report(code)
+    if safety_error is not None:
+        return True
+    # Unknown network targets require approval in auto mode.
+    if safety_info.get("unresolved_network_calls"):
         return True
     tree, _parse_error = _parse_python(code)
     if _parse_error is not None:
@@ -15955,9 +15959,10 @@ def _check_signal_escape_patterns(code: str):
     if visitor.imports_signal and not signal_tampering:
         warnings.append("Code imports 'signal' module - review manually for safety")
 
-    # Static host policy: block metadata hosts and any literal host outside the trusted allowlist; uploads blocked
-    # regardless of host. Dynamic hosts are caught by the bash blocklist.
+    # Block known disallowed targets and record unknown targets so auto mode asks.
+    # Upload checks are host-independent.
     network_calls: list[dict] = []
+    unresolved_network_calls: list[dict] = []
     sensitive_file_reads: list[dict] = []
     _NETWORK_FQ_PREFIXES = (
         "socket.socket",
@@ -15985,6 +15990,36 @@ def _check_signal_escape_patterns(code: str):
         "httpx.Client",
         "httpx.AsyncClient",
         "aiohttp.ClientSession",
+        "paramiko.Transport",
+        "paramiko.transport.Transport",
+        "fabric.Connection",
+        "fabric.connection.Connection",
+        "asyncssh.connect",
+    )
+    # Network target location: (positional index, keyword, target kind).
+    _NETWORK_TARGET_ARGS = {
+        "socket.create_connection": (0, "address", "host"),
+        "socket.getaddrinfo": (0, "host", "host"),
+        "urllib.request.urlopen": (0, "url", "url"),
+        "urllib.request.urlretrieve": (0, "url", "url"),
+        **{
+            f"requests.{m}": (0, "url", "url")
+            for m in ("get", "post", "put", "delete", "patch", "head")
+        },
+        "requests.request": (1, "url", "url"),
+        **{f"httpx.{m}": (0, "url", "url") for m in ("get", "post", "put", "patch", "delete")},
+        "httpx.request": (1, "url", "url"),
+        "http.client.HTTPConnection": (0, "host", "host"),
+        "http.client.HTTPSConnection": (0, "host", "host"),
+        "paramiko.Transport": (0, "sock", "host"),
+        "paramiko.transport.Transport": (0, "sock", "host"),
+        "fabric.Connection": (0, "host", "host"),
+        "fabric.connection.Connection": (0, "host", "host"),
+        "asyncssh.connect": (0, "host", "host"),
+    }
+    # Constructors whose instances open a connection through .connect(...).
+    _CONNECTING_CLIENT_FQ = frozenset(
+        {"socket.socket", "paramiko.SSHClient", "paramiko.client.SSHClient"}
     )
     _UPLOAD_HTTP_METHODS = (
         "requests.post",
@@ -16429,7 +16464,410 @@ def _check_signal_escape_patterns(code: str):
             return _HF_UPLOAD_PATH_VIOLATION
         return None
 
+    # Lazily model Python scopes for network-call resolution. Stores hold an AST value,
+    # ("import", dotted path), or None when unknown; attributes are tracked per class.
+    _SCOPE_NODES = (
+        ast.FunctionDef,
+        ast.AsyncFunctionDef,
+        ast.Lambda,
+        ast.ClassDef,
+        ast.ListComp,
+        ast.SetComp,
+        ast.DictComp,
+        ast.GeneratorExp,
+    )
+    _FUNCTION_NODES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
+    _COMPREHENSION_NODES = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
+    _NETWORK_MODULE_ROOTS = frozenset(
+        p.split(".")[0]
+        for p in (*_NETWORK_FQ_PREFIXES, *_NETWORK_TARGET_ARGS, *_CONNECTING_CLIENT_FQ)
+    )
+    _scope_parent: dict[int, ast.AST | None] = {id(tree): None}
+    _node_scope: dict[int, ast.AST] = {}
+    _declared: dict[tuple[int, str], str] = {}
+    _raw_name_stores: list[tuple[ast.AST, str, object]] = []
+    _name_stores: dict[tuple[int, str], list] = {}
+    _attr_stores: dict[tuple[int, str, str], list] = {}
+    _model_state: dict[str, bool] = {}
+
+    def _enclosing_class(scope: ast.AST | None) -> ast.AST | None:
+        while scope is not None and not isinstance(scope, ast.ClassDef):
+            scope = _scope_parent.get(id(scope))
+        return scope
+
+    def _store_scope(scope: ast.AST, name: str, binding: set) -> ast.AST:
+        declared = _declared.get((id(scope), name))
+        if declared == "global":
+            return tree
+        if declared == "nonlocal":
+            # nonlocal binds to the nearest enclosing function that defines the name.
+            outer = _scope_parent.get(id(scope))
+            nearest_function = None
+            while outer is not None and outer is not tree:
+                if isinstance(outer, _FUNCTION_NODES):
+                    nearest_function = nearest_function or outer
+                    if (id(outer), name) in binding:
+                        return outer
+                outer = _scope_parent.get(id(outer))
+            return nearest_function or tree
+        return scope
+
+    def _add_name_store(scope: ast.AST, name: str, value) -> None:
+        # Resolve scopes after collecting bindings so nonlocal can find its owner.
+        _raw_name_stores.append((scope, name, value))
+
+    def _record_store(target: ast.AST, value, scope: ast.AST, handled: set) -> None:
+        if isinstance(target, (ast.Tuple, ast.List)):
+            for elt in target.elts:
+                _record_store(elt, None, scope, handled)
+        elif isinstance(target, ast.Starred):
+            _record_store(target.value, None, scope, handled)
+        elif isinstance(target, ast.Name):
+            handled.add(id(target))
+            _add_name_store(scope, target.id, value)
+        elif isinstance(target, ast.Attribute):
+            handled.add(id(target))
+            if isinstance(target.value, ast.Name):
+                cls = _enclosing_class(scope)
+                key = (id(cls) if cls is not None else 0, target.value.id, target.attr)
+                _attr_stores.setdefault(key, []).append(value)
+
+    def _evaluated_outside(node: ast.AST) -> list:
+        """Return child expressions evaluated in the enclosing scope."""
+        if isinstance(node, _FUNCTION_NODES):
+            args = node.args
+            outside = [*args.defaults, *(d for d in args.kw_defaults if d is not None)]
+            if not isinstance(node, ast.Lambda):
+                outside += [*node.decorator_list, node.returns]
+                for arg in [
+                    *args.posonlyargs,
+                    *args.args,
+                    *args.kwonlyargs,
+                    args.vararg,
+                    args.kwarg,
+                ]:
+                    if arg is not None:
+                        outside.append(arg.annotation)
+            return [n for n in outside if n is not None]
+        if isinstance(node, ast.ClassDef):
+            return [*node.decorator_list, *node.bases, *(kw.value for kw in node.keywords)]
+        if isinstance(node, _COMPREHENSION_NODES):
+            return [node.generators[0].iter]
+        return []
+
+    def _build_scope_model() -> None:
+        outer_scope_of: dict[int, ast.AST] = {}
+        pending: list = [(tree, tree)]
+        while pending:
+            node, scope = pending.pop()
+            scope = outer_scope_of.get(id(node), scope)
+            _node_scope[id(node)] = scope
+            if isinstance(node, (ast.Global, ast.Nonlocal)):
+                kind = "global" if isinstance(node, ast.Global) else "nonlocal"
+                for name in node.names:
+                    _declared[(id(scope), name)] = kind
+            inner = scope
+            if isinstance(node, _SCOPE_NODES):
+                _scope_parent[id(node)] = scope
+                inner = node
+                for part in _evaluated_outside(node):
+                    outer_scope_of[id(part)] = scope
+            for child in ast.iter_child_nodes(node):
+                pending.append((child, inner))
+        handled: set = set()
+        for node in _tree_nodes(tree):
+            scope = _node_scope.get(id(node), tree)
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    _record_store(target, node.value, scope, handled)
+            elif isinstance(node, ast.AnnAssign) and node.value is not None:
+                _record_store(node.target, node.value, scope, handled)
+            elif isinstance(node, ast.NamedExpr):
+                # A walrus inside a comprehension binds in the scope around it.
+                while isinstance(scope, _COMPREHENSION_NODES):
+                    scope = _scope_parent.get(id(scope)) or tree
+                _record_store(node.target, node.value, scope, handled)
+            elif isinstance(node, (ast.With, ast.AsyncWith)):
+                for item in node.items:
+                    if item.optional_vars is not None:
+                        _record_store(item.optional_vars, item.context_expr, scope, handled)
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    root = alias.name.split(".")[0]
+                    if alias.asname:
+                        _add_name_store(scope, alias.asname, ("import", alias.name))
+                    else:
+                        _add_name_store(scope, root, ("import", root))
+            elif isinstance(node, ast.ImportFrom):
+                for alias in node.names:
+                    if alias.name == "*":
+                        continue
+                    value = (
+                        ("import", f"{node.module}.{alias.name}")
+                        if node.module and not node.level
+                        else None
+                    )
+                    _add_name_store(scope, alias.asname or alias.name, value)
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                _add_name_store(scope, node.name, None)
+            elif isinstance(node, ast.ExceptHandler) and node.name:
+                _add_name_store(scope, node.name, None)
+            elif isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name:
+                _add_name_store(scope, node.name, None)
+            elif isinstance(node, ast.MatchMapping) and node.rest:
+                _add_name_store(scope, node.rest, None)
+            if isinstance(node, _FUNCTION_NODES):
+                args = node.args
+                for arg in [
+                    *args.posonlyargs,
+                    *args.args,
+                    *args.kwonlyargs,
+                    args.vararg,
+                    args.kwarg,
+                ]:
+                    if arg is not None:
+                        _add_name_store(node, arg.arg, None)
+        # Loop and comprehension targets, `+=`, `del` and any other store not given a value above.
+        for node in _tree_nodes(tree):
+            if (
+                isinstance(node, (ast.Name, ast.Attribute))
+                and isinstance(node.ctx, (ast.Store, ast.Del))
+                and id(node) not in handled
+            ):
+                _record_store(node, None, _node_scope.get(id(node), tree), handled)
+        binding = {
+            (id(scope), name)
+            for scope, name, _value in _raw_name_stores
+            if _declared.get((id(scope), name)) is None
+        }
+        for scope, name, value in _raw_name_stores:
+            key = (id(_store_scope(scope, name, binding)), name)
+            _name_stores.setdefault(key, []).append(value)
+
+    def _scope_model_ready() -> bool:
+        if "built" not in _model_state:
+            wanted = False
+            for n in _tree_nodes(tree):
+                if isinstance(n, ast.Import):
+                    wanted = any(a.name.split(".")[0] in _NETWORK_MODULE_ROOTS for a in n.names)
+                elif isinstance(n, ast.ImportFrom):
+                    wanted = (n.module or "").split(".")[0] in _NETWORK_MODULE_ROOTS
+                elif isinstance(n, ast.Call):
+                    wanted = isinstance(n.func, ast.Attribute) and n.func.attr == "connect"
+                if wanted:
+                    break
+            if wanted:
+                _build_scope_model()
+            _model_state["built"] = wanted
+        return _model_state["built"]
+
+    def _name_values(name: ast.Name) -> "list | None":
+        """Return the stores visible to this name read."""
+        if not _scope_model_ready():
+            return None
+        scope = _node_scope.get(id(name), tree)
+        if _declared.get((id(scope), name.id)) == "global":
+            return _name_stores.get((id(tree), name.id))
+        current: ast.AST | None = scope
+        while current is not None:
+            key = (id(current), name.id)
+            # Methods skip class-local names.
+            if key in _name_stores and (current is scope or not isinstance(current, ast.ClassDef)):
+                return _name_stores[key]
+            current = _scope_parent.get(id(current))
+        return None
+
+    def _resolved_fq(func: ast.AST, seen: frozenset = frozenset()) -> str:
+        parts: list[str] = []
+        cur = func
+        while isinstance(cur, ast.Attribute):
+            parts.insert(0, cur.attr)
+            cur = cur.value
+        if isinstance(cur, ast.Name):
+            values = _name_values(cur)
+            if values and len(values) == 1:
+                value = values[0]
+                if isinstance(value, tuple):
+                    return ".".join([value[1], *parts])
+                # Follow assigned module and function aliases.
+                if isinstance(value, (ast.Name, ast.Attribute)) and id(value) not in seen:
+                    base = _resolved_fq(value, seen | {id(value)})
+                    if base:
+                        return ".".join([base, *parts])
+            parts.insert(0, cur.id)
+        return ".".join(parts) if parts else ""
+
+    def _bound_value(expr: ast.AST, seen: frozenset) -> "tuple[ast.AST, frozenset]":
+        """Resolve a name with one known store."""
+        while isinstance(expr, ast.Name):
+            values = _name_values(expr)
+            if not values or len(values) != 1 or not isinstance(values[0], ast.AST):
+                break
+            if id(values[0]) in seen:
+                break
+            seen = seen | {id(values[0])}
+            expr = values[0]
+        return expr, seen
+
+    def _static_prefix(
+        expr: ast.AST,
+        seen: frozenset = frozenset(),
+        *,
+        formatted: bool = False,
+    ) -> "tuple[str, bool] | None":
+        """Return a string's known prefix and whether it is complete."""
+        expr, seen = _bound_value(expr, seen)
+        if isinstance(expr, ast.Constant):
+            if isinstance(expr.value, str):
+                return expr.value, True
+            if formatted and isinstance(expr.value, int) and not isinstance(expr.value, bool):
+                return str(expr.value), True
+            return None
+        if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Add):
+            left = _static_prefix(expr.left, seen)
+            if left is None or not left[1]:
+                return left
+            right = _static_prefix(expr.right, seen)
+            if right is None:
+                return left[0], False
+            return left[0] + right[0], right[1]
+        if isinstance(expr, ast.JoinedStr):
+            text = ""
+            for value in expr.values:
+                formatted = isinstance(value, ast.FormattedValue)
+                if formatted:
+                    if value.conversion != -1 or value.format_spec is not None:
+                        return text, False
+                    value = value.value
+                piece = _static_prefix(value, seen, formatted = formatted)
+                if piece is None:
+                    return text, False
+                text += piece[0]
+                if not piece[1]:
+                    return text, False
+            return text, True
+        return None
+
+    def _target_host(expr: ast.AST, kind: str) -> "tuple[bool, str | None]":
+        """Resolve a URL, host string, or (host, port) target to (resolved, host)."""
+        expr, _seen = _bound_value(expr, frozenset())
+        if (
+            kind == "url"
+            and isinstance(expr, ast.Call)
+            and _resolved_fq(expr.func) == "urllib.request.Request"
+        ):
+            # urlopen(Request(url, headers=...)) connects to the Request's URL.
+            present, expr = _call_target(expr, 0, "url")
+            if not present or expr is None:
+                return False, None
+            expr, _seen = _bound_value(expr, frozenset())
+        if isinstance(expr, (ast.Tuple, ast.List)):
+            if not expr.elts:
+                return True, None
+            expr, kind = expr.elts[0], "host"
+        prefix = _static_prefix(expr)
+        if prefix is None:
+            return False, None
+        text, complete = prefix
+        if kind == "url":
+            # A partial URL resolves only once its authority is closed off by a path, query or fragment.
+            m = re.match(r"^\w+://([^/?#]+)" if complete else r"^\w+://([^/?#]+)[/?#]", text)
+            if m:
+                return True, m.group(1)
+            return (True, None) if complete else (False, None)
+        return (True, text) if complete else (False, None)
+
+    def _call_target(node: ast.Call, position: int, keyword: str) -> "tuple[bool, ast.AST | None]":
+        """Return the target argument; splats yield (True, None)."""
+        for kw in node.keywords or []:
+            if kw.arg == keyword:
+                return True, kw.value
+        args = node.args or []
+        if any(isinstance(a, ast.Starred) for a in args[: position + 1]):
+            return True, None
+        if len(args) > position:
+            return True, args[position]
+        if any(kw.arg is None for kw in node.keywords or []):
+            return True, None
+        return False, None
+
+    def _holds_client(expr: ast.AST, depth: int = 0) -> str:
+        """Return whether expr is always, sometimes, or never a tracked client."""
+        if depth > 16:
+            return "no"
+        if isinstance(expr, ast.NamedExpr):
+            return _holds_client(expr.value, depth + 1)
+        if isinstance(expr, ast.Call):
+            return "yes" if _resolved_fq(expr.func) in _CONNECTING_CLIENT_FQ else "no"
+        if isinstance(expr, ast.Name):
+            values = _name_values(expr)
+        elif (
+            isinstance(expr, ast.Attribute)
+            and isinstance(expr.value, ast.Name)
+            and _scope_model_ready()
+        ):
+            cls = _enclosing_class(_node_scope.get(id(expr), tree))
+            values = _attr_stores.get((id(cls) if cls is not None else 0, expr.value.id, expr.attr))
+        else:
+            return "no"
+        # Ignore None placeholders when classifying client stores.
+        states = [
+            _holds_client(value, depth + 1) if isinstance(value, ast.AST) else "no"
+            for value in values or []
+            if not (isinstance(value, ast.Constant) and value.value is None)
+        ]
+        if states and all(state == "yes" for state in states):
+            return "yes"
+        return "maybe" if any(state != "no" for state in states) else "no"
+
     class NetworkAndIoVisitor(ast.NodeVisitor):
+        def _check_host(self, node, host: str) -> None:
+            if _is_metadata_host(host):
+                network_calls.append(
+                    {
+                        "type": "metadata_host_blocked",
+                        "line": getattr(node, "lineno", -1),
+                        "description": "Blocked: cloud-metadata host",
+                    }
+                )
+            elif not _is_trusted_host(host):
+                network_calls.append(
+                    {
+                        "type": "untrusted_host_blocked",
+                        "line": getattr(node, "lineno", -1),
+                        "description": (
+                            "Blocked: host not in sandbox allowlist; "
+                            "use an allowed informational source"
+                        ),
+                    }
+                )
+
+        def _check_target(
+            self,
+            node,
+            present: bool,
+            expr,
+            kind: str,
+            *,
+            connects: bool,
+            refuse: bool = True,
+        ) -> None:
+            if not present:
+                return
+            resolved, host = (False, None) if expr is None else _target_host(expr, kind)
+            if host and refuse:
+                self._check_host(node, host)
+            elif (not resolved and connects) or (
+                host and (_is_metadata_host(host) or not _is_trusted_host(host))
+            ):
+                unresolved_network_calls.append(
+                    {
+                        "type": "unresolved_network_host",
+                        "line": getattr(node, "lineno", -1),
+                        "description": "Network call to a host that is not statically known",
+                    }
+                )
+
         def visit_Call(self, node):
             parts: list[str] = []
             cur = node.func
@@ -16439,6 +16877,7 @@ def _check_signal_escape_patterns(code: str):
             if isinstance(cur, ast.Name):
                 parts.insert(0, cur.id)
             fq = ".".join(parts) if parts else ""
+            net_fq = _resolved_fq(node.func)
 
             hf_upload_name = _method_call_hf_upload_name(node)
             if hf_upload_name is not None:
@@ -16452,40 +16891,31 @@ def _check_signal_escape_patterns(code: str):
                         }
                     )
 
-            # Direct sock.connect((host, port)) bypasses the FQ-prefix branch.
-            if isinstance(node.func, ast.Attribute) and node.func.attr == "connect" and node.args:
-                a0 = node.args[0]
-                host_lit = None
-                if isinstance(a0, ast.Tuple) and a0.elts:
-                    e0 = a0.elts[0]
-                    if isinstance(e0, ast.Constant) and isinstance(e0.value, str):
-                        host_lit = e0.value
-                elif isinstance(a0, ast.Constant) and isinstance(a0.value, str):
-                    host_lit = a0.value
-                if host_lit:
-                    if _is_metadata_host(host_lit):
-                        network_calls.append(
-                            {
-                                "type": "metadata_host_blocked",
-                                "line": getattr(node, "lineno", -1),
-                                "description": "Blocked: cloud-metadata host",
-                            }
-                        )
-                    elif not _is_trusted_host(host_lit):
-                        network_calls.append(
-                            {
-                                "type": "untrusted_host_blocked",
-                                "line": getattr(node, "lineno", -1),
-                                "description": (
-                                    "Blocked: host not in sandbox allowlist; "
-                                    "use an allowed informational source"
-                                ),
-                            }
-                        )
+            # Resolve .connect() keywords for tracked socket and SSH clients. Ambiguous receivers
+            # ask; other receivers retain the existing positional-literal check.
+            if (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "connect"
+                and net_fq not in _NETWORK_TARGET_ARGS
+            ):
+                client = _holds_client(node.func.value)
+                host_kw = next(
+                    (kw.arg for kw in node.keywords or [] if kw.arg in ("hostname", "host")), None
+                )
+                if client == "yes":
+                    present, expr = _call_target(node, 0, host_kw or "hostname")
+                    self._check_target(node, present, expr, "host", connects = True)
+                else:
+                    if node.args and isinstance(node.args[0], (ast.Tuple, ast.Constant)):
+                        self._check_target(node, True, node.args[0], "host", connects = False)
+                    if client == "maybe":
+                        # Ambiguous receivers ask instead of refusing.
+                        present, expr = _call_target(node, 0, host_kw or "hostname")
+                        self._check_target(node, present, expr, "host", connects = True, refuse = False)
 
-            if fq and any(fq.startswith(p) for p in _NETWORK_FQ_PREFIXES):
+            if net_fq and any(net_fq.startswith(p) for p in _NETWORK_FQ_PREFIXES):
                 # 1) Upload-shape check (host-independent).
-                if _call_is_upload_shape(node, fq):
+                if _call_is_upload_shape(node, net_fq):
                     network_calls.append(
                         {
                             "type": "upload_blocked",
@@ -16494,42 +16924,14 @@ def _check_signal_escape_patterns(code: str):
                         }
                     )
 
-                # 2) Extract literal host (URL string or (host, port) tuple).
-                host_arg = None
-                url_arg = None
-                if node.args:
-                    a0 = node.args[0]
-                    if isinstance(a0, ast.Constant) and isinstance(a0.value, str):
-                        url_arg = a0.value
-                    elif isinstance(a0, ast.Tuple) and a0.elts:
-                        e0 = a0.elts[0]
-                        if isinstance(e0, ast.Constant) and isinstance(e0.value, str):
-                            host_arg = e0.value
-                if url_arg and host_arg is None:
-                    m = re.match(r"^\w+://([^/?#]+)", url_arg)
-                    if m:
-                        host_arg = m.group(1)
-
-                if host_arg:
-                    if _is_metadata_host(host_arg):
-                        network_calls.append(
-                            {
-                                "type": "metadata_host_blocked",
-                                "line": getattr(node, "lineno", -1),
-                                "description": "Blocked: cloud-metadata host",
-                            }
-                        )
-                    elif not _is_trusted_host(host_arg):
-                        network_calls.append(
-                            {
-                                "type": "untrusted_host_blocked",
-                                "line": getattr(node, "lineno", -1),
-                                "description": (
-                                    "Blocked: host not in sandbox allowlist; "
-                                    "use an allowed informational source"
-                                ),
-                            }
-                        )
+                # 2) Resolve the call's URL or host argument.
+                if net_fq in _NETWORK_TARGET_ARGS:
+                    position, keyword, kind = _NETWORK_TARGET_ARGS[net_fq]
+                    present, expr = _call_target(node, position, keyword)
+                    self._check_target(node, present, expr, kind, connects = True)
+                elif node.args:
+                    # Non-connecting constructors keep the existing literal-target check.
+                    self._check_target(node, True, node.args[0], "url", connects = False)
 
             is_open_call = (
                 (isinstance(node.func, ast.Name) and node.func.id == "open")
@@ -16574,6 +16976,7 @@ def _check_signal_escape_patterns(code: str):
         "exception_catching": exception_catching,
         "shell_escapes": shell_escapes,
         "network_calls": network_calls,
+        "unresolved_network_calls": unresolved_network_calls,
         "sensitive_file_reads": sensitive_file_reads,
         "warnings": warnings,
     }
@@ -16582,12 +16985,17 @@ def _check_signal_escape_patterns(code: str):
 def _check_code_safety(code: str) -> str | None:
     """Validate code safety via static analysis. Returns an error message string if the code is
     unsafe, or None if OK."""
+    return _code_safety_report(code)[0]
+
+
+def _code_safety_report(code: str) -> "tuple[str | None, dict]":
+    """Return the safety error and its analysis in one pass."""
     safe, info = _check_signal_escape_patterns(code)
     if not safe:
         # Let SyntaxError from ast.parse through so the subprocess produces a normal Python traceback instead of a
         # misleading "unsafe code" message.
         if info.get("error"):
-            return None
+            return None, info
 
         reasons = [item.get("description", "") for item in info.get("signal_tampering", [])]
         shell_reasons = [item.get("description", "") for item in info.get("shell_escapes", [])]
@@ -16607,9 +17015,9 @@ def _check_code_safety(code: str) -> str | None:
             return (
                 f"Error: unsafe code detected ({'; '.join(all_reasons)}). "
                 f"Please remove unsafe patterns from your code."
-            )
+            ), info
 
-    return None
+    return None, info
 
 
 def _adopt_tool_pid(pid: "int | None") -> None:
