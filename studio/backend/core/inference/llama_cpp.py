@@ -37201,6 +37201,11 @@ class LlamaCppBackend:
                     tool_controller.force_final_answer
                     or not tool_controller.active_tools()
                     or (_turn_executed_real_tool and _tool_iters_done + 1 >= max_tool_iterations)
+                    # The tool-iteration cap is not the only way out: the loop also stops on
+                    # the outer iteration range, which no-op and continuation turns consume
+                    # without advancing _tool_iters_done. Missing it asks for a retry and then
+                    # tells the model not to call any tools, in adjacent user turns.
+                    or iteration + 1 >= max_tool_iterations + _extra + _continuation_credits
                 )
                 _final_over_cap = _over_cap if _over_cap_final else []
                 if _over_cap_final:
@@ -37264,7 +37269,21 @@ class LlamaCppBackend:
                     _limit_text = tool_call_limit_nudge(
                         _final_over_cap, _MAX_TOOL_CALLS_PER_TURN, final = True
                     )["content"]
-                    if not _attach_internal_feedback_to_tool_result(_limit_text):
+                    # Same rule as _fold_target_matches above: a template labels the folded
+                    # block with the result's own tool name, so a note about tool A inside
+                    # tool B's result reads as B's output. Fold only onto a result whose tool
+                    # the notice is actually about.
+                    _limit_names = {
+                        (_tc.get("function") or {}).get("name") for _tc in _final_over_cap
+                    }
+                    _limit_foldable = (
+                        bool(conversation)
+                        and conversation[-1].get("role") == "tool"
+                        and conversation[-1].get("name") in _limit_names
+                    )
+                    if not (
+                        _limit_foldable and _attach_internal_feedback_to_tool_result(_limit_text)
+                    ):
                         if deferred_noop_msgs and conversation[-1].get("role") == "user":
                             conversation[-1] = {
                                 **conversation[-1],
