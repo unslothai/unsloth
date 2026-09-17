@@ -780,13 +780,20 @@ function Invoke-ManagedLlamaCppPreflight {
         $moved = $false
         try {
             # [System.IO.Directory]::Move, not Move-Item. Move-Item falls back to
-            # copy-then-delete when the rename fails, which creates $asideDir and then dies
-            # on the unreadable contents, leaving a stray llama.cpp.denied-* folder beside
-            # the original on every run. Directory.Move is a bare rename: it either moves
-            # the tree or throws having created nothing. Measured on windows-latest: every
-            # read denial ((OI)(CI)(RX), (OI)(CI)(R), (RX)) refuses the rename, while (DE)
-            # alone does not, so on Windows this recovery cannot fire. On POSIX the rename
-            # needs only write+execute on the parent, which is why it stays.
+            # copy-then-delete when the rename fails, which creates $asideDir and then
+            # dies on the unreadable contents, leaving a stray llama.cpp.denied-* folder
+            # beside the original on every run. Directory.Move is a bare rename: it
+            # either moves the tree or throws having created nothing.
+            # Measured on windows-latest, denying each shape on the folder itself:
+            #   (OI)(CI)(RX)  rename refused, Move-Item left a stray folder
+            #   (OI)(CI)(R)   rename refused, Move-Item left a stray folder
+            #   (RX)          rename refused, Move-Item left a stray folder
+            #   (DE)          rename SUCCEEDED, both ways
+            # So on Windows a read denial always refuses the rename (the open asks for
+            # SYNCHRONIZE, which every read deny removes) and this recovery cannot fire;
+            # denying DELETE, which sounds like the blocker, does not stop it. On POSIX
+            # the rename needs only write+execute on the parent, so the recovery is real
+            # there and is why this stays rather than being deleted.
             [System.IO.Directory]::Move($dir, $asideDir)
             $moved = $true
         } catch {
