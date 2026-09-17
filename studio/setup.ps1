@@ -1063,7 +1063,7 @@ function Get-NvidiaProbePythonExe {
 #
 # New-Item with -ErrorAction Stop, not -Force: it must FAIL on a directory that already exists,
 # or a pre-created one carrying an attacker's ACL would be adopted instead of refused.
-f# An in-box tool, named by its full path, or "" when it is not there.
+# An in-box tool, named by its full path, or "" when it is not there.
 #
 # `& icacls.exe` is PowerShell command resolution: a function, alias or executable of that
 # name from the user's session or PATH wins, and on an elevated run it would then execute
@@ -1081,7 +1081,7 @@ function Get-StudioSystem32Tool {
     return $candidate
 }
 
-f# Is this path inside a root that only an administrator can write.
+# Is this path inside a root that only an administrator can write.
 #
 # An elevated run launches whatever interpreter is handed to it WITH THE ADMINISTRATOR TOKEN.
 # A per-user CPython, or the venv one under a per-user Studio root, is then a way to have

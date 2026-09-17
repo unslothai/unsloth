@@ -1389,3 +1389,36 @@ def test_a_comment_never_points_at_a_file_that_is_not_here(name: str) -> None:
         f"{name} has a comment pointing at {missing}, which is not in this tree. Cite a PR number, "
         "or cite tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD), which travels with the repo."
     )
+
+
+# A comment that does not start where it looks like it does.
+#
+# `f# whatever` is not a comment: PowerShell reads the bareword, and `#` after one starts a
+# command name, so the line is an invocation of a command called `f#`. Under this file's
+# $ErrorActionPreference = "Stop" that is CommandNotFoundException and the run ends there.
+#
+# Nothing catches it earlier. The parser accepts it, so an AST parse reports no errors, and the
+# suites that read functions out of the file by name still find them. It reached review as a live
+# defect twice, both times from an edit that shifted a line by one character.
+@pytest.mark.parametrize("name", PS_SCRIPTS)
+def test_no_comment_line_starts_with_a_bareword(name: str) -> None:
+    path = REPO / name
+    if not path.is_file():
+        pytest.skip(f"{name} is not present")
+    offenders = [
+        f"{n}: {line.strip()}"
+        for n, line in enumerate(path.read_text(encoding = "utf-8").splitlines(), 1)
+        if re.match(r"^\s*[A-Za-z0-9_]+#", line)
+    ]
+    assert not offenders, (
+        f"{name} has lines where a bareword runs into a '#'. PowerShell reads those as a command "
+        f"named '<word>#', not as a comment, and the run dies there:\n  " + "\n  ".join(offenders)
+    )
+
+
+def test_the_bareword_comment_rule_can_fire() -> None:
+    """The pattern really does catch the shape, and really does leave ordinary lines alone."""
+    assert re.match(r"^\s*[A-Za-z0-9_]+#", "f# An in-box tool")
+    assert re.match(r"^\s*[A-Za-z0-9_]+#", "    unction# something")
+    assert not re.match(r"^\s*[A-Za-z0-9_]+#", "# An in-box tool")
+    assert not re.match(r"^\s*[A-Za-z0-9_]+#", '    $x = "a#b"')
