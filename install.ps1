@@ -2749,69 +2749,76 @@ exit 1
         return $null
     }
 
-    # os.path.realpath in a bounded child. Null on anything other than a clean answer, because
-    # every caller already treats "no exact answer" as "use the lexical one".
-    function Invoke-StudioEarlyPython {
+    # The two launchers below must return the same string for the same child, or a caller is
+    # reading one of two subtly different programs depending on the host's language mode.
+    # They differ in exactly one way: Start-Process's redirection appends a trailing newline the
+    # child did not write. Measured, not assumed. Neither current caller can see it, since each
+    # trims or splits, but that is luck rather than a contract, so both ends are normalised here.
+    function Remove-StudioTrailingNewline {
+        param([string]$Text)
+        if ($null -eq $Text) { return $Text }
+        # Two normalisations, and the name undersells both, so they are written down.
+        #
+        # 1. CRLF is folded to LF. The two launchers otherwise disagree and the contract that
+        #    they are interchangeable is false. Measured: a child writing the bytes 61 0d 0a 62
+        #    comes back as 61 0d 0a 62 through the ProcessStartInfo launcher and as 61 0a 62
+        #    through the cmdlet launcher, whose redirection goes through a file.
+        # 2. EVERY trailing newline is removed, not one. .NET's $ matches before a final \n as
+        #    well as at the end, so -replace strips each of them: "a\n\n" measures as "a". That
+        #    is deliberate rather than tolerated. Start-Process redirection appends a newline the
+        #    child never wrote while the ProcessStartInfo launcher does not, so removing exactly
+        #    one would leave the two disagreeing whenever the child's own output ends in a
+        #    newline, which is the ordinary case for print().
+        #
+        # The cost is that a payload whose meaningful content ends in blank lines cannot be
+        # carried through here. No consumer does: the path resolver returns one line, the icon
+        # refresh compares a single token, and the process table splits on newlines and ignores
+        # empty entries. A future consumer that needs trailing blank lines must not use this.
+        return (($Text -replace "\r\n", "`n") -replace "\n$", "")
+    }
+
+    # Run a script in a bounded child and return its stdout, or $null on anything other than a
+    # clean exit. The generic half, shared by every early-Python rung.
+    #
+    # Two launchers, because the first does not work on the hosts these rungs exist for.
+    # Constrained Language Mode allows methods only on a small set of core types, and
+    # System.Diagnostics.Process is not among them: both "New-Object ProcessStartInfo" and
+    # [Process]::Start are refused there. Measured, not assumed. Since CLM is one of the two
+    # policies that also block defining a type at runtime, a launcher that only works outside CLM
+    # would miss half the population the ladder is for. Start-Process, Wait-Process and
+    # Get-Content are cmdlets and stay available, so the fallback is built from those.
+    #
+    # The first launcher stays first because it needs no temporary files and no second write of
+    # the script. The fallback is reached by the catch, so a host that merely fails to start the
+    # process once does not silently lose the answer either.
+    function Invoke-StudioEarlyPythonScript {
         param(
             [Parameter(Mandatory = $true)][string]$Exe,
-            [Parameter(Mandatory = $true)][string]$Path,
+            [Parameter(Mandatory = $true)][string]$Script,
+            [string[]]$ScriptArgs = @(),
             [int]$TimeoutMs = 10000
         )
-        # -I isolates the run from PYTHONPATH, a sitecustomize and the user site directory, so a
-        # broken environment cannot change the answer. studio/setup.sh runs nvidia_probe.py the
-        # same way.
-        # Deliberately the SAME expression unsloth_cli/_studio_runtime_gate.py's
-        # _resolved_windows_path uses, Path(...).resolve(strict = False), not os.path.realpath.
-        # The two agree today, but this string is hashed into a lock name that the running
-        # Unsloth derives from that function, so matching the expression removes a whole class of
-        # divergence rather than relying on two spellings staying equivalent.
-        #
-        # Written as UTF-8 bytes rather than through print, and read back as UTF-8 below. Windows
-        # PowerShell 5.1 decodes a child's stdout with the console codepage, which mangles every
-        # non-ASCII character in a path and would silently produce a different hash from the one
-        # the Python side computes.
-        # strict=True, unlike the gate's strict=False, and the difference is deliberate. For any
-        # path that genuinely resolves the two return the same string, so the byte-identity above
-        # holds for every valid input. They part company on a symlink loop or a dangling
-        # component, where strict=False returns the path UNRESOLVED rather than raising. That
-        # string is not an identity, and this rung's whole contract is that an answer is exact, so
-        # handing one back would let a caller treat an unresolved path as vouched for and decide
-        # two paths are different when it cannot know. Raising means null here and the lexical
-        # fallback with Exact = $false, which fails closed.
-        #
-        # Test-Path is not enough on its own: it returns true for the loop's own symlink.
-        # The version gate is load-bearing, not hygiene. Before 3.8, Windows path resolution did
-        # not follow junctions or symlinks, so an older interpreter would hand back the ALIAS
-        # spelling and this rung would mark it exact. Test-StudioPathEqual would then read an
-        # alias and its target as definitively different instead of taking both runtime locks,
-        # which is permission to install over a live managed environment. The probe cannot catch
-        # it either, since it only resolves the interpreter's own ordinary directory. Refusing
-        # the interpreter outright is the honest answer: the ladder falls through to lexical and
-        # Exact stays false.
-        $script = "import pathlib,sys" + [char]10 +
-                  "sys.exit(2) if sys.version_info < (3,8) else None" + [char]10 +
-                  "sys.stdout.buffer.write(str(pathlib.Path(sys.argv[1]).resolve(strict=True)).encode('utf-8'))"
         $proc = $null
         try {
             $psi = New-Object System.Diagnostics.ProcessStartInfo
             $psi.FileName = $Exe
-            # ArgumentList is .NET Core only. Windows PowerShell 5.1, which is the host the
-            # desktop installer launches, gets ProcessStartInfo from .NET Framework where the
-            # property does not exist, so .Add() throws, the catch below returns null and every
-            # candidate is rejected: the rung would never work on the primary Windows host while
-            # looking perfectly healthy. Branch on the property rather than assume it.
-            # -S as well as -I. Isolated mode implies -E, -P and -s, but NOT -S, so site is still
-            # imported and a system-level sitecustomize still runs before this script. On a
-            # corporate host that is instrumentation: it can print to stdout, which corrupts the
-            # one line this rung reads back, it can hang, which burns the timeout and rejects a
-            # perfectly good interpreter, and it can patch pathlib, which would let this mark an
-            # influenced answer as exact. Measured, not assumed: under -I alone sys.flags.no_site
-            # is 0. Nothing here needs site-packages; the probe is three stdlib imports.
-            $argv = @("-I", "-S", "-c", $script, $Path)
+            # -I and -S. Isolated mode covers PYTHONPATH and the user site directory, but it
+            # implies -E, -P and -s and NOT -S, so site is still imported and a system-level
+            # sitecustomize still runs before the script below. Measured rather than assumed:
+            # under -I alone sys.flags.no_site is 0. On a corporate host that sitecustomize is
+            # instrumentation, and each thing it can do breaks a different caller of this runner:
+            # printing to stdout corrupts the single line read back, hanging burns the timeout on
+            # a working interpreter, and patching a stdlib module would let an influenced answer
+            # be taken as authoritative. Nothing routed through here needs site-packages.
+            $argv = @("-I", "-S", "-c", $Script) + $ScriptArgs
+            # ArgumentList is .NET Core only. Windows PowerShell 5.1, the host the desktop
+            # installer launches, gets ProcessStartInfo from .NET Framework where the property
+            # does not exist, so .Add() would throw and the catch below would reject every
+            # candidate while looking perfectly healthy.
             if ($null -ne $psi.PSObject.Properties["ArgumentList"]) {
                 foreach ($a in $argv) { $null = $psi.ArgumentList.Add($a) }
             } else {
-                # Quote for CommandLineToArgvW. The script carries no double quote by
+                # Quote for CommandLineToArgvW. The scripts here carry no double quote by
                 # construction and a Windows path cannot contain one, so only two things matter:
                 # wrap each argument, and double any run of trailing backslashes, since
                 # "C:\dir\" would otherwise escape its own closing quote.
@@ -2822,31 +2829,161 @@ exit 1
             $psi.UseShellExecute = $false
             $psi.RedirectStandardOutput = $true
             $psi.RedirectStandardError = $true
-            # Without this, 5.1 decodes the child's bytes with the console codepage and a path
-            # containing any non-ASCII character comes back corrupted. The corruption is silent:
-            # the string still looks like a path, and it is what gets hashed into a lock name.
+            # Without this, 5.1 decodes the child's bytes with the console codepage and any
+            # non-ASCII character comes back corrupted. The corruption is silent: a path still
+            # looks like a path, and it is what gets hashed into a lock name.
             $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
             $psi.CreateNoWindow = $true
             $proc = [System.Diagnostics.Process]::Start($psi)
             $stdout = $proc.StandardOutput.ReadToEndAsync()
             $null = $proc.StandardError.ReadToEndAsync()
+            # A wedged interpreter must not wedge an installer that has not taken its lock yet.
             if (-not $proc.WaitForExit($TimeoutMs)) {
                 try { $proc.Kill() } catch {}
                 return $null
             }
             if ($proc.ExitCode -ne 0) { return $null }
-            $answer = "$($stdout.Result)".Trim()
-            if ([string]::IsNullOrWhiteSpace($answer)) { return $null }
-            # A relative answer is not an identity, and a path that does not exist cannot be the
-            # resolution of one that does.
-            if (-not [System.IO.Path]::IsPathRooted($answer)) { return $null }
-            if (-not (Test-Path -LiteralPath $answer)) { return $null }
-            return $answer
+            return (Remove-StudioTrailingNewline -Text "$($stdout.Result)")
         } catch {
-            return $null
+            return (Invoke-StudioEarlyPythonScriptViaCmdlets -Exe $Exe -Script $Script -ScriptArgs $ScriptArgs -TimeoutMs $TimeoutMs)
         } finally {
             if ($proc) { try { $proc.Dispose() } catch {} }
         }
+    }
+
+    # The Constrained Language Mode launcher. Cmdlets only: no .NET method call, no New-Object,
+    # no type literal, because all four are refused there.
+    function Invoke-StudioEarlyPythonScriptViaCmdlets {
+        param(
+            [Parameter(Mandatory = $true)][string]$Exe,
+            [Parameter(Mandatory = $true)][string]$Script,
+            [string[]]$ScriptArgs = @(),
+            [int]$TimeoutMs = 10000
+        )
+        $scriptFile = $null
+        $outFile = $null
+        $errFile = $null
+        $proc = $null
+        try {
+            # The script goes to a file rather than through -c. Start-Process builds one command
+            # line out of -ArgumentList, and a -c body carrying newlines and quotes cannot survive
+            # that intact. A file path is one plain token, so the two launchers run the same
+            # program rather than nearly the same one.
+            # Plain strings, not New-TemporaryFile. That cmdlet hands back a FileInfo, and
+            # reading a path off it is a property read on a type Constrained Language Mode does
+            # not allow, so every path below would have thrown on a locked-down host. [guid] and
+            # [string] are both on the allowed list, and Join-Path is a cmdlet.
+            $tempRoot = if ($env:TEMP) { $env:TEMP } elseif ($env:TMPDIR) { $env:TMPDIR } else { "/tmp" }
+            $stem = Join-Path $tempRoot ("unsloth-early-" + [guid]::NewGuid().ToString("N"))
+            $scriptFile = "$stem.py"
+            $outFile = "$stem.out"
+            $errFile = "$stem.err"
+            # UTF-8 both ways. The interpreter writes its answer as UTF-8 bytes, so reading it
+            # back any other way corrupts every non-ASCII path exactly as the console codepage
+            # would, and silently: the string still looks like a path.
+            Set-Content -LiteralPath $scriptFile -Value $Script -Encoding UTF8 -NoNewline
+            # Quoted here, not handed to -ArgumentList as an array: Start-Process joins that
+            # array with spaces and quotes nothing, so a path containing a space arrives as two
+            # arguments. Same rule as the other launcher's 5.1 branch, and for the same reason:
+            # wrap each argument, and double any run of trailing backslashes, since "C:\dir\"
+            # would otherwise escape its own closing quote.
+            # -I -S, the same pair as the primary launcher. These two are asserted to return the
+            # same string byte for byte, and a sitecustomize running in one of them but not the
+            # other is exactly the kind of difference that assertion exists to catch.
+            $argv = (@(@("-I", "-S", $scriptFile) + $ScriptArgs | ForEach-Object {
+                '"' + ($_ -replace '(\\+)$', '$1$1') + '"'
+            }) -join ' ')
+            $proc = Start-Process -FilePath $Exe -ArgumentList $argv -NoNewWindow -PassThru `
+                -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+            if (-not $proc) { return $null }
+            # Wait-Process takes whole seconds, so round up: a sub-second bound must not become a
+            # zero-second one, which returns immediately and kills a healthy interpreter.
+            #
+            # Arithmetic and a cast, not [math]::Ceiling. System.Math is not among the types
+            # Constrained Language Mode allows method calls on, so Ceiling throws there, and this
+            # is the one function in the file that exists to run under exactly that policy.
+            # Measured: it blocks. This rounds up and never to zero, and being a second generous
+            # on a bound this coarse costs nothing.
+            # Ceiling, done with integer arithmetic rather than the +999 idiom.
+            #
+            # That idiom is a C integer-DIVISION trick and PowerShell's / is floating point, so
+            # [int] rounds to nearest instead of truncating and every exact multiple gains a
+            # second: measured, 10000 became 11 and 20000 became 21. Wait-Process then waited a
+            # second longer than the caller asked, so the two launchers did not share a deadline.
+            #
+            # [math]::Ceiling is the obvious spelling and Constrained Language Mode refuses it,
+            # which is the whole reason this launcher exists. % and / are operators and the [int]
+            # cast is permitted there, both measured on a constrained runspace.
+            $seconds = ($TimeoutMs - ($TimeoutMs % 1000)) / 1000
+            if (($TimeoutMs % 1000) -ne 0) { $seconds = $seconds + 1 }
+            $seconds = [int]$seconds
+            if ($seconds -lt 1) { $seconds = 1 }
+            $timedOut = $false
+            Wait-Process -InputObject $proc -Timeout $seconds -ErrorAction SilentlyContinue -ErrorVariable waitError
+            if ($waitError) { $timedOut = $true }
+            if ($timedOut) {
+                Stop-Process -InputObject $proc -Force -ErrorAction SilentlyContinue
+                return $null
+            }
+            # Select-Object, not $proc.ExitCode: System.Diagnostics.Process is not an allowed
+            # type under Constrained Language Mode either, so the direct read throws on the very
+            # hosts the primary launcher already could not serve.
+            $exitCode = $proc | Select-Object -ExpandProperty ExitCode -ErrorAction SilentlyContinue
+            if ($null -eq $exitCode -or $exitCode -ne 0) { return $null }
+            $answer = Get-Content -LiteralPath $outFile -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+            if ($null -eq $answer) { return "" }
+            return (Remove-StudioTrailingNewline -Text ([string]$answer))
+        } catch {
+            return $null
+        } finally {
+            foreach ($f in @($scriptFile, $outFile, $errFile)) {
+                if ($f) { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue }
+            }
+        }
+    }
+
+    # A path resolved in a bounded child. Null on anything other than a clean answer, because
+    # every caller already treats "no exact answer" as "use the lexical one".
+    function Invoke-StudioEarlyPython {
+        param(
+            [Parameter(Mandatory = $true)][string]$Exe,
+            [Parameter(Mandatory = $true)][string]$Path,
+            [int]$TimeoutMs = 10000
+        )
+        # Deliberately the same expression unsloth_cli/_studio_runtime_gate.py's
+        # _resolved_windows_path uses, Path(...).resolve(...), not os.path.realpath. The two agree
+        # today, but this string is hashed into a lock name the running Unsloth derives from that
+        # function, so matching the expression removes a class of divergence rather than relying
+        # on two spellings staying equivalent.
+        #
+        # strict=True, unlike the gate's strict=False, and the difference is deliberate. For any
+        # path that genuinely resolves the two return the same string, so that byte-identity
+        # holds for every valid input. They part company on a symlink loop or a dangling
+        # component, where strict=False returns the path UNRESOLVED rather than raising. That is
+        # not an identity, and this rung's contract is that an answer is exact, so returning one
+        # would let a caller decide two paths are different when it cannot know. Raising means
+        # the lexical fallback with Exact = $false, which fails closed. Test-Path alone is not
+        # enough: it is true for the loop's own symlink.
+        #
+        # The version gate is load-bearing. Before 3.8, Windows path resolution did not follow
+        # junctions or symlinks, so an older interpreter would return the ALIAS spelling and this
+        # rung would mark it exact. Test-StudioPathEqual would then read an alias and its target
+        # as definitively different instead of taking both runtime locks, which is permission to
+        # install over a live managed environment. The probe cannot catch it, since it only
+        # resolves the interpreter's own ordinary directory, so the interpreter is refused here.
+        $script = "import pathlib,sys" + [char]10 +
+                  "sys.exit(2) if sys.version_info < (3,8) else None" + [char]10 +
+                  "sys.stdout.buffer.write(str(pathlib.Path(sys.argv[1]).resolve(strict=True)).encode('utf-8'))"
+        $answer = "$(Invoke-StudioEarlyPythonScript -Exe $Exe -Script $script -ScriptArgs @($Path) -TimeoutMs $TimeoutMs)".Trim()
+        if ([string]::IsNullOrWhiteSpace($answer)) { return $null }
+        # A relative answer is not an identity, and a path that does not exist cannot be the
+        # resolution of one that does.
+        # Split-Path -IsAbsolute, not [System.IO.Path]::IsPathRooted, for the allowed-type
+        # reason above. This one guards the path the final-path resolver returns, so the static
+        # call would have thrown right where the ladder is meant to answer.
+        if (-not (Split-Path -IsAbsolute $answer)) { return $null }
+        if (-not (Test-Path -LiteralPath $answer)) { return $null }
+        return $answer
     }
 
     # One child per DISTINCT path, not per call.
