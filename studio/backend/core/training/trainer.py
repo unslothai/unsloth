@@ -89,6 +89,7 @@ from trl import SFTTrainer, SFTConfig
 
 from .training import (
     TrainingProgress,
+    apply_save_strategy,
     create_mlx_trainer_adapter,
     should_use_mlx_training_backend,
 )
@@ -686,12 +687,7 @@ class UnslothTrainer:
         else:
             config["num_train_epochs"] = training_args.get("num_epochs", 3)
 
-        save_steps_val = training_args.get("save_steps", 0)
-        if save_steps_val and save_steps_val > 0:
-            config["save_steps"] = save_steps_val
-            config["save_strategy"] = "steps"
-        else:
-            config["save_strategy"] = "no"
+        apply_save_strategy(config, training_args.get("save_steps", 0))
 
         if extra_args:
             config.update(extra_args)
@@ -4083,12 +4079,7 @@ class UnslothTrainer:
                 config_args["warmup_steps"] = 5
                 logger.info("Using default warmup_steps: 5\n")
 
-            save_steps_val = training_args.get("save_steps", 0)
-            if save_steps_val and save_steps_val > 0:
-                config_args["save_steps"] = save_steps_val
-                config_args["save_strategy"] = "steps"
-            else:
-                config_args["save_strategy"] = "no"
+            apply_save_strategy(config_args, training_args.get("save_steps", 0))
 
             max_steps_val = training_args.get("max_steps", 0)
             if max_steps_val and max_steps_val > 0:

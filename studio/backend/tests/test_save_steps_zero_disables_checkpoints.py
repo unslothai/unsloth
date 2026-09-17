@@ -3,8 +3,8 @@
 
 from __future__ import annotations
 
+import contextlib
 import sys
-import textwrap
 from pathlib import Path
 
 _BACKEND = Path(__file__).resolve().parent.parent
@@ -114,7 +114,9 @@ def test_generic_sft_config_args(trainer, tmp_path, monkeypatch, save_steps, str
     trainer.model_name = "unsloth/spark-tts"
 
     rows = [{"text": "a"}, {"text": "b"}]
-    try:
+    # _train_worker runs past config construction into stubbed-out training; only the
+    # captured config matters here, so let it unwind on the stubs.
+    with contextlib.suppress(AttributeError, TypeError, ValueError, KeyError):
         trainer._train_worker(
             {"dataset": rows, "final_format": "audio_bicodec"},
             save_steps = save_steps,
@@ -124,8 +126,6 @@ def test_generic_sft_config_args(trainer, tmp_path, monkeypatch, save_steps, str
             warmup_steps = 0,
             output_dir = str(tmp_path),
         )
-    except Exception:
-        pass
 
     assert captured, "the config was never built, so this asserts nothing"
     assert captured["save_strategy"] == strategy
@@ -133,13 +133,17 @@ def test_generic_sft_config_args(trainer, tmp_path, monkeypatch, save_steps, str
 
 
 @pytest.mark.parametrize("save_steps,strategy,steps", CASES)
-def test_embedding_training_args(save_steps, strategy, steps):
+def test_apply_save_strategy(save_steps, strategy, steps):
+    from core.training.training import apply_save_strategy
+
+    kwargs = {}
+    apply_save_strategy(kwargs, save_steps)
+    assert kwargs["save_strategy"] == strategy
+    assert kwargs.get("save_steps") == steps
+
+
+def test_embedding_training_uses_shared_save_strategy():
     text = (_BACKEND / "core/training/worker.py").read_text(encoding = "utf-8")
     body = text[text.index("def _run_embedding_training") :]
-    start = body.index("    if save_steps_val and save_steps_val > 0:")
-    end = body.index("    args = SentenceTransformerTrainingArguments(")
-    scope = {"save_steps_val": save_steps, "training_args_kwargs": {}}
-    exec(textwrap.dedent(body[start:end]), scope)
-
-    assert scope["training_args_kwargs"].get("save_strategy") == strategy
-    assert scope["training_args_kwargs"].get("save_steps") == steps
+    body = body[: body.index("SentenceTransformerTrainingArguments(")]
+    assert "apply_save_strategy(training_args_kwargs, save_steps_val)" in body
