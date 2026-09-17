@@ -43,13 +43,45 @@ CLM_REACHABLE = (
 # The allowed-type list from the 5.1 documentation, lowercased, restricted to the spellings this
 # installer actually uses. A static call on anything else throws under CLM.
 CLM_ALLOWED_TYPES = {
-    "array", "bool", "byte", "char", "cultureinfo", "datetime", "decimal", "double", "float",
-    "guid", "hashtable", "int", "int16", "int32", "int64", "long", "psobject", "pscustomobject",
-    "regex", "sbyte", "single", "string", "switch", "timespan", "uint16", "uint32", "uint64",
-    "uri", "version", "void", "xml",
+    "array",
+    "bool",
+    "byte",
+    "char",
+    "cultureinfo",
+    "datetime",
+    "decimal",
+    "double",
+    "float",
+    "guid",
+    "hashtable",
+    "int",
+    "int16",
+    "int32",
+    "int64",
+    "long",
+    "psobject",
+    "pscustomobject",
+    "regex",
+    "sbyte",
+    "single",
+    "string",
+    "switch",
+    "timespan",
+    "uint16",
+    "uint32",
+    "uint64",
+    "uri",
+    "version",
+    "void",
+    "xml",
     # Spelled out in full as well, since both forms appear in the file.
-    "system.string", "system.guid", "system.datetime", "system.timespan", "system.uri",
-    "system.version", "system.text.regularexpressions.regex",
+    "system.string",
+    "system.guid",
+    "system.datetime",
+    "system.timespan",
+    "system.uri",
+    "system.version",
+    "system.text.regularexpressions.regex",
 }
 
 # Property reads CLM refuses because the object is not of an allowed type. Each of these was
@@ -82,7 +114,7 @@ def _extent(text: str, name: str) -> str:
         elif text[i] == "}":
             depth -= 1
             if depth == 0:
-                return text[start:i + 1]
+                return text[start : i + 1]
         i += 1
 
 
@@ -101,7 +133,7 @@ def _code_lines(body: str) -> list[str]:
     return out
 
 
-SOURCE = INSTALL_PS1.read_text(encoding="utf-8")
+SOURCE = INSTALL_PS1.read_text(encoding = "utf-8")
 BODIES = {name: _extent(SOURCE, name) for name in CLM_REACHABLE}
 
 
@@ -120,10 +152,13 @@ def test_every_static_call_is_on_a_clm_allowed_type(name: str):
 @pytest.mark.parametrize("name", CLM_REACHABLE)
 def test_no_property_is_read_off_a_disallowed_type(name: str):
     code = "\n".join(_code_lines(BODIES[name]))
-    hits = sorted({
-        prop for prop in FORBIDDEN_PROPERTIES
-        if re.search(r"\$\w+(\.\w+)*\." + prop + r"\b", code)
-    })
+    hits = sorted(
+        {
+            prop
+            for prop in FORBIDDEN_PROPERTIES
+            if re.search(r"\$\w+(\.\w+)*\." + prop + r"\b", code)
+        }
+    )
     assert not hits, "; ".join(f"{name} reads .{p}: {FORBIDDEN_PROPERTIES[p]}" for p in hits)
 
 
@@ -140,9 +175,9 @@ def test_nothing_casts_to_ref(name: str):
     # permitted." That rules out [int]::TryParse($text, [ref]$out), whose obvious replacement is
     # a -match on '^\\d+$' followed by an [int] cast.
     code = "\n".join(_code_lines(BODIES[name]))
-    assert not re.search(r"\[ref\]\s*\$", code), (
-        f"{name} casts to [ref], which Constrained Language Mode does not permit"
-    )
+    assert not re.search(
+        r"\[ref\]\s*\$", code
+    ), f"{name} casts to [ref], which Constrained Language Mode does not permit"
 
 
 def test_the_checks_are_not_vacuous():
@@ -159,11 +194,19 @@ def test_the_checks_are_not_vacuous():
         $where = $cmd.Source
     }"""
     code = "\n".join(_code_lines(_extent(sample, "Fake-Helper")))
-    assert sorted({m.lower() for m in re.findall(r"\[([\w.]+)\]::", code)} - CLM_ALLOWED_TYPES) == ["system.io.path"]
-    assert sorted(p for p in FORBIDDEN_PROPERTIES if re.search(r"\$\w+(\.\w+)*\." + p + r"\b", code)) == [
-        "ExitCode", "FullName", "Source",
+    assert sorted({m.lower() for m in re.findall(r"\[([\w.]+)\]::", code)} - CLM_ALLOWED_TYPES) == [
+        "system.io.path"
     ]
-    assert [c for c in FORBIDDEN_CMDLETS if re.search(r"\b" + c + r"\b", code)] == ["New-TemporaryFile"]
+    assert sorted(
+        p for p in FORBIDDEN_PROPERTIES if re.search(r"\$\w+(\.\w+)*\." + p + r"\b", code)
+    ) == [
+        "ExitCode",
+        "FullName",
+        "Source",
+    ]
+    assert [c for c in FORBIDDEN_CMDLETS if re.search(r"\b" + c + r"\b", code)] == [
+        "New-TemporaryFile"
+    ]
     assert re.search(r"\[ref\]\s*\$", code)
 
 
