@@ -256,18 +256,19 @@ def apply_step_cache(
         try:
             _restore_hooked_block_inners(transformer)
             transformer.disable_cache()
-        except Exception as exc:  # noqa: BLE001 - cannot re-configure -> keep what is already running
-            # Which of the two statements above raised decides this, so ask the model rather than assume.
-            # _restore_hooked_block_inners raising means disable_cache never ran and the cache is still
-            # live; disable_cache raising can still have taken the hooks off before it did. So report
-            # what is STILL engaged: a None while the transformer caches is the very desync this guard
-            # exists to prevent, and a prior mode on a transformer that no longer caches is the same
-            # desync mirrored, pinning it to the eager path and blocking every later re-engage.
-            if getattr(transformer, "is_cache_enabled", False):
+        except Exception as exc:  # noqa: BLE001 - cannot re-configure -> finish the teardown ourselves
+            # is_cache_enabled cannot adjudicate this either. diffusers' disable_cache removes the FBC
+            # leader and block hooks in SEPARATE remove_hook calls and clears _cache_config only after
+            # both, so a raise between them leaves block hooks installed with no leader to make the skip
+            # decision, while is_cache_enabled still reads True and would have this report a healthy
+            # prior cache. Half a cache is not the prior cache. Finish the removal by name instead.
+            removed = _unhook_first_block_cache(transformer)
+            if not removed:
+                # Cannot verify, so say what was last known to be engaged and leave the marker alone.
                 _warn(logger, mode, exc)
                 return prior.split("@")[0] if isinstance(prior, str) else None
-            # Unhooked after all: the reconfiguration this call wanted is exactly what happened, so drop
-            # the stale marker and fall through to engage at the new settings.
+            # Fully unhooked now, which is what this call wanted before re-configuring, so drop the
+            # stale marker and fall through to engage at the new settings.
             try:
                 transformer._unsloth_step_cache = None
             except Exception:  # noqa: BLE001 - marker is best-effort

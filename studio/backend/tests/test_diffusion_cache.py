@@ -797,13 +797,53 @@ def test_a_reconfigure_whose_cleanup_unhooked_anyway_re_engages(monkeypatch):
     assert t._unsloth_step_cache == "fbcache@0.42"
 
 
-def test_a_reconfigure_that_could_not_unhook_keeps_reporting_the_prior_mode(monkeypatch):
-    """The other half: the cache is still enabled, so the hooks are live and the honest answer is the
-    mode that is STILL running, not None and not the mode that was asked for."""
+def test_a_reconfigure_that_cannot_be_verified_keeps_reporting_the_prior_mode(monkeypatch):
+    """With no registry to remove through, the teardown cannot be shown to have completed. Re-engaging
+    on top of hooks that may still be installed is the dangerous move, so this reports the mode that was
+    last known to be running and leaves the marker describing it."""
     _stub_diffusers(monkeypatch)
+    monkeypatch.delitem(sys.modules, "diffusers.hooks.first_block_cache", raising = False)
+    monkeypatch.setitem(sys.modules, "diffusers.hooks", types.ModuleType("diffusers.hooks"))
+    sys.modules["diffusers.hooks"].apply_first_block_cache = lambda *_a, **_k: None
+    sys.modules["diffusers.hooks"].FirstBlockCacheConfig = _Config
+
     t = _ReconfigureCleanupPartlyFails(enabled_after_disable = True)
     t._unsloth_step_cache = "fbcache@0.1"
 
     assert apply_step_cache(_pipe(t), mode = "fbcache", threshold = 0.42) == TC_FBCACHE
     assert t.enabled_with is None  # never re-engaged
     assert t._unsloth_step_cache == "fbcache@0.1"  # marker still describes the live hooks
+
+
+def test_a_reconfigure_that_dies_between_the_two_hook_removals_finishes_the_job(monkeypatch):
+    """diffusers removes the FBC leader and block hooks in SEPARATE calls and clears _cache_config only
+    after both. A raise in between leaves block hooks with no leader to decide the skip, which is worse
+    than either a whole cache or none, while is_cache_enabled still reads True and would have this
+    report the prior cache as healthy. The removal has to be finished, not diagnosed."""
+    registry = _stub_diffusers(monkeypatch)
+
+    class _DiesMidTeardown:
+        _cache_config = object()  # leader gone, blocks still hooked, diffusers never got to clear it
+
+        @property
+        def is_cache_enabled(self):
+            return self._cache_config is not None
+
+        def disable_cache(self):
+            raise RuntimeError("registry mutated while removing fbc_block_hook")
+
+        def enable_cache(self, config):
+            self.enabled_with = config
+
+        def cache_context(self, *_a, **_k):
+            raise AssertionError("not used")
+
+    t = _DiesMidTeardown()
+    t.enabled_with = None
+    t._unsloth_step_cache = "fbcache@0.1"
+
+    # Re-configuring at a new threshold: the half-torn cache is finished off, then the engage proceeds.
+    assert apply_step_cache(_pipe(t), mode = "fbcache", threshold = 0.3) == TC_FBCACHE
+    assert registry.removed == ["fbc_leader_block_hook", "fbc_block_hook"]
+    assert t.enabled_with.threshold == 0.3
+    assert t._unsloth_step_cache == "fbcache@0.3"
