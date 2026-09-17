@@ -398,6 +398,19 @@ class TestNetworkTargetResolution:
                 f"import httpx\nc = httpx.Client()\nc.post('http://{_H}/')",
                 id = "httpx_client_post",
             ),
+            # `stream` takes the method first, unlike the verb methods next to it.
+            pytest.param(
+                f"import httpx\nc = httpx.AsyncClient()\nc.stream('GET', 'http://{_H}/')",
+                id = "httpx_client_stream_url_position",
+            ),
+            pytest.param(
+                f"import httpx\nhttpx.stream('GET', 'http://{_H}/')",
+                id = "httpx_module_stream_url_position",
+            ),
+            pytest.param(
+                f"import urllib3\nurllib3.PoolManager().urlopen('GET', 'http://{_H}/')",
+                id = "urllib3_pool_manager_urlopen",
+            ),
             pytest.param(
                 f"import aiohttp\ns = aiohttp.ClientSession()\ns.get('http://{_H}/')",
                 id = "aiohttp_session_get",
@@ -545,6 +558,7 @@ class TestNetworkTargetResolution:
             # A session reaching an allowlisted host is as unremarkable as the module function.
             "import requests\ns = requests.Session()\ns.get('https://pypi.org/simple/')",
             "import requests\ns = requests.Session()\ns.close()",
+            "import httpx\nhttpx.Client().stream('GET', 'https://pypi.org/')",
             "import requests\ns = requests.Session()\ns.headers.update({'a': 'b'})",
             # Two functions with a same-named attribute receiver do not contaminate each other.
             "import paramiko\ndef a(obj):\n    obj.client = paramiko.SSHClient()\n"

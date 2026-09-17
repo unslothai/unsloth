@@ -16040,31 +16040,35 @@ def _check_signal_escape_patterns(code: str):
     # Session and pool objects send through their own methods, so an instance resolves to its
     # constructor and the method rides on top: `requests.Session().get(url)` reads as
     # `requests.Session.get`.
-    _REQUEST_CLIENT_FQ = (
+    # Per client, the methods that take the URL first, then the ones that take it after the
+    # method string. Read off the real signatures: `Client.stream(method, url)` is not
+    # `Client.get(url)`, and urllib3's pools have no `get`.
+    _VERB_CLIENTS = (
         "requests.Session",
         "requests.sessions.Session",
         "httpx.Client",
         "httpx.AsyncClient",
         "aiohttp.ClientSession",
-        "urllib3.PoolManager",
-        "urllib3.ProxyManager",
     )
+    _POOL_CLIENTS = ("urllib3.PoolManager", "urllib3.ProxyManager")
     _NETWORK_TARGET_ARGS.update(
         {
             **{
                 f"{client}.{method}": (0, "url", "url")
-                for client in _REQUEST_CLIENT_FQ
-                for method in ("get", "post", "put", "delete", "patch", "head", "stream")
-            },
-            **{f"{client}.request": (1, "url", "url") for client in _REQUEST_CLIENT_FQ},
-            **{
-                f"{client}.urlopen": (1, "url", "url")
-                for client in ("urllib3.PoolManager", "urllib3.ProxyManager")
+                for client in _VERB_CLIENTS
+                for method in ("get", "post", "put", "delete", "patch", "head")
             },
             **{
-                f"{client}.connection_from_url": (0, "url", "url")
-                for client in ("urllib3.PoolManager", "urllib3.ProxyManager")
+                f"{client}.request": (1, "url", "url")
+                for client in (*_VERB_CLIENTS, *_POOL_CLIENTS)
             },
+            **{
+                f"{client}.stream": (1, "url", "url")
+                for client in ("httpx.Client", "httpx.AsyncClient")
+            },
+            "httpx.stream": (1, "url", "url"),
+            **{f"{client}.urlopen": (1, "url", "url") for client in _POOL_CLIENTS},
+            **{f"{client}.connection_from_url": (0, "url", "url") for client in _POOL_CLIENTS},
             **{
                 f"{client}.send": (0, "request", "url")
                 for client in ("requests.Session", "requests.sessions.Session")
@@ -17202,7 +17206,9 @@ def _check_signal_escape_patterns(code: str):
                 elif node.args and isinstance(node.args[0], (ast.Tuple, ast.Constant)):
                     self._check_target(node, [(True, node.args[0], "host")], connects = False)
 
-            if any(fq and fq.startswith(p) for fq in net_fqs for p in _NETWORK_FQ_PREFIXES):
+            # _is_network_fq, not the prefixes alone: a name in the target table is a network
+            # call whether or not some prefix also happens to cover it.
+            if any(_is_network_fq(fq) for fq in net_fqs):
                 # 1) Upload-shape check (host-independent).
                 if any(_call_is_upload_shape(node, fq) for fq in net_fqs):
                     network_calls.append(
