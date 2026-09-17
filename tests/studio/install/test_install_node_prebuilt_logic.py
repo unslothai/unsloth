@@ -4,6 +4,7 @@
 
 import importlib.util
 import io
+import contextlib
 import json
 import os
 import sys
@@ -316,6 +317,55 @@ def test_install_prebuilt_short_circuits_when_version_matches(tmp_path: Path, mo
 
     rc = M.install_prebuilt(install_dir, channel = "lts", min_major = 24, force = False)
     assert rc == M.EXIT_SUCCESS
+
+
+def test_a_matching_install_beside_a_running_installer_still_exits_0(tmp_path: Path, monkeypatch):
+    """End to end, through install_prebuilt, with a REAL lock file held by a live PID.
+
+    The whole exit code is the thing under test: the record is an optimisation, and a
+    legacy install that cannot write it because another installer is running must still
+    report the install current. Exit 3 is fatal in setup.sh, so getting this wrong turns
+    "Studio was already installed" into a failed launch on the first update after upgrading.
+    """
+    host = _host("linux", "x64")
+    install_dir = tmp_path / "node"
+    install_dir.mkdir()
+    _real_node_tree(install_dir, host)
+    version = M.pinned_default_version(M.load_pins())
+    asset = M.node_asset_name(version, host)
+    # A marker written before the record existed: the one shape with something to backfill.
+    M.write_metadata(
+        install_dir,
+        version = version,
+        asset = asset,
+        sha256 = M.pinned_sha256(M.load_pins(), version, asset),
+    )
+    assert "node_version_checked" not in M.load_metadata(install_dir)
+
+    monkeypatch.setattr(M, "detect_host", lambda: host)
+    monkeypatch.setattr(M, "fetch_json", lambda url: INDEX)
+    monkeypatch.setattr(M, "installed_node_version", lambda d, h: version)
+    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 11)
+
+    def boom(*a, **k):
+        raise AssertionError("must not download when the install already matches")
+
+    monkeypatch.setattr(M, "download_file", boom)
+    monkeypatch.setattr(M, "download_bytes", boom)
+    # Held by this process, which is alive, so the stale-lock reclaim does not fire.
+    lock_path = M.install_lock_path(install_dir)
+    lock_path.parent.mkdir(parents = True, exist_ok = True)
+    lock_path.write_text(f"{os.getpid()}\n", encoding = "utf-8")
+    # The PID-file implementation, so the holder is a file this test can really write.
+    monkeypatch.setattr(M, "FileLock", None)
+    monkeypatch.setattr(M, "RECORD_LOCK_TIMEOUT_SECONDS", 0)
+    monkeypatch.setattr(M, "INSTALL_LOCK_TIMEOUT_SECONDS", 0)
+
+    assert M.install_prebuilt(install_dir, channel = "lts", min_major = 24, force = False) == (
+        M.EXIT_SUCCESS
+    )
+    # Nothing was written under a lock this run never held.
+    assert "node_version_checked" not in M.load_metadata(install_dir)
 
 
 def test_existing_install_usable_is_version_agnostic(tmp_path: Path, monkeypatch):
@@ -878,3 +928,525 @@ def test_a_denial_without_a_filename_still_exits_denied(capsys, tmp_path):
     )
     # Nothing to classify, so the caller keeps its default and is told no lie.
     assert M.DENIED_SCOPE_MARKER not in "".join(capsys.readouterr())
+# The recorded runtime check: the 110 MB interpreter start it saves per run.
+def _real_node_tree(root: Path, host) -> None:
+    """The two files existing_install_matches spawns, as real bytes on disk.
+
+    The execute bit is not decoration: the recorded fast path refuses a node it could not
+    run, so a tree built without it never reaches the short circuit under test.
+    """
+    node = M.node_binary_path(root, host)
+    npm = M.npm_cli_path(root, host)
+    node.parent.mkdir(parents = True, exist_ok = True)
+    npm.parent.mkdir(parents = True, exist_ok = True)
+    node.write_bytes(b"node" * 64)
+    npm.write_bytes(b"npm" * 64)
+    node.chmod(0o755)
+
+
+def test_a_verified_install_is_not_re_probed(tmp_path: Path, monkeypatch):
+    """`node -v` is an interpreter start of a 110 MB runtime, run on every install and
+    every update to re-derive an answer that cannot have changed while the binary has
+    not."""
+    host = _host("linux", "x64")
+    _real_node_tree(tmp_path, host)
+    M.write_metadata(tmp_path, version = "24.17.0", asset = "x", sha256 = "y")
+
+    spawns = []
+    monkeypatch.setattr(
+        M, "installed_node_version", lambda d, h: (spawns.append("node"), "24.17.0")[1]
+    )
+    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: (spawns.append("npm"), 11)[1])
+    # First call has nothing recorded, so it spawns -- and writes down what it learned.
+    assert M.existing_install_matches(tmp_path, host, version = "24.17.0") is True
+    assert spawns == ["node", "npm"]
+
+    spawns.clear()
+    assert M.existing_install_matches(tmp_path, host, version = "24.17.0") is True
+    # `node -v` is saved; npm is re-probed, since the record covers the launcher, not the tree.
+    assert spawns == ["npm"], "the recorded verification was not believed"
+
+
+def _runnable_node_tree(
+    root: Path,
+    host,
+    *,
+    version = "v24.17.0",
+    npm = "11.0.0",
+) -> Path:
+    """A node that really executes, so the probes under test are real subprocess runs.
+
+    _run_node invokes the node binary for BOTH probes -- `node -v` and, through it, npm-cli.js
+    -- which is the whole reason the record is allowed to skip only the first.
+    """
+    node = M.node_binary_path(root, host)
+    npm_cli = M.npm_cli_path(root, host)
+    node.parent.mkdir(parents = True, exist_ok = True)
+    npm_cli.parent.mkdir(parents = True, exist_ok = True)
+    # Padded to a fixed length so a later rewrite can preserve the byte count exactly.
+    script = f'#!/bin/sh\ncase "$1" in -v) echo {version} ;; *) echo {npm} ;; esac\n'
+    node.write_text(script.ljust(512), encoding = "utf-8")
+    node.chmod(0o755)
+    npm_cli.write_text("// npm launcher\n", encoding = "utf-8")
+    return node
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "the stand-in node is a shell script")
+def test_a_node_that_no_longer_runs_is_caught_even_at_the_recorded_size_and_mtime(
+    tmp_path: Path, monkeypatch
+):
+    """The record compares size and mtime_ns, not the digest, so a rewrite that preserves
+    both is invisible TO THE RECORD. It is not invisible to the check: npm-cli.js is run BY
+    the node binary, and that probe is never skipped, so a node that cannot run is still
+    rejected and repaired. This pins the reason the digest is affordable to skip.
+    """
+    host = _host("linux", "x64")
+    node = _runnable_node_tree(tmp_path, host)
+    M.write_metadata(tmp_path, version = "24.17.0", asset = "x", sha256 = "y")
+    assert M.existing_install_matches(tmp_path, host, version = "24.17.0") is True
+    recorded = M.load_metadata(tmp_path)["node_binary"]
+
+    original = node.stat()
+    node.write_bytes(b"\x00" * original.st_size)
+    os.utime(node, ns = (original.st_atime_ns, original.st_mtime_ns))
+    after = node.stat()
+    assert (after.st_size, after.st_mtime_ns) == (
+        recorded["size"],
+        recorded["mtime_ns"],
+    ), "the rewrite must be invisible to the record for this test to mean anything"
+
+    # Non-vacuity: the record itself is satisfied, so the rejection comes from the probe.
+    assert M._recorded_runtime_matches(tmp_path, host, M.load_metadata(tmp_path), "24.17.0") is True
+    assert M.existing_install_matches(tmp_path, host, version = "24.17.0") is False
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "the stand-in node is a shell script")
+def test_a_full_check_over_an_unchanged_install_does_not_rewrite_the_marker(
+    tmp_path: Path, monkeypatch
+):
+    """UNSLOTH_PREBUILT_FULL_CHECK re-proves what the record already says, on every run.
+    Publishing an identical marker each time moves its mtime and inode and re-applies its
+    mode and owner, which is a write, a chmod and a chown for bytes that did not change."""
+    host = _host("linux", "x64")
+    _runnable_node_tree(tmp_path, host)
+    M.write_metadata(tmp_path, version = "24.17.0", asset = "x", sha256 = "y")
+    assert M.existing_install_matches(tmp_path, host, version = "24.17.0") is True
+
+    monkeypatch.setenv("UNSLOTH_PREBUILT_FULL_CHECK", "1")
+    marker = M.metadata_path(tmp_path)
+    before = marker.stat()
+    for _ in range(3):
+        assert M.existing_install_matches(tmp_path, host, version = "24.17.0") is True
+    after = marker.stat()
+    assert (after.st_ino, after.st_mtime_ns) == (
+        before.st_ino,
+        before.st_mtime_ns,
+    ), "an unchanged record was republished"
+
+
+def test_a_replaced_binary_is_probed_again(tmp_path: Path, monkeypatch):
+    """The record describes bytes, not a directory: a node swapped underneath us has
+    to answer for itself."""
+    host = _host("linux", "x64")
+    _real_node_tree(tmp_path, host)
+    M.write_metadata(tmp_path, version = "24.17.0", asset = "x", sha256 = "y")
+    M.record_runtime_verification(tmp_path, host, version = "24.17.0", npm_major = 11)
+
+    spawns = []
+    monkeypatch.setattr(
+        M, "installed_node_version", lambda d, h: (spawns.append("node"), "24.17.0")[1]
+    )
+    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: (spawns.append("npm"), 11)[1])
+    assert M.existing_install_matches(tmp_path, host, version = "24.17.0") is True
+    assert spawns == ["npm"]
+
+    spawns.clear()
+    M.node_binary_path(tmp_path, host).write_bytes(b"a different node")
+    assert M.existing_install_matches(tmp_path, host, version = "24.17.0") is True
+    assert spawns == ["node", "npm"]
+
+
+def test_a_deleted_binary_is_not_a_match(tmp_path: Path, monkeypatch):
+    host = _host("linux", "x64")
+    _real_node_tree(tmp_path, host)
+    M.write_metadata(tmp_path, version = "24.17.0", asset = "x", sha256 = "y")
+    M.record_runtime_verification(tmp_path, host, version = "24.17.0", npm_major = 11)
+    M.npm_cli_path(tmp_path, host).unlink()
+    monkeypatch.setattr(M, "installed_node_version", lambda d, h: "24.17.0")
+    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: None)
+    assert M.existing_install_matches(tmp_path, host, version = "24.17.0") is False
+
+
+def test_a_recorded_verification_never_outranks_the_version_or_the_pin(tmp_path: Path, monkeypatch):
+    """The short-circuit is only about the two spawns. Version and digest are still
+    what decide whether this is the install that was asked for."""
+    host = _host("linux", "x64")
+    _real_node_tree(tmp_path, host)
+    M.write_metadata(tmp_path, version = "24.17.0", asset = "x", sha256 = "pinned")
+    M.record_runtime_verification(tmp_path, host, version = "24.17.0", npm_major = 11)
+    monkeypatch.setattr(M, "installed_node_version", lambda d, h: "24.17.0")
+    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 11)
+    assert M.existing_install_matches(tmp_path, host, version = "24.18.0") is False
+    assert (
+        M.existing_install_matches(tmp_path, host, version = "24.17.0", expected_sha = "other") is False
+    )
+    assert (
+        M.existing_install_matches(tmp_path, host, version = "24.17.0", expected_sha = "pinned") is True
+    )
+
+
+def test_a_recorded_npm_below_the_floor_is_probed_again(tmp_path: Path, monkeypatch):
+    host = _host("linux", "x64")
+    _real_node_tree(tmp_path, host)
+    M.write_metadata(tmp_path, version = "24.17.0", asset = "x", sha256 = "y")
+    M.record_runtime_verification(tmp_path, host, version = "24.17.0", npm_major = 10)
+    monkeypatch.setattr(M, "installed_node_version", lambda d, h: "24.17.0")
+    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 10)
+    assert M.existing_install_matches(tmp_path, host, version = "24.17.0") is False
+
+
+# os.access X_OK reads POSIX mode bits, which root ignores and Windows lacks.
+_EXECUTE_BIT_IS_ENFORCED = os.name != "nt" and getattr(os, "geteuid", lambda: 0)() != 0
+
+
+@pytest.mark.skipif(
+    not _EXECUTE_BIT_IS_ENFORCED,
+    reason = "needs an unprivileged POSIX user: root and Windows both ignore the execute bit",
+)
+def test_a_node_that_lost_its_execute_bit_is_not_a_match(tmp_path: Path, monkeypatch):
+    """Dropping the execute bit is invisible to the record: it moves ctime, and nothing else.
+
+    Size and mtime_ns both survive it, so the file record still matches a node that can no
+    longer be started. The spawn the record stands in for would have failed here and the
+    install would have been repaired, which is the outcome that has to be kept.
+    """
+    host = _host("linux", "x64")
+    _real_node_tree(tmp_path, host)
+    M.write_metadata(tmp_path, version = "24.17.0", asset = "x", sha256 = "y")
+    M.record_runtime_verification(tmp_path, host, version = "24.17.0", npm_major = 11)
+    node = M.node_binary_path(tmp_path, host)
+    before = node.stat()
+
+    node.chmod(0o644)
+    after = node.stat()
+    assert (after.st_size, after.st_mtime_ns) == (before.st_size, before.st_mtime_ns)
+    # The record itself still matches, which is exactly why the mode has to be asked for.
+    assert M._file_record_matches(node, M.load_metadata(tmp_path)["node_binary"]) is True
+    assert (
+        M._recorded_runtime_matches(tmp_path, host, M.load_metadata(tmp_path), "24.17.0") is False
+    )
+
+    monkeypatch.setattr(M, "installed_node_version", lambda d, h: None)
+    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 11)
+    assert M.existing_install_matches(tmp_path, host, version = "24.17.0") is False
+
+
+def test_an_execute_bit_is_not_demanded_of_the_npm_launcher(tmp_path: Path, monkeypatch):
+    """npm-cli.js is read by node, not executed, so its mode says nothing about npm."""
+    host = _host("linux", "x64")
+    _real_node_tree(tmp_path, host)
+    M.write_metadata(tmp_path, version = "24.17.0", asset = "x", sha256 = "y")
+    M.record_runtime_verification(tmp_path, host, version = "24.17.0", npm_major = 11)
+    M.npm_cli_path(tmp_path, host).chmod(0o644)
+
+    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 11)
+    assert M._recorded_runtime_matches(tmp_path, host, M.load_metadata(tmp_path), "24.17.0") is True
+    assert M.existing_install_matches(tmp_path, host, version = "24.17.0") is True
+
+
+def test_a_recorded_install_whose_npm_tree_was_gutted_is_not_a_match(tmp_path: Path, monkeypatch):
+    """The record covers npm-cli.js, a launcher that bootstraps ../lib/cli.js.
+
+    Deleting npm/lib/cli.js leaves the recorded launcher byte for byte identical while
+    `npm --version` fails, so nothing about the record can notice it. That is why the npm
+    probe is still paid on the recorded path, and this pins that it is.
+    """
+    host = _host("linux", "x64")
+    _real_node_tree(tmp_path, host)
+    cli_js = M.npm_cli_path(tmp_path, host).parent.parent / "lib" / "cli.js"
+    cli_js.parent.mkdir(parents = True, exist_ok = True)
+    cli_js.write_bytes(b"module.exports = () => {};\n")
+    M.write_metadata(tmp_path, version = "24.17.0", asset = "x", sha256 = "y")
+    M.record_runtime_verification(tmp_path, host, version = "24.17.0", npm_major = 11)
+    launcher_before = M.npm_cli_path(tmp_path, host).read_bytes()
+
+    # Stands in for the real spawn: node loads the launcher, which requires ../lib/cli.js.
+    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 11 if cli_js.exists() else None)
+    monkeypatch.setattr(
+        M, "installed_node_version", lambda d, h: pytest.fail("`node -v` should stay saved")
+    )
+    assert M.existing_install_matches(tmp_path, host, version = "24.17.0") is True
+
+    cli_js.unlink()
+    assert M.npm_cli_path(tmp_path, host).read_bytes() == launcher_before
+    # The record cannot tell the difference, so only the probe can.
+    assert M._recorded_runtime_matches(tmp_path, host, M.load_metadata(tmp_path), "24.17.0") is True
+    assert M.existing_install_matches(tmp_path, host, version = "24.17.0") is False
+
+
+def test_the_healthy_recorded_case_never_spawns_node_v(tmp_path: Path, monkeypatch):
+    """The saved `node -v` is the whole point of the record; losing it is a silent revert."""
+    host = _host("linux", "x64")
+    _real_node_tree(tmp_path, host)
+    M.write_metadata(tmp_path, version = "24.17.0", asset = "x", sha256 = "y")
+    M.record_runtime_verification(tmp_path, host, version = "24.17.0", npm_major = 11)
+
+    probes = []
+    monkeypatch.setattr(
+        M, "installed_node_version", lambda d, h: pytest.fail("`node -v` was spawned")
+    )
+    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: (probes.append("npm"), 11)[1])
+    assert M.existing_install_matches(tmp_path, host, version = "24.17.0") is True
+    assert probes == ["npm"]
+
+
+def test_the_record_survives_an_unwritable_marker(tmp_path: Path):
+    """A marker that cannot be refreshed costs the two spawns again, never the install."""
+    host = _host("linux", "x64")
+    _real_node_tree(tmp_path, host)
+    M.record_runtime_verification(tmp_path, host, version = "24.17.0", npm_major = 11)
+    assert M.load_metadata(tmp_path) is None
+
+
+def test_a_failed_marker_refresh_leaves_the_old_marker_intact(tmp_path: Path, monkeypatch):
+    """The read-modify-write rewrites a marker that already describes a good install.
+
+    A truncated one reads as "no install" (load_metadata returns None on a parse
+    error), so a crash or a full disk mid-write would retire a working 110 MB runtime
+    and buy a full re-download. The replace is atomic: the marker is either the one
+    that was there or the new one, never half of either.
+    """
+    host = _host("linux", "x64")
+    _real_node_tree(tmp_path, host)
+    M.write_metadata(tmp_path, version = "24.17.0", asset = "x", sha256 = "y")
+    before = M.metadata_path(tmp_path).read_bytes()
+
+    def boom(tmp, destination):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(M, "atomic_replace_from_tempfile", boom)
+    M.record_runtime_verification(tmp_path, host, version = "24.17.0", npm_major = 11)
+    assert M.metadata_path(tmp_path).read_bytes() == before
+    assert M.load_metadata(tmp_path) is not None
+    # A stranded sibling would sit there forever, and _swap_into_place would carry it live.
+    assert list(tmp_path.glob(M.METADATA_FILENAME + ".tmp-*")) == []
+
+
+def test_the_marker_is_never_written_in_place(tmp_path: Path, monkeypatch):
+    """What makes the guarantee above true: the payload is complete on disk in a
+    sibling before the destination is touched at all."""
+    host = _host("linux", "x64")
+    _real_node_tree(tmp_path, host)
+    M.write_metadata(tmp_path, version = "24.17.0", asset = "x", sha256 = "y")
+    original = M.metadata_path(tmp_path).read_bytes()
+    seen = {}
+    real = M.atomic_replace_from_tempfile
+
+    def observe(tmp, destination):
+        seen["destination"] = Path(destination).read_bytes()
+        seen["staged"] = json.loads(Path(tmp).read_text(encoding = "utf-8"))
+        return real(tmp, destination)
+
+    monkeypatch.setattr(M, "atomic_replace_from_tempfile", observe)
+    M.record_runtime_verification(tmp_path, host, version = "24.17.0", npm_major = 11)
+    assert seen["destination"] == original, "the destination was written before the replace"
+    assert seen["staged"]["npm_major_checked"] == 11
+    assert M.load_metadata(tmp_path)["npm_major_checked"] == 11
+
+
+def test_the_marker_bytes_are_unchanged_by_the_atomic_writer(tmp_path: Path):
+    """The setup fast path and the idempotency harness both compare this file byte for
+    byte, so moving the writer must not re-spell it."""
+    M.write_metadata(tmp_path, version = "24.17.0", asset = "x", sha256 = "y")
+    payload = {
+        "schema_version": M.METADATA_SCHEMA_VERSION,
+        "kind": "node",
+        "version": "24.17.0",
+        "asset": "x",
+        "sha256": "y",
+    }
+    expected = json.dumps(payload, indent = 2) + "\n"
+    assert M.metadata_path(tmp_path).read_text(encoding = "utf-8") == expected
+
+
+def test_a_failed_install_marker_write_strands_nothing(tmp_path: Path, monkeypatch):
+    """write_metadata still raises -- it writes into a staging tree the caller discards
+    -- but it must not leave the temp file behind in it either."""
+
+    def boom(tmp, destination):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(M, "atomic_replace_from_tempfile", boom)
+    with pytest.raises(OSError):
+        M.write_metadata(tmp_path, version = "24.17.0", asset = "x", sha256 = "y")
+    assert not M.metadata_path(tmp_path).exists()
+    assert list(tmp_path.glob(M.METADATA_FILENAME + ".tmp-*")) == []
+
+
+def test_both_marker_writers_share_one_atomic_path() -> None:
+    """Two spellings of "write the marker" is how one of them would stay non-atomic."""
+    source = MODULE_PATH.read_text(encoding = "utf-8")
+    assert source.count("_write_metadata_payload(") == 3  # def + write_metadata + refresh
+    assert "metadata_path(install_dir).write_text(" not in source
+
+
+def test_the_record_is_written_after_the_swap_not_before() -> None:
+    """_ensure_npm_floor rewrites npm inside the staged tree, so a record taken there
+    describes bytes that are about to be replaced."""
+    source = MODULE_PATH.read_text(encoding = "utf-8")
+    swap = source.index("_swap_into_place(extracted_root, install_dir)")
+    record = source.index(
+        "_record_runtime_verification_under_lock(\n        install_dir, host, installed_meta, version = final_version"
+    )
+    assert swap < record
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX modes")
+def test_a_marker_refresh_keeps_the_marker_readable_to_other_users(tmp_path: Path):
+    """NamedTemporaryFile is 0600 and os.replace keeps the source file's mode, so the
+    first runtime-verification refresh used to leave a shared install's marker readable
+    only by whoever ran it, and every other user's update read "nothing installed"."""
+    import stat as _stat
+
+    host = _host("linux", "x64")
+    _real_node_tree(tmp_path, host)
+    M.write_metadata(tmp_path, version = "24.17.0", asset = "x", sha256 = "y")
+    marker = M.metadata_path(tmp_path)
+    mask = os.umask(0)
+    os.umask(mask)
+    assert _stat.S_IMODE(marker.stat().st_mode) == 0o666 & ~mask
+    marker.chmod(0o664)
+    M.record_runtime_verification(tmp_path, host, version = "24.17.0", npm_major = 11)
+    assert M.load_metadata(tmp_path)["node_version_checked"] == "24.17.0"
+    assert _stat.S_IMODE(marker.stat().st_mode) == 0o664
+
+
+def test_the_pre_lock_record_is_written_under_the_lock_and_only_over_the_marker_it_read(
+    tmp_path: Path, monkeypatch
+):
+    """The pre-lock check in install_prebuilt records the spawns it just paid for. That
+    record is a read-modify-write of the marker, so it takes the install lock for the
+    write and goes ahead only if the marker is still the one it read: a concurrent
+    installer that swapped a new tree in between must keep its own marker."""
+    host = _host("linux", "x64")
+    _real_node_tree(tmp_path, host)
+    M.write_metadata(tmp_path, version = "24.17.0", asset = "x", sha256 = "y")
+    monkeypatch.setattr(M, "installed_node_version", lambda d, h: "24.17.0")
+    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 11)
+    held = {"depth": 0, "writes_under_lock": 0}
+    real_lock = M.install_lock
+    real_record = M.record_runtime_verification
+
+    @contextlib.contextmanager
+    def counting_lock(path, **kwargs):
+        with real_lock(path, **kwargs):
+            held["depth"] += 1
+            try:
+                yield
+            finally:
+                held["depth"] -= 1
+
+    def counting_record(*args, **kwargs):
+        assert held["depth"], "the record was written outside the install lock"
+        held["writes_under_lock"] += 1
+        real_record(*args, **kwargs)
+
+    monkeypatch.setattr(M, "install_lock", counting_lock)
+    monkeypatch.setattr(M, "record_runtime_verification", counting_record)
+    assert M.existing_install_matches(tmp_path, host, version = "24.17.0") is True
+    assert held["writes_under_lock"] == 1
+    assert M.load_metadata(tmp_path)["node_version_checked"] == "24.17.0"
+
+    # The marker changes hands while the lock is being taken: no record over it.
+    M.write_metadata(tmp_path, version = "24.17.0", asset = "x", sha256 = "y")
+
+    @contextlib.contextmanager
+    def swapping_lock(path, **kwargs):
+        with real_lock(path, **kwargs):
+            M.write_metadata(tmp_path, version = "24.18.0", asset = "z", sha256 = "w")
+            yield
+
+    monkeypatch.setattr(M, "install_lock", swapping_lock)
+    # ...and the tree that changed hands is not reported as the one that was asked for.
+    assert M.existing_install_matches(tmp_path, host, version = "24.17.0") is False
+    after = M.load_metadata(tmp_path)
+    assert after["version"] == "24.18.0"
+    assert "node_version_checked" not in after
+
+
+@pytest.mark.skipif(not hasattr(os, "chown"), reason = "os.chown is POSIX only")
+def test_a_refreshed_marker_keeps_its_owner_and_group(tmp_path, monkeypatch):
+    """os.replace installs the temp file's ownership; a group-shared marker refreshed by
+    another member must not take that member's group and stop being readable."""
+    install_dir = tmp_path / "node"
+    install_dir.mkdir()
+    marker = M.metadata_path(install_dir)
+    marker.write_text("{}", encoding = "utf-8")
+    original = marker.stat()
+    chowned = []
+
+    def refusing(path, uid, gid):
+        chowned.append((uid, gid))
+        if uid != -1:
+            raise PermissionError("a non-root member may not give a file away")
+
+    monkeypatch.setattr(M.os, "chown", refusing)
+    M._write_metadata_payload(install_dir, {"kind": "node"})
+    # Owner and group first, since root can restore both; group alone when that is refused,
+    # which is the non-root member of a group-shared install.
+    assert chowned == [(original.st_uid, original.st_gid), (-1, original.st_gid)]
+    chowned.clear()
+    # A marker written for the first time has no owner to preserve.
+    marker.unlink()
+    M._write_metadata_payload(install_dir, {"kind": "node"})
+    assert chowned == []
+
+
+def test_a_busy_install_lock_keeps_the_verified_install(tmp_path, monkeypatch):
+    """Busy says nothing about the tree. The evidence that another installer replaced it is
+    the marker no longer being the one that was read, and that check answers False on its own.
+
+    Answering False for a lock that was merely busy would send a legacy install -- the one
+    case that has a record to write -- on to the outer install lock, which the same holder
+    also fails. A first launch beside a running installer would then exit busy, where the
+    path before this record reported the install current and exited 0.
+    """
+    waited = {}
+
+    def busy(_path, *, timeout = None):
+        waited["timeout"] = timeout
+        raise M.BusyInstallConflict("held elsewhere")
+
+    monkeypatch.setattr(M, "install_lock", busy)
+    assert (
+        M._record_runtime_verification_under_lock(
+            tmp_path, object(), {"version": "v22.0.0"}, version = "v22.0.0", npm_major = 10
+        )
+        is True
+    )
+    # ...and it does not hold the launch for the install timeout to write an optimisation.
+    assert waited["timeout"] == M.RECORD_LOCK_TIMEOUT_SECONDS
+    assert M.RECORD_LOCK_TIMEOUT_SECONDS < M.INSTALL_LOCK_TIMEOUT_SECONDS
+
+
+def test_a_tree_replaced_under_the_lock_is_still_not_a_match(tmp_path, monkeypatch):
+    """The half that DOES answer: the lock was taken, and the marker had changed hands."""
+    install_dir = tmp_path / "node"
+    install_dir.mkdir()
+    M.metadata_path(install_dir).write_text(
+        json.dumps({"version": "v22.9.9", "sha256": "b" * 64, "asset": "other.tar.xz"}),
+        encoding = "utf-8",
+    )
+    recorded = []
+    monkeypatch.setattr(M, "record_runtime_verification", lambda *a, **k: recorded.append(a))
+    assert (
+        M._record_runtime_verification_under_lock(
+            install_dir,
+            object(),
+            {"version": "v22.0.0", "sha256": "a" * 64, "asset": "node.tar.xz"},
+            version = "v22.0.0",
+            npm_major = 10,
+        )
+        is False
+    )
+    assert recorded == [], "a record was written over another installer's tree"

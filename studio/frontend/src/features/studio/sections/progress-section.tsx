@@ -417,7 +417,9 @@ function LiveGpuPanel({
             <select
               value={selectedGpuIndex}
               onChange={(e) => setSelectedGpu(Number(e.target.value))}
-              className="h-6 cursor-pointer rounded-md border border-border bg-popover px-1.5 py-0.5 text-ui-11 text-popover-foreground outline-none hover:bg-muted focus:border-ring transition-colors font-medium appearance-none"
+              // At the 16px coarse-pointer floor a 24px box clips descenders, and a long
+              // device name widens the row past the viewport.
+              className="h-6 cursor-pointer rounded-md border border-border bg-popover px-1.5 py-0.5 text-ui-11 text-popover-foreground outline-none hover:bg-muted focus:border-ring transition-colors font-medium appearance-none pointer-coarse:h-auto pointer-coarse:min-w-0 pointer-coarse:max-w-full"
               title="Select GPU"
             >
               {gpus.map((device, index) => (

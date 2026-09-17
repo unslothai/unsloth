@@ -110,6 +110,32 @@ def _backend(tmp_path: Path, *, vulkan: bool, memory):
     return backend, gguf
 
 
+# A synthetic compute buffer for the slot-reduction planner fixtures, per micro-batch
+# token: a fixed base, plus a fixed cost for every slot past the first.
+SLOT_COMPUTE_BASE_BYTES_PER_TOKEN = 92 * 1024
+SLOT_COMPUTE_EXTRA_SLOT_BYTES_PER_TOKEN = 1116 * 1024
+
+
+def _install_slot_scaled_compute(backend):
+    """Use a synthetic per-slot cost to exercise slot reduction on dense fixtures."""
+
+    def compute(
+        *,
+        n_ubatch = None,
+        n_parallel = 1,
+        **_kwargs,
+    ):
+        ub = max(1, int(backend._DEFAULT_N_UBATCH if n_ubatch is None else n_ubatch))
+        extra_slots = max(0, int(n_parallel) - 1)
+        return ub * (
+            SLOT_COMPUTE_BASE_BYTES_PER_TOKEN
+            + extra_slots * SLOT_COMPUTE_EXTRA_SLOT_BYTES_PER_TOKEN
+        )
+
+    backend._estimate_compute_buffer_bytes = compute
+    return backend
+
+
 def _backend_non_vulkan(
     *args,
     vulkan = False,
@@ -650,11 +676,7 @@ def test_auto_classifies_placement_on_the_device_flags_the_child_gets(tmp_path):
 
 
 def _hybrid_reserve_backend(tmp_path: Path, *, caps = None):
-    """A Hybrid Mamba target on one 24 GB card with the MTP-overhead math live.
-
-    The drafter's own KV is stubbed away so the only moving term is the target's
-    recurrent rollback state, which is what the reserve has to keep charging.
-    """
+    """Hybrid Mamba on a 24 GB card, with only target rollback state affecting MTP cost."""
     gb = 1024**3
     backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 24_576, 24_576)])
     sidecar = tmp_path / "dflash-model-Q8_0.gguf"
@@ -664,6 +686,7 @@ def _hybrid_reserve_backend(tmp_path: Path, *, caps = None):
     backend._compute_buffer_ctx_bytes = lambda *args, **kwargs: 0
     backend._estimate_compute_buffer_bytes = lambda **kwargs: 1
     backend._mtp_draft_kv_bytes = lambda *args, **kwargs: 0
+    backend._mtp_draft_compute_bytes = lambda *args, **kwargs: 0
     backend._select_gpus = lambda *args, **kwargs: ([0], False)
     backend._select_gpus_split_aware = lambda *args, **kwargs: ([0], False)
 
@@ -742,9 +765,9 @@ def _recorded_mtp_reserve_and_callbacks(backend, gguf, **load_kwargs):
 
 def test_a_cpu_pinned_drafter_still_pays_the_hybrid_target_rollback(tmp_path):
     # -ngld 0 moves the drafter's weights and KV to host memory, but the rollback
-    # snapshots live in the TARGET context, so they stay on the GPU. Releasing the
-    # whole reserve here undercounts them and the fit can pick a placement that
-    # spills.
+    # snapshots and verification output rows live in the TARGET context, so they stay
+    # on the GPU. Releasing the whole reserve here undercounts them and the fit can
+    # pick a placement that spills.
     backend, gguf, sidecar = _hybrid_reserve_backend(tmp_path)
 
     charged = _recorded_mtp_reserve_std(
@@ -756,9 +779,9 @@ def test_a_cpu_pinned_drafter_still_pays_the_hybrid_target_rollback(tmp_path):
     )
 
     # After the launch: the GGUF dims land when the load reads the metadata.
-    expected = backend._mamba_recurrent_state_bytes(n_parallel = 4) * 2
-    assert expected > 0
-    assert set(charged) == {expected}
+    rollback = backend._mamba_recurrent_state_bytes(n_parallel = 4) * 2
+    assert rollback > 0
+    assert set(charged) == {rollback + backend._spec_verify_rows_bytes(4, 2)}
 
 
 def test_the_cpu_drafter_reserve_still_reprices_per_slot_candidate(tmp_path):
@@ -783,6 +806,7 @@ def test_the_cpu_drafter_reserve_still_reprices_per_slot_candidate(tmp_path):
     for slots in (1, 2, 4):
         assert fn(8192, _np = slots, _n_ubatch = 512) == (
             backend._mamba_recurrent_state_bytes(n_parallel = slots) * 2
+            + backend._spec_verify_rows_bytes(slots, 2)
         )
     # Per-slot state, not per-token: context does not move it.
     assert fn(2048, _np = 4, _n_ubatch = 512) == fn(131072, _np = 4, _n_ubatch = 512)
@@ -1125,10 +1149,10 @@ def test_a_busy_second_gpu_does_not_condemn_a_drafter_the_first_one_holds(tmp_pa
 
 def test_a_cpu_offloaded_sidecar_releases_the_byte_accurate_reserve(tmp_path):
     """-ngld 0 puts the drafter in host memory, and a separate sidecar displaces
-    the embedded head that mtp_overhead_fn was sized from, so nothing speculative
-    is GPU-resident. The flat fraction already stands down here; the byte-accurate
-    callback did not, so the fit went on charging GPU bytes for a drafter that
-    allocates none, cutting the context or taking --fit for them.
+    the embedded head that mtp_overhead_fn was sized from, so only the target's
+    verification rows stay GPU-resident. The flat fraction already stands down here;
+    the byte-accurate callback did not, so the fit went on charging GPU bytes for a
+    drafter that allocates none, cutting the context or taking --fit for them.
     """
     backend, gguf, sidecar = _tight_vram_backend(tmp_path, drafter_gb = 12.0)
     backend._nextn_predict_layers = 1
@@ -1156,7 +1180,8 @@ def test_a_cpu_offloaded_sidecar_releases_the_byte_accurate_reserve(tmp_path):
     )
 
     assert charged, "the fit never ran, so this proves nothing"
-    assert set(charged) == {0}
+    # One slot at the three-token DSpark depth.
+    assert set(charged) == {backend._spec_verify_rows_bytes(1, 3)}
 
 
 def test_an_mla_model_keeps_the_reason_that_actually_dropped_its_drafter(tmp_path):
@@ -1788,6 +1813,136 @@ def test_an_explicit_tensor_split_leaves_the_shared_heap_uncredited(tmp_path, mo
         gpu_ids = [0, 1],
         **split,
     )
+
+
+def test_auto_tensor_parallel_honors_user_tensor_split_when_planner_returns_none(tmp_path):
+    """When auto tensor planning decides an even split is safe, the user's
+    per-GPU ratio must still be emitted instead of being silently ignored.
+    Regression for unslothai/unsloth#10355."""
+    backend, gguf = _backend_non_vulkan(
+        tmp_path,
+        memory = [(0, 24_000, 24_000), (1, 24_000, 24_000)],
+    )
+    backend._can_estimate_kv = lambda: True
+    backend._estimate_kv_cache_bytes = lambda *args, **kwargs: 0
+    backend._compute_buffer_ctx_bytes = lambda *args, **kwargs: 0
+    backend._get_gguf_size_bytes = lambda _path: 1 * 1024**3
+    backend._TENSOR_PARALLEL_BUFFER_RESERVE_MIB = 256
+
+    cmd = _launch(
+        backend,
+        gguf,
+        gpu_memory_mode = "auto",
+        tensor_parallel = True,
+        tensor_split = [3, 1],
+        gpu_ids = [0, 1],
+        n_ctx = 4096,
+    )["cmd"]
+
+    assert backend.tensor_parallel is True
+    assert "--split-mode" in cmd
+    assert cmd[cmd.index("--split-mode") + 1] == "tensor"
+    assert "--tensor-split" in cmd
+    assert cmd[cmd.index("--tensor-split") + 1] == "3,1"
+
+
+def test_auto_tensor_parallel_drops_user_split_when_it_exceeds_budget(tmp_path):
+    """A user ratio that overshoots a GPU's usable budget must not be forwarded
+    in auto mode just because an even split fits."""
+    backend, gguf = _backend_non_vulkan(
+        tmp_path,
+        memory = [(0, 16_000, 16_000), (1, 16_000, 16_000)],
+    )
+    backend._can_estimate_kv = lambda: True
+    backend._estimate_kv_cache_bytes = lambda *args, **kwargs: 0
+    backend._compute_buffer_ctx_bytes = lambda *args, **kwargs: 0
+    backend._get_gguf_size_bytes = lambda _path: 25 * 1024**3
+    backend._TENSOR_PARALLEL_BUFFER_RESERVE_MIB = 256
+
+    cmd = _launch(
+        backend,
+        gguf,
+        gpu_memory_mode = "auto",
+        tensor_parallel = True,
+        tensor_split = [3, 1],
+        gpu_ids = [0, 1],
+        n_ctx = 4096,
+    )["cmd"]
+
+    assert backend.tensor_parallel is True
+    assert cmd[cmd.index("--split-mode") + 1] == "tensor"
+    assert "--tensor-split" not in cmd
+
+
+def test_auto_tensor_parallel_records_split_for_reload_matching(tmp_path):
+    """An auto tensor-parallel load with a concrete ratio must not be reused
+    when a later request asks for a different ratio.
+
+    What is recorded is the ratio the load was ASKED for, normalized, not the
+    list that was emitted: the planner's own split is in per-device MiB and a
+    declined ratio emits nothing, so recording the emitted value would
+    mismatch every identical repeat and reload forever. See
+    ``_auto_split_fingerprint``.
+    """
+    backend, gguf = _backend_non_vulkan(
+        tmp_path,
+        memory = [(0, 24_000, 24_000), (1, 24_000, 24_000)],
+    )
+    backend._can_estimate_kv = lambda: True
+    backend._estimate_kv_cache_bytes = lambda *args, **kwargs: 0
+    backend._compute_buffer_ctx_bytes = lambda *args, **kwargs: 0
+    backend._get_gguf_size_bytes = lambda _path: 1 * 1024**3
+    backend._TENSOR_PARALLEL_BUFFER_RESERVE_MIB = 256
+
+    _launch(
+        backend,
+        gguf,
+        gpu_memory_mode = "auto",
+        tensor_parallel = True,
+        tensor_split = [3, 1],
+        gpu_ids = [0, 1],
+        n_ctx = 4096,
+    )
+
+    assert backend._auto_tensor_split == (0.75, 0.25)
+    # /status should also surface the normalized ratio that was emitted.
+    assert backend.tensor_split == [0.75, 0.25]
+
+    # The same ratio written differently is the same instruction to llama.cpp,
+    # so it reuses; a different one reloads.
+    def _intent(split):
+        return GgufLoadIntent(
+            gguf_path = str(gguf),
+            model_identifier = "test",
+            gpu_memory_mode = "auto",
+            tensor_parallel = True,
+            tensor_split = split,
+            gpu_ids = [0, 1],
+            n_ctx = 4096,
+        )
+
+    assert backend.adopt_load_intent_if_matched(_intent([3, 1])) is True
+    assert backend.adopt_load_intent_if_matched(_intent([6, 2])) is True
+    assert backend.adopt_load_intent_if_matched(_intent([1, 3])) is False
+
+    intent_same = GgufLoadIntent(
+        model_identifier = "test",
+        gpu_memory_mode = "auto",
+        tensor_parallel = True,
+        tensor_split = (3, 1),
+        gpu_ids = (0, 1),
+        n_ctx = 4096,
+    )
+    intent_changed = GgufLoadIntent(
+        model_identifier = "test",
+        gpu_memory_mode = "auto",
+        tensor_parallel = True,
+        tensor_split = (1, 3),
+        gpu_ids = (0, 1),
+        n_ctx = 4096,
+    )
+    assert backend._runtime_matches_intent(intent_same, None) is True
+    assert backend._runtime_matches_intent(intent_changed, None) is False
 
 
 def _mixed_vulkan(tmp_path, monkeypatch, memory):
@@ -3377,3 +3532,167 @@ def test_a_restored_cpu_fallback_the_host_can_hold_says_nothing(tmp_path, monkey
     _launch_with_vulkan_cpu_replay(backend, gguf, crash = False, cpu_fallback = True)
 
     assert backend.last_load_warning is None
+
+
+def _write_mtp_drafter(path: Path, *, with_token_embd: bool) -> Path:
+    import numpy as np
+    from gguf import GGUFWriter
+
+    writer = GGUFWriter(str(path), "qwen35")
+    names = ["output.weight", "blk.64.nextn.eh_proj.weight"]
+    if with_token_embd:
+        names += ["token_embd.weight", "output_norm.weight"]
+    for name in names:
+        writer.add_tensor(name, np.zeros((2, 2), dtype = np.float32))
+    writer.write_header_to_file()
+    writer.write_kv_data_to_file()
+    writer.write_tensors_to_file()
+    writer.close()
+    return path
+
+
+def _headless_mtp_backend(tmp_path):
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 24_000, 24_000)])
+    backend._select_gpus = lambda *args, **kwargs: ([0], False)
+    backend.probe_server_capabilities = lambda _binary = None: {
+        "mtp_token": "draft-mtp",
+        "spec_draft_n_max_flag": "--spec-draft-n-max",
+    }
+    return backend, gguf
+
+
+def test_an_mtp_drafter_llama_server_cannot_load_is_dropped(tmp_path):
+    """Dropped before the launch it would abort, and recorded so Apply does not reload."""
+    backend, gguf = _headless_mtp_backend(tmp_path)
+    drafter = _write_mtp_drafter(tmp_path / "mtp-model.gguf", with_token_embd = False)
+
+    cmd = _launch(backend, gguf, mtp_draft_path = str(drafter), speculative_type = "mtp")["cmd"]
+
+    assert "--model-draft" not in cmd
+    assert str(drafter) not in cmd
+    assert backend.mtp_draft_path is None
+    assert backend.mtp_draft_suppressed_path == str(drafter)
+
+
+def test_an_advanced_argument_drafter_survives_the_unloadable_drop(tmp_path):
+    """A user-named --model-draft wins last, so the head-only sibling never opens.
+
+    Dropping it anyway made the load read as drafterless, and the fallback emits
+    ngram-mod or --spec-default BEFORE the extras are appended, so the override stopped
+    running as MTP at all. Nothing here needs protecting: the file llama-server opens is
+    the user's, and the sibling is not passed.
+    """
+    backend, gguf = _headless_mtp_backend(tmp_path)
+    bad = _write_mtp_drafter(tmp_path / "mtp-model.gguf", with_token_embd = False)
+    good = _write_mtp_drafter(tmp_path / "user-draft.gguf", with_token_embd = True)
+
+    cmd = _launch(
+        backend,
+        gguf,
+        mtp_draft_path = str(bad),
+        speculative_type = "mtp",
+        extra_args = ["--model-draft", str(good)],
+    )["cmd"]
+
+    # The user's file is what runs, as MTP, and the rejected sibling is nowhere.
+    assert cmd[-2:] == ["--model-draft", str(good)]
+    assert "draft-mtp" in cmd
+    assert "--spec-default" not in cmd
+    assert "ngram-mod" not in cmd
+    assert backend.mtp_draft_suppressed_path is None
+    assert backend.spec_fallback_reason is None
+
+
+def test_a_drafter_carrying_its_own_embeddings_still_reaches_the_command(tmp_path):
+    """The control for the drop above: same load, one tensor different."""
+    backend, gguf = _headless_mtp_backend(tmp_path)
+    drafter = _write_mtp_drafter(tmp_path / "mtp-model.gguf", with_token_embd = True)
+
+    cmd = _launch(backend, gguf, mtp_draft_path = str(drafter), speculative_type = "mtp")["cmd"]
+
+    assert cmd[cmd.index("--model-draft") + 1] == str(drafter)
+    assert backend.mtp_draft_path == str(drafter)
+    assert backend.mtp_draft_suppressed_path is None
+
+
+def _recording_compute_backend(
+    tmp_path,
+    monkeypatch,
+    *,
+    build = 10909,
+):
+    """A dense backend on one 24 GB card whose compute terms are the real estimator,
+    recording what the loader asks of them."""
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 24_576, 24_576)])
+
+    def read(_path):
+        backend._architecture = "qwen3"
+        backend._vocab_size = 151936
+        backend._embedding_length = 4096
+        backend._feed_forward_length = 12288
+        backend._n_layers = 36
+        backend._n_heads = 32
+        backend._n_kv_heads = 8
+        backend._kv_key_length = 128
+        backend._kv_value_length = 128
+        backend._context_length = 40960
+
+    backend._read_gguf_metadata = read
+    backend._get_gguf_size_bytes = lambda _path: 4 * 1024**3
+    del backend._can_estimate_kv  # the real one, now that the dims are set
+    backend.probe_server_capabilities = lambda _binary = None: {
+        "supports_kv_unified": True,
+        "supports_flash_attn": True,
+        "flash_attn_takes_value": True,
+    }
+    monkeypatch.setattr(
+        LlamaCppBackend, "probe_build_number", classmethod(lambda cls, binary = None: build)
+    )
+    calls = {"ctx": [], "flat": [], "kv": []}
+    real_ctx = backend._compute_buffer_ctx_bytes
+    real_flat = backend._estimate_compute_buffer_bytes
+    real_kv = backend._estimate_kv_cache_bytes
+
+    def ctx(*args, **kwargs):
+        calls["ctx"].append(kwargs.get("flash_attn", True))
+        return real_ctx(*args, **kwargs)
+
+    def flat(**kwargs):
+        calls["flat"].append(backend._reserves_micro_batch_outputs)
+        return real_flat(**kwargs)
+
+    def kv(*args, **kwargs):
+        calls["kv"].append(kwargs.get("flash_attn", True))
+        return real_kv(*args, **kwargs)
+
+    backend._compute_buffer_ctx_bytes = ctx
+    backend._estimate_compute_buffer_bytes = flat
+    backend._estimate_kv_cache_bytes = kv
+    return backend, gguf, calls
+
+
+@pytest.mark.parametrize(
+    "extra_args,expected",
+    [([], True), (["--flash-attn", "off"], False), (["-fa", "off", "--flash-attn", "on"], True)],
+)
+def test_the_loader_prices_the_attention_mode_it_launches(
+    tmp_path, monkeypatch, extra_args, expected
+):
+    """Compute follows the launch's attention mode; KV covers the no-flash retry."""
+    backend, gguf, calls = _recording_compute_backend(tmp_path, monkeypatch)
+
+    assert _launch(backend, gguf, n_ctx = 0, n_parallel = 4, extra_args = extra_args)["cmd"]
+
+    assert calls["ctx"], "the fit never priced the context term"
+    assert set(calls["ctx"]) == {expected}
+    assert False in calls["kv"]
+
+
+@pytest.mark.parametrize("build,expected", [(9415, True), (10909, False), (None, False)])
+def test_the_loader_prices_the_output_rows_of_its_build(tmp_path, monkeypatch, build, expected):
+    backend, gguf, calls = _recording_compute_backend(tmp_path, monkeypatch, build = build)
+
+    assert _launch(backend, gguf, n_ctx = 0, n_parallel = 4)["cmd"]
+
+    assert calls["flat"], "the fit never priced the flat compute buffer"
+    assert set(calls["flat"]) == {expected}

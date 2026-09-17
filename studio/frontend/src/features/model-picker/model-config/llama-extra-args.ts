@@ -174,7 +174,6 @@ export function sanitizeStoredExtraArgs(
         kept.length > 0 &&
         extraArgFlagName(kept[kept.length - 1]) !== null
       ) {
-        // The flag this value belonged to.
         kept.pop();
       }
       continue;
@@ -372,7 +371,6 @@ export function parseExtraArgs(input: string): ExtraArgsParse {
   const quotedIndices = new Set<number>();
   let current = "";
   let started = false;
-  // Whether any part of the token being built came from inside quotes.
   let currentQuoted = false;
   let quote: '"' | "'" | null = null;
 
@@ -786,7 +784,6 @@ export function diagnoseExtraArgs(
   // validate_extra_args refuses it outright, so saying so here is the difference between a red
   // line and a failed load. Two-value flags are allowed for.
   let pendingValues = 0;
-  // The flag those values are owed to, for the checks below.
   let pendingOwner: string | null = null;
   // A flag left waiting for its value. Reported only when the arity is known: the catalogue read
   // this build's own help, or it is the two-value flag whose arity needs no probe. An

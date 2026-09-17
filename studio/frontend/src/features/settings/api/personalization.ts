@@ -29,6 +29,7 @@ export type Personalization = {
   // False when the stored record predates these fields (legacy migration): the
   // client then keeps local values instead of the server-filled defaults.
   customizationSaved: boolean;
+  chatWidthSaved?: boolean;
   paletteSaved: boolean;
   greetingSlothSaved: boolean;
 };
@@ -46,7 +47,11 @@ export async function loadPersonalization(): Promise<Personalization> {
 export async function savePersonalization(
   data: Omit<
     Personalization,
-    "saved" | "customizationSaved" | "paletteSaved" | "greetingSlothSaved"
+    | "saved"
+    | "customizationSaved"
+    | "chatWidthSaved"
+    | "paletteSaved"
+    | "greetingSlothSaved"
   >,
 ): Promise<void> {
   const res = await authFetch("/api/settings/personalization", {

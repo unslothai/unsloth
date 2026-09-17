@@ -56,7 +56,7 @@ export function SidebarModelConfig({
       displayName: ggufVariant ? `${leaf} · ${ggufVariant}` : leaf,
       ggufVariant: settingsGgufVariant,
       isGguf,
-      // An Ollama blob sits behind a link dir the resolver skips, so do not mirror it.
+      // A materialized Ollama link sits in a dir the resolver skips, so do not mirror it.
       apiLoadable: isGguf && !isOllamaLinkPath(modelId),
       meta: {
         source: "local",

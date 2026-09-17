@@ -95,20 +95,25 @@ test("leaving the audio page does NOT abort an in-flight generation", () => {
   );
 });
 
-test("leaving the audio page aborts an in-flight transcription", () => {
+test("transcription survives page deactivation and aborts on unmount", () => {
   assert.match(
     source,
     /const transcriptionAbort = useRef<AbortController \| null>\(null\)/,
   );
   assert.match(
     source,
-    /transcribeAudioBlob\(blob, \{[\s\S]*signal: controller\.signal/,
+    /transcribeWithProgress\(\s*blob,\s*name,\s*\{[\s\S]*signal: controller\.signal/,
   );
-  assert.match(
-    source,
-    /if \(!active\) \{[\s\S]*transcriptionAbort\.current\?\.abort\(\)/,
+  const lifecycle = source.slice(
+    source.indexOf("// Release the microphone"),
+    source.indexOf("const handleTranscribeFile"),
   );
+  assert.match(lifecycle, /if \(!active\) \{\s*stopAndDiscardRecording\(\);\s*\}/);
   assert.match(
+    lifecycle,
+    /useEffect\(\(\) => \(\) => transcriptionAbort\.current\?\.abort\(\), \[\]\)/,
+  );
+  assert.doesNotMatch(
     source,
     /if \(controller\.signal\.aborted \|\| !activeRef\.current\) return/,
   );
