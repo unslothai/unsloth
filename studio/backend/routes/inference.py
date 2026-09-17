@@ -1621,6 +1621,7 @@ try:
         _planned_flash_attn_state,
         _planned_main_cache_types,
         _planned_scratch_cache_type,
+        _reserved_flash_attn_state,
         _swa_full_from_args_or_env,
         detect_reasoning_flags,
         paravirtual_normalized_request,
@@ -1683,6 +1684,7 @@ except ImportError:
         _planned_flash_attn_state,
         _planned_main_cache_types,
         _planned_scratch_cache_type,
+        _reserved_flash_attn_state,
         _swa_full_from_args_or_env,
         detect_reasoning_flags,
         paravirtual_normalized_request,
@@ -10629,6 +10631,10 @@ def _gguf_runtime_bytes(
     ctx_last_wins: bool = False,
     model_identifier: Optional[str] = None,
     launch_required_ubatch: int = 0,
+    # False prices the plan the launch runs, which is what the panel shows. True also
+    # keeps load_model's reserve for a flash-attention-off respawn that the fitter cannot
+    # re-place, which is what a guard admitting a load beside training has to hold.
+    reserve_no_flash_respawn: bool = False,
 ) -> _GgufRuntimeBytes:
     """KV-cache and compute-buffer VRAM (bytes) at the larger of max_seq_length and
     any `--ctx-size`/`-c` override, over n_parallel slots at the effective
@@ -10818,6 +10824,20 @@ def _gguf_runtime_bytes(
             architecture = getattr(probe, "_architecture", None),
             env = os.environ,
         )
+        if reserve_no_flash_respawn:
+            # load_model holds the reading down where a flash-attention-off respawn cannot
+            # be re-placed, and the training guard is admitting a load against the worst
+            # this placement can reach rather than what it opens with. Resolving only the
+            # plan admitted it against the smaller cache that the same placement then
+            # reserves the larger one for, so the respawn could take VRAM the guard never
+            # admitted and take a training run with it. The panel keeps the plan: its total
+            # is what the launch uses, and is placement-independent.
+            flash_attn = _reserved_flash_attn_state(
+                flash_attn,
+                llama_extra_args,
+                tensor_parallel = bool(tensor_parallel),
+                env = os.environ,
+            )
         kv = probe._estimate_kv_cache_bytes(
             ctx,
             cache_type_for_budget,
@@ -10954,6 +10974,7 @@ def _estimate_gguf_kv_gb(
         is_diffusion = is_diffusion,
         model_identifier = model_identifier,
         launch_required_ubatch = launch_required_ubatch,
+        reserve_no_flash_respawn = True,
     )
     gpu_kv_bytes = (
         runtime.kv_bytes
