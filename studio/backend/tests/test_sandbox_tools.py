@@ -274,6 +274,20 @@ class TestNetworkTargetResolution:
                 f"import urllib.request as n\nimport requests as n\nn.get('http://{_H}/')",
                 id = "alias_shadowed_by_unrelated_network_call",
             ),
+            # Competing stores for the target may add a prompt, never drop the refusal.
+            pytest.param(
+                f"import requests\nurl = 'http://{_H}/'\nrequests.get(url)\nurl = 'https://huggingface.co/'",
+                id = "url_variable_rebound_after_call",
+            ),
+            pytest.param(
+                f"import socket\nhost = '{_H}'\ns = socket.socket()\ns.connect((host, 22))\nhost = 'huggingface.co'",
+                id = "socket_tuple_host_rebound_after_call",
+            ),
+            pytest.param(
+                f"import urllib.request\nu = 'http://{_H}/'\n"
+                "urllib.request.urlopen(urllib.request.Request(u))\nu = 'https://pypi.org/'",
+                id = "request_url_variable_rebound_after_call",
+            ),
         ],
     )
     def test_known_untrusted_host_blocked(self, code):
@@ -293,6 +307,7 @@ class TestNetworkTargetResolution:
             "from requests import get\nget('https://pypi.org/simple/')",
             "import urllib.request\nreq = urllib.request.Request('https://pypi.org/simple/', headers={})\nurllib.request.urlopen(req)",
             "import requests as r\nr.get('https://huggingface.co/api/models')\nr = object()",
+            "import requests\nurl = 'https://pypi.org/simple/'\nrequests.get(url)\nurl = 'https://huggingface.co/'",
         ],
     )
     def test_known_trusted_host_runs_without_prompt(self, code):
@@ -323,6 +338,7 @@ class TestNetworkTargetResolution:
             "import paramiko\nc0 = paramiko.SSHClient()\n"
             + "".join(f"c{i + 1} = c{i}\n" for i in range(17))
             + "c17.connect(hostname='203.0.113.5')",
+            "import requests\nurl = 'https://pypi.org/simple/'\nrequests.get(url)\nurl = input()",
         ],
     )
     def test_unresolved_host_runs_but_asks_in_auto_mode(self, code):

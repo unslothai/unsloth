@@ -16763,8 +16763,26 @@ def _check_signal_escape_patterns(code: str):
             return text, True
         return None
 
-    def _target_host(expr: ast.AST, kind: str) -> "tuple[bool, str | None]":
-        """Resolve a URL, host string, or (host, port) target to (resolved, host)."""
+    def _target_hosts(
+        expr: ast.AST,
+        kind: str,
+        depth: int = 0,
+    ) -> list:
+        """Resolve a target to one (resolved, host) per store it may hold."""
+        if isinstance(expr, ast.Name) and depth <= 8:
+            values = _name_values(expr)
+            if values and len(values) > 1:
+                stores = [v for v in values if isinstance(v, ast.AST)]
+                if stores:
+                    return [r for v in stores for r in _target_hosts(v, kind, depth + 1)]
+        return _target_host(expr, kind, depth)
+
+    def _target_host(
+        expr: ast.AST,
+        kind: str,
+        depth: int = 0,
+    ) -> list:
+        """Resolve a URL, host string, or (host, port) target to [(resolved, host)]."""
         expr, _seen = _bound_value(expr, frozenset())
         if (
             kind == "url"
@@ -16772,25 +16790,25 @@ def _check_signal_escape_patterns(code: str):
             and _resolved_fq(expr.func) == "urllib.request.Request"
         ):
             # urlopen(Request(url, headers=...)) connects to the Request's URL.
-            present, expr = _call_target(expr, 0, "url")
-            if not present or expr is None:
-                return False, None
-            expr, _seen = _bound_value(expr, frozenset())
+            present, inner = _call_target(expr, 0, "url")
+            if not present or inner is None:
+                return [(False, None)]
+            return _target_hosts(inner, "url", depth + 1)
         if isinstance(expr, (ast.Tuple, ast.List)):
             if not expr.elts:
-                return True, None
-            expr, kind = expr.elts[0], "host"
+                return [(True, None)]
+            return _target_hosts(expr.elts[0], "host", depth + 1)
         prefix = _static_prefix(expr)
         if prefix is None:
-            return False, None
+            return [(False, None)]
         text, complete = prefix
         if kind == "url":
             # A partial URL resolves only once its authority is closed off by a path, query or fragment.
             m = re.match(r"^\w+://([^/?#]+)" if complete else r"^\w+://([^/?#]+)[/?#]", text)
             if m:
-                return True, m.group(1)
-            return (True, None) if complete else (False, None)
-        return (True, text) if complete else (False, None)
+                return [(True, m.group(1))]
+            return [(True, None)] if complete else [(False, None)]
+        return [(True, text)] if complete else [(False, None)]
 
     def _call_target(node: ast.Call, position: int, keyword: str) -> "tuple[bool, ast.AST | None]":
         """Return the target argument; splats yield (True, None)."""
@@ -16869,12 +16887,20 @@ def _check_signal_escape_patterns(code: str):
         ) -> None:
             if not present:
                 return
-            resolved, host = (False, None) if expr is None else _target_host(expr, kind)
-            if host and refuse:
-                self._check_host(node, host)
-            elif (not resolved and connects) or (
-                host and (_is_metadata_host(host) or not _is_trusted_host(host))
-            ):
+            results = [(False, None)] if expr is None else _target_hosts(expr, kind)
+            # Competing stores may only add a prompt, never drop a refusal, so a host that is out
+            # of policy on any of them decides the call.
+            blocked = next(
+                (
+                    h
+                    for _resolved, h in results
+                    if h and (_is_metadata_host(h) or not _is_trusted_host(h))
+                ),
+                None,
+            )
+            if blocked and refuse:
+                self._check_host(node, blocked)
+            elif blocked or (connects and not all(resolved for resolved, _h in results)):
                 unresolved_network_calls.append(
                     {
                         "type": "unresolved_network_host",
