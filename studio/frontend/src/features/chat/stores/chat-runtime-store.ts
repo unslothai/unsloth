@@ -6,6 +6,8 @@ import {
   mirrorHfTokenInto,
   useHfTokenStore,
 } from "@/features/hub/stores/hf-token-store";
+// eslint-disable-next-line no-restricted-imports -- Leaf module; the model-picker index pulls in chat.
+import { pinnedReasoningEffort } from "@/features/model-picker/components/model-selector/model-reasoning-effort";
 import { loadedContextFields } from "@/features/model-picker/model-config/per-model-config";
 import {
   cachedPinnableGpuIndexKind,
@@ -917,6 +919,28 @@ function keepsStoredValueUnderConstraint(
   );
 }
 
+/** Whether a per-model pin currently owns the live `reasoningEffort`. The pin is written into the
+ *  store so the composer shows it, but it belongs to the model, not to the chat. */
+function pinOwnsLiveReasoningEffort(state: ChatRuntimeStore): boolean {
+  return (
+    pinnedReasoningEffort(
+      state.params.checkpoint,
+      state.reasoningEffortLevels,
+    ) !== null
+  );
+}
+
+/** The chat's own effort while a pin hides it: what the chat is on record as running with, so a
+ *  snapshot taken under a pin stores the chat's level and not the model's. */
+function reasoningEffortOnRecord(): ReasoningEffort | undefined {
+  return (
+    activeThreadScopedSettings?.reasoningEffort ??
+    globalThreadScopedDefaults?.reasoningEffort ??
+    effortDisplacedByPin ??
+    undefined
+  );
+}
+
 // The pills chat-page clamps to the selected model's capabilities.
 const CLAMPED_PILL_KEYS = [
   "toolsEnabled",
@@ -1081,6 +1105,17 @@ function buildThreadScopedSnapshot(
     useChatRuntimeStore.getState().reasoningAlwaysOn
   ) {
     settings.reasoningEnabled = false;
+  }
+  // And for the effort, which a per-model pin overwrites in the live store: that level is the
+  // model's, so persisting it would turn a pin into the chat's own effort and clearing the pin
+  // afterwards could not undo it. The chat keeps the level it is on record with.
+  if (
+    threadId === threadScopedSettingsThreadId &&
+    !explicitlyEditedThreadFields.has("reasoningEffort") &&
+    pinOwnsLiveReasoningEffort(useChatRuntimeStore.getState())
+  ) {
+    const onRecord = reasoningEffortOnRecord();
+    if (onRecord !== undefined) settings.reasoningEffort = onRecord;
   }
   // Same for every pill the model-selection pass clamps off without touching the snapshot:
   // each pill's own capability rule is exactly when the user could not have done it.
@@ -3446,11 +3481,17 @@ export function noteEffortDisplacedByPin(current: ReasoningEffort): void {
   effortDisplacedByPin ??= current;
 }
 
-/** The level to resolve from when a pin is cleared, or null when none was recorded. */
+/** The level to resolve from when a pin is cleared, or null when neither source has one. The
+ *  chat's own level first: the snapshot keeps it because buildThreadScopedSnapshot holds the pin
+ *  back, so it survives a reload and a thread switch, which the in-memory record does not. */
 export function takeEffortDisplacedByPin(): ReasoningEffort | null {
   const displaced = effortDisplacedByPin;
   effortDisplacedByPin = null;
-  return displaced;
+  return (
+    activeThreadScopedSettings?.reasoningEffort ??
+    globalThreadScopedDefaults?.reasoningEffort ??
+    displaced
+  );
 }
 
 function installationReasoningEnabled(state: ChatRuntimeStore): boolean {
@@ -4802,6 +4843,14 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           }
           hydratedDefaultsByHeldField.delete(field);
         }
+        // Same reason as the snapshot: a pin applied before the first chat opened is in the live
+        // effort, and capturing it here would make one model's level the default every
+        // snapshot-less chat follows.
+        if (pinOwnsLiveReasoningEffort(state)) {
+          const onRecord = reasoningEffortOnRecord();
+          if (onRecord === undefined) delete captured.reasoningEffort;
+          else captured.reasoningEffort = onRecord;
+        }
         globalThreadScopedDefaults = captured as ThreadScopedSettings;
       }
       threadScopedSettingsThreadId = threadId;
@@ -4849,6 +4898,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         );
         if (value === undefined) continue;
         applied[key] = value;
+        // The pin outranks the chat for as long as its model is selected, so the incoming level
+        // stays the chat's on record, recorded just above, but must not land in the store over
+        // the pin. Same shape as the "full" case: recorded, not applied.
+        if (key === "reasoningEffort" && pinOwnsLiveReasoningEffort(state)) {
+          continue;
+        }
         if (isSameThreadScopedValue(value, readThreadScopedValue(state, key))) {
           continue;
         }

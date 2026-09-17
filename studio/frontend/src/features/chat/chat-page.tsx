@@ -184,6 +184,7 @@ import {
   getTrainingCompareHandoff,
 } from "./lib/training-compare-handoff";
 import {
+  type ExternalReasoningCapabilities,
   getExternalReasoningCapabilities,
   getProviderCapabilities,
   modelCatalogVersion,
@@ -276,6 +277,42 @@ const EXTERNAL_PROVIDER_DROPDOWN_ORDER: Record<string, number> = {
 
 function getExternalProviderDropdownRank(providerType: string): number {
   return EXTERNAL_PROVIDER_DROPDOWN_ORDER[providerType] ?? 2;
+}
+
+/**
+ * Puts the selected model's pinned effort back in force in the live store. Called from every
+ * trigger that can dislodge it: the pin changing in another tab, and a catalogue refresh, which
+ * changes which levels the same stored pin is legal against and so can make a pin that was
+ * ignored at selection time the valid one.
+ */
+function reconcilePinnedReasoningEffort(opts: {
+  checkpoint: string;
+  caps: ExternalReasoningCapabilities;
+  providerType: string | null | undefined;
+  /** Whether no pin means the user just cleared one, in which case the chat's own level comes
+   *  back. A catalogue refresh cannot tell a cleared pin from one it never had, so it says no. */
+  clearsToChatEffort: boolean;
+}): void {
+  const live = useChatRuntimeStore.getState().reasoningEffort;
+  const pinned = pinnedReasoningEffort(
+    opts.checkpoint,
+    opts.caps.reasoningEffortLevels,
+  );
+  if (!pinned && !opts.clearsToChatEffort) return;
+  const next = resolveExternalReasoningEffort({
+    caps: opts.caps,
+    providerType: opts.providerType,
+    current: pinned ? live : (takeEffortDisplacedByPin() ?? live),
+    pinned,
+  });
+  if (pinned && next !== live) noteEffortDisplacedByPin(live);
+  if (next === live) return;
+  // The epoch too: a prompt waiting on startup captured the old level, and this is what tells it
+  // the settings it captured are no longer current.
+  useChatRuntimeStore.setState((state) => ({
+    reasoningEffort: next,
+    queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+  }));
 }
 
 function normalizeModelRef(value: string | null | undefined): string {
@@ -2679,24 +2716,13 @@ export function ChatPage({
         baseUrl: provider?.baseUrl ?? null,
       },
     );
-    const live = useChatRuntimeStore.getState().reasoningEffort;
-    const pinned = pinnedReasoningEffort(
-      inferenceParams.checkpoint,
-      caps.reasoningEffortLevels,
-    );
-    const next = resolveExternalReasoningEffort({
+    // This guard fires on the stored pin changing, so no pin here means it was cleared.
+    reconcilePinnedReasoningEffort({
+      checkpoint: inferenceParams.checkpoint,
       caps,
       providerType: provider?.providerType,
-      current: pinned ? live : (takeEffortDisplacedByPin() ?? live),
-      pinned,
+      clearsToChatEffort: true,
     });
-    if (pinned && next !== live) noteEffortDisplacedByPin(live);
-    // The epoch too: a prompt waiting on startup captured the old level, and this is what tells
-    // it the settings it captured are no longer current.
-    useChatRuntimeStore.setState((state) => ({
-      reasoningEffort: next,
-      queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
-    }));
   }, [activePinnedEffort, externalProvidersForChat, inferenceParams.checkpoint]);
   // A catalog that lands after selection refreshes only the stored reasoning fields (the effort shortcut reads them),
   // never the selection defaults above, so a chosen effort and the pills survive the refresh.
@@ -2725,6 +2751,14 @@ export function ChatPage({
     useChatRuntimeStore.setState(
       reasoningFieldsAfterCatalogRefresh(useChatRuntimeStore.getState(), caps),
     );
+    // After the levels, not before: a pin is only applied while the catalogue calls it legal, so
+    // the refresh that publishes the level is what puts the model's own pin in force.
+    reconcilePinnedReasoningEffort({
+      checkpoint: inferenceParams.checkpoint,
+      caps,
+      providerType: provider?.providerType,
+      clearsToChatEffort: false,
+    });
   }, [modelCatalogChange, inferenceParams.checkpoint]);
   const canCompare = useMemo(() => {
     return Boolean(inferenceParams.checkpoint) && !isExternalModel;

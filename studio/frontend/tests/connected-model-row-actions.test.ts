@@ -307,6 +307,23 @@ test("per-model prompt and cap reuse the memory Chat already keeps", () => {
     chatPage,
     /useChatRuntimeStore\.setState\(\(state\) => \(\{\s*reasoningEffort: next,\s*queuedSettingsEpoch: state\.queuedSettingsEpoch \+ 1,/,
   );
+  // One reconciler for every trigger that can dislodge the pin, the catalogue included: a refresh
+  // decides which levels a stored pin is legal against, so it can make an ignored pin the valid
+  // one, and the pin effect's own guard sees no change in the stored string.
+  assert.match(
+    chatPage,
+    /reconcilePinnedReasoningEffort\(\{\s*checkpoint: inferenceParams\.checkpoint,\s*caps,\s*providerType: provider\?\.providerType,\s*clearsToChatEffort: true,/,
+  );
+  assert.match(
+    chatPage,
+    /reasoningFieldsAfterCatalogRefresh\(useChatRuntimeStore\.getState\(\), caps\),\s*\);[\s\S]{0,220}?reconcilePinnedReasoningEffort\(\{[\s\S]{0,160}?clearsToChatEffort: false,/,
+  );
+  // A refresh cannot tell a cleared pin from one it never had, so only the pin effect, whose
+  // guard fires on the stored string changing, restores the chat's own level.
+  assert.match(
+    chatPage,
+    /if \(!pinned && !opts\.clearsToChatEffort\) return;/,
+  );
   // Blank or junk is an absence, not a zero the request would then send as the cap.
   assert.match(
     settingsDialog,
@@ -406,6 +423,29 @@ test("editing the live model's effort reaches the chat now", () => {
   assert.match(
     store,
     /own level, so whatever a pin displaced before is history\.\s*effortDisplacedByPin = null;/,
+  );
+  // reasoningEffort is a thread-scoped key, so a snapshot taken while a pin is in force would
+  // store the model's level as the chat's own and clearing the pin could not undo it.
+  assert.match(
+    store,
+    /!explicitlyEditedThreadFields\.has\("reasoningEffort"\) &&\s*pinOwnsLiveReasoningEffort\(useChatRuntimeStore\.getState\(\)\)\s*\) \{\s*const onRecord = reasoningEffortOnRecord\(\);\s*if \(onRecord !== undefined\) settings\.reasoningEffort = onRecord;/,
+  );
+  // Same for the capture that becomes every snapshot-less chat's default.
+  assert.match(
+    store,
+    /if \(pinOwnsLiveReasoningEffort\(state\)\) \{\s*const onRecord = reasoningEffortOnRecord\(\);\s*if \(onRecord === undefined\) delete captured\.reasoningEffort;\s*else captured\.reasoningEffort = onRecord;/,
+  );
+  // And a thread snapshot being applied records its level without putting it over the pin, which
+  // outranks the chat for as long as its model is selected.
+  assert.match(
+    store,
+    /applied\[key\] = value;[\s\S]{0,400}?if \(key === "reasoningEffort" && pinOwnsLiveReasoningEffort\(state\)\) \{\s*continue;/,
+  );
+  // With the snapshot pin-free, clearing resolves from the chat's own recorded level first: that
+  // one survives a reload and a thread switch, which the in-memory record does not.
+  assert.match(
+    store,
+    /export function takeEffortDisplacedByPin\(\)[\s\S]{0,320}?return \(\s*activeThreadScopedSettings\?\.reasoningEffort \?\?\s*globalThreadScopedDefaults\?\.reasoningEffort \?\?\s*displaced\s*\);/,
   );
   // setState, not the action: setReasoningEffort persists the value through
   // setScalarSettingVersion as the chat-wide preference, which is the setting a per-model pin
