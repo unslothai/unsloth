@@ -199,6 +199,7 @@ def _earliest_tool_signal(
     *,
     unrestricted: bool = False,
     start: int = 0,
+    streaming: bool = False,
 ) -> int:
     """Index where the turn's first genuine tool-call boundary begins, or -1.
 
@@ -243,6 +244,7 @@ def _earliest_tool_signal(
             None if unrestricted else (lambda: _active_tool_names(active_tools)),
             start,
             floor = floor,
+            streaming = streaming,
         )
         if gemma >= floor and (best < 0 or gemma < best):
             best = gemma
@@ -905,6 +907,7 @@ def run_safetensors_tool_loop(
                     _detect_tools,
                     unrestricted = unrestricted_tools,
                     start = max(0, _tool_signal_scanned_upto - _TOOL_SIGNAL_OVERLAP),
+                    streaming = True,
                 )
                 if signal_pos >= 0:
                     before_tool = candidate[:signal_pos]

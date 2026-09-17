@@ -254,9 +254,15 @@ def test_confined_child_keeps_interpreter_and_system_tools(tmp_path):
 
 
 @pytest.mark.skipif(not LANDLOCK, reason = "Landlock not available on this kernel")
-def test_owner_child_remains_unconfined(tmp_path):
+def test_owner_bypass_remains_unconfined(tmp_path):
     files = _seed(tmp_path)
-    out = run_as(OWNER, tools._bash_exec, f"cat {files['alice']}", session_id = "chat")
+    out = run_as(
+        OWNER,
+        tools._bash_exec,
+        f"cat {files['alice']}",
+        session_id = "chat",
+        disable_sandbox = True,
+    )
     assert "ALICE_PRIVATE" in out
 
 
@@ -369,14 +375,32 @@ def test_install_under_a_granted_root_stays_hidden(tmp_path, monkeypatch):
         auth = home / "auth" / "auth.db"
         auth.parent.mkdir(parents = True, exist_ok = True)
         auth.write_text("OWNER_AUTH_DB", encoding = "utf-8")
-        out = run_as(
+        # Three separate claims, run as three separate commands. They used to share one
+        # command line, and once the credential pre-flight in tools.py learned to refuse a
+        # command that NAMES the auth database, that one line was refused whole: the reach
+        # probes passed because nothing ran at all, and the usability probe could not run
+        # either. Split, each claim is answered by the layer that actually owns it.
+        reach = run_as(
             BOB,
             tools._bash_exec,
-            f"cat {auth}; echo rc=$?; ls {home}; echo ls_rc=$?; python -c 'import sys; print(sys.prefix)'",
+            f"cat {auth}; echo rc=$?",
             session_id = "chat",
         )
-        assert "OWNER_AUTH_DB" not in out and "rc=0" not in out and "ls_rc=0" not in out, out
-        assert sys.prefix in out, out
+        assert "OWNER_AUTH_DB" not in reach and "rc=0" not in reach, reach
+
+        listing = run_as(BOB, tools._bash_exec, f"ls {home}; echo ls_rc=$?", session_id = "chat")
+        assert "OWNER_AUTH_DB" not in listing and "ls_rc=0" not in listing, listing
+
+        # Names no part of the auth path, so nothing short-circuits it: this is the half
+        # that says the rest of the granted root is still usable, which is the whole point
+        # of hiding one directory inside it rather than revoking the root.
+        usable = run_as(
+            BOB,
+            tools._bash_exec,
+            "python -c 'import sys; print(sys.prefix)'",
+            session_id = "chat",
+        )
+        assert sys.prefix in usable, usable
         rules = run_as(BOB, tool_confinement._landlock_rules, 3, tools._SANDBOX_SITE_DIR)
         assert all(not tool_confinement._contains(p, str(home.resolve())) for p, _ in rules)
     finally:

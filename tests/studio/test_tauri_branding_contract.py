@@ -185,6 +185,8 @@ def test_desktop_release_asset_names_are_human_readable() -> None:
         "Ubuntu.deb",
         "Windows.exe",
         "Windows.exe.sig",
+        "Windows-ARM64.exe",
+        "Windows-ARM64.exe.sig",
     }
     for suffix in expected_suffixes:
         assert f"f'{{base_name}}-{suffix}'" in workflow
@@ -194,6 +196,7 @@ def test_desktop_release_asset_names_are_human_readable() -> None:
         "Unsloth-Desktop-Linux.AppImage",
         "Unsloth-Desktop-Ubuntu.deb",
         "Unsloth-Desktop-Windows.exe",
+        "Unsloth-Desktop-Windows-ARM64.exe",
     ):
         assert name in workflow
 
