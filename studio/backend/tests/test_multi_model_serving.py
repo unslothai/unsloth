@@ -19,15 +19,11 @@ class FakeLlama:
     def __init__(self, identifier = None, variant = None):
         self.model_identifier = identifier
         self.hf_variant = variant
-        self.is_loaded = identifier is not None
+        self.is_loaded = self.is_active = identifier is not None
         self.context_length = 4096
 
-    @property
-    def is_active(self):
-        return self.is_loaded
-
     def unload_model(self):
-        self.is_loaded = False
+        self.is_loaded = self.is_active = False
 
     def _cleanup(self):
         pass
@@ -39,7 +35,7 @@ class FakeOrchestrator:
         self.models = {active: {}} if active else {}
 
     def _cleanup(self):
-        self.active_model_name = None
+        pass
 
 
 @pytest.fixture
@@ -117,7 +113,7 @@ def test_plain_load_replaces_the_primary(backends, monkeypatch):
 
 def test_alongside_load_uses_an_empty_primary(backends, monkeypatch):
     primary, _ = backends
-    primary.is_loaded = False
+    primary.unload_model()
     assert _selected(monkeypatch, LoadRequest(model_path = "org/C-GGUF", alongside = True)) is None
 
 
@@ -161,3 +157,51 @@ def test_status_describes_the_named_slot_and_lists_the_rest(backends, monkeypatc
     assert (named.active_model, named.loaded) == ("org/B-GGUF", ["org/A-GGUF"])
     primary = asyncio.run(inf.get_status("s"))
     assert (primary.active_model, primary.loaded) == ("org/A-GGUF", ["org/B-GGUF"])
+
+
+def test_stop_loading_reaches_the_slot_being_filled(backends, monkeypatch):
+    primary, _ = backends
+    filling = inf._ExtraSlot(FakeLlama(), FakeOrchestrator(), "owner")
+    filling.llama.model_identifier = "org/D-GGUF"
+    filling.llama.is_active = True
+    inf._extra_slots.append(filling)
+    monkeypatch.setattr(inf, "_loading_slot", (filling, "org/D-GGUF"))
+    response = asyncio.run(inf._unload_model_impl(UnloadRequest(model_path = "org/D-GGUF"), "s"))
+    assert response.status == "unloaded"
+    assert primary.is_loaded and not filling.llama.is_active
+
+
+def test_the_primary_wins_a_bare_name_both_serve(backends):
+    primary, _ = backends
+    inf._extra_slots.append(inf._ExtraSlot(FakeLlama("org/A-GGUF", "Q8_0"), FakeOrchestrator(), "owner"))
+    assert _routed("org/A-GGUF") == (None, primary)
+    assert _routed("org/A-GGUF:Q8_0")[0] is inf._extra_slots[-1]
+
+
+def test_another_account_cannot_stop_a_slot_load(backends, monkeypatch):
+    primary, _ = backends
+    filling = inf._ExtraSlot(FakeLlama(), FakeOrchestrator(), "owner")
+    inf._extra_slots.append(filling)
+    monkeypatch.setattr(inf, "_loading_slot", (filling, "org/D-GGUF"))
+    monkeypatch.setattr(inf.account_access, "managed_account", lambda: True)
+    monkeypatch.setattr(inf, "current_account_id", lambda: "someone-else")
+    assert inf._visible_loading_slot() is None
+
+
+def test_a_slot_evicted_while_it_loads_is_torn_down(backends, monkeypatch):
+    monkeypatch.setattr(inf, "LlamaCppBackend", FakeLlama)
+    monkeypatch.setattr(inf, "InferenceOrchestrator", FakeOrchestrator)
+    monkeypatch.setattr(inf, "_raise_if_sidecar_swap_in_progress", lambda: None)
+    spawned = []
+
+    async def load_after_eviction(request, *args, **kwargs):
+        slot = inf._extra_slots[-1]
+        inf.unload_extra_models()
+        slot.llama.is_loaded = slot.llama.is_active = True
+        spawned.append(slot)
+        return "loaded"
+
+    monkeypatch.setattr(inf, "_run_tracked_load_model_impl", load_after_eviction)
+    request = LoadRequest(model_path = "org/C-GGUF", alongside = True)
+    assert asyncio.run(inf.load_model_gated(request, None, "s")) == "loaded"
+    assert inf._extra_slots == [] and not spawned[0].llama.is_active

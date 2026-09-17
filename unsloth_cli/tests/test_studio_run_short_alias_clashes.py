@@ -515,3 +515,27 @@ def test_consume_helper_allows_short_dash_value():
     value, remaining = helper(["-m", "-foo", "--top-k", "20"], ("-m",), None, "--model")
     assert value == "-foo"
     assert remaining == ["--top-k", "20"]
+
+
+def test_also_reaches_the_child_through_the_environment(monkeypatch):
+    """An older re-exec target would hand an unknown `--also` to llama-server."""
+    studio_mod = _studio_mod()
+    captured = _install_capture(monkeypatch)
+    seen = []
+
+    def fake_execvp(file, argv):
+        seen.append(studio_mod.os.environ.get(studio_mod._RUN_ALSO_ENV))
+        captured.append(list(argv))
+        raise _ExecCaptured(argv)
+
+    monkeypatch.setattr(studio_mod.os, "execvp", fake_execvp)
+    import typer as _typer
+
+    app = _typer.Typer()
+    app.command(context_settings = {"allow_extra_args": True, "ignore_unknown_options": True})(
+        studio_mod.run
+    )
+    CliRunner().invoke(app, ["--model", "org/A", "--also", "org/B:Q8_0", "--also", "org/C"])
+    assert seen == ['["org/B:Q8_0", "org/C"]']
+    assert "--also" not in captured[0] and "org/C" not in captured[0]
+    assert studio_mod._RUN_ALSO_ENV not in studio_mod.os.environ

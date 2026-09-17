@@ -809,7 +809,8 @@ export function useChatModelRuntime() {
     setLoadingModel(null);
     setLoadProgress(null);
     setLoadToastDismissedState(false);
-    clearCheckpoint();
+    // Kept models are still loaded, so the selection the load started from still stands.
+    if (!useChatRuntimeStore.getState().keepModelsLoaded) clearCheckpoint();
     if (tid != null) toast.dismiss(tid);
     const isCachedOrLocal = model.isDownloaded || model.isCachedLora;
     toast.info("Stopped loading model", {
@@ -1131,10 +1132,22 @@ export function useChatModelRuntime() {
       let stopDecision: Awaited<
         ReturnType<typeof confirmStopRunningChatsIfNeeded>
       >;
+      const keepModelsLoaded = useChatRuntimeStore.getState().keepModelsLoaded;
       try {
-        stopDecision = await confirmStopRunningChatsIfNeeded(
-          forceReload ? "Applying these settings" : "Loading a different model",
-        );
+        // A load next to the loaded models replaces nothing, so no running chat is in its way.
+        stopDecision =
+          keepModelsLoaded && !forceReload
+            ? {
+                proceed: true,
+                forceCancelActive: false,
+                promptQueueThreadIds: [],
+                preStreamRunTokens: [],
+              }
+            : await confirmStopRunningChatsIfNeeded(
+                forceReload
+                  ? "Applying these settings"
+                  : "Loading a different model",
+              );
       } catch (error) {
         releasePreflightLifecycleLease();
         throw error;
@@ -1642,7 +1655,6 @@ export function useChatModelRuntime() {
 
             cancelPreStreamRunReservations(stopDecision.preStreamRunTokens);
             requestLocalPromptQueueStop(stopDecision.promptQueueThreadIds);
-            const keepModelsLoaded = useChatRuntimeStore.getState().keepModelsLoaded;
             if (currentCheckpoint && !keepModelsLoaded) {
               // With chats generating, skip this preliminary unload: it cancels them ahead of /load's
               // preflight, so a rejected target truncates replies for a model that never loads. Idle,
