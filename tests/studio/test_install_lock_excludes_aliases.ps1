@@ -510,6 +510,84 @@ try {
         $lockFn -match 'Write-StudioRootOwnerMarker -Root \$Path')
     Check "and does not write the marker itself" (
         $lockFn -notmatch 'WriteAllText\([^)]*\.unsloth-studio-owned')
+
+    # A detected link that will not go must STOP the install.
+    #
+    # The removal sat under an empty catch, so on a root where the link can be inspected but not
+    # deleted the run carried on into File.Open, which follows it. A zero-byte target then also
+    # passed the length check, and the installer held an unrelated file with FileShare.None for
+    # the whole install: the exact denial of service the removal exists to prevent, reached
+    # through the code meant to prevent it. Driven by making the removal fail.
+    $undeletableRoot = Join-Path $tmp "undeletable-link-root"
+    New-Item -ItemType Directory -Force -Path $undeletableRoot | Out-Null
+    $linkVictim = Join-Path $tmp "link-victim-empty.txt"
+    [System.IO.File]::WriteAllText($linkVictim, "")
+    $undeletableLock = Join-Path $undeletableRoot $lockFileName
+    $madeUndeletable = $false
+    try {
+        New-Item -ItemType SymbolicLink -Path $undeletableLock -Target $linkVictim -ErrorAction Stop | Out-Null
+        $madeUndeletable = $true
+    } catch {}
+    if (-not $madeUndeletable) {
+        Write-Host "  SKIP  cannot create a symbolic link on this host" -ForegroundColor Yellow
+    } else {
+        # Remove-Item is what the lock calls; make it refuse for this one path only, which is what
+        # an ACL that permits inspection but not deletion looks like from in here.
+        $savedRemove = ${function:Remove-Item}
+        function Remove-Item {
+            param(
+                [Parameter(ValueFromPipeline = $true)]$InputObject,
+                [string]$LiteralPath, [string]$Path, [switch]$Force, [switch]$Recurse,
+                [string]$ErrorAction
+            )
+            if ($LiteralPath -and $LiteralPath.EndsWith($script:StudioInstallLockFileName)) {
+                throw [System.UnauthorizedAccessException]::new("access denied by test")
+            }
+        }
+        $linkThrew = $false
+        $linkResult = "unset"
+        try { $linkResult = Enter-StudioInstallLock -Path $undeletableRoot } catch { $linkThrew = $true }
+        ${function:Remove-Item} = $savedRemove
+        Check "an undeletable link at the lock path fails the install" (
+            $linkThrew -eq $true -and $linkResult -eq "unset")
+        Check "control: it did not quietly report a busy lock instead" ($linkResult -ne $null -or $linkThrew)
+        Check "and the link's target was never held or replaced" (
+            (Get-Item -LiteralPath $undeletableLock -Force).Target -eq $linkVictim)
+    }
+
+    # A rename that fails for a reason other than contention must surface, not be reported as
+    # another installer. A read-only directory, an ACL, a policy block or a storage fault are none
+    # of them, and calling any of those "already running" sends the user hunting for an installer
+    # that does not exist.
+    $mvRoot = Join-Path $tmp "unmovable-lock-root"
+    New-Item -ItemType Directory -Force -Path $mvRoot | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $mvRoot $lockFileName), "not empty")
+    $savedMove = ${function:Move-Item}
+    function Move-Item {
+        param([string]$LiteralPath, [string]$Destination, [switch]$Force, [string]$ErrorAction)
+        throw [System.UnauthorizedAccessException]::new("rename denied by test")
+    }
+    $mvThrew = $false
+    $mvResult = "unset"
+    try { $mvResult = Enter-StudioInstallLock -Path $mvRoot } catch { $mvThrew = $true }
+    ${function:Move-Item} = $savedMove
+    Check "a rename denied by permissions is surfaced, not called a busy lock" (
+        $mvThrew -eq $true -and $mvResult -eq "unset")
+
+    # Bites control: a rename that fails with a SHARING violation is still the busy path, so the
+    # check above is about the error class and not about every failure now throwing.
+    [System.IO.File]::WriteAllText((Join-Path $mvRoot $lockFileName), "not empty")
+    function Move-Item {
+        param([string]$LiteralPath, [string]$Destination, [switch]$Force, [string]$ErrorAction)
+        # The two-argument constructor sets HResult; the field is not settable from here.
+        throw [System.IO.IOException]::new("sharing violation", 32)
+    }
+    $busyThrew = $false
+    $busyResult = "unset"
+    try { $busyResult = Enter-StudioInstallLock -Path $mvRoot } catch { $busyThrew = $true }
+    ${function:Move-Item} = $savedMove
+    Check "control: a sharing violation on the rename still reports a busy lock" (
+        $busyThrew -eq $false -and $null -eq $busyResult)
 } finally {
     Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }

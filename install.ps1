@@ -5277,13 +5277,30 @@ exit 0
             # Remove the link itself, never its target, then let the open below create a real
             # file. Get-Item -Force rather than Test-Path, which follows a dangling link and
             # answers false; Write-StudioRootOwnerMarker guards the same hazard the same way.
+            $existingLock = $null
             try {
                 $existingLock = Get-Item -LiteralPath $lockPath -Force -ErrorAction SilentlyContinue
-                if ($existingLock -and
-                    ($existingLock.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            } catch { $existingLock = $null }
+            if ($existingLock -and
+                ($existingLock.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                # A detected link that will NOT go must stop the install, not be shrugged off.
+                #
+                # The removal used to sit under an empty catch, so on a root where the link can be
+                # inspected but not deleted the run carried straight on into File.Open, which
+                # follows it. If the target happened to be zero bytes it also passed the length
+                # check below, and the installer then held an unrelated file with FileShare.None
+                # for the whole install: precisely the denial of service this removal exists to
+                # prevent, reached by the path meant to prevent it.
+                #
+                # The throw is caught by the outer handler, which drops the mutex and rethrows, so
+                # the caller reports a lock-creation failure rather than a phantom second
+                # installer.
+                try {
                     Remove-Item -LiteralPath $lockPath -Force -ErrorAction Stop
+                } catch {
+                    throw "A link is planted at the install lock path $lockPath and cannot be removed."
                 }
-            } catch {}
+            }
             # The attributes check above cannot see a HARD link. A hard link is a second
             # directory entry for an existing file, not a reparse point, so it carries no
             # attribute to test and File.Open follows it just the same: the target would be held
@@ -5364,9 +5381,25 @@ exit 0
                 try {
                     Move-Item -LiteralPath $lockPath -Destination $displaced -Force -ErrorAction Stop
                 } catch {
-                    # Another process holding the entry with FileShare.None is what makes this
-                    # fail, so this is "busy", not a fault to swallow and carry on from.
+                    # Only a sharing or lock violation means "another installer holds it". A
+                    # read-only directory, an ACL that forbids renaming, a policy block or a
+                    # storage fault are none of those, and reporting them as a concurrent install
+                    # sends the user hunting for a second installer that does not exist. Same
+                    # discrimination, and the same Win32 and errno codes, as the open below.
+                    #
+                    # The code is dug out of the exception chain because a cmdlet failure arrives
+                    # wrapped: the IOException that carries the HResult is not always the outermost.
+                    $mvCode = 0
+                    $mvEx = $_.Exception
+                    while ($mvEx) {
+                        if ($mvEx -is [System.IO.IOException]) {
+                            $mvCode = $mvEx.HResult -band 0xFFFF
+                            break
+                        }
+                        $mvEx = $mvEx.InnerException
+                    }
                     Exit-StudioInstallMutex -Mutex $mutex
+                    if ($mvCode -ne 32 -and $mvCode -ne 33 -and $mvCode -ne 11) { throw }
                     return $null
                 }
                 $repaired = $true
