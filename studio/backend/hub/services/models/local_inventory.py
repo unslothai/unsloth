@@ -584,8 +584,17 @@ def _inventory_physical_identity(raw_path: str) -> str:
 
 
 def _local_model_path_is_symlink(raw_path: str) -> bool:
+    """True when the inventory path is a symlink or lives under a symlinked directory."""
     try:
-        return Path(raw_path).is_symlink()
+        path = Path(raw_path)
+        if path.is_symlink():
+            return True
+        for parent in path.parents:
+            if parent.is_symlink():
+                return True
+            if parent == parent.parent:
+                break
+        return False
     except OSError:
         return False
 
