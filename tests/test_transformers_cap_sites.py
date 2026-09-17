@@ -178,8 +178,11 @@ def test_the_declared_zoo_floor_can_supply_the_declared_transformers_window() ->
             f"whose own transformers cap is {ZOO_TRANSFORMERS_CEILING_BEFORE_THE_LIFT}"
         )
         floors[str(req)] = max(lower)
-    stale = {raw: str(floor) for raw, floor in floors.items()
-             if floor < ZOO_FLOOR_WITH_LIFTED_TRANSFORMERS_CAP}
+    stale = {
+        raw: str(floor)
+        for raw, floor in floors.items()
+        if floor < ZOO_FLOOR_WITH_LIFTED_TRANSFORMERS_CAP
+    }
     assert not stale, (
         f"pyproject.toml admits transformers up to {ceiling} while still accepting "
         f"unsloth_zoo {stale}. pip intersects the two requirements, so users would "
