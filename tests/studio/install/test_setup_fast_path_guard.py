@@ -486,13 +486,17 @@ def test_the_installer_reads_uv_offline_the_same_way_the_shell_does(tmp_path, mo
     )
 
     stack = (REPO_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
-    node = next(
-        n
-        for n in _ast.parse(stack).body
-        if isinstance(n, _ast.FunctionDef) and n.name == "_uv_is_offline"
-    )
+    # `_uv_is_offline` is one caller of `_uv_env_flag`, which is where the boolish set
+    # actually lives, so both are lifted. Naming the callee here rather than lifting the
+    # whole module keeps the test reading the real source instead of an import with side
+    # effects, and a callee that goes missing is a NameError, not a wrong answer.
+    wanted = ("_uv_env_flag", "_uv_is_offline")
+    nodes = [
+        n for n in _ast.parse(stack).body if isinstance(n, _ast.FunctionDef) and n.name in wanted
+    ]
+    assert {n.name for n in nodes} == set(wanted), sorted(n.name for n in nodes)
     namespace: dict = {"os": os}
-    exec(compile(_ast.Module(body = [node], type_ignores = []), "<stack>", "exec"), namespace)
+    exec(compile(_ast.Module(body = nodes, type_ignores = []), "<stack>", "exec"), namespace)
 
     for value in (
         "1",
