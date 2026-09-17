@@ -37411,7 +37411,14 @@ async def diffusion_download_plan(
         # Plan for the engine /images/load will pick, not diffusers unconditionally: a GGUF on a GPU-less host routes to native
         # sd.cpp, which reads different files. predict_engine applies the policy without activating anything.
         planner = backend
-        if fam is not None and predict_engine(fam, model_kind = kind) == ENGINE_SD_CPP:
+        # The SAME card /images/load will select: the accelerator failure records are card-scoped, so
+        # predicting host-wide here can stage diffusers files for a load that goes native on a card
+        # that works.
+        plan_ordinal = await _selected_gpu_ordinal(getattr(request, "gpu_ids", None))
+        if (
+            fam is not None
+            and predict_engine(fam, model_kind = kind, gpu_ordinal = plan_ordinal) == ENGINE_SD_CPP
+        ):
             from core.inference.sd_cpp_backend import get_sd_cpp_backend
             planner = get_sd_cpp_backend()
         # BEFORE the plan is handed back and staged. The load route refuses a precision this

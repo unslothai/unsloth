@@ -2748,3 +2748,46 @@ def test_an_ensure_that_hands_back_the_failed_build_is_not_a_working_fallback(
     # The point of the test: NOTHING is persisted. Before the class check, this same run recorded
     # rocm with proven=True off one transient probe of the very binary that was handed back.
     assert _noted_accelerators(fake_settings) == [], fake_settings
+
+
+class TestTheRouterRecordsTheBundleNotTheServer:
+    """sd-server and sd-cli ship in the same bundle. Only the server failing to launch says nothing
+    about the accelerator, and a strike for it on every otherwise successful one-shot load reaches the
+    two-strike threshold and diverts a working ROCm host to Vulkan for good.
+
+    These assert the ORDER of the three statements in the selection block rather than driving a load:
+    the behaviour is "the record happens after the CLI verdict, not before", and the surrounding
+    function activates a global engine, which a unit test should not be doing to reach one branch.
+    """
+
+    @staticmethod
+    def _selection_source():
+        from core.inference import diffusion_engine_router as router
+
+        return inspect.getsource(router.select_and_activate_engine)
+
+    def test_a_dead_server_is_held_until_the_cli_has_answered(self):
+        source = self._selection_source()
+        held = source.index("unlaunchable_server = server_binary")
+        cli_probe = source.index("SdCppEngine(binary = binary).version() is None")
+        recorded = source.index("note_unlaunchable_accelerator_build(unlaunchable_server")
+        assert held < cli_probe < recorded, (held, cli_probe, recorded)
+
+    def test_a_bundle_where_nothing_runs_is_still_recorded(self):
+        source = self._selection_source()
+        # The dead-bundle case must still reach the recorder, not be dropped along with the deferral.
+        assert "if unlaunchable_server is not None and binary is None:" in source
+
+
+def test_the_download_plan_predicts_for_the_card_the_load_will_select():
+    """Card-scoped records mean a card-less prediction reads a per-card failure as host-wide. Selection
+    is given the ordinal and clears the working card, so the two disagree and the plan stages the
+    diffusers files a native load never opens."""
+    from core.inference import diffusion_engine_router as router
+
+    assert "gpu_ordinal" in inspect.signature(router.predict_engine).parameters
+    assert "gpu_ordinal" in inspect.signature(router.native_binary_installed).parameters
+    # The predictor must scope the record lookup exactly the way selection does.
+    source = inspect.getsource(router.native_binary_installed)
+    assert "_selected_card(gpu_ordinal)" in source
+    assert source.count("selected_card") >= 3  # accelerator + both usable_or_recorded_failure calls

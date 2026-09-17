@@ -269,14 +269,17 @@ def select_and_activate_engine(
                 accelerator = install_accelerator,
             )
         )
+        unlaunchable_server: Optional[str] = None
         if server_binary and not _server_binary_runnable(server_binary):
             logger.warning(
                 "sd-server at %s is present but not runnable; not using it", server_binary
             )
-            # Counted here, not in the load: the router runs first, so a build it rejects never reaches the recorders there.
-            # Against the CARD being selected: a cards-less note is read as host-wide, so a launch
-            # failure met while selecting one card would move every other card to Vulkan.
-            note_unlaunchable_accelerator_build(server_binary, card = selected_card)
+            # HELD, not recorded yet. sd-server and sd-cli come from the same bundle, and only the
+            # server being unrunnable (a lost execute bit, a partial install) says nothing about the
+            # accelerator: the CLI below may run it perfectly. Recording here would put a strike on
+            # every otherwise successful one-shot load and reach the two-strike threshold, diverting a
+            # working ROCm host to Vulkan. It is an accelerator failure only if the CLI fails too.
+            unlaunchable_server = server_binary
             server_binary = None
         # sd-cli is the one-shot fallback: always LOCATE an existing binary, but auto-INSTALL only when there is no
         # usable server. Probe runnability first, else a present but non-runnable binary passes as available and fails
@@ -291,6 +294,12 @@ def select_and_activate_engine(
             logger.warning("sd-cli at %s is present but not runnable; not using it", binary)
             note_unlaunchable_accelerator_build(binary, card = selected_card)
             binary = None
+        if unlaunchable_server is not None and binary is None:
+            # Nothing from this bundle runs, so the build really is the problem. Counted here rather
+            # than in the load: the router runs first, so a build it rejects never reaches the
+            # recorders there. Against the CARD being selected, since a card-less note is read as
+            # host-wide and would move every other card to Vulkan too.
+            note_unlaunchable_accelerator_build(unlaunchable_server, card = selected_card)
 
     native_available = bool(binary or server_binary) and policy_eligible and fam_ok
     choice = select_diffusion_engine(
@@ -311,7 +320,7 @@ def select_and_activate_engine(
     return _activate(ENGINE_DIFFUSERS, reason)
 
 
-def native_binary_installed() -> bool:
+def native_binary_installed(*, gpu_ordinal: Optional[int] = None) -> bool:
     """Whether a RUNNABLE sd.cpp binary is already on disk, installing nothing to find out.
 
     Separated from the prediction because the two answers differ where it matters: prediction
@@ -319,25 +328,34 @@ def native_binary_installed() -> bool:
     must know whether selection could still fall back to diffusers needs the unassumed answer.
 
     Must filter exactly as selection does: this prediction picks which planner stages the download,
-    so disagreeing leaves an offline load on diffusers with none of its assets staged.
+    so disagreeing leaves an offline load on diffusers with none of its assets staged. That includes
+    the CARD, because the failure records are card-scoped: with no ordinal a per-card record reads as
+    host-wide here while selection, which is given the ordinal, correctly clears the working card, and
+    the plan then stages the diffusers files the load never opens. ``gpu_ordinal`` None keeps the
+    host-wide reading, which is right for a caller that has no card in hand.
     """
+    selected_card = _selected_card(gpu_ordinal)
     install_accelerator = preferred_accelerator(
-        _install_accelerator_for(resolve_diffusion_device_target().backend)
+        _install_accelerator_for(resolve_diffusion_device_target().backend), selected_card
     )
     server_binary = usable_or_recorded_failure(
         ensure_sd_server_binary(allow_install = False, accelerator = install_accelerator),
         install_accelerator,
+        selected_card,
     )
     if server_binary and _server_binary_runnable(server_binary):
         return True
     binary = usable_or_recorded_failure(
         ensure_sd_cpp_binary(allow_install = False, accelerator = install_accelerator),
         install_accelerator,
+        selected_card,
     )
     return bool(binary and SdCppEngine(binary = binary).version() is not None)
 
 
-def predict_engine(fam: DiffusionFamily, *, model_kind: Optional[str] = None) -> str:
+def predict_engine(
+    fam: DiffusionFamily, *, model_kind: Optional[str] = None, gpu_ordinal: Optional[int] = None
+) -> str:
     """The engine a load of ``fam`` would select on this host, WITHOUT any side effect.
 
     Same policy as ``select_and_activate_engine`` -- and it has to be, because the download plan
@@ -367,7 +385,7 @@ def predict_engine(fam: DiffusionFamily, *, model_kind: Optional[str] = None) ->
     if not (policy_eligible and family_sd_cpp_supported(fam)):
         return ENGINE_DIFFUSERS
 
-    native_available = native_binary_installed() or _install_allowed()
+    native_available = native_binary_installed(gpu_ordinal = gpu_ordinal) or _install_allowed()
     return select_diffusion_engine(
         backend, native_available = native_available, prefer_native = prefer_native
     )
