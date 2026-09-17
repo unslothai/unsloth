@@ -355,9 +355,7 @@ def test_the_core_phase_upgrading_the_zoo_re_resolves_mlx(monkeypatch):
     narrow = f"{stack._MLX_VLM_SPEC},<0.7.0"
     # Twice for the install step, then the widened answer after the core phase.
     _zoo_spec_sequence(monkeypatch, [narrow, narrow, stack._MLX_VLM_SPEC])
-    calls = _run_to_extras(
-        monkeypatch, platform = "macos_arm", skip_base = False, no_torch = False
-    )
+    calls = _run_to_extras(monkeypatch, platform = "macos_arm", skip_base = False, no_torch = False)
     assert len(calls) == 2
     assert "MLX stack (re-resolved for the new zoo)" in _run_to_extras.steps
     assert narrow in list(calls[0].args[1:])
@@ -366,8 +364,6 @@ def test_the_core_phase_upgrading_the_zoo_re_resolves_mlx(monkeypatch):
 
 def test_an_unchanged_zoo_does_not_re_resolve_mlx(monkeypatch):
     _zoo_spec_sequence(monkeypatch, [stack._MLX_VLM_SPEC])
-    calls = _run_to_extras(
-        monkeypatch, platform = "macos_arm", skip_base = False, no_torch = False
-    )
+    calls = _run_to_extras(monkeypatch, platform = "macos_arm", skip_base = False, no_torch = False)
     assert len(calls) == 1
     assert "MLX stack (zoo unchanged, skipped)" in _run_to_extras.steps
