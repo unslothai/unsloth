@@ -2708,8 +2708,14 @@ exit 1
         }
         foreach ($name in @("python3", "python")) {
             try {
-                foreach ($cmd in @(Get-Command $name -All -CommandType Application -ErrorAction SilentlyContinue)) {
-                    if ($cmd -and $cmd.Source) { $candidates += $cmd.Source }
+                # Select-Object, not $cmd.Source. Constrained Language Mode permits property
+                # reads only on its allowed type list, and CommandInfo is not on it, so the
+                # direct spelling throws on exactly the hosts this ladder exists for. Reading it
+                # through a cmdlet keeps the access inside compiled code, where CLM does not
+                # reach. Same reason for every other Select-Object -ExpandProperty below.
+                foreach ($source in @(Get-Command $name -All -CommandType Application -ErrorAction SilentlyContinue |
+                    Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue)) {
+                    if ($source) { $candidates += $source }
                 }
             } catch {}
         }
@@ -2722,7 +2728,9 @@ exit 1
             # The interpreter's own directory: it exists, since the executable inside it just
             # passed Test-Path. Not $PSScriptRoot, which is empty under `irm | iex` (no script
             # file), and not the temp directory, which this installer relocates.
-            $probeDir = [System.IO.Path]::GetDirectoryName($candidate)
+            # Split-Path, not [System.IO.Path]::GetDirectoryName: System.IO.Path is not an
+            # allowed type under Constrained Language Mode, and a static call on it throws.
+            $probeDir = Split-Path -Parent $candidate
             if ([string]::IsNullOrWhiteSpace($probeDir)) { continue }
             $probe = Invoke-StudioEarlyPython -Exe $candidate -Path $probeDir
             if (-not [string]::IsNullOrWhiteSpace($probe)) {
@@ -2853,13 +2861,19 @@ exit 1
             # line out of -ArgumentList, and a -c body carrying newlines and quotes cannot survive
             # that intact. A file path is one plain token, so the two launchers run the same
             # program rather than nearly the same one.
-            $scriptFile = New-TemporaryFile
-            $outFile = New-TemporaryFile
-            $errFile = New-TemporaryFile
+            # Plain strings, not New-TemporaryFile. That cmdlet hands back a FileInfo, and
+            # reading a path off it is a property read on a type Constrained Language Mode does
+            # not allow, so every path below would have thrown on a locked-down host. [guid] and
+            # [string] are both on the allowed list, and Join-Path is a cmdlet.
+            $tempRoot = if ($env:TEMP) { $env:TEMP } elseif ($env:TMPDIR) { $env:TMPDIR } else { "/tmp" }
+            $stem = Join-Path $tempRoot ("unsloth-early-" + [guid]::NewGuid().ToString("N"))
+            $scriptFile = "$stem.py"
+            $outFile = "$stem.out"
+            $errFile = "$stem.err"
             # UTF-8 both ways. The interpreter writes its answer as UTF-8 bytes, so reading it
             # back any other way corrupts every non-ASCII path exactly as the console codepage
             # would, and silently: the string still looks like a path.
-            Set-Content -LiteralPath $scriptFile.FullName -Value $Script -Encoding UTF8 -NoNewline
+            Set-Content -LiteralPath $scriptFile -Value $Script -Encoding UTF8 -NoNewline
             # Quoted here, not handed to -ArgumentList as an array: Start-Process joins that
             # array with spaces and quotes nothing, so a path containing a space arrives as two
             # arguments. Same rule as the other launcher's 5.1 branch, and for the same reason:
@@ -2868,11 +2882,11 @@ exit 1
             # -I -S, the same pair as the primary launcher. These two are asserted to return the
             # same string byte for byte, and a sitecustomize running in one of them but not the
             # other is exactly the kind of difference that assertion exists to catch.
-            $argv = (@(@("-I", "-S", $scriptFile.FullName) + $ScriptArgs | ForEach-Object {
+            $argv = (@(@("-I", "-S", $scriptFile) + $ScriptArgs | ForEach-Object {
                 '"' + ($_ -replace '(\\+)$', '$1$1') + '"'
             }) -join ' ')
             $proc = Start-Process -FilePath $Exe -ArgumentList $argv -NoNewWindow -PassThru `
-                -RedirectStandardOutput $outFile.FullName -RedirectStandardError $errFile.FullName
+                -RedirectStandardOutput $outFile -RedirectStandardError $errFile
             if (-not $proc) { return $null }
             # Wait-Process takes whole seconds, so round up: a sub-second bound must not become a
             # zero-second one, which returns immediately and kills a healthy interpreter.
@@ -2903,15 +2917,19 @@ exit 1
                 Stop-Process -InputObject $proc -Force -ErrorAction SilentlyContinue
                 return $null
             }
-            if ($proc.ExitCode -ne 0) { return $null }
-            $answer = Get-Content -LiteralPath $outFile.FullName -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+            # Select-Object, not $proc.ExitCode: System.Diagnostics.Process is not an allowed
+            # type under Constrained Language Mode either, so the direct read throws on the very
+            # hosts the primary launcher already could not serve.
+            $exitCode = $proc | Select-Object -ExpandProperty ExitCode -ErrorAction SilentlyContinue
+            if ($null -eq $exitCode -or $exitCode -ne 0) { return $null }
+            $answer = Get-Content -LiteralPath $outFile -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
             if ($null -eq $answer) { return "" }
             return (Remove-StudioTrailingNewline -Text ([string]$answer))
         } catch {
             return $null
         } finally {
             foreach ($f in @($scriptFile, $outFile, $errFile)) {
-                if ($f) { Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue }
+                if ($f) { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue }
             }
         }
     }
@@ -2952,7 +2970,10 @@ exit 1
         if ([string]::IsNullOrWhiteSpace($answer)) { return $null }
         # A relative answer is not an identity, and a path that does not exist cannot be the
         # resolution of one that does.
-        if (-not [System.IO.Path]::IsPathRooted($answer)) { return $null }
+        # Split-Path -IsAbsolute, not [System.IO.Path]::IsPathRooted, for the allowed-type
+        # reason above. This one guards the path the final-path resolver returns, so the static
+        # call would have thrown right where the ladder is meant to answer.
+        if (-not (Split-Path -IsAbsolute $answer)) { return $null }
         if (-not (Test-Path -LiteralPath $answer)) { return $null }
         return $answer
     }
@@ -5885,8 +5906,16 @@ exit 0
             if ($split -lt 1) { continue }
             $pidText = $line.Substring(0, $split)
             $path = $line.Substring($split + 1)
+            # A -match and a cast, not [int]::TryParse. Constrained Language Mode does not
+            # permit casting to [ref] at all, so the TryParse spelling throws on the hosts this
+            # rung exists for, and the whole table comes back empty. The regex is anchored, so
+            # it rejects everything the parse would have: PowerShell's [int] cast on a
+            # non-numeric string throws rather than returning zero, and on an out-of-range one
+            # it throws too, which the -match cannot let through unnoticed.
+            if ($pidText -notmatch '^\s*\d+\s*$') { continue }
             $parsed = 0
-            if (-not [int]::TryParse($pidText, [ref]$parsed)) { continue }
+            try { $parsed = [int]$pidText } catch { continue }
+            if ($parsed -le 0) { continue }
             if (-not [string]::IsNullOrWhiteSpace($path)) { $table[$parsed] = $path }
         }
         if ($table.Count -eq 0) { return $null }
