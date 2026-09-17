@@ -967,14 +967,7 @@ def start_studio_tunnel(
                     return None
                 return url
             saw_url = tunnel.url is not None
-            retry_no_url = (
-                not saw_url
-                and bool(no_url_delays)
-                # The delay and a whole further attempt have to fit too, or the budget would only
-                # bound where the last retry was authorized and not the sequence it pays for.
-                and time.monotonic() - no_url_started + no_url_delays[0] + timeout
-                <= _NO_URL_RETRY_BUDGET
-            )
+            retry_no_url = not saw_url and bool(no_url_delays)
             tail = tunnel.output_tail() if hasattr(tunnel, "output_tail") else ""
             logging.getLogger(__name__).warning(
                 "cloudflared attempt failed (protocol=%s, url=%s, registered=%s)%s",
@@ -1016,15 +1009,21 @@ def start_studio_tunnel(
             if not stopped:
                 return None
             if retry_no_url:
-                with _active_lock:
-                    # A Stop that landed during the attempt above must not pay out the delay: this holds
-                    # _start_lock, so a following Start would queue behind the wait.
-                    if _shutdown_requested or generation != _tunnel_generation:
+                # Charged against the budget here, not before tunnel.stop(): terminating a cloudflared
+                # that ignores SIGTERM is itself seconds of the startup stall. The delay and a whole
+                # further attempt have to fit as well, or the budget would bound only where the retry
+                # was authorized and not the sequence it pays for.
+                spent = time.monotonic() - no_url_started
+                if spent + no_url_delays[0] + timeout <= _NO_URL_RETRY_BUDGET:
+                    with _active_lock:
+                        # A Stop that landed during the attempt above must not pay out the delay: this
+                        # holds _start_lock, so a following Start would queue behind the wait.
+                        if _shutdown_requested or generation != _tunnel_generation:
+                            return None
+                    # One that lands during the delay ends it early for the same reason.
+                    if _wait_before_retry(no_url_delays.pop(0)):
                         return None
-                # One that lands during the delay ends it early for the same reason.
-                if _wait_before_retry(no_url_delays.pop(0)):
-                    return None
-                continue
+                    continue
             if not saw_url:
                 _set_failed(generation, managed_by, port, "cloudflared did not produce a URL")
                 return None

@@ -1358,6 +1358,49 @@ def test_start_studio_tunnel_no_url_retry_never_overruns_the_budget(monkeypatch)
     assert clock[0] <= ct._NO_URL_RETRY_BUDGET
 
 
+def test_start_studio_tunnel_budget_counts_a_slow_stop(monkeypatch):
+    # Terminating a cloudflared that ignores SIGTERM costs seconds of the same startup stall, and it
+    # happens after the failure: a 10s failure plus a 5s stop leaves no room for a 2s delay and a
+    # whole further attempt inside the 30s budget.
+    attempts, clock = [], [0.0]
+
+    class _Stub:
+        def __init__(
+            self,
+            port,
+            binary,
+            protocol = None,
+            origin_host = "localhost",
+        ):
+            self.url = None
+            attempts.append(protocol)
+
+        def start(self):
+            pass
+
+        def wait_for_ready(self, timeout):
+            clock[0] += min(10.0, timeout)
+            return None
+
+        def stop(self):
+            clock[0] += 5.0  # SIGTERM ignored, so terminate() waits out its 5s
+
+    monkeypatch.setattr(ct, "ensure_cloudflared", lambda: "/bin/cloudflared")
+    monkeypatch.setattr(ct, "CloudflareTunnel", _Stub)
+    monkeypatch.setattr(ct, "_READY_TIMEOUT", 15.0)
+    monkeypatch.setattr(ct, "_NO_URL_RETRY_DELAYS", (2.0, 5.0))
+    monkeypatch.setattr(ct, "_NO_URL_RETRY_BUDGET", 30.0)
+    monkeypatch.setattr(ct.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        ct, "_wait_before_retry", lambda d: clock.__setitem__(0, clock[0] + d) or False
+    )
+
+    assert ct.start_studio_tunnel(8080) is None
+    assert attempts == [None]
+    assert clock[0] <= ct._NO_URL_RETRY_BUDGET
+    assert ct.get_studio_tunnel_status()["error"] == "cloudflared did not produce a URL"
+
+
 def test_start_studio_tunnel_no_url_retries_survive_a_fast_failure(monkeypatch):
     # The case the retries exist for: cloudflared refuses in milliseconds, so the budget is untouched
     # and every retry is still taken.
