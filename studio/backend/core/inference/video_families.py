@@ -173,7 +173,18 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # recompiles across captions of 19 to 402 tokens. The loader engages this only when the denoiser is RESIDENT;
         # compiling inside a full CPU-offload rotation measured slower than eager.
         supports_torch_compile = True,
-        supports_cuda_graph = True,
+        # Measured and declined. H3 opted in on an early 1.006x, which does not survive a paired measurement: at
+        # 960x544x124, 30 steps, fp8, the graph is 32.188 s p50 against 32.246 s eager over 5 timed renders per arm,
+        # 1.0018x, inside the 0.19% spread that a never-armed control process occupies. The graph works exactly as
+        # intended (29 replays per render, 0 eager calls, 0 fallbacks, replay bit-identical); there is simply nothing
+        # for it to win. The GPU is 92.7% busy either way, and the step is 0.94 s of dense fp8 matmul over 18,870
+        # packed rows: eliminating ALL 25.3 s of host launch time (0.873 s/step to 0.1 ms/step) moved the wall by
+        # 0.058 s, because the host was never the wall. Dropping the process from 192 cores to 4 left that 25.3 s
+        # unchanged to the millisecond, so no weaker host turns H3 launch-bound either. What the capture costs is
+        # real: 3.93 GB held for the life of the process, 4.03 GB more at the capture peak on a family that already
+        # needs 87.5 GB resident, and 31.1 s on the first render, which is a break-even of about 530 videos. This is
+        # the CHEAPEST grid H3 ships, so the larger presets can only be more GPU-bound.
+        supports_cuda_graph = False,
         gguf_repo = "unsloth/MiniMax-H3-GGUF",
         # Hosted pre-quantized FL2VA denoisers. The modular workflow builds each component through its own
         # from_pretrained, so there is no dense module to quantise in place: these are the ONLY way to run the 66.3 GB
