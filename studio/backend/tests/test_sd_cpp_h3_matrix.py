@@ -432,8 +432,7 @@ def test_h3_cancellation_precedes_the_binary_install(h3_host, platform, hw_label
 def test_h3_revet_catches_a_managed_tree_rebuilt_for_another_accelerator(
     h3_host, platform, hw_label, backend, device, monkeypatch
 ):
-    """A ROCm build installed over the tree during the download answers the boolean re-vet the
-    same way the Vulkan rung did, so the class is what has to be compared."""
+    """A ROCm build installed over the tree mid-download answers the boolean re-vet exactly as the Vulkan rung did."""
     host, real_probe, sd_cpp_backend, swapped = _shared_setup_1(backend, device, h3_host, platform)
 
     def _accelerator_of(binary):
@@ -459,8 +458,7 @@ def test_h3_revet_catches_a_managed_tree_rebuilt_for_another_accelerator(
 def test_h3_revet_does_not_invent_a_change_for_an_unrecorded_tree(
     h3_host, platform, hw_label, backend, device, monkeypatch
 ):
-    """None on either side is "cannot tell", not "it changed": refusing the load on it would
-    refuse every SD_CLI_PATH build there is."""
+    """None is "cannot tell", not "it changed"; refusing on it would refuse every SD_CLI_PATH build."""
     host, real_probe, sd_cpp_backend, swapped = _shared_setup_1(backend, device, h3_host, platform)
 
     import utils.hf_xet_fallback as xet

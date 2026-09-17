@@ -20,13 +20,11 @@ H3_FILE = "minimax_h3_fl2va-Q4_K_M.gguf"
 _BANNER = "stable-diffusion.cpp version unknown, commit unknown\n"
 _H3_HELP = _BANNER + "  --ref-video   MiniMax-H3 Ref2VA reference video frame directory\n"
 
-# The ROCm build on an unsupported card does not answer at all, which is why the load reads the raw verdict
-# rather than the collapsed one.
+# The ROCm build on an unsupported card does not answer at all, hence the raw verdict.
 _DEVICES_ROCM = "ROCm0\tAMD Radeon RX 7900 XTX\nCPU\tAMD Ryzen 9\n"
 _DEVICES_VULKAN = "Vulkan0\tAMD Radeon RX 7900 XTX\nCPU\tAMD Ryzen 9\n"
 _DEVICES_CPU_ONLY = "CPU\tAMD Ryzen 9\n"
-# MISSING: no such build can be installed here. None: installed and cannot be asked anything. A string: its
-# --list-devices answer.
+# MISSING: no such build here. None: installed, cannot be asked. A string: its --list-devices answer.
 MISSING = object()
 
 PLATFORMS = ["linux", "wsl", "win32"]
@@ -223,8 +221,7 @@ def test_a_working_rocm_build_is_left_alone(h3_amd_host, fake_settings, platform
     [
         ("rocm_unrunnable", _ROCM_BROKEN, False),
         ("rocm_cpu_only", _ROCM_CPU_ONLY, True),
-        # The ensure returns None for a failed download as readily as for a missing asset, and a record with no
-        # binary carries no bundle tag for a later release to retire: a strike, not proof.
+        # The ensure answers None for a failed download too, and a record with no binary carries no bundle tag to retire: a strike, not proof.
         ("no_rocm_asset", _VULKAN_ONLY, False),
     ],
 )
@@ -534,8 +531,7 @@ def test_a_second_ambiguous_failure_does_divert(fake_settings, monkeypatch):
         ("invalid device function", True),
         ("ggml_cuda_mul_mat_q: unspecified launch failure at mmq.cu:145", False),
         ("ROCm error: something went wrong", False),
-        # The same defect class printed by a layer that does not name the build; both have mundane causes too
-        # (no /dev/kfd in a container; flash attention or P2P), so both are counted rather than acted on.
+        # The same defect class printed by a layer that does not name the build, but both also have mundane causes, so both are only counted.
         ("rocBLAS error: Could not initialize Tensile host: No devices found", False),
         (
             "Memory access fault by GPU node-1 (Agent handle: 0x55d) on address 0x7f18. "
@@ -545,12 +541,10 @@ def test_a_second_ambiguous_failure_does_divert(fake_settings, monkeypatch):
     ],
 )
 def test_the_marker_tiers_split_evidence_from_suspicion(output, decisive):
-    """Only a message naming the BUILD as having no code for the card is acted on immediately."""
     from core.inference.sd_cpp_backend import (
         output_shows_accelerator_failure,
         output_shows_decisive_accelerator_failure,
     )
-
     assert output_shows_accelerator_failure(output) is True
     assert output_shows_decisive_accelerator_failure(output) is decisive
 
@@ -818,8 +812,7 @@ _T, _F, _N, _X = "accel", "cpu_only", "unreadable", "missing"
 
 _ANSWER = {_T: _DEVICES_VULKAN, _F: _DEVICES_CPU_ONLY, _N: None, _X: MISSING}
 
-# (rocm answer, vulkan answer) -> (ensured, committed device, what main committed, why the change
-# is allowed). "same" means the corner is untouched.
+# (rocm, vulkan) -> (ensured, committed device, what main committed, why). "same": untouched.
 _ROUTING = {
     (_T, _T): (["rocm"], "cuda", "cuda", "same"),
     (_T, _F): (["rocm"], "cuda", "cuda", "same"),
@@ -830,8 +823,7 @@ _ROUTING = {
     (_F, _N): (["rocm", "vulkan", "cpu"], "cpu", "cpu", "same"),
     (_F, _X): (["rocm", "vulkan", "cpu"], "cpu", "cpu", "same"),
     (_N, _T): (["rocm", "vulkan"], "cuda", "cuda", "upgraded on positive evidence"),
-    # The one corner whose committed DEVICE moves down: main committed the GPU on an sd-cli that could not be
-    # asked for its devices, which is a load that was already going to fail minutes in.
+    # The one corner whose committed DEVICE moves down, and main's commit there was already a load that fails minutes in.
     (_N, _F): (["rocm", "vulkan", "cpu"], "cpu", "cuda", "was a failed load"),
     (_N, _N): (["rocm", "vulkan"], "cuda", "cuda", "same"),
     (_N, _X): (["rocm", "vulkan"], "cuda", "cuda", "same"),
@@ -861,8 +853,7 @@ def test_the_whole_load_routing_space_is_enumerated(h3_amd_host, fake_settings, 
     assert host.ensured == expected_ensured, host.ensured
     assert backend_obj._state.device == expected_device
     upgraded = _why == "upgraded on positive evidence"
-    # ...and only where the host's own build ANSWERED. An unreadable probe, and a build never obtained, are
-    # both non-answers about it.
+    # ...and only where the host's own build ANSWERED; an unreadable probe is not an answer.
     assert _noted_accelerators(fake_settings) == (
         ["rocm"] if (upgraded and rocm_answer not in (_N, _X)) else []
     )
@@ -965,7 +956,6 @@ def test_the_runtime_half_is_still_read_once(unpinned_fingerprint, monkeypatch):
 
     first = unpinned_fingerprint._host_fingerprint()
     assert first == {"runtime": "6.4.0", "gpus": ["first"]}
-    # A wheel label cannot actually change inside a process, so a later read of it is not taken.
     monkeypatch.setattr(torch.version, "hip", "7.0.0", raising = False)
     cards[0] = _inventory("second")
     assert unpinned_fingerprint._host_fingerprint() == {"runtime": "6.4.0", "gpus": ["second"]}
@@ -1074,8 +1064,7 @@ def test_an_empty_device_list_is_still_no_cards(unpinned_fingerprint, monkeypatc
     assert unpinned_fingerprint._host_fingerprint()["gpus"] is None
 
 
-# The gfx1151 Windows 11 runner: the ROCm asset ships no hipBLAS, so every invocation exits 0xC0000135 in
-# 0.02s having printed zero bytes.
+# The gfx1151 Windows runner: the ROCm asset ships no hipBLAS, so every invocation exits 0xC0000135 printing nothing.
 _WINDOWS_DLL_FAILURE = "sd-cli exited 3221225781. Last output:\n"
 
 
@@ -1196,7 +1185,6 @@ def test_two_identical_cards_are_not_pinned_on_a_guess(monkeypatch):
 
 
 def test_the_h3_load_resolves_the_pin_by_name_when_the_index_says_nothing():
-    """The matcher is only worth anything if the load reaches for it."""
     import inspect
     from core.inference import video as video_mod
 
@@ -1344,7 +1332,7 @@ def test_a_hip_id_is_translated_into_the_inventorys_own_row(monkeypatch):
 
 
 def test_an_unreadable_hip_mapping_declines_the_tie_break(monkeypatch):
-    """``get_hip_id_by_gpu_index`` answers None when any device lacks a usable id, and its docstring tells callers not to assume the identity mapping."""
+    """``get_hip_id_by_gpu_index`` answers None when any device lacks a usable id, and tells callers not to assume the identity mapping."""
     from core.inference import video as video_mod
 
     _no_visibility_mask(monkeypatch)
@@ -1384,7 +1372,6 @@ def test_a_mask_this_cannot_read_declines_the_tie_break(monkeypatch):
 
 
 def test_an_unnamed_physical_card_withholds_the_tie_break(monkeypatch):
-    """A row the OS did not name cannot establish the grouping the tie-break counts in."""
     from core.inference import video as video_mod
 
     _no_visibility_mask(monkeypatch)
@@ -1500,7 +1487,6 @@ def test_a_related_model_name_is_not_tie_broken_by_position(monkeypatch):
         "_sd_cpp_probe_output",
         lambda binary, *args: listing if args == ("--list-devices",) else None,
     )
-    # The driver tag is dropped and the rest compared for equality, not containment.
     assert (
         sd_cpp_backend.sd_cpp_device_named(
             "/opt/sd/vulkan/sd-cli", "AMD Radeon RX 7600", position = 0
@@ -1639,7 +1625,6 @@ def test_the_note_can_be_pinned_to_the_build_that_failed(monkeypatch):
 
 
 def test_the_load_path_reads_the_fingerprint_before_it_installs_the_fallback():
-    """Ordering, pinned in the source rather than only in the helper's behaviour."""
     import inspect
     from core.inference import video as video_mod
 
@@ -1657,7 +1642,6 @@ def test_the_load_path_reads_the_fingerprint_before_it_installs_the_fallback():
 
 
 def test_a_singleton_match_does_not_answer_for_a_position_it_cannot_hold(monkeypatch):
-    """One device answering is not proof that it is the card that was selected."""
     from core.inference import sd_cpp_backend
 
     listing = "Vulkan0\tAMD Radeon RX 7900 XTX (RADV NAVI31)\n"
@@ -1717,8 +1701,7 @@ def test_the_fingerprint_reads_the_root_that_owns_the_binary(monkeypatch):
     assert sd_cpp_backend._accelerator_fingerprint()["bundle"] == "tag-for-current"
     assert asked == ["/roots/legacy", "/roots/current"], asked
 
-    # Named nothing while the finder serves the legacy tree -- every CONSULTATION, since
-    # `accelerator_runtime_failed` passes no binary -- it is the legacy root as well.
+    # Named nothing while the finder serves the legacy tree (every CONSULTATION, since `accelerator_runtime_failed` passes no binary), it is that root too.
     asked.clear()
     monkeypatch.setattr(
         sd_cpp_backend, "find_sd_cpp_binary", lambda: "/roots/legacy/bin/sd", raising = False
@@ -1963,7 +1946,7 @@ def test_a_server_that_starts_and_dies_is_recorded_from_its_own_output(fake_sett
 
 
 def test_a_build_that_cannot_launch_at_all_is_counted(fake_settings, monkeypatch):
-    """0xC0000135 arrives as a large POSITIVE exit code, so the pre-download probe accepts it; a missing execute bit fails identically, so it is counted rather than acted on."""
+    """0xC0000135 arrives as a large POSITIVE exit code, so the probe accepts it; a missing execute bit fails identically, so it is only counted."""
     from core.inference import sd_cpp_backend
 
     monkeypatch.setattr(sd_cpp_backend, "_installed_accelerator_of", lambda _b: "rocm")
@@ -1996,7 +1979,7 @@ def test_both_unlaunchable_load_paths_record_before_they_raise():
 
 
 def test_a_resident_server_does_not_cost_the_reload_its_native_engine(fake_settings, monkeypatch):
-    """A resident server still executes out of the managed tree, so both ensures decline the install and hand back the ROCm build; the load path stops the server and lands the deferred install itself."""
+    """A resident server executes out of the tree, so both ensures decline the install; the load stops it and lands the deferred install itself."""
     from core.inference import diffusion_engine_router as router
     from core.inference import sd_cpp_backend
 
@@ -2217,7 +2200,6 @@ def test_the_condemned_build_is_still_refused_on_the_card_that_failed(fake_setti
 
 
 def test_the_selected_card_is_read_through_the_visibility_mask(fake_settings, monkeypatch):
-    """Ordinal 0 under ``HIP_VISIBLE_DEVICES=1`` is the second physical card."""
     from core.inference import sd_cpp_backend
 
     devices = [

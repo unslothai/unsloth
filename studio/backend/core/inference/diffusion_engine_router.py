@@ -195,11 +195,8 @@ def begin_load_on(expected_engine: Any, start: Callable[[], Any]) -> Any:
 
 
 def _selected_card(gpu_ids) -> Optional[str]:
-    """The identity of the card this request picked, or ``None`` when it cannot be told.
-
-    A recorded accelerator failure is a fact about a CARD (one ROCm bundle can carry the gfx
-    target of one card on the host and not another); ``None`` means the record applies to all.
-    """
+    """The card this request picked, or ``None``, meaning every record applies. A recorded failure
+    is about a CARD: one ROCm bundle can carry one host card's gfx target and not another's."""
     if not gpu_ids:
         return None
     try:
@@ -244,8 +241,7 @@ def select_and_activate_engine(
     binary = None
     server_binary = None
     if policy_eligible and fam_ok:
-        # Resolved once, per card, so the server and the CLI cannot disagree: a card whose ROCm
-        # build will not start (#9278, #8814) must not divert the other cards on the host.
+        # Once, per card, so server and CLI cannot disagree: a card whose ROCm build will not start (#9278, #8814) must not divert the others.
         selected_card = _selected_card(gpu_ids)
         install_accelerator = preferred_accelerator(
             _install_accelerator_for(backend), selected_card
@@ -253,14 +249,10 @@ def select_and_activate_engine(
         # Probe the resident sd-server FIRST (the backend prefers it): a server-only install must still route to
         # native and should not pay an sd-cli download. Install the accelerator-matched build so a forced-native GPU
         # load gets the GPU server.
-        # `ensure_*` does not promise the accelerator it was given: offline or after a failed
-        # download it returns whatever is already in the managed tree, which can be the ROCm
-        # build the record condemns -- that build passes the runnability probes below and only
-        # dies mid-render. Only a SUBSTITUTE is refused; with the Vulkan fallback switched off
-        # ROCm is the request again and the opt-out means run it anyway. While the upgrade is
-        # merely deferred (a resident server still executing out of the tree), keep the native
-        # selection and let `_upgrade_server_after_teardown` land it, else the first reload
-        # after a failure goes to diffusers; only where an install is possible at all.
+        # An ensure does not promise the accelerator it was given: offline it hands back the
+        # condemned ROCm build, which passes the probes below and dies mid-render. Only a SUBSTITUTE
+        # is refused -- with the fallback off, ROCm is the request again. A merely DEFERRED upgrade
+        # keeps the native selection for the teardown to land, else the reload goes to diffusers.
         upgrade_is_deferred = _managed_tree_in_use() and _install_allowed()
 
         def _accept(candidate):
@@ -278,8 +270,7 @@ def select_and_activate_engine(
             logger.warning(
                 "sd-server at %s is present but not runnable; not using it", server_binary
             )
-            # Counted here, not in `_run_load`: the router runs first, so a build it rejects
-            # never reaches the recorders there and the Vulkan rung is never reached.
+            # Counted here, not in the load: the router runs first, so a build it rejects never reaches the recorders there.
             note_unlaunchable_accelerator_build(server_binary)
             server_binary = None
         # sd-cli is the one-shot fallback: always LOCATE an existing binary, but auto-INSTALL only when there is no
@@ -322,9 +313,8 @@ def native_binary_installed() -> bool:
     counts an absent binary as available whenever installing one is allowed, and a caller that
     must know whether selection could still fall back to diffusers needs the unassumed answer.
 
-    Must use the SAME preferred accelerator and recorded-failure filter as selection: this
-    prediction picks which planner stages the download, so disagreeing with selection leaves an
-    offline load on diffusers with none of the diffusers assets staged.
+    Must filter exactly as selection does: this prediction picks which planner stages the download,
+    so disagreeing leaves an offline load on diffusers with none of its assets staged.
     """
     install_accelerator = preferred_accelerator(
         _install_accelerator_for(resolve_diffusion_device_target().backend)
