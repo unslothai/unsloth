@@ -101,6 +101,7 @@ def assert_linear(
     *,
     factor: int = 4,
     tolerance: float = 6.0,
+    repeats_on_retry: int = 7,
 ):
     """`run(build(n))` must cost ~`factor`x, not ~`factor ** 2`x, for `factor`x the input.
 
@@ -118,8 +119,27 @@ def assert_linear(
     # Backstop: a regression bad enough to make the ratio unmeasurable still has to fail, and
     # fail quickly, rather than run until the job's own timeout kills it with no explanation.
     assert big < budget, f"{label} path took {big:.1f}s on {units * factor} units"
-    assert ratio < tolerance, (
-        f"{label} path is not linear: {factor}x the input cost {ratio:.1f}x the time "
-        f"(linear is ~{factor}, quadratic is ~{factor ** 2})"
-    )
+    if ratio >= tolerance:
+        # RE-MEASURE rather than loosen. Pairing divides most contention out, but not all of
+        # it: the big leg runs `factor`x longer than the small one, so a scheduler stall that
+        # lands inside a run is `factor`x more likely to land in the big half, which biases a
+        # pair upward and never downward. Three pairs is few enough that two unlucky ones move
+        # the median, which is how this reported 7.2x on unslothai/unsloth#11152, a branch that
+        # touches none of this code.
+        #
+        # A second, larger sample is the honest answer, and it is not a second chance: a path
+        # that is genuinely quadratic measures ~`factor ** 2` in EVERY pair, so its second
+        # median comes back over the bar as surely as its first, while a contention spike does
+        # not survive being asked again on a bigger sample. The cost is paid only on the
+        # reading that would otherwise have failed, so a green run still takes three pairs.
+        confirm, big_again, result = growth(
+            run, build, units, factor, repeats = repeats_on_retry, abort_over_s = budget
+        )
+        big = min(big, big_again)
+        assert big < budget, f"{label} path took {big:.1f}s on {units * factor} units"
+        assert confirm < tolerance, (
+            f"{label} path is not linear: {factor}x the input cost {confirm:.1f}x the time "
+            f"over {repeats_on_retry} pairs, after {ratio:.1f}x over 3 "
+            f"(linear is ~{factor}, quadratic is ~{factor ** 2})"
+        )
     return result
