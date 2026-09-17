@@ -398,9 +398,9 @@ def test_a_repo_fetched_with_a_one_off_token_is_not_served_to_a_tokenless_caller
 
     recorded[hf_tokens._request_token_repo_key(ON_DISK, "model")] = True
     hf_tokens._repo_access_cache.clear()
-    assert public_cache_read_authorized(repo_id = ON_DISK) is False, (
-        "a repo downloaded with a one-off token was served to a caller with no token"
-    )
+    assert (
+        public_cache_read_authorized(repo_id = ON_DISK) is False
+    ), "a repo downloaded with a one-off token was served to a caller with no token"
     # Another repo on the same host is unaffected: the record is per repo.
     _materialize_repo(root, "acme/other")
     hf_tokens._repo_access_cache.clear()

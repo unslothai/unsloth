@@ -503,7 +503,9 @@ def _as_owner(call, *args, **kwargs):
 
 
 def note_repo_fetched_with_a_request_token(
-    token: HfTokenArg, repo_id: str, repo_type: Optional[str] = "model",
+    token: HfTokenArg,
+    repo_id: str,
+    repo_type: Optional[str] = "model",
 ) -> None:
     """Record that *repo_id* was fetched under a credential this host does not hold.
 
@@ -534,19 +536,18 @@ def note_repo_fetched_with_a_request_token(
 
 
 def _repo_was_fetched_with_a_request_token(
-    repo_id: Optional[str], repo_type: Optional[str],
+    repo_id: Optional[str], repo_type: Optional[str]
 ) -> Optional[bool]:
     """True / False / ``None`` for "the record could not be read"."""
     if not repo_id:
         return None
     try:
         from storage.studio_db import get_app_setting
-
         recorded = _as_owner(get_app_setting, _REQUEST_TOKEN_REPOS_SETTING_KEY, None)
     except Exception:  # noqa: BLE001
         return None
     if recorded is None:
-        return False          # the store answered, and it holds nothing
+        return False  # the store answered, and it holds nothing
     if not isinstance(recorded, dict):
         return None
     return _request_token_repo_key(repo_id, repo_type) in recorded
