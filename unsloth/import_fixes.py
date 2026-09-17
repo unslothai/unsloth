@@ -1403,6 +1403,298 @@ def ignore_logger_messages():
         pass
 
 
+# huggingface_hub routes to Xet on `is_xet_available()`, which asks importlib.metadata whether the
+# hf_xet DISTRIBUTION is installed and never whether it IMPORTS, so an unloadable hf_xet is still
+# routed to and dies as transformers' misleading "you need to install the hf_xet package".
+# HF_HUB_DISABLE_XET=1 is the Hub's own way off that path, and constants.py freezes it at import
+# time, which is why this is wired into the FIRST block of _gpu_init.py, not the late fixes.
+# unsloth_zoo.hf_xet_fallback does not cover this: it is a stall watchdog around its own wrappers,
+# and an ImportError at import time never reaches it.
+_CPU_FAMILY_BY_MACHINE = {
+    "amd64": "x86_64",
+    "x86_64": "x86_64",
+    "x64": "x86_64",
+    "arm64": "arm64",
+    "aarch64": "arm64",
+    "i386": "x86",
+    "i686": "x86",
+    "x86": "x86",
+    "armv7l": "armv7l",
+    "ppc64le": "ppc64le",
+    "s390x": "s390x",
+}
+# Windows tags name the cpu outright; every other OS carries it as the tag's last token.
+_WINDOWS_PLATFORM_TAG_CPU = {
+    "win_amd64": "x86_64",
+    "win_arm64": "arm64",
+    "win32": "x86",
+}
+_MULTI_ARCH_PLATFORM_TAG_PREFIXES = ("macosx_", "manylinux", "musllinux", "linux_")
+# Header machine ids, for installs whose WHEEL metadata cannot be read. A family absent here reads
+# as "cannot tell", which is never a mismatch.
+_ELF_MACHINE_CPU = {
+    0x03: "x86",
+    0x15: "ppc64le",
+    0x16: "s390x",
+    0x28: "armv7l",
+    0x3E: "x86_64",
+    0xB7: "arm64",
+}
+_PE_MACHINE_CPU = {0x014C: "x86", 0x01C4: "armv7l", 0x8664: "x86_64", 0xAA64: "arm64"}
+# huggingface_hub.constants.ENV_VARS_TRUE_VALUES, matched after .upper(), so an explicit disable
+# is read exactly the way the Hub itself would have read it.
+_HF_HUB_ENV_TRUE_VALUES = ("1", "ON", "TRUE", "YES")
+_MACHO_CPU_TYPE_CPU = {7: "x86", 12: "armv7l", 0x01000007: "x86_64", 0x0100000C: "arm64"}
+
+
+def _host_cpu_family():
+    """CPU family of THIS interpreter, or None when it cannot be told.
+
+    sysconfig first: it reports what the interpreter was BUILT for, which is what a wheel tag must
+    match. platform.machine() is WRONG on Windows, where CPython asks WMI for the PHYSICAL cpu, so
+    an emulated x86-64 process on Windows on ARM answers "ARM64" while being win-amd64. It stays
+    only as the fallback for platforms sysconfig cannot name a cpu for, chiefly macOS universal2.
+    """
+    import platform
+    import sysconfig
+
+    try:
+        host_platform = sysconfig.get_platform().strip().lower()
+    except Exception:
+        host_platform = ""
+    if host_platform:
+        family = _WINDOWS_PLATFORM_TAG_CPU.get(host_platform.replace("-", "_"))
+        if family is None:
+            # linux-x86_64, macosx-11.0-arm64: cpu is the last token.
+            family = _CPU_FAMILY_BY_MACHINE.get(host_platform.rsplit("-", 1)[-1])
+        if family is not None:
+            return family
+    try:
+        return _CPU_FAMILY_BY_MACHINE.get(platform.machine().strip().lower())
+    except Exception:
+        return None
+
+
+def _cpu_family_from_compiled_object(path):
+    """CPU family an ELF / PE / Mach-O file targets, read from its header, or None."""
+    import struct
+
+    try:
+        with open(path, "rb") as binary:
+            head = binary.read(4096)
+    except Exception:
+        return None
+    try:
+        if head[:4] == b"\x7fELF":
+            endian = "<" if head[5] == 1 else ">"
+            return _ELF_MACHINE_CPU.get(struct.unpack_from(endian + "H", head, 18)[0])
+        if head[:2] == b"MZ":
+            pe_offset = struct.unpack_from("<I", head, 0x3C)[0]
+            if head[pe_offset : pe_offset + 4] != b"PE\0\0":
+                return None
+            return _PE_MACHINE_CPU.get(struct.unpack_from("<H", head, pe_offset + 4)[0])
+        magic = struct.unpack_from("<I", head, 0)[0]
+        if magic in (0xFEEDFACE, 0xFEEDFACF):  # little endian Mach-O, 32 and 64 bit
+            return _MACHO_CPU_TYPE_CPU.get(struct.unpack_from("<i", head, 4)[0] & 0xFFFFFFFF)
+        if magic in (0xCEFAEDFE, 0xCFFAEDFE):  # byte swapped
+            return _MACHO_CPU_TYPE_CPU.get(struct.unpack_from(">i", head, 4)[0] & 0xFFFFFFFF)
+    except Exception:
+        return None
+    return None  # Mach-O universal binaries carry several cpus: unreadable on purpose.
+
+
+def _hf_xet_extension_cpu_families(spec):
+    """CPU families of hf_xet's compiled extensions, or () when unreadable. The fallback when the
+    WHEEL metadata is gone: the .pyd/.so still says what it was built for."""
+    families = set()
+    for location in list(getattr(spec, "submodule_search_locations", None) or []):
+        try:
+            names = os.listdir(location)
+        except Exception:
+            continue
+        for name in names:
+            if not name.endswith(tuple(importlib.machinery.EXTENSION_SUFFIXES)):
+                continue
+            family = _cpu_family_from_compiled_object(os.path.join(location, name))
+            if family is None:
+                return ()
+            families.add(family)
+    return tuple(sorted(families))
+
+
+def _cpu_family_from_platform_tag(platform_tag):
+    """CPU family a wheel platform tag targets, or None when it cannot be told: a tag we cannot
+    read (`any`, macOS universal2) must never be reported as a mismatch."""
+    platform_tag = platform_tag.strip().lower()
+    if platform_tag in _WINDOWS_PLATFORM_TAG_CPU:
+        return _WINDOWS_PLATFORM_TAG_CPU[platform_tag]
+    if not platform_tag.startswith(_MULTI_ARCH_PLATFORM_TAG_PREFIXES):
+        return None
+    for machine, family in _CPU_FAMILY_BY_MACHINE.items():
+        if platform_tag.endswith("_" + machine):
+            return family
+    return None
+
+
+def _hf_xet_distribution_is_installed():
+    """True when importlib.metadata sees an hf_xet distribution, the only question
+    huggingface_hub's is_xet_available() asks before routing a download to Xet."""
+    try:
+        importlib_version("hf_xet")
+    except Exception:
+        return False
+    return True
+
+
+def _hf_xet_wheel_platform_tags():
+    """Platform components of the installed hf_xet's WHEEL tags, or () when unreadable."""
+    try:
+        wheel_metadata = importlib_distribution("hf_xet").read_text("WHEEL")
+    except Exception:
+        return ()
+    if not wheel_metadata:
+        return ()
+    platform_tags = []
+    for line in wheel_metadata.splitlines():
+        if not line.lower().startswith("tag:"):
+            continue
+        tag = line.split(":", 1)[1].strip()
+        parts = tag.rsplit("-", 1)
+        if len(parts) != 2 or not parts[1]:
+            continue
+        # compressed tag sets join platforms with a dot
+        platform_tags.extend(parts[1].split("."))
+    return tuple(platform_tags)
+
+
+def _hf_xet_architecture_mismatch(spec = None):
+    """True if hf_xet targets a CPU family this interpreter is not, False if it matches, None when
+    either side cannot be read. Metadata and file headers only: nothing is imported here."""
+    host_family = _host_cpu_family()
+    if host_family is None:
+        return None
+    wheel_families = set()
+    for platform_tag in _hf_xet_wheel_platform_tags():
+        family = _cpu_family_from_platform_tag(platform_tag)
+        if family is None:
+            return None  # one unreadable tag makes the whole verdict unsafe
+        wheel_families.add(family)
+    if not wheel_families:
+        # No readable WHEEL metadata. The extension's own header is the better source anyway.
+        wheel_families = set(_hf_xet_extension_cpu_families(spec))
+    if not wheel_families:
+        return None
+    return host_family not in wheel_families
+
+
+def _hf_xet_extension_is_missing(spec):
+    """True only when hf_xet's package directory holds no compiled extension at all."""
+    locations = list(getattr(spec, "submodule_search_locations", None) or [])
+    if not locations:
+        return False
+    suffixes = tuple(importlib.machinery.EXTENSION_SUFFIXES)
+    for location in locations:
+        try:
+            names = os.listdir(location)
+        except Exception:
+            return False
+        if any(name.endswith(suffixes) for name in names):
+            return False
+    return True
+
+
+def _disable_xet_on_already_imported_huggingface_hub():
+    """Turn Xet off in an ALREADY imported huggingface_hub, returning the bindings changed.
+
+    The variable alone is not enough: >= 0.34 freezes it into `constants.HF_HUB_DISABLE_XET` at
+    import time. Readers go through the module attribute, never a local copy, so rebinding does
+    take effect. Every module is scanned, not constants.py alone, so a future
+    `from .constants import HF_HUB_DISABLE_XET` is covered; versions without the attribute are
+    left alone rather than given one.
+    """
+    if "huggingface_hub" not in sys.modules:
+        # Nothing frozen yet, and importing the Hub just to patch it would cost every user.
+        return ()
+
+    patched = []
+    for name, module in list(sys.modules.items()):
+        if module is None:
+            continue
+        if name != "huggingface_hub" and not name.startswith("huggingface_hub."):
+            continue
+        try:
+            current = getattr(module, "HF_HUB_DISABLE_XET")
+        except Exception:
+            continue  # no binding here to fix, and we must not invent one
+        if current is True:
+            continue
+        try:
+            setattr(module, "HF_HUB_DISABLE_XET", True)
+        except Exception:
+            continue
+        patched.append(name)
+    return tuple(patched)
+
+
+def fix_broken_hf_xet_wheel():
+    """Route Hugging Face downloads over plain HTTPS when hf_xet is installed but unimportable."""
+    explicit = os.environ.get("HF_HUB_DISABLE_XET", "").strip()
+    if explicit != "":
+        # Set explicitly, in either direction: the user's choice outranks ours. A TRUTHY value set
+        # after the Hub was already imported is read by nobody, though, so carry it to the frozen
+        # constant. Falsey values are left alone, so an explicit opt back IN to Xet still wins.
+        if explicit.upper() in _HF_HUB_ENV_TRUE_VALUES:
+            _disable_xet_on_already_imported_huggingface_hub()
+        return
+    if "hf_xet" in sys.modules:
+        return  # already imported, so it works; also makes repeat calls free
+    try:
+        if importlib.util.find_spec("huggingface_hub") is None:
+            return
+        spec = importlib.util.find_spec("hf_xet")
+    except Exception:
+        return
+    if spec is None:
+        # find_spec cannot see it, but huggingface_hub never asks find_spec: a leftover
+        # hf_xet-*.dist-info with no package beside it still reports Xet available and still dies
+        # in `from hf_xet import XetFileInfo`. A genuinely absent hf_xet has no metadata either
+        # and is left alone, since huggingface_hub handles that case correctly.
+        if not _hf_xet_distribution_is_installed():
+            return
+        suspicion = (
+            "its distribution metadata is installed but the package itself is not importable"
+        )
+    elif _hf_xet_architecture_mismatch(spec) is True:
+        suspicion = "it is built for a different CPU architecture than this interpreter"
+    elif _hf_xet_extension_is_missing(spec):
+        suspicion = "its compiled extension module is missing from the installed package"
+    else:
+        return
+
+    # Confirm the suspicion by importing. If it imports after all, we misread the metadata and Xet
+    # stays on. Only reached for an already-suspect install, so a healthy one never pays for it.
+    try:
+        importlib.import_module("hf_xet")
+        return
+    except Exception as error:
+        failure = f"{type(error).__name__}: {error}"
+
+    # The variable is what child processes inherit; the helper is what fixes THIS process when
+    # something already imported the Hub and froze the constant.
+    os.environ["HF_HUB_DISABLE_XET"] = "1"
+    _disable_xet_on_already_imported_huggingface_hub()
+    logger.warning(
+        f"Unsloth: `hf_xet` is installed but cannot be imported ({failure}) because {suspicion} "
+        f"(wheel platform tag(s): {', '.join(_hf_xet_wheel_platform_tags()) or 'unknown'}). "
+        "Set HF_HUB_DISABLE_XET=1, so Hugging Face downloads use plain HTTPS instead: same files, "
+        "same cache, only the Xet transport is skipped. Note that without this, transformers "
+        "reports 'you need to install the hf_xet package', which is misleading: hf_xet IS "
+        "installed, it is simply not loadable by this Python, and reinstalling the same wheel "
+        "cannot fix it. To get Xet back, install an hf_xet built for this interpreter, for example "
+        "`pip install --force-reinstall --no-cache-dir hf_xet`."
+    )
+
+
 def patch_ipykernel_hf_xet():
     # HF-XET 1.1.10 with ipykernel 7.0.0 / 7.0.1 raises LookupError on ContextVar 'shell_parent';
     # see huggingface/xet-core#526.

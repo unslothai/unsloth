@@ -37,6 +37,7 @@ from .import_fixes import (
     disable_torchaudio_if_cuda_mismatched,
     fix_diffusers_warnings,
     fix_huggingface_hub,
+    fix_broken_hf_xet_wheel,
 )
 
 # Redirect a read-only Hugging Face cache before anything below imports huggingface_hub /
@@ -64,6 +65,10 @@ try:
 except Exception:
     pass
 
+# Before anything imports huggingface_hub (disable_broken_vllm, check_fbgemm_gpu_version and
+# fix_huggingface_hub all reach it): the Hub freezes HF_HUB_DISABLE_XET at import time. Stdlib
+# only, so it does not disturb the torch ordering the next comment describes.
+fix_broken_hf_xet_wheel()
 # Configure libdrm ids table path early so ROCm can resolve AMD GPU names. Stdlib only,
 # and it must stay ahead of the first `import torch` in this file: it sets
 # AMDGPU_ASIC_ID_TABLE_PATH, and a torch that has already brought up libdrm would not see
@@ -113,6 +118,7 @@ del check_triton_py_ssize_t_clean
 del torchvision_compatibility_check
 del fix_diffusers_warnings
 del fix_huggingface_hub
+del fix_broken_hf_xet_wheel
 
 # Unsloth patches these libraries at import time; if they are imported first the unoptimized
 # versions run, risking OOM or slower training.
