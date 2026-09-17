@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { readImageModel, rememberImageModel, matchesRememberedModel, type RememberedImageModel } from "./image-model-recall";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ArrowLeftRightIcon,
@@ -19,6 +20,8 @@ import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 
 import { ImageDropzone } from "@/components/image-dropzone";
+import { GuidedTour, useGuidedTourController } from "@/features/tour";
+import { buildImagesTourSteps } from "./tour";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -56,13 +59,17 @@ import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { ModelSelector } from "@/features/model-picker/components/model-selector";
 import { IMAGE_GEN_TASKS } from "@/features/model-picker/components/model-selector/pickers";
 import { PillTabs } from "@/features/model-picker/components/model-selector/pill-tabs";
-import type { HostClass } from "@/features/model-picker/components/model-selector/host-artifact-policy";
+import {
+  type HostClass,
+  hostOffersDensePrecision,
+} from "@/features/model-picker/components/model-selector/host-artifact-policy";
 import {
   IMAGE_CATALOG,
   catalogToModelOptions,
+  curatedArtifactTakesDenseQuant,
   loadSpecFor,
 } from "@/features/model-picker/components/model-selector/model-catalog";
-import { useHostClass } from "@/hooks/use-host-class";
+import { useDenseQuantSchemes, useHostClass } from "@/hooks/use-host-class";
 import type {
   ModelOption,
   ModelSelectorChangeMeta,
@@ -89,7 +96,7 @@ import {
 } from "@/lib/gallery-flags";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
 import { useImageWorkflowStore } from "./stores/image-workflow-store";
-import { WORKFLOW_TABS } from "./workflows";
+import { WORKFLOW_TABS, type WorkflowId } from "./workflows";
 import { ParamSlider } from "@/features/chat";
 import { ModelLoadDescription } from "@/features/chat/components/model-load-status";
 import {
@@ -118,6 +125,7 @@ import {
   denseTransformerBuildLabel,
   isNativeEngineStatus,
   formatResolvedValue,
+  isDenseQuantKind,
   isPrecisionRefusal,
   memoryRecipeValue,
   resolvedBadge,
@@ -173,11 +181,25 @@ import {
   type TrainFamilyOption,
 } from "./train/train-base-selector";
 
+/** Whether this pick may receive a transformer precision request. Unknown repos defer to the backend. */
+function sendsTransformerQuant(kind: string | null | undefined, repoId: string): boolean {
+  return (
+    isDenseQuantKind(kind) &&
+    curatedArtifactTakesDenseQuant(repoId, IMAGE_CATALOG) !== false
+  );
+}
+
 // Curated models come from the shared catalog, one group per model with its artifacts as data and
 // the load kind per artifact from loadSpecFor. Built per render, since a host that can only run
 // the native engine is not offered pipeline rows.
-function useImageModels(host: HostClass): ModelOption[] {
-  return useMemo(() => catalogToModelOptions(IMAGE_CATALOG, host), [host]);
+function useImageModels(
+  host: HostClass,
+  denseQuantSchemes: readonly string[],
+): ModelOption[] {
+  return useMemo(
+    () => catalogToModelOptions(IMAGE_CATALOG, host, denseQuantSchemes),
+    [host, denseQuantSchemes],
+  );
 }
 
 // Workflow tabs. `requires` is the backend workflow id (status.workflows) the model must
@@ -1161,9 +1183,12 @@ export function ImagesPage({
   onInitialReady?: () => void;
 }) {
   const initialReadySent = useRef(false);
+  const [rememberedModel, setRememberedModel] = useState(readImageModel);
+  const pendingRecalledGeneration = useRef<{ model: RememberedImageModel; load: number; workflow: WorkflowId } | null>(null);
   const { isMobile, pinned } = useSidebar();
   const hostClass = useHostClass();
-  const imageModels = useImageModels(hostClass);
+  const denseQuantSchemes = useDenseQuantSchemes();
+  const imageModels = useImageModels(hostClass, denseQuantSchemes);
   const [quant, setQuant] = useState<string | null>(galleryCache.quant);
   const [prompt, setPrompt] = useState(
     "Cinematic wide shot of a whimsical Alice in Wonderland tea party in an overgrown Victorian garden. Exactly three figures at a long white lace-draped table: a tall eccentric gentleman in an oversized emerald velvet top hat pouring tea from a silver pot mid-motion; a young woman in a pale blue Victorian dress seated left, holding a porcelain teacup with both hands, looking up and laughing; an older woman in deep burgundy seated right in profile, reaching for a tiered cake stand. Detailed embroidered fabrics, realistic skin texture, natural expressions. The table holds mismatched porcelain, antique silverware, towering pastel cakes, and wildflowers. Giant red-capped mushrooms rise behind the table, with ancient trees overhead and golden sunlight streaming through leaves. Shot on 85mm, f/2.8, focus on the gentleman, soft background falloff. Photorealistic, saturated storybook color, warm amber and deep green palette.",
@@ -1246,6 +1271,15 @@ export function ImagesPage({
   // Page mode: "create" is the generation workspace, "train" the LoRA training workspace.
   const pageMode = useImageWorkflowStore((s) => s.pageMode);
   const setPageMode = useImageWorkflowStore((s) => s.setPageMode);
+  const tourSteps = useMemo(
+    () => buildImagesTourSteps({ pageMode }),
+    [pageMode],
+  );
+  const tour = useGuidedTourController({
+    id: "images",
+    steps: tourSteps,
+    enabled: active,
+  });
   // Train family + base live here so the top bar can pick them, replacing the generation model selector on Train.
   const [trainFamilies, setTrainFamilies] = useState<TrainFamilyOption[]>([]);
   const [trainFamilyName, setTrainFamilyName] = useState("flux.1");
@@ -2134,6 +2168,10 @@ export function ImagesPage({
         }
         setStatusIfNewest(ticket, loaded);
         toast.success("Model loaded");
+        if (lastLoad.current && matchesRememberedModel(lastLoad.current, loaded)) {
+          rememberImageModel(lastLoad.current);
+          setRememberedModel(lastLoad.current);
+        }
         setBusy(null);
         // Load succeeded: the optimistic quant is now the real one, so drop the pending revert.
         quantRevert.current?.commitRecipeClaim?.();
@@ -2145,6 +2183,7 @@ export function ImagesPage({
         return;
       }
       if (p.phase === "error") {
+        pendingRecalledGeneration.current = null;
         dismissLoadToast();
         reportLoadFailure(p.error, "Failed to load model");
         setBusy(null);
@@ -2165,6 +2204,7 @@ export function ImagesPage({
         return;
       }
       if (p.phase === null) {
+        pendingRecalledGeneration.current = null;
         // No load in flight and nothing loaded: the load was cancelled or evicted. Terminal, else this
         // loop spins forever.
         dismissLoadToast();
@@ -2356,9 +2396,9 @@ export function ImagesPage({
   }, [resolvedKey]);
 
   const bakedLorasFor = useCallback(
-    (repoId: string): LoraSpecInput[] => {
+    (repoId: string, preserveSelection = false): LoraSpecInput[] => {
       const sameTarget = repoId === (lastLoad.current?.repoId ?? status?.repo_id ?? null);
-      if (!sameTarget) return [];
+      if (!sameTarget && !preserveSelection) return [];
       return loras
         .map((l) => ({ id: l.id.trim(), weight: l.weight }))
         .filter((l) => l.id && l.weight > 0);
@@ -2368,8 +2408,8 @@ export function ImagesPage({
 
   // One snapshot of every Advanced control a load sends, so a staged pick can pin the values it planned against.
   const currentLoadAdvanced = useCallback(
-    (repoId: string): LoadAdvanced => {
-      const baked = bakedLorasFor(repoId);
+    (repoId: string, preserveSelection = false): LoadAdvanced => {
+      const baked = bakedLorasFor(repoId, preserveSelection);
       return {
         cpu_offload: cpuOffload,
         speed_mode: speedMode === "auto" ? undefined : speedMode,
@@ -2459,10 +2499,10 @@ export function ImagesPage({
           hf_token: hfApiToken(getHfToken()),
           cpu_offload: advanced.cpu_offload,
           speed_mode: advanced.speed_mode,
-          // GGUF picks only: the dense fast path replaces a GGUF transformer, and every other kind runs
-          // its checkpoint's own precision. The control is hidden there but the state persists across
-          // picks, so a stale scheme would reach a load that can only decline it.
-          transformer_quant: opts.kind === "gguf" ? advanced.transformer_quant : undefined,
+          // Do not carry a saved precision into a known incompatible artifact.
+          transformer_quant: sendsTransformerQuant(opts.kind, repoId)
+            ? advanced.transformer_quant
+            : undefined,
           text_encoder_quant: advanced.text_encoder_quant,
           attention_backend: advanced.attention_backend,
           memory_mode: advanced.memory_mode,
@@ -2662,8 +2702,10 @@ export function ImagesPage({
         hf_token: hfApiToken(getHfToken()),
         cpu_offload: advanced.cpu_offload,
         speed_mode: advanced.speed_mode,
-        // Non-GGUF loads ignore this control; the plan must describe the same request as handleLoad.
-        transformer_quant: opts.kind === "gguf" ? advanced.transformer_quant : undefined,
+        // Keep the planned precision identical to the load request.
+        transformer_quant: sendsTransformerQuant(opts.kind, repoId)
+          ? advanced.transformer_quant
+          : undefined,
         text_encoder_quant: advanced.text_encoder_quant,
         memory_mode: advanced.memory_mode,
         // The backend prefetch decision reads the adapter selection too: a baked LoRA always runs the
@@ -2811,6 +2853,7 @@ export function ImagesPage({
   );
 
   const beginPick = useCallback(() => {
+    pendingRecalledGeneration.current = null;
     pickSeq.current += 1;
     pendingStagedLoad.current = null;
     pendingLoadEntries.current = null;
@@ -3211,6 +3254,7 @@ export function ImagesPage({
 
   // Resolves true when the backend accepted the unload; handleCancelLoad reports the cancel only then.
   const handleUnload = useCallback(async (): Promise<boolean> => {
+    pendingRecalledGeneration.current = null;
     // Ejecting cancels any in-flight replacement load, so tear down its client-side tracking too
     // or the toast leaks forever.
     dropResidentState();
@@ -3563,6 +3607,82 @@ export function ImagesPage({
     }
   }, []);
 
+  const handleGenerateWithRecall = useCallback(async () => {
+    if (busy !== null || !imagePresets.hydrated) return;
+    if (status?.loaded) {
+      const kind = status.model_kind;
+      if (
+        status.repo_id &&
+        (kind === "pipeline" ||
+          ((kind === "gguf" || kind === "single_file") && status.gguf_filename))
+      ) {
+        const model: RememberedImageModel = {
+          repoId: status.repo_id,
+          kind,
+          filename: status.gguf_filename ?? undefined,
+        };
+        rememberImageModel(model);
+        setRememberedModel(model);
+      }
+      await handleGenerate();
+      return;
+    }
+    if (!rememberedModel || !prompt.trim()) {
+      toast.info(
+        rememberedModel
+          ? "Enter a prompt first."
+          : "Pick an image model first.",
+      );
+      return;
+    }
+    pendingRecalledGeneration.current = {
+      model: rememberedModel,
+      load: loadSeq.current + 1,
+      workflow,
+    };
+    const started = await handleLoad(
+      rememberedModel.repoId,
+      { kind: rememberedModel.kind, filename: rememberedModel.filename },
+      currentLoadAdvanced(rememberedModel.repoId, true),
+    );
+    if (!started) pendingRecalledGeneration.current = null;
+  }, [
+    busy,
+    currentLoadAdvanced,
+    handleGenerate,
+    handleLoad,
+    imagePresets.hydrated,
+    prompt,
+    rememberedModel,
+    status,
+    workflow,
+  ]);
+
+  useEffect(() => {
+    const pending = pendingRecalledGeneration.current;
+    if (!pending) return;
+    if (!active || pending.load !== loadSeq.current) {
+      pendingRecalledGeneration.current = null;
+      return;
+    }
+    if (busy !== null || !status?.loaded) return;
+    pendingRecalledGeneration.current = null;
+    const tab = WORKFLOW_TABS.find(
+      (candidate) => candidate.id === pending.workflow,
+    );
+    if (
+      pending.workflow !== workflow ||
+      !tab ||
+      !(status.workflows ?? []).includes(tab.requires ?? "txt2img")
+    ) {
+      toast.info(
+        "Choose a workflow supported by the loaded model before generating.",
+      );
+      return;
+    }
+    if (matchesRememberedModel(pending.model, status)) void handleGenerate();
+  }, [active, busy, handleGenerate, status, workflow]);
+
   // Publish what the loaded model can do, so the sidebar submenu dims the rest. null while
   // nothing is loaded, which leaves every workflow open to set up first.
   useEffect(() => {
@@ -3616,22 +3736,31 @@ export function ImagesPage({
           ["max", "Max"],
         ]}
       />
-      {/* The dense transformer_quant fast path engages only on the GGUF kind, so gate the control to
-          GGUF (or nothing loaded) and otherwise say why it is unavailable. */}
-      {!status?.loaded || status.model_kind === "gguf" ? (
+      {/* Use the same precision eligibility rule as the load request. Native sd.cpp reports
+          model_kind "gguf" as well, to be recallable by exact checkpoint, but runs no torchao
+          path: gate it out by ENGINE or it offers FP8/INT8/NVFP4 with no badge and snaps back. */}
+      {!status?.loaded
+      || (sendsTransformerQuant(status.model_kind, status.repo_id ?? "")
+          && !isNativeEngineStatus(status)) ? (
         <AdvancedSelect
           label="Precision"
-          hint="How the model computes. Auto picks the fastest precision the hardware supports (at least INT8 on a capable GPU; FP8 on data-center cards) by loading the FULL base model and quantising its transformer onto low-precision tensor cores, and falls back to running the GGUF as-is when the device, VRAM or disk can't take it. Off always runs the GGUF as-is."
+          hint="How the model computes. Auto picks the fastest precision the hardware supports (INT8 on every capable GPU, then FP8 where the card has it) and quantises the transformer onto low-precision tensor cores. A GGUF pick reaches it by loading the FULL base model instead of the GGUF, and falls back to the GGUF as-is when the device, VRAM or disk can't take it; an official pipeline is already dense and is quantised in place, falling back to plain BF16. Off runs the checkpoint as-is."
           badge={<ResolvedBadge status={status} controlKey="transformer_quant" />}
           value={transformerQuant}
           onValueChange={(v) => setTransformerQuant(v as typeof transformerQuant)}
           options={[
             ["auto", "Auto (fastest for GPU)"],
-            ["none", "Off (run the GGUF)"],
-            ["fp8", "FP8"],
-            ["int8", "INT8"],
-            ["nvfp4", "NVFP4 (Blackwell)"],
-            ["mxfp8", "MXFP8 (Blackwell)"],
+            ["none", "Off (run the checkpoint as-is)"],
+            // The explicit low-precision schemes need the dense tensor-core path, which a Mac or
+            // CPU-only host cannot run, so the picker does not list what the loader would refuse.
+            ...(hostOffersDensePrecision(hostClass)
+              ? ([
+                  ["fp8", "FP8"],
+                  ["int8", "INT8"],
+                  ["nvfp4", "NVFP4 (Blackwell)"],
+                  ["mxfp8", "MXFP8 (Blackwell)"],
+                ] as [string, string][])
+              : []),
           ]}
         />
       ) : (
@@ -3639,7 +3768,9 @@ export function ImagesPage({
           <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
             Precision
           </span>
-          <span className="text-xs text-muted-foreground/60">GGUF models only</span>
+          <span className="text-xs text-muted-foreground/60">
+            Runs this checkpoint's own precision
+          </span>
         </div>
       )}
       <AdvancedSelect
@@ -3747,6 +3878,8 @@ export function ImagesPage({
     // The chat-style layout gives this page no outer top inset, so clear the custom titlebar here as chat does.
     // 34px on win/linux, 0 under macOS's native one.
     <div className="diffusion-surface @container flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]">
+      {/* Portals to body, and this page stays mounted off-route, so gate it like the composer. */}
+      {active && <GuidedTour {...tour.tourProps} />}
       {/* Keep the tabs centered over the preview at every width: the model rail holds at 408px when
           space permits and shrinks only to preserve the controls. */}
       <div className="pointer-events-none relative z-40 grid h-[48px] shrink-0 grid-cols-[minmax(0,408px)_minmax(13rem,1fr)]">
@@ -3773,6 +3906,7 @@ export function ImagesPage({
               />
             ) : (
               <ModelSelector
+                triggerDataTour="images-model"
                 models={imageModels}
                 value={status?.loaded ? status.repo_id ?? undefined : undefined}
                 activeGgufVariant={quant}
@@ -3811,6 +3945,7 @@ export function ImagesPage({
         <div className="grid h-full min-w-0 grid-cols-[1fr_auto_auto] gap-2 @[50rem]:grid-cols-[1fr_auto_1fr] @[50rem]:gap-0">
           <div className="pointer-events-auto col-start-2 justify-self-center pt-[var(--studio-chat-header-padding-top,11px)]">
             <PillTabs
+              dataTour="images-mode"
               ariaLabel="Page mode"
               value={pageMode}
               onValueChange={(v) => setPageMode(v as "create" | "train")}
@@ -3857,7 +3992,10 @@ export function ImagesPage({
       /* Settings column + preview canvas. Structural borders stay edge-to-edge; spacing belongs inside each pane.
          The same 50rem page-container breakpoint drives this body and the header above. */
       <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden @[50rem]:flex-row @[50rem]:overflow-hidden">
-        <div className="flex w-full shrink-0 flex-col border-b border-border/60 @[50rem]:w-[408px] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0">
+        <div
+          data-tour="images-settings"
+          className="flex w-full shrink-0 flex-col border-b border-border/60 @[50rem]:w-[408px] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0"
+        >
           {/* pl-0.5 keeps focus rings off the scroll container's edge. */}
           <div
             ref={attachSettingsScroll}
@@ -4442,8 +4580,8 @@ export function ImagesPage({
             ) : (
               <Button
                 className="relative z-10 h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
-                onClick={handleGenerate}
-                disabled={busy !== null || !status?.loaded}
+                onClick={handleGenerateWithRecall}
+                disabled={busy !== null || !imagePresets.hydrated || (!status?.loaded && !rememberedModel)}
               >
                 Generate
               </Button>
@@ -4451,7 +4589,10 @@ export function ImagesPage({
           </div>
         </div>
 
-        <div className="relative flex min-h-[60dvh] min-w-0 flex-1 flex-col overflow-hidden @[50rem]:min-h-0">
+        <div
+          data-tour="images-preview"
+          className="relative flex min-h-[60dvh] min-w-0 flex-1 flex-col overflow-hidden @[50rem]:min-h-0"
+        >
           <div className="hover-scrollbar relative flex flex-1 items-center justify-center overflow-auto p-6 px-10 @[50rem]:pt-[60px]">
             {selected && selectedSrc ? (
               <>

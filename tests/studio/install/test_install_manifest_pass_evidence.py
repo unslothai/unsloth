@@ -132,6 +132,28 @@ def test_extras_cannot_shadow_a_field_verify_install_reads(tmp_path: pathlib.Pat
     assert payload["package_version"] != "9.9.9"
 
 
+def test_extras_cannot_name_the_windows_on_arm_torch_index(tmp_path: pathlib.Path) -> None:
+    """setup.ps1 reads woa_torch_index back as an index to install torch FROM, and the
+    parameter that writes it accepts NVIDIA's own https channel only. Evidence reaching the
+    same key would hand a fresh-shell update any URL the caller liked."""
+    im.write_manifest(
+        root = tmp_path,
+        req_root = tmp_path,
+        package_name = "pytest",
+        extra = {"woa_torch_index": "https://evil.test/simple"},
+    )
+    assert "woa_torch_index" not in _payload(tmp_path)
+
+    im.write_manifest(
+        root = tmp_path,
+        req_root = tmp_path,
+        package_name = "pytest",
+        woa_torch_index = "https://pypi.nvidia.com/nvtorch_oot",
+        extra = {"woa_torch_index": "https://evil.test/simple"},
+    )
+    assert _payload(tmp_path)["woa_torch_index"] == "https://pypi.nvidia.com/nvtorch_oot"
+
+
 def test_update_manifest_merges_without_touching_the_rest(tmp_path: pathlib.Path) -> None:
     im.write_manifest(root = tmp_path, req_root = tmp_path, package_name = "pytest")
     before = _payload(tmp_path)
