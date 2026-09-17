@@ -16,6 +16,7 @@ from __future__ import annotations
 import ast
 import re
 from pathlib import Path
+from tests.studio._js_source import assert_guard_holds
 
 WORKDIR = Path(__file__).resolve().parents[2]
 FRONTEND = WORKDIR / "studio" / "frontend" / "src"
@@ -489,11 +490,14 @@ def test_active_model_config_round_trips_gpu_fields():
         assert field in src, field
     assert "if (!isGguf)" in src and "return base" in src
     assert "useActiveModelConfig(" in _read("features/chat/chat-page.tsx")
-    # The GPU knobs are in the editor's instance key, so a reload re-seeds instead of keeping.
+    # Live config sync is in the shared draft store; instance keys still remount on signature.
     shared = _read("features/model-picker/model-config/config-signature.ts")
     assert "export function gpuFieldsSignature" in shared
     assert "gpuFieldsSignature(config)," in shared
     assert "export function modelConfigInstanceKey" in shared
+    assert "export function loadedConfigSignature" in shared
+    draft = _read("features/model-picker/model-config/model-config-draft.ts")
+    assert "export function primeModelConfigDraft" in draft
     sidebar = _read("features/model-picker/components/sidebar-model-config.tsx")
     assert "modelConfigInstanceKey(" in sidebar
     # apply-per-model-config re-exports it, so its own callers are unchanged.
@@ -679,19 +683,24 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
     # that silently follows the default ref. #7736 added the third: the collapsed
     # single-quant GGUF row. #7880 added the fourth: the per-quant VRAM bar, which
     # has to price the pinned snapshot rather than the default ref. #10128 put three of
-    # them behind a torn-snapshot guard, so the guard is matched rather than one spelling.
+    # them behind a torn-snapshot guard. The sole-quant row uses the stronger downloaded
+    # verdict; the other two guard directly on partial state.
     pins = re.findall(r"loadId:\s*(?:(\w+)\s*\?\s*undefined\s*:\s*)?c\.load_id", picker)
-    assert len(pins) == 4, (
+    downloaded_pins = re.findall(r"loadId:\s*(\w+)\s*\?\s*c\.load_id\s*:\s*undefined", picker)
+    assert len(pins) + len(downloaded_pins) == 4, (
         "a row or gear that can start a load is missing the pin, or a new one was "
         "added and this count needs to follow it"
     )
     # #10128: the three that can START a load withhold the pin for a part-downloaded
     # snapshot, since audio-page.tsx reads a forwarded loadId as proof the weights are
     # on disk. The VRAM bar only prices what is there, so it pins unconditionally.
-    assert sorted(pins) == ["", "isPartial", "isPartial", "isPartial"], (
-        "a row that can start a load lost its partial-snapshot guard, or the VRAM bar "
+    assert sorted(pins) == ["", "isPartial", "isPartial"], (
+        "a multi-quant row that can start a load lost its partial-snapshot guard, or the VRAM bar "
         f"gained one: {sorted(pins)}"
     )
+    assert downloaded_pins == [
+        "isDownloaded"
+    ], "the sole-quant row must carry the pin only after that quant is known complete"
     block = re.search(r"onConfigure\(repoId, \{.*?\n\s*\}", picker, re.S)
     assert block and "loadId," in block.group(0), "the GGUF gear drops the pin"
     # The variant click withholds it: a quant outside the pinned snapshot lands in a different one.
@@ -1543,9 +1552,14 @@ def test_a_hidden_diffusion_page_does_not_load_when_its_download_lands():
         src = _read(rel)
         ready = re.search(r"onReady: \(\) => \{.*?\n    \},", src, re.S)
         assert ready, f"{rel}: staged-download onReady not found"
-        assert "if (!active)" in ready.group(0), f"{rel}: a hidden page still takes the GPU"
+        region = ready.group(0)
+        if "resumePendingLoad();" in region:
+            resume = re.search(r"function resumePendingLoad\(\) \{.*?\n  \}", src, re.S)
+            assert resume, f"{rel}: staged-load continuation not found"
+            region += resume.group(0)
+        assert "if (!active)" in region, f"{rel}: a hidden page still takes the GPU"
         # Deferred, not dropped: something has to fire the held pick when the page returns.
-        assert "stagedLoadDeferred" in ready.group(0), f"{rel}: the pick is discarded"
+        assert "stagedLoadDeferred" in region, f"{rel}: the pick is discarded"
         # The deps array grew when the load body moved into runStagedLoad, so match the
         # effect by its guard and check the deps separately. Keying the boundary on
         # `[active` instead lets a reordered array run the match on into the next hook,
@@ -1597,7 +1611,12 @@ def test_a_dying_staged_download_only_rolls_back_its_own_pick():
     for rel in ("features/images/images-page.tsx", "features/video/video-page.tsx"):
         src = _read(rel)
         # Captured before the plan await, otherwise it is the newer pick's entry that gets stored.
-        own = re.search(r"const ownRevert = quantRevert\.current;\n(.*?)await ", src, re.S)
+        own = re.search(
+            r"const ownRevert = (?:downloadSnapshot(?: \|\| downloadOnly)? \? null : )?"
+            r"quantRevert\.current;\n(.*?)await ",
+            src,
+            re.S,
+        )
         assert own, f"{rel}: loadOrStage does not capture its own rollback entry"
         assert "await" not in own.group(
             1
@@ -1624,7 +1643,7 @@ def test_a_plan_that_lands_after_a_newer_pick_is_dropped():
     first plan is still in flight. Plans then resolve in RESPONSE order, not pick order: the older
     one would restage over the newer queue, or fall through and load the model the user left.
 
-    So each pick takes a sequence number and gives up if a newer one has been made since. It must
+    Each load pick takes a sequence number and gives up if a newer one has been made since. It must
     report started, not failed: returning false would send this pick's `.then` rollback at a label
     the newer pick now owns. Every exit that acts on the pick is covered, not just the one after a
     successful plan -- a rejected plan falls through to the load, and a pick that never asks for a
@@ -1634,9 +1653,14 @@ def test_a_plan_that_lands_after_a_newer_pick_is_dropped():
         body = re.search(r"const loadOrStage = useCallback\(\n(.*?)\n  \);", src, re.S)
         assert body, f"{rel}: loadOrStage not found"
         text = body.group(1)
-        assert "const pick = ++pickSeq.current;" in text, f"{rel}: no pick sequence is taken"
+        sequence = re.search(
+            r"const pick = (?:(?:downloadSnapshot|downloadOnly) \? pickSeq\.current : )?"
+            r"\+\+pickSeq\.current;",
+            text,
+        )
+        assert sequence, f"{rel}: no pick sequence is taken"
         # Before any real await, or two picks can share a number.
-        seq = text.index("const pick = ++pickSeq.current;")
+        seq = sequence.start()
         first_await = min(
             (
                 text.index(tok)
@@ -1648,19 +1672,20 @@ def test_a_plan_that_lands_after_a_newer_pick_is_dropped():
         assert seq < first_await, f"{rel}: the sequence is taken after the plan await"
         # Before the non-hub return, so a local pick invalidates an in-flight hub plan.
         assert seq < text.index(
-            'if (source !== "hub")'
+            'if (source !== "hub"'
         ), f"{rel}: a non-hub pick returns without invalidating an in-flight hub plan"
         guards = re.findall(
-            r"if \(pick !== pickSeq\.current(?: \|\| !owns\(\))?\) return (\w+);", text
+            r"if \((?:!downloadOnly && \()?pick !== pickSeq\.current(?: \|\| !owns\(\))?\){1,2} return (\w+);",
+            text,
         )
         assert guards, f"{rel}: a superseded plan is not dropped"
         assert (
             set(guards) == {"true"}
         ), f"{rel}: a superseded pick reports failure, so its rollback fires at the newer pick's label"
         # The fallback load after a rejected plan is guarded too.
-        tail = text[text.rindex("} catch {") :]
+        tail = text[text.rindex("} catch") :]
         assert re.search(
-            r"if \(pick !== pickSeq\.current(?: \|\| !owns\(\))?\) return true;.*?return handleLoadRef",
+            r"if \((?:!downloadOnly && \()?pick !== pickSeq\.current(?: \|\| !owns\(\))?\){1,2} return true;.*?return handleLoadRef",
             tail,
             re.S,
         ), f"{rel}: a plan that rejected after a newer pick still reaches the fallback load"
@@ -1796,11 +1821,11 @@ def test_a_new_pick_drops_the_previous_staged_intent():
         text = body.group(1)
         cleared = text.index("pendingStagedLoad.current = null;")
         assert cleared < text.index(
-            'if (source !== "hub")'
+            'if (source !== "hub"'
         ), f"{rel}: a non-hub pick returns while the previous staged intent is still armed"
         assert cleared < text.index("await "), f"{rel}: the intent survives until the plan resolves"
         # The deferred re-fire and the rollback owner belong to that dead intent too.
-        head = text[: text.index('if (source !== "hub")')]
+        head = text[: text.index('if (source !== "hub"')]
         assert (
             "stagedLoadDeferred.current = false;" in head
         ), f"{rel}: a deferred staged load can still fire for the abandoned pick"
@@ -2609,7 +2634,13 @@ def test_chat_autoload_records_every_validation_failure():
     # The preflight's own cancellation goes through the helper too, or it records without halting.
     assert "recordCandidateFailure(failureLabel, cancelled)" in autoload
     assert "noteLoadFailure(failureLabel, cancelled)" not in autoload
-    assert "if (autoLoadCancelled || loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS)" in autoload
+    assert_guard_holds(
+        autoload,
+        "if",
+        "||",
+        {"autoLoadCancelled", "loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS"},
+        expected = 2,
+    )
 
 
 def test_auth_retries_tag_transport_failures_like_the_first_attempt():
@@ -2712,6 +2743,86 @@ def test_evicted_local_configs_drop_their_server_overrides():
     store = " ".join(_read("features/model-picker/model-config/per-model-config.ts").split())
     assert "evicted?: { modelId: string; ggufVariant: string | null }[]" in store
     assert "modelIdFromStorageKey(" in store and "ggufVariantFromStorageKey(" in store
+
+
+def test_reasoning_resets_reach_the_server_without_making_backfill_destructive():
+    api = " ".join(_read("features/model-picker/api/model-overrides.ts").split())
+    assert "options?.resetReasoningBudget && config?.reasoningBudget === -1" in api
+    assert "reasoning_budget: -1" in api
+    assert 'options?.resetReasoningBudgetMessage && config?.reasoningBudgetMessage === ""' in api
+    assert 'reasoning_budget_message: ""' in api
+
+    route = _read_backend("routes/settings.py")
+    assert "fields_set = payload.model_fields_set" in route
+    assert '"reasoning_budget" in fields_set and payload.reasoning_budget == -1' in route
+    assert (
+        '"reasoning_budget_message" in fields_set and payload.reasoning_budget_message == ""'
+        in route
+    )
+    assert "if not payload.fill_absent_fields and requested_extra_args:" in route
+
+    page = _read("features/model-picker/components/model-config-page.tsx")
+    assert "baseline.reasoningBudget !== -1" in page
+    assert "normalizedRuntimeConfig.reasoningBudget === -1" in page
+    assert 'baseline.reasoningBudgetMessage !== ""' in page
+    assert 'normalizedRuntimeConfig.reasoningBudgetMessage === ""' in page
+
+
+def test_a_recipe_restores_the_previous_model_at_its_reasoning_budget():
+    """Captured from /status beside the context request and replayed the same way; a recipe's
+    own target carries neither and runs at the defaults."""
+    src = _read("features/recipe-studio/hooks/use-recipe-executions.ts")
+    assert src.count("reasoningBudget: status.requested_reasoning_budget ?? -1,") == 2, src
+    assert (
+        src.count('reasoningBudgetMessage: status.requested_reasoning_budget_message ?? "",') == 2
+    ), src
+    assert "reasoning_budget: reasoningBudget ?? -1," in src
+    assert 'reasoning_budget_message: reasoningBudgetMessage ?? "",' in src
+    assert "(left.reasoningBudget ?? -1) === (right.reasoningBudget ?? -1)" in src
+
+    api = " ".join(_read("features/model-picker/api/model-overrides.ts").split())
+    assert "mirrors_reasoning_budget: true," in api
+
+
+def test_reasoning_settings_hydrate_from_a_server_authored_override():
+    """A row written by another browser or an API client carries the pair, and fromApiOverride has
+    to copy it or the panel shows local defaults and the next save writes them back."""
+    api = _read("features/model-picker/api/model-overrides.ts")
+    hydrate = api.split("export function fromApiOverride", 1)[1]
+    hydrate = hydrate[: hydrate.index("\n}")]
+    assert "reasoningBudget: override.reasoning_budget ?? local.reasoningBudget" in hydrate
+    assert "override.reasoning_budget_message ?? local.reasoningBudgetMessage" in hydrate
+
+
+def test_a_recipe_compares_the_requested_reasoning_budget():
+    """Requested, never effective: the effective pair folds in LLAMA_ARG_THINK_BUDGET*, which no
+    request can express, so comparing it would reload the weights on every run forever."""
+    src = _read("features/recipe-studio/hooks/use-recipe-executions.ts")
+    reuse = src.split("async function isLocalModelAlreadyLoaded", 1)[1]
+    reuse = reuse[: reuse.index("\n}")]
+    assert "status.requested_reasoning_budget" in reuse
+    assert (
+        "status.reasoning_budget" not in reuse
+    ), "the reuse check must compare the request, never the environment-resolved value"
+
+
+def test_validate_sends_reasoning_controls_before_the_runtime_unloads():
+    api = _read("features/chat/api/chat-api.ts")
+    validate_body = api.split("export async function validateModel", 1)[1].split(
+        "export async function", 1
+    )[0]
+    assert "reasoning_budget: payload.reasoning_budget ?? -1" in validate_body
+    assert 'reasoning_budget_message: payload.reasoning_budget_message ?? ""' in validate_body
+
+    runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    validation = runtime.index("const validation = await validateModel({")
+    unload = runtime.index("await unloadModel(", validation)
+    assert validation < unload
+    validate_payload = runtime[validation:unload]
+    assert "reasoning_budget:" in validate_payload
+    assert "validateReasoningBudget" in validate_payload
+    assert "reasoning_budget_message:" in validate_payload
+    assert "validateReasoningBudgetMessage" in validate_payload
 
 
 def test_backfill_compares_server_keys_by_normalized_identity():
@@ -2952,8 +3063,7 @@ def test_public_model_identity_matches_the_backend_for_path_loaded_models():
 
 
 def test_the_sidebar_settings_editor_reseeds_when_the_live_config_lands():
-    """ModelConfigPage reads loadedConfig in a useState initializer, so it seeds once per
-    mounted instance."""
+    """ModelConfigPage primes the shared draft when loadedConfigSignature changes."""
     sidebar = " ".join(_read("features/model-picker/components/sidebar-model-config.tsx").split())
     assert "key={modelConfigInstanceKey(modelId, settingsGgufVariant, loadedConfig)}" in sidebar
 
@@ -2972,7 +3082,36 @@ def test_the_sidebar_settings_editor_reseeds_when_the_live_config_lands():
         assert field in signature, field
 
     page = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
-    assert "const [initial] = useState(resolveInitial);" in page, "the rule this mirrors"
+    assert "primeModelConfigDraft(" in page
+    assert "loadedConfigSignature(loadedConfig)" in page
+    # LAYOUT: a live change remounts under the same key, so only a layout cleanup runs first.
+    assert "useLayoutEffect(() => retainModelConfigDraft(draftKey), [draftKey])" in page
+    # Marked by the DRAFT, never the candidate keys: the hosts build differently shaped lists.
+    assert "isExtraArgsHydratedForDraft(draftKey)" in page
+    # Retiring it on retain is how a fresh editor re-reads: the sidebar stays mounted for a
+    # model's whole residency and would never see another origin's save.
+    assert "!isModelConfigDraftEdited(draftKey) &&" in page
+    assert "markModelConfigDraftEdited(draftKey)" in page
+    # Only once the write landed, or the next read replaces values still on screen.
+    assert re.search(r"if \(!saveFailed\) \{.*?clearModelConfigDraftEdited\(draftKey\);", page)
+    # An unticked Remember is a pending Forget the read's own guard would pass and re-tick.
+    assert "markModelConfigDraftEdited(draftKey); setRemember(checked === true);" in page
+    # A peer that fixed the text lifts this editor's retained refusal.
+    assert "(!extraArgsLoadable && !sharedExtraArgsCleared) ||" in page
+    # Run reads the draft, not the render closure: the peer's input blurs during this click.
+    assert "const liveDraftConfig = readModelConfigDraft(draftKey)?.config;" in page
+    assert "const peerChanged = !perModelConfigsEqual(baseConfig, config);" in page
+    assert "markExtraArgsHydratedForDraft(draftKey)" in page
+    # DEFAULT_PER_MODEL_CONFIG names no GPU field, so a merge could not clear a manual pick.
+    assert 'typeof action === "function" ? action(current) : action' in page
+    # Only the row reads the raw text; an editor with Advanced collapsed judges the TOKENS.
+    # Only ever LOWERED by a row that has no catalogue: until the probe lands every flag reads
+    # as unknown, so a second row mounting would otherwise clear a refusal another row verified.
+    assert "if (catalog !== null || !loadable) {" in page
+    assert "setExtraArgsEditLoadableForDraft(draftKey, loadable)" in page
+    assert "sharedExtraArgsRefused" in page
+    assert "resetExtraArgsHydrationForDraft(" not in page
+    assert "extraArgsHydrationIdentityForDraft(" not in page
 
 
 def test_a_standalone_gguf_has_one_settings_identity_in_the_picker():
@@ -3085,7 +3224,10 @@ def test_clearing_the_log_keeps_a_request_that_is_still_running():
     """Dropping an own row mid-flight loses the request outright: active_count falls to
     zero and the finish or fail that follows has no entry left to land on."""
     monitor = " ".join(_read_backend("core/inference/api_monitor.py").split())
-    assert 'if entry.shared or entry.subject != subject or entry.status == "running"' in monitor
+    assert (
+        "if entry.shared or not self._attributed(entry, subject) or "
+        'entry.status == "running"' in monitor
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3419,7 +3561,13 @@ def test_a_failed_quant_is_marked_tried_so_the_repo_continues():
     src = _read("features/chat/api/chat-adapter.ts")
     cascade = src.split("for (const source of sources)", 1)[1]
     cascade = cascade.split("    try {\n      const rt = useChatRuntimeStore.getState();", 1)[0]
-    assert "while (!autoLoadCancelled && loadAttempts < MAX_AUTO_LOAD_ATTEMPTS)" in cascade
+    assert_guard_holds(
+        cascade,
+        "while",
+        "&&",
+        {"!autoLoadCancelled", "loadAttempts < MAX_AUTO_LOAD_ATTEMPTS"},
+        expected = 1,
+    )
     assert "skippedAutoLoadCandidates.add(" in cascade
 
 
@@ -3726,7 +3874,7 @@ def test_a_refused_load_after_staging_rolls_the_pick_back():
     the same bug."""
     for page in ("features/images/images-page.tsx", "features/video/video-page.tsx"):
         src = _read(page)
-        helper = src.split("const runStagedLoad = useCallback(", 1)[1].split("[revertPick],", 1)[0]
+        helper = src.split("const runStagedLoad = useCallback(", 1)[1].split("\n  );", 1)[0]
         # Fire-and-forget is precisely the defect: the boolean has to be observed.
         assert ".then((started) => {" in helper, page
         assert "if (started) return;" in helper, page
@@ -3735,8 +3883,21 @@ def test_a_refused_load_after_staging_rolls_the_pick_back():
         assert "const owned = stagedQuantRevert.current;" in helper, page
         assert "quantRevert.current === owned" in helper, page
         assert "revertPick(quantRevert.current);" in helper, page
-        # One implementation, reached from both deferred paths, so neither can drift.
-        assert src.count("if (pending) runStagedLoad(pending);") == 2, page
+        # Both visible and deferred loads must use the rollback helper.
+        ready = re.search(r"onReady: \(\) => \{.*?\n    \},", src, re.S)
+        assert ready, page
+        continuation = ready.group(0)
+        if "resumePendingLoad();" in continuation:
+            resume = re.search(r"function resumePendingLoad\(\) \{.*?\n  \}", src, re.S)
+            assert resume, page
+            continuation = resume.group(0)
+        assert "runStagedLoad(pending);" in continuation, page
+        deferred = re.search(
+            r"if \(!active \|\| !stagedLoadDeferred\.current\) return;.*?\n  \}, \[[^\]]*\]\);",
+            src,
+            re.S,
+        )
+        assert deferred and "runStagedLoad(pending);" in deferred.group(0), page
         # Exactly one direct call left, the one inside the helper itself.
         assert len(re.findall(r"void handleLoadRef\s*\.current\(\s*pending\.", src)) == 1, page
 
@@ -3820,3 +3981,153 @@ def test_the_media_gpu_pick_survives_a_reload():
         assert "gpuChoices.some((d) => String(d.index) === selectedGpu)" in src or (
             "controls.gpuChoices.some((d) => String(d.index) === controls.selectedGpu)" in src
         ), page
+
+
+def test_a_download_only_pick_does_not_strand_a_staged_load():
+    """Download only fetches files. It must not take the page from a load that is already staging.
+
+    Both pick routes used to retire the staged intent unconditionally: `handleModelSelect` called
+    `beginPick()` plus `pickGuard.claim()` before it looked at the mode, and `loadGgufRepoPick` did
+    the same, so picking a second model in Download only mode left the first one downloaded in full
+    and never loaded, with no toast and nothing to retry from. `loadOrStage` cleared the same refs a
+    second time on its way in.
+
+    So: the mode is read first, and a download-only pick claims nothing and clears nothing."""
+    src = _read("features/images/images-page.tsx")
+    select = re.search(r"const handleModelSelect = useCallback\(\n(.*?)\n  \);", src, re.S)
+    assert select, "handleModelSelect not found"
+    pick = select.group(1)
+    mode = re.search(r'const (\w+) = modelSelectionAction === "download";', pick)
+    assert mode, "handleModelSelect does not read the selection mode before branching"
+    flag = mode.group(1)
+    assert pick.index(mode.group(0)) < pick.index(
+        "beginPick();"
+    ), "the mode is read after the staged intent has already been retired"
+    assert (
+        f"if (!{flag}) beginPick();" in pick
+    ), "a download-only pick still retires the staged load"
+    assert re.search(
+        rf"const token = {flag} \? undefined : pickGuard\.claim\(\);", pick
+    ), "a download-only pick still claims the page, which makes the staged load's token stale"
+
+    repo_pick = re.search(r"const loadGgufRepoPick = useCallback\(\n(.*?)\n  \);", src, re.S)
+    assert repo_pick, "loadGgufRepoPick not found"
+    repo = repo_pick.group(1)
+    assert (
+        "beginPick();" not in repo
+    ), "the repo-level download-only pick still retires the staged load"
+    assert re.search(
+        r"const token = downloadOnly \? 0 : pickGuard\.claim\(\);", repo
+    ), "the repo-level download-only pick still claims the page"
+
+    stage_fn = re.search(r"const loadOrStage = useCallback\(\n(.*?)\n  \);", src, re.S)
+    assert stage_fn, "loadOrStage not found"
+    body = stage_fn.group(1)
+    clearing = re.search(r"if \(([^)]*)\) \{\n\s*pendingStagedLoad\.current = null;", body)
+    assert clearing, "loadOrStage no longer has the staged-intent clearing block"
+    assert "!downloadOnly" in clearing.group(
+        1
+    ), "loadOrStage still clears the staged load intent for a download-only pick"
+
+
+def test_every_optimistic_pick_hands_its_label_back_under_a_guard():
+    """`quantRevert` is one slot. A pick that no longer owns the page must not revert over the label
+    a newer pick has already set, so every `!started` rollback is guarded. Two branches lost that
+    guard when they moved from `handleLoad` to `loadOrStage`."""
+    src = _read("features/images/images-page.tsx")
+    start = src.index("const handleModelSelect = useCallback(")
+    # Bounded at the next top-level callback: handleDeployAdapter rolls back a deploy, not a pick.
+    pick = src[start : src.index("const handleDeployAdapter", start)]
+    rollbacks = re.findall(r"if \(!started(.*?)\) \{\n\s*revertPick\(", pick, re.S)
+    assert rollbacks, "no optimistic rollback found; this guard has gone stale"
+    for tail in rollbacks:
+        assert (
+            "stillOwnsPick()" in tail
+        ), "an optimistic pick reverts its label without checking it still owns the page"
+
+
+def test_a_repeated_download_only_pick_queues_one_download():
+    """Two picks of the same model planned the same files twice and downloaded every byte twice;
+    the second start could also come back "busy" against the first and be dropped silently."""
+    src = " ".join(_read("features/images/images-page.tsx").split())
+    assert (
+        "if (queuedDownloadKeys().has(planKey(entries))) return true;" in src
+    ), "download-only plans are queued without checking what is already queued"
+    assert "function planKey(entries: StagedDownloadEntry[])" in src
+
+
+def test_a_download_only_pick_does_not_retire_the_pick_sequence():
+    """`pickSeq` is how a load pick tells a NEWER load pick from itself. A Download only pick is
+    neither: it fetches files and takes over nothing. Advancing the sequence for one made the
+    ordinary selection that was still awaiting its plan fail its own stale check and return
+    silently, leaving that model neither staged nor loaded and nothing on screen to say so."""
+    src = _read("features/images/images-page.tsx")
+    body = re.search(r"const loadOrStage = useCallback\(\n(.*?)\n  \);", src, re.S)
+    assert body, "loadOrStage not found"
+    text = body.group(1)
+    assert "const pick = downloadOnly ? pickSeq.current : ++pickSeq.current;" in text
+    # The flag has to be decided first, or the ternary reads an undefined binding.
+    assert text.index("const downloadOnly =") < text.index("const pick =")
+
+
+def test_a_download_only_pick_claims_no_label_rollback():
+    """`quantRevert` is ONE slot and a staged load in flight owns what is in it: that entry is the
+    baseline it restores on failure and commits on success. A Download only pick used to take the
+    slot for an optimistic label it then reverted, which restored the PREVIOUS resident's quant and
+    recipe underneath a load that was still coming and left it nothing to commit. So it installs no
+    label at all, and reads no rollback out of the slot."""
+    src = _read("features/images/images-page.tsx")
+    start = src.index("const handleModelSelect = useCallback(")
+    pick = src[start : src.index("const handleDeployAdapter", start)]
+    installs = re.findall(r"const revert: PickRevert(.*?);\n", pick, re.S)
+    assert installs, "no optimistic label install found; this guard has gone stale"
+    for tail in installs:
+        assert "downloadOnlyPick" in tail, "a download-only pick installs an optimistic label"
+    assert "const ownRevert = downloadSnapshot || downloadOnly ? null : quantRevert.current;" in src
+
+
+def test_a_routed_download_only_arrival_claims_nothing():
+    """A ?model= arrival from the chat picker or the Hub takes the page like a direct pick. Under
+    Download only it must not: claiming there revokes the token of a load that is already staging,
+    and resumePendingLoad then drops that load once its files have finished arriving."""
+    src = _read("features/images/images-page.tsx")
+    body = re.search(r"const handledRouteModel = useRef(.*?)\n  \]\);", src, re.S)
+    assert body, "the routed-pick effect was not found; this guard has gone stale"
+    text = body.group(1)
+    assert 'const downloadOnlyPick = modelSelectionAction === "download";' in text
+    assert "const token = downloadOnlyPick ? undefined : pickGuard.claim();" in text
+    # And no optimistic label either: quantRevert is the staged load's slot, not this arrival's.
+    assert "const revert: PickRevert | null = downloadOnlyPick" in text
+
+
+def test_a_refused_download_only_pick_leaves_the_staged_rollback_alone():
+    """abandonPick() reverts and clears quantRevert. A Download only pick refused for being an
+    unsupported repo never claimed the page, so what it would clear is the staged load's own
+    baseline: that load would then resume with the previous resident's steps and guidance and have
+    nothing left to commit."""
+    src = " ".join(_read("features/images/images-page.tsx").split())
+    assert "if (!downloadOnlyPick) abandonPick();" in src
+
+
+def test_an_unresolvable_download_only_gguf_hands_nothing_back():
+    """A GGUF repo whose filename cannot be resolved (several quants and no hint, or a failed
+    listing) reaches onNotStarted. Under Download only nothing was applied, so what sits in
+    quantRevert is the staged load's own baseline: reverting it would load that model with the
+    previous resident's steps and guidance and leave it nothing to commit."""
+    src = _read("features/images/images-page.tsx")
+    body = re.search(r"onNotStarted: \(\) => \{\n(.*?)\n        \},", src, re.S)
+    assert body, "the not-started callback was not found; this guard has gone stale"
+    assert "!downloadOnly &&" in body.group(1)
+
+
+def test_a_download_only_pick_is_allowed_while_the_page_is_busy():
+    """The busy guard exists because the backend 409s a second load. A Download only pick submits
+    no load, and the selector stays interactive during a generation, so refusing it there was a
+    silent dead click: the user picked a model to download and nothing happened."""
+    src = _read("features/images/images-page.tsx")
+    body = re.search(r"const handleModelSelect = useCallback\(\n(.*?)\n  \);", src, re.S)
+    assert body, "handleModelSelect not found"
+    text = body.group(1)
+    assert "if (busy !== null && !downloadOnlyPick) return;" in text
+    # Decided before the guard, or the guard reads an undefined binding.
+    assert text.index("const downloadOnlyPick =") < text.index("if (busy !== null")

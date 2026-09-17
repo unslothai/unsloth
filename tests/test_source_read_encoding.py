@@ -61,6 +61,8 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 TESTS = Path(__file__).resolve().parent
 REPO = TESTS.parent
 # Both trees ship to Windows contributors, and separate CI jobs collect them (repo-cpu-tests and the studio-backend
@@ -109,6 +111,36 @@ def _tracked_test_files(repo: Path):
 SOURCES = _tracked_test_files(REPO)
 if SOURCES is None:
     SOURCES = _walked_test_files(REPO)
+
+# The rules below re-walk the same subtrees many times over: a fixed-point pass
+# repeats until it stops learning, and each pass walks every function again.
+# That is ~170M iter_child_nodes calls across the tree, and the traversal, not
+# the rules, is most of the runtime. The AST is never mutated while a file is
+# scanned, so a walk of a node is the same tuple every time it is asked for.
+#
+# Keyed on id(), which is only sound while the node is alive, so each entry
+# keeps a reference to the node it was keyed on and _scan clears both caches
+# when it is done with a file. The results are identical either way; this only
+# stops the work being repeated.
+_WALKS: dict = {}
+_KIDS: dict = {}
+_CONSUMED: dict = {}
+
+
+def _walk(node):
+    cached = _WALKS.get(id(node))
+    if cached is None:
+        cached = _WALKS[id(node)] = (node, tuple(ast.walk(node)))
+    return cached[1]
+
+
+def _kids(node):
+    cached = _KIDS.get(id(node))
+    if cached is None:
+        cached = _KIDS[id(node)] = (node, tuple(ast.iter_child_nodes(node)))
+    return cached[1]
+
+
 GUARDED_METHODS = {"read_text", "write_text"}
 # Openers that are somebody else's are recognised by the file's own imports rather than a fixed list, so `import tarfile
 # as tf` and `from PIL import Image` are both covered without naming either. These wrap their stream in a TextIOWrapper
@@ -329,10 +361,18 @@ def _import_time_calls(tree: ast.Module):
                         body = list(helper.body)
                         _collect(body)  # a def nested here is now callable
                         frontier.append(body)
-            stack.extend(ast.iter_child_nodes(node))
+            stack.extend(_kids(node))
 
 
 def _eagerly_consumed(tree: ast.Module) -> set:
+    """Both rules ask for this, so compute it once per file. See _walk."""
+    cached = _CONSUMED.get(id(tree))
+    if cached is None:
+        cached = _CONSUMED[id(tree)] = (tree, _eagerly_consumed_uncached(tree))
+    return cached[1]
+
+
+def _eagerly_consumed_uncached(tree: ast.Module) -> set:
     """Nodes whose lazy value is drained right where it is written.
 
     Covers both things that defer: a generator expression, and a call to a
@@ -342,7 +382,7 @@ def _eagerly_consumed(tree: ast.Module) -> set:
     # `texts = (p.read_text() for p in ...)` then `list(texts)` consumes the generator through a name, so the name has
     # to lead back to it.
     named: dict = {}
-    for node in ast.walk(tree):
+    for node in _walk(tree):
         if isinstance(node, ast.Assign) and len(node.targets) == 1:
             target = node.targets[0]
             if isinstance(target, ast.Name) and isinstance(node.value, ast.GeneratorExp):
@@ -354,14 +394,14 @@ def _eagerly_consumed(tree: ast.Module) -> set:
         return node
 
     consumed = set()
-    for node in ast.walk(tree):
+    for node in _walk(tree):
         if isinstance(node, ast.Call) and _is_eager_consumer(node.func):
             consumed.update(id(_resolve(a)) for a in node.args)
             consumed.update(id(_resolve(k.value)) for k in node.keywords)
         elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
             consumed.add(id(_resolve(node.iter)))  # the loop pulls every item
     # `list(enumerate(_paths()))` drains _paths() as well, one wrapper down.
-    by_id = {id(n): n for n in ast.walk(tree)}
+    by_id = {id(n): n for n in _walk(tree)}
     queue = [by_id[i] for i in list(consumed) if i in by_id]
     while queue:
         node = queue.pop()
@@ -382,8 +422,7 @@ def _temp_rooted_names(tree: ast.Module) -> set:
         if value is None:
             continue
         if any(
-            isinstance(n, ast.Call) and _callee_name(n.func) in TEMP_FACTORIES
-            for n in ast.walk(value)
+            isinstance(n, ast.Call) and _callee_name(n.func) in TEMP_FACTORIES for n in _walk(value)
         ):
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
             names.update(t.id for t in targets if isinstance(t, ast.Name))
@@ -419,7 +458,7 @@ def _is_generator(func) -> bool:
             return True
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
             continue
-        stack.extend(ast.iter_child_nodes(node))
+        stack.extend(_kids(node))
     return False
 
 
@@ -438,8 +477,7 @@ def _module_level_names(tree: ast.Module) -> set:
 
     def _is_temp(value) -> bool:
         return value is not None and any(
-            isinstance(n, ast.Call) and _callee_name(n.func) in TEMP_FACTORIES
-            for n in ast.walk(value)
+            isinstance(n, ast.Call) and _callee_name(n.func) in TEMP_FACTORIES for n in _walk(value)
         )
 
     names = set()
@@ -471,7 +509,7 @@ def _local_names(func) -> set:
     for extra in (args.vararg, args.kwarg):
         if extra is not None:
             names.add(extra.arg)
-    stack = list(ast.iter_child_nodes(func))
+    stack = list(_kids(func))
     while stack:
         node = stack.pop()
         if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
@@ -486,7 +524,7 @@ def _local_names(func) -> set:
             names.add(node.id)
         elif isinstance(node, (ast.Import, ast.ImportFrom)):
             names.update((a.asname or a.name).split(".")[0] for a in node.names)
-        stack.extend(ast.iter_child_nodes(node))
+        stack.extend(_kids(node))
     return names
 
 
@@ -503,7 +541,7 @@ def _imported_names(node) -> dict:
     local `from PIL.Image import open` turn off the builtin check everywhere.
     """
     bound = {}
-    stack = list(ast.iter_child_nodes(node))
+    stack = list(_kids(node))
     while stack:
         item = stack.pop()
         if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
@@ -511,7 +549,7 @@ def _imported_names(node) -> dict:
         if isinstance(item, (ast.Import, ast.ImportFrom)):
             bound.update(_import_bindings(item))
         else:
-            stack.extend(ast.iter_child_nodes(item))
+            stack.extend(_kids(item))
     return bound
 
 
@@ -553,7 +591,7 @@ def _imports_at_each_call(tree: ast.Module) -> dict:
                 for child in arm:
                     walk(child, inner)
             return
-        for child in ast.iter_child_nodes(node):
+        for child in _kids(node):
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
                 walk(child, dict(visible))  # its own scope, so its own copy
             else:
@@ -743,7 +781,7 @@ def _class_path_attrs(tree: ast.Module, module_names: set) -> set:
     reads seven real source files exactly that way.
     """
     attrs, mixed = set(), set()
-    for node in ast.walk(tree):
+    for node in _walk(tree):
         if not isinstance(node, ast.ClassDef):
             continue
         for stmt in node.body:
@@ -811,7 +849,7 @@ def _checked_in_locals(
     assignments = []
     targets = set()
     bad = set()
-    for node in ast.walk(func):
+    for node in _walk(func):
         paired = False
         if isinstance(node, ast.Assign) and len(node.targets) == 1:
             target, value = node.targets[0], node.value
@@ -826,7 +864,7 @@ def _checked_in_locals(
             targets.add(id(name_node))
             if not _reads_itself(name_node.id, bound):
                 assignments.append((name_node.id, bound))
-    for node in ast.walk(func):
+    for node in _walk(func):
         # A with-as or an augassign says nothing about the value it binds.
         if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
             if id(node) not in targets:
@@ -910,7 +948,7 @@ def _checked_in_params(tree: ast.Module, module_names: set) -> set:
     defs_in: dict = {}
 
     def _index(node, scope):
-        for child in ast.iter_child_nodes(node):
+        for child in _kids(node):
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 defs_in.setdefault(id(scope), {}).setdefault(child.name, child)
                 scope_of[id(child)] = scope
@@ -937,7 +975,7 @@ def _checked_in_params(tree: ast.Module, module_names: set) -> set:
     def _mark(node, owning):
         if isinstance(node, ast.Call):
             owner[id(node)] = owning
-        for child in ast.iter_child_nodes(node):
+        for child in _kids(node):
             nested = isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
             _mark(child, child if nested else owning)
 
@@ -949,7 +987,7 @@ def _checked_in_params(tree: ast.Module, module_names: set) -> set:
     def _mark_class(node, cls):
         if isinstance(node, ast.Call):
             in_class[id(node)] = cls
-        for child in ast.iter_child_nodes(node):
+        for child in _kids(node):
             _mark_class(child, child if isinstance(child, ast.ClassDef) else cls)
 
     _mark_class(tree, None)
@@ -972,7 +1010,7 @@ def _checked_in_params(tree: ast.Module, module_names: set) -> set:
         # What the calling function itself can prove, recomputed each pass so a parameter resolved last time can feed a
         # local this time.
         scope: dict = {}
-        for call in ast.walk(tree):
+        for call in _walk(tree):
             if not isinstance(call, ast.Call):
                 continue
             caller = owner.get(id(call))
@@ -1069,7 +1107,7 @@ def _checked_in_path_calls(
                 expr, module_names, shadowed, derived, attrs
             ):
                 yield node
-        for child in ast.iter_child_nodes(node):
+        for child in _kids(node):
             yield from visit(child, shadowed, derived)
 
     yield from visit(tree, frozenset())
@@ -1203,6 +1241,17 @@ def _offender(call: ast.Call, modules = NO_MODULES) -> str | None:
 
 def _scan(tree: ast.Module, rel: str):
     """Offenders from both rules, reported once each and in source order."""
+    try:
+        yield from _scan_one(tree, rel)
+    finally:
+        # This file's nodes are about to become unreachable, and a later file's
+        # node could then land on one of their ids.
+        _WALKS.clear()
+        _KIDS.clear()
+        _CONSUMED.clear()
+
+
+def _scan_one(tree: ast.Module, rel: str):
     modules = _imported_names(tree)
     visible_at = _imports_at_each_call(tree)
     calls = {id(c): c for c in _import_time_calls(tree)}
@@ -1227,9 +1276,22 @@ def _scan(tree: ast.Module, rel: str):
             yield f"{rel}:{call.lineno}: {name}"
 
 
-def test_checked_in_file_reads_name_an_encoding():
+# Scanning every file was one test, and a single test is one xdist worker, so
+# it set the floor for the whole suite however many workers were free. The
+# files are independent, so the same scan splits into batches that run in
+# parallel. Every file is still scanned exactly once, by exactly one batch.
+_BATCHES = 16
+
+
+def _batches():
+    ordered = sorted(SOURCES)
+    return [ordered[i::_BATCHES] for i in range(_BATCHES)]
+
+
+@pytest.mark.parametrize("batch", range(_BATCHES))
+def test_checked_in_file_reads_name_an_encoding(batch: int):
     offenders = []
-    for path in sorted(SOURCES):
+    for path in _batches()[batch]:
         tree = ast.parse(path.read_text(encoding = "utf-8"), filename = str(path))
         offenders.extend(_scan(tree, path.relative_to(REPO).as_posix()))
     assert offenders == [], (

@@ -59,11 +59,10 @@ const COARSE_POINTER =
   typeof window.matchMedia === "function" &&
   window.matchMedia("(pointer: coarse)").matches;
 
-// Defer the cached-size chip (Radix Tooltip + two store subscriptions) until a
-// row is first hovered/focused so scrolling the virtualized list doesn't pay
-// that cost per row; an identical StatChip placeholder makes the swap invisible.
-// Coarse pointers have no hover, so they arm immediately. Default true so any
-// out-of-row usage stays functional.
+// Defer the cached-size chip (Radix Tooltip + two store subscriptions) until a row is first
+// hovered/focused so scrolling the virtualized list doesn't pay that cost per row; an identical
+// StatChip placeholder makes the swap invisible. Coarse pointers have no hover, so they arm
+// immediately. Default true so any out-of-row usage stays functional.
 const CatalogRowInteractiveContext = createContext(true);
 
 function CachedSizeChip(props: {
@@ -951,9 +950,8 @@ export function VirtualRows<T>({
               left: 0,
               width: "100%",
               transform: `translateY(${virtualRow.start - scrollMargin}px)`,
-              // Fixed height matching estimateSize (no measureElement ref):
-              // dynamic per-row measurement churns virtualizer state and causes
-              // visible jumps as new rows arrive.
+              // Fixed height matching estimateSize (no measureElement ref): dynamic per-row
+              // measurement churns virtualizer state and causes visible jumps as new rows arrive.
               height: `${rowHeight}px`,
               contain: "layout",
             }}

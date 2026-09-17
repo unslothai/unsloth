@@ -2,8 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
+
+import { readSrcAsync } from "./helpers/kit.ts";
 
 // onScroll never fires for a list that is not scrolling, so the bottom fade is
 // only re-measured when this effect re-runs. Every input that can add or remove
@@ -11,10 +12,7 @@ import test from "node:test";
 // stays wrong until an unrelated scroll or resize.
 
 test("the bottom fade re-measures on every row-count input", async () => {
-  const source = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
+  const source = await readSrcAsync("components/app-sidebar.tsx");
   const effect =
     /Recompute bottom-fade on mount[\s\S]*?\}, \[([\s\S]*?)\n  \]\);/.exec(
       source,

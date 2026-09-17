@@ -34,6 +34,11 @@ const QUEUED_SETTING_KEYS = [
   "ragAutoInject",
   "ragAutoInjectMinScore",
   "loadedContextLength",
+  // Beside the window it describes: selecting an external model clears the live residency
+  // fields without unloading, and a queued local turn is still served by the model it was
+  // queued against. Without this an Ollama or native-path GGUF, which reports no quant and
+  // no .gguf suffix, reads as non-GGUF and loses its compaction policy.
+  "loadedIsGguf",
   "autoHealToolCalls",
   "nudgeToolCalls",
   "maxToolCallsPerMessage",
@@ -63,12 +68,17 @@ const pendingSettings: PendingSettings[] = [];
 
 export function snapshotQueuedChatRunSettings(
   state: ChatRuntimeState,
+  options?: { deferModelResolution?: boolean },
 ): QueuedChatRunSettings {
   const snapshot = {
     params: { ...state.params },
   } as QueuedChatRunSettings;
   for (const key of QUEUED_SETTING_KEYS) {
     Object.assign(snapshot, { [key]: state[key] });
+  }
+  if (options?.deferModelResolution) {
+    snapshot.params.checkpoint = "";
+    snapshot.activeGgufVariant = null;
   }
   return snapshot;
 }

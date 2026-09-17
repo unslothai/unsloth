@@ -163,7 +163,6 @@ def _models_from(payload_args: str) -> list[str]:
         picked[flag] = value
     # Chat model first: it is the GGUF that llama.cpp has to serve, and it is
     # the larger of the two.
-    #
     # The variant glob is deliberately loose at both ends. Multi-part GGUFs are
     # named `...UD-Q4_K_XL-00001-of-00002.gguf`, so anchoring the suffix would
     # match the single-file case and silently miss every shard of the split
@@ -434,7 +433,6 @@ print("{PAYLOAD_SENTINEL} complete rc=" + str(proc.returncode), flush=True)
 """
 
     # Studio's two models, fetched on the half that is ALREADY hidden.
-    #
     # Both were previously pulled inside run_studio_gpu.py, which is the TEST
     # half, so the merged kernel hid Studio's clone, pip and Playwright browser
     # and then paid full price for its downloads with both cards idle. They go
@@ -442,11 +440,9 @@ print("{PAYLOAD_SENTINEL} complete rc=" + str(proc.returncode), flush=True)
     # the t4 driver's lane: that one deliberately targets the image default so
     # the training legs can read it, and Studio's install is a user-shaped
     # install with a cache root of its own.
-    #
     # Last in the install phase, after the venv and the browser: those are what
     # the test half cannot start without, and a download that overruns the card
     # queue must not be what delays them.
-    #
     # hf_home=None means "inherit", NOT "use the default". The setup cell runs
     # first in this same notebook and has already put Studio's private root in
     # os.environ["HF_HOME"], so inheriting is how this lands there. Passing the

@@ -101,7 +101,7 @@ def test_redirect_to_out_of_range_port_is_blocked(monkeypatch):
     monkeypatch.setattr(
         tools,
         "_resolve_with_budget",
-        lambda host, port, deadline, cancel: (True, "", "93.184.216.34"),
+        lambda host, port, deadline, cancel: (True, "", ["93.184.216.34"]),
     )
 
     class _Redirecting:
@@ -184,7 +184,7 @@ def _request_url_for(monkeypatch, url):
             seen["url"] = req.full_url
             raise RuntimeError("captured")
 
-    monkeypatch.setattr(tools, "_resolve_with_budget", lambda *a: (True, "", "93.184.216.34"))
+    monkeypatch.setattr(tools, "_resolve_with_budget", lambda *a: (True, "", ["93.184.216.34"]))
     monkeypatch.setattr(tools.urllib.request, "build_opener", lambda *a: _Opener())
     tools._fetch_url_raw(url, timeout = 5)
     return seen.get("url", "")

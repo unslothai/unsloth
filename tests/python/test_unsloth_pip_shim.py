@@ -16,6 +16,17 @@ from pathlib import Path
 
 import pytest
 
+
+def _shared_setup_1(monkeypatch, tmp_path):
+    _fake_distributions(monkeypatch, ("unsloth", "2026.6.9"))
+    here, there = tmp_path / "here", tmp_path / "there"
+    here.mkdir()
+    there.mkdir()
+    _local_project(there, "unsloth")
+    monkeypatch.chdir(here)
+    return there
+
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SHIM_PATH = REPO_ROOT / "docker" / "unsloth_pip_shim.py"
 
@@ -187,30 +198,45 @@ def test_index_url_value_flag_kept_verbatim(shim):
     assert execd == ["--extra-index-url", "https://example.com/simple", "snac"], execd
 
 
-def test_editable_protected_in_requirements_file_dropped(shim, tmp_path):
+@pytest.mark.parametrize(
+    "requirements, tool, flag, expected_program, absent",
+    [
+        pytest.param(
+            "-e git+https://github.com/unslothai/unsloth.git#egg=unsloth\nsnac==1.2.0\n",
+            "pip",
+            "-r",
+            "-r",
+            "unsloth",
+            id = "editable_protected_in_requirements_file_dropped",
+        ),
+        pytest.param(
+            "-egit+https://github.com/unslothai/unsloth.git#egg=unsloth\nsnac==1.2.0\n",
+            "pip",
+            "-r",
+            "-r",
+            "unsloth",
+            id = "editable_attached_protected_in_requirements_file_dropped",
+        ),
+        pytest.param(
+            "torch==2.11.0\nsnac==1.2.0\n",
+            "uv",
+            "--requirements",
+            "--requirements",
+            "torch",
+            id = "uv_plural_requirements_filtered",
+        ),
+    ],
+)
+def test_requirements_file_drops_the_protected_package(
+    shim, tmp_path, requirements, tool, flag, expected_program, absent
+):
     req = tmp_path / "reqs.txt"
-    req.write_text(
-        "-e git+https://github.com/unslothai/unsloth.git#egg=unsloth\nsnac==1.2.0\n",
-        encoding = "utf-8",
-    )
-    execd, _ = _run(shim, "pip", ["-r", str(req)])
-    assert execd is not None and execd[0] == "-r", execd
+    req.write_text(requirements, encoding = "utf-8")
+    execd, _ = _run(shim, tool, [flag, str(req)])
+    assert execd is not None and execd[0] == expected_program, execd
     filtered = Path(execd[1]).read_text(encoding = "utf-8")
     assert "snac==1.2.0" in filtered
-    assert "unsloth" not in filtered
-
-
-def test_editable_attached_protected_in_requirements_file_dropped(shim, tmp_path):
-    req = tmp_path / "reqs.txt"
-    req.write_text(
-        "-egit+https://github.com/unslothai/unsloth.git#egg=unsloth\nsnac==1.2.0\n",
-        encoding = "utf-8",
-    )
-    execd, _ = _run(shim, "pip", ["-r", str(req)])
-    assert execd is not None and execd[0] == "-r", execd
-    filtered = Path(execd[1]).read_text(encoding = "utf-8")
-    assert "snac==1.2.0" in filtered
-    assert "unsloth" not in filtered
+    assert absent not in filtered
 
 
 def test_editable_unprotected_in_requirements_file_kept(shim, tmp_path):
@@ -287,13 +313,27 @@ def test_bare_wheel_filename_forms(shim, args, expected):
     assert execd == (args if expected is KEPT else expected), execd
 
 
-def test_vcs_url_without_egg_protected_dropped(shim):
-    execd, _ = _run(shim, "pip", ["git+https://github.com/huggingface/transformers.git", "snac"])
-    assert execd == ["snac"], execd
-
-
-def test_vcs_url_without_egg_with_ref_dropped(shim):
-    execd, _ = _run(shim, "pip", ["git+https://github.com/unslothai/unsloth-zoo.git@main", "snac"])
+@pytest.mark.parametrize(
+    "tool, argument",
+    [
+        pytest.param(
+            "pip",
+            "git+https://github.com/huggingface/transformers.git",
+            id = "vcs_url_without_egg_protected_dropped",
+        ),
+        pytest.param(
+            "pip",
+            "git+https://github.com/unslothai/unsloth-zoo.git@main",
+            id = "vcs_url_without_egg_with_ref_dropped",
+        ),
+        pytest.param("pip", "--force-reinstall", id = "force_reinstall_flag_stripped"),
+        pytest.param("pip", "-I", id = "ignore_installed_short_flag_stripped"),
+        pytest.param("uv", "--reinstall", id = "uv_reinstall_flag_stripped"),
+        pytest.param("uv", "--exact", id = "uv_exact_flag_stripped"),
+    ],
+)
+def test_protected_arguments_are_stripped_before_exec(shim, tool, argument):
+    execd, _ = _run(shim, tool, [argument, "snac"])
     assert execd == ["snac"], execd
 
 
@@ -333,19 +373,6 @@ def test_nested_remote_include_dropped(shim, tmp_path):
 
 
 # resolver-wide reinstall / ignore-installed flags cannot rebuild satisfied baked deps
-def test_force_reinstall_flag_stripped(shim):
-    execd, _ = _run(shim, "pip", ["--force-reinstall", "snac"])
-    assert execd == ["snac"], execd
-
-
-def test_ignore_installed_short_flag_stripped(shim):
-    execd, _ = _run(shim, "pip", ["-I", "snac"])
-    assert execd == ["snac"], execd
-
-
-def test_uv_reinstall_flag_stripped(shim):
-    execd, _ = _run(shim, "uv", ["--reinstall", "snac"])
-    assert execd == ["snac"], execd
 
 
 @pytest.mark.parametrize(
@@ -382,16 +409,6 @@ SDIST_URL = "https://files.pythonhosted.org/packages/aa/unsloth-2026.7.1.tar.gz"
 def test_source_archive_forms(shim, args, expected):
     execd, _ = _run(shim, "pip", args)
     assert execd == (args if expected is KEPT else expected), execd
-
-
-def test_uv_plural_requirements_filtered(shim, tmp_path):
-    req = tmp_path / "reqs.txt"
-    req.write_text("torch==2.11.0\nsnac==1.2.0\n", encoding = "utf-8")
-    execd, _ = _run(shim, "uv", ["--requirements", str(req)])
-    assert execd is not None and execd[0] == "--requirements", execd
-    filtered = Path(execd[1]).read_text(encoding = "utf-8")
-    assert "snac==1.2.0" in filtered
-    assert "torch" not in filtered
 
 
 def test_uv_plural_constraints_filtered(shim, tmp_path):
@@ -604,9 +621,6 @@ def test_one_unreadable_dist_does_not_drop_the_other_pins(shim, monkeypatch):
 
 
 # uv --exact is an exact SYNC: it removes packages outside the kept target's closure
-def test_uv_exact_flag_stripped(shim):
-    execd, _ = _run(shim, "uv", ["--exact", "snac"])
-    assert execd == ["snac"], execd
 
 
 # a local project dir naming a protected package needs its name from the project
@@ -1476,12 +1490,7 @@ def _local_project(
 def test_a_local_protected_project_is_found_in_uvs_working_directory(
     shim, monkeypatch, tmp_path, build
 ):
-    _fake_distributions(monkeypatch, ("unsloth", "2026.6.9"))
-    here, there = tmp_path / "here", tmp_path / "there"
-    here.mkdir()
-    there.mkdir()
-    _local_project(there, "unsloth")
-    monkeypatch.chdir(here)
+    there = _shared_setup_1(monkeypatch, tmp_path)
 
     ran = _full_argv(shim, build(str(there)))
     assert ran is None or not any(
@@ -1490,12 +1499,7 @@ def test_a_local_protected_project_is_found_in_uvs_working_directory(
 
 
 def test_the_working_dir_env_also_finds_a_local_protected_project(shim, monkeypatch, tmp_path):
-    _fake_distributions(monkeypatch, ("unsloth", "2026.6.9"))
-    here, there = tmp_path / "here", tmp_path / "there"
-    here.mkdir()
-    there.mkdir()
-    _local_project(there, "unsloth")
-    monkeypatch.chdir(here)
+    there = _shared_setup_1(monkeypatch, tmp_path)
     monkeypatch.setenv("UV_WORKING_DIR", str(there))
 
     ran = _full_argv(shim, ["uv", "pip", "install", "-e", "./unsloth"])
@@ -1544,12 +1548,7 @@ def test_a_fragment_does_not_hide_a_local_protected_project(shim, monkeypatch, t
     """The stat has to happen on the path alone. `#egg=` is recognised earlier, but
     any other fragment reaches the directory lookup still attached, and leaving it on
     makes the stat miss and forwards the project for replacement."""
-    _fake_distributions(monkeypatch, ("unsloth", "2026.6.9"))
-    here, there = tmp_path / "here", tmp_path / "there"
-    here.mkdir()
-    there.mkdir()
-    _local_project(there, "unsloth")
-    monkeypatch.chdir(here)
+    there = _shared_setup_1(monkeypatch, tmp_path)
 
     ran = _full_argv(shim, ["uv", "pip", "--directory", str(there), "install", "-e", spec])
     assert ran is None or not any(

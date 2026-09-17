@@ -2,12 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import { after, before, test } from "node:test";
 import ts from "typescript";
 import { type ViteDevServer, createServer } from "vite";
 import type { ParsedConversation } from "../src/features/chat/types.ts";
+
+import { readSrc } from "./helpers/kit.ts";
 
 let vite: ViteDevServer;
 let parseImportText: (text: string, filename: string) => ParsedConversation[];
@@ -18,13 +19,7 @@ let messageToOpenAI: (message: {
 }) => unknown[];
 
 function loadMessageToOpenAI(): typeof messageToOpenAI {
-  const source = readFileSync(
-    new URL(
-      "../src/features/chat/prompt-storage/prompt-storage-dialog.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const source = readSrc("features/chat/prompt-storage/prompt-storage-dialog.tsx");
   const start = source.indexOf("type OAIContentPart =");
   const end = source.indexOf("// ShareGPT training JSONL", start);
   assert.notEqual(start, -1, "message serializer start marker must exist");

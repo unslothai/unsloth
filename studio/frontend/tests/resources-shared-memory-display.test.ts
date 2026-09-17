@@ -2,13 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
-const resourcesTab = readFileSync(
-  new URL("../src/features/settings/tabs/resources-tab.tsx", import.meta.url),
-  "utf8",
-);
+import { readSrc } from "./helpers/kit.ts";
+
+const resourcesTab = readSrc("features/settings/tabs/resources-tab.tsx");
 
 test("Resources separates dedicated VRAM from shared GPU memory", () => {
   assert.match(resourcesTab, /gpuMemoryTotalsGb\(devices\)/);

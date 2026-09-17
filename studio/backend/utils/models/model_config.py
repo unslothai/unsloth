@@ -5,6 +5,7 @@
 
 from dataclasses import dataclass
 from typing import Optional, Dict, Any
+from utils.paths.storage_roots import own_entry, within_account
 from utils.paths import (
     normalize_path,
     is_local_path,
@@ -18,8 +19,11 @@ from utils.paths import (
 )
 from hub.utils.hf_tokens import (
     ANONYMOUS_CACHE_IDENTITY,
+    cached_read_refused,
+    qualify_cache_identity,
     HfTokenArg,
     apply_token_to_child_env,
+    cache_reads_authorized,
     is_anonymous,
     normalize_token,
 )
@@ -574,6 +578,22 @@ def load_model_config(
             **revision_kwargs,
         )
 
+    if (
+        isinstance(token, str)
+        and token
+        and not is_local_path(model_name)
+        and cached_read_refused(
+            token,
+            repo_id = model_name,
+            is_cached = lambda: _config_json_already_cached(model_name, revision),
+            # The caller's own cache-only contract, forwarded: without it a
+            # local_files_only read still dialled /auth-check and could stall for the
+            # probe timeout, which is the one thing that kind of read promises not to do.
+            offline = bool(local_files_only),
+        )
+    ):
+        raise OSError(f"config.json for {model_name} is not available to an unauthorized caller")
+
     if token:
         return AutoConfig.from_pretrained(
             model_name,
@@ -807,6 +827,15 @@ def _raw_config_has_vision_config(
             }
             if revision is not None:
                 download_kwargs["revision"] = revision
+            # Measured: hf_hub_download falls back to the cache even with
+            # local_files_only=False, never consulting the credential, so a planted entry
+            # plus a dead endpoint returns a private config.json to a token that cannot read it.
+            if cached_read_refused(
+                hf_token,
+                repo_id = model_name,
+                is_cached = lambda: _config_json_already_cached(model_name, revision),
+            ):
+                return None
             config_path = Path(hf_hub_download(**download_kwargs))
         config = json.loads(config_path.read_text(encoding = "utf-8-sig"))
         architectures = config.get("architectures") or []
@@ -834,6 +863,39 @@ def _raw_config_has_vision_config(
 
 # why: inline _is_vlm and constants are prepended so the subprocess stays self-contained
 # and doesn't import the parent module graph. Built on demand to defer the registry read.
+def _offline_cache_read_refused(hf_token, model_name: str, repo_id: str, offline: bool) -> bool:
+    """Offline the capability probes read the cache and never authorize, so an unentitled
+    caller is not put back on the wire by local_files_only being False. A local path the
+    caller named itself is not the Hub cache and stays available.
+
+    ``offline`` is forwarded, not just tested: else a local_files_only call on a host with no
+    offline env probes anyway, once per repo, which is what it promises not to do.
+    """
+    return (
+        offline
+        and not is_local_path(model_name)
+        and not cache_reads_authorized(hf_token, repo_id = repo_id, offline = offline)
+    )
+
+
+def _config_json_already_cached(model_name: str, revision: Optional[str] = None) -> bool:
+    """True if this repo's config.json is on disk, so an unauthorized read could be served it."""
+    try:
+        from huggingface_hub import try_to_load_from_cache
+        hit = try_to_load_from_cache(
+            repo_id = model_name,
+            filename = "config.json",
+            revision = revision,
+            cache_dir = active_hf_hub_cache(),
+        )
+        # Also returns a sentinel object recording a known-absent file; only a str is a real hit.
+        return isinstance(hit, str)
+    except Exception as exc:
+        # Never let the guard's own failure open the path it guards.
+        logger.debug("Could not check cached config.json for '%s': %s", model_name, exc)
+        return True
+
+
 def _build_vision_check_inline_helpers() -> str:
     vlm_types, vlm_classes, audio_types = _detection_sets()
     return (
@@ -1061,7 +1123,7 @@ def _token_fingerprint(token: HfTokenArg) -> Optional[str]:
         return ANONYMOUS_CACHE_IDENTITY
     if token is None:
         return None
-    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+    return qualify_cache_identity(token, hashlib.sha256(token.encode("utf-8")).hexdigest())
 
 
 # Scoped to a request, not cached: a repo gated or deleted between requests is seen on the next.
@@ -1197,9 +1259,10 @@ def is_vision_model(
         resolved_name = model_name
     # Key on effective offline (kwarg OR env) so an offline probe can't poison a later lookup.
     effective_offline = bool(local_files_only or _env_offline())
-    # Offline the probe reads the cache and never authorizes, so local_files_only=False
-    # does not put an anonymous caller back on the wire. It gets the default instead.
-    if effective_offline and is_anonymous(hf_token) and not is_local_path(model_name):
+    # The ONLINE fallback is guarded inside _raw_config_has_vision_config, where a cached
+    # file can actually be served; gating the whole call would deny a legitimate token its
+    # answer on any Hub hiccup, for a repo with nothing to leak.
+    if _offline_cache_read_refused(hf_token, model_name, resolved_name, effective_offline):
         return False
     cache_key: _CapabilityCacheKey = (
         resolved_name,
@@ -1361,7 +1424,7 @@ def _local_audio_metadata_fingerprint(model_name: str) -> tuple:
             identities.append((relative, identity))
         return tuple(identities)
     except Exception:
-        # Keep cache-key construction from turning an unreadable path into a request failure.
+        # An unreadable path must not turn cache-key construction into a request failure.
         return (("unreadable", None),)
 
 
@@ -1420,9 +1483,7 @@ def detect_audio_type_checked(
 
     # Key on effective offline (kwarg OR env) so an offline negative can't poison a later probe.
     effective_offline = bool(local_files_only or _env_offline())
-    # Offline the probe reads the cache and never authorizes, so local_files_only=False
-    # does not put an anonymous caller back on the wire. Inconclusive for it instead.
-    if effective_offline and is_anonymous(hf_token) and not is_local_path(model_name):
+    if _offline_cache_read_refused(hf_token, model_name, model_name, effective_offline):
         return None, False
     local_fingerprint = (
         _local_audio_metadata_fingerprint(model_name) if is_local_path(model_name) else None
@@ -1556,7 +1617,11 @@ def _detect_audio_from_tokenizer(
         else:
             # Read before any network branch and never authorizes, so it would serve a
             # cached private repo's audio tokens online as well as offline.
-            repo_dir = None if is_anonymous(hf_token) else get_cache_path(model_name)
+            repo_dir = (
+                get_cache_path(model_name)
+                if cache_reads_authorized(hf_token, repo_id = model_name)
+                else None
+            )
             if repo_dir is not None and repo_dir.is_dir():
                 snapshots_dir = repo_dir / "snapshots"
                 if snapshots_dir.is_dir() and revision is None:
@@ -1659,8 +1724,11 @@ def _detect_audio_from_tokenizer(
     from urllib.parse import quote
 
     revision_path = "main" if revision is None else quote(revision, safe = "")
+    from utils.hf_endpoint import get_hf_endpoint
+
+    hf_endpoint = get_hf_endpoint()
     for tok_path in _AUDIO_TOKENIZER_CONFIG_PATHS:
-        url = f"https://huggingface.co/{model_name}/resolve/{revision_path}/{tok_path}"
+        url = f"{hf_endpoint}/{model_name}/resolve/{revision_path}/{tok_path}"
         try:
             resp = requests.get(url, headers = headers, timeout = 15)
         except Exception as e:
@@ -1949,6 +2017,7 @@ def detect_mmproj_file(
     path: str,
     search_root: Optional[str] = None,
     allow_disjoint_search_root: bool = False,
+    accept: Optional[Callable[[str], bool]] = None,
 ) -> Optional[str]:
     """Find the mmproj GGUF for a model.
 
@@ -1956,6 +2025,7 @@ def detect_mmproj_file(
     to also walk (snapshot layouts where the weight is in ``snapshot/BF16/``
     but the projector sits at ``snapshot/``). A trusted cache resolver may set
     ``allow_disjoint_search_root`` for another revision of the same repository.
+    ``accept`` applies caller authorization before candidate metadata is read.
     Returns the projector path or ``None``."""
     p = Path(path)
     start_dir = p.parent if p.is_file() else p
@@ -1978,6 +2048,9 @@ def detect_mmproj_file(
         scan_order.append(resolved)
 
     _add(start_dir)
+    # Hermes stages the projector for a one-click download under models/assets/ so its own
+    # router never lists it as a model; the weight sits one level up as a flat file.
+    _add(start_dir / "assets")
 
     # Ollama's .studio_links/foo.gguf -> blobs/sha256-...: also scan target dir.
     try:
@@ -2018,6 +2091,8 @@ def detect_mmproj_file(
         except OSError:
             continue
         for f in files:
+            if accept is not None and not accept(str(f)):
+                continue
             try:
                 resolved = f.resolve()
                 # Interrupted download: llama-server can't open it and it must not shadow a real projector.
@@ -2067,12 +2142,13 @@ def detect_mmproj_file(
     if not scored:
         return None
 
-    # Score first, then longest shared prefix, then shorter stem.
+    # Score first, then longest shared prefix, then shorter stem. The prefix is read past
+    # the ``mmproj-`` marker, or every projector in a shared pool ties at zero.
     best = max(
         scored,
         key = lambda sc: (
             sc[0],
-            _shared_prefix_len(model_stem, sc[1].stem.lower()),
+            _shared_prefix_len(model_stem, _re.sub(r"^mmproj[-_]", "", sc[1].stem.lower())),
             -len(sc[1].stem),
         ),
     )
@@ -2093,6 +2169,7 @@ from utils.models.drafters import (  # noqa: E402
     _drafter_total_size,
     detect_dflash_file,
     dspark_precision_rank,
+    is_published_drafter_filename,
 )
 from utils.models.drafters import (  # noqa: E402
     dspark_preference_key as _drafters_dspark_preference_key,
@@ -2173,7 +2250,8 @@ def detect_mtp_file(
     p = Path(path)
     weight_name = p.name.lower() if p.suffix.lower() == ".gguf" else None
     start_dir = p.parent if p.is_file() else p
-    dirs = [start_dir]
+    # Hermes stages a download's drafter under models/assets/, like its projector.
+    dirs = [start_dir, start_dir / "assets"]
     if search_root is not None:
         dirs.append(Path(search_root))
     # Both tiers are collected before either is emitted: two sidecars can
@@ -2188,8 +2266,7 @@ def detect_mtp_file(
             except OSError:
                 continue
             for f in entries:
-                name = f.name.lower()
-                if not (name.startswith("mtp-") and name.endswith(".gguf")):
+                if not is_published_drafter_filename(f.name, kind = "mtp", allow_legacy_suffix = False):
                     continue
                 if not _matches_weight(f):
                     continue
@@ -2229,13 +2306,7 @@ def detect_mtp_file(
                 # _is_mtp_drafter accepts everything under MTP/ by design (it excludes them from variant
                 # menus). Too broad to include here: a weight copy would launch as --model-draft. Require
                 # a published drafter name: mtp-<model> or <model>-MTP.
-                lower = f.name.lower()
-                if not lower.endswith(".gguf"):
-                    continue
-                # Drop the shard suffix first: an old-scheme split copy is named
-                # <model>-Q8_0-MTP-00001-of-00002.gguf, whose stem does not end in -mtp.
-                stem = re.sub(r"-[0-9]{5}-of-[0-9]{5}$", "", Path(lower).stem)
-                if not (lower.startswith("mtp-") or stem.endswith("-mtp")):
+                if not is_published_drafter_filename(f.name, kind = "mtp"):
                     continue
                 if not _matches_weight(f):
                     continue
@@ -2321,7 +2392,8 @@ def detect_dspark_file(
     p = Path(path)
     weight_name = p.name if p.suffix.lower() == ".gguf" else None
     start_dir = p.parent if p.is_file() else p
-    dirs = [start_dir]
+    # Hermes stages a download's drafter under models/assets/, like its projector.
+    dirs = [start_dir, start_dir / "assets"]
     if search_root is not None:
         dirs.append(Path(search_root))
 
@@ -3351,13 +3423,14 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
     # online lookup can memoize True from tags with no weights cached, and a cached negative can
     # be invalidated by later materialization. The cache probe is local-only, so it's cheap.
     if not is_local_path(model_name) and hf_env_offline():
-        # The marker is read off the HF cache and never authorizes. Offline this caller
-        # cannot establish access, so it reports the default rather than the cache.
-        if is_anonymous(hf_token):
+        # The marker never authorizes, so offline an unverified token reports the default.
+        if not cache_reads_authorized(hf_token, repo_id = model_name):
             return False
         return _embedding_marker_in_hf_cache(model_name)
 
-    cache_key = (model_name, hf_token)
+    # Fingerprinted, not the raw token: the marker is a str subclass equal to a plain token
+    # of the same value, so a UI-computed classification was served to an API caller.
+    cache_key = (model_name, _token_fingerprint(hf_token))
     if cache_key in _embedding_detection_cache:
         return _embedding_detection_cache[cache_key]
 
@@ -3392,7 +3465,7 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
     except Exception as e:
         # Timeout or transient network error: fall back to the local cache marker, don't hard-fail.
         logger.warning(f"Could not determine if {model_name} is embedding model: {e}")
-        if is_anonymous(hf_token):
+        if not cache_reads_authorized(hf_token, repo_id = model_name):
             # The anonymous 404 lands here too, and the marker read never authorizes.
             return False
         is_emb = _embedding_marker_in_hf_cache(model_name)
@@ -3448,13 +3521,15 @@ def _looks_like_lora_adapter(model_dir: Path) -> bool:
     )
 
 
-def scan_trained_models(outputs_dir: str = str(outputs_root())) -> List[Tuple[str, str, str]]:
+def scan_trained_models(outputs_dir: Optional[str] = None) -> List[Tuple[str, str, str]]:
     """Scan outputs folder for trained Unsloth models.
 
     Returns:
         List of (display_name, model_path, model_type), where model_type is
         "lora" for adapter runs or "merged" for full finetunes.
     """
+    if outputs_dir is None:
+        outputs_dir = str(outputs_root())
     trained_models = []
     outputs_path = resolve_output_dir(outputs_dir)
 
@@ -3464,7 +3539,7 @@ def scan_trained_models(outputs_dir: str = str(outputs_root())) -> List[Tuple[st
 
     try:
         for item in outputs_path.iterdir():
-            if item.is_dir():
+            if item.is_dir() and within_account(item):
                 model_type = _detect_training_output_type(item)
                 if model_type is None:
                     continue
@@ -3489,7 +3564,7 @@ def scan_trained_models(outputs_dir: str = str(outputs_root())) -> List[Tuple[st
 
 
 def scan_exported_models(
-    exports_dir: str = str(exports_root()),
+    exports_dir: Optional[str] = None,
 ) -> List[Tuple[str, str, str, Optional[str]]]:
     """Scan exports folder for exported models (merged, LoRA, GGUF).
 
@@ -3500,6 +3575,8 @@ def scan_exported_models(
         List of (display_name, model_path, export_type, base_model), where
         export_type is "lora" | "merged" | "gguf".
     """
+    if exports_dir is None:
+        exports_dir = str(exports_root())
 
     results = []
     exports_path = resolve_export_dir(exports_dir)
@@ -3509,7 +3586,7 @@ def scan_exported_models(
 
     try:
         for run_dir in exports_path.iterdir():
-            if not run_dir.is_dir():
+            if not run_dir.is_dir() or not within_account(run_dir):
                 continue
 
             # Flat GGUF export (exports/...-gguf/); neither mmproj files nor the imatrix an
@@ -3537,7 +3614,7 @@ def scan_exported_models(
 
             # Two-level: {run}/{checkpoint}/
             for checkpoint_dir in run_dir.iterdir():
-                if not checkpoint_dir.is_dir():
+                if not checkpoint_dir.is_dir() or not within_account(checkpoint_dir):
                     continue
 
                 adapter_config = checkpoint_dir / "adapter_config.json"
@@ -3551,18 +3628,18 @@ def scan_exported_models(
                 base_model = None
                 export_type = None
 
-                if adapter_config.exists():
+                if own_entry(adapter_config):
                     export_type = "lora"
                     try:
                         cfg = json.loads(adapter_config.read_text(encoding = "utf-8-sig"))
                         base_model = cfg.get("base_model_name_or_path")
                     except Exception:
                         pass
-                elif config_file.exists() and has_weights:
+                elif own_entry(config_file) and has_weights:
                     export_type = "merged"
                     export_meta = checkpoint_dir / "export_metadata.json"
                     try:
-                        if export_meta.exists():
+                        if own_entry(export_meta):
                             meta = json.loads(export_meta.read_text(encoding = "utf-8-sig"))
                             base_model = meta.get("base_model")
                     except Exception:
@@ -3574,7 +3651,7 @@ def scan_exported_models(
                     for meta_dir in (checkpoint_dir, run_dir):
                         export_meta = meta_dir / "export_metadata.json"
                         try:
-                            if export_meta.exists():
+                            if own_entry(export_meta):
                                 meta = json.loads(export_meta.read_text(encoding = "utf-8-sig"))
                                 base_model = meta.get("base_model")
                                 if base_model:
@@ -3594,7 +3671,7 @@ def scan_exported_models(
                 if not base_model:
                     outputs_adapter_cfg = resolve_output_dir(run_dir.name) / "adapter_config.json"
                     try:
-                        if outputs_adapter_cfg.exists():
+                        if own_entry(outputs_adapter_cfg):
                             cfg = json.loads(outputs_adapter_cfg.read_text(encoding = "utf-8-sig"))
                             base_model = cfg.get("base_model_name_or_path")
                     except Exception:
@@ -3977,6 +4054,7 @@ class ModelConfig:
         gguf_variant: Optional[str] = None,
         drafter_accept: Optional[Callable[[str, str, str, str], bool]] = None,
         gguf_companion_roots: Optional[Tuple[str, ...]] = None,
+        mmproj_accept: Optional[Callable[[str, str], bool]] = None,
     ) -> Optional["ModelConfig"]:
         """Create ModelConfig from a clean model identifier (HF repo or local
         path), for FastAPI routes that send sanitized paths.
@@ -4000,6 +4078,8 @@ class ModelConfig:
             gguf_companion_roots: Trusted snapshot directories belonging to the
                 resolver-selected local cache entry. Used only to locate a
                 compatible mmproj without changing the selected main weights.
+            mmproj_accept: ``(candidate, gguf_file) -> bool`` admission rule
+                applied before reading projector metadata for native loads.
 
         Returns:
             ModelConfig or None if it cannot be created.
@@ -4089,6 +4169,11 @@ class ModelConfig:
                                 gguf_file,
                                 search_root = root,
                                 allow_disjoint_search_root = gguf_companion_roots is not None,
+                                accept = (
+                                    (lambda candidate: mmproj_accept(candidate, gguf_file))
+                                    if mmproj_accept is not None
+                                    else None
+                                ),
                             )
                         )
                     ),
@@ -4118,7 +4203,6 @@ class ModelConfig:
                         None,
                     )
 
-                # Separate speculative-decoding companions, mirroring mmproj.
                 mtp_file = _find_drafter(detect_mtp_file, "mtp")
                 if mtp_file:
                     logger.info(f"Detected MTP drafter: {mtp_file}")

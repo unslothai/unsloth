@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Assertions over the model catalog: keys, aliases, integrity, quant ladders, search.
-// `--network` adds an OPT-IN Hub reachability/gated-flag pass, kept out of
-// `npm run catalog:check` so a Hub hiccup cannot fail an unrelated PR.
-// Run it on a schedule (.github/workflows/model-catalog-network-check.yml) or by hand with
+// Assertions over the model catalog: keys, aliases, integrity, quant ladders, search. `--network` adds an OPT-IN
+// Hub reachability/gated-flag pass, kept out of `npm run catalog:check` so a Hub hiccup cannot fail an unrelated
+// PR. Run it on a schedule (.github/workflows/model-catalog-network-check.yml) or by hand with
 // `npm run catalog:check:network`.
 
 import assert from "node:assert/strict";
@@ -371,9 +370,8 @@ for (const catalog of [IMAGE_CATALOG, VIDEO_CATALOG]) {
   }
 }
 
-// A non-GGUF artifact stating a parameter count must state its size, or the VRAM badge
-// falls back to the QLoRA estimator, which reads a pipeline as a language model
-// (5B says 5.9 GB where Wan 2.2 TI2V is 30).
+// A non-GGUF artifact stating a parameter count must state its size, or the VRAM badge falls back to the QLoRA
+// estimator, which reads a pipeline as a language model (5B says 5.9 GB where Wan 2.2 TI2V is 30).
 for (const catalog of [IMAGE_CATALOG, VIDEO_CATALOG, AUDIO_CATALOG]) {
   for (const group of catalog) {
     for (const artifact of group.artifacts) {
@@ -392,9 +390,8 @@ const H3 = "MiniMaxAI/MiniMax-H3";  // 145 GB, tiers at 74/140 and 123/80
 const fitsCurated = (id: string, gpuGb: number, systemRamGb: number) =>
   curatedArtifactFitsDevice(id, VIDEO_CATALOG, { gpuGb, systemRamGb });
 
-// The resident 70% rule on the card alone. RAM is not a discrete GPU's budget: a pipeline
-// with no measured tier is placed wholly on the card.
-// 64 GB of RAM does not rescue a 12 GB card.
+// The resident 70% rule on the card alone. RAM is not a discrete GPU's budget: a pipeline with no measured tier
+// is placed wholly on the card, so 64 GB of RAM does not rescue a 12 GB card.
 assert.equal(fitsCurated(WAN, 48, 0), true);
 assert.equal(fitsCurated(WAN, 40, 0), false);
 assert.equal(fitsCurated(WAN, 12, 64), false);
@@ -410,9 +407,9 @@ assert.equal(fitsCurated(H3, 74, 100), false);
 // A GGUF ladder self-fits via pickDefaultQuant, and an unknown id is not ours to judge.
 assert.equal(fitsCurated("unsloth/MiniMax-H3-GGUF", 12, 64), undefined);
 assert.equal(fitsCurated("someone/not-in-the-catalog", 12, 64), undefined);
-// Transcription retries a failed device load on CPU (stt_sidecar.py), so RAM is a real
-// budget for stt: Whisper Large runs on a card too small to hold it. A tts load rejects CPU
-// offload (inference.py raise_if_offloaded), so Orpheus is judged on the card.
+// Transcription retries a failed device load on CPU (stt_sidecar.py), so RAM is a real budget for stt: Whisper
+// Large runs on a card too small to hold it. A tts load rejects CPU offload (inference.py raise_if_offloaded), so
+// Orpheus is judged on the card.
 assert.equal(
   curatedArtifactFitsDevice("unsloth/whisper-large-v3", AUDIO_CATALOG, {
     gpuGb: 4,
@@ -453,9 +450,8 @@ assert.equal(
 
 
 const GB = 1024 ** 3;
-// Delegated to lib/gguf-fit, the Hub badge formula: 0.97 of the card (or saved VRAM budget)
-// against weights + KV, then RAM offload at 0.5. The old 0.7-of-each rule on raw file
-// size matched neither the Hub nor the loader.
+// Delegated to lib/gguf-fit, the Hub badge formula: 0.97 of the card (or saved VRAM budget) against weights +
+// KV, then RAM offload at 0.5. The old 0.7-of-each rule on raw file size matched neither the Hub nor the loader.
 assert.equal(classifyGgufFit(10 * GB, { gpuGb: 24, systemRamGb: 64 }), "fits");
 // 20 GiB needs 24.0: past the 23.28 budget, still inside the 24 GiB card.
 assert.equal(classifyGgufFit(20 * GB, { gpuGb: 24, systemRamGb: 64 }), "marginal");
@@ -516,10 +512,9 @@ for (const gpuCount of [1, 2, 4]) {
   );
 }
 
-// Images / Video place a GGUF through the diffusion backend, whose 64 GiB unified budget is
-// (total - 20%) * 0.85 = 43.5 GiB. This rule allows 44.8; the llama.cpp one allows 62.1
-// and would promise loads the planner refuses.
-// classifyMediaGgufFit. The 43.5 GiB figure is (total - 20% reserve) * 0.85, per diffusion_memory.py.
+// Images / Video place a GGUF through the diffusion backend, whose 64 GiB unified budget is (total - 20%) * 0.85
+// = 43.5 GiB, per diffusion_memory.py. This rule allows 44.8; the llama.cpp one allows 62.1 and would promise
+// loads the planner refuses.
 assert.equal(classifyMediaGgufFit(40 * GB, 64, 0), "fits");  // 40 <= 44.8
 assert.equal(classifyMediaGgufFit(50 * GB, 64, 0), "oom");  // past 44.8, no RAM tier
 // The same 50 GiB file reads as fitting under the llama.cpp rule, the regression this guard
@@ -591,9 +586,8 @@ assert.equal(
     .format,
   "bnb-4bit",
 );
-// 48 GB: still bnb-4bit. fp8 is family-denied for qwen-image (renders black) and the -FP8
-// repo ships prequant .pt rather than single-file safetensors, so the old winner
-// auto-routed to a download that 404s.
+// 48 GB: still bnb-4bit. fp8 is family-denied for qwen-image (renders black) and the -FP8 repo ships prequant
+// .pt rather than single-file safetensors, so the old winner auto-routed to a download that 404s.
 assert.equal(
   pickDefaultArtifact(qwenGroup, { gpuGb: 48, systemRamGb: 64, isDownloaded: notDownloaded })
     .format,
@@ -678,9 +672,8 @@ const hyimage = groupForRepoId(
   IMAGE_CATALOG,
 );
 assert.ok(hyimage);
-// bf16 at both ends now: the QuantStack GGUF was unpublished, so the group has no quant
-// ladder left. 50 GB still fits a 24 GB card's 61.6 GB budget, so this asserts the
-// group did not vanish with its GGUF.
+// bf16 at both ends now: the QuantStack GGUF was unpublished, so the group has no quant ladder left. 50 GB still
+// fits a 24 GB card's 61.6 GB budget, so this asserts the group did not vanish with its GGUF.
 assert.equal(
   pickDefaultArtifact(hyimage, { gpuGb: 24, systemRamGb: 64, isDownloaded: notDownloaded })
     .repoId,
@@ -762,9 +755,9 @@ assert.equal(
     .format,
   "bf16",
 );
-// The upper tier in the picker's units: 132 GiB VRAM is 141.7 decimal GB, past the 132 GB
-// where the estimator drops its host-RAM floor to 85 GB, and 85 GiB RAM is 91.3 GB.
-// A decimal-GB tier table would wrongly send this host to GGUF.
+// The upper tier in the picker's units: 132 GiB VRAM is 141.7 decimal GB, past the 132 GB where the estimator
+// drops its host-RAM floor to 85 GB, and 85 GiB RAM is 91.3 GB. A decimal-GB tier table would wrongly send this
+// host to GGUF.
 assert.equal(
   pickDefaultArtifact(h3, { gpuGb: 132, systemRamGb: 85, isDownloaded: notDownloaded })
     .format,
@@ -819,10 +812,9 @@ assert.equal(
     .format,
   "gguf",
 );
-// LTX-2.3 video carries the official BF16 single file (no FP8: the loader refuses its
-// scaled-fp8 one), keeping the ~50 GB Gemma3 encoder resident, so B200-class only.
-// Looked up by the retired unsloth/LTX-2.3 id on purpose: a pasted or persisted copy
-// must still land on this group through the GGUF artifact's suffix-stripped key.
+// LTX-2.3 video carries the official BF16 single file (no FP8: the loader refuses its scaled-fp8 one), keeping
+// the ~50 GB Gemma3 encoder resident, so B200-class only. Looked up by the retired unsloth/LTX-2.3 id on purpose:
+// a pasted or persisted copy must still land on this group through the GGUF artifact's suffix-stripped key.
 const ltxGroup = groupForRepoId("unsloth/LTX-2.3", VIDEO_CATALOG);
 assert.ok(ltxGroup);
 assert.equal(ltxGroup.canonicalId, "Lightricks/LTX-2.3");
@@ -955,19 +947,18 @@ assert.ok(groupMatchesQuery(ltx23, "lightricks/ltx-2.3"));
 
 console.log("model-catalog check: all assertions passed");
 
-// Opt-in `--network` pass: every failure it catches was reported by hand, a link that 401s
-// on an undeclared gated repo or 404s after a rename. Anonymous on purpose, since that
-// is what a fresh install sees; only a definitive verdict fails the run.
+// Opt-in `--network` pass: every failure it catches was reported by hand, a link that 401s on an undeclared
+// gated repo or 404s after a rename. Anonymous on purpose, since that is what a fresh install sees; only a
+// definitive verdict fails the run.
 
 const HF_API = "https://huggingface.co/api/models";
 const HF_RESOLVE = "https://huggingface.co";
 const NETWORK_ATTEMPTS = 3;
 /** Per-attempt wall clock, headers and body together. */
 const NETWORK_TIMEOUT_MS = 20_000;
-/** Wall clock for the whole network pass, under the workflow's 10-minute timeout. Bounding
- *  each attempt is not enough: ~53 repos at NETWORK_BATCH 4 is 14 serial batches, so a
- *  stalling peer would be killed at 10 as a red run. Past the deadline requests
- *  short-circuit to "no opinion" and the check exits 0. */
+/** Wall clock for the whole network pass, under the workflow's 10-minute timeout. Bounding each attempt is not
+ *  enough: ~53 repos at NETWORK_BATCH 4 is 14 serial batches, so a stalling peer would be killed at 10 as a red
+ *  run. Past the deadline requests short-circuit to "no opinion" and the check exits 0. */
 const NETWORK_DEADLINE_MS = 7 * 60 * 1000;
 /** Set when the network pass starts; Infinity keeps the offline assertions unbounded. */
 let networkDeadlineAt = Number.POSITIVE_INFINITY;

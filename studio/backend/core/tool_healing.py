@@ -28,6 +28,55 @@ import bisect
 import json
 import re
 
+# The route's ``_LOCAL_CODE_TOOLS`` (a drift test pins that), all unsandboxed under Full
+# access. Their markerless forms are indistinguishable from prose quoting the syntax, so a
+# model echoing attacker text would turn a quote into execution: require a wrapper
+# (``<|tool_call>``, ``[TOOL_CALLS]``, ``<function=>``) or a structured call. Same rule for
+# ``mcp__*``, whose third-party vocabulary may hide execution sinks we cannot classify.
+EXECUTION_CLASS_TOOL_NAMES = frozenset({"python", "terminal", "edit_file"})
+_MCP_TOOL_PREFIX = "mcp__"
+
+
+def _normalized_tool_name(name) -> str:
+    """``name`` as ``ToolLoopController.prepare_call`` will resolve it.
+
+    The controller executes ``str(...).strip()``, so comparing the RAW name let
+    ``{"name":" terminal "}`` pass the guard as an unknown tool and then run as the real
+    one. The guard has to read the name the executor will."""
+    return str(name).strip() if isinstance(name, str) else ""
+
+
+def _markerless_promotable(name, enabled_tool_names) -> bool:
+    """True when a bare call named ``name`` may be promoted. ``None`` is name-agnostic;
+    execution-class and MCP names are refused under either gate."""
+    name = _normalized_tool_name(name)
+    if not name:
+        return False
+    if name in EXECUTION_CLASS_TOOL_NAMES or name.startswith(_MCP_TOOL_PREFIX):
+        return False
+    return enabled_tool_names is None or name in enabled_tool_names
+
+
+def _markerless_execution_class(name) -> bool:
+    """True for an execution-class or MCP name, WITHOUT the enabled gate.
+
+    What a body is allowed to CONTAIN cannot depend on whether the outer tool is offered:
+    with only ``python`` enabled, ``terminal[ARGS]{"c": "<function=python>...</function>"}``
+    had its span skipped as "not blocked", and both parsers then read the quoted wrapper as
+    a real python call. Enabledness governs promotion and chain handling, not opacity."""
+    name = _normalized_tool_name(name)
+    return bool(name) and (name in EXECUTION_CLASS_TOOL_NAMES or name.startswith(_MCP_TOOL_PREFIX))
+
+
+def _markerless_blocked_execution(name, enabled_tool_names) -> bool:
+    """True when ``name`` is enabled but the guard declines its bare span. Unlike a disabled
+    name it keeps its place in a chain; only promotion is lost. For whether the BODY stays
+    opaque, use ``_markerless_execution_class``."""
+    return _markerless_execution_class(name) and (
+        enabled_tool_names is None or name in enabled_tool_names
+    )
+
+
 # One nesting level in the strip regexes; deeper may leak markup (still parsed).
 _BRACKETED_JSON_ONE_LEVEL = r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}"
 
@@ -42,7 +91,10 @@ _REHEARSAL_TAIL_STRIP_RE = re.compile(r"(?<!\[CALL_ID\])\b([\w-]+)\[ARGS\]\s*(?:
 # <tag>.*?</tag> rescans to EOF from every opener (quadratic).
 _TC_JSON_CLOSED_PAT = re.compile(r"<tool_call>.*?</tool_call>", re.DOTALL)
 _TC_GEMMA_CLOSED_PAT = re.compile(r"<\|tool_call>.*?<tool_call\|>", re.DOTALL)
-_TC_FUNC_CLOSED_PAT = re.compile(r"<function=[\w-]+>.*?</function>", re.DOTALL)
+# Dotted names too, matching what the main parser accepts: a narrower name class here
+# left ``<function=foo.bar>`` out of the TRUSTED spans, so execution-shaped text in its
+# own parameter read as an independent blocked call and the mask corrupted real arguments.
+_TC_FUNC_CLOSED_PAT = re.compile(r"<function=[\w.-]+>.*?</function>", re.DOTALL)
 _TOOL_CLOSED_PATS = [
     _TC_JSON_CLOSED_PAT,
     _TC_GEMMA_CLOSED_PAT,
@@ -122,20 +174,39 @@ def strip_tool_patterns(text: str, patterns) -> str:
 def _rehearsal_strip(m, pat, text, spans, enabled_tool_names) -> str:
     """Replacement for one rehearsal strip match: "" to remove it, else what to keep.
 
-    An inactive name or a quoted example is kept. The tail pattern runs to EOF, so a match
-    that opens on a quoted example can still cover a later real call; keep the quoted part
-    and strip from that call on, or the truncated markup leaks into the answer."""
-    if enabled_tool_names is not None and m.group(1) not in enabled_tool_names:
-        return m.group(0)
-    if not _in_code(spans, m.start()):
+    A non-promotable name or quoted example is kept. The tail pattern runs to EOF, so ANY
+    kept match can still cover a later real call: keep the kept part and strip from that
+    call on, or the truncated markup leaks into the answer.
+
+    A match inside the kept call's own balanced body is that call's ARGUMENTS, not a later
+    sibling. Truncating there cut the blocked call mid-string and took the rest of the turn
+    with it, so a command quoting ``web_search[ARGS]{}`` lost its own tail."""
+    if _markerless_promotable(m.group(1), enabled_tool_names) and not _in_code(spans, m.start()):
         return ""
+    # The kept call's own argument object; a match inside it is that call's arguments.
+    # Resolved LAZILY: this scans the whole body, which for an unterminated blocked call is
+    # the whole growing buffer, and the streaming path re-strips every snapshot. Computing it
+    # before knowing a sibling match exists made a long blocked call quadratic in the display
+    # path (16KB streamed 4 chars at a time: 10.3s, against 2.7s with it deferred).
+    reh = _REHEARSAL_RE.search(text, m.start(), m.end())
+    cached_body_end: list = []
+
+    def body_end():
+        if not cached_body_end:
+            cached_body_end.append(
+                _balanced_json_span(text, reh.end()) if reh is not None else None
+            )
+        return cached_body_end[0]
+
     pos = m.start()
     while True:
         nxt = pat.search(text, pos + 1)
         if nxt is None or nxt.start() >= m.end():
             return m.group(0)
-        if not _in_code(spans, nxt.start()) and (
-            enabled_tool_names is None or nxt.group(1) in enabled_tool_names
+        if (
+            (body_end() is None or nxt.start() > body_end())
+            and not _in_code(spans, nxt.start())
+            and _markerless_promotable(nxt.group(1), enabled_tool_names)
         ):
             return m.group(0)[: nxt.start() - m.start()]
         pos = nxt.start()
@@ -147,10 +218,10 @@ def apply_tool_strip_patterns(
     enabled_tool_names = None,
 ) -> str:
     """Apply strip ``patterns`` to ``text``. A bare rehearsal ``name[ARGS]{..}`` pattern
-    strips only when ``name`` is an enabled tool (or when ``enabled_tool_names`` is
-    ``None``) and the match is not inside markdown code; every other pattern is removed
-    unconditionally. A closed-pair pattern whose close token is absent is skipped so an
-    unclosed-marker stream stays linear."""
+    strips only a markerless-promotable name outside markdown code, keeping parse/strip
+    symmetry with ``_iter_bracket_spans``. Every other pattern is removed unconditionally.
+    A closed-pair pattern whose close token is absent is skipped so an unclosed-marker
+    stream stays linear."""
     for pat in patterns:
         required = _PAT_REQUIRED_TOKEN.get(pat)
         scan_end = len(text)
@@ -233,6 +304,11 @@ def _balanced_json_span(text: str, start: int) -> int | None:
     or ``None`` if the braces don't balance. Honors escapes and strings.
     """
     if start >= len(text) or text[start] != "{":
+        return None
+    # A span can only close on a ``}``, so with none at all the scan below is guaranteed to
+    # fall through. Worth the check because the streaming path re-scans a growing UNTERMINATED
+    # body once per snapshot, and ``find`` runs in C while the loop does not.
+    if text.find("}", start) < 0:
         return None
     depth = 0
     in_string = False
@@ -401,25 +477,23 @@ def _iter_bracket_spans(
     start: int = 0,
     enabled_tool_names = None,
 ):
-    """Yield ``(span_start, span_end, kind, match)`` for each balanced bracket-tag
-    call from ``start`` on, in document order; ``span_end`` exclusive. ``kind`` is
-    ``"array"`` ([TOOL_CALLS] [..]), ``"name"`` ([TOOL_CALLS]name{..}, incl. v11
-    [CALL_ID]/[ARGS]) or ``"rehearsal"`` (name[ARGS]{..}).
+    """Yield ``(span_start, span_end, kind, match)`` for each balanced bracket-tag call from ``start``
+    on, in document order; ``span_end`` exclusive. ``kind`` is ``"array"`` ([TOOL_CALLS] [..]),
+    ``"name"`` ([TOOL_CALLS]name{..}, incl. v11 [CALL_ID]/[ARGS]) or ``"rehearsal"``
+    (name[ARGS]{..}).
 
-    ``enabled_tool_names`` (set, or None = unrestricted) gates only the ambiguous
-    bare rehearsal form: name[ARGS]{..} is a call ONLY when ``name`` is enabled, so a
-    prose ``foo[ARGS]{..}`` (foo disabled) is neither parsed nor stripped. Explicit
-    [TOOL_CALLS] markers stay unconditional, keeping parse/strip/detection symmetric.
+    ``enabled_tool_names`` (set, or None = unrestricted) gates only the ambiguous bare rehearsal
+    form: name[ARGS]{..} is a call ONLY when ``name`` is markerless-promotable, so a disabled
+    ``foo[ARGS]{..}`` or an execution-class ``terminal[ARGS]{..}`` is neither parsed nor stripped.
+    Explicit [TOOL_CALLS] markers stay unconditional, keeping parse/strip/detection symmetric. A
+    rehearsal inside markdown code is documentation for the same reason -- the syntax has no
+    sentinel, so quoting it would otherwise BE a call -- and is likewise neither parsed nor
+    stripped; explicit markers stay unconditional there too.
 
-    A rehearsal inside markdown code (fenced block or inline span) is documentation
-    for the same reason -- the syntax has no sentinel, so quoting it would otherwise
-    BE a call -- and is likewise neither parsed nor stripped. Explicit markers stay
-    unconditional there too: a ```json block is still a real call for the templates
-    that emit one.
-
-    Balance-only (no JSON validation) so strip and parse share one scan. The cursor
-    jumps past each consumed span, so a marker inside consumed JSON is never
-    re-matched and each regex re-searches only once its match falls behind: linear."""
+    Balance-only (no JSON validation) so strip and parse share one scan. The cursor jumps past each
+    consumed span, so a marker inside consumed JSON is never re-matched and each regex re-searches
+    only once its match falls behind: linear.
+    """
     n = len(text)
     specs = (
         ("array", _MISTRAL_ARRAY_RE),
@@ -456,13 +530,8 @@ def _iter_bracket_spans(
         if end is None:
             cursor = m.end()
             continue
-        if (
-            kind == "rehearsal"
-            and enabled_tool_names is not None
-            and m.group(1) not in enabled_tool_names
-        ):
+        if kind == "rehearsal" and not _markerless_promotable(m.group(1), enabled_tool_names):
             # Quoted syntax, not a call: advance past its body without yielding.
-            # Inactive-name rehearsal is prose: advance past its body without yielding.
             cursor = end + 1
             continue
         if kind == "rehearsal":
@@ -854,7 +923,23 @@ def parse_tool_calls_from_text(
     call_spans: list[tuple] = []
     # A marker inside another call's coverage, even one that failed to parse, is data and is not executed.
     parsed_items = []
-    markers = [mk for mk in _build_markers(content) if not _in_think(mk[0])]
+    # A marker inside a blocked markerless call's body is that call's quoted ARGUMENT text.
+    # The inference parser masks those bodies before every pass; this lighter parser is
+    # reached directly from passthrough healing, where the same quoted payload still
+    # promoted. Imported late: tool_call_parser imports this module, and the spans are
+    # defined there because the Gemma and bare-JSON scanners live there.
+    try:
+        from core.inference.tool_call_parser import _blocked_markerless_body_spans
+        _blocked_spans = _blocked_markerless_body_spans(content, enabled_tool_names)
+    except Exception:  # noqa: BLE001 -- no spans just means the old, unmasked behaviour
+        _blocked_spans = []
+
+    def _in_blocked(pos: int) -> bool:
+        return any(begin <= pos < stop for begin, stop in _blocked_spans)
+
+    markers = [
+        mk for mk in _build_markers(content) if not _in_think(mk[0]) and not _in_blocked(mk[0])
+    ]
     coverage = _marker_coverage(content, markers)
     covered_until = -1
     for idx, (start, brace_end, kind, m) in enumerate(markers):
@@ -909,6 +994,7 @@ def parse_tool_calls_from_text(
         for fm in _TC_FUNC_START_RE.finditer(content)
         if not _inside_open_parameter(content, fm.start())
         and not _in_think(fm.start())
+        and not _in_blocked(fm.start())
         and not any(s <= fm.start() < e for s, e in coverage)
     ]
     for idx, fm in enumerate(func_starts):
@@ -994,7 +1080,7 @@ def parse_tool_calls_from_text(
         for start, end, kind, m in _iter_bracket_spans(
             content, enabled_tool_names = enabled_tool_names
         ):
-            if _in_think(start):
+            if _in_think(start) or _in_blocked(start):
                 continue
             # Extend the region over an immediately-following v11 closer so with_spans consumers strip it too.
             closer = re.match(r"\s*\[/TOOL_CALLS\]", content[end:])
@@ -1029,9 +1115,8 @@ def parse_tool_calls_from_text(
                             "type": "function",
                             "function": {
                                 "name": item.get("name", ""),
-                                # A bare scalar string stays raw; json.dumps would double-encode it so the arg
-                                # healer wraps it with
-                                # literal quotes.
+                                # A bare scalar string stays raw; json.dumps would double-encode it so the arg healer
+                                # wraps it with literal quotes.
                                 "arguments": args if isinstance(args, str) else json.dumps(args),
                             },
                         }

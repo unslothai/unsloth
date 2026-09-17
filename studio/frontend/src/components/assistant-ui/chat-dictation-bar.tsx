@@ -240,10 +240,12 @@ export const ChatDictationBar: FC<{
           />
         ))}
       </div>
-      <span className="mr-4 shrink-0 tabular-nums text-sm text-muted-foreground">
+      {/* Classed so narrow panes can tighten these; both are shrink-0, so they
+          set the bar's floor and would otherwise overflow the composer. */}
+      <span className="unsloth-dictation-timer mr-4 shrink-0 tabular-nums text-sm text-muted-foreground">
         {formatElapsed(elapsed)}
       </span>
-      <div className="flex shrink-0 items-center gap-2.5">
+      <div className="unsloth-dictation-actions flex shrink-0 items-center gap-2.5">
         <TooltipIconButton
           type="button"
           tooltip={

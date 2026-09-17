@@ -19,6 +19,7 @@ import importlib.abc
 import importlib.machinery
 import importlib.util
 from pathlib import Path
+from importlib.metadata import distribution as importlib_distribution
 from importlib.metadata import version as importlib_version
 from importlib.metadata import PackageNotFoundError
 from packaging.version import Version as TrueVersion
@@ -1489,6 +1490,59 @@ _TORCHVISION_ABI_MARKERS = (
 # unrelated reason must keep importing unsloth, not get "reinstall torchvision".
 _LOADER_FAILURE_MARKERS = ("undefined symbol", "cannot open shared object file")
 _TORCH_LIBRARY_MARKERS = ("torchvision", "libtorch", "libc10", "_C.so", "c10::")
+# A lazily-imported torchvision with a dead extension surfaces as this, not a loader error.
+# "partially initialized" is load-bearing: without it a typo on a healthy torchvision
+# ("module 'torchvision' has no attribute 'nms'") would be answered with "reinstall". Nothing
+# AFTER the module name is, because CPython words the rest four ways for the one fault:
+#   3.9 - 3.12   partially initialized module 'torchvision' has no attribute 'extension'
+#   3.13, 3.14   partially initialized module 'torchvision' from '<file>' has no attribute
+#   from-import  cannot import name 'extension' from partially initialized module 'torchvision'
+#   submodule    cannot access submodule 'ops' of module 'torchvision'
+# The first three share "partially initialized module 'torchvision'"; the fourth names it as
+# the parent instead, so it gets its own alternative.
+_TORCHVISION_ATTRIBUTE_RE = re.compile(
+    r"partially initialized module 'torchvision(?:\.[\w.]+)?'"
+    r"|cannot access submodule '[\w.]+' of module 'torchvision(?:\.[\w.]+)?'"
+)
+
+
+def _shadowing_torchvision_path():
+    """What is standing in for torchvision, if something is, else None.
+
+    A local `torchvision` earlier on sys.path raises the same "partially initialized" words
+    while the metadata still describes the installed distribution, so the binary check would
+    answer it with "reinstall", which cannot change which sys.path entry is searched first.
+
+    Identity, not shape: a `torchvision/` directory is a package exactly like the real one, so
+    only asking whether the resolved file is the one the metadata installed separates them.
+
+    find_spec, not sys.modules: the caller is in the `except` of the import that failed, and
+    CPython has already removed the half-built module by then.
+    """
+    try:
+        spec = importlib.util.find_spec("torchvision")
+    except Exception:
+        # A shadow can break find_spec itself. No answer is not evidence of shadowing.
+        return None
+    origin = getattr(spec, "origin", None) if spec is not None else None
+    if not origin:
+        return None
+    try:
+        installed = os.fspath(
+            importlib_distribution("torchvision").locate_file("torchvision/__init__.py")
+        )
+    except Exception:
+        return None
+    if not os.path.exists(installed):
+        # Editable install, usually. Cannot tell, so do not send anyone hunting a file.
+        return None
+    try:
+        if os.path.samefile(origin, installed):
+            return None
+    except OSError:
+        if os.path.realpath(origin) == os.path.realpath(installed):
+            return None
+    return origin
 
 
 def _is_broken_torchvision_error(error) -> bool:
@@ -1498,6 +1552,8 @@ def _is_broken_torchvision_error(error) -> bool:
         checked.add(id(current))
         message = str(current)
         if any(marker in message for marker in _TORCHVISION_ABI_MARKERS):
+            return True
+        if _TORCHVISION_ATTRIBUTE_RE.search(message) and _shadowing_torchvision_path() is None:
             return True
         if any(m in message for m in _LOADER_FAILURE_MARKERS) and any(
             m in message for m in _TORCH_LIBRARY_MARKERS
@@ -1614,6 +1670,15 @@ def _probe_torchvision_binary(
         import torchvision  # noqa: F401
         import torchvision.ops  # noqa: F401  where the compiled nms lives
     except Exception as error:
+        shadow = _shadowing_torchvision_path()
+        if shadow is not None and _TORCHVISION_ATTRIBUTE_RE.search(str(error)):
+            # Named: the metadata says torchvision is installed and it is, so a reinstall
+            # changes nothing. The file is the whole fix.
+            raise ImportError(
+                f"Unsloth: {shadow} is being imported as `torchvision`, ahead of the "
+                f"installed package ({type(error).__name__}: {error}). Rename or move that "
+                f"file; reinstalling torchvision will not change which one wins."
+            ) from error
         # Anything else is left for whoever actually needs torchvision.
         if not _is_broken_torchvision_error(error):
             return
@@ -2665,6 +2730,55 @@ def _torchcodec_provenance_hint() -> "str | None":
     )
 
 
+def _ffmpeg_on_loader_path():
+    """Every library torchcodec links (per the shipped libtorchcodec_core*.so NEEDED entries) resolvable by the dynamic loader. Distros package them separately, so a host missing only libswscale cannot load the codec; calling that present sends the user at a torch ABI bug."""
+    import ctypes.util
+    import glob
+    import os
+
+    dirs = [d for d in os.environ.get("PATH", "").split(os.pathsep) if d]
+    # A prefix on LD_LIBRARY_PATH may ship only versioned files (libavcodec.so.61), which the loader resolves but find_library never sees: it reads the ld cache and linker names.
+    libdirs = [
+        d
+        for v in ("LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH")
+        for d in os.environ.get(v, "").split(os.pathsep)
+        if d
+    ]
+    for name in ("avutil", "avcodec", "avformat", "avdevice", "avfilter", "swscale", "swresample"):
+        if ctypes.util.find_library(name):
+            continue
+        # find_library does not glob, so walk PATH for Windows names like avutil-59.dll. Windows only: WSL puts the Windows PATH on the Linux one, and those DLLs cannot load here.
+        if os.name == "nt" and any(glob.glob(os.path.join(d, name + "-*.dll")) for d in dirs):
+            continue
+        if os.name != "nt" and any(
+            glob.glob(os.path.join(d, "lib" + name + ".so*"))
+            or glob.glob(os.path.join(d, "lib" + name + ".*dylib"))
+            for d in libdirs
+        ):
+            continue
+        return False
+    return True
+
+
+def _torchcodec_load_failure(exc):
+    """Why an installed torchcodec did not import: "ffmpeg" (its FFmpeg libraries are not on the loader path), "native" (they are, so the cause is elsewhere) or "broken" (a failure that does not involve libtorchcodec at all)."""
+    import traceback
+
+    # One libtorchcodec message covers a missing FFmpeg, a torch mismatch and other runtime deps, so the text cannot pick between them. Ask the system: FFmpeg missing from the loader path is the one cause establishable here.
+    if "libtorchcodec" not in "".join(
+        traceback.format_exception(type(exc), exc, exc.__traceback__)
+    ):
+        return "broken"
+    return "native" if _ffmpeg_on_loader_path() else "ffmpeg"
+
+
+_TORCHCODEC_FALLBACK_NOTES = {
+    "ffmpeg": "cannot load its FFmpeg libraries; install an FFmpeg full-shared build only if you need torchcodec itself",
+    "native": "cannot load its native libraries although FFmpeg is on the loader path; likely an FFmpeg major it does not support (it takes 4 to 8), a missing CUDA NPP runtime (nvidia-npp), or a build that does not match this torch",
+    "broken": "fails to import for a reason other than its FFmpeg libraries; reinstall torchcodec against this torch build",
+}
+
+
 def disable_torchcodec_if_broken():
     """Make broken torchcodec behave as if uninstalled (#5446).
 
@@ -2687,9 +2801,10 @@ def disable_torchcodec_if_broken():
         if importlib.util.find_spec("torchcodec") is None:
             return  # absent or already disabled
 
-        # RuntimeError on dlopen failure; OSError covers chained libavutil.so misses.
+        # RuntimeError on dlopen failure, OSError on chained libavutil.so misses, and a damaged or
+        # version-skewed wheel can raise anything else; the package is present, so every shape is "broken".
         from torchcodec.decoders import AudioDecoder
-    except (ImportError, RuntimeError, OSError):
+    except Exception as load_error:
         if mismatch_hint is None:
             # Versions agree, so the load failed for another reason. A mismatched accelerator
             # build is the one this can still name, and the one pinning the index repairs.
@@ -2738,6 +2853,230 @@ def disable_torchcodec_if_broken():
         ]:
             sys.modules.pop(_stale, None)
         sys.modules["torchcodec"] = None
+        decodes = patch_datasets_audio_decoding_without_torchcodec()
+        try:
+            import warnings
+
+            note = _TORCHCODEC_FALLBACK_NOTES[_torchcodec_load_failure(load_error)]
+            tail = (
+                "audio datasets decode through soundfile and PyAV instead (wav/flac/mp3/ogg, m4a/aac/webm)"
+                if decodes
+                else "audio datasets will not decode until soundfile and PyAV are installed (pip install soundfile av)"
+            )
+            warnings.warn(f"Unsloth: torchcodec is installed but {note}; {tail}.", stacklevel = 2)
+        except Exception:
+            pass  # a report must never abort the disable fallback above
+
+
+def _audio_decode_with_av(source, stream_index = None):
+    """Mono float32 at the native rate through PyAV's bundled FFmpeg: every container torchcodec would have read (m4a, aac, webm, wma, amr) without a system FFmpeg. Kept identical to studio/backend/utils/datasets/audio_decode.py; a test holds the two together."""
+    import av
+    import numpy as np
+
+    chunks = []
+    rate = 0
+    resampler = None
+    with av.open(source, mode = "r", metadata_errors = "ignore") as container:
+        if not container.streams.audio:
+            raise ValueError("audio container has no audio stream")
+        # datasets.Audio(stream_index=...) is the container's absolute stream index, as torchcodec reads it; None is the best audio stream.
+        try:
+            if stream_index is None:
+                # av_find_best_stream, which torchcodec uses: the default-disposition track wins over the first. PyAV < 13 has no wrapper, so take the first audio track there.
+                best = getattr(container.streams, "best", None)
+                stream = best("audio") if best is not None else container.streams.audio[0]
+            else:
+                stream = container.streams[stream_index]
+        except IndexError:
+            raise ValueError(
+                f"stream {stream_index} is not in the container, which has {len(container.streams)} streams"
+            ) from None
+        if stream.type != "audio":
+            raise ValueError(f"stream {stream_index} is not an audio stream")
+        for frame in container.decode(stream):
+            if resampler is None:
+                rate = int(frame.sample_rate or 0)
+                if rate <= 0:
+                    raise ValueError("decoded audio has an invalid sample rate")
+                resampler = av.AudioResampler(format = "flt", layout = "mono", rate = rate)
+            for out in resampler.resample(frame):
+                chunks.append(out.to_ndarray().reshape(-1))
+        if resampler is not None:
+            for out in resampler.resample(None):
+                chunks.append(out.to_ndarray().reshape(-1))
+    if not chunks:
+        raise ValueError("audio container decoded to no samples")
+    return np.concatenate(chunks).astype(np.float32, copy = False), rate
+
+
+def _audio_read_mono(source, stream_index = None):
+    """soundfile first (wav, flac, mp3, ogg), PyAV for the rest. `source` is a path, a bytes buffer or an open file."""
+    import numpy as np
+    import soundfile as sf
+
+    if stream_index not in (None, 0):
+        # libsndfile only knows single-stream files, so an explicit other stream is PyAV's alone.
+        return _audio_decode_with_av(source, stream_index)
+    try:
+        array, rate = sf.read(source, dtype = "float32", always_2d = False)
+    except Exception as sf_error:  # noqa: BLE001  libsndfile raises its own hierarchy
+        try:
+            import av  # noqa: F401
+        except ImportError:
+            raise sf_error
+        if hasattr(source, "seek"):
+            source.seek(0)
+        try:
+            return _audio_decode_with_av(source, stream_index)
+        except Exception as av_error:  # noqa: BLE001
+            raise RuntimeError(
+                f"audio could not be decoded by soundfile ({sf_error}) or PyAV ({av_error})"
+            ) from av_error
+    if array.ndim > 1:
+        # soundfile returns (frames, channels); torchcodec returns (channels, frames).
+        array = np.mean(array, axis = -1)
+    return array, rate
+
+
+def _audio_resample(array, rate, target):
+    """librosa when installed, else swresample through PyAV; both are already on the audio extras."""
+    try:
+        import librosa
+    except Exception:  # noqa: BLE001  an old librosa beside numpy 2 raises AttributeError at import, not ImportError
+        librosa = None
+    if librosa is not None:
+        return librosa.resample(array, orig_sr = rate, target_sr = target)
+    import av
+    import numpy as np
+
+    frame = av.AudioFrame.from_ndarray(
+        np.ascontiguousarray(array, dtype = np.float32)[np.newaxis, :], format = "flt", layout = "mono"
+    )
+    frame.sample_rate = rate
+    resampler = av.AudioResampler(format = "flt", layout = "mono", rate = target)
+    chunks = [out.to_ndarray().reshape(-1) for out in resampler.resample(frame)]
+    chunks += [out.to_ndarray().reshape(-1) for out in resampler.resample(None)]
+    return np.concatenate(chunks)
+
+
+def patch_datasets_audio_decoding_without_torchcodec():
+    """Keep `datasets` Audio columns decodable when torchcodec is unusable (#8642).
+
+    `datasets` >= 4 decodes audio only through torchcodec, which needs an FFmpeg full-shared
+    install to dlopen its native libraries; with `TORCHCODEC_AVAILABLE` cleared above every
+    audio row raises "please install torchcodec" for a package that is installed. This seats
+    a decoder on `datasets.features.audio.Audio` that reads through soundfile, then PyAV's
+    bundled FFmpeg, and resamples to the cast rate, returning the pre-4.0 dict contract
+    `{"path", "array", "sampling_rate"}`. Studio installs the same decoder from its own copy
+    (utils/datasets/audio_decode.py) because its API process never imports unsloth.
+    No-op on `datasets` < 4, on a working torchcodec, and without soundfile. Idempotent.
+    """
+    try:
+        from datasets import config
+        from datasets.features.audio import Audio
+    except ImportError:
+        return False
+    if not hasattr(config, "TORCHCODEC_AVAILABLE") or config.TORCHCODEC_AVAILABLE:
+        return False
+    if getattr(Audio, "_unsloth_audio_fallback", False):
+        return True
+    try:
+        import soundfile  # noqa: F401
+    except Exception:  # noqa: BLE001  libsndfile absent raises OSError, not ImportError
+        return False
+    original_encode = Audio.encode_example
+
+    def _token_for_url(path, token_per_repo_id):
+        if not token_per_repo_id:
+            return None
+        try:
+            from datasets.utils.py_utils import string_to_dict
+
+            source_url = path.split("::")[-1]
+            pattern = (
+                config.HUB_DATASETS_URL
+                if source_url.startswith(config.HF_ENDPOINT)
+                else config.HUB_DATASETS_HFFS_URL
+            )
+            fields = string_to_dict(source_url, pattern)
+        except Exception:  # noqa: BLE001
+            fields = None
+        if fields is None:
+            values = list(token_per_repo_id.values())
+            return values[0] if len(values) == 1 else None
+        return token_per_repo_id.get(fields["repo_id"])
+
+    def decode_example(
+        self,
+        value,
+        token_per_repo_id = None,
+    ):
+        import io
+
+        from datasets.download.download_config import DownloadConfig
+        from datasets.utils.file_utils import is_local_path, xopen
+
+        if not self.decode:
+            raise RuntimeError(
+                "Decoding is disabled for this feature. Please use Audio(decode=True) instead."
+            )
+        path, raw = value["path"], value["bytes"]
+        if path is None and raw is None:
+            raise ValueError(
+                f"An audio sample should have one of 'path' or 'bytes' but both are None in {value}."
+            )
+        if raw is not None:
+            source = io.BytesIO(raw)
+        elif is_local_path(path):
+            source = path
+        else:
+            source = xopen(
+                path,
+                "rb",
+                download_config = DownloadConfig(token = _token_for_url(path, token_per_repo_id)),
+            )
+        array, sampling_rate = _audio_read_mono(source, getattr(self, "stream_index", None))
+        target = self.sampling_rate
+        if target and sampling_rate != target:
+            array = _audio_resample(array, sampling_rate, target)
+            sampling_rate = target
+        return {"path": path, "array": array, "sampling_rate": sampling_rate}
+
+    def encode_example(self, value):
+        import io
+        from pathlib import Path
+
+        import soundfile as sf
+
+        if isinstance(value, str):
+            return {"bytes": None, "path": value}
+        if isinstance(value, Path):
+            return {"bytes": None, "path": str(value.absolute())}
+        if isinstance(value, (bytes, bytearray)):
+            return {"bytes": bytes(value), "path": None}
+        if isinstance(value, dict) and value.get("array") is not None:
+            import numpy as np
+
+            array = np.asarray(value["array"])
+            if array.dtype == object:
+                array = np.asarray(
+                    array.tolist(), dtype = "float32"
+                )  # a nested list back from Arrow arrives as an object array
+            if array.ndim == 2 and array.shape[0] < array.shape[1]:
+                array = (
+                    array.T
+                )  # torchcodec hands out (channels, samples); libsndfile writes (frames, channels)
+            buf = io.BytesIO()
+            sf.write(buf, array, value["sampling_rate"], format = "WAV")
+            return {"bytes": buf.getvalue(), "path": value.get("path")}
+        if isinstance(value, dict) and ("bytes" in value or "path" in value):
+            return {"bytes": value.get("bytes"), "path": value.get("path")}
+        return original_encode(self, value)
+
+    Audio.decode_example = decode_example
+    Audio.encode_example = encode_example
+    Audio._unsloth_audio_fallback = True
+    return True
 
 
 def disable_torchaudio_if_cuda_mismatched():
@@ -5755,6 +6094,221 @@ def fix_torchao_nf4tensor_move():
     sys.meta_path.append(_TorchaoNF4AliasFinder())
 
 
+_TORCHAO_INTMM_MODULES = (
+    "torchao.kernel.intmm",  # every release up to and including 0.18.0
+    "torchao.quantization.quantize_.workflows.int8.kernels",  # main after pytorch/ao#4718
+)
+_TORCHAO_INTMM_MODULE = _TORCHAO_INTMM_MODULES[0]  # kept for callers that named the old home
+_TORCHAO_INTMM_SENTINEL = "__unsloth_torchao_intmm_patch__"
+_TORCHAO_INT_MM_ENV = "UNSLOTH_TORCHAO_INT_MM_FIX"
+
+# The copy below hard-codes torchao's cuBLAS guards and fp32 fallback: ALL must be in the installed source.
+_TORCHAO_SAFE_INT_MM_MARKERS = (
+    "input.__repr__()",
+    "dynamo_is_compiling()",
+    "out_dtype(torch.ops.aten.mm.default",
+    "j_is_nonzero_multiple_of_8",
+    "k_is_nonzero_multiple_of_8",
+    "mat2.is_contiguous()",
+)
+
+
+def _is_fake_tensor(x):
+    """Covers exactly the set the substring repr probe did: ``is_fake`` unwraps FunctionalTensor too."""
+    try:
+        from torch._subclasses.fake_tensor import is_fake
+        return bool(is_fake(x))
+    except Exception:
+        pass
+    try:
+        from torch._subclasses.fake_tensor import FakeTensor
+        return isinstance(x, FakeTensor)
+    except Exception:
+        return False
+
+
+def _make_safe_int_mm(mod, original):
+    """A FULL copy of torchao 0.17.0's body, not a wrapper: its very first statement IS the probe."""
+    import torch
+
+    out_dtype = mod.out_dtype
+    dynamo_is_compiling = mod.dynamo_is_compiling
+
+    @functools.wraps(original)
+    def safe_int_mm(input: torch.Tensor, mat2: torch.Tensor) -> torch.Tensor:
+        if dynamo_is_compiling() or _is_fake_tensor(input):
+            if input.device.type == "cpu":
+                # Matmul in int32 is slow on CPU and not supported well by Inductor cpp backend
+                return out_dtype(
+                    torch.ops.aten.mm.default, torch.int32, input.float(), mat2.float()
+                )
+            return out_dtype(torch.ops.aten.mm.default, torch.int32, input, mat2)
+
+        assert (
+            mat2.device == input.device
+        ), f"need both tensors to be on the same device but got {mat2.device} and {input.device}"
+        device_cpu = "cpu" in [mat2.device.type, input.device.type]
+        j_is_nonzero_multiple_of_8 = (input.shape[1] % 8 == 0) and (input.shape[1] > 0)
+        k_is_nonzero_multiple_of_8 = (mat2.shape[1] % 8 == 0) and (mat2.shape[1] > 0)
+        bad_dimensions_for_cublas = not (j_is_nonzero_multiple_of_8 and k_is_nonzero_multiple_of_8)
+
+        if device_cpu or bad_dimensions_for_cublas:
+            return torch.matmul(input.cpu().to(torch.int32), mat2.cpu().to(torch.int32)).to(
+                input.device.type
+            )
+
+        if not mat2.is_contiguous():  # silently gives incorrect result without this
+            mat2 = mat2.contiguous()
+        if (not input.is_contiguous()) and (
+            input.shape[0] % 8 != 0
+        ):  # gives cryptic error without this
+            input = input.contiguous()
+        try:
+            return out_dtype(torch.ops.aten.mm.default, torch.int32, input, mat2)
+        except Exception:
+            # H100 float8: "addmm_cuda" not implemented for 'Float8_e4m3fn'
+            return torch.matmul(input.to(torch.float32), mat2.to(torch.float32)).to(torch.int32)
+
+    safe_int_mm.__unsloth_patched__ = True
+    safe_int_mm.__unsloth_original__ = original
+    return safe_int_mm
+
+
+def _patch_torchao_intmm_module(mod):
+    """Rebind ``safe_int_mm`` on either torchao home; True when this call installed it."""
+    original = getattr(mod, "safe_int_mm", None)
+    if original is None or not callable(original):
+        return False
+    if getattr(original, "__unsloth_patched__", False):
+        return False
+    # Off the module, never imported here, so this fails closed rather than borrowing our own operators.
+    if not hasattr(mod, "out_dtype") or not hasattr(mod, "dynamo_is_compiling"):
+        return False
+    try:
+        source = inspect.getsource(original)
+    except Exception:
+        return False
+    missing = [marker for marker in _TORCHAO_SAFE_INT_MM_MARKERS if marker not in source]
+    if missing:
+        if "input.__repr__()" not in missing:
+            logger.warning(
+                "Unsloth: torchao's safe_int_mm still probes input.__repr__() but its body "
+                "changed (%s missing), so the capture-safe replacement was not installed. "
+                "Eager int8 keeps syncing the device on every linear.",
+                ", ".join(missing),
+            )
+        return False
+    patched = _make_safe_int_mm(mod, original)
+    try:
+        mod.safe_int_mm = patched
+    except Exception:
+        return False
+    # `torchao.kernel` and `torchao.quantization` re-export the function OBJECT, so they need a sweep.
+    for name, other in tuple(sys.modules.items()):
+        if other is None or not (name == "torchao" or name.startswith("torchao.")):
+            continue
+        if getattr(other, "safe_int_mm", None) is original:
+            try:
+                setattr(other, "safe_int_mm", patched)
+            except Exception:
+                pass
+    return True
+
+
+class _TorchaoIntmmLoader(importlib.abc.Loader):
+    """The real loader, plus the patch once the module body finishes. Failures here leave torchao unpatched."""
+
+    __slots__ = ("_loader",)
+
+    def __init__(self, loader):
+        self._loader = loader
+
+    def create_module(self, spec):
+        create = getattr(self._loader, "create_module", None)
+        if create is None:
+            return None
+        return create(spec)
+
+    def exec_module(self, module):
+        self._loader.exec_module(module)
+        try:
+            _patch_torchao_intmm_module(module)
+        except Exception:
+            pass
+
+    def __getattr__(self, attribute):
+        return getattr(self._loader, attribute)
+
+
+class _TorchaoIntmmPatchFinder(importlib.abc.MetaPathFinder):
+    """Inserted at the FRONT of sys.meta_path: the module really exists, so PathFinder would answer first."""
+
+    __slots__ = (_TORCHAO_INTMM_SENTINEL, "_finding")
+
+    def __init__(self):
+        setattr(self, _TORCHAO_INTMM_SENTINEL, True)
+        self._finding = False  # find_spec below walks sys.meta_path again
+
+    def find_spec(
+        self,
+        fullname,
+        path = None,
+        target = None,
+    ):
+        if fullname not in _TORCHAO_INTMM_MODULES or self._finding:
+            return None
+        self._finding = True
+        try:
+            spec = importlib.util.find_spec(fullname)
+        except Exception:
+            return None
+        finally:
+            self._finding = False
+        if spec is None or spec.loader is None:
+            return None
+        if not hasattr(spec.loader, "exec_module"):
+            return None  # a loader from before PEP 451; leave the import entirely alone
+        try:
+            spec.loader = _TorchaoIntmmLoader(spec.loader)
+        except Exception:
+            return None
+        return spec
+
+
+def fix_torchao_safe_int_mm_repr_probe():
+    """Stop torchao's int8 GEMM from syncing the device to ask whether it is being traced.
+
+    ``safe_int_mm`` branches on ``"FakeTensor" in input.__repr__()``; a real CUDA tensor's repr calls
+    ``.item()``, so eager int8 syncs per linear and ``torch.cuda.graph`` capture fails outright. The
+    gate is structural, not version-based, and the meta path finder covers a torchao imported after
+    this call, which the int8 prequant path needs since it never calls ``quantize_``.
+    ``UNSLOTH_TORCHAO_INT_MM_FIX=0`` keeps upstream's behaviour. True when patched or the finder was
+    installed, False when there is nothing to do, None when torchao is absent or the fix is off."""
+    if os.environ.get(_TORCHAO_INT_MM_ENV, "1").strip() == "0":
+        return None
+    try:
+        if importlib.util.find_spec("torchao") is None:
+            return None
+    except Exception:
+        return None
+    patched_now = False
+    for name in _TORCHAO_INTMM_MODULES:
+        module = sys.modules.get(name)
+        if module is None:
+            continue
+        try:
+            patched_now = _patch_torchao_intmm_module(module) or patched_now
+        except Exception:
+            pass
+    if all(name in sys.modules for name in _TORCHAO_INTMM_MODULES):
+        return patched_now  # nothing left for a finder to catch
+    for finder in sys.meta_path:
+        if getattr(finder, _TORCHAO_INTMM_SENTINEL, False):
+            return patched_now
+    sys.meta_path.insert(0, _TorchaoIntmmPatchFinder())
+    return True
+
+
 # `datasets` fingerprints through dill, and dill._dill._is_builtin_module pickles a module by
 # reference only if its __file__ starts with a sys prefix, ends with an extension suffix, or
 # contains the literal `site-packages`. An install matching none (pip install --target, a
@@ -6052,5 +6606,81 @@ def fix_dill_module_by_value_pickling():
             "Unsloth: patched dill to pickle importable modules by reference; "
             f"{getattr(probe, '__name__', '?')} is installed outside a "
             "site-packages tree."
+        )
+    return True
+
+
+# Windows refuses sentencepiece's compiled extension on some machines. Smart App Control and
+# App Control for Business judge by reputation, one file at a time, so a freshly published
+# unsigned .pyd can be refused on a machine where everything else loads. The user sees a Bad
+# Image dialog naming the file, and transformers keeps saying the package is available,
+# because it decides that from find_spec and installed metadata and loads nothing.
+#
+# There is no way to ask whether this machine will refuse the file that does not involve
+# handing the file to the loader, which is the thing being avoided: a probe IS the dialog. So
+# on Windows the extension is simply never imported.
+DISABLE_SENTENCEPIECE_VARIABLE = "UNSLOTH_DISABLE_SENTENCEPIECE"
+_SENTENCEPIECE_TRUTHY = frozenset({"1", "true", "yes", "on"})
+_SENTENCEPIECE_FALSY = frozenset({"0", "false", "no", "off"})
+
+
+def sentencepiece_should_be_disabled():
+    """Whether to make sentencepiece absent in this process.
+
+    Windows by default; every other platform only when asked. WSL reports ``linux`` and is
+    treated as the Linux box it is, since App Control does not enforce over ELF binaries in
+    the guest.
+
+    An unrecognised value falls back to the platform default rather than raising. This runs at
+    the very top of the process, where a typo in an environment variable must not be fatal.
+    """
+    value = (os.environ.get(DISABLE_SENTENCEPIECE_VARIABLE) or "").strip().lower()
+    if value in _SENTENCEPIECE_TRUTHY:
+        return True
+    if value in _SENTENCEPIECE_FALSY:
+        return False
+    return sys.platform == "win32"
+
+
+def disable_sentencepiece_on_windows():
+    """Make ``import sentencepiece`` fail the way an uninstalled package does.
+
+    A ``None`` entry in ``sys.modules`` is CPython's documented sentinel for this: the import
+    raises ``ModuleNotFoundError`` (an ``ImportError``, so every ``try/except ImportError`` in
+    transformers already handles it) and nothing on disk is opened, so the compiled extension
+    is never handed to the Windows loader and there is no dialog to see.
+
+    Deliberately NOT a monkey patch of ``is_sentencepiece_available``. transformers derives
+    that from ``find_spec``, which now finds the sentinel and answers False on its own, so the
+    process is in the ordinary "sentencepiece was never installed" configuration rather than a
+    state where the flag and the package disagree. That distinction is load bearing: on
+    transformers 4.52 through 4.57 a flag that lies sends ``tokenizer_class_from_name`` into a
+    fallback that imports the slow tokenizer module and reaches its unguarded
+    ``import sentencepiece as spm``, which is the loader error this is meant to prevent.
+
+    Must run before transformers is imported, since transformers reads availability during
+    its own import. Once transformers is in sys.modules this declines rather than installing a
+    sentinel it has already contradicted. Returns True only when this call is what made it
+    absent.
+    """
+    if not sentencepiece_should_be_disabled():
+        return False
+    if "sentencepiece" in sys.modules:
+        # Already imported by something earlier, or already disabled by an earlier call.
+        # Replacing a live module here would break whoever is holding it.
+        return sys.modules["sentencepiece"] is None
+    if "transformers" in sys.modules:
+        # Too late, and installing it anyway would be worse than doing nothing. transformers
+        # has already read availability from find_spec and cached "installed", so the sentinel
+        # would only produce the disagreement described above, and a tokenizer that loads
+        # today would start raising ModuleNotFoundError. Whoever imported transformers first
+        # keeps the ordinary behaviour.
+        return False
+    sys.modules["sentencepiece"] = None
+    if UNSLOTH_ENABLE_LOGGING:
+        logger.info(
+            "Unsloth: sentencepiece is not imported on Windows, so a code integrity policy "
+            "cannot refuse its extension. Models needing it will say so. Set "
+            f"{DISABLE_SENTENCEPIECE_VARIABLE}=0 to import it again."
         )
     return True

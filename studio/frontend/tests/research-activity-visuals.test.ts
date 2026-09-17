@@ -2,16 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
-const source = readFileSync(
-  new URL(
-    "../src/features/chat/components/research-activity-panel.tsx",
-    import.meta.url,
-  ),
-  "utf8",
-);
+import { readSrc } from "./helpers/kit.ts";
+
+const source = readSrc("features/chat/components/research-activity-panel.tsx");
 
 function between(start: string, end: string): string {
   const startIndex = source.indexOf(start);
