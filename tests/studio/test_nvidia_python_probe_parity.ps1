@@ -69,7 +69,9 @@ $blockNames = @(
     "Read-NvidiaLibraryRaw",
     "Get-NvidiaLibraryInventory",
     # Appended rather than inserted: the indices below are positional.
-    "Test-StudioChildScriptDirectoryElevated"
+    "Test-StudioChildScriptDirectoryElevated",
+    "Get-StudioSystem32Tool",
+    "Test-StudioPathUnderAdminRoot"
 )
 $installParts = @(Get-HelperSources $installPs1 $blockNames)
 $setupParts = @(Get-HelperSources $setupPs1 $blockNames)
@@ -290,6 +292,8 @@ Invoke-Expression ($setupParts[2])   # Read-NvidiaLibraryRawViaPython
 Invoke-Expression ($setupParts[3])   # Read-NvidiaLibraryRaw
 Invoke-Expression ($setupParts[4])   # Get-NvidiaLibraryInventory
 Invoke-Expression ($setupParts[5])   # Test-StudioChildScriptDirectoryElevated
+Invoke-Expression ($setupParts[6])   # Get-StudioSystem32Tool
+Invoke-Expression ($setupParts[7])   # Test-StudioPathUnderAdminRoot
 # The emitted rung declines, which is the whole point: this is what a Constrained Language Mode
 # or WDAC host sees, and the capabilities below are recovered with nothing emitted.
 function Get-NvidiaLibraryProbeType { return $null }
@@ -360,6 +364,23 @@ foreach ($file in @($installPs1, $setupPs1)) {
     Check "$leaf treats an unreadable token as elevated" (
         $elevCode -match 'catch \{ return \$true \}' -and
         $elevCode -match 'IsNullOrWhiteSpace\(\$groups\)\) \{ return \$true \}')
+    # And the tools are the real ones. `& icacls.exe` is PowerShell command resolution, so a
+    # function or executable of that name from the user's session would run with the
+    # administrator token, and a fake one can report success without applying the label at all.
+    Check "$leaf names the in-box tools by absolute path" (
+        $dirFn -match 'Get-StudioSystem32Tool -Name "icacls\.exe"' -and
+        $elevCode -match 'Get-StudioSystem32Tool -Name "whoami\.exe"')
+    Check "$leaf does not resolve either of them through PATH" (
+        $dirFn -notmatch '& icacls\.exe' -and $elevCode -notmatch '& whoami\.exe')
+    $toolFn = @(Get-HelperSources $file @("Get-StudioSystem32Tool"))[0]
+    Check "$leaf builds that path under System32" (
+        $toolFn -match 'System32' -and $toolFn -match 'Test-Path -LiteralPath \$candidate')
+    # And the NVIDIA probe will not launch a user-writable interpreter while elevated: it runs
+    # whatever it is given, and a venv under a per-user Studio root is exactly that.
+    $probePick = @(Get-HelperSources $file @("Get-NvidiaProbePythonExe"))[0]
+    Check "$leaf refuses a user-writable probe interpreter on an elevated run" (
+        $probePick -match 'Test-StudioChildScriptDirectoryElevated' -and
+        $probePick -match 'Test-StudioPathUnderAdminRoot -Path \$candidate')
     Check "$leaf only answers no for a label it actually read" (
         $elevCode -match 'S-1-16-\\d\+.*return \$false')
     Check "$leaf comment stripper kept the code (bites)" ($elevCode -match 'return')
@@ -418,6 +439,8 @@ try {
     # Restored rather than removed: this one came from the file under test, and the rows below
     # still drive it. Removing it left them failing on a missing command instead of on the code.
     Invoke-Expression ($setupParts[5])
+    Invoke-Expression ($setupParts[6])
+    Invoke-Expression ($setupParts[7])
     if ($null -eq $savedOs) { Remove-Item Env:OS -ErrorAction SilentlyContinue } else { $env:OS = $savedOs }
 }
 

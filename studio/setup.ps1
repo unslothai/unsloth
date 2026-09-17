@@ -1023,12 +1023,19 @@ function Get-NvidiaProbePythonExe {
     if (-not $VenvDir) { return "" }
     foreach ($leaf in @("Scripts\python.exe", "bin/python3", "bin/python")) {
         $candidate = Join-Path $VenvDir $leaf
-        if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
+        if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
+        # Elevated runs only take an interpreter a standard user cannot replace. This probe
+        # launches whatever it returns, so on an elevated run a venv interpreter under a per-user
+        # Studio root is a way to have arbitrary code run as administrator. Declining costs the
+        # CUDA version and the compute capabilities, which the caller already treats as unknown.
+        if ($env:OS -eq "Windows_NT" -and (Test-StudioChildScriptDirectoryElevated) -and
+            -not (Test-StudioPathUnderAdminRoot -Path $candidate)) { continue }
+        return $candidate
     }
     return ""
 }
 
-## Writing the program into the shared %TEMP% and then naming that path to Start-Process leaves a
+# Writing the program into the shared %TEMP% and then naming that path to Start-Process leaves a
 # time-of-check to time-of-use gap: any process of the same user can watch the directory and
 # swap the file between the write and the launch. That only becomes a privilege question when
 # THIS shell is elevated, and then it is the whole of one, because the child runs our program
@@ -1056,6 +1063,59 @@ function Get-NvidiaProbePythonExe {
 #
 # New-Item with -ErrorAction Stop, not -Force: it must FAIL on a directory that already exists,
 # or a pre-created one carrying an attacker's ACL would be adopted instead of refused.
+f# An in-box tool, named by its full path, or "" when it is not there.
+#
+# `& icacls.exe` is PowerShell command resolution: a function, alias or executable of that
+# name from the user's session or PATH wins, and on an elevated run it would then execute
+# with the administrator token. A fake one can also report success without applying the
+# label, which reopens the file-swap this helper is here to close. So the real one, by
+# absolute path, and nothing at all rather than whatever PATH offers.
+#
+# System32 resolves to SysWOW64 in a 32-bit process, which carries both of these tools, so
+# this spelling is right in either bitness.
+function Get-StudioSystem32Tool {
+    param([Parameter(Mandatory = $true)][string]$Name)
+    if ([string]::IsNullOrWhiteSpace($env:SystemRoot)) { return "" }
+    $candidate = Join-Path (Join-Path $env:SystemRoot "System32") $Name
+    if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { return "" }
+    return $candidate
+}
+
+f# Is this path inside a root that only an administrator can write.
+#
+# An elevated run launches whatever interpreter is handed to it WITH THE ADMINISTRATOR TOKEN.
+# A per-user CPython, or the venv one under a per-user Studio root, is then a way to have
+# arbitrary code run elevated: replace the executable, wait for the next run. The labelled
+# child directory does not help, because it protects the script this runs, not the thing
+# running it.
+#
+# Matched by location rather than by reading the ACL. The Windows-protected roots are the ones
+# whose default ACLs give write to administrators and TrustedInstaller only, and asking icacls
+# instead would mean parsing account names that are rendered in the OS language.
+function Test-StudioPathUnderAdminRoot {
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    # $env: rather than [Environment]::GetEnvironmentVariable: System.Environment is not on
+    # Constrained Language Mode's allowed type list, and this helper runs on hosts under it.
+    $roots = @()
+    foreach ($value in @($env:SystemRoot, $env:ProgramFiles, $env:ProgramW6432, ${env:ProgramFiles(x86)})) {
+        if (-not [string]::IsNullOrWhiteSpace($value)) { $roots += "$value".TrimEnd('\', '/') }
+    }
+    foreach ($root in $roots) {
+        # The separator is part of the comparison: "C:\Program Files" must not match
+        # "C:\Program Files Evil", which any user can create.
+        #
+        # -like, not String.StartsWith with a StringComparison: that enum is not on
+        # Constrained Language Mode's allowed type list either, and -like is already
+        # case-insensitive. The root is escaped first, because a bracket in it would
+        # otherwise be read as a character class and match the wrong thing.
+        $escapedRoot = $root -replace '([\[\]\*\?])', '`$1'
+        if ("$Path" -like ($escapedRoot + "\*")) { return $true }
+        if ("$Path" -like ($escapedRoot + "/*")) { return $true }
+    }
+    return $false
+}
+
 function Test-StudioChildScriptDirectoryElevated {
     # whoami is in-box and prints the token's own mandatory label, as a SID, which is the same
     # text in every language. The WindowsPrincipal route the rest of this file uses for
@@ -1069,7 +1129,9 @@ function Test-StudioChildScriptDirectoryElevated {
     # mandatory label below High. Costs an unelevated host with whoami blocked the Python
     # rungs, which degrade to the lexical resolver and say so.
     $groups = ""
-    try { $groups = "$(& whoami.exe /groups 2>&1)" } catch { return $true }
+    $whoami = Get-StudioSystem32Tool -Name "whoami.exe"
+    if (-not $whoami) { return $true }
+    try { $groups = "$(& $whoami /groups 2>&1)" } catch { return $true }
     if ([string]::IsNullOrWhiteSpace($groups)) { return $true }
     if ($groups -match "S-1-16-(12288|16384)") { return $true }
     if ($groups -match "S-1-16-\d+") { return $false }
@@ -1119,8 +1181,15 @@ function New-StudioChildScriptDirectory {
     if (-not $made) { return "" }
     if ($env:OS -eq "Windows_NT") {
         $labelled = $false
+        $icacls = Get-StudioSystem32Tool -Name "icacls.exe"
+        if (-not $icacls) {
+            # No way to raise the label, and no way to tell whether it mattered either, so
+            # the directory is given up rather than handed back unprotected.
+            try { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+            return ""
+        }
         try {
-            $null = & icacls.exe "$dir" /setintegritylevel "(OI)(CI)H" 2>&1
+            $null = & $icacls "$dir" /setintegritylevel "(OI)(CI)H" 2>&1
             # Two signals, both locale-independent. icacls reports through its exit code that
             # it wrote the ACE, and the label's SID is the same text in every language. The
             # English name is accepted as well, for a host that resolves it that way.
@@ -1130,7 +1199,7 @@ function New-StudioChildScriptDirectory {
             # applied label as missing and the helper deleted the directory it had just made.
             $labelled = ($LASTEXITCODE -eq 0)
             if (-not $labelled) {
-                $labelled = ("$(& icacls.exe "$dir" 2>&1)" -match "S-1-16-12288|High Mandatory Level")
+                $labelled = ("$(& $icacls "$dir" 2>&1)" -match "S-1-16-12288|High Mandatory Level")
             }
         } catch { $labelled = $false }
         if ((-not $labelled) -and (Test-StudioChildScriptDirectoryElevated)) {

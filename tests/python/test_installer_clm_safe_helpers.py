@@ -35,6 +35,7 @@ CLM_REACHABLE = (
     "Invoke-StudioEarlyPythonScriptViaCmdlets",
     "New-StudioChildScriptDirectory",
     "Test-StudioChildScriptDirectoryElevated",
+    "Get-StudioSystem32Tool",
     "Get-StudioEarlyPython",
     "Test-StudioPathUnderAdminRoot",
     "Invoke-StudioEarlyPython",
