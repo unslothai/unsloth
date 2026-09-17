@@ -316,6 +316,34 @@ class TestRefusalsAreRealRefusals:
         assert r.status_code == 400, r.text
         assert backend.dispatched == []
 
+    @pytest.mark.parametrize(
+        "url",
+        [
+            pytest.param("\n" * 13 + _METADATA, id = "blank-padded"),
+            pytest.param("\x00" * 20 + "http://127.0.0.1/x.png", id = "nul-padded"),
+            pytest.param("averyveryverylongscheme://x.example/a.png", id = "over-long-scheme"),
+        ],
+    )
+    def test_a_scheme_pushed_out_of_the_window_is_still_a_scheme(self, monkeypatch, url):
+        """urlsplit reads these as http; passing them off as base64 would forward a URL."""
+
+        def _never(*_a, **_k):
+            raise AssertionError("only https reaches the fetcher")
+
+        monkeypatch.setattr(external_provider, "safe_fetch_remote_image_sync", _never)
+        backend = _VisionGguf()
+        r = _client(monkeypatch, backend).post("/v1/chat/completions", json = _chat_body(url))
+
+        assert r.status_code == 400, r.text
+        assert backend.dispatched == []
+
+    @pytest.mark.parametrize(
+        "payload",
+        ["iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB", "iVBORw0-KGgo_AAAANSUhEUg==", "iVBORw0KGgo\nAAAANS"],
+    )
+    def test_base64_shapes_are_still_read_as_payload(self, payload):
+        assert inference_route._image_url_scheme(payload) == ""
+
     def test_the_vision_guard_still_runs_before_any_fetch(self, monkeypatch):
         def _never(*_a, **_k):
             raise AssertionError("a text-only model must refuse before fetching")

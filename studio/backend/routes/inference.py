@@ -31772,10 +31772,24 @@ _COUNT_IMAGE_PLACEHOLDER = (
 )
 
 
+# A bare base64 payload holds neither a colon nor any of these, so a URL cannot pass as one.
+_NOT_BASE64 = _re.compile(r"[^A-Za-z0-9+/=_\s-]")
+# urlsplit drops these before it reads a scheme, so skip them the same way.
+_URL_LEADING_BLANKS = "".join(map(chr, range(0x21)))
+# Wider than any real scheme, so the scan stays bounded without missing one.
+_MAX_IMAGE_SCHEME_CHARS = 64
+
+
 def _image_url_scheme(url: str) -> str:
-    """Return a short URL scheme, or ``""`` for llama-server's bare-base64 form."""
-    head = url[: _MAX_VIDEO_SCHEME_CHARS + 1]
-    return head.split(":", 1)[0].lower() if ":" in head else ""
+    """Return a short URL scheme, or ``""`` for llama-server's bare-base64 form.
+
+    Leading blanks are skipped and the window outruns any real scheme, so a scheme padded
+    or stretched out of view cannot smuggle a URL through as a base64 payload.
+    """
+    head = url.lstrip(_URL_LEADING_BLANKS)[:_MAX_IMAGE_SCHEME_CHARS]
+    if ":" not in head and not _NOT_BASE64.search(head):
+        return ""
+    return head.split(":", 1)[0][: _MAX_VIDEO_SCHEME_CHARS].lower()
 
 
 def _remote_image_scheme_rejection(scheme: str) -> Optional[tuple[int, str]]:
