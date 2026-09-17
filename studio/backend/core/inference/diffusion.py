@@ -5563,7 +5563,7 @@ class DiffusionBackend:
                     # Pre-commit failure: roll back the process-wide mutations (symmetric with _unload_locked).
                     if not state_committed:
                         restore_backend_flags(backend_flags_before)
-                        compile_cache.restore(compile_ctx)
+                        compile_cache.restore(compile_ctx, logger = logger)
                         gguf_compile.uninstall_all()  # idempotent
                         cuda_graph.uninstall_all(getattr(pipe, "_unsloth_cuda_graphs", ()) or ())
                         if eager_patched:
@@ -7135,7 +7135,9 @@ class DiffusionBackend:
                     steps_done[0] += steps
                 # Keep progress ACTIVE through the post-denoise work: the route persists the image after this returns,
                 # so a mount probe reading idle would refresh the gallery too early. Persist the warm compile bundle;
-                # a STATIC compile makes new artifacts per (w,h,batch), so register this shape.
+                # a STATIC compile makes new artifacts per (w,h,batch), so register this shape. The write itself is
+                # QUEUED, not performed: nothing in this response depends on it (only the NEXT process reads the
+                # bundle), so save_async hands it to the shared worker and the user stops waiting on it.
                 try:
                     # Register the dims the forward ACTUALLY compiled with, and every distinct chunk size (a static
                     # compile makes one artifact per batch size too).
@@ -7149,11 +7151,11 @@ class DiffusionBackend:
                             (reg_width, reg_height, int(chunk_batch)),
                             static = static_shapes,
                         )
-                    compile_cache.save(state.compile_cache_ctx, logger = logger)
+                    compile_cache.save_async(state.compile_cache_ctx, logger = logger)
                 except Exception:  # noqa: BLE001 - cache persistence is best-effort
                     pass
                 # Last word on cancellation, AFTER the post-denoise work: the event stays registered through the
-                # compile-cache save and the page still shows Stop for as long as progress reads active, so a Stop
+                # compile-cache bookkeeping and the page still shows Stop for as long as progress reads active, so a Stop
                 # landing there was answered cancelled = true and then contradicted by the image the route persisted.
                 # Check and deregister under the cancellation lock, which cancel_generate takes, so the two cannot
                 # interleave. The finally below repeats the clear for every other exit.
@@ -7341,7 +7343,7 @@ class DiffusionBackend:
         # Restore the process-wide backend flags this load flipped so the next `off` load is bit-identical. All
         # idempotent.
         restore_backend_flags(state.backend_flags_before)
-        compile_cache.restore(state.compile_cache_ctx)
+        compile_cache.restore(state.compile_cache_ctx, logger = logger)
         # Before clear_gpu_cache(), or the graph pool stays reserved for the life of the process.
         cuda_graph.uninstall_all(state.cuda_graphs)
         gguf_compile.uninstall_all()
