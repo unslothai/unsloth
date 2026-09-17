@@ -584,10 +584,27 @@ def short_path_for_log(value: Any) -> str:
     text = _as_text(value)
     if not text:
         return ""
+    # A RELATIVE path is returned as written. There is no home directory, account name or
+    # cache root in front of it to leave out, so shortening it only loses information, and
+    # rewriting `./models/repo` to `.../models/repo` invents a parent it does not have.
+    if not _is_absolute_for_log(text):
+        return text
     parts = [part for part in text.replace("\\", "/").split("/") if part]
     if len(parts) <= 2:
-        return "/".join(parts)
+        # Already the two components this would keep, so there is nothing in front of them to
+        # leave out. Returned as written: rebuilding it from the parts dropped the root and
+        # turned `/srv/cache` into `srv/cache`, which reads as a relative path.
+        return text
     return ".../" + "/".join(parts[-2:])
+
+
+def _is_absolute_for_log(text: str) -> bool:
+    """The three spellings of absolute, judged as WRITTEN rather than against this host's OS.
+
+    A Windows path in a line logged on Windows is still a Windows path when the line is read
+    on Linux, where `os.path.isabs` would say no.
+    """
+    return bool(text.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:[\\/]", text))
 
 
 # An absolute POSIX path or a Windows drive path. Deliberately conservative about what may sit
@@ -596,7 +613,14 @@ def short_path_for_log(value: Any) -> str:
 # One path component: no separator, no quote, no colon, none of the marks that end a clause,
 # and no leading or trailing whitespace. Spaces INSIDE are allowed, because directory names
 # have them.
-_PATH_COMPONENT = r"[^\s\\/\n\":;,](?:[^\\/\n\":;,]*[^\s\\/\n\":;,])?"
+# `=` terminates a run for the same reason a quote does. Spaces are allowed INSIDE a component,
+# which is what lets `Program Files` through, but without a stop the run then walked out of the
+# path and into the rest of the line: `Scan folder rejected: /home/jane.doe/.cache/hf/hub
+# (path=/home/jane.doe/models)` matched from the first slash to the last bracket as ONE path,
+# whose final two components were `jane.doe` and `models)`, so the line came back as
+# `Scan folder rejected: .../jane.doe/models)` -- the second path, the `(path=` label and the
+# first path all gone, and the account name this exists to drop still in it.
+_PATH_COMPONENT = r"[^\s\\/\n\":;,=](?:[^\\/\n\":;,=]*[^\s\\/\n\":;,=])?"
 
 _ABSOLUTE_PATH_RE = re.compile(
     # Not preceded by a word character, a colon or a slash, so a URL's "//host/path" and a
@@ -616,7 +640,11 @@ _ABSOLUTE_PATH_RE = re.compile(
     # is the short one and it is the terminators: a colon so `Skipping /x: denied` keeps its
     # reason, a quote so a quoted path ends at the quote, and a comma or semicolon so a list
     # of paths is still a list.
-    r"(?<![\w:/])(?:\\\\[^\\/\s]+[\\/]|[A-Za-z]:[\\/]|/)"
+    # A DOT is in the excluded set for the same reason a word character is: `./models/repo`
+    # and `../models/repo` are relative, and matching from their slash onwards ate the
+    # leading separator and turned them into `.models/repo` and `..models/repo`, a directory
+    # name the operator does not have. `../../a/b/c` came back as `...../b/c`.
+    r"(?<![\w:/.])(?:\\\\[^\\/\s]+[\\/]|[A-Za-z]:[\\/]|/)"
     r"(?:" + _PATH_COMPONENT + r"[\\/])*" + _PATH_COMPONENT
 )
 

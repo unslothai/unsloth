@@ -458,16 +458,20 @@ def test_every_route_that_can_fetch_with_a_one_off_token_records_it():
     assert text_load.rindex("finally:") < text_load.index("_note_load_fetched_with_a_request_token")
     assert "_load_fetched_bytes(" in text_load
 
-    # The media loads take their readings before the first fetch and record in the finally,
-    # for the same reason: recording at route entry marks a repo no fetch ever touched.
+    # The media loads decide at ENTRY, and must: `begin_load` runs the slow load on a daemon
+    # thread and returns at once, so a before/after comparison in the route would be taken
+    # before the worker moved a byte and would record nothing for the downloads that need a
+    # record. The test they can pass is the one fact available that early -- the repo is not
+    # already cached, so this load is going to go and fetch it.
     for media_load in (
         inspect.getsource(inference_routes.load_diffusion_model_gated),
         inspect.getsource(video_routes.load_video_model_gated),
     ):
-        assert "_media_cached_before" in media_load and "_media_footprint_before" in media_load
-        assert media_load.rindex("finally:") < media_load.index(
-            "_note_load_fetched_with_a_request_token(_ref"
-        ), "a media load still records before it knows a fetch happened"
+        assert "_repo_is_in_the_hub_cache(_ref) is not True" in media_load
+        assert "_note_load_fetched_with_a_request_token(_ref" in media_load
+        assert "_load_fetched_bytes" not in media_load, (
+            "a media route cannot compare before and after: its fetch has not happened yet"
+        )
 
     assert "_note_load_fetched_with_a_request_token" not in inspect.getsource(
         inference_routes.load_model_gated
@@ -1491,3 +1495,58 @@ def test_a_base_that_was_already_cached_is_not_marked_as_fetched(monkeypatch):
         "acme/adapter", "hf_someoneelses", already_cached = None
     )
     assert recorded == ["acme/public-base"]
+
+
+def test_only_growth_counts_as_a_fetch(monkeypatch, tmp_path):
+    """`after != before` was too loose in two directions that both record a false fetch.
+
+    An after-reading that could not be taken is not evidence, and a cache that SHRANK was
+    pruned rather than fetched. Both used to compare unequal and mark the repo, which is what
+    withholds a public cached copy from every tokenless offline caller for good.
+    """
+    from routes import inference as inference_routes
+
+    blobs = tmp_path / "models--acme--public" / "blobs"
+    blobs.mkdir(parents = True)
+    (blobs / "a").write_bytes(b"x" * 4096)
+    (blobs / "b").write_bytes(b"y" * 4096)
+    monkeypatch.setattr(
+        hf_cache_state,
+        "iter_repo_cache_dirs",
+        lambda repo_type, repo_id, **kw: iter([tmp_path / "models--acme--public"]),
+    )
+    monkeypatch.setattr(inference_routes, "_repo_is_in_the_hub_cache", lambda ref: True)
+    before = inference_routes._hub_cache_footprint("acme/public")
+    assert before == (2, 8192)
+
+    (blobs / "b").unlink()  # a prune, not a fetch
+    assert not inference_routes._load_fetched_bytes("acme/public", True, before)
+
+    monkeypatch.setattr(inference_routes, "_hub_cache_footprint", lambda ref: None)
+    assert not inference_routes._load_fetched_bytes("acme/public", True, before), (
+        "an unreadable after-reading was counted as a fetch"
+    )
+
+    # Growth in either component is still a fetch: a new blob moves the count, and a partial
+    # one that was appended to moves only the bytes.
+    monkeypatch.setattr(inference_routes, "_hub_cache_footprint", lambda ref: (3, 8192))
+    assert inference_routes._load_fetched_bytes("acme/public", True, before)
+    monkeypatch.setattr(inference_routes, "_hub_cache_footprint", lambda ref: (2, 9000))
+    assert inference_routes._load_fetched_bytes("acme/public", True, before)
+
+
+def test_a_media_load_records_at_entry_because_its_fetch_is_on_a_worker_thread():
+    """`begin_load` validates and then runs the slow load on a daemon thread, returning at
+    once, so the media routes have no after-the-fetch moment of their own. Comparing a
+    footprint there would be measured before the worker moved a byte and would record NOTHING
+    for a download made with a one-off credential, which is the case the record exists for."""
+    import inspect
+
+    from core.inference import diffusion, video as video_core
+
+    for begin in (diffusion.DiffusionBackend.begin_load, video_core.VideoBackend.begin_load):
+        doc = inspect.getdoc(begin) or ""
+        assert "Returns at once" in doc or "daemon thread" in doc, (
+            f"{begin.__qualname__} no longer hands off; the media routes could compare "
+            "before and after like the text load does"
+        )

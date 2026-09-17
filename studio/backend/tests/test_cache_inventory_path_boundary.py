@@ -579,6 +579,57 @@ def test_a_windows_network_share_is_shortened_like_any_other_path():
     )
 
 
+def test_a_relative_path_in_a_log_line_is_left_as_written():
+    """There is no home directory or cache root in front of a relative path to leave out.
+
+    Shortening one only loses information, and matching from its first slash ate the leading
+    separator: `./models/repo` came back as `.models/repo`, a directory the operator does not
+    have, and `../../a/b/c` as `...../b/c`.
+    """
+    for line in (
+        "Skipping ./models/repo: denied",
+        "Skipping ../models/repo: denied",
+        "Skipping ../../a/b/c: denied",
+        "Skipping models/team/repo: denied",
+    ):
+        assert scrub_paths(line) == line, line
+    assert short_path_for_log("./models/repo") == "./models/repo"
+    assert short_path_for_log("../models/repo") == "../models/repo"
+
+    # An absolute path already down to two components keeps its root for the same reason:
+    # rebuilding it from the parts turned `/srv/cache` into `srv/cache`, which reads relative.
+    assert scrub_paths("cache root /srv/cache is unreadable") == (
+        "cache root /srv/cache is unreadable"
+    )
+    # And the shortening this exists for still happens.
+    assert scrub_paths("Failed /home/op/.cache/huggingface/hub/models--acme--x: EACCES") == (
+        "Failed .../hub/models--acme--x: EACCES"
+    )
+
+
+def test_a_path_run_stops_at_the_end_of_the_path():
+    """A component may contain a space, so the run has to be stopped by something.
+
+    Without one it walked out of the path and through the rest of the line: the two-path
+    scan-folder message matched from its first slash to the closing bracket as ONE path, and
+    came back as `Scan folder rejected: .../jane.doe/models)` -- the first path, the label
+    between them and the closing of the line all swallowed.
+    """
+    line = "Scan folder rejected: /home/jane.doe/.cache/huggingface/hub (path=/home/jane.doe/x)"
+    scrubbed = scrub_paths(line)
+    assert scrubbed == "Scan folder rejected: .../huggingface/hub (path=.../jane.doe/x)"
+    assert "(path=" in scrubbed, "the label between the two paths was swallowed"
+
+    # The two shapes the stop must not break: punctuation inside a directory name, which an
+    # allowlist got wrong before, and a space inside one.
+    assert scrub_paths("Skipping /srv/client(acme)/models: denied") == (
+        "Skipping .../client(acme)/models: denied"
+    )
+    assert scrub_paths("Skipping /srv/Program Files/models--x: denied") == (
+        "Skipping .../Program Files/models--x: denied"
+    )
+
+
 def test_a_long_line_with_no_path_in_it_is_not_a_stall():
     """The pattern nests a quantifier, so a line built from an exception has to stay linear."""
     import time

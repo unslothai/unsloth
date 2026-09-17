@@ -14903,19 +14903,31 @@ def _hub_cache_footprint(model_ref) -> Optional[tuple]:
 def _load_fetched_bytes(model_ref, cached_before, footprint_before) -> bool:
     """Whether this load brought *model_ref*'s bytes onto the host, or added to them.
 
+    Only usable where the caller AWAITED the fetch; a load that hands off to a background
+    worker and returns has nothing to compare yet. See the media loads, which decide at entry.
+
     The record is a claim that a fetch HAPPENED. Two shapes count: the repo arrived, and the
-    repo was already here and grew. Anything else -- a pure cache hit, an unreadable
-    footprint, a repo that never arrived -- is not evidence and records nothing, because a
-    record that is wrong withholds a public cached copy from every tokenless offline caller
-    for good.
+    repo was already here and GREW. Anything else records nothing, because a record that is
+    wrong withholds a public cached copy from every tokenless offline caller for good:
+
+    - a pure cache hit leaves both readings equal;
+    - a reading that could not be taken, before or after, is not evidence either way, and
+      `after != before` alone would read an unreadable after as a fetch;
+    - a cache that SHRANK was pruned, not fetched, so growth is the test rather than
+      difference. A prune racing a load can still mask a real fetch, which is the direction
+      that withholds nothing.
     """
     if cached_before is False and _repo_is_in_the_hub_cache(model_ref):
         return True
-    return bool(
-        cached_before is True
-        and footprint_before is not None
-        and _hub_cache_footprint(model_ref) != footprint_before
-    )
+    if cached_before is not True or footprint_before is None:
+        return False
+    footprint_after = _hub_cache_footprint(model_ref)
+    if footprint_after is None:
+        return False
+    # Either component growing is a fetch: a new blob moves the count, and a partial one that
+    # was appended to moves only the bytes. Compared per component rather than as tuples, so a
+    # prune that removed one blob while another arrived is still read as a fetch.
+    return any(after > before for after, before in zip(footprint_after, footprint_before))
 
 
 def _lora_base_already_in_the_hub_cache(model_ref) -> Optional[str]:
@@ -36996,14 +37008,24 @@ async def load_diffusion_model_gated(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
         )
     # Same as the text load: a one-off token on an image load pulls the repo into the same
-    # cache and is kept nowhere, so the provenance is recorded where the request is -- and, as
-    # there, only for a repo this load actually fetched. An unsupported model family, a
-    # cancelled load and an already-cached public pick all fetch nothing, and recording those
-    # withholds a public cached copy from every tokenless offline caller. The readings are
-    # taken here, before the first fetch, and the record in the finally below.
+    # cache and is kept nowhere, so the provenance is recorded where the request is.
+    #
+    # Decided at ENTRY, unlike the text load, because `begin_load` validates and then runs the
+    # slow load on a daemon thread, returning at once. There is no point after the fetch for
+    # this request to look at: a before/after comparison here would be taken before the worker
+    # has moved a byte and would record nothing for the very downloads that need a record.
+    #
+    # So the test is the one fact available before the worker starts: a repo that is ALREADY in
+    # the cache is not one this load will fetch, and recording it is what withholds an ordinary
+    # public model from every tokenless offline caller for good. A repo that is absent is one
+    # this load is about to go and get. That errs toward recording -- a load that then fails
+    # leaves a record for a repo with nothing on disk, which the gate only ever consults once
+    # some later download puts bytes there -- and erring the other way hands over a private
+    # repo, so this is the direction to err in.
     _media_repos = [ref for ref in (request.model_path, request.base_repo) if ref]
-    _media_cached_before = {ref: _repo_is_in_the_hub_cache(ref) for ref in _media_repos}
-    _media_footprint_before = {ref: _hub_cache_footprint(ref) for ref in _media_repos}
+    for _ref in _media_repos:
+        if _repo_is_in_the_hub_cache(_ref) is not True:
+            _note_load_fetched_with_a_request_token(_ref, request.hf_token)
     from core.inference.diffusion import (
         get_diffusion_backend,
         resolve_local_single_file,
@@ -37240,12 +37262,6 @@ async def load_diffusion_model_gated(
     except RuntimeError as exc:
         # A load is already in progress.
         raise HTTPException(status_code = 409, detail = str(exc))
-    finally:
-        for _ref in _media_repos:
-            if _load_fetched_bytes(
-                _ref, _media_cached_before[_ref], _media_footprint_before[_ref]
-            ):
-                _note_load_fetched_with_a_request_token(_ref, request.hf_token)
 
 
 # Count of finished generations still writing their PNG/gallery records; generate-progress reports active while above 0. Mutated only on the event loop, so no lock.

@@ -273,21 +273,18 @@ async def load_video_model_gated(
         request = request.model_copy(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
         )
-    # Same as the text and image loads: a one-off token on a video load pulls the repo into
-    # the same cache and is kept nowhere, so the provenance is recorded where the request is --
-    # and only for a repo this load actually fetched, since recording a pure cache hit
-    # withholds a public cached copy from every tokenless offline caller. Readings here, record
-    # in the finally below.
+    # Same as the image load, and decided at entry for the same reason: `begin_load` runs the
+    # slow load on a daemon thread and returns at once, so this request has no after-the-fetch
+    # moment to compare against. A repo already in the cache is not one this load will fetch,
+    # and recording it withholds an ordinary public model from every tokenless offline caller.
     from routes.inference import (
-        _hub_cache_footprint,
-        _load_fetched_bytes,
         _note_load_fetched_with_a_request_token,
         _repo_is_in_the_hub_cache,
     )
 
-    _media_repos = [ref for ref in (request.model_path, request.base_repo) if ref]
-    _media_cached_before = {ref: _repo_is_in_the_hub_cache(ref) for ref in _media_repos}
-    _media_footprint_before = {ref: _hub_cache_footprint(ref) for ref in _media_repos}
+    for _ref in (request.model_path, request.base_repo):
+        if _ref and _repo_is_in_the_hub_cache(_ref) is not True:
+            _note_load_fetched_with_a_request_token(_ref, request.hf_token)
     from core.inference.diffusion import resolve_local_single_file
     from core.inference.diffusion_device import (
         resolve_diffusion_device_target,
@@ -436,12 +433,6 @@ async def load_video_model_gated(
     except RuntimeError as exc:
         # A video load is already in progress.
         raise HTTPException(status_code = 409, detail = str(exc))
-    finally:
-        for _ref in _media_repos:
-            if _load_fetched_bytes(
-                _ref, _media_cached_before[_ref], _media_footprint_before[_ref]
-            ):
-                _note_load_fetched_with_a_request_token(_ref, request.hf_token)
 
 
 @router.get("/video/load-progress", response_model = VideoLoadProgressResponse)
