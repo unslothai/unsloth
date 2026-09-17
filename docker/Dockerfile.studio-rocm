@@ -1,0 +1,100 @@
+# Unsloth Studio on AMD (ROCm): the ROCm training image + Studio's web UI.
+#
+# The AMD counterpart to Dockerfile.studio, which layers Studio on the CUDA core
+# image. Kept as its own file rather than a branch in that one: the CUDA build
+# bakes a CUDA llama.cpp, stages NVRTC and dedups the nvidia-* wheels against the
+# base venv, and none of those steps have a ROCm meaning.
+#
+# Not here yet, unlike unsloth/unsloth:studio: JupyterLab, sshd and supervisord.
+# The ROCm base ships no jupyterlab, so that whole chain (labextension build,
+# branding, the three-service supervisor) is a follow-up. This runs Studio alone.
+#
+# llama.cpp is installed as the CPU bundle: the builder has no GPU, and a ROCm
+# bundle is per-gfx-family, so baking one would pin this image to one arch. GGUF
+# chat therefore runs on the CPU here; training and the UI use the GPU.
+#
+# Build (on the published ROCm base, or one built from docker/Dockerfile.rocm):
+#   docker buildx build --build-arg BASE_IMAGE=unsloth/unsloth-rocm:latest \
+#     -f docker/Dockerfile.studio-rocm -t unsloth/unsloth-rocm:studio docker/
+# Run (Linux):
+#   docker run --rm --device /dev/kfd --device /dev/dri --group-add video \
+#     --group-add render --ipc=host -p 127.0.0.1:8000:8000 \
+#     -v unsloth-studio-rocm:/opt/unsloth-studio unsloth/unsloth-rocm:studio
+# Run (Windows/WSL2): bash docker/run.sh --rocm passes the DXG bridge instead.
+
+ARG BASE_IMAGE=unsloth/unsloth-rocm:latest
+
+FROM ${BASE_IMAGE}
+
+# Studio source ref to clone. Defaults to main; CI pins it (the same UNSLOTH_REF
+# as the base) so the published image is reproducible.
+ARG UNSLOTH_STUDIO_REF=main
+# unsloth-zoo ref overlaid into the Studio venv by install.sh --local, so Studio
+# runs the same zoo as the base.
+ARG UNSLOTH_STUDIO_ZOO_REF=main
+
+# UV_CACHE_DIR lives in the app dir: install.sh defaults it to
+# $UNSLOTH_STUDIO_HOME/cache/uv, which would fill a volume on the home with wheels.
+ENV UNSLOTH_STUDIO_HOME=/opt/unsloth-studio \
+    UNSLOTH_STUDIO_APP=/opt/unsloth-studio-app \
+    UV_CACHE_DIR=/opt/unsloth-studio-app/uv-cache \
+    UNSLOTH_STUDIO_PORT=8000 \
+    DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl git ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+# The linker this build finishes with, and the entrypoint reruns.
+COPY studio_home.sh /usr/local/bin/unsloth-studio-home
+
+# Clone + install Studio into a venv under $UNSLOTH_STUDIO_HOME, then move it to
+# $UNSLOTH_STUDIO_APP in the same layer (a later RUN would store it twice).
+#
+# The torch index comes from /etc/unsloth-rocm-build, which the base wrote with
+# the index it actually resolved against: the pytorch.org rocm leaf normally, or
+# repo.amd.com/rocm/whl/<family>/ on a per-arch (ROCM_GFX) build. Letting
+# install.sh detect instead would land on CPU wheels, since the builder has no GPU.
+#
+# fetch+checkout FETCH_HEAD, not `clone --branch`: CI passes a commit SHA.
+RUN set -eux \
+ && . /etc/unsloth-rocm-build \
+ && mkdir -p "${UNSLOTH_STUDIO_HOME}" \
+ && git init -q "${UNSLOTH_STUDIO_HOME}/src" \
+ && cd "${UNSLOTH_STUDIO_HOME}/src" \
+ && git remote add origin https://github.com/unslothai/unsloth \
+ && git fetch -q --depth 1 origin "${UNSLOTH_STUDIO_REF}" \
+ && git checkout -q FETCH_HEAD \
+ && UNSLOTH_STUDIO_HOME="${UNSLOTH_STUDIO_HOME}" \
+    UNSLOTH_TORCH_INDEX_URL="${TORCH_INDEX_URL}" \
+    UNSLOTH_ZOO_REF="${UNSLOTH_STUDIO_ZOO_REF}" \
+    UNSLOTH_LLAMA_CPP_BACKEND=cpu \
+    UNSLOTH_SKIP_WHISPER_INSTALL=1 \
+    UNSLOTH_PYTHON=3.12 \
+    UNSLOTH_ALLOW_CPU=1 \
+    bash install.sh --local \
+    # Fail loud unless the Studio venv torch exactly matches the base, version and
+    # ROCm build tag both: a mismatch means install.sh re-resolved somewhere else
+    # and the image would ship two different ROCm runtimes.
+ && BASE_TORCH="$(/opt/unsloth-venv/bin/python -c "from importlib.metadata import version; print(version('torch'))")" \
+ && "${UNSLOTH_STUDIO_HOME}/unsloth_studio/bin/python" -c "import sys; from importlib.metadata import version; v = version('torch'); assert v == '${BASE_TORCH}', 'Studio venv torch ' + v + ' does not match base venv torch ${BASE_TORCH}'; assert '+rocm' in v, 'Studio venv torch ' + v + ' is not a ROCm build'; print('Studio venv python %d.%d torch' % sys.version_info[:2], v, '== base')" \
+    # The UI is the point of this image, so a missing frontend build is fatal here
+    # rather than a 404 at runtime.
+ && test -f "${UNSLOTH_STUDIO_HOME}/src/studio/frontend/dist/index.html" \
+ && rm -rf "${UNSLOTH_STUDIO_HOME}/src/.git" \
+          "${UNSLOTH_STUDIO_HOME}/src/studio/frontend/node_modules" \
+          "${UV_CACHE_DIR}" \
+          /root/.cache \
+ && mkdir -p "${UNSLOTH_STUDIO_APP}" \
+ && find "${UNSLOTH_STUDIO_HOME}" -mindepth 1 -maxdepth 1 ! -name cache -exec mv -t "${UNSLOTH_STUDIO_APP}" {} + \
+ && bash /usr/local/bin/unsloth-studio-home \
+ && "${UNSLOTH_STUDIO_HOME}/unsloth_studio/bin/python" -c "import os, sys, studio; print('Studio venv', sys.prefix, 'imports studio from', studio.__file__); assert os.path.realpath(studio.__file__).startswith(os.path.realpath('${UNSLOTH_STUDIO_HOME}/src') + '/'), studio.__file__"
+
+COPY studio_password.sh /usr/local/bin/unsloth-studio-password
+RUN chmod +x /usr/local/bin/unsloth-studio-home /usr/local/bin/unsloth-studio-password
+
+EXPOSE 8000
+
+# The base ENTRYPOINT (unsloth-entrypoint-rocm) runs its GPU pre-flight first,
+# then execs this.
+CMD ["/bin/bash", "-lc", "unsloth-studio-home && exec ${UNSLOTH_STUDIO_HOME}/unsloth_studio/bin/unsloth studio -H 0.0.0.0 -p ${UNSLOTH_STUDIO_PORT}"]
