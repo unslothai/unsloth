@@ -105,6 +105,10 @@ try {
     $savedFinder2 = ${function:Get-StudioEarlyPython}
     function Get-StudioEarlyPython { return $null }
     $script:StudioEarlyPythonProbed = $false
+    # The resolver's per-run cache is cleared with it. This stub stands in for a DIFFERENT run,
+    # one that never had an interpreter, and a cached answer from the run above would otherwise
+    # be served without the rung being reached at all.
+    $script:StudioPythonFinalPathCache = $null
     $noPy = Resolve-StudioFinalPathInfo -Path $real
     Check "with no interpreter the identity is inexact, as before" ($noPy.Exact -eq $false)
     Check "with no interpreter a usable path still comes back" (
@@ -274,6 +278,34 @@ try {
     Remove-Item Function:Test-Path -ErrorAction SilentlyContinue
     Remove-Item Function:Get-Command -ErrorAction SilentlyContinue
     Remove-Variable -Name VenvDir -Scope Global -ErrorAction SilentlyContinue
+    # ---- one child per distinct path, not one per call ----
+    #
+    # The process scan resolves every running process's image path, and the install repeats that
+    # for each protected root, so the same strings are asked for over and over. On a host where
+    # the rung above this one declines, each of those was a child process with a ten second bound
+    # behind it. Counted rather than timed: the count is what separates a cache from a fast host.
+    $script:ResolveCalls = 0
+    $savedInvoke = ${function:Invoke-StudioEarlyPython}
+    function Invoke-StudioEarlyPython { param($Exe, $Path, $TimeoutMs) $script:ResolveCalls++; return $Path }
+    $savedFinder3 = ${function:Get-StudioEarlyPython}
+    function Get-StudioEarlyPython { return "python3" }
+    $script:StudioPythonFinalPathCache = $null
+    $null = Get-StudioPythonFinalPath -Path $real
+    $null = Get-StudioPythonFinalPath -Path $real
+    $null = Get-StudioPythonFinalPath -Path $real
+    Check "three calls for one path spawn one child" ($script:ResolveCalls -eq 1)
+    $null = Get-StudioPythonFinalPath -Path $tmp
+    Check "and a different path still spawns its own" ($script:ResolveCalls -eq 2)
+    # The miss is worth caching too: learning it twice costs the same child as learning it once.
+    function Invoke-StudioEarlyPython { param($Exe, $Path, $TimeoutMs) $script:ResolveCalls++; return $null }
+    $missPath = Join-Path $tmp "no-such-thing"
+    $null = Get-StudioPythonFinalPath -Path $missPath
+    $null = Get-StudioPythonFinalPath -Path $missPath
+    Check "a miss is remembered as well as an answer" ($script:ResolveCalls -eq 3)
+    ${function:Invoke-StudioEarlyPython} = $savedInvoke
+    ${function:Get-StudioEarlyPython} = $savedFinder3
+    $script:StudioPythonFinalPathCache = $null
+
 } finally {
     Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }

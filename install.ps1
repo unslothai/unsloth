@@ -2849,11 +2849,32 @@ exit 1
         }
     }
 
+    # One child per DISTINCT path, not per call.
+    #
+    # The process scan resolves the image path of every running process, and the install repeats
+    # that for each protected root, so a machine with a few hundred processes asked this the same
+    # questions two to four times over. Most of those paths are also the same string: many
+    # processes run the same executable. Where the rung above this one declines, which is what
+    # WDAC Dynamic Code Security and Constrained Language Mode do, every one of those was a child
+    # process with a ten second bound behind it.
+    #
+    # The miss is cached too, as $null, because "asked, and there is no exact answer for this
+    # path" is worth exactly as much as an answer and costs the same child to learn twice.
+    $script:StudioPythonFinalPathCache = $null
+
     function Get-StudioPythonFinalPath {
         param([Parameter(Mandatory = $true)][string]$Path)
+        if ($null -eq $script:StudioPythonFinalPathCache) { $script:StudioPythonFinalPathCache = @{} }
+        if ($script:StudioPythonFinalPathCache.ContainsKey($Path)) {
+            return $script:StudioPythonFinalPathCache[$Path]
+        }
         $exe = Get-StudioEarlyPython
+        # Not cached: the interpreter can appear later in the run (the ladder re-probes once
+        # $VenvDir is known), and recording a miss taken without one would outlive the reason.
         if (-not $exe) { return $null }
-        return (Invoke-StudioEarlyPython -Exe $exe -Path $Path)
+        $answer = Invoke-StudioEarlyPython -Exe $exe -Path $Path
+        $script:StudioPythonFinalPathCache[$Path] = $answer
+        return $answer
     }
 
     # Exact = $true means the native resolver answered, so the string is what it
