@@ -1655,11 +1655,21 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         "                if isinstance(prompt, list):  # i.e., when using conversational data\n"
         "                    prepare_multimodal_messages(prompt, num_images=1)"
     )
+    # An empty cell takes zero placeholders, not one: the prologue already counts it as zero,
+    # and a batch mixing an image bearing row with an empty one otherwise reaches the processor
+    # a placeholder short of its images. An all empty column is a text batch wearing an image
+    # one, which TRL demotes itself from 0.24.0; ported here, because zero placeholders against
+    # `[[], []]` is an IndexError inside the processor rather than a text run. The guard mirrors
+    # TRL's `all(img_list == [] ...)`, so a `None` cell still fails exactly as it does on main.
     _placeholder_new = (
-        '            for prompt, _unsloth_cell in zip(prompts, kwargs["images"]):\n'
+        '            if kwargs.get("images") and all(\n'
+        '                _unsloth_cell == [] for _unsloth_cell in kwargs["images"]\n'
+        "            ):\n"
+        "                kwargs = {}\n"
+        '            for prompt, _unsloth_cell in zip(prompts, kwargs.get("images", [])):\n'
         "                if isinstance(prompt, list):  # i.e., when using conversational data\n"
         "                    prepare_multimodal_messages(\n"
-        "                        prompt, num_images=len(_unsloth_cell) if _unsloth_cell else 1\n"
+        "                        prompt, num_images=len(_unsloth_cell) if _unsloth_cell else 0\n"
         "                    )"
     )
     # TRL 0.24.0 and up size the placeholders themselves, off the cell they were handed, so the

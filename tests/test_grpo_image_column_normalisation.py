@@ -252,5 +252,56 @@ def test_a_trl_that_can_size_its_placeholders_is_not_refused():
         "_generate_and_score_completions", _legacy_source(with_placeholder_helper = True)
     )
     assert "_unsloth_grpo_image_cell(img)" in patched
-    assert "len(_unsloth_cell) if _unsloth_cell else 1" in patched
+    assert "len(_unsloth_cell) if _unsloth_cell else 0" in patched
     assert "_unsloth_reject_grpo_image_list(inputs)" not in patched
+
+
+def _run_legacy_placeholders(cells):
+    """Execute the rewritten TRL 0.22.x block and report what the processor would be handed."""
+    source = (
+        '        has_images = "image" in inputs[0]\n'
+        "        if has_images:\n"
+        '            images = [example.get("image") for example in inputs]\n'
+        '            kwargs = {"images": [[img] for img in images]}\n'
+        "            for prompt in prompts:\n"
+        "                if isinstance(prompt, list):  # i.e., when using conversational data\n"
+        "                    prepare_multimodal_messages(prompt, num_images=1)\n"
+    )
+    patched = grpo_trainer__generate_and_score_completions(
+        "_generate_and_score_completions", source
+    )
+    calls = []
+    namespace = {
+        "inputs": [{"image": cell} for cell in cells],
+        "prompts": [[{"role": "user", "content": "x"}] for _ in cells],
+        "prepare_multimodal_messages": lambda prompt, num_images: calls.append(num_images),
+        "_unsloth_grpo_image_cell": _unsloth_grpo_image_cell,
+    }
+    exec(textwrap.dedent(patched), namespace)
+    return namespace["kwargs"].get("images", None), calls
+
+
+def test_an_empty_cell_takes_no_placeholder_so_a_mixed_batch_stays_in_step():
+    """One placeholder for a row with no image leaves the prompt a token ahead of the pixels,
+    which the processor rejects. Measured against a real Gemma 3 processor: this batch fails
+    with one placeholder for the empty row and succeeds with none."""
+    a, b = _Img("a"), _Img("b")
+    assert _run_legacy_placeholders([a, []]) == ([[a], []], [1, 0])
+    assert _run_legacy_placeholders([[a, b], []]) == ([[a, b], []], [2, 0])
+    assert _run_legacy_placeholders([[], a]) == ([[], [a]], [0, 1])
+
+
+def test_an_all_empty_image_column_is_demoted_to_a_text_batch():
+    """TRL does this itself from 0.24.0. Without it the processor is handed [[], []] against
+    zero placeholders, which is an IndexError inside the processor rather than a text run."""
+    images, calls = _run_legacy_placeholders([[], []])
+    assert images is None, images
+    assert calls == []
+
+
+def test_a_none_cell_is_left_to_fail_exactly_as_it_does_on_main():
+    """The guard mirrors TRL's own `all(img_list == [])`, which never fires for a None entry.
+    Diverging from TRL's extraction here is a bigger change than the bug is worth."""
+    images, calls = _run_legacy_placeholders([None, None])
+    assert images == [None, None], images
+    assert calls == [0, 0]
