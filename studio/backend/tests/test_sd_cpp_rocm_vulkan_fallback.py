@@ -1774,10 +1774,13 @@ def test_an_unnamed_physical_card_withholds_the_tie_break(monkeypatch):
     _no_visibility_mask(monkeypatch)
     monkeypatch.setenv("HIP_VISIBLE_DEVICES", "1")
     _pinned_torch(monkeypatch, ["AMD Radeon(TM) Graphics"])
-    _pinned_inventory(monkeypatch, [
-        {"vendor": "amd", "index": 0, "name": None, "gfx_candidates": ["gfx11", "gfx1151"]},
-        {"vendor": "amd", "index": 1, "name": None, "gfx_candidates": ["gfx11", "gfx1151"]},
-    ])
+    _pinned_inventory(
+        monkeypatch,
+        [
+            {"vendor": "amd", "index": 0, "name": None, "gfx_candidates": ["gfx11", "gfx1151"]},
+            {"vendor": "amd", "index": 1, "name": None, "gfx_candidates": ["gfx11", "gfx1151"]},
+        ],
+    )
 
     assert video_mod._physical_card_name(0) == ("AMD Radeon(TM) Graphics", None)
 
@@ -1792,23 +1795,33 @@ def test_the_tie_break_counts_the_same_group_the_matcher_will(monkeypatch):
     _no_visibility_mask(monkeypatch)
     monkeypatch.setenv("HIP_VISIBLE_DEVICES", "1")
     _pinned_torch(monkeypatch, ["AMD Radeon(TM) Graphics"])
-    _pinned_inventory(monkeypatch, [
-        {
-            "vendor": "amd", "index": 0, "name": "AMD Radeon(TM) Graphics",
-            "gfx_candidates": ["gfx11", "gfx1103"],
-        },
-        {
-            "vendor": "amd", "index": 1, "name": "AMD Radeon(TM) Graphics",
-            "gfx_candidates": ["gfx11", "gfx1151"],
-        },
-    ])
+    _pinned_inventory(
+        monkeypatch,
+        [
+            {
+                "vendor": "amd",
+                "index": 0,
+                "name": "AMD Radeon(TM) Graphics",
+                "gfx_candidates": ["gfx11", "gfx1103"],
+            },
+            {
+                "vendor": "amd",
+                "index": 1,
+                "name": "AMD Radeon(TM) Graphics",
+                "gfx_candidates": ["gfx11", "gfx1151"],
+            },
+        ],
+    )
 
     assert video_mod._physical_card_name(0) == ("AMD Radeon(TM) Graphics", 1)
     # And a card of a DIFFERENT name before it does not count toward the group.
-    _pinned_inventory(monkeypatch, [
-        {"vendor": "amd", "index": 0, "name": "AMD Radeon RX 7600"},
-        {"vendor": "amd", "index": 1, "name": "AMD Radeon(TM) Graphics"},
-    ])
+    _pinned_inventory(
+        monkeypatch,
+        [
+            {"vendor": "amd", "index": 0, "name": "AMD Radeon RX 7600"},
+            {"vendor": "amd", "index": 1, "name": "AMD Radeon(TM) Graphics"},
+        ],
+    )
     assert video_mod._physical_card_name(0) == ("AMD Radeon(TM) Graphics", 0)
 
 
@@ -2579,9 +2592,9 @@ def test_a_resident_server_does_not_cost_the_reload_its_native_engine(fake_setti
     # starting the known-failing build.
     monkeypatch.setattr(router, "_managed_tree_in_use", lambda: True)
     monkeypatch.setattr(router, "_install_allowed", lambda: False)
-    assert router.select_and_activate_engine(family) == "diffusers", (
-        "a deferred upgrade that can never install kept the condemned build"
-    )
+    assert (
+        router.select_and_activate_engine(family) == "diffusers"
+    ), "a deferred upgrade that can never install kept the condemned build"
 
 
 def test_the_router_counts_a_binary_it_rejects_for_not_launching(fake_settings, monkeypatch):
