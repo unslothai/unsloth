@@ -446,9 +446,7 @@ def _nvidia_wins(env: str, stubs: str) -> bool:
             f"{env} _nvidia_gpu_wins_over_amd && echo NVIDIA || echo AMD",
         ]
     )
-    out = subprocess.run(
-        ["bash", "-c", script], capture_output = True, text = True, env = _clean_env()
-    )
+    out = subprocess.run(["bash", "-c", script], capture_output = True, text = True, env = _clean_env())
     assert out.stdout.strip() in ("NVIDIA", "AMD"), out
     return out.stdout.strip() == "NVIDIA"
 
