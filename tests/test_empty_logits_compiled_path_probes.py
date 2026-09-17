@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import ast
 import importlib.util
-import re
 from pathlib import Path
 
 import pytest
@@ -54,14 +53,20 @@ class EmptyLogits:
 """
 
 
-def _zoo_floor() -> Version:
-    """The `unsloth_zoo>=` floor pyproject.toml declares, so the gate cannot drift from the pin."""
-    pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
-    if not pyproject.is_file():
-        return Version("2026.9.5")
-    floors = re.findall(r'"unsloth_zoo>=([^"]+)"', pyproject.read_text())
-    assert floors, "pyproject.toml no longer pins unsloth_zoo; this gate has nothing to read"
-    return max(Version(floor) for floor in floors)
+# The first unsloth_zoo release expected to generate a fixed sentinel, i.e. the one that
+# carries unslothai/unsloth-zoo#1259. Not yet published: 2026.9.4 is the newest on PyPI.
+#
+# This deliberately does NOT read the `unsloth_zoo>=` floor out of pyproject.toml, which is
+# what it used to do. That coupling was only correct while the pin and the fix named the
+# same release. The pin is now held at 2026.9.4 because a floor no release satisfies makes
+# unsloth uninstallable, and 2026.9.4 is exactly the zoo that still generates the BROKEN
+# sentinel -- so a gate reading the pin would let these probes run against a zoo that has
+# the bug, and they would fail on a correct tree. What the probes assert is a property of
+# the INSTALLED zoo, so the gate names the release that fixes it, directly.
+#
+# Until that release exists, every probe below skips and the always-on canary at the bottom
+# of this file is what keeps the assertions honest. Move this constant when #1259 ships.
+ZOO_RELEASE_WITH_GENERATED_SENTINEL_FIX = Version("2026.9.5")
 
 
 def _installed_zoo() -> tuple[Path, Version]:
@@ -107,11 +112,13 @@ def _build(source: str):
 @pytest.fixture(scope = "module")
 def generated_sentinel():
     compiler, installed = _installed_zoo()
-    floor = _zoo_floor()
-    if installed < floor:
+    if installed < ZOO_RELEASE_WITH_GENERATED_SENTINEL_FIX:
         pytest.skip(
-            f"installed unsloth_zoo {installed} is below the pyproject floor {floor}; the "
-            f"generated sentinel is only fixed from unslothai/unsloth-zoo#1259 onwards"
+            f"installed unsloth_zoo {installed} still generates the pre-fix sentinel; it is "
+            f"fixed from {ZOO_RELEASE_WITH_GENERATED_SENTINEL_FIX} "
+            f"(unslothai/unsloth-zoo#1259) onwards, which is not published yet. The "
+            f"canary test in this file runs unconditionally and shows these probes have "
+            f"teeth."
         )
     return _build(_generated_sentinel_source(compiler))
 

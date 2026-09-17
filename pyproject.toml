@@ -192,12 +192,16 @@ triton = [
 
 huggingfacenotorch = [
     # unsloth_zoo.compiler embeds its own copy of the empty-logits sentinel in the code it
-    # generates for the compiled trainers, and pip intersects the two packages' windows, so
-    # fixing _utils.py here buys nothing while an older zoo is resolvable: 2026.9.4 on PyPI
-    # still hands FSDP2 mixed precision a sentinel that answers `__dataclass_fields__` and
-    # dies in `dataclasses.replace`. The floor names the first release expected to carry the
-    # matching fix (unslothai/unsloth-zoo#1259).
-    "unsloth_zoo>=2026.9.5",
+    # generates for the compiled trainers, so fixing _utils.py here does not reach the
+    # compiled path while an older zoo is resolvable: 2026.9.4, the newest on PyPI, still
+    # hands FSDP2 mixed precision a sentinel that answers `__dataclass_fields__` and dies in
+    # `dataclasses.replace`. The release carrying the matching fix
+    # (unslothai/unsloth-zoo#1259) is not published yet, and a floor no release satisfies
+    # makes the package uninstallable, so the floor stays at 2026.9.4 for now and the
+    # eager-path fix below stands on its own. Raise the floor once #1259 ships; the
+    # compiled-path probes in tests/test_empty_logits_compiled_path_probes.py gate on the
+    # INSTALLED zoo, not on this pin, so they start running on their own.
+    "unsloth_zoo>=2026.9.4",
     "wheel>=0.42.0",
     "packaging",
     "numpy",
@@ -263,7 +267,7 @@ audio-torch280 = [
 ]
 huggingface = [
     "unsloth[huggingfacenotorch]",
-    "unsloth_zoo>=2026.9.5",
+    "unsloth_zoo>=2026.9.4",
     "torchvision",
     "unsloth[triton]",
 ]
@@ -882,7 +886,7 @@ colab-ampere-torch220 = [
     "flash-attn>=2.6.3 ; ('linux' in sys_platform)",
 ]
 colab-new = [
-    "unsloth_zoo>=2026.9.5",
+    "unsloth_zoo>=2026.9.4",
     "packaging",
     "tyro",
     "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.5.0",
