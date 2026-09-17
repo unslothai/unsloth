@@ -27,10 +27,16 @@ def growth(
     factor: int = 4,
     repeats: int = 3,
     abort_over_s: float = None,
+    clock = None,
 ):
     """How much more `factor` times the input costs. Returns (ratio, big_seconds, big_result).
 
     `build(n)` makes an input of size n and `run(text)` is the thing being measured.
+
+    `clock` is `time.perf_counter` unless given. It exists so this module's OWN tests can
+    state a timing shape exactly instead of sleeping for it: a test of a flakiness guard
+    that needs the scheduler to cooperate is the thing being fixed here, not a way to
+    check it. Nothing in the repo passes it outside those tests.
 
     The MEDIAN of `repeats` PAIRED ratios: each pair times the small input and then the big
     one back to back, and the ratio is formed inside the pair before anything is aggregated.
@@ -68,10 +74,12 @@ def growth(
     import statistics as _statistics
     import time as _time
 
+    read_clock = _time.perf_counter if clock is None else clock
+
     def once(text):
-        start = _time.perf_counter()
+        start = read_clock()
         result = run(text)
-        return _time.perf_counter() - start, result
+        return read_clock() - start, result
 
     small_text, big_text = build(units), build(units * factor)
     ratios, big, result = [], None, None
@@ -102,6 +110,7 @@ def assert_linear(
     factor: int = 4,
     tolerance: float = 6.0,
     repeats_on_retry: int = 7,
+    clock = None,
 ):
     """`run(build(n))` must cost ~`factor`x, not ~`factor ** 2`x, for `factor`x the input.
 
@@ -115,7 +124,7 @@ def assert_linear(
     budget = 60.0
     # Passed down rather than checked here: on a path slow enough to trip it, every repeat
     # is another minute spent measuring something already known to be too slow.
-    ratio, big, result = growth(run, build, units, factor, abort_over_s = budget)
+    ratio, big, result = growth(run, build, units, factor, abort_over_s = budget, clock = clock)
     # Backstop: a regression bad enough to make the ratio unmeasurable still has to fail, and
     # fail quickly, rather than run until the job's own timeout kills it with no explanation.
     assert big < budget, f"{label} path took {big:.1f}s on {units * factor} units"
@@ -133,7 +142,13 @@ def assert_linear(
         # not survive being asked again on a bigger sample. The cost is paid only on the
         # reading that would otherwise have failed, so a green run still takes three pairs.
         confirm, big_again, result = growth(
-            run, build, units, factor, repeats = repeats_on_retry, abort_over_s = budget
+            run,
+            build,
+            units,
+            factor,
+            repeats = repeats_on_retry,
+            abort_over_s = budget,
+            clock = clock,
         )
         big = min(big, big_again)
         assert big < budget, f"{label} path took {big:.1f}s on {units * factor} units"

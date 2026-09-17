@@ -13,46 +13,62 @@ after the paired-median form was supposed to have ended it.
 So the predicate gets rows of its own, the same way `test_cache_budget_discipline.py` and
 `test_windows_amd_gpu_scan_fallback.py` test the readers their guards hand the verdict to.
 
-Cost is SIMULATED rather than spent: `run` sleeps for a duration computed from the input
-size, so a "quadratic" path here is quadratic exactly and a whole file of these runs in a
-couple of seconds. That is the point -- a test of a timing guard that had to really be slow
-could only be run at sizes too small to separate the shapes.
+Cost is DECLARED, not spent. Every row drives `growth` with a fake clock that advances by
+exactly what the shape says, so a "quadratic" path here is quadratic to the last digit and
+nothing depends on the scheduler. Sleeping for these shapes instead would have made a test
+of a flakiness guard flaky in the same way the guard was, which is the failure being fixed
+rather than a way to check it: a nominal 4 ms leg that the runner stretches to 7 ms moves
+the ratio across the bar and the row means nothing.
 """
 
 from __future__ import annotations
-
-import time
 
 import pytest
 
 from growth import assert_linear, growth  # tests/_shared, on sys.path via tests/conftest.py
 
 
-#: Small enough to keep the file fast, large enough to sit well above the timer's resolution
-#: and above the 1e-4 floor `growth` clamps the small leg to.
-_UNIT_SECONDS = 0.002
+class FakeClock:
+    """A `perf_counter` that only moves when something says how much time it took.
 
-
-def _shaped(exponent: float, *, spikes: list[int] = None):
-    """A `run` whose cost is `len(text) ** exponent`, optionally stalling on chosen calls.
-
-    `spikes` names call indices (0-based, counting every leg) that additionally sleep long
-    enough to look like a scheduler stall. That is how contention is reproduced deterministically:
-    the real thing lands inside one leg of one pair, and because the big leg runs `factor`x
-    longer it is the one that usually catches it.
+    `growth` reads the clock either side of `run`, so a `run` that advances this by the
+    cost of its input makes the measured elapsed exactly that cost.
     """
-    spikes = set(spikes or [])
+
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+#: Seconds per unit of cost. Small enough that a quadratic row stays well under the 60s
+#: backstop `assert_linear` applies, so the quadratic rows fail on the RATIO, which is what
+#: they are about, rather than on the backstop, which has its own row.
+_UNIT = 0.001
+
+
+def _shaped(exponent: float, *, stalls: dict[int, float] = None):
+    """A `run` costing `_UNIT * len(text) ** exponent` seconds, plus a stall on chosen calls.
+
+    `stalls` maps a call index (0-based, counting every leg in order) to extra seconds, which
+    is how contention is stated exactly: the real thing lands inside one leg of one pair, and
+    because the big leg runs `factor`x longer it is the one that usually catches it.
+    """
+    stalls = stalls or {}
+    clock = FakeClock()
     calls = {"n": 0}
 
     def run(text: str) -> str:
         index = calls["n"]
         calls["n"] += 1
-        time.sleep(_UNIT_SECONDS * (len(text) ** exponent))
-        if index in spikes:
-            time.sleep(_UNIT_SECONDS * 12)
+        clock.advance(_UNIT * len(text) ** exponent + stalls.get(index, 0.0))
         return text
 
-    return run, calls
+    return run, clock, calls
 
 
 def _build(n: int) -> str:
@@ -61,27 +77,27 @@ def _build(n: int) -> str:
 
 def test_a_linear_path_passes():
     """The negative control. Without it every row below could pass by the guard never accepting."""
-    run, _ = _shaped(1.0)
-    assert assert_linear(run, _build, "linear", 2) == _build(8)
+    run, clock, _ = _shaped(1.0)
+    assert assert_linear(run, _build, "linear", 2, clock = clock) == _build(8)
 
 
 def test_a_quadratic_path_fails():
     """The positive control: the shape these guards exist to catch."""
-    run, _ = _shaped(2.0)
+    run, clock, _ = _shaped(2.0)
     with pytest.raises(AssertionError, match = "is not linear"):
-        assert_linear(run, _build, "quadratic", 2)
+        assert_linear(run, _build, "quadratic", 2, clock = clock)
 
 
 def test_a_stall_in_the_first_sample_does_not_fail_a_linear_path():
-    """#11152's failure, reproduced and then not reproduced.
+    """#11152's failure, reproduced exactly and then not reproduced.
 
-    Three pairs is few enough that one stalled big leg moves the median over the bar. The
-    stall is placed on call index 1, which is the big leg of the first pair, and made large
-    enough that the first median alone would read as superlinear. A linear path must still
-    pass, because the re-measurement is taken on a quiet sample.
+    Three pairs is few enough that two stalled big legs move the median over the bar. The
+    stalls are placed on call indices 1 and 3, the big legs of the first two pairs, and are
+    sized so the first median reads well above 6. A linear path must still pass, because
+    the re-measurement is taken on a sample with no stall in it.
     """
-    run, calls = _shaped(1.0, spikes = [1, 3])
-    assert assert_linear(run, _build, "stalled but linear", 2) == _build(8)
+    run, clock, calls = _shaped(1.0, stalls = {1: 40.0, 3: 40.0})
+    assert assert_linear(run, _build, "stalled but linear", 2, clock = clock) == _build(8)
     # It really did take the retry: three pairs is six legs, so anything past six is the
     # second sample. A row that passed on the first reading would prove nothing about it.
     assert calls["n"] > 6, "the first sample did not trip the bar, so the retry was not exercised"
@@ -92,30 +108,36 @@ def test_the_retry_is_not_a_second_chance_for_a_quadratic_path():
 
     Same stalls as the row above, on a genuinely quadratic path. Every pair of a quadratic
     path measures ~`factor ** 2`, so the larger second sample has to come back over the bar
-    too -- if it does not, the retry has turned the guard off.
+    too. If it does not, the retry has turned the guard off.
     """
-    run, _ = _shaped(2.0, spikes = [1, 3])
+    run, clock, _ = _shaped(2.0, stalls = {1: 40.0, 3: 40.0})
     with pytest.raises(AssertionError, match = "is not linear"):
-        assert_linear(run, _build, "stalled and quadratic", 2)
+        assert_linear(run, _build, "stalled and quadratic", 2, clock = clock)
 
 
 def test_the_failure_message_names_both_samples():
     """A red run has to say it was measured twice, or the next person re-litigates the retry."""
-    run, _ = _shaped(2.0)
+    run, clock, _ = _shaped(2.0)
     with pytest.raises(AssertionError) as excinfo:
-        assert_linear(run, _build, "quadratic", 2)
+        assert_linear(run, _build, "quadratic", 2, clock = clock)
     message = str(excinfo.value)
     assert "pairs, after" in message, message
     assert "quadratic is ~16" in message, message
 
 
 def test_growth_reports_the_best_big_time_not_the_worst():
-    """`assert_linear`'s 60s backstop reads this, and a stalled run must not trip it.
+    """`assert_linear`'s 60s backstop reads this, and one stalled run must not trip it.
 
     Contention only adds, so the minimum big leg is the closest that size got to its own
     cost. A backstop reading the worst would fire on a runner that stalled once.
     """
-    run, _ = _shaped(1.0, spikes = [1])
-    _, big, _ = growth(run, _build, 2, repeats = 3)
-    quiet = _UNIT_SECONDS * 8
-    assert big < quiet + _UNIT_SECONDS * 6, f"the stalled leg was reported as the big time: {big}"
+    run, clock, _ = _shaped(1.0, stalls = {1: 50.0})
+    _, big, _ = growth(run, _build, 2, repeats = 3, clock = clock)
+    assert big == pytest.approx(_UNIT * 8), f"the stalled leg was the big time: {big}"
+
+
+def test_a_path_slow_enough_to_trip_the_backstop_fails_on_the_backstop():
+    """The other arm of the backstop: too slow to measure still has to fail, and say so."""
+    run, clock, _ = _shaped(1.0, stalls = {1: 120.0})
+    with pytest.raises(AssertionError, match = "path took"):
+        assert_linear(run, _build, "glacial", 2, clock = clock)
