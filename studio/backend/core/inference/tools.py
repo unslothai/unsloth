@@ -16956,6 +16956,12 @@ def _check_signal_escape_patterns(code: str):
             return [alt for value in expr.values for alt in _alternatives(value)]
         return [expr]
 
+    def _names_a_network_call(fq: str) -> bool:
+        """Whether the fq is itself a listed entry point, not a method hanging off one."""
+        return fq in _NETWORK_FQ_PREFIXES or any(
+            p.endswith(".") and fq.startswith(p) for p in _NETWORK_FQ_PREFIXES
+        )
+
     def _is_network_fq(fq: str) -> bool:
         return bool(fq) and (
             fq in _NETWORK_TARGET_ARGS
@@ -17359,8 +17365,9 @@ def _check_signal_escape_patterns(code: str):
                         if kw.arg in _PROXY_KEYWORDS
                     ]
                     self._check_target(node, targets, connects = True)
-                elif node.args:
-                    # Non-connecting constructors keep the existing literal-target check.
+                elif node.args and any(_names_a_network_call(fq) for fq in net_fqs):
+                    # Only for a listed entry point itself. A method with no target spec, like
+                    # `Session.mount`, configures routing and opens nothing.
                     self._check_target(node, [(True, node.args[0], "url")], connects = False)
 
             is_open_call = (

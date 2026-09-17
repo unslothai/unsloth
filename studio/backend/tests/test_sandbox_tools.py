@@ -683,6 +683,10 @@ class TestNetworkTargetResolution:
             "import httpx\nhttpx.Client(base_url='https://pypi.org/').get('/')",
             "import httpx\nhttpx.Client().get('https://pypi.org/x')",
             "import requests\nrequests.options('https://pypi.org/')",
+            # Adapter routing and request building open nothing.
+            "import requests\ns = requests.Session()\ns.mount('http://internal.example/', adapter)",
+            "import requests\ns = requests.Session()\ns.get_adapter('http://internal.example/')",
+            "import httpx\nc = httpx.Client()\nc.build_request('GET', 'http://internal.example/')",
             "import requests\n(fetch := requests.get)('https://pypi.org/')",
             "import requests\nurl = 'http://203.0.113.5/'; url = 'https://pypi.org/'; requests.get(url)",
             "import aiohttp\naiohttp.ClientSession().ws_connect('https://pypi.org/')",
