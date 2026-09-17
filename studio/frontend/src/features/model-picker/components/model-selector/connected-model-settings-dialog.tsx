@@ -135,7 +135,10 @@ export function ConnectedModelSettingsDialog({
     capDraft ?? String(clampCap(remembered?.maxTokens ?? chatMaxTokens));
 
   function save() {
-    const typedCap = Number.parseInt(maxTokens, 10);
+    // Number, not parseInt: a number field accepts scientific notation, and parseInt stops at the
+    // "e", so 1e5 read as 1 and was saved clamped to the provider minimum. Rounded because the
+    // cap is a token count and the field admits a decimal.
+    const typedCap = Math.round(Number(maxTokens.trim()));
     // Only what the user actually touched: this is a patch, and writing an untouched field would
     // put whatever the dialog happened to be showing over the stored value.
     setRememberedParamsForModel(checkpointId, {

@@ -3392,6 +3392,16 @@ export function ChatPage({
       }
       // Local model picked: drop any cached openrouter/free chosen model.
       useChatRuntimeStore.setState({ lastOpenRouterChosenModel: null });
+      // And put the chat's own effort back before the load reads it. The load and status handlers
+      // clamp whatever the store holds to the local model's ladder, and what it holds is the
+      // external model's pin. Only ever that one: a local checkpoint has no pin to displace.
+      const ownEffort = pinHoldsLiveEffort() ? takeEffortDisplacedByPin() : null;
+      if (ownEffort && ownEffort !== store.reasoningEffort) {
+        useChatRuntimeStore.setState((state) => ({
+          reasoningEffort: ownEffort,
+          queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+        }));
+      }
       void (async () => {
         let showImageCompatibilityWarning = false;
         if (view.mode === "single" && activeThreadId) {

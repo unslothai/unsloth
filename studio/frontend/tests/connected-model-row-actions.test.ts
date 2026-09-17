@@ -341,6 +341,19 @@ test("per-model prompt and cap reuse the memory Chat already keeps", () => {
     readSrc("features/chat/stores/chat-runtime-store.ts"),
     /export function pinHoldsLiveEffort\(\): boolean \{\s*return effortDisplacedByPin !== null;/,
   );
+  // Leaving a pinned model for a local one restores the chat's level first: the load and status
+  // handlers clamp whatever the store holds to the local ladder, and that is the pin.
+  assert.match(
+    chatPage,
+    /const ownEffort = pinHoldsLiveEffort\(\) \? takeEffortDisplacedByPin\(\) : null;\s*if \(ownEffort && ownEffort !== store\.reasoningEffort\) \{\s*useChatRuntimeStore\.setState\(\(state\) => \(\{\s*reasoningEffort: ownEffort,\s*queuedSettingsEpoch: state\.queuedSettingsEpoch \+ 1,/,
+  );
+  // A number field accepts scientific notation and parseInt stops at the "e", so 1e5 was read as
+  // 1 and saved clamped to the provider minimum.
+  assert.match(
+    settingsDialog,
+    /const typedCap = Math\.round\(Number\(maxTokens\.trim\(\)\)\);/,
+  );
+  assert.doesNotMatch(settingsDialog, /Number\.parseInt\(/);
   // Blank or junk is an absence, not a zero the request would then send as the cap.
   assert.match(
     settingsDialog,
