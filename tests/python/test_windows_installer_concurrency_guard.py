@@ -96,7 +96,7 @@ _FINAL_PATH_CHAIN = (
     "New-StudioChildScriptDirectory",
     "Test-StudioChildScriptDirectoryElevated",
     "Test-StudioPathUnderAdminRoot",
-            "Get-StudioSystem32Tool",
+    "Get-StudioSystem32Tool",
     "Remove-StudioTrailingNewline",
     "Invoke-StudioEarlyPython",
     "Get-StudioPythonFinalPath",
