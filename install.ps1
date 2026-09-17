@@ -712,12 +712,69 @@ function Install-UnslothStudio {
         return @{ NoIndex = $noIndex; DefaultIndex = $defaultIndex; ExtraIndexes = @($extras | Where-Object { $_ }) }
     }
 
+    # uv's own boolish set, for every UV_* switch this script reads out of the caller's
+    # environment. Verified against uv 0.10.7, crates/uv-static/src/lib.rs
+    # parse_boolish_environment_variable, which restates clap's str_to_bool: true is
+    # y, yes, t, true, on, 1; false is n, no, f, false, off, 0; case-insensitive, and
+    # anything else aborts uv rather than being guessed at.
+    #
+    # `-notin @("", "0", "false")`, which each of these sites used to spell inline, read
+    # off, no, n and f as TRUE, the exact opposite of uv's answer for them.
+    #
+    # Trimmed where uv is not: uv aborts on a padded value, so the resolve fails whatever
+    # this returns, and trimming keeps the answer identical to setup.sh's
+    # _uv_offline_requested and install_python_stack.py's _uv_env_flag, which is the
+    # property worth having. ToLowerInvariant, not ToLower: a Turkish-locale host
+    # lowercases "I" to a dotless i and would stop matching.
+    function Test-UvEnvFlag {
+        param([string]$Name)
+        $value = [string][Environment]::GetEnvironmentVariable($Name)
+        return (@("1", "t", "true", "y", "yes", "on") -contains $value.Trim().ToLowerInvariant())
+    }
+
+    # pip's rule, kept separate on purpose: PIP_NO_INDEX is pip's variable and uv never
+    # reads it, so uv's parser has no authority over it. pip routes it through
+    # ConfigOptionParser._update_defaults -> strtobool (pip/_internal/utils/misc.py): true
+    # is y, yes, t, true, on, 1; false is n, no, f, false, off, 0; case-insensitive and
+    # untrimmed, with anything else exiting pip on "is not a valid value". An empty value
+    # never reaches strtobool, because _get_ordered_configuration_items drops falsy values
+    # first, so PIP_NO_INDEX="" is simply not set.
+    #
+    # The literals coincide with uv's today. They are restated rather than shared anyway,
+    # so that the day either project changes its mind this is a one-function edit instead
+    # of a silent behaviour change in the other resolver.
+    function Test-PipEnvFlag {
+        param([string]$Name)
+        $value = [string][Environment]::GetEnvironmentVariable($Name)
+        return (@("1", "t", "true", "y", "yes", "on") -contains $value.Trim().ToLowerInvariant())
+    }
+
+    # UV_NO_INDEX is OURS, not uv's, and the distinction is not pedantic: uv 0.10.7 defines
+    # no such environment variable. `--no-index` exists only as a command-line flag, it is
+    # absent from `uv pip install --help`'s environment list beside UV_OFFLINE and
+    # UV_NO_CONFIG, and grepping the 0.10.7 tree for the name returns nothing. uv will
+    # ignore it however it is spelled. So this is not "what uv was told"; it is the
+    # operator telling US they want no registry index, and what we do about it is shape the
+    # arguments we pass.
+    #
+    # Read with uv's boolish set deliberately, not by inheritance. A caller sets this
+    # beside UV_OFFLINE and UV_NO_CONFIG, which uv really does read, and one spelling
+    # across all three is the entire point. It is a choice, and the test says so.
+    #
+    # Deliberately NOT turned into a `--no-index` argument. That would make our behaviour
+    # and uv's actually agree, which is the honest long-term answer, but it would also turn
+    # a resolve that works today into one with no index at all. That is a behaviour change
+    # for existing users and belongs in its own change, not riding along with a truthiness
+    # fix.
+    function Test-NoIndexRequested {
+        return (Test-UvEnvFlag "UV_NO_INDEX")
+    }
+
     function Get-WoaUvConfigIndexPolicy {
         $result = @{ NoIndex = $false; DefaultIndex = $null; Unreadable = $false; UnreadablePath = $null; ExtraIndexes = @() }
-        $noCfg = [string](Get-Item Env:UV_NO_CONFIG -ErrorAction SilentlyContinue).Value
-        if ($noCfg -and ($noCfg.Trim().ToLowerInvariant() -notin @("", "0", "false"))) { return $result }
+        if (Test-UvEnvFlag "UV_NO_CONFIG") { return $result }
         $files = @()
-        $cfgFile = [string](Get-Item Env:UV_CONFIG_FILE -ErrorAction SilentlyContinue).Value
+        $cfgFile = [string][Environment]::GetEnvironmentVariable("UV_CONFIG_FILE")
         if ($cfgFile) {
             $files += @{ Path = $cfgFile; Top = "" }
         } else {
@@ -761,21 +818,22 @@ function Install-UnslothStudio {
         return ($u.Host.ToLowerInvariant() -eq "pypi.org")
     }
 
-    # This script resolves with uv, so uv's policy is the one that counts: UV_* and its configuration files. pip's PIP_* variables are pip's alone; uv never reads them.
+    # This script resolves with uv, so uv's policy is the one that counts: the UV_* variables uv actually defines, and its configuration files. pip's PIP_* variables are pip's alone; uv never reads them. UV_NO_INDEX is neither -- see Test-NoIndexRequested.
     function Test-WoaResolveReachesPyPI {
-        foreach ($name in @("UV_OFFLINE", "UV_NO_INDEX")) {
-            $flag = [string](Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
-            if ($flag -and ($flag.Trim().ToLowerInvariant() -notin @("", "0", "false"))) { return $false }
-        }
+        # Two different questions, kept apart. UV_OFFLINE really does stop uv reaching a
+        # network. UV_NO_INDEX is our own convention and uv ignores it, so this arm is us
+        # honouring an operator's stated intent, not a prediction about uv.
+        if (Test-UvEnvFlag "UV_OFFLINE") { return $false }
+        if (Test-NoIndexRequested) { return $false }
         $extraIsPyPI = $false
         foreach ($name in @("UV_INDEX", "UV_EXTRA_INDEX_URL")) {
-            $list = [string](Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
+            $list = [string][Environment]::GetEnvironmentVariable($name)
             foreach ($u in ($list -split '\s+' | Where-Object { $_ })) {
                 if (Test-WoaUrlIsPublicPyPI $u) { $extraIsPyPI = $true }
             }
         }
         foreach ($name in @("UV_DEFAULT_INDEX", "UV_INDEX_URL")) {
-            $url = [string](Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
+            $url = [string][Environment]::GetEnvironmentVariable($name)
             if ($url -and ($url.Trim())) { return ($extraIsPyPI -or (Test-WoaUrlIsPublicPyPI $url)) }
         }
         # Doubt resolves to "not PyPI": that answer keeps a wheel, the other loses the package.
@@ -789,7 +847,7 @@ function Install-UnslothStudio {
     # True when uv's own config decides the indexes and we could not read it: fatal where the caller scrubs UV_* and sets UV_NO_CONFIG, because the trio index would be the only source left.
     function Test-WoaUvIndexPolicyUnreadable {
         foreach ($name in @("UV_NO_INDEX", "UV_DEFAULT_INDEX", "UV_INDEX_URL")) {
-            $v = [string](Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
+            $v = [string][Environment]::GetEnvironmentVariable($name)
             if ($v -and $v.Trim()) { return $false }
         }
         return [bool](Get-WoaUvConfigIndexPolicy).Unreadable
@@ -799,21 +857,21 @@ function Install-UnslothStudio {
     function Get-WoaDependencyIndexArgs {
         param([string]$Resolver = "uv")
         $pip = ($Resolver -eq "pip")
-        $noIndexNames = if ($pip) { @("PIP_NO_INDEX") } else { @("UV_NO_INDEX") }
         $defaultNames = if ($pip) { @("PIP_INDEX_URL") } else { @("UV_DEFAULT_INDEX", "UV_INDEX_URL") }
         $extraNames = if ($pip) { @("PIP_EXTRA_INDEX_URL") } else { @("UV_INDEX", "UV_EXTRA_INDEX_URL") }
-        foreach ($name in $noIndexNames) {
-            $flag = [string](Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
-            if ($flag -and ($flag.Trim().ToLowerInvariant() -notin @("", "0", "false"))) { return @() }
-        }
+        # Each variable by its owner's rule, and they are not symmetric. PIP_NO_INDEX is
+        # pip's and pip really reads it, so naming no index here matches what pip will
+        # then do. UV_NO_INDEX is ours alone, so that arm is us honouring the operator.
+        $noIndexRequested = if ($pip) { Test-PipEnvFlag "PIP_NO_INDEX" } else { Test-NoIndexRequested }
+        if ($noIndexRequested) { return @() }
         $default = $null
         foreach ($name in $defaultNames) {
-            $url = [string](Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
+            $url = [string][Environment]::GetEnvironmentVariable($name)
             if ($url -and $url.Trim()) { $default = $url.Trim(); break }
         }
         $extras = @()
         foreach ($name in $extraNames) {
-            $list = [string](Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
+            $list = [string][Environment]::GetEnvironmentVariable($name)
             foreach ($u in ($list -split '\s+' | Where-Object { $_ })) { $extras += $u }
         }
         if (-not $pip -and (-not $default -or -not $extras)) {
@@ -8755,16 +8813,16 @@ exit 0
                 if ($script:WoaNativeCudaTorch -and $VenvPlatform -eq "win-arm64") {
                     # The probe read the index page, which carries no upload dates, and the pin is exact: an upload cutoff would reject the selected wheel. Only this one command.
                     foreach ($_woaCutoffName in @("UV_EXCLUDE_NEWER", "UV_EXCLUDE_NEWER_PACKAGE")) {
-                        $_woaCutoffValue = [string](Get-Item "Env:$_woaCutoffName" -ErrorAction SilentlyContinue).Value
+                        $_woaCutoffValue = [string][Environment]::GetEnvironmentVariable($_woaCutoffName)
                         if ($_woaCutoffValue) {
                             $_woaCutoffSaved[$_woaCutoffName] = $_woaCutoffValue
                             Remove-Item "Env:$_woaCutoffName" -ErrorAction SilentlyContinue
                             substep "windows on arm: $_woaCutoffName is not applied to the exact CUDA pin (the index carries no upload dates)."
                         }
                     }
-                    # --no-index ignores every registry index, the selected CUDA one included, so it yields for this one command: torch from the index the probe chose, dependencies from the wheelhouse.
-                    $_woaNoIndexValue = [string](Get-Item "Env:UV_NO_INDEX" -ErrorAction SilentlyContinue).Value
-                    if ($_woaNoIndexValue -and ($_woaNoIndexValue.Trim().ToLowerInvariant() -notin @("", "0", "false"))) {
+                    # Our own UV_NO_INDEX convention (uv defines no such variable) means the operator wants no registry index, and we honour it by naming none. The CUDA trio is published nowhere else, so it yields for this one command: torch from the index the probe chose, dependencies from the wheelhouse. Saved and restored, because the rest of the run still reads it.
+                    $_woaNoIndexValue = [string][Environment]::GetEnvironmentVariable("UV_NO_INDEX")
+                    if (Test-NoIndexRequested) {
                         $_woaCutoffSaved["UV_NO_INDEX"] = $_woaNoIndexValue
                         Remove-Item "Env:UV_NO_INDEX" -ErrorAction SilentlyContinue
                         substep "windows on arm: UV_NO_INDEX yields for the CUDA trio, which only the selected index carries; its dependencies still come from the wheelhouse."
