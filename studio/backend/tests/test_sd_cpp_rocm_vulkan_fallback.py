@@ -2785,7 +2785,6 @@ class TestTheRouterRecordsTheBundleNotTheServer:
         assert "if unlaunchable_server is not None and binary is None" in source
 
 
-
 def test_the_download_plan_predicts_for_the_card_the_load_will_select():
     """Card-scoped records mean a card-less prediction reads a per-card failure as host-wide. Selection
     is given the ordinal and clears the working card, so the two disagree and the plan stages the
