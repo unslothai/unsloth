@@ -774,7 +774,7 @@ def test_route_start_preflights_the_normalized_fetch_mirror(
         assert mirror in req.full_url
         return object()
 
-    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
+    monkeypatch.setattr("utils.utils.auth_safe_open", _fake_urlopen)
     r = client.post(
         "/api/train/diffusion/start",
         json = {**_BODY, "base_model": source, "hf_token": hf_token},
@@ -876,7 +876,7 @@ def test_the_start_preflight_never_heads_the_hub_for_a_local_clone(monkeypatch, 
     def _explode(*a, **k):
         pytest.fail("a local clone must never be probed over the network")
 
-    monkeypatch.setattr(urllib.request, "urlopen", _explode)
+    monkeypatch.setattr("utils.utils.auth_safe_open", _explode)
 
     _preflight_gated_base(local, None)
 
@@ -1883,7 +1883,7 @@ def test_route_start_still_runs_when_the_install_does_have_the_pipeline(
     import sys
     import urllib.request
 
-    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout = None: object())
+    monkeypatch.setattr("utils.utils.auth_safe_open", lambda req, timeout = None: object())
     monkeypatch.setitem(sys.modules, "diffusers", _fake_diffusers("0.39.0", "Krea2Pipeline"))
 
     r = client.post("/api/train/diffusion/start", json = {**_BODY, "base_model": "krea/Krea-2-Raw"})
@@ -2253,7 +2253,7 @@ def test_start_gated_base_without_access_is_400_and_keeps_gpu(client, monkeypatc
     def _fake_urlopen(req, timeout = None):
         raise urllib.error.HTTPError(req.full_url, 403, "Forbidden", {}, None)
 
-    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
+    monkeypatch.setattr("utils.utils.auth_safe_open", _fake_urlopen)
     r = client.post(
         "/api/train/diffusion/start",
         json = {**_BODY, "base_model": "black-forest-labs/FLUX.1-dev"},
@@ -2302,7 +2302,7 @@ def test_start_ungated_base_preflight_is_noop(client, monkeypatch):
         "core.training.diffusion_train_common.training_precision_preflight_error",
         lambda fam, prec: None,
     )
-    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout = None: object())
+    monkeypatch.setattr("utils.utils.auth_safe_open", lambda req, timeout = None: object())
     r = client.post(
         "/api/train/diffusion/start",
         json = {**_BODY, "base_model": "black-forest-labs/FLUX.1-dev"},

@@ -62,9 +62,9 @@ export const hi = {
     announceMoveFailed: "इस संदेश को खिसकाने से पहले कतार बदल गई। फिर कोशिश करें।",
     announceDragReset: "कतार बदल गई। बाकी संदेशों का क्रम बदलने के लिए फिर से खींचें।",
     editingHint: "संदेश संपादित हो रहा है",
-    queueingOffHint: "नए संदेश मौजूदा उत्तर रोककर अगले चलते हैं।",
-    queueingOnHint: "नए संदेश अपनी बारी का इंतज़ार कर क्रम से चलते हैं।",
-    queueingHintShared: "कतार के संदेश बने रहते हैं।",
+    queueingOffHint: "नए संदेश बीच में आकर अगले चलते हैं।",
+    queueingOnHint: "नए संदेश अपनी बारी का इंतज़ार करते हैं।",
+    queueingHintShared: "कतार बनी रहती है।",
   },
   picker: {
     onDevice: "डिवाइस पर",
@@ -1303,6 +1303,8 @@ export const hi = {
           sourceBuild: "यह llama.cpp सोर्स से बनाया गया है, इसलिए इसका बैकएंड यहाँ से नहीं बदला जा सकता।",
           customPath: "एक कस्टम llama.cpp फ़ोल्डर चुना गया है। उसका बिल्ड कंप्यूट बैकएंड तय करता है।",
           unresolved: "उपलब्ध बैकएंड की जाँच नहीं हो सकी। अपना कनेक्शन देखकर दोबारा कोशिश करें।",
+          updateChecksDisabled:
+            "अपडेट जाँच बंद है (UNSLOTH_DISABLE_UPDATE_CHECK=1), इसलिए उपलब्ध बैकएंड नहीं खोजे जाते।",
         },
         // दिखाया नहीं जाता: सेटिंग्स खोज के लिए अतिरिक्त शब्द।
         llamaBackendKeywords:

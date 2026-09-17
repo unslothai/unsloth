@@ -351,6 +351,25 @@ def test_the_environment_is_normalised_for_huggingface_hub(monkeypatch):
     assert "HF_ENDPOINT" not in os.environ
 
 
+def test_a_blank_endpoint_is_cleared_rather_than_left_for_the_library(monkeypatch):
+    """huggingface_hub's os.getenv("HF_ENDPOINT", default) falls back only when the key
+    is ABSENT, and its rstrip("/") does not touch whitespace, so "   " reached the
+    library verbatim while Studio served the default. datasets/config.py is the same."""
+    for blank in ("", "   ", "\t", "\n", " \t\n "):
+        monkeypatch.setenv("HF_ENDPOINT", blank)
+        hf_endpoint.normalize_hf_endpoint_env()
+        assert "HF_ENDPOINT" not in os.environ, repr(blank)
+
+    # Idempotent, and it does not invent the variable when it was never set.
+    hf_endpoint.normalize_hf_endpoint_env()
+    assert "HF_ENDPOINT" not in os.environ
+
+    # Whitespace AROUND a real endpoint is trimmed, not treated as blank.
+    monkeypatch.setenv("HF_ENDPOINT", "  https://hf-mirror.com  ")
+    hf_endpoint.normalize_hf_endpoint_env()
+    assert os.environ["HF_ENDPOINT"] == "https://hf-mirror.com"
+
+
 def test_a_private_endpoint_reaches_only_a_client_on_a_local_network(monkeypatch):
     """A private address means the VISITOR's network when the visitor is
     elsewhere, so it is handed out only to a client that is itself local."""
