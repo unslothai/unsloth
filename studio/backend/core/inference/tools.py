@@ -16037,6 +16037,11 @@ def _check_signal_escape_patterns(code: str):
             for module in ("urllib3", "urllib3.connectionpool")
             for pool in ("HTTPConnectionPool", "HTTPSConnectionPool")
         },
+        # The raw connection classes take the host the same way the pools do.
+        **{
+            f"urllib3.connection.{conn}": (0, "host", "host")
+            for conn in ("HTTPConnection", "HTTPSConnection")
+        },
         "http.client.HTTPConnection": (0, "host", "host"),
         "http.client.HTTPSConnection": (0, "host", "host"),
         "paramiko.Transport": (0, "sock", "host"),
@@ -16589,6 +16594,20 @@ def _check_signal_escape_patterns(code: str):
     _attr_stores: dict[tuple[int, str, str], list] = {}
     _model_state: dict[str, bool] = {}
 
+    def _receiver_key(name: str, scope: ast.AST | None) -> str:
+        """`self` is a convention, so a method's first parameter is the instance, whatever it
+        is called."""
+        current = scope
+        while current is not None and not isinstance(current, _FUNCTION_NODES):
+            current = _scope_parent.get(id(current))
+        if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)) and isinstance(
+            _scope_parent.get(id(current)), ast.ClassDef
+        ):
+            positional = [*current.args.posonlyargs, *current.args.args]
+            if positional and positional[0].arg == name:
+                return ""
+        return name
+
     def _enclosing_class(scope: ast.AST | None) -> ast.AST | None:
         while scope is not None and not isinstance(scope, ast.ClassDef):
             scope = _scope_parent.get(id(scope))
@@ -16690,7 +16709,12 @@ def _check_signal_escape_patterns(code: str):
                 # Key on the class so sibling methods share `self.x`, else on the scope so two
                 # functions with a same-named local receiver stay apart.
                 owner = _enclosing_class(scope) or scope
-                _attr_stores.setdefault((id(owner), target.value.id, target.attr), []).append(value)
+                receiver = (
+                    _receiver_key(target.value.id, scope)
+                    if isinstance(owner, ast.ClassDef)
+                    else target.value.id
+                )
+                _attr_stores.setdefault((id(owner), receiver, target.attr), []).append(value)
 
     def _evaluated_outside(node: ast.AST) -> list:
         """Return child expressions evaluated in the enclosing scope."""
@@ -16930,11 +16954,12 @@ def _check_signal_escape_patterns(code: str):
         cls = _enclosing_class(scope)
         if cls is not None:
             # A subclass reads what its bases set on self, so walk the inheritance chain.
+            receiver = _receiver_key(expr.value.id, scope)
             values: list = []
             pending, seen = [cls], {id(cls)}
             while pending:
                 current = pending.pop(0)
-                values.extend(_attr_stores.get((id(current), expr.value.id, expr.attr)) or [])
+                values.extend(_attr_stores.get((id(current), receiver, expr.attr)) or [])
                 for base in _base_classes(current):
                     if id(base) not in seen:
                         seen.add(id(base))
@@ -17176,6 +17201,9 @@ def _check_signal_escape_patterns(code: str):
             if not expr.elts:
                 return [(True, None)]
             return _target_hosts(expr.elts[0], "host", depth + 1)
+        if isinstance(expr, ast.Constant) and expr.value is None:
+            # An explicit None is a disabled proxy or an absent target, not an unknown host.
+            return [(True, None)]
         prefix = _static_prefix(expr)
         if prefix is None:
             return [(False, None)]

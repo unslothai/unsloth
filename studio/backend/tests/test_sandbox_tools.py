@@ -420,6 +420,22 @@ class TestNetworkTargetResolution:
                 f"import aiohttp\naiohttp.ClientSession('http://{_H}').get('/')",
                 id = "aiohttp_session_base_url",
             ),
+            # The raw connection classes take a host like the pools do.
+            pytest.param(
+                f"import urllib3\nurllib3.connection.HTTPConnection('{_H}').request('GET', '/')",
+                id = "urllib3_raw_connection",
+            ),
+            # A method's first parameter is the instance whatever it is named.
+            pytest.param(
+                "import requests\nclass A:\n    def __init__(self):\n        self.s = requests.Session()\n"
+                f"    def go(this):\n        this.s.get('http://{_H}/')",
+                id = "instance_attribute_through_renamed_receiver",
+            ),
+            pytest.param(
+                "import paramiko\nclass Base:\n    def __init__(me):\n        me.c = paramiko.SSHClient()\n"
+                f"class Sub(Base):\n    def go(self):\n        self.c.connect(hostname='{_H}')",
+                id = "inherited_attribute_through_renamed_receiver",
+            ),
             # An opaque helper's name says nothing about what it returned, so the module name
             # it was rebound over still stands.
             pytest.param(
@@ -689,6 +705,12 @@ class TestNetworkTargetResolution:
             "import httpx\nhttpx.Client(base_url='https://pypi.org/').get('/')",
             "import httpx\nhttpx.Client().get('https://pypi.org/x')",
             "import requests\nrequests.options('https://pypi.org/')",
+            # An explicit None is a disabled proxy, not an unknown destination.
+            "import httpx\nhttpx.Client(proxy=None).get('https://pypi.org/')",
+            "import requests\nrequests.get('https://pypi.org/', proxies={'https': None})",
+            # A receiver that is not the instance keeps its own identity.
+            "import requests\nclass A:\n    def __init__(self):\n        self.s = requests.Session()\n"
+            "    def go(self, other):\n        other.s.get('https://pypi.org/')",
             # Adapter routing and request building open nothing.
             "import requests\ns = requests.Session()\ns.mount('http://internal.example/', adapter)",
             "import requests\ns = requests.Session()\ns.get_adapter('http://internal.example/')",
