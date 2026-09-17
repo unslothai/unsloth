@@ -2618,6 +2618,15 @@ _RE_ESCALATION_TOKEN = re.compile(
     r"|\bos\s*\.\s*(?:system|popen|exec\w*|spawn\w*)\b"
     r"|\bsocket\s*\.\s*\w+"
     r"|\bctypes\s*\.\s*\w+"
+    # Untrusted SOURCES, not just sinks. A vocabulary of call names alone says what the file
+    # executes with and nothing about what it executes, so `exec(os.getenv("PAYLOAD"))` added
+    # to a file already approved for `exec(` spelled no new token and was suppressed -- the
+    # evidence hash and the file pin would both have reopened on it. `_tokens_in_matches`
+    # reads the whole matched LINE, so a source feeding a sink on that line is now part of the
+    # vocabulary and an approval that never had one does not cover it.
+    r"|\bos\s*\.\s*(?:getenv|environ)\b"
+    r"|\bsys\s*\.\s*argv\b"
+    r"|\binput\s*\("
     # The two RE_OBFUSCATION forms the list above did not otherwise cover. Without them a
     # first-party file approved for `exec(` also rides `exec(chr(101)+chr(118)+...)`: the
     # decoder raises the very finding the entry suppresses and contributes no token.
@@ -2853,7 +2862,13 @@ def _file_rule_entries(path: str) -> "dict[tuple[str, str, str, str], dict]":
     if not isinstance(data, dict):
         return {}
     out: dict[tuple[str, str, str, str], dict] = {}
-    for e in data.get("entries") or []:
+    # Same list check _load_baseline applies. `{"entries": 1}` is valid JSON, and iterating
+    # the int raised TypeError out of --write-baseline -- which is the one command that could
+    # have replaced the malformed file. Recover the way the loader already does instead.
+    entries = data.get("entries")
+    if not isinstance(entries, list):
+        return {}
+    for e in entries:
         if not isinstance(e, dict) or e.get("match") != _MATCH_FILE_RULE:
             continue
         if _norm_pkg(e.get("package") or "") not in _FIRST_PARTY_PACKAGES:

@@ -666,6 +666,60 @@ def test_the_coarse_key_reopens_on_a_construct_the_approval_never_covered():
     ], "a marshal/zlib/base64 payload inside an approved file rode the approval"
 
 
+def test_an_untrusted_source_feeding_an_approved_sink_reopens():
+    """A vocabulary of call names says what a file executes WITH, not what it executes.
+
+    `exec(os.getenv("UNSLOTH_PAYLOAD"))` added to compiler.py spells `exec(` and
+    `__import__(` -- both already approved -- so the coarse key suppressed a file that now
+    runs attacker-controlled input, and no other check reported it. The evidence hash and
+    the file pin would both have reopened on it, so this was a real regression against what
+    the coarse key replaced. Sources are part of the vocabulary for that reason.
+
+    Driven through the SHIPPED baseline so it fails if that entry is ever widened.
+    """
+    import pathlib as _pathlib
+
+    path = _pathlib.Path(__file__).resolve().parents[2] / "scripts" / "scan_packages_baseline.json"
+    baseline = sp._load_baseline(str(path))
+    check = "Advanced obfuscation (marshal/compile/zlib) + exec/eval"
+
+    benign = """
+def patch(model_location, module):
+    _mod = __import__(model_location, fromlist=["x"])
+    exec(f"{model_location}.{module}.forward = forward", globals(), locals())
+"""
+    attack = (
+        benign
+        + """
+def _boot():
+    exec(os.getenv("UNSLOTH_PAYLOAD"))
+"""
+    )
+    for label, content, expect_active in (("benign", benign, False), ("attack", attack, True)):
+        findings = [
+            f
+            for f in sp.check_py_file(content, "unsloth_zoo/compiler.py", "unsloth_zoo")
+            if f.check == check
+        ]
+        assert findings, f"{label}: the check did not fire, so this proves nothing"
+        active, suppressed = sp._partition_baseline(findings, baseline)
+        assert (
+            bool(active) is expect_active
+        ), f"{label}: tokens={sorted(findings[0].escalation_tokens)} active={len(active)}"
+
+
+def test_write_baseline_survives_a_malformed_entries_field(tmp_path):
+    """`{"entries": 1}` is valid JSON. _load_baseline warns and recovers; the coarse-entry
+    reader iterated the int and raised TypeError out of --write-baseline, which is the one
+    command that could have replaced the malformed file."""
+    bad = tmp_path / "baseline.json"
+    bad.write_text('{"entries": 1}', encoding = "utf-8")
+    assert sp._file_rule_entries(str(bad)) == {}
+    for payload in ('{"entries": "x"}', '{"entries": {"a": 1}}', "[]", "null"):
+        bad.write_text(payload, encoding = "utf-8")
+        assert sp._file_rule_entries(str(bad)) == {}, payload
+
+
 def test_an_mlx_method_call_does_not_approve_the_builtin_eval():
     """`mx.eval(arr)` evaluates a lazy MLX array and `model.eval()` switches to inference.
     Neither runs code, and both used to normalise to the same `eval(` token as the built-in.
