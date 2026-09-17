@@ -1,36 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tool-capability hints from executable Jinja syntax.
+"""Does this chat template ever put the tool catalog into the prompt?
 
-Studio needs one yes/no answer per model: does this chat template ever put the tool
-catalog into the prompt? That decides whether the tool controls are live or greyed
-out.
+Answers Studio's one yes/no per model, deciding whether the tool controls are live.
 
-This used to be answered by matching whitespace-exact substrings such as
-`"{%- if tools %}"`. That reads the spelling rather than the meaning, so a template
-saying the same thing differently was reported as tool-less. IBM Granite 3.3 writes
-its guard as `{%- if tools and not available_tools -%}` and then renders the aliased
-name, which no marker matched.
+Do not go back to matching substrings: that reads spelling, not meaning, and called
+Granite 3.3 tool-less for writing `{%- if tools and not available_tools -%}`.
 
-So this reads the parse tree instead. It walks the template, tracks which names hold
-the catalog, and answers True the first time one of them can reach the output. A
-branch guarded on the catalog counts even when its body is plain prose, because
-`{% if tools %}You may call tools.{% endif %}` is advertising them.
-
-Deliberately an over-approximation. Where it cannot tell, it says yes. A spurious
-answer shows a tool control on a model that may ignore tools, and the backend checks
-again before anything is routed; the opposite error silently disables a working
-feature, which is the bug this replaces. The same reasoning drives the fail-closed
-handler: a capability hint must never stop a model from loading, so anything
-unexpected leaves tools off rather than raising.
-
-Verified against 348 unique chat templates from 1330 published repositories, with the
-ground truth taken from rendering each one with a tool catalog and with a renamed
-same-size control, so a template that merely mentions the word does not count: no
-regressions against the marker scan it replaces, no false negatives, no crashes, and
-Granite 3.3, LiquidAI's LFM2 family and Xing4.0 all detected where the markers missed
-them.
+Over-approximates on purpose. A spurious yes shows a control the backend re-checks;
+a spurious no silently disables a working feature, which is the bug this replaces.
 """
 
 from functools import lru_cache
@@ -41,12 +20,7 @@ from jinja2.sandbox import ImmutableSandboxedEnvironment
 
 
 class _Generation(Extension):
-    """`{% generation %}`, which marks the assistant span for training masks.
-
-    Not a real Jinja tag, so without this the template fails to parse and the
-    fail-closed branch turns tools off on a model that has them. HuggingFaceTB's
-    SmolLM3-3B is the published template that needs it.
-    """
+    """Not real Jinja, so without it HuggingFaceTB/SmolLM3-3B fails to parse."""
 
     tags = {"generation"}
 
@@ -59,16 +33,12 @@ _ENVIRONMENT = ImmutableSandboxedEnvironment(
     extensions = ["jinja2.ext.loopcontrols", "jinja2.ext.do", _Generation],
 )
 
-# Filters that answer a question about the catalog rather than serialising it, so what
-# reaches the prompt is a number and not a schema.
+# Ask about the catalog rather than serialise it: a number reaches the prompt.
 _REDUCING = frozenset({"length", "count"})
 
 
 def _names(node):
-    """Every name this expression reads.
-
-    `find_all` does not yield the node itself, so a bare `tools` needs adding by hand.
-    """
+    """Every name this expression reads. find_all skips the node, so add it by hand."""
     found = {item.name for item in node.find_all(nodes.Name)}
     return found | ({node.name} if isinstance(node, nodes.Name) else set())
 
@@ -96,8 +66,7 @@ def _checks_tool_role(node):
     """`message.role == 'tool'` - the branch that handles a tool result."""
     compares = list(node.find_all(nodes.Compare))
     if isinstance(node, nodes.Compare):
-        # find_all does not yield the node itself, so `{% if m.role == 'tool' %}`
-        # would otherwise be invisible: its test IS the comparison.
+        # `{% if m.role == 'tool' %}` IS the comparison, which find_all skips.
         compares.append(node)
     for compare in compares:
         if len(compare.ops) != 1 or compare.ops[0].op != "eq":
@@ -127,19 +96,14 @@ def _bound_names(node):
     """The names a `{% set %}` or `{% for %}` target binds, tuple targets included."""
     if isinstance(node, nodes.Tuple):
         return {name for item in node.items for name in _bound_names(item)}
-    # Indexed and attribute targets write through to the container they name, and
-    # `{% set ns.catalog = ... %}` parses to an NSRef that already names it.
+    # `{% set ns.catalog = ... %}` is an NSRef, already naming the container.
     while isinstance(node, (nodes.Getattr, nodes.Getitem)):
         node = node.node
     return {node.name} if isinstance(node, (nodes.Name, nodes.NSRef)) else set()
 
 
 def _rebound_names(node):
-    """The names a target REBINDS, which is not every name it writes through.
-
-    `{% set ns.catalog = x %}` leaves the rest of `ns` alone, so it cannot un-hold the
-    catalog. A plain name does, and so does each plain name a tuple target unpacks into.
-    """
+    """Names a target REBINDS: `{% set ns.catalog = x %}` cannot un-hold `ns`."""
     if isinstance(node, nodes.Name):
         return {node.name}
     if isinstance(node, nodes.Tuple):
@@ -148,11 +112,7 @@ def _rebound_names(node):
 
 
 def _receiver_gaining_catalog(node, aliases):
-    """The names a call puts the catalog into, for `catalog.append(tools)` and friends.
-
-    Not modelled per method: anything handed tool data is assumed to keep it. Taking
-    it back out again is not tracked, which is the safe direction here.
-    """
+    """Names `catalog.append(tools)` fills. Handed tool data is assumed kept."""
     if not (isinstance(node, nodes.Call) and isinstance(node.node, nodes.Getattr)):
         return set()
     arguments = list(node.args) + [keyword.value for keyword in node.kwargs]
@@ -162,14 +122,8 @@ def _receiver_gaining_catalog(node, aliases):
 
 
 def _scan_maybe(body, aliases, guarded, bound = frozenset(), killed = frozenset()):
-    """Walk a body that may not run, or may run with names of its own.
-
-    What the body learns is kept, what it unbinds is not: a `{% for %}` body may run
-    zero times, and a macro body does not run where it is written. `bound` and
-    `killed` are the body's own scope - a `{% for %}` variable is undefined after
-    `{% endfor %}`, and a `{% with %}` binding stops meaning anything at the
-    `{% endwith %}` - so neither escapes in either direction.
-    """
+    """Walk a body that may not run. Keep what it learns, drop what it unbinds; the
+    body's own `bound`/`killed` names escape in neither direction."""
     local = (set(aliases) | set(bound)) - set(killed)
     found = _scan(body, local, guarded)
     aliases |= local - (set(bound) - aliases)
@@ -177,15 +131,9 @@ def _scan_maybe(body, aliases, guarded, bound = frozenset(), killed = frozenset(
 
 
 def _join(aliases, arms, exhaustive):
-    """Merge the alias sets an `{% if %}` chain's arms walked out with.
-
-    A name holds the catalog here if it does on any arm, since the walk cannot tell
-    which one runs. Falling past every arm is itself a path, so the incoming set
-    counts too unless an `{% else %}` makes the chain exhaustive - which is what lets
-    a rebinding on every arm still be a rebinding, and what keeps
-    `{% if legacy %}{% set tools = none %}{% endif %}{{ tools | tojson }}` a yes, since
-    skipping the branch leaves the catalog bound.
-    """
+    """Union the arms: a name holds the catalog if it does on any. Falling past every
+    arm is a path too, so the incoming set counts unless an `{% else %}` is present -
+    which is what keeps a rebinding on every arm a rebinding."""
     merged = set() if exhaustive else set(aliases)
     for arm in arms:
         merged |= arm
@@ -194,11 +142,8 @@ def _join(aliases, arms, exhaustive):
 
 
 def _scan(body, aliases, guarded):
-    """Walk statements, tracking which names hold the catalog. True on first emission.
-
-    `guarded` means the enclosing branch only runs when tools are present, so any
-    prose in it is advertising them even if it never names the catalog.
-    """
+    """Walk statements, tracking which names hold the catalog; True on first emission.
+    `guarded` means the branch runs only when tools exist, so its prose advertises them."""
     for node in body:
         if isinstance(node, nodes.Output):
             for value in node.nodes:
@@ -209,21 +154,15 @@ def _scan(body, aliases, guarded):
             aliases |= _receiver_gaining_catalog(node.node, aliases)
             continue
         elif isinstance(node, nodes.Assign):
-            # `{% set _ = catalog.append(tools) %}` is the same mutation without the
-            # do extension.
+            # `{% set _ = catalog.append(tools) %}`: the same mutation without `do`.
             aliases |= _receiver_gaining_catalog(node.node, aliases)
             if _reads_catalog(node.node, aliases):
-                # Gen. A plain name, a tuple target, and a namespace field alike:
-                # LiquidAI's LFM2 accumulates the catalog with
-                # `{% set ns.system_prompt = ns.system_prompt + tool %}` and renders
-                # `ns.system_prompt` outside the guard, so `ns` has to carry it.
+                # LiquidAI's LFM2 fills `ns.system_prompt` inside the guard and
+                # renders it outside, so a namespace field has to carry the catalog.
                 aliases |= _bound_names(node.target)
             else:
-                # Kill. `{% set tools = item['tools'] %}` rebinds the name to something
-                # that is not the caller's catalog, so it stops being one - which is
-                # exactly what THUDM/glm-4-9b-chat does. Plain names only, tuple
-                # targets included: writing one field of a container says nothing
-                # about the rest of it, so it cannot un-hold the catalog.
+                # Plain names only: writing one field says nothing about the rest of
+                # the container. glm-4-9b-chat rebinds `tools` off a message.
                 aliases -= _rebound_names(node.target)
             continue
 
@@ -247,17 +186,14 @@ def _scan(body, aliases, guarded):
             _join(aliases, arms, exhaustive = bool(node.else_))
         elif isinstance(node, nodes.For):
             over_catalog = _reads_catalog(node.iter, aliases)
-            # `{% for tool in tools %}` hands each item to the loop variable, so a
-            # name bound to one carries the catalog - inside the loop only, since
-            # Jinja leaves it undefined after `{% endfor %}`.
+            # Each item is catalog data, so the loop variable carries it.
             bound = _bound_names(node.target) if over_catalog else frozenset()
             if _scan_maybe(node.body, aliases, guarded or over_catalog, bound):
                 return True
             if _scan_maybe(node.else_, aliases, guarded):
                 return True
         elif isinstance(node, nodes.With):
-            # `{% with catalog = tools %}` binds like a set but only for the block,
-            # and the block is the only place the name means anything.
+            # `{% with catalog = tools %}` binds like a set, for the block only.
             bound = set()
             killed = set()
             for target, value in zip(node.targets, node.values):
@@ -268,8 +204,7 @@ def _scan(body, aliases, guarded):
             if _scan_maybe(node.body, aliases, guarded, bound, killed):
                 return True
         elif hasattr(node, "body"):
-            # Macros, blocks, filters, with, autoescape: the body can still render.
-            # May-run, since a macro body does not run where it is written.
+            # Macros, blocks, filters, autoescape: the body can still render.
             if _scan_maybe(node.body, aliases, guarded):
                 return True
     return False
@@ -277,15 +212,11 @@ def _scan(body, aliases, guarded):
 
 def template_supports_tools(template) -> bool:
     """Inspect syntax only; rendering and parser support remain backend checks."""
-    # Outside the cache: lru_cache hashes its argument before the body runs, so a
-    # dict- or list-valued chat template would raise "unhashable type" past every
-    # fail-closed branch below. A str subclass is narrowed to str for the same
-    # reason - its __hash__, __eq__ and __contains__ are the caller's code and they
-    # run before the try as well, and lru_cache misses on a subclass regardless.
+    # Outside the cache: lru_cache hashes first, so a dict-valued template would
+    # raise past every fail-closed branch below.
     if not isinstance(template, str):
         return False
-    # `str.__str__` rather than `str(...)`, which would call a subclass override that
-    # can raise out here where there is no handler.
+    # `str.__str__`, not `str(...)`: an override would raise out here, unhandled.
     return _analyse_template(str.__str__(template))
 
 
@@ -296,16 +227,13 @@ def _analyse_template(template: str) -> bool:
     try:
         tree = _ENVIRONMENT.parse(template)
         aliases = {"tools"}
-        # Twice: a template may render an alias before the statement that binds it,
-        # and one extra pass settles that without needing a fixed point.
+        # Twice: a template may render an alias before the statement that binds it.
         for _ in range(2):
             if _scan(tree.body, aliases, False):
                 return True
         return False
     except Exception:
-        # Fail closed. This runs on the GGUF metadata read and the llama-server
-        # launch, so a capability hint must leave tools disabled rather than stop
-        # the model from loading.
+        # Fail closed: this runs on the model-load path and must not stop it.
         return False
 
 
