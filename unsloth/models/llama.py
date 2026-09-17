@@ -133,25 +133,17 @@ from transformers.models.auto.modeling_auto import MODEL_FOR_CAUSAL_LM_MAPPING
 from transformers import set_seed as transformers_set_seed
 from peft import LoraConfig, TaskType, get_peft_model as _get_peft_model
 from peft import PeftModelForCausalLM, PeftModelForSequenceClassification
-# Deferred to first call: see the note in unsloth/models/vision.py and
-# tests/test_cold_import_order.py. `unsloth.save` imports this package, so binding a name out of
-# it at module scope closes a cycle that breaks a cold `import unsloth.save`.
+# Deferred to first call: a module-scope bind out of `unsloth.save` closes an import cycle.
+# See the note in unsloth/models/vision.py and tests/test_cold_import_order.py.
 
 
 def patch_saving_functions(*args, **kwargs):
-    """Hand off to ``unsloth.save.patch_saving_functions``, imported on first call.
-
-    Binding this at module scope closed an import cycle (see the note at the top of the
-    file). A shim rather than a call-site import so the module attribute is still there
-    for anything that reads or patches it on this module, and so the internal
-    call sites below are unchanged.
-    """
+    """Hand off to ``unsloth.save.patch_saving_functions``, imported on first call."""
     from ..save import patch_saving_functions as _impl
     return _impl(*args, **kwargs)
 
 
-# How unsloth/save.py recognises its own shim, so it only ever replaces this and never a
-# function someone else has put here.
+# How unsloth/save.py tells its own shim from a function someone else put here.
 patch_saving_functions._unsloth_deferred_shim = True
 
 

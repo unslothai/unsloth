@@ -1,16 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The dataset preview must standardise ShareGPT roles the way training does.
-
-`unsloth_zoo.dataset_utils.standardize_data_formats` matches its role aliases
-against `role.strip().lower()` (unslothai/unsloth-zoo#1225), because real
-datasets spell them "Human", "GPT", "Assistant" or " user ". The preview keeps
-its own copy of the alias map in `hub/utils/dataset_format.py` and looked the raw
-value up, so those datasets previewed with the raw strings as roles while the
-training run standardised them. Same dataset, two answers, and the preview is the
-one the user reads before starting a run.
-"""
+"""The preview's copy of the alias map matched the RAW role, while the zoo matches
+`role.strip().lower()` (unslothai/unsloth-zoo#1225), so "Human"/"GPT" trained differently."""
 
 import json
 import sys
@@ -28,8 +20,7 @@ from hub.utils.dataset_format import (  # noqa: E402
     _standardize_sharegpt_row,
 )
 
-# Every spelling on the left has to preview as the role on the right, which is what
-# standardize_data_formats writes into the conversation the trainer sees.
+# Left previews as right, matching what standardize_data_formats writes for the trainer.
 _SPELLINGS = [
     ("human", "user"),
     ("Human", "user"),
@@ -77,7 +68,6 @@ def test_the_preview_row_standardiser_maps_every_spelling(spelling, expected):
 
 
 def test_the_role_key_is_read_before_the_from_key():
-    """Unchanged precedence: `role` wins over `from`, and both normalise."""
     row = {"conversations": [{"role": "GPT", "from": "Human", "value": "x"}]}
     assert (
         _standardize_sharegpt_row(row, "conversations")["conversations"][0]["role"] == "assistant"
@@ -91,18 +81,14 @@ def test_the_content_key_is_read_before_the_value_key():
 
 
 def test_the_map_keys_are_all_already_normalised():
-    """A key that needed normalising itself could never be matched."""
     for key in _ROLE_MAP:
         assert key == _normalize_role_alias(key), f"{key!r} is not in normalised form"
 
 
 def test_the_alias_set_is_the_one_the_trainer_accepts():
-    """Cross-repo pin. If the zoo grows an alias, the preview has to grow it too, or
-    the preview will refuse to standardise a dataset training accepts."""
-    # Not importorskip: it only catches ImportError, and unsloth_zoo raises
-    # NotImplementedError at import on a host with no accelerator it recognises, which is
-    # every GitHub macOS and Windows runner. Probe whether the module is usable, not
-    # whether it is installed.
+    """Cross-repo pin: an alias the zoo grows has to reach the preview too."""
+    # Not importorskip: unsloth_zoo raises NotImplementedError, not ImportError, on a host
+    # with no recognised accelerator, which is every GitHub macOS and Windows runner.
     try:
         import unsloth_zoo.dataset_utils as dataset_utils
     except Exception as error:
@@ -122,8 +108,6 @@ def test_the_alias_set_is_the_one_the_trainer_accepts():
 
 
 def test_an_unknown_role_is_still_shown_as_written():
-    """Only the matching is normalised. An alias nothing recognises keeps its own
-    spelling rather than being silently rewritten or lowercased."""
     row = {"conversations": [{"from": "Narrator", "value": "x"}]}
     assert _standardize_sharegpt_row(row, "conversations")["conversations"][0]["role"] == "Narrator"
 
@@ -135,7 +119,6 @@ def test_a_missing_or_blank_role_still_defaults_to_user(role):
 
 
 def test_a_non_string_role_does_not_raise():
-    """`.strip()` on a raw value would have been an AttributeError; the helper casts."""
     row = {"conversations": [{"from": 7, "value": "x"}]}
     assert _standardize_sharegpt_row(row, "conversations")["conversations"][0]["role"] == "7"
 
@@ -154,11 +137,6 @@ def test_non_dict_messages_are_skipped():
     row = {"conversations": ["plain", {"from": "GPT", "value": "y"}]}
     messages = _standardize_sharegpt_row(row, "conversations")["conversations"]
     assert messages == [{"role": "assistant", "content": "y"}]
-
-
-# ---------------------------------------------------------------------------
-# End to end, through the real preview route
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -205,16 +183,8 @@ def test_the_check_format_route_previews_a_mixed_case_sharegpt_upload(isolated_s
         ]
 
 
-# ---------------------------------------------------------------------------
-# The training path, which is the one the preview is a preview OF
-# ---------------------------------------------------------------------------
-
-
 def test_the_training_standardiser_normalises_the_same_way():
-    """Studio training does not call the zoo helper: `core/training/trainer.py` goes
-    through `utils/datasets/dataset_utils.py`, which calls the local
-    `standardize_chat_format`. That matched the raw role, so a "Human"/"GPT" dataset
-    previewed as user/assistant and then handed the raw roles to the tokenizer."""
+    """Studio training reaches the local `standardize_chat_format`, not the zoo helper."""
     from utils.datasets.format_conversion import _normalize_role_alias as training_normalize
     for spelling, expected in _SPELLINGS:
         assert _ROLE_MAP[training_normalize(spelling)] == expected
@@ -235,8 +205,6 @@ def test_standardize_chat_format_maps_every_spelling(spelling, expected):
 
 
 def test_standardize_chat_format_leaves_an_unknown_role_as_written():
-    """NEGATIVE CONTROL: only the matching is normalised. A role no alias list knows
-    keeps its own spelling rather than being lowercased on the way to the template."""
     datasets = pytest.importorskip("datasets")
     from utils.datasets.format_conversion import standardize_chat_format
 
@@ -247,7 +215,6 @@ def test_standardize_chat_format_leaves_an_unknown_role_as_written():
 
 
 def test_the_preview_and_the_training_path_agree_on_every_spelling():
-    """The property the P1 was about: two standardisers, one answer."""
     datasets = pytest.importorskip("datasets")
     from utils.datasets.format_conversion import standardize_chat_format
 
@@ -263,12 +230,7 @@ def test_the_preview_and_the_training_path_agree_on_every_spelling():
 
 @pytest.mark.parametrize("role", [None, "", "   ", "\t"])
 def test_the_training_path_defaults_a_blank_role_like_the_preview(role):
-    """The last place the two standardisers disagreed.
-
-    `_standardize_sharegpt_row` maps a missing, empty or whitespace-only role to "user";
-    the training path preserved the original, so the tokenizer received an empty or
-    whitespace role, which most chat templates reject outright.
-    """
+    """The training path preserved a blank role and most chat templates reject one."""
     datasets = pytest.importorskip("datasets")
     from utils.datasets.format_conversion import standardize_chat_format
 
@@ -288,14 +250,12 @@ def test_the_training_path_defaults_a_blank_role_like_the_preview(role):
 @pytest.mark.parametrize(
     "message, expected",
     [
-        # The mixed-key record: the inferred role key is blank, but the SAME message
-        # carries a usable fallback role. The preview reads it; training used to skip it
-        # because the check was `is None`, labelling an assistant turn as user.
+        # Blank inferred role, usable fallback in the same message: training's `is None`
+        # check skipped it and labelled an assistant turn as user.
         ({"role": "", "from": "gpt", "content": "answer"}, "assistant"),
         ({"role": "   ", "from": "Human", "content": "q"}, "user"),
         ({"role": None, "from": "gpt", "content": "answer"}, "assistant"),
-        # NEGATIVE CONTROLS: a blank role with no fallback is still "user", and a role
-        # that is present wins over any fallback rather than being second-guessed.
+        # NEGATIVE CONTROLS: no fallback stays "user"; a present role wins over one.
         ({"role": "", "content": "answer"}, "user"),
         ({"role": "gpt", "from": "human", "content": "answer"}, "assistant"),
     ],

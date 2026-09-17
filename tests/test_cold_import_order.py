@@ -3,29 +3,9 @@
 
 """A cold `import unsloth.save` has to work, whatever imported first.
 
-`unsloth/save.py` imports `.models.loader_utils`, which executes
-`unsloth/models/__init__.py`. Three modules under `unsloth/models/` used to
-import names back out of `unsloth.save` at module scope, so that chain closed a
-cycle: save.py ran as far as its own `.models` import, `models/__init__.py`
-reached `llama.py`, `llama.py` reached `vision.py`, and vision's
-`from ..save import patch_saving_functions` landed in a half-built
-`unsloth.save` and raised
-
-    ImportError: cannot import name 'patch_saving_functions' from partially
-    initialized module 'unsloth.save' (most likely due to a circular import)
-
-`unsloth/__init__.py` hid this on the GPU path, and only there, because
-`_gpu_init.py` imports `.models` before `.save`, so by the time save.py runs the
-package it needs is already complete. The MLX branch of `unsloth/__init__.py`
-never reaches `_gpu_init`, so on Apple Silicon a cold `import unsloth.save` hit
-the cycle for real, and `import unsloth` first did not help.
-
-Each of the three modules now defines a one-line shim of the same name that
-imports the real function on first call, so the module attribute is still there
-for anything that reads or patches it, and the call sites are unchanged. Two
-source gates below keep the module-scope imports out (they are what fails on the
-unfixed tree, on any platform, with no torch), and the behavioural cases reproduce
-the original ordering in a child interpreter.
+save.py -> .models.loader_utils -> models/__init__ -> llama -> vision, whose module-scope
+`from ..save import ...` landed back in the half-built save.py. `_gpu_init.py` hid that by
+importing `.models` first, but the MLX branch never reaches it.
 """
 
 import ast
@@ -54,19 +34,14 @@ def _model_sources():
 
 
 def _is_save_module(node, package_depth):
-    """Whether an ImportFrom names `unsloth.save`.
-
-    Both spellings count: the absolute `from unsloth.save import ...` and the
-    relative `from ..save import ...` that the files under `unsloth/models/`
-    actually use (`level` 2 from a module one directory below the package root).
-    """
+    """Absolute or relative: `from ..save` is level 2 one directory below the root."""
     if node.module == "unsloth.save":
         return True
     return node.level == package_depth and node.module == "save"
 
 
 def _module_scope_imports(tree):
-    """Only the `import`s the interpreter runs while the module object is built."""
+    # Only the `import`s the interpreter runs while the module object is built.
     for node in tree.body:
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             yield node
@@ -79,8 +54,6 @@ def _module_scope_imports(tree):
 
 
 def test_no_module_under_models_imports_unsloth_save_at_module_scope():
-    """The gate. `unsloth.save` imports this package, so the edge may only run
-    lazily, from inside a function."""
     offenders = []
     for path, tree in _model_sources():
         depth = len(path.relative_to(_ROOT / "unsloth").parts)
@@ -108,9 +81,6 @@ def _module_level_functions(tree):
 
 
 def test_every_module_that_calls_a_deferred_name_defines_the_shim_for_it():
-    """The other half of the gate. Deleting a shim must fail here rather than as a
-    NameError the first time a user saves a model, and a shim that stops importing
-    from `unsloth.save` is no longer a hand-off."""
     problems = []
     for path, tree in _model_sources():
         depth = len(path.relative_to(_ROOT / "unsloth").parts)
@@ -144,8 +114,7 @@ def test_every_module_that_calls_a_deferred_name_defines_the_shim_for_it():
 
 
 def test_the_deferred_names_are_still_exported_by_unsloth_save():
-    """Nothing here may rename a public symbol; the gate above would otherwise
-    pass on a tree where the names had simply gone away."""
+    """The gate above also passes on a tree where the names simply went away."""
     source = (_ROOT / "unsloth" / "save.py").read_text(encoding = "utf-8")
     tree = ast.parse(source)
     defined = {
@@ -160,19 +129,11 @@ def test_the_deferred_names_are_still_exported_by_unsloth_save():
         and any(getattr(t, "id", None) == "__all__" for t in node.targets)
     )
     listed = {elt.value for elt in exported.elts if isinstance(elt, ast.Constant)}
-    # Only `patch_saving_functions` is in `__all__`; the two save_pretrained helpers are
-    # reached by name and never through `from unsloth.save import *`. Pinned so a later
-    # change to `__all__` cannot silently drop the one that is exported.
+    # Only this one is in `__all__`; the save_pretrained helpers are reached by name.
     assert "patch_saving_functions" in listed
 
 
-# ---------------------------------------------------------------------------
-# Behavioural: the original ordering, in a child interpreter
-# ---------------------------------------------------------------------------
-
-
 def _run(code):
-    """Fresh interpreter with this checkout first on the path."""
     path = [str(_ROOT)]
     if os.environ.get("PYTHONPATH"):
         path.append(os.environ["PYTHONPATH"])
@@ -186,17 +147,8 @@ def _run(code):
 
 
 def _models_importable():
-    """Whether `import unsloth.models` completes at all in a child interpreter.
-
-    Probing the behaviour, not the dependency list. `find_spec("torch")` is not the
-    question: a host can have torch, transformers and peft installed and still be unable
-    to import `unsloth.models`, because `unsloth_zoo.device_type` raises
-    NotImplementedError when it recognises no accelerator. A GitHub macOS runner is exactly
-    that host, and gating on the spec list turned "cannot run here" into a red test rather
-    than a skip.
-
-    One subprocess, at collection, reused by every case below.
-    """
+    """Not `find_spec("torch")`: a GitHub macOS runner has torch and still cannot import
+    this, because `unsloth_zoo.device_type` raises NotImplementedError with no accelerator."""
     result = _run(
         """
         import unsloth.models  # noqa: F401
@@ -215,9 +167,7 @@ _needs_torch = pytest.mark.skipif(
 )
 
 
-# The MLX ordering without MLX: put a bare `unsloth` package object in sys.modules, which
-# is all that `unsloth.models` has ever needed from the parent, then import `unsloth.save`
-# first. Faking the MLX branch itself would need mlx, mlx_lm and an Apple Silicon uname.
+# The MLX ordering without MLX: faking the branch needs mlx, mlx_lm and an Apple uname.
 _COLD_SAVE_FIRST = """
     import importlib
     import importlib.machinery
@@ -275,9 +225,7 @@ def test_a_cold_import_of_unsloth_save_does_not_hit_the_cycle():
     ],
 )
 def test_either_import_order_works_through_the_real_package_init(first, second):
-    """The supported path too: `unsloth/__init__.py` runs, then both modules are
-    imported in either order. This passes on the unfixed tree as well, and is here
-    so the fix cannot be mistaken for having changed it."""
+    """Passes on the unfixed tree too, so the fix cannot be mistaken for changing it."""
     result = _run(
         f"""
         import {first}
@@ -292,8 +240,7 @@ def test_either_import_order_works_through_the_real_package_init(first, second):
 
 @_needs_torch
 def test_the_star_export_from_gpu_init_still_carries_the_names():
-    """`unsloth/_gpu_init.py` re-exports `unsloth.save`, so `from unsloth import
-    patch_saving_functions` has to keep working for existing scripts."""
+    """`from unsloth import patch_saving_functions` has to keep working for old scripts."""
     result = _run(
         """
         import unsloth
@@ -307,14 +254,7 @@ def test_the_star_export_from_gpu_init_still_carries_the_names():
 
 
 def test_save_publishes_the_deferred_names_back_over_its_own_shims():
-    """Source gate for the last block of `unsloth/save.py`.
-
-    The deferral would otherwise be visible after import: `inspect.signature` on the
-    module attribute would read `(*args, **kwargs)` rather than the real one, which is a
-    change to what a caller can see even though every call still works. save.py ends by
-    replacing its own shims with the real objects, and it identifies them by the
-    `_unsloth_deferred_shim` marker so it can never overwrite somebody else's function.
-    """
+    """Without the publish-back, `inspect.signature` would read `(*args, **kwargs)`."""
     source = (_ROOT / "unsloth" / "save.py").read_text(encoding = "utf-8")
     assert "_unsloth_deferred_shim" in source, (
         "unsloth/save.py no longer publishes the deferred names back to unsloth.models, so "
@@ -348,9 +288,6 @@ def test_save_publishes_the_deferred_names_back_over_its_own_shims():
 
 @_needs_torch
 def test_the_module_attributes_are_the_real_functions_once_save_is_imported():
-    """The behavioural half. After `import unsloth.save`, on any import order, the three
-    modules expose the exact objects they exposed before the deferral: same identity, so
-    same signature, same docstring and same result from anything that introspects them."""
     result = _run(
         """
         import importlib
@@ -422,8 +359,5 @@ _SHIM_ONLY = """
 
 @_needs_torch
 def test_a_module_that_never_imports_save_still_gets_a_working_name():
-    """The case the shim exists for. Import `unsloth.models.vision` and never
-    `unsloth.save`, and the attribute is still there and still forwards, unchanged, to
-    the real function the moment anything calls it."""
     result = _run(_SHIM_ONLY % (str(__file__),))
     assert "SHIM_OK" in result.stdout, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"

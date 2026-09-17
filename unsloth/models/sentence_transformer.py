@@ -42,37 +42,23 @@ import re
 from transformers import AutoModel, AutoConfig
 import tempfile
 from huggingface_hub import HfApi, get_token
-# Deferred to first call: see the note in unsloth/models/vision.py and
-# tests/test_cold_import_order.py. `unsloth.save` imports this package, so binding a name out of
-# it at module scope closes a cycle that breaks a cold `import unsloth.save`.
+# Deferred to first call: a module-scope bind out of `unsloth.save` closes an import cycle.
+# See the note in unsloth/models/vision.py and tests/test_cold_import_order.py.
 
 
 def unsloth_save_pretrained_torchao(*args, **kwargs):
-    """Hand off to ``unsloth.save.unsloth_save_pretrained_torchao``, imported on first call.
-
-    Binding this at module scope closed an import cycle (see the note at the top of the
-    file). A shim rather than a call-site import so the module attribute is still there
-    for anything that reads or patches it on this module, and so the internal
-    call sites below are unchanged.
-    """
+    """Hand off to ``unsloth.save.unsloth_save_pretrained_torchao``, imported on first call."""
     from ..save import unsloth_save_pretrained_torchao as _impl
     return _impl(*args, **kwargs)
 
 
 def unsloth_save_pretrained_gguf(*args, **kwargs):
-    """Hand off to ``unsloth.save.unsloth_save_pretrained_gguf``, imported on first call.
-
-    Binding this at module scope closed an import cycle (see the note at the top of the
-    file). A shim rather than a call-site import so the module attribute is still there
-    for anything that reads or patches it on this module, and so the internal
-    call sites below are unchanged.
-    """
+    """Hand off to ``unsloth.save.unsloth_save_pretrained_gguf``, imported on first call."""
     from ..save import unsloth_save_pretrained_gguf as _impl
     return _impl(*args, **kwargs)
 
 
-# How unsloth/save.py recognises its own shims, so it only ever replaces these and never a
-# function someone else has put here.
+# How unsloth/save.py tells its own shims from functions someone else put here.
 unsloth_save_pretrained_torchao._unsloth_deferred_shim = True
 unsloth_save_pretrained_gguf._unsloth_deferred_shim = True
 

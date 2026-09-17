@@ -1600,11 +1600,9 @@ def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
 _UNIFIED_OS_RESERVE_BYTES = 16 * 1024**3
 _UNIFIED_MAX_RESERVE_FRACTION = 0.20
 _DISCRETE_MEM_FRACTION = 0.90
-# The ROCm-only name this guard shipped with. Kept, and still the one that wins on a ROCm
-# host, because it is what existing setups export.
+# The name this guard shipped with; still wins on a ROCm host, since setups export it.
 _MEM_FRACTION_ENV = "UNSLOTH_ROCM_MEM_FRACTION"
-# Backend neutral, so NVIDIA has a cap too (unsloth#8178). `set_per_process_memory_fraction`
-# lives on `torch.cuda` for both vendors, so one variable covers both training workers.
+# Backend neutral, so NVIDIA has a cap too (unsloth#8178).
 _GPU_MEM_FRACTION_ENV = "UNSLOTH_GPU_MEM_FRACTION"
 
 
@@ -1697,24 +1695,14 @@ def _rocm_memory_fraction(
 
 
 def _mem_fraction_env_names(backend: str) -> tuple[str, ...]:
-    """The override variables to read, most specific first.
-
-    A ROCm host reads ``UNSLOTH_ROCM_MEM_FRACTION`` before the neutral name, so a machine
-    that already exports the ROCm variable keeps exactly the cap it had. Every other
-    backend only ever had the neutral name.
-    """
+    """Most specific first, so a host already exporting the ROCm name keeps its cap."""
     if backend == "rocm":
         return (_MEM_FRACTION_ENV, _GPU_MEM_FRACTION_ENV)
     return (_GPU_MEM_FRACTION_ENV,)
 
 
 def _mem_fraction_env_value(backend: str, environ: Any = None) -> tuple[str | None, str | None]:
-    """Resolve the override to ``(raw value, variable name)``.
-
-    The first variable that parses wins. If none parses, the first one that is *set* is
-    returned anyway, so the caller can name it in the "ignoring ..." warning rather than
-    reporting a variable the user never touched. ``(None, None)`` when nothing is set.
-    """
+    """``(raw, name)``, else the first one SET so a warning names what the user exported."""
     if environ is None:
         environ = os.environ
     first_set: tuple[str | None, str | None] = (None, None)
@@ -1737,16 +1725,8 @@ def _gpu_memory_fraction(
     env_value: str | None = None,
     denominator_bytes: int | None = None,
 ) -> float:
-    """The one memory-cap policy, for every backend.
-
-    An override in ``(0.0, 1.0]`` always wins. With no override, ROCm keeps the policy in
-    ``_rocm_memory_fraction`` unchanged, and every other backend answers ``1.0``, which is
-    what torch does with no cap at all. So this is additive: a host that sets nothing runs
-    exactly as it did, on either vendor.
-
-    The ROCm arm is delegated rather than inlined so the reserve policy, its floors and its
-    denominator handling stay in one place with their own tests.
-    """
+    """An override in ``(0.0, 1.0]`` wins; else ROCm delegates unchanged and the rest
+    answer ``1.0``, torch's uncapped default, so setting nothing changes nothing."""
     override = _parse_mem_fraction_env(env_value)
     if override is not None:
         return override
@@ -3730,9 +3710,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         try:
             import torch as _torch_mem
             if _torch_mem.cuda.is_available():
-                # Every visible device, not just cuda:0: torch keeps the fraction PER
-                # DEVICE, so a sharded ROCm run left the later GPUs uncapped while the log
-                # said otherwise. Classification and pool size are per device too.
+                # torch keeps the fraction PER DEVICE: a sharded run left the rest uncapped.
                 _unified_seen = False
                 for _mem_index in range(_torch_mem.cuda.device_count()):
                     # Classify unified vs discrete (see _rocm_classify_unified_memory's docstring).
@@ -3745,15 +3723,11 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                             "unified memory from device name %r; applying unified cap",
                             _dev_name,
                         )
-                    # Unified hosts on native Windows: mem_get_info's total is the WDDM budget
-                    # (BIOS carve + ~half of remaining RAM), so the OS share is already outside
-                    # it and any sub-1.0 starve-protection double-taxes (48.49 GiB -> 38.79) and
-                    # blocks loads that fit. AMD Windows wheels enforce only sub-1.0 fractions,
-                    # so 1.0 is torch's uncapped default. On Linux the total spans nearly all
-                    # RAM, so keep a bounded headroom. The reserve comes out of
-                    # props.total_memory, which from torch 2.10 is also what the allocator
-                    # scales; through 2.9 it scales hipMemGetInfo's total, so hand that to the
-                    # helper there and the reserve is the same bytes either way.
+                    # On native Windows mem_get_info's total is the WDDM budget, which already
+                    # excludes the OS share, so any sub-1.0 double-taxes; Linux totals span
+                    # nearly all RAM, so keep headroom. The allocator scales props.total_memory
+                    # from torch 2.10 and hipMemGetInfo's total through 2.9, so hand the driver
+                    # total to the helper there and the reserve is the same bytes either way.
                     _total_bytes = int(getattr(_props, "total_memory", 0) or 0)
                     _driver_total = 0
                     if not _allocator_divides_by_props_total(
@@ -3763,8 +3737,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                             _driver_total = int(_torch_mem.cuda.mem_get_info(_mem_index)[1])
                         except Exception:
                             _driver_total = 0
-                    # ROCm name first, then the neutral one, so an existing export keeps
-                    # the cap it had.
+                    # ROCm name first, so an existing export keeps the cap it had.
                     _env_raw, _env_name = _mem_fraction_env_value("rocm")
                     _env_fraction = _parse_mem_fraction_env(_env_raw)
                     if _env_raw and _env_fraction is None:
@@ -3782,8 +3755,6 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                         _env_raw,
                         _driver_total or None,
                     )
-                    # A wheel reporting no total still gets a cap; say so rather than
-                    # printing "0.0 of 0.0 GiB allowed".
                     _allowed = (
                         f"{_total_bytes * _mem_fraction / 1024**3:.1f} of "
                         f"{_total_bytes / 1024**3:.1f} GiB allowed"
@@ -3804,9 +3775,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                         if _env_fraction is not None
                         else f"computed; override with {_MEM_FRACTION_ENV} or {_GPU_MEM_FRACTION_ENV}",
                     )
-                    # Differing totals mean the cap was solved against the driver's, so the
-                    # budget printed above is not the one enforced. Give both, and the
-                    # headroom, which the floor can leave under the intended reserve.
+                    # Differing totals: the budget printed above is not the one enforced.
                     if (
                         _is_unified
                         and sys.platform != "win32"
@@ -3851,10 +3820,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         except Exception as _oom_guard_err:
             logger.debug("Could not set GPU memory fraction: %s", _oom_guard_err)
 
-    # Explicit GPU memory cap on the backends that never had one (unsloth#8178). Unlike the
-    # driver-forced ROCm arm above, this is a user leaving room for a game or a second model.
-    # Unset means 1.0, torch's uncapped default, so a host that sets nothing is unchanged and
-    # nothing is logged. torch.cuda is the NVIDIA half; XPU and MPS are not wired yet.
+    # A user preference, unlike the driver-forced ROCm arm; XPU and MPS are not wired yet.
     # ── 1h. Explicit GPU memory cap ──
     if not _hw.IS_ROCM:
         _cap_raw, _cap_name = _mem_fraction_env_value("cuda")
@@ -3870,10 +3836,8 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 import torch as _torch_cap
                 if _torch_cap.cuda.is_available():
                     _cap = _gpu_memory_fraction(0, False, sys.platform, "cuda", _cap_raw)
-                    # Every visible device, named explicitly: the allocator keeps the
-                    # fraction PER DEVICE, so a job sharded by `get_device_map` left cuda:1
-                    # and up uncapped. The fraction is an env override with no device of
-                    # its own, so the same value is right for each.
+                    # Named explicitly: the fraction is PER DEVICE, so `get_device_map` jobs
+                    # left cuda:1 and up uncapped.
                     for _cap_index in range(_torch_cap.cuda.device_count()):
                         _torch_cap.cuda.set_per_process_memory_fraction(_cap, _cap_index)
                         _cap_props = _torch_cap.cuda.get_device_properties(_cap_index)

@@ -6979,19 +6979,10 @@ def patch_saving_functions(model, vision = False):
     return model
 
 
-# ── Publish the deferred names back to unsloth.models ──
-# `unsloth.save` imports `.models.loader_utils`, so the three modules below cannot bind these
-# names out of this one at module scope without closing an import cycle; each defines a shim
-# of the same name that imports the real object on first call instead (see
-# unsloth/models/vision.py and tests/test_cold_import_order.py).
-#
-# This module is finished by the time this line runs, and `.models` was fully imported on the
-# way here, so hand the real objects over now. From here the module attributes are the exact
-# functions they were before the deferral, identity, signature and docstring included, so
-# anything that reads, introspects or patches `unsloth.models.vision.patch_saving_functions`
-# and the two `sentence_transformer` helpers sees no change at all. The shim only ever
-# answers for a tree that imported `unsloth.models` and never `unsloth.save`, where it is the
-# only thing that can work.
+# Publish the deferred names back to unsloth.models. Those modules bind shims instead of
+# these names to avoid an import cycle (see unsloth/models/vision.py); this module and
+# `.models` are both complete by the time this runs, so hand the real objects over and the
+# attributes regain their identity, signature and docstring.
 _DEFERRED_INTO_MODELS = {
     "unsloth.models.vision": ("patch_saving_functions",),
     "unsloth.models.llama": ("patch_saving_functions",),
@@ -7005,7 +6996,6 @@ for _module_name, _deferred_names in _DEFERRED_INTO_MODELS.items():
     if _module is None:
         continue
     for _deferred_name in _deferred_names:
-        # Only ever replace our own shim. A module that never got one, or that someone has
-        # already pointed somewhere else, is left exactly as it is.
+        # Only ever replace our own shim; anything else is left exactly as it is.
         if getattr(getattr(_module, _deferred_name, None), "_unsloth_deferred_shim", False):
             setattr(_module, _deferred_name, globals()[_deferred_name])

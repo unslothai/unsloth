@@ -56,35 +56,20 @@ from .loader_utils import (
     requested_device_map,
     resolve_unsloth_device_map,
 )
-# `unsloth.save` imports `.models.loader_utils`, so binding a name out of `unsloth.save` here
-# at module scope closes a cycle: a cold `import unsloth.save` runs save.py to its
-# `.models.loader_utils` import, which executes `unsloth/models/__init__.py`, which reaches this
-# module, which imports back into a half-built `unsloth.save` and fails on the name.
-# `unsloth/__init__.py` hides it on the GPU path only, because `_gpu_init` imports `.models`
-# before `.save`; the MLX branch never reaches `_gpu_init`, so there a cold
-# `import unsloth.save` raised ImportError. The hand-off is deferred to first call instead.
-#
-# The shim is short lived: `unsloth/save.py` replaces it with the real function on the last
-# line of its own module body, so once `unsloth.save` has been imported at all, which is the
-# only way to reach the real function anyway, this attribute is that function, identity and
-# signature included. The shim answers only for a tree that imported `unsloth.models` and
-# never `unsloth.save`. Pinned by tests/test_cold_import_order.py.
+# `unsloth.save` imports `.models.loader_utils`, so binding a name out of it here at module
+# scope closes a cycle and a cold `import unsloth.save` fails on the half-built module.
+# `_gpu_init` hid that by importing `.models` first; the MLX branch never reaches it. So the
+# hand-off is deferred to first call, and save.py replaces this shim with the real function on
+# the last line of its own body. Pinned by tests/test_cold_import_order.py.
 
 
 def patch_saving_functions(*args, **kwargs):
-    """Hand off to ``unsloth.save.patch_saving_functions``, imported on first call.
-
-    Binding this at module scope closed an import cycle (see the note at the top of the
-    file). A shim rather than a call-site import so the module attribute is still there
-    for anything that reads or patches it on this module, and so the internal
-    call sites below are unchanged.
-    """
+    """Hand off to ``unsloth.save.patch_saving_functions``, imported on first call."""
     from ..save import patch_saving_functions as _impl
     return _impl(*args, **kwargs)
 
 
-# How unsloth/save.py recognises its own shim, so it only ever replaces this and never a
-# function someone else has put here.
+# How unsloth/save.py tells its own shim from a function someone else put here.
 patch_saving_functions._unsloth_deferred_shim = True
 
 

@@ -709,8 +709,8 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
     }
 
 
-# The same seven aliases `standardize_data_formats` accepts, so the preview shows the roles
-# the run will see. Keys are normalised: look them up through `_normalize_role_alias`.
+# The aliases `standardize_data_formats` accepts. Keys are normalised: look them up
+# through `_normalize_role_alias`.
 _ROLE_MAP = {
     "human": "user",
     "user": "user",
@@ -723,14 +723,8 @@ _ROLE_MAP = {
 
 
 def _normalize_role_alias(role: Any) -> str:
-    """Normalise a ShareGPT role the way the trainer does before matching aliases.
-
-    `standardize_data_formats` compares `role.strip().lower()` against its alias lists
-    (unslothai/unsloth-zoo#1225), because roles arrive with stray case and whitespace
-    ("Human", "GPT", " user "). This map was matched against the raw value, so those
-    spellings previewed with the raw string as the role while training standardised them,
-    and the preview disagreed with the run it was previewing.
-    """
+    """Match aliases the way the trainer does: `role.strip().lower()`, as
+    `standardize_data_formats` compares them (unslothai/unsloth-zoo#1225)."""
     if role is None:
         return ""
     return str(role).strip().lower()
@@ -749,8 +743,7 @@ def _standardize_sharegpt_row(row: dict[str, Any], chat_column: str) -> dict[str
         normalized = _normalize_role_alias(role)
         messages.append(
             {
-                # An unknown alias is shown as written; only the matching is normalised. A
-                # missing, empty or whitespace role falls back to "user", as before.
+                # Unknown alias shown as written; blank falls back to "user", as before.
                 "role": _ROLE_MAP.get(normalized, str(role)) if normalized else "user",
                 "content": "" if content is None else content,
             }

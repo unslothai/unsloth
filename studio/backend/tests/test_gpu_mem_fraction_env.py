@@ -1,26 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A backend-neutral GPU memory cap for the training worker (unsloth#8178).
-
-The only lever on how much GPU memory a training run may take was
-`UNSLOTH_ROCM_MEM_FRACTION`, read in one place behind `_hw.IS_ROCM`, so NVIDIA had
-no cap at all. `set_per_process_memory_fraction` lives on `torch.cuda` for both
-vendors, so one variable can serve both: `UNSLOTH_GPU_MEM_FRACTION`.
-
-Two properties this file exists to hold:
-
-1. Nothing changes for anyone who sets nothing. With no override the policy
-   answers 1.0 on every non-ROCm backend, which is what torch does with no cap,
-   and the ROCm arm is delegated unchanged to `_rocm_memory_fraction`.
-2. The ROCm name still wins on a ROCm host, so a machine that already exports it
-   keeps exactly the cap it had.
-
-The wiring in section 1h of `run_training_process` cannot be called directly (it
-sits inside a function that spawns a trainer), so the block is sliced out of the
-source and executed against fake `_hw`, `torch` and `logger` objects. That is a
-real execution of the shipped lines, not a source-substring check.
-"""
+"""A backend-neutral GPU memory cap for the training worker (unsloth#8178). Section 1h
+cannot be called directly, so the block is sliced out of worker.py by its banner
+comments, which are therefore load-bearing, and executed against fakes."""
 
 from __future__ import annotations
 
@@ -44,13 +27,9 @@ GIB = 1024**3
 
 _WORKER_PY = Path(__file__).resolve().parents[1] / "core" / "training" / "worker.py"
 
-# Non-ROCm backends the worker can meet. "cuda" is the one wired; the rest are here so a
-# later backend cannot quietly inherit a cap it was never measured for.
+# "cuda" is the one wired; the rest guard a later backend inheriting an unmeasured cap.
 _OTHER_BACKENDS = ["cuda", "xpu", "mps", "cpu"]
 _PLATFORMS = ["linux", "win32", "darwin"]
-
-
-# ── The default: nobody who sets nothing is affected ─────────────────────────
 
 
 @pytest.mark.parametrize("backend", _OTHER_BACKENDS)
@@ -70,21 +49,16 @@ def test_every_non_rocm_backend_is_uncapped_without_an_override(
 def test_the_rocm_arm_is_byte_identical_to_the_helper_it_delegates_to(
     platform: str, total: int, is_unified: bool, denominator: int | None
 ) -> None:
-    """The whole compatibility claim in one assertion, over the corners the ROCm
-    policy actually branches on."""
     assert _gpu_memory_fraction(
         total, is_unified, platform, "rocm", None, denominator
     ) == _rocm_memory_fraction(total, is_unified, platform, None, denominator)
 
 
 def test_a_known_rocm_answer_is_unchanged():
-    """Spot values, so a refactor of both sides at once still fails here."""
+    # Spot values, so a refactor of both sides at once still fails here.
     assert _gpu_memory_fraction(24 * GIB, False, "linux", "rocm") == _DISCRETE_MEM_FRACTION
     assert _gpu_memory_fraction(128 * GIB, True, "win32", "rocm") == 1.0
     assert _gpu_memory_fraction(24 * GIB, True, "linux", "rocm") == pytest.approx(0.80)
-
-
-# ── The override ─────────────────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize("backend", _OTHER_BACKENDS + ["rocm"])
@@ -108,9 +82,6 @@ def test_an_unusable_override_leaves_rocm_on_its_computed_cap(bad: str) -> None:
     )
 
 
-# ── Which variable is read ───────────────────────────────────────────────────
-
-
 def test_rocm_reads_its_own_name_first():
     assert _mem_fraction_env_names("rocm") == (_MEM_FRACTION_ENV, _GPU_MEM_FRACTION_ENV)
 
@@ -121,7 +92,6 @@ def test_other_backends_read_only_the_neutral_name(backend: str) -> None:
 
 
 def test_the_rocm_name_still_wins_on_a_rocm_host():
-    """An existing ROCm setup keeps the cap it had, whatever else is exported."""
     environ = {_MEM_FRACTION_ENV: "0.7", _GPU_MEM_FRACTION_ENV: "0.3"}
     assert _mem_fraction_env_value("rocm", environ) == ("0.7", _MEM_FRACTION_ENV)
     assert _gpu_memory_fraction(128 * GIB, True, "linux", "rocm", "0.7") == 0.7
@@ -138,7 +108,6 @@ def test_an_unusable_rocm_value_falls_through_to_the_neutral_one():
 
 
 def test_when_nothing_parses_the_first_variable_that_was_set_is_named():
-    """So the warning names a variable the user really exported."""
     environ = {_MEM_FRACTION_ENV: "abc", _GPU_MEM_FRACTION_ENV: "2.0"}
     assert _mem_fraction_env_value("rocm", environ) == ("abc", _MEM_FRACTION_ENV)
 
@@ -149,8 +118,7 @@ def test_nothing_set_resolves_to_nothing():
 
 
 def test_a_cuda_host_ignores_the_rocm_only_name():
-    """The ROCm variable describes a ROCm-specific reserve policy; honouring it on
-    NVIDIA would cap a machine whose owner meant something else entirely."""
+    # UNSLOTH_ROCM_MEM_FRACTION names a ROCm reserve policy, not a user's cap.
     environ = {_MEM_FRACTION_ENV: "0.5"}
     assert _mem_fraction_env_value("cuda", environ) == (None, None)
 
@@ -163,9 +131,6 @@ def test_an_empty_string_is_treated_as_unset():
     assert _gpu_memory_fraction(0, False, "linux", "cuda", "") == 1.0
 
 
-# ── Section 1h, executed ─────────────────────────────────────────────────────
-
-
 def _section_1h_source() -> str:
     source = _WORKER_PY.read_text(encoding = "utf-8")
     start = source.index("    # ── 1h. Explicit GPU memory cap ──")
@@ -174,7 +139,6 @@ def _section_1h_source() -> str:
 
 
 def _make_logger():
-    """A logger that keeps the rendered lines, so the assertions read what a user sees."""
     recorded = SimpleNamespace(info = [], warning = [], debug = [])
 
     def make(level):
@@ -188,14 +152,8 @@ def _make_logger():
 
 
 class _FakeCuda:
-    """torch.cuda, with the allocator's real per-device fraction bookkeeping.
-
-    `set_per_process_memory_fraction` stores the fraction against ONE device --
-    `device` when given, `current_device()` otherwise -- so a fake that kept a single
-    scalar could not tell a cap on every visible GPU from a cap on cuda:0. `fractions`
-    is the per-device record; `fraction` stays as the last value written so the
-    single-GPU assertions above read unchanged.
-    """
+    """The fraction is stored against ONE device, so a scalar could not tell a cap on
+    every GPU from a cap on cuda:0."""
 
     def __init__(
         self,
@@ -242,7 +200,6 @@ def _run_section_1h(
     cuda = None,
     platform = "linux",
 ):
-    """Execute the shipped block with fakes standing in for the process globals."""
     import sys as _real_sys
 
     cuda = cuda if cuda is not None else _FakeCuda()
@@ -252,8 +209,7 @@ def _run_section_1h(
     from core.training import worker as worker_module
 
     def resolve_env(backend, environ_ = None):
-        # The shipped line calls this with one argument, so the fake environment has to
-        # arrive here rather than through a patched os module.
+        # The shipped line passes one argument, so the fake environ cannot arrive via os.
         return worker_module._mem_fraction_env_value(
             backend, environ if environ_ is None else environ_
         )
@@ -292,7 +248,6 @@ def test_the_block_does_nothing_when_no_variable_is_set():
 
 
 def test_the_block_does_nothing_on_a_rocm_host():
-    """Section 1g already served it; running both would cap twice and log twice."""
     cuda, log = _run_section_1h(
         is_rocm = True,
         environ = {_GPU_MEM_FRACTION_ENV: "0.5"},
@@ -361,8 +316,6 @@ def test_a_failure_inside_the_block_never_takes_the_run_down():
 
 @pytest.mark.parametrize("platform", _PLATFORMS)
 def test_the_cap_is_the_same_on_every_platform(platform: str):
-    """The neutral cap is a user preference, not a driver workaround, so unlike the
-    ROCm reserve it does not vary by platform."""
     cuda, _ = _run_section_1h(
         is_rocm = False,
         environ = {_GPU_MEM_FRACTION_ENV: "0.6"},
@@ -376,8 +329,7 @@ def test_the_block_is_still_gated_on_the_rocm_flag():
 
 
 def test_no_settings_route_reads_the_new_variable():
-    """The Settings control is a deliberate follow-up. If one is added, this test is
-    the reminder that the env var and the control need one policy path, not two."""
+    """A Settings control is a follow-up; when added it must share this policy path."""
     backend_root = Path(__file__).resolve().parents[1]
     offenders = []
     for path in (backend_root / "routes").rglob("*.py"):
@@ -387,10 +339,8 @@ def test_no_settings_route_reads_the_new_variable():
 
 
 def test_every_visible_gpu_is_capped_not_just_the_current_one():
-    """unsloth#8178's cap is advertised as process-wide, and Studio shards a run across
-    every visible GPU through `get_device_map`. torch keeps the fraction per device and
-    defaults `device` to `current_device()`, so the call without one left cuda:1 and up
-    allocating freely while the log claimed the cap was in force."""
+    """torch keeps the fraction per device and defaults to `current_device()`, so a
+    sharded run left cuda:1 and up allocating freely (unsloth#8178)."""
     cuda, log = _run_section_1h(
         is_rocm = False,
         environ = {_GPU_MEM_FRACTION_ENV: "0.75"},
@@ -409,9 +359,7 @@ def test_every_visible_gpu_is_capped_not_just_the_current_one():
 
 
 def test_the_cap_names_a_device_explicitly_rather_than_relying_on_the_current_one():
-    """The control for the bug's mechanism: a process whose current device is not 0
-    must still cap 0. A `set_per_process_memory_fraction(f)` with no device would
-    record only cuda:3 here."""
+    """Control: with no `device` argument this records only cuda:3."""
     cuda, _log = _run_section_1h(
         is_rocm = False,
         environ = {_GPU_MEM_FRACTION_ENV: "0.5"},
@@ -421,7 +369,6 @@ def test_the_cap_names_a_device_explicitly_rather_than_relying_on_the_current_on
 
 
 def test_a_single_gpu_host_is_unchanged():
-    """The whole point is additive: one device still means one call and one line."""
     cuda, log = _run_section_1h(
         is_rocm = False,
         environ = {_GPU_MEM_FRACTION_ENV: "0.9"},
@@ -429,9 +376,6 @@ def test_a_single_gpu_host_is_unchanged():
     )
     assert cuda.fractions == {0: pytest.approx(0.9)}
     assert len(log.info) == 1
-
-
-# ── Section 1g: the ROCm arm caps every visible device too ───────────────────
 
 
 def _section_1g_source() -> str:
@@ -442,9 +386,6 @@ def _section_1g_source() -> str:
 
 
 class _FakeRocmCuda(_FakeCuda):
-    """_FakeCuda plus the two things only the ROCm arm asks for: the driver's own
-    total, and the arch string the unified/discrete classification reads."""
-
     def __init__(
         self,
         *,
@@ -518,8 +459,7 @@ def _run_section_1g(
 
 
 def test_the_rocm_guard_caps_every_visible_device():
-    """A sharded ROCm run capped cuda:0 and logged that the cap was in force, while the
-    allocator, which keeps the fraction per device, left cuda:1 and up free."""
+    """A sharded ROCm run capped cuda:0 and logged success while cuda:1 and up ran free."""
     cuda, log = _run_section_1g(
         environ = {_GPU_MEM_FRACTION_ENV: "0.75"},
         cuda = _FakeRocmCuda(count = 4),
@@ -531,7 +471,6 @@ def test_the_rocm_guard_caps_every_visible_device():
 
 
 def test_the_rocm_guard_names_the_device_rather_than_the_current_one():
-    """The control for the mechanism: a call with no `device` would record only cuda:2."""
     cuda, _log = _run_section_1g(
         environ = {_MEM_FRACTION_ENV: "0.5"},
         cuda = _FakeRocmCuda(count = 4, current = 2),
@@ -549,8 +488,7 @@ def test_a_single_rocm_gpu_is_unchanged():
 
 
 def test_each_rocm_device_is_solved_from_its_own_properties():
-    """A host that mixes a unified APU with a discrete card must not cap both from
-    cuda:0's pool: the APU needs OS headroom and the discrete card does not."""
+    """A mixed APU + discrete host must not cap both from cuda:0: only the APU needs headroom."""
 
     class _MixedCuda(_FakeRocmCuda):
         def get_device_properties(self, index):
@@ -562,8 +500,7 @@ def test_each_rocm_device_is_solved_from_its_own_properties():
             )
 
         def mem_get_info(self, index = None):
-            # This wheel reports the same pool both ways, so the cap is the one the
-            # properties alone imply and the arithmetic stays readable.
+            # Same pool both ways, so the cap is the one the properties alone imply.
             total = self.get_device_properties(index).total_memory
             return (total // 2, total)
 
