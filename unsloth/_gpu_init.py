@@ -63,10 +63,8 @@ try:
 except Exception:
     pass
 
-# Must run before ANYTHING imports huggingface_hub (disable_broken_vllm probes `import vllm`,
-# check_fbgemm_gpu_version imports transformers, fix_huggingface_hub imports the Hub itself):
-# huggingface_hub freezes HF_HUB_DISABLE_XET into constants.py at import, so a value set after
-# that point is read by nobody and every Xet download still dies on the broken hf_xet.
+# Before anything imports huggingface_hub (disable_broken_vllm, check_fbgemm_gpu_version and
+# fix_huggingface_hub all reach it): the Hub freezes HF_HUB_DISABLE_XET at import time.
 fix_broken_hf_xet_wheel()
 # Configure libdrm ids table path early so ROCm can resolve AMD GPU names.
 configure_amdgpu_asic_id_table_path()

@@ -1068,38 +1068,13 @@ def ignore_logger_messages():
         pass
 
 
-# huggingface_hub gates the Xet transport on `is_xet_available()`, which asks importlib.metadata
-# whether the hf_xet DISTRIBUTION is installed. It never asks whether hf_xet IMPORTS. So an hf_xet
-# that is present but unloadable is still routed to, `from hf_xet import PyXetDownloadInfo,
-# download_files` inside file_download.xet_get raises ImportError, and transformers' cached_files
-# turns that into:
-#     OSError: To use optimized download using Xet storage, you need to install the hf_xet
-#     package. Try 'pip install "huggingface_hub[hf_xet]"' or 'pip install hf_xet'.
-# which names the one remedy that cannot possibly work, since hf_xet IS installed. Users reinstall
-# it, get the same wheel back, and the download fails again.
-#
-# Seen on Windows on ARM: an x86-64 hf_xet wheel (WHEEL says `Tag: cp37-abi3-win_amd64`, and
-# hf_xet.pyd carries PE machine 0x8664) landed in an ARM64 CPython 3.13 (0xAA64), so every Hub
-# download died at "ImportError: DLL load failed while importing hf_xet: %1 is not a valid Win32
-# application" and a QLoRA run never got past step 0. The same shape is reachable anywhere a wheel
-# is copied or resolved against the wrong interpreter (a linux aarch64 tree holding an x86_64
-# wheel, a truncated install with no extension module at all).
-#
-# HF_HUB_DISABLE_XET=1 is huggingface_hub's own supported way off that path: is_xet_available()
-# returns False, the download takes the plain HTTPS branch, and the user gets the same files in the
-# same cache, only without the Xet transport. It MUST be set before huggingface_hub is imported,
-# because constants.py freezes the variable into `HF_HUB_DISABLE_XET` at import time, which is why
-# this is wired into the first block of _gpu_init.py rather than down with the late fixes.
-#
-# unsloth_zoo.hf_xet_fallback does NOT cover this. That one is a Xet -> HTTP STALL fallback, a
-# watchdog for a transfer that hangs with no progress, and it only guards downloads routed through
-# its own wrappers. An ImportError at import time never trips it, and the training path that broke
-# here went straight through transformers' cached_files, which those wrappers never see.
-#
-# Only fires on a proven-broken install: an hf_xet that is absent entirely is left alone
-# (huggingface_hub already downgrades to HTTP for that, correctly), an HF_HUB_DISABLE_XET the user
-# set is never overridden in either direction, and a suspicion raised by the wheel metadata is
-# confirmed with a real import before anything is changed.
+# huggingface_hub routes to Xet on `is_xet_available()`, which asks importlib.metadata whether the
+# hf_xet DISTRIBUTION is installed and never whether it IMPORTS, so an unloadable hf_xet is still
+# routed to and dies as transformers' misleading "you need to install the hf_xet package".
+# HF_HUB_DISABLE_XET=1 is the Hub's own way off that path, and constants.py freezes it at import
+# time, which is why this is wired into the FIRST block of _gpu_init.py, not the late fixes.
+# unsloth_zoo.hf_xet_fallback does not cover this: it is a stall watchdog around its own wrappers,
+# and an ImportError at import time never reaches it.
 _CPU_FAMILY_BY_MACHINE = {
     "amd64": "x86_64",
     "x86_64": "x86_64",
@@ -1113,17 +1088,15 @@ _CPU_FAMILY_BY_MACHINE = {
     "ppc64le": "ppc64le",
     "s390x": "s390x",
 }
-# Windows platform tags name the CPU outright; every other OS carries it as the tag's last token
-# (macosx_11_0_arm64, manylinux_2_28_aarch64, musllinux_1_2_x86_64, linux_armv7l).
+# Windows tags name the cpu outright; every other OS carries it as the tag's last token.
 _WINDOWS_PLATFORM_TAG_CPU = {
     "win_amd64": "x86_64",
     "win_arm64": "arm64",
     "win32": "x86",
 }
 _MULTI_ARCH_PLATFORM_TAG_PREFIXES = ("macosx_", "manylinux", "musllinux", "linux_")
-# Machine ids out of the three compiled-object headers, for the installs whose WHEEL metadata
-# cannot be read (vendored, relocated, repackaged). Only the families above are worth listing:
-# anything absent here reads as "cannot tell", which is never a mismatch.
+# Header machine ids, for installs whose WHEEL metadata cannot be read. A family absent here reads
+# as "cannot tell", which is never a mismatch.
 _ELF_MACHINE_CPU = {
     0x03: "x86",
     0x15: "ppc64le",
@@ -1139,18 +1112,10 @@ _MACHO_CPU_TYPE_CPU = {7: "x86", 12: "armv7l", 0x01000007: "x86_64", 0x0100000C:
 def _host_cpu_family():
     """CPU family of THIS interpreter, or None when it cannot be told.
 
-    `sysconfig.get_platform()` is asked first, because it reports what the interpreter was BUILT
-    for ("win-amd64", "win-arm64", "linux-x86_64", "macosx-11.0-arm64"), which is the thing a
-    wheel's platform tag has to match.
-
-    `platform.machine()` cannot answer this on Windows. CPython there asks WMI for the PHYSICAL
-    processor (see `platform._get_machine_win32`), so inside an emulated x86-64 process on Windows
-    on ARM it returns "ARM64" while the interpreter is win-amd64. Measured on such a box: every
-    x86-64 venv reports `platform.machine() == "ARM64"` next to `sysconfig.get_platform() ==
-    "win-amd64"`. Trusting it there gets the verdict backwards in both directions, calling a
-    correct win_amd64 wheel a mismatch and passing a genuinely unloadable win_arm64 wheel as
-    healthy. It stays as the fallback only for the platforms sysconfig cannot name a CPU for
-    (macOS `universal2` builds, chiefly), where it is right.
+    sysconfig first: it reports what the interpreter was BUILT for, which is what a wheel tag must
+    match. platform.machine() is WRONG on Windows, where CPython asks WMI for the PHYSICAL cpu, so
+    an emulated x86-64 process on Windows on ARM answers "ARM64" while being win-amd64. It stays
+    only as the fallback for platforms sysconfig cannot name a cpu for, chiefly macOS universal2.
     """
     import platform
     import sysconfig
@@ -1160,10 +1125,9 @@ def _host_cpu_family():
     except Exception:
         host_platform = ""
     if host_platform:
-        # "win-amd64"/"win-arm64"/"win32" spell the CPU the way the wheel tags do.
         family = _WINDOWS_PLATFORM_TAG_CPU.get(host_platform.replace("-", "_"))
         if family is None:
-            # "linux-x86_64", "macosx-11.0-arm64", "freebsd-14-amd64": CPU is the last token.
+            # linux-x86_64, macosx-11.0-arm64: cpu is the last token.
             family = _CPU_FAMILY_BY_MACHINE.get(host_platform.rsplit("-", 1)[-1])
         if family is not None:
             return family
@@ -1198,16 +1162,12 @@ def _cpu_family_from_compiled_object(path):
             return _MACHO_CPU_TYPE_CPU.get(struct.unpack_from(">i", head, 4)[0] & 0xFFFFFFFF)
     except Exception:
         return None
-    # Mach-O universal ("fat") binaries carry several CPUs: unreadable on purpose, see above.
-    return None
+    return None  # Mach-O universal binaries carry several cpus: unreadable on purpose.
 
 
 def _hf_xet_extension_cpu_families(spec):
-    """CPU families of the compiled extensions shipped inside hf_xet, or () when unreadable.
-
-    The fallback for an install whose WHEEL metadata is gone: the .pyd/.so itself still says what
-    it was built for, and that is the fact that actually decides whether the import can work.
-    """
+    """CPU families of hf_xet's compiled extensions, or () when unreadable. The fallback when the
+    WHEEL metadata is gone: the .pyd/.so still says what it was built for."""
     families = set()
     for location in list(getattr(spec, "submodule_search_locations", None) or []):
         try:
@@ -1225,11 +1185,8 @@ def _hf_xet_extension_cpu_families(spec):
 
 
 def _cpu_family_from_platform_tag(platform_tag):
-    """CPU family a wheel platform tag targets, or None when it cannot be told.
-
-    None is the answer for `any`, macOS `universal2` / `intel` / `fat` and anything unrecognised:
-    a tag we cannot read must never be reported as a mismatch.
-    """
+    """CPU family a wheel platform tag targets, or None when it cannot be told: a tag we cannot
+    read (`any`, macOS universal2) must never be reported as a mismatch."""
     platform_tag = platform_tag.strip().lower()
     if platform_tag in _WINDOWS_PLATFORM_TAG_CPU:
         return _WINDOWS_PLATFORM_TAG_CPU[platform_tag]
@@ -1242,8 +1199,8 @@ def _cpu_family_from_platform_tag(platform_tag):
 
 
 def _hf_xet_distribution_is_installed():
-    """True when importlib.metadata can see an hf_xet distribution, which is the only question
-    huggingface_hub's is_xet_available() actually asks before routing a download to Xet."""
+    """True when importlib.metadata sees an hf_xet distribution, the only question
+    huggingface_hub's is_xet_available() asks before routing a download to Xet."""
     try:
         importlib_version("hf_xet")
     except Exception:
@@ -1267,8 +1224,7 @@ def _hf_xet_wheel_platform_tags():
         parts = tag.rsplit("-", 1)
         if len(parts) != 2 or not parts[1]:
             continue
-        # Compressed tag sets join platforms with a dot:
-        # cp37-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64
+        # compressed tag sets join platforms with a dot
         platform_tags.extend(parts[1].split("."))
     return tuple(platform_tags)
 
@@ -1283,14 +1239,10 @@ def _hf_xet_architecture_mismatch(spec = None):
     for platform_tag in _hf_xet_wheel_platform_tags():
         family = _cpu_family_from_platform_tag(platform_tag)
         if family is None:
-            # One unreadable tag makes the whole verdict unsafe (a universal2 build really does
-            # run here), so stop rather than judge on the remainder.
-            return None
+            return None  # one unreadable tag makes the whole verdict unsafe
         wheel_families.add(family)
     if not wheel_families:
-        # No readable WHEEL metadata (vendored, repackaged, dist-info trimmed). The compiled
-        # extension's own header is the better source anyway, so fall back to it rather than
-        # giving up: huggingface_hub will still route to Xet here, and the import will still fail.
+        # No readable WHEEL metadata. The extension's own header is the better source anyway.
         wheel_families = set(_hf_xet_extension_cpu_families(spec))
     if not wheel_families:
         return None
@@ -1314,31 +1266,16 @@ def _hf_xet_extension_is_missing(spec):
 
 
 def _disable_xet_on_already_imported_huggingface_hub():
-    """Turn Xet off in an ALREADY imported huggingface_hub, and report which bindings were changed.
+    """Turn Xet off in an ALREADY imported huggingface_hub, returning the bindings changed.
 
-    The environment variable alone is not enough. huggingface_hub >= 0.34 evaluates
-    ``HF_HUB_DISABLE_XET`` ONCE, at import time, in constants.py:
-
-        HF_HUB_DISABLE_XET: bool = _is_true(os.environ.get("HF_HUB_DISABLE_XET"))
-
-    so a user whose first line is `import transformers` (or anything else that reaches the Hub)
-    has already frozen it to False by the time unsloth runs, and setting the variable afterwards
-    is read by nobody: every download still routes to Xet and still dies. Readers go through the
-    module attribute (`if xet_file_data is not None and not constants.HF_HUB_DISABLE_XET`), never
-    a local copy, so rebinding the attribute does take effect for the rest of the process.
-
-    Only modules already in sys.modules are touched, and only where the attribute already exists:
-      * huggingface_hub < 0.31 never had the variable, so nothing is found and nothing is created,
-      * 0.31 to 0.33 read os.environ per call, so nothing is found and the variable alone suffices,
-      * 0.34 and later have the frozen constant, which is what gets rebound.
-    Every huggingface_hub module is scanned rather than constants.py alone, so a future
-    `from .constants import HF_HUB_DISABLE_XET` (which would copy the value into a second module)
-    is covered without having to notice it first.
+    The variable alone is not enough: >= 0.34 freezes it into `constants.HF_HUB_DISABLE_XET` at
+    import time. Readers go through the module attribute, never a local copy, so rebinding does
+    take effect. Every module is scanned, not constants.py alone, so a future
+    `from .constants import HF_HUB_DISABLE_XET` is covered; versions without the attribute are
+    left alone rather than given one.
     """
     if "huggingface_hub" not in sys.modules:
-        # Nothing has been frozen yet, so the environment variable is still read in time. Do not
-        # import the Hub just to patch it: that would move the cost of the Hub import into every
-        # unsloth import.
+        # Nothing frozen yet, and importing the Hub just to patch it would cost every user.
         return ()
 
     patched = []
@@ -1350,9 +1287,7 @@ def _disable_xet_on_already_imported_huggingface_hub():
         try:
             current = getattr(module, "HF_HUB_DISABLE_XET")
         except Exception:
-            # Missing on this version, or a lazy __getattr__ that raises. Either way there is no
-            # binding here to fix, and we must not invent one.
-            continue
+            continue  # no binding here to fix, and we must not invent one
         if current is True:
             continue
         try:
@@ -1366,11 +1301,9 @@ def _disable_xet_on_already_imported_huggingface_hub():
 def fix_broken_hf_xet_wheel():
     """Route Hugging Face downloads over plain HTTPS when hf_xet is installed but unimportable."""
     if os.environ.get("HF_HUB_DISABLE_XET", "").strip() != "":
-        # Set explicitly, in either direction. The user's choice outranks ours.
-        return
+        return  # set explicitly, in either direction: the user's choice outranks ours
     if "hf_xet" in sys.modules:
-        # Already imported, so it works. Also makes repeat calls free.
-        return
+        return  # already imported, so it works; also makes repeat calls free
     try:
         if importlib.util.find_spec("huggingface_hub") is None:
             return
@@ -1378,14 +1311,10 @@ def fix_broken_hf_xet_wheel():
     except Exception:
         return
     if spec is None:
-        # The import system cannot see hf_xet. huggingface_hub does not ask the import system:
-        # is_xet_available() -> is_package_available("hf_xet") -> importlib.metadata.version(), so
-        # a leftover hf_xet-*.dist-info with no package directory beside it (a half removed or
-        # half copied install) still reports Xet as available and still routes every download into
-        # `from hf_xet import XetFileInfo`, which raises ModuleNotFoundError. Measured against
-        # huggingface_hub 1.31.0: metadata present, find_spec None, is_xet_available() True.
-        # A genuinely absent hf_xet has no metadata either, and is left alone: huggingface_hub
-        # handles that case correctly on its own.
+        # find_spec cannot see it, but huggingface_hub never asks find_spec: a leftover
+        # hf_xet-*.dist-info with no package beside it still reports Xet available and still dies
+        # in `from hf_xet import XetFileInfo`. A genuinely absent hf_xet has no metadata either
+        # and is left alone, since huggingface_hub handles that case correctly.
         if not _hf_xet_distribution_is_installed():
             return
         suspicion = (
@@ -1398,19 +1327,16 @@ def fix_broken_hf_xet_wheel():
     else:
         return
 
-    # Confirm before acting. A wrong-architecture extension raises ImportError here rather than
-    # loading, and if it does import after all (our reading of the metadata was wrong) Xet is left
-    # switched on. This is the only place hf_xet is imported, and only for an install already
-    # proven suspect, so a healthy environment never pays for it.
+    # Confirm the suspicion by importing. If it imports after all, we misread the metadata and Xet
+    # stays on. Only reached for an already-suspect install, so a healthy one never pays for it.
     try:
         importlib.import_module("hf_xet")
         return
     except Exception as error:
         failure = f"{type(error).__name__}: {error}"
 
-    # The variable is what child processes (download workers, spawned trainers) inherit, so it is
-    # still set first and unconditionally. It is not enough on its own for THIS process, though,
-    # if something already imported the Hub and froze the constant; see the helper.
+    # The variable is what child processes inherit; the helper is what fixes THIS process when
+    # something already imported the Hub and froze the constant.
     os.environ["HF_HUB_DISABLE_XET"] = "1"
     _disable_xet_on_already_imported_huggingface_hub()
     logger.warning(
