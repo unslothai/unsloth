@@ -114,4 +114,74 @@ test("unsupported headroom ratios snap to an exposed choice", () => {
 test("the chat adapter sends compaction fields through the shared helper", () => {
   const adapter = readSrc("features/chat/api/chat-adapter.ts");
   assert.match(adapter, /ggufCompactionRequestFields\(/);
+  // Through isServedByLlamaCpp, not a catalog row: /api/models/list can replace the row a
+  // load minted, and the panel that shows these settings asks the same owner.
+  assert.match(adapter, /isGguf: isGgufForCompaction/);
+  assert.match(adapter, /loadedIsGguf: runtime\.loadedIsGguf/);
+  assert.match(adapter, /isServedByLlamaCpp\(/);
+  // One request object for both streams, so a media turn cannot lose these fields.
+  assert.match(adapter, /image_base64: imageBase64/);
+});
+
+test("a queued run keeps its own model's llama.cpp verdict after the picker moves on", async () => {
+  const { registerBundlerResolver, installLocalStorageFake } = await import(
+    "./helpers/kit.ts"
+  );
+  registerBundlerResolver();
+  installLocalStorageFake();
+  const { snapshotQueuedChatRunSettings } = await import(
+    "../src/features/chat/utils/queued-chat-run-settings.ts"
+  );
+  const { isServedByLlamaCpp, loadedContextFields } = await import(
+    "../src/features/model-picker/model-config/per-model-config.ts"
+  );
+
+  // An Ollama GGUF: the backend keeps the opaque inventory ref public, so the checkpoint
+  // carries no .gguf suffix, and the load reports no quant. loadedIsGguf is the only
+  // evidence llama.cpp serves it.
+  const resident = {
+    params: { checkpoint: "ollama-manifest:%2Fhome%2Fu%2F.ollama%2Fmanifests%2Fq" },
+    activeGgufVariant: null,
+    activeNativePathToken: null,
+    loadedIsGguf: true,
+    loadedContextLength: 8192,
+    autoCompactEnabled: true,
+    contextPolicy: "rolling" as const,
+    compactionHeadroomRatio: 0.1,
+  };
+  const queued = snapshotQueuedChatRunSettings(
+    resident as unknown as Parameters<typeof snapshotQueuedChatRunSettings>[0],
+  );
+
+  // Selecting an external provider clears the local residency fields without unloading
+  // the model that the queued turn is still going to be served by.
+  const live = {
+    ...resident,
+    params: { checkpoint: "external::openai::gpt-5" },
+    activeGgufVariant: null,
+    activeNativePathToken: null,
+    ...loadedContextFields(null),
+  };
+  const runtime = { ...live, ...queued };
+
+  const isGguf = isServedByLlamaCpp({
+    loadedIsGguf: runtime.loadedIsGguf,
+    activeGgufVariant: runtime.activeGgufVariant,
+    activeNativePathToken: runtime.activeNativePathToken,
+    checkpoint: runtime.params.checkpoint,
+  });
+  assert.equal(isGguf, true);
+  assert.deepEqual(
+    ggufCompactionRequestFields({
+      isGguf,
+      autoCompactEnabled: runtime.autoCompactEnabled,
+      contextPolicy: runtime.contextPolicy,
+      compactionHeadroomRatio: runtime.compactionHeadroomRatio,
+    }),
+    {
+      context_overflow: "truncate_oldest",
+      context_policy: "rolling",
+      compaction_headroom_ratio: 0.1,
+    },
+  );
 });

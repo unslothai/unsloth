@@ -44,6 +44,7 @@ from core.inference.llama_admission import (
 from routes.inference import (
     _aclose_stream_resources,
     _build_chat_request,
+    _build_external_messages,
     _build_openai_passthrough_body,
     _build_passthrough_payload,
     _clamp_finish_reason,
@@ -528,10 +529,10 @@ class TestChatMessageToolRoles:
             ChatMessage(role = "user", content = "Hi", tool_call_id = "call_1")
         assert "tool_call_id" in str(exc_info.value)
 
-    def test_name_on_user_rejected(self):
-        with pytest.raises(ValidationError) as exc_info:
-            ChatMessage(role = "user", content = "Hi", name = "get_weather")
-        assert "name" in str(exc_info.value)
+    @pytest.mark.parametrize("role", ["user", "assistant", "system", "developer"])
+    def test_participant_name_accepted_on_every_role(self, role):
+        msg = ChatMessage(role = role, content = "Hi", name = "alice")
+        assert msg.name == "alice"
 
 
 # =====================================================================
@@ -1528,6 +1529,40 @@ class TestChatCompletionRequestToolFields:
         assert calls == []
         assert monitor.active_count() == 0
 
+    def test_audio_input_carries_participant_names(self, monkeypatch):
+        import numpy as np
+        import routes.inference as inference_route
+
+        calls = []
+        omni = _omni_backend(calls)
+        monkeypatch.setattr(inference_route, "api_monitor", ApiMonitor(max_entries = 3))
+        monkeypatch.setattr(
+            inference_route,
+            "_detect_safetensors_features",
+            lambda *a, **k: {"supports_tools": False},
+        )
+        monkeypatch.setattr(
+            inference_route,
+            "_decode_audio_base64",
+            lambda *a, **k: np.zeros(16000, dtype = "float32"),
+        )
+        client = self._v1_client(monkeypatch, _LlamaOff(), omni)
+
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [
+                    {"role": "system", "name": "supervisor", "content": "be brief"},
+                    {"role": "user", "name": "alice", "content": "what is said?"},
+                ],
+                "audio_base64": base64.b64encode(b"RIFF....WAVEfmt ").decode(),
+            },
+        )
+
+        assert resp.status_code == 200, resp.text
+        assert calls[0]["system_prompt"].endswith("be brief")
+        assert [(m["role"], m.get("name")) for m in calls[0]["messages"]] == [("user", "alice")]
+
     def test_a_derived_legacy_image_field_does_not_block_a_voice_follow_up(self, monkeypatch):
         """Studio fills image_base64 from anywhere in the thread, so it is not a
         per-turn signal. When an earlier turn carries the image the parts decide,
@@ -2025,6 +2060,416 @@ class TestChatCompletionRequestToolFields:
         assert entry["reply"] == "plain response"
         assert monitor.active_count() == 0
 
+    def _studio_tool_history_messages(self):
+        return [
+            {"role": "user", "content": "what did we say about seeds?"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "search_conversation",
+                            "arguments": '{"query": "seeds"}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "name": "search_conversation",
+                "content": "we said 3407",
+            },
+            {"role": "user", "content": "and now?"},
+        ]
+
+    def test_studio_tool_history_still_answers_without_a_tool_template(self, monkeypatch):
+        """Switching a thread that already ran a Studio tool to a toolless GGUF used to 400
+        every later turn: the loop's own replayed calls were read as a client tool contract.
+        They are folded into user text instead, exactly as /v1/messages folds them."""
+        import routes.inference as inference_route
+
+        captured = {}
+
+        class _GGUFBackend:
+            is_loaded = True
+            model_identifier = "test-gguf"
+            supports_tools = False
+            is_vision = False
+            _is_audio = False
+            context_length = 4096
+
+            def generate_chat_completion(self, **kwargs):
+                captured["messages"] = kwargs["messages"]
+                yield "plain response"
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inference_route, "api_monitor", monitor)
+        client = self._v1_client(monkeypatch, _GGUFBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": self._studio_tool_history_messages(),
+                "studio_tool_history": True,
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["choices"][0]["message"]["content"] == "plain response"
+        assert not any(m.get("role") == "tool" for m in captured["messages"])
+        assert any(
+            m.get("role") == "user" and "tool_response" in (m.get("content") or "")
+            for m in captured["messages"]
+        )
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "completed"
+        assert monitor.active_count() == 0
+
+    def test_studio_tool_history_with_a_client_catalog_is_still_rejected(self, monkeypatch):
+        """The catalog is a live client contract whatever produced the history, and a
+        template with no tool markup would drop it and answer in prose instead."""
+        import routes.inference as inference_route
+
+        class _GGUFBackend:
+            is_loaded = True
+            model_identifier = "test-gguf"
+            supports_tools = False
+            is_vision = False
+            _is_audio = False
+            context_length = 4096
+
+            def generate_chat_completion(self, **_kwargs):
+                raise AssertionError("a client tool catalog must not fall through")
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inference_route, "api_monitor", monitor)
+        client = self._v1_client(monkeypatch, _GGUFBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": self._studio_tool_history_messages(),
+                "studio_tool_history": True,
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {"name": "lookup", "parameters": {"type": "object"}},
+                    }
+                ],
+            },
+        )
+
+        self._assert_unsupported_param(resp, "tools")
+        assert "does not advertise tools" in resp.json()["error"]["message"]
+        assert monitor.active_count() == 0
+
+    def test_studio_tool_history_keeps_the_passthrough_on_a_tool_capable_gguf(self, monkeypatch):
+        """A backend that can render tools is untouched: the history stays role="tool"."""
+        import routes.inference as inference_route
+
+        captured = {}
+
+        class _GGUFBackend:
+            is_loaded = True
+            model_identifier = "test-gguf"
+            supports_tools = True
+            is_vision = False
+            _is_audio = False
+            context_length = 4096
+
+            def generate_chat_completion(self, **kwargs):
+                captured["messages"] = kwargs["messages"]
+                yield "plain response"
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inference_route, "api_monitor", monitor)
+        client = self._v1_client(monkeypatch, _GGUFBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": self._studio_tool_history_messages(),
+                "studio_tool_history": True,
+            },
+        )
+
+        assert resp.status_code == 200
+        assert any(m.get("role") == "tool" for m in captured["messages"])
+        assert monitor.active_count() == 0
+
+    def test_studio_tool_history_streams_without_a_tool_template(self, monkeypatch):
+        """The composer sends stream=true, and the fold rewrites payload.messages before the
+        generator runs, so the streamed turn needs its own guard: the non-streaming pass
+        cannot show that the folded list is what the stream generates from."""
+        import routes.inference as inference_route
+
+        captured = {}
+
+        class _GGUFBackend:
+            is_loaded = True
+            model_identifier = "test-gguf"
+            supports_tools = False
+            is_vision = False
+            _is_audio = False
+            context_length = 4096
+
+            def generate_chat_completion(self, **kwargs):
+                captured["messages"] = kwargs["messages"]
+                yield "plain response"
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inference_route, "api_monitor", monitor)
+        client = self._v1_client(monkeypatch, _GGUFBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": self._studio_tool_history_messages(),
+                "studio_tool_history": True,
+                "stream": True,
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/event-stream")
+        streamed = "".join(
+            (choice.get("delta") or {}).get("content") or ""
+            for line in resp.text.splitlines()
+            if line.startswith("data: ") and line.removeprefix("data: ") != "[DONE]"
+            for choice in (json.loads(line.removeprefix("data: ")).get("choices") or [])
+        )
+        assert streamed == "plain response"
+        assert not any(m.get("role") == "tool" for m in captured["messages"])
+
+    def test_studio_tool_history_answers_with_studio_tools_left_on(self, monkeypatch):
+        """Switching to a toolless GGUF does not switch Studio's tool toggle off, so the
+        thread's next turn still carries enable_tools. A backend that cannot run the loop
+        must answer in prose rather than reject the turn the toggle cannot undo."""
+        import routes.inference as inference_route
+
+        captured = {}
+
+        class _GGUFBackend:
+            is_loaded = True
+            model_identifier = "test-gguf"
+            supports_tools = False
+            is_vision = False
+            _is_audio = False
+            context_length = 4096
+
+            def generate_chat_completion(self, **kwargs):
+                captured["messages"] = kwargs["messages"]
+                yield "plain response"
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inference_route, "api_monitor", monitor)
+        client = self._v1_client(monkeypatch, _GGUFBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": self._studio_tool_history_messages(),
+                "studio_tool_history": True,
+                "enable_tools": True,
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["choices"][0]["message"]["content"] == "plain response"
+        assert not any(m.get("role") == "tool" for m in captured["messages"])
+        assert monitor.active_count() == 0
+
+    def test_studio_tool_history_under_guided_decoding_has_no_adjacent_user_turns(
+        self, monkeypatch
+    ):
+        """A response_format on this same thread routes to the guided-decoding passthrough,
+        which is the one path that never coalesces. Folding a tool result there leaves it
+        next to the turn that follows it, and Gemma checks alternation by index parity, so
+        llama-server answered 'Unable to generate parser for this template' for the whole
+        request until the fold merged them itself."""
+        import routes.inference as inference_route
+
+        captured = {}
+
+        class _GGUFBackend:
+            is_loaded = True
+            model_identifier = "test-gguf"
+            supports_tools = False
+            is_vision = False
+            _is_audio = False
+            context_length = 4096
+            base_url = "http://llama.guided-fold.test"
+            _request_reasoning_kwargs = lambda *_args, **_kwargs: None
+
+            def generate_chat_completion(self, **_kwargs):
+                raise AssertionError("a response_format request must use the passthrough")
+
+        async def fake_passthrough(llama_backend, payload, model_name, **kwargs):
+            captured["body"] = inference_route._build_openai_passthrough_body(
+                payload,
+                backend_ctx = llama_backend.context_length,
+                llama_backend = llama_backend,
+            )
+            inference_route.api_monitor.finish(kwargs.get("monitor_id"))
+            return inference_route.JSONResponse({"ok": True, "model": model_name})
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inference_route, "api_monitor", monitor)
+        monkeypatch.setattr(inference_route, "_openai_passthrough_non_streaming", fake_passthrough)
+        client = self._v1_client(monkeypatch, _GGUFBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": self._studio_tool_history_messages(),
+                "studio_tool_history": True,
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "answer",
+                        "schema": {"type": "object", "properties": {}},
+                    },
+                },
+            },
+        )
+
+        assert resp.status_code == 200
+        roles = [m.get("role") for m in captured["body"]["messages"]]
+        assert "tool" not in roles
+        assert not any(a == "user" and b == "user" for a, b in zip(roles, roles[1:])), roles
+        assert monitor.active_count() == 0
+
+    @pytest.mark.parametrize(
+        "sentinel",
+        [
+            pytest.param({"role": "assistant", "content": None}, id = "explicit_none"),
+            pytest.param({"role": "assistant", "content": ""}, id = "empty_string"),
+            pytest.param({"role": "assistant"}, id = "no_content_key"),
+            pytest.param({"role": "assistant", "content": []}, id = "empty_parts"),
+        ],
+    )
+    def test_studio_tool_history_under_guided_decoding_survives_a_stopped_turn(
+        self, monkeypatch, sentinel
+    ):
+        """Stop leaves an empty assistant turn between the tool result and the next question. The
+        coalesce cannot merge across it and the passthrough drops it downstream without
+        coalescing, so the two user turns land adjacent again -- the failure above, one Stop
+        later. Sanitizing before the fold, not after it, is what holds it."""
+        import routes.inference as inference_route
+
+        captured = {}
+
+        class _GGUFBackend:
+            is_loaded = True
+            model_identifier = "test-gguf"
+            supports_tools = False
+            is_vision = False
+            _is_audio = False
+            context_length = 4096
+            base_url = "http://llama.stopped-fold.test"
+            _request_reasoning_kwargs = lambda *_args, **_kwargs: None
+
+            def generate_chat_completion(self, **_kwargs):
+                raise AssertionError("a response_format request must use the passthrough")
+
+        async def fake_passthrough(llama_backend, payload, model_name, **kwargs):
+            captured["body"] = inference_route._build_openai_passthrough_body(
+                payload,
+                backend_ctx = llama_backend.context_length,
+                llama_backend = llama_backend,
+            )
+            inference_route.api_monitor.finish(kwargs.get("monitor_id"))
+            return inference_route.JSONResponse({"ok": True, "model": model_name})
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inference_route, "api_monitor", monitor)
+        monkeypatch.setattr(inference_route, "_openai_passthrough_non_streaming", fake_passthrough)
+        messages = self._studio_tool_history_messages()
+        messages.insert(-1, sentinel)
+        client = self._v1_client(monkeypatch, _GGUFBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": messages,
+                "studio_tool_history": True,
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "answer",
+                        "schema": {"type": "object", "properties": {}},
+                    },
+                },
+            },
+        )
+
+        assert resp.status_code == 200
+        roles = [m.get("role") for m in captured["body"]["messages"]]
+        assert "tool" not in roles
+        assert not any(a == "user" and b == "user" for a, b in zip(roles, roles[1:])), roles
+        assert monitor.active_count() == 0
+
+    def test_studio_fold_drops_a_provider_synthetic_card_rather_than_folding_it(self):
+        """Downstream a Gemini tool card is dropped by matching its role="tool" reply to the
+        synthetic call, and folding destroys that handle, so a thread switched from Gemini to a
+        local GGUF would carry code_execution on as user prose. Strip before folding."""
+        from routes.inference import _folded_studio_tool_messages
+
+        folded = _folded_studio_tool_messages(
+            [
+                ChatMessage.model_validate(message)
+                for message in [
+                    *self._studio_tool_history_messages()[:3],
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call_2",
+                                "type": "function",
+                                "function": {
+                                    "name": "code_execution",
+                                    "arguments": '{"_server_tool": true, "code": "print(1)"}',
+                                },
+                            }
+                        ],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": "call_2",
+                        "name": "code_execution",
+                        "content": "1",
+                    },
+                    {"role": "user", "content": "and now?"},
+                ]
+            ]
+        )
+
+        rendered = json.dumps([m.model_dump(exclude_none = True) for m in folded])
+        assert "code_execution" not in rendered, rendered
+        # The Studio result is the one that must survive: it is what recall depends on.
+        assert "search_conversation" in rendered
+        roles = [m.role for m in folded]
+        assert not any(a == "user" and b == "user" for a, b in zip(roles, roles[1:])), roles
+
+    def test_studio_fold_keeps_an_audio_only_follow_up_validatable(self):
+        """The audio lift leaves ``content = []`` for ``_inject_audio_part`` to refill, and
+        ChatMessage rejects that placeholder, so speaking the next turn of a folded thread raised
+        out of the route instead of answering."""
+        from routes.inference import _folded_studio_tool_messages
+
+        messages = [
+            ChatMessage.model_validate(message)
+            for message in [
+                *self._studio_tool_history_messages()[:3],
+                {"role": "assistant", "content": "we said 3407"},
+                {"role": "user", "content": [{"type": "text", "text": "placeholder"}]},
+            ]
+        ]
+        # Exactly what the audio lift leaves behind on the latest user turn.
+        messages[-1].content = []
+
+        folded = _folded_studio_tool_messages(messages)
+        assert folded[-1].role == "user"
+        assert folded[-1].content == ""
+
     def test_tool_call_history_rejected_when_gguf_template_has_no_tool_support(self, monkeypatch):
         import routes.inference as inference_route
 
@@ -2281,9 +2726,20 @@ class TestBuildPassthroughPayloadToolChoice:
         body = _build_passthrough_payload(**self._args(), tool_choice = "none")
         assert body["tool_choice"] == "none"
 
-    def test_override_tool_choice_named_function(self):
-        tc = {"type": "function", "function": {"name": "f"}}
+    def test_named_function_is_sent_as_its_one_tool_under_required(self):
+        args = self._args()
+        args["openai_tools"].append(
+            {"type": "function", "function": {"name": "g", "parameters": {"type": "object"}}}
+        )
+        tc = {"type": "function", "function": {"name": "g"}}
+        body = _build_passthrough_payload(**args, tool_choice = tc)
+        assert [t["function"]["name"] for t in body["tools"]] == ["g"]
+        assert body["tool_choice"] == "required"
+
+    def test_named_function_missing_from_tools_is_forwarded_unchanged(self):
+        tc = {"type": "function", "function": {"name": "missing"}}
         body = _build_passthrough_payload(**self._args(), tool_choice = tc)
+        assert [t["function"]["name"] for t in body["tools"]] == ["f"]
         assert body["tool_choice"] == tc
 
     def test_llama_incompatible_tool_constraints_are_omitted(self):
@@ -3648,6 +4104,39 @@ class TestDropEmptyAssistantSentinels:
             {"type": "text", "text": "Here is the answer."},
         ]
         assert out[1]["reasoning_content"] == "first trace\n\nsecond trace\n\nfinal trace"
+
+    def test_a_folded_fragment_keeps_only_a_name_both_halves_agree_on(self):
+        def _synthetic_call(call_id: str) -> dict:
+            return {
+                "id": call_id,
+                "type": "function",
+                "function": {"name": "web_search", "arguments": '{"_server_tool": true}'},
+            }
+
+        def _fold(first_name, second_name):
+            messages = [
+                {"role": "user", "content": "Find it."},
+                {
+                    "role": "assistant",
+                    **({"name": first_name} if first_name else {}),
+                    "content": "Searching first.",
+                    "tool_calls": [_synthetic_call("call-1")],
+                },
+                {"role": "tool", "tool_call_id": "call-1", "content": "first result"},
+                {
+                    "role": "assistant",
+                    **({"name": second_name} if second_name else {}),
+                    "content": "Here is the answer.",
+                },
+            ]
+            out = _strip_provider_synthetic_tool_history(messages)
+            assert [m["role"] for m in out] == ["user", "assistant"]
+            return out[1]
+
+        assert _fold("researcher", "researcher").get("name") == "researcher"
+        assert _fold("researcher", "auditor").get("name") is None
+        assert _fold("researcher", None).get("name") is None
+        assert _fold(None, "auditor").get("name") is None
 
     def test_synthetic_reasoning_fragment_before_user_stays_valid(self):
         messages = [
@@ -5046,24 +5535,47 @@ class TestGgufVisionToolRouting:
         [entry] = result.monitor.snapshot()
         assert entry["reply"] == "visible"
 
-    def test_reasoning_capable_gguf_stream_sanitizes_think_tags_when_disabled(self, monkeypatch):
+    def test_reasoning_capable_gguf_stream_keeps_think_tags_visible_when_disabled(
+        self, monkeypatch
+    ):
+        answer = "Use <think>hi</think> in your prompt."
+
         def _generate(**_kwargs):
-            yield "<think>leaked</think>visible"
+            yield answer
             yield _stop_metadata()
 
         result = self._run_gguf_case(
             monkeypatch,
             generate = _generate,
-            payload_kwargs = {"stream": True, "enable_thinking": False},
+            # The shape Studio's own composer sends for an enable_thinking template
+            # once the Thinking toggle is off.
+            payload_kwargs = {"stream": True, "thinking": {"type": "disabled"}},
             backend_kwargs = {"reasoning_always_on": False},
         )
         deltas = [p["choices"][0].get("delta", {}) for p in result.payloads if p.get("choices")]
 
-        assert "".join(d.get("reasoning_content", "") for d in deltas) == "leaked"
-        assert "".join(d.get("content", "") for d in deltas) == "visible"
-        assert all("<think>" not in d.get("content", "") for d in deltas)
+        assert "".join(d.get("reasoning_content", "") for d in deltas) == ""
+        assert "".join(d.get("content", "") for d in deltas) == answer
         [entry] = result.monitor.snapshot()
-        assert entry["reply"] == "visible"
+        assert entry["reply"] == answer
+
+    def test_reasoning_capable_gguf_keeps_think_tags_visible_when_disabled(self, monkeypatch):
+        answer = "Use <think>hi</think> in your prompt."
+
+        def _generate(**_kwargs):
+            yield answer
+            yield _stop_metadata()
+
+        result = self._run_gguf_case(
+            monkeypatch,
+            generate = _generate,
+            payload_kwargs = {"enable_thinking": False},
+            backend_kwargs = {"reasoning_always_on": False},
+        )
+        message = result.body["choices"][0]["message"]
+
+        assert message["content"] == answer
+        assert message.get("reasoning_content") is None
 
     def test_gguf_tool_stream_splits_reasoning_and_strips_gemma_tool_marker(self, monkeypatch):
         def _tools(**_kwargs):
@@ -9588,6 +10100,28 @@ class TestCoalesceConsecutiveUserTurns:
         _coalesce_consecutive_user_turns(msgs)
         assert msgs[0]["content"] == "hi"
 
+    def test_shared_participant_name_survives_merge(self):
+        msgs = [
+            {"role": "user", "name": "alice", "content": "hi"},
+            {"role": "user", "name": "alice", "content": "again"},
+        ]
+        assert _coalesce_consecutive_user_turns(msgs) == [
+            {"role": "user", "name": "alice", "content": "hi\n\nagain"},
+        ]
+
+    @pytest.mark.parametrize(
+        "first, second",
+        [({"name": "alice"}, {"name": "bob"}), ({"name": "alice"}, {}), ({}, {"name": "bob"})],
+    )
+    def test_differing_participant_names_are_dropped_on_merge(self, first, second):
+        msgs = [
+            {"role": "user", **first, "content": "hi"},
+            {"role": "user", **second, "content": "again"},
+        ]
+        assert _coalesce_consecutive_user_turns(msgs) == [
+            {"role": "user", "content": "hi\n\nagain"},
+        ]
+
 
 class TestGgufChatHistoryAlternation:
     def test_empty_assistant_turn_dropped_then_users_coalesced(self):
@@ -9660,6 +10194,97 @@ class TestGgufChatHistoryAlternation:
         roles = [m["role"] for m in rebuilt]
         assert roles == ["system", "user"]
         assert all(roles[i] != roles[i + 1] for i in range(len(roles) - 1)), roles
+
+    def test_participant_names_reach_llama_server(self):
+        req = ChatCompletionRequest.model_validate(
+            {
+                "model": "default",
+                "messages": [
+                    {"role": "system", "name": "supervisor", "content": "be brief"},
+                    {"role": "user", "name": "alice", "content": "hi"},
+                    {"role": "assistant", "name": "researcher", "content": "hello"},
+                    {"role": "user", "name": "alice", "content": "again"},
+                ],
+            }
+        )
+        out, _ = _openai_messages_for_gguf_chat(req, is_vision = False)
+        assert [m.get("name") for m in out] == ["supervisor", "alice", "researcher", "alice"]
+
+    def test_system_name_survives_the_route_system_rebuild(self):
+        req = ChatCompletionRequest.model_validate(
+            {
+                "model": "default",
+                "messages": [
+                    {"role": "system", "name": "supervisor", "content": "be brief"},
+                    {"role": "user", "name": "alice", "content": "hi"},
+                ],
+            }
+        )
+        out, _ = _openai_messages_for_gguf_chat(req, is_vision = False)
+        system_prompt, _, _ = _extract_content_parts(req.messages)
+        rebuilt = _set_or_prepend_system_message(out, f"Today is Monday.\n\n{system_prompt}")
+        assert [(m["role"], m.get("name")) for m in rebuilt] == [
+            ("system", "supervisor"),
+            ("user", "alice"),
+        ]
+
+    @pytest.mark.parametrize(
+        "first, second",
+        [({"name": "supervisor"}, {"name": "auditor"}), ({"name": "supervisor"}, {})],
+    )
+    def test_differing_system_names_are_dropped_on_rebuild(self, first, second):
+        messages = [
+            {"role": "system", **first, "content": "be brief"},
+            {"role": "developer", **second, "content": "cite sources"},
+            {"role": "user", "content": "hi"},
+        ]
+        rebuilt = _set_or_prepend_system_message(messages, "be brief\n\ncite sources")
+        assert rebuilt[0] == {"role": "system", "content": "be brief\n\ncite sources"}
+
+    def test_local_backends_receive_participant_names(self):
+        req = ChatCompletionRequest.model_validate(
+            {
+                "model": "default",
+                "messages": [
+                    {"role": "system", "name": "supervisor", "content": "be brief"},
+                    {"role": "user", "name": "alice", "content": "hi"},
+                    {"role": "assistant", "name": "researcher", "content": "hello"},
+                    {"role": "user", "content": "again"},
+                ],
+            }
+        )
+        system_prompt, chat_messages, _ = _extract_content_parts(req.messages)
+        assert system_prompt == "be brief"
+        assert chat_messages == [
+            {"role": "user", "name": "alice", "content": "hi"},
+            {"role": "assistant", "name": "researcher", "content": "hello"},
+            {"role": "user", "content": "again"},
+        ]
+
+
+class TestExternalProviderParticipantNames:
+    @pytest.mark.parametrize("provider_type", ["openai", "anthropic", "gemini", "mistral"])
+    def test_only_tool_results_keep_their_name(self, provider_type):
+        messages = [
+            ChatMessage(role = "system", name = "supervisor", content = "be brief"),
+            ChatMessage(role = "user", name = "alice", content = "weather?"),
+            ChatMessage(
+                role = "assistant",
+                name = "researcher",
+                tool_calls = [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "get_weather", "arguments": "{}"},
+                    }
+                ],
+            ),
+            ChatMessage(role = "tool", tool_call_id = "call_1", name = "get_weather", content = "sunny"),
+            ChatMessage(role = "assistant", name = "researcher", content = "It is sunny."),
+        ]
+        out = _build_external_messages(messages, supports_vision = True, provider_type = provider_type)
+        assert [m["role"] for m in out] == ["system", "user", "assistant", "tool", "assistant"]
+        assert [m.get("name") for m in out] == [None, None, None, "get_weather", None]
 
 
 # ── Per-choice seeds on the GGUF drain ──────────────────────────────

@@ -318,9 +318,8 @@ export function ProjectSourceDropzone({
           rows can carry their own remove buttons. */}
       <div
         ref={nativeDropRef}
-        // preventDefault runs even while disabled: nothing else on the page
-        // cancels a file drop, so the browser would navigate to the file and
-        // kill the uploads in flight.
+        // preventDefault runs even while disabled: nothing else on the page cancels a file drop, so
+        // the browser would navigate to the file and kill the uploads in flight.
         onDragEnter={(e) => {
           e.preventDefault();
           if (disabled) return;

@@ -82,10 +82,9 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
     void refresh({ quiet: true });
   }, [projectId, refresh]);
 
-  // External mutators (sidebar/thread saves, deletes elsewhere) announce when
-  // they are done; refresh the mounted list so a source saved from a chat shows
-  // up here without a remount. The list only polls while a row it already knows
-  // is indexing, so nothing else would ever fetch it.
+  // External mutators (sidebar/thread saves, deletes elsewhere) announce when they are done;
+  // refresh the mounted list so a source saved from a chat shows up here without a remount. The
+  // list only polls while a row it already knows is indexing, so nothing else would ever fetch it.
   useEffect(
     () =>
       subscribeProjectSourcesUpdated(projectId, () => {

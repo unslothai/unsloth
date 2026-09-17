@@ -51,6 +51,7 @@ import {
 } from "react";
 import {
   downloadManager,
+  pendingDrafterPresentation,
   useDownloadManagerStore,
   useHttpPartialsResumable,
   useRepoDownload,
@@ -754,6 +755,7 @@ export function GgufDownloadCard({
   const selectedLiveState = selectedQuant
     ? liveVariantStates.get(normalizeGgufVariantIdentity(selectedQuant))
     : undefined;
+  const selectedPresentation = pendingDrafterPresentation(selected);
   const selectedLiveActive = activeDownloadState(selectedLiveState?.state);
   const downloadingThisVariant =
     progress !== null && ggufVariantsMatch(progress.variant, selectedQuant);
@@ -803,6 +805,7 @@ export function GgufDownloadCard({
     job,
     variant: selectedQuant,
     expectedBytes: selected?.download_size_bytes ?? selected?.size_bytes ?? 0,
+    presentation: selectedPresentation,
     downloading: downloadingThisVariant,
     cancelling,
     disabled: cancelling
@@ -853,13 +856,12 @@ export function GgufDownloadCard({
   const updateTargetLabel = updateTargetVariant
     ? ggufVariantDisplayLabel(updateTargetVariant)
     : updateTarget;
-  // Confirm → close the dialog and run the re-download as a MANAGED download, so
-  // it surfaces in the "Downloading N items" panel with correct manifest-based
-  // progress and a working Cancel — the same UX as any other download — instead
-  // of a bespoke modal/toast. The worker re-resolves `main` and pulls only the
-  // changed blobs, so the cached version stays intact (and runnable) until the
-  // new revision lands. Completion refreshes the variant list, whose metadata
-  // carries the "Update available" cue.
+  // Confirm → close the dialog and run the re-download as a MANAGED download, so it surfaces in the
+  // "Downloading N items" panel with correct manifest-based progress and a working Cancel — the
+  // same UX as any other download — instead of a bespoke modal/toast. The worker re-resolves `main`
+  // and pulls only the changed blobs, so the cached version stays intact (and runnable) until the
+  // new revision lands. Completion refreshes the variant list, whose metadata carries the "Update
+  // available" cue.
   const handleConfirmUpdate = useCallback(() => {
     if (!updateTarget) return;
     const variant = updateTarget;
@@ -867,12 +869,14 @@ export function GgufDownloadCard({
       updateTargetVariant?.download_size_bytes ??
       updateTargetVariant?.size_bytes ??
       0;
+    const presentation = pendingDrafterPresentation(updateTargetVariant);
     setUpdateTarget(null);
     void downloadManager.requestStart({
       kind: "model",
       repoId,
       variant,
       expectedBytes,
+      ...(presentation ? { presentation } : {}),
     });
   }, [updateTarget, updateTargetVariant, repoId]);
   const variantListUnavailable = !sortedVariants || sortedVariants.length === 0;

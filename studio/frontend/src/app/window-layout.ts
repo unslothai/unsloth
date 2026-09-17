@@ -16,7 +16,20 @@ export type WindowSizeBounds = {
   maximum?: LogicalWindowSize;
 };
 
+/**
+ * Resize floor: a companion width, as other chat apps allow, and no narrower
+ * than the desktop layout it keeps at every size can fit.
+ */
 export const MINIMUM_APP_WINDOW_SIZE: LogicalWindowSize = {
+  width: 460,
+  height: 480,
+};
+
+/**
+ * The size a first launch aims for. Separate from the resize floor: shrinking
+ * the floor must not shrink the window we open.
+ */
+export const NOMINAL_APP_WINDOW_SIZE: LogicalWindowSize = {
   width: 900,
   height: 600,
 };
@@ -42,18 +55,30 @@ function relaxMinimum(preferred: number, maximum: number): number {
   return Math.max(1, Math.floor(maximum * RELAXED_MINIMUM_RATIO));
 }
 
-/** Bounds a frameless window to the monitor work area. */
+/**
+ * Bounds a frameless window to the monitor work area.
+ *
+ * `logicalPerCssPx` keeps the floor a CSS-pixel floor. Windows text scaling
+ * zooms the webview above the display scale, so a window sized in logical
+ * pixels lays out in fewer CSS pixels: at 150% a 460px floor is a 307px
+ * viewport, narrower than the layout can hold.
+ */
 export function calculateWindowSizeBounds(
   workAreaSize: LogicalWindowSize,
+  logicalPerCssPx = 1,
 ): WindowSizeBounds {
   const maximum = {
     width: Math.max(1, Math.floor(workAreaSize.width)),
     height: Math.max(1, Math.floor(workAreaSize.height)),
   };
+  const floor = {
+    width: Math.round(MINIMUM_APP_WINDOW_SIZE.width * logicalPerCssPx),
+    height: Math.round(MINIMUM_APP_WINDOW_SIZE.height * logicalPerCssPx),
+  };
   return {
     minimum: {
-      width: relaxMinimum(MINIMUM_APP_WINDOW_SIZE.width, maximum.width),
-      height: relaxMinimum(MINIMUM_APP_WINDOW_SIZE.height, maximum.height),
+      width: relaxMinimum(floor.width, maximum.width),
+      height: relaxMinimum(floor.height, maximum.height),
     },
     maximum,
   };
@@ -74,20 +99,34 @@ export function calculateFirstAppWindowSize(
   { minimum, maximum }: WindowSizeBounds,
   cssSafeLogicalWidth?: number,
 ): LogicalWindowSize {
-  if (!maximum) return minimum;
+  if (!maximum) return NOMINAL_APP_WINDOW_SIZE;
 
+  // A first window floors at the nominal size, not the resize floor: opening
+  // at a width the user may shrink to would be a surprise. Never below the
+  // floor either: a work area too small for the nominal size relaxes it, and
+  // the constraints would then grow the window off the centre it was placed on.
+  const nominal = {
+    width: Math.max(
+      minimum.width,
+      relaxMinimum(NOMINAL_APP_WINDOW_SIZE.width, maximum.width),
+    ),
+    height: Math.max(
+      minimum.height,
+      relaxMinimum(NOMINAL_APP_WINDOW_SIZE.height, maximum.height),
+    ),
+  };
   const width = Math.max(
-    minimum.width,
+    nominal.width,
     Math.round(maximum.width * FIRST_WINDOW_WIDTH_RATIO),
     Math.min(cssSafeLogicalWidth ?? 0, maximum.width),
   );
   // Preserve requested height when the work area is short.
   const heightCap = Math.max(
-    MINIMUM_APP_WINDOW_SIZE.height,
+    NOMINAL_APP_WINDOW_SIZE.height,
     Math.round(maximum.height * FIRST_WINDOW_HEIGHT_RATIO),
   );
   const height = Math.max(
-    minimum.height,
+    nominal.height,
     Math.min(Math.round(width / FIRST_WINDOW_ASPECT_RATIO), heightCap),
   );
   return fitWindowSize({ width, height }, maximum);

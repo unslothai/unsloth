@@ -11,11 +11,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { isLocalModelPath } from "../src/features/chat/utils/model-download-staging.ts";
-import { isOllamaLinkPath } from "../src/features/hub/lib/model-identity.ts";
+import { isOllamaModelId } from "../src/features/hub/lib/model-identity.ts";
 
 // The predicate as the load path composes it; nativePathToken is the file-lease case.
 function mayReachHub(modelId: string, nativePathToken: string | null): boolean {
-  const servedFromDisk = isLocalModelPath(modelId) || isOllamaLinkPath(modelId);
+  const servedFromDisk = isLocalModelPath(modelId) || isOllamaModelId(modelId);
   return !servedFromDisk && nativePathToken == null;
 }
 

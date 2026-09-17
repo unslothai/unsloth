@@ -20,6 +20,15 @@ from types import SimpleNamespace
 
 import pytest
 
+
+def _shared_setup_1(monkeypatch):
+    events = []
+    monkeypatch.setattr(
+        cache_cleanup, "clear_unsloth_compiled_cache", lambda *a, **k: events.append("clear")
+    )
+    return events
+
+
 _BACKEND = Path(__file__).resolve().parents[1]
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
@@ -656,11 +665,28 @@ def test_the_legacy_file_is_taken_over_from_a_dead_server(tmp_path, monkeypatch)
     assert (tmp_path / "studio.pid").read_text(encoding = "utf-8") == str(os.getpid())
 
 
-def test_a_live_sibling_is_found_so_the_shared_cache_survives(tmp_path):
-    # The compiled cache is install-tree relative, so a second backend of this
-    # install must not wipe it out from under the first.
-    (tmp_path / "studio-8888-8550.pid").write_text("8550\n\n127.0.0.1", encoding = "utf-8")
-
+@pytest.mark.parametrize(
+    "filename, contents",
+    [
+        # The compiled cache is install-tree relative, so a second backend of this
+        # install must not wipe it out from under the first.
+        pytest.param(
+            "studio-8888-8550.pid",
+            "8550\n\n127.0.0.1",
+            id = "a_live_sibling_is_found_so_the_shared_cache_survives",
+        ),
+        # The window Codex flagged: lifespan startup runs, and would clear the
+        # cache, long before uvicorn reports a port for _write_pid_file to record.
+        pytest.param(
+            "studio-starting-8550.marker", "8550\n", id = "a_sibling_that_is_still_binding_is_found"
+        ),
+        # A pre-upgrade server is recorded here and nowhere else, and so is one
+        # whose best-effort per-port write failed.
+        pytest.param("studio.pid", "8550", id = "a_legacy_only_sibling_is_found"),
+    ],
+)
+def test_live_sibling_backend_finds_the_recorded_port(tmp_path, filename, contents):
+    (tmp_path / filename).write_text(contents, encoding = "utf-8")
     assert run.live_sibling_backend() == 8550
 
 
@@ -686,22 +712,6 @@ def test_a_reused_pid_is_not_a_sibling(tmp_path, monkeypatch):
     (tmp_path / "studio-8888-8550.pid").write_text("8550\n1.0\n127.0.0.1", encoding = "utf-8")
 
     assert run.live_sibling_backend() is None
-
-
-def test_a_sibling_that_is_still_binding_is_found(tmp_path):
-    # The window Codex flagged: lifespan startup runs, and would clear the
-    # cache, long before uvicorn reports a port for _write_pid_file to record.
-    (tmp_path / "studio-starting-8550.marker").write_text("8550\n", encoding = "utf-8")
-
-    assert run.live_sibling_backend() == 8550
-
-
-def test_a_legacy_only_sibling_is_found(tmp_path):
-    # A pre-upgrade server is recorded here and nowhere else, and so is one
-    # whose best-effort per-port write failed.
-    (tmp_path / "studio.pid").write_text("8550", encoding = "utf-8")
-
-    assert run.live_sibling_backend() == 8550
 
 
 def test_a_dead_legacy_record_is_not_a_sibling(tmp_path, monkeypatch):
@@ -864,10 +874,7 @@ def test_a_lock_that_cannot_be_taken_at_all_still_clears(tmp_path, monkeypatch):
     blocked = tmp_path / "not-a-directory"
     blocked.write_text("", encoding = "utf-8")
     monkeypatch.setattr(cache_cleanup, "cache_coordination_dir", lambda: blocked / "lock")
-    events = []
-    monkeypatch.setattr(
-        cache_cleanup, "clear_unsloth_compiled_cache", lambda *a, **k: events.append("clear")
-    )
+    events = _shared_setup_1(monkeypatch)
 
     with cache_cleanup.compiled_cache_lock() as state:
         assert state == cache_cleanup.LOCK_UNAVAILABLE
@@ -878,10 +885,7 @@ def test_a_lock_that_cannot_be_taken_at_all_still_clears(tmp_path, monkeypatch):
 
 
 def test_a_live_sibling_keeps_the_compiled_cache(tmp_path, monkeypatch):
-    events = []
-    monkeypatch.setattr(
-        cache_cleanup, "clear_unsloth_compiled_cache", lambda *a, **k: events.append("clear")
-    )
+    events = _shared_setup_1(monkeypatch)
 
     cache_cleanup.clear_compiled_cache_unless_shared(lambda: 8550)
 
@@ -890,10 +894,7 @@ def test_a_live_sibling_keeps_the_compiled_cache(tmp_path, monkeypatch):
 
 def test_no_sibling_probe_clears_unconditionally(tmp_path, monkeypatch):
     # An embedded app or a test never sets the probe, and the old behaviour stands.
-    events = []
-    monkeypatch.setattr(
-        cache_cleanup, "clear_unsloth_compiled_cache", lambda *a, **k: events.append("clear")
-    )
+    events = _shared_setup_1(monkeypatch)
 
     cache_cleanup.clear_compiled_cache_unless_shared(None)
 
@@ -1064,10 +1065,7 @@ def test_a_filesystem_that_cannot_lock_is_not_read_as_contention(tmp_path, monke
         raise OSError(errno.ENOSYS, "flock not supported")
 
     monkeypatch.setattr(cache_cleanup, "_try_lock", unsupported)
-    events = []
-    monkeypatch.setattr(
-        cache_cleanup, "clear_unsloth_compiled_cache", lambda *a, **k: events.append("clear")
-    )
+    events = _shared_setup_1(monkeypatch)
 
     with cache_cleanup.compiled_cache_lock(timeout = 30.0) as state:
         assert state == cache_cleanup.LOCK_UNAVAILABLE
@@ -1182,10 +1180,7 @@ def test_two_cold_starts_keep_rather_than_delete_each_others_modules(tmp_path, m
     # The documented limitation of scoping this back: both keep a cache neither
     # cleaned, which is the safe direction. The failure being replaced is the two
     # of them deleting each other's modules mid-run.
-    events = []
-    monkeypatch.setattr(
-        cache_cleanup, "clear_unsloth_compiled_cache", lambda *a, **k: events.append("clear")
-    )
+    events = _shared_setup_1(monkeypatch)
 
     cache_cleanup.clear_compiled_cache_unless_shared(lambda: 8550)
     cache_cleanup.clear_compiled_cache_unless_shared(lambda: 8551)

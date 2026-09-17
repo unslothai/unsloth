@@ -45,6 +45,7 @@ TABS = [
     "keyboard-shortcuts",
     "debugging",
     "about",
+    "accounts",
 ]
 
 ENGINE = os.environ.get("PW_ENGINE", "chromium")
