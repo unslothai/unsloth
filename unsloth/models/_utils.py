@@ -510,9 +510,25 @@ def _prefers_flex_for_head_dim(config):
     At 8192 the quadratic term dominates and flex repays that compile by ~step 5,
     which is why the default favours it: the downside is seconds, the upside is 1.8x.
 
+    One caveat the numbers above do not show, because it is a property of the BATCH and
+    not of the config, so this load-time decision cannot see it. What actually costs SDPA
+    the flash kernel above head_dim 128 is being handed an explicit mask, not the head dim
+    itself. Measured on a B200, torch 2.13, head_dim 256, fwd+bwd:
+
+        seqlen   sdpa + mask   sdpa is_causal   flex
+          2048      4.711 ms        0.671 ms   0.838 ms
+          4096     16.877 ms        1.993 ms   2.161 ms
+          8192     63.114 ms        6.782 ms   7.494 ms
+
+    `create_causal_mask` returns None for an unpadded batch, so SDPA gets is_causal=True
+    and reaches `pytorch_flash::flash_fwd_kernel<...256...>`; a padded or packed batch
+    materialises a mask and drops to `fmha_cutlassF...sm80`. So flex is a large win on
+    padded/packed training, which is the common case, and a ~25% loss on attention for a
+    perfectly uniform-length batch. Set the env var to "0" for that case.
+
     UNSLOTH_FLEX_ATTENTION_FOR_LARGE_HEAD_DIM overrides the config in either
-    direction, "0" to keep SDPA on a short-sequence run, "1" to force flex on a model
-    this would otherwise leave alone.
+    direction, "0" to keep SDPA on a short-sequence or unpadded run, "1" to force flex on
+    a model this would otherwise leave alone.
     """
     _override = os.environ.get(_FLEX_LARGE_HEAD_DIM_ENV_VAR)
     if _override is not None and _override.strip() != "":
