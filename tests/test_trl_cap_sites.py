@@ -51,6 +51,12 @@ REJECTED = ("0.19.0",)
 # flip (trl#5846), 1.13.0 the ceiling.
 NEWLY_ADMITTED = ("0.29.1", "1.0.0", "1.6.0", "1.7.0", "1.13.0")
 
+# The ceiling every unsloth_zoo up to and including 2026.9.4 publishes, and the first
+# release that lifts it. pip intersects unsloth's window with the zoo's, so these two
+# decide whether the window above is what a user actually resolves.
+ZOO_TRL_CEILING_BEFORE_THE_LIFT = Version("0.24.0")
+ZOO_FLOOR_WITH_LIFTED_TRL_CAP = Version("2026.9.5")
+
 # Lanes deliberately NOT on the published cap. Each needs a reason, or "lower" is
 # indistinguishable from "forgotten", which is the bug this file is about. Keyed on
 # (workflow, exact requirement string), never the workflow alone: a filename-level
@@ -160,6 +166,74 @@ def test_the_runtime_requirements_mirror_restates_the_same_window() -> None:
         f"{RUNTIME_MIRROR.name} declares {disagree} while pyproject.toml declares "
         f"{window}. The installer would ship a different TRL range than the package "
         f"advertises."
+    )
+
+
+def _pyproject_zoo() -> list[Requirement]:
+    data = _toml()
+    project = data.get("project") or {}
+    raws: list[str] = list(project.get("dependencies") or [])
+    for extra in (project.get("optional-dependencies") or {}).values():
+        raws.extend(extra)
+    out = []
+    for raw in raws:
+        try:
+            req = Requirement(raw)
+        except InvalidRequirement:
+            continue
+        if req.name.lower().replace("_", "-") == "unsloth-zoo" and req.specifier:
+            out.append(req)
+    return out
+
+
+def test_the_declared_zoo_floor_can_supply_the_declared_trl_window() -> None:
+    """Widening the window here does nothing while the resolvable zoo still caps TRL.
+
+    unsloth_zoo publishes its own trl requirement and pip intersects the two, so a user
+    installing any extra gets the LOWER of the two ceilings. unsloth_zoo 2026.9.4 on PyPI
+    says `trl<=0.24.0`; under that intersection the guards the test above checks for
+    reachability are still unreachable, and asking for a newly admitted TRL by hand is a
+    resolver conflict rather than an install.
+
+    So a ceiling above what the old zoo admits is only real once the declared zoo floor
+    names a release that carries the matching lift.
+    """
+    ceiling = _ceiling(_declared_window())
+    if ceiling <= ZOO_TRL_CEILING_BEFORE_THE_LIFT:
+        pytest.skip(
+            f"declared trl ceiling {ceiling} is within what zoo "
+            f"<{ZOO_FLOOR_WITH_LIFTED_TRL_CAP} already admits; nothing to coordinate"
+        )
+    reqs = _pyproject_zoo()
+    assert reqs, (
+        "pyproject.toml declares a trl ceiling above what the published unsloth_zoo "
+        "admits, and names no versioned unsloth_zoo requirement at all, so nothing "
+        "stops pip resolving the zoo that caps trl lower"
+    )
+    floors = {}
+    for req in reqs:
+        lower = [
+            Version(str(spec.version))
+            for spec in req.specifier
+            if spec.operator in (">=", "==", "~=")
+        ]
+        assert lower, (
+            f"unsloth_zoo requirement {req} has no lower bound, so it admits the "
+            f"release whose own trl cap is {ZOO_TRL_CEILING_BEFORE_THE_LIFT}"
+        )
+        floors[str(req)] = max(lower)
+    stale = {raw: str(floor) for raw, floor in floors.items()
+             if floor < ZOO_FLOOR_WITH_LIFTED_TRL_CAP}
+    assert not stale, (
+        f"pyproject.toml admits trl up to {ceiling} while still accepting unsloth_zoo "
+        f"{stale}. pip intersects the two requirements, so users would resolve the zoo "
+        f"that caps trl at {ZOO_TRL_CEILING_BEFORE_THE_LIFT} and the wider window here "
+        f"would never take effect. Move the floor to "
+        f"{ZOO_FLOOR_WITH_LIFTED_TRL_CAP} in the same commit as the ceiling."
+    )
+    assert len(set(floors.values())) == 1, (
+        f"pyproject.toml declares more than one unsloth_zoo floor: {floors}. One of them "
+        f"is the one users hit."
     )
 
 
