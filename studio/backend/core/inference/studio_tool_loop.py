@@ -1007,12 +1007,13 @@ def _split_turn_end(
 
 
 def _unrun_provenance(tool_name: str, round_id: int) -> dict[str, Any]:
-    """Provenance for a hand-built unrun card; carries the MCP display name so a budget-exhausted or
-    truncated MCP call never shows the internal server id."""
+    """Provenance for a hand-built unrun card; carries the MCP display names so a budget-exhausted
+    or truncated MCP call never shows the internal server id or an alias."""
     provenance: dict[str, Any] = {"source": "local", "round_id": round_id}
     mcp = mcp_display_parts(tool_name)
     if mcp:
         provenance["mcp_server"] = mcp[0]
+        provenance["mcp_tool"] = mcp[1]
     return provenance
 
 
