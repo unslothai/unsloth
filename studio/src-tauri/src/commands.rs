@@ -38,12 +38,32 @@ const HEALTH_WATCHDOG_MAX_FAILURES_BUSY: u32 = 12;
 /// `_HEALTH_DETECT_BUDGET_S` from that number.
 const HEALTH_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long one loopback connect gets to be REFUSED before the answer stops being "nothing
-/// is listening". A refusal comes back in microseconds (0.18ms median here, 1.3ms worst),
-/// so this is not a budget the answer normally uses; it is the point past which silence is
-/// a filtered or stalled handshake, which is #10520 and keeps the full retry ladder.
+/// is listening". Past this point silence is a filtered or stalled handshake, which is
+/// #10520, and the full retry ladder is kept.
 ///
-/// Small on purpose: it is spent BEFORE the ladder's first rung, so it is the whole cost the
-/// fast path can add to a backend that turns out to be alive.
+/// The budget is per platform because the wait before a refusal is per platform, measured on
+/// CI runners over 12 reps each against a genuinely closed loopback port:
+///
+///   linux     errno 111, min 0.0ms  median 0.0ms  max 0.1ms
+///   macos     errno 61,  min 0.0ms  median 0.1ms  max 0.2ms
+///   windows   WinError 10061, min 2002.3ms median 2010.9ms max 2030.2ms
+///
+/// Windows retransmits the SYN before reporting the refusal, so the answer is late rather
+/// than absent, and a 250ms budget classified every dead port there as Unsettled: correct
+/// and fail-safe, but the fast path never fired. A live listener was accepted in 0.2ms on
+/// all three, which is what rules out a filtered loopback as the explanation.
+///
+/// 3s leaves roughly 1s over the worst observed Windows wait, against a 28ms spread across
+/// those 12 samples, because the cost of being too low is losing the feature on that
+/// platform entirely.
+///
+/// This is spent BEFORE the ladder's first rung, so it is also the whole cost the fast path
+/// can add. It is only ever paid by a port nobody here manages that neither answers nor
+/// refuses: an alive backend of ours returns before any connect, and one that accepts
+/// answers in microseconds.
+#[cfg(windows)]
+const REFUSAL_PROBE_TIMEOUT: Duration = Duration::from_millis(3_000);
+#[cfg(not(windows))]
 const REFUSAL_PROBE_TIMEOUT: Duration = Duration::from_millis(250);
 /// Budget for the single last-chance probe spent before a stalled backend is declared dead.
 ///
@@ -1936,6 +1956,29 @@ mod tests {
                 error.raw_os_error(),
             ),
         }
+    }
+
+    /// The budget has to clear the platform's own wait before a refusal, or the fast path
+    /// classifies every dead port as Unsettled and silently stops existing.
+    ///
+    /// Worst observed over 12 reps per runner: 0.1ms on linux, 0.2ms on macOS, 2030.2ms on
+    /// Windows, where the SYN is retransmitted first. These floors are deliberately well
+    /// under `REFUSAL_PROBE_TIMEOUT` rather than equal to it, so ordinary variance does not
+    /// fail the suite while a change that drops the budget back below the real wait does.
+    #[test]
+    fn the_refusal_budget_clears_the_wait_this_platform_actually_takes() {
+        let floor = if cfg!(windows) {
+            Duration::from_millis(2_500)
+        } else {
+            Duration::from_millis(50)
+        };
+        assert!(
+            super::REFUSAL_PROBE_TIMEOUT >= floor,
+            "REFUSAL_PROBE_TIMEOUT is {:?}, under the {floor:?} this platform needs to see a \
+             refusal at all. Below the real wait every dead port reads as Unsettled and the \
+             fast path never fires.",
+            super::REFUSAL_PROBE_TIMEOUT,
+        );
     }
 
     #[tokio::test]
