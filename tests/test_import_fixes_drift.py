@@ -1228,16 +1228,8 @@ DEEPSEEK_V4_ROPE = {
 
 
 def test_rope_theta_carry_never_puts_a_per_label_mapping_in_the_scalar_slot():
-    """A nested snapshot is a ``{label: base}`` MAPPING, and a base frequency is a NUMBER.
-
-    ``_carry_per_layer_rope_theta`` answers ``None`` for three different reasons, and
-    "every entry already names its own base" -- the no-op -- is one of them. Reading that
-    ``None`` as "nothing nested to restore, fall through" carried the mapping into
-    ``config.rope_theta``, so a T5Gemma2 config assigned its own parameters back
-    serialized ``"rope_theta": {"sliding_attention": 10000.0, "full_attention":
-    1000000.0}`` where a number belongs, on a config that previously had no such key at
-    all. Measured on transformers 5.17.0 against #11037 as merged.
-    """
+    """``_carry_per_layer_rope_theta`` returns ``None`` for the no-op too, and #11037 as merged
+    read that as "fall through", carrying the mapping into the scalar ``config.rope_theta``."""
     from types import SimpleNamespace
 
     from unsloth.import_fixes import _carry_rope_theta_across_assignment as carry
@@ -1261,8 +1253,7 @@ def test_rope_theta_carry_never_puts_a_per_label_mapping_in_the_scalar_slot():
         k: dict(v) for k, v in T5GEMMA2_ROPE.items()
     }, "the nested parameters were rewritten by an assignment that lost nothing"
 
-    # The same refusal when the nested entries genuinely lost their bases but the
-    # snapshot cannot be written back: still no mapping in the scalar slot.
+    # Same refusal when the nested write is REFUSED rather than a no-op.
     stubborn = {
         "sliding_attention": {"rope_type": "default"},
         "full_attention": {"rope_type": "default"},
@@ -1283,17 +1274,9 @@ def test_rope_theta_carry_never_puts_a_per_label_mapping_in_the_scalar_slot():
 
 
 def test_rope_theta_carry_follows_rope_type_labels_not_only_layer_types():
-    """transformers nests ``rope_parameters`` under ``_rope_type_labels`` first.
-
-    ``standardize_rope_params`` resolves the nesting axis as
-    ``getattr(self, "_rope_type_labels", getattr(self, "layer_types", None))``
-    (transformers 5.17.0 ``modeling_rope_utils.py``), because the two are not the same
-    axis: ``DeepseekV4Config`` keys its rope by rope-type label (``main`` / ``compress``)
-    while its ``layer_types`` names attention blocks. Reading only ``layer_types`` made
-    the carry mistake that config for a flat one, so it took no nested snapshot, let the
-    160000.0 compression base fall back to the 10000.0 global one, and wrote a
-    top-level ``rope_theta`` INTO the nested dict.
-    """
+    """``standardize_rope_params`` resolves the nesting axis as ``getattr(self,
+    "_rope_type_labels", getattr(self, "layer_types", None))`` (transformers 5.17.0
+    ``modeling_rope_utils.py``); on DeepseekV4 the two name different things."""
     from types import SimpleNamespace
 
     from unsloth.import_fixes import (
@@ -1319,7 +1302,6 @@ def test_rope_theta_carry_follows_rope_type_labels_not_only_layer_types():
     }, f"the per-label bases were not snapshotted: {_rope_theta_snapshot(config)!r}"
     carried = _rope_theta_snapshot(config)
 
-    # The replacement unsloth's own scaling path performs: per-label, bases omitted.
     config.rope_parameters = {
         "main": {"rope_type": "linear", "factor": 4.0},
         "compress": {"rope_type": "default"},
@@ -1340,8 +1322,7 @@ def test_rope_theta_carry_follows_rope_type_labels_not_only_layer_types():
     assert restored["main"]["factor"] == 4.0, "the caller's scaling was damaged"
     assert config.rope_theta == 10000.0, "the stated global base went stale"
 
-    # A genuinely flat replacement over the same config still behaves: the two bases
-    # disagree, so no scalar stands for them and the config's own base is used.
+    # Flat replacement, same config: the two bases disagree, so the config's own base is used.
     flat = SimpleNamespace(
         _rope_type_labels = DEEPSEEK_V4_LABELS,
         rope_theta = 10000.0,
@@ -1352,16 +1333,9 @@ def test_rope_theta_carry_follows_rope_type_labels_not_only_layer_types():
 
 
 def test_rope_carry_handles_rope_labels_not_all_present_in_layer_types():
-    """A nested rope dict may name MORE labels than ``layer_types`` actually uses.
-
-    transformers asks ``isdisjoint``, not ``issubset``: a config that declares bases for
-    both ``full_attention`` and ``sliding_attention`` while its own ``layer_types`` lists
-    only ``full_attention`` is still nested. Laguna, Mellum and Zaya ship exactly that
-    default on transformers 5.17.0, and the subset test read all three as flat, so the
-    carry took no snapshot and BOTH bases went to ``None`` -- the
-    ``TypeError: unsupported operand type(s) for ** or pow(): 'NoneType' and 'Tensor'``
-    this whole patch exists to prevent.
-    """
+    """transformers asks ``isdisjoint``, not ``issubset``: laguna, mellum and zaya ship a rope
+    dict naming a label their default ``layer_types`` omits. Under the subset test all their
+    bases went to ``None`` -- the ``TypeError: ... 'NoneType' and 'Tensor'`` #11037 prevents."""
     from types import SimpleNamespace
 
     from unsloth.import_fixes import (
@@ -1374,7 +1348,6 @@ def test_rope_carry_handles_rope_labels_not_all_present_in_layer_types():
         "full_attention": {"rope_type": "default", "rope_theta": 500000.0},
         "sliding_attention": {"rope_type": "default", "rope_theta": 10000.0},
     }
-    # Only one of the two labels is an actual layer type on the default config.
     config = SimpleNamespace(rope_parameters = parameters, layer_types = ["full_attention"])
 
     assert _rope_parameters_are_per_layer(config, parameters), (
@@ -1410,7 +1383,7 @@ def test_rope_carry_handles_rope_labels_not_all_present_in_layer_types():
 
 
 def test_rope_carry_on_the_real_nested_configs():
-    """The two shapes above, on the real transformers config classes rather than stubs."""
+    """The stub shapes above on the real config classes, so a transformers change is caught."""
     pytest.importorskip("transformers")
     import copy as _copy
 
@@ -1451,7 +1424,6 @@ def test_rope_carry_on_the_real_nested_configs():
     assert (
         "rope_theta" not in deepseek.rope_parameters
     ), f"stray top-level rope_theta in a nested dict: {deepseek.rope_parameters!r}"
-    # What transformers itself then resolves for each label.
     deepseek.standardize_rope_params()
     resolved = deepseek.rope_parameters
     assert resolved["compress"]["rope_theta"] == expected_compress, (
@@ -1461,15 +1433,8 @@ def test_rope_carry_on_the_real_nested_configs():
 
 
 def test_rope_carry_keeps_every_nested_base_on_every_real_config():
-    """Every config shipping a nested rope dict keeps ALL of its bases across a
-    per-label scaling replacement, and gains no top-level ``rope_theta``.
-
-    Swept rather than enumerated so a newly added model with a nested rope dict is
-    covered the day it lands. On transformers 5.17.0 this catches deepseek_v4 (keyed by
-    ``_rope_type_labels``) and laguna / mellum / zaya (whose rope names a label their
-    default ``layer_types`` does not list); under the subset-only discriminator all four
-    lost every base.
-    """
+    """Swept, not enumerated, so a new nested-rope model is covered the day it lands. On 5.17.0:
+    deepseek_v4 (``_rope_type_labels``) and laguna / mellum / zaya, all four broken by issubset."""
     pytest.importorskip("transformers")
 
     from unsloth.import_fixes import fix_transformers_rope_scaling_drops_theta
@@ -1515,8 +1480,7 @@ def test_rope_carry_keeps_every_nested_base_on_every_real_config():
 
 
 def test_rope_carry_leaves_the_zoo_gemma_local_base_alone_on_a_real_config():
-    """``unsloth_zoo/empty_model.py`` sets Gemma's LOCAL rotary base and then replaces
-    the scaling. The base it stated on purpose has to survive the carry."""
+    """``unsloth_zoo/empty_model.py`` sets Gemma's LOCAL base, then replaces the scaling."""
     pytest.importorskip("transformers")
 
     from unsloth.import_fixes import fix_transformers_rope_scaling_drops_theta
@@ -1529,7 +1493,6 @@ def test_rope_carry_leaves_the_zoo_gemma_local_base_alone_on_a_real_config():
         pytest.skip(f"Gemma2Config unavailable: {exc!r}")
 
     config = Gemma2Config(num_hidden_layers = 2)
-    # The zoo's order: the local base first, then the scaling replacement.
     config.rope_theta = 10000.0
     config.rope_scaling = {"rope_type": "default"}
 
