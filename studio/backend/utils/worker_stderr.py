@@ -144,7 +144,6 @@ def _remove_open_sinks() -> None:
 
 
 class WorkerStderrCapture:
-
     def __init__(
         self,
         directory: "str | None" = None,
@@ -427,7 +426,6 @@ def install_worker_stderr_mirror(
 
 
 class _EveryLineCarriesThePrefix(logging.Formatter):
-
     def __init__(self, inner: "logging.Formatter") -> None:
         super().__init__()
         self._inner = inner

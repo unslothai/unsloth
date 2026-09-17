@@ -500,7 +500,6 @@ def test_a_native_abort_with_no_traceback_is_still_reported():
 
 def test_the_log_record_shapes_are_the_ones_content_arrives_in():
     from core.inference.orchestrator import _looks_like_a_log_record
-
     for record in (
         "2026-09-16 10:00:01 audio_codecs.decode_bicodec: generated text: hello",
         "2026-09-16T10:00:01 worker: started",
@@ -1174,7 +1173,6 @@ def test_a_handler_installed_after_startup_is_marked_too(_logging_restored):
 
 def test_a_root_level_path_is_redacted_too():
     from core.inference.orchestrator import _redact_worker_output
-
     for path, tail in (
         ("/model.gguf", "model.gguf"),
         ("C:\\model.gguf", "model.gguf"),
