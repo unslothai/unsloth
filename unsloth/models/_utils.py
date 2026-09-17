@@ -103,6 +103,7 @@ __all__ = [
     "make_fast_generate_wrapper",
     "_mark_unsloth_disable_data_parallel",
     "_patch_transformers_trainer_data_parallel",
+    "patch_flex_attention_kernel_options",
 ]
 
 import torch
@@ -543,6 +544,127 @@ def _prefers_flex_for_head_dim(config):
         return False
     head_dim = _text_attention_head_dim(config)
     return head_dim is not None and head_dim > _SDPA_FLASH_MAX_HEAD_DIM
+
+
+# ---------------------------------------------------------------------------------------------
+# FlexAttention above head_dim 256 crashes without explicit kernel_options
+# ---------------------------------------------------------------------------------------------
+# Inductor's default flex template asks for BLOCK_M = BLOCK_N = 128, which at head_dim 512 needs
+# 266 240 bytes of shared memory against a B200's 232 448 byte limit. Under `mode="max-autotune"`
+# Inductor says so out loud ("No valid triton configs ... Required: 266240 Hardware limit: 232448");
+# with the default config it emits the kernel anyway and the launch dies with
+# `CUDA error: misaligned address`. Reproduced on torch 2.13 and 2.14, forward-only, without GQA
+# and without a BlockMask, so it is the template and not flex itself: eager flex passes.
+#
+# Measured escape (scripts/flex_d512_kernel_options.py, head_dim 512):
+#     default                  FAIL misaligned address
+#     BLOCK_M=64,  BLOCK_N=64  FAIL misaligned address
+#     BLOCK_M=64,  BLOCK_N=32  FAIL misaligned address
+#     BLOCK_M=32,  BLOCK_N=32  PASS, relRMS 0.00202
+#     BLOCK_M=32,  BLOCK_N=16  PASS, relRMS 0.00200
+# 64x64 fits the naive shared-memory estimate and still faults, so this is the measured rule
+# rather than a computed one. The boundary is exactly head_dim > 256: 264 already fails, 256 passes.
+_FLEX_KERNEL_OPTIONS_SAFE_HEAD_DIM = 256
+# BLOCK_M/N drive the forward template, BLOCK_M1/N1/M2/N2 the two backward passes.
+_FLEX_LARGE_HEAD_DIM_KERNEL_OPTIONS = {
+    "BLOCK_M": 32,
+    "BLOCK_N": 32,
+    "BLOCK_M1": 16,
+    "BLOCK_N1": 32,
+    "BLOCK_M2": 32,
+    "BLOCK_N2": 16,
+}
+
+
+def _flex_kernel_options_for_head_dim(head_dim):
+    """The kernel_options flex needs at this head dim, or None when the default config is fine."""
+    if not isinstance(head_dim, int) or head_dim <= _FLEX_KERNEL_OPTIONS_SAFE_HEAD_DIM:
+        return None
+    return dict(_FLEX_LARGE_HEAD_DIM_KERNEL_OPTIONS)
+
+
+def _wrap_flex_attention_forward(flex_attention_forward):
+    """Add kernel_options to a registered `flex_attention` function, for large head dims only."""
+    if getattr(flex_attention_forward, "_unsloth_flex_kernel_options", False):
+        return flex_attention_forward
+
+    @functools.wraps(flex_attention_forward)
+    def unsloth_flex_attention_forward(module, query, key, value, *args, **kwargs):
+        try:
+            # Registered attention functions receive [batch, heads, seq_len, head_dim]. A few
+            # vision callers reuse the interface with a different rank, so check before indexing.
+            kernel_options = (
+                _flex_kernel_options_for_head_dim(query.shape[-1])
+                if hasattr(query, "dim") and query.dim() == 4
+                else None
+            )
+        except Exception:
+            kernel_options = None
+        if kernel_options is not None:
+            # A caller that already asked for something keeps it: only fill the gaps.
+            requested = kwargs.get("kernel_options") or {}
+            kernel_options.update(requested)
+            kwargs["kernel_options"] = kernel_options
+        return flex_attention_forward(module, query, key, value, *args, **kwargs)
+
+    unsloth_flex_attention_forward._unsloth_flex_kernel_options = True
+    unsloth_flex_attention_forward._unsloth_original_forward = flex_attention_forward
+    return unsloth_flex_attention_forward
+
+
+def patch_flex_attention_kernel_options():
+    """Give FlexAttention the kernel_options it needs above head_dim 256.
+
+    A no-op at head_dim <= 256, which is decided per call from the query tensor, so this cannot
+    change what any model that runs today does. Above 256 it is the difference between a run and
+    a `CUDA error: misaligned address`, so it is applied unconditionally rather than behind the
+    head_dim routing: flex is also reachable by an explicit `attn_implementation="flex_attention"`
+    and through _FLEX_PREFERRED_MODELS, and those routes crash identically.
+
+    Returns True when the registered function is now wrapped.
+    """
+    try:
+        from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+    except Exception:
+        return False
+
+    # The interface holds the function object captured at import, so replacing the module
+    # attribute alone would never be seen. Wrap what is registered, whoever registered it.
+    try:
+        registered = ALL_ATTENTION_FUNCTIONS["flex_attention"]
+    except Exception:
+        return False
+    if registered is None:
+        return False
+
+    wrapped = _wrap_flex_attention_forward(registered)
+    if wrapped is registered:
+        return True  # Already ours.
+
+    # Both halves are needed. `__setitem__` writes the instance's local mapping, which is what
+    # every model module reads through the shared global instance. `register` is a classmethod
+    # writing the class-wide mapping, which is the only thing the handful of models that build
+    # their OWN AttentionInterface (doge) ever see. Neither one alone covers both.
+    try:
+        ALL_ATTENTION_FUNCTIONS["flex_attention"] = wrapped
+    except Exception:
+        return False
+    try:
+        register = getattr(type(ALL_ATTENTION_FUNCTIONS), "register", None)
+        if register is not None:
+            register("flex_attention", wrapped)
+    except Exception:
+        pass
+
+    # Anything importing `flex_attention_forward` by name after this point gets the wrapper too.
+    try:
+        import transformers.integrations.flex_attention as _flex_module
+        if getattr(_flex_module, "flex_attention_forward", None) is registered:
+            _flex_module.flex_attention_forward = wrapped
+    except Exception:
+        pass
+
+    return True
 
 
 def _transformers_supports_attn_impl_mapping():
@@ -4640,3 +4762,11 @@ if (
         transformers.integrations.bitsandbytes.should_convert_module = patched_should_convert_module
     except Exception:
         pass
+
+
+# Applied at import: a no-op below head_dim 256, and the difference between a run and a
+# `CUDA error: misaligned address` above it, on every route that reaches FlexAttention.
+try:
+    patch_flex_attention_kernel_options()
+except Exception:
+    pass
