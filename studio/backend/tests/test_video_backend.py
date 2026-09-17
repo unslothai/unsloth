@@ -7851,7 +7851,9 @@ def test_dense_quant_replan_uses_the_scaled_text_encoder(fake_runtime, monkeypat
     scale, text_encoder_gb, transformer_gb, vae_gb = _shared_setup_9(monkeypatch)
     monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(
-        video_mod, "select_transformer_quant_scheme", lambda target, mode, family = None: "int8"
+        video_mod,
+        "select_transformer_quant_scheme",
+        lambda target, mode, family = None, **_kw: "int8",
     )
     monkeypatch.setattr(video_mod, "quantize_transformer", lambda *a, **k: None)
     # Force the first plan to offload so the re-plan branch runs.
@@ -8271,7 +8273,7 @@ def test_unified_memory_refuses_on_the_dense_peak_even_when_a_quant_is_requested
     monkeypatch.setattr(video_mod, "resolve_diffusion_device_target", lambda: target)
     monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda t: True)
     monkeypatch.setattr(
-        video_mod, "select_transformer_quant_scheme", lambda t, q, family = None: "fp8"
+        video_mod, "select_transformer_quant_scheme", lambda t, q, family = None, **_kw: "fp8"
     )
     # An integrated CUDA device: 48 GiB shared, so LTX-2's ~65 GB of dense weights cannot fit even
     # though the fp8 steady size would.
@@ -9056,6 +9058,7 @@ def _plans_for(monkeypatch, video_mod):
 
 
 def test_the_memory_plan_prices_a_seeded_denoiser_at_the_measured_row(fake_runtime, monkeypatch):
+    """The memory plan prices a seeded denoiser at the measured row, not the dense term."""
     import core.inference.video as video_mod
 
     monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
@@ -9112,6 +9115,7 @@ def test_a_failed_seed_replans_at_bf16_and_refuses_again(fake_runtime, monkeypat
 
 
 def test_the_planned_scheme_is_what_the_load_seeds(fake_runtime, monkeypatch):
+    """The scheme the plan committed to is the one the load seeds."""
     import core.inference.video as video_mod
 
     monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
@@ -9138,8 +9142,7 @@ def test_a_seed_the_plan_declined_is_not_re_taken_by_the_load(fake_runtime, monk
     monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(video_mod, "quantize_transformer", lambda *a, **k: "nvfp4")
     calls, _modules = _stub_denoiser_seed(monkeypatch, plan_scheme = None)
-    # The load's own probe knows nothing of the plan's offload decision, and this test card is roomy
-    # enough for it to answer yes.
+    # The load's own probe knows nothing of the plan's offload decision, and this card is roomy enough for it to answer yes.
     monkeypatch.setattr(video_mod, "_video_auto_denoiser_scheme", lambda fam, **kw: "nvfp4")
 
     backend = VideoBackend()
@@ -9170,6 +9173,7 @@ _A14B_SIBLINGS = [
 
 
 def test_base_download_files_drops_both_experts_and_keeps_both_configs():
+    """A seeded MoE drops both experts' dense shards and keeps both configs."""
     info = types.SimpleNamespace(siblings = _A14B_SIBLINGS)
 
     dense = dict(VideoBackend._base_download_files(info, "pipeline"))
@@ -9200,6 +9204,7 @@ def test_base_download_files_keeps_the_h3_partition_default():
 
 
 def test_the_download_plan_stages_both_experts_artifacts(monkeypatch):
+    """The download plan stages both experts' artifacts."""
     import core.inference.video as video_mod
     import core.inference.video_denoiser_prequant as dq
 
@@ -9236,8 +9241,7 @@ def test_the_download_plan_stages_both_experts_artifacts(monkeypatch):
         ),
     }
     monkeypatch.setattr(dq, "denoiser_prequant_sources", lambda fam, scheme, base: sources)
-    # The plan asks the LOAD's own seed question, so pin the device and keep the staging assertions
-    # below independent of the test host's card.
+    # The plan asks the LOAD's own seed question, so pin the device and keep the staging assertions off the test host's card.
     monkeypatch.setattr(video_mod, "_video_auto_denoiser_scheme", lambda fam, **kw: "nvfp4")
 
     plan = VideoBackend().download_plan(
@@ -9261,8 +9265,8 @@ def test_the_download_plan_stages_both_experts_artifacts(monkeypatch):
 
 
 def test_a_speed_off_plan_stages_the_dense_experts_the_load_will_open(monkeypatch):
-    """speed_mode="off" declines the conventional seed for an EXPLICIT scheme too, so the plan
-    stages the dense shards, not a replacement the load refuses to install."""
+    """speed_mode="off" declines the conventional seed for an EXPLICIT scheme too, so the plan stages
+    the dense shards rather than a replacement the load refuses to install."""
     import core.inference.video_denoiser_prequant as dq
 
     _plan_api(
@@ -9310,6 +9314,20 @@ def test_a_speed_off_plan_stages_the_dense_experts_the_load_will_open(monkeypatc
     assert "transformer/diffusion_pytorch_model.safetensors" in staged
     assert "transformer_2/diffusion_pytorch_model.safetensors" in staged
     assert not any(f.endswith(".pt") for f in staged)
+
+
+def test_the_video_status_response_carries_the_nvfp4_backend_label():
+    """The same field the image status exposes: the A14B auto ladder leads with nvfp4 only where
+    flashinfer serves it, so 'NVFP4' alone does not say what ran."""
+    from models.inference import VideoStatusResponse
+
+    resp = VideoStatusResponse(
+        loaded = True,
+        transformer_quant = "nvfp4",
+        transformer_quant_backend = "flashinfer",
+    )
+    assert resp.model_dump()["transformer_quant_backend"] == "flashinfer"
+    assert VideoStatusResponse(loaded = True).model_dump()["transformer_quant_backend"] is None
 
 
 def _cuda_plan_target(monkeypatch, video_mod, *, free_gib):
@@ -9382,10 +9400,10 @@ def _a14b_plan(monkeypatch):
 
 
 def test_a_plan_that_still_offloads_at_artifact_size_stages_the_dense_experts(monkeypatch):
-    """A card the ARTIFACT-sized model still offloads on cannot seed: offload hooks move the DiT
-    and torchao tensors reject the move, so ``load_pipeline`` builds the dense bf16 denoiser. The
-    plan must reach the same verdict or it drops 56 GB of shards the load tops up inline, outside
-    its progress, cancel and disk preflight."""
+    """A card the ARTIFACT-sized model still offloads on cannot seed: offload hooks move the DiT and
+    torchao tensors reject the move, so ``load_pipeline`` builds the dense bf16 denoiser. The plan
+    must reach the same verdict, or it drops 56 GB of shards the load tops up inline, outside its
+    progress, cancel and disk preflight."""
     import core.inference.video as video_mod
 
     _a14b_plan(monkeypatch)
@@ -9406,8 +9424,8 @@ def test_a_plan_that_still_offloads_at_artifact_size_stages_the_dense_experts(mo
 
 
 def test_a_card_the_artifact_fits_on_still_stages_the_artifacts(monkeypatch):
-    """The other side of the same gate: where the artifact-sized plan stays resident the load seeds,
-    so the dense shards stay out of the pull."""
+    """The other side of that gate: an artifact-sized plan that stays resident seeds, so the dense
+    shards stay out of the pull."""
     import core.inference.video as video_mod
 
     _a14b_plan(monkeypatch)
@@ -9430,8 +9448,8 @@ def test_a_card_the_artifact_fits_on_still_stages_the_artifacts(monkeypatch):
 
 
 def test_an_offloading_memory_mode_stages_the_dense_experts_on_any_card(monkeypatch):
-    """The user's own memory_mode reaches the same verdict on a card with room to spare: an
-    explicit offload request is an offload policy, and an offloaded load will not seed."""
+    """The user's own memory_mode reaches the same verdict on a roomy card: an explicit offload
+    request is an offload policy, and an offloaded load will not seed."""
     import core.inference.video as video_mod
 
     _a14b_plan(monkeypatch)
@@ -9455,7 +9473,7 @@ def test_a_dense_encoder_fallback_that_forces_offload_also_drops_the_seed(
 ):
     """The pre-cast encoder is best-effort and its fallback re-plans at the dense bf16 size (~11 GB
     more for ltx-2). That re-plan can select offload, and an offloading load cannot seed, so the
-    seed decision has to be re-taken on the plan the load ends up with, not only the first one."""
+    seed decision has to be re-taken on the plan the load ends up with."""
     import core.inference.diffusion_te_prequant as te
     import core.inference.video as video_mod
 

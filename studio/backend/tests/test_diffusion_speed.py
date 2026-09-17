@@ -1117,3 +1117,118 @@ def test_cuda_graph_install_failure_leaves_the_load_usable(monkeypatch):
     )
     assert applied["cuda_graph"] is False and calls["installs"] == 1
     assert applied["compiled"] is True  # the rest of the tier still engaged
+
+
+class _Block:
+    """A repeated block whose ``forward`` source is what the detector reads."""
+
+    def forward(self, hidden_states, encoder_hidden_states, temb):  # pragma: no cover - never run
+        return hidden_states, encoder_hidden_states
+
+
+class FluxSingleTransformerBlock(_Block):
+    """Named on ``_STREAM_MERGING_BLOCKS``, so it is recognised without reading source."""
+
+
+class _MergingByArgOrderA(_Block):
+    def forward(self, hidden_states, encoder_hidden_states, temb):  # pragma: no cover
+        import torch  # source fixture: only the text is read
+        hidden_states = torch.cat([encoder_hidden_states, hidden_states], dim = 1)
+        return hidden_states, encoder_hidden_states
+
+
+class _MergingByArgOrderB(_Block):
+    def forward(self, hidden_states, encoder_hidden_states, temb):  # pragma: no cover
+        import torch  # source fixture: only the text is read
+        hidden_states = torch.cat([hidden_states, encoder_hidden_states], dim = 1)
+        return hidden_states, encoder_hidden_states
+
+
+class _DualStreamBlock(_Block):
+    """Takes BOTH streams but keeps them separate (Qwen-Image / SD3 shape), so it stays dynamic."""
+
+    def forward(self, hidden_states, encoder_hidden_states, temb):  # pragma: no cover
+        return hidden_states + 1, encoder_hidden_states + 1
+
+
+def _dit(*block_classes):
+    """A stub DiT exposing the two things the detector reads: _repeated_blocks + named_modules."""
+    blocks = [cls() for cls in block_classes]
+    dit = types.SimpleNamespace(
+        _repeated_blocks = [cls.__name__ for cls in block_classes],
+        named_modules = lambda: [("", None)] + [(f"blocks.{i}", b) for i, b in enumerate(blocks)],
+    )
+    return dit
+
+
+def test_class_merges_streams_is_crash_confirmed_names_only_by_default():
+    assert ds_mod._class_merges_streams(FluxSingleTransformerBlock) is True
+    assert ds_mod._class_merges_streams(_MergingByArgOrderA) is False
+    assert ds_mod._class_merges_streams(_MergingByArgOrderB) is False
+    assert ds_mod._class_merges_streams(_DualStreamBlock) is False
+
+
+def test_class_merges_streams_broad_sweep_is_opt_in():
+    assert ds_mod._class_merges_streams(_MergingByArgOrderA, True) is True
+    assert ds_mod._class_merges_streams(_MergingByArgOrderB, True) is True
+    assert ds_mod._class_merges_streams(_DualStreamBlock, True) is False
+
+
+def test_class_merges_streams_without_source_falls_back_to_the_name_list(monkeypatch):
+    import inspect
+
+    monkeypatch.setattr(
+        inspect, "getsource", lambda _obj: (_ for _ in ()).throw(OSError("no source"))
+    )
+    ds_mod._class_merges_streams.cache_clear()
+    assert ds_mod._class_merges_streams(_MergingByArgOrderA, True) is False
+    assert ds_mod._class_merges_streams(FluxSingleTransformerBlock, True) is True
+    ds_mod._class_merges_streams.cache_clear()
+
+
+def test_dits_merge_streams_honours_the_opt_in_env(monkeypatch):
+    monkeypatch.delenv(ds_mod._STREAM_MERGE_DETECT_ENV, raising = False)
+    assert ds_mod._dits_merge_streams([_dit(_MergingByArgOrderA)]) is False
+    monkeypatch.setenv(ds_mod._STREAM_MERGE_DETECT_ENV, "1")
+    assert ds_mod._dits_merge_streams([_dit(_MergingByArgOrderA)]) is True
+    monkeypatch.delenv(ds_mod._STREAM_MERGE_DETECT_ENV, raising = False)
+    assert ds_mod._dits_merge_streams([_dit(FluxSingleTransformerBlock)]) is True
+
+
+def test_dits_merge_streams_scans_every_denoiser():
+    assert ds_mod._dits_merge_streams([]) is False
+    assert ds_mod._dits_merge_streams([types.SimpleNamespace()]) is False
+    assert ds_mod._dits_merge_streams([_dit(_DualStreamBlock)]) is False
+    assert ds_mod._dits_merge_streams([_dit(_MergingByArgOrderA)]) is False
+    assert ds_mod._dits_merge_streams([_dit(_DualStreamBlock, FluxSingleTransformerBlock)]) is True
+    assert (
+        ds_mod._dits_merge_streams([_dit(_DualStreamBlock), _dit(FluxSingleTransformerBlock)])
+        is True
+    )
+
+
+def test_speed_default_compiles_stream_merging_dit_with_static_shapes(monkeypatch):
+    """FLUX.1 regression: dynamic=True cannot be codegen'd for a stream-merging block."""
+    _stub_torch(monkeypatch)
+    _stub_gguf_accel(monkeypatch)
+    pipe = _Pipe(with_compile = True)
+    pipe.transformer._repeated_blocks = ["FluxSingleTransformerBlock"]
+    block = FluxSingleTransformerBlock()
+    pipe.transformer.named_modules = lambda: [("blocks.0", block)]
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
+    )
+    assert applied["compiled"] is True
+    assert pipe.compile_kwargs == {"fullgraph": True, "dynamic": False}
+    assert pipe.compile_kwargs["dynamic"] is not None
+
+
+def test_compiled_shapes_are_static_reports_the_stream_merging_downgrade(monkeypatch):
+    _stub_torch(monkeypatch)
+    merging = types.SimpleNamespace(transformer = _dit(FluxSingleTransformerBlock))
+    plain = types.SimpleNamespace(transformer = _dit(_DualStreamBlock))
+    assert ds_mod.compiled_shapes_are_static(merging, SPEED_DEFAULT) is True
+    assert ds_mod.compiled_shapes_are_static(plain, SPEED_DEFAULT) is False
+    assert ds_mod.compiled_shapes_are_static(plain, SPEED_MAX) is True
+    assert ds_mod.compiled_shapes_are_static(merging, SPEED_OFF) is False
+    assert ds_mod.compiled_shapes_are_static(merging, SPEED_EAGER) is False

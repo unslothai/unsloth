@@ -150,6 +150,40 @@ def test_estimate_nvfp4_is_smaller_than_int8():
     assert nvfp4.steady_transformer_mib < int8.steady_transformer_mib
 
 
+def test_an_nvfp4_policy_base_is_sized_by_the_policy_not_by_whole_model_nvfp4():
+    from core.inference.diffusion_auto_policy import (
+        _MIB_PER_GB,
+        _POLICY_STEADY_FACTOR,
+        _QUANT_STEADY_FACTOR,
+        policy_steady_factor,
+    )
+
+    transformer_gb = ap._FAMILY_BF16_GB["z-image"][0]
+    policy = estimate_dense_quant(_fam("z-image"), "nvfp4", base_repo = "Tongyi-MAI/Z-Image-Turbo")
+    assert policy is not None
+    assert policy.steady_transformer_mib == int(
+        transformer_gb * _POLICY_STEADY_FACTOR["zimg_f8mod_toq34_v1"] * _MIB_PER_GB
+    )
+    whole_model = int(transformer_gb * _QUANT_STEADY_FACTOR["nvfp4"] * _MIB_PER_GB)
+    assert policy.steady_transformer_mib > whole_model
+    for base in (None, "some-org/Z-Image-Fork"):
+        plain = estimate_dense_quant(_fam("z-image"), "nvfp4", base_repo = base)
+        assert plain is not None and plain.steady_transformer_mib == whole_model, base
+    kontext = estimate_dense_quant(
+        _fam("flux.1-kontext"), "nvfp4", base_repo = "black-forest-labs/FLUX.1-Kontext-dev"
+    )
+    assert kontext is not None
+    assert kontext.steady_transformer_mib == int(
+        ap._FAMILY_BF16_GB["flux.1-kontext"][0] * _QUANT_STEADY_FACTOR["nvfp4"] * _MIB_PER_GB
+    )
+    assert policy_steady_factor("flux.1-kontext", "black-forest-labs/FLUX.1-Kontext-dev") is None
+    fp8 = estimate_dense_quant(_fam("z-image"), "fp8", base_repo = "Tongyi-MAI/Z-Image-Turbo")
+    assert fp8 is not None
+    assert fp8.steady_transformer_mib == int(
+        transformer_gb * _QUANT_STEADY_FACTOR["fp8"] * _MIB_PER_GB
+    )
+
+
 def test_estimate_unknown_family_or_scheme_returns_none():
     assert estimate_dense_quant(_fam("not-a-family"), "int8") is None
     assert estimate_dense_quant(_fam("z-image"), "q4_k") is None
@@ -167,7 +201,9 @@ def _patch_selector(
 
     monkeypatch.setattr(tq, "dense_transformer_supported", lambda target: supported)
     monkeypatch.setattr(
-        tq, "select_transformer_quant_scheme", lambda target, req, family = None: scheme
+        tq,
+        "select_transformer_quant_scheme",
+        lambda target, req, family = None, **_kw: scheme,
     )
     import core.inference.diffusion_prequant as pq
 

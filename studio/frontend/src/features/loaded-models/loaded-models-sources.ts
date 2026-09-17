@@ -198,6 +198,18 @@ export function precisionLabel(value: string | null | undefined): string | null 
   return known[value] ?? value.toUpperCase();
 }
 
+/** Which NVFP4 kernel path served the load, spelled the way the projects spell themselves. Unrecognised values pass through as sent, as in precisionLabel. */
+export function quantBackendLabel(
+  value: string | null | undefined,
+): string | null {
+  if (!value) return null;
+  const known: Record<string, string> = {
+    flashinfer: "FlashInfer",
+    torchao: "torchao",
+  };
+  return known[value.toLowerCase()] ?? value;
+}
+
 export function describeDiffusionStatus(
   status: DiffusionStatus | null,
 ): LoadedModelEntry[] {
@@ -225,6 +237,7 @@ export function describeDiffusionStatus(
         precisionLabel(status.transformer_quant) ??
           precisionLabel(status.gguf_variant) ??
           precisionLabel(status.dtype),
+        quantBackendLabel(status.transformer_quant_backend),
         status.device,
       ),
     },
@@ -249,6 +262,7 @@ export function describeVideoStatus(
         precisionLabel(status.gguf_variant) ??
           precisionLabel(status.transformer_quant) ??
           precisionLabel(status.dtype),
+        quantBackendLabel(status.transformer_quant_backend),
         status.device,
       ),
     },
