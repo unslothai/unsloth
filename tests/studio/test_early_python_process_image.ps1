@@ -70,12 +70,39 @@ if (-not $exe) {
     # BROKEN EXTRACTION looks like from here: a helper this file forgot to pull out of
     # install.ps1 makes Get-StudioEarlyPython fail, the probe finds nothing, and the suite exits 0
     # having tested nothing. That happened once and CI recorded it as a pass. Tell the two apart.
-    $onPath = $null
-    foreach ($n in @("python3", "python")) {
-        if (-not $onPath) { $onPath = (Get-Command $n -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1) }
+    # The documented opt-out first. UNSLOTH_EARLY_PYTHON_PROBE=0 means "do not spawn an interpreter
+    # on this host", so discovery returning nothing is the switch working, not a broken extraction.
+    if ("$($env:UNSLOTH_EARLY_PYTHON_PROBE)".Trim() -eq "0") {
+        Write-Host "  SKIP  UNSLOTH_EARLY_PYTHON_PROBE=0, so this rung is switched off by request" -ForegroundColor Yellow
+        exit 0
     }
-    if ($onPath) {
-        Write-Host "  FAIL  Get-StudioEarlyPython found nothing, yet $($onPath.Source) is on PATH." -ForegroundColor Red
+    # USABLE, not merely present. The installer rejects an interpreter that cannot complete its own
+    # probe, so presence on PATH is not proof that discovery should have found one: Python 2, any
+    # Python below 3.8 (whose Windows resolve() does not follow links), a broken executable, and a
+    # Windows Store App Execution Alias are all on PATH and all correctly refused. Failing here on
+    # those hosts blames this file for the installer behaving as designed.
+    #
+    # So ask the same question Invoke-StudioEarlyPython asks, of the same candidates, and only then
+    # decide. The WindowsApps aliases are excluded WITHOUT running them: they are zero-length stubs
+    # that open the Microsoft Store, which a test must not do to whoever is running it.
+    $usable = $null
+    foreach ($n in @("python3", "python")) {
+        foreach ($src in @(Get-Command $n -All -CommandType Application -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue)) {
+            if ($usable) { break }
+            if ([string]::IsNullOrWhiteSpace($src)) { continue }
+            if ("$src" -match '(?i)[\\/]Microsoft[\\/]WindowsApps[\\/]') { continue }
+            $here = Split-Path -Parent $src
+            if ([string]::IsNullOrWhiteSpace($here)) { continue }
+            $answer = ""
+            try {
+                $answer = "$(& $src -I -S -c "import pathlib,sys`nsys.exit(2) if sys.version_info < (3,8) else None`nsys.stdout.write(str(pathlib.Path(sys.argv[1]).resolve(strict=True)))" $here 2>$null)".Trim()
+            } catch { $answer = "" }
+            if (-not [string]::IsNullOrWhiteSpace($answer)) { $usable = $src }
+        }
+    }
+    if ($usable) {
+        Write-Host "  FAIL  Get-StudioEarlyPython found nothing, yet $usable answers the same probe." -ForegroundColor Red
         Write-Host "        That is a broken extraction in this file, not a host without Python." -ForegroundColor Red
         exit 1
     }
