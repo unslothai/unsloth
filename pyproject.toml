@@ -200,21 +200,22 @@ triton = [
 ]
 
 huggingfacenotorch = [
-    # The floor stays at 2026.9.4 for two independent reasons, and moves only when both are
-    # satisfied. A floor no published release satisfies makes the package uninstallable.
+    # 2026.9.5 is the newest published release and matches what main requires. It settles one
+    # of the two reasons this floor is tracked, and leaves the other outstanding. A floor no
+    # published release satisfies would make the package uninstallable, so this never leads.
     #
-    # 1. unsloth_zoo publishes its own transformers window and pip intersects the two, so the
-    #    lift below only reaches users once a zoo release carries the same ceiling: 2026.9.4,
-    #    the newest on PyPI, still says transformers<=5.5.0. That release is
-    #    unslothai/unsloth-zoo#1227, unpublished. Raise the floor and re-enable the deferred
-    #    gate named in tests/test_transformers_cap_sites.py in the same commit.
-    # 2. unsloth_zoo.compiler embeds its own copy of the empty-logits sentinel in the code it
-    #    generates for the compiled trainers, and 2026.9.4 still hands FSDP2 mixed precision a
-    #    sentinel that answers `__dataclass_fields__` and dies in `dataclasses.replace`. The
-    #    matching fix is unslothai/unsloth-zoo#1259. Its probes in
-    #    tests/test_empty_logits_compiled_path_probes.py gate on the INSTALLED zoo rather than
-    #    on this pin, so they start running on their own once it ships.
-    "unsloth_zoo>=2026.9.4",
+    # 1. OUTSTANDING. unsloth_zoo publishes its own transformers window and pip intersects the
+    #    two, so the lift below only reaches users once a zoo release carries the same ceiling.
+    #    2026.9.5 still says transformers<=5.5.0; the fix is unslothai/unsloth-zoo#1227, which
+    #    is unmerged and unreleased. Raise this floor to the release that ships it and
+    #    re-enable the deferred gate in tests/test_transformers_cap_sites.py in one commit.
+    # 2. SETTLED by 2026.9.5. unsloth_zoo.compiler embeds its own copy of the empty-logits
+    #    sentinel in the code it generates for the compiled trainers, and every release before
+    #    this one handed FSDP2 mixed precision a sentinel that answers `__dataclass_fields__`
+    #    and dies in `dataclasses.replace`. 2026.9.5 carries the fix, unslothai/unsloth-zoo#1259.
+    #    Its probes in tests/test_empty_logits_compiled_path_probes.py gate on the INSTALLED
+    #    zoo rather than on this pin, so they began running on their own when it shipped.
+    "unsloth_zoo>=2026.9.5",
     "wheel>=0.42.0",
     "packaging",
     "numpy",
@@ -287,7 +288,7 @@ audio-torch280 = [
 ]
 huggingface = [
     "unsloth[huggingfacenotorch]",
-    "unsloth_zoo>=2026.9.4",
+    "unsloth_zoo>=2026.9.5",
     "torchvision",
     "unsloth[triton]",
 ]
@@ -906,7 +907,7 @@ colab-ampere-torch220 = [
     "flash-attn>=2.6.3 ; ('linux' in sys_platform)",
 ]
 colab-new = [
-    "unsloth_zoo>=2026.9.4",
+    "unsloth_zoo>=2026.9.5",
     "packaging",
     "tyro",
     "transformers>=4.52.4,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.17.0",
