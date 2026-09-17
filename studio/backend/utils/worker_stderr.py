@@ -34,6 +34,7 @@ import time
 
 __all__ = [
     "LOG_RECORD_CONTINUATION_PREFIX",
+    "LOG_RECORD_START_MARK",
     "STDERR_MIRROR_KWARG",
     "WorkerStderrCapture",
     "decode_worker_stderr",
@@ -58,6 +59,20 @@ __all__ = [
 # here, at the one handler that writes them, and anything left unmarked at column 0 came
 # from something that was not the logging stack.
 LOG_RECORD_CONTINUATION_PREFIX = "    | "
+
+# And what its FIRST line carries. Marking only the continuations left the opening line to be
+# recognised by shape, and a record written through a DEFAULT formatter has no shape to
+# recognise: `logging.error("RuntimeError: ...")` on `logging.lastResort` arrives as exactly
+# that text at column 0, which is what a dying runtime writes too. A single-line record of
+# that shape was therefore classified as crash output, and a later request that killed the
+# shared worker without writing a diagnostic of its own handed that earlier request's text to
+# whoever was waiting.
+#
+# ASCII UNIT SEPARATOR, because this has to be invisible: the same bytes are mirrored to the
+# server's own stderr, and a printable prefix would rewrite the look of every worker log line
+# on every install. The parent strips it before writing the operator's copy, and any line
+# carrying it is dropped from the client-facing tail, so it reaches neither reader.
+LOG_RECORD_START_MARK = "\x1f"
 
 # The reserved keyword argument the shared child entrypoint intercepts. Passed as a kwarg
 # rather than an environment variable on purpose: several workers can be spawned at once,
@@ -581,11 +596,12 @@ def install_worker_stderr_mirror(
 
 
 class _EveryLineCarriesThePrefix(logging.Formatter):
-    """A formatter that marks a record's continuation lines and delegates everything else.
+    """A formatter that marks every line of a record and delegates everything else.
 
     Wrapping rather than replacing: the handler's own formatter decides what a record looks
-    like, including structlog's, and this only touches what happens after the first
-    newline. A single-line record is returned byte for byte.
+    like, including structlog's. What is added is an invisible mark on the first line and a
+    visible continuation prefix on the rest, so the parent can tell a logged line from a line
+    a crashing runtime wrote without having to recognise either by shape.
     """
 
     def __init__(self, inner: "logging.Formatter") -> None:
@@ -595,10 +611,17 @@ class _EveryLineCarriesThePrefix(logging.Formatter):
     def format(self, record: "logging.LogRecord") -> str:
         text = self._inner.format(record)
         first, newline, rest = text.partition("\n")
+        # The first line is marked too, invisibly: a single-line record through a default
+        # formatter is otherwise indistinguishable from the same words written by a dying
+        # runtime, and the whole point of marking is that the WRITER says which it is.
+        marked_first = (
+            first if first.startswith(LOG_RECORD_START_MARK)
+            else LOG_RECORD_START_MARK + first
+        )
         if not newline:
-            return text
+            return marked_first
         return (
-            first
+            marked_first
             + "\n"
             + "\n".join(LOG_RECORD_CONTINUATION_PREFIX + line for line in rest.split("\n"))
         )

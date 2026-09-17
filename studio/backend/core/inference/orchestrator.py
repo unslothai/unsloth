@@ -107,6 +107,13 @@ _LOG_RECORD_RE = re.compile(
 # that died, because the bytes are identical. The writer is the only place that knows, so
 # the writer says so. See `utils.worker_stderr.mark_log_record_continuations`.
 _LOG_CONTINUATION_PREFIX = "    | "
+# And the mark the same writer puts on a record's FIRST line, invisibly (ASCII RECORD
+# SEPARATOR). Needed because a record written through a DEFAULT formatter has no shape to
+# recognise: `logging.error("RuntimeError: ...")` through `logging.lastResort` arrives as
+# exactly that text at column 0, which is what a dying runtime writes too, so it was read as
+# crash output and could be handed to whoever was waiting when a later request killed the
+# shared worker without writing a diagnostic of its own.
+_LOG_RECORD_START_MARK = "\x1f"
 
 
 def _looks_like_a_log_record(line: str) -> bool:
@@ -123,7 +130,7 @@ def _looks_like_a_log_record(line: str) -> bool:
     a native abort and a fatal-signal line do not. `RuntimeError: boom` has no dot before
     its colon and is kept.
     """
-    if line.startswith(_LOG_CONTINUATION_PREFIX):
+    if line.startswith(_LOG_CONTINUATION_PREFIX) or line.startswith(_LOG_RECORD_START_MARK):
         return True
     return bool(_LOG_RECORD_RE.match(line))
 
@@ -674,6 +681,8 @@ class InferenceOrchestrator:
         # produced after _shutdown_subprocess has cleared _proc, and the only thing that makes
         # the previous worker's stderr worthless is a new worker taking its place.
         self._retire_stderr_capture()
+        # A fresh worker has not been stopped by anybody yet.
+        self._worker_stopped_deliberately = False
         try:
             from utils.worker_stderr import WorkerStderrCapture
             self._stderr_capture = WorkerStderrCapture(prefix = "unsloth-inference-worker-")
@@ -855,6 +864,11 @@ class InferenceOrchestrator:
         handle and refuse the destructive sidecar swap."""
         self._stop_dispatcher()  # before killing subprocess
         if self._proc is None or not self._proc.is_alive():
+            # It was already gone when we asked. A nonzero status is a crash nobody was
+            # waiting on, and its stderr is still the only account of it, so that one keeps
+            # its replay; a clean exit has nothing to report.
+            exitcode = getattr(self._proc, "exitcode", 0) if self._proc is not None else 0
+            self._worker_stopped_deliberately = exitcode == 0
             self._proc = None
             return True
 
@@ -905,6 +919,11 @@ class InferenceOrchestrator:
             )
             return False
 
+        # We asked for this one, down to the terminate and the kill, so its exit status and
+        # whatever it wrote on the way out are not a crash report. Without this, every model
+        # switch and every application shutdown replayed a healthy worker's stderr at ERROR
+        # with `pid=None, exitcode=None` and read as a crash in the operator's log.
+        self._worker_stopped_deliberately = True
         self._proc = None
         self._cmd_queue = None
         self._resp_queue = None
@@ -1024,7 +1043,11 @@ class InferenceOrchestrator:
             worker_is_gone = proc is None or not proc.is_alive()
         except Exception:  # noqa: BLE001 -- a handle in teardown; treat it as gone
             worker_is_gone = True
-        if worker_is_gone:
+        # A worker WE stopped is not a crash report. `_shutdown_subprocess_locked` clears
+        # `_proc` once it is down, so without this flag every model switch and every
+        # application shutdown replayed a healthy worker's stderr at ERROR with
+        # `pid=None, exitcode=None`, duplicating output that was forwarded at the time.
+        if worker_is_gone and not getattr(self, "_worker_stopped_deliberately", False):
             self._log_worker_stderr_once(
                 getattr(proc, "pid", None),
                 getattr(proc, "exitcode", None),
@@ -1119,6 +1142,8 @@ class InferenceOrchestrator:
         raw = self._worker_stderr_tail()
         if not raw:
             return
+        # The record marks are for this parent to read, not for the operator to look at.
+        raw = raw.replace(_LOG_RECORD_START_MARK, "")
         logger.error(
             "Inference worker stderr (pid=%s, exitcode=%s):\n%s",
             pid,

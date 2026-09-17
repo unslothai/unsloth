@@ -966,6 +966,8 @@ def test_a_path_component_with_punctuation_in_it_is_still_redacted():
 
 
 MARK = "    | "
+# The invisible mark the same writer puts on a record's FIRST line.
+START_MARK = "\x1f"
 
 
 def test_the_worker_marks_every_continuation_line_of_a_record():
@@ -1001,7 +1003,8 @@ def test_the_worker_marks_every_continuation_line_of_a_record():
     )
     formatted = handler.formatter.format(record)
     lines = formatted.split("\n")
-    assert lines[0].startswith("ERROR unsloth-test-marking:"), lines
+    # The first line carries the invisible record mark, the rest the continuation prefix.
+    assert lines[0].startswith(START_MARK + "ERROR unsloth-test-marking:"), lines
     assert all(line.startswith(MARK) for line in lines[1:]), lines
 
     single = logger_object.makeRecord(
@@ -1013,10 +1016,38 @@ def test_the_worker_marks_every_continuation_line_of_a_record():
         (),
         None,
     )
-    assert "\n" not in handler.formatter.format(single)
+    one_line = handler.formatter.format(single)
+    assert "\n" not in one_line
+    # Marked too, which is the whole point: a single-line record through a default formatter
+    # is otherwise the same bytes a dying runtime writes.
+    assert one_line.startswith(START_MARK), repr(one_line)
 
+
+def test_a_default_formatter_record_is_not_mistaken_for_a_crash():
+    """The hole the first-line mark closes.
+
+    `logging.error("RuntimeError: ...")` through `logging.lastResort`, or any handler on the
+    default formatter, writes exactly the bytes a dying runtime writes: one line, at column 0,
+    with no timestamp or logger name to recognise it by. Classified as crash output, it was
+    handed to whoever was waiting when a later request killed the shared worker without
+    writing a diagnostic of its own.
+    """
+    # Alone in the capture: the worker was killed outright afterwards and wrote nothing of
+    # its own, so there is no crash to report and the tail must be empty.
+    logged = START_MARK + "RuntimeError: another account's prompt was rejected\n"
+    assert _orchestrator_with_capture(logged)._public_worker_stderr_tail() == ""
+
+    # And with a real abort after it, that abort is what is delivered, not the record.
+    public = _orchestrator_with_capture(
+        logged
+        + "Fatal Python error: Aborted\n"
+        + "  File \"/home/alice/.unsloth/studio/worker.py\", line 9, in handle\n"
+    )._public_worker_stderr_tail()
+    assert "another account" not in public, public
+    assert "Fatal Python error: Aborted" in public, public
 
 def test_a_logged_traceback_is_not_returned_when_the_worker_dies_silently():
+
     """The case a later diagnostic cannot rescue. One request raises a handled error, its
     traceback is logged, the worker keeps running, and a LATER request ends it by SIGKILL
     or the OOM killer, which write nothing at all. The last traceback in the capture is
@@ -1145,6 +1176,39 @@ def test_a_live_replacements_own_crash_is_still_written_to_the_log(monkeypatch):
     # And THAT one is final: the exit has been reported, so nothing replays it again.
     orchestrator._subprocess_crash_message("generation", with_worker_output = True)
     assert len(written) == 2, written
+
+
+def test_a_worker_we_stopped_on_purpose_is_not_replayed_as_a_crash(monkeypatch):
+    """`_shutdown_subprocess_locked` clears `_proc` once the worker is down, so the retirement
+    that follows a model switch or an application shutdown sees no handle at all. Replaying
+    there logged a healthy worker's already-forwarded stderr at ERROR with `pid=None,
+    exitcode=None`, so every routine switch read as a crash and duplicated its output."""
+    import importlib.util as _ilu
+
+    spec = _ilu.spec_from_file_location(
+        "inference_orchestrator_deliberate_stop_under_test",
+        Path(_BACKEND_DIR) / "core/inference/orchestrator.py",
+    )
+    module = _ilu.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    written: "list[tuple]" = []
+    monkeypatch.setattr(
+        module.logger, "error", lambda *args, **kwargs: written.append(args), raising = False,
+    )
+
+    orchestrator = module.InferenceOrchestrator.__new__(module.InferenceOrchestrator)
+    orchestrator._stderr_capture = _FixedCapture("loading shards: 100%\n")
+    orchestrator._proc = None
+    orchestrator._worker_stopped_deliberately = True
+    orchestrator._retire_stderr_capture()
+    assert written == [], written
+
+    # And a worker that went down on its own still is replayed: the flag is about who asked.
+    orchestrator._stderr_capture = _FixedCapture("Fatal Python error: Aborted\n")
+    orchestrator._worker_stopped_deliberately = False
+    orchestrator._retire_stderr_capture()
+    assert written, "an unattended crash was skipped because a previous stop was deliberate"
 
 
 def test_a_worker_that_died_between_requests_is_replayed_before_its_sink_closes(monkeypatch):
@@ -1395,7 +1459,7 @@ def test_the_marking_covers_the_last_resort_handler(_logging_restored):
         "unsloth-test-lastresort", logging.ERROR, __file__, 1, "one\ntwo\nthree", (), None
     )
     lines = logging.lastResort.format(record).split("\n")
-    assert lines[0] == "one", lines
+    assert lines[0] == START_MARK + "one", lines
     assert all(line.startswith(MARK) for line in lines[1:]), lines
 
 
@@ -1422,7 +1486,7 @@ def test_a_handler_installed_after_startup_is_marked_too(_logging_restored):
     # And a library that sets its formatter AFTER the handler is installed does not undo it.
     handler.setFormatter(logging.Formatter("%(levelname)s %(message)s"))
     formatted = handler.format(record)
-    assert formatted.split("\n")[0] == "ERROR one", formatted
+    assert formatted.split("\n")[0] == START_MARK + "ERROR one", formatted
     assert formatted.split("\n")[1].startswith(MARK), formatted
 
     # Clearing the formatter falls back to logging's default, which marks nothing, so that
