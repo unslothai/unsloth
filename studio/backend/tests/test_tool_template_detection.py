@@ -47,12 +47,10 @@ def _renders_catalog(template, **context):
 @pytest.mark.parametrize(
     ("name", "detected"),
     [
-        # Aliases the catalog and renders the alias. The old substring scan matched
-        # none of its spellings and reported it tool-less, which is the bug.
+        # Aliases the catalog and renders the alias; no marker matched. The bug.
         ("granite-3.3", True),
-        # Accumulates the catalog into a namespace field inside the guard and renders
-        # that field outside it, so nothing is emitted where the walk can see the
-        # guard. The marker scan matched its `{%- if tools -%}` and this has to agree.
+        # Fills a namespace field inside the guard, renders it outside, so nothing
+        # is emitted where the walk sees the guard. The marker scan said yes.
         ("lfm2-tool", True),
         # Names a `tools` variable but never renders anything derived from it.
         ("phi-4-mini", False),
@@ -124,33 +122,27 @@ def test_guard_spellings(template, detected):
         ("{% set a = tools %}{% set b = a %}{{ b|tojson }}", True),
         ("{% if tools %}{% set c = tools %}{% endif %}{{ c|tojson }}", True),
         ("{% set catalog = tools %}{{ catalog|length }}", False),
-        # A name rebound to something that is not the caller's catalog stops being
-        # one. THUDM/glm-4-9b-chat reads `tools` off a message, inside the same
-        # branch that then renders it, so it does not consume what Studio passes in.
+        # glm-4-9b-chat reads `tools` off a message inside the branch that renders
+        # it, so it never consumes what Studio passes in.
         ("{% set tools = item['tools'] %}{{ tools|tojson }}", False),
         ("{% set tools = none %}{{ tools }}", False),
         ("{% set catalog = tools %}{% set catalog = [] %}{{ catalog|tojson }}", False),
-        # A loop over the catalog hands each item to the loop variable, and a
-        # namespace field written from one holds the catalog. LiquidAI's LFM2 builds
-        # its whole tool block this way, outside any guard the walk can see.
+        # LFM2 builds its whole tool block this way: loop variable to namespace
+        # field, rendered outside any guard the walk can see.
         ("{% set ns = namespace(p='') %}{% for t in tools %}"
          "{% set ns.p = ns.p + (t|tojson) %}{% endfor %}{{ ns.p }}", True),
         ("{% set ns = namespace(c=none) %}{% set ns.c = tools %}{{ ns.c|tojson }}", True),
         ("{% set ns = namespace(c=none) %}{% set ns.c = messages %}{{ ns.c|tojson }}", False),
         ("{% set a, b = tools, none %}{{ a|tojson }}", True),
-        # A rebinding inside a branch that may not run must not follow the walk out:
-        # with the branch skipped the caller's catalog is still there and still
-        # renders. The unconditional cases above stay False, which is what keeps
-        # glm-4-9b-chat and granite-guardian's own rebindings meaningful.
+        # Skip the branch and the catalog is still bound, so a rebinding inside one
+        # must not follow the walk out. The unconditional cases above still kill.
         ("{% if legacy %}{% set tools = none %}{% endif %}{{ tools|tojson }}", True),
         ("{% if legacy %}{% set tools = none %}{% else %}{{ tools|tojson }}{% endif %}", True),
         ("{% if a %}{% if b %}{% set tools = none %}{% endif %}{% endif %}{{ tools|tojson }}", True),
         ("{% if a %}x{% elif b %}{% set tools = none %}{% endif %}{{ tools|tojson }}", True),
         ("{% for m in messages %}{% set tools = m.tools %}{% endfor %}{{ tools|tojson }}", True),
         ("{% macro unused() %}{% set tools = none %}{% endmacro %}{{ tools|tojson }}", True),
-        # A rebinding on EVERY arm is still a rebinding: there is no path left where
-        # the catalog survives, so an exhaustive chain has to kill it. Without this
-        # the branch rule above would turn every `{% if %}/{% else %}` into a yes.
+        # On EVERY arm there is no surviving path, so an exhaustive chain kills.
         ("{% if x %}{% set tools = none %}{% else %}{% set tools = none %}{% endif %}"
          "{{ tools|tojson }}", False),
         ("{% set c = tools %}{% if x %}{% set c = [] %}{% else %}{% set c = [] %}"
@@ -159,26 +151,20 @@ def test_guard_spellings(template, detected):
          "{% else %}{% set tools = none %}{% endif %}{{ tools|tojson }}", False),
         # One arm leaving it alone is a path where it survives.
         ("{% if x %}{% set tools = none %}{% else %}prose{% endif %}{{ tools|tojson }}", True),
-        # The loop variable is undefined after `{% endfor %}`, so it must not carry
-        # the catalog out with it.
+        # Undefined after `{% endfor %}`, so it carries nothing out.
         ("{% for t in tools %}{% endfor %}{{ t|tojson }}", False),
         ("{% for t in tools %}{% endfor %}"
          "{% for t in messages %}{{ t.content }}{% endfor %}", False),
-        # A tuple target binds and rebinds the same way a plain name does. Reading it
-        # only one way round would let `{% set tools, flag = none, false %}` keep the
-        # catalog it just threw away.
+        # A tuple target binds and rebinds like a plain name, both ways round.
         ("{% set tools, flag = none, false %}{{ tools|tojson }}", False),
         ("{% set a, b = tools, none %}{% set a, b = none, none %}{{ a|tojson }}", False),
-        # A branch that only runs when tools exist stores tool-conditional content,
-        # whatever the value is. The marker scan matched this shape, so a
-        # catalog-only rule would lose tool support the old code had.
+        # Stored under a tools guard, so tool-conditional whatever the value is.
         ("{% set intro = '' %}{% if tools %}{% set intro = 'You may call functions.' %}"
          "{% endif %}{{ intro }}", True),
         ("{% set intro = '' %}{% if enable_thinking %}{% set intro = 'Think.' %}"
          "{% endif %}{{ intro }}", False),
-        # The tool-role check can sit inside the output expression itself, and a
-        # tools-gated branch can store its instructions through a side effect. The
-        # marker scan matched both spellings.
+        # The check can sit in the output expression, and a guarded branch can
+        # store its instructions through a side effect. Markers matched both.
         ("{{ message.content if message.role == 'tool' else '' }}", True),
         ("{{ message.content if message.role != 'tool' else '' }}", False),
         ("{{ message.content if message.role == 'user' else '' }}", False),
@@ -187,19 +173,17 @@ def test_guard_spellings(template, detected):
          "{{ ns.lines|join(',') }}", True),
         ("{% set ns = namespace(lines=[]) %}{% if enable_thinking %}"
          "{% do ns.lines.append('Think') %}{% endif %}{{ ns.lines|join(',') }}", False),
-        # `.get('tool_calls')` is the same member read spelled as a call. The marker
-        # scan matched the `tool_calls is defined` such a template tends to carry.
+        # `.get('tool_calls')` is the same member read spelled as a call.
         ("{% set tool_calls = message.get('tool_calls') %}"
          "{% if tool_calls is defined %}{{ tool_calls }}{% endif %}", True),
         ("{% set tc = message.get('tool_calls') %}{% if tc %}{{ tc }}{% endif %}", True),
         ("{% set x = message.get('content') %}{{ x }}", False),
-        # A stored predicate renders what the inline one does, so it answers the same.
+        # A stored predicate renders what the inline one does.
         ("{% set handles_tool = message.role == 'tool' %}"
          "{% if handles_tool %}{{ message.content }}{% endif %}", True),
         ("{% set is_user = message.role == 'user' %}"
          "{% if is_user %}{{ message.content }}{% endif %}", False),
-        # A loop's inline filter is a guard like any other. The marker scan matched
-        # this spelling of the tool-role check, so missing it loses tool support.
+        # A loop's inline filter is a guard like any other.
         ("{% for m in messages if m.role == 'tool' %}{{ m.content }}{% endfor %}", True),
         ('{% for m in messages if m["role"] == "tool" %}{{ m.content }}{% endfor %}', True),
         ("{% for m in messages if m.role != 'tool' %}{{ m.content }}{% endfor %}", False),
@@ -279,9 +263,8 @@ def test_a_guarded_branch_counts_even_without_naming_the_catalog():
 
 
 # ── robustness ──────────────────────────────────────────────────────────────
-# Named rather than generated: pytest puts the full id in PYTEST_CURRENT_TEST, and
-# Windows refuses an environment variable over 32767 characters, so the 5000-repeat
-# case errors at setup on windows-latest while passing everywhere else.
+# Named, not generated: pytest exports the id in PYTEST_CURRENT_TEST and Windows
+# refuses an env var over 32767 characters, which the 5000-repeat id exceeds.
 @pytest.mark.parametrize(
     "template",
     [

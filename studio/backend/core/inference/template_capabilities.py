@@ -49,8 +49,7 @@ def _field(node):
         return node.attr
     if isinstance(node, nodes.Getitem) and isinstance(node.arg, nodes.Const):
         return node.arg.value
-    # `.get('tool_calls')` is the same read spelled as a call, and the marker scan
-    # matched the `tool_calls is defined` a template normalising one tends to write.
+    # `.get('tool_calls')` is the same read spelled as a call.
     if (isinstance(node, nodes.Call) and isinstance(node.node, nodes.Getattr)
             and node.node.attr == "get" and node.args
             and isinstance(node.args[0], nodes.Const)):
@@ -118,11 +117,7 @@ def _rebound_names(node):
 
 
 def _receiver_gaining_catalog(node, aliases, guarded = False):
-    """Names `catalog.append(tools)` fills. Handed tool data is assumed kept.
-
-    Under a tools guard the call runs only when tools exist, so the receiver holds
-    tool-conditional content whatever the argument was.
-    """
+    """Names `catalog.append(tools)` fills, or any receiver written under a guard."""
     if not (isinstance(node, nodes.Call) and isinstance(node.node, nodes.Getattr)):
         return set()
     arguments = list(node.args) + [keyword.value for keyword in node.kwargs]
@@ -157,9 +152,8 @@ def _scan(body, aliases, guarded):
     for node in body:
         if isinstance(node, nodes.Output):
             for value in node.nodes:
-                # `{{ m.content if m.role == 'tool' else '' }}` carries its tool-role
-                # check inside the expression, where an `{% if %}` would otherwise
-                # hold it. The marker scan matched that spelling.
+                # `{{ m.content if m.role == 'tool' else '' }}` holds its check in
+                # the expression, where an `{% if %}` usually would.
                 if _is_payload(value) and (
                     guarded
                     or _reads_catalog(value, aliases)
@@ -175,19 +169,14 @@ def _scan(body, aliases, guarded):
             aliases |= _receiver_gaining_catalog(node.node, aliases, guarded)
             if (_reads_catalog(node.node, aliases) or guarded
                     or _checks_tool_role(node.node)):
-                # LiquidAI's LFM2 fills `ns.system_prompt` inside the guard and
-                # renders it outside, so a namespace field has to carry the catalog.
-                # Anything stored under a tools guard counts too, even a constant:
-                # `{% if tools %}{% set intro = 'You may call functions.' %}{% endif %}`
-                # only runs when tools exist, so rendering `intro` later advertises
-                # them - which the marker scan caught and a catalog-only rule misses.
-                # A stored tool-role predicate counts the same way: branching on
-                # `{% set handles_tool = m.role == 'tool' %}` renders exactly what the
-                # inline spelling does, which is already a yes.
+                # Three ways a name comes to hold tool-conditional content: LFM2 fills
+                # `ns.system_prompt` inside the guard and renders it outside; a guard
+                # runs the statement only when tools exist, so even a constant counts;
+                # and a stored `m.role == 'tool'` renders what the inline test does.
                 aliases |= _bound_names(node.target)
             else:
-                # Plain names only: writing one field says nothing about the rest of
-                # the container. glm-4-9b-chat rebinds `tools` off a message.
+                # Plain names only: one field says nothing about the rest of the
+                # container. glm-4-9b-chat rebinds `tools` off a message.
                 aliases -= _rebound_names(node.target)
             continue
 
@@ -211,12 +200,11 @@ def _scan(body, aliases, guarded):
             _join(aliases, arms, exhaustive = bool(node.else_))
         elif isinstance(node, nodes.For):
             over_catalog = _reads_catalog(node.iter, aliases)
-            # `{% for m in messages if m.role == 'tool' %}` keeps its guard in the
-            # loop's own filter, where an `{% if %}` would otherwise hold it.
+            # `{% for m in messages if m.role == 'tool' %}`: the guard is the filter.
             filtered = node.test is not None and (
                 _reads_catalog(node.test, aliases) or _checks_tool_role(node.test)
             )
-            # Each item is catalog data, so the loop variable carries it.
+            # Each item is catalog data, so the loop variable carries it too.
             bound = _bound_names(node.target) if over_catalog else frozenset()
             if _scan_maybe(node.body, aliases, guarded or over_catalog or filtered, bound):
                 return True
