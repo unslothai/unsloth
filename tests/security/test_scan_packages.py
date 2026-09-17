@@ -695,7 +695,23 @@ def _boot():
     exec(os.getenv("UNSLOTH_PAYLOAD"))
 """
     )
-    for label, content, expect_active in (("benign", benign, False), ("attack", attack, True)):
+    # RE_EXEC_EVAL ends on the OPENER, so a window of the matched line alone stopped at
+    # `exec(` and never saw the argument. Splitting the source onto the continuation was a
+    # second bypass, which fixing the same-line form above did not close.
+    split = (
+        benign
+        + """
+def _boot():
+    exec(
+        os.getenv("UNSLOTH_PAYLOAD")
+    )
+"""
+    )
+    for label, content, expect_active in (
+        ("benign", benign, False),
+        ("attack", attack, True),
+        ("attack split over lines", split, True),
+    ):
         findings = [
             f
             for f in sp.check_py_file(content, "unsloth_zoo/compiler.py", "unsloth_zoo")

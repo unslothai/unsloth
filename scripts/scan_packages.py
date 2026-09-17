@@ -2700,12 +2700,25 @@ def _tokens_in_matches(content: str, *patterns: "re.Pattern") -> "frozenset[str]
     for index, char in enumerate(content):
         if char == "\n":
             starts.append(index + 1)
+    # The same two blanked views _extract_evidence binds its spans with, so the vocabulary
+    # and the evidence read the same lines. RE_EXEC_EVAL ends on the OPENER, so a window of
+    # the matched line alone stopped at `exec(` and never saw an argument written on the
+    # continuation: `exec(\n    os.getenv("PAYLOAD")\n)` spelled only the approved `exec(`
+    # and rode the approval, which fixing the same-line form did not address.
+    lines = content.splitlines()
+    sl_blanked = [_RE_STR_LITERAL.sub("", line) for line in lines]
+    ml_blanked = _blank_code_strings(lines)
     tokens: "set[str]" = set()
     for pattern in patterns:
         for match in pattern.finditer(content):
             head = bisect.bisect_right(starts, match.start()) - 1
             tail = bisect.bisect_left(starts, match.end())
-            window = content[starts[head] : (starts[tail] if tail < len(starts) else len(content))]
+            # Follow the call to its logical close, bounded by the caps that helper already
+            # applies, and never shorter than the match's own span.
+            close = _logical_line_end(sl_blanked, ml_blanked, head + 1)
+            last = max(tail - 1, close - 1)
+            stop = starts[last + 1] if last + 1 < len(starts) else len(content)
+            window = content[starts[head] : stop]
             for found in _RE_ESCALATION_TOKEN.finditer(window):
                 tokens.add(_normalise_escalation_token(found.group(0)))
                 if len(tokens) > _MAX_ESCALATION_TOKENS:
