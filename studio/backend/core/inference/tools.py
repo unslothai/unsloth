@@ -15970,7 +15970,19 @@ def _check_signal_escape_patterns(code: str):
         "socket.getaddrinfo",
         "urllib.request.urlopen",
         "urllib.request.urlretrieve",
-        "urllib3.",
+        # urllib3's connecting surface only: `urllib3.util` is string and retry helpers, and
+        # matching the whole package refused `urllib3.util.parse_url`, which opens nothing.
+        "urllib3.request",
+        "urllib3.connection_from_url",
+        "urllib3.PoolManager",
+        "urllib3.ProxyManager",
+        "urllib3.HTTPConnectionPool",
+        "urllib3.HTTPSConnectionPool",
+        "urllib3.connection.",
+        "urllib3.connectionpool.",
+        "urllib3.poolmanager.",
+        "urllib3.contrib.",
+        "urllib3.util.connection.",
         "requests.get",
         "requests.post",
         "requests.put",
@@ -16007,6 +16019,7 @@ def _check_signal_escape_patterns(code: str):
             for m in ("get", "post", "put", "delete", "patch", "head")
         },
         "requests.request": (1, "url", "url"),
+        "urllib3.request": (1, "url", "url"),
         **{f"httpx.{m}": (0, "url", "url") for m in ("get", "post", "put", "patch", "delete")},
         "httpx.request": (1, "url", "url"),
         "http.client.HTTPConnection": (0, "host", "host"),
@@ -16485,7 +16498,7 @@ def _check_signal_escape_patterns(code: str):
     _scope_parent: dict[int, ast.AST | None] = {id(tree): None}
     _node_scope: dict[int, ast.AST] = {}
     _declared: dict[tuple[int, str], str] = {}
-    _raw_name_stores: list[tuple[ast.AST, str, object]] = []
+    _raw_name_stores: list[tuple[ast.AST, str, object, tuple]] = []
     _name_stores: dict[tuple[int, str], list] = {}
     _attr_stores: dict[tuple[int, str, str], list] = {}
     _model_state: dict[str, bool] = {}
@@ -16512,9 +16525,12 @@ def _check_signal_escape_patterns(code: str):
             return nearest_function or tree
         return scope
 
-    def _add_name_store(scope: ast.AST, name: str, value) -> None:
+    def _position(node: ast.AST) -> tuple:
+        return (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+
+    def _add_name_store(scope: ast.AST, name: str, value, at: ast.AST) -> None:
         # Resolve scopes after collecting bindings so nonlocal can find its owner.
-        _raw_name_stores.append((scope, name, value))
+        _raw_name_stores.append((scope, name, value, _position(at)))
 
     def _record_store(target: ast.AST, value, scope: ast.AST, handled: set) -> None:
         if isinstance(target, (ast.Tuple, ast.List)):
@@ -16524,7 +16540,7 @@ def _check_signal_escape_patterns(code: str):
             _record_store(target.value, None, scope, handled)
         elif isinstance(target, ast.Name):
             handled.add(id(target))
-            _add_name_store(scope, target.id, value)
+            _add_name_store(scope, target.id, value, target)
         elif isinstance(target, ast.Attribute):
             handled.add(id(target))
             if isinstance(target.value, ast.Name):
@@ -16595,9 +16611,9 @@ def _check_signal_escape_patterns(code: str):
                 for alias in node.names:
                     root = alias.name.split(".")[0]
                     if alias.asname:
-                        _add_name_store(scope, alias.asname, ("import", alias.name))
+                        _add_name_store(scope, alias.asname, ("import", alias.name), node)
                     else:
-                        _add_name_store(scope, root, ("import", root))
+                        _add_name_store(scope, root, ("import", root), node)
             elif isinstance(node, ast.ImportFrom):
                 for alias in node.names:
                     if alias.name == "*":
@@ -16607,15 +16623,15 @@ def _check_signal_escape_patterns(code: str):
                         if node.module and not node.level
                         else None
                     )
-                    _add_name_store(scope, alias.asname or alias.name, value)
+                    _add_name_store(scope, alias.asname or alias.name, value, node)
             elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                _add_name_store(scope, node.name, None)
+                _add_name_store(scope, node.name, None, node)
             elif isinstance(node, ast.ExceptHandler) and node.name:
-                _add_name_store(scope, node.name, None)
+                _add_name_store(scope, node.name, None, node)
             elif isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name:
-                _add_name_store(scope, node.name, None)
+                _add_name_store(scope, node.name, None, node)
             elif isinstance(node, ast.MatchMapping) and node.rest:
-                _add_name_store(scope, node.rest, None)
+                _add_name_store(scope, node.rest, None, node)
             if isinstance(node, _FUNCTION_NODES):
                 args = node.args
                 for arg in [
@@ -16626,7 +16642,7 @@ def _check_signal_escape_patterns(code: str):
                     args.kwarg,
                 ]:
                     if arg is not None:
-                        _add_name_store(node, arg.arg, None)
+                        _add_name_store(node, arg.arg, None, arg)
         # Loop and comprehension targets, `+=`, `del` and any other store not given a value above.
         for node in _tree_nodes(tree):
             if (
@@ -16637,12 +16653,12 @@ def _check_signal_escape_patterns(code: str):
                 _record_store(node, None, _node_scope.get(id(node), tree), handled)
         binding = {
             (id(scope), name)
-            for scope, name, _value in _raw_name_stores
+            for scope, name, _value, _pos in _raw_name_stores
             if _declared.get((id(scope), name)) is None
         }
-        for scope, name, value in _raw_name_stores:
+        for scope, name, value, pos in _raw_name_stores:
             key = (id(_store_scope(scope, name, binding)), name)
-            _name_stores.setdefault(key, []).append(value)
+            _name_stores.setdefault(key, []).append((value, pos))
 
     def _scope_model_ready() -> bool:
         if "built" not in _model_state:
@@ -16667,13 +16683,23 @@ def _check_signal_escape_patterns(code: str):
             return None
         scope = _node_scope.get(id(name), tree)
         if _declared.get((id(scope), name.id)) == "global":
-            return _name_stores.get((id(tree), name.id))
+            stores = _name_stores.get((id(tree), name.id))
+            return None if stores is None else [value for value, _pos in stores]
+        read_at = _position(name)
         current: ast.AST | None = scope
         while current is not None:
             key = (id(current), name.id)
             # Methods skip class-local names.
             if key in _name_stores and (current is scope or not isinstance(current, ast.ClassDef)):
-                return _name_stores[key]
+                stores = _name_stores[key]
+                if isinstance(current, ast.ClassDef):
+                    # A class body runs top down, so a read before its first local store sees the
+                    # enclosing scope instead.
+                    stores = [(v, pos) for v, pos in stores if pos < read_at]
+                    if not stores:
+                        current = _scope_parent.get(id(current))
+                        continue
+                return [value for value, _pos in stores]
             current = _scope_parent.get(id(current))
         return None
 

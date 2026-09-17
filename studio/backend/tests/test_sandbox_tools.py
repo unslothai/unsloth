@@ -308,6 +308,25 @@ class TestNetworkTargetResolution:
                 "    requests.get(url)",
                 id = "parameter_with_out_of_policy_fallback",
             ),
+            # A class body runs top down, so this read sees the module value, not the later one.
+            pytest.param(
+                f"import requests\nurl = 'http://{_H}/'\nclass C:\n    requests.get(url)\n"
+                "    url = 'https://pypi.org/'",
+                id = "class_body_read_before_local_store",
+            ),
+            pytest.param(
+                f"import requests\nurl = 'https://pypi.org/'\nclass C:\n    url = 'http://{_H}/'\n"
+                "    requests.get(url)",
+                id = "class_body_read_after_local_store",
+            ),
+            pytest.param(
+                f"import urllib3\nurllib3.request('GET', 'http://{_H}/')",
+                id = "urllib3_request_url_position",
+            ),
+            pytest.param(
+                f"from urllib3.util import connection\nconnection.create_connection(('{_H}', 80))",
+                id = "urllib3_util_connection",
+            ),
             pytest.param(
                 f"import socket\nhost = '{_H}'\ns = socket.socket()\ns.connect((host, 22))\nhost = 'huggingface.co'",
                 id = "socket_tuple_host_rebound_after_call",
@@ -337,6 +356,10 @@ class TestNetworkTargetResolution:
             "import urllib.request\nreq = urllib.request.Request('https://pypi.org/simple/', headers={})\nurllib.request.urlopen(req)",
             "import requests as r\nr.get('https://huggingface.co/api/models')\nr = object()",
             "import requests\nurl = 'https://pypi.org/simple/'\nrequests.get(url)\nurl = 'https://huggingface.co/'",
+            "import requests\nurl = 'https://pypi.org/'\nclass C:\n    requests.get(url)\n    url = 'http://203.0.113.5/'",
+            # urllib3's string helpers open no connection.
+            "from urllib3.util import parse_url\nparse_url('https://example.com/')",
+            "import urllib3\nurllib3.util.parse_url('https://example.com/')",
         ],
     )
     def test_known_trusted_host_runs_without_prompt(self, code):
