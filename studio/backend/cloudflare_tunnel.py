@@ -39,6 +39,10 @@ _NO_URL_RETRY_DELAYS = (2.0, 5.0)
 # request fails in milliseconds and still gets all of them; a network that swallows the request instead
 # burns a full _READY_TIMEOUT per attempt, so stop once the sequence has cost this much.
 _NO_URL_RETRY_BUDGET = 30.0
+# How long stop() gives cloudflared to honour SIGTERM before killing it. The retry budget reserves one
+# of these for the attempt it authorizes, so the attempt's own teardown cannot carry the sequence past
+# the budget. (A SIGKILL the process survives is unbounded by anything here.)
+_STOP_TERM_GRACE = 5.0
 _OUTPUT_TAIL_LINES = 8
 _DOWNLOAD_TIMEOUT = 60
 
@@ -601,11 +605,11 @@ class CloudflareTunnel:
             if proc.poll() is None:
                 proc.terminate()
                 try:
-                    proc.wait(timeout = 5)
+                    proc.wait(timeout = _STOP_TERM_GRACE)
                 except subprocess.TimeoutExpired:
                     proc.kill()
                     try:
-                        proc.wait(timeout = 5)
+                        proc.wait(timeout = _STOP_TERM_GRACE)
                     except Exception:
                         pass
         except Exception:
@@ -1014,7 +1018,8 @@ def start_studio_tunnel(
                 # further attempt have to fit as well, or the budget would bound only where the retry
                 # was authorized and not the sequence it pays for.
                 spent = time.monotonic() - no_url_started
-                if spent + no_url_delays[0] + timeout <= _NO_URL_RETRY_BUDGET:
+                reserved = no_url_delays[0] + timeout + _STOP_TERM_GRACE
+                if spent + reserved <= _NO_URL_RETRY_BUDGET:
                     with _active_lock:
                         # A Stop that landed during the attempt above must not pay out the delay: this
                         # holds _start_lock, so a following Start would queue behind the wait.
