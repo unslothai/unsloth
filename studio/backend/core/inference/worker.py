@@ -1120,6 +1120,13 @@ def run_inference_process(
         service_name = "unsloth-studio-inference-worker",
         env = os.getenv("ENVIRONMENT_TYPE", "production"),
     )
+    # Must follow setup_logging. Structlog records go to fd 1, but a third-party library
+    # logging through stdlib `logging` reaches fd 2 via `logging.lastResort`, and that
+    # traceback is byte-identical to a dying process's: unmarked, the parent hands a
+    # RECOVERED failure to the NEXT caller on a shared worker as their crash.
+    from utils.worker_stderr import mark_log_record_continuations
+
+    mark_log_record_continuations()
 
     apply_gpu_ids(config.get("resolved_gpu_ids"), backend = config.get("device_backend"))
 
