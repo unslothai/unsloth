@@ -31789,7 +31789,7 @@ def _image_url_scheme(url: str) -> str:
     head = url.lstrip(_URL_LEADING_BLANKS)[:_MAX_IMAGE_SCHEME_CHARS]
     if ":" not in head and not _NOT_BASE64.search(head):
         return ""
-    return head.split(":", 1)[0][: _MAX_VIDEO_SCHEME_CHARS].lower()
+    return head.split(":", 1)[0][:_MAX_VIDEO_SCHEME_CHARS].lower()
 
 
 def _remote_image_scheme_rejection(scheme: str) -> Optional[tuple[int, str]]:
