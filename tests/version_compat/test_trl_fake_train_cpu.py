@@ -426,11 +426,18 @@ def test_grpo_trains_on_cpu_through_the_patched_batch_sampler(tmp_path):
             if Trainer.__dict__.get(name) is not value:
                 setattr(Trainer, name, value)
 
-    # Prove the cleanup, rather than trusting it. Identity comparison, so a re-wrapped
-    # method that merely looks the same still fails.
-    assert dict(Trainer.__dict__) == trainer_attributes_before, (
-        "this canary left a patched attribute on the Trainer class, so any later test in "
-        "the same process that reads upstream's own methods is reading Unsloth's instead"
+    # Prove the cleanup, rather than trusting it. `is`, not `==`: a wrapper that merely
+    # compares equal to what it replaced still counts as a leak, and `dict == dict` would
+    # not say so. Naming the attributes also keeps a failure readable; comparing the two
+    # class dicts wholesale prints several hundred entries and no verdict.
+    leaked = [n for n in Trainer.__dict__ if n not in trainer_attributes_before]
+    not_restored = [
+        n for n, v in trainer_attributes_before.items() if Trainer.__dict__.get(n) is not v
+    ]
+    assert not leaked and not not_restored, (
+        "this canary left the Trainer class patched, so any later test in the same process "
+        "that reads upstream's own methods is reading Unsloth's instead: "
+        f"added {leaked}, not restored {not_restored}"
     )
 
     assert seen["calls"] > 0, "the patched batch sampler was never entered"
