@@ -436,8 +436,12 @@ def _flex_attention_gpu_is_supported():
 # ---------------------------------------------------------------------------------------------
 # head_dim > 128: no flash kernel exists, and torch SDPA silently degrades
 # ---------------------------------------------------------------------------------------------
-# SDPA's FLASH and CUDNN backends refuse head_dim > 128, FA3 has no sm100 kernel and FA4's sm100
-# path asserts head_dim in [8, 128]. SDPA therefore falls to memory-efficient, which on Blackwell
+# SDPA's FLASH and CUDNN backends refuse head_dim > 128. FlashAttention does reach 256, but not
+# where we need it: FA3 goes to 256 on sm90 while its build targets 8.0/9.0a only, so the hub
+# build refuses Blackwell outright, and FA4 does define a dedicated (256, 256) sm100 kernel with a
+# backward, but it is not loadable today (the kernels-community build's metadata fails to parse,
+# and the source path imports flash_attn_2_cuda). Recheck this when FA4 packaging settles.
+# SDPA therefore falls to memory-efficient, which on Blackwell
 # dispatches an *sm80* CUTLASS kernel: 21.2% of the CUDA step on Qwen3.5-2B, 12.9% on 35B-A3B, and
 # 2.2-4.8x slower than an unconstrained kernel. Flex has no head-dim ceiling, and its BlockMask from
 # masking_utils.flex_attention_mask carries causality, the 2D padding mask and packed-sequence
