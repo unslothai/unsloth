@@ -61,18 +61,13 @@ export function isStudioChatBackup(value: unknown): value is Dict {
 }
 
 export function studioBackupProjects(backup: Dict): ProjectRecord[] {
-  const referenced = new Set<string>();
-  for (const thread of backup.threads as unknown[]) {
-    const projectId = isDict(thread) ? str(thread.projectId) : null;
-    if (projectId) referenced.add(projectId);
-  }
   const projects: ProjectRecord[] = [];
   if (!Array.isArray(backup.projects)) return projects;
   for (const project of backup.projects) {
     if (!isDict(project)) continue;
     const id = str(project.id);
     const name = str(project.name);
-    if (!id || !name || !referenced.has(id)) continue;
+    if (!id || !name) continue;
     const createdAt = num(project.createdAt) ?? Date.now();
     projects.push({
       id,
@@ -119,8 +114,8 @@ export function studioBackupToConversations(
 
   const conversations: ParsedConversation[] = [];
   threads.forEach((thread, index) => {
-    const source = messagesByThread.get(thread.id as string);
-    if (!source) return;
+    // The export dumps every thread row, and a chat whose only turn was deleted has none left.
+    const source = messagesByThread.get(thread.id as string) ?? [];
     const threadId = threadIds.get(thread.id as string) as string;
     const ordered = source
       .map((message) => ({
@@ -163,7 +158,7 @@ export function studioBackupToConversations(
     const projectId = str(thread.projectId);
     const pairId = str(thread.pairId);
     const modelId = str(thread.modelId);
-    const createdAt = num(thread.createdAt) ?? messages[0].createdAt;
+    const createdAt = num(thread.createdAt) ?? messages[0]?.createdAt ?? Date.now();
     conversations.push({
       title: str(thread.title) ?? `${fallbackTitle} ${index + 1}`,
       threadId,
@@ -182,8 +177,11 @@ export function studioBackupToConversations(
         projectId: projectId && knownProjectIds.has(projectId) ? projectId : null,
         createdAt,
         updatedAt: num(thread.updatedAt) ?? createdAt,
-        ...(forkedFromThreadId && forkedFromMessageId
-          ? { forkedFromThreadId, forkedFromMessageId }
+        ...(forkedFromThreadId
+          ? {
+              forkedFromThreadId,
+              ...(forkedFromMessageId ? { forkedFromMessageId } : {}),
+            }
           : {}),
         ...(isDict(thread.settings)
           ? { settings: thread.settings as ThreadRecord["settings"] }

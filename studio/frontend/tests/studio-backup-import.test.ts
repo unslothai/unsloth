@@ -168,7 +168,10 @@ test("a Studio backup restores one chat per thread, with titles, branches, archi
 
   assert.deepEqual(
     projects.map(({ id, name, instructions, rootPath }) => ({ id, name, instructions, rootPath })),
-    [{ id: "p1", name: "Research", instructions: "Be brief", rootPath: undefined }],
+    [
+      { id: "p1", name: "Research", instructions: "Be brief", rootPath: undefined },
+      { id: "p2", name: "Unused", instructions: "", rootPath: undefined },
+    ],
   );
 
   const tripMessages = messages.get(trip.id) as MessageRecord[];
@@ -198,7 +201,7 @@ test("importing the same backup twice reuses the project and never reuses a thre
   const ids = [...messages.values()].flat().map(({ id }) => id);
   assert.equal(ids.length, 10);
   assert.equal(new Set(ids).size, 10);
-  assert.equal(projects.length, 1);
+  assert.deepEqual(projects.map(({ id }) => id), ["p1", "p2"]);
 });
 
 test("an existing project is left as it is, and importing into a project overrides the backup's", async () => {
@@ -211,7 +214,8 @@ test("an existing project is left as it is, and importing into a project overrid
   };
   const kept = harness([renamed]);
   await kept.module.importConversationsFromSource(sourceOf("backup.json", backup()));
-  assert.deepEqual(kept.projects, [renamed]);
+  assert.equal(kept.projects[0], renamed);
+  assert.deepEqual(kept.projects.map(({ id }) => id), ["p1", "p2"]);
   assert.equal(kept.threads.find(({ title }) => title === "Trip plan")?.projectId, "p1");
 
   const into = harness();
@@ -325,4 +329,51 @@ test("restored messages carry no link to the server run that produced them", asy
     custom: { note: "kept" },
   });
   assert.deepEqual(assistant?.content, [{ type: "text", text: "hello" }]);
+});
+
+test("a chat whose last message was deleted comes back, and so does a project with no chats", async () => {
+  const data = backup();
+  data.threads.push({
+    id: "t3",
+    title: "Emptied out",
+    modelType: "base",
+    projectId: "p3",
+    archived: false,
+    createdAt: 3000,
+    updatedAt: 3100,
+  });
+  data.projects.push({
+    id: "p3",
+    name: "Nothing in it yet",
+    instructions: "notes here",
+    archived: false,
+    createdAt: 5,
+    updatedAt: 5,
+  });
+  const { module, threads, messages, projects } = harness();
+
+  const result = await module.importConversationsFromSource(sourceOf("backup.json", data));
+
+  assert.deepEqual(result, { imported: 3, failed: 0 });
+  const emptied = threads.find(({ title }) => title === "Emptied out") as ThreadRecord;
+  assert.notEqual(emptied, undefined);
+  assert.equal(emptied.createdAt, 3000);
+  assert.equal(emptied.updatedAt, 3100);
+  assert.equal(emptied.projectId, "p3");
+  assert.deepEqual(messages.get(emptied.id), []);
+  assert.deepEqual(projects.map(({ id }) => id).sort(), ["p1", "p2", "p3"]);
+});
+
+test("a fork keeps its badge when only the branch-point message is gone", async () => {
+  const data = backup();
+  data.messages = data.messages.filter(({ id }) => id !== "m2");
+  data.messages = data.messages.map((m) => (m.parentId === "m2" ? { ...m, parentId: "m1" } : m));
+  const { module, threads } = harness();
+
+  await module.importConversationsFromSource(sourceOf("backup.json", data));
+
+  const trip = threads.find(({ title }) => title === "Trip plan") as ThreadRecord;
+  const recipe = threads.find(({ title }) => title === "Old recipe") as ThreadRecord;
+  assert.equal(recipe.forkedFromThreadId, trip.id);
+  assert.equal(recipe.forkedFromMessageId, undefined);
 });
