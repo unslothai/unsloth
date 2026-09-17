@@ -252,6 +252,19 @@ class TestNetworkTargetResolution:
                 f"import socket\nsocket.create_connection(address=('{_H}', 22))",
                 id = "socket_address_keyword",
             ),
+            # A rebinding elsewhere cannot un-import the module the call already reaches.
+            pytest.param(
+                f"import requests as r\nr.get('http://{_H}/')\nr = object()",
+                id = "module_alias_rebound_after_call",
+            ),
+            pytest.param(
+                f"import requests\nfetch = requests.get\nfetch('http://{_H}/')\nfetch = print",
+                id = "function_alias_rebound_after_call",
+            ),
+            pytest.param(
+                f"import requests as r\nfor _ in range(2):\n    r.get('http://{_H}/')\n    r = object()",
+                id = "module_alias_rebound_in_loop",
+            ),
         ],
     )
     def test_known_untrusted_host_blocked(self, code):
@@ -270,6 +283,7 @@ class TestNetworkTargetResolution:
             "import requests\nname = input()\nrequests.get(f'https://huggingface.co/api/models/{name}')",
             "from requests import get\nget('https://pypi.org/simple/')",
             "import urllib.request\nreq = urllib.request.Request('https://pypi.org/simple/', headers={})\nurllib.request.urlopen(req)",
+            "import requests as r\nr.get('https://huggingface.co/api/models')\nr = object()",
         ],
     )
     def test_known_trusted_host_runs_without_prompt(self, code):

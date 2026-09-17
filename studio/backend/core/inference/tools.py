@@ -16684,16 +16684,23 @@ def _check_signal_escape_patterns(code: str):
             parts.insert(0, cur.attr)
             cur = cur.value
         if isinstance(cur, ast.Name):
-            values = _name_values(cur)
-            if values and len(values) == 1:
-                value = values[0]
+            bases: list[str] = []
+            for value in _name_values(cur) or []:
                 if isinstance(value, tuple):
-                    return ".".join([value[1], *parts])
+                    bases.append(value[1])
                 # Follow assigned module and function aliases.
-                if isinstance(value, (ast.Name, ast.Attribute)) and id(value) not in seen:
-                    base = _resolved_fq(value, seen | {id(value)})
-                    if base:
-                        return ".".join([base, *parts])
+                elif isinstance(value, (ast.Name, ast.Attribute)) and id(value) not in seen:
+                    bases.append(_resolved_fq(value, seen | {id(value)}))
+                else:
+                    bases.append("")
+            # Rebinding the name elsewhere does not undo the import this call can reach, so a
+            # store naming a network module outranks the stores that resolve to nothing.
+            base = next(
+                (b for b in bases if b and b.split(".")[0] in _NETWORK_MODULE_ROOTS),
+                bases[0] if len(set(bases)) == 1 else "",
+            )
+            if base:
+                return ".".join([base, *parts])
             parts.insert(0, cur.id)
         return ".".join(parts) if parts else ""
 
