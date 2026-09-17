@@ -44,7 +44,20 @@ test("the dialog mounts only once opened", () => {
 // A local GGUF file has no Hub repo, so looking one up would 404 against whatever the path's
 // basename happens to collide with.
 test("local-path rows do not offer Hub info", () => {
-  assert.match(PICKERS, /info=\{isLocalPath \? undefined : \{ repoId \}\}/);
+  assert.match(
+    PICKERS,
+    /info=\{\s*isLocalPath \? undefined : \{ repoId, variant: v\.quant \}\s*\}/,
+  );
+});
+
+// The local header probe reads one file, so a row naming a quant has to say which.
+test("rows that name a quant pass it to the info panel", () => {
+  const infos = PICKERS.match(/\n\s*info=\{[^}]*\}[^}]*\}/g) ?? [];
+  const withVariant = infos.filter((i) => i.includes("variant:"));
+  assert.ok(
+    withVariant.length >= 3,
+    `expected the quant-bearing rows to pass a variant, saw ${withVariant.length}`,
+  );
 });
 
 test("every row menu in the picker passes a repo to look up", () => {
@@ -132,4 +145,24 @@ test("disk-only actions stay behind the downloaded guard", () => {
     /onDeleteVariant && \(v\.downloaded \|\| v\.partial === true\)/,
     "delete should be withheld for a variant that is not on disk",
   );
+});
+
+// The template is already in hand from the header read, so the viewer must not refetch it.
+test("the chat template row opens a read-only viewer", () => {
+  assert.match(DIALOG, /ChatTemplateEditorDialog/);
+  assert.match(DIALOG, /readOnly=\{true\}/, "the panel does not configure the model");
+  assert.match(
+    DIALOG,
+    /fact\.key === "chatTemplate" && template/,
+    "only an embedded template is clickable",
+  );
+  assert.match(DIALOG, /defaultTemplate=\{template\}/, "viewer reads the probed template");
+});
+
+// Popularity and the restated licence verdict were both dropped from the panel.
+test("the panel does not restate the licence or show popularity", () => {
+  assert.doesNotMatch(DIALOG, /"Downloads"/);
+  assert.doesNotMatch(DIALOG, /"Likes"/);
+  // The verdict line survives only for screen readers.
+  assert.match(DIALOG, /DialogDescription className="sr-only"/);
 });

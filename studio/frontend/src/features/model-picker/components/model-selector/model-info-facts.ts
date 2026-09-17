@@ -7,7 +7,6 @@
 
 import { formatBytes } from "@/features/hub/lib/format";
 import { detectLicense } from "@/features/hub/lib/model-capabilities";
-import { formatCompact } from "@/lib/utils";
 import { type LicenseOpenness, classifyLicense } from "./license-openness";
 
 // Deliberately not imported from @/features/hub/lib/view-models: that barrel re-exports the
@@ -37,8 +36,6 @@ export const MODEL_INFO_FIELDS = [
   "library",
   "task",
   "languages",
-  "downloads",
-  "likes",
   "created",
   "updated",
   "access",
@@ -71,11 +68,6 @@ export interface ModelInfoMeta {
   languages?: string[];
   gated?: boolean;
   isPrivate?: boolean;
-}
-
-/** A count HF actually returned, including a real 0. `undefined` means "not reported". */
-function isReportedCount(n: number | undefined): n is number {
-  return typeof n === "number" && Number.isFinite(n) && n >= 0;
 }
 
 // The API returns dates as ISO strings or Date objects, and occasionally something that
@@ -169,24 +161,6 @@ export function modelInfoFacts(meta: ModelInfoMeta): ModelInfoFact[] {
       ...(meta.languages.length > 4
         ? { detail: meta.languages.map((l) => l.toUpperCase()).join(", ") }
         : {}),
-    });
-  }
-
-  // A brand-new repo genuinely has 0 downloads; reporting that is more honest than
-  // hiding the row and implying the number is unknown.
-  if (isReportedCount(meta.downloads)) {
-    facts.push({
-      key: "downloads",
-      label: "Downloads",
-      value: formatCompact(meta.downloads),
-    });
-  }
-
-  if (isReportedCount(meta.likes)) {
-    facts.push({
-      key: "likes",
-      label: "Likes",
-      value: formatCompact(meta.likes),
     });
   }
 

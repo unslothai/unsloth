@@ -28,6 +28,9 @@ interface ChatTemplateEditorDialogProps {
   defaultLoading: boolean;
   onSave: (override: string | null) => void;
   readOnly?: boolean;
+  /** Replaces the read-only blurb, whose default explains a backend that cannot take a
+   *  custom template. A viewer opened for another reason says its own. */
+  description?: string;
 }
 
 export function ChatTemplateEditorDialog({
@@ -38,6 +41,7 @@ export function ChatTemplateEditorDialog({
   defaultLoading,
   onSave,
   readOnly = false,
+  description,
 }: ChatTemplateEditorDialogProps) {
   const [draft, setDraft] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -112,9 +116,10 @@ export function ChatTemplateEditorDialog({
             {readOnly ? "Chat Template" : "Edit Chat Template"}
           </DialogTitle>
           <DialogDescription>
-            {readOnly
-              ? "This is the model's chat template. This model's backend cannot take a custom one, so it is view only."
-              : "Override the model's chat template with custom Jinja. The change applies when the model loads. Saving an empty template or one that matches the default clears the override."}
+            {description ??
+              (readOnly
+                ? "This is the model's chat template. This model's backend cannot take a custom one, so it is view only."
+                : "Override the model's chat template with custom Jinja. The change applies when the model loads. Saving an empty template or one that matches the default clears the override.")}
           </DialogDescription>
         </DialogHeader>
         <Textarea

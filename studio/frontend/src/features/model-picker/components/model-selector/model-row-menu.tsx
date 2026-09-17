@@ -63,6 +63,8 @@ interface ModelRowMenuPin {
  *  repo on the Hub to report on. */
 interface ModelRowMenuInfo {
   repoId: string;
+  /** Quant whose local header to read, when the row names one. */
+  variant?: string | null;
 }
 
 interface ModelRowMenuUpdate {
@@ -344,6 +346,7 @@ export function ModelRowMenu({
       {info && infoOpen && (
         <ModelInfoDialog
           repoId={info.repoId}
+          variant={info.variant}
           open={infoOpen}
           onOpenChange={setInfoOpen}
         />

@@ -2276,7 +2276,9 @@ function GgufVariantExpander({
                       ? undefined
                       : { repoId, variant: v.quant }
                   }
-                  info={isLocalPath ? undefined : { repoId }}
+                  info={
+                    isLocalPath ? undefined : { repoId, variant: v.quant }
+                  }
                   pin={
                     allowPin && v.downloaded
                       ? {
@@ -5642,7 +5644,7 @@ export function HubModelPicker({
           <ModelRowMenu
             ariaLabel={`More options for ${entry.repoId} ${entry.quant}`}
             cachePath={{ repoId: entry.repoId, variant: entry.quant }}
-            info={{ repoId: entry.repoId }}
+            info={{ repoId: entry.repoId, variant: entry.quant }}
             pin={{
               pinned: true,
               pinLabel: "Pin to top",
@@ -5772,7 +5774,7 @@ export function HubModelPicker({
           <ModelRowMenu
             ariaLabel={`More options for ${c.repo_id} ${variant.quant}`}
             cachePath={{ repoId: c.repo_id, variant: variant.quant }}
-            info={{ repoId: c.repo_id }}
+            info={{ repoId: c.repo_id, variant: variant.quant }}
             pin={{
               pinned: isPinned,
               pinLabel: "Pin to top",

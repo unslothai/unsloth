@@ -67,16 +67,11 @@ test("absent values drop their row instead of rendering a placeholder", () => {
 
 // Zero downloads is a fact HF actually returned; dropping it would misreport a real
 // new repo as "unknown". This is the case a plain `if (!value)` guard gets wrong.
-test("a real zero is kept, not treated as missing", () => {
-  const fact = factFor({ id: "acme/new", downloads: 0, likes: 0 }, "downloads");
-  assert.ok(fact, "zero downloads dropped");
-  assert.match(fact.value, /0/);
-});
-
-test("large counts are abbreviated rather than printed in full", () => {
-  const downloads = factFor(FULL, "downloads");
-  assert.ok(downloads);
-  assert.doesNotMatch(downloads.value, /1234567/);
+// Popularity is not a property of the model, and the Hub page one click away shows it.
+test("downloads and likes are not rendered", () => {
+  const keys = modelInfoFacts(FULL).map((f) => f.key);
+  assert.ok(!keys.includes("downloads" as never), "downloads row is gone");
+  assert.ok(!keys.includes("likes" as never), "likes row is gone");
 });
 
 test("parameter count reads in billions", () => {
