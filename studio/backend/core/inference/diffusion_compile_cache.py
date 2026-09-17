@@ -29,6 +29,26 @@ Lifecycle (around ``_compile_repeated_blocks``): ``begin`` builds the fingerprin
 first compiled forward); ``save`` writes the bundle + manifest after the warmup forward
 (on by default, a hit skips the rewrite); ``restore`` resets the inductor dir on unload.
 All env-gated and best-effort; torch imported lazily.
+
+The generate path calls ``save_async``, not ``save``: the write is pure bookkeeping for
+the NEXT process, so making a user wait on it buys them nothing. Measured on a B200
+(Z-Image-Turbo, speed=max, torch 2.11): a 42.7 MB bundle costs 0.088 s to serialise plus
+0.033 s to write, a 71.1 MB one 0.130 s plus 0.057 s, so roughly 2.6 ms per MB, and the
+docstring's batched-GGUF bundles are far larger than either. ``save`` itself is unchanged
+and still synchronous, for tests and for anyone who needs the write to have happened by
+the time the call returns.
+
+ON-DISK LAYOUT, per key dir: ``manifest.json`` plus one or more ``bundle-<sha16>.bin``.
+The bundle is CONTENT-ADDRESSED and the manifest names the one it is paired with, so the
+manifest is the single commit point: a save writes a file no reader is using, then
+publishes the manifest naming it, then collects the bundles no manifest names. Killed
+anywhere in between, what is on disk is still a matching pair, either the old one (the
+new bundle is an orphan) or the new one. That matters because a save runs on a daemon
+thread that interpreter exit can kill mid-write: writing one fixed ``cache.bin`` in place
+would leave the old manifest paired with a new bundle, and the sha256 check on load would
+then throw away a warm start that was perfectly good. Manifests without a ``bundle`` key
+are pre-content-addressing and name ``cache.bin``, so old bundles keep hitting; the format
+version is deliberately NOT bumped, since bumping it is what would invalidate them.
 """
 
 from __future__ import annotations
@@ -37,6 +57,8 @@ import dataclasses
 import hashlib
 import json
 import os
+import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -46,15 +68,49 @@ from typing import Any, Optional
 # 22.2 s, bit-identical, 7.9 MB bundle. The rest is dynamo tracing + guards, which Mega-cache does not capture.
 # UNSLOTH_DIFFUSION_COMPILE_CACHE_DIR: root dir for bundles (default under the workspace).
 # UNSLOTH_DIFFUSION_COMPILE_CACHE_SAVE: 0 disables the auto save (load-only); 1 keeps it.
+# UNSLOTH_DIFFUSION_COMPILE_CACHE_SYNC: 1 makes save_async write inline on the calling thread, as it did before the
+# background worker existed. For tests and for debugging a save that looks like it never ran.
 _ENV_MODE = "UNSLOTH_DIFFUSION_COMPILE_CACHE"
 _ENV_DIR = "UNSLOTH_DIFFUSION_COMPILE_CACHE_DIR"
 _ENV_SAVE = "UNSLOTH_DIFFUSION_COMPILE_CACHE_SAVE"
+_ENV_SYNC = "UNSLOTH_DIFFUSION_COMPILE_CACHE_SYNC"
 
 _DEFAULT_ROOT = Path.home() / ".cache" / "unsloth" / "diffusion_compile_cache"
 
 _MANIFEST_NAME = "manifest.json"
+# The pre-content-addressing bundle name. Still read (a manifest without a "bundle" key names it, which is every
+# bundle written before this scheme) and still collected once a newer pair supersedes it, never written.
 _BUNDLE_NAME = "cache.bin"
+_BUNDLE_PREFIX = "bundle-"
+_BUNDLE_SUFFIX = ".bin"
+# What _atomic_write names its in-progress file, as a suffix: ".<final name>.<random>.tmp".
+_TEMP_SUFFIX = ".tmp"
 _FORMAT_VERSION = 1
+
+# A bundle file this new is NOT collectable even when the manifest does not name it: another process may have just
+# published it and not yet committed its manifest, and the whole point of the split is that the loser of that race
+# keeps a loadable pair. Only ever delays a delete.
+_GC_GRACE_SECONDS = 60.0
+
+
+def _bundle_name(digest: str) -> str:
+    """Content-addressed file name, so writing a bundle can never damage the live one."""
+    return f"{_BUNDLE_PREFIX}{digest[:16]}{_BUNDLE_SUFFIX}"
+
+
+def _manifest_bundle(cdir: Path, manifest: dict[str, Any]) -> Path:
+    """The bundle file a manifest names. Absent "bundle" means a pre-content-addressing manifest."""
+    name = str(manifest.get("bundle") or _BUNDLE_NAME)
+    # Defence against a manifest naming something outside its own directory.
+    return cdir / Path(name).name
+
+
+def _read_manifest(path: Path) -> Optional[dict[str, Any]]:
+    try:
+        loaded = json.loads(path.read_text(encoding = "utf-8"))
+    except Exception:  # noqa: BLE001 - unreadable/absent/half-written reads as "no manifest"
+        return None
+    return loaded if isinstance(loaded, dict) else None
 
 
 def cache_mode() -> str:
@@ -75,6 +131,11 @@ def _save_enabled(mode: str) -> bool:
     # auto: save by default (without a saved bundle no user gets a warm restart); the SAVE env overrides: "0" load-only,
     # "1" on.
     return (os.environ.get(_ENV_SAVE) or "").strip().lower() not in ("0", "off", "false", "no")
+
+
+def sync_saves() -> bool:
+    """Whether ``save_async`` must write inline instead of handing off to the worker."""
+    return (os.environ.get(_ENV_SYNC) or "").strip().lower() in ("1", "on", "true", "yes")
 
 
 def cache_root() -> Path:
@@ -185,6 +246,15 @@ class CacheContext:
     prev_inductor_dir: Optional[str] = None
     prev_inductor_dir_set: bool = False
     shapes: set = dataclasses.field(default_factory = set)
+    # Bumped by every ``register_shape`` that dirties the context. A background save clears ``saved`` -> True only
+    # when this still reads what it read before it started, so a shape registered WHILE that save ran cannot be
+    # marked persisted by it.
+    dirty_seq: int = 0
+    # A bundle this context LOADED and rejected on its checksum. The save below must overwrite that
+    # file rather than take its exists() shortcut: the recompiled artifacts usually hash to the same
+    # digest, so the shortcut would leave the corrupt bytes in place under a manifest that names
+    # them, and every future start would reject the cache again with no way back.
+    rejected_bundle: Optional[str] = None
 
 
 def begin(
@@ -240,6 +310,13 @@ def begin(
         mode = mode,
     )
 
+    # Same reason as restore(): the previous load's save reads the inductor dir that is about to be repointed.
+    if not wait_for_saves():
+        _warn(
+            logger,
+            f"compile-cache: background save still running after {_SAVE_JOIN_TIMEOUT:.0f}s; continuing",
+        )
+
     try:
         cdir.mkdir(parents = True, exist_ok = True)
         ctx.prev_inductor_dir = os.environ.get("TORCHINDUCTOR_CACHE_DIR")
@@ -248,8 +325,21 @@ def begin(
     except Exception as exc:  # noqa: BLE001
         _warn(logger, f"could not set TORCHINDUCTOR_CACHE_DIR: {exc}")
 
+    # The MANIFEST decides which bundle is live: it is published last and only ever names a bundle that was
+    # completely written, so an interrupted save leaves the previous pair addressed and loadable.
+    published = _read_manifest(ctx.manifest_path)
+    if published is not None:
+        ctx.bundle = _manifest_bundle(cdir, published)
+
+    # Collect here as well as after a save, because the grace window can otherwise leak a bundle for
+    # good: two saves for one key inside 60 s leave the first one too young to collect, and the
+    # second save is the last thing that ever looks. By the time this key is opened again that
+    # orphan is minutes or days old, the live bundle is spared by name, and anything a concurrent
+    # process is mid-save on is still inside its grace, so the same two rules decide it.
+    _collect_superseded(cdir, logger)
+
     # Try an exact-match load. A miss/mismatch is normal and non-fatal.
-    if ctx.bundle.exists() and ctx.manifest_path.exists():
+    if published is not None and ctx.bundle.exists():
         ctx.hit = _try_load(ctx, logger)
         if ctx.hit and mode != "on":
             # Loaded artifacts == on-disk artifacts, so nothing to save. A new static-compile shape re-dirties via
@@ -271,9 +361,13 @@ def register_shape(ctx: Optional[CacheContext], shape: Any, *, static: bool) -> 
         return
     try:
         key = tuple(shape)
-        if key not in ctx.shapes:
-            ctx.shapes.add(key)
-            ctx.saved = False
+        # Under the dirty lock so a background save cannot read dirty_seq, lose the race to this block, and then
+        # publish saved = True over the clear below.
+        with _dirty_lock:
+            if key not in ctx.shapes:
+                ctx.shapes.add(key)
+                ctx.saved = False
+                ctx.dirty_seq += 1
     except Exception:  # noqa: BLE001 - bookkeeping only
         pass
 
@@ -300,6 +394,7 @@ def _try_load(ctx: CacheContext, logger: Any) -> bool:
     digest = hashlib.sha256(data).hexdigest()
     if manifest.get("sha256") and manifest["sha256"] != digest:
         _warn(logger, "compile-cache: bundle checksum mismatch; ignoring")
+        ctx.rejected_bundle = ctx.bundle.name
         return False
 
     try:
@@ -320,16 +415,86 @@ def _try_load(ctx: CacheContext, logger: Any) -> bool:
         return False
 
 
-def save(ctx: Optional[CacheContext], *, logger: Any = None) -> bool:
-    """Persist compiled artifacts to the bundle + manifest, AFTER a warmup forward.
+def _atomic_write(path: Path, data: bytes) -> None:
+    """Write ``data`` to ``path`` via a temp file in the SAME directory plus ``os.replace``.
 
-    No-op unless save is enabled and the context is dirty: a bundle HIT starts clean
-    (rewriting the just-loaded artifacts costs ~0.5 s for no change); a new static-compile
-    shape re-dirties via ``register_shape`` so the bundle grows to cover every shape used.
-    Returns True if a bundle was written.
+    A save runs on a daemon thread, so interpreter exit can kill it anywhere. Renaming a
+    fully written temp file into place means a half-written file is never visible under a
+    name anything reads. Paired with the content-addressed bundle names above, that is
+    what makes an interrupted save leave a matching manifest/bundle pair rather than a
+    good bundle the sha256 check has to reject.
     """
-    if ctx is None or not _save_enabled(ctx.mode) or ctx.saved:
+    tmp: Optional[str] = None
+    try:
+        fd, tmp = tempfile.mkstemp(
+            dir = str(path.parent), prefix = f".{path.name}.", suffix = _TEMP_SUFFIX
+        )
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+        tmp = None
+    finally:
+        if tmp is not None:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+
+def _collect_superseded(cdir: Path, logger: Any) -> list[str]:
+    """Delete bundles no manifest names any more. Returns the names removed. Never raises.
+
+    Two rules keep this from deleting a bundle somebody is about to need:
+
+    1. The live name is re-read from the manifest ON DISK, not from the context that just wrote it, so a manifest
+       another process committed in between decides what survives rather than our stale idea of it.
+    2. A file younger than the grace window is spared regardless. Between a racing process publishing its bundle
+       and committing its manifest, that bundle is named by nothing; deleting it there would hand the loser of the
+       race exactly the broken pair this whole scheme exists to prevent.
+    """
+    removed: list[str] = []
+    try:
+        manifest = _read_manifest(cdir / _MANIFEST_NAME)
+        live = _manifest_bundle(cdir, manifest).name if manifest is not None else None
+        cutoff = time.time() - _GC_GRACE_SECONDS
+        for path in cdir.iterdir():
+            name = path.name
+            if name == live or not path.is_file():
+                continue
+            if not (
+                name == _BUNDLE_NAME
+                or (name.startswith(_BUNDLE_PREFIX) and name.endswith(_BUNDLE_SUFFIX))
+                # An _atomic_write that the interpreter killed mid-write leaves its temp file
+                # behind: the finally that removes it does not run when the daemon save thread is
+                # torn down inside fh.write, and the file can be gigabytes. The same grace window
+                # covers it, so a write actually in flight is never the one taken.
+                or (name.startswith(".") and name.endswith(_TEMP_SUFFIX))
+            ):
+                continue
+            try:
+                if path.stat().st_mtime > cutoff:
+                    continue
+                path.unlink()
+                removed.append(name)
+            except OSError:
+                # Another process got there first, or it is busy on Windows. Next save tries again.
+                continue
+    except Exception as exc:  # noqa: BLE001 - housekeeping must never fail a save
+        _warn(logger, f"compile-cache: could not collect superseded bundles: {exc}")
+    return removed
+
+
+def _write_bundle(ctx: CacheContext, logger: Any) -> bool:
+    """The save itself. Runs on the caller's thread (``save``) or the worker (``save_async``)."""
+    if not _save_enabled(ctx.mode) or ctx.saved:
         return False
+    # Read BEFORE the artifacts are collected: anything registered from here on is not in `data`, and iterating the
+    # live set while the request thread adds to it is a "set changed size during iteration" away from failing.
+    with _dirty_lock:
+        seq = ctx.dirty_seq
+        shapes = sorted(list(s) for s in ctx.shapes)
     try:
         import torch  # noqa: PLC0415
         result = torch.compiler.save_cache_artifacts()
@@ -343,22 +508,39 @@ def save(ctx: Optional[CacheContext], *, logger: Any = None) -> bool:
     data = result[0]
     try:
         ctx.dir.mkdir(parents = True, exist_ok = True)
-        ctx.bundle.write_bytes(data)
+        digest = hashlib.sha256(data).hexdigest()
+        bundle = ctx.dir / _bundle_name(digest)
         manifest = {
             "format": _FORMAT_VERSION,
             "key": ctx.key,
             "created": time.time(),
             "bytes": len(data),
-            "sha256": hashlib.sha256(data).hexdigest(),
+            "sha256": digest,
+            # The bundle THIS manifest is paired with. Content-addressed, so a save writes a file no reader is
+            # using and the previous pair stays whole and addressed until the manifest below commits.
+            "bundle": bundle.name,
             "env": ctx.env_fp,
             "model": ctx.model_fp,
             # Static-compile shape coverage (register_shape); unused by dynamic compiles.
-            "shapes": sorted(list(s) for s in ctx.shapes),
+            "shapes": shapes,
         }
-        ctx.manifest_path.write_text(
-            json.dumps(manifest, indent = 2, sort_keys = True, default = str), encoding = "utf-8"
+        # Bundle first, under its own name, THEN the manifest: the manifest is the single commit point, and it only
+        # ever names a bundle already fully on disk. An exit between the two leaves the OLD manifest still naming
+        # the OLD bundle, which is untouched, so the previous warm start survives and the new file is just an
+        # orphan the next successful save collects.
+        if not bundle.exists() or bundle.name == ctx.rejected_bundle:
+            _atomic_write(bundle, data)
+        _atomic_write(
+            ctx.manifest_path,
+            json.dumps(manifest, indent = 2, sort_keys = True, default = str).encode("utf-8"),
         )
-        ctx.saved = True
+        ctx.bundle = bundle
+        _collect_superseded(ctx.dir, logger)
+        with _dirty_lock:
+            # A shape registered while this ran is NOT in the bundle just written, so leave the context dirty for
+            # the save its own register_shape queued.
+            if ctx.dirty_seq == seq:
+                ctx.saved = True
         _info(logger, f"compile-cache: saved bundle ({len(data)} bytes) for key {ctx.key}")
         return True
     except Exception as exc:  # noqa: BLE001
@@ -366,10 +548,112 @@ def save(ctx: Optional[CacheContext], *, logger: Any = None) -> bool:
         return False
 
 
-def restore(ctx: Optional[CacheContext]) -> None:
+def save(ctx: Optional[CacheContext], *, logger: Any = None) -> bool:
+    """Persist compiled artifacts to the bundle + manifest, AFTER a warmup forward.
+
+    No-op unless save is enabled and the context is dirty: a bundle HIT starts clean
+    (rewriting the just-loaded artifacts costs ~0.5 s for no change); a new static-compile
+    shape re-dirties via ``register_shape`` so the bundle grows to cover every shape used.
+    Returns True if a bundle was written. Synchronous: the write has happened when this
+    returns. ``save_async`` is what the generate path uses.
+    """
+    if ctx is None:
+        return False
+    return _write_bundle(ctx, logger)
+
+
+# One daemon worker for the whole process, created on first use. Saves are serialised through it, so no two threads
+# ever touch the same context and two contexts cannot interleave their save_cache_artifacts() calls.
+_dirty_lock = threading.RLock()
+_worker_cv = threading.Condition(threading.Lock())
+_worker_thread: Optional[threading.Thread] = None
+_worker_queue: list[tuple[CacheContext, Any]] = []
+_worker_active: Optional[CacheContext] = None
+
+# How long restore()/begin() will wait for an in-flight save before going ahead anyway. The worst save measured on a
+# B200 was 0.19 s for a 71 MB bundle (~2.6 ms/MB), so this is ~150x the observed cost and still covers a multi-GB
+# bundle; past it, an unload that keeps blocking reads to a user as a wedged app, which is worse than a bundle that
+# lands a moment late (the rename keeps whatever it writes atomic either way).
+_SAVE_JOIN_TIMEOUT = 30.0
+
+
+def _worker_loop() -> None:
+    global _worker_active
+    while True:
+        with _worker_cv:
+            while not _worker_queue:
+                _worker_cv.wait()
+            ctx, logger = _worker_queue.pop(0)
+            _worker_active = ctx
+        try:
+            _write_bundle(ctx, logger)
+        except Exception as exc:  # noqa: BLE001 - a cache write must never reach a render
+            _warn(logger, f"compile-cache: background save failed: {exc}")
+        finally:
+            with _worker_cv:
+                _worker_active = None
+                _worker_cv.notify_all()
+
+
+def _start_worker_locked() -> None:
+    global _worker_thread
+    if _worker_thread is not None and _worker_thread.is_alive():
+        return
+    _worker_thread = threading.Thread(
+        target = _worker_loop, name = "unsloth-compile-cache-save", daemon = True
+    )
+    _worker_thread.start()
+
+
+def save_async(ctx: Optional[CacheContext], *, logger: Any = None) -> bool:
+    """Queue ``save`` on the shared worker and return at once. Never raises.
+
+    Returns True when a save was queued (or, under the SYNC env, written). Already queued
+    is False: the pending save reads the context when it runs, so it covers every shape
+    registered up to that point. A context whose save is IN FLIGHT does get queued again,
+    since the running save cannot contain what was registered after it started.
+    """
+    if ctx is None or not _save_enabled(ctx.mode) or ctx.saved:
+        return False
+    if sync_saves():
+        return _write_bundle(ctx, logger)
+    try:
+        with _worker_cv:
+            if any(queued is ctx for queued, _ in _worker_queue):
+                return False
+            _worker_queue.append((ctx, logger))
+            _start_worker_locked()
+            _worker_cv.notify_all()
+        return True
+    except Exception as exc:  # noqa: BLE001 - best-effort, exactly like the write itself
+        _warn(logger, f"compile-cache: could not queue background save: {exc}")
+        return False
+
+
+def wait_for_saves(timeout: float = _SAVE_JOIN_TIMEOUT) -> bool:
+    """Block until the worker is idle. True if it drained, False on timeout."""
+    deadline = time.monotonic() + timeout
+    with _worker_cv:
+        while _worker_queue or _worker_active is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            _worker_cv.wait(remaining)
+    return True
+
+
+def restore(ctx: Optional[CacheContext], *, logger: Any = None) -> None:
     """Restore ``TORCHINDUCTOR_CACHE_DIR`` to its pre-load value. Call on unload."""
     if ctx is None or not ctx.prev_inductor_dir_set:
         return
+    # Before the env var moves: save_cache_artifacts() reads the inductor cache this load pointed at, so a save
+    # still running when the dir is handed back would be collecting against a directory that is about to mean
+    # something else, and the unload below goes on to tear that directory's owner down.
+    if not wait_for_saves():
+        _warn(
+            logger,
+            f"compile-cache: background save still running after {_SAVE_JOIN_TIMEOUT:.0f}s; continuing",
+        )
     try:
         if ctx.prev_inductor_dir is None:
             os.environ.pop("TORCHINDUCTOR_CACHE_DIR", None)

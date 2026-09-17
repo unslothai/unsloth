@@ -1234,18 +1234,21 @@ class InferenceBackend:
         presence_penalty: float = 0.0,
         tool_protocol_active: Optional[bool] = None,
         stop: Optional[list] = None,
+        *,
+        images = None,
     ) -> Generator[str, None, None]:
         """Generate response for text or vision models (lock held by background thread).
 
         ``tools`` / ``enable_thinking`` / ``reasoning_effort`` / ``preserve_thinking`` are forwarded
         into ``apply_chat_template`` so templates that understand them (Qwen3, Llama 3.1+, gpt-oss
         harmony) advertise tool schemas and reasoning controls. ``presence_penalty`` matches the
-        GGUF sampling path (0 disables it).
+        GGUF sampling path (0 disables it). ``images`` is the MLX backend's list spelling.
         """
         yield from self._generate_chat_response_inner(
             messages = messages,
             system_prompt = system_prompt,
             image = image,
+            images = images,
             temperature = temperature,
             top_p = top_p,
             top_k = top_k,
@@ -1284,6 +1287,8 @@ class InferenceBackend:
         presence_penalty: float = 0.0,
         tool_protocol_active: Optional[bool] = None,
         stop: Optional[list] = None,
+        *,
+        images = None,
     ) -> Generator[str, None, None]:
         """Inner generation logic.
 
@@ -1296,6 +1301,15 @@ class InferenceBackend:
         """
         if not self.active_model_name:
             raise RuntimeError("No active model")
+
+        # Every generation entry point funnels through here, so the list collapses here.
+        if images:
+            if len(images) > 1:
+                raise ValueError(
+                    "The transformers backend takes one image per request; "
+                    f"{len(images)} were supplied."
+                )
+            image = images[0]
 
         model_info = self.models[self.active_model_name]
         is_vision = model_info.get("is_vision", False)
