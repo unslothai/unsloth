@@ -479,7 +479,7 @@ def _mask_entries(value: Optional[str]) -> "Optional[list[int]]":
 
 
 def _physical_index_of(ordinal: int, env: Optional[dict] = None) -> "tuple[Optional[int], bool]":
-    """``(physical index, a mask was set)`` for a torch-visible *ordinal*.
+    """``(HIP device id, a mask was set)`` for a torch-visible *ordinal*.
 
     With no mask set the two namespaces are the same list, so the ordinal is returned as it
     arrived. With a mask this composes the levels; when any of them cannot be read as indices
@@ -513,14 +513,24 @@ def _physical_index_of(ordinal: int, env: Optional[dict] = None) -> "tuple[Optio
     return visible[ordinal], True
 
 
-def _physical_position_of(physical_index: int) -> "tuple[Optional[str], Optional[int]]":
-    """``(name, position)`` for a PHYSICAL index, read from the host's own card enumeration.
+def _physical_position_of(hip_index: int) -> "tuple[Optional[str], Optional[int]]":
+    """``(name, position)`` for a HIP device id, read from the host's own card enumeration.
 
     torch cannot answer this once a mask is set: it can only see the cards it was left. The
     hardware inventory enumerates every card, so it is what says how many cards of the same
     kind come before this one in the order the Vulkan build will walk.
+
+    The two numbers are NOT the same number. What a visibility mask names, and what torch
+    reports as `cuda:N`, is the HIP device id, derived from the KFD node id. The inventory's
+    `index` is its own probe row, amd-smi's enumeration order over its KFD/sysfs view, which
+    its docstring says is not a pin. They coincide on most hosts and not on all, which is why
+    `utils.hardware.amd.get_hip_id_by_gpu_index` exists -- amd-smi publishes the mapping for
+    exactly this. Without that mapping there is no way to say which row the mask selected, so
+    this declines and `sd_cpp_device_named` falls back to a name-only pin rather than
+    counting positions in the wrong space.
     """
     try:
+        from utils.hardware.amd import get_hip_id_by_gpu_index
         from utils.hardware.hardware import get_physical_gpu_inventory
 
         inventory = get_physical_gpu_inventory(block = False)
@@ -531,7 +541,15 @@ def _physical_position_of(physical_index: int) -> "tuple[Optional[str], Optional
             for device in ((inventory or {}).get("devices") or [])
             if isinstance(device, dict) and device.get("index") is not None
         ]
+        hip_by_row = get_hip_id_by_gpu_index()
     except Exception:  # noqa: BLE001 -- no reader, no position; the name alone still pins
+        return None, None
+    if not hip_by_row:
+        return None, None
+    physical_index = next(
+        (row for row, hip in hip_by_row.items() if hip == hip_index), None,
+    )
+    if physical_index is None:
         return None, None
     devices.sort(key = lambda device: device.get("index"))
     selected = next((d for d in devices if d.get("index") == physical_index), None)

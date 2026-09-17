@@ -33,6 +33,7 @@ from core.inference.diffusion_families import (
 )
 from core.inference.sd_cpp_backend import (
     _install_allowed,
+    _managed_tree_in_use,
     _server_binary_runnable,
     ensure_sd_cpp_binary,
     ensure_sd_server_binary,
@@ -242,12 +243,28 @@ def select_and_activate_engine(
         # selects native and the backend then runs the very build the record condemned. Only
         # a SUBSTITUTE is refused: with the Vulkan fallback switched off the requested
         # accelerator is ROCm again on purpose, and that opt-out means run it anyway.
-        server_binary = usable_or_recorded_failure(
+        # ...unless the substitute is only a substitute because an install cannot run RIGHT
+        # NOW. A resident sd-server that recorded a mid-render failure is still executing out
+        # of the managed tree, and an accelerator upgrade replaces the binaries in it, so both
+        # ensures decline and hand back the very ROCm build the record condemns. Refusing it
+        # here made `native_available` false and sent the first reload after the failure to
+        # diffusers -- downloading unrelated assets, and reaching the Vulkan rung only on some
+        # later load, after that switch happened to unload the server. The load path is the
+        # one that CAN do this: it stops the server and then runs the deferred install through
+        # `_upgrade_server_after_teardown`. So while the tree is busy the native selection is
+        # kept and the upgrade happens behind it.
+        upgrade_is_deferred = _managed_tree_in_use()
+
+        def _accept(candidate):
+            if candidate and upgrade_is_deferred:
+                return candidate
+            return usable_or_recorded_failure(candidate, install_accelerator)
+
+        server_binary = _accept(
             ensure_sd_server_binary(
                 allow_install = _install_allowed(),
                 accelerator = install_accelerator,
-            ),
-            install_accelerator,
+            )
         )
         if server_binary and not _server_binary_runnable(server_binary):
             logger.warning(
@@ -262,12 +279,11 @@ def select_and_activate_engine(
         # sd-cli is the one-shot fallback: always LOCATE an existing binary, but auto-INSTALL only when there is no
         # usable server. Probe runnability first, else a present but non-runnable binary passes as available and fails
         # inside the background load.
-        binary = usable_or_recorded_failure(
+        binary = _accept(
             ensure_sd_cpp_binary(
                 allow_install = _install_allowed() and server_binary is None,
                 accelerator = install_accelerator,
-            ),
-            install_accelerator,
+            )
         )
         if binary and SdCppEngine(binary = binary).version() is None:
             logger.warning("sd-cli at %s is present but not runnable; not using it", binary)

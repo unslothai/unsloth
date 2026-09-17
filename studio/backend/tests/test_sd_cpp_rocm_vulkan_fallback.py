@@ -1619,8 +1619,15 @@ def _pinned_torch(monkeypatch, names):
     monkeypatch.setitem(__import__("sys").modules, "torch", type("torch", (), {"cuda": _FakeCuda}))
 
 
-def _pinned_inventory(monkeypatch, devices):
-    from utils.hardware import hardware
+def _pinned_inventory(monkeypatch, devices, hip_by_row = None):
+    """The inventory, plus the amd-smi mapping from its probe rows to HIP device ids.
+
+    Two index spaces: a visibility mask and torch both speak HIP ids, while the inventory's
+    own `index` is amd-smi's discovery row. They coincide on most hosts, so the default here
+    is the identity mapping, and a test that needs them to disagree passes its own.
+    """
+    from utils.hardware import amd, hardware
+
     monkeypatch.setattr(
         hardware,
         "get_physical_gpu_inventory",
@@ -1631,6 +1638,9 @@ def _pinned_inventory(monkeypatch, devices):
             "unknown": False,
         },
     )
+    if hip_by_row is None:
+        hip_by_row = {device["index"]: device["index"] for device in devices}
+    monkeypatch.setattr(amd, "get_hip_id_by_gpu_index", lambda: hip_by_row)
 
 
 def test_a_visibility_mask_is_translated_before_the_tie_is_broken(monkeypatch):
@@ -1673,6 +1683,59 @@ def test_the_masks_compose_the_way_rocm_applies_them(monkeypatch):
     )
 
     assert video_mod._physical_card_name(0) == ("AMD Radeon RX 7900 XTX", 3)
+
+
+def test_a_hip_id_is_translated_into_the_inventorys_own_row(monkeypatch):
+    """Two index spaces wearing one number.
+
+    A visibility mask names HIP device ids, derived from the KFD node id, and that is what
+    torch reports as `cuda:N`. The inventory's `index` is amd-smi's own discovery row, which
+    its docstring says is not a pin. They coincide on most hosts and not on all, so on a host
+    where they disagree, counting positions with the HIP number selected the wrong row and
+    pinned Vulkan to a card Studio had not reserved.
+    """
+    from core.inference import video as video_mod
+
+    _no_visibility_mask(monkeypatch)
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")          # HIP id 0 ...
+    _pinned_torch(monkeypatch, ["AMD Radeon RX 7900 XTX"])
+    _pinned_inventory(
+        monkeypatch,
+        [
+            {"vendor": "amd", "index": 0, "name": "AMD Radeon RX 7600"},
+            {"vendor": "amd", "index": 1, "name": "AMD Radeon RX 7900 XTX"},
+            {"vendor": "amd", "index": 2, "name": "AMD Radeon RX 7900 XTX"},
+        ],
+        # ... which is probe row 2 on this host, not row 0.
+        hip_by_row = {0: 2, 1: 1, 2: 0},
+    )
+
+    assert video_mod._physical_card_name(0) == ("AMD Radeon RX 7900 XTX", 1)
+
+
+def test_an_unreadable_hip_mapping_declines_the_tie_break(monkeypatch):
+    """`get_hip_id_by_gpu_index` answers None when any device lacks a usable id -- an older
+    amd-smi rejects `list -e` outright. Assuming the identity mapping there is exactly what
+    its docstring tells callers not to do, so the position is withheld and the pin falls back
+    to the name, which is still unambiguous for a card that is alone of its kind."""
+    from core.inference import video as video_mod
+
+    _no_visibility_mask(monkeypatch)
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "1")
+    _pinned_torch(monkeypatch, ["AMD Radeon RX 7900 XTX"])
+    _pinned_inventory(
+        monkeypatch,
+        [
+            {"vendor": "amd", "index": 0, "name": "AMD Radeon RX 7900 XTX"},
+            {"vendor": "amd", "index": 1, "name": "AMD Radeon RX 7900 XTX"},
+        ],
+        hip_by_row = None,
+    )
+    from utils.hardware import amd
+
+    monkeypatch.setattr(amd, "get_hip_id_by_gpu_index", lambda: None)
+
+    assert video_mod._physical_card_name(0) == ("AMD Radeon RX 7900 XTX", None)
 
 
 def test_a_mask_this_cannot_read_declines_the_tie_break(monkeypatch):
@@ -1902,7 +1965,12 @@ def test_the_image_router_checks_its_ensures_against_the_record_too():
     body = inspect.getsource(router.select_and_activate_engine)
     ensures = body.count("ensure_sd_server_binary(") + body.count("ensure_sd_cpp_binary(")
     assert ensures == 2, ensures
-    assert body.count("usable_or_recorded_failure(") == ensures, body[:400]
+    # Through the one gate both ensures share, which is `usable_or_recorded_failure` plus the
+    # deferred-upgrade exception below it. Counting the raw calls instead would have to be
+    # rewritten by any refactor that gives the two ensures a common path, which is the shape
+    # they now have.
+    assert body.count("_accept(") == ensures + 1, body[:400]
+    assert "usable_or_recorded_failure(candidate, install_accelerator)" in body
 
 
 def test_every_ensure_in_the_h3_load_is_checked_against_the_record():
@@ -2424,6 +2492,55 @@ def test_both_unlaunchable_load_paths_record_before_they_raise():
     ):
         arm = source[: source.index(raised)]
         assert "note_unlaunchable_accelerator_build(" in arm[-400:], raised
+
+
+def test_a_resident_server_does_not_cost_the_reload_its_native_engine(fake_settings, monkeypatch):
+    """The first reload after a mid-render ROCm failure is the one the fallback is FOR.
+
+    That server is still resident, so it is still executing out of the managed tree, and an
+    accelerator upgrade replaces the binaries in that tree: both ensures decline the install
+    and hand back the ROCm build. Refusing it here made `native_available` false and sent the
+    reload to diffusers, which downloads a different set of assets entirely and only reaches
+    Vulkan on some later load, after that switch happened to unload the server. The load path
+    stops the server and then lands the deferred install itself.
+    """
+    from core.inference import diffusion_engine_router as router
+    from core.inference import sd_cpp_backend
+
+    monkeypatch.setattr(router, "_install_allowed", lambda: True)
+    monkeypatch.setattr(
+        router, "ensure_sd_server_binary", lambda **_k: "/opt/sd/rocm/sd-server"
+    )
+    monkeypatch.setattr(router, "ensure_sd_cpp_binary", lambda **_k: "/opt/sd/rocm/sd-cli")
+    monkeypatch.setattr(router, "_server_binary_runnable", lambda _b: True)
+    monkeypatch.setattr(
+        router, "SdCppEngine", lambda binary: types.SimpleNamespace(version = lambda: "1")
+    )
+    monkeypatch.setattr(
+        router,
+        "resolve_diffusion_device_target",
+        lambda: types.SimpleNamespace(backend = "rocm", device = "cuda", dtype = None),
+    )
+    monkeypatch.setattr(router, "family_sd_cpp_supported", lambda _fam: True)
+    monkeypatch.setattr(router, "_activate", lambda name, reason = None: name)
+    monkeypatch.setattr(sd_cpp_backend, "_installed_accelerator_of", lambda _b: "rocm")
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ENGINE", "sd_cpp")
+    # The record that makes the ROCm build a refused substitute, and the resident server that
+    # makes it the only thing either ensure can return.
+    sd_cpp_backend.note_accelerator_runtime_failure("rocm", proven = True)
+    assert sd_cpp_backend.preferred_accelerator("rocm") == "vulkan"
+
+    family = _detect_load_family(H3_REPO, None, "minimax-h3")
+
+    monkeypatch.setattr(router, "_managed_tree_in_use", lambda: True)
+    assert router.select_and_activate_engine(family) == "sd_cpp", (
+        "the reload that should have upgraded to Vulkan behind the teardown went to diffusers"
+    )
+
+    # And with the tree free, nothing changes: an ensure that still hands back the condemned
+    # build has no teardown coming to fix it, so it is refused exactly as before.
+    monkeypatch.setattr(router, "_managed_tree_in_use", lambda: False)
+    assert router.select_and_activate_engine(family) == "diffusers"
 
 
 def test_the_router_counts_a_binary_it_rejects_for_not_launching(fake_settings, monkeypatch):
