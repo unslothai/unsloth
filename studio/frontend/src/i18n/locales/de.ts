@@ -62,9 +62,9 @@ export const de = {
     announceMoveFailed: "Die Warteschlange hat sich geändert, bevor diese Nachricht verschoben werden konnte. Versuche es erneut.",
     announceDragReset: "Die Warteschlange hat sich geändert. Ziehe erneut, um die übrigen Nachrichten umzusortieren.",
     editingHint: "Nachricht wird bearbeitet",
-    queueingOffHint: "Neue Nachrichten stoppen die aktuelle Antwort und laufen als Nächstes.",
-    queueingOnHint: "Neue Nachrichten warten und laufen der Reihe nach.",
-    queueingHintShared: "Eingereihte Nachrichten bleiben erhalten.",
+    queueingOffHint: "Neue Nachrichten unterbrechen und laufen als Nächstes.",
+    queueingOnHint: "Neue Nachrichten warten auf ihren Platz.",
+    queueingHintShared: "Die Warteschlange bleibt erhalten.",
   },
   picker: {
     onDevice: "Auf dem Gerät",

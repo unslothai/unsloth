@@ -337,7 +337,7 @@ test("the bar offers the way out in place of a Continue that cannot help", () =>
     /if \(!reason \|\| \(!remedy && !resumable\)\) \{\n\s*return null;/,
     "the way out is gated on the turn being resumable again",
   );
-  // Reading the cancelled status first shows "Response stopped" and offers Continue.
+  // Reading the cancelled status first shows "Response stopped" and offers Resume.
   assert.match(
     thread,
     /cancelled && !isProviderReportedReason\(stamped\?\.reason\)/,
@@ -350,8 +350,8 @@ test("the bar offers the way out in place of a Continue that cannot help", () =>
   );
   assert.match(
     thread,
-    /\{remedy \? null : \([\s\S]{0,400}Continue\n\s*<\/Button>/,
-    "Continue is offered again for a cut it cannot help",
+    /\{remedy \? null : \([\s\S]{0,400}Resume\n\s*<\/Button>/,
+    "the resume button is offered again for a cut it cannot help",
   );
 });
 
