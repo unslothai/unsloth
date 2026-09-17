@@ -250,9 +250,7 @@ def test_absence_is_decided_by_real_metadata_not_by_a_stub(monkeypatch):
     """
     monkeypatch.delenv("HF_HUB_DISABLE_XET", raising = False)
     monkeypatch.delitem(IF.sys.modules, "hf_xet", raising = False)
-    monkeypatch.setattr(
-        IF, "importlib_version", _raise_package_not_found, raising = False
-    )
+    monkeypatch.setattr(IF, "importlib_version", _raise_package_not_found, raising = False)
 
     real_find_spec = importlib.util.find_spec
 
