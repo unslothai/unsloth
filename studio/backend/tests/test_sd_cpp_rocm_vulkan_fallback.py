@@ -2527,8 +2527,9 @@ class TestRocmRuntimePreflight:
     def test_the_preflight_never_touches_a_non_rocm_accelerator(self, monkeypatch):
         """Only rocm has a rung below it. A CUDA or Vulkan host must not consult this at all."""
         called = []
-        monkeypatch.setattr(sd_backend, "rocm_runtime_resolvable",
-                            lambda: called.append(1) or False)
+        monkeypatch.setattr(
+            sd_backend, "rocm_runtime_resolvable", lambda: called.append(1) or False
+        )
         assert sd_backend.accelerator_probe_failure_is_decisive("cuda") is False
         assert sd_backend.accelerator_probe_failure_is_decisive("vulkan") is False
         assert called == []
