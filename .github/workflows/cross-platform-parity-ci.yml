@@ -258,6 +258,7 @@ jobs:
           tests/python/test_windows_setup_output_encoding.py
           tests/python/test_windows_installer_native_type_fallback.py
           tests/python/test_pwsh_runner_encoding.py
+          tests/python/test_compiler_watch_temp_scan.py
           tests/test_installer_skip_autostart.py
           tests/test_installer_system32_guard.py
           tests/test_installer_interactive_prompts.py

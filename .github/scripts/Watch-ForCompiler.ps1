@@ -64,6 +64,55 @@ function Get-StudioTempRoots {
     return $result
 }
 
+function Get-StudioTempSubtree {
+    <#
+    .SYNOPSIS
+    Every file under one root, walked a directory at a time so that one unreadable
+    directory costs that directory and nothing else.
+
+    .DESCRIPTION
+    Get-ChildItem -Recurse is the obvious way to do this and it is not safe here.
+    A temp root is shared with everything else running on the machine, so a
+    directory can be removed or become unopenable partway through the walk, and
+    the provider raises a Win32Exception that -ErrorAction SilentlyContinue does
+    not suppress: that parameter governs non-terminating errors, and with
+    $ErrorActionPreference = 'Stop' set by the caller this one ends the step.
+    Observed on hosted runners as
+
+        Get-ChildItem : The system cannot find the file specified
+        + CategoryInfo : NotSpecified: (:) [Get-ChildItem], Win32Exception
+
+    from inside the positive control, which failed the job while the installer
+    under test had done nothing wrong. Walking by hand means the failure is
+    contained to the one directory that raised it, and the rest of the subtree is
+    still reported.
+
+    Reparse points are not followed. A junction into an ancestor would otherwise
+    walk forever, and a compile does not write through one.
+    #>
+    param([Parameter(Mandatory = $true)][string]$Root)
+    $found = @()
+    $pending = @($Root)
+    $visited = 0
+    while ($pending.Count -gt 0) {
+        $visited++
+        # A cheap ceiling rather than a correctness bound: this is a detector, and a
+        # temp tree deep enough to hit it is already telling us something is wrong.
+        if ($visited -gt 20000) { break }
+        $dir = $pending[0]
+        $pending = @($pending | Select-Object -Skip 1)
+        $entries = @()
+        try { $entries = @(Get-ChildItem -LiteralPath $dir -Force -ErrorAction Stop) }
+        catch { continue }
+        foreach ($entry in $entries) {
+            if ($entry.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { continue }
+            if ($entry.PSIsContainer) { $pending += $entry.FullName; continue }
+            $found += $entry.FullName
+        }
+    }
+    return ,[string[]]$found
+}
+
 function Get-StudioTempArtifacts {
     <#
     .SYNOPSIS
@@ -72,12 +121,15 @@ function Get-StudioTempArtifacts {
     $patterns = @('*.dll', '*.cmdline', '*.rsp', '*.cs', '*.err', '*.out')
     $found = @()
     foreach ($root in (Get-StudioTempRoots)) {
-        foreach ($pattern in $patterns) {
-            # Recurse: PowerShell compiles into a per-invocation subdirectory, not
-            # into the root, so a non-recursive listing sees none of this.
-            $found += Get-ChildItem -LiteralPath $root -Filter $pattern -File -Recurse `
-                -Force -ErrorAction SilentlyContinue |
-                Select-Object -ExpandProperty FullName
+        # Recurse: PowerShell compiles into a per-invocation subdirectory, not
+        # into the root, so a non-recursive listing sees none of this.
+        foreach ($file in (Get-StudioTempSubtree -Root $root)) {
+            foreach ($pattern in $patterns) {
+                if ((Split-Path -Leaf $file) -like $pattern) {
+                    $found += $file
+                    break
+                }
+            }
         }
     }
     # Comma-wrapped: PowerShell unrolls an empty array to nothing on return, and the
