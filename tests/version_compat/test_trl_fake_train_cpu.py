@@ -212,11 +212,11 @@ def _load_plain():
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     try:
-    # Neither dtype kwarg is safe across the declared transformers window: `dtype=` is
-    # rejected at the 4.52.4 floor (from_pretrained forwards it into the model __init__,
-    # which raises TypeError), and `torch_dtype=` spans the window but is deprecated from
-    # 4.57.6 on. Load with neither and cast after, which needs no probe and no branch. The
-    # model is tiny and CPU-only, so the intermediate costs nothing.
+        # Neither dtype kwarg is safe across the declared transformers window: `dtype=` is
+        # rejected at the 4.52.4 floor (from_pretrained forwards it into the model __init__,
+        # which raises TypeError), and `torch_dtype=` spans the window but is deprecated from
+        # 4.57.6 on. Load with neither and cast after, which needs no probe and no branch. The
+        # model is tiny and CPU-only, so the intermediate costs nothing.
         tok = AutoTokenizer.from_pretrained(_MODEL)
         model = AutoModelForCausalLM.from_pretrained(_MODEL).to(torch.float32)
     except OSError as e:  # hub unreachable / model missing

@@ -145,7 +145,9 @@ def _floor_lane_transformers_pins() -> dict[str, str]:
         for entry in ((job.get("strategy") or {}).get("matrix") or {}).get("include") or []:
             if entry.get("slug") != "floor":
                 continue
-            pins = " ".join(str(v) for k, v in entry.items() if k.endswith("pins") or k.endswith("pin"))
+            pins = " ".join(
+                str(v) for k, v in entry.items() if k.endswith("pins") or k.endswith("pin")
+            )
             match = re.search(r"transformers==([\d.]+)", pins)
             assert match, (
                 f"the floor lane of {job_name} no longer pins transformers exactly, so "

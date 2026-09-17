@@ -82,15 +82,14 @@ def _loss_type_field(cfg_cls):
     check it.
     """
     import dataclasses
-
-    return next(
-        (f for f in dataclasses.fields(cfg_cls) if f.name == "loss_type"), None
-    )
+    return next((f for f in dataclasses.fields(cfg_cls) if f.name == "loss_type"), None)
 
 
 def _pristine_config_cls(cfg_cls):
     """TRL's own config class, walking past the subclass patching rebinds over it."""
-    while "_unsloth_patched_rl_config" in cfg_cls.__dict__ or cfg_cls.__name__.startswith("Unsloth"):
+    while "_unsloth_patched_rl_config" in cfg_cls.__dict__ or cfg_cls.__name__.startswith(
+        "Unsloth"
+    ):
         cfg_cls = cfg_cls.__mro__[1]
     return cfg_cls
 
