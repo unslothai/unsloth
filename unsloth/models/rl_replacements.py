@@ -1095,12 +1095,24 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         if (
             sum(re.match(rf"{spacing}[^\s]", x) is not None for x in splits) == 2
             and len(spacing) >= 8
+            # The regex above also matches trl 0.18.2 and 0.19.1, which the declared window
+            # admits and which have none of the symbols the replacement below emits; TRL's own
+            # call to the helper is the discriminator (0.20.0-0.23.1 have it, those two do not),
+            # and without it TRL's native slicing must stay. tests/version_compat/
+            # test_grpo_protected_tokens_guard.py measures this per version.
+            and "truncate_with_protected_tokens" in replace_part
         ):
+            # getattr: the next emitted line drops None, so an id a fork or subclass leaves
+            # unset means "nothing to protect" rather than AttributeError in generated code.
             new_replacement = f"""\n{spacing}if self.max_prompt_length is not None:
             # If max_prompt_length is set, we trim the prompt to keep only the last `max_prompt_length` tokens.
             # Then we decode those tokens back into text. We manually remove leading pad tokens from the decoded text,
             # because we can't use `skip_special_tokens=True` (some special tokens are still needed for generation).
-            protected = [self.image_token_id, self.vision_start_token_id, self.vision_end_token_id]
+            protected = [
+                getattr(self, "image_token_id", None),
+                getattr(self, "vision_start_token_id", None),
+                getattr(self, "vision_end_token_id", None),
+            ]
             protected = [token for token in protected if token is not None]
             prompt_ids, prompt_mask = truncate_with_protected_tokens(
                 prompt_ids, prompt_mask, self.max_prompt_length, protected
