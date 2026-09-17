@@ -129,8 +129,11 @@ def test_guard_spellings(template, detected):
         ("{% set catalog = tools %}{% set catalog = [] %}{{ catalog|tojson }}", False),
         # LFM2 builds its whole tool block this way: loop variable to namespace
         # field, rendered outside any guard the walk can see.
-        ("{% set ns = namespace(p='') %}{% for t in tools %}"
-         "{% set ns.p = ns.p + (t|tojson) %}{% endfor %}{{ ns.p }}", True),
+        (
+            "{% set ns = namespace(p='') %}{% for t in tools %}"
+            "{% set ns.p = ns.p + (t|tojson) %}{% endfor %}{{ ns.p }}",
+            True,
+        ),
         ("{% set ns = namespace(c=none) %}{% set ns.c = tools %}{{ ns.c|tojson }}", True),
         ("{% set ns = namespace(c=none) %}{% set ns.c = messages %}{{ ns.c|tojson }}", False),
         ("{% set a, b = tools, none %}{{ a|tojson }}", True),
@@ -138,51 +141,86 @@ def test_guard_spellings(template, detected):
         # must not follow the walk out. The unconditional cases above still kill.
         ("{% if legacy %}{% set tools = none %}{% endif %}{{ tools|tojson }}", True),
         ("{% if legacy %}{% set tools = none %}{% else %}{{ tools|tojson }}{% endif %}", True),
-        ("{% if a %}{% if b %}{% set tools = none %}{% endif %}{% endif %}{{ tools|tojson }}", True),
+        (
+            "{% if a %}{% if b %}{% set tools = none %}{% endif %}{% endif %}{{ tools|tojson }}",
+            True,
+        ),
         ("{% if a %}x{% elif b %}{% set tools = none %}{% endif %}{{ tools|tojson }}", True),
         ("{% for m in messages %}{% set tools = m.tools %}{% endfor %}{{ tools|tojson }}", True),
         ("{% macro unused() %}{% set tools = none %}{% endmacro %}{{ tools|tojson }}", True),
         # On EVERY arm there is no surviving path, so an exhaustive chain kills.
-        ("{% if x %}{% set tools = none %}{% else %}{% set tools = none %}{% endif %}"
-         "{{ tools|tojson }}", False),
-        ("{% set c = tools %}{% if x %}{% set c = [] %}{% else %}{% set c = [] %}"
-         "{% endif %}{{ c|tojson }}", False),
-        ("{% if x %}{% set tools = none %}{% elif y %}{% set tools = none %}"
-         "{% else %}{% set tools = none %}{% endif %}{{ tools|tojson }}", False),
+        (
+            "{% if x %}{% set tools = none %}{% else %}{% set tools = none %}{% endif %}"
+            "{{ tools|tojson }}",
+            False,
+        ),
+        (
+            "{% set c = tools %}{% if x %}{% set c = [] %}{% else %}{% set c = [] %}"
+            "{% endif %}{{ c|tojson }}",
+            False,
+        ),
+        (
+            "{% if x %}{% set tools = none %}{% elif y %}{% set tools = none %}"
+            "{% else %}{% set tools = none %}{% endif %}{{ tools|tojson }}",
+            False,
+        ),
         # One arm leaving it alone is a path where it survives.
         ("{% if x %}{% set tools = none %}{% else %}prose{% endif %}{{ tools|tojson }}", True),
         # Undefined after `{% endfor %}`, so it carries nothing out.
         ("{% for t in tools %}{% endfor %}{{ t|tojson }}", False),
-        ("{% for t in tools %}{% endfor %}"
-         "{% for t in messages %}{{ t.content }}{% endfor %}", False),
+        (
+            "{% for t in tools %}{% endfor %}{% for t in messages %}{{ t.content }}{% endfor %}",
+            False,
+        ),
         # A tuple target binds and rebinds like a plain name, both ways round.
         ("{% set tools, flag = none, false %}{{ tools|tojson }}", False),
         ("{% set a, b = tools, none %}{% set a, b = none, none %}{{ a|tojson }}", False),
         # Stored under a tools guard, so tool-conditional whatever the value is.
-        ("{% set intro = '' %}{% if tools %}{% set intro = 'You may call functions.' %}"
-         "{% endif %}{{ intro }}", True),
-        ("{% set intro = '' %}{% if enable_thinking %}{% set intro = 'Think.' %}"
-         "{% endif %}{{ intro }}", False),
+        (
+            "{% set intro = '' %}{% if tools %}{% set intro = 'You may call functions.' %}"
+            "{% endif %}{{ intro }}",
+            True,
+        ),
+        (
+            "{% set intro = '' %}{% if enable_thinking %}{% set intro = 'Think.' %}"
+            "{% endif %}{{ intro }}",
+            False,
+        ),
         # The check can sit in the output expression, and a guarded branch can
         # store its instructions through a side effect. Markers matched both.
         ("{{ message.content if message.role == 'tool' else '' }}", True),
         ("{{ message.content if message.role != 'tool' else '' }}", False),
         ("{{ message.content if message.role == 'user' else '' }}", False),
-        ("{% set ns = namespace(lines=[]) %}{% if tools %}"
-         "{% do ns.lines.append('You may call functions') %}{% endif %}"
-         "{{ ns.lines|join(',') }}", True),
-        ("{% set ns = namespace(lines=[]) %}{% if enable_thinking %}"
-         "{% do ns.lines.append('Think') %}{% endif %}{{ ns.lines|join(',') }}", False),
+        (
+            "{% set ns = namespace(lines=[]) %}{% if tools %}"
+            "{% do ns.lines.append('You may call functions') %}{% endif %}"
+            "{{ ns.lines|join(',') }}",
+            True,
+        ),
+        (
+            "{% set ns = namespace(lines=[]) %}{% if enable_thinking %}"
+            "{% do ns.lines.append('Think') %}{% endif %}{{ ns.lines|join(',') }}",
+            False,
+        ),
         # `.get('tool_calls')` is the same member read spelled as a call.
-        ("{% set tool_calls = message.get('tool_calls') %}"
-         "{% if tool_calls is defined %}{{ tool_calls }}{% endif %}", True),
+        (
+            "{% set tool_calls = message.get('tool_calls') %}"
+            "{% if tool_calls is defined %}{{ tool_calls }}{% endif %}",
+            True,
+        ),
         ("{% set tc = message.get('tool_calls') %}{% if tc %}{{ tc }}{% endif %}", True),
         ("{% set x = message.get('content') %}{{ x }}", False),
         # A stored predicate renders what the inline one does.
-        ("{% set handles_tool = message.role == 'tool' %}"
-         "{% if handles_tool %}{{ message.content }}{% endif %}", True),
-        ("{% set is_user = message.role == 'user' %}"
-         "{% if is_user %}{{ message.content }}{% endif %}", False),
+        (
+            "{% set handles_tool = message.role == 'tool' %}"
+            "{% if handles_tool %}{{ message.content }}{% endif %}",
+            True,
+        ),
+        (
+            "{% set is_user = message.role == 'user' %}"
+            "{% if is_user %}{{ message.content }}{% endif %}",
+            False,
+        ),
         # A loop's inline filter is a guard like any other.
         ("{% for m in messages if m.role == 'tool' %}{{ m.content }}{% endfor %}", True),
         ('{% for m in messages if m["role"] == "tool" %}{{ m.content }}{% endfor %}', True),
@@ -271,10 +309,10 @@ def test_a_guarded_branch_counts_even_without_naming_the_catalog():
         pytest.param("{% if tools %}", id = "unterminated_tag"),
         pytest.param("{{ tools", id = "unterminated_expression"),
         pytest.param("{%", id = "bare_tag_opener"),
-        pytest.param("{% if tools %}" * 400 + "x" + "{% endif %}" * 400,
-                     id = "deeply_nested_tags"),
-        pytest.param("{{ " + "(" * 300 + "tools" + ")" * 300 + " }}",
-                     id = "deeply_nested_expression"),
+        pytest.param("{% if tools %}" * 400 + "x" + "{% endif %}" * 400, id = "deeply_nested_tags"),
+        pytest.param(
+            "{{ " + "(" * 300 + "tools" + ")" * 300 + " }}", id = "deeply_nested_expression"
+        ),
         pytest.param("{{ tools|tojson }}" * 5000, id = "very_long"),
         pytest.param("{% unknown_tag %}{{ tools|tojson }}", id = "unknown_tag"),
     ],

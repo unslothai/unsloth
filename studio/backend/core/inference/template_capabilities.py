@@ -50,9 +50,13 @@ def _field(node):
     if isinstance(node, nodes.Getitem) and isinstance(node.arg, nodes.Const):
         return node.arg.value
     # `.get('tool_calls')` is the same read spelled as a call.
-    if (isinstance(node, nodes.Call) and isinstance(node.node, nodes.Getattr)
-            and node.node.attr == "get" and node.args
-            and isinstance(node.args[0], nodes.Const)):
+    if (
+        isinstance(node, nodes.Call)
+        and isinstance(node.node, nodes.Getattr)
+        and node.node.attr == "get"
+        and node.args
+        and isinstance(node.args[0], nodes.Const)
+    ):
         return node.args[0].value
     return None
 
@@ -116,7 +120,11 @@ def _rebound_names(node):
     return set()
 
 
-def _receiver_gaining_catalog(node, aliases, guarded = False):
+def _receiver_gaining_catalog(
+    node,
+    aliases,
+    guarded = False,
+):
     """Names `catalog.append(tools)` fills, or any receiver written under a guard."""
     if not (isinstance(node, nodes.Call) and isinstance(node.node, nodes.Getattr)):
         return set()
@@ -126,7 +134,13 @@ def _receiver_gaining_catalog(node, aliases, guarded = False):
     return _bound_names(node.node.node)
 
 
-def _scan_maybe(body, aliases, guarded, bound = frozenset(), killed = frozenset()):
+def _scan_maybe(
+    body,
+    aliases,
+    guarded,
+    bound = frozenset(),
+    killed = frozenset(),
+):
     """Walk a body that may not run. Keep what it learns, drop what it unbinds; the
     body's own `bound`/`killed` names escape in neither direction."""
     local = (set(aliases) | set(bound)) - set(killed)
@@ -155,9 +169,7 @@ def _scan(body, aliases, guarded):
                 # `{{ m.content if m.role == 'tool' else '' }}` holds its check in
                 # the expression, where an `{% if %}` usually would.
                 if _is_payload(value) and (
-                    guarded
-                    or _reads_catalog(value, aliases)
-                    or _checks_tool_role(value)
+                    guarded or _reads_catalog(value, aliases) or _checks_tool_role(value)
                 ):
                     return True
         elif isinstance(node, nodes.ExprStmt):
@@ -167,8 +179,7 @@ def _scan(body, aliases, guarded):
         elif isinstance(node, nodes.Assign):
             # `{% set _ = catalog.append(tools) %}`: the same mutation without `do`.
             aliases |= _receiver_gaining_catalog(node.node, aliases, guarded)
-            if (_reads_catalog(node.node, aliases) or guarded
-                    or _checks_tool_role(node.node)):
+            if _reads_catalog(node.node, aliases) or guarded or _checks_tool_role(node.node):
                 # Three ways a name comes to hold tool-conditional content: LFM2 fills
                 # `ns.system_prompt` inside the guard and renders it outside; a guard
                 # runs the statement only when tools exist, so even a constant counts;
