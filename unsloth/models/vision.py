@@ -1088,6 +1088,10 @@ VLLM_SUPPORTED_VLM = [
     # The MoE checkpoints report qwen3_5_moe, which the exact-membership gate below does
     # not reach via "qwen3_5".
     "qwen3_5_moe",
+    # Gemma-4 ships as Gemma4ForConditionalGeneration with a vision_config, so the MoE
+    # text checkpoints reach this gate too.
+    "gemma4",
+    "gemma4_text",
 ]
 
 
