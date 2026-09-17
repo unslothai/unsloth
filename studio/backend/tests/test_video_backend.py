@@ -8860,15 +8860,22 @@ def test_a_direct_worker_call_keeps_its_cancellation(fake_runtime, tmp_path, mon
 
 
 def test_cuda_graph_is_a_per_family_opt_in():
-    from core.inference.video_families import detect_video_family
+    """No video family opts in. Every one measured so far is GPU-bound at its shipped grid, so the capture buys
+    no wall and costs VRAM: H3 measured 1.0018x for 3.93 GB held, Wan measured 9.4% SLOWER. The opt-in stays a
+    field rather than being deleted because it is the only way a future launch-bound video family gets graphs,
+    and because deleting it would silently hand video the image backend's opt-OUT default."""
+    from core.inference.video_families import _FAMILIES, detect_video_family
 
     h3 = detect_video_family("MiniMaxAI/MiniMax-H3")
     assert h3 is not None and h3.name == "minimax-h3"
-    assert h3.supports_cuda_graph is True
+    assert h3.supports_cuda_graph is False
 
     wan = detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers")
     assert wan is not None and wan.name == "wan2.2-ti2v-5b"
     assert wan.supports_cuda_graph is False
+
+    opted_in = [f.name for f in _FAMILIES if f.supports_cuda_graph]
+    assert opted_in == [], f"{opted_in} opts into CUDA graphs with no measurement on record"
 
 
 def test_every_rebuilt_speed_target_carries_the_backend():

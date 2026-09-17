@@ -8376,14 +8376,40 @@ def _raw_body_model(body) -> Optional[str]:
     return body.get("model") if isinstance(body, dict) else None
 
 
-async def _available_model_ids() -> list[str]:
-    """Sorted ids a /v1 request may name, from the catalog ``GET /v1/models``
-    serves, so an error and the listing can't disagree."""
+def _catalog_object_ids(objects: list[dict]) -> list[str]:
+    """Ids to offer a chat caller. Task-carrying rows are dropped for the reason
+    _chat_servable_ids drops them, or the error names the model it just refused."""
     return sorted(
         mid
-        for mid in (m.get("id") for m in await _openai_catalog_objects())
+        for mid in (m.get("id") for m in objects if m.get("task") is None)
         if isinstance(mid, str) and mid
     )
+
+
+def _chat_servable_ids(objects: list[dict]) -> set[str]:
+    """Casefolded ids the chat endpoints can serve: a media, speech or TTS row carries a ``task``."""
+    return {
+        obj["id"].casefold()
+        for obj in objects
+        if isinstance(obj.get("id"), str) and obj["id"] and obj.get("task") is None
+    }
+
+
+async def _downloaded_model_ids() -> set[str]:
+    """Casefolded ids of every complete model in the local catalog, read before the servability
+    filter so an id here and absent from the chat listing is downloaded but withheld. Filtered for
+    visibility, or it would report another account's inventory."""
+    catalog = await _cached_local_catalog()
+    if account_access.managed_account():
+        catalog = await asyncio.to_thread(account_access.filter_model_rows, catalog)
+    ids = set()
+    for info in catalog:
+        if getattr(info, "partial", False):
+            continue
+        cid = getattr(info, "model_id", None) or public_model_id(getattr(info, "id", None))
+        if isinstance(cid, str) and cid:
+            ids.add(cid.casefold())
+    return ids
 
 
 def _format_available_models(ids: list[str]) -> str:
@@ -8414,8 +8440,48 @@ async def _unavailable_model_message(requested_model: str) -> str:
             f"The model '{base_id}' is downloaded, but the quant '{wanted}' is not. "
             f"Available quants: {', '.join(variants)}."
         )
-    available = _format_available_models(await _available_model_ids())
+    # One build, two views: each _openai_catalog_objects() call re-probes quants through the resolver.
+    catalog_objects = await _openai_catalog_objects()
+    available = _format_available_models(_catalog_object_ids(catalog_objects))
+    requested = requested_model.strip()
+    base, sep, _tag = requested.rpartition(":")
+    # The branch above only fires for an indexed repo with variants, so test the base too.
+    candidates = [requested.casefold()] + (
+        [base.strip().casefold()] if sep and base.strip() else []
+    )
+    # The advertised ids too, not just the catalog's raw model_id: a task row can be advertised
+    # under an alias (_stt_model_objects() lists "tiny" for unsloth/whisper-tiny), and a request
+    # naming what GET /v1/models showed is a request for something that IS on this machine.
+    downloaded = await _downloaded_model_ids() | {
+        obj["id"].casefold()
+        for obj in catalog_objects
+        if isinstance(obj.get("id"), str) and obj["id"]
+    }
+    servable = _chat_servable_ids(catalog_objects)
+    withheld = next((c for c in candidates if c in downloaded and c not in servable), None)
+    if withheld is not None:
+        named = requested if withheld == requested.casefold() else base.strip()
+        # No "load it in Studio to find out": one of the two reasons a checkpoint lands here is a
+        # truthy `model_file`, which _config_is_servable_here refuses because the MLX loaders
+        # exec_module it, and the Studio consent gate does not cover that key (it reads
+        # trust_remote_code and auto_map only, utils/security/consent.py). Sending the caller
+        # down that path would run exactly the code this refusal exists to stop.
+        message = (
+            f"The model '{named}' is downloaded, but this server cannot serve it here: it is not a "
+            "chat model this backend loads, or it needs custom code an API request cannot approve."
+        )
+        return f"{message} Available models: {available}." if available else message
     if not available:
+        if downloaded:
+            # Something is on this machine, it just is not a chat model the backend loads.
+            # `downloaded`, not `catalog_objects`: a resolver-withheld checkpoint (auto_map,
+            # model_file, encoder-decoder) never enters the catalog at all, so testing the
+            # catalog would claim an empty machine on a full one.
+            return (
+                f"The model '{requested_model}' is not downloaded on this server, and none of "
+                "the downloaded models is a chat model. Download one in Unsloth Studio, "
+                "or list what is here with GET /v1/models."
+            )
         return (
             f"The model '{requested_model}' is not downloaded on this server, and no "
             "models are downloaded yet. Download one in Unsloth Studio."
