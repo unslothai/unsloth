@@ -58,6 +58,9 @@ function readStoredMode(): RefreshMode {
 export function DebuggingTab() {
   const t = useT();
   const [sources, setSources] = useState<DebugLogSource[]>([]);
+  const [troubleshootingSourceIds, setTroubleshootingSourceIds] = useState<
+    string[]
+  >([]);
   const [sourceId, setSourceId] = useState<string | null>(null);
   const [mode, setMode] = useState<RefreshMode>(readStoredMode);
   const [buffer, setBuffer] = useState<LogBufferState>(EMPTY_BUFFER);
@@ -111,6 +114,7 @@ export function DebuggingTab() {
         );
         setSources(result.sources);
         setLogRoot(result.logRoot);
+        setTroubleshootingSourceIds(result.troubleshootingSourceIds);
         setSourceId((current) =>
           options.reselect
             ? result.defaultSourceId
@@ -270,6 +274,21 @@ export function DebuggingTab() {
     [buffer.lines],
   );
 
+  const troubleshootingRank = useMemo(
+    () => new Map(troubleshootingSourceIds.map((id, index) => [id, index])),
+    [troubleshootingSourceIds],
+  );
+
+  const orderedSources = useMemo(() => {
+    if (!troubleshootingRank.size) return sources;
+    return [...sources].sort((left, right) => {
+      const leftRank = troubleshootingRank.get(left.id) ?? 999;
+      const rightRank = troubleshootingRank.get(right.id) ?? 999;
+      if (leftRank !== rightRank) return leftRank - rightRank;
+      return right.modifiedAt - left.modifiedAt;
+    });
+  }, [sources, troubleshootingRank]);
+
   useEffect(() => {
     const pane = paneRef.current;
     if (pane && pinnedRef.current) pane.scrollTop = pane.scrollHeight;
@@ -356,10 +375,12 @@ export function DebuggingTab() {
             value={sourceId ?? ""}
             onChange={(event) => setSourceId(event.target.value || null)}
           >
-            {sources.map((source) => (
+            {orderedSources.map((source) => (
               <option key={source.id} value={source.id}>
                 {source.family} / {source.label}
                 {source.isCurrent ? " *" : ""}
+                {troubleshootingRank.has(source.id) ? " †" : ""}
+                {source.isRecentAttempt ? " +" : ""}
               </option>
             ))}
           </select>
