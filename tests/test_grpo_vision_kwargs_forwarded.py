@@ -670,3 +670,75 @@ def test_both_halves_travel_with_the_generated_module():
     pre = "\n".join(RL_PRE_ITEMS["grpo_trainer"])
     assert "def _unsloth_grpo_split_vision_by_sample(" in pre
     assert "def _unsloth_grpo_unsplit_vision(" in pre
+
+
+def _legacy_output_block(images, *, has_images = True):
+    """Run the block the 0.22.x-0.23.x output rewrite injects, on that TRL's variables."""
+    import textwrap
+
+    from unsloth.models.rl_replacements import (
+        _unsloth_grpo_image_cell,
+        grpo_trainer__generate_and_score_completions,
+    )
+
+    source = (
+        '        if "image_sizes" in prompt_inputs:\n'
+        '            output["image_sizes"] = prompt_inputs["image_sizes"]\n'
+        "        return output\n"
+    )
+    patched = grpo_trainer__generate_and_score_completions(
+        "_generate_and_score_completions", source
+    )
+    lines = patched.splitlines()
+    start = next(
+        i for i, line in enumerate(lines) if "if has_images and images is not None" in line
+    )
+    stop = next(i for i, line in enumerate(lines) if line.strip() == "except NameError:")
+    block = textwrap.dedent("\n".join(lines[start - 1 : stop + 2]))
+    output: dict = {}
+    namespace = {
+        "_unsloth_grpo_image_cell": _unsloth_grpo_image_cell,
+        "has_images": has_images,
+        "images": images,
+        "output": output,
+    }
+    exec(compile(block, "<legacy-output>", "exec"), namespace)
+    return output
+
+
+def test_a_legacy_trl_batch_carries_the_counts_for_a_multi_image_row():
+    """0.22.x-0.23.x hardcoded one image per example and never counted them, so a row holding
+    two images was sliced as though it were two rows and the images went to the wrong
+    samples."""
+    assert _legacy_output_block([["a", "b"], ["c"]])["num_images"] == [2, 1]
+
+
+def test_a_legacy_row_with_no_image_of_its_own_counts_zero():
+    assert _legacy_output_block([["a", "b"], None])["num_images"] == [2, 0]
+
+
+def test_a_singular_cell_is_counted_the_way_the_processor_was_given_it():
+    """The count comes off the same normalisation the processor got, so the two agree."""
+    assert _legacy_output_block(["a", "b"])["num_images"] == [1, 1]
+
+
+def test_a_text_only_legacy_batch_saves_no_counts():
+    assert _legacy_output_block(None, has_images = False) == {}
+
+
+def test_the_counts_are_not_added_twice_on_a_trl_that_has_them():
+    """0.24.0 saves `num_images` itself, and a second assignment off a different variable is
+    two sources for one fact."""
+    from unsloth.models.rl_replacements import grpo_trainer__generate_and_score_completions
+
+    source = (
+        '        if "image_sizes" in forward_kwargs:\n'
+        '            output["image_sizes"] = forward_kwargs["image_sizes"]\n'
+        "        if images is not None:\n"
+        '            output["num_images"] = num_images\n'
+        "        return output\n"
+    )
+    patched = grpo_trainer__generate_and_score_completions(
+        "_generate_and_score_completions", source
+    )
+    assert patched.count('output["num_images"]') == 1, patched

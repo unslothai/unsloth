@@ -1304,8 +1304,26 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
     string_to_find = """        if "image_sizes" in prompt_inputs:
             output["image_sizes"] = prompt_inputs["image_sizes"]"""
 
+    # TRL 0.22.x-0.23.x has no `num_images` at all: it hardcoded one image per example, so
+    # nothing counted them and nothing saved them. The singular `image` column normalisation
+    # above lets a cell hold several, and every consumer of a multi image batch -- the chunker
+    # that slices the vision tensors per sample and the per sample split in _prepare_inputs --
+    # reads those counts, so without them a two image row is sliced as if it were two rows and
+    # the images are handed to the wrong samples. Counted off the same normalised cells the
+    # processor was given, so the two can never disagree; a row with no image counts zero,
+    # which is what it contributed.
     replacement_string = """        if "image_sizes" in prompt_inputs:
             output["image_sizes"] = prompt_inputs["image_sizes"]
+        try:
+            if has_images and images is not None:
+                output["num_images"] = [
+                    len(_unsloth_cell) if _unsloth_cell else 0
+                    for _unsloth_cell in (
+                        _unsloth_grpo_image_cell(_unsloth_image) for _unsloth_image in images
+                    )
+                ]
+        except NameError:
+            pass
         if max_left_pad is not None:
             output["max_left_pad"] = torch.tensor(prompt_ids.shape[0] * [max_left_pad]).unsqueeze(-1)
         try:
