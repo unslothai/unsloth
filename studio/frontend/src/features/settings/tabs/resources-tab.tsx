@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { Switch } from "@/components/ui/switch";
+import { formatBytes } from "@/features/hub";
 import { FolderBrowser } from "@/features/model-picker";
 import {
   openModelsDir,
@@ -67,12 +68,6 @@ function formatGb(value: number | null | undefined): string {
   const safe = isFiniteNumber(value) ? Math.max(0, value) : 0;
   const digits = safe >= 10 ? 1 : 2;
   return `${safe.toFixed(digits)} GB`;
-}
-
-function formatBytes(value: number | null): string | null {
-  if (value === null || !Number.isFinite(value)) return null;
-  const gib = value / 1024 ** 3;
-  return `${gib >= 10 ? gib.toFixed(1) : gib.toFixed(2)} GiB`;
 }
 
 // RAM/VRAM come from the backend in binary units (bytes / 1024**3), matching
@@ -412,7 +407,7 @@ export function ResourcesTab() {
           t("settings.resources.storage.futureDownloads"),
           hfCache.freeBytes !== null
             ? t("settings.resources.storage.locationFree", {
-                free: formatBytes(hfCache.freeBytes) ?? "",
+                free: formatBytes(hfCache.freeBytes),
               })
             : null,
         ]

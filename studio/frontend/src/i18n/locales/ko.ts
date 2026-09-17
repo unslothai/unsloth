@@ -62,9 +62,9 @@ export const ko = {
     announceMoveFailed: "옮기기 전에 대기열이 변경되었습니다. 다시 시도하세요.",
     announceDragReset: "대기열이 변경되었습니다. 남은 메시지를 다시 드래그해 순서를 바꾸세요.",
     editingHint: "메시지 편집 중",
-    queueingOffHint: "새 메시지가 현재 응답을 중지하고 다음에 실행됩니다.",
-    queueingOnHint: "새 메시지는 순서를 기다렸다가 차례로 실행됩니다.",
-    queueingHintShared: "대기 중인 메시지는 유지됩니다.",
+    queueingOffHint: "새 메시지가 끼어들어 먼저 실행됩니다.",
+    queueingOnHint: "새 메시지는 순서를 기다립니다.",
+    queueingHintShared: "대기열은 유지됩니다.",
   },
   picker: {
     onDevice: "기기",
@@ -1296,6 +1296,8 @@ export const ko = {
           sourceBuild: "이 llama.cpp는 소스에서 빌드되어 여기서 백엔드를 전환할 수 없습니다.",
           customPath: "사용자 지정 llama.cpp 폴더가 선택되어 있습니다. 해당 빌드가 컴퓨팅 백엔드를 결정합니다.",
           unresolved: "사용 가능한 백엔드를 확인하지 못했습니다. 연결을 확인한 뒤 다시 시도하세요.",
+          updateChecksDisabled:
+            "업데이트 확인이 비활성화되어 있어(UNSLOTH_DISABLE_UPDATE_CHECK=1) 사용 가능한 백엔드를 조회하지 않습니다.",
         },
         // 표시되지 않음: 설정 검색용 추가 키워드.
         llamaBackendKeywords:

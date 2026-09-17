@@ -527,6 +527,10 @@ _TEMPLATE_FLAGS: frozenset[str] = frozenset(
         "--chat-template",
         "--chat-template-file",
         "--chat-template-kwargs",
+        # enable_thinking's new spelling (#7526); a template override recomputes the default,
+        # so both must strip. Takes a value, so NOT in _BOOLEAN_SHADOWING_FLAGS.
+        "--reasoning",
+        "-rea",
         "--jinja",
         "--no-jinja",
     }

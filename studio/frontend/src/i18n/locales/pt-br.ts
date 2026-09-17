@@ -62,9 +62,9 @@ export const ptBR = {
     announceMoveFailed: "A fila mudou antes que esta mensagem pudesse ser movida. Tente de novo.",
     announceDragReset: "A fila mudou. Arraste de novo para reordenar as mensagens restantes.",
     editingHint: "Editando a mensagem",
-    queueingOffHint: "Mensagens novas interrompem a resposta atual e são executadas em seguida.",
-    queueingOnHint: "Mensagens novas esperam a vez e são executadas em ordem.",
-    queueingHintShared: "As mensagens na fila são mantidas.",
+    queueingOffHint: "Mensagens novas interrompem e são executadas em seguida.",
+    queueingOnHint: "Mensagens novas esperam a vez.",
+    queueingHintShared: "A fila é mantida.",
   },
   picker: {
     onDevice: "No dispositivo",
@@ -1310,6 +1310,8 @@ export const ptBR = {
           sourceBuild: "This llama.cpp was built from source, so its backend cannot be switched from here.",
           customPath: "Uma pasta personalizada do llama.cpp está selecionada. A compilação dela determina o backend de computação.",
           unresolved: "The available backends could not be checked. Check your connection and try again.",
+          updateChecksDisabled:
+            "As verificações de atualização estão desativadas (UNSLOTH_DISABLE_UPDATE_CHECK=1), então os backends disponíveis não são consultados.",
         },
         // Not rendered: extra terms the settings search matches these rows on.
         llamaBackendKeywords:
