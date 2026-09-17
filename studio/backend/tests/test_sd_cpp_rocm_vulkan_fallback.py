@@ -2654,9 +2654,11 @@ def _backend_with_a_deferred_upgrade(
     monkeypatch.setattr(
         sd_cpp_backend.SdCppDiffusionBackend,
         "_resolved_accelerator",
-        lambda _self: requested,
+        lambda _self, _card = None: requested,
         raising = False,
     )
+    # Built with __new__, so give it the per-load field the resolutions read.
+    backend._loading_card = None
     monkeypatch.setattr(
         sd_cpp_backend,
         "_installed_accelerator_of",
@@ -2853,3 +2855,76 @@ def test_the_route_tells_the_selection_which_card_it_picked(fake_settings):
     route_source = inspect.getsource(inference_routes)
     call = route_source.split("                select_and_activate_engine,", 1)[1][:600]
     assert "gpu_ids = request.gpu_ids" in call, call
+
+
+def test_the_backend_resolution_asks_about_the_card_this_load_selected(fake_settings, monkeypatch):
+    """The router keeping ROCm for the supported card is worth nothing if the backend then
+    resolves the accelerator without the card and switches the install to Vulkan anyway."""
+    from core.inference import sd_cpp_backend
+
+    monkeypatch.setattr(
+        sd_cpp_backend,
+        "resolve_diffusion_device_target",
+        lambda: types.SimpleNamespace(backend = "rocm", device = "cuda", dtype = None),
+        raising = False,
+    )
+    sd_cpp_backend.note_accelerator_runtime_failure("rocm", proven = True, card = "Card A@gfx1201")
+
+    backend = sd_cpp_backend.SdCppDiffusionBackend.__new__(sd_cpp_backend.SdCppDiffusionBackend)
+    assert backend._resolved_accelerator("Card B@gfx1100") == "rocm"
+    assert backend._resolved_accelerator("Card A@gfx1201") == "vulkan"
+    assert backend._resolved_accelerator() == "vulkan"
+
+
+def test_every_in_load_resolution_reads_the_same_card(fake_settings):
+    """Placement, and agreement: `_accelerator_changed` compares the tree against this answer,
+    so a resolution that skipped the card would reinstall over what the others chose."""
+    import inspect
+
+    from core.inference import sd_cpp_backend
+
+    source = inspect.getsource(sd_cpp_backend)
+    assert (
+        source.count("self._resolved_accelerator()") == 0
+    ), "a resolution inside the load still asks without the card"
+    run_load = inspect.getsource(sd_cpp_backend.SdCppDiffusionBackend._run_load)
+    assert "self._loading_card = selected_card_identity(gpu_ordinal)" in run_load
+    assert run_load.index("_loading_card = selected_card_identity") < run_load.index(
+        "self._resolve_backend()"
+    )
+
+
+def test_a_video_render_failure_names_the_card_it_was_rendering_on(fake_settings, monkeypatch):
+    """One sd-cli, two callers: the video path records the same hipBLAS failure, and a record
+    with no card sends every later image and video load to Vulkan."""
+    from core.inference import sd_cpp_backend, video as video_mod
+
+    monkeypatch.setattr(sd_cpp_backend, "_installed_accelerator_of", lambda _b: "rocm")
+    monkeypatch.setattr(
+        video_mod,
+        "_note_sd_cpp_accelerator_failure",
+        video_mod._note_sd_cpp_accelerator_failure,
+        raising = False,
+    )
+    monkeypatch.setattr(
+        sd_cpp_backend, "selected_card_identity", lambda ordinal: f"Card {ordinal}@gfx1201"
+    )
+    video_mod._note_sd_cpp_accelerator_failure(
+        "/opt/sd/rocm/sd-cli",
+        "ROCm error: CUBLAS_STATUS_INVALID_VALUE at hipblasSetStream",
+        gpu_ordinal = 1,
+    )
+    assert sd_cpp_backend.accelerator_runtime_failed("rocm", "Card 1@gfx1201") is True
+    assert sd_cpp_backend.accelerator_runtime_failed("rocm", "Card 0@gfx1201") is False
+
+
+def test_the_video_failure_handler_passes_the_cards_ordinal(fake_settings):
+    """Placement: the recorder above only narrows what the handler tells it."""
+    import inspect
+
+    from core.inference import video as video_mod
+
+    source = inspect.getsource(video_mod)
+    handler = source.rindex("_note_sd_cpp_accelerator_failure(")
+    window = source[handler : handler + 220]
+    assert "gpu_ordinal = state.gpu_ordinal" in window, window

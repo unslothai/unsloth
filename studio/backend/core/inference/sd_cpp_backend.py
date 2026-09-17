@@ -2268,6 +2268,13 @@ class SdCppDiffusionBackend:
         # Set by _resolve_backend when it had to skip an accelerator install because the managed tree was still in
         # use; the load retries it once the tree is free.
         self._deferred_accelerator_install = False
+        # The card THIS load selected, resolved once from its ordinal. Every accelerator
+        # resolution inside the load asks about it, so a failure recorded against another card
+        # on a heterogeneous host does not divert this one: the router keeps ROCm for the
+        # supported card and the backend would otherwise switch the install back to Vulkan.
+        # None outside a load and whenever the selection cannot be identified, which is the
+        # answer that leaves every record applying, as before.
+        self._loading_card: Optional[str] = None
         # Servers taken out of _state/_pending_server whose stop() has not returned yet. unload() deliberately stops
         # outside the lock (terminate can take seconds), so between the clear and the stop the fields say idle while
         # the process is still running its own executable.
@@ -2304,7 +2311,7 @@ class SdCppDiffusionBackend:
         self._stop_reserved(server)
 
     @staticmethod
-    def _resolved_accelerator() -> str:
+    def _resolved_accelerator(card: Optional[str] = None) -> str:
         """The installer accelerator this host's device target resolves to (cpu / cuda / rocm /
         vulkan). Lazy import avoids an import cycle with the engine router.
 
@@ -2318,7 +2325,8 @@ class SdCppDiffusionBackend:
         on every load."""
         from core.inference.diffusion_engine_router import _install_accelerator_for
         return preferred_accelerator(
-            _install_accelerator_for(getattr(resolve_diffusion_device_target(), "backend", "cpu"))
+            _install_accelerator_for(getattr(resolve_diffusion_device_target(), "backend", "cpu")),
+            card,
         )
 
     def _resolve_engine(self) -> SdCppEngine:
@@ -2330,7 +2338,7 @@ class SdCppDiffusionBackend:
         # bundle over the working GPU one and run the whole generation on the CPU.
         binary = ensure_sd_cpp_binary(
             allow_install = _install_allowed() and not _tree_in_use(self),
-            accelerator = self._resolved_accelerator(),
+            accelerator = self._resolved_accelerator(self._loading_card),
         )
         if not binary:
             raise RuntimeError("sd-cli (stable-diffusion.cpp) binary is unavailable.")
@@ -2347,7 +2355,7 @@ class SdCppDiffusionBackend:
         it instead of being pinned to one-shot for the whole session."""
         if self._engine_injected and self._engine is not None:
             return "oneshot", None, self._resolve_engine()
-        accelerator = self._resolved_accelerator()
+        accelerator = self._resolved_accelerator(self._loading_card)
         # An accelerator upgrade REPLACES the binaries in the managed tree, and this runs before the load stops the
         # resident server or waits out an in-flight one-shot sd-cli. Linux refuses to open a running executable for
         # writing (ETXTBSY) and Windows locks it, so an install here fails and can leave the tree half-written.
@@ -2378,7 +2386,7 @@ class SdCppDiffusionBackend:
         if not _install_allowed():
             return server_binary
         try:
-            accelerator = self._resolved_accelerator()
+            accelerator = self._resolved_accelerator(self._loading_card)
             # Judge the tree by whatever binary it holds: on a serverless install that is the sd-cli, and without this
             # the retry would reinstall on every deferred load, matching accelerator or not.
             probe = server_binary or find_sd_cpp_binary()
@@ -2417,7 +2425,9 @@ class SdCppDiffusionBackend:
         """
         upgraded = self._upgrade_server_after_teardown(server_binary)
         running = upgraded if mode == "server" else getattr(engine, "binary", None)
-        if running and not usable_or_recorded_failure(running, self._resolved_accelerator()):
+        if running and not usable_or_recorded_failure(
+            running, self._resolved_accelerator(self._loading_card), self._loading_card
+        ):
             raise RuntimeError(
                 "the sd.cpp build in the managed tree is recorded as failing on this host "
                 "and the replacement for it could not be installed."
@@ -2579,6 +2589,9 @@ class SdCppDiffusionBackend:
         # leaked _pending_server reads as "the managed tree is busy" for the rest of the process and blocks every
         # later install.
         started: Optional[SdCppServer] = None
+        # Resolved once, before anything asks: the translation reads the host's enumeration and
+        # every resolution in this load has to give the same answer.
+        self._loading_card = selected_card_identity(gpu_ordinal)
         try:
             # Resolve mode (server preferred, one-shot fallback) + binary up front so an install failure surfaces
             # before the multi-GB pull.
@@ -2604,9 +2617,7 @@ class SdCppDiffusionBackend:
                         # Neither this accelerator's server nor its one-shot CLI will launch.
                         # There is no output to classify -- a build that dies in the loader
                         # prints nothing -- so it is counted rather than acted on.
-                        note_unlaunchable_accelerator_build(
-                            server_binary, card = selected_card_identity(gpu_ordinal)
-                        )
+                        note_unlaunchable_accelerator_build(server_binary, card = self._loading_card)
                         raise RuntimeError("sd-server binary is present but not runnable.")
                     mode, server_binary, engine = "oneshot", None, fallback
             # The accelerator the managed tree held when THIS binary was chosen, taken where the choice is made rather
@@ -2626,7 +2637,7 @@ class SdCppDiffusionBackend:
                 if engine.version() is None:
                     note_unlaunchable_accelerator_build(
                         getattr(engine, "binary", None),
-                        card = selected_card_identity(gpu_ordinal),
+                        card = self._loading_card,
                     )
                     raise RuntimeError("sd-cli binary is present but not runnable.")
 
@@ -2758,7 +2769,8 @@ class SdCppDiffusionBackend:
                     # already passed its in-use check can sweep this executable between the re-read and the start.
                     with _tree_reader(server_binary, cancel_event):
                         refreshed = ensure_sd_server_binary(
-                            allow_install = False, accelerator = self._resolved_accelerator()
+                            allow_install = False,
+                            accelerator = self._resolved_accelerator(self._loading_card),
                         )
                         if refreshed and refreshed != server_binary:
                             logger.info(
@@ -2841,7 +2853,7 @@ class SdCppDiffusionBackend:
                         note_accelerator_failure_from_output(
                             server_binary,
                             str(start_exc),
-                            card = selected_card_identity(gpu_ordinal),
+                            card = self._loading_card,
                         )
                         server.stop()
                         # Unpublish BEFORE resolving the one-shot engine: _pending_server means "a process is running
@@ -2925,7 +2937,7 @@ class SdCppDiffusionBackend:
                         if mode == "server"
                         else None
                     ),
-                    selected_card = selected_card_identity(gpu_ordinal),
+                    selected_card = self._loading_card,
                 )
                 superseded = False
                 orphan: Optional[SdCppServer] = None

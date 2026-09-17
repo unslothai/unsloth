@@ -612,7 +612,12 @@ def _sd_cli_identity(binary: Optional[str]) -> Optional[tuple[int, int]]:
     return (stat.st_size, stat.st_mtime_ns)
 
 
-def _note_sd_cpp_accelerator_failure(binary: Optional[str], output: str) -> None:
+def _note_sd_cpp_accelerator_failure(
+    binary: Optional[str],
+    output: str,
+    *,
+    gpu_ordinal: Optional[int] = None,
+) -> None:
     """The video path's name for the shared recorder, kept because that is what the render
     failure handler below reads.
 
@@ -621,8 +626,16 @@ def _note_sd_cpp_accelerator_failure(binary: Optional[str], output: str) -> None
     hipBLAS failure, and an image-only host was having none of them recorded.
     """
     try:
-        from .sd_cpp_backend import note_accelerator_failure_from_output
-        note_accelerator_failure_from_output(binary, output, source = "video")
+        from .sd_cpp_backend import note_accelerator_failure_from_output, selected_card_identity
+
+        # WHICH card, resolved from the ordinal this render is running on. A record with no
+        # card names the whole host, so a hipBLAS failure on one unsupported card would send
+        # every later image and video load to Vulkan, including one that explicitly selects a
+        # card the build serves. None stays host-wide, which is right for an automatic pick and
+        # for a host whose enumeration cannot be read.
+        note_accelerator_failure_from_output(
+            binary, output, source = "video", card = selected_card_identity(gpu_ordinal)
+        )
     except Exception as exc:  # noqa: BLE001 -- a preference, never a reason to mask the real error
         logger.debug("could not record the sd.cpp accelerator failure: %s", exc)
 
@@ -6349,7 +6362,9 @@ class VideoBackend:
                     # into the render. Nothing about the install is wrong, so the next load would pick the same build
                     # again. Record it instead, so the fallback rung in the load path is taken from here on.
                     if not cancel.is_set() and VIDEO_CANCELLED_MSG not in str(exc):
-                        _note_sd_cpp_accelerator_failure(binary, str(exc))
+                        _note_sd_cpp_accelerator_failure(
+                            binary, str(exc), gpu_ordinal = state.gpu_ordinal
+                        )
                     raise
                 if cancel.is_set():
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
