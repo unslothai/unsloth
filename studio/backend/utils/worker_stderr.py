@@ -615,8 +615,7 @@ class _EveryLineCarriesThePrefix(logging.Formatter):
         # formatter is otherwise indistinguishable from the same words written by a dying
         # runtime, and the whole point of marking is that the WRITER says which it is.
         marked_first = (
-            first if first.startswith(LOG_RECORD_START_MARK)
-            else LOG_RECORD_START_MARK + first
+            first if first.startswith(LOG_RECORD_START_MARK) else LOG_RECORD_START_MARK + first
         )
         if not newline:
             return marked_first

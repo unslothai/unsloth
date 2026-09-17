@@ -1041,13 +1041,13 @@ def test_a_default_formatter_record_is_not_mistaken_for_a_crash():
     public = _orchestrator_with_capture(
         logged
         + "Fatal Python error: Aborted\n"
-        + "  File \"/home/alice/.unsloth/studio/worker.py\", line 9, in handle\n"
+        + '  File "/home/alice/.unsloth/studio/worker.py", line 9, in handle\n'
     )._public_worker_stderr_tail()
     assert "another account" not in public, public
     assert "Fatal Python error: Aborted" in public, public
 
-def test_a_logged_traceback_is_not_returned_when_the_worker_dies_silently():
 
+def test_a_logged_traceback_is_not_returned_when_the_worker_dies_silently():
     """The case a later diagnostic cannot rescue. One request raises a handled error, its
     traceback is logged, the worker keeps running, and a LATER request ends it by SIGKILL
     or the OOM killer, which write nothing at all. The last traceback in the capture is
@@ -1194,7 +1194,10 @@ def test_a_worker_we_stopped_on_purpose_is_not_replayed_as_a_crash(monkeypatch):
 
     written: "list[tuple]" = []
     monkeypatch.setattr(
-        module.logger, "error", lambda *args, **kwargs: written.append(args), raising = False,
+        module.logger,
+        "error",
+        lambda *args, **kwargs: written.append(args),
+        raising = False,
     )
 
     orchestrator = module.InferenceOrchestrator.__new__(module.InferenceOrchestrator)
