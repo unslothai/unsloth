@@ -1213,6 +1213,299 @@ def test_rope_theta_carry_only_writes_when_the_base_would_be_lost():
     assert parameters == {"rope_type": "default"}
 
 
+# The two shapes the carry got wrong when it first landed (#11037).
+
+T5GEMMA2_LAYER_TYPES = ["sliding_attention", "sliding_attention", "full_attention"]
+T5GEMMA2_ROPE = {
+    "sliding_attention": {"rope_type": "default", "rope_theta": 10000.0},
+    "full_attention": {"rope_type": "default", "rope_theta": 1000000.0},
+}
+DEEPSEEK_V4_LABELS = ("main", "compress")
+DEEPSEEK_V4_ROPE = {
+    "main": {"rope_type": "default", "rope_theta": 10000.0, "partial_rotary_factor": 0.125},
+    "compress": {"rope_type": "default", "rope_theta": 160000.0, "partial_rotary_factor": 0.125},
+}
+
+
+def test_rope_theta_carry_never_puts_a_per_label_mapping_in_the_scalar_slot():
+    """``_carry_per_layer_rope_theta`` returns ``None`` for the no-op too, and #11037 as merged
+    read that as "fall through", carrying the mapping into the scalar ``config.rope_theta``."""
+    from types import SimpleNamespace
+
+    from unsloth.import_fixes import _carry_rope_theta_across_assignment as carry
+
+    parameters = {k: dict(v) for k, v in T5GEMMA2_ROPE.items()}
+    config = SimpleNamespace(
+        rope_parameters = parameters,
+        layer_types = list(T5GEMMA2_LAYER_TYPES),
+    )
+    carried = {"sliding_attention": 10000.0, "full_attention": 1000000.0}
+
+    assert (
+        carry(config, carried) is None
+    ), "the carry reported it carried a base across an assignment that lost nothing"
+    assert not hasattr(config, "rope_theta"), (
+        f"a per-label MAPPING reached the scalar rope_theta slot: "
+        f"{getattr(config, 'rope_theta', None)!r}. A base frequency is a number, and a "
+        f"config that had no rope_theta must not gain one from a no-op assignment."
+    )
+    assert config.rope_parameters == {
+        k: dict(v) for k, v in T5GEMMA2_ROPE.items()
+    }, "the nested parameters were rewritten by an assignment that lost nothing"
+
+    # Same refusal when the nested write is REFUSED rather than a no-op.
+    stubborn = {
+        "sliding_attention": {"rope_type": "default"},
+        "full_attention": {"rope_type": "default"},
+    }
+
+    class _Frozen(SimpleNamespace):
+        def __setattr__(self, name, value):
+            if name == "rope_parameters" and getattr(self, "_locked", False):
+                raise AttributeError("read-only")
+            super().__setattr__(name, value)
+
+    frozen = _Frozen(rope_parameters = stubborn, layer_types = list(T5GEMMA2_LAYER_TYPES))
+    frozen._locked = True
+    assert carry(frozen, carried) is None
+    assert not isinstance(
+        getattr(frozen, "rope_theta", None), dict
+    ), "a refused nested write fell through and put the mapping in the scalar slot"
+
+
+def test_rope_theta_carry_follows_rope_type_labels_not_only_layer_types():
+    """``standardize_rope_params`` resolves the nesting axis as ``getattr(self,
+    "_rope_type_labels", getattr(self, "layer_types", None))`` (transformers 5.17.0
+    ``modeling_rope_utils.py``); on DeepseekV4 the two name different things."""
+    from types import SimpleNamespace
+
+    from unsloth.import_fixes import (
+        _carry_rope_theta_across_assignment as carry,
+        _rope_parameters_are_per_layer,
+        _rope_theta_snapshot,
+    )
+
+    parameters = {k: dict(v) for k, v in DEEPSEEK_V4_ROPE.items()}
+    config = SimpleNamespace(
+        _rope_type_labels = DEEPSEEK_V4_LABELS,
+        layer_types = ["heavily_compressed_attention", "compressed_sparse_attention"],
+        rope_theta = 10000.0,
+        rope_parameters = parameters,
+    )
+
+    assert _rope_parameters_are_per_layer(
+        config, parameters
+    ), "rope keyed by _rope_type_labels was read as a flat dict"
+    assert _rope_theta_snapshot(config) == {
+        "main": 10000.0,
+        "compress": 160000.0,
+    }, f"the per-label bases were not snapshotted: {_rope_theta_snapshot(config)!r}"
+    carried = _rope_theta_snapshot(config)
+
+    config.rope_parameters = {
+        "main": {"rope_type": "linear", "factor": 4.0},
+        "compress": {"rope_type": "default"},
+    }
+    carry(config, carried)
+
+    restored = config.rope_parameters
+    assert "rope_theta" not in restored, (
+        f"a top-level rope_theta was written into a NESTED rope dict: {restored!r}. "
+        f"transformers would hand that one global base to every label."
+    )
+    assert restored["compress"]["rope_theta"] == 160000.0, (
+        f"the compression base was lost: {restored['compress'].get('rope_theta')!r} "
+        f"(expected 160000.0). standardize_rope_params would setdefault the 10000.0 "
+        f"global base into it instead."
+    )
+    assert restored["main"]["rope_theta"] == 10000.0
+    assert restored["main"]["factor"] == 4.0, "the caller's scaling was damaged"
+    assert config.rope_theta == 10000.0, "the stated global base went stale"
+
+    # Flat replacement, same config: the two bases disagree, so the config's own base is used.
+    flat = SimpleNamespace(
+        _rope_type_labels = DEEPSEEK_V4_LABELS,
+        rope_theta = 10000.0,
+        rope_parameters = {"rope_type": "linear", "factor": 4.0},
+    )
+    assert carry(flat, {"main": 10000.0, "compress": 160000.0}) == 10000.0
+    assert flat.rope_parameters["rope_theta"] == 10000.0
+
+
+def test_rope_carry_handles_rope_labels_not_all_present_in_layer_types():
+    """transformers asks ``isdisjoint``, not ``issubset``: laguna, mellum and zaya ship a rope
+    dict naming a label their default ``layer_types`` omits. Under the subset test all their
+    bases went to ``None`` -- the ``TypeError: ... 'NoneType' and 'Tensor'`` #11037 prevents."""
+    from types import SimpleNamespace
+
+    from unsloth.import_fixes import (
+        _carry_rope_theta_across_assignment as carry,
+        _rope_parameters_are_per_layer,
+        _rope_theta_snapshot,
+    )
+
+    parameters = {
+        "full_attention": {"rope_type": "default", "rope_theta": 500000.0},
+        "sliding_attention": {"rope_type": "default", "rope_theta": 10000.0},
+    }
+    config = SimpleNamespace(rope_parameters = parameters, layer_types = ["full_attention"])
+
+    assert _rope_parameters_are_per_layer(config, parameters), (
+        "a nested rope dict was read as flat because one of its labels is absent from "
+        "layer_types; transformers asks isdisjoint, not issubset"
+    )
+    carried = _rope_theta_snapshot(config)
+    assert carried == {
+        "full_attention": 500000.0,
+        "sliding_attention": 10000.0,
+    }, f"the per-label bases were not snapshotted: {carried!r}"
+
+    config.rope_parameters = {
+        "full_attention": {"rope_type": "linear", "factor": 4.0},
+        "sliding_attention": {"rope_type": "default"},
+    }
+    carry(config, carried)
+
+    restored = config.rope_parameters
+    assert (
+        restored["full_attention"]["rope_theta"] == 500000.0
+    ), f"the full-attention base was lost: {restored['full_attention'].get('rope_theta')!r}"
+    assert restored["sliding_attention"]["rope_theta"] == 10000.0, (
+        f"the sliding-attention base was lost: "
+        f"{restored['sliding_attention'].get('rope_theta')!r}"
+    )
+    assert (
+        "rope_theta" not in restored
+    ), f"a top-level rope_theta was written into a NESTED rope dict: {restored!r}"
+    assert not hasattr(
+        config, "rope_theta"
+    ), "a nested-only config gained a scalar rope_theta attribute it never had"
+
+
+def test_rope_carry_on_the_real_nested_configs():
+    """The stub shapes above on the real config classes, so a transformers change is caught."""
+    pytest.importorskip("transformers")
+    import copy as _copy
+
+    from unsloth.import_fixes import fix_transformers_rope_scaling_drops_theta
+
+    fix_transformers_rope_scaling_drops_theta()
+
+    try:
+        from transformers.models.t5gemma2.configuration_t5gemma2 import T5Gemma2DecoderConfig
+    except Exception as exc:
+        pytest.skip(f"T5Gemma2DecoderConfig unavailable: {exc!r}")
+
+    config = T5Gemma2DecoderConfig()
+    before = config.to_json_string()
+    had_theta = hasattr(config, "rope_theta")
+    config.rope_scaling = _copy.deepcopy(config.rope_parameters)
+    assert not isinstance(
+        getattr(config, "rope_theta", None), dict
+    ), f"T5Gemma2 rope_theta became a mapping: {config.rope_theta!r}"
+    assert (
+        hasattr(config, "rope_theta") == had_theta
+    ), "a no-op assignment gave the config a rope_theta attribute it never had"
+    assert (
+        config.to_json_string() == before
+    ), "assigning a config its own rope_parameters back changed what it serializes"
+
+    try:
+        from transformers.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config
+    except Exception as exc:
+        pytest.skip(f"DeepseekV4Config unavailable: {exc!r}")
+
+    deepseek = DeepseekV4Config()
+    expected_compress = deepseek.rope_parameters["compress"]["rope_theta"]
+    deepseek.rope_scaling = {
+        "main": {"rope_type": "linear", "factor": 4.0},
+        "compress": {"rope_type": "default"},
+    }
+    assert (
+        "rope_theta" not in deepseek.rope_parameters
+    ), f"stray top-level rope_theta in a nested dict: {deepseek.rope_parameters!r}"
+    deepseek.standardize_rope_params()
+    resolved = deepseek.rope_parameters
+    assert resolved["compress"]["rope_theta"] == expected_compress, (
+        f"the compression base resolved to {resolved['compress']['rope_theta']!r}, "
+        f"expected {expected_compress!r}"
+    )
+
+
+def test_rope_carry_keeps_every_nested_base_on_every_real_config():
+    """Swept, not enumerated, so a new nested-rope model is covered the day it lands. On 5.17.0:
+    deepseek_v4 (``_rope_type_labels``) and laguna / mellum / zaya, all four broken by issubset."""
+    pytest.importorskip("transformers")
+
+    from unsloth.import_fixes import fix_transformers_rope_scaling_drops_theta
+
+    fix_transformers_rope_scaling_drops_theta()
+
+    from transformers.models.auto.configuration_auto import CONFIG_MAPPING
+
+    checked, damaged = [], {}
+    for name, config_class in sorted(CONFIG_MAPPING.items()):
+        try:
+            config = config_class()
+        except Exception:
+            continue
+        parameters = getattr(config, "rope_parameters", None)
+        if not isinstance(parameters, dict):
+            continue
+        labels = [k for k, v in parameters.items() if isinstance(v, dict)]
+        if len(labels) < 2:
+            continue
+        expected = {k: parameters[k].get("rope_theta") for k in labels}
+        if any(v is None for v in expected.values()):
+            continue
+        try:
+            config.rope_scaling = {k: {"rope_type": "default"} for k in labels}
+        except Exception:
+            continue
+        restored = config.rope_parameters
+        actual = {k: (restored.get(k) or {}).get("rope_theta") for k in labels}
+        checked.append(name)
+        if actual != expected or "rope_theta" in restored:
+            damaged[name] = {
+                "expected": expected,
+                "actual": actual,
+                "stray_top_level_rope_theta": "rope_theta" in restored,
+            }
+
+    assert checked, "no config with a nested rope dict was found to check"
+    assert not damaged, (
+        f"a per-label scaling replacement lost bases on {sorted(damaged)} "
+        f"(checked {len(checked)} nested configs): {damaged}"
+    )
+
+
+def test_rope_carry_leaves_the_zoo_gemma_local_base_alone_on_a_real_config():
+    """``unsloth_zoo/empty_model.py`` sets Gemma's LOCAL base, then replaces the scaling."""
+    pytest.importorskip("transformers")
+
+    from unsloth.import_fixes import fix_transformers_rope_scaling_drops_theta
+
+    fix_transformers_rope_scaling_drops_theta()
+
+    try:
+        from transformers import Gemma2Config
+    except Exception as exc:
+        pytest.skip(f"Gemma2Config unavailable: {exc!r}")
+
+    config = Gemma2Config(num_hidden_layers = 2)
+    config.rope_theta = 10000.0
+    config.rope_scaling = {"rope_type": "default"}
+
+    assert (
+        config.rope_theta == 10000.0
+    ), f"the carry overwrote the local rotary base with {config.rope_theta!r}"
+    parameters = config.rope_parameters
+    if isinstance(parameters, dict):
+        assert (
+            parameters.get("rope_theta") == 10000.0
+        ), f"the local base did not reach rope_parameters: {parameters!r}"
+
+
 def test_rope_scaling_patch_wired_into_gpu_init():
     source = Path(__file__).resolve().parent.parent / "unsloth" / "_gpu_init.py"
     source = source.read_text(encoding = "utf-8")

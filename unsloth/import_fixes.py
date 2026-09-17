@@ -935,18 +935,27 @@ def _rope_scaling_setter_is_patched(owner = None):
     return bool(getattr(prop.fset, _ROPE_SCALING_PATCH_FLAG, False))
 
 
-def _rope_parameters_are_per_layer(config, parameters):
-    """Is this a per-layer-type rope dict rather than one global one?
+_ROPE_LABELS_UNSET = object()
 
-    transformers' own discriminator: per-layer exactly when the config declares
-    ``layer_types`` and every key is one of them. A global key written into such a dict
-    makes transformers read the whole thing as flat, so this is asked first.
-    """
-    layer_types = getattr(config, "layer_types", None)
-    if not layer_types or not isinstance(parameters, dict) or not parameters:
+
+def _rope_nesting_labels(config):
+    """Where ``rope_parameters`` nests: ``standardize_rope_params`` reads ``_rope_type_labels``,
+    falling back to ``layer_types``. Different axes -- DeepseekV4 keys rope by main/compress."""
+    labels = getattr(config, "_rope_type_labels", _ROPE_LABELS_UNSET)
+    if labels is _ROPE_LABELS_UNSET:
+        labels = getattr(config, "layer_types", None)
+    return labels
+
+
+def _rope_parameters_are_per_layer(config, parameters):
+    """Nested per-label rope dict or one global one? Asked first: a global key inside a nested
+    dict makes transformers read it flat. Its test is ``isdisjoint``, NOT ``issubset`` -- a
+    nested dict may name labels this config's ``layer_types`` omits."""
+    labels = _rope_nesting_labels(config)
+    if not labels or not isinstance(parameters, dict) or not parameters:
         return False
     try:
-        return set(parameters.keys()).issubset(set(layer_types))
+        return not set(parameters.keys()).isdisjoint(set(labels))
     except Exception:
         return False
 
@@ -954,10 +963,7 @@ def _rope_parameters_are_per_layer(config, parameters):
 def _rope_theta_snapshot(config):
     """The base(s) ``rope_parameters`` holds right now, in the shape it holds them.
 
-    A flat dict has one base. A per-layer dict has one per layer type (5.5's
-    ``T5Gemma2DecoderConfig``: 10000.0 sliding, 1000000.0 full), returned as
-    ``{layer_type: base}``; the outer dict has no ``rope_theta``, which is how both
-    bases used to be lost.
+    Flat -> one base; nested -> a ``{label: base}`` mapping, valid only one level down.
     """
     parameters = getattr(config, "rope_parameters", None)
     if not isinstance(parameters, dict):
@@ -976,7 +982,8 @@ def _carry_per_layer_rope_theta(config, parameters, carried):
 
     A top-level ``rope_theta`` would make the dict read as flat, so the base goes back
     into each nested entry. Copies throughout, never the caller's dicts in place. An
-    entry naming its own base is left alone.
+    entry naming its own base is left alone. ``None`` means nothing was written -- no nested
+    snapshot, OR every entry already named its base, OR refused; never "fall through as scalar".
     """
     if not isinstance(carried, dict) or not carried:
         return None
@@ -1014,7 +1021,8 @@ def _carry_rope_theta_across_assignment(config, carried):
 
     The base is written to ``rope_parameters`` where 5.x keeps it, so the answer does
     not depend on ``standardize_rope_params`` running first and ``validate_rope`` and
-    ``save_pretrained`` see a complete dict. A per-layer dict is left alone.
+    ``save_pretrained`` see a complete dict. A nested per-label dict is left alone: a
+    ``{label: base}`` ``carried`` is restored one level down or dropped, never made a scalar.
 
     The config's ``rope_theta`` attribute (the 4.x slot) is written only when it is the
     only slot that can hold the base, which is the non-dict replacement of #2405, or
@@ -1030,6 +1038,9 @@ def _carry_rope_theta_across_assignment(config, carried):
         restored = _carry_per_layer_rope_theta(config, parameters, carried)
         if restored is not None:
             return restored
+        if isinstance(carried, dict):
+            # Nothing restored = no-op or refused; a scalar fall-through put the MAPPING here.
+            return None
     elif isinstance(carried, dict):
         # Per-layer parameters replaced by a FLAT dict. Passing the mapping through would
         # write a dict where a number belongs. One base stands for it only when every
@@ -1046,6 +1057,10 @@ def _carry_rope_theta_across_assignment(config, carried):
     if base is None:
         base = carried
     if base is None:
+        return None
+    if isinstance(base, dict):
+        # A base is a number. Also reachable from a config SAVED by the #11037 release,
+        # whose own rope_theta holds a mapping: refuse, it needs fixing at rest instead.
         return None
 
     readable = current is not None
