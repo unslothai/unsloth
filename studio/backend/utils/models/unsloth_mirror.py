@@ -17,7 +17,7 @@ logger = get_logger(__name__)
 
 
 @lru_cache(maxsize = 1)
-def _mapper_tables() -> Optional[tuple[dict, dict]]:
+def _mapper_tables() -> Optional[tuple[dict, dict, dict]]:
     # Load the data file directly to avoid initializing Unsloth's GPU stack.
     try:
         spec = importlib.util.find_spec("unsloth")
@@ -29,14 +29,18 @@ def _mapper_tables() -> Optional[tuple[dict, dict]]:
         )
         module = importlib.util.module_from_spec(mapper_spec)
         mapper_spec.loader.exec_module(module)
-        return module.INT_TO_FLOAT_MAPPER, module.MAP_TO_UNSLOTH_16bit
+        return (
+            module.INT_TO_FLOAT_MAPPER,
+            module.FLOAT_TO_INT_MAPPER,
+            module.MAP_TO_UNSLOTH_16bit,
+        )
     except Exception as error:
         logger.debug("Could not read the Unsloth model mapper: %s", error)
         return None
 
 
-def unsloth_16bit_mirror(model_name: Optional[str]) -> Optional[str]:
-    """Return the public repo substituted by Unsloth's 16-bit loader, if any."""
+def unsloth_public_mirror(model_name: Optional[str], load_in_4bit: bool = True) -> Optional[str]:
+    """Return the public repo substituted by Unsloth's loader for this load mode, if any."""
     if (
         not isinstance(model_name, str)
         or model_name.strip().count("/") != 1
@@ -46,11 +50,16 @@ def unsloth_16bit_mirror(model_name: Optional[str]) -> Optional[str]:
     tables = _mapper_tables()
     if tables is None:
         return None
-    int_to_float, map_to_unsloth_16bit = tables
+    int_to_float, float_to_int, map_to_unsloth_16bit = tables
     lower = model_name.strip().lower()
     if lower.startswith("unsloth/"):
         return None
-    mirror = int_to_float.get(lower) or map_to_unsloth_16bit.get(lower)
+    if load_in_4bit:
+        # A 4-bit load resolves through FLOAT_TO_INT_MAPPER alone, and keeps an explicit
+        # -bnb-4bit name as given (unsloth.models.loader_utils.__get_model_name).
+        mirror = None if lower.endswith("-bnb-4bit") else float_to_int.get(lower)
+    else:
+        mirror = int_to_float.get(lower) or map_to_unsloth_16bit.get(lower)
     if not isinstance(mirror, str) or mirror.lower() == lower:
         return None
     return mirror

@@ -67,7 +67,7 @@ def test_start_gives_the_model_preflight_only_the_callers_token(
     backend = _Backend()
     probed = []
 
-    def _probe(model_name, hf_token):
+    def _probe(model_name, hf_token, load_in_4bit = True):
         probed.append(hf_token)
         return None
 

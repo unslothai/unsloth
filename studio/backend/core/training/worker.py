@@ -735,6 +735,7 @@ def _pre_detect_training_model(
         model_load_name = model_load_name,
         local_files_only = local_files_only,
         model_revision = model_revision,
+        load_in_4bit = config.get("load_in_4bit", True),
     )
     _check_finetune_targets_after_detect(trainer, config)
 

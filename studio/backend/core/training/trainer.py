@@ -73,7 +73,7 @@ from utils.third_party_source import (
 
 from utils.models import is_vision_model, detect_audio_type_checked
 from utils.models.model_identity import restore_hf_cache_repo_identity
-from utils.models.unsloth_mirror import unsloth_16bit_mirror
+from utils.models.unsloth_mirror import unsloth_public_mirror
 from utils.models.model_config import _env_offline
 from utils.datasets import format_and_template_dataset
 from utils.datasets.completion_masking import apply_completion_masking
@@ -172,12 +172,16 @@ def _drop_hf_stdout_callbacks(trainer) -> None:
 
 
 def _metadata_lookup_name(
-    model_name: str, lookup_name: str, local_files_only: bool, model_revision: Optional[str]
+    model_name: str,
+    lookup_name: str,
+    local_files_only: bool,
+    model_revision: Optional[str],
+    load_in_4bit: bool,
 ) -> str:
     """Return the repo whose config and tokenizer the loader will read."""
     if local_files_only or model_revision is not None or lookup_name != model_name:
         return lookup_name
-    mirror = unsloth_16bit_mirror(model_name)
+    mirror = unsloth_public_mirror(model_name, load_in_4bit)
     if mirror is None:
         return lookup_name
     logger.info(
@@ -350,6 +354,7 @@ class UnslothTrainer:
         model_load_name: Optional[str] = None,
         local_files_only: bool = False,
         model_revision: Optional[str] = None,
+        load_in_4bit: bool = True,
     ) -> None:
         """Lightweight detection and tokenizer load: no model weights, no VRAM. Sets is_vlm,
         _audio_type, is_audio_vlm, model_name and loads a lightweight tokenizer for dataset
@@ -364,6 +369,7 @@ class UnslothTrainer:
             model_load_name or model_name,
             local_files_only,
             model_revision,
+            load_in_4bit,
         )
 
         if hf_token:
@@ -850,7 +856,7 @@ class UnslothTrainer:
         self._use_gradient_checkpointing = use_gradient_checkpointing
         lookup_name = model_load_name or model_name
         metadata_name = _metadata_lookup_name(
-            model_name, lookup_name, local_files_only, model_revision
+            model_name, lookup_name, local_files_only, model_revision, load_in_4bit
         )
         self.model_load_error = None
         try:

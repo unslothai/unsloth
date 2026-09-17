@@ -468,10 +468,12 @@ _HF_MODEL_ACCESS_DENIED = (
 )
 
 
-def _remote_untrainable_model_format(model_name: str, hf_token: HfTokenArg) -> Optional[str]:
+def _remote_untrainable_model_format(
+    model_name: str, hf_token: HfTokenArg, load_in_4bit: bool = True
+) -> Optional[str]:
     from huggingface_hub import model_info as hf_model_info
     from hub.utils.hf_errors import hf_error_status
-    from utils.models.unsloth_mirror import unsloth_16bit_mirror
+    from utils.models.unsloth_mirror import unsloth_public_mirror
     from utils.security import load_scan_target
 
     # Registry aliases such as "Spark-TTS-0.5B/LLM" are not repos; probe the repo the trainer
@@ -544,13 +546,12 @@ def _remote_untrainable_model_format(model_name: str, hf_token: HfTokenArg) -> O
             ) from error
 
     # Gated model metadata is public, so verify access to its files separately.
-    if getattr(info, "gated", False) and unsloth_16bit_mirror(repo_id) is None:
+    if getattr(info, "gated", False) and unsloth_public_mirror(repo_id, load_in_4bit) is None:
         from urllib.parse import quote
         from huggingface_hub import constants
         from huggingface_hub.utils import build_hf_headers, get_session, hf_raise_for_status
 
         try:
-            # Call the endpoint directly so the request is bounded.
             response = get_session().get(
                 f"{constants.ENDPOINT}/api/models/{quote(repo_id, safe = '/')}/auth-check",
                 headers = build_hf_headers(token = account_hf_token(hf_token)),
@@ -1003,7 +1004,9 @@ def _reject_untrainable_model_request(
                         "Retry before starting training."
                     ),
                 )
-            remote_format = _remote_untrainable_model_format(request.model_name, hf_token)
+            remote_format = _remote_untrainable_model_format(
+                request.model_name, hf_token, request.load_in_4bit
+            )
         except HTTPException as error:
             metadata_error = error
             from core.training.training import _resolve_model_snapshot
