@@ -117,17 +117,50 @@ def test_an_explicit_tokenizer_is_not_shadowed_by_kwargs(i):
 # ---- behavioural check with a stand-in ------------------------------------
 
 
-def _extract_helper(name):
+def _extract_helper(name, path = None):
     """Pull a module-level helper out by source, so nothing imports unsloth."""
-    src = ST_PY.read_text(encoding = "utf-8")
+    path = path or ST_PY
+    src = path.read_text(encoding = "utf-8")
     node = [n for n in ast.parse(src).body if isinstance(n, ast.FunctionDef) and n.name == name]
-    assert node, f"{name} not found in sentence_transformer.py"
+    assert node, f"{name} not found in {path.name}"
     ns = {}
     exec(ast.get_source_segment(src, node[0]), ns)
     return ns[name]
 
 
 _normalize_save_method = _extract_helper("_normalize_save_method")
+_is_adapter_save_method = _extract_helper("_is_adapter_save_method", SAVE_PY)
+
+
+# _save_pretrained_merged defers `from ..save import _is_adapter_save_method` to call time, to keep
+# the unsloth.save import cycle closed. exec'ing the closure into a bare dict leaves that import
+# with nothing to resolve against and it dies with KeyError: "'__name__' not in globals" -- the
+# whole point of this file being to call the closure without importing unsloth.
+#
+# So give it a package to be relative to. `..save` from a module whose __package__ is
+# "_st_probe.models" is "_st_probe.save", and that module carries the real predicate, lifted from
+# unsloth/save.py by the same source extraction as everything else here. Anything else the closure
+# defers later fails loudly on a missing attribute rather than passing against a stub.
+_PROBE_PACKAGE = "_st_probe"
+
+
+def _install_probe_package():
+    """Register the synthetic package the exec'd closure resolves `..save` against."""
+    import sys
+    import types
+
+    pkg = types.ModuleType(_PROBE_PACKAGE)
+    pkg.__path__ = []
+    models = types.ModuleType(f"{_PROBE_PACKAGE}.models")
+    models.__path__ = []
+    save = types.ModuleType(f"{_PROBE_PACKAGE}.save")
+    save._is_adapter_save_method = _is_adapter_save_method
+    for name, module in (
+        (_PROBE_PACKAGE, pkg),
+        (f"{_PROBE_PACKAGE}.models", models),
+        (f"{_PROBE_PACKAGE}.save", save),
+    ):
+        sys.modules.setdefault(name, module)
 
 
 def _extract(i):
@@ -136,8 +169,11 @@ def _extract(i):
     node = _defs("_save_pretrained_merged", ST_PY)[i]
     import textwrap
 
+    _install_probe_package()
     branding = []
     ns = {
+        "__name__": f"{_PROBE_PACKAGE}.models.sentence_transformer",
+        "__package__": f"{_PROBE_PACKAGE}.models",
         "os": __import__("os"),
         "print": lambda *a, **k: None,
         "_normalize_save_method": _normalize_save_method,
@@ -268,14 +304,23 @@ def test_no_modules_fallback_still_does_a_16bit_merge(tmp_path):
     assert st.inner.merged
 
 
-def test_the_forwarding_path_still_accepts_lora(tmp_path):
-    """With modules.json present the merge understands every method, so the
-    refusal above must not leak into this branch."""
+def test_the_forwarding_path_refuses_lora_for_its_own_reason(tmp_path):
+    """unsloth#11067 made "lora" an error on this path too, and this test asserted the
+    opposite until then. It could not say so: every call here died in `from ..save import
+    _is_adapter_save_method` with KeyError: "'__name__' not in globals", so the file was red
+    for a harness reason and the stale expectation underneath it was never reached.
+
+    The refusal is not the no_modules one leaking down. save_pretrained_merged writes a
+    loadable SentenceTransformer and an adapter-only save has no base weights for one, so
+    both branches refuse "lora" and each has to say which is which.
+    """
     fn, _ = _extract(1)
     st = _FakeST(no_modules = False)
-    fn(st, str(tmp_path), None, "lora")
-    assert st.inner.forwarded["save_method"] == "lora"
-    assert not st.inner.merged
+    with pytest.raises(NotImplementedError, match = "adapter-only save has no base weights"):
+        fn(st, str(tmp_path), None, "lora")
+    assert not st.inner.merged, "must refuse BEFORE merging the adapters away"
+    assert st.saved == [], "and before writing a half-finished directory"
+    assert st.inner.forwarded is None, "and without forwarding the request on"
 
 
 # ---- spellings mean the same thing as in unsloth_save_model ----------------

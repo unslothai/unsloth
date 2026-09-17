@@ -3851,9 +3851,10 @@ exit 1
     # files, so neither explains a denied folder.
     #
     # When Defender is not it, name whichever antivirus is registered and running
-    # instead: third-party suites ship the same feature under their own names
-    # (Bitdefender Safe Files and Ransomware Remediation, for instance), and the
-    # user cannot act on advice that does not say which product to open.
+    # instead: third-party suites ship the same feature under their own product
+    # names, and the user cannot act on advice that does not say which product to
+    # open. Which suites, and what they call it, is in
+    # tests/studio/test_installer_av_shapes.py, AV_SHAPES_RECORD.
     #
     # Answers "" whenever it cannot tell, so a machine with no Defender module
     # and no SecurityCenter registration reads the same as one that says no.

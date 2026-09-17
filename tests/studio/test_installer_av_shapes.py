@@ -191,6 +191,15 @@ Each fires a rule and each is load-bearing. Listed so nobody spends a second pas
   - ie4uinit, Get-Process, python -X utf8 -c, Invoke-WebRequest. Each is scored; each has no
     equivalent that does the job.
 
+## Controlled-folder-access denials are not all Defender's
+
+`Get-SecuritySoftwareNote` in install.ps1 and studio/setup.ps1 names whichever antivirus is
+registered and running when a folder write is denied, rather than assuming Defender. The feature is
+not Defender-only: Bitdefender ships it as Safe Files and as Ransomware Remediation, and a user told
+to open Defender's Controlled folder access page cannot act on that advice when it is another
+product holding the lock. The vendor name lives here rather than in the scripts because those are
+handed to AMSI in full, comments included, before they run (#10533).
+
 ## Reporting a detection
 
 Use the "Windows: antivirus or security software blocked the installer" issue form. It requires the
@@ -1181,6 +1190,7 @@ def test_the_record_survives_and_keeps_its_evidence() -> None:
         "## uv comes from a pinned archive, not from a remote install script",
         "## Why the script headers do not repeat the usage text",
         "## Shapes we are keeping, on purpose",
+        "## Controlled-folder-access denials are not all Defender's",
     ):
         assert section in AV_SHAPES_RECORD, f"the record lost its {section!r} section"
 
@@ -1193,6 +1203,8 @@ def test_the_record_survives_and_keeps_its_evidence() -> None:
         "#10540",
         "#10805",
         "#9140",
+        "Safe Files",
+        "#10533",
     ):
         assert evidence in AV_SHAPES_RECORD, f"the record no longer names {evidence}"
 
