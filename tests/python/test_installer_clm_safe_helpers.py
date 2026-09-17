@@ -38,6 +38,10 @@ CLM_REACHABLE = (
     "Get-StudioPythonFinalPath",
     "Get-StudioPythonProcessImageTable",
     "Remove-StudioTrailingNewline",
+    # The NVIDIA inventory's Python rung. It is REACHED when the emitted probe type declined,
+    # and Constrained Language Mode is the commonest reason it declines, so this one runs under
+    # CLM more often than any other helper here.
+    "Read-NvidiaLibraryRawViaPython",
 )
 
 # The allowed-type list from the 5.1 documentation, lowercased, restricted to the spellings this
