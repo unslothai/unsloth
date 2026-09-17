@@ -26,6 +26,7 @@ import re
 import sys
 import threading
 import time
+import traceback
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
@@ -919,6 +920,34 @@ class _LoadingState:
     # Where the companion BYTES land: ``base_repo``, or its mirror when one was swapped in. Never surfaced
     # (``base_repo`` stays the id status() reports), but the cache scan and the delete guard must look here.
     fetch_repo: Optional[str] = None
+    account_id: Optional[str] = None
+
+
+def _account_owned_load(method):
+    @functools.wraps(method)
+    def wrapped(self, *args, **kwargs):
+        request = object()
+        inherited = kwargs.get("_load_token")
+        while True:
+            if inherited is None:
+                # Wait the in-flight ejects out and take the epoch they leave; a worker inherits one.
+                self._wait_for_pending_unloads()
+            with self._load_cancel_lock:
+                token = self._load_token if inherited is None else inherited
+                # Read under the lock that registers: an eject arriving in the gap above bumps the
+                # epoch too, so re-reading it would admit this load into the teardown it walked into.
+                if inherited is None and self._unload_waiters:
+                    continue
+                self._raise_if_load_cancelled(token)
+                self._load_accounts[request] = (token, current_account_id())
+                break
+        try:
+            return method(self, *args, **{**kwargs, "_load_token": token})
+        finally:
+            with self._load_cancel_lock:
+                self._load_accounts.pop(request, None)
+
+    return wrapped
 
 
 @dataclass
@@ -1194,20 +1223,37 @@ def _memory_request_forces_offload(memory_mode: Optional[str], cpu_offload: bool
     return mode is None and bool(cpu_offload)
 
 
+def _clear_exception_frames(exc: BaseException) -> None:
+    """Release failed-call locals while preserving traceback locations."""
+    errors, seen = [exc], set()
+    while errors:
+        error = errors.pop()
+        if id(error) in seen:
+            continue
+        seen.add(id(error))
+        traceback.clear_frames(error.__traceback__)
+        errors.extend(cause for cause in (error.__cause__, error.__context__) if cause is not None)
+
+
 class DiffusionBackend:
     """Holds at most one loaded diffusers pipeline. All mutations are serialised."""
 
     def __init__(self) -> None:
-        # _lock serialises the small state mutations; the status/progress readers stay lock-free.
+        # _lock serialises pipeline mutations; the status/progress readers stay lock-free.
         self._lock = threading.Lock()
+        # Protect load metadata without waiting for construction.
+        # Never acquire pipeline locks while holding this lock.
+        self._load_cancel_lock = threading.Lock()
+        self._unload_waiters = 0
         # _generate_lock serialises generations and is the ONLY lock the denoise holds.
         self._generate_lock = threading.Lock()
         self._state: Optional[_LoadState] = None
         self._loading: Optional[_LoadingState] = None
         # Bumped on begin_load/unload so a superseded worker neither commits nor stamps progress
         self._load_token = 0
-        # Set by unload() to abort an in-flight download. Replaced, never cleared, so a cancelled worker stays
-        # cancelled.
+        # Includes preflight and direct loads that have no background marker.
+        self._load_accounts: dict[object, tuple[int, str]] = {}
+        # Replaced per load so cancelled workers stay cancelled.
         self._cancel_event = threading.Event()
         # Keep Stop responsive while a replacement holds _lock.
         self._generation_cancel_lock = threading.Lock()
@@ -1225,6 +1271,12 @@ class DiffusionBackend:
         # Set when no teardown is reserved; an Event keeps waiting independent of _lock.
         self._teardown_drained = threading.Event()
         self._teardown_drained.set()
+        # Repos a cancelled load is still reading, per epoch; see draining_repo_ids().
+        self._draining_repos: dict[int, set[str]] = {}
+        # Set when no eject holds the load fence. Its own event: _teardown_drained stays SET from the
+        # eject being accepted until construction releases _lock, so waiting on that spun a core.
+        self._unload_fence_clear = threading.Event()
+        self._unload_fence_clear.set()
         # Written by the callback, read lock-free by generate_progress().
         self._gen: Optional[_GenState] = None
         # img2img/inpaint pipes built via from_pipe (shared modules, no extra VRAM); cleared on unload
@@ -1246,6 +1298,36 @@ class DiffusionBackend:
         target = resolve_diffusion_device_target(ordinal = ordinal)
         # The INDEXED string, so _resolve_device_target can rebuild a selection an override would erase.
         return target.torch_device, target.dtype
+
+    def _raise_if_load_cancelled(self, token: int) -> None:
+        # The epoch alone: unload() bumps _load_token before any teardown, so a load that started
+        # after the eject carries the current token and was never cancelled.
+        # Refusing on a bare _unload_waiters count 409'd an ordinary model switch for the length of
+        # the denoise; such a request waits in _wait_for_pending_unloads instead.
+        if token != self._load_token:
+            raise RuntimeError("Diffusion load was cancelled.")
+
+    def _wait_for_pending_unloads(self, timeout: float = 900.0) -> None:
+        """Queue a FRESH load behind every eject that is already tearing down.
+
+        Replacement loads stay fenced until each pending eject finishes, including a failed teardown:
+        the eject frees the very pipeline this load is about to replace. Waiting is the whole point --
+        raising here would report a cancellation that never happened. Only requests entering with no
+        epoch of their own wait; a worker that already holds one is governed by the epoch instead, so
+        a cancelled load never sits here waiting for the eject that cancelled it.
+
+        Nothing is held while waiting (this is called before ``_lock``), so it cannot deadlock against
+        an eject that is itself waiting for ``_lock`` or for the active denoise.
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            with self._load_cancel_lock:
+                if not self._unload_waiters:
+                    return
+            if time.monotonic() >= deadline:
+                raise RuntimeError("Timed out waiting for a diffusion unload to finish.")
+            # A sleep with an early wake, not the condition itself: the counter above decides.
+            self._unload_fence_clear.wait(timeout = 0.1)
 
     def _reserve_teardown_locked(self) -> None:
         """Fence queued generations off the pipeline this teardown is about to free. Call only while
@@ -1306,7 +1388,7 @@ class DiffusionBackend:
                     if not self._teardown_waiters:
                         with self._generation_cancel_lock:
                             cancelled = cancel.is_set()
-                            if not cancelled:
+                            if not cancelled and not self._unload_waiters:
                                 self._queued_generate_cancels.discard(cancel)
                                 self._active_generate_cancel = cancel
                                 self._active_generate_account = current_account_id()
@@ -1322,7 +1404,12 @@ class DiffusionBackend:
                 while True:
                     if cancel.is_set():
                         raise RuntimeError(DIFFUSION_CANCELLED_MSG)
-                    if self._teardown_drained.wait(timeout = 0.1):
+                    # Whichever fence turned it away: _teardown_drained is still SET before the
+                    # teardown is reserved, so waiting on that spun against the eject's own _lock.
+                    with self._load_cancel_lock:
+                        fenced_by_unload = bool(self._unload_waiters)
+                    gate = self._unload_fence_clear if fenced_by_unload else self._teardown_drained
+                    if gate.wait(timeout = 0.1):
                         break
             from hub.services.models.account_access import media_generation_slot
             try:
@@ -1971,6 +2058,7 @@ class DiffusionBackend:
         # the Hub.
         assert_pick_is_not_speech(repo_id, gguf_filename, hf_token, allow_network)
 
+    @_account_owned_load
     def begin_load(
         self,
         repo_id: str,
@@ -1995,8 +2083,12 @@ class DiffusionBackend:
         gpu_ids: Optional[list[int]] = None,
         # The ordinal the ROUTE already ranked, so the preflight and the load agree on one card.
         gpu_ordinal: Optional[int] = None,
+        _load_token: Optional[int] = None,
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once."""
+        with self._load_cancel_lock:
+            entry_token = _load_token
+            self._raise_if_load_cancelled(entry_token)
         hf_token = (hf_token.strip() if isinstance(hf_token, str) else hf_token) or None
         # Resolved ONCE, here, and carried to the worker: outside it so a bad pick is the route's 400 rather than a
         # load that dies mid-download, and only once so free VRAM cannot re-rank the choice after the weights land.
@@ -2027,7 +2119,8 @@ class DiffusionBackend:
             gpu_ordinal = gpu_ordinal,
         )
 
-        with self._lock:
+        with self._lock, self._load_cancel_lock:
+            self._raise_if_load_cancelled(entry_token)
             # Allow starting over a previously-failed load, but not over a live one.
             if self._loading is not None and self._loading.error is None:
                 raise RuntimeError("A diffusion load is already in progress.")
@@ -2039,7 +2132,9 @@ class DiffusionBackend:
             cancel_event = threading.Event()
             self._cancel_event = cancel_event
             # Seed with the family fallback; the worker resolves the real base and updates this.
-            self._loading = _LoadingState(repo_id = repo_id, base_repo = fam.base_repo)
+            self._loading = _LoadingState(
+                repo_id = repo_id, base_repo = fam.base_repo, account_id = current_account_id()
+            )
 
         account_thread(
             target = self._run_load,
@@ -2183,7 +2278,7 @@ class DiffusionBackend:
                     shortfall,
                 )
                 raise RuntimeError(shortfall)
-            with self._lock:
+            with self._load_cancel_lock:
                 if self._load_token == token and self._loading is not None:
                     self._loading.base_repo = base
                     self._loading.fetch_repo = fetch_base
@@ -2206,7 +2301,7 @@ class DiffusionBackend:
                 or base_snapshot
             )
             self.load_pipeline(**kwargs)
-            with self._lock:
+            with self._load_cancel_lock:
                 # Only clear the marker if this load is still current (a superseder has its own token).
                 if self._load_token == token:
                     self._loading = None
@@ -2241,9 +2336,13 @@ class DiffusionBackend:
                 )
             except Exception:  # noqa: BLE001
                 text = str(exc)
-            with self._lock:
+            with self._load_cancel_lock:
                 if self._load_token == token and self._loading is not None:
                     self._loading.error = redact_native_paths(text)
+        finally:
+            # Nothing else knows when the prefetch returned, so this is the drain's only owner.
+            with self._load_cancel_lock:
+                self._draining_repos.pop(token, None)
 
     def load_progress(self) -> dict[str, Any]:
         """Phase + downloaded/total bytes for the in-flight load (cache-scan based)."""
@@ -2280,12 +2379,27 @@ class DiffusionBackend:
         target repo (or its companion base) would yank blobs and snapshot files from under the
         download/assembly. Includes the mirror when one was swapped in: that is where the
         companion bytes land."""
-        with self._lock:
+        # _load_cancel_lock alone: _loading lives under it, and this predicate runs inside the GPU
+        # arbiter's lock (release_if), so taking _lock here let a multi-minute build stall every
+        # other modality's acquire.
+        with self._load_cancel_lock:
             loading = self._loading
             if loading is None or loading.error is not None:
                 return ()
             ids = (loading.repo_id, loading.base_repo, loading.fetch_repo)
             return tuple(dict.fromkeys(r for r in ids if r))
+
+    def draining_repo_ids(self) -> tuple[str, ...]:
+        """Repo ids a cancelled load is still reading, for the delete-cached guard only.
+
+        The eject drops ``_loading`` at once so the load cancels promptly, but its thread reads on
+        until it unwinds, holding no lock at all inside ``_prefetch_files``.
+
+        NOT part of ``loading_repo_ids()``: that answers "is a load in flight", which the arbiter's
+        ``release_if``, keep-warm and the media auto-switch read as ownership.
+        """
+        with self._load_cancel_lock:
+            return tuple(dict.fromkeys(r for repos in self._draining_repos.values() for r in repos))
 
     @staticmethod
     def _te_prequant_plan_files(
@@ -3370,6 +3484,7 @@ class DiffusionBackend:
 
         return DiffusionBackend._union_over_cached_revs(base, _params, staged_dir) * 2
 
+    @_account_owned_load
     def load_pipeline(
         self,
         repo_id: str,
@@ -3401,6 +3516,10 @@ class DiffusionBackend:
         # prefetch phase.
         _fetch_base: Optional[str] = None,
     ) -> dict[str, Any]:
+        with self._load_cancel_lock:
+            if _load_token is None:
+                _load_token = self._load_token
+            self._raise_if_load_cancelled(_load_token)
         # A blank token must degrade to anonymous, not be passed as a credential. Normalize once.
         hf_token = hf_token.strip() if isinstance(hf_token, str) else hf_token
         hf_token = hf_token or None
@@ -3468,8 +3587,7 @@ class DiffusionBackend:
             pass
 
         with self._lock:
-            if _load_token is not None and _load_token != self._load_token:
-                raise RuntimeError("Diffusion load was cancelled.")
+            self._raise_if_load_cancelled(_load_token)
             with self._generation_cancel_lock:
                 if self._active_generate_cancel is not None:
                     self._active_generate_cancel.set()
@@ -3477,8 +3595,7 @@ class DiffusionBackend:
         with self._model_transition_slot():
             with self._lock:
                 try:
-                    if _load_token is not None and _load_token != self._load_token:
-                        raise RuntimeError("Diffusion load was cancelled.")
+                    self._raise_if_load_cancelled(_load_token)
 
                     self._unload_locked()
                 finally:
@@ -3550,7 +3667,8 @@ class DiffusionBackend:
                     else normalize_transformer_quant(transformer_quant_requested)
                 )
 
-                pipe = None
+                pipe = transformer = None
+                pipe_kwargs: dict[str, Any] = {}
                 transformer_quant_engaged = None
                 quant_plan = None
                 # Why the dense quant did not engage, in the caller's terms. Threaded into `resolved` so a fallback is
@@ -4061,346 +4179,370 @@ class DiffusionBackend:
                                     else "no hosted pre-quantised checkpoint is available and the "
                                     "dense bf16 transformer cannot be built on this host"
                                 )
-                if (
-                    kind == "gguf"
-                    and normalize_transformer_quant(transformer_quant) is not None
-                    and dense_transformer_supported(target)
-                    and not dense_declined
-                    and (plan.offload_policy == OFFLOAD_NONE or quant_plan is not None)
-                ):
-                    try:
-                        pipe, transformer_quant_engaged = self._load_dense_quant_pipeline(
-                            transformer_cls,
-                            pipeline_cls,
-                            base,
-                            device,
-                            dtype,
-                            hf_token,
-                            target,
-                            transformer_quant,
-                            transformer_quant_fast_accum,
-                            fam = fam,
-                            base_local_dir = _base_local_dir,
-                            prequant_path = transformer_prequant_path,
-                            allow_dense_fallback = dense_fallback_allowed,
-                            lora_specs = loras,
-                            text_encoder_quant = text_encoder_quant,
-                            fetch_base = fetch_base,
-                            local_files_only = local_files_only,
-                        )
-                    except Exception as exc:  # noqa: BLE001 - fall back to the GGUF build
-                        logger.warning(
-                            "diffusion.transformer_quant_fallback: %s (loading GGUF)", exc
-                        )
-                        pipe = None
-                        transformer_quant_engaged = None
-                        # Formatted BEFORE the del below, and redacted: this reaches the client both as a status
-                        # tooltip and (for an explicit ask) as the refusal message.
-                        from utils.native_path_leases import redact_native_paths
-
-                        transformer_quant_decline = redact_native_paths(
-                            f"the quantised transformer build failed ({exc})"
-                        )
-                        # Drop the exception before clearing the cache: its traceback pins the dense transformer's
-                        # VRAM.
-                        del exc
-                        try:
-                            clear_gpu_cache()
-                        except Exception:  # noqa: BLE001
-                            pass
-                if transformer_quant_engaged is not None and quant_plan is not None:
-                    # The engaged dense build uses the re-planned placement; the GGUF-size plan stays for fallback.
-                    plan = quant_plan
-
-                if (
-                    pipe is None
-                    and kind == "gguf"
-                    and normalize_transformer_quant(transformer_quant) is not None
-                    and _has_active_lora(loras)
-                ):
-                    # Adapters were requested BAKED but that build failed, and the GGUF fallback cannot carry them;
-                    # fail loudly.
-                    raise RuntimeError(
-                        "The requested LoRA adapters could not be applied: baking adapters "
-                        "requires the quantized (int8/fp8) transformer build, which was "
-                        "declined or failed on this device (see the server log), and the "
-                        "GGUF fallback cannot carry them. Retry without transformer_quant "
-                        "adapters, free VRAM, or pick a smaller model."
-                    )
-
-                # Fail closed on a declined EXPLICIT precision. Loading the GGUF here produced a perfectly good image
-                # at a precision the caller never asked for, and nothing in the response said so, which is why a
-                # successful render could not be taken as proof the requested precision ran. `auto` is untouched:
-                # falling down the ladder is what it asks for.
-                if (
-                    pipe is None
-                    and transformer_quant_pinned is not None
-                    and not precision_fallback_allowed()
-                ):
-                    raise RuntimeError(
-                        precision_refusal_message(
-                            "transformer_quant",
-                            transformer_quant_pinned,
-                            transformer_quant_decline
-                            or "the quantised transformer build did not engage on this host",
-                            off_label = "Off to run the checkpoint as-is",
-                        )
-                    )
-
-                if pipe is None:
-                    if kind == "pipeline":
-                        if fam.name == KREA2_FAMILY_NAME:
-                            # krea ships transformers-5.x configs the 4.x line cannot parse, so assemble
-                            # per-component; that path never sees pipe_kwargs, so pass the pre-cast TE. Fetches EVERY
-                            # component from the id given, so it must get the mirror.
-                            pipe = load_krea2_pipeline(
-                                fetch_base,
-                                dtype,
-                                hf_token = hf_token,
-                                # The branch never sees pipe_kwargs, so the one keyword that keeps the no-download
-                                # promise has to be handed over with the rest
-                                local_files_only = local_files_only,
-                                text_encoder = te_prequant_pipe_kwargs(
-                                    fam,
-                                    fetch_base,
-                                    te_quant_mode = text_encoder_quant,
-                                    target = target,
-                                    dtype = dtype,
-                                    hf_token = hf_token,
-                                    logger = logger,
-                                    local_files_only = local_files_only,
-                                ).get("text_encoder"),
-                            )
-                        elif fam.name == IDEOGRAM4_FAMILY_NAME:
-                            # ideogram ships the same transformers-5.x Qwen stack as krea; assemble per-component too,
-                            # from the mirror for the same reason.
-                            pipe = load_ideogram4_pipeline(fetch_base, dtype, hf_token = hf_token)
-                        else:
-                            pipe_kwargs: dict[str, Any] = {
-                                "local_files_only": local_files_only,
-                                "torch_dtype": dtype,
-                                "cache_dir": hub_cache_dir(),
-                            }
-                            if hf_token:
-                                pipe_kwargs["token"] = hf_token
-                            if fam.name == HIDREAM_FAMILY_NAME:
-                                # The repo names a Llama text_encoder_4 it does not ship; supply it from the open
-                                # mirror
-                                pipe_kwargs.update(
-                                    hidream_te4_kwargs(
-                                        dtype,
-                                        hf_token,
-                                        fam = fam,
-                                        te_quant_mode = text_encoder_quant,
-                                        target = target,
-                                        local_files_only = local_files_only,
-                                    )
-                                )
-                            # A hosted pre-cast fp8 text encoder skips the dense TE download; the cast re-applies
-                            # idempotently.
-                            pipe_kwargs.update(
-                                te_prequant_pipe_kwargs(
-                                    fam,
-                                    fetch_base,
-                                    te_quant_mode = text_encoder_quant,
-                                    target = target,
-                                    dtype = dtype,
-                                    hf_token = hf_token,
-                                    logger = logger,
-                                    local_files_only = local_files_only,
-                                )
-                            )
-                            # The prefetched snapshot dir keeps from_pretrained off the hub (24 GB per FLUX.1
-                            # otherwise)
-                            pipe = pipeline_cls.from_pretrained(
-                                _base_local_dir or fetch_base, **pipe_kwargs
-                            )
-                    elif kind == "single_file" and fam.single_file_is_pipeline:
-                        # A single-file SDXL-style checkpoint is the WHOLE pipeline: load it through the pipeline
-                        # class with ``config`` on the base repo.
-                        sf_pipe_kwargs: dict[str, Any] = {
-                            "local_files_only": local_files_only,
-                            "torch_dtype": dtype,
-                            # ``config`` is a REPO FETCH ahead of the mirrored load, so a gated id would 401 here
-                            # first
-                            "config": fetch_base,
-                            "cache_dir": hub_cache_dir(),
-                        }
-                        if hf_token:
-                            sf_pipe_kwargs["token"] = hf_token
-                        pipe = pipeline_cls.from_single_file(single_file_path, **sf_pipe_kwargs)
-                    else:
-                        # Transformer-only single file; VAE/text-encoder/scheduler come from the base repo.
-                        sf_kwargs: dict[str, Any] = {
-                            "torch_dtype": dtype,
-                            "config": fetch_base,
-                            "subfolder": "transformer",
-                            "token": hf_token,
-                            "cache_dir": hub_cache_dir(),
-                            # config is a REPO ID, and diffusers forwards this into the load_config() that resolves
-                            # it, so without the flag this branch reaches the Hub on a load nobody asked for. The
-                            # pipeline assembly below was already guarded; this call was not.
-                            "local_files_only": local_files_only,
-                        }
-                        if kind == "gguf":
-                            # Dequantise the GGUF transformer on-device at the compute dtype.
-                            sf_kwargs["quantization_config"] = diffusers.GGUFQuantizationConfig(
-                                compute_dtype = dtype
-                            )
-                            # sd.cpp GGUFs prefix tensors with model.diffusion_model.; the FLUX.2 / Qwen converters
-                            # choke.
-                            _install_gguf_prefix_strip(transformer_cls, logger)
-                        # A safetensors single-file (fp8) carries its own dtype: no GGUF dequant config.
-                        transformer = transformer_cls.from_single_file(
-                            single_file_path, **sf_kwargs
-                        )
-
-                        if fam.name == KREA2_FAMILY_NAME:
-                            pipe = load_krea2_pipeline(
-                                fetch_base,
-                                dtype,
-                                hf_token = hf_token,
-                                transformer = transformer,
-                                # Same reason as the full-pipeline branch: the single file supplies only the denoiser,
-                                # so the encoder, VAE and tokenizer below are still GB this load promised not to
-                                # fetch.
-                                local_files_only = local_files_only,
-                                text_encoder = te_prequant_pipe_kwargs(
-                                    fam,
-                                    fetch_base,
-                                    te_quant_mode = text_encoder_quant,
-                                    target = target,
-                                    dtype = dtype,
-                                    hf_token = hf_token,
-                                    logger = logger,
-                                    local_files_only = local_files_only,
-                                ).get("text_encoder"),
-                            )
-                        else:
-                            pipe_kwargs = {
-                                "local_files_only": local_files_only,
-                                "torch_dtype": dtype,
-                                "transformer": transformer,
-                                "cache_dir": hub_cache_dir(),
-                            }
-                            if hf_token:
-                                pipe_kwargs["token"] = hf_token
-                            if fam.name == HIDREAM_FAMILY_NAME:
-                                pipe_kwargs.update(
-                                    hidream_te4_kwargs(
-                                        dtype,
-                                        hf_token,
-                                        fam = fam,
-                                        te_quant_mode = text_encoder_quant,
-                                        target = target,
-                                        local_files_only = local_files_only,
-                                    )
-                                )
-                            # Same pre-cast TE injection as above: the GGUF supplies the transformer, so the TE is the
-                            # big download.
-                            pipe_kwargs.update(
-                                te_prequant_pipe_kwargs(
-                                    fam,
-                                    fetch_base,
-                                    te_quant_mode = text_encoder_quant,
-                                    target = target,
-                                    dtype = dtype,
-                                    hf_token = hf_token,
-                                    logger = logger,
-                                    local_files_only = local_files_only,
-                                )
-                            )
-                            pipe = pipeline_cls.from_pretrained(
-                                _base_local_dir or fetch_base, **pipe_kwargs
-                            )
-
-                # Effective speed: GGUF defaults to `default` (~2.2x, below the quant noise floor); dense stays
-                # bit-identical `off`.
-                effective_speed = resolve_speed_mode(speed_mode, is_gguf = kind == "gguf")
-                # A torchao-quantized dense transformer must be compiled (eager is ~30x slower, losing to GGUF)
-                if transformer_quant_engaged is not None and effective_speed == SPEED_OFF:
-                    logger.info(
-                        "diffusion.transformer_quant: forcing speed_mode=default "
-                        "(quantized transformer must be compiled; eager is ~30x slower)"
-                    )
-                    effective_speed = SPEED_DEFAULT
-                # Deferred speed auto for dense: stay eager and engage `default` on the 3rd image, where compile
-                # amortises. Only when speed was unset.
-                speed_deferred = (
-                    speed_mode is None
-                    and effective_speed == SPEED_OFF
-                    and transformer_quant_engaged is None
-                    and compile_eligible(target, is_gguf = False, family = fam)
-                )
-                # Speed optims run BEFORE placement, so snapshot the global backend flags first for unload restore.
-                # The dense transformer quant above builds quiet configs, so it mutated none of these flags.
-                backend_flags_before = snapshot_backend_flags()
-                # Pick the attention kernel BEFORE compile: auto upgrades to cuDNN fused attention on NVIDIA (~1.18x)
-                attention_engaged = apply_attention_backend(
-                    pipe,
-                    select_attention_backend(
-                        target, attention_backend, speed_active = effective_speed != SPEED_OFF
-                    ),
-                    logger = logger,
-                    target = target,
-                )
-                # Step caching (First-Block-Cache), also before compile: reuses the transformer tail across steps and
-                # drops compile fullgraph. Tri-state: unset/auto -> FBCACHE_MIN_STEPS policy; off/fbcache pinned.
-                cache_request = normalize_transformer_cache(transformer_cache)
-                cache_auto = transformer_cache is None or cache_request == TC_AUTO
-                cache_quant_active = transformer_quant_engaged is not None or bool(gguf_filename)
-                default_steps: Optional[int] = None
-                if cache_auto:
-                    default_steps, _ = default_generation_params(
-                        gguf_filename, repo_id, base, fam.name
-                    )
-                    cache_request = TC_FBCACHE if default_steps >= FBCACHE_MIN_STEPS else None
-                cache_engaged = apply_step_cache(
-                    pipe,
-                    mode = cache_request,
-                    threshold = transformer_cache_threshold,
-                    # GGUF transformers are quantized too, so the cache needs the higher threshold.
-                    quant_active = cache_quant_active,
-                    logger = logger,
-                )
-                # An auto decision can flip at generation time, but only on a cache-capable transformer
-                cache_may_toggle = cache_auto and callable(
-                    getattr(getattr(pipe, "transformer", None), "enable_cache", None)
-                )
-                if cache_auto:
-                    if cache_engaged:
-                        cache_reason = (
-                            f"auto: {default_steps}-step default schedule reaches "
-                            f"{FBCACHE_MIN_STEPS}; re-checked per generation"
-                        )
-                    elif cache_request is not None:
-                        cache_reason = "auto: model does not support step caching"
-                    else:
-                        cache_reason = (
-                            f"auto: {default_steps}-step default schedule is below "
-                            f"{FBCACHE_MIN_STEPS}; re-checked per generation"
-                        )
-                else:
-                    cache_reason = "requested"
-                # Everything to the _LoadState commit mutates PROCESS-WIDE state; the try/finally below restores it on
-                # failure. gguf_transformer: the dense fast path still sets gguf_filename, but pipe.transformer is
-                # dense (REGIONAL compile).
-                gguf_transformer = kind == "gguf" and transformer_quant_engaged is None
-
+                backend_flags_before = None
                 eager_patched = False
                 compile_ctx = None
                 state_committed = False
-                # Lazy import (these modules import torch) keeps diffusion.py torch-free to import.
-                from .diffusion_eager_patches import (
-                    install_compile_safe_patches,
-                    uninstall_patches,
-                )
-                from .diffusion_arch_patches import (
-                    install_arch_patches,
-                    uninstall_arch_patches,
-                )
-
+                state = None
                 try:
+                    self._raise_if_load_cancelled(_load_token)
+                    if (
+                        kind == "gguf"
+                        and normalize_transformer_quant(transformer_quant) is not None
+                        and dense_transformer_supported(target)
+                        and not dense_declined
+                        and (plan.offload_policy == OFFLOAD_NONE or quant_plan is not None)
+                    ):
+                        try:
+                            pipe, transformer_quant_engaged = self._load_dense_quant_pipeline(
+                                transformer_cls,
+                                pipeline_cls,
+                                base,
+                                device,
+                                dtype,
+                                hf_token,
+                                target,
+                                transformer_quant,
+                                transformer_quant_fast_accum,
+                                fam = fam,
+                                base_local_dir = _base_local_dir,
+                                prequant_path = transformer_prequant_path,
+                                allow_dense_fallback = dense_fallback_allowed,
+                                lora_specs = loras,
+                                text_encoder_quant = text_encoder_quant,
+                                fetch_base = fetch_base,
+                                local_files_only = local_files_only,
+                                _load_token = _load_token,
+                            )
+                        except Exception as exc:  # noqa: BLE001 - fall back to the GGUF build
+                            self._raise_if_load_cancelled(_load_token)
+                            logger.warning(
+                                "diffusion.transformer_quant_fallback: %s (loading GGUF)", exc
+                            )
+                            pipe = None
+                            transformer_quant_engaged = None
+                            # Formatted before cleanup and redacted: this reaches the client both as a status
+                            # tooltip and (for an explicit ask) as the refusal message.
+                            from utils.native_path_leases import redact_native_paths
+
+                            transformer_quant_decline = redact_native_paths(
+                                f"the quantised transformer build failed ({exc})"
+                            )
+                            _clear_exception_frames(exc)
+                            try:
+                                clear_gpu_cache()
+                            except Exception:  # noqa: BLE001
+                                pass
+                    if transformer_quant_engaged is not None and quant_plan is not None:
+                        # The engaged dense build uses the re-planned placement; the GGUF-size plan stays for fallback.
+                        plan = quant_plan
+
+                    if (
+                        pipe is None
+                        and kind == "gguf"
+                        and normalize_transformer_quant(transformer_quant) is not None
+                        and _has_active_lora(loras)
+                    ):
+                        # Adapters were requested BAKED but that build failed, and the GGUF fallback cannot carry them;
+                        # fail loudly.
+                        raise RuntimeError(
+                            "The requested LoRA adapters could not be applied: baking adapters "
+                            "requires the quantized (int8/fp8) transformer build, which was "
+                            "declined or failed on this device (see the server log), and the "
+                            "GGUF fallback cannot carry them. Retry without transformer_quant "
+                            "adapters, free VRAM, or pick a smaller model."
+                        )
+
+                    # Fail closed on a declined EXPLICIT precision. Loading the GGUF here produced a perfectly good image
+                    # at a precision the caller never asked for, and nothing in the response said so, which is why a
+                    # successful render could not be taken as proof the requested precision ran. `auto` is untouched:
+                    # falling down the ladder is what it asks for.
+                    if (
+                        pipe is None
+                        and transformer_quant_pinned is not None
+                        and not precision_fallback_allowed()
+                    ):
+                        raise RuntimeError(
+                            precision_refusal_message(
+                                "transformer_quant",
+                                transformer_quant_pinned,
+                                transformer_quant_decline
+                                or "the quantised transformer build did not engage on this host",
+                                off_label = "Off to run the checkpoint as-is",
+                            )
+                        )
+
+                    if pipe is None:
+                        if kind == "pipeline":
+                            if fam.name == KREA2_FAMILY_NAME:
+                                # krea ships transformers-5.x configs the 4.x line cannot parse, so assemble
+                                # per-component; that path never sees pipe_kwargs, so pass the pre-cast TE. Fetches EVERY
+                                # component from the id given, so it must get the mirror.
+                                pipe = load_krea2_pipeline(
+                                    fetch_base,
+                                    dtype,
+                                    hf_token = hf_token,
+                                    check_cancelled = lambda: self._raise_if_load_cancelled(
+                                        _load_token
+                                    ),
+                                    # The branch never sees pipe_kwargs, so the one keyword that keeps the no-download
+                                    # promise has to be handed over with the rest
+                                    local_files_only = local_files_only,
+                                    text_encoder = te_prequant_pipe_kwargs(
+                                        fam,
+                                        fetch_base,
+                                        te_quant_mode = text_encoder_quant,
+                                        target = target,
+                                        dtype = dtype,
+                                        hf_token = hf_token,
+                                        logger = logger,
+                                        local_files_only = local_files_only,
+                                    ).get("text_encoder"),
+                                )
+                            elif fam.name == IDEOGRAM4_FAMILY_NAME:
+                                # ideogram ships the same transformers-5.x Qwen stack as krea; assemble per-component too,
+                                # from the mirror for the same reason.
+                                pipe = load_ideogram4_pipeline(
+                                    fetch_base,
+                                    dtype,
+                                    hf_token = hf_token,
+                                    check_cancelled = lambda: self._raise_if_load_cancelled(
+                                        _load_token
+                                    ),
+                                )
+                            else:
+                                pipe_kwargs = {
+                                    "local_files_only": local_files_only,
+                                    "torch_dtype": dtype,
+                                    "cache_dir": hub_cache_dir(),
+                                }
+                                if hf_token:
+                                    pipe_kwargs["token"] = hf_token
+                                if fam.name == HIDREAM_FAMILY_NAME:
+                                    # The repo names a Llama text_encoder_4 it does not ship; supply it from the open
+                                    # mirror
+                                    pipe_kwargs.update(
+                                        hidream_te4_kwargs(
+                                            dtype,
+                                            hf_token,
+                                            fam = fam,
+                                            te_quant_mode = text_encoder_quant,
+                                            target = target,
+                                            local_files_only = local_files_only,
+                                        )
+                                    )
+                                    self._raise_if_load_cancelled(_load_token)
+                                # A hosted pre-cast fp8 text encoder skips the dense TE download; the cast re-applies
+                                # idempotently.
+                                pipe_kwargs.update(
+                                    te_prequant_pipe_kwargs(
+                                        fam,
+                                        fetch_base,
+                                        te_quant_mode = text_encoder_quant,
+                                        target = target,
+                                        dtype = dtype,
+                                        hf_token = hf_token,
+                                        logger = logger,
+                                        local_files_only = local_files_only,
+                                    )
+                                )
+                                self._raise_if_load_cancelled(_load_token)
+                                # The prefetched snapshot dir keeps from_pretrained off the hub (24 GB per FLUX.1
+                                # otherwise)
+                                pipe = pipeline_cls.from_pretrained(
+                                    _base_local_dir or fetch_base, **pipe_kwargs
+                                )
+                        elif kind == "single_file" and fam.single_file_is_pipeline:
+                            # A single-file SDXL-style checkpoint is the WHOLE pipeline: load it through the pipeline
+                            # class with ``config`` on the base repo.
+                            sf_pipe_kwargs: dict[str, Any] = {
+                                "local_files_only": local_files_only,
+                                "torch_dtype": dtype,
+                                # ``config`` is a REPO FETCH ahead of the mirrored load, so a gated id would 401 here
+                                # first
+                                "config": fetch_base,
+                                "cache_dir": hub_cache_dir(),
+                            }
+                            if hf_token:
+                                sf_pipe_kwargs["token"] = hf_token
+                            pipe = pipeline_cls.from_single_file(single_file_path, **sf_pipe_kwargs)
+                        else:
+                            # Transformer-only single file; VAE/text-encoder/scheduler come from the base repo.
+                            sf_kwargs: dict[str, Any] = {
+                                "torch_dtype": dtype,
+                                "config": fetch_base,
+                                "subfolder": "transformer",
+                                "token": hf_token,
+                                "cache_dir": hub_cache_dir(),
+                                # config is a REPO ID, and diffusers forwards this into the load_config() that resolves
+                                # it, so without the flag this branch reaches the Hub on a load nobody asked for. The
+                                # pipeline assembly below was already guarded; this call was not.
+                                "local_files_only": local_files_only,
+                            }
+                            if kind == "gguf":
+                                # Dequantise the GGUF transformer on-device at the compute dtype.
+                                sf_kwargs["quantization_config"] = diffusers.GGUFQuantizationConfig(
+                                    compute_dtype = dtype
+                                )
+                                # sd.cpp GGUFs prefix tensors with model.diffusion_model.; the FLUX.2 / Qwen converters
+                                # choke.
+                                _install_gguf_prefix_strip(transformer_cls, logger)
+                            # A safetensors single-file (fp8) carries its own dtype: no GGUF dequant config.
+                            transformer = transformer_cls.from_single_file(
+                                single_file_path, **sf_kwargs
+                            )
+                            self._raise_if_load_cancelled(_load_token)
+
+                            if fam.name == KREA2_FAMILY_NAME:
+                                pipe = load_krea2_pipeline(
+                                    fetch_base,
+                                    dtype,
+                                    hf_token = hf_token,
+                                    check_cancelled = lambda: self._raise_if_load_cancelled(
+                                        _load_token
+                                    ),
+                                    transformer = transformer,
+                                    # Same reason as the full-pipeline branch: the single file supplies only the denoiser,
+                                    # so the encoder, VAE and tokenizer below are still GB this load promised not to
+                                    # fetch.
+                                    local_files_only = local_files_only,
+                                    text_encoder = te_prequant_pipe_kwargs(
+                                        fam,
+                                        fetch_base,
+                                        te_quant_mode = text_encoder_quant,
+                                        target = target,
+                                        dtype = dtype,
+                                        hf_token = hf_token,
+                                        logger = logger,
+                                        local_files_only = local_files_only,
+                                    ).get("text_encoder"),
+                                )
+                            else:
+                                pipe_kwargs = {
+                                    "local_files_only": local_files_only,
+                                    "torch_dtype": dtype,
+                                    "transformer": transformer,
+                                    "cache_dir": hub_cache_dir(),
+                                }
+                                if hf_token:
+                                    pipe_kwargs["token"] = hf_token
+                                if fam.name == HIDREAM_FAMILY_NAME:
+                                    pipe_kwargs.update(
+                                        hidream_te4_kwargs(
+                                            dtype,
+                                            hf_token,
+                                            fam = fam,
+                                            te_quant_mode = text_encoder_quant,
+                                            target = target,
+                                            local_files_only = local_files_only,
+                                        )
+                                    )
+                                    self._raise_if_load_cancelled(_load_token)
+                                # Same pre-cast TE injection as above: the GGUF supplies the transformer, so the TE is the
+                                # big download.
+                                pipe_kwargs.update(
+                                    te_prequant_pipe_kwargs(
+                                        fam,
+                                        fetch_base,
+                                        te_quant_mode = text_encoder_quant,
+                                        target = target,
+                                        dtype = dtype,
+                                        hf_token = hf_token,
+                                        logger = logger,
+                                        local_files_only = local_files_only,
+                                    )
+                                )
+                                self._raise_if_load_cancelled(_load_token)
+                                pipe = pipeline_cls.from_pretrained(
+                                    _base_local_dir or fetch_base, **pipe_kwargs
+                                )
+
+                    self._raise_if_load_cancelled(_load_token)
+                    # Lazy import (these modules import torch) keeps diffusion.py torch-free to import.
+                    from .diffusion_eager_patches import (
+                        install_compile_safe_patches,
+                        uninstall_patches,
+                    )
+                    from .diffusion_arch_patches import (
+                        install_arch_patches,
+                        uninstall_arch_patches,
+                    )
+
+                    # Effective speed: GGUF defaults to `default` (~2.2x, below the quant noise floor); dense stays
+                    # bit-identical `off`.
+                    effective_speed = resolve_speed_mode(speed_mode, is_gguf = kind == "gguf")
+                    # A torchao-quantized dense transformer must be compiled (eager is ~30x slower, losing to GGUF)
+                    if transformer_quant_engaged is not None and effective_speed == SPEED_OFF:
+                        logger.info(
+                            "diffusion.transformer_quant: forcing speed_mode=default "
+                            "(quantized transformer must be compiled; eager is ~30x slower)"
+                        )
+                        effective_speed = SPEED_DEFAULT
+                    # Deferred speed auto for dense: stay eager and engage `default` on the 3rd image, where compile
+                    # amortises. Only when speed was unset.
+                    speed_deferred = (
+                        speed_mode is None
+                        and effective_speed == SPEED_OFF
+                        and transformer_quant_engaged is None
+                        and compile_eligible(target, is_gguf = False, family = fam)
+                    )
+                    # Speed optims run BEFORE placement, so snapshot the global backend flags first for unload restore.
+                    # The dense transformer quant above builds quiet configs, so it mutated none of these flags.
+                    backend_flags_before = snapshot_backend_flags()
+                    # Pick the attention kernel BEFORE compile: auto upgrades to cuDNN fused attention on NVIDIA (~1.18x)
+                    attention_engaged = apply_attention_backend(
+                        pipe,
+                        select_attention_backend(
+                            target, attention_backend, speed_active = effective_speed != SPEED_OFF
+                        ),
+                        logger = logger,
+                        target = target,
+                    )
+                    self._raise_if_load_cancelled(_load_token)
+                    # Step caching (First-Block-Cache), also before compile: reuses the transformer tail across steps and
+                    # drops compile fullgraph. Tri-state: unset/auto -> FBCACHE_MIN_STEPS policy; off/fbcache pinned.
+                    cache_request = normalize_transformer_cache(transformer_cache)
+                    cache_auto = transformer_cache is None or cache_request == TC_AUTO
+                    cache_quant_active = transformer_quant_engaged is not None or bool(
+                        gguf_filename
+                    )
+                    default_steps: Optional[int] = None
+                    if cache_auto:
+                        default_steps, _ = default_generation_params(
+                            gguf_filename, repo_id, base, fam.name
+                        )
+                        cache_request = TC_FBCACHE if default_steps >= FBCACHE_MIN_STEPS else None
+                    cache_engaged = apply_step_cache(
+                        pipe,
+                        mode = cache_request,
+                        threshold = transformer_cache_threshold,
+                        # GGUF transformers are quantized too, so the cache needs the higher threshold.
+                        quant_active = cache_quant_active,
+                        logger = logger,
+                    )
+                    self._raise_if_load_cancelled(_load_token)
+                    # An auto decision can flip at generation time, but only on a cache-capable transformer
+                    cache_may_toggle = cache_auto and callable(
+                        getattr(getattr(pipe, "transformer", None), "enable_cache", None)
+                    )
+                    if cache_auto:
+                        if cache_engaged:
+                            cache_reason = (
+                                f"auto: {default_steps}-step default schedule reaches "
+                                f"{FBCACHE_MIN_STEPS}; re-checked per generation"
+                            )
+                        elif cache_request is not None:
+                            cache_reason = "auto: model does not support step caching"
+                        else:
+                            cache_reason = (
+                                f"auto: {default_steps}-step default schedule is below "
+                                f"{FBCACHE_MIN_STEPS}; re-checked per generation"
+                            )
+                    else:
+                        cache_reason = "requested"
+                    # The dense fast path sets gguf_filename, but its transformer is dense.
+                    gguf_transformer = kind == "gguf" and transformer_quant_engaged is None
+
                     if effective_speed != SPEED_OFF:
                         install_compile_safe_patches()
                         # Per-arch compile-safe fusions; neutral under compile, tracked by the same eager_patched
@@ -4411,6 +4553,7 @@ class DiffusionBackend:
                         uninstall_patches()
                         uninstall_arch_patches()
 
+                    self._raise_if_load_cancelled(_load_token)
                     # Pre-warmed torch.compile cache: a per-fingerprint inductor dir plus a bundle loaded before the
                     # first compiled forward pays the 25-58s compile once.
                     if effective_speed in (SPEED_DEFAULT, SPEED_MAX) and compile_eligible(
@@ -4439,6 +4582,7 @@ class DiffusionBackend:
                             logger = logger,
                         )
 
+                    self._raise_if_load_cancelled(_load_token)
                     speed_applied = apply_speed_optims(
                         pipe,
                         target,
@@ -4450,6 +4594,7 @@ class DiffusionBackend:
                         offload_active = plan.offload_policy != OFFLOAD_NONE,
                         logger = logger,
                     )
+                    self._raise_if_load_cancelled(_load_token)
                     if transformer_quant_engaged is not None and not speed_applied.get("compiled"):
                         # Compile could not engage: the quantized transformer runs eager, far slower than the GGUF it
                         # replaced
@@ -4468,6 +4613,7 @@ class DiffusionBackend:
                         offload_active = plan.offload_policy != OFFLOAD_NONE,
                         logger = logger,
                     )
+                    self._raise_if_load_cancelled(_load_token)
                     te_quant = te_outcome.mode
                     # Same contract for the other half of the requested precision: an explicit encoder mode that
                     # engaged NOTHING leaves a dense bf16 encoder the caller did not ask for, and a PARTIAL cast
@@ -4516,6 +4662,7 @@ class DiffusionBackend:
 
                     # Apply the planned placement; apply_memory_plan returns what ACTUALLY engaged so status stays
                     # honest.
+                    self._raise_if_load_cancelled(_load_token)
                     effective_policy, effective_tiling = apply_memory_plan(
                         pipe,
                         plan,
@@ -4624,7 +4771,7 @@ class DiffusionBackend:
                         }
                     )
 
-                    self._state = _LoadState(
+                    state = _LoadState(
                         pipe = pipe,
                         family = fam,
                         repo_id = repo_id,
@@ -4663,7 +4810,14 @@ class DiffusionBackend:
                             base,
                         ),
                     )
-                    state_committed = True
+                    # Serialize publication with cancellation.
+                    with self._load_cancel_lock:
+                        self._raise_if_load_cancelled(_load_token)
+                        self._state = state
+                        state_committed = True
+                except BaseException as exc:
+                    _clear_exception_frames(exc)
+                    raise
                 finally:
                     # Pre-commit failure: roll back the process-wide mutations (symmetric with _unload_locked).
                     if not state_committed:
@@ -4674,6 +4828,8 @@ class DiffusionBackend:
                         if eager_patched:
                             uninstall_patches()
                             uninstall_arch_patches()
+                        state = pipe = transformer = None
+                        pipe_kwargs.clear()
                         clear_gpu_cache()
 
         logger.info(
@@ -4707,6 +4863,7 @@ class DiffusionBackend:
         text_encoder_quant: Optional[str] = None,
         fetch_base: Optional[str] = None,
         local_files_only: bool = False,
+        _load_token: Optional[int] = None,
     ) -> tuple[Any, str]:
         """Build the opt-in fast pipeline and return ``(pipe, engaged_scheme)``.
 
@@ -4730,6 +4887,13 @@ class DiffusionBackend:
         download uses ``fetch_base``. A gated base 401s on both the prequant config read and the
         dense pull, and a nonzero baked LoRA refuses the GGUF fallback, so that 401 fails the load.
         """
+        if _load_token is None:
+            _load_token = self._load_token
+
+        def check_cancelled() -> None:
+            self._raise_if_load_cancelled(_load_token)
+
+        check_cancelled()
         fetch_base = fetch_base or prefer_ungated_mirror(base, hf_token)
         # 1. Pre-quantized checkpoint, when one is configured for the resolved scheme.
         scheme = select_transformer_quant_scheme(target, mode, family = getattr(fam, "name", None))
@@ -4744,6 +4908,7 @@ class DiffusionBackend:
             source = resolve_prequant_source(
                 fam, scheme, path_override = prequant_path, base_repo = base
             )
+            check_cancelled()
             if source is not None:
                 transformer = load_prequantized_transformer(
                     transformer_cls,
@@ -4767,6 +4932,7 @@ class DiffusionBackend:
                     cache_dir = hub_cache_dir(),
                     logger = logger,
                 )
+                check_cancelled()
                 if transformer is not None:
                     pipe = self._assemble_pipe(
                         pipeline_cls,
@@ -4781,7 +4947,9 @@ class DiffusionBackend:
                         target = target,
                         fetch_base = fetch_base,
                         local_files_only = local_files_only,
+                        check_cancelled = check_cancelled,
                     )
+                    check_cancelled()
                     return pipe, scheme
 
         # 2. Fallback: materialise the dense bf16 transformer and quantise it on-device.
@@ -4795,6 +4963,7 @@ class DiffusionBackend:
         # raises rather than falling back to the hub) and a sharded load raises per missing shard, so a partial
         # snapshot would drop a build the hub id completes. Off the hub id a base only the other root holds costs a
         # re-download, or 401s into the GGUF fallback.
+        check_cancelled()
         transformer = transformer_cls.from_pretrained(
             fetch_base,
             subfolder = "transformer",
@@ -4805,6 +4974,7 @@ class DiffusionBackend:
             # refused here rather than allowed to pull it.
             local_files_only = local_files_only,
         )
+        check_cancelled()
         pipe = self._assemble_pipe(
             pipeline_cls,
             base,
@@ -4818,7 +4988,9 @@ class DiffusionBackend:
             target = target,
             fetch_base = fetch_base,
             local_files_only = local_files_only,
+            check_cancelled = check_cancelled,
         )
+        check_cancelled()
         if _has_active_lora(lora_specs):
             # Bake the adapters BEFORE quantize_: peft wraps the dense Linears (post-quant torchao dispatch would
             # TypeError), then quantize_ converts only each wrapper's frozen base_layer while the "lora_" side path
@@ -4829,7 +5001,9 @@ class DiffusionBackend:
                 hf_token = hf_token,
             )
             for name, path, _weight in baked:
+                check_cancelled()
                 pipe.load_lora_weights(path, adapter_name = name)
+            check_cancelled()
             pipe.set_adapters(
                 [n for (n, _p, _w) in baked],
                 adapter_weights = [w for (_n, _p, w) in baked],
@@ -4841,6 +5015,7 @@ class DiffusionBackend:
                 len(baked),
                 scheme,
             )
+        check_cancelled()
         scheme = quantize_transformer(
             pipe,
             target,
@@ -4849,6 +5024,7 @@ class DiffusionBackend:
             fast_accum = fast_accum,
             logger = logger,
         )
+        check_cancelled()
         if scheme is None:
             raise RuntimeError("transformer quant unsupported for this device/scheme")
         return pipe, scheme
@@ -4867,11 +5043,14 @@ class DiffusionBackend:
         target: Any = None,
         fetch_base: Optional[str] = None,
         local_files_only: bool = False,
+        check_cancelled: Optional[Callable[[], None]] = None,
     ) -> Any:
         """Assemble the diffusers pipeline around ``transformer`` and place it on ``device`` (a
         no-op for an already-placed pre-quantized transformer; it moves the companions).
         Everything below reads the base only to FETCH, so it uses ``fetch_base``. Matters when
         ``base_local_dir`` is None: nothing was staged, so a gated upstream would 401 here."""
+        check_cancelled = check_cancelled or (lambda: None)
+        check_cancelled()
         base = fetch_base or prefer_ungated_mirror(base, hf_token)
         if getattr(fam, "name", None) == KREA2_FAMILY_NAME:
             # krea ships transformers-5.x configs and no top-level tokenizer files, so assemble per-component.
@@ -4887,16 +5066,19 @@ class DiffusionBackend:
                     logger = logger,
                     local_files_only = local_files_only,
                 ).get("text_encoder")
+            check_cancelled()
             pipe = load_krea2_pipeline(
                 base_local_dir or base,
                 dtype,
                 hf_token = hf_token,
                 transformer = transformer,
                 text_encoder = krea_te,
+                check_cancelled = check_cancelled,
                 # ``base_local_dir`` is None whenever nothing was staged, and then this is a repo id: the same guard
                 # the pipe_kwargs below carry for every other family.
                 local_files_only = local_files_only,
             )
+            check_cancelled()
             pipe.to(device)
             return pipe
         pipe_kwargs: dict[str, Any] = {
@@ -4919,6 +5101,7 @@ class DiffusionBackend:
                 )
             )
         if target is not None:
+            check_cancelled()
             pipe_kwargs.update(
                 te_prequant_pipe_kwargs(
                     fam,
@@ -4931,7 +5114,9 @@ class DiffusionBackend:
                     local_files_only = local_files_only,
                 )
             )
+        check_cancelled()
         pipe = pipeline_cls.from_pretrained(base_local_dir or base, **pipe_kwargs)
+        check_cancelled()
         pipe.to(device)
         return pipe
 
@@ -6299,8 +6484,16 @@ class DiffusionBackend:
                 return True
             if self._generation_owns_slot:
                 return False
-            # Only teardown or transition ownership makes queued waiters cancellable.
-            if not self._teardown_waiters and not self._transition_owns_slot:
+            # Only teardown, transition, or an ACCEPTED eject makes queued waiters cancellable. The
+            # eject raises _unload_waiters the moment it is admitted and reserves the teardown only
+            # once construction releases _lock, which can be minutes later. That window is exactly
+            # when the same counter denies these waiters admission, so without it here Stop answered
+            # False throughout and the request it could not cancel went on to run.
+            if (
+                not self._teardown_waiters
+                and not self._transition_owns_slot
+                and not self._unload_waiters
+            ):
                 return False
             # Recheck live state so timed waiters observe a replacement handoff.
             cancels = set(self._queued_generate_cancels)
@@ -6311,43 +6504,79 @@ class DiffusionBackend:
             return True
 
     def unload(self, *, expected_account: Optional[str] = None) -> dict[str, Any]:
-        with self._lock:
-            if expected_account is not None:
-                from .gpu_arbiter import DIFFUSION, GpuBusyForAnotherAccountError
-                from hub.services.models.account_access import require_resident_control
+        # fenced, and the try that owns it, start BEFORE the counter moves: a leaked _unload_waiters
+        # would make _wait_for_pending_unloads block every later load for the life of the process,
+        # and the flag keeps the finally honest when authorization refuses before the fence is raised.
+        fenced = False
+        try:
+            with self._generation_cancel_lock, self._load_cancel_lock:
+                if expected_account is not None:
+                    from .gpu_arbiter import DIFFUSION, GpuBusyForAnotherAccountError
+                    from hub.services.models.account_access import require_resident_control
 
-                # Recheck under the generation-admitting lock before setting any cancel event.
-                if (
-                    self._active_generate_cancel is not None
-                    and self._active_generate_account != expected_account
-                ):
-                    raise GpuBusyForAnotherAccountError(DIFFUSION, 1)
-                require_resident_control(
-                    DIFFUSION, self._state.repo_id if self._state is not None else None
-                )
-            # Abort an in-flight (lock-free) download so unload returns promptly. Under the lock, like video.py:
-            # begin_load rebinds this attribute, so an unlocked read could set an event the current load no longer
-            # watches.
-            self._cancel_event.set()
-            with self._generation_cancel_lock:
+                    # Authorize before changing either cancellation event.
+                    if (
+                        self._active_generate_cancel is not None
+                        and self._active_generate_account != expected_account
+                    ):
+                        raise GpuBusyForAnotherAccountError(DIFFUSION, 1)
+                    require_resident_control(DIFFUSION, getattr(self._state, "repo_id", None))
+                    # A published resident outranks a pending load: require_resident_control above has
+                    # already authorized this caller against the model that is actually loaded, and a
+                    # newcomer queueing a replacement over it must not cost the owner the right to
+                    # eject its own model. Only with no resident to speak for does pending ownership
+                    # decide, which is the window the CPU-load advisory was about.
+                    loading = self._loading
+                    if self._state is not None:
+                        foreign_load = False
+                    elif loading is not None and loading.error is None:
+                        foreign_load = loading.account_id != expected_account
+                    else:
+                        foreign_load = any(
+                            token == self._load_token and account != expected_account
+                            for token, account in self._load_accounts.values()
+                        )
+                    if foreign_load:
+                        raise GpuBusyForAnotherAccountError(DIFFUSION, 1)
+                # Fence loads and generations before waiting for construction.
+                self._unload_waiters += 1
+                self._unload_fence_clear.clear()
+                fenced = True
+                # The cancelled load's own epoch; _load_token is bumped just below.
+                cancelled_token = self._load_token
+                loading = self._loading
+                if loading is not None and loading.error is None:
+                    # _run_load's finally drops this, so it spans the prefetch too, where nothing
+                    # is registered in _load_accounts.
+                    self._draining_repos.setdefault(cancelled_token, set()).update(
+                        r for r in (loading.repo_id, loading.base_repo, loading.fetch_repo) if r
+                    )
+                self._cancel_event.set()
+                self._load_token += 1
+                self._loading = None
                 if self._active_generate_cancel is not None:
                     self._active_generate_cancel.set()
-            # Fence queued generations too: they are intentionally not cancelled by model lifecycle changes, so they
-            # must wait and observe the post-teardown state.
-            self._reserve_teardown_locked()
-            self._load_token += 1
-            self._loading = None
-        # Wait for the signalled denoise to exit BEFORE tearing down: _unload_locked uninstalls process-wide state
-        # (attention patches, GGUF compile hooks, backend flags, compile cache) the denoise still depends on.
-        with self._model_transition_slot():
             with self._lock:
-                try:
-                    self._unload_locked()
-                finally:
-                    # Released in a finally, exactly like begin_load: _unload_locked ends in clear_gpu_cache(), which
-                    # raises on a sticky CUDA fault, and an un-drained fence would refuse every later generation for
-                    # the life of the process.
-                    self._release_teardown_locked()
+                # Fence queued generations too: they are intentionally not cancelled by model lifecycle changes, so they
+                # must wait and observe the post-teardown state.
+                self._reserve_teardown_locked()
+            # Wait for the signalled denoise to exit BEFORE tearing down: _unload_locked uninstalls process-wide state
+            # (attention patches, GGUF compile hooks, backend flags, compile cache) the denoise still depends on.
+            with self._model_transition_slot():
+                with self._lock:
+                    try:
+                        self._unload_locked()
+                    finally:
+                        # Released in a finally, exactly like begin_load: _unload_locked ends in clear_gpu_cache(), which
+                        # raises on a sticky CUDA fault, and an un-drained fence would refuse every later generation for
+                        # the life of the process.
+                        self._release_teardown_locked()
+        finally:
+            if fenced:
+                with self._load_cancel_lock:
+                    self._unload_waiters -= 1
+                    if not self._unload_waiters:
+                        self._unload_fence_clear.set()
         return self.status()
 
     def _unload_locked(self) -> None:
@@ -6415,6 +6644,7 @@ class DiffusionBackend:
             "device": state.device,
             "dtype": state.dtype,
             "model_kind": state.kind,
+            "gguf_filename": state.gguf_filename,
             "gguf_variant": (
                 extract_quant_token(state.gguf_filename)
                 if state.kind == "gguf" and state.gguf_filename
