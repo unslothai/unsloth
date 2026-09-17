@@ -58,13 +58,46 @@ Check "exactly one Refresh-Environment" ($fn.Count -eq 1)
 $fnText = $fn[0].Extent.Text
 Check "it skips PSModulePath as well as Path" ($fnText -match "\`$key -eq 'PSModulePath'")
 
-# Behavioural: the registry reload must not clobber a value already normalized.
-# On non-Windows GetEnvironmentVariables('Machine') is empty, so this leg only
-# proves the function is callable there; the AST check above is what holds the
-# line cross-platform.
+# Everything Refresh-Environment calls, defined before it runs. Extracting the one function
+# alone worked on Linux and failed on Windows, which is the only host where this leg does
+# anything: GetEnvironmentVariables('Machine') is empty off Windows, so the body returned before
+# reaching Test-ActiveCondaEnvironment and the missing definition never showed. A helper added to
+# Refresh-Environment is therefore invisible here until a Windows runner picks it up, so the
+# closure is computed rather than listed.
+$setupFunctions = @{}
+foreach ($f in $setupAst.FindAll({ param($n)
+    $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) {
+    $setupFunctions[$f.Name] = $f.Extent.Text
+}
+$needed = [ordered]@{}
+$pending = [System.Collections.Generic.Queue[string]]::new()
+$pending.Enqueue("Refresh-Environment")
+$seen = @{ "Refresh-Environment" = $true }
+while ($pending.Count -gt 0) {
+    $current = $pending.Dequeue()
+    $body = $setupFunctions[$current]
+    if (-not $body) { continue }
+    # Whole-line comments dropped first: a function named in prose is not a call, and pulling it
+    # in would grow this closure to satisfy a mention rather than a dependency.
+    $code = ($body -split "`r?`n" | Where-Object { -not ($_.TrimStart().StartsWith("#")) }) -join "`n"
+    foreach ($name in $setupFunctions.Keys) {
+        if ($seen[$name]) { continue }
+        if ($code -match ("(?<![\w-])" + [regex]::Escape($name) + "(?![\w-])")) {
+            $seen[$name] = $true
+            $needed[$name] = $true
+            $pending.Enqueue($name)
+        }
+    }
+}
+Check "the closure found Refresh-Environment's own helpers (bites)" ($needed.Count -ge 1)
+
+# Behavioural: the registry reload must not clobber a value already normalized. Off Windows the
+# machine environment block is empty, so this leg only proves the function is callable there; the
+# AST check above is what holds the line cross-platform.
 $savedPath = $env:Path
 $savedModulePath = $env:PSModulePath
 try {
+    foreach ($name in $needed.Keys) { Invoke-Expression $setupFunctions[$name] }
     Invoke-Expression $fnText
     $sentinel = "C:\__unsloth_sentinel__;C:\Windows\System32\WindowsPowerShell\v1.0\Modules"
     $env:PSModulePath = $sentinel
