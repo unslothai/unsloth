@@ -16544,9 +16544,10 @@ def _check_signal_escape_patterns(code: str):
         elif isinstance(target, ast.Attribute):
             handled.add(id(target))
             if isinstance(target.value, ast.Name):
-                cls = _enclosing_class(scope)
-                key = (id(cls) if cls is not None else 0, target.value.id, target.attr)
-                _attr_stores.setdefault(key, []).append(value)
+                # Key on the class so sibling methods share `self.x`, else on the scope so two
+                # functions with a same-named local receiver stay apart.
+                owner = _enclosing_class(scope) or scope
+                _attr_stores.setdefault((id(owner), target.value.id, target.attr), []).append(value)
 
     def _evaluated_outside(node: ast.AST) -> list:
         """Return child expressions evaluated in the enclosing scope."""
@@ -16703,6 +16704,20 @@ def _check_signal_escape_patterns(code: str):
             current = _scope_parent.get(id(current))
         return None
 
+    def _attr_values(expr: ast.Attribute) -> "list | None":
+        """Return the stores for an `obj.attr` receiver, nearest owning scope first."""
+        scope = _node_scope.get(id(expr), tree)
+        cls = _enclosing_class(scope)
+        if cls is not None:
+            return _attr_stores.get((id(cls), expr.value.id, expr.attr))
+        current: ast.AST | None = scope
+        while current is not None:
+            values = _attr_stores.get((id(current), expr.value.id, expr.attr))
+            if values is not None:
+                return values
+            current = _scope_parent.get(id(current))
+        return None
+
     def _is_network_fq(fq: str) -> bool:
         return bool(fq) and (
             fq in _NETWORK_TARGET_ARGS
@@ -16710,7 +16725,8 @@ def _check_signal_escape_patterns(code: str):
             or any(fq.startswith(p) for p in _NETWORK_FQ_PREFIXES)
         )
 
-    def _resolved_fq(func: ast.AST, seen: frozenset = frozenset()) -> str:
+    def _resolved_fqs(func: ast.AST, seen: frozenset = frozenset()) -> list:
+        """Return every fully qualified name this call target may resolve to."""
         parts: list[str] = []
         cur = func
         while isinstance(cur, ast.Attribute):
@@ -16723,20 +16739,22 @@ def _check_signal_escape_patterns(code: str):
                     bases.append(value[1])
                 # Follow assigned module and function aliases.
                 elif isinstance(value, (ast.Name, ast.Attribute)) and id(value) not in seen:
-                    bases.append(_resolved_fq(value, seen | {id(value)}))
+                    bases.extend(_resolved_fqs(value, seen | {id(value)}))
                 else:
                     bases.append("")
-            # Rebinding the name elsewhere does not undo the import this call can reach, so a
-            # store that lands on a network call outranks every store that does not. Picking by
-            # module root instead would let `import socket as r` shadow `import requests as r`.
-            base = next(
-                (b for b in bases if _is_network_fq(".".join([b, *parts]))),
-                bases[0] if len(set(bases)) == 1 else "",
-            )
-            if base:
-                return ".".join([base, *parts])
+            # Rebinding the name elsewhere does not undo the import this call can reach, so every
+            # store that lands on a network call is kept and checked. Picking one by module root
+            # would let `import socket as r` shadow `import requests as r`, and picking one
+            # network store would read the wrong argument when their signatures differ.
+            network = [
+                fq for fq in (".".join([b, *parts]) for b in bases if b) if _is_network_fq(fq)
+            ]
+            if network:
+                return list(dict.fromkeys(network))
+            if bases and len(set(bases)) == 1 and bases[0]:
+                return [".".join([bases[0], *parts])]
             parts.insert(0, cur.id)
-        return ".".join(parts) if parts else ""
+        return [".".join(parts)] if parts else [""]
 
     def _bound_value(expr: ast.AST, seen: frozenset) -> "tuple[ast.AST, frozenset]":
         """Resolve a name with one known store."""
@@ -16821,7 +16839,7 @@ def _check_signal_escape_patterns(code: str):
         if (
             kind == "url"
             and isinstance(expr, ast.Call)
-            and _resolved_fq(expr.func) == "urllib.request.Request"
+            and "urllib.request.Request" in _resolved_fqs(expr.func)
         ):
             # urlopen(Request(url, headers=...)) connects to the Request's URL.
             present, inner = _call_target(expr, 0, "url")
@@ -16866,7 +16884,8 @@ def _check_signal_escape_patterns(code: str):
         if isinstance(expr, ast.NamedExpr):
             return _holds_client(expr.value, depth + 1)
         if isinstance(expr, ast.Call):
-            return "yes" if _resolved_fq(expr.func) in _CONNECTING_CLIENT_FQ else "no"
+            fqs = _resolved_fqs(expr.func)
+            return "yes" if any(fq in _CONNECTING_CLIENT_FQ for fq in fqs) else "no"
         if isinstance(expr, ast.Name):
             values = _name_values(expr)
         elif (
@@ -16874,8 +16893,7 @@ def _check_signal_escape_patterns(code: str):
             and isinstance(expr.value, ast.Name)
             and _scope_model_ready()
         ):
-            cls = _enclosing_class(_node_scope.get(id(expr), tree))
-            values = _attr_stores.get((id(cls) if cls is not None else 0, expr.value.id, expr.attr))
+            values = _attr_values(expr)
         else:
             return "no"
         states = [
@@ -16909,12 +16927,16 @@ def _check_signal_escape_patterns(code: str):
                     }
                 )
 
-        def _check_target(self, node, present: bool, expr, kind: str, *, connects: bool) -> None:
-            if not present:
+        def _check_target(self, node, targets: list, *, connects: bool) -> None:
+            results = []
+            for present, expr, kind in targets:
+                if not present:
+                    continue
+                results.extend([(False, None)] if expr is None else _target_hosts(expr, kind))
+            if not results:
                 return
-            results = [(False, None)] if expr is None else _target_hosts(expr, kind)
-            # Competing stores may only add a prompt, never drop a refusal, so a host that is out
-            # of policy on any of them decides the call.
+            # Competing signatures and stores may only add a prompt, never drop a refusal, so a
+            # host that is out of policy on any of them decides the call.
             blocked = next(
                 (
                     h
@@ -16943,7 +16965,7 @@ def _check_signal_escape_patterns(code: str):
             if isinstance(cur, ast.Name):
                 parts.insert(0, cur.id)
             fq = ".".join(parts) if parts else ""
-            net_fq = _resolved_fq(node.func)
+            net_fqs = _resolved_fqs(node.func)
 
             hf_upload_name = _method_call_hf_upload_name(node)
             if hf_upload_name is not None:
@@ -16962,21 +16984,21 @@ def _check_signal_escape_patterns(code: str):
             if (
                 isinstance(node.func, ast.Attribute)
                 and node.func.attr == "connect"
-                and net_fq not in _NETWORK_TARGET_ARGS
+                and not any(fq in _NETWORK_TARGET_ARGS for fq in net_fqs)
             ):
                 if _holds_client(node.func.value) != "no":
                     host_kw = next(
                         (kw.arg for kw in node.keywords or [] if kw.arg in ("hostname", "host")),
                         None,
                     )
-                    present, expr = _call_target(node, 0, host_kw or "hostname")
-                    self._check_target(node, present, expr, "host", connects = True)
+                    target = (*_call_target(node, 0, host_kw or "hostname"), "host")
+                    self._check_target(node, [target], connects = True)
                 elif node.args and isinstance(node.args[0], (ast.Tuple, ast.Constant)):
-                    self._check_target(node, True, node.args[0], "host", connects = False)
+                    self._check_target(node, [(True, node.args[0], "host")], connects = False)
 
-            if net_fq and any(net_fq.startswith(p) for p in _NETWORK_FQ_PREFIXES):
+            if any(fq and fq.startswith(p) for fq in net_fqs for p in _NETWORK_FQ_PREFIXES):
                 # 1) Upload-shape check (host-independent).
-                if _call_is_upload_shape(node, net_fq):
+                if any(_call_is_upload_shape(node, fq) for fq in net_fqs):
                     network_calls.append(
                         {
                             "type": "upload_blocked",
@@ -16985,14 +17007,21 @@ def _check_signal_escape_patterns(code: str):
                         }
                     )
 
-                # 2) Resolve the call's URL or host argument.
-                if net_fq in _NETWORK_TARGET_ARGS:
-                    position, keyword, kind = _NETWORK_TARGET_ARGS[net_fq]
-                    present, expr = _call_target(node, position, keyword)
-                    self._check_target(node, present, expr, kind, connects = True)
+                # 2) Resolve the call's URL or host argument under every candidate signature.
+                specs = list(
+                    dict.fromkeys(
+                        _NETWORK_TARGET_ARGS[fq] for fq in net_fqs if fq in _NETWORK_TARGET_ARGS
+                    )
+                )
+                if specs:
+                    self._check_target(
+                        node,
+                        [(*_call_target(node, pos, kw), kind) for pos, kw, kind in specs],
+                        connects = True,
+                    )
                 elif node.args:
                     # Non-connecting constructors keep the existing literal-target check.
-                    self._check_target(node, True, node.args[0], "url", connects = False)
+                    self._check_target(node, [(True, node.args[0], "url")], connects = False)
 
             is_open_call = (
                 (isinstance(node.func, ast.Name) and node.func.id == "open")

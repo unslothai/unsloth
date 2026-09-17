@@ -327,6 +327,20 @@ class TestNetworkTargetResolution:
                 f"from urllib3.util import connection\nconnection.create_connection(('{_H}', 80))",
                 id = "urllib3_util_connection",
             ),
+            # Competing aliases are checked under each signature, not just the first.
+            pytest.param(
+                f"import requests\nf = requests.get\nf = requests.request\nf('GET', 'http://{_H}/')",
+                id = "alias_stores_with_different_signatures",
+            ),
+            pytest.param(
+                f"import requests\nf = requests.request\nf = requests.get\nf('http://{_H}/')",
+                id = "alias_stores_with_different_signatures_reversed",
+            ),
+            pytest.param(
+                f"import paramiko\ndef go(obj):\n    obj.client = paramiko.SSHClient()\n"
+                f"    obj.client.connect(host='{_H}')",
+                id = "attribute_client_in_same_function",
+            ),
             pytest.param(
                 f"import socket\nhost = '{_H}'\ns = socket.socket()\ns.connect((host, 22))\nhost = 'huggingface.co'",
                 id = "socket_tuple_host_rebound_after_call",
@@ -360,6 +374,10 @@ class TestNetworkTargetResolution:
             # urllib3's string helpers open no connection.
             "from urllib3.util import parse_url\nparse_url('https://example.com/')",
             "import urllib3\nurllib3.util.parse_url('https://example.com/')",
+            "import requests\nf = requests.get\nf = requests.request\nf('GET', 'https://pypi.org/simple/')",
+            # Two functions with a same-named attribute receiver do not contaminate each other.
+            "import paramiko\ndef a(obj):\n    obj.client = paramiko.SSHClient()\n"
+            "def b(obj):\n    obj.client = get_db()\n    obj.client.connect(host='localhost')",
         ],
     )
     def test_known_trusted_host_runs_without_prompt(self, code):
