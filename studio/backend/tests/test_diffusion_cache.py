@@ -973,11 +973,15 @@ def test_a_stale_marker_cannot_authorize_the_no_op(monkeypatch):
             raise AssertionError("not used")
 
     t = _Reconfigured()
-    t._unsloth_step_cache = f"fbcache@{DEFAULT_FBCACHE_THRESHOLD}"  # stale: says what we last asked for
+    t._unsloth_step_cache = (
+        f"fbcache@{DEFAULT_FBCACHE_THRESHOLD}"  # stale: says what we last asked for
+    )
 
     assert apply_step_cache(_pipe(t), mode = "fbcache") == TC_FBCACHE
-    assert t.disable_calls == 1                                    # reconfigured, not waved through
-    assert t._cache_config.threshold == DEFAULT_FBCACHE_THRESHOLD  # at the settings actually asked for
+    assert t.disable_calls == 1  # reconfigured, not waved through
+    assert (
+        t._cache_config.threshold == DEFAULT_FBCACHE_THRESHOLD
+    )  # at the settings actually asked for
 
 
 def test_an_adopted_cache_gets_the_post_enable_integration(monkeypatch):
@@ -990,7 +994,9 @@ def test_an_adopted_cache_gets_the_post_enable_integration(monkeypatch):
 
     ran = []
     monkeypatch.setattr(dc, "_invalidate_child_registry_cache", lambda t: ran.append("invalidate"))
-    monkeypatch.setattr(dc, "_compile_hooked_block_inners", lambda t, log = None: ran.append("compile"))
+    monkeypatch.setattr(
+        dc, "_compile_hooked_block_inners", lambda t, log = None: ran.append("compile")
+    )
 
     class FirstBlockCacheConfig:  # noqa: N801 - matched by NAME
         def __init__(self, threshold):
