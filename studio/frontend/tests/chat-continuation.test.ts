@@ -218,16 +218,32 @@ test("an empty turn is reported, and offers a retry rather than a resume", () =>
   assert.equal(incompleteRemedy("empty"), "Try again, or pick a different model");
   assert.equal(incompleteRemedy("cancelled"), null);
   assert.equal(incompleteRemedy("length"), null);
-  // `cancelled`, not `error`: the bar carries the explanation, so assistant-ui must not
-  // paint a second one over it.
-  assert.deepEqual(
-    restoredAssistantStatus({ custom: { incomplete: { reason: "empty" } } }),
-    { type: "incomplete", reason: "cancelled" },
-  );
   assert.deepEqual(
     readIncompleteInfo({ custom: { incomplete: { reason: "empty" } } }),
     { reason: "empty" },
   );
+});
+
+test("a reloaded empty turn keeps its reason instead of reading as a Stop", () => {
+  // The bar drops the stamped reason whenever the status says cancelled, so mapping
+  // `empty` there would restore as a bare "Cancelled": no label, no way out, and no
+  // partial to make it resumable either.
+  const metadata = { custom: { incomplete: { reason: "empty" as const } } };
+  const status = restoredAssistantStatus(metadata);
+  const stamped = readIncompleteInfo(metadata);
+  assert.notEqual(status.type === "incomplete" && status.reason, "cancelled");
+
+  // The bar's own precedence, run over the restored pair.
+  const cancelled = status.type === "incomplete" && status.reason === "cancelled";
+  const reason =
+    cancelled && !isProviderReportedReason(stamped?.reason)
+      ? "cancelled"
+      : stamped?.reason;
+  assert.equal(reason, "empty");
+  assert.notEqual(incompleteRemedy(reason!), null);
+
+  // A Stop during an empty run is still a Stop: the abort stamps its own reason first.
+  assert.equal(resolveIncompleteReason("cancelled", false), "cancelled");
 });
 
 test("the adapter marks a finish that rendered nothing", () => {

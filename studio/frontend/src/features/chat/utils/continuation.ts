@@ -92,8 +92,10 @@ const STATUS_REASON: Record<
   length: "length",
   interrupted: "error",
   context_window: "length",
-  // Not `error`: the bar below already explains it, and a red box would repeat that.
-  empty: "cancelled",
+  // Not `cancelled`: the bar reads that status as a real Stop and drops the stamped
+  // reason, losing the explanation on reload. `context_window` maps here for the same
+  // reason. Not `error` either, which would paint a red box over the bar.
+  empty: "length",
 };
 
 /** Restore assistant-ui's status without losing the product-specific stop reason. */
