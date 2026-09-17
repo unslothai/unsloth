@@ -16502,6 +16502,7 @@ def _check_signal_escape_patterns(code: str):
         for p in (*_NETWORK_FQ_PREFIXES, *_NETWORK_TARGET_ARGS, *_CONNECTING_CLIENT_FQ)
     )
     _ALIAS_DEPTH_CAP = 256
+    _UNRESOLVED_FQ = "<unresolved>"
     _fq_cache: dict[int, list] = {}
     _fq_active: set = set()
     _client_cache: dict[int, str] = {}
@@ -16758,9 +16759,12 @@ def _check_signal_escape_patterns(code: str):
         key = id(func)
         if key in _fq_cache:
             return _fq_cache[key]
-        # An alias cycle, or a chain past the cap that would otherwise exhaust the interpreter
-        # stack, resolves to nothing, which is what every alias did before this analysis existed.
-        if key in _fq_active or depth > _ALIAS_DEPTH_CAP:
+        # An alias cycle has no runtime value to reach, so it resolves to nothing. A chain past
+        # the cap, which is only there to keep the interpreter stack intact, is a callee we gave
+        # up on: it reports itself so the call asks instead of passing unexamined.
+        if depth > _ALIAS_DEPTH_CAP:
+            return [_UNRESOLVED_FQ]
+        if key in _fq_active:
             return []
         _fq_active.add(key)
         try:
@@ -16778,12 +16782,15 @@ def _check_signal_escape_patterns(code: str):
             cur = cur.value
         if isinstance(cur, ast.Name):
             bases: list[str] = []
+            gave_up = False
             for value in _name_values(cur) or []:
                 if isinstance(value, tuple):
                     bases.append(value[1])
                 # Follow assigned module and function aliases.
                 elif isinstance(value, (ast.Name, ast.Attribute)):
-                    bases.extend(_resolved_fqs(value, depth + 1))
+                    inner = _resolved_fqs(value, depth + 1)
+                    gave_up = gave_up or _UNRESOLVED_FQ in inner
+                    bases.extend(fq for fq in inner if fq != _UNRESOLVED_FQ)
                 else:
                     bases.append("")
             # Rebinding the name elsewhere does not undo the import this call can reach, so every
@@ -16793,6 +16800,8 @@ def _check_signal_escape_patterns(code: str):
             network = [
                 fq for fq in (".".join([b, *parts]) for b in bases if b) if _is_network_fq(fq)
             ]
+            if gave_up:
+                network.append(_UNRESOLVED_FQ)
             if network:
                 return list(dict.fromkeys(network))
             if bases and len(set(bases)) == 1 and bases[0]:
@@ -17023,6 +17032,14 @@ def _check_signal_escape_patterns(code: str):
                 parts.insert(0, cur.id)
             fq = ".".join(parts) if parts else ""
             net_fqs = _resolved_fqs(node.func)
+            if _UNRESOLVED_FQ in net_fqs:
+                unresolved_network_calls.append(
+                    {
+                        "type": "unresolved_network_host",
+                        "line": getattr(node, "lineno", -1),
+                        "description": "Network call to a host that is not statically known",
+                    }
+                )
 
             hf_upload_name = _method_call_hf_upload_name(node)
             if hf_upload_name is not None:

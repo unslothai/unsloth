@@ -466,6 +466,10 @@ class TestNetworkTargetResolution:
             "import requests\ndef fetch(url):\n    if not url:\n        url = 'https://pypi.org/'\n    requests.get(url)",
             "import requests\nurl = 'https://pypi.org/'\nfor url in urls:\n    requests.get(url)",
             "import requests\nurl = 'https://pypi.org/'\nurl += input()\nrequests.get(url)",
+            # Giving up on the callee past the alias-depth cap must ask, not wave the call through.
+            "import requests\na0 = requests.get\n"
+            + "".join(f"a{i + 1} = a{i}\n" for i in range(300))
+            + "a300('http://203.0.113.5/')",
             # The receiver is a client on one path, so the unknown host still asks.
             "import paramiko\ndef outer():\n    client = get_db()\n    def swap():\n        nonlocal client\n"
             "        client = paramiko.SSHClient()\n    swap()\n    client.connect(hostname=input())",
