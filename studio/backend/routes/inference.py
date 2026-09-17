@@ -14390,6 +14390,14 @@ _NVFP4_INFERENCE_UNSUPPORTED_MESSAGE = (
     "We are working on supporting NVFP4 inference. For now it is not supported"
 )
 
+# Said instead of transformers' "pip install compressed-tensors", which no user can act on:
+# Studio runs from its own environment (#8246). Names no scheme: these errors carry none.
+_COMPRESSED_TENSORS_INFERENCE_UNSUPPORTED_MESSAGE = (
+    "This model is quantized with compressed-tensors, which Unsloth cannot run yet. "
+    "Installing compressed-tensors will not help. Try a GGUF or a bitsandbytes 4-bit "
+    "build of this model instead."
+)
+
 
 def _diagnosis_text(msg: str) -> str:
     """``msg`` up to the startup-diagnostics block, which is not ours to read.
@@ -14415,6 +14423,35 @@ def _is_unsupported_nvfp4_inference_error(msg: str) -> bool:
     while loading an NVFP4 checkpoint."""
     lower_msg = _diagnosis_text(msg).lower()
     return "nvfp4" in lower_msg and "per-module mlx quantization metadata" in lower_msg
+
+
+# The two transformers sites, reworded in 5.10 to add a version: match only what survived.
+_MISSING_COMPRESSED_TENSORS_SIGNATURES = (
+    "is required for compressed-tensors quantization",
+    "`compressed_tensors` quantized models requires",
+)
+
+
+def _is_missing_compressed_tensors_error(msg: str) -> bool:
+    """Whether ``msg`` says the checkpoint needs the compressed-tensors library.
+
+    The NVFP4 matcher above only fires on the MLX loader's metadata error, so it never
+    reaches a CUDA, ROCm or CPU host; there the load dies inside transformers (#8246).
+    """
+    lower_msg = _diagnosis_text(msg).lower()
+    return any(sig in lower_msg for sig in _MISSING_COMPRESSED_TENSORS_SIGNATURES)
+
+
+def _unsupported_quantization_detail(msg: str) -> Optional[str]:
+    """The refusal to show for ``msg``, or None when it is not about quantization.
+
+    One place to add a signature to, so load, native load and validate cannot drift.
+    """
+    if _is_unsupported_nvfp4_inference_error(msg):
+        return _NVFP4_INFERENCE_UNSUPPORTED_MESSAGE
+    if _is_missing_compressed_tensors_error(msg):
+        return _COMPRESSED_TENSORS_INFERENCE_UNSUPPORTED_MESSAGE
+    return None
 
 
 def _maybe_unsupported_message(msg: str) -> str:
@@ -16219,14 +16256,16 @@ async def _load_model_impl(
         raise
     except ValueError as e:
         redacted_msg = redact_native_paths(str(e))
-        if _is_unsupported_nvfp4_inference_error(redacted_msg):
+        _unsupported_quantization = _unsupported_quantization_detail(redacted_msg)
+        if _unsupported_quantization is not None:
             logger.warning(
-                "NVFP4 inference is not supported yet while loading '%s'",
+                "Unsupported quantization while loading '%s': %s",
                 model_log_label,
+                _unsupported_quantization,
             )
             raise HTTPException(
                 status_code = 500,
-                detail = _NVFP4_INFERENCE_UNSUPPORTED_MESSAGE,
+                detail = _unsupported_quantization,
             )
         if native_grant_backed:
             logger.warning(
@@ -16255,14 +16294,16 @@ async def _load_model_impl(
             raise HTTPException(status_code = 409, detail = str(e))
         # Friendlier message for models Unsloth cannot load.
         redacted_msg = redact_native_paths(str(e))
-        if _is_unsupported_nvfp4_inference_error(redacted_msg):
+        _unsupported_quantization = _unsupported_quantization_detail(redacted_msg)
+        if _unsupported_quantization is not None:
             logger.warning(
-                "NVFP4 inference is not supported yet while loading '%s'",
+                "Unsupported quantization while loading '%s': %s",
                 model_log_label,
+                _unsupported_quantization,
             )
             raise HTTPException(
                 status_code = 500,
-                detail = _NVFP4_INFERENCE_UNSUPPORTED_MESSAGE,
+                detail = _unsupported_quantization,
             )
         if native_grant_backed:
             logger.error(
@@ -16805,14 +16846,16 @@ async def validate_model(
                     "in Settings, and confirm access to this gated repository."
                 ),
             )
-        if _is_unsupported_nvfp4_inference_error(redacted_msg):
+        _unsupported_quantization = _unsupported_quantization_detail(redacted_msg)
+        if _unsupported_quantization is not None:
             logger.warning(
-                "NVFP4 inference is not supported yet while validating '%s'",
+                "Unsupported quantization while validating '%s': %s",
                 model_log_label,
+                _unsupported_quantization,
             )
             raise HTTPException(
                 status_code = 400,
-                detail = _NVFP4_INFERENCE_UNSUPPORTED_MESSAGE,
+                detail = _unsupported_quantization,
             )
         if native_grant_backed:
             logger.error(
