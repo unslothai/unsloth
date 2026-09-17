@@ -402,6 +402,39 @@ class TestTheDowngradesRePlanTheAttention:
         assert getattr(passed["tensor_parallel"], "id", None) == "_current_tp"
         assert getattr(call.args[0], "id", None) == "extra_args"
 
+    def test_no_sizing_closure_freezes_the_plan_in_a_default_argument(self):
+        """A default argument is evaluated where the closure is written, so it holds
+        whatever the plan said there, and the downgrades below re-plan it. The MTP draft
+        reserve did that: a hybrid SWA draft head prices 4.5x larger with flash attention
+        off (262,144 tokens, 3.5 GB on a 4-layer shape), so a frozen tensor-mode True left
+        the reserve short of what the layer split it downgraded to actually allocates,
+        beside a KV cache that had already re-read the plan."""
+        import ast
+
+        func = self._load_model_body()
+        frozen = [
+            (node.name, default.id)
+            for node in ast.walk(func)
+            if isinstance(node, ast.FunctionDef)
+            for default in node.args.defaults
+            if isinstance(default, ast.Name) and default.id == "planned_flash_attn"
+        ]
+        assert frozen == [], frozen
+        # And the term is still priced, rather than dropped to silence the pin.
+        mtp = next(
+            node
+            for node in ast.walk(func)
+            if isinstance(node, ast.FunctionDef) and node.name == "mtp_overhead_fn"
+        )
+        call = next(
+            node
+            for node in ast.walk(mtp)
+            if isinstance(node, ast.Call)
+            and getattr(node.func, "attr", None) == "_estimate_mtp_overhead_bytes"
+        )
+        passed = {kw.arg: getattr(kw.value, "id", None) for kw in call.keywords}
+        assert passed.get("flash_attn") == "planned_flash_attn", passed
+
 
 class TestTheReserveWhenTheFitterIsOff:
     """The reserve has to survive the respawn too, and a user's own `--fit off` is what

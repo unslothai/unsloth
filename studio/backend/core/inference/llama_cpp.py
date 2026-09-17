@@ -23692,7 +23692,6 @@ class LlamaCppBackend:
                                 _swa_full: bool = swa_full,
                                 _kv_unified: bool = planned_kv_unified,
                                 _n_ubatch: Optional[int] = _effective_ubatch,
-                                _flash_attn: bool = planned_flash_attn,
                             ) -> int:
                                 v = self._estimate_mtp_overhead_bytes(
                                     ctx,
@@ -23707,7 +23706,13 @@ class LlamaCppBackend:
                                     swa_full = _swa_full,
                                     kv_unified = _kv_unified,
                                     n_ubatch = _n_ubatch,
-                                    flash_attn = _flash_attn,
+                                    # Read at call time, like the KV and compute terms
+                                    # beside it: a downgrade re-plans the attention, and a
+                                    # default argument would hold the tensor plan's True
+                                    # while those price the layer split's padded V, which
+                                    # short-changes the draft reserve 4.5x on a hybrid SWA
+                                    # draft head. The other captures settle with the load.
+                                    flash_attn = planned_flash_attn,
                                 )
                                 return v if v is not None else 0
 
