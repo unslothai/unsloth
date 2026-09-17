@@ -16875,16 +16875,7 @@ def _check_signal_escape_patterns(code: str):
                     }
                 )
 
-        def _check_target(
-            self,
-            node,
-            present: bool,
-            expr,
-            kind: str,
-            *,
-            connects: bool,
-            refuse: bool = True,
-        ) -> None:
+        def _check_target(self, node, present: bool, expr, kind: str, *, connects: bool) -> None:
             if not present:
                 return
             results = [(False, None)] if expr is None else _target_hosts(expr, kind)
@@ -16898,9 +16889,9 @@ def _check_signal_escape_patterns(code: str):
                 ),
                 None,
             )
-            if blocked and refuse:
+            if blocked:
                 self._check_host(node, blocked)
-            elif blocked or (connects and not all(resolved for resolved, _h in results)):
+            elif connects and not all(resolved for resolved, _h in results):
                 unresolved_network_calls.append(
                     {
                         "type": "unresolved_network_host",
@@ -16932,26 +16923,22 @@ def _check_signal_escape_patterns(code: str):
                         }
                     )
 
-            # Resolve .connect() keywords for tracked socket and SSH clients. Ambiguous receivers
-            # ask; other receivers retain the existing positional-literal check.
+            # Resolve .connect() keywords once any store on the receiver is a tracked socket or SSH
+            # client. Other receivers retain the existing positional-literal check.
             if (
                 isinstance(node.func, ast.Attribute)
                 and node.func.attr == "connect"
                 and net_fq not in _NETWORK_TARGET_ARGS
             ):
-                client = _holds_client(node.func.value)
-                host_kw = next(
-                    (kw.arg for kw in node.keywords or [] if kw.arg in ("hostname", "host")), None
-                )
-                if client == "yes":
+                if _holds_client(node.func.value) != "no":
+                    host_kw = next(
+                        (kw.arg for kw in node.keywords or [] if kw.arg in ("hostname", "host")),
+                        None,
+                    )
                     present, expr = _call_target(node, 0, host_kw or "hostname")
                     self._check_target(node, present, expr, "host", connects = True)
-                else:
-                    if node.args and isinstance(node.args[0], (ast.Tuple, ast.Constant)):
-                        self._check_target(node, True, node.args[0], "host", connects = False)
-                    if client == "maybe":
-                        present, expr = _call_target(node, 0, host_kw or "hostname")
-                        self._check_target(node, present, expr, "host", connects = True, refuse = False)
+                elif node.args and isinstance(node.args[0], (ast.Tuple, ast.Constant)):
+                    self._check_target(node, True, node.args[0], "host", connects = False)
 
             if net_fq and any(net_fq.startswith(p) for p in _NETWORK_FQ_PREFIXES):
                 # 1) Upload-shape check (host-independent).

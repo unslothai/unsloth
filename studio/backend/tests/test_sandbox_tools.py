@@ -274,6 +274,30 @@ class TestNetworkTargetResolution:
                 f"import urllib.request as n\nimport requests as n\nn.get('http://{_H}/')",
                 id = "alias_shadowed_by_unrelated_network_call",
             ),
+            # A receiver that is a tracked client on any path is checked like a certain one.
+            pytest.param(
+                "import paramiko\ndef outer():\n    client = get_db()\n    def middle():\n        def inner():\n"
+                "            nonlocal client\n            client = paramiko.SSHClient()\n        inner()\n"
+                f"    middle()\n    client.connect(hostname='{_H}')",
+                id = "client_on_one_path_keyword_host",
+            ),
+            pytest.param(
+                "import paramiko\ndef outer():\n    client = paramiko.SSHClient()\n    def swap():\n"
+                "        nonlocal client\n        client = get_db()\n    swap()\n"
+                "    client.connect(host='localhost')",
+                id = "client_rebound_to_non_client_keyword_host",
+            ),
+            pytest.param(
+                f"import socket, ssl\ns = socket.socket()\ns = ssl.wrap_socket(s)\ns.connect(('{_H}', 443))",
+                id = "socket_rebound_through_ssl_wrapper",
+            ),
+            # Exhausting the client-alias depth limit must not disable the check.
+            pytest.param(
+                "import paramiko\nc0 = paramiko.SSHClient()\n"
+                + "".join(f"c{i + 1} = c{i}\n" for i in range(17))
+                + f"c17.connect(hostname='{_H}')",
+                id = "client_alias_chain_past_depth_limit",
+            ),
             # Competing stores for the target may add a prompt, never drop the refusal.
             pytest.param(
                 f"import requests\nurl = 'http://{_H}/'\nrequests.get(url)\nurl = 'https://huggingface.co/'",
@@ -322,23 +346,16 @@ class TestNetworkTargetResolution:
             "import paramiko\nclass Deploy:\n    def __init__(self):\n        self.client = paramiko.SSHClient()\n"
             "    def run(self):\n        self.client.connect(self.host)",
             "import paramiko\nclient = paramiko.SSHClient()\nssh = client\nssh.connect(hostname=input())",
-            # Ambiguous client receivers ask instead of blocking.
-            "import paramiko\ndef outer():\n    client = get_db()\n    def middle():\n        def inner():\n"
-            "            nonlocal client\n            client = paramiko.SSHClient()\n        inner()\n    middle()\n"
-            "    client.connect(hostname='203.0.113.5')",
-            "import paramiko\ndef outer():\n    client = paramiko.SSHClient()\n    def swap():\n        nonlocal client\n"
-            "        client = get_db()\n    swap()\n    client.connect(host='localhost')",
             "import requests\nfetch = requests.get\nfetch(input())",
             "from fabric import Connection\nConnection(input()).run('id')",
             "import requests\nrequests.get(input())",
             "import requests\nsub = input()\nrequests.get(f'https://{sub}.huggingface.co/')",
             "import socket\nwith socket.socket() as s:\n    s.connect((input(), 22))",
             "import requests\nrequests.get(*[input()])",
-            # Exhausting the client-alias depth limit asks; it must not disable the check.
-            "import paramiko\nc0 = paramiko.SSHClient()\n"
-            + "".join(f"c{i + 1} = c{i}\n" for i in range(17))
-            + "c17.connect(hostname='203.0.113.5')",
             "import requests\nurl = 'https://pypi.org/simple/'\nrequests.get(url)\nurl = input()",
+            # The receiver is a client on one path, so the unknown host still asks.
+            "import paramiko\ndef outer():\n    client = get_db()\n    def swap():\n        nonlocal client\n"
+            "        client = paramiko.SSHClient()\n    swap()\n    client.connect(hostname=input())",
         ],
     )
     def test_unresolved_host_runs_but_asks_in_auto_mode(self, code):
