@@ -6426,6 +6426,196 @@ def fix_peft_stale_torchao_import_error():
     return patched
 
 
+# Matches both spellings a torchao removal produces: the class name, and the module that used to
+# define it. Only these two, so a torchao that is BROKEN rather than newer still raises.
+_PEFT_TORCHAO_MISSING_TENSOR_SUBCLASS = re.compile(
+    r"linear_?activation_?quantized_?tensor|affine_?quantized_?tensor",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+# The two imports `dispatch_torchao` performs, in upstream's order.
+_PEFT_TORCHAO_TENSOR_SUBCLASSES = (
+    ("torchao.dtypes", "AffineQuantizedTensor"),
+    ("torchao.quantization", "LinearActivationQuantizedTensor"),
+)
+
+
+def _peft_torchao_tensor_subclasses():
+    """``(classes, missing)`` for the two subclasses `dispatch_torchao` checks: a tuple usable as
+    the second argument of ``isinstance``, plus the names that are gone. Only a failure naming one
+    of those two counts as gone; anything else is a broken install and is re-raised."""
+    classes = []
+    missing = []
+    for module_name, class_name in _PEFT_TORCHAO_TENSOR_SUBCLASSES:
+        try:
+            classes.append(getattr(importlib.import_module(module_name), class_name))
+        except (ImportError, AttributeError) as exc:
+            if _PEFT_TORCHAO_MISSING_TENSOR_SUBCLASS.search(str(exc)) is None:
+                raise
+            missing.append(class_name)
+    return tuple(classes), tuple(missing)
+
+
+def _guard_peft_torchao_dispatcher(original):
+    """Wrap one `dispatch_torchao` so a removed tensor subclass costs only that class.
+
+    The wrapper calls through, so a torchao shipping both classes behaves exactly as upstream.
+    Only on a failure naming one of the two does it redo upstream's work against the classes that
+    remain, so an AffineQuantizedTensor weight still gets a TorchaoLoraLinear.
+    """
+    warned = [False]
+    # The defining module's own globals, so the degraded path uses the very objects upstream would
+    # have, including an is_torchao_available already patched by the sibling fix.
+    namespace = getattr(original, "__globals__", None)
+    if not isinstance(namespace, dict):
+        namespace = {}
+
+    def _upstream(name, module_name):
+        value = namespace.get(name, None)
+        if value is not None:
+            return value
+        return getattr(importlib.import_module(module_name), name, None)
+
+    def _redo_dispatch(classes, args, kwargs):
+        """Upstream's body, with `classes` standing in for the two-class isinstance tuple.
+
+        Arguments are read by POSITION because peft 0.19 renamed the third parameter from
+        `lora_config` to `config`, and forwarded as `target, adapter_name, **kwargs`, which is
+        exactly how peft <= 0.18 builds TorchaoLoraLinear.
+        """
+        try:
+            signature = inspect.signature(original)
+            bound = signature.bind(*args, **kwargs)
+            bound.apply_defaults()
+            arguments = dict(bound.arguments)
+        except (TypeError, ValueError):
+            return None
+        positional = [
+            name
+            for name, parameter in signature.parameters.items()
+            if parameter.kind in (parameter.POSITIONAL_ONLY, parameter.POSITIONAL_OR_KEYWORD)
+        ]
+        layer_kwargs = {}
+        for name, parameter in signature.parameters.items():
+            if parameter.kind is parameter.VAR_KEYWORD:
+                layer_kwargs = dict(arguments.get(name, None) or {})
+        if len(positional) < 2:
+            return None
+        target = arguments.get(positional[0], None)
+        adapter_name = arguments.get(positional[1], None)
+        if target is None or adapter_name is None:
+            return None
+
+        base_tuner_layer = _upstream("BaseTunerLayer", "peft.tuners.tuners_utils")
+        if base_tuner_layer is not None and isinstance(target, base_tuner_layer):
+            target_base_layer = target.get_base_layer()
+        else:
+            target_base_layer = target
+        if not hasattr(target_base_layer, "weight"):
+            return None
+        is_torchao_available = _upstream("is_torchao_available", "peft.import_utils")
+        if is_torchao_available is not None and not is_torchao_available():
+            return None
+        if not classes or not isinstance(target_base_layer.weight, classes):
+            return None  # upstream's answer for an unrecognised weight: the loop moves on
+        torchao_lora_linear = _upstream("TorchaoLoraLinear", "peft.tuners.lora.torchao")
+        if torchao_lora_linear is None:
+            return None
+        return torchao_lora_linear(target, adapter_name, **layer_kwargs)
+
+    @functools.wraps(original)
+    def dispatch_torchao(*args, **kwargs):
+        try:
+            return original(*args, **kwargs)
+        except ImportError as exc:
+            message = str(exc)
+            if _PEFT_TORCHAO_MISSING_TENSOR_SUBCLASS.search(message) is None:
+                raise
+            classes, missing = _peft_torchao_tensor_subclasses()
+            if not missing:
+                # The message named one of the two classes but both are there, so this came from
+                # somewhere else in the dispatcher and is a real failure. Redoing the dispatch
+                # would swallow it and re-run whatever construction already happened.
+                raise
+        if not warned[0]:
+            warned[0] = True
+            kept = ", ".join(cls.__name__ for cls in classes) or "none of them"
+            logger.warning(
+                f"Unsloth: This torchao no longer ships "
+                f"{' and '.join(missing) or 'a tensor subclass'}, which peft's "
+                f"torchao LoRA dispatcher imports to run one isinstance check "
+                f"({message}), so that dispatcher raised for every LoRA layer. "
+                f"Unsloth now runs the same check against the subclasses this "
+                f"torchao does ship ({kept}), so weights of those types still get "
+                f"peft's torchao LoRA layer and everything else gets an ordinary "
+                f"one. Only weights of the removed subclass cannot be matched; "
+                f"install `torchao<0.18` if you need those."
+            )
+        return _redo_dispatch(classes, args, kwargs)
+
+    dispatch_torchao.__unsloth_patched__ = True
+    return dispatch_torchao
+
+
+def fix_peft_torchao_missing_tensor_subclass():
+    """Stop a removed torchao class from aborting LoRA creation that never uses torchao.
+
+    peft's dispatch table runs every dispatcher in order and keeps the first non-None, so one that
+    RAISES ends `get_peft_model` for models it does not even apply to. `dispatch_torchao` imports
+    AffineQuantizedTensor and LinearActivationQuantizedTensor at call time purely for one
+    isinstance check, and torchao 0.18 deleted the second outright. QLoRA never sees it, because
+    dispatch_bnb_4bit matches first; plain LoRA falls through and dies.
+
+    AffineQuantizedTensor is still there, so declining outright would quietly give real
+    torchao-quantized weights an ordinary LoRA layer. The wrapper redoes the isinstance check
+    against whichever classes this torchao ships instead, and costs nothing when both are present.
+
+    True when patched, False when no patch is needed, None when peft is absent.
+    """
+    try:
+        import peft  # noqa: F401
+    except Exception:
+        return None
+    try:
+        # Normally already imported, and costs nothing extra: the torchao imports that break live
+        # inside the functions, not the module body.
+        import peft.tuners.lora.torchao  # noqa: F401
+    except Exception:
+        pass
+
+    # `from .torchao import dispatch_torchao` copies the function into peft.tuners.lora.model,
+    # where the dispatch list is built, so patching the definer alone leaves the real caller
+    # raising. One wrapper per distinct original, shared, so a missing class warns once.
+    wrapped = []
+    patched = False
+    for mod_name, mod in tuple(sys.modules.items()):
+        if not mod_name.startswith("peft") or mod is None:
+            continue
+        original = getattr(mod, "dispatch_torchao", None)
+        if original is None or not callable(original):
+            continue
+        if getattr(original, "__unsloth_patched__", False):
+            continue
+        replacement = None
+        for seen, wrapper in wrapped:
+            if seen is original:
+                replacement = wrapper
+                break
+        if replacement is None:
+            try:
+                replacement = _guard_peft_torchao_dispatcher(original)
+            except Exception:
+                continue
+            wrapped.append((original, replacement))
+        try:
+            setattr(mod, "dispatch_torchao", replacement)
+            patched = True
+        except Exception:
+            pass
+    return patched
+
+
 # Every name torchao 0.18.0 imports from torch.nn.functional. scaled_grouped_mm is on the path
 # of a plain `import torchao`; scaled_dot_product_attention is listed for completeness, and the
 # loop below skips symbols torch provides.
