@@ -207,6 +207,37 @@ def test_a_marker_without_a_byte_record_still_probes(tmp_path: Path, monkeypatch
     assert calls[0] == 1
 
 
+def test_a_size_only_dylib_record_still_probes(tmp_path: Path, monkeypatch):
+    host = macos_host()
+    install_dir = build_install(tmp_path, host)
+    marker = marker_of(install_dir)
+    # A marker written before macOS hashed its payload tier.
+    marker["runtime_files"]["build/bin/libggml.0.dylib"].pop("sha256")
+    write_marker(install_dir, marker)
+    calls = count_spawns(monkeypatch)
+
+    assert matches_choice(install_dir, host) is True
+    assert calls[0] == 1
+
+
+def test_a_same_size_dylib_rewrite_is_rejected(tmp_path: Path, monkeypatch):
+    host = macos_host()
+    install_dir = build_install(tmp_path, host)
+    dylib = install_dir / "build" / "bin" / "libggml.0.dylib"
+    before = dylib.stat().st_size
+    dylib.write_bytes(b"ROTTE")
+    assert dylib.stat().st_size == before
+    calls = count_spawns(monkeypatch)
+
+    assert matches_choice(install_dir, host) is False
+    assert fast_path(install_dir, host) is False
+    # Rejected on the record, before anything was started.
+    assert calls[0] == 0
+    # _existing_install_runs answers a different question, so it only loses the skip.
+    assert ILP._existing_install_runs(install_dir, host) is True
+    assert calls[0] == 1
+
+
 def test_a_marker_without_a_host_profile_still_probes(tmp_path: Path, monkeypatch):
     host = macos_host()
     install_dir = build_install(tmp_path, host)

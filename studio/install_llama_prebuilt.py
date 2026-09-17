@@ -7840,7 +7840,9 @@ def runtime_file_records(
         libraries are where most of a CUDA bundle's bytes live, which is exactly the
         shape a full disk or an interrupted extract leaves behind. A size comparison
         catches it for the price of a stat; hashing 300 MB of kernels on every update
-        would not be worth it.
+        would not be worth it. macOS is the exception and hashes both tiers: its record
+        is what lets an update skip the dyld probe, so it has to cover the dylibs dyld
+        loads, and a Metal bundle is tens of MB.
 
     *patterns* comes from runtime_patterns_for_install_kind for the bundle being
     installed; without it only the binary tier is recorded, which is what the callers
@@ -7851,6 +7853,7 @@ def runtime_file_records(
     """
     records: dict[str, dict[str, Any]] = {}
     runtime_dir = install_runtime_dir(install_dir, host) if host is not None else None
+    hash_payload = host is not None and host.is_macos
     if patterns and runtime_dir is not None:
         for pattern in patterns:
             try:
@@ -7865,6 +7868,15 @@ def runtime_file_records(
                     relative = candidate.relative_to(install_dir).as_posix()
                 except ValueError:
                     continue
+                if hash_payload:
+                    try:
+                        record["sha256"] = sha256_file(candidate)
+                    except (OSError, MemoryError) as exc:
+                        log(
+                            f"could not hash {relative} for the runtime record ({exc}); "
+                            "not recording"
+                        )
+                        return {}
                 records[relative] = record
     # Last, so a binary the sweep matched is upgraded to the hashed tier.
     for candidate in _runtime_record_paths(install_dir, host):
@@ -7894,16 +7906,26 @@ def _macos_load_record_is_current(marker: "dict[str, Any] | None", host: HostInf
     """
     if not host.is_macos or prebuilt_full_check_requested():
         return False
-    if not _runtime_files_are_recorded(marker):
+    if not _runtime_record_is_fully_hashed(marker):
         return False
     recorded_profile = (marker or {}).get("host_profile")
     return isinstance(recorded_profile, dict) and recorded_profile == host_profile(host)
 
 
-def _runtime_files_are_recorded(marker: "dict[str, Any] | None") -> bool:
-    """Whether the marker carries a byte record at all, so _runtime_files_match can answer."""
+def _runtime_record_is_fully_hashed(marker: "dict[str, Any] | None") -> bool:
+    """Whether every recorded file carries a digest, so the record covers the load graph.
+
+    A size-only entry answers truncation, not a same-size rewrite, so a record holding one
+    cannot stand in for starting the image. Markers written before macOS hashed its payload
+    have such entries and take the probe until the next install re-records them.
+    """
     recorded = (marker or {}).get("runtime_files")
-    return isinstance(recorded, dict) and bool(recorded)
+    if not isinstance(recorded, dict) or not recorded:
+        return False
+    return all(
+        isinstance(entry, dict) and isinstance(entry.get("sha256"), str) and entry["sha256"]
+        for entry in recorded.values()
+    )
 
 
 def _runtime_files_match(install_dir: Path, host: HostInfo, marker: "dict[str, Any]") -> bool:
