@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import ast
 import pathlib
+import re
 import subprocess
 
 import pytest
@@ -236,6 +237,32 @@ def test_an_unset_variable_is_not_a_request_in_powershell(script):
 
 
 @requires_pwsh
+@pytest.mark.parametrize("script", [INSTALL_PS1, SETUP_PS1], ids = ["install.ps1", "setup.ps1"])
+@pytest.mark.parametrize("function", ["Test-UvEnvFlag", "Test-PipEnvFlag"])
+def test_an_unset_variable_answers_rather_than_aborts_under_a_callers_strict_mode(script, function):
+    """The same row as above, in the session setup.ps1 actually runs in.
+
+    `(Get-Item "Env:$Name").Value` on an unset variable reads a property off `$null`, and
+    under `Set-StrictMode -Version 2` or `Latest` that is a TERMINATING
+    PropertyNotFoundException rather than an empty string. setup.ps1 never turns strict
+    mode off -- four of its comments say they are written for a caller's Set-StrictMode --
+    and unset is the ordinary state of UV_OFFLINE, so an operator whose profile sets strict
+    mode had setup abort before installing anything. `[Environment]::GetEnvironmentVariable`
+    returns `$null` for a missing variable instead, which the `[string]` cast makes "".
+
+    Strict mode is set in the snippet, not asked of the runner, so this states the
+    requirement on every host rather than only on one configured to reproduce it.
+    """
+    snippet = _script(
+        "Set-StrictMode -Version Latest",
+        clear_env(_others("UV_OFFLINE")),
+        functions(INSTALL_SRC if script == INSTALL_PS1 else SETUP_SRC, function),
+        f'Write-Output ([string]({function} "UV_OFFLINE"))',
+    )
+    assert _ps_last(snippet, env = _env("UV_OFFLINE", None)) == "False"
+
+
+@requires_pwsh
 @pytest.mark.parametrize("variable", ["UV_OFFLINE", "UV_NO_CONFIG", "UV_NO_INDEX"])
 @pytest.mark.parametrize(("value", "expected"), BOOLISH_TABLE, ids = TABLE_IDS)
 def test_every_uv_variable_gets_the_same_table(variable, value, expected):
@@ -314,6 +341,13 @@ PS1_FILES = sorted(
 # here, which is the only thing that keeps four separated copies honest over time.
 OLD_IDIOM = '-notin @("", "0", "false")'
 
+#: Reading an environment variable through the provider and then taking `.Value`. Fine
+#: while the variable is set; under a caller's `Set-StrictMode -Version 2` or `Latest` it
+#: is a terminating PropertyNotFoundException the moment it is not, because the property
+#: is being read off `$null`. `-ErrorAction SilentlyContinue` does not help: it suppresses
+#: Get-Item's own error, not the property access on what it did not return.
+_STRICT_UNSAFE_ENV_READ = re.compile(r"\(\s*Get-Item\s+[\"']?Env:[^)]*\)\s*\.Value")
+
 
 @pytest.mark.parametrize("path", PS1_FILES, ids = lambda p: p.name)
 def test_no_shipped_powershell_decides_a_resolver_flag_the_old_way(path):
@@ -324,6 +358,29 @@ def test_no_shipped_powershell_decides_a_resolver_flag_the_old_way(path):
     assert not offending, (
         f"{path.name} decides a flag with {OLD_IDIOM}, which reads off/no/n/f as set. "
         "Use Test-UvEnvFlag for a UV_* variable or Test-PipEnvFlag for a PIP_* one."
+    )
+
+
+@pytest.mark.parametrize("path", PS1_FILES, ids = lambda p: p.name)
+def test_no_shipped_powershell_reads_an_environment_variable_unsafely(path):
+    """Structural, because the behavioural rows above can only reach the two readers.
+
+    Eighteen sites read a variable this way and every one of them is on the Windows on ARM
+    resolver path, where the variables are normally unset, so a caller's strict mode turned
+    an ordinary install into an abort at whichever site ran first. Fixing the two flag
+    readers alone would have moved the abort one line down, to UV_CONFIG_FILE.
+    """
+    text = path.read_text(encoding = "utf-8-sig")
+    offending = [
+        line.strip()
+        for line in text.splitlines()
+        if _STRICT_UNSAFE_ENV_READ.search(line) and not line.strip().startswith("#")
+    ]
+    assert not offending, (
+        f"{path.name} reads an environment variable through (Get-Item Env:...).Value, which "
+        "throws under a caller's Set-StrictMode when the variable is unset:\n  "
+        + "\n  ".join(offending)
+        + "\nUse [Environment]::GetEnvironmentVariable(name), which returns $null instead."
     )
 
 

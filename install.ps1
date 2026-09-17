@@ -728,7 +728,7 @@ function Install-UnslothStudio {
     # lowercases "I" to a dotless i and would stop matching.
     function Test-UvEnvFlag {
         param([string]$Name)
-        $value = [string](Get-Item "Env:$Name" -ErrorAction SilentlyContinue).Value
+        $value = [string][Environment]::GetEnvironmentVariable($Name)
         return (@("1", "t", "true", "y", "yes", "on") -contains $value.Trim().ToLowerInvariant())
     }
 
@@ -745,7 +745,7 @@ function Install-UnslothStudio {
     # of a silent behaviour change in the other resolver.
     function Test-PipEnvFlag {
         param([string]$Name)
-        $value = [string](Get-Item "Env:$Name" -ErrorAction SilentlyContinue).Value
+        $value = [string][Environment]::GetEnvironmentVariable($Name)
         return (@("1", "t", "true", "y", "yes", "on") -contains $value.Trim().ToLowerInvariant())
     }
 
@@ -774,7 +774,7 @@ function Install-UnslothStudio {
         $result = @{ NoIndex = $false; DefaultIndex = $null; Unreadable = $false; UnreadablePath = $null; ExtraIndexes = @() }
         if (Test-UvEnvFlag "UV_NO_CONFIG") { return $result }
         $files = @()
-        $cfgFile = [string](Get-Item Env:UV_CONFIG_FILE -ErrorAction SilentlyContinue).Value
+        $cfgFile = [string][Environment]::GetEnvironmentVariable("UV_CONFIG_FILE")
         if ($cfgFile) {
             $files += @{ Path = $cfgFile; Top = "" }
         } else {
@@ -827,13 +827,13 @@ function Install-UnslothStudio {
         if (Test-NoIndexRequested) { return $false }
         $extraIsPyPI = $false
         foreach ($name in @("UV_INDEX", "UV_EXTRA_INDEX_URL")) {
-            $list = [string](Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
+            $list = [string][Environment]::GetEnvironmentVariable($name)
             foreach ($u in ($list -split '\s+' | Where-Object { $_ })) {
                 if (Test-WoaUrlIsPublicPyPI $u) { $extraIsPyPI = $true }
             }
         }
         foreach ($name in @("UV_DEFAULT_INDEX", "UV_INDEX_URL")) {
-            $url = [string](Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
+            $url = [string][Environment]::GetEnvironmentVariable($name)
             if ($url -and ($url.Trim())) { return ($extraIsPyPI -or (Test-WoaUrlIsPublicPyPI $url)) }
         }
         # Doubt resolves to "not PyPI": that answer keeps a wheel, the other loses the package.
@@ -847,7 +847,7 @@ function Install-UnslothStudio {
     # True when uv's own config decides the indexes and we could not read it: fatal where the caller scrubs UV_* and sets UV_NO_CONFIG, because the trio index would be the only source left.
     function Test-WoaUvIndexPolicyUnreadable {
         foreach ($name in @("UV_NO_INDEX", "UV_DEFAULT_INDEX", "UV_INDEX_URL")) {
-            $v = [string](Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
+            $v = [string][Environment]::GetEnvironmentVariable($name)
             if ($v -and $v.Trim()) { return $false }
         }
         return [bool](Get-WoaUvConfigIndexPolicy).Unreadable
@@ -866,12 +866,12 @@ function Install-UnslothStudio {
         if ($noIndexRequested) { return @() }
         $default = $null
         foreach ($name in $defaultNames) {
-            $url = [string](Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
+            $url = [string][Environment]::GetEnvironmentVariable($name)
             if ($url -and $url.Trim()) { $default = $url.Trim(); break }
         }
         $extras = @()
         foreach ($name in $extraNames) {
-            $list = [string](Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
+            $list = [string][Environment]::GetEnvironmentVariable($name)
             foreach ($u in ($list -split '\s+' | Where-Object { $_ })) { $extras += $u }
         }
         if (-not $pip -and (-not $default -or -not $extras)) {
@@ -8813,7 +8813,7 @@ exit 0
                 if ($script:WoaNativeCudaTorch -and $VenvPlatform -eq "win-arm64") {
                     # The probe read the index page, which carries no upload dates, and the pin is exact: an upload cutoff would reject the selected wheel. Only this one command.
                     foreach ($_woaCutoffName in @("UV_EXCLUDE_NEWER", "UV_EXCLUDE_NEWER_PACKAGE")) {
-                        $_woaCutoffValue = [string](Get-Item "Env:$_woaCutoffName" -ErrorAction SilentlyContinue).Value
+                        $_woaCutoffValue = [string][Environment]::GetEnvironmentVariable($_woaCutoffName)
                         if ($_woaCutoffValue) {
                             $_woaCutoffSaved[$_woaCutoffName] = $_woaCutoffValue
                             Remove-Item "Env:$_woaCutoffName" -ErrorAction SilentlyContinue
@@ -8821,7 +8821,7 @@ exit 0
                         }
                     }
                     # Our own UV_NO_INDEX convention (uv defines no such variable) means the operator wants no registry index, and we honour it by naming none. The CUDA trio is published nowhere else, so it yields for this one command: torch from the index the probe chose, dependencies from the wheelhouse. Saved and restored, because the rest of the run still reads it.
-                    $_woaNoIndexValue = [string](Get-Item "Env:UV_NO_INDEX" -ErrorAction SilentlyContinue).Value
+                    $_woaNoIndexValue = [string][Environment]::GetEnvironmentVariable("UV_NO_INDEX")
                     if (Test-NoIndexRequested) {
                         $_woaCutoffSaved["UV_NO_INDEX"] = $_woaNoIndexValue
                         Remove-Item "Env:UV_NO_INDEX" -ErrorAction SilentlyContinue
