@@ -348,8 +348,6 @@ def test_grpo_trains_on_cpu_through_the_patched_batch_sampler(tmp_path):
 
     So install the patch the way a real run does, assert it took, and take real steps.
     """
-    import inspect
-
     from datasets import Dataset
     from transformers import Trainer
     from trl import GRPOConfig, GRPOTrainer
