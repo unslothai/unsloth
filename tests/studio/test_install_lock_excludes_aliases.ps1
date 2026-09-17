@@ -594,5 +594,64 @@ try {
 
 Write-Host ""
 if ($failures -gt 0) { Write-Host "$failures check(s) failed" -ForegroundColor Red; exit 1 }
+# ---------------------------------------------------------------- the swapped-link race
+#
+# The reparse test runs on the pathname BEFORE the lock is opened, so on a root another user can
+# write to, a symbolic link can be swapped in between the check and the open. The stream Length
+# test catches every planted target that has bytes in it; a target that is itself zero bytes does
+# not, which is the gap this guard closes. Drive the SHIPPED expression rather than a retyped
+# copy of it, so a change to the real one cannot leave this passing.
+$lockSrc = [System.IO.File]::ReadAllText((Join-Path $root "install.ps1"))
+$guardAt = $lockSrc.IndexOf('A link was planted at the install lock path')
+Check "the post-open guard is present" ($guardAt -gt 0)
+
+$openAt = $lockSrc.IndexOf('$stream = [System.IO.File]::Open(')
+Check "the guard runs after the open, not before it" ($openAt -gt 0 -and $guardAt -gt $openAt)
+# Guarded: with the guard gone $guardAt is -1, and Substring would raise instead of failing
+# the check. A suite that dies reports nothing, which is the worst way to signal a regression.
+$guardBlock = if ($openAt -gt 0 -and $guardAt -gt $openAt) { $lockSrc.Substring($openAt, $guardAt - $openAt) } else { "" }
+Check "the guard releases the handle before it throws" ($guardBlock -match '\$stream\.Dispose\(\)[\s\S]*\$stream = \$null')
+
+$predicate = @($lockSrc -split "`n" | Where-Object {
+    $_ -match '\$entry -and \(\(\$entry\.Attributes -band \[System\.IO\.FileAttributes\]::ReparsePoint\) -ne 0\)' })
+Check "the predicate is one line of the shipped source" ($predicate.Count -eq 1)
+# Degrade to a failed check rather than an indexing error: a suite that dies when the guard is
+# missing reports nothing at all, and "the run crashed" is not a readable test result.
+$test = $null
+if ($predicate.Count -eq 1) {
+    # Two statements, not one expression: [scriptblock]::Create(A -replace B, C) binds C as a
+    # second ARGUMENT to Create rather than to -replace, and fails on the overload.
+    $rewritten = ($predicate[0].Trim() -replace '^if \(', 'return (') -replace '\) \{$', ')'
+    $test = [scriptblock]::Create($rewritten)
+}
+
+$raceDir = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-lockrace-" + [guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Path $raceDir | Out-Null
+try {
+    # The exact case the Length test cannot see: a link whose target is itself zero bytes.
+    $victim = Join-Path $raceDir "someone-elses.lock"
+    [System.IO.File]::WriteAllText($victim, "")
+    $planted = Join-Path $raceDir "install.lock"
+    New-Item -ItemType SymbolicLink -Path $planted -Target $victim | Out-Null
+
+    $entry = Get-Item -LiteralPath $planted -Force
+    Check "a zero-byte target is still zero bytes, so the Length test alone would accept it" (
+        ([System.IO.FileInfo]$victim).Length -eq 0)
+    Check "the guard refuses a link swapped in under the lock path" ($null -ne $test -and (& $test) -eq $true)
+
+    # The control that makes the row above mean something: an ordinary empty lock file is fine.
+    $ordinary = Join-Path $raceDir "ordinary.lock"
+    [System.IO.File]::WriteAllText($ordinary, "")
+    $entry = Get-Item -LiteralPath $ordinary -Force
+    Check "control: the guard leaves an ordinary empty lock file alone" ($null -ne $test -and (& $test) -eq $false)
+
+    # A missing entry must not be read as a link either, or a lock the installer just created and
+    # an antivirus momentarily hid would fail the install instead of proceeding.
+    $entry = $null
+    Check "control: a vanished entry is not a link" ($null -ne $test -and (& $test) -eq $false)
+} finally {
+    Remove-Item -LiteralPath $raceDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 Write-Host "All install-lock alias checks passed"
 exit 0

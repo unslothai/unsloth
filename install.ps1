@@ -5352,7 +5352,28 @@ exit 0
                     Exit-StudioInstallMutex -Mutex $mutex
                     return $null
                 }
-                if ($stream.Length -eq 0) { break }
+                # The reparse test above ran on the PATHNAME, before this open, so on a root
+                # another user can write to, a symbolic link can be swapped in between the two.
+                # The Length test below catches every planted target that has bytes in it; a
+                # target that is itself zero bytes does not, and the install would then hold
+                # somebody else's sentinel with FileShare.None for its whole duration.
+                #
+                # Re-read the entry now the handle is held and refuse if it became a link. This
+                # narrows the window rather than closing it: closing it needs the handle's own
+                # identity, which means FILE_FLAG_OPEN_REPARSE_POINT and
+                # GetFileInformationByHandle, and removing native imports is the point of this
+                # workstream. The residual is a zero-byte denial of service on a root that is
+                # already writable by another user, which the root owner marker refuses first.
+                if ($stream.Length -eq 0) {
+                    $entry = $null
+                    try { $entry = Get-Item -LiteralPath $lockPath -Force -ErrorAction Stop } catch { $entry = $null }
+                    if ($entry -and (($entry.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)) {
+                        $stream.Dispose()
+                        $stream = $null
+                        throw "A link was planted at the install lock path $lockPath while it was being opened."
+                    }
+                    break
+                }
                 if ($repaired) {
                     # A file this run just created cannot be non-empty, so reaching here means the
                     # path is not behaving like a file at all. Fail loudly instead of looping.
