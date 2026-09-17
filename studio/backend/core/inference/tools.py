@@ -16067,6 +16067,9 @@ def _check_signal_escape_patterns(code: str):
                 for client in ("httpx.Client", "httpx.AsyncClient")
             },
             "httpx.stream": (1, "url", "url"),
+            # A client built on a base URL sends there even when the call passes a bare path.
+            **{f"{c}": (None, "base_url", "url") for c in ("httpx.Client", "httpx.AsyncClient")},
+            "aiohttp.ClientSession": (0, "base_url", "url"),
             **{f"{client}.urlopen": (1, "url", "url") for client in _POOL_CLIENTS},
             **{f"{client}.connection_from_url": (0, "url", "url") for client in _POOL_CLIENTS},
             **{
@@ -16629,7 +16632,13 @@ def _check_signal_escape_patterns(code: str):
             _record_store(target.value, None, scope, handled, certain = certain)
         elif isinstance(target, ast.Name):
             handled.add(id(target))
-            _add_name_store(scope, target.id, value, target, certain = certain)
+            # `f = f`, `url = url + x`: the value is built from the earlier binding, so it adds
+            # to it rather than replacing it.
+            reads_itself = isinstance(value, ast.AST) and any(
+                isinstance(n, ast.Name) and n.id == target.id and isinstance(n.ctx, ast.Load)
+                for n in ast.walk(value)
+            )
+            _add_name_store(scope, target.id, value, target, certain = certain and not reads_itself)
         elif isinstance(target, ast.Attribute):
             handled.add(id(target))
             if isinstance(target.value, ast.Name):
@@ -16734,15 +16743,21 @@ def _check_signal_escape_patterns(code: str):
                 _add_name_store(scope, node.rest, None, node, certain = False)
             if isinstance(node, _FUNCTION_NODES):
                 args = node.args
-                for arg in [
-                    *args.posonlyargs,
-                    *args.args,
-                    *args.kwonlyargs,
-                    args.vararg,
-                    args.kwarg,
-                ]:
-                    if arg is not None:
-                        _add_name_store(node, arg.arg, None, arg)
+                positional = [*args.posonlyargs, *args.args]
+                defaults = dict(
+                    zip(positional[len(positional) - len(args.defaults) :], args.defaults)
+                )
+                defaults.update(
+                    {a: d for a, d in zip(args.kwonlyargs, args.kw_defaults) if d is not None}
+                )
+                for arg in [*positional, *args.kwonlyargs, args.vararg, args.kwarg]:
+                    if arg is None:
+                        continue
+                    _add_name_store(node, arg.arg, None, arg)
+                    # A caller may override the default, so the default is an extra value the
+                    # parameter may hold, never a replacement for the unknown one.
+                    if arg in defaults:
+                        _add_name_store(node, arg.arg, defaults[arg], arg, certain = False)
         # Loop and comprehension targets, `+=`, `del` and any other store not given a value above.
         for node in _tree_nodes(tree):
             if (
@@ -17049,16 +17064,18 @@ def _check_signal_escape_patterns(code: str):
             return [(True, None)] if complete else [(False, None)]
         return [(True, text)] if complete else [(False, None)]
 
-    def _call_target(node: ast.Call, position: int, keyword: str) -> "tuple[bool, ast.AST | None]":
-        """Return the target argument; splats yield (True, None)."""
+    def _call_target(node: ast.Call, position, keyword: str) -> "tuple[bool, ast.AST | None]":
+        """Return the target argument; splats yield (True, None). A position of None is
+        keyword-only."""
         for kw in node.keywords or []:
             if kw.arg == keyword:
                 return True, kw.value
         args = node.args or []
-        if any(isinstance(a, ast.Starred) for a in args[: position + 1]):
-            return True, None
-        if len(args) > position:
-            return True, args[position]
+        if position is not None:
+            if any(isinstance(a, ast.Starred) for a in args[: position + 1]):
+                return True, None
+            if len(args) > position:
+                return True, args[position]
         if any(kw.arg is None for kw in node.keywords or []):
             return True, None
         return False, None
