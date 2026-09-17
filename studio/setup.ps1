@@ -1069,7 +1069,28 @@ function Test-StudioChildScriptDirectoryElevated {
 function New-StudioChildScriptDirectory {
     $tempRoot = if ($env:TEMP) { $env:TEMP } elseif ($env:TMPDIR) { $env:TMPDIR } else { "/tmp" }
     $dir = Join-Path $tempRoot ("unsloth-child-" + [guid]::NewGuid().ToString("N"))
-    try { $null = New-Item -ItemType Directory -Path $dir -ErrorAction Stop } catch { return "" }
+    # New-Item takes -Path and Windows PowerShell 5.1 has no -LiteralPath, so a profile like
+    # "C:\Users\Mike [work]" turns %TEMP% into a wildcard pattern there and the create fails,
+    # which would decline this rung on a host with nothing wrong with it. Elsewhere this file
+    # reaches for [System.IO.Directory]::CreateDirectory for the same reason; that is not
+    # available here, because this helper has to keep working under Constrained Language Mode,
+    # where the type is refused.
+    #
+    # So: the path as written first, and the bracket-escaped spelling only if that failed.
+    # Not the escaped one first. Measured on PowerShell 7: it takes -Path literally and the
+    # escaped spelling creates a directory whose NAME contains the backticks, somewhere else
+    # entirely. Hence the confirmation below rather than trusting either call to have made
+    # the directory the caller is about to be handed.
+    $made = $false
+    try { $null = New-Item -ItemType Directory -Path $dir -ErrorAction Stop; $made = $true } catch { }
+    if ((-not $made) -and $dir -match '[\[\]]') {
+        $escaped = $dir -replace '([\[\]])', '`$1'
+        try { $null = New-Item -ItemType Directory -Path $escaped -ErrorAction Stop; $made = $true } catch { }
+    }
+    # Created by THIS call. New-Item without -Force throws on a directory that already exists,
+    # which is the point: a pre-created one carrying an attacker's ACL is refused, not adopted.
+    if (-not $made) { return "" }
+    if (-not (Test-Path -LiteralPath $dir -PathType Container)) { return "" }
     if ($env:OS -eq "Windows_NT") {
         $labelled = $false
         try {

@@ -342,6 +342,33 @@ foreach ($file in @($installPs1, $setupPs1)) {
     Check "$leaf writes no child program straight into the shared temp root" (
         $whole -notmatch '\$stem = Join-Path \$tempRoot')
 }
+# A temp root with wildcard characters in it. "C:\Users\Mike [work]" is a legal profile path, and
+# New-Item takes -Path with no -LiteralPath on 5.1, so the create there reads the brackets as a
+# pattern. Nothing about such a host should cost it the Python rungs.
+$bracketRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth [test] " + [guid]::NewGuid().ToString("N"))
+$null = New-Item -ItemType Directory -Path $bracketRoot -Force
+$savedTemp = $env:TEMP
+$savedTmpdir = $env:TMPDIR
+try {
+    $env:TEMP = $bracketRoot
+    $env:TMPDIR = $bracketRoot
+    $bracketDir = New-StudioChildScriptDirectory
+    Check "a temp root with brackets still yields a directory" (
+        -not [string]::IsNullOrWhiteSpace($bracketDir))
+    # The path it HANDED BACK has to be the one that exists. The escaped spelling can succeed at a
+    # different path, so a helper that trusted New-Item not throwing would return a name with
+    # nothing behind it and every write into it would fail.
+    Check "and the path it returned is the directory that exists" (
+        $bracketDir -and (Test-Path -LiteralPath $bracketDir -PathType Container))
+    Check "and it is inside the bracketed root, not beside it" (
+        "$bracketDir".StartsWith($bracketRoot))
+    if ($bracketDir) { Remove-Item -LiteralPath $bracketDir -Recurse -Force -ErrorAction SilentlyContinue }
+} finally {
+    if ($null -eq $savedTemp) { Remove-Item Env:TEMP -ErrorAction SilentlyContinue } else { $env:TEMP = $savedTemp }
+    if ($null -eq $savedTmpdir) { Remove-Item Env:TMPDIR -ErrorAction SilentlyContinue } else { $env:TMPDIR = $savedTmpdir }
+    Remove-Item -LiteralPath $bracketRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 # Run it: a directory really is created, really is fresh, and really is cleaned up.
 $madeDir = New-StudioChildScriptDirectory
 Check "the directory is created" (-not [string]::IsNullOrWhiteSpace($madeDir))
