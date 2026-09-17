@@ -147,6 +147,11 @@ def _conditional_path_is_local(payload: Mapping) -> bool:
 # `GET /api/inference/status` publishes it for as long as that model stays loaded -- long
 # after the request that resolved the reference ended, so there is no handle left to put back.
 # Value-decided like the two above it: almost always a repo id, and never touched when it is.
+# `dataset_name` is the training half of the same pattern, and it is PERSISTED: a run started
+# from `local_datasets` records its first entry, already resolved to an absolute path, and the
+# list, detail and update routes answer with that field for as long as the run exists. The
+# list it came from is emptied for an API-key caller, so without this the same path went out
+# beside it, unredacted, on every run summary.
 HOST_PATH_IDENTITY_FIELDS = (
     "id",
     "load_id",
@@ -154,6 +159,7 @@ HOST_PATH_IDENTITY_FIELDS = (
     "model_name",
     "active_model",
     "model_identifier",
+    "dataset_name",
 )
 # The same identities, published as lists by the chat status route. Each ENTRY is decided on
 # its own value, so a list of repo ids with one local path in it keeps every id.

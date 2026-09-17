@@ -14849,6 +14849,27 @@ async def load_model(
     )
 
 
+def _note_lora_base_fetched_with_a_request_token(model_ref, hf_token) -> None:
+    """The same record for the BASE a LoRA load pulls in behind the adapter.
+
+    A load of an adapter fetches its ``base_model_name_or_path`` too, under the same one-off
+    credential, and recording only the adapter left the base with no provenance at all: on a
+    host holding no credential of its own, the next tokenless caller reads an absent record as
+    "nothing here needed one" and is served the private base through an unaskable probe.
+
+    Read from the hub cache rather than over the network: the adapter's config is there by the
+    time this runs, this is the load path, and a definitive answer is not needed -- a base that
+    cannot be resolved simply has no record, which REFUSES. Never raises.
+    """
+    try:
+        from utils.transformers_version import _adapter_base_from_hf_cache
+        base = _adapter_base_from_hf_cache(model_ref) if model_ref else None
+    except Exception:  # noqa: BLE001 -- a load never fails on its own bookkeeping
+        return
+    if base and base != model_ref:
+        _note_load_fetched_with_a_request_token(base, hf_token)
+
+
 def _note_load_fetched_with_a_request_token(model_ref, hf_token) -> None:
     """Record a LOAD that may fetch *model_ref* under a credential this host does not hold.
 
@@ -16142,6 +16163,11 @@ async def _load_model_impl(
         raise HTTPException(status_code = 500, detail = f"Failed to load model: {msg}")
     finally:
         gguf_load_stack.close()
+        # The LoRA base, once the adapter's config is on disk. Before the fetch the adapter may
+        # not be cached yet and its base is unknown, so the answer is taken here, where it is
+        # readable without a network call, and for a load that failed part way as well: the
+        # bytes it did pull are in the cache either way.
+        _note_lora_base_fetched_with_a_request_token(request.model_path, request.hf_token)
         # Catch-all: an error or cancelled load would otherwise leave the row "loading".
         api_monitor.fail_open(_load_event, "Load did not complete")
 

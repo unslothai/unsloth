@@ -2019,3 +2019,27 @@ def test_the_table_is_still_bounded_at_its_ceiling(monkeypatch):
     for index in range(host_paths._REFERENCE_LIMIT + 500):
         host_paths.cache_reference(f"/srv/ceiling/row-{index}.gguf")
     assert len(host_paths._reference_paths) <= host_paths._REFERENCE_CEILING + 1
+
+
+def test_a_runs_persisted_dataset_name_is_redacted_like_the_list_it_came_from():
+    """A run started from `local_datasets` persists the first entry as `dataset_name`, already
+    absolute, and the history routes answer with it. The list beside it is emptied for an
+    API-key caller, so the same path was going out anyway, once per run summary."""
+    from hub.utils.host_paths import redact_host_paths
+
+    row = {
+        "id": "run-1",
+        "dataset_name": "/home/operator/datasets/customer-transcripts.jsonl",
+        "local_datasets": ["/home/operator/datasets/customer-transcripts.jsonl"],
+        "model_name": "unsloth/Llama-3.2-1B",
+    }
+    redacted = redact_host_paths(row, via_api_key = True)
+    assert "/home/operator" not in str(redacted), redacted
+    assert redacted["dataset_name"].startswith("ref:"), redacted
+    # A hub dataset id is not a path and is left exactly as it was.
+    hub_row = {"id": "run-2", "dataset_name": "unsloth/Radiology-mini"}
+    assert redact_host_paths(hub_row, via_api_key = True)["dataset_name"] == (
+        "unsloth/Radiology-mini"
+    )
+    # And the browser session pays nothing.
+    assert redact_host_paths(row, via_api_key = False) is row

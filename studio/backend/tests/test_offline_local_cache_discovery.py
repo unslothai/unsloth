@@ -1238,3 +1238,59 @@ def test_the_provenance_map_is_bounded_and_says_so_when_it_is_full(monkeypatch):
 def test_a_map_below_the_cap_still_answers_no_for_a_repo_it_does_not_hold(monkeypatch):
     monkeypatch.setattr(hf_tokens, "_recorded_request_token_repos", lambda: {})
     assert hf_tokens._repo_was_fetched_with_a_request_token("acme/other", "model") is False
+
+
+def test_a_lora_loads_base_is_recorded_too(monkeypatch):
+    """A LoRA load fetches its `base_model_name_or_path` under the same one-off credential, and
+    recording only the adapter left the base with no provenance: on a host holding no
+    credential of its own, the next tokenless caller reads an absent record as "nothing here
+    needed one" and is served the private base through an unaskable probe."""
+    from routes import inference as inference_routes
+    from utils import transformers_version
+
+    recorded: list = []
+    monkeypatch.setattr(
+        transformers_version, "_adapter_base_from_hf_cache", lambda repo: "acme/private-base"
+    )
+    monkeypatch.setattr(
+        inference_routes,
+        "_note_load_fetched_with_a_request_token",
+        lambda ref, token: recorded.append((ref, token)),
+    )
+    inference_routes._note_lora_base_fetched_with_a_request_token("acme/adapter", "hf_someoneelses")
+    assert recorded == [("acme/private-base", "hf_someoneelses")]
+
+
+def test_a_base_that_cannot_be_resolved_records_nothing(monkeypatch):
+    """No record REFUSES, so an unresolvable base is the safe answer rather than a guess."""
+    from routes import inference as inference_routes
+    from utils import transformers_version
+
+    recorded: list = []
+    monkeypatch.setattr(
+        inference_routes,
+        "_note_load_fetched_with_a_request_token",
+        lambda ref, token: recorded.append(ref),
+    )
+    monkeypatch.setattr(transformers_version, "_adapter_base_from_hf_cache", lambda repo: None)
+    inference_routes._note_lora_base_fetched_with_a_request_token("acme/adapter", "hf_x")
+
+    def _raises(_repo):
+        raise OSError(13, "denied")
+
+    monkeypatch.setattr(transformers_version, "_adapter_base_from_hf_cache", _raises)
+    inference_routes._note_lora_base_fetched_with_a_request_token("acme/adapter", "hf_x")
+    assert recorded == []
+
+
+def test_the_load_reads_the_base_after_the_fetch_not_before_it():
+    """Before the fetch the adapter may not be cached at all, so its base is unknown; the
+    answer is taken in the finally, where it is readable without a network call and a load
+    that failed part way is covered as well."""
+    import inspect
+
+    from routes import inference as inference_routes
+
+    impl = inspect.getsource(inference_routes._load_model_impl)
+    assert "_note_lora_base_fetched_with_a_request_token(request.model_path" in impl
+    assert impl.rindex("finally:") < impl.index("_note_lora_base_fetched_with_a_request_token")
