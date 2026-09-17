@@ -1077,6 +1077,246 @@ def test_patch_mamba2_varlen_no_fused_dispatch_aborts(monkeypatch):
         )
 
 
+def _make_refactored_mamba2_namespace(module_name, *, forward_body):
+    """A modeling module shaped like the refactored transformers Mamba2 mixer.
+
+    The kernels are module globals resolved at call time, not instance
+    attributes, and ``forward`` splats ``**kwargs`` into them instead of
+    hardcoding ``seq_idx=None``.
+    """
+    import sys
+    import types
+
+    module = types.ModuleType(module_name)
+    sys.modules[module_name] = module
+    exec(
+        """
+def mamba2_split_conv1d_scan_combined(*args, seq_idx=None, **kwargs):
+    mamba2_split_conv1d_scan_combined.calls.append(seq_idx)
+    return args[0]
+mamba2_split_conv1d_scan_combined.calls = []
+"""
+        + forward_body,
+        module.__dict__,
+    )
+    return module
+
+
+def _make_refactored_mamba2_model(module, monkeypatch):
+    import types
+
+    fake_kernels = (
+        ("mamba2 fused kernel", module.__dict__["mamba2_split_conv1d_scan_combined"]),
+    )
+    monkeypatch.setattr(
+        packing_module,
+        "_resolve_accelerated_mamba2_kernels",
+        lambda: fake_kernels,
+    )
+
+    class _RefactoredMamba2Mixer(_FakeNemotronHMamba2Mixer):
+        def __init__(self):
+            super().__init__()
+            # The refactored mixer holds no kernel attribute to wrap.
+            del self.mamba2_split_conv1d_scan_combined
+            self.forward = types.MethodType(module.__dict__["forward"], self)
+
+    _RefactoredMamba2Mixer.__module__ = module.__name__
+
+    class _RefactoredModel(_FakeMamba2Model):
+        def __init__(self):
+            super().__init__()
+            self.mixer = _RefactoredMamba2Mixer()
+
+    return _RefactoredModel()
+
+
+def test_patch_mamba2_varlen_kwargs_path_threads_seq_idx(monkeypatch):
+    # The refactored mixer carries **kwargs into the kernel itself
+    # (huggingface/transformers#48490), so seq_idx only has to be handed to
+    # mixer.forward: no kernel is rewritten to inject it.
+    monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
+    import sys
+
+    module = _make_refactored_mamba2_namespace(
+        "transformers.models.fake_refactored_nemotron_h",
+        forward_body = """
+def forward(self, hidden_states, cache_params=None, attention_mask=None, **kwargs):
+    return mamba2_split_conv1d_scan_combined(hidden_states, **kwargs)
+""",
+    )
+    try:
+        model = _make_refactored_mamba2_model(module, monkeypatch)
+        assert packing_module._mamba2_forwards_kwargs_to_kernels(model.mixer) is True
+        assert patch_hybrid_linear_attention_varlen(model) is True
+
+        kernel = module.__dict__["mamba2_split_conv1d_scan_combined"]
+        kernel.calls.clear()
+        model(
+            input_ids = torch.zeros(1, 6, dtype = torch.long),
+            packed_seq_lengths = torch.tensor([2, 1, 3], dtype = torch.int32),
+            use_cache = False,
+        )
+        seq_idx = kernel.calls[-1]
+        assert seq_idx is not None
+        assert seq_idx.tolist() == [[0, 0, 1, 2, 2, 2]]
+    finally:
+        sys.modules.pop(module.__name__, None)
+
+
+def test_patch_mamba2_varlen_kwargs_path_aborts_when_kwargs_dropped(monkeypatch):
+    # A transformers with the mixer refactor but without the block fix drops the
+    # kwargs before the kernel. Nothing raises on its own, so the handshake has
+    # to catch it rather than let a flattened batch reach loss and backward.
+    monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
+    import sys
+
+    module = _make_refactored_mamba2_namespace(
+        "transformers.models.fake_dropping_nemotron_h",
+        forward_body = """
+def forward(self, hidden_states, cache_params=None, attention_mask=None, **kwargs):
+    return mamba2_split_conv1d_scan_combined(hidden_states)
+""",
+    )
+    try:
+        model = _make_refactored_mamba2_model(module, monkeypatch)
+        assert patch_hybrid_linear_attention_varlen(model) is True
+        with pytest.raises(RuntimeError, match = "not both invoked"):
+            model(
+                input_ids = torch.zeros(1, 6, dtype = torch.long),
+                packed_seq_lengths = torch.tensor([2, 1, 3], dtype = torch.int32),
+                use_cache = False,
+            )
+    finally:
+        sys.modules.pop(module.__name__, None)
+
+
+def test_patch_mamba2_varlen_kwargs_path_declines_without_accelerated_kernels(monkeypatch):
+    # transformers filters kwargs down to the bound kernel's parameters, so on the
+    # torch reference seq_idx is dropped silently. Decline instead of corrupting.
+    monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
+    import sys
+
+    module = _make_refactored_mamba2_namespace(
+        "transformers.models.fake_torchonly_nemotron_h",
+        forward_body = """
+def forward(self, hidden_states, cache_params=None, attention_mask=None, **kwargs):
+    return mamba2_split_conv1d_scan_combined(hidden_states, **kwargs)
+""",
+    )
+    try:
+        model = _make_refactored_mamba2_model(module, monkeypatch)
+        monkeypatch.setattr(
+            packing_module,
+            "_resolve_accelerated_mamba2_kernels",
+            lambda: None,
+        )
+        packing_module._HYBRID_WARNED.clear()
+        assert patch_hybrid_linear_attention_varlen(model) is False
+    finally:
+        sys.modules.pop(module.__name__, None)
+
+
+def test_patch_mamba2_varlen_kwargs_path_rejects_kwargs_only_kernel(monkeypatch):
+    # A kernel that merely collects **kwargs is transformers' torch reference, which
+    # accepts seq_idx and ignores it.
+    monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
+    import sys
+
+    module = _make_refactored_mamba2_namespace(
+        "transformers.models.fake_stub_nemotron_h",
+        forward_body = """
+def forward(self, hidden_states, cache_params=None, attention_mask=None, **kwargs):
+    return mamba2_split_conv1d_scan_combined(hidden_states, **kwargs)
+""",
+    )
+    try:
+        model = _make_refactored_mamba2_model(module, monkeypatch)
+
+        def stub(*args, **kwargs):
+            return args[0]
+
+        monkeypatch.setattr(
+            packing_module,
+            "_resolve_accelerated_mamba2_kernels",
+            lambda: (("mamba2 fused kernel", stub),),
+        )
+        packing_module._HYBRID_WARNED.clear()
+        assert patch_hybrid_linear_attention_varlen(model) is False
+    finally:
+        sys.modules.pop(module.__name__, None)
+
+
+def test_patch_mamba2_varlen_kwargs_path_on_real_nemotron_h(monkeypatch):
+    # The fakes above pin the contract; this pins it against the transformers
+    # mixer itself, so a future refactor that stops carrying kwargs to the
+    # kernels shows up here rather than on an H200.
+    monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
+    transformers = pytest.importorskip("transformers")
+    if not hasattr(transformers, "NemotronHConfig"):
+        pytest.skip("transformers has no Nemotron-H")
+    from transformers.models.nemotron_h import modeling_nemotron_h as modeling
+
+    # The name for a Mamba2 layer changed across releases ("mamba" vs
+    # "linear_attention"), so take whichever this config validates.
+    config = None
+    for mamba_layer in ("mamba", "linear_attention"):
+        try:
+            config = transformers.NemotronHConfig(
+                vocab_size = 99,
+                hidden_size = 32,
+                num_hidden_layers = 1,
+                intermediate_size = 64,
+                mamba_num_heads = 4,
+                mamba_head_dim = 8,
+                ssm_state_size = 8,
+                n_groups = 1,
+                layers_block_type = [mamba_layer],
+                num_attention_heads = 4,
+                num_key_value_heads = 4,
+                chunk_size = 2,
+            )
+            break
+        except Exception:
+            continue
+    if config is None:
+        pytest.skip("cannot build a single-layer Nemotron-H config")
+
+    # Training mode: the fused branch asks for it, and packing only runs there.
+    model = modeling.NemotronHModel(config).train()
+    mixers = packing_module._iter_mamba2_modules(model)
+    if not mixers:
+        pytest.skip("no Mamba2 mixer in this Nemotron-H")
+    mixer = mixers[0]
+    if not packing_module._mamba2_forwards_kwargs_to_kernels(mixer):
+        pytest.skip("transformers predates the Mamba2 mixer refactor")
+    if not hasattr(modeling, "mamba2_split_conv1d_scan_combined"):
+        pytest.skip("no module-level fused kernel to probe")
+
+    fused = modeling.mamba2_split_conv1d_scan_combined
+    monkeypatch.setattr(
+        packing_module,
+        "_resolve_accelerated_mamba2_kernels",
+        lambda: (("mamba2 fused kernel", _make_fake_mamba2_fused()),),
+    )
+    assert patch_hybrid_linear_attention_varlen(model) is True
+    # The probe replaced the module global rather than the mixer's kernel call.
+    assert modeling.mamba2_split_conv1d_scan_combined is not fused
+
+    input_ids = torch.zeros(1, 6, dtype = torch.long)
+    with torch.no_grad():
+        model(
+            input_ids = input_ids,
+            packed_seq_lengths = torch.tensor([2, 1, 3], dtype = torch.int32),
+            use_cache = False,
+        )
+    # A recorded hit means transformers carried seq_idx from mixer.forward all the
+    # way into the kernel calls on its own. Which kernels run depends on whether the
+    # accelerated ones are installed: without them the fused call short-circuits and
+    # the conv plus chunk scan do the work.
+    assert packing_module._hybrid_varlen_dispatched(mixer) is True
+
+
 def test_varlen_from_position_ids_mrope_3d():
     pos = (
         torch.tensor([[0, 1, 0, 0, 1, 2]]).unsqueeze(0).expand(3, 1, 6).clone()

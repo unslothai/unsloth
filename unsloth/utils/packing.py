@@ -286,9 +286,11 @@ def enable_padding_free_metadata(model, trainer):
 # flattens the batch so those ops leak state across sequence boundaries unless seq_idx (conv, Mamba2
 # fused kernel) and cu_seqlens (gated-delta scan) are passed. Only the accelerated kernels accept these,
 # so it fails closed on the pure-torch fallbacks, behind an env flag. Gated-delta overrides the
-# per-module prefill kernels (causal_conv1d_fn / chunk_gated_delta_rule); Mamba2 injects seq_idx into
-# mixer.forward, forces a packed prefill so transformers takes the fused path, and wraps the fused and
-# chunk-scan kernels. Decode is left untouched.
+# per-module prefill kernels (causal_conv1d_fn / chunk_gated_delta_rule). Mamba2 comes in two shapes,
+# picked per module by feature marker: the refactored mixer takes seq_idx as a plain mixer.forward kwarg
+# and carries it to the kernels itself, so only record-only dispatch probes are installed, while the
+# transformers 5.5 mixer hardcodes seq_idx=None, so there the fused kernel is wrapped by name and a
+# packed prefill is forced. Decode is left untouched.
 _MAMBA2_FUSED_NAMES = (
     "mamba2_split_conv1d_scan_combined",
     "mamba_split_conv1d_scan_combined",
@@ -342,7 +344,7 @@ def _iter_mamba2_modules(model):
     return modules
 
 
-def _callable_accepts_named_seq_idx(fn) -> Optional[str]:
+def _callable_accepts_named_seq_idx(fn, label = "mamba2 fused kernel") -> Optional[str]:
     """None if ``seq_idx`` is a named parameter. ``**kwargs``-only stubs are
     rejected so transformers' unused hub fallback is not treated as varlen-ready."""
     try:
@@ -351,7 +353,7 @@ def _callable_accepts_named_seq_idx(fn) -> Optional[str]:
         return "kernel signature not introspectable"
     if "seq_idx" in params:
         return None
-    return "mamba2 fused kernel does not accept seq_idx"
+    return f"{label} does not accept seq_idx"
 
 
 _MAMBA2_NAMESPACE_SUBSTR = (
@@ -601,6 +603,151 @@ def _mamba2_varlen_kernels_available(mamba2_modules) -> Optional[str]:
         if reason is not None:
             return reason
     return None
+
+
+def _mamba2_forwards_kwargs_to_kernels(module) -> bool:
+    """True on the transformers mixer that splats ``**kwargs`` into its kernels.
+
+    transformers collapsed ``cuda_kernels_forward`` / ``torch_forward`` into a
+    single ``forward(..., **kwargs)`` that forwards those kwargs to the fused
+    conv1d+scan, the conv and the chunk scan, dropping the hardcoded
+    ``seq_idx=None``; https://github.com/huggingface/transformers/pull/48490 then
+    made the Nemotron-H block pass kwargs through to it. On that shape a plain
+    kwarg reaches the kernels, so none of the 5.5 kernel rebinding is needed.
+    The markers are behavioural, never the transformers version, since the
+    refactor and the block fix shipped apart: no ``cuda_kernels_forward``, no
+    kernel exposed as an attribute to wrap (it is resolved as a module global),
+    and a ``forward`` that collects ``**kwargs``.
+    """
+    if hasattr(module, "cuda_kernels_forward"):
+        return False
+    if any(hasattr(module, name) for name in _MAMBA2_FUSED_NAMES):
+        return False
+    try:
+        params = inspect.signature(module.forward).parameters
+    except (TypeError, ValueError):
+        return False
+    return any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+
+def _resolve_accelerated_mamba2_kernels():
+    """The kernels transformers binds ahead of its torch reference, else None."""
+    try:
+        from mamba_ssm.ops.triton.ssd_combined import (  # type: ignore
+            mamba_chunk_scan_combined,
+            mamba_split_conv1d_scan_combined,
+        )
+    except Exception:
+        return None
+    try:
+        from causal_conv1d import causal_conv1d_fn  # type: ignore
+    except Exception:
+        return None
+    return (
+        ("mamba2 fused kernel", mamba_split_conv1d_scan_combined),
+        ("mamba2 chunk scan", mamba_chunk_scan_combined),
+        ("conv kernel", causal_conv1d_fn),
+    )
+
+
+def _mamba2_kwargs_kernels_available(mamba2_modules) -> Optional[str]:
+    """None when the kernels transformers binds take ``seq_idx``, else a reason.
+
+    ``use_kernel_func_from_hub_with_fallback`` narrows kwargs to the bound
+    implementation's parameters before calling it, so on the pure-torch reference
+    ``seq_idx`` is dropped *silently* rather than raising, which would leave state
+    bleeding across packed boundaries with no error. The wrapper cannot be
+    introspected for this: ``functools.wraps`` gives it the reference signature
+    either way, so check the accelerated kernels it prefers instead.
+    """
+    if not mamba2_modules:
+        return "no mamba2 modules found"
+    kernels = _resolve_accelerated_mamba2_kernels()
+    if kernels is None:
+        return "accelerated kernels missing (install mamba_ssm and causal_conv1d)"
+    for label, fn in kernels:
+        reason = _callable_accepts_named_seq_idx(fn, label)
+        if reason is not None:
+            return reason
+    return None
+
+
+def _wrap_mamba2_kwargs_mixer_forward(module, varlen_getter = None) -> None:
+    """Pass packed ``seq_idx`` to the mixer as a plain kwarg.
+
+    Safe to put in ``**kwargs`` here, unlike on 5.5: the refactored mixer never
+    passes ``seq_idx`` to a kernel itself, so there is no duplicate-keyword risk,
+    and it needs no packed-prefill forcing either. The fused branch only asks for
+    ``self.training and cache_params is None``, and when a cache does come in the
+    conv and chunk-scan fallbacks receive the same kwargs.
+    """
+    if getattr(module, "_unsloth_mamba2_forward_wrapped", False):
+        return
+    forward_orig = module.forward
+
+    def _packed():
+        if varlen_getter is not None:
+            varlen = varlen_getter()
+            if varlen is not None:
+                return varlen
+        return getattr(module, "_unsloth_varlen", None)
+
+    @wraps(forward_orig)
+    def mixer_forward(*args, **kwargs):
+        varlen = _packed()
+        if (
+            varlen is not None
+            and kwargs.get("seq_idx") is None
+            and _varlen_seq_idx_applies(varlen[1], args, kwargs)
+        ):
+            kwargs["seq_idx"] = varlen[1]
+        return forward_orig(*args, **kwargs)
+
+    module.forward = mixer_forward
+    module._unsloth_mamba2_forward_wrapped = True
+
+
+def _wrap_mamba2_dispatch_probe(orig, mixers, hit_attr):
+    """Record that a kernel ran *and* was handed ``seq_idx``, changing nothing.
+
+    The refactored mixer calls its kernels as module globals rather than instance
+    attributes, so reassigning the name is the only way to observe dispatch. This
+    injects nothing: a recorded hit means transformers itself carried the kwarg
+    all the way through, which is what the handshake needs to prove before the
+    batch reaches loss and backward.
+    """
+    if orig is None or getattr(orig, "_unsloth_varlen_probe", False):
+        return orig
+
+    @wraps(orig)
+    def probe(*args, **kwargs):
+        if kwargs.get("seq_idx") is not None:
+            for mixer in mixers:
+                setattr(mixer, hit_attr, True)
+        return orig(*args, **kwargs)
+
+    probe._unsloth_varlen_probe = True
+    return probe
+
+
+_MAMBA2_PROBE_NAMES = (
+    ("mamba2_split_conv1d_scan_combined", "_unsloth_varlen_fused_hit"),
+    ("mamba_split_conv1d_scan_combined", "_unsloth_varlen_fused_hit"),
+    ("causal_conv1d_fn", "_unsloth_varlen_conv_hit"),
+    ("mamba2_chunk_scan", "_unsloth_varlen_scan_hit"),
+    ("mamba_chunk_scan_combined", "_unsloth_varlen_scan_hit"),
+)
+
+
+def _install_mamba2_dispatch_probes(namespace, mixers) -> None:
+    """Reassign kernel names in ``namespace`` to record-only probes."""
+    if not isinstance(namespace, dict):
+        return
+    for name, hit_attr in _MAMBA2_PROBE_NAMES:
+        orig = namespace.get(name)
+        if not callable(orig):
+            continue
+        namespace[name] = _wrap_mamba2_dispatch_probe(orig, mixers, hit_attr)
 
 
 def _hybrid_varlen_dispatched(module) -> bool:
@@ -872,9 +1019,12 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
     """Feed seq_idx / cu_seqlens to hybrid mixers so packing resets state.
 
     Gated-delta: wrap ``causal_conv1d_fn`` + ``chunk_gated_delta_rule``.
-    Mamba2: wrap ``mamba2_split_conv1d_scan_combined`` and inject ``seq_idx``
-    into mixer.forward kwargs (transformers already forwards ``**kwargs`` into
-    the fused kernel). Gated by ``UNSLOTH_EXPERIMENTAL_HYBRID_PACKING`` and
+    Mamba2 on a refactored transformers: pass ``seq_idx`` as a mixer.forward
+    kwarg and let transformers carry it to the kernels, probing only to confirm
+    it arrived. Mamba2 on transformers 5.5: wrap
+    ``mamba2_split_conv1d_scan_combined`` by name and force a packed prefill,
+    because that mixer hardcodes ``seq_idx=None``.
+    Gated by ``UNSLOTH_EXPERIMENTAL_HYBRID_PACKING`` and
     fail-closed. Returns True when the varlen path is active.
     Idempotent: repeat calls on an already-patched model return True.
     """
@@ -892,12 +1042,20 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
     ):
         return True
 
+    # Two mixer shapes, chosen per module by feature marker, never by version.
+    kwargs_mamba2 = [m for m in mamba2_modules if _mamba2_forwards_kwargs_to_kernels(m)]
+    legacy_mamba2 = [m for m in mamba2_modules if m not in kwargs_mamba2]
+
     if gated_delta_modules:
         reason = _hybrid_varlen_kernels_available(gated_delta_modules)
         if reason is not None:
             return _hybrid_reject(reason)
-    if mamba2_modules:
-        reason = _mamba2_varlen_kernels_available(mamba2_modules)
+    if kwargs_mamba2:
+        reason = _mamba2_kwargs_kernels_available(kwargs_mamba2)
+        if reason is not None:
+            return _hybrid_reject(reason)
+    if legacy_mamba2:
+        reason = _mamba2_varlen_kernels_available(legacy_mamba2)
         if reason is not None:
             return _hybrid_reject(reason)
 
@@ -957,7 +1115,18 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
             _rebind_mamba2_fused_aliases(fn, wrapped)
         return wrapped
 
-    for module in mamba2_modules:
+    for module in kwargs_mamba2:
+        if getattr(module, "_unsloth_varlen_wrapped", False):
+            continue
+        _wrap_mamba2_kwargs_mixer_forward(module, varlen_getter = lambda: varlen_slot[0])
+        module._unsloth_varlen = None
+        module._unsloth_varlen_wrapped = True
+    if kwargs_mamba2:
+        for ns in _iter_mamba2_install_namespaces(kwargs_mamba2):
+            _install_mamba2_dispatch_probes(ns, kwargs_mamba2)
+
+    wrapped = None
+    for module in legacy_mamba2:
         if getattr(module, "_unsloth_varlen_wrapped", False):
             continue
         fn, loc = _resolve_mamba2_fused(module)
@@ -982,7 +1151,7 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
         _wrap_mamba2_mixer_forward(module, varlen_getter = lambda: varlen_slot[0])
         module._unsloth_varlen = None
         module._unsloth_varlen_wrapped = True
-    if mamba2_modules:
+    if legacy_mamba2:
         try:
             from mamba_ssm.ops.triton.ssd_combined import (  # type: ignore
                 mamba_split_conv1d_scan_combined as _ssm_fused,
@@ -996,10 +1165,10 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
         def packed():
             return varlen_slot[0]
 
-        for ns in _iter_mamba2_install_namespaces(mamba2_modules):
+        for ns in _iter_mamba2_install_namespaces(legacy_mamba2):
             _force_install_mamba2_fused(ns, wrapped_real)
             _install_mamba2_mask_clear(ns, packed)
-            _install_mamba2_seq_idx_fallbacks(ns, mamba2_modules, varlen_slot)
+            _install_mamba2_seq_idx_fallbacks(ns, legacy_mamba2, varlen_slot)
 
     # Refresh the boundary stash on the outermost forward, once per step and outside gradient-checkpoint
     # recompute so it stays valid for recomputed inner forwards.
