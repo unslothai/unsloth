@@ -233,7 +233,7 @@ class TestWaitForHealthResilience:
             b._stop_mtp_crash_watchdog = lambda *a, **kw: None
             b._reset_effective_parallel_slots = lambda *a, **kw: None
             b._leading_process_group = lambda *a, **kw: None
-            b._collect_descendants = lambda *a, **kw: []
+            b._collect_descendants = lambda *a, **kw: ([], True)
             b._kill_process_group = lambda *a, **kw: None
             b._terminate_descendants = lambda *a, **kw: None
             b._process.poll.return_value = 0
@@ -377,7 +377,7 @@ class TestWaitForHealthResilience:
         b._stop_mtp_crash_watchdog = lambda *a, **kw: None
         b._reset_effective_parallel_slots = lambda *a, **kw: None
         b._leading_process_group = lambda *a, **kw: None
-        b._collect_descendants = lambda *a, **kw: []
+        b._collect_descendants = lambda *a, **kw: ([], True)
         b._kill_process_group = lambda *a, **kw: None
         b._terminate_descendants = lambda *a, **kw: None
         seen = {}
@@ -1314,7 +1314,7 @@ class TestHealthPublicationIsAtomicWithTeardown:
         b._process = object()
         b._reset_effective_parallel_slots = lambda: None
         b._leading_process_group = lambda _pid: None
-        b._collect_descendants = lambda _pid: []
+        b._collect_descendants = lambda _pid: ([], True)
         b._diffusion_requested_ngl = None
 
         published = b._publish_healthy()
@@ -1411,7 +1411,7 @@ def test_a_lifecycle_cannot_reopen_while_a_teardown_is_still_killing():
     b._reset_effective_parallel_slots = lambda: None
     b._diffusion_requested_ngl = None
     b._leading_process_group = lambda _pid: None
-    b._collect_descendants = lambda _pid: []
+    b._collect_descendants = lambda _pid: ([], True)
     b._spawn_lock = threading.RLock()  # so the probe below can observe, not deadlock
 
     reopened_during_kill = []
@@ -1489,7 +1489,7 @@ class TestATeardownDoesNotBlockASpawnItWillRefuse:
         b._reset_effective_parallel_slots = lambda: None
         b._diffusion_requested_ngl = None
         b._leading_process_group = lambda _p: None
-        b._collect_descendants = lambda _p: []
+        b._collect_descendants = lambda _p: ([], True)
 
         class _Stubborn:
             pid = 4242
@@ -1586,6 +1586,31 @@ def test_the_lock_order_is_teardown_then_spawn():
                 ):
                     inversions.append(inner.lineno)
     assert not inversions, f"_teardown_lock taken inside _spawn_lock at {inversions}"
+
+
+def test_no_kill_double_still_returns_the_legacy_shape():
+    """`_collect_descendants` answers `(descendants, known)`, and the teardown unpacks it.
+
+    Five doubles in this file still returned a bare list, so every kill path here raised
+    `ValueError: not enough values to unpack` and the teardown cases were exercising nothing.
+    A grep is the cheapest guard against the same drift: a double that returns a list is a
+    test that cannot reach the code it names.
+    """
+    import ast
+    import inspect
+    import sys
+
+    module = sys.modules[__name__]
+    tree = ast.parse(inspect.getsource(module))
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        target = node.targets[0]
+        if not isinstance(target, ast.Attribute) or target.attr != "_collect_descendants":
+            continue
+        assert isinstance(node.value, ast.Lambda), ast.unparse(node)
+        body = node.value.body
+        assert isinstance(body, ast.Tuple) and len(body.elts) == 2, ast.unparse(node)
 
 
 class TestHealthWaitMeasuresStalls:
