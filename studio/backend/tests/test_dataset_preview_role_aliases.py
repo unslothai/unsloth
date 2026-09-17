@@ -269,6 +269,6 @@ def test_a_blank_inferred_role_consults_the_same_fallback_the_preview_does(messa
     assert trained[0]["conversations"][0]["role"] == expected
 
     previewed = _standardize_sharegpt_row({"conversations": [dict(message)]}, "conversations")
-    assert previewed["conversations"][0]["role"] == expected, (
-        "the preview and the training path disagree on this message"
-    )
+    assert (
+        previewed["conversations"][0]["role"] == expected
+    ), "the preview and the training path disagree on this message"
