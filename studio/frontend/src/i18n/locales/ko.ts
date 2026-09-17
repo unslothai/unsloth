@@ -1296,6 +1296,8 @@ export const ko = {
           sourceBuild: "이 llama.cpp는 소스에서 빌드되어 여기서 백엔드를 전환할 수 없습니다.",
           customPath: "사용자 지정 llama.cpp 폴더가 선택되어 있습니다. 해당 빌드가 컴퓨팅 백엔드를 결정합니다.",
           unresolved: "사용 가능한 백엔드를 확인하지 못했습니다. 연결을 확인한 뒤 다시 시도하세요.",
+          updateChecksDisabled:
+            "업데이트 확인이 비활성화되어 있어(UNSLOTH_DISABLE_UPDATE_CHECK=1) 사용 가능한 백엔드를 조회하지 않습니다.",
         },
         // 표시되지 않음: 설정 검색용 추가 키워드.
         llamaBackendKeywords:

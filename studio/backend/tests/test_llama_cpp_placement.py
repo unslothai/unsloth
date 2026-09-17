@@ -3678,14 +3678,24 @@ def _recording_compute_backend(
 def test_the_loader_prices_the_attention_mode_it_launches(
     tmp_path, monkeypatch, extra_args, expected
 ):
-    """Compute follows the launch's attention mode; KV covers the no-flash retry."""
+    """Compute AND KV follow the launch's attention mode, off one resolved state.
+
+    The KV cache used to be pinned to flash attention off whatever the argv said, which
+    priced a load that was not going to happen (#9697, #10489). The reserve it stood in for
+    is narrower now: ``_reserved_flash_attn_state`` only holds the reading down where a
+    no-flash respawn cannot be re-placed, which is neither of the cases here.
+    """
     backend, gguf, calls = _recording_compute_backend(tmp_path, monkeypatch)
 
     assert _launch(backend, gguf, n_ctx = 0, n_parallel = 4, extra_args = extra_args)["cmd"]
 
     assert calls["ctx"], "the fit never priced the context term"
     assert set(calls["ctx"]) == {expected}
-    assert False in calls["kv"]
+    assert calls["kv"], "the fit never priced the KV cache"
+    assert set(calls["kv"]) == {expected}, (
+        f"the KV cache was priced with flash_attn {sorted(set(map(str, calls['kv'])))} "
+        f"while the compute buffers were priced {expected}: one load, two answers"
+    )
 
 
 @pytest.mark.parametrize("build,expected", [(9415, True), (10909, False), (None, False)])

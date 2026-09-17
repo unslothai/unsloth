@@ -232,6 +232,63 @@ TORCHAO_EXPORT_SCHEMES = {
 }
 
 
+def _normalize_safe_serialization(safe_serialization):
+    """`None` means the safetensors default, and never a pickle.
+
+    Unsloth's message and docs say to pass `safe_serialization = None` to FORCE
+    safetensors, but `None` is falsy to peft and transformers, so forwarding it writes the
+    `.bin` that advice exists to avoid (unsloth#1792). `True` and `False` pass through, so
+    an explicit `False` still writes a pickle.
+    """
+    return True if safe_serialization is None else safe_serialization
+
+
+def _filter_push_to_hub_kwargs(push_fn, kwargs):
+    """Keep only the keywords `push_fn` actually accepts.
+
+    transformers 5 dropped `use_temp_dir` and `safe_serialization` from
+    `PushToHubMixin.push_to_hub`, which always stages in a temp dir and always writes
+    safetensors, so passing them raises `TypeError: push_to_hub() got an unexpected
+    keyword argument 'use_temp_dir'`. Probed from the signature, not a version; `**kwargs`
+    keeps everything.
+
+    A dropped keyword is reported only when honouring it would have changed the upload, so
+    only an explicit `safe_serialization = False`, which asked for a pickle it will not get.
+    """
+    import inspect
+
+    try:
+        parameters = inspect.signature(push_fn).parameters
+    except (TypeError, ValueError):
+        return dict(kwargs)
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
+        return dict(kwargs)
+    kept = {k: v for k, v in kwargs.items() if k in parameters}
+    dropped = [k for k in kwargs if k not in parameters]
+    reportable = sorted(
+        key
+        for key in dropped
+        if key != "use_temp_dir" and not (key == "safe_serialization" and kwargs[key])
+    )
+    if reportable:
+        logger.warning_once(
+            f"Unsloth: this transformers no longer accepts {reportable} on `push_to_hub`, "
+            "so they were not applied to the upload."
+        )
+    return kept
+
+
+def _is_adapter_save_method(save_method):
+    """Is `save_method` the adapter-only save, i.e. "do not merge anything"?
+
+    Spelled the way every other reader here spells it, so `"LoRA"` and `"lora "` mean
+    `"lora"`. A non-string (Studio passes `None` for whisper) is not an adapter save.
+    """
+    if not isinstance(save_method, str):
+        return False
+    return save_method.lower().strip().replace("-", "_").replace(" ", "_") == "lora"
+
+
 def _normalize_torchao_method(save_method):
     """Return (kind, suffix) if `save_method` is a torchao portable FP8/INT8 export, else None."""
     if not isinstance(save_method, str):
@@ -884,6 +941,12 @@ def unsloth_save_model(
     if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
         tokenizer = patch_saving_functions(tokenizer)
 
+    # Normalised before `save_pretrained_settings` is captured, so every writer below gets
+    # the real value. `_force_safe_serialization` remembers the caller asked for the
+    # override, which the low-CPU downgrade further down honours.
+    _force_safe_serialization = safe_serialization is None
+    safe_serialization = _normalize_safe_serialization(safe_serialization)
+
     if token is None:
         token = get_token()
 
@@ -916,6 +979,8 @@ def unsloth_save_model(
         "temporary_location",
         "maximum_memory_usage",
         "datasets",
+        # Bookkeeping for the normalisation above, not a `save_pretrained` keyword.
+        "_force_safe_serialization",
     ):
         del save_pretrained_settings[deletion]
 
@@ -986,7 +1051,7 @@ def unsloth_save_model(
             datasets = datasets,
         )
 
-        getattr(model, "original_push_to_hub", model.push_to_hub)(
+        _push_kwargs = dict(
             repo_id = save_directory,
             use_temp_dir = use_temp_dir,
             commit_message = commit_message,
@@ -999,24 +1064,15 @@ def unsloth_save_model(
             commit_description = commit_description,
             tags = tags,
         )
+        _model_push = getattr(model, "original_push_to_hub", model.push_to_hub)
+        _model_push(**_filter_push_to_hub_kwargs(_model_push, _push_kwargs))
         if tokenizer is not None:
             _tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
             old_padding_side = _tokenizer.padding_side
             _tokenizer.padding_side = "left"
 
-            getattr(tokenizer, "original_push_to_hub", tokenizer.push_to_hub)(
-                repo_id = save_directory,
-                use_temp_dir = use_temp_dir,
-                commit_message = commit_message,
-                private = private,
-                token = token,
-                max_shard_size = max_shard_size,
-                create_pr = create_pr,
-                safe_serialization = safe_serialization,
-                revision = revision,
-                commit_description = commit_description,
-                tags = tags,
-            )
+            _tokenizer_push = getattr(tokenizer, "original_push_to_hub", tokenizer.push_to_hub)
+            _tokenizer_push(**_filter_push_to_hub_kwargs(_tokenizer_push, _push_kwargs))
 
             _tokenizer.padding_side = old_padding_side
 
@@ -1160,15 +1216,16 @@ def unsloth_save_model(
     if n_cpus is None:
         n_cpus = 1
 
-    if safe_serialization is None:
-        safe_serialization = True
+    # Already `True` from the normalisation at the top of this function; the caller having
+    # passed `None` is what keeps the downgrade below from undoing it.
+    if _force_safe_serialization:
         save_pretrained_settings["safe_serialization"] = safe_serialization
 
     elif safe_serialization and (n_cpus <= 2):
         logger.warning_once(
             f"Unsloth: You have {n_cpus} CPUs. Using `safe_serialization` is 10x slower.\n"
             f"We shall switch to Pytorch saving, which might take 3 minutes and not 30 minutes.\n"
-            f"To force `safe_serialization`, set it to `None` instead.",
+            f"Safetensors is the default; to keep it here, pass `safe_serialization = None`.",
         )
         safe_serialization = False
         save_function = fast_save_pickle
@@ -2458,10 +2515,19 @@ def unsloth_save_pretrained_merged(
     Choose for `save_method` to be either:
     1. `16bit`: Merge LoRA into float16 weights. Useful for GGUF / llama.cpp.
     2.  `4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
-    3.  `lora`: Save LoRA adapters with no merging. Useful for HF inference.
+    3.  `lora`: Save the LoRA adapter itself, with no merging: `adapter_config.json`
+        plus `adapter_model.safetensors`, and no base-model weights at all (the adapter
+        is written as `adapter_model.bin` instead when `safe_serialization = False`).
+        Passing `tokenizer` also writes that tokenizer's files, exactly as the merge
+        methods do. Useful for HF inference.
     4.  FP8 / FP4 compressed export for vLLM (`fp8`, `mxfp4`, `nvfp4`, `mxfp8`): keeps the
         16bit merge at `save_directory` and writes the quantized checkpoint to
         `save_directory + "-<fmt>"`.
+
+    `safe_serialization` defaults to safetensors. `None` is stronger than the default `True`: on a host
+    with at most two physical CPUs the default downgrades to a pickle, since safetensors is
+    roughly 10x slower there, while `None` pins safetensors through that fallback. `False`
+    asks for a pickle.
     """
     if tokenizer is None:
         logger.warning_once(
@@ -2584,8 +2650,17 @@ def unsloth_push_to_hub_merged(
     Choose for `save_method` to be either:
     1. `16bit`: Merge LoRA into float16 weights. Useful for GGUF / llama.cpp.
     2.  `4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
-    3.  `lora`: Save LoRA adapters with no merging. Useful for HF inference.
+    3.  `lora`: Save the LoRA adapter itself, with no merging: `adapter_config.json`
+        plus `adapter_model.safetensors`, and no base-model weights at all (the adapter
+        is written as `adapter_model.bin` instead when `safe_serialization = False`).
+        Passing `tokenizer` also writes that tokenizer's files, exactly as the merge
+        methods do. Useful for HF inference.
     4.  FP8 / FP4 compressed export for vLLM: `fp8`, `mxfp4`, `nvfp4`, `mxfp8`.
+
+    `safe_serialization` defaults to safetensors. `None` is stronger than the default `True`: on a host
+    with at most two physical CPUs the default downgrades to a pickle, since safetensors is
+    roughly 10x slower there, while `None` pins safetensors through that fallback. `False`
+    asks for a pickle.
     """
     if tokenizer is None:
         logger.warning_once(
@@ -5622,6 +5697,10 @@ def unsloth_generic_save(
             "If you are certain, change `save_method` to `merged_4bit_forced`."
         )
 
+    # Rebound rather than kept in a new local, because the `locals()` below is forwarded as
+    # this function's own keywords.
+    safe_serialization = _normalize_safe_serialization(safe_serialization)
+
     if push_to_hub and (create_pr or revision is not None):
         return _push_merged_to_hub_revision(dict(locals()))
 
@@ -5719,6 +5798,42 @@ def unsloth_generic_save(
                 _tokenizer.padding_side = old_padding_side
 
         print(f"Unsloth: Model saved successfully to '{save_directory}'")
+    elif _is_adapter_save_method(save_method):
+        # "lora" means "do not merge", so it must not go to the merge. It used to:
+        # `merge_and_overwrite_lora` has no `"lora"` branch, so the value fell through to a
+        # 16bit merge and a caller asking for an adapter got a full-size checkpoint with no
+        # adapter_config.json (2.47 GB for a 1B base, no config.json either). Routed back to
+        # `unsloth_save_model`, the same adapter save `save_lora_to_custom_dir` and the MLX
+        # `save_pretrained_merged` already perform for this value.
+        unsloth_save_model(
+            model,
+            tokenizer,
+            save_directory = save_directory,
+            # The canonical spelling, not the caller's. `unsloth_save_model` normalises with
+            # `.lower().replace(" ", "_")` and then rejects anything that is not exactly
+            # "lora", so forwarding `" lora "` verbatim would turn it into `"_lora_"` and
+            # raise, which is a worse answer than the merge it replaces.
+            save_method = "lora",
+            push_to_hub = push_to_hub,
+            token = token,
+            is_main_process = is_main_process,
+            state_dict = state_dict,
+            save_function = save_function,
+            max_shard_size = max_shard_size,
+            safe_serialization = safe_serialization,
+            variant = variant,
+            save_peft_format = save_peft_format,
+            use_temp_dir = use_temp_dir,
+            commit_message = commit_message,
+            private = private,
+            create_pr = create_pr,
+            revision = revision,
+            commit_description = commit_description,
+            tags = tags,
+            temporary_location = temporary_location,
+            maximum_memory_usage = maximum_memory_usage,
+            datasets = datasets,
+        )
     else:
         _prewarm_base_model_hub_cache(model, save_method = save_method, token = token)
         from unsloth_zoo.saving_utils import merge_and_overwrite_lora
@@ -5778,11 +5893,20 @@ def unsloth_generic_save_pretrained_merged(
     Choose for `save_method` to be either:
     1. `16bit`: Merge LoRA into float16 weights. Useful for GGUF / llama.cpp.
     2.  `4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
-    3.  `lora`: Save LoRA adapters with no merging. Useful for HF inference.
+    3.  `lora`: Save the LoRA adapter itself, with no merging: `adapter_config.json`
+        plus `adapter_model.safetensors`, and no base-model weights at all (the adapter
+        is written as `adapter_model.bin` instead when `safe_serialization = False`).
+        Passing `tokenizer` also writes that tokenizer's files, exactly as the merge
+        methods do. Useful for HF inference.
     4.  FP8 / FP4 compressed export for vLLM via llm-compressor:
         `fp8` (dynamic W8A8), `mxfp4`, `nvfp4` (W4A4), `mxfp8`. The LoRA is merged to 16bit at
         `save_directory`, then a quantized checkpoint is written to `save_directory + "-<fmt>"`.
         `nvfp4` needs calibration data (defaults to ultrachat; override with `calibration_dataset`).
+
+    `safe_serialization` defaults to safetensors. `None` is stronger than the default `True`: on a host
+    with at most two physical CPUs the default downgrades to a pickle, since safetensors is
+    roughly 10x slower there, while `None` pins safetensors through that fallback. `False`
+    asks for a pickle.
     """
     if tokenizer is None:
         logger.warning_once(
@@ -5903,8 +6027,17 @@ def unsloth_generic_push_to_hub_merged(
     Choose for `save_method` to be either:
     1. `16bit`: Merge LoRA into float16 weights. Useful for GGUF / llama.cpp.
     2.  `4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
-    3.  `lora`: Save LoRA adapters with no merging. Useful for HF inference.
+    3.  `lora`: Save the LoRA adapter itself, with no merging: `adapter_config.json`
+        plus `adapter_model.safetensors`, and no base-model weights at all (the adapter
+        is written as `adapter_model.bin` instead when `safe_serialization = False`).
+        Passing `tokenizer` also writes that tokenizer's files, exactly as the merge
+        methods do. Useful for HF inference.
     4.  FP8 / FP4 compressed export for vLLM: `fp8`, `mxfp4`, `nvfp4`, `mxfp8`.
+
+    `safe_serialization` defaults to safetensors. `None` is stronger than the default `True`: on a host
+    with at most two physical CPUs the default downgrades to a pickle, since safetensors is
+    roughly 10x slower there, while `None` pins safetensors through that fallback. `False`
+    asks for a pickle.
     """
     if tokenizer is None:
         logger.warning_once(
@@ -6973,6 +7106,10 @@ def patch_saving_functions(model, vision = False):
     """
     arguments = dict(locals())
     del arguments["self"]
+    # `None` is the documented way to force safetensors, and is falsy to peft and
+    # transformers, so passing it through uploads a pickle .bin (unsloth#1792).
+    if "safe_serialization" in arguments and arguments["safe_serialization"] is None:
+        arguments["safe_serialization"] = True
     if "tags" in arguments and arguments["tags"] is not None:
         assert(isinstance(arguments["tags"], (list, tuple)))
         arguments["tags"] = list(arguments["tags"]) + ["unsloth",]
@@ -7054,6 +7191,40 @@ def patch_saving_functions(model, vision = False):
             self.push_to_hub(repo_id, **push_kwargs)
         return result
 
+    def unsloth_model_save_pretrained(self, *args, **kwargs):
+        """`safe_serialization = None` means the safetensors default, not a pickle.
+
+        `model.save_pretrained(..., safe_serialization = None)` is the remedy the
+        troubleshooting docs give for a `.bin` checkpoint, and it is the one call Unsloth
+        did not wrap, so `None` reached peft, which read it as falsy and wrote
+        `adapter_model.bin`: the advice produced the file it exists to avoid
+        (unsloth#1792). Only that one value is rewritten, so an explicit
+        `safe_serialization = False` still writes a pickle and every other argument is
+        forwarded untouched.
+
+        Positional too, because `PeftModel.save_pretrained` takes `safe_serialization` as
+        its SECOND positional parameter, so `model.save_pretrained(directory, None)` is a
+        supported spelling of the same request. Which position that is cannot be assumed:
+        `PreTrainedModel.save_pretrained`'s second parameter is `is_main_process`, and
+        rewriting that would be a different bug. So the value is located by binding the
+        ORIGINAL callable's own signature, and a signature that cannot be read or bound
+        leaves the call exactly as it arrived.
+        """
+        import inspect
+
+        original = self.original_model_save_pretrained
+        if kwargs.get("safe_serialization", True) is None:
+            kwargs["safe_serialization"] = _normalize_safe_serialization(None)
+        elif args:
+            try:
+                bound = inspect.signature(original).bind_partial(*args, **kwargs)
+            except (TypeError, ValueError):
+                bound = None
+            if bound is not None and bound.arguments.get("safe_serialization", True) is None:
+                bound.arguments["safe_serialization"] = _normalize_safe_serialization(None)
+                return original(*bound.args, **bound.kwargs)
+        return original(*args, **kwargs)
+
     if (
         isinstance(model, PreTrainedTokenizerBase)
         and model.save_pretrained.__name__ != "unsloth_tokenizer_save_pretrained"
@@ -7062,6 +7233,17 @@ def patch_saving_functions(model, vision = False):
         model.save_pretrained = types.MethodType(unsloth_tokenizer_save_pretrained, model)
     elif getattr(model, "tokenizer", None) is not None:
         patch_saving_functions(model.tokenizer)
+
+    # A separate attribute name from the tokenizer wrapper above, so a processor that is
+    # both a tokenizer holder and a model-like object cannot have one shadow the other.
+    if (
+        not isinstance(model, (PreTrainedTokenizerBase, ProcessorMixin))
+        and hasattr(model, "config")
+        and callable(getattr(model, "save_pretrained", None))
+        and getattr(model.save_pretrained, "__name__", "") != "unsloth_model_save_pretrained"
+    ):
+        model.original_model_save_pretrained = model.save_pretrained
+        model.save_pretrained = types.MethodType(unsloth_model_save_pretrained, model)
 
     original_model = model
     while True:
@@ -7107,3 +7289,25 @@ def patch_saving_functions(model, vision = False):
         model.save_pretrained_gguf = types.MethodType(unsloth_save_pretrained_gguf, model)
         model.save_pretrained_torchao = types.MethodType(unsloth_save_pretrained_torchao, model)
     return model
+
+
+# Publish the deferred names back to unsloth.models. Those modules bind shims instead of
+# these names to avoid an import cycle (see unsloth/models/vision.py); this module and
+# `.models` are both complete by the time this runs, so hand the real objects over and the
+# attributes regain their identity, signature and docstring.
+_DEFERRED_INTO_MODELS = {
+    "unsloth.models.vision": ("patch_saving_functions",),
+    "unsloth.models.llama": ("patch_saving_functions",),
+    "unsloth.models.sentence_transformer": (
+        "unsloth_save_pretrained_torchao",
+        "unsloth_save_pretrained_gguf",
+    ),
+}
+for _module_name, _deferred_names in _DEFERRED_INTO_MODELS.items():
+    _module = sys.modules.get(_module_name)
+    if _module is None:
+        continue
+    for _deferred_name in _deferred_names:
+        # Only ever replace our own shim; anything else is left exactly as it is.
+        if getattr(getattr(_module, _deferred_name, None), "_unsloth_deferred_shim", False):
+            setattr(_module, _deferred_name, globals()[_deferred_name])
