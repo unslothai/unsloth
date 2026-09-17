@@ -101,10 +101,17 @@ HOST_PATH_LIST_FIELDS = frozenset(
         # directories is the host's layout however many entries it has.
         "output_dirs",
         "dataset_paths",
-        "local_datasets",
-        "local_eval_datasets",
     }
 )
+
+# List fields a caller has to be able to HAND BACK, entry by entry. The same reasoning as
+# HOST_PATH_HANDLE_FIELDS and the same place it matters: the history detail is where a client
+# learns a run can be resumed, and `/training/start` replays that payload. A run trained from
+# local data names its dataset HERE, so emptying these left the replay with a resumable
+# checkpoint and no dataset to resume it against -- it either fails validation or, worse,
+# selects a different source. Each entry becomes its own opaque reference, which reverses to
+# nothing and which `TrainingStartRequest` resolves the way it resolves every other handle.
+HOST_PATH_HANDLE_LIST_FIELDS = frozenset({"local_datasets", "local_eval_datasets"})
 
 # ``path`` is a path on the inventory objects and a repo id or a display name elsewhere, so it
 # is only redacted inside the models the routes name here, never by field name alone.
@@ -477,6 +484,12 @@ def _redact(payload: Any, *, redact_ambiguous_path: bool) -> Any:
                     reference = cache_reference(value)
                 out[key] = None if value is None else ""
                 continue
+            if key in HOST_PATH_HANDLE_LIST_FIELDS and isinstance(value, (list, tuple)):
+                out[key] = [
+                    _referenced_identity(item) if _identity_value_is_a_path(item) else item
+                    for item in value
+                ]
+                continue
             if key in HOST_PATH_LIST_FIELDS:
                 out[key] = []
                 continue
@@ -536,7 +549,9 @@ def _find_leak(
             # gate reported a clean response for a cache row pinned to a snapshot directory.
             if key in HOST_PATH_IDENTITY_FIELDS and _identity_value_is_a_path(text):
                 return f"{key}={text}"
-            if key in HOST_PATH_LIST_FIELDS and isinstance(value, (list, tuple)):
+            if (key in HOST_PATH_LIST_FIELDS or key in HOST_PATH_HANDLE_LIST_FIELDS) and isinstance(
+                value, (list, tuple)
+            ):
                 for item in value:
                     item_text = _as_text(item)
                     if item_text and _looks_absolute(item_text):

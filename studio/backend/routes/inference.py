@@ -14849,6 +14849,23 @@ async def load_model(
     )
 
 
+def _repo_is_in_the_hub_cache(model_ref) -> Optional[bool]:
+    """Whether *model_ref* already has usable bytes in one of this host's caches.
+
+    ``None`` when the question does not arise or cannot be answered: not a repo id, or the
+    walk failed. Local and never blocking, the same probe the offline fallback uses.
+    """
+    try:
+        from hub.utils import hf_tokens as _hf_tokens
+
+        repo = (model_ref or "").strip()
+        if not repo or "/" not in repo or repo.startswith((".", "/", "~")) or ":" in repo[:3]:
+            return None
+        return bool(_hf_tokens._repo_present_on_disk(repo, "model"))
+    except Exception:  # noqa: BLE001 -- a load never fails on its own bookkeeping
+        return None
+
+
 def _note_lora_base_fetched_with_a_request_token(model_ref, hf_token) -> None:
     """The same record for the BASE a LoRA load pulls in behind the adapter.
 
@@ -14866,7 +14883,9 @@ def _note_lora_base_fetched_with_a_request_token(model_ref, hf_token) -> None:
         base = _adapter_base_from_hf_cache(model_ref) if model_ref else None
     except Exception:  # noqa: BLE001 -- a load never fails on its own bookkeeping
         return
-    if base and base != model_ref:
+    if base and base != model_ref and _repo_is_in_the_hub_cache(base):
+        # The base's own bytes have to be here: an adapter whose config names a base this host
+        # never pulled is not evidence that anything was fetched with this credential.
         _note_load_fetched_with_a_request_token(base, hf_token)
 
 
@@ -15015,16 +15034,19 @@ async def _load_model_impl(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
         )
     # A one-off `X-Unsloth-HF-Token` on a LOAD pulls the repo into the same cache and is kept
-    # nowhere, so the provenance is recorded where the request is: without it the offline
-    # fallback reads an empty credential set as "nothing here needed one" for a repo that did.
+    # nowhere, so the provenance has to be recorded where the request is: without it the
+    # offline fallback reads an empty credential set as "nothing here needed one" for a repo
+    # that did need one.
     #
-    # HERE rather than at the route, and after the access check above: the record is a claim
-    # about a fetch, and a load that is refused fetches nothing. At the route it was written
-    # before the attempt was even registered, so a caller could name any repo it liked, be
-    # refused, and still have the name written -- and a public repo named that way is then
-    # withheld from every tokenless offline caller. This is also the path preview and
-    # auto-switch take, which the route call never covered.
-    _note_load_fetched_with_a_request_token(request.model_path, request.hf_token)
+    # The record is a claim that a fetch HAPPENED, so it is written in the finally below and
+    # only for a repo whose bytes were not on this host when the load started. A typo, a repo
+    # that does not exist, an unsupported model, a cancellation -- none of them fetch anything
+    # and none of them record anything, and naming a repo that is already cached records
+    # nothing either, which is what keeps a public cached copy from being withheld from every
+    # tokenless offline caller by a caller who merely asked for it. A repo that really was
+    # pulled with a one-off credential was pulled by the load that FIRST cached it, and that is
+    # the load this records.
+    _cached_before_this_load = _repo_is_in_the_hub_cache(request.model_path)
     from core.inference.llama_cpp import LlamaServerNotFoundError
 
     def _raise_if_scoped_load_cancelled() -> None:
@@ -16163,10 +16185,14 @@ async def _load_model_impl(
         raise HTTPException(status_code = 500, detail = f"Failed to load model: {msg}")
     finally:
         gguf_load_stack.close()
+        # Now that the fetch has had its chance. A repo this load brought onto the host is
+        # recorded; one that was already here, or never arrived, is not. This runs for a load
+        # that failed part way too: the bytes it did pull are in the cache either way.
+        if _cached_before_this_load is False and _repo_is_in_the_hub_cache(request.model_path):
+            _note_load_fetched_with_a_request_token(request.model_path, request.hf_token)
         # The LoRA base, once the adapter's config is on disk. Before the fetch the adapter may
         # not be cached yet and its base is unknown, so the answer is taken here, where it is
-        # readable without a network call, and for a load that failed part way as well: the
-        # bytes it did pull are in the cache either way.
+        # readable without a network call.
         _note_lora_base_fetched_with_a_request_token(request.model_path, request.hf_token)
         # Catch-all: an error or cancelled load would otherwise leave the row "loading".
         api_monitor.fail_open(_load_event, "Load did not complete")

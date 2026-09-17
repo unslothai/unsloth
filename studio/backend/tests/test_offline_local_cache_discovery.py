@@ -450,13 +450,13 @@ def test_every_route_that_can_fetch_with_a_one_off_token_records_it():
         "proc = spawn()"
     )
 
-    # The text load records inside the impl, after the access check and before the fetch, so
-    # a refused load marks nothing and preview and auto-switch are covered as well.
+    # The text load records inside the impl, in the finally and only for a repo this load
+    # brought onto the host, so a refused or failed load marks nothing and preview and
+    # auto-switch are covered as well.
     text_load = inspect.getsource(inference_routes._load_model_impl)
     assert "_note_load_fetched_with_a_request_token(request.model_path" in text_load
-    assert text_load.index("require_model_access") < text_load.index(
-        "_note_load_fetched_with_a_request_token"
-    )
+    assert text_load.rindex("finally:") < text_load.index("_note_load_fetched_with_a_request_token")
+    assert "_cached_before_this_load is False and _repo_is_in_the_hub_cache" in text_load
     assert "_note_load_fetched_with_a_request_token" not in inspect.getsource(
         inference_routes.load_model_gated
     ), "the route records again, before the load is admitted"
@@ -1257,6 +1257,8 @@ def test_a_lora_loads_base_is_recorded_too(monkeypatch):
         "_note_load_fetched_with_a_request_token",
         lambda ref, token: recorded.append((ref, token)),
     )
+    # The base's own bytes are on this host, which is what the record claims.
+    monkeypatch.setattr(inference_routes, "_repo_is_in_the_hub_cache", lambda ref: True)
     inference_routes._note_lora_base_fetched_with_a_request_token("acme/adapter", "hf_someoneelses")
     assert recorded == [("acme/private-base", "hf_someoneelses")]
 
@@ -1272,8 +1274,16 @@ def test_a_base_that_cannot_be_resolved_records_nothing(monkeypatch):
         "_note_load_fetched_with_a_request_token",
         lambda ref, token: recorded.append(ref),
     )
+    monkeypatch.setattr(inference_routes, "_repo_is_in_the_hub_cache", lambda ref: True)
     monkeypatch.setattr(transformers_version, "_adapter_base_from_hf_cache", lambda repo: None)
     inference_routes._note_lora_base_fetched_with_a_request_token("acme/adapter", "hf_x")
+    # A base this host never pulled is not evidence of a fetch either.
+    monkeypatch.setattr(
+        transformers_version, "_adapter_base_from_hf_cache", lambda repo: "acme/never-pulled"
+    )
+    monkeypatch.setattr(inference_routes, "_repo_is_in_the_hub_cache", lambda ref: False)
+    inference_routes._note_lora_base_fetched_with_a_request_token("acme/adapter", "hf_x")
+    monkeypatch.setattr(inference_routes, "_repo_is_in_the_hub_cache", lambda ref: True)
 
     def _raises(_repo):
         raise OSError(13, "denied")
@@ -1294,3 +1304,48 @@ def test_the_load_reads_the_base_after_the_fetch_not_before_it():
     impl = inspect.getsource(inference_routes._load_model_impl)
     assert "_note_lora_base_fetched_with_a_request_token(request.model_path" in impl
     assert impl.rindex("finally:") < impl.index("_note_lora_base_fetched_with_a_request_token")
+
+
+def test_only_a_repo_this_load_actually_pulled_is_recorded(monkeypatch):
+    """A typo, a repo that does not exist, an unsupported model or a cancellation fetches
+    nothing, and naming a repo that is already cached fetches nothing either. Recording those
+    withholds a public cached copy from every tokenless offline caller on the say-so of the
+    caller who named it."""
+    from routes import inference as inference_routes
+
+    recorded: list = []
+    monkeypatch.setattr(
+        inference_routes,
+        "_note_load_fetched_with_a_request_token",
+        lambda ref, token: recorded.append(ref),
+    )
+
+    # The shape the impl runs, exercised directly: the reading before, the proof after.
+    def _record(before, after):
+        recorded.clear()
+        if before is False and after:
+            inference_routes._note_load_fetched_with_a_request_token("acme/private", "hf_x")
+        return list(recorded)
+
+    assert _record(False, True) == ["acme/private"], "a repo this load pulled was not recorded"
+    assert _record(True, True) == [], "a repo that was already cached was recorded as fetched"
+    assert _record(False, False) == [], "a load that fetched nothing recorded a fetch"
+    assert _record(None, True) == [], "an unanswerable reading recorded a fetch"
+
+
+def test_the_presence_probe_answers_none_for_anything_that_is_not_a_repo(monkeypatch):
+    from routes import inference as inference_routes
+
+    for local in ("/srv/models/model.gguf", "./model.gguf", "~/model.gguf", "C:/models", ""):
+        assert inference_routes._repo_is_in_the_hub_cache(local) is None, local
+
+    from hub.utils import hf_tokens as _hf_tokens
+
+    monkeypatch.setattr(_hf_tokens, "_repo_present_on_disk", lambda repo, kind: True)
+    assert inference_routes._repo_is_in_the_hub_cache("acme/model") is True
+
+    def _raises(_repo, _kind):
+        raise OSError(13, "denied")
+
+    monkeypatch.setattr(_hf_tokens, "_repo_present_on_disk", _raises)
+    assert inference_routes._repo_is_in_the_hub_cache("acme/model") is None

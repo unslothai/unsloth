@@ -97,6 +97,19 @@ def _parse_lr(v: Any) -> float:
     return lr
 
 
+def _resolve_inventory_handles(values):
+    """Every entry of a list field that may carry an opaque handle.
+
+    A run trained from local data is advertised to an API-key caller with each dataset path
+    referenced, and Resume replays that payload, so the entries come back as handles and have
+    to resolve the same way the scalar ones do. Anything that is not a handle is returned
+    unchanged, which is every ordinary request.
+    """
+    if not isinstance(values, (list, tuple)):
+        return values
+    return [_resolve_inventory_handle(item) if isinstance(item, str) else item for item in values]
+
+
 def _resolve_inventory_handle(value: str) -> str:
     """`models.inference.resolve_inventory_handle`, imported lazily.
 
@@ -187,6 +200,12 @@ class TrainingStartRequest(BaseModel):
     )
     local_eval_datasets: List[str] = Field(
         default_factory = list, description = "List of local eval dataset paths"
+    )
+    # The history detail references each of these for an API-key caller, and Resume replays
+    # that payload, so the handles come back here. Resolved entry by entry, exactly as
+    # `model_name` and `resume_from_checkpoint` are.
+    _resolve_the_dataset_handles = field_validator("local_datasets", "local_eval_datasets")(
+        _resolve_inventory_handles
     )
     format_type: str = Field(..., description = "Dataset format type")
     subset: Optional[str] = None

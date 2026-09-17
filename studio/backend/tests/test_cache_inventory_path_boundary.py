@@ -504,7 +504,6 @@ _ROUTES_WITHOUT_HOST_PATHS = {
     "get_gguf_variants": "filenames and quant labels, no directory",
     "download_model": "job id and status",
     "cancel_download_model": "job id and status",
-    "get_download_status": "job status",
     "get_active_downloads": "repo ids and byte counts",
     "delete_impact": "repo ids, byte counts and blockers",
     "delete_cached_model": "status, repo id and variant",
@@ -1710,7 +1709,11 @@ def test_the_persisted_training_request_keys_are_the_ones_redacted():
     from models.training import TrainingStartRequest
 
     declared = set(TrainingStartRequest.model_fields)
-    covered = host_paths.HOST_PATH_SCALAR_FIELDS | host_paths.HOST_PATH_LIST_FIELDS
+    covered = (
+        host_paths.HOST_PATH_SCALAR_FIELDS
+        | host_paths.HOST_PATH_LIST_FIELDS
+        | host_paths.HOST_PATH_HANDLE_LIST_FIELDS
+    )
     for field in ("local_datasets", "local_eval_datasets", "model_local_path"):
         assert field in declared, field
         assert field in covered, field
@@ -2043,3 +2046,78 @@ def test_a_runs_persisted_dataset_name_is_redacted_like_the_list_it_came_from():
     )
     # And the browser session pays nothing.
     assert redact_host_paths(row, via_api_key = False) is row
+
+
+def test_a_failed_downloads_error_does_not_carry_the_cache_path(monkeypatch):
+    """`DownloadJobStatus.error` is the worker's own stderr, kept after `scrub_secrets` only,
+    so a filesystem exception out of huggingface_hub quotes the absolute cache path. Polling a
+    failed download was a way to read the host layout from a route with no path FIELD at all."""
+    from hub.schemas.downloads import DownloadJobStatus
+    from hub.services.models import downloads as downloads_service
+
+    async def _status(_repo_id, _variant = ""):
+        return DownloadJobStatus(
+            repo_id = "acme/model",
+            state = "error",
+            error = (
+                "OSError: [Errno 28] No space left on device: "
+                f"'{HOST_ROOT}/hub/models--acme--model/blobs/deadbeef.incomplete'"
+            ),
+        )
+
+    monkeypatch.setattr(downloads_service, "get_download_status_response", _status)
+    answered = _hub(True).get("/api/hub/download-status", params = {"repo_id": "acme/model"})
+    assert answered.status_code == 200, answered.text
+    body = answered.json()
+    assert HOST_ROOT not in answered.text, body
+    assert "No space left on device" in body["error"], body
+
+    # The browser session still sees the message it can act on.
+    owner = _hub(False).get("/api/hub/download-status", params = {"repo_id": "acme/model"})
+    assert HOST_ROOT in owner.text
+
+
+def test_an_api_key_caller_can_still_resume_a_run_trained_from_local_data():
+    """The history detail is the replay payload, so emptying these left a resumable checkpoint
+    with no dataset beside it: `/training/start` either fails validation or picks a different
+    source. Each entry is referenced instead, and resolves on the way back in."""
+    from hub.utils.host_paths import redact_host_paths
+    from models.training import TrainingStartRequest
+
+    detail = {
+        "id": "run-9",
+        "output_dir": f"{HOST_ROOT}/outputs/run-9",
+        "local_datasets": [f"{HOST_ROOT}/datasets/train.jsonl"],
+        "local_eval_datasets": [f"{HOST_ROOT}/datasets/eval.jsonl", "acme/hub-eval"],
+    }
+    redacted = redact_host_paths(detail, via_api_key = True)
+    assert HOST_ROOT not in str(redacted), redacted
+    assert all(entry.startswith("ref:") for entry in redacted["local_datasets"])
+    # A hub id in the list is not a path and is left alone.
+    assert redacted["local_eval_datasets"][1] == "acme/hub-eval"
+
+    replayed = TrainingStartRequest(
+        model_name = "unsloth/Llama-3.2-1B",
+        training_type = "LoRA/QLoRA",
+        format_type = "alpaca",
+        local_datasets = redacted["local_datasets"],
+        local_eval_datasets = redacted["local_eval_datasets"],
+        resume_from_checkpoint = redacted["output_dir"],
+    )
+    assert replayed.local_datasets == [f"{HOST_ROOT}/datasets/train.jsonl"]
+    assert replayed.local_eval_datasets == [f"{HOST_ROOT}/datasets/eval.jsonl", "acme/hub-eval"]
+    assert replayed.resume_from_checkpoint == f"{HOST_ROOT}/outputs/run-9"
+
+
+def test_a_dataset_handle_that_was_never_issued_resolves_to_nothing():
+    """The reference reverses to nothing: only what this process listed comes back."""
+    from models.training import TrainingStartRequest
+
+    forged = "ref:" + "0" * 32
+    replayed = TrainingStartRequest(
+        model_name = "unsloth/Llama-3.2-1B",
+        training_type = "LoRA/QLoRA",
+        format_type = "alpaca",
+        local_datasets = [forged],
+    )
+    assert replayed.local_datasets == [forged], "a forged handle resolved to a host path"

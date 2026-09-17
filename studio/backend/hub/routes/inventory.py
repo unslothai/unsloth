@@ -201,8 +201,15 @@ async def get_download_status(
     repo_id: str = Query(..., description = "HuggingFace repo ID"),
     gguf_variant: str = Query("", description = "Quantization variant (empty for safetensors)"),
     current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    return await downloads.get_download_status_response(repo_id, gguf_variant)
+    # `error` is the worker's own stderr, kept after `scrub_secrets` only, so a filesystem
+    # exception out of huggingface_hub carries the absolute cache path. Polling a failed
+    # download was therefore a way to read the host layout without ever seeing a path field.
+    return redact_host_paths(
+        await downloads.get_download_status_response(repo_id, gguf_variant),
+        via_api_key = via_api_key,
+    )
 
 
 @router.get("/active-downloads", response_model = ActiveDownloadsResponse)
