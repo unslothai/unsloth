@@ -323,7 +323,6 @@ import {
   ChevronRightIcon,
   Columns2Icon,
   SlidersHorizontalIcon,
-  FastForwardIcon,
   GitBranchIcon,
   GlobeIcon,
   HeadphonesIcon,
@@ -7279,8 +7278,8 @@ const ContinueMessageBarForLastMessage: FC = () => {
           className="h-7 shrink-0 gap-1.5 text-xs"
           onClick={handleContinue}
         >
-          <FastForwardIcon strokeWidth={1.75} className="size-3.5" />
-          Continue
+          <QueueResumeIcon className="size-3.5" />
+          Resume
         </Button>
       )}
     </div>
