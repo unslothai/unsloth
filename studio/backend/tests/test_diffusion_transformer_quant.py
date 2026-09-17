@@ -1688,7 +1688,6 @@ def test_the_denoiser_view_presents_an_arbitrary_attribute_as_the_transformer():
 
 
 def test_a_pipeline_that_cannot_be_walked_is_not_called_quantised():
-
     class _Unwalkable:
         def parameters(self, recurse = True):
             raise RuntimeError("no")
