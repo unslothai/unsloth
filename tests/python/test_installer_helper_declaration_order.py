@@ -117,7 +117,8 @@ def _calls_within(start: int, end: int) -> set[str]:
     return {
         name
         for name in FUNCTIONS
-        if name not in inner and re.search(rf"(?<![A-Za-z0-9\-]){re.escape(name)}(?![A-Za-z0-9\-])", span)
+        if name not in inner
+        and re.search(rf"(?<![A-Za-z0-9\-]){re.escape(name)}(?![A-Za-z0-9\-])", span)
     }
 
 
@@ -179,6 +180,6 @@ def test_the_rule_is_not_vacuous():
     for start, end in _top_level_spans():
         for called in _calls_within(start, end):
             reached |= _reaches(called)
-    assert set(CHECKED) <= reached, (
-        f"not reachable from any top-level statement: {sorted(set(CHECKED) - reached)}"
-    )
+    assert (
+        set(CHECKED) <= reached
+    ), f"not reachable from any top-level statement: {sorted(set(CHECKED) - reached)}"

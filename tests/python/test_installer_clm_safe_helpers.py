@@ -269,12 +269,13 @@ def test_the_raw_process_rule_is_not_vacuous():
         foreach ($p in @(Get-Process -ErrorAction SilentlyContinue |
             Select-Object -Property Id)) { $null = $p.Id }
     }"""
+
     def offends(sample: str) -> bool:
         code = _joined_pipelines("\n".join(_code_lines(_extent(sample, "Fake-Scan"))))
         return any(
-            "Select-Object" not in m.group(1)
-            for m in re.finditer(r"Get-Process\b([^\r\n]*)", code)
+            "Select-Object" not in m.group(1) for m in re.finditer(r"Get-Process\b([^\r\n]*)", code)
         )
+
     assert offends(bad)
     assert not offends(good)
     # And a pipeline broken across lines is still one pipeline, which is how the real one is
