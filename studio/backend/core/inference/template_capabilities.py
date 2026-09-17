@@ -156,9 +156,13 @@ def _scan(body, aliases, guarded):
         elif isinstance(node, nodes.Assign):
             # `{% set _ = catalog.append(tools) %}`: the same mutation without `do`.
             aliases |= _receiver_gaining_catalog(node.node, aliases)
-            if _reads_catalog(node.node, aliases):
+            if _reads_catalog(node.node, aliases) or guarded:
                 # LiquidAI's LFM2 fills `ns.system_prompt` inside the guard and
                 # renders it outside, so a namespace field has to carry the catalog.
+                # Anything stored under a tools guard counts too, even a constant:
+                # `{% if tools %}{% set intro = 'You may call functions.' %}{% endif %}`
+                # only runs when tools exist, so rendering `intro` later advertises
+                # them - which the marker scan caught and a catalog-only rule misses.
                 aliases |= _bound_names(node.target)
             else:
                 # Plain names only: writing one field says nothing about the rest of

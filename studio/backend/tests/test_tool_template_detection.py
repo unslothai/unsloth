@@ -169,6 +169,13 @@ def test_guard_spellings(template, detected):
         # catalog it just threw away.
         ("{% set tools, flag = none, false %}{{ tools|tojson }}", False),
         ("{% set a, b = tools, none %}{% set a, b = none, none %}{{ a|tojson }}", False),
+        # A branch that only runs when tools exist stores tool-conditional content,
+        # whatever the value is. The marker scan matched this shape, so a
+        # catalog-only rule would lose tool support the old code had.
+        ("{% set intro = '' %}{% if tools %}{% set intro = 'You may call functions.' %}"
+         "{% endif %}{{ intro }}", True),
+        ("{% set intro = '' %}{% if enable_thinking %}{% set intro = 'Think.' %}"
+         "{% endif %}{{ intro }}", False),
         # `{% with %}` binds for its block and for nothing else.
         ("{% with catalog = tools %}{{ catalog|tojson }}{% endwith %}", True),
         ("{% with tools = none %}{{ tools|tojson }}{% endwith %}", False),
