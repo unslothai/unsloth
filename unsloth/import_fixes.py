@@ -1673,9 +1673,17 @@ def fix_broken_hf_xet_wheel():
 
     # Confirm the suspicion by importing. If it imports after all, we misread the metadata and Xet
     # stays on. Only reached for an already-suspect install, so a healthy one never pays for it.
+    #
+    # Importing the package is not enough on its own: an hf_xet/ directory with no __init__.py and
+    # no extension in it is a NAMESPACE package, which imports fine and defines nothing, while
+    # huggingface_hub does `from hf_xet import PyXetDownloadInfo, download_files` and fails. So the
+    # module has to carry real code, which a namespace package never does (its __file__ is None).
     try:
-        importlib.import_module("hf_xet")
-        return
+        module = importlib.import_module("hf_xet")
+        if getattr(module, "__file__", None) is not None:
+            return
+        sys.modules.pop("hf_xet", None)
+        failure = "ImportError: hf_xet resolves to an empty namespace package, which defines none of the symbols huggingface_hub imports"
     except Exception as error:
         failure = f"{type(error).__name__}: {error}"
 
