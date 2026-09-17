@@ -610,7 +610,20 @@ def test_the_high_churn_unsloth_zoo_entries_are_keyed_on_file_and_check():
         # chr:92 is the `{chr(92)}` in compiler.py's training banner, which is what makes
         # RE_OBFUSCATION fire on that file at all. The token carries the ordinal, so a
         # decoder chain in the same file spells different ones and is not covered by it.
-        approved_family = {"exec(", "eval(", "__import__(", "compile(", "chr:92"}
+        # mx.eval / model.eval are named ONE BY ONE rather than allowed as "any
+        # receiver.eval(": the receiver is what makes them safe, and a pattern would
+        # readmit `builtins.eval(` -- the built-in wearing an attribute -- into the family
+        # this list exists to bound. mx.eval evaluates a lazy MLX array and model.eval
+        # switches to inference; neither executes source.
+        approved_family = {
+            "exec(",
+            "eval(",
+            "__import__(",
+            "compile(",
+            "chr:92",
+            "mx.eval(",
+            "model.eval(",
+        }
         assert set(tokens) <= approved_family, (
             f"{e['file']} was approved for generating and importing code. "
             f"{sorted(set(tokens) - approved_family)} is "
@@ -651,6 +664,59 @@ def test_the_coarse_key_reopens_on_a_construct_the_approval_never_covered():
     assert active == [
         payload
     ], "a marshal/zlib/base64 payload inside an approved file rode the approval"
+
+
+def test_an_mlx_method_call_does_not_approve_the_builtin_eval():
+    """`mx.eval(arr)` evaluates a lazy MLX array and `model.eval()` switches to inference.
+    Neither runs code, and both used to normalise to the same `eval(` token as the built-in.
+
+    unsloth_zoo/mlx/loader.py's approval is built ENTIRELY out of those two, so a later
+    `eval(payload)` added to that file produced `{__import__(, eval(}` -- a set the approval
+    already covered -- and the HIGH finding was suppressed. Measured against the shipped
+    baseline before the receiver was kept, so this is a regression test for a real hole,
+    not a hypothetical one.
+
+    Driven through the SHIPPED baseline so it fails if that entry is ever widened back.
+    """
+    import pathlib as _pathlib
+
+    path = _pathlib.Path(__file__).resolve().parents[2] / "scripts" / "scan_packages_baseline.json"
+    baseline = sp._load_baseline(str(path))
+    check = "Advanced obfuscation (marshal/compile/zlib) + exec/eval"
+    approved = baseline[sp._coarse_key("unsloth-zoo", "unsloth_zoo/mlx/loader.py", check)]
+    assert "eval(" not in approved, (
+        "the loader is approved for MLX/torch method calls only; an unqualified eval( in "
+        f"its vocabulary is the hole this test exists for: {sorted(approved)}"
+    )
+    assert {"mx.eval(", "model.eval("} <= approved, sorted(approved)
+
+    benign = """
+import mlx.core as mx
+def load(model):
+    mx.eval(model.parameters())
+    model.eval()
+    _mod = __import__(module_name, fromlist=["_"])
+    return _mod
+"""
+    payload = (
+        benign
+        + """
+def _hook(blob):
+    return eval(blob)
+"""
+    )
+    for label, content, expect_active in (("benign", benign, False), ("payload", payload, True)):
+        findings = [
+            f
+            for f in sp.check_py_file(content, "unsloth_zoo/mlx/loader.py", "unsloth_zoo")
+            if f.check == check
+        ]
+        assert findings, f"{label}: the check did not fire, so this proves nothing"
+        active, suppressed = sp._partition_baseline(findings, baseline)
+        assert bool(active) is expect_active, (
+            f"{label}: active={[f.evidence for f in active]} "
+            f"suppressed={[f.evidence for f in suppressed]}"
+        )
 
 
 def test_a_coarse_entry_cannot_widen_itself_past_its_own_evidence():

@@ -2604,6 +2604,14 @@ _RE_ESCALATION_TOKEN = re.compile(
     r"|\bcompile\s*\("
     r"|\b__import__\s*\("
     r"|\bgetattr\s*\(\s*__builtins__"
+    # Keep the RECEIVER on an attribute call, and before the bare form so it wins the
+    # position. `mx.eval(arr)` is MLX evaluating a lazy array and `model.eval()` is torch
+    # switching to inference; neither runs code, and both used to normalise to the same
+    # `eval(` as the built-in. unsloth_zoo/mlx/loader.py's approval is built ENTIRELY out of
+    # those two, so a later `eval(payload)` in that file produced a vocabulary the approval
+    # already covered and was suppressed -- measured, not theorised. Split apart, the file is
+    # approved for `mx.eval(` / `model.eval(` and an unqualified `eval(` reopens it.
+    r"|\b\w+\s*\.\s*(?:exec|eval)\s*\("
     r"|\b(?:exec|eval)\s*\("
     r"|\b(?:urlopen|urlretrieve)\s*\("
     r"|\bsubprocess\s*\.\s*\w+"

@@ -1467,7 +1467,8 @@
       "evidence_hash": "cf9c8ed7bf9c33f83b6280d7d2d60b072262a04ce3e886a1f38c4003fbef01f4",
       "evidence_tokens": [
         "__import__(",
-        "eval("
+        "model.eval(",
+        "mx.eval("
       ]
     },
     {
