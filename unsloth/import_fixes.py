@@ -1124,7 +1124,14 @@ _MULTI_ARCH_PLATFORM_TAG_PREFIXES = ("macosx_", "manylinux", "musllinux", "linux
 # Machine ids out of the three compiled-object headers, for the installs whose WHEEL metadata
 # cannot be read (vendored, relocated, repackaged). Only the families above are worth listing:
 # anything absent here reads as "cannot tell", which is never a mismatch.
-_ELF_MACHINE_CPU = {0x03: "x86", 0x15: "ppc64le", 0x16: "s390x", 0x28: "armv7l", 0x3E: "x86_64", 0xB7: "arm64"}
+_ELF_MACHINE_CPU = {
+    0x03: "x86",
+    0x15: "ppc64le",
+    0x16: "s390x",
+    0x28: "armv7l",
+    0x3E: "x86_64",
+    0xB7: "arm64",
+}
 _PE_MACHINE_CPU = {0x014C: "x86", 0x01C4: "armv7l", 0x8664: "x86_64", 0xAA64: "arm64"}
 _MACHO_CPU_TYPE_CPU = {7: "x86", 12: "armv7l", 0x01000007: "x86_64", 0x0100000C: "arm64"}
 
@@ -1331,7 +1338,9 @@ def fix_broken_hf_xet_wheel():
         # handles that case correctly on its own.
         if not _hf_xet_distribution_is_installed():
             return
-        suspicion = "its distribution metadata is installed but the package itself is not importable"
+        suspicion = (
+            "its distribution metadata is installed but the package itself is not importable"
+        )
     elif _hf_xet_architecture_mismatch(spec) is True:
         suspicion = "it is built for a different CPU architecture than this interpreter"
     elif _hf_xet_extension_is_missing(spec):

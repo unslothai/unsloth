@@ -28,7 +28,11 @@ import pytest
 from unsloth import import_fixes as IF
 
 
-def _fake_host(monkeypatch, sysconfig_platform, machine = "unknown-cpu"):
+def _fake_host(
+    monkeypatch,
+    sysconfig_platform,
+    machine = "unknown-cpu",
+):
     """Pretend to be an interpreter built for `sysconfig_platform`.
 
     Both sources are faked, and `machine` defaults to something unmappable, so any test that
@@ -132,7 +136,10 @@ def test_host_cpu_family_ignores_the_physical_cpu_on_windows(monkeypatch):
 
 
 def _install_fake_environment(
-    monkeypatch, hf_xet_present, import_error, distribution_installed = None
+    monkeypatch,
+    hf_xet_present,
+    import_error,
+    distribution_installed = None,
 ):
     """Pretend huggingface_hub is installed, and hf_xet is installed or not, without touching disk.
 
@@ -144,9 +151,7 @@ def _install_fake_environment(
     real_find_spec = importlib.util.find_spec
     if distribution_installed is None:
         distribution_installed = hf_xet_present
-    monkeypatch.setattr(
-        IF, "_hf_xet_distribution_is_installed", lambda: distribution_installed
-    )
+    monkeypatch.setattr(IF, "_hf_xet_distribution_is_installed", lambda: distribution_installed)
 
     def fake_find_spec(name, package = None):
         if name == "huggingface_hub":
@@ -240,9 +245,9 @@ def test_fires_when_only_the_distribution_metadata_survives(monkeypatch, caplog)
     monkeypatch.delenv("HF_HUB_DISABLE_XET", raising = False)
     _install_fake_environment(
         monkeypatch,
-        hf_xet_present = False,          # find_spec -> None
+        hf_xet_present = False,  # find_spec -> None
         import_error = ModuleNotFoundError("No module named 'hf_xet'"),
-        distribution_installed = True,   # ...but importlib.metadata still sees it
+        distribution_installed = True,  # ...but importlib.metadata still sees it
     )
 
     with caplog.at_level("WARNING", logger = IF.logger.name):
@@ -374,9 +379,7 @@ def test_is_the_very_first_import_fix_called():
     names = [line.strip().rstrip(",") for line in imported.splitlines() if line.strip()]
     assert "fix_broken_hf_xet_wheel" in names
 
-    calls = sorted(
-        (source.index(f"\n{name}("), name) for name in names if f"\n{name}(" in source
-    )
+    calls = sorted((source.index(f"\n{name}("), name) for name in names if f"\n{name}(" in source)
     assert calls[0][1] == "fix_broken_hf_xet_wheel", (
         f"fix_broken_hf_xet_wheel() must be the first import fix invoked in _gpu_init.py, but "
         f"{calls[0][1]}() runs before it. huggingface_hub freezes HF_HUB_DISABLE_XET into "
