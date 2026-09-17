@@ -1078,13 +1078,11 @@ def test_the_declared_requirement_is_read_by_distribution_name(monkeypatch):
         "requires",
         lambda name: [
             "filelock",
-            "pytorch_triton_xpu==3.7.1; platform_system == \"Linux\"",
+            'pytorch_triton_xpu==3.7.1; platform_system == "Linux"',
             "sympy>=1.13.3",
         ],
     )
-    assert import_fixes._torch_required_triton_distributions() == frozenset(
-        {"pytorch-triton-xpu"}
-    )
+    assert import_fixes._torch_required_triton_distributions() == frozenset({"pytorch-triton-xpu"})
 
 
 def test_two_claimants_a_cuda_torch_cannot_separate_name_the_generic_one(monkeypatch, tmp_path):
