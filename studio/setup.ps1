@@ -1256,9 +1256,15 @@ main()
             else { $env:UNSLOTH_CUDA_HINT = $savedCuda }
         }
         if (-not $proc) { return "" }
-        Wait-Process -Id $proc.Id -Timeout $seconds -ErrorAction SilentlyContinue
-        if (-not $proc.HasExited) {
-            try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch { }
+        # -InputObject and an error variable, never $proc.Id or $proc.HasExited. Constrained
+        # Language Mode permits property reads only on its allowed type list and
+        # System.Diagnostics.Process is not on it, so reading either one throws on exactly the
+        # hosts this rung exists for. Handing the object to a cmdlet keeps the access inside
+        # compiled code, where the language mode does not reach.
+        $waitError = $null
+        Wait-Process -InputObject $proc -Timeout $seconds -ErrorAction SilentlyContinue -ErrorVariable waitError
+        if ($waitError) {
+            try { Stop-Process -InputObject $proc -Force -ErrorAction SilentlyContinue } catch { }
             return ""
         }
         $raw = "$(Get-Content -LiteralPath $outFile -Raw -ErrorAction SilentlyContinue)"

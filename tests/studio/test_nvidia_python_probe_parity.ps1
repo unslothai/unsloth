@@ -150,6 +150,21 @@ Check "the launcher avoids ProcessStartInfo, which CLM refuses" ($pyCode -notmat
 Check "the launcher avoids [Process]::Start, which CLM refuses" ($pyCode -notmatch '\[(System\.)?Diagnostics\.Process\]::Start|\[Process\]::Start')
 Check "the launcher avoids [System.IO.Path], which CLM refuses" ($pyCode -notmatch '\[System\.IO\.Path\]')
 Check "the launcher avoids [math], which CLM refuses" ($pyCode -notmatch '\[math\]::')
+# Constrained Language Mode permits property reads only on its documented allowed-type list, and
+# System.Diagnostics.Process and System.IO.FileInfo are on neither. Reading .Id, .HasExited,
+# .ExitCode or a path off a FileInfo throws on precisely the hosts where the emitted rung already
+# declined, which is the whole population this rung serves. Handing the object to a cmdlet keeps
+# the access inside compiled code. This is not hypothetical: the sibling early-python launcher
+# shipped with exactly these reads and failed three checks on windows-latest under 5.1.
+foreach ($blocked in @("\.Id\b", "\.HasExited\b", "\.ExitCode\b", "\.FullName\b", "New-TemporaryFile")) {
+    Check "the launcher avoids $($blocked -replace '\\[.b]', '') , which CLM refuses on a Process or FileInfo" (
+        $pyCode -notmatch $blocked)
+}
+Check "the launcher waits by object, not by pid" ($pyCode -match 'Wait-Process -InputObject \$proc')
+Check "the launcher kills by object too" ($pyCode -match 'Stop-Process -InputObject \$proc')
+Check "the timeout is detected through an error variable" ($pyCode -match '-ErrorVariable waitError')
+# "[ref] - Casting an object to type [ref] ... is not permitted."
+Check "the launcher casts nothing to [ref]" ($pyCode -notmatch '\[ref\]\s*\$')
 # The stripping must not be so eager that it deletes the launcher itself.
 Check "the comment-free source still contains the launcher" ($pyCode -match 'Start-Process -FilePath \$exe')
 Check "the interpreter comes from a per-file hook, not from the shared region" `
