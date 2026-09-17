@@ -82,7 +82,11 @@ def _not_hip(monkeypatch) -> None:
     )
 
 
-def _cuda_host(monkeypatch, *props, numeric_ids = None) -> None:
+def _cuda_host(
+    monkeypatch,
+    *props,
+    numeric_ids = None,
+) -> None:
     ids = [0] if numeric_ids is None else numeric_ids
     _not_hip(monkeypatch)
     monkeypatch.setattr(hw, "IS_ROCM", False)
@@ -102,17 +106,24 @@ def _cuda_host(monkeypatch, *props, numeric_ids = None) -> None:
     monkeypatch.setattr(hw, "_torch_get_physical_gpu_count", lambda: len(props))
 
 
-def _host_memory(monkeypatch, total_gb = HOST_TOTAL_GB, available_gb = HOST_AVAILABLE_GB) -> None:
+def _host_memory(
+    monkeypatch,
+    total_gb = HOST_TOTAL_GB,
+    available_gb = HOST_AVAILABLE_GB,
+) -> None:
     monkeypatch.setattr(
         psutil,
         "virtual_memory",
-        lambda: types.SimpleNamespace(
-            total = int(total_gb * GIB), available = int(available_gb * GIB)
-        ),
+        lambda: types.SimpleNamespace(total = int(total_gb * GIB), available = int(available_gb * GIB)),
     )
 
 
-def _util_row(index = 0, ordinal = 0, total_gb = N1X_CARVE_OUT_GB, used_gb = N1X_USED_GB) -> dict:
+def _util_row(
+    index = 0,
+    ordinal = 0,
+    total_gb = N1X_CARVE_OUT_GB,
+    used_gb = N1X_USED_GB,
+) -> dict:
     """A row exactly as nvidia.py::_build_gpu_metrics emits it."""
     return {
         "index": index,
@@ -133,7 +144,11 @@ def _util_row(index = 0, ordinal = 0, total_gb = N1X_CARVE_OUT_GB, used_gb = N1X
     }
 
 
-def _smi_utilization(monkeypatch, rows, numeric_ids = None) -> None:
+def _smi_utilization(
+    monkeypatch,
+    rows,
+    numeric_ids = None,
+) -> None:
     ids = [0] if numeric_ids is None else numeric_ids
     monkeypatch.setattr(
         hw,
@@ -537,18 +552,16 @@ def _llama_common(monkeypatch, avail_mib):
     monkeypatch.setattr(
         LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: avail_mib)
     )
-    monkeypatch.setattr(
-        LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: None)
-    )
+    monkeypatch.setattr(LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: None))
     monkeypatch.setattr(LlamaCppBackend, "_visible_devices_mask", staticmethod(lambda name: None))
-    monkeypatch.setattr(LlamaCppBackend, "_resolve_visible_physical_ids", staticmethod(lambda: None))
+    monkeypatch.setattr(
+        LlamaCppBackend, "_resolve_visible_physical_ids", staticmethod(lambda: None)
+    )
 
 
 def _integrated_llama_host(monkeypatch, avail_mib = int(HOST_AVAILABLE_GB * 1024)):
     _llama_common(monkeypatch, avail_mib)
-    monkeypatch.setattr(
-        LlamaCppBackend, "_integrated_cuda_gpu_ids", staticmethod(lambda: {0})
-    )
+    monkeypatch.setattr(LlamaCppBackend, "_integrated_cuda_gpu_ids", staticmethod(lambda: {0}))
     monkeypatch.setattr(
         LlamaCppBackend,
         "_integrated_cuda_pool_total_mib",

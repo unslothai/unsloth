@@ -10540,9 +10540,7 @@ class LlamaCppBackend:
             return {}
 
     @staticmethod
-    def _widen_integrated_cuda_rows(
-        gpus: list[tuple[int, int, int]],
-    ) -> list[tuple[int, int, int]]:
+    def _widen_integrated_cuda_rows(gpus: list[tuple[int, int, int]]) -> list[tuple[int, int, int]]:
         """Re-price nvidia-smi rows for an integrated CUDA SoC against its shared pool.
 
         The torch arm of ``_get_gpu_memory`` already sizes an integrated part this way,
