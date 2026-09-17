@@ -275,9 +275,7 @@ def client(monkeypatch, tmp_path):
     app = FastAPI()
     app.include_router(studio_router, prefix = "/api/inference")
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
-    # A browser session, like every other harness here: the status routes redact host paths
-    # for an API-key caller, and the dependency that answers that question has no credential
-    # to read in a bare TestClient.
+    # A browser session: the status routes redact host paths for an API-key caller.
     app.dependency_overrides[authenticated_via_api_key] = lambda: False
     return TestClient(app)
 
@@ -846,9 +844,7 @@ def test_a_cpu_mispredicted_engine_is_still_preflighted(monkeypatch):
     app = FastAPI()
     app.include_router(studio_router, prefix = "/api/inference")
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
-    # A browser session, like every other harness here: the status routes redact host paths
-    # for an API-key caller, and the dependency that answers that question has no credential
-    # to read in a bare TestClient.
+    # A browser session: the status routes redact host paths for an API-key caller.
     app.dependency_overrides[authenticated_via_api_key] = lambda: False
     local = TestClient(app)
 
@@ -922,9 +918,7 @@ def test_gated_pick_on_an_engine_switch_keeps_the_previous_model(monkeypatch, de
     app = FastAPI()
     app.include_router(studio_router, prefix = "/api/inference")
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
-    # A browser session, like every other harness here: the status routes redact host paths
-    # for an API-key caller, and the dependency that answers that question has no credential
-    # to read in a bare TestClient.
+    # A browser session: the status routes redact host paths for an API-key caller.
     app.dependency_overrides[authenticated_via_api_key] = lambda: False
     local = TestClient(app)
 
@@ -1195,9 +1189,7 @@ def test_load_routes_to_sd_cpp_on_cpu(monkeypatch, tmp_path):
     app = FastAPI()
     app.include_router(studio_router, prefix = "/api/inference")
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
-    # A browser session, like every other harness here: the status routes redact host paths
-    # for an API-key caller, and the dependency that answers that question has no credential
-    # to read in a bare TestClient.
+    # A browser session: the status routes redact host paths for an API-key caller.
     app.dependency_overrides[authenticated_via_api_key] = lambda: False
     client = TestClient(app)
 

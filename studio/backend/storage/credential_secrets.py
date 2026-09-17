@@ -203,12 +203,10 @@ def has_secret(credential_kind: str, scope_id: str) -> bool:
 def secret_row_exists(credential_kind: str, scope_id: str) -> bool:
     """Whether a credential is STORED, whether or not it can be read back.
 
-    `get_secret` answers None for an absent row and for one it cannot decrypt -- a lost or
-    rotated encryption key, corrupted ciphertext, a format from a newer build -- and
-    `has_secret` is defined in terms of it, so neither can tell "this installation has no
-    credential" from "this installation has one it cannot open". Callers that AUTHORIZE on
-    the absence of a credential need that distinction, because the second answer is not a
-    statement that there is nothing to protect.
+    `get_secret` answers None for an absent row and for one it cannot decrypt, and `has_secret`
+    is defined in terms of it, so neither can tell "this installation has no credential" from
+    "this installation has one it cannot open". Callers that AUTHORIZE on the absence of a
+    credential need that distinction.
     """
     conn = get_connection()
     try:

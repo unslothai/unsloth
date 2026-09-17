@@ -564,13 +564,9 @@ def load_model_config(
         # Passed as the sentinel rather than via without_hf_auth(), which mutates HF_TOKEN
         # process-wide and would strip a concurrent download's credential.
         # token=False denies auth, not the cache: AutoConfig resolves a cached config.json
-        # without ever consulting the credential, so the read has to be gated here. Refusing
-        # EVERY cache-only read for this caller class is what that used to do, and it cost an
-        # API client its own PUBLIC downloaded models on any host that cannot reach the Hub
-        # -- which is the one host where the cache is the only answer there is. The shared
-        # rule refuses only what disk could answer AND this caller may not read, so a public
-        # repo on disk stays available and a private one does not. Nothing cached leaves the
-        # OSError to AutoConfig, which is the same failure by a more accurate name.
+        # without ever consulting the credential, so the read has to be gated here. The
+        # shared rule refuses only what disk could answer AND this caller may not read, so a
+        # public repo on disk stays available and a private one does not.
         if not is_local_path(model_name) and cached_read_refused(
             token,
             repo_id = model_name,
@@ -2558,7 +2554,7 @@ def detect_gguf_model(path: str, model_root: Optional[str] = None) -> Optional[s
             is_dir = False  # stat() unavailable in the lock window
         if not is_dir:
             return str(_local_gguf_load_path(p))
-        # Directory named "*.gguf": fall through to the dir scan below.
+    # Directory named "*.gguf": fall through to the dir scan below.
 
     # Case 2: directory containing .gguf files (skip mmproj / MTP drafter)
     if p.is_dir():

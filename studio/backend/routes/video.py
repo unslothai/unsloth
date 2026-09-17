@@ -236,13 +236,10 @@ async def load_video_model(
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    # The status this answers with describes whatever is resident, which on a second load is
-    # still the PREVIOUS model: a path an earlier request resolved, so the request context has
-    # no handle to put back for it and the response would hand the caller the absolute path it
-    # was never shown. Restore first, so the reference the caller just sent comes back as the
-    # reference it sent, then redact, which turns anything left over into the same opaque
-    # reference `GET /video/status` gives. Done in the route rather than in the gated body
-    # below, because the internal callers of that body are not serving an API-key request.
+    # The status this answers with describes whatever is resident, which on a second load is the
+    # PREVIOUS model, whose path an earlier request resolved and which this context has no handle
+    # for. Restore first, then redact. Done in the route rather than the gated body below,
+    # because that body's internal callers are not serving an API-key request.
     from hub.utils.host_paths import redact_host_paths, restore_inventory_handles
     return redact_host_paths(
         restore_inventory_handles(
@@ -273,10 +270,8 @@ async def load_video_model_gated(
         request = request.model_copy(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
         )
-    # Same as the image load, and decided at entry for the same reason: `begin_load` runs the
-    # slow load on a daemon thread and returns at once, so this request has no after-the-fetch
-    # moment to compare against. A repo already in the cache is not one this load will fetch,
-    # and recording it withholds an ordinary public model from every tokenless offline caller.
+    # Same as the image load, and decided at entry for the same reason: `begin_load` returns
+    # before the worker has moved a byte, so this request has nothing to compare against.
     from routes.inference import (
         _note_load_fetched_with_a_request_token,
         _repo_is_in_the_hub_cache,
@@ -718,9 +713,7 @@ async def video_status(
     if account_access.resident_hidden("video", status_dict.get("repo_id")):
         return account_access.hidden_resident_response()
     # A load started from an inventory reference records the resolved path, and this route
-    # answers long after the request that resolved it has ended, so the reference cannot be
-    # put back from the request context. The redactor hands back the same opaque reference
-    # instead, which is what the caller sent and what it can send again.
+    # answers long after that request ended, so there is no handle in context to put back.
     return redact_host_paths(VideoStatusResponse(**status_dict), via_api_key = via_api_key)
 
 
@@ -749,7 +742,7 @@ async def unload_video_model(
         lambda: not backend.loading_repo_ids() and not backend.status()["loaded"],
     )
     # An unload answers with the state it left behind, which still names the model it just
-    # dropped, so it is the same disclosure the load route has and gets the same treatment.
+    # dropped, so it is the same disclosure the load route has.
     from hub.utils.host_paths import redact_host_paths, restore_inventory_handles
 
     return redact_host_paths(

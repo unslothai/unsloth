@@ -1086,13 +1086,9 @@ def _process_shutdown_latch_is_clear():
 def _no_leaked_inventory_handles():
     """Start every test with an empty per-request handle table.
 
-    ``host_paths.note_resolved_handle`` records the path a ``ref:`` handle stood for in a
-    ContextVar a REQUEST owns, and ``restore_inventory_handles`` swaps those paths back out
-    of whatever the route answers. Nothing resets it between tests, so one test that resolves
-    a handle leaves the table populated for every test after it in the same worker -- and a
-    route that answers a response MODEL then answers a restored dict instead, which is how
-    `test_get_model_config_resolves_cached_case_before_model_checks` came to fail on
-    `result.model_name` in a full run while passing alone.
+    The ContextVar a REQUEST owns is never reset between tests, so one test that resolves a
+    handle leaves the table populated for every test after it in the same worker, and a route
+    that answers a response MODEL then answers a restored dict instead.
     """
     try:
         from hub.utils import host_paths

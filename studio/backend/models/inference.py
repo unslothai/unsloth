@@ -37,15 +37,9 @@ from utils.reasoning_budget import validate_reasoning_budget_message
 def resolve_inventory_handle(value: str) -> str:
     """Turn a `ref:...` identity from an inventory listing back into the path it stands for.
 
-    A caller that may not see host paths is shown filesystem-backed local models under an
-    opaque reference, and hands that reference straight back when it asks to load, validate
-    or train one. Every request model that consumes an inventory identity therefore resolves
-    it, or the row is advertised as actionable and is not.
-
-    A reference this process did not issue, or one that has aged out of the table, is left
-    exactly as it arrived and fails the way an unknown model would. Nothing about
-    authorization is decided here: the resolved path goes through every check a path a caller
-    named directly goes through.
+    Every request model that consumes an inventory identity resolves it, or the row is advertised
+    as actionable and is not. A reference this process did not issue is left as it arrived.
+    Nothing about authorization is decided here.
     """
     if not isinstance(value, str) or not value.startswith("ref:"):
         return value
@@ -56,11 +50,8 @@ def resolve_inventory_handle(value: str) -> str:
     resolved = resolve_host_path_reference(value)
     if not resolved:
         return value
-    # Remembered for the length of this request so the ANSWER carries the handle rather than
-    # the path it stood for. `ValidateModelResponse.identifier`, `LoadResponse.model` and the
-    # label beside it are all built from what was asked for, so without this a caller who may
-    # not see host paths enumerates a redacted row and reads its path back out of the load it
-    # just performed with the reference.
+    # Remembered for the length of this request so the ANSWER carries the handle rather than the
+    # path it stood for: the responses are built from what was asked for.
     note_resolved_handle(value, resolved)
     return resolved
 
@@ -445,11 +436,8 @@ class UnloadRequest(BaseModel):
             "unload takes away the llama-server they are decoding on."
         ),
     )
-    # The same resolution the load side does, and for the reverse of the same reason: a
-    # caller that loaded a redacted row by reference has only that reference to unload it
-    # with, and the resident model is keyed on the path. Without this the unload matched
-    # nothing, both backend checks no-opped, and the model stayed resident holding its GPU
-    # while the caller was told it had gone.
+    # The reverse of the load side: the resident model is keyed on the path, so without this
+    # the unload matches nothing and reports success while the model keeps its GPU.
     _resolve_the_handle = field_validator("model_path")(resolve_inventory_handle)
 
 
@@ -714,11 +702,8 @@ class TransformersUpgradeCheckRequest(BaseModel):
         "installing would strand that checkpoint's exact 4-bit resume.",
     )
 
-    # A preflight is where the reference arrives first: the picker was shown an opaque handle
-    # for a filesystem-backed row and this check runs before the load it precedes. Unresolved,
-    # the lookup fails and this route SWALLOWS the failure and answers "no upgrade needed", so
-    # training starts on a newly supported architecture and dies at model load in the worker.
-    # The cache pin fields are resolved too, for the same reason the scan route resolves them.
+    # A preflight is where the reference arrives first, and this route SWALLOWS a failed lookup
+    # and answers "no upgrade needed", so training starts and dies at model load in the worker.
     _resolve_the_handle = field_validator(
         "model_name", "model_local_path", "model_snapshot_path", "model_snapshot_repo_id"
     )(resolve_inventory_handle)
@@ -923,9 +908,8 @@ class EstimateMemoryRequest(BaseModel):
     _no_booleans = field_validator(
         "n_batch", "n_ubatch", "ctx_checkpoints", "n_ctx", mode = "before"
     )(LoadRequest._no_booleans.__func__)
-    # Every field here mirrors the load request it previews, and the load resolves the handle,
-    # so this has to as well: an unresolved reference is read as a Hub id and the panel is
-    # told the estimate is unavailable for a row it was invited to pick.
+    # Every field here mirrors the load request it previews, so an unresolved reference is read
+    # as a Hub id and the panel is told the estimate is unavailable for a row it was offered.
     _resolve_the_handle = field_validator("model_path")(resolve_inventory_handle)
 
 

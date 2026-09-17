@@ -202,17 +202,15 @@ from hub.utils.host_paths import (
 from utils.utils import anonymous_and_offline
 
 
-# Says both halves, because with the local cache no longer gated on reaching the Hub, this is
-# what reaching here means: the credential could not be established AND the repo is not on this
-# disk. The earlier wording sent operators looking for a credential problem that was not there.
+# Says both halves: the credential could not be established AND the repo is not on this disk.
+# The earlier wording sent operators looking for a credential problem that was not there.
 _UNAUTHORIZED_OFFLINE = (
     "This request cannot be authorized without network access, and this repository is not in "
     "the local cache."
 )
 
-# Reached when the operator's disk could answer this read and this caller may not. Says which of
-# the two it is: "unauthorized" alone reads as a broken credential, and the repository refusing
-# this caller is not the same thing as the caller having sent the wrong token.
+# Says which of the two it is: "unauthorized" alone reads as a broken credential, and the
+# repository refusing this caller is not the same as the caller having sent the wrong token.
 _UNAUTHORIZED_CACHED_MODEL = (
     "This model is cached on this host, but this repository does not authorize this caller to "
     "read it."
@@ -2234,12 +2232,9 @@ async def get_model_config(
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     """Get configuration for a specific model (wraps load_model_defaults)."""
-    # An inventory listing shows a filesystem-backed row to an API-key caller under an opaque
-    # `ref:` handle, and that caller hands the handle straight back here. Without this the
-    # handle is read as a Hugging Face id and the row cannot be inspected at all, which makes
-    # a row that was advertised as actionable not actionable. Resolved through the same helper
-    # the load, validate and train schemas use, so nothing about authorization moves: the
-    # resolved path goes through every check below that a path named directly goes through.
+    # An API-key caller is shown a filesystem-backed row under an opaque `ref:` handle and
+    # hands it back here, where without this it reads as a Hugging Face id. Same helper the
+    # load and train schemas use, so the resolved path takes every check below.
     from models.inference import resolve_inventory_handle
 
     model_name = resolve_inventory_handle(model_name)
@@ -2375,20 +2370,11 @@ async def get_model_config(
 
     try:
         # Off the loop: the guard blocks on DNS + HEAD + TCP, stalling every other request.
-        # The answer carries the handle back rather than the path it stood for: the details
-        # are built out of what was asked for, so a caller who may not see host paths would
-        # otherwise read the path out of the very lookup it performed with the reference.
-        # Restored first, then redacted. The restoration puts back the handle the CALLER
-        # sent; the redaction covers a second path the caller never named -- a LoRA whose
-        # `base_model_name_or_path` is another absolute local path, which this lookup reports
-        # verbatim, so the ordinary config lookup handed back host layout the caller only had
-        # one reference for.
-        # `echo` is the identifier the CALLER named. The details are built out of it, so
-        # referencing it would compute a reference for any string the caller chooses, and
-        # since the reference is one stable HMAC for the life of the process that is an
-        # online oracle confirming every other reference they hold: guess a home directory
-        # and a cache root, ask about it here, and a matching reference confirms the guess.
-        # Handed back as written instead, which tells the caller only what they typed.
+        # Restored first, then redacted: the restoration puts back the handle the CALLER
+        # sent, the redaction covers a second path they never named (a LoRA's
+        # `base_model_name_or_path`, reported verbatim). `echo` is the caller's own
+        # identifier: referencing it would make this route an online oracle confirming every
+        # other reference they hold.
         from hub.utils.host_paths import redact_host_paths, restore_inventory_handles
         return redact_host_paths(
             restore_inventory_handles(await asyncio.to_thread(_resolve, model_name)),
@@ -2441,10 +2427,8 @@ async def scan_model_remote_code(
     POST (not GET) so the ``hf_token`` for gated repos travels in the body and
     never lands in a URL, browser history, or access log.
     """
-    # Same handle resolution as the config route, and for a sharper reason: a local model that
-    # needs remote-code review cannot be approved at all if the scan cannot see it, so the
-    # pinning fingerprint the load checks is never produced. Before the access checks, so they
-    # run on the path rather than on the reference.
+    # Same resolution as the config route: a local model needing remote-code review cannot be
+    # approved if the scan cannot see it. Before the access checks, so they run on the path.
     from models.inference import resolve_inventory_handle
 
     model_name = resolve_inventory_handle(model_name)
@@ -2709,8 +2693,8 @@ async def scan_model_remote_code(
             payload["approvable"] = False
             payload["requires_trust_remote_code"] = True
             payload["error_kind"] = "malware_blocked"
-        # The findings quote paths inside the model directory, so the answer goes back through
-        # the request's handle table for the same reason the config route does.
+        # The findings quote paths inside the model directory, so the answer goes back
+        # through the request's handle table.
         from hub.utils.host_paths import restore_inventory_handles
 
         return restore_inventory_handles(payload)
@@ -5210,11 +5194,8 @@ async def delete_cached_model(
     account_access.require_installation_owner()
     from hub.services.models import deletion
 
-    # Same resolution as the hub route this is the compatibility alias for. The listing
-    # answers an API-key caller with `cache_ref` where a browser session gets `cache_path`,
-    # so the reference is the only identifier such a caller has for one specific copy;
-    # without this, naming the row it was shown returned "Invalid cache_path" and omitting
-    # it acted on the active root, which on a multi-root host is a different copy.
+    # Same resolution as the hub route this aliases: the reference is the only identifier an
+    # API-key caller has for one copy, and omitting it acts on the active root instead.
     return await deletion.delete_cached_model_response(
         repo_id, variant, hf_token, resolve_host_path_reference(cache_path) or cache_path
     )

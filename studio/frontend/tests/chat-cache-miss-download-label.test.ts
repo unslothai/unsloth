@@ -1,11 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A cached load that is really a download must say so. #9094: the toast read "Loading cached
-// model into memory." for fourteen minutes while bytes arrived from Hugging Face.
-//
-// Asserted on the decision, not on the source text: a regex over the hook would pass with the
-// watch wired to nothing.
+// #9094: the toast read "Loading cached model into memory." while bytes arrived from Hugging
+// Face. Asserted on the decision, not the source text, which would pass with nothing wired up.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -34,8 +31,8 @@ test("bytes that grow between two readings are a download", () => {
 });
 
 test("an incomplete cache that is not moving is a load, not a download", () => {
-  // The state #9094's reporter was in before the transfer began, and the state of every repo
-  // whose last download was cancelled. Relabelling here would cry download on every load.
+// The state of every repo whose last download was cancelled; relabelling here would cry
+// download on every load.
   let watch = EMPTY_CACHE_MISS_WATCH;
   for (let poll = 0; poll < 5; poll += 1) {
     const verdict = watchCacheMissDownload(watch, partial(250));
@@ -55,7 +52,6 @@ test("a complete cache resets the watch instead of arming it", () => {
   const reset = watchCacheMissDownload(armed.watch, complete);
   assert.equal(reset.started, false);
   assert.equal(reset.watch.bytes, null);
-  // And the next partial reading is a first reading again, so it cannot claim movement.
   assert.equal(watchCacheMissDownload(reset.watch, partial(900)).started, false);
 });
 
@@ -104,15 +100,13 @@ test("a total the backend could not establish reports bytes rather than a wrong 
 });
 
 test("the load hook actually consults the watch, and on the cached branch", () => {
-  // The decision above is only worth anything if the poll loop asks it. A cached load polls the
-  // mmap phase and nothing else on main, which is how #9094 stayed invisible for fourteen
-  // minutes, so assert the call sits on that branch and that finding a download reopens the
-  // download poller rather than only changing the words.
+// Only worth anything if the poll loop asks it: a cached load polls the mmap phase and nothing
+// else on main, which is how #9094 stayed invisible.
   const hook = readText("../src/features/chat/hooks/use-chat-model-runtime.ts");
   assert.match(hook, /watchCacheMissDownload\(/);
   assert.match(hook, /watchForCacheMiss && !cacheMissDownload && \(await cacheMissDownloadStarted\(\)\)/);
   assert.match(hook, /downloadComplete = false;\n\s+activeLoadingDescription = cacheMissDescription;/);
-  // Local paths, Ollama manifests and cached LoRAs never reach the Hub, so they are not polled.
+// Local paths, Ollama manifests and cached LoRAs never reach the Hub, so they are not polled.
   assert.match(
     hook,
     /const watchForCacheMiss =\n\s+isDownloaded && !isLocal && nativePathToken == null && !isOllamaModelId\(modelId\);/,
@@ -120,11 +114,8 @@ test("the load hook actually consults the watch, and on the cached branch", () =
 });
 
 test("an unknown total still updates the toast the user is looking at", () => {
-  // The state write in this branch is read only by the inline status shown AFTER the toast
-  // is dismissed. With the toast still up, and nothing else in the branch touching it, the
-  // words the user sees stay on whatever the previous phase set, which on exactly this path
-  // is "Loading cached model into memory" for the length of the download. That is #9094,
-  // reappearing on the branch where the backend cannot size the repo.
+  // This branch's state write is read only by the inline status shown AFTER the toast is
+  // dismissed, so with the toast up the words stay on whatever the previous phase set.
   const hook = readText("../src/features/chat/hooks/use-chat-model-runtime.ts");
   const start = hook.indexOf("prog.expected_bytes === 0 &&");
   assert.ok(start > 0, "the unknown-total branch moved");
@@ -132,24 +123,19 @@ test("an unknown total still updates the toast the user is looking at", () => {
   assert.ok(end > start, "the branch after the unknown-total one moved");
   const branch = hook.slice(start, end);
 
-  // Dismissed: the inline status still gets the state write, and only then, so the chat page
-  // is not re-rendered on every poll while the toast is the thing being read.
+    // Dismissed: only the inline status is written, so the page is not re-rendered per poll.
   assert.match(branch, /if \(loadToastDismissedRef\.current\) \{[\s\S]*setLoadProgress\(/);
-  // Visible: the toast is written directly, the same way both neighbouring branches do it.
+    // Visible: the toast is written directly, as both neighbouring branches do.
   assert.match(branch, /\} else \{[\s\S]*toast\(null, \{[\s\S]*renderLoadDescription\(/);
   assert.match(branch, /"Downloading model…"/);
-  // No percentage: there is no total to compute one from, and inventing one is the failure
-  // the byte-count label exists to avoid.
+    // No percentage: there is no total to compute one from.
   assert.match(branch, /renderLoadDescription\(\s*"Downloading model…",[\s\S]*?null,/);
 });
 
 test("detecting the download counts as having shown progress", () => {
-  // The completion branch in pollDownload is gated on hasShownProgress, and the only other
-  // places that set it are the two branches that report bytes. A tail that finishes between
-  // the watcher request and the pollDownload immediately behind it therefore arrives at a
-  // poller that ignores `progress >= 1`: downloadComplete stays false, every later tick
-  // re-enters pollDownload rather than pollLoad, and the UI is stuck in the downloading
-  // phase with the mmap and startup progress suppressed for the rest of the load.
+  // pollDownload's completion branch is gated on hasShownProgress, so a tail finishing between
+  // the watcher request and the pollDownload behind it reaches a poller that ignores
+  // `progress >= 1`, and the UI sticks in the downloading phase for the rest of the load.
   const hook = readText("../src/features/chat/hooks/use-chat-model-runtime.ts");
   const start = hook.indexOf("const cacheMissDownloadStarted");
   assert.ok(start > 0, "the watcher moved");
@@ -158,19 +144,15 @@ test("detecting the download counts as having shown progress", () => {
   const branch = hook.slice(start, end);
   assert.match(branch, /if \(!verdict\.started\) return false;/);
   assert.match(branch, /cacheMissDownload = true;[\s\S]*hasShownProgress = true;/);
-  // And it is set only once the watch has actually reported movement, so a first reading
-  // cannot arm it.
+  // And it is set only once the watch has actually reported movement, so a first reading cannot
+  // arm it.
   const armed = branch.indexOf("hasShownProgress = true;");
   assert.ok(armed > branch.indexOf("if (!verdict.started) return false;"));
 });
 
 test("the cache-miss watcher re-reads the load after its own await", () => {
-  // The request is in flight for as long as the backend takes to answer, and a load that
-  // completes or is cancelled in that window runs `finally`: the interval is cleared and
-  // resetLoadingUi() puts the UI back. A callback that then writes the watch and
-  // setLoadProgress left the dismissed-toast inline status reading "Downloading the rest of
-  // the model" for a load that had already ended. pollDownload and pollLoad both re-read
-  // after their awaits for this reason; this one did not.
+  // A load that completes or is cancelled mid-request runs `finally`, which calls
+  // resetLoadingUi(); a callback writing afterwards left the inline status still downloading.
   const hook = readText("../src/features/chat/hooks/use-chat-model-runtime.ts");
   const start = hook.indexOf("const cacheMissDownloadStarted");
   assert.ok(start > 0, "the watcher moved");

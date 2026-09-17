@@ -100,10 +100,7 @@ def _parse_lr(v: Any) -> float:
 def _resolve_inventory_handles(values):
     """Every entry of a list field that may carry an opaque handle.
 
-    A run trained from local data is advertised to an API-key caller with each dataset path
-    referenced, and Resume replays that payload, so the entries come back as handles and have
-    to resolve the same way the scalar ones do. Anything that is not a handle is returned
-    unchanged, which is every ordinary request.
+    Resume replays a referenced history payload, so the entries come back as handles.
     """
     if not isinstance(values, (list, tuple)):
         return values
@@ -111,12 +108,8 @@ def _resolve_inventory_handles(values):
 
 
 def _resolve_inventory_handle(value: str) -> str:
-    """`models.inference.resolve_inventory_handle`, imported lazily.
-
-    Imported inside the function rather than at module scope because `models.inference` is a
-    large module and this one is imported by the CLI, where the loader schemas are not
-    needed.
-    """
+    """`models.inference.resolve_inventory_handle`, imported lazily: `models.inference` is large
+    and this module is imported by the CLI, where the loader schemas are not needed."""
     try:
         from models.inference import resolve_inventory_handle
     except Exception:  # noqa: BLE001 -- a resolver that cannot import must not fail a run
@@ -130,9 +123,8 @@ class TrainingStartRequest(BaseModel):
     model_name: str = Field(
         ..., description = "Model identifier (e.g., 'unsloth/llama-3-8b-bnb-4bit')"
     )
-    # A filesystem-backed row from the inventory is advertised to an API-key caller under an
-    # opaque handle; training consumes the same identity the picker was shown, so it resolves
-    # it too. See `models.inference.resolve_inventory_handle`.
+    # Training consumes the same identity the picker was shown. See
+    # `models.inference.resolve_inventory_handle`.
     _resolve_the_handle = field_validator("model_name")(_resolve_inventory_handle)
     project_name: Optional[str] = Field(
         None,
@@ -201,9 +193,8 @@ class TrainingStartRequest(BaseModel):
     local_eval_datasets: List[str] = Field(
         default_factory = list, description = "List of local eval dataset paths"
     )
-    # The history detail references each of these for an API-key caller, and Resume replays
-    # that payload, so the handles come back here. Resolved entry by entry, exactly as
-    # `model_name` and `resume_from_checkpoint` are.
+    # The history detail references each of these for an API-key caller, and Resume replays that
+    # payload, so the handles come back here.
     _resolve_the_dataset_handles = field_validator("local_datasets", "local_eval_datasets")(
         _resolve_inventory_handles
     )
@@ -608,8 +599,7 @@ class TrainingStartRequest(BaseModel):
         None, description = "Saved training output directory to resume from"
     )
     # The history detail hands an API-key caller an opaque handle for the directory it may
-    # resume from, since the path itself is the server's output layout. Resume is that handle
-    # coming back, so it resolves here exactly as `model_name` does above.
+    # resume from, and Resume is that handle coming back.
     _resolve_the_resume_handle = field_validator("resume_from_checkpoint")(
         _resolve_inventory_handle
     )
@@ -861,17 +851,13 @@ class DiffusionTrainingStartRequest(BaseModel):
     model_config = ConfigDict(protected_namespaces = ())
 
     base_model: str = Field(..., description = "HF repo id or local path to a trainable base")
-    # A filesystem-backed base is advertised to an API-key caller under an opaque handle, and
-    # this field carries exactly the identity the picker was shown. Unresolved, family
-    # detection and `_assert_trusted_base_model` read `ref:...` as a Hub id, so a local
-    # diffusion base could not be trained through the API at all. The text half resolves
-    # `model_name` for the same reason.
+    # Unresolved, family detection and `_assert_trusted_base_model` read `ref:...` as a Hub id,
+    # so a local diffusion base could not be trained through the API at all.
     _resolve_the_base_handle = field_validator("base_model")(_resolve_inventory_handle)
     data_dir: str = Field(..., description = "Folder of training images (+ captions)")
     output_dir: str = Field(..., description = "Directory to write the LoRA .safetensors into")
-    # A diffusion Resume replays the stored config, whose `output_dir` answers an API-key
-    # caller as a handle for the same reason `resume_from_checkpoint` does: it is the run's
-    # folder on this host. Resolved here so the replay writes back into the run it continues.
+    # A diffusion Resume replays the stored config, whose `output_dir` is the run's folder on
+    # this host and so answers an API-key caller as a handle.
     _resolve_the_output_handle = field_validator("output_dir")(_resolve_inventory_handle)
     model_family: Optional[str] = Field(
         None,

@@ -2386,17 +2386,10 @@ export function useChatModelRuntime() {
 
         let downloadComplete = isDownloaded || isCachedLora;
 
-        // A load that begins believing the weights are cached can still turn into a download: the
-        // backend re-fetches a blob it judged unsafe to resume, or a revision it could not confirm.
-        // #9094 is what that looks like from outside, a "Loading cached model into memory" toast
-        // sitting still for minutes while bytes arrive from Hugging Face. So watch for it, and when
-        // it happens say so instead: the phase becomes downloading, with real progress, and the
-        // words name the reason.
-        //
-        // MOVEMENT is the only proof accepted. A cached repo whose byte count is below its expected
-        // total is the ordinary state of a partially fetched revision, and a load reading one is not
-        // a transfer; only bytes that grow between two polls are. Local paths, Ollama manifests and
-        // cached LoRAs never reach the Hub, so they are not watched at all.
+  // A load that begins believing the weights are cached can still turn into a download (#9094):
+  // the backend re-fetches a blob it judged unsafe to resume. MOVEMENT is the only proof
+  // accepted, since a byte count below the expected total is the ordinary state of a partially
+  // fetched revision. Local paths, Ollama manifests and cached LoRAs are never watched.
         const watchForCacheMiss =
           isDownloaded && !isLocal && nativePathToken == null && !isOllamaModelId(modelId);
         const cacheMissDescription = [
@@ -2479,11 +2472,9 @@ export function useChatModelRuntime() {
                   phase: "downloading",
                 });
               } else {
-                // The toast is UP, and without this it keeps saying "Loading cached model
-                // into memory" for the whole download, which is the one case where that
-                // sentence is wrong: bytes are arriving from the Hub right now. A missing
-                // total is a supported answer, not an error, so the visible toast gets the
-                // same treatment as the known-total branch above with no percentage.
+                // The toast is UP, and without this it keeps saying "Loading cached
+                // model into memory" for the whole download. A missing total is a
+                // supported answer, not an error.
                 toast(null, {
                   id: toastId,
                   ...modelLoadToastOptions(
@@ -2580,24 +2571,17 @@ export function useChatModelRuntime() {
         const cacheMissDownloadStarted = async (): Promise<boolean> => {
           try {
             const reading = await getDownloadProgress(modelId, hfToken);
-            // Re-read AFTER the await, as pollDownload does: the load can finish or be
-            // cancelled while this request is in flight, and `finally` then clears the
-            // interval and calls resetLoadingUi(). Writing the watch or the progress from
-            // this outstanding callback afterwards left the dismissed-toast inline status
-            // stuck on "Downloading the rest of the model" for a load that had ended.
+              // Re-read AFTER the await, as pollDownload does: the load can finish or
+              // be cancelled while this request is in flight, and `finally` then calls
+              // resetLoadingUi().
             if (abortCtrl.signal.aborted || !loadingModelRef.current) return false;
             const verdict = watchCacheMissDownload(cacheMissWatch, reading);
             cacheMissWatch = verdict.watch;
             if (!verdict.started) return false;
             cacheMissDownload = true;
-            // Detection IS movement observed: `watchCacheMissDownload` only returns started
-            // after two readings whose byte counts grew. Leaving the flag false meant the
-            // completion branch in pollDownload, which is gated on it, could not fire, and a
-            // tail that finished between this request and the pollDownload right behind it
-            // reported `progress >= 1` to a poller that ignored it. `downloadComplete` then
-            // stayed false forever, every later tick re-entered pollDownload instead of
-            // pollLoad, and the UI sat in the downloading phase with the mmap and startup
-            // progress suppressed until the whole load finished.
+              // Detection IS movement observed, so the flag has to be set: pollDownload's
+              // completion branch is gated on it, and leaving it false left
+              // `downloadComplete` false forever with later progress suppressed.
             hasShownProgress = true;
             downloadComplete = false;
             activeLoadingDescription = cacheMissDescription;

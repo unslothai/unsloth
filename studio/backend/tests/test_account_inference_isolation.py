@@ -65,10 +65,8 @@ def client_for(account):
 
     app.dependency_overrides[get_current_subject] = subject
     app.dependency_overrides[allow_ambient_hf_token] = lambda: False
-    # The routes that redact host paths take the caller class as a dependency of their own,
-    # and this harness stands in for the authentication layer that would answer it. A
-    # browser session is the case these tests are about: the isolation they check is between
-    # ACCOUNTS, not between caller classes.
+    # A browser session: the isolation these tests check is between ACCOUNTS, not between
+    # caller classes.
     app.dependency_overrides[authenticated_via_api_key] = lambda: False
     app.include_router(inference.router, prefix = "/api/inference")
     app.include_router(inference.studio_router, prefix = "/api/inference")

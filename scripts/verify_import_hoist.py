@@ -273,12 +273,9 @@ class _Builder(ast.NodeVisitor):
                     self._record_loads(t, scope)
                 else:
                     # A subscript or attribute target LOADS everything but the outermost
-                    # binding: `overrides[dependency] = fn` reads `overrides` and
-                    # `dependency`, and Python marks exactly those Name nodes Load while the
-                    # Subscript itself is Store. Missing them read a name used only that way
-                    # as never used at all, which is this checker's own false "added but
-                    # unused" -- the FastAPI `app.dependency_overrides[dep] = ...` idiom
-                    # writes it in every route test there is.
+                    # binding: `overrides[dependency] = fn` reads both names, and Python
+                    # marks exactly those Name nodes Load. Missing them read a name used
+                    # only that way as never used at all.
                     if not isinstance(t, ast.Name):
                         self._record_loads(t, scope)
             return
@@ -781,9 +778,8 @@ _SELF_TESTS = {
         "    return x\n",
         None,
     ),
-    # A name used only as a subscript KEY of an assignment target is used. FastAPI route
-    # tests are written this way -- `app.dependency_overrides[dep] = lambda: ...` -- and
-    # reading it as unused blocked a PR for importing exactly what it needed.
+    # A name used only as a subscript KEY of an assignment target is used. FastAPI route tests
+    # are written this way -- `app.dependency_overrides[dep] = lambda: ...`.
     "a_subscript_key_on_the_left_hand_side_is_a_use": (
         "app = {}\n",
         "from .deps import dependency\napp = {}\napp[dependency] = 1\n",
