@@ -44,11 +44,17 @@ def _names(node):
 
 
 def _field(node):
-    """The field a member access reads, for `a.b` and `a['b']` alike."""
+    """The field a member access reads, for `a.b`, `a['b']` and `a.get('b')` alike."""
     if isinstance(node, nodes.Getattr):
         return node.attr
     if isinstance(node, nodes.Getitem) and isinstance(node.arg, nodes.Const):
         return node.arg.value
+    # `.get('tool_calls')` is the same read spelled as a call, and the marker scan
+    # matched the `tool_calls is defined` a template normalising one tends to write.
+    if (isinstance(node, nodes.Call) and isinstance(node.node, nodes.Getattr)
+            and node.node.attr == "get" and node.args
+            and isinstance(node.args[0], nodes.Const)):
+        return node.args[0].value
     return None
 
 
@@ -56,8 +62,8 @@ def _reads_catalog(node, aliases):
     """Whether this expression reads the tool catalog or a message's tool calls."""
     if _names(node) & aliases:
         return True
-    members = list(node.find_all((nodes.Getattr, nodes.Getitem)))
-    if isinstance(node, (nodes.Getattr, nodes.Getitem)):
+    members = list(node.find_all((nodes.Getattr, nodes.Getitem, nodes.Call)))
+    if isinstance(node, (nodes.Getattr, nodes.Getitem, nodes.Call)):
         members.append(node)
     return any(_field(member) == "tool_calls" for member in members)
 

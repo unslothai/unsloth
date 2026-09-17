@@ -187,6 +187,12 @@ def test_guard_spellings(template, detected):
          "{{ ns.lines|join(',') }}", True),
         ("{% set ns = namespace(lines=[]) %}{% if enable_thinking %}"
          "{% do ns.lines.append('Think') %}{% endif %}{{ ns.lines|join(',') }}", False),
+        # `.get('tool_calls')` is the same member read spelled as a call. The marker
+        # scan matched the `tool_calls is defined` such a template tends to carry.
+        ("{% set tool_calls = message.get('tool_calls') %}"
+         "{% if tool_calls is defined %}{{ tool_calls }}{% endif %}", True),
+        ("{% set tc = message.get('tool_calls') %}{% if tc %}{{ tc }}{% endif %}", True),
+        ("{% set x = message.get('content') %}{{ x }}", False),
         # A stored predicate renders what the inline one does, so it answers the same.
         ("{% set handles_tool = message.role == 'tool' %}"
          "{% if handles_tool %}{{ message.content }}{% endif %}", True),
