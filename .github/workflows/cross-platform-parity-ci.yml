@@ -98,6 +98,7 @@ on:
       - 'tests/studio/test_amd_name_arch_r9700.ps1'
       - 'tests/studio/test_nvidia_library_inventory.ps1'
       - 'tests/studio/test_nvidia_smi_discovery.ps1'
+      - 'tests/studio/test_install_lock_excludes_aliases.ps1'
       - 'tests/studio/test_application_control_cli_fallback.ps1'
       # test_application_control_cli_fallback.ps1 pins install.ps1's trampoline against
       # process.rs's, so a change to either spelling has to run here.
@@ -178,6 +179,7 @@ on:
       - 'tests/studio/test_amd_name_arch_r9700.ps1'
       - 'tests/studio/test_nvidia_library_inventory.ps1'
       - 'tests/studio/test_nvidia_smi_discovery.ps1'
+      - 'tests/studio/test_install_lock_excludes_aliases.ps1'
       - 'tests/studio/test_application_control_cli_fallback.ps1'
       # test_application_control_cli_fallback.ps1 pins install.ps1's trampoline against
       # process.rs's, so a change to either spelling has to run here.
@@ -319,6 +321,16 @@ jobs:
         if: runner.os == 'Windows'
         shell: powershell
         run: powershell -NoProfile -File tests\studio\test_nvidia_smi_discovery.ps1
+      # Spawns a real holder process and takes the lock through a junction (Windows) or a
+      # symbolic link (Linux), so it needs both legs: the alias mechanisms differ per OS and
+      # .NET enforces FileShare.None through a different mechanism on each.
+      - name: Install lock alias-exclusion tests
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/studio/test_install_lock_excludes_aliases.ps1
+      - name: Install lock alias-exclusion tests (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: powershell -NoProfile -File tests\studio\test_install_lock_excludes_aliases.ps1
       # AST-extracted helpers plus a real .cmd written to a temp dir, so no venv and no
       # Windows needed. The 1260 classification is exercised against crafted exceptions:
       # a hosted runner has no Application Control policy to be denied by. The enforced
