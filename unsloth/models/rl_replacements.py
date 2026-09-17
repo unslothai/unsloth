@@ -1049,6 +1049,14 @@ def _unsloth_grpo_split_vision_by_sample(batch):
     if rows != sum(num_images):
         # One padded row per sample already (Idefics, SmolVLM): TRL leaves this alone.
         return batch
+    if rows == len(num_images) and any(_count != 1 for _count in num_images):
+        # A padded sample axis and a flat image axis are the same length here, and only the
+        # padded reading keeps each row with the sample it came from: num_images = [2, 0]
+        # over two padded rows would hand both of them to the first sample and the second an
+        # empty tensor. Nothing in the batch tells the two apart, so keep TRL's layout, which
+        # is what every version does today. The all-ones case is excluded because the two
+        # readings agree there. Same hazard the list branch above guards against.
+        return batch
     split["pixel_values"] = list(torch.split(pixel_values, num_images, dim = 0))
     _image_sizes = batch.get("image_sizes", None)
     if (

@@ -601,6 +601,39 @@ def test_a_padded_row_per_sample_is_left_alone():
     assert _unsloth_grpo_split_vision_by_sample(batch) is batch
 
 
+def test_a_padded_row_per_sample_survives_counts_that_sum_to_the_batch_size():
+    """The case above only holds because [2, 2] over two rows does not sum to two. A mixed
+    batch like [2, 0] does, and a padded sample axis then looks exactly like a flat image
+    axis: splitting it hands both rows to the first sample and the second an empty tensor,
+    so the images train against the wrong prompt with no error anywhere."""
+    import torch
+
+    from unsloth.models.rl_replacements import _unsloth_grpo_split_vision_by_sample
+
+    for num_images in ([2, 0], [0, 2], [1, 2, 0], [1, 0, 2, 1]):
+        samples = len(num_images)
+        # Every value in row s is s, so a misattributed row is visible rather than inferred.
+        pixel_values = torch.stack(
+            [torch.full((2, 3, 4, 4), float(sample)) for sample in range(samples)]
+        )
+        batch = {
+            "num_images": num_images,
+            "pixel_values": pixel_values,
+            "prompt_ids": torch.zeros(samples, 5, dtype = torch.long),
+        }
+        split = _unsloth_grpo_split_vision_by_sample(batch)
+        assert split is batch, num_images
+        assert split["pixel_values"] is pixel_values, num_images
+
+    # All ones is not ambiguous: both readings put row s with sample s, so it still splits.
+    pixel_values = torch.stack([torch.full((3, 4, 4), float(s)) for s in range(2)])
+    split = _unsloth_grpo_split_vision_by_sample(
+        {"num_images": [1, 1], "pixel_values": pixel_values}
+    )
+    owners = [tensor.flatten().unique().tolist() for tensor in split["pixel_values"]]
+    assert owners == [[0.0], [1.0]], owners
+
+
 def test_a_batch_trl_already_split_is_not_split_again():
     import torch
 
