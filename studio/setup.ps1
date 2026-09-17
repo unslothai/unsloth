@@ -577,9 +577,13 @@ function Get-PathDenialDetail {
 # files, so neither explains a denied folder.
 #
 # When Defender is not it, name whichever antivirus is registered and running
-# instead: third-party suites ship the same feature under their own names
-# (Bitdefender Safe Files and Ransomware Remediation, for instance), and the
-# user cannot act on advice that does not say which product to open.
+# instead: third-party suites ship the same protected-folders feature under
+# their own product names, and the user cannot act on advice that does not say
+# which product to open. Which suite ships what is recorded in
+# tests/studio/test_installer_av_shapes.py and deliberately not repeated here,
+# because this file is scanned in full before a line of it runs and a comment
+# listing security products raises the score of the very file explaining it.
+# Nothing below hard-codes a product: it reads what SecurityCenter2 registered.
 #
 # Answers "" whenever it cannot tell, so a machine with no Defender module
 # and no SecurityCenter registration reads the same as one that says no.
