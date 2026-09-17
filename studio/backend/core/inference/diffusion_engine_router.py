@@ -194,11 +194,31 @@ def begin_load_on(expected_engine: Any, start: Callable[[], Any]) -> Any:
         return start()
 
 
+def _selected_card(gpu_ids) -> Optional[str]:
+    """The identity of the card this request picked, or ``None`` when it cannot be told.
+
+    A recorded accelerator failure is a fact about a CARD -- one ROCm bundle can carry code
+    for one gfx target on this host and not another -- so the selection has to say which card
+    it is about to use, or a single unsupported card sends every later load to Vulkan. None is
+    the honest answer for a caller that named no GPU and for a host whose enumeration cannot
+    be read, and it leaves the record applying exactly as it did.
+    """
+    if not gpu_ids:
+        return None
+    try:
+        from core.inference.diffusion_device import resolve_selected_cuda_ordinal
+        from core.inference.sd_cpp_backend import selected_card_identity
+        return selected_card_identity(resolve_selected_cuda_ordinal(gpu_ids))
+    except Exception:  # noqa: BLE001 -- a narrowing, never a reason to fail the selection
+        return None
+
+
 def select_and_activate_engine(
     fam: DiffusionFamily,
     *,
     hf_token: Optional[str] = None,
     model_kind: Optional[str] = None,
+    gpu_ids: Optional[Any] = None,
 ) -> Any:
     """Pick + activate the engine for loading ``fam`` on this host; return the engine.
 
@@ -231,7 +251,11 @@ def select_and_activate_engine(
         # the build for its own accelerator (a generic ROCm prebuilt against a card whose hipBLAS kernels it does not
         # carry, #9278 and #8814) would otherwise install and probe that same build on every selection, then decline
         # native because the binary will not start. Resolved once so the server and the CLI cannot disagree.
-        install_accelerator = preferred_accelerator(_install_accelerator_for(backend))
+        # Which card, so one card that cannot run this build does not divert the others.
+        selected_card = _selected_card(gpu_ids)
+        install_accelerator = preferred_accelerator(
+            _install_accelerator_for(backend), selected_card
+        )
         # Probe the resident sd-server FIRST (the backend prefers it): a server-only install must still route to
         # native and should not pay an sd-cli download. Install the accelerator-matched build so a forced-native GPU
         # load gets the GPU server.
@@ -263,7 +287,7 @@ def select_and_activate_engine(
         def _accept(candidate):
             if candidate and upgrade_is_deferred:
                 return candidate
-            return usable_or_recorded_failure(candidate, install_accelerator)
+            return usable_or_recorded_failure(candidate, install_accelerator, selected_card)
 
         server_binary = _accept(
             ensure_sd_server_binary(

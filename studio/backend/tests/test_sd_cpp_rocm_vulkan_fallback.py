@@ -1964,7 +1964,7 @@ def test_a_build_recorded_as_unrunnable_is_not_accepted_back_from_the_ensure(mon
     monkeypatch.setattr(
         sd_cpp_backend,
         "accelerator_runtime_failed",
-        lambda accelerator: accelerator == "rocm",
+        lambda accelerator, card = None: accelerator == "rocm",
         raising = False,
     )
     # Asked for Vulkan, handed back the condemned ROCm build: refused.
@@ -2017,7 +2017,7 @@ def test_the_image_router_checks_its_ensures_against_the_record_too():
     # rewritten by any refactor that gives the two ensures a common path, which is the shape
     # they now have.
     assert body.count("_accept(") == ensures + 1, body[:400]
-    assert "usable_or_recorded_failure(candidate, install_accelerator)" in body
+    assert "usable_or_recorded_failure(candidate, install_accelerator, selected_card)" in body
 
 
 def test_every_ensure_in_the_h3_load_is_checked_against_the_record():
@@ -2487,7 +2487,8 @@ def test_a_server_that_starts_and_dies_is_recorded_from_its_own_output(fake_sett
     source = inspect.getsource(sd_cpp_backend.SdCppDiffusionBackend._run_load)
     start = source.index("sd-server failed to start")
     window = source[start : start + 900]
-    assert "note_accelerator_failure_from_output(server_binary" in window, window
+    assert "note_accelerator_failure_from_output(" in window, window
+    assert "server_binary" in window, window
 
     # And the recorder really does act on the text that error carries.
     monkeypatch.setattr(sd_cpp_backend, "_installed_accelerator_of", lambda _b: "rocm")
@@ -2723,3 +2724,132 @@ def test_the_load_path_takes_the_deferred_upgrade_through_the_record_check(fake_
     assert (
         "_upgrade_server_after_teardown(" not in body
     ), "the load path went around the record check again"
+
+
+def _inventory_of(
+    monkeypatch,
+    devices,
+    hip_by_row = None,
+):
+    """The host's own card enumeration, with the HIP mapping a mask is translated through."""
+    import types as _types
+
+    from utils.hardware import amd as amd_module
+    from utils.hardware import hardware as hardware_module
+
+    monkeypatch.setattr(
+        hardware_module,
+        "get_physical_gpu_inventory",
+        lambda **_k: {"unknown": False, "devices": devices},
+        raising = False,
+    )
+    monkeypatch.setattr(
+        amd_module,
+        "get_hip_id_by_gpu_index",
+        lambda: hip_by_row if hip_by_row is not None else {d["index"]: d["index"] for d in devices},
+        raising = False,
+    )
+    return _types.SimpleNamespace()
+
+
+def test_one_card_that_cannot_run_the_build_does_not_divert_the_other(fake_settings, monkeypatch):
+    """One ROCm bundle, two gfx targets: the build can have code for one card on this host and
+    none for the other. Recorded against the accelerator alone, the first card's crash sent
+    every later load to Vulkan, including one that explicitly selected the supported card."""
+    from core.inference import sd_cpp_backend
+
+    sd_cpp_backend.note_accelerator_runtime_failure("rocm", proven = True, card = "Card A@gfx1201")
+    assert sd_cpp_backend.accelerator_runtime_failed("rocm", "Card A@gfx1201") is True
+    assert sd_cpp_backend.accelerator_runtime_failed("rocm", "Card B@gfx1100") is False
+    # And a selection that cannot say which card it is about to use is not narrowed.
+    assert sd_cpp_backend.accelerator_runtime_failed("rocm") is True
+    assert sd_cpp_backend.preferred_accelerator("rocm", "Card B@gfx1100") == "rocm"
+    assert sd_cpp_backend.preferred_accelerator("rocm", "Card A@gfx1201") == "vulkan"
+
+
+def test_a_second_card_failing_the_same_build_is_added_not_substituted(fake_settings, monkeypatch):
+    from core.inference import sd_cpp_backend
+
+    sd_cpp_backend.note_accelerator_runtime_failure("rocm", proven = True, card = "Card A@gfx1201")
+    sd_cpp_backend.note_accelerator_runtime_failure("rocm", proven = True, card = "Card B@gfx1100")
+    assert sd_cpp_backend.accelerator_runtime_failed("rocm", "Card A@gfx1201") is True
+    assert sd_cpp_backend.accelerator_runtime_failed("rocm", "Card B@gfx1100") is True
+    assert sd_cpp_backend.accelerator_runtime_failed("rocm", "Card C@gfx1030") is False
+
+
+def test_a_record_written_before_the_cards_were_named_still_diverts(fake_settings, monkeypatch):
+    """An older record names no card, and reading that as "not this card" would hand the build
+    back to the very host that recorded it."""
+    from core.inference import sd_cpp_backend
+
+    sd_cpp_backend.note_accelerator_runtime_failure("rocm", proven = True)
+    assert sd_cpp_backend.accelerator_runtime_failed("rocm", "Card B@gfx1100") is True
+
+
+def test_the_condemned_build_is_still_refused_on_the_card_that_failed(fake_settings, monkeypatch):
+    from core.inference import sd_cpp_backend
+
+    monkeypatch.setattr(sd_cpp_backend, "_installed_accelerator_of", lambda _b: "rocm")
+    sd_cpp_backend.note_accelerator_runtime_failure("rocm", proven = True, card = "Card A@gfx1201")
+    assert (
+        sd_cpp_backend.usable_or_recorded_failure("/opt/sd/rocm/sd-cli", "vulkan", "Card A@gfx1201")
+        is None
+    )
+    assert (
+        sd_cpp_backend.usable_or_recorded_failure("/opt/sd/rocm/sd-cli", "vulkan", "Card B@gfx1100")
+        == "/opt/sd/rocm/sd-cli"
+    )
+
+
+def test_the_selected_card_is_read_through_the_visibility_mask(fake_settings, monkeypatch):
+    """A mask filters and reorders what torch enumerates, so ordinal 0 under `HIP_VISIBLE_DEVICES=1`
+    is the second physical card -- and recording the first one's identity would condemn the wrong
+    card."""
+    from core.inference import sd_cpp_backend
+
+    devices = [
+        {"index": 0, "name": "Card A", "gfx_candidates": ["gfx1201"], "vendor": "amd"},
+        {"index": 1, "name": "Card B", "gfx_candidates": ["gfx1100"], "vendor": "amd"},
+    ]
+    _inventory_of(monkeypatch, devices)
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "1")
+    monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+
+    identity = sd_cpp_backend.selected_card_identity(0)
+    assert identity == sd_cpp_backend._card_identity(devices[1]), identity
+
+
+def test_an_unreadable_enumeration_names_no_card(fake_settings, monkeypatch):
+    """Which leaves every record applying, exactly as it did before."""
+    from core.inference import sd_cpp_backend
+    from utils.hardware import hardware as hardware_module
+
+    monkeypatch.setattr(
+        hardware_module,
+        "get_physical_gpu_inventory",
+        lambda **_k: {"unknown": True},
+        raising = False,
+    )
+    assert sd_cpp_backend.selected_card_identity(0) is None
+    assert sd_cpp_backend.selected_card_identity(None) is None
+
+
+def test_the_route_tells_the_selection_which_card_it_picked(fake_settings):
+    """Placement: the narrowing above is worth nothing if the selection never hears the card."""
+    import inspect
+
+    from core.inference import diffusion_engine_router as router
+
+    body = inspect.getsource(router.select_and_activate_engine)
+    assert "_selected_card(gpu_ids)" in body
+    assert (
+        "preferred_accelerator(\n            _install_accelerator_for(backend), selected_card\n        )"
+        in body
+    )
+
+    import routes.inference as inference_routes
+
+    route_source = inspect.getsource(inference_routes)
+    call = route_source.split("                select_and_activate_engine,", 1)[1][:600]
+    assert "gpu_ids = request.gpu_ids" in call, call

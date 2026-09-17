@@ -1084,6 +1084,54 @@ def _card_identity(device: dict) -> Optional[str]:
     return ":".join(parts) or None
 
 
+def selected_card_identity(ordinal: "Optional[int]") -> "Optional[str]":
+    """The fingerprint identity of the card at torch-visible index *ordinal*, or ``None``.
+
+    The same ``_card_identity`` the fingerprint is built from -- name AND gfx target -- so a
+    record written about one card can be compared with the card a later load selected. Read
+    off the host's own enumeration through the mask translation `physical_card_name` uses,
+    because a visibility mask filters and reorders what torch sees and the inventory does not.
+
+    ``None`` means "cannot tell", which every consumer treats as "the record still applies":
+    nothing here may narrow a note on a guess.
+    """
+    if ordinal is None:
+        return None
+    try:
+        from utils.hardware.amd import get_hip_id_by_gpu_index
+        from utils.hardware.hardware import get_physical_gpu_inventory
+
+        physical_index, masked = _physical_index_of(ordinal)
+        if physical_index is None:
+            return None
+        inventory = get_physical_gpu_inventory(block = False)
+        if (inventory or {}).get("unknown"):
+            return None
+        devices = [
+            device
+            for device in ((inventory or {}).get("devices") or [])
+            if isinstance(device, dict) and device.get("index") is not None
+        ]
+        if masked:
+            # A mask names HIP ids; the inventory rows are its own probe order, and amd-smi
+            # publishes the mapping between them. Without it there is no saying which row was
+            # selected, so this declines rather than counting in the wrong space.
+            hip_by_row = get_hip_id_by_gpu_index()
+            if not hip_by_row:
+                return None
+            physical_index = next(
+                (row for row, hip in hip_by_row.items() if hip == physical_index), None
+            )
+            if physical_index is None:
+                return None
+        selected = next((d for d in devices if d.get("index") == physical_index), None)
+        if selected is None:
+            return None
+        return _card_identity(selected)
+    except Exception:  # noqa: BLE001 -- no reader, no narrowing
+        return None
+
+
 def _host_fingerprint() -> dict:
     """``{"runtime": ..., "gpus": ...}``. Never raises.
 
@@ -1160,11 +1208,18 @@ def _normalise_failure_record(key: str, value: object) -> Optional[dict]:
     except (TypeError, ValueError):
         strikes = 0
     fingerprint = value.get("fingerprint")
-    return {
+    record = {
         "strikes": max(strikes, 0),
         "proven": bool(value.get("proven", False)),
         "fingerprint": fingerprint if isinstance(fingerprint, dict) else {},
     }
+    # The cards this was seen on, when the writer could tell. Dropping them here would read a
+    # card-scoped note back as a host-wide one on the next process, which is the whole of what
+    # the scoping is for; an entry that names none keeps applying to every card, as it did.
+    cards = [str(card).strip() for card in (value.get("cards") or []) if str(card).strip()]
+    if cards:
+        record["cards"] = sorted(set(cards))
+    return record
 
 
 def _stored_accelerator_runtime_failures() -> dict[str, dict]:
@@ -1216,6 +1271,7 @@ def note_accelerator_runtime_failure(
     *,
     proven: bool = True,
     fingerprint: Optional[dict] = None,
+    card: Optional[str] = None,
 ) -> None:
     """Record that the ``accelerator`` sd.cpp build could not be run on this host.
 
@@ -1263,11 +1319,23 @@ def note_accelerator_runtime_failure(
         # established that nothing known about this host contradicts the stored fingerprint.
         fingerprint = _fingerprint_with_known_fields_kept(previous.get("fingerprint"), fingerprint)
     strikes = (previous or {}).get("strikes", 0) + 1
+    # WHICH card this was seen on, when the caller could tell. A host can carry cards the same
+    # build serves and cards it does not -- one ROCm bundle, several gfx targets -- and a note
+    # keyed on the accelerator alone moved every later load off ROCm because one card could not
+    # run it. Accumulated rather than overwritten: a second card failing the same build is one
+    # more card it does not serve, not a correction of the first. An unknown card adds nothing
+    # and leaves the record unnarrowed, which is what keeps it applying to every selection this
+    # cannot identify.
+    cards = [c for c in ((previous or {}).get("cards") or []) if c]
+    if card and card not in cards:
+        cards = sorted([*cards, card])
     record = {
         "strikes": strikes,
         "proven": bool(proven) or bool((previous or {}).get("proven", False)),
         "fingerprint": fingerprint,
     }
+    if cards:
+        record["cards"] = cards
     if previous == record:
         return
     records[klass] = record
@@ -1292,9 +1360,23 @@ def _fingerprint_with_known_fields_kept(
     return merged
 
 
-def _record_diverts(record: Optional[dict], fingerprint: Optional[dict] = None) -> bool:
-    """Whether one record is enough to move this host off its own accelerator."""
+def _record_diverts(
+    record: Optional[dict],
+    fingerprint: Optional[dict] = None,
+    card: Optional[str] = None,
+) -> bool:
+    """Whether one record is enough to move this host off its own accelerator.
+
+    *card* is the card this selection will actually run on, when the caller knows it. A record
+    that names the cards it was seen on says nothing about a different one, so it does not
+    divert it. Either side unknown, or a record from before the cards were recorded, keeps the
+    record applying: narrowing a note on an unknown is how a card that really cannot run the
+    build gets handed it again.
+    """
     if not isinstance(record, dict):
+        return False
+    known_cards = [c for c in (record.get("cards") or []) if c]
+    if card and known_cards and card not in known_cards:
         return False
     if not _fingerprint_still_applies(
         record.get("fingerprint"),
@@ -1306,19 +1388,24 @@ def _record_diverts(record: Optional[dict], fingerprint: Optional[dict] = None) 
     return int(record.get("strikes", 0) or 0) >= _AMBIGUOUS_FAILURE_STRIKES
 
 
-def accelerator_runtime_failed(accelerator: Optional[str]) -> bool:
+def accelerator_runtime_failed(accelerator: Optional[str], card: Optional[str] = None) -> bool:
     """Whether the ``accelerator`` build is already known not to run on this host, under a
-    fingerprint that still describes this host."""
+    fingerprint that still describes this host -- and, when the caller names the card this
+    selection will run on, on THAT card rather than on any card of this host."""
     klass = _accelerator_class_of(accelerator)
     if not klass:
         return False
     fingerprint = _accelerator_fingerprint()
-    if _record_diverts(_accelerator_runtime_failures.get(klass), fingerprint):
+    if _record_diverts(_accelerator_runtime_failures.get(klass), fingerprint, card):
         return True
-    return _record_diverts(_stored_accelerator_runtime_failures().get(klass), fingerprint)
+    return _record_diverts(_stored_accelerator_runtime_failures().get(klass), fingerprint, card)
 
 
-def usable_or_recorded_failure(binary, requested):
+def usable_or_recorded_failure(
+    binary,
+    requested,
+    card = None,
+):
     """``binary``, unless it is a build this host has already recorded as unrunnable AND it is
     not the one that was asked for.
 
@@ -1347,7 +1434,7 @@ def usable_or_recorded_failure(binary, requested):
             return binary
         if requested is not None and _accelerator_class_of(requested) == klass:
             return binary
-        if accelerator_runtime_failed(klass):
+        if accelerator_runtime_failed(klass, card):
             logger.warning(
                 "sd_cpp.recorded_failure_returned: the ensure handed back the %s build in "
                 "place of %s, and this host has already recorded it as unrunnable; not "
@@ -1575,7 +1662,7 @@ def output_shows_decisive_accelerator_failure(text: Optional[str]) -> bool:
     return any(marker in lowered for marker in _ACCELERATOR_DECISIVE_FAILURE_MARKERS)
 
 
-def preferred_accelerator(accelerator: Optional[str]) -> str:
+def preferred_accelerator(accelerator: Optional[str], card: Optional[str] = None) -> str:
     """``accelerator``, or its fallback when this host has already been shown it cannot run it.
 
     Applied at the TOP of an ensure ladder, so a host that has seen the ROCm build crash does not
@@ -1583,7 +1670,7 @@ def preferred_accelerator(accelerator: Optional[str]) -> str:
     whenever there is no note, no rung, or the knob is off."""
     klass = _accelerator_class_of(accelerator) or (accelerator or "auto")
     nxt = fallback_accelerator_for(klass)
-    if nxt and accelerator_runtime_failed(klass):
+    if nxt and accelerator_runtime_failed(klass, card):
         return nxt
     return accelerator or "auto"
 
@@ -1740,6 +1827,7 @@ def note_accelerator_failure_from_output(
     output: str,
     *,
     source: str = "diffusion",
+    card: Optional[str] = None,
 ) -> None:
     """Record that the sd.cpp build ``binary`` came from cannot run on this host, when its own
     output says so.
@@ -1781,13 +1869,16 @@ def note_accelerator_failure_from_output(
             else "the message does not establish the build as the cause, counting it",
             fallback_accelerator_for(accelerator),
         )
-        note_accelerator_runtime_failure(accelerator, proven = decisive)
+        note_accelerator_runtime_failure(accelerator, proven = decisive, card = card)
     except Exception as exc:  # noqa: BLE001 -- a preference, never a reason to mask the real error
         logger.debug("could not record the sd.cpp accelerator failure: %s", exc)
 
 
 def note_unlaunchable_accelerator_build(
-    binary: Optional[str], *, source: str = "diffusion"
+    binary: Optional[str],
+    *,
+    source: str = "diffusion",
+    card: Optional[str] = None,
 ) -> None:
     """Record that the build ``binary`` came from could not be LAUNCHED on this host.
 
@@ -1815,7 +1906,7 @@ def note_unlaunchable_accelerator_build(
             accelerator,
             fallback_accelerator_for(accelerator),
         )
-        note_accelerator_runtime_failure(accelerator, proven = False)
+        note_accelerator_runtime_failure(accelerator, proven = False, card = card)
     except Exception as exc:  # noqa: BLE001 -- a preference, never a reason to mask the error
         logger.debug("could not record the sd.cpp launch failure: %s", exc)
 
@@ -1968,6 +2059,10 @@ class _SdState:
     # Physical card behind the server's single resolved CUDA/ROCm backend. None for CPU/Metal/Vulkan, an unresolved
     # pin, automatic multi-GPU, and one-shot mode; those shapes cannot safely consume the startup VRAM floor.
     physical_gpu_id: Optional[int] = None
+    # The card this load selected, as the failure record names cards. A generation that fails mid
+    # render is a fact about THAT card, and the generate path is far from the ordinal that chose
+    # it, so the answer is resolved once here and carried.
+    selected_card: Optional[str] = None
 
 
 def _offload_with_device_pin_impl(
@@ -2509,7 +2604,9 @@ class SdCppDiffusionBackend:
                         # Neither this accelerator's server nor its one-shot CLI will launch.
                         # There is no output to classify -- a build that dies in the loader
                         # prints nothing -- so it is counted rather than acted on.
-                        note_unlaunchable_accelerator_build(server_binary)
+                        note_unlaunchable_accelerator_build(
+                            server_binary, card = selected_card_identity(gpu_ordinal)
+                        )
                         raise RuntimeError("sd-server binary is present but not runnable.")
                     mode, server_binary, engine = "oneshot", None, fallback
             # The accelerator the managed tree held when THIS binary was chosen, taken where the choice is made rather
@@ -2527,7 +2624,10 @@ class SdCppDiffusionBackend:
                 # version() is None when a present binary can't run; fail now, not on the first generation
                 assert engine is not None
                 if engine.version() is None:
-                    note_unlaunchable_accelerator_build(getattr(engine, "binary", None))
+                    note_unlaunchable_accelerator_build(
+                        getattr(engine, "binary", None),
+                        card = selected_card_identity(gpu_ordinal),
+                    )
                     raise RuntimeError("sd-cli binary is present but not runnable.")
 
             # Swap ONCE so the size probe and the download agree: sizes come from paths-info, which -- unlike
@@ -2738,7 +2838,11 @@ class SdCppDiffusionBackend:
                         # "sd-server exited N. Last output: ..." -- and nothing else on this
                         # path was reading it, so a ROCm build that cannot come up at all left
                         # no note and every retry chose it again.
-                        note_accelerator_failure_from_output(server_binary, str(start_exc))
+                        note_accelerator_failure_from_output(
+                            server_binary,
+                            str(start_exc),
+                            card = selected_card_identity(gpu_ordinal),
+                        )
                         server.stop()
                         # Unpublish BEFORE resolving the one-shot engine: _pending_server means "a process is running
                         # out of the tree", and leaving this stopped one there would block the very sd-cli install
@@ -2821,6 +2925,7 @@ class SdCppDiffusionBackend:
                         if mode == "server"
                         else None
                     ),
+                    selected_card = selected_card_identity(gpu_ordinal),
                 )
                 superseded = False
                 orphan: Optional[SdCppServer] = None
@@ -3425,6 +3530,7 @@ class SdCppDiffusionBackend:
                             _failed_binary,
                             str(exc),
                             source = "diffusion",
+                            card = getattr(state, "selected_card", None),
                         )
                     raise
                 # Check and deregister under _lock, the lock cancel_generate takes, so the two cannot interleave: a

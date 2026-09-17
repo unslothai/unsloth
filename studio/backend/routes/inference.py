@@ -37245,7 +37245,16 @@ async def load_diffusion_model_gated(
         require_no_foreign_generations()
         # Pick the engine for this host (diffusers on GPU, native sd.cpp otherwise), installing sd-cli if needed, BEFORE evicting chat.
         engine = await asyncio.to_thread(
-            select_and_activate_engine, fam, hf_token = request.hf_token, model_kind = kind
+            functools.partial(
+                select_and_activate_engine,
+                fam,
+                hf_token = request.hf_token,
+                model_kind = kind,
+                # The card this request picked. A recorded accelerator failure is a fact about
+                # one card, and without this a host whose second card cannot run the ROCm build
+                # sends the card that can to Vulkan as well.
+                gpu_ids = request.gpu_ids,
+            )
         )
         # predict_engine is selection's read-only twin: it never installs, so a host whose sd-cli
         # install then fails lands on the OTHER engine. Re-ask the engine actually activated when
