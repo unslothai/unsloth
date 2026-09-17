@@ -1208,6 +1208,8 @@ class VideoBackend:
                     f"load asked for {h3_task}. Pick the matching checkpoint."
                 )
         else:
+            # assert_pipeline_class_available closes the dynamo window itself, ahead of its own
+            # `import diffusers`, which covers this validation and the training preflight too.
             # Refuse a too-old diffusers here rather than deep in the load.
             from .diffusion_families import assert_pipeline_class_available
             assert_pipeline_class_available(fam.pipeline_class, fam.name)
@@ -3454,6 +3456,15 @@ class VideoBackend:
                 local_files_only = local_files_only,
             )
             return self.status()
+
+        # Below the H3 native return, which is the one video path that never imports diffusers,
+        # and above every consumer that does. Same window as diffusion.py: `import diffusers`
+        # is itself a torch._dynamo importer, and so is the offload step further down.
+        try:
+            from utils.torch_warmup import close_dynamo_import_window
+            close_dynamo_import_window(logger)
+        except Exception as exc:  # noqa: BLE001 - optimisation only
+            logger.debug("dynamo pre-import skipped: %r", exc)
 
         import diffusers
         import torch

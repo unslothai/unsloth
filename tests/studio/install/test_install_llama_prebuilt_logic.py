@@ -4531,6 +4531,9 @@ function Write-LlamaFailureLog { param($Output) }
 function Mark-StudioOwned { param($Path) }
 function Get-InstalledLlamaPrebuiltRelease { param($InstallDir) return $null }
 function Test-PathQuiet { param($p) return $false }
+# Nothing to keep, as in the bash mirror where the guard is absent: exit 2 falls back to a compile.
+function Get-GpuPrebuiltToKeepOverSourceBuild { param($InstallDir) return "" }
+function Get-LlamaUpdateFailReason { param($Output) return "network" }
 function Exit-SetupFailure {
     param($Message, $Code = 1)
     Write-Output "setup_fail: $Code"

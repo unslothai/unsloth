@@ -27,6 +27,7 @@ export interface DiffusionStatus {
   dtype: string | null;
   // Resolved load kind: "gguf" | "single_file" | "pipeline". Gates GGUF-only controls. Null when not loaded.
   model_kind?: string | null;
+  gguf_filename?: string | null;
   // Selected GGUF quant. Newer backends report this separately from the compute dtype.
   gguf_variant?: string | null;
   cpu_offload: boolean;
@@ -287,6 +288,8 @@ export async function loadDiffusionModel(body: DiffusionLoadRequest): Promise<Di
 }
 
 export interface DiffusionDownloadPlan {
+  /** Metadata discovery failed, so the file list may be incomplete. */
+  plan_failed?: boolean;
   entries: {
     repo_id: string;
     files: string[];

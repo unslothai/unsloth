@@ -13,6 +13,11 @@ import os, importlib.util, platform, sys
 
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
+# Opt into ROCm AOTriton kernels PyTorch still gates as experimental; it keeps its own hardware
+# checks and reads this lazily at the SDPA probe, so no torch import here. `setdefault` preserves
+# an explicit override, including "0".
+os.environ.setdefault("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")
+
 # Before transformers, which reads sentencepiece availability during its own import. On Windows
 # the extension is never imported at all: a code integrity policy can refuse it by reputation,
 # and any probe to find out whether this machine will is itself the refusal the user sees. See
