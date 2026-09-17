@@ -200,17 +200,31 @@ triton = [
 ]
 
 huggingfacenotorch = [
-    # unsloth_zoo publishes its own transformers and trl windows and pip intersects the
-    # two, so widening either range below only reaches users once a zoo release carries the
-    # same ceilings. The trl half is now satisfied: 2026.9.5 ships unslothai/unsloth-zoo#1260
-    # and says `trl<=1.13.0`, so the floor names it and the gate in
-    # tests/test_trl_cap_sites.py is live again.
-    # The transformers half is NOT. 2026.9.5 still says `transformers<=5.5.0` because
-    # unslothai/unsloth-zoo#1227 is still open, so pip keeps intersecting the wider window
-    # below down to 5.5.0 and the lift is advertised rather than delivered. A floor no
-    # release satisfies would make the package uninstallable, which is worse, so the floor
-    # stops at 2026.9.5 and the gate in tests/test_transformers_cap_sites.py stays
-    # deferred. Raise this again, and re-enable that one gate, when #1227 ships.
+    # unsloth_zoo.compiler embeds its own copy of the empty-logits sentinel in the code it
+    # generates for the compiled trainers, so fixing _utils.py here never reached the compiled
+    # path while an older zoo stayed resolvable: 2026.9.4 hands FSDP2 mixed precision a
+    # sentinel that answers `__dataclass_fields__` and then dies in `dataclasses.replace`.
+    # 2026.9.5 carries the matching fix (unslothai/unsloth-zoo#1259), so the floor moves to it
+    # and the compiled path is covered for the first time rather than resting on the eager
+    # fix alone. The compiled-path probes in tests/test_empty_logits_compiled_path_probes.py
+    # gate on the INSTALLED zoo rather than on this pin, so they start running by themselves
+    # wherever 2026.9.5 or newer is the zoo actually present.
+    #
+    # This branch widens both the transformers and the trl ranges below, and unsloth_zoo
+    # publishes its own window for each. pip intersects the two, so a widened range only
+    # reaches users once a zoo release carries the same ceiling. The two halves are not in
+    # the same state:
+    #
+    # trl: SATISFIED. 2026.9.5 ships unslothai/unsloth-zoo#1260 and says `trl<=1.13.0`, so
+    #   the floor names it and the gate in tests/test_trl_cap_sites.py is live again.
+    # transformers: NOT SATISFIED. 2026.9.5 still says `transformers<=5.5.0` because
+    #   unslothai/unsloth-zoo#1227 is still open, so pip keeps intersecting the wider window
+    #   below back down to 5.5.0 and that lift is advertised rather than delivered. The gate
+    #   in tests/test_transformers_cap_sites.py stays deferred for exactly that reason.
+    #
+    # The floor therefore stops at 2026.9.5: a floor no published release satisfies would
+    # make unsloth uninstallable, which is worse than under-delivering. Raise it again, and
+    # re-enable that one remaining gate, in the same commit that #1227 ships.
     "unsloth_zoo>=2026.9.5",
     "wheel>=0.42.0",
     "packaging",
