@@ -32,6 +32,7 @@ unmatched. A torchao that is BROKEN rather than newer must still raise, which
 is why the two class names are matched rather than the word "torchao".
 """
 
+import os
 import sys
 import types
 from pathlib import Path
@@ -91,6 +92,21 @@ MISSING = ImportError(
     "cannot import name 'LinearActivationQuantizedTensor' from "
     "'torchao.quantization' (/site-packages/torchao/quantization/__init__.py)"
 )
+
+
+def _require_peft():
+    """Skip when peft cannot be imported, including because of its neighbours.
+
+    `pytest.importorskip` only treats a missing module as a skip, but the ways
+    peft fails to import are mostly not that: peft 0.17 against transformers 5
+    raises `ImportError: cannot import name 'HybridCache'`, which says nothing
+    about this fix and must not be reported as a failure of it.
+    """
+    try:
+        import peft  # noqa: F401
+    except ImportError as exc:
+        pytest.skip(f"peft is not importable here: {exc}")
+    return peft
 
 
 class _BlockTorchao:
@@ -499,12 +515,93 @@ def test_metadata_survives(peft_env, fake_torchao):
     assert definer.dispatch_torchao.__name__ == "dispatch_torchao"
 
 
+def test_repeated_application_never_stacks_wrappers(peft_env, fake_torchao):
+    """`import unsloth` can run more than once; five passes must leave one wrapper."""
+    fake_torchao()
+    definer, caller = peft_env(_raiser(MISSING))
+    assert FIX() is True
+    first = definer.dispatch_torchao
+    for _ in range(5):
+        assert FIX() is False
+    assert definer.dispatch_torchao is first
+    assert caller.dispatch_torchao is first
+    assert definer.dispatch_torchao(_Layer("plain"), "default") is None
+
+
+def test_an_unrelated_decorator_already_wrapping_the_dispatcher_is_preserved(
+    peft_env, fake_torchao,
+):
+    """Another library may get to `dispatch_torchao` first.
+
+    The wrapper must call that decorator rather than reaching past it, and the
+    degraded path must still read the arguments correctly: `functools.wraps`
+    sets `__wrapped__`, so `inspect.signature` follows the foreign wrapper down
+    to upstream's real parameter list.
+    """
+    import functools
+
+    fake_torchao(affine = True, linear_activation = False)
+    inner = _raiser(MISSING)
+    seen = []
+
+    @functools.wraps(inner)
+    def foreign(*args, **kwargs):
+        seen.append(args)
+        return inner(*args, **kwargs)
+
+    definer, caller = peft_env(foreign)
+    assert FIX() is True
+    assert definer.dispatch_torchao is not foreign
+    assert definer.dispatch_torchao(_Layer("plain"), "default") is None
+    assert seen, "the unrelated decorator must still run"
+
+
+def test_the_degraded_path_still_matches_through_an_unrelated_decorator(
+    peft_env, fake_torchao,
+):
+    """The surviving class must still win when a foreign decorator sits in between."""
+    import functools
+
+    classes = fake_torchao(affine = True, linear_activation = False)
+    inner = _raiser(MISSING)
+
+    @functools.wraps(inner)
+    def foreign(*args, **kwargs):
+        return inner(*args, **kwargs)
+
+    definer, _ = peft_env(foreign)
+    assert FIX() is True
+    weight = classes["AffineQuantizedTensor"]()
+    built = definer.dispatch_torchao(_Layer(weight), "default")
+    assert isinstance(built, _FakeTorchaoLoraLinear)
+    assert built.adapter_name == "default"
+
+
+def test_the_patched_dispatcher_still_pickles():
+    """peft objects get pickled for `spawn` workers; the wrapper must stay resolvable.
+
+    `functools.wraps` keeps upstream's `__module__` and `__qualname__`, and the
+    patch replaces the module attribute those two name, so pickle's
+    by-reference lookup lands back on the wrapper itself. Uses the real peft:
+    the point is that upstream's qualname still resolves, which a dispatcher
+    defined inside a test function could not show.
+    """
+    import pickle
+
+    _require_peft()
+    import peft.tuners.lora.torchao as definer
+
+    FIX()
+    restored = pickle.loads(pickle.dumps(definer.dispatch_torchao))
+    assert restored is definer.dispatch_torchao
+
+
 # ---- against the peft and torchao that are actually installed -------------
 
 
 def test_real_plain_lora_survives_this_torchao():
     """The user-visible failure: a plain 16-bit LoRA layer on a torchao without the class."""
-    pytest.importorskip("peft")
+    _require_peft()
     torch = pytest.importorskip("torch")
     from peft import LoraConfig, get_peft_model
 
@@ -555,6 +652,234 @@ def test_the_real_torchao_class_lookup_agrees_with_the_imports_peft_does():
         expected.append(class_name)
     assert [cls.__name__ for cls in classes] == expected
     assert len(classes) + len(missing) == len(ns["_PEFT_TORCHAO_TENSOR_SUBCLASSES"])
+
+
+def _in_child(body):
+    """Run `body` in a fresh interpreter, so import order is really fresh."""
+    import subprocess
+    import textwrap
+
+    preamble = textwrap.dedent(
+        f"""
+        import sys, os, importlib.util
+        REPO = r"{REPO_ROOT}"
+        def load_fix():
+            spec = importlib.util.spec_from_file_location(
+                "unsloth_import_fixes_standalone",
+                os.path.join(REPO, "unsloth", "import_fixes.py"),
+            )
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = mod
+            spec.loader.exec_module(mod)
+            return mod.fix_peft_torchao_missing_tensor_subclass
+        """
+    )
+    env = dict(os.environ)
+    env["CUDA_VISIBLE_DEVICES"] = ""
+    done = subprocess.run(
+        [sys.executable, "-c", preamble + textwrap.dedent(body)],
+        capture_output = True, text = True, env = env, timeout = 600,
+    )
+    return done.returncode, (done.stdout or "") + (done.stderr or "")
+
+
+def test_a_bare_import_peft_is_enough_to_patch_the_dispatching_module():
+    """`peft.tuners.lora.model` is where the dispatch list is built, not `.torchao`.
+
+    The sweep only sees modules that are already in `sys.modules`, so if a bare
+    `import peft` did not pull the dispatching module in, the real caller would
+    be left raising while the defining module looked patched.
+    """
+    _require_peft()
+    code, out = _in_child(
+        """
+        import peft
+        load_fix()()
+        import peft.tuners.lora.model as caller
+        import peft.tuners.lora.torchao as definer
+        print("CALLER", getattr(caller.dispatch_torchao, "__unsloth_patched__", False))
+        print("DEFINER", getattr(definer.dispatch_torchao, "__unsloth_patched__", False))
+        print("SHARED", caller.dispatch_torchao is definer.dispatch_torchao)
+        """
+    )
+    assert code == 0, out
+    assert "CALLER True" in out, out
+    assert "DEFINER True" in out, out
+    assert "SHARED True" in out, out
+
+
+def test_applying_the_fix_before_peft_is_imported_still_patches_and_lora_works():
+    """`import unsloth` may land before anything has touched peft."""
+    _require_peft()
+    pytest.importorskip("torch")
+    code, out = _in_child(
+        """
+        assert "peft" not in sys.modules
+        load_fix()()
+        import torch
+        import peft.tuners.lora.model as caller
+        print("CALLER", getattr(caller.dispatch_torchao, "__unsloth_patched__", False))
+        from peft import LoraConfig, get_peft_model
+        model = torch.nn.Sequential()
+        model.add_module("q_proj", torch.nn.Linear(8, 8, bias = False))
+        built = get_peft_model(model, LoraConfig(r = 4, target_modules = ["q_proj"]))
+        print("LAYER", type(built.base_model.model.q_proj).__name__)
+        """
+    )
+    assert code == 0, out
+    assert "CALLER True" in out, out
+    assert "LAYER Linear" in out, out
+
+
+def test_a_fresh_interpreter_does_not_inherit_the_patch_but_can_apply_it():
+    """The patch lives in one process; a spawned worker has to redo it itself."""
+    _require_peft()
+    code, out = _in_child(
+        """
+        import peft.tuners.lora.model as caller
+        print("INHERITED", getattr(caller.dispatch_torchao, "__unsloth_patched__", False))
+        load_fix()()
+        print("AFTER", getattr(caller.dispatch_torchao, "__unsloth_patched__", False))
+        """
+    )
+    assert code == 0, out
+    assert "INHERITED False" in out, out
+    assert "AFTER True" in out, out
+
+
+def test_an_earlier_dispatcher_short_circuits_before_the_torchao_one():
+    """Why QLoRA never saw this bug.
+
+    peft keeps the first dispatcher that returns a module, so anything matching
+    ahead of `dispatch_torchao` means the torchao dispatcher is never called at
+    all. `dispatch_bnb_4bit` occupies such a slot; `_custom_modules` installs a
+    dispatcher in the same short-circuiting position without needing
+    bitsandbytes, which has no wheel on every platform unsloth runs on.
+    """
+    _require_peft()
+    torch = pytest.importorskip("torch")
+    from peft import LoraConfig, get_peft_model
+    from peft.tuners.lora.layer import Linear as LoraLinear
+    import peft.tuners.lora.model as caller
+
+    FIX()
+    reached = []
+    shared = caller.dispatch_torchao
+
+    def tripwire(*args, **kwargs):
+        reached.append(1)
+        return shared(*args, **kwargs)
+
+    class StandIn(LoraLinear):
+        pass
+
+    def build():
+        model = torch.nn.Sequential()
+        model.add_module("q_proj", torch.nn.Linear(8, 8, bias = False))
+        return model
+
+    caller.dispatch_torchao = tripwire
+    try:
+        early = LoraConfig(r = 4, target_modules = ["q_proj"])
+        early._custom_modules = {torch.nn.Linear: StandIn}
+        built = get_peft_model(build(), early)
+        assert isinstance(built.base_model.model.q_proj, StandIn)
+        assert not reached, "an earlier match must skip the torchao dispatcher entirely"
+
+        # and with nothing matching earlier, the torchao dispatcher really is reached,
+        # which is what makes a raising one fatal for plain 16-bit LoRA.
+        get_peft_model(build(), LoraConfig(r = 4, target_modules = ["q_proj"]))
+        assert reached, "plain LoRA must fall through to the torchao dispatcher"
+    finally:
+        caller.dispatch_torchao = shared
+
+
+def test_mixed_module_types_all_resolve_under_the_patch():
+    """Only some targets reach the torchao dispatcher; none of them may break."""
+    _require_peft()
+    torch = pytest.importorskip("torch")
+    from peft import LoraConfig, get_peft_model
+
+    model = torch.nn.Module()
+    model.q_proj = torch.nn.Linear(8, 8, bias = False)
+    model.emb = torch.nn.Embedding(4, 8)
+    model.conv = torch.nn.Conv2d(2, 2, 1)
+    model.norm = torch.nn.LayerNorm(8)
+
+    FIX()
+    built = get_peft_model(
+        model, LoraConfig(r = 4, target_modules = ["q_proj", "emb", "conv"]),
+    )
+    resolved = {
+        name: type(getattr(built.base_model.model, name)).__name__
+        for name in ("q_proj", "emb", "conv")
+    }
+    assert resolved == {"q_proj": "Linear", "emb": "Embedding", "conv": "Conv2d"}
+    # An untargeted module of a third type is left exactly as it was.
+    assert isinstance(built.base_model.model.norm, torch.nn.LayerNorm)
+
+
+def test_a_surviving_stub_class_cannot_silently_match_a_real_weight():
+    """torchao 0.18 keeps `AffineQuantizedTensor` only as an `object` subclass.
+
+    That is what makes the degraded path's isinstance check answer None for
+    every weight this torchao can actually build, so plain LoRA gets an
+    ordinary layer. If a later torchao restores a real tensor subclass under
+    that name, this test fails and the degraded path starts mattering again,
+    which is the point of pinning it.
+    """
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("torchao")
+    try:
+        from torchao.dtypes import AffineQuantizedTensor
+    except (ImportError, AttributeError):
+        pytest.skip("this torchao does not ship AffineQuantizedTensor at all")
+    if issubclass(AffineQuantizedTensor, torch.Tensor):
+        # torchao < 0.18: a real subclass, so the degraded path can genuinely match.
+        assert not isinstance(torch.zeros(2), AffineQuantizedTensor)
+    else:
+        assert AffineQuantizedTensor.__bases__ == (object,)
+        assert not isinstance(torch.zeros(2), AffineQuantizedTensor)
+
+
+def test_both_torchao_peft_fixes_can_be_active_at_once():
+    """The stale-version fix patches `is_torchao_available`, which this one calls."""
+    _require_peft()
+    torch = pytest.importorskip("torch")
+    code, out = _in_child(
+        """
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "uif", os.path.join(REPO, "unsloth", "import_fixes.py"),
+        )
+        fixes = importlib.util.module_from_spec(spec)
+        sys.modules["uif"] = fixes
+        spec.loader.exec_module(fixes)
+
+        import peft.import_utils as import_utils
+        import peft.tuners.lora.torchao as definer
+
+        def stale(*args, **kwargs):
+            raise ImportError(
+                "Found an incompatible version of torchao. Found version 0.1.0, "
+                "but only versions above 0.4.0 are supported"
+            )
+
+        import_utils.is_torchao_available = stale
+        definer.is_torchao_available = stale
+        fixes.fix_peft_stale_torchao_import_error()
+        fixes.fix_peft_torchao_missing_tensor_subclass()
+
+        import torch
+        from peft import LoraConfig, get_peft_model
+        model = torch.nn.Sequential()
+        model.add_module("q_proj", torch.nn.Linear(8, 8, bias = False))
+        built = get_peft_model(model, LoraConfig(r = 4, target_modules = ["q_proj"]))
+        print("LAYER", type(built.base_model.model.q_proj).__name__)
+        """
+    )
+    assert code == 0, out
+    assert "LAYER Linear" in out, out
 
 
 # ---- wiring ---------------------------------------------------------------
