@@ -28,7 +28,26 @@ from pathlib import Path
 
 import pytest
 
-from unsloth import import_fixes as IF
+
+def _load_import_fixes():
+    """Load `unsloth/import_fixes.py` directly, without importing the `unsloth` package.
+
+    `import unsloth` needs torch and an accelerator, which is exactly what the runners this
+    file is meant to cover do not have: a bare `from unsloth import import_fixes` turns every
+    test here into `ImportError: Unsloth: torch not found` on a stock Linux, macOS or Windows
+    runner, so the cross-platform coverage the module docstring claims was not actually being
+    collected anywhere. The module's own top-level imports are stdlib plus `packaging`, so
+    loading it by path costs nothing and runs everywhere.
+    """
+    path = Path(__file__).resolve().parents[1] / "unsloth" / "import_fixes.py"
+    spec = importlib.util.spec_from_file_location("unsloth_import_fixes_under_test", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+IF = _load_import_fixes()
 
 
 def _fake_host(
