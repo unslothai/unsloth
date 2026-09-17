@@ -911,8 +911,28 @@ def resolve_encoder_attention_implementation(
     return None
 
 
+# Outcome of the most recent `_run_temporary_patches` pass, keyed by phase, as
+# {"completed": [patch, ...], "raised": [(patch, exception), ...]}. A temporary
+# patch that raises is warned about rather than propagated, so without this a
+# whole patch silently dropping out leaves CI green; the regression gate in
+# tests/test_temporary_patch_coverage.py reads it and fails on a non-empty
+# "raised" bucket. Which patches legitimately decline depends on the installed
+# transformers/TRL/PEFT, so only "raised" is a defect, never the membership of
+# "completed".
+TEMPORARY_PATCH_OUTCOMES = {}
+
+
 def _run_temporary_patches(phase):
     import inspect
+
+    # Bookkeeping is one list append per patch, storing the callables as they
+    # are so nothing is formatted on the success path, and the per-phase entry
+    # is replaced rather than extended so repeated model loads cannot grow it.
+    # Nothing here can raise, which matters because this loop runs inside
+    # `import unsloth`.
+    completed = []
+    raised = []
+    TEMPORARY_PATCH_OUTCOMES[phase] = {"completed": completed, "raised": raised}
     for temporary_patch in TEMPORARY_PATCHES:
         # Two separate questions, kept separate. inspect.signature raises
         # ValueError or TypeError for a callable whose signature it cannot read,
@@ -933,12 +953,34 @@ def _run_temporary_patches(phase):
             else:
                 temporary_patch()
         except Exception as exception:
+            # Keep the exception, drop what it drags along. An exception holds
+            # its __traceback__, and a traceback holds every frame in it and
+            # every local in those frames; __context__ and __cause__ chain to
+            # more of the same. The "init" entry is written once per process and
+            # never replaced, so recording a failure as-is would pin the failed
+            # patch's frames for the lifetime of the process. Nothing reads them
+            # (the gate and the warning below both use only the type and the
+            # message), so this loses no diagnosis and bounds the record to the
+            # exception objects themselves.
+            # Guarded because these three are ordinary settable attributes and a
+            # subclass can shadow them with a property that refuses the write
+            # (measured: a ValueError out of a __traceback__ setter). Losing the
+            # trim is fine; losing the import over bookkeeping is not.
+            try:
+                exception.__traceback__ = None
+                exception.__context__ = None
+                exception.__cause__ = None
+            except Exception:
+                pass
+            raised.append((temporary_patch, exception))
             logger.warning(
                 f"Unsloth: temporary patch "
                 f"{getattr(temporary_patch, '__name__', temporary_patch)} failed in "
                 f"phase {phase} and was skipped. "
                 f"({type(exception).__name__}: {exception})"
             )
+        else:
+            completed.append(temporary_patch)
 
 
 _run_temporary_patches("init")
