@@ -4497,40 +4497,6 @@ _probe_amd_gfx_arch() {
 # Pair each rocminfo GPU gfx id with its marketing name instead of using the CPU-first
 # global name (#7307). Blank names keep device ordinals; no GPU keeps the old fallback.
 # Keep in sync with studio/setup.sh.
-_rocminfo_gpu_records() {
-    awk '
-        # Split at the first colon so embedded colons survive.
-        function value(line,   v) {
-            v = line
-            sub(/^[^:]*:[[:space:]]*/, "", v)
-            gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
-            return v
-        }
-        /^[[:space:]]*Name:/ {
-            # Keep a slot for a nameless GPU.
-            if (gfx != "" && !named) { print gfx "|"; gpus++ }
-            gfx = ""; named = 0
-            name = value($0)
-            # Accept target suffixes such as gfx90a:sramecc+, but reject ISA names.
-            if (match(name, /^gfx[1-9][0-9a-z][0-9a-z][0-9a-z]?/)) {
-                rest = substr(name, RLENGTH + 1)
-                if (rest == "" || rest ~ /^[^0-9a-z]/) gfx = substr(name, 1, RLENGTH)
-            }
-            next
-        }
-        /^[[:space:]]*Marketing Name:/ {
-            mkt = value($0)
-            if (gfx != "" && !named) { print gfx "|" mkt; gpus++; named = 1 }
-            else if (first == "") first = mkt
-            next
-        }
-        END {
-            if (gfx != "" && !named) { print gfx "|"; gpus++ }
-            if (gpus == 0 && first != "") print "|" first
-        }
-    '
-}
-
 # One gfx per GPU, in the order ROCr enumerates them, which is the order a visible-device
 # mask indexes. _probe_amd_gfx_arch cannot be used for that: rocminfo names an agent's
 # target in BOTH "Name:" and its "ISA Info" block, so a flat grep returns two rows per
@@ -5999,72 +5965,10 @@ tauri_diag_marker "$_TAURI_GPU_BRANCH" "$_TAURI_TORCH_INDEX_FAMILY"
 # `amd-smi list -e` is the map AMD publishes for this (HIP_ID, ROCm 6.4.0+); the Python
 # side reads the same field in utils/hardware/amd.py get_hip_id_by_gpu_index.
 # Keep in sync with studio/setup.sh.
-_amd_smi_hip_order() {
-    # POSIX awk forbids a physical newline in a -v value (gawk --posix makes it fatal),
-    # so the records arrive on stdin ahead of the map, separated by a sentinel. The first
-    # output line reports which index space the records came back in; the caller needs to
-    # know, because a mask cannot be applied to an untranslated list of unlike adapters.
-    { printf '%s\n' "$1"; echo "@@hip-map@@"; cat; } | awk '
-        function value(line,   v) {
-            v = line
-            sub(/^[^:]*:[[:space:]]*/, "", v)
-            gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
-            return v
-        }
-        function keep(   i) { print "discovery"; for (i = 1; i <= r; i++) print rec[i] }
-        !split_seen && $0 == "@@hip-map@@" { split_seen = 1; next }
-        !split_seen { if ($0 != "") rec[++r] = $0; next }
-        /^[[:space:]]*GPU:[[:space:]]*[0-9]/ { n++; hip[n] = -1; next }
-        n && tolower($0) ~ /hip.?id/ {
-            if (hip[n] < 0) { v = value($0); if (v ~ /^[0-9]+$/) hip[n] = v + 0 }
-            next
-        }
-        END {
-            # All or nothing, like get_hip_id_by_gpu_index: an older CLI rejects -e, and
-            # hip_id reads N/A when the library cannot reach a KFD node. A partial or
-            # colliding map is not a 1:1 device mapping, so keep discovery order.
-            if (r == 0 || n != r) { keep(); exit }
-            for (i = 1; i <= n; i++) {
-                if (hip[i] < 0 || hip[i] >= r || (hip[i] in used)) { keep(); exit }
-                used[hip[i]] = 1
-                out[hip[i]] = rec[i]
-            }
-            print "hip"
-            for (i = 0; i < r; i++) print out[i]
-        }
-    '
-}
-
 # One `gfx|marketing name` per adapter, in `GPU: N` order, so the mask picks both halves
 # of one device. Was: arch indexed, name always adapter 0's -- and on amd-smi 6.1.1, which
 # has no TARGET_GRAPHICS_VERSION, that name is what --rocm-gfx is inferred from.
 # Keep in sync with studio/setup.sh.
-_amd_smi_gpu_records() {
-    awk '
-        function value(line,   v) {
-            v = line
-            sub(/^[^:]*:[[:space:]]*/, "", v)
-            gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
-            return v
-        }
-        function flush() {
-            if (started) print gfx "|" mkt
-            gfx = ""; mkt = ""
-        }
-        # amd-smi upper-cases every key (amdsmi_logger.py _capitalize_keys): MARKET_NAME,
-        # TARGET_GRAPHICS_VERSION. Matched case-folded so older spellings work too.
-        /^[[:space:]]*GPU:[[:space:]]*[0-9]/ { flush(); started = 1; next }
-        !started { next }
-        tolower($0) ~ /market.?name/ { if (mkt == "") mkt = value($0); next }
-        tolower($0) ~ /target.?graphics.?version/ {
-            v = value($0)
-            if (gfx == "" && v ~ /^gfx[1-9][0-9a-z][0-9a-z][0-9a-z]?$/) gfx = v
-            next
-        }
-        END { flush() }
-    '
-}
-
 # ── GPU detection summary (mirrors install.ps1 step "gpu" block) ──
 # Asked of the RESOLVED index, not of the predicate that chose it: after the CUDA restore
 # the request is still set and an AMD card still present, so the predicate says "AMD wins"
