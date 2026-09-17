@@ -1,0 +1,195 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import type {
+  MessageRecord,
+  ModelType,
+  ParsedConversation,
+  ProjectRecord,
+  ThreadRecord,
+} from "../types";
+import { compareStoredMessages } from "./message-order";
+
+type Dict = Record<string, unknown>;
+
+const MODEL_TYPES = new Set<string>(["base", "lora", "model1", "model2"]);
+
+// Mirrors studio_db._SERVER_MANAGED_LINK_KEYS: a restored copy belongs to no server run.
+const SERVER_MANAGED_LINK_KEYS = new Set<string>([
+  "researchRunId",
+  "researchRun",
+  "researchStatus",
+  "researchPlanRevision",
+  "serverManaged",
+  "generationRunId",
+  "generationSeq",
+  "generationStatus",
+  "generationSettled",
+]);
+
+function isDict(value: unknown): value is Dict {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function str(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function num(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function withoutServerLinks(value: Dict): Dict {
+  return Object.fromEntries(
+    Object.entries(value).filter(([key]) => !SERVER_MANAGED_LINK_KEYS.has(key)),
+  );
+}
+
+function detachMetadata(metadata: Dict): Dict {
+  const detached = withoutServerLinks(metadata);
+  if (isDict(detached.custom)) detached.custom = withoutServerLinks(detached.custom);
+  return detached;
+}
+
+export function isStudioChatBackup(value: unknown): value is Dict {
+  return (
+    isDict(value) &&
+    typeof value.version === "number" &&
+    Array.isArray(value.threads) &&
+    Array.isArray(value.messages)
+  );
+}
+
+export function studioBackupProjects(backup: Dict): ProjectRecord[] {
+  const referenced = new Set<string>();
+  for (const thread of backup.threads as unknown[]) {
+    const projectId = isDict(thread) ? str(thread.projectId) : null;
+    if (projectId) referenced.add(projectId);
+  }
+  const projects: ProjectRecord[] = [];
+  if (!Array.isArray(backup.projects)) return projects;
+  for (const project of backup.projects) {
+    if (!isDict(project)) continue;
+    const id = str(project.id);
+    const name = str(project.name);
+    if (!id || !name || !referenced.has(id)) continue;
+    const createdAt = num(project.createdAt) ?? Date.now();
+    projects.push({
+      id,
+      name,
+      instructions:
+        typeof project.instructions === "string" ? project.instructions : "",
+      archived: project.archived === true,
+      createdAt,
+      updatedAt: num(project.updatedAt) ?? createdAt,
+    });
+  }
+  return projects;
+}
+
+export function studioBackupToConversations(
+  backup: Dict,
+  fallbackTitle: string,
+  knownProjectIds: ReadonlySet<string> = new Set(),
+): ParsedConversation[] {
+  const threads = (backup.threads as unknown[]).filter(
+    (thread): thread is Dict => isDict(thread) && str(thread.id) !== null,
+  );
+  const threadIds = new Map<string, string>();
+  const pairIds = new Map<string, string>();
+  for (const thread of threads) {
+    threadIds.set(thread.id as string, crypto.randomUUID());
+    const pairId = str(thread.pairId);
+    if (pairId && !pairIds.has(pairId)) pairIds.set(pairId, crypto.randomUUID());
+  }
+
+  const messageIds = new Map<string, string>();
+  const messagesByThread = new Map<string, Dict[]>();
+  for (const message of backup.messages as unknown[]) {
+    if (!isDict(message)) continue;
+    const id = str(message.id);
+    const threadId = str(message.threadId);
+    if (!id || !threadId || !threadIds.has(threadId) || messageIds.has(id)) continue;
+    if (!str(message.role)) continue;
+    messageIds.set(id, crypto.randomUUID());
+    const bucket = messagesByThread.get(threadId);
+    if (bucket) bucket.push(message);
+    else messagesByThread.set(threadId, [message]);
+  }
+
+  const conversations: ParsedConversation[] = [];
+  threads.forEach((thread, index) => {
+    const source = messagesByThread.get(thread.id as string);
+    if (!source) return;
+    const threadId = threadIds.get(thread.id as string) as string;
+    const ordered = source
+      .map((message) => ({
+        raw: message,
+        id: message.id as string,
+        role: message.role as string,
+        createdAt: num(message.createdAt) ?? 0,
+      }))
+      .sort(compareStoredMessages);
+
+    let previousTs = Number.NEGATIVE_INFINITY;
+    const messages = ordered.map(({ raw, id, createdAt }): MessageRecord => {
+      const ts = Math.max(previousTs + 1, createdAt);
+      previousTs = ts;
+      const record: MessageRecord = {
+        id: messageIds.get(id) as string,
+        threadId,
+        role: raw.role as MessageRecord["role"],
+        content: (Array.isArray(raw.content)
+          ? raw.content.map((part) => (isDict(part) ? withoutServerLinks(part) : part))
+          : []) as MessageRecord["content"],
+        createdAt: ts,
+      };
+      if (typeof raw.parentId === "string") {
+        record.parentId = messageIds.get(raw.parentId) ?? null;
+      } else if (raw.parentId === null) {
+        record.parentId = null;
+      }
+      if (Array.isArray(raw.attachments)) {
+        record.attachments = raw.attachments as MessageRecord["attachments"];
+      }
+      if (isDict(raw.metadata)) record.metadata = detachMetadata(raw.metadata);
+      return record;
+    });
+
+    const forkedFromThreadId = threadIds.get(str(thread.forkedFromThreadId) ?? "");
+    const forkedFromMessageId = messageIds.get(
+      str(thread.forkedFromMessageId) ?? "",
+    );
+    const projectId = str(thread.projectId);
+    const pairId = str(thread.pairId);
+    const modelId = str(thread.modelId);
+    const createdAt = num(thread.createdAt) ?? messages[0].createdAt;
+    conversations.push({
+      title: str(thread.title) ?? `${fallbackTitle} ${index + 1}`,
+      threadId,
+      messages,
+      archived: thread.archived === true,
+      createdAt,
+      thread: {
+        modelType: MODEL_TYPES.has(thread.modelType as string)
+          ? (thread.modelType as ModelType)
+          : "base",
+        ...(modelId ? { modelId } : {}),
+        ...(str(thread.modelGgufVariant)
+          ? { modelGgufVariant: thread.modelGgufVariant as string }
+          : {}),
+        ...(pairId ? { pairId: pairIds.get(pairId) } : {}),
+        projectId: projectId && knownProjectIds.has(projectId) ? projectId : null,
+        createdAt,
+        updatedAt: num(thread.updatedAt) ?? createdAt,
+        ...(forkedFromThreadId && forkedFromMessageId
+          ? { forkedFromThreadId, forkedFromMessageId }
+          : {}),
+        ...(isDict(thread.settings)
+          ? { settings: thread.settings as ThreadRecord["settings"] }
+          : {}),
+      },
+    });
+  });
+  return conversations;
+}
