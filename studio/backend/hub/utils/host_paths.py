@@ -386,7 +386,12 @@ def resolve_host_path_reference(value: Any) -> Optional[str]:
     return entry[0] if entry else None
 
 
-def redact_host_paths(payload: Any, *, via_api_key: bool, echo: Iterable[Any] = ()) -> Any:
+def redact_host_paths(
+    payload: Any,
+    *,
+    via_api_key: bool,
+    echo: Iterable[Any] = (),
+) -> Any:
     """Return *payload* with every host path removed, if this caller may not see them.
 
     Walks dicts and sequences so one call covers a route that answers a row, a list of rows or
@@ -403,7 +408,10 @@ def redact_host_paths(payload: Any, *, via_api_key: bool, echo: Iterable[Any] = 
 
 
 def redact_inventory_host_paths(
-    payload: Any, *, via_api_key: bool, echo: Iterable[Any] = ()
+    payload: Any,
+    *,
+    via_api_key: bool,
+    echo: Iterable[Any] = (),
 ) -> Any:
     """``redact_host_paths`` plus the ambiguous ``path`` field.
 
@@ -451,7 +459,12 @@ def _echoed(value: Any, echo: frozenset) -> bool:
     return bool(text) and text in echo
 
 
-def _redact(payload: Any, *, redact_ambiguous_path: bool, echo: frozenset = frozenset()) -> Any:
+def _redact(
+    payload: Any,
+    *,
+    redact_ambiguous_path: bool,
+    echo: frozenset = frozenset(),
+) -> Any:
     dumped = _dump_model(payload)
     if dumped is not None:
         return _redact(dumped, redact_ambiguous_path = redact_ambiguous_path, echo = echo)

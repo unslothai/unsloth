@@ -469,9 +469,9 @@ def test_every_route_that_can_fetch_with_a_one_off_token_records_it():
     ):
         assert "_repo_is_in_the_hub_cache(_ref) is not True" in media_load
         assert "_note_load_fetched_with_a_request_token(_ref" in media_load
-        assert "_load_fetched_bytes" not in media_load, (
-            "a media route cannot compare before and after: its fetch has not happened yet"
-        )
+        assert (
+            "_load_fetched_bytes" not in media_load
+        ), "a media route cannot compare before and after: its fetch has not happened yet"
 
     assert "_note_load_fetched_with_a_request_token" not in inspect.getsource(
         inference_routes.load_model_gated
@@ -1425,17 +1425,17 @@ def test_a_load_that_added_blobs_to_an_existing_repo_is_recorded(monkeypatch, tm
     before = inference_routes._hub_cache_footprint("acme/private")
     assert before == (1, 10)
     monkeypatch.setattr(inference_routes, "_repo_is_in_the_hub_cache", lambda ref: True)
-    assert not inference_routes._load_fetched_bytes("acme/private", True, before), (
-        "a pure cache hit was recorded as a fetch"
-    )
+    assert not inference_routes._load_fetched_bytes(
+        "acme/private", True, before
+    ), "a pure cache hit was recorded as a fetch"
 
     (blobs / "b").write_bytes(b"y" * 4096)  # the blob this load pulled
-    assert inference_routes._load_fetched_bytes("acme/private", True, before), (
-        "a credentialed refetch of an existing repo was lost"
-    )
-    assert not inference_routes._load_fetched_bytes("acme/private", True, None), (
-        "an unreadable footprint guessed instead of abstaining"
-    )
+    assert inference_routes._load_fetched_bytes(
+        "acme/private", True, before
+    ), "a credentialed refetch of an existing repo was lost"
+    assert not inference_routes._load_fetched_bytes(
+        "acme/private", True, None
+    ), "an unreadable footprint guessed instead of abstaining"
 
     # The repo arriving is still recorded, which is the case that always worked.
     assert inference_routes._load_fetched_bytes("acme/private", False, None)
@@ -1523,9 +1523,9 @@ def test_only_growth_counts_as_a_fetch(monkeypatch, tmp_path):
     assert not inference_routes._load_fetched_bytes("acme/public", True, before)
 
     monkeypatch.setattr(inference_routes, "_hub_cache_footprint", lambda ref: None)
-    assert not inference_routes._load_fetched_bytes("acme/public", True, before), (
-        "an unreadable after-reading was counted as a fetch"
-    )
+    assert not inference_routes._load_fetched_bytes(
+        "acme/public", True, before
+    ), "an unreadable after-reading was counted as a fetch"
 
     # Growth in either component is still a fetch: a new blob moves the count, and a partial
     # one that was appended to moves only the bytes.

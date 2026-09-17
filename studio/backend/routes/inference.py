@@ -15268,7 +15268,6 @@ def _lora_base_already_in_the_hub_cache(model_ref) -> Optional[str]:
     """
     try:
         from utils.transformers_version import _adapter_base_from_hf_cache
-
         base = _adapter_base_from_hf_cache(model_ref) if model_ref else None
     except Exception:  # noqa: BLE001 -- a load never fails on its own bookkeeping
         return None
@@ -15276,7 +15275,9 @@ def _lora_base_already_in_the_hub_cache(model_ref) -> Optional[str]:
 
 
 def _note_lora_base_fetched_with_a_request_token(
-    model_ref, hf_token, already_cached = None
+    model_ref,
+    hf_token,
+    already_cached = None,
 ) -> None:
     """The same record for the BASE a LoRA load pulls in behind the adapter.
 
@@ -15299,12 +15300,7 @@ def _note_lora_base_fetched_with_a_request_token(
     # that was ALREADY here before the load was not fetched by it either -- an adapter on a
     # public base the host had all along is the ordinary LoRA load, and recording that base
     # withholds it from every tokenless offline caller, permanently.
-    if (
-        base
-        and base != model_ref
-        and base != already_cached
-        and _repo_is_in_the_hub_cache(base)
-    ):
+    if base and base != model_ref and base != already_cached and _repo_is_in_the_hub_cache(base):
         _note_load_fetched_with_a_request_token(base, hf_token)
 
 
