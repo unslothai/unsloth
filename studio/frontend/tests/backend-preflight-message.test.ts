@@ -100,7 +100,9 @@ test("the setting that could not be resolved is named", () => {
   assert.doesNotMatch(unnamed, UPDATE_ADVICE);
 });
 
-test("a busy managed environment waits instead of repairing", async () => {
+// The constant crosses a language boundary, so the two spellings are checked against
+// each other. What the hook DOES with it is driven in managed-environment-wait.test.ts.
+test("the busy reason is spelled the same in Rust", async () => {
   const native = await readFile(
     new URL("../../src-tauri/src/preflight/managed.rs", import.meta.url),
     "utf8",
@@ -108,12 +110,4 @@ test("a busy managed environment waits instead of repairing", async () => {
   assert.ok(
     native.includes(`MANAGED_ENVIRONMENT_BUSY: &str = "${MANAGED_ENVIRONMENT_BUSY}"`),
   );
-
-  const hook = await readFile(
-    new URL("../src/hooks/use-tauri-backend.ts", import.meta.url),
-    "utf8",
-  );
-  const busy = hook.indexOf("preflight.reason === MANAGED_ENVIRONMENT_BUSY");
-  const repair = hook.indexOf("if (preflight.can_auto_repair)");
-  assert.ok(busy !== -1 && busy < repair);
 });

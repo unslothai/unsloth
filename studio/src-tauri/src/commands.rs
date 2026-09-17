@@ -221,11 +221,24 @@ pub async fn desktop_preflight(
     app: AppHandle,
     state: tauri::State<'_, BackendState>,
     shutdown: tauri::State<'_, ShutdownFlag>,
+    update_state: tauri::State<'_, update::UpdateState>,
+    install_state: tauri::State<'_, install::InstallState>,
     diagnostics: tauri::State<'_, DiagnosticsState>,
 ) -> Result<crate::preflight::DesktopPreflightResult, String> {
     let started = Instant::now();
     let (result, adopted_watchdog_generation) =
         crate::preflight::desktop_preflight_result_with_state(state.inner()).await?;
+    // A reload during our own install or update re-runs this probe against an
+    // environment that is being rewritten. Only the update phase holds the runtime
+    // gate, so the probe answers "broken install" for the whole installer phase and
+    // start_managed_repair then refuses the repair it asked for.
+    let result = if install::is_install_running(install_state.inner())
+        || update::is_update_running(update_state.inner())
+    {
+        crate::preflight::busy_managed_environment(result)
+    } else {
+        result
+    };
     diagnostics::record_preflight(&diagnostics, &result);
 
     info!(
