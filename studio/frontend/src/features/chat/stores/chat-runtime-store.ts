@@ -3439,6 +3439,10 @@ let effortDisplacedByPin: ReasoningEffort | null = null;
 /** Called before a per-model pin overwrites the live effort. The first displacement wins, so
  *  pinning twice and then clearing returns to the chat's own level, not to the earlier pin. */
 export function noteEffortDisplacedByPin(current: ReasoningEffort): void {
+  // Nothing before hydration: the level on screen is still this store's own default, not the
+  // chat's, and hydration replaces it because a pin advances no mutation version. The pin sites
+  // rerun once it lands, and the first record is the one that sticks.
+  if (!useChatRuntimeStore.getState().settingsHydrated) return;
   effortDisplacedByPin ??= current;
 }
 

@@ -397,6 +397,12 @@ test("editing the live model's effort reaches the chat now", () => {
   const store = readSrc("features/chat/stores/chat-runtime-store.ts");
   assert.match(store, /export function noteEffortDisplacedByPin\(/);
   assert.match(store, /effortDisplacedByPin \?\?= current;/);
+  // Nothing before hydration: the live level is still the store's own default there, and with
+  // ??= that first record would outlast the chat's real level landing a moment later.
+  assert.match(
+    store,
+    /if \(!useChatRuntimeStore\.getState\(\)\.settingsHydrated\) return;\s*effortDisplacedByPin \?\?= current;/,
+  );
   assert.match(
     store,
     /own level, so whatever a pin displaced before is history\.\s*effortDisplacedByPin = null;/,
