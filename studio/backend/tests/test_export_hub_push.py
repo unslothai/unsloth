@@ -379,7 +379,12 @@ class _LoraTokenizer(_Tokenizer):
     def __init__(self, calls):
         self.calls = calls
 
-    def push_to_hub(self, repo_id, token = None, private = None):
+    def push_to_hub(
+        self,
+        repo_id,
+        token = None,
+        private = None,
+    ):
         self.calls.append(f"tokenizer_push:{repo_id}")
 
 
@@ -406,7 +411,12 @@ class _LoraModel:
     ):
         Path(save_directory, "model-lora-q8_0.gguf").write_bytes(b"GGUF")
 
-    def push_to_hub(self, repo_id, token = None, private = None):
+    def push_to_hub(
+        self,
+        repo_id,
+        token = None,
+        private = None,
+    ):
         self.calls.append(f"model_push:{repo_id}")
 
 
