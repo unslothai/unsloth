@@ -2667,7 +2667,11 @@ def _write_baseline(
         "version": 1,
         "entries": entries,
     }
-    with open(path, "w", encoding = "utf-8") as fh:
+    # newline = "\n" for the same reason as update_req_file above: the default translates every
+    # "\n" json.dump emits to os.linesep, and --write-baseline rewrites the tracked
+    # scripts/scan_packages_baseline.json in place, so on Windows a one-entry review turned into a
+    # whole-file CRLF diff over several thousand lines.
+    with open(path, "w", encoding = "utf-8", newline = "\n") as fh:
         json.dump(doc, fh, indent = 2, sort_keys = False)
         fh.write("\n")
     print(f"  Wrote {len(entries)} baseline entr(y/ies) to {path}")

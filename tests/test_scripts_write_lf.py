@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -47,12 +48,21 @@ _ROOT = Path(__file__).resolve().parent.parent
 _SCRIPTS = _ROOT / "scripts"
 
 #: The in-place rewriters this file covers, as (path, the function holding the write).
-#: Keyed on the real files so a rename fails here rather than silently dropping coverage.
-_REWRITERS = {
-    "enforce_kwargs_spacing.py": "_atomic_write_text",
-    "stamp_studio_release.py": "_atomic_write_text",
-    "scan_packages.py": "update_req_file",
-}
+#: Named on the real files so a rename fails here rather than silently dropping coverage. A pair,
+#: not a {script: func} mapping, because one script can hold more than one rewriter.
+#:
+#: The list is what it is because the rule is "rewrites a TRACKED file in place", not "uses
+#: os.fdopen": the last two write through plain open()/Path.write_text and have exactly the same
+#: default-newline defect. sync_allow_scripts_pins is the one that matters most -- it runs as a
+#: pre-commit hook with --fix over studio/frontend/package.json, which .gitattributes pins to
+#: eol=lf.
+_REWRITERS = (
+    ("enforce_kwargs_spacing.py", "_atomic_write_text"),
+    ("stamp_studio_release.py", "_atomic_write_text"),
+    ("scan_packages.py", "update_req_file"),
+    ("scan_packages.py", "_write_baseline"),
+    ("sync_allow_scripts_pins.py", "main"),
+)
 
 
 def _load(name: str):
@@ -70,10 +80,16 @@ def _load(name: str):
 
 
 def _text_write_calls(tree: ast.AST, func_name: str) -> list[ast.Call]:
-    """Every `os.fdopen(...)`/`open(...)` text-mode WRITE inside the named function.
+    """Every `os.fdopen(...)`/`open(...)`/`Path.write_text(...)` text-mode WRITE in the function.
 
     Binary mode is excluded: `newline` is meaningless there and passing it raises. A call with
     no mode argument at all defaults to "r", so it is not a write and is skipped too.
+
+    `write_text` is here because it carries the identical default: `Path.write_text(data,
+    encoding = ...)` leaves `newline` at None and so translates to os.linesep exactly like
+    `open()` does. Leaving it out would let a rewriter swap one for the other and drop out of
+    this guard silently, which is how sync_allow_scripts_pins.py was writing CRLF in the first
+    place.
     """
     target = next(
         (
@@ -97,6 +113,10 @@ def _text_write_calls(tree: ast.AST, func_name: str) -> list[ast.Call]:
             if isinstance(func, ast.Name)
             else ""
         )
+        if named == "write_text":
+            # No mode argument to read: write_text is always a text-mode write.
+            calls.append(node)
+            continue
         if named not in ("fdopen", "open"):
             continue
         # Mode is the second positional for both open() and os.fdopen().
@@ -123,7 +143,7 @@ def _text_write_calls(tree: ast.AST, func_name: str) -> list[ast.Call]:
     return calls
 
 
-@pytest.mark.parametrize(("script", "func"), sorted(_REWRITERS.items()))
+@pytest.mark.parametrize(("script", "func"), _REWRITERS)
 def test_every_in_place_rewriter_names_its_newline(script, func):
     """A text-mode write in one of these must say what line ending it wants.
 
@@ -203,3 +223,28 @@ def test_the_requirements_fixer_writes_lf_and_utf8(tmp_path):
     assert b"\r\n" not in written, f"the requirements fixer wrote CRLF: {written!r}"
     assert "naïve".encode("utf-8") in written, "the non-ASCII comment did not survive as UTF-8"
     assert b"urllib3==2.0.0" in written, written
+
+
+def test_the_allow_scripts_pin_sync_writes_lf(tmp_path):
+    """The other pre-commit hook that rewrites a tracked file, on a file pinned `eol=lf`.
+
+    `.gitattributes` carries `studio/frontend/** text=auto eol=lf`, and .pre-commit-config.yaml
+    runs this one with `--fix` on every package.json touch, so it is the same contributor-facing
+    surface as the spacing hook above.
+    """
+    module = _load("sync_allow_scripts_pins.py")
+    (tmp_path / "package.json").write_bytes(
+        json.dumps({"name": "x", "allowScripts": {"esbuild@0.1.0": True}}).encode("utf-8")
+    )
+    (tmp_path / "package-lock.json").write_bytes(
+        json.dumps(
+            {"packages": {"node_modules/esbuild": {"version": "0.2.0", "hasInstallScript": True}}}
+        ).encode("utf-8")
+    )
+
+    assert module.main(["--fix", "--dir", str(tmp_path)]) == 0
+
+    written = (tmp_path / "package.json").read_bytes()
+    assert b"\r\n" not in written, f"the allowScripts pin sync wrote CRLF: {written!r}"
+    # Non-vacuous: the re-pin must actually have happened, or "no CRLF" is just "no write".
+    assert b'"esbuild@0.2.0"' in written, written
