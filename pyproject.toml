@@ -353,13 +353,6 @@ audio-torch280 = [
     "soundfile>=0.12.1 ; python_version >= '3.9' and python_version < '3.14' and (((sys_platform == 'linux' or sys_platform == 'win32') and (platform_machine == 'x86_64' or platform_machine == 'AMD64')) or (sys_platform == 'darwin' and platform_machine == 'arm64'))",
     "av>=12.3.0 ; python_version >= '3.9' and python_version < '3.14' and (((sys_platform == 'linux' or sys_platform == 'win32') and (platform_machine == 'x86_64' or platform_machine == 'AMD64')) or (sys_platform == 'darwin' and platform_machine == 'arm64'))",
 ]
-huggingface = [
-    "unsloth[huggingfacenotorch]",
-    "unsloth_zoo>=2026.9.5",
-    "torchvision",
-    "unsloth[triton]",
-]
-
 # xFormers' win_amd64 wheels are per-CUDA-family, not just per-torch: the
 # xformers/_C.pyd is linked against ONE exact (torch, CUDA) pair, and next to any
 # other pair torch.ops.load_library raises and xformers/_cpp_lib.py downgrades to
