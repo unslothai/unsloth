@@ -285,6 +285,7 @@ import {
   budgetImpliesTruncation,
   CONTINUE_INSTRUCTION,
   createContinuationMerger,
+  hasRenderableContent,
   incompleteLabel,
   type IncompleteReason,
   readIncompleteInfo,
@@ -7843,16 +7844,18 @@ export function createOpenAIStreamAdapter(
         );
 
         reasoningDurationTracker.finishGroup();
-        const finalIncompleteReason = resolveIncompleteReason(
-          incompleteReason,
-          contextWindowExceeded,
-        );
+        const finalContent = [
+          ...buildAssistantContent(mergeContinuation(cumulativeText, { final: true })),
+          ...sourceParts,
+          ...documentCitationParts,
+        ];
+        const finalIncompleteReason =
+          resolveIncompleteReason(incompleteReason, contextWindowExceeded) ??
+          // A run can stop cleanly on its first token and leave nothing behind.
+          // Saved as complete that is a blank bubble with no way out.
+          (hasRenderableContent(finalContent) ? null : "empty");
         yield {
-          content: [
-            ...buildAssistantContent(mergeContinuation(cumulativeText, { final: true })),
-            ...sourceParts,
-            ...documentCitationParts,
-          ],
+          content: finalContent,
           metadata: {
             timing: finalTiming,
             custom: {
