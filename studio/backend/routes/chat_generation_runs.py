@@ -153,7 +153,11 @@ def _sanitize_request(payload: CreateChatGenerationRun) -> dict[str, Any]:
             detail = safe_validation_errors(exc.errors()),
         ) from exc
     # Without this an unservable part is queued at 202 and fails where the caller cannot see it.
-    from routes.inference import _messages_have_input_audio, _reject_unsupported_content_parts
+    from routes.inference import (
+        _messages_have_input_audio,
+        _reject_unsupported_content_parts,
+        _request_has_video,
+    )
 
     _reject_unsupported_content_parts(request)
 
@@ -181,9 +185,13 @@ def _sanitize_request(payload: CreateChatGenerationRun) -> dict[str, Any]:
             detail = "Durable chat runs are available only for local inference",
         )
     # A media turn has no replayable transcript and its payload persists verbatim, so a base64 blob would live in
-    if any(
-        raw.get(field) not in (None, "") for field in _MEDIA_FIELDS
-    ) or _messages_have_input_audio(request.messages):
+    # request_json for the life of the thread. _MEDIA_FIELDS is field-shaped, so a video_url part
+    # needs _request_has_video.
+    if (
+        any(raw.get(field) not in (None, "") for field in _MEDIA_FIELDS)
+        or _messages_have_input_audio(request.messages)
+        or _request_has_video(request)
+    ):
         raise HTTPException(
             status_code = 400,
             detail = "Media chat runs use the legacy streaming path",

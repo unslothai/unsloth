@@ -1226,9 +1226,24 @@ def load_jwt_secret() -> str:
         conn.close()
 
 
+_admin_created_this_process = False
+
+
+def admin_created_this_process() -> bool:
+    """Whether this process seeded the admin account, whoever called first.
+
+    run_server's pre-bind password gate calls ensure_default_admin() itself on a tunnel
+    launch, so by the time the lifespan calls it the answer is already False and a
+    first-boot check keyed on that return value silently does nothing.
+    """
+    return _admin_created_this_process
+
+
 def ensure_default_admin() -> bool:
     """Seed the default admin account on first startup, using a randomly generated diceware passphrase
     as the bootstrap password. Returns True when it was created in this call."""
+    global _admin_created_this_process
+
     if get_user_and_secret(DEFAULT_ADMIN_USERNAME) is not None:
         _load_bootstrap_password()
         return False
@@ -1241,6 +1256,7 @@ def ensure_default_admin() -> bool:
             jwt_secret = secrets.token_urlsafe(64),
             must_change_password = True,
         )
+        _admin_created_this_process = True
         return True
     except sqlite3.IntegrityError:
         return False

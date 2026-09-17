@@ -31,6 +31,7 @@ from core.inference.llama_server_args import (
 from core.inference.runtime_context import MAX_REQUESTABLE_CONTEXT
 from core.inference.video_families import MAX_VIDEO_NUM_FRAMES
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
+from utils.reasoning_budget import validate_reasoning_budget_message
 
 
 class LoadRequest(BaseModel):
@@ -331,7 +332,9 @@ class LoadRequest(BaseModel):
         ),
     )
 
-    @field_validator("n_batch", "n_ubatch", "ctx_checkpoints", "cache_ram", mode = "before")
+    @field_validator(
+        "n_batch", "n_ubatch", "ctx_checkpoints", "cache_ram", "reasoning_budget", mode = "before"
+    )
     @classmethod
     def _no_booleans(cls, value: Any) -> Any:
         # bool subclasses int and pydantic parses non-strictly, so `true` arrives as 1 and the load
@@ -366,6 +369,22 @@ class LoadRequest(BaseModel):
             "auth, UI/server mode) are rejected. Ignored for non-GGUF models."
         ),
     )
+    reasoning_budget: int = Field(
+        -1,
+        ge = -1,
+        le = 2_147_483_647,
+        description = "llama-server reasoning token budget (-1 = model/default behavior).",
+    )
+    reasoning_budget_message: str = Field(
+        "",
+        description = "Message emitted by llama-server when the reasoning budget is exhausted.",
+    )
+
+    @field_validator("reasoning_budget_message")
+    @classmethod
+    def _validate_reasoning_budget_message(cls, value: str) -> str:
+        return validate_reasoning_budget_message(value)
+
     force_cancel_active: bool = Field(
         False,
         description = (
@@ -565,6 +584,14 @@ class ValidateModelRequest(BaseModel):
             "asking for them needs materially more memory than one that does not."
         ),
     )
+    reasoning_budget: int = Field(-1, ge = -1, le = 2_147_483_647)
+    reasoning_budget_message: str = ""
+
+    @field_validator("reasoning_budget_message")
+    @classmethod
+    def _validate_reasoning_budget_message(cls, value: str) -> str:
+        return validate_reasoning_budget_message(value)
+
     include_context_length: bool = Field(
         False,
         description = "Also read the native context length from the local GGUF header. "
@@ -578,9 +605,9 @@ class ValidateModelRequest(BaseModel):
         "guard. Only the leased file's own embedded template is read, never sibling sidecars.",
     )
 
-    _no_booleans = field_validator("n_batch", "n_ubatch", "ctx_checkpoints", mode = "before")(
-        LoadRequest._no_booleans.__func__
-    )
+    _no_booleans = field_validator(
+        "n_batch", "n_ubatch", "ctx_checkpoints", "reasoning_budget", mode = "before"
+    )(LoadRequest._no_booleans.__func__)
 
 
 class TransformersUpgradeInfo(BaseModel):
@@ -1152,6 +1179,19 @@ class _InferenceRuntimeFields(BaseModel):
         False,
         description = "Whether reasoning is always on (hardcoded <think> tags, not toggleable)",
     )
+    reasoning_budget: int = Field(-1, description = "Effective llama-server reasoning token budget.")
+    reasoning_budget_message: str = Field(
+        "", description = "Effective llama-server reasoning-budget exhaustion message."
+    )
+    # The effective pair folds in LLAMA_ARG_THINK_BUDGET*, which no client can send or clear, so a
+    # caller comparing its own request against it reads a machine-wide default as a difference and
+    # reloads forever. These echo what the load ASKED for, which a client can reproduce.
+    requested_reasoning_budget: int = Field(
+        -1, description = "Reasoning token budget this load requested, before the environment."
+    )
+    requested_reasoning_budget_message: str = Field(
+        "", description = "Reasoning-budget message this load requested, before the environment."
+    )
     supports_preserve_thinking: bool = Field(
         False,
         description = "Whether the template understands the optional preserve_thinking kwarg",
@@ -1402,7 +1442,8 @@ class LoadResponse(_InferenceRuntimeFields):
         None,
         description = "Non-blocking advisory about this load, or null. Set when the "
         "weights do not fit in free VRAM plus available system RAM, so llama.cpp pages "
-        "them in from disk and generation will be slow. The model still loaded.",
+        "them in from disk and generation will be slow, or when the requested GGUF quant "
+        "did not fit on disk and a smaller one was loaded. The model still loaded.",
     )
     carveout_advice: Optional[dict] = Field(
         None,
@@ -1530,6 +1571,11 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
         False, description = "Whether the active model came from a local filesystem path"
     )
     gguf_variant: Optional[str] = Field(None, description = "GGUF quantization variant (e.g. Q4_K_M)")
+    memory_warning: Optional[str] = Field(
+        None,
+        description = "Non-blocking advisory about the active load, or null: the "
+        "memory_warning its load response carried, kept while that model is running.",
+    )
     loading: List[str] = Field(default_factory = list, description = "Models currently being loaded")
     loaded: List[str] = Field(default_factory = list, description = "Models currently loaded")
     inference: Optional[Dict[str, Any]] = Field(
@@ -1708,6 +1754,19 @@ class ImageContentPart(BaseModel):
     image_url: ImageUrl
 
 
+class VideoUrl(BaseModel):
+    """Video URL object: an inline data URI. Remote URLs are not fetched."""
+
+    url: str = Field(..., description = "data:video/mp4;base64,... (inline only)")
+
+
+class VideoContentPart(BaseModel):
+    """Video content part; served only through llama-server's ``input_video``."""
+
+    type: Literal["video_url"]
+    video_url: VideoUrl
+
+
 class InputDocumentContentPart(BaseModel):
     """Document (PDF / file) content part in a multimodal message.
 
@@ -1804,6 +1863,7 @@ _KNOWN_CONTENT_PART_TAGS = frozenset(
     {
         "text",
         "image_url",
+        "video_url",
         "input_audio",
         "input_document",
         "reasoning",
@@ -1825,6 +1885,7 @@ ContentPart = Annotated[
     Union[
         Annotated[TextContentPart, Tag("text")],
         Annotated[ImageContentPart, Tag("image_url")],
+        Annotated[VideoContentPart, Tag("video_url")],
         Annotated[InputAudioContentPart, Tag("input_audio")],
         Annotated[InputDocumentContentPart, Tag("input_document")],
         Annotated[OpenAIReasoningContentPart, Tag("reasoning")],
@@ -1892,6 +1953,14 @@ class ChatMessage(BaseModel):
             raise ValueError('"tool_calls" is only valid on role="assistant" messages.')
         if self.tool_call_id is not None and self.role != "tool":
             raise ValueError('"tool_call_id" is only valid on role="tool" messages.')
+        # llama-server renders the marker into whatever turn carried it, so off a user turn the
+        # result is template-dependent.
+        if (
+            self.role != "user"
+            and isinstance(self.content, list)
+            and any(isinstance(part, VideoContentPart) for part in self.content)
+        ):
+            raise ValueError(f'"video_url" parts are not valid on role="{self.role}" messages.')
 
         if self.role == "tool":
             # tool_call_id resolution happens at ChatCompletionRequest scope. OpenAI accepts empty tool
@@ -3227,15 +3296,17 @@ class AnthropicToolResultBlock(BaseModel):
         return "" if v is None else v
 
 
-# Block types the converter translates explicitly. Anything else (thinking / redacted_thinking, a
-# provider block a resumed session replays, or a future type) is accepted as an unknown block and
-# dropped by the converter, rather than 400-ing the whole request on strict validation.
+# Block types with typed models. Anything else (a search_result or document, a provider block a
+# resumed session replays, or a future type) is accepted as an unknown block, which the converter
+# renders if it can and otherwise drops, rather than 400-ing the whole request on strict validation.
 _KNOWN_ANTHROPIC_BLOCK_TYPES = frozenset(
     {"text", "image", "tool_use", "tool_result", "thinking", "redacted_thinking"}
 )
 # Thinking blocks are replayed only in assistant turns; the converter drops them
 # from user content, so accepting them there would silently lose a user turn.
-_USER_ANTHROPIC_BLOCK_TYPES = frozenset({"text", "image", "tool_use", "tool_result"})
+_USER_ANTHROPIC_BLOCK_TYPES = frozenset(
+    {"text", "image", "tool_use", "tool_result", "search_result", "document"}
+)
 
 
 class AnthropicUnknownBlock(BaseModel):
@@ -3348,6 +3419,20 @@ class AnthropicMessage(BaseModel):
                 # value would raise TypeError, escaping as a 500 instead of a clean 400.
                 if not isinstance(btype, str) or btype not in _USER_ANTHROPIC_BLOCK_TYPES:
                     raise ValueError(f"unsupported content block type {btype!r} in a user message")
+                # A PDF, url or file document cannot be read. Only inside a tool result, which
+                # clients resend with history, does it degrade to a note instead of a 400.
+                if btype == "document":
+                    source = (
+                        block.get("source")
+                        if isinstance(block, dict)
+                        else getattr(block, "source", None)
+                    )
+                    stype = source.get("type") if isinstance(source, dict) else None
+                    if stype not in ("text", "content"):
+                        raise ValueError(
+                            f"unsupported document source type {stype!r}: only text and content "
+                            "documents can be read"
+                        )
         return data
 
 
@@ -3618,7 +3703,7 @@ class DiffusionLoadRequest(BaseModel):
             description = "Transformer compute dtype. UNSET or auto (the default) picks the "
             "fastest precision the hardware supports: the DENSE bf16 transformer "
             "is loaded instead of the GGUF and torchao-quantised onto the "
-            "low-precision tensor cores (data-center fp8, consumer/Ampere int8), "
+            "low-precision tensor cores (int8 first on every tier, then fp8 on sm_89+), "
             "falling back to the GGUF when the device, VRAM or disk cannot take "
             "it. none/off pins running the GGUF as-is; an explicit scheme forces "
             "that scheme. Dense path needs CUDA + bf16. An EXPLICIT scheme fails "
@@ -4112,6 +4197,13 @@ class DiffusionResolvedControl(BaseModel):
         "so a client reading an older backend's payload still parses.",
     )
     reason: str = Field("", description = "Short human-readable reason for the resolved value.")
+    artifact: Optional[str] = Field(
+        None,
+        description = "The hosted or local file the engaged value came from, as "
+        '"prequant:<repo>/<file>", when a pre-quantized checkpoint was seeded rather than the '
+        "weights being quantised in memory. Declared here or pydantic drops it and no API client "
+        "ever sees the provenance. Null on every other control and on a runtime quantise.",
+    )
 
 
 class DiffusionDownloadPlanEntry(BaseModel):
@@ -4175,6 +4267,9 @@ class DiffusionStatusResponse(BaseModel):
     dtype: Optional[str] = Field(None, description = "Compute dtype")
     model_kind: Optional[str] = Field(
         None, description = "Resolved load kind: gguf | single_file | pipeline (gates GGUF-only UI)"
+    )
+    gguf_filename: Optional[str] = Field(
+        None, description = "Loaded single-file checkpoint filename, or null for a pipeline"
     )
     gguf_variant: Optional[str] = Field(
         None, description = "Selected GGUF quantisation variant (for example Q8_0)"
@@ -4549,7 +4644,7 @@ class VideoLoadRequest(BaseModel):
             None,
             description = "Quantise the dense DiT(s) on a full-pipeline load. On a diffusers "
             "pipeline load the dense bf16 transformer(s) are torchao-quantised in place onto "
-            "the low-precision tensor cores (data-center fp8, consumer/Ampere int8), which is "
+            "the low-precision tensor cores (int8 first on every tier, then fp8 on sm_89+), which is "
             "faster than running dense bf16. For a dual-expert MoE family (Wan2.2-A14B) BOTH "
             "experts are quantised with the same scheme. null/none/off keeps the DiT(s) at "
             "their loaded precision; an explicit scheme forces it. Needs CUDA + bf16; ignored "

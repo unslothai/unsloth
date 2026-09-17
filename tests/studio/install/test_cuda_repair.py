@@ -120,6 +120,7 @@ def _run_cuda_repair(
     cvd = None,
     index_family = None,
     index_url = None,
+    probe = False,
 ):
     """Invoke _ensure_cuda_torch under a fully mocked host; return the pip mock.
 
@@ -173,7 +174,12 @@ def _run_cuda_repair(
             stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
         if index_url is None:
             stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_URL", None)
-        _ensure_cuda_torch()
+        # probe asks setup.sh's fast-path question instead. Carried on the pip mock so the
+        # scenarios above keep their single return value.
+        if probe:
+            mock_pip.probe_answer = stack_mod._cuda_torch_needs_dependency_pass()
+        else:
+            _ensure_cuda_torch()
     return mock_pip
 
 
@@ -836,6 +842,7 @@ def _run_flavor_invariant(
     index_family = None,
     index_url = None,
     win_arm64 = False,
+    win_arm64_interpreter = None,
     probe_cuda = None,
     probe_hip = None,
 ):
@@ -913,6 +920,13 @@ def _run_flavor_invariant(
         patch.object(stack_mod, "_RECORDED_TORCH_TAG", recorded),
         patch.object(stack_mod.platform, "machine", return_value = "AMD64"),
         patch.object(stack_mod, "_is_windows_arm64", return_value = win_arm64),
+        # The interpreter's arch, which the CUDA-preservation shortcut reads.
+        # They separate on an ARM64 machine running an emulated x64 python.
+        patch.object(
+            stack_mod,
+            "_is_win_arm64_interpreter",
+            return_value = win_arm64 if win_arm64_interpreter is None else win_arm64_interpreter,
+        ),
         patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = nvidia),
         patch.object(stack_mod.shutil, "which", side_effect = _which),
         patch.object(stack_mod.os.path, "isfile", return_value = True),
@@ -1395,6 +1409,84 @@ class TestAPinnedCpuIndexIsEnforcedToo:
         )
         assert ok is True
         mock_pip.assert_not_called()
+
+
+class TestWindowsOnArmPreservesCudaOnlyForAnInferredExpectation:
+    """The win_arm64 CUDA shortcut must not swallow an explicit CPU pin.
+
+    Preserving an installed cu* build is right for an expectation DERIVED from the driver:
+    download.pytorch.org publishes no win_arm64 CUDA wheel, so that "repair" resolves
+    nothing. A pin is not a derivation, and /cpu does publish win_arm64 torch and
+    torchvision, so that repair has somewhere to go.
+    """
+
+    _PIN = "https://download.pytorch.org/whl/cpu"
+
+    def test_an_explicit_cpu_pin_still_repairs_a_cuda_venv(self):
+        ok, mock_pip = _run_flavor_invariant(
+            installed = "2.11.0+cu134",
+            repaired = "2.10.0+cpu",
+            expected_env = "cpu",
+            index_url = self._PIN,
+            backend = "cpu",
+            win_arm64 = True,
+        )
+        assert ok is True
+        assert mock_pip.call_count == 1
+        assert _index_url(mock_pip) == self._PIN
+        args = [str(a) for a in mock_pip.call_args.args]
+        # No win_arm64 torchaudio on /cpu either, so the existing drop still applies.
+        assert not any(a.startswith("torchaudio") for a in args)
+
+    def test_the_family_spelling_of_the_pin_is_honoured_too(self):
+        ok, mock_pip = _run_flavor_invariant(
+            installed = "2.11.0+cu134",
+            repaired = "2.10.0+cpu",
+            expected_env = "cpu",
+            index_family = "cpu",
+            backend = "cpu",
+            win_arm64 = True,
+        )
+        assert ok is True
+        assert mock_pip.call_count == 1
+
+    def test_a_driver_inferred_cuda_expectation_is_still_preserved(self):
+        ok, mock_pip = _run_flavor_invariant(
+            installed = "2.11.0+cu134",
+            expected_env = "cu130",
+            win_arm64 = True,
+        )
+        assert ok is True
+        mock_pip.assert_not_called()
+
+    def test_a_probed_cpu_tag_with_no_pin_does_not_downgrade_it(self):
+        # setup.ps1 also publishes "cpu" when its nvidia-smi probe comes back empty, and a probe
+        # result is not evidence, so the shortcut keeps the CUDA build.
+        ok, mock_pip = _run_flavor_invariant(
+            installed = "2.11.0+cu134",
+            expected_env = "cpu",
+            nvidia = False,
+            win_arm64 = True,
+        )
+        assert ok is True
+        mock_pip.assert_not_called()
+
+    def test_an_emulated_x64_interpreter_on_an_arm64_machine_still_repairs(self):
+        """The machine and the interpreter are separate axes, and the shortcut reads the
+        interpreter. Every Windows on ARM install predating native support runs an
+        emulated x64 python against ordinary win_amd64 wheels from
+        download.pytorch.org, so the repair must reach them exactly as it always did.
+        """
+        ok, mock_pip = _run_flavor_invariant(
+            installed = "2.9.1+cu118",
+            repaired = "2.10.0+cu128",
+            expected_env = "cu128",
+            win_arm64 = True,
+            win_arm64_interpreter = False,
+        )
+        assert ok is True
+        assert mock_pip.call_count == 1
+        assert _index_url(mock_pip).endswith("/cu128")
 
 
 class TestWindowsOnArmKeepsTheNoTorchaudioException:
@@ -2192,9 +2284,13 @@ class TestTheDelegatedRocmRepairKeepsTheArm64Exception:
     def test_the_windows_rocm_install_drops_torchaudio_on_arm64(self):
         source = inspect.getsource(stack_mod._ensure_rocm_torch)
         block = source[source.index("_WINDOWS_ROCM_TORCH_PKG_SPECS.get") :][:1200]
+        # The interpreter's arch, not the machine's: an emulated x64 venv installs win_amd64.
         assert (
-            "_is_windows_arm64()" in block
+            "_is_win_arm64_interpreter()" in block
         ), "the delegated ROCm repair needs the same exception as the flavor repair"
+        assert (
+            "_is_windows_arm64()" not in block
+        ), "the machine predicate would drop torchaudio from x64 venvs"
         assert "*_rocm_trio" in block, "the trio has to be built, not passed positionally"
 
     def test_x64_windows_still_asks_for_all_three(self):
@@ -2636,3 +2732,41 @@ def test_detect_index_url_reads_a_localized_nvidia_smi_banner(monkeypatch, tmp_p
         lambda name, *a, **k: "nvidia-smi" if name == "nvidia-smi" else None,
     )
     assert _detect_cuda_torch_index_url() == f"{stack_mod._PYTORCH_WHL_BASE}/cu130"
+
+
+# setup.sh's fast path skips the dependency pass whole, so the repair above is unreachable on an
+# "up to date" install. --cuda-torch-needs-dependency-pass forces the pass, and answers by asking
+# the repair itself: these assert the two cannot drift apart.
+class TestTheFastPathProbeAgreesWithTheRepair:
+    SCENARIOS = {
+        "cpu wheel on an NVIDIA host": dict(torch_state = "cpu"),
+        "rocm wheel on an NVIDIA host": dict(torch_state = "hip"),
+        "healthy cuda wheel": dict(torch_state = "cuda", cuda_version = "12.8"),
+        "deliberate cpu backend": dict(torch_state = "cpu", backend = "cpu"),
+        "the GPU is masked away": dict(torch_state = "cpu", cvd = ""),
+        "no NVIDIA GPU": dict(torch_state = "cpu", nvidia = False),
+        "a no-torch install": dict(torch_state = "cpu", no_torch = True),
+        "windows, where setup.ps1 owns torch": dict(torch_state = "cpu", is_windows = True),
+        "macos": dict(torch_state = "cpu", is_macos = True),
+        "a deliberate rocm install": dict(torch_state = "hip", rocm_marker = True),
+    }
+
+    @pytest.mark.parametrize("name", sorted(SCENARIOS))
+    def test_the_probe_answers_what_the_repair_would_do(self, name):
+        scenario = self.SCENARIOS[name]
+        repaired = _run_cuda_repair(**scenario).call_count == 1
+        probe = _run_cuda_repair(**scenario, probe = True)
+        assert probe.probe_answer is repaired
+        # A probe that installs would download multi-gigabyte wheels from a fast path.
+        assert probe.call_count == 0
+
+    def test_at_least_one_scenario_answers_each_way(self):
+        answers = {
+            _run_cuda_repair(**scenario, probe = True).probe_answer
+            for scenario in self.SCENARIOS.values()
+        }
+        assert answers == {True, False}
+
+    def test_a_probe_that_cannot_answer_keeps_the_fast_path(self):
+        with patch.object(stack_mod, "_ensure_cuda_torch", side_effect = OSError("no")):
+            assert stack_mod._cuda_torch_needs_dependency_pass() is False
