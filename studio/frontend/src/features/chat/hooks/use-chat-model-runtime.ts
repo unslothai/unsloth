@@ -10,6 +10,7 @@ import {
 } from "../lib/server-tuning-fields";
 import { createElement, useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
+import { isBackendDownForDesktopUpdate } from "@/lib/desktop-update-activity";
 import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
 import {
   type TransferSample,
@@ -619,6 +620,8 @@ async function syncInferenceStatusToStore(options?: {
     // A superseded refresh reports nothing, or a stale failure would raise a toast about a read
     // whose answer would have been discarded. The LoRA inventory settles from its own request.
     if (signal?.aborted || superseded()) return;
+    // The desktop update stopped the backend itself, and the update screen already says so.
+    if (isBackendDownForDesktopUpdate()) return;
     const message =
       error instanceof Error ? error.message : "Failed to load models";
     setModelsError(message);

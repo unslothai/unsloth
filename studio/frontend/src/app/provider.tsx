@@ -43,6 +43,7 @@ import { TauriUpdateContext } from "@/hooks/tauri-update-context";
 import { type BackendStatus, useTauriBackend } from "@/hooks/use-tauri-backend";
 import { useTauriUpdate } from "@/hooks/use-tauri-update";
 import { isTauri } from "@/lib/api-base";
+import { setBackendDownForDesktopUpdate } from "@/lib/desktop-update-activity";
 import { getToastOffsets } from "@/lib/toast-offset";
 import { Z_LAYER } from "@/lib/z-layers";
 import { useRouterState } from "@tanstack/react-router";
@@ -433,6 +434,11 @@ function TauriUpdateLayer({
     update.status === "downloading" ||
     update.status === "installing" ||
     (update.status === "error" && !update.dismissed);
+
+  useEffect(() => {
+    setBackendDownForDesktopUpdate(isUpdating);
+    return () => setBackendDownForDesktopUpdate(false);
+  }, [isUpdating]);
 
   const content = isUpdating ? (
     <UpdateScreen
