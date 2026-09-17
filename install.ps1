@@ -1119,16 +1119,25 @@ function Install-UnslothStudio {
         # the machine as having none. Test-Path is a file existence check, not a process spawn; the
         # bound that matters is on the candidates handed back, since each of those costs a probe.
         try {
+            $repos = @()
             if ($env:SystemRoot) {
-                $repo = Join-Path $env:SystemRoot "System32\DriverStore\FileRepository"
-                if (Test-Path -LiteralPath $repo -PathType Container) {
-                    foreach ($dir in @(Get-ChildItem -LiteralPath $repo -Directory -Filter "nv*" -ErrorAction SilentlyContinue |
-                        Sort-Object LastWriteTime -Descending |
-                        Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName "nvidia-smi.exe") -PathType Leaf } |
-                        Select-Object -First 8)) {
-                        $dirs += $dir.FullName
-                    }
-                }
+                # Both spellings, for the same WOW64 reason as System32 and SysNative above: in a
+                # 32-bit process System32 redirects to SysWOW64, which has no DriverStore at all,
+                # and SysNative is the only name that reaches the 64-bit driver package. At most
+                # one of the two resolves in any given process, so this is not a doubled scan.
+                $repos += (Join-Path $env:SystemRoot "System32\DriverStore\FileRepository")
+                $repos += (Join-Path $env:SystemRoot "SysNative\DriverStore\FileRepository")
+            }
+            $packages = @()
+            foreach ($repo in $repos) {
+                if (-not (Test-Path -LiteralPath $repo -PathType Container)) { continue }
+                $packages += @(Get-ChildItem -LiteralPath $repo -Directory -Filter "nv*" -ErrorAction SilentlyContinue |
+                    Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName "nvidia-smi.exe") -PathType Leaf })
+            }
+            # The bound is on the whole DriverStore contribution rather than per root, so adding
+            # the second spelling cannot double the number of probes this hands back.
+            foreach ($dir in @($packages | Sort-Object LastWriteTime -Descending | Select-Object -First 8)) {
+                $dirs += $dir.FullName
             }
         } catch {}
         $paths = @()

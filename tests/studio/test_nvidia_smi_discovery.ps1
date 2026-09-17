@@ -131,6 +131,25 @@ try {
     Check "the DriverStore scan is bounded and filtered to NVIDIA's own packages" (
         $found.Count -le 8 -and -not ($found -match "unrelated"))
 
+    # A 32-bit PowerShell on 64-bit Windows is the whole reason SysNative is in the direct list,
+    # and the DriverStore needed the same treatment: in that process "System32" is redirected to
+    # SysWOW64, which carries no DriverStore at all, so a host whose ONLY nvidia-smi is the driver
+    # package would have been reported as having no NVIDIA GPU. That is exactly the population
+    # this discovery change exists to recover.
+    Reset-FakeMachine
+    $planted = Add-FakeSmi "Windows/SysNative/DriverStore/FileRepository/nvmii.inf_amd64_0001/"
+    $found = @(Get-NvidiaSmiCandidatePaths)
+    Check "the DriverStore is reached through SysNative as well as System32" (
+        $found.Count -eq 1 -and $found[0] -eq $planted)
+
+    # The two spellings name one directory on a real host, so the bound is on the whole
+    # DriverStore contribution rather than per root: adding SysNative must not double the probes.
+    Reset-FakeMachine
+    for ($i = 0; $i -lt 12; $i++) { $null = Add-FakeSmi "Windows/System32/DriverStore/FileRepository/nva$i.inf_amd64_$i/" }
+    for ($i = 0; $i -lt 12; $i++) { $null = Add-FakeSmi "Windows/SysNative/DriverStore/FileRepository/nvb$i.inf_amd64_$i/" }
+    $found = @(Get-NvidiaSmiCandidatePaths)
+    Check "both DriverStore spellings still share one bound of eight" ($found.Count -le 8)
+
     # The bound applies to directories that actually HOLD the binary, not to the nv* name matches.
     # NVIDIA ships several packages whose names start nv and contain no nvidia-smi at all: the HD
     # audio driver, the virtual audio device, the network service. A machine that installed any of
