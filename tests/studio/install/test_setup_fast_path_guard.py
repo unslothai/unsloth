@@ -464,9 +464,15 @@ def test_the_deep_verify_only_degrades_on_a_tree_that_lacks_the_keyword(
     assert result.returncode == expected, result.stderr.decode()
 
 
-def test_the_installer_reads_uv_offline_the_same_way_the_shell_does(tmp_path):
+def test_the_installer_reads_uv_offline_the_same_way_the_shell_does(tmp_path, monkeypatch):
     """A shell that decides "online" while the installer decides "offline" declines a repair
-    with a message contradicting the user. `off` and `no` are the spellings that did it."""
+    with a message contradicting the user. `off` and `no` are the spellings that did it.
+
+    ``_uv_is_offline`` reads ``os.environ``, so the loop below has to set it for real. It
+    does that through ``monkeypatch`` rather than assigning ``os.environ`` directly: a bare
+    assignment survives the test and leaves the LAST value in the loop set for the rest of
+    the session, which is a resolver policy every other suite in this directory inherits.
+    """
     import ast as _ast
     import os
     import subprocess
@@ -525,7 +531,7 @@ def test_the_installer_reads_uv_offline_the_same_way_the_shell_does(tmp_path):
             ).stdout.strip()
             == "yes"
         )
-        os.environ["UV_OFFLINE"] = value
+        monkeypatch.setenv("UV_OFFLINE", value)
         assert (
             shell == namespace["_uv_is_offline"]()
         ), f"UV_OFFLINE={value!r}: setup.sh says {shell}, install_python_stack.py disagrees"
