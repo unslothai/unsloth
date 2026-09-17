@@ -36,6 +36,7 @@ CLM_REACHABLE = (
     "Get-StudioEarlyPython",
     "Invoke-StudioEarlyPython",
     "Get-StudioPythonFinalPath",
+    "Resolve-StudioFinalPathsInOneChild",
     "Get-StudioPythonProcessImageTable",
     "Remove-StudioTrailingNewline",
     # The NVIDIA inventory's Python rung. It is REACHED when the emitted probe type declined,

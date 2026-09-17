@@ -2317,6 +2317,15 @@ function Install-UnslothStudio {
         foreach ($candidate in $candidates) {
             if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
             if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
+            # Windows ships python.exe and python3.exe in WindowsApps as App Execution Aliases:
+            # zero-length reparse stubs that satisfy Get-Command and Test-Path and, when run,
+            # OPEN THE MICROSOFT STORE instead of executing anything. On a first install with no
+            # CPython that is the first candidate on PATH, so probing it would show the user a
+            # Store window and then spend the probe timeout waiting for output that never comes.
+            # Matched by location, which is where Windows documents these aliases, rather than by
+            # file length: reading .Length off a FileInfo is a property access Constrained
+            # Language Mode refuses, and this ladder exists for hosts under CLM.
+            if ("$candidate" -match '(?i)[\\/]Microsoft[\\/]WindowsApps[\\/]') { continue }
             # The probe IS a realpath call, so an interpreter that cannot answer one is rejected
             # here rather than passing a check and failing later. Python 2 fails it too, since its
             # Windows realpath does not follow links.
@@ -2591,11 +2600,94 @@ function Install-UnslothStudio {
         return $answer
     }
 
+    # Filled by Resolve-StudioFinalPathsInOneChild below, and read here. Nothing else writes it,
+    # so an unprimed run behaves exactly as it did: one child per resolution.
+    $script:StudioPythonFinalPathCache = $null
+
     function Get-StudioPythonFinalPath {
         param([Parameter(Mandatory = $true)][string]$Path)
+        if ($null -ne $script:StudioPythonFinalPathCache -and
+            $script:StudioPythonFinalPathCache.ContainsKey($Path)) {
+            # Including a cached $null, which means "asked, and this path has no exact answer".
+            # Falling through on that would spend a child to be told the same thing again.
+            return $script:StudioPythonFinalPathCache[$Path]
+        }
         $exe = Get-StudioEarlyPython
         if (-not $exe) { return $null }
         return (Invoke-StudioEarlyPython -Exe $exe -Path $Path)
+    }
+
+    # Resolve many paths in ONE child, and prime the cache above with the answers.
+    #
+    # Purely an optimisation: every entry it writes is exactly what Invoke-StudioEarlyPython would
+    # have returned for that path, same expression and same two post-checks, so the ladder above is
+    # unchanged and simply stops paying for children it can avoid. It matters because of one
+    # caller. Get-RunningStudioVenvProcesses resolves the image path of EVERY running process, and
+    # the install scan repeats that for each of the two to four protected roots; on a machine with
+    # a few hundred processes that is a few hundred interpreter launches where the resolver this
+    # replaced made an in-process call. Measured as the reason to batch, not guessed.
+    #
+    # The path list goes through a file rather than argv. Windows caps a command line at 32767
+    # characters and a few hundred image paths can pass that, which would fail the whole batch
+    # rather than a single path.
+    function Resolve-StudioFinalPathsInOneChild {
+        param([string[]]$Paths = @())
+        if ($null -eq $script:StudioPythonFinalPathCache) { $script:StudioPythonFinalPathCache = @{} }
+        $wanted = @()
+        foreach ($candidate in $Paths) {
+            if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
+            if ($script:StudioPythonFinalPathCache.ContainsKey($candidate)) { continue }
+            if ($wanted -notcontains $candidate) { $wanted += $candidate }
+        }
+        if ($wanted.Count -eq 0) { return }
+        $exe = Get-StudioEarlyPython
+        if (-not $exe) { return }
+        $tempRoot = if ($env:TEMP) { $env:TEMP } elseif ($env:TMPDIR) { $env:TMPDIR } else { "/tmp" }
+        $listFile = Join-Path $tempRoot ("unsloth-paths-" + [guid]::NewGuid().ToString("N") + ".txt")
+        try { Set-Content -LiteralPath $listFile -Value $wanted -Encoding UTF8 -ErrorAction Stop }
+        catch { return }
+        # Character for character the expression Invoke-StudioEarlyPython uses, including
+        # strict=True and the version gate, because a batched answer that differed from the
+        # single-path one would be a second implementation of path identity.
+        $probe = "import pathlib,sys" + [char]10 +
+            "sys.exit(2) if sys.version_info < (3,8) else None" + [char]10 +
+            "out=[]" + [char]10 +
+            "with open(sys.argv[1],'r',encoding='utf-8') as fh:" + [char]10 +
+            "    for line in fh:" + [char]10 +
+            "        p=line.rstrip('\r\n')" + [char]10 +
+            "        if not p: continue" + [char]10 +
+            "        try:" + [char]10 +
+            "            out.append(p+'|'+str(pathlib.Path(p).resolve(strict=True)))" + [char]10 +
+            "        except Exception:" + [char]10 +
+            "            pass" + [char]10 +
+            "sys.stdout.buffer.write('\n'.join(out).encode('utf-8'))"
+        $raw = ""
+        try { $raw = Invoke-StudioEarlyPythonScript -Exe $exe -Script $probe -ScriptArgs @($listFile) -TimeoutMs 30000 }
+        catch { $raw = "" }
+        finally { Remove-Item -LiteralPath $listFile -Force -ErrorAction SilentlyContinue }
+        $answers = @{}
+        foreach ($line in ("$raw" -split "`r?`n")) {
+            if ([string]::IsNullOrWhiteSpace($line)) { continue }
+            # The first separator, because the pipe is not legal in a Windows path so the left
+            # half cannot contain one. $requested, not $input: $input is an automatic variable.
+            $split = $line.IndexOf('|')
+            if ($split -lt 1) { continue }
+            $requested = $line.Substring(0, $split)
+            $answer = $line.Substring($split + 1)
+            if ([string]::IsNullOrWhiteSpace($answer)) { continue }
+            # The same two checks the single-path rung applies to its own answer. A relative
+            # answer is not an identity, and a path that does not exist cannot be the resolution
+            # of one that does.
+            if (-not (Split-Path -IsAbsolute $answer)) { continue }
+            if (-not (Test-Path -LiteralPath $answer)) { continue }
+            $answers[$requested] = $answer
+        }
+        foreach ($candidate in $wanted) {
+            if ($answers.ContainsKey($candidate)) { $script:StudioPythonFinalPathCache[$candidate] = $answers[$candidate] }
+            # A path the child could not resolve is recorded as $null rather than left absent, so
+            # the miss is not re-asked once per protected root.
+            else { $script:StudioPythonFinalPathCache[$candidate] = $null }
+        }
     }
 
     # Tell Explorer a shortcut was rewritten, through a child interpreter. Used only where the
@@ -5556,9 +5648,24 @@ exit 0
 
         # Block only confirmed executable identities: a command line or working
         # directory that merely mentions the path is not proof of an open file.
-        foreach ($process in @(Get-Process -ErrorAction SilentlyContinue)) {
-            $executable = $null
-            try { $executable = Get-StudioProcessImagePath -ProcessId $process.Id } catch { continue }
+        #
+        # Two passes. The image paths are collected first and resolved in ONE child, because the
+        # resolver below is called once per running process and this whole scan runs again for
+        # each protected root: a few hundred processes meant a few hundred interpreter launches.
+        # The cache is script-scoped and keyed on the raw image path, so the repeat scans cost
+        # nothing at all. It is a cache of answers, not a second resolver; every entry is what
+        # the single-path rung would have returned.
+        $studioScanProcesses = @(Get-Process -ErrorAction SilentlyContinue)
+        $studioScanImages = @{}
+        foreach ($process in $studioScanProcesses) {
+            $image = $null
+            try { $image = Get-StudioProcessImagePath -ProcessId $process.Id } catch { continue }
+            if ([string]::IsNullOrWhiteSpace($image)) { continue }
+            $studioScanImages[[string]$process.Id] = $image
+        }
+        try { Resolve-StudioFinalPathsInOneChild -Paths @($studioScanImages.Values) } catch { }
+        foreach ($process in $studioScanProcesses) {
+            $executable = $studioScanImages[[string]$process.Id]
             if (-not $executable) { continue }
             try { $executable = Get-StudioFinalPath -Path $executable } catch { continue }
             if (Test-StudioProtectedPathMatch -Candidate $executable -ProtectedPath $resolvedPath -Exact:$Exact) {

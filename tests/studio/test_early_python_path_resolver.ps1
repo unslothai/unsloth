@@ -34,11 +34,21 @@ $wanted = @(
     "Remove-StudioTrailingNewline",
     "Invoke-StudioEarlyPythonScriptViaCmdlets", "Get-StudioPythonFinalPath",
     "Resolve-StudioLinkTarget", "Get-StudioSubstTarget", "Get-StudioLexicalPath",
-    "Resolve-StudioFinalPathInfo",
+    "Resolve-StudioFinalPathInfo", "Resolve-StudioFinalPathsInOneChild",
     # Called by Resolve-StudioFinalPathInfo on the rung below this one. Extracted rather than
     # stubbed: whether the degradation is announced is part of what the ladder owes its caller.
     "Write-StudioFinalPathDegraded"
 )
+# Source text of a named function, for the checks that read code rather than run it.
+function Get-FunctionTextOrEmpty($path, $name) {
+    $a = [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$null, [ref]$null)
+    $f = @($a.FindAll({ param($n)
+        $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name
+    }, $true))
+    if ($f.Count -lt 1) { return "" }
+    return $f[0].Extent.Text
+}
+
 $extracted = @{}
 foreach ($name in $wanted) {
     $fn = $ast.FindAll({ param($n)
@@ -291,6 +301,110 @@ try {
     foreach ($v in $vectors) {
         Check "the launcher at offset $($v.Index) runs with -S as well as -I" (
             $v.Value -match '"-I",\s*"-S"')
+    }
+
+    # ---- The batch, which exists for one caller and one number ----
+    #
+    # Get-RunningStudioVenvProcesses resolves the image path of every running process, and the
+    # install scan repeats that for each protected root. One child per resolution meant a few
+    # hundred interpreter launches on an ordinary machine, where the resolver this replaced made
+    # an in-process call. Counted here rather than reasoned about.
+    $script:StudioPythonFinalPathCache = $null
+    $batchDir = Join-Path $tmp "batch"
+    $null = New-Item -ItemType Directory -Path $batchDir -Force
+    $batchPaths = @()
+    foreach ($i in 1..12) {
+        $leaf = Join-Path $batchDir "f$i.txt"
+        Set-Content -LiteralPath $leaf -Value "x" -Encoding utf8
+        $batchPaths += $leaf
+    }
+
+    # A counter around the single-path rung, so what is measured is children avoided rather than
+    # a cache being populated.
+    $script:RealInvoke = ${function:Invoke-StudioEarlyPython}
+    $script:SingleCalls = 0
+    function Invoke-StudioEarlyPython {
+        param([string]$Exe, [string]$Path, [int]$TimeoutMs = 10000)
+        $script:SingleCalls++
+        return (& $script:RealInvoke -Exe $Exe -Path $Path -TimeoutMs $TimeoutMs)
+    }
+
+    $script:SingleCalls = 0
+    foreach ($leaf in $batchPaths) { $null = Get-StudioPythonFinalPath -Path $leaf }
+    $unbatched = $script:SingleCalls
+    Check "unbatched, every resolution starts its own child (bites)" ($unbatched -eq $batchPaths.Count)
+
+    $script:StudioPythonFinalPathCache = $null
+    $script:SingleCalls = 0
+    Resolve-StudioFinalPathsInOneChild -Paths $batchPaths
+    Check "the batch starts no single-path child of its own" ($script:SingleCalls -eq 0)
+    foreach ($leaf in $batchPaths) { $null = Get-StudioPythonFinalPath -Path $leaf }
+    Check "and every resolution after it is served without one" ($script:SingleCalls -eq 0)
+
+    # An answer, not just an absence of children. The batch must return exactly what the
+    # single-path rung returns for the same path, or it is a second implementation of identity.
+    $script:StudioPythonFinalPathCache = $null
+    $one = Get-StudioPythonFinalPath -Path $batchPaths[0]
+    $script:StudioPythonFinalPathCache = $null
+    Resolve-StudioFinalPathsInOneChild -Paths $batchPaths
+    $batched = Get-StudioPythonFinalPath -Path $batchPaths[0]
+    Check "the batched answer is a real path (bites)" (-not [string]::IsNullOrWhiteSpace($one))
+    Check "the batch answers byte for byte what the single rung answers" ($batched -ceq $one)
+
+    # A path the child cannot resolve is recorded as a miss rather than left absent, or the whole
+    # scan re-asks it once per protected root.
+    $script:StudioPythonFinalPathCache = $null
+    $missing = Join-Path $batchDir "no-such-file"
+    Resolve-StudioFinalPathsInOneChild -Paths @($missing)
+    Check "an unresolvable path is recorded" ($script:StudioPythonFinalPathCache.ContainsKey($missing))
+    Check "and recorded as no exact answer" ($null -eq $script:StudioPythonFinalPathCache[$missing])
+    $script:SingleCalls = 0
+    $null = Get-StudioPythonFinalPath -Path $missing
+    Check "and is not re-asked" ($script:SingleCalls -eq 0)
+
+    # The list goes through a file, not argv: a few hundred image paths pass the 32767 character
+    # Windows command line limit, and that would fail the whole batch rather than one path.
+    $batchText = Get-FunctionTextOrEmpty $installPs1 "Resolve-StudioFinalPathsInOneChild"
+    Check "the batch hands the child a list FILE rather than an argv of paths" (
+        $batchText -match 'Set-Content -LiteralPath \$listFile' -and
+        $batchText -match 'ScriptArgs @\(\$listFile\)')
+    # Same expression as the single-path rung, or the two can disagree about identity.
+    Check "the batch resolves with the same expression the single rung uses" (
+        $batchText -match 'pathlib\.Path\(p\)\.resolve\(strict=True\)')
+    Check "and keeps the same version gate" ($batchText -match 'sys\.version_info < \(3,8\)')
+    Check "and applies the same two post-checks" (
+        $batchText -match 'Split-Path -IsAbsolute \$answer' -and
+        $batchText -match 'Test-Path -LiteralPath \$answer')
+
+    # ---- Windows Store App Execution Aliases ----
+    #
+    # Windows ships python.exe and python3.exe in WindowsApps as zero-length reparse stubs that
+    # satisfy Get-Command and Test-Path and OPEN THE MICROSOFT STORE when run. On a first install
+    # with no CPython that is the first candidate on PATH, so probing it shows the user a Store
+    # window and then burns the probe timeout waiting for output that never arrives.
+    # Comments stripped first, both ways round: the comment that explains the filter NAMES
+    # WindowsApps, so the positive check passed against prose with the code deleted, and the
+    # comment that explains the absence of a length read names .Length.
+    $discoveryText = Get-FunctionTextOrEmpty $installPs1 "Get-StudioEarlyPython"
+    $discoveryCode = ($discoveryText -split "`r?`n" |
+        Where-Object { -not ($_.TrimStart().StartsWith("#")) }) -join "`n"
+    Check "the comment stripper kept the code (bites)" ($discoveryCode -match 'Get-Command')
+    Check "discovery skips the WindowsApps execution aliases" (
+        $discoveryCode -match 'WindowsApps')
+    # By location, not by reading a file's length: that is a property access on a FileInfo, which
+    # Constrained Language Mode refuses, and this ladder exists for hosts under CLM.
+    Check "and does not read a property CLM refuses to get there" (
+        $discoveryCode -notmatch '\.Length\b')
+    foreach ($case in @(
+        @{ P = "C:\Users\a\AppData\Local\Microsoft\WindowsApps\python3.exe"; Skip = $true },
+        @{ P = "C:\Users\a\AppData\Local\Microsoft\WindowsApps\python.exe"; Skip = $true },
+        @{ P = "C:/Users/a/AppData/Local/Microsoft/WindowsApps/python.exe"; Skip = $true },
+        @{ P = "C:\Python312\python.exe"; Skip = $false },
+        @{ P = "C:\Users\a\.unsloth\studio\.venv\Scripts\python.exe"; Skip = $false },
+        @{ P = "/usr/bin/python3"; Skip = $false }
+    )) {
+        $hit = [bool]("$($case.P)" -match '(?i)[\\/]Microsoft[\\/]WindowsApps[\\/]')
+        Check "the alias filter $(if ($case.Skip) { 'skips' } else { 'keeps' }) $($case.P)" ($hit -eq $case.Skip)
     }
 } finally {
     Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
