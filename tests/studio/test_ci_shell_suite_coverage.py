@@ -336,7 +336,9 @@ class TestWindowsPowerShellStepsAreGated:
         for name, job in (doc.get("jobs") or {}).items():
             runs_on = job.get("runs-on")
             labels = runs_on if isinstance(runs_on, list) else [runs_on]
-            if all(isinstance(l, str) and l.startswith("windows-") for l in labels if l is not None):
+            if all(
+                isinstance(l, str) and l.startswith("windows-") for l in labels if l is not None
+            ):
                 continue
             yield name, job
 
