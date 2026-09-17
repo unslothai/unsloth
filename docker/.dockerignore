@@ -1,12 +1,17 @@
 **
 !Dockerfile
+!Dockerfile.rocm
+!Dockerfile.studio-rocm
 !entrypoint.sh
+!entrypoint-rocm.sh
 !smoke_test.py
+!smoke_test_rocm.py
 !fetch_llama_prebuilt.py
 !supervisord.conf
 !studio_launch.sh
 !studio_password.sh
 !studio_run.sh
+!studio_home.sh
 !unsloth_studio_update.sh
 !unsloth_llama_update.sh
 !unsloth_jupyter_tunnel.sh

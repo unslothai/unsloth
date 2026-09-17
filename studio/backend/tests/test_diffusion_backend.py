@@ -11,6 +11,7 @@ GPU, weights, or network access is needed (sub-second, CI-friendly).
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import re
 import sys
 import threading
@@ -851,7 +852,7 @@ def fake_runtime(monkeypatch):
 
     monkeypatch.setattr(
         "core.inference.diffusion.load_ideogram4_pipeline",
-        lambda repo_id, dtype, hf_token = None: _FakePipe(),
+        lambda repo_id, dtype, hf_token = None, check_cancelled = None: _FakePipe(),
     )
 
     monkeypatch.setitem(sys.modules, "torch", torch)
@@ -2274,6 +2275,67 @@ def test_load_progress_downloading_then_finalizing(monkeypatch):
     assert backend.load_progress()["phase"] == "finalizing"  # 1000/1000
 
 
+def test_load_progress_counts_only_the_selected_prequant_file_in_its_artifact_repo(monkeypatch):
+    # unsloth/Qwen-Image-FP8 hosts one checkpoint per scheme, so a card that already ran fp8 and now
+    # loads int8 has 19 GB of a sibling file in that repo while expected_bytes counts only int8.
+    # Counting the whole repo reported finalizing with most of the selected checkpoint still to come.
+    backend = DiffusionBackend()
+    backend._loading = _LoadingState(
+        repo_id = "Qwen/Qwen-Image",
+        base_repo = "Qwen/Qwen-Image",
+        expected_bytes = 1000,
+    )
+    backend._loading.asset_repos = ("unsloth/Qwen-Image-FP8",)
+    # 600 bytes of the fp8 sibling were already there when the load claimed the repo.
+    backend._loading.asset_files = (("unsloth/Qwen-Image-FP8", "Qwen-Image-INT8.pt", 400, 600),)
+    monkeypatch.setattr(DiffusionBackend, "_cache_bytes", staticmethod(lambda repo: 0))
+    monkeypatch.setattr(DiffusionBackend, "_cache_file_bytes", staticmethod(lambda repo, f: 0))
+
+    # 100 of the selected file's 400 bytes have landed as an .incomplete blob.
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_cache_bytes",
+        staticmethod(lambda repo: 700 if repo == "unsloth/Qwen-Image-FP8" else 500),
+    )
+    p = backend.load_progress()
+    assert p["phase"] == "downloading"
+    assert p["bytes_downloaded"] == 600  # 500 base + 100 of the selected file, not 500 + 700
+
+    # Finished: the file is in the snapshot, so it counts in full and exactly once.
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_cache_file_bytes",
+        staticmethod(lambda repo, f: 400 if f == "Qwen-Image-INT8.pt" else 0),
+    )
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_cache_bytes",
+        staticmethod(lambda repo: 1000 if repo == "unsloth/Qwen-Image-FP8" else 600),
+    )
+    assert backend.load_progress()["phase"] == "finalizing"  # 600 + 400
+    assert backend.load_progress()["bytes_downloaded"] == 1000
+
+
+def test_load_progress_reports_a_prequant_file_that_was_already_cached(monkeypatch):
+    # Nothing to download from the artifact repo: the selected file must still count, or the bar
+    # stalls short of 100% for the rest of the load.
+    backend = DiffusionBackend()
+    backend._loading = _LoadingState(
+        repo_id = "Qwen/Qwen-Image",
+        base_repo = "Qwen/Qwen-Image",
+        expected_bytes = 1000,
+    )
+    backend._loading.asset_repos = ("unsloth/Qwen-Image-FP8",)
+    backend._loading.asset_files = (("unsloth/Qwen-Image-FP8", "Qwen-Image-INT8.pt", 400, 1000),)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_cache_bytes",
+        staticmethod(lambda repo: 1000 if repo == "unsloth/Qwen-Image-FP8" else 600),
+    )
+    monkeypatch.setattr(DiffusionBackend, "_cache_file_bytes", staticmethod(lambda repo, f: 400))
+    assert backend.load_progress()["phase"] == "finalizing"
+
+
 def test_load_progress_counts_a_mirrored_pipeline_repo_once(monkeypatch):
     # base_repo == repo_id, so count once. Summing adds the upstream's stale partial blobs -- the
     # very thing that selects the mirror -- to the mirror's live bytes, pegging the bar at 100%.
@@ -2502,6 +2564,756 @@ def test_unload_sets_cancel_event(fake_runtime):
     assert backend._cancel_event.is_set()
 
 
+@pytest.mark.parametrize("reason", ["generation", "resident"])
+def test_rejected_unload_preserves_pending_work(fake_runtime, monkeypatch, reason):
+    from fastapi import HTTPException
+    from core.inference.gpu_arbiter import GpuBusyForAnotherAccountError
+    from hub.services.models import account_access
+
+    backend = DiffusionBackend()
+    pending = object()
+    backend._loading = pending
+    active = threading.Event()
+    backend._active_generate_cancel = active
+    backend._active_generate_account = "bob" if reason == "generation" else "alice"
+
+    def refuse(*args):
+        raise HTTPException(status_code = 404, detail = "Model not found")
+
+    monkeypatch.setattr(account_access, "require_resident_control", refuse)
+    error = GpuBusyForAnotherAccountError if reason == "generation" else HTTPException
+    with pytest.raises(error):
+        backend.unload(expected_account = "alice")
+    assert not active.is_set() and not backend._cancel_event.is_set()
+    assert backend._load_token == backend._unload_waiters == backend._teardown_waiters == 0
+    assert backend._loading is pending
+
+
+def test_generation_waits_for_unload_before_teardown_reservation(fake_runtime, monkeypatch):
+    backend = DiffusionBackend()
+    parked, release, attempted, started = (threading.Event() for _ in range(4))
+    real_lock = backend._lock
+    torn_down = []
+    observed = []
+    errors = []
+
+    class GateLock:
+        def __enter__(self):
+            if threading.current_thread() is ejector:
+                parked.set()
+                assert release.wait(5)
+            real_lock.acquire()
+
+        def __exit__(self, *args):
+            real_lock.release()
+            if threading.current_thread() is generator:
+                attempted.set()
+
+    monkeypatch.setattr(backend, "_lock", GateLock())
+    monkeypatch.setattr(backend, "_unload_locked", lambda: torn_down.append(True))
+
+    def eject():
+        try:
+            backend.unload()
+        except Exception as exc:
+            errors.append(str(exc))
+
+    def generate():
+        with backend._generation_slot(threading.Event()):
+            observed.append(bool(torn_down))
+            started.set()
+
+    ejector = threading.Thread(target = eject, daemon = True)
+    generator = threading.Thread(target = generate, daemon = True)
+    ejector.start()
+    try:
+        assert parked.wait(5)
+        generator.start()
+        assert attempted.wait(5)
+        assert not started.wait(0.1), "generation started before the accepted eject"
+    finally:
+        release.set()
+        ejector.join(5)
+        if generator.ident is not None:
+            generator.join(5)
+    assert not errors and not ejector.is_alive() and not generator.is_alive()
+    assert observed == [True]
+    assert backend._unload_waiters == backend._teardown_waiters == 0
+
+
+@pytest.mark.parametrize(
+    "phase",
+    [
+        "validation",
+        "preinstall",
+        "resolution",
+        "memory_plan",
+        "dense_plan",
+        "transformer_error",
+        "pipeline_error",
+        "dense_error",
+        "dense_fallback",
+        "transformer",
+        "pipeline",
+        "dense",
+        "attention_error",
+        "cache_error",
+        "attention",
+        "step_cache",
+        "compile_cache",
+        "speed",
+        "quantize",
+        "component_plan",
+        "conditioning",
+        "placement",
+        "publication",
+    ],
+)
+@pytest.mark.parametrize("account_scoped", [False, True])
+def test_unload_cancels_pipeline_construction(
+    fake_runtime, tmp_path, monkeypatch, phase, account_scoped
+):
+    import gc
+    import weakref
+    from core.inference import diffusion as diff_mod
+    from core.inference import diffusion_eager_patches as ep
+
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    # ep.is_installed() is process-global, and other tests in this file leave the eager patches
+    # installed (test_generate_other_family_never_passes_cfg_trunc_ratio is one). Without this clean
+    # slate the assertion below reads THEIR leftovers and fails for 16 of the 46 cases whenever the
+    # file runs whole, while passing when this test is selected alone. Same idiom as
+    # test_failed_load_rolls_back_eager_patches.
+    ep.uninstall_patches()
+    backend = DiffusionBackend()
+    entered, release = threading.Event(), threading.Event()
+    outcome = {}
+    live = weakref.WeakSet()
+    reclaimed = []
+    pipelines = []
+    transformer_calls = []
+    setup_calls = []
+
+    def tracked():
+        value = _FakePipe()
+        value.cycle = value
+        live.add(value)
+        return value
+
+    def reclaim():
+        gc.collect()
+        reclaimed.append((len(live), backend._transition_owns_slot, backend._lock.locked()))
+
+    def park(value):
+        entered.set()
+        assert release.wait(5)
+        return value
+
+    def transformer(cls, *args, **kwargs):
+        transformer_calls.append(True)
+        value = tracked()
+        if phase == "transformer_error":
+            park(None)
+            raise RuntimeError("setup failed")
+        return park(value) if phase == "transformer" else value
+
+    def pipeline(cls, *args, **kwargs):
+        value = tracked()
+        value.transformer = kwargs["transformer"]
+        value.text_encoder = kwargs["text_encoder"]
+        pipelines.append(weakref.ref(value))
+        if phase == "pipeline_error":
+            park(None)
+            raise RuntimeError("setup failed")
+        return park(value) if phase == "pipeline" else value
+
+    def dense(*args, **kwargs):
+        value = tracked()
+        value.transformer = tracked()
+        pipelines.append(weakref.ref(value))
+        if phase in ("dense_error", "dense_fallback"):
+            park(None)
+            raise RuntimeError("setup failed")
+        return park(value), "int8"
+
+    def load():
+        try:
+            outcome["loaded"] = _load_into(
+                backend,
+                tmp_path,
+                speed_mode = "default" if phase == "compile_cache" else "eager",
+                transformer_quant = None
+                if phase == "dense_fallback"
+                else "int8"
+                if phase.startswith("dense")
+                else "off",
+            )
+        except Exception as exc:
+            outcome["error"] = str(exc)
+
+    with monkeypatch.context() as mp:
+        mp.setattr(diff_mod, "clear_gpu_cache", reclaim)
+        mp.setattr(_FakeTransformer, "from_single_file", classmethod(transformer))
+        mp.setattr(_FakePipeline, "from_pretrained", classmethod(pipeline))
+        mp.setattr(diff_mod, "te_prequant_pipe_kwargs", lambda *a, **k: {"text_encoder": tracked()})
+        if phase in ("attention", "step_cache", "compile_cache", "speed"):
+            if phase == "compile_cache":
+                mp.setattr(diff_mod, "compile_eligible", lambda *a, **k: True)
+                mp.setattr(diff_mod.compile_cache, "begin", lambda **k: None)
+            for stage, owner, name in (
+                ("attention", diff_mod, "apply_attention_backend"),
+                ("step_cache", diff_mod, "apply_step_cache"),
+                ("compile_cache", diff_mod.compile_cache, "begin"),
+                ("speed", diff_mod, "apply_speed_optims"),
+                ("quantize", diff_mod, "quantize_text_encoders"),
+            ):
+                original = getattr(owner, name)
+
+                def setup(
+                    *args,
+                    _stage = stage,
+                    _original = original,
+                    **kwargs,
+                ):
+                    setup_calls.append(_stage)
+                    result = _original(*args, **kwargs)
+                    return park(result) if phase == _stage else result
+
+                mp.setattr(owner, name, setup)
+        if phase.startswith("dense"):
+            mp.setattr(diff_mod, "dense_transformer_supported", lambda target: True)
+            mp.setattr(diff_mod, "select_transformer_quant_scheme", lambda *a, **k: "int8")
+            mp.setattr(
+                backend,
+                "_dense_transformer_resident_bytes",
+                lambda *a, **k: park(0) if phase == "dense_plan" else 0,
+            )
+            mp.setattr(backend, "_load_dense_quant_pipeline", dense)
+        elif phase in ("resolution", "memory_plan"):
+            name = "_resolve_gguf_path" if phase == "resolution" else "_plan_memory"
+            original = getattr(backend, name)
+            mp.setattr(backend, name, lambda *a, **k: park(original(*a, **k)))
+        elif phase in ("validation", "preinstall"):
+            if phase == "validation":
+                original = backend.validate_load_request
+                mp.setattr(
+                    backend, "validate_load_request", lambda *a, **k: park(original(*a, **k))
+                )
+            else:
+                mp.setattr(diff_mod, "select_attention_backend", lambda *a, **k: "test")
+                mp.setattr(
+                    diff_mod, "_ensure_attention_backend_installed", lambda *a, **k: park(None)
+                )
+        elif phase in ("attention_error", "cache_error"):
+
+            def fail_setup(*args, **kwargs):
+                park(None)
+                raise RuntimeError("setup failed")
+
+            name = "apply_attention_backend" if phase == "attention_error" else "apply_step_cache"
+            mp.setattr(diff_mod, name, fail_setup)
+        elif phase in ("component_plan", "conditioning"):
+            owner, name = (
+                (diff_mod, "refine_memory_plan_for_components")
+                if phase == "component_plan"
+                else (diff_mod.cond_cache, "install")
+            )
+            original = getattr(owner, name)
+            mp.setattr(owner, name, lambda *a, **k: park(original(*a, **k)))
+            place = diff_mod.apply_memory_plan
+
+            def placement(*args, **kwargs):
+                setup_calls.append("placement")
+                return place(*args, **kwargs)
+
+            mp.setattr(diff_mod, "apply_memory_plan", placement)
+        elif phase in ("quantize", "placement", "publication"):
+            name = {
+                "quantize": "quantize_text_encoders",
+                "placement": "apply_memory_plan",
+                "publication": "_LoadState",
+            }[phase]
+            original = getattr(diff_mod, name)
+
+            def parked(*args, **kwargs):
+                return park(original(*args, **kwargs))
+
+            mp.setattr(diff_mod, name, parked)
+
+        loader = threading.Thread(target = load, daemon = True)
+        ejector = threading.Thread(
+            target = backend.unload,
+            kwargs = {"expected_account": diff_mod.current_account_id()} if account_scoped else {},
+            daemon = True,
+        )
+        loader.start()
+        try:
+            assert entered.wait(5), "load did not reach the blocked construction stage"
+            ejector.start()
+            assert backend._cancel_event.wait(2), "eject could not signal during construction"
+            if phase in ("validation", "preinstall"):
+                ejector.join(5)
+                assert not ejector.is_alive()
+            else:
+                assert ejector.is_alive(), "teardown must wait for the constructor to unwind"
+        finally:
+            release.set()
+            loader.join(5)
+            if ejector.ident is not None:
+                ejector.join(5)
+
+    assert not loader.is_alive() and not ejector.is_alive()
+    assert "loaded" not in outcome, "a cancelled pipeline was published as ready"
+    assert (
+        "setup failed" if phase.endswith("_error") and phase != "dense_error" else "cancelled"
+    ) in outcome["error"]
+    assert not backend.is_loaded
+    assert not ep.is_installed()
+    assert backend._teardown_waiters == 0
+    if phase in ("validation", "preinstall"):
+        assert not live and not reclaimed
+    else:
+        assert reclaimed and all(item == (0, True, True) for item in reclaimed), reclaimed
+    if phase in ("resolution", "memory_plan", "dense_plan"):
+        assert not transformer_calls and not pipelines, "cancelled planning constructed weights"
+    if phase == "dense_fallback":
+        assert not transformer_calls, "cancelled dense attempt started a GGUF fallback"
+    if phase == "transformer":
+        assert not pipelines, "cancelled load still constructed its companions"
+    if phase in ("attention", "step_cache", "compile_cache", "speed"):
+        assert setup_calls[-1] == phase, setup_calls
+    if phase in ("component_plan", "conditioning"):
+        assert not setup_calls, "cancelled setup still placed the pipeline"
+
+    # A fresh load still serves consecutive generations.
+    _load_into(backend, tmp_path)
+    pipe = backend._state.pipe
+    for _ in range(2):
+        assert len(backend.generate(prompt = "a sloth", steps = 2)["images"]) == 1
+        assert backend._state.pipe is pipe
+    backend.unload()
+
+
+@pytest.mark.parametrize(
+    "phase",
+    [
+        "index",
+        "tokenizer",
+        "tokenizer_error",
+        "encoder_config",
+        "text_encoder",
+        "scheduler",
+        "vae",
+        "transformer",
+        "pipeline",
+    ],
+)
+@pytest.mark.parametrize("cancel", [False, True])
+def test_krea_component_load_honors_eject(fake_runtime, tmp_path, monkeypatch, phase, cancel):
+    import gc
+    import weakref
+    from core.inference import diffusion as diff_mod, diffusion_krea2 as krea
+
+    backend = DiffusionBackend()
+    calls, ejectors, reclaimed = [], [], []
+    live = weakref.WeakSet()
+    (tmp_path / "model_index.json").write_text("{}", encoding = "utf-8")
+
+    def record(name, value):
+        calls.append(name)
+        if name == phase and cancel:
+            ejector = threading.Thread(target = backend.unload, daemon = True)
+            ejectors.append(ejector)
+            ejector.start()
+            assert backend._cancel_event.wait(5), "eject could not signal during assembly"
+        return value
+
+    def component(name):
+        value = _FakePipe()
+        value.cycle = value
+        live.add(value)
+        return record(name, value)
+
+    def pretrained(name):
+        return types.SimpleNamespace(from_pretrained = lambda *a, **k: component(name))
+
+    def tokenizer(*args, **kwargs):
+        if phase == "tokenizer_error" and "extra_special_tokens" not in kwargs:
+            record("tokenizer_error", None)
+            raise ValueError("tokenizer config requires the compatibility fallback")
+        return component("tokenizer_retry" if phase == "tokenizer_error" else "tokenizer")
+
+    def reclaim():
+        gc.collect()
+        reclaimed.append(len(live))
+
+    diffusers = sys.modules["diffusers"]
+    diffusers.Krea2Pipeline = lambda **kwargs: component("pipeline")
+    diffusers.Krea2Transformer2DModel = pretrained("transformer")
+    diffusers.FlowMatchEulerDiscreteScheduler = pretrained("scheduler")
+    diffusers.AutoencoderKLQwenImage = pretrained("vae")
+    monkeypatch.setitem(
+        sys.modules,
+        "transformers",
+        types.SimpleNamespace(
+            AutoTokenizer = types.SimpleNamespace(from_pretrained = tokenizer),
+            AutoConfig = types.SimpleNamespace(
+                from_pretrained = lambda *a, **k: record("encoder_config", types.SimpleNamespace())
+            ),
+            Qwen3VLModel = pretrained("text_encoder"),
+        ),
+    )
+    monkeypatch.setattr(krea, "_load_model_index", lambda *a, **k: record("index", {}))
+    monkeypatch.setattr(diff_mod, "clear_gpu_cache", reclaim)
+    expected = [
+        "index",
+        "tokenizer",
+        "encoder_config",
+        "text_encoder",
+        "scheduler",
+        "vae",
+        "transformer",
+        "pipeline",
+    ]
+    if phase == "tokenizer_error":
+        expected[1:2] = ["tokenizer_error", "tokenizer_retry"]
+    try:
+        if cancel:
+            with pytest.raises(RuntimeError, match = "cancelled"):
+                backend.load_pipeline(
+                    str(tmp_path), family_override = "krea-2", local_files_only = True
+                )
+            assert calls == expected[: expected.index(phase) + 1]
+            assert not backend.is_loaded
+            assert reclaimed and not any(reclaimed), reclaimed
+        else:
+            assert backend.load_pipeline(
+                str(tmp_path), family_override = "krea-2", local_files_only = True
+            )["loaded"]
+            assert calls == expected
+            for _ in range(2):
+                assert backend.generate(prompt = "a sloth", steps = 2)["images"]
+    finally:
+        for ejector in ejectors:
+            ejector.join(5)
+            assert not ejector.is_alive()
+        backend.unload()
+
+
+@pytest.mark.parametrize("kind", ["pipeline", "gguf", "single_file"])
+@pytest.mark.parametrize(
+    "family,phase", [("hidream-i1", "te4"), ("hidream-i1", "encoder"), ("z-image", "encoder")]
+)
+@pytest.mark.parametrize("cancel", [False, True])
+def test_eager_encoder_cancellation_stops_pipeline_build(
+    fake_runtime, tmp_path, monkeypatch, kind, family, phase, cancel
+):
+    import gc
+    import weakref
+    from core.inference import diffusion as mod
+
+    backend = DiffusionBackend()
+    calls, ejectors, reclaimed = [], [], []
+    live = weakref.WeakSet()
+    (tmp_path / "model_index.json").write_text("{}", encoding = "utf-8")
+    filename = "model.gguf" if kind == "gguf" else "model.safetensors"
+    (tmp_path / filename).write_bytes(b"weights")
+    sys.modules["diffusers"].HiDreamImagePipeline = _FakePipeline
+    sys.modules["diffusers"].HiDreamImageTransformer2DModel = _FakeTransformer
+
+    def prepare(name, key):
+        calls.append(name)
+        value = _FakePipe()
+        value.cycle = value
+        live.add(value)
+        if cancel and phase == name:
+            thread = threading.Thread(target = backend.unload, daemon = True)
+            ejectors.append(thread)
+            thread.start()
+            assert backend._cancel_event.wait(5)
+        return {key: value}
+
+    def pipeline(*args, **kwargs):
+        calls.append("pipeline")
+        return _FakePipe()
+
+    def reclaim():
+        gc.collect()
+        reclaimed.append(len(live))
+
+    monkeypatch.setattr(mod, "hidream_te4_kwargs", lambda *a, **k: prepare("te4", "text_encoder_4"))
+    monkeypatch.setattr(
+        mod, "te_prequant_pipe_kwargs", lambda *a, **k: prepare("encoder", "text_encoder")
+    )
+    monkeypatch.setattr(_FakePipeline, "from_pretrained", staticmethod(pipeline))
+    monkeypatch.setattr(mod, "clear_gpu_cache", reclaim)
+    expected = (["te4"] if family == "hidream-i1" else []) + ["encoder", "pipeline"]
+    kwargs = dict(family_override = family, local_files_only = True, transformer_quant = "off")
+    if kind != "pipeline":
+        kwargs.update(gguf_filename = filename, base_repo = str(tmp_path))
+    try:
+        if cancel:
+            with pytest.raises(RuntimeError, match = "cancelled"):
+                backend.load_pipeline(str(tmp_path), **kwargs)
+            assert calls == expected[: expected.index(phase) + 1]
+            assert not backend.is_loaded
+            assert reclaimed and not any(reclaimed)
+        else:
+            assert backend.load_pipeline(str(tmp_path), **kwargs)["loaded"]
+            assert calls == expected
+            assert backend.generate(prompt = "a sloth", steps = 2)["images"]
+    finally:
+        for thread in ejectors:
+            thread.join(5)
+            assert not thread.is_alive()
+        backend.unload()
+
+
+@pytest.mark.parametrize(
+    "phase",
+    [
+        "mask",
+        "text_encoder",
+        "tokenizer",
+        "transformer",
+        "unconditional_transformer",
+        "vae",
+        "scheduler",
+        "pipeline",
+    ],
+)
+@pytest.mark.parametrize("cancel", [False, True])
+def test_ideogram_component_load_honors_eject(fake_runtime, tmp_path, monkeypatch, phase, cancel):
+    import gc
+    import weakref
+    from core.inference import diffusion as mod, diffusion_ideogram4 as ideogram
+
+    backend = DiffusionBackend()
+    calls, ejectors, reclaimed = [], [], []
+    live = weakref.WeakSet()
+    (tmp_path / "model_index.json").write_text("{}", encoding = "utf-8")
+
+    def component(name):
+        calls.append(name)
+        value = _FakePipe()
+        value.cycle = value
+        live.add(value)
+        if cancel and phase == name:
+            thread = threading.Thread(target = backend.unload, daemon = True)
+            ejectors.append(thread)
+            thread.start()
+            assert backend._cancel_event.wait(5)
+        return value
+
+    def reclaim():
+        gc.collect()
+        reclaimed.append(len(live))
+
+    monkeypatch.setattr(mod, "load_ideogram4_pipeline", ideogram.load_ideogram4_pipeline)
+    monkeypatch.setattr(ideogram, "_patch_create_causal_mask", lambda: component("mask"))
+    monkeypatch.setattr(
+        ideogram, "load_ideogram4_text_encoder", lambda *a, **k: component("text_encoder")
+    )
+    monkeypatch.setattr(ideogram, "load_krea2_tokenizer", lambda *a, **k: component("tokenizer"))
+    monkeypatch.setattr(
+        ideogram,
+        "load_ideogram4_transformer",
+        lambda repo, subfolder, *a, **k: component(subfolder),
+    )
+    diffusers = sys.modules["diffusers"]
+    diffusers.Ideogram4Pipeline = lambda **kwargs: component("pipeline")
+    diffusers.AutoencoderKLFlux2 = types.SimpleNamespace(
+        from_pretrained = lambda *a, **k: component("vae")
+    )
+    diffusers.FlowMatchEulerDiscreteScheduler = types.SimpleNamespace(
+        from_pretrained = lambda *a, **k: component("scheduler")
+    )
+    monkeypatch.setattr(mod, "clear_gpu_cache", reclaim)
+    expected = [
+        "mask",
+        "text_encoder",
+        "tokenizer",
+        "transformer",
+        "unconditional_transformer",
+        "vae",
+        "scheduler",
+        "pipeline",
+    ]
+    try:
+        if cancel:
+            with pytest.raises(RuntimeError, match = "cancelled"):
+                backend.load_pipeline(
+                    str(tmp_path), family_override = "ideogram-4", local_files_only = True
+                )
+            assert calls == expected[: expected.index(phase) + 1]
+            assert not backend.is_loaded
+            assert reclaimed and not any(reclaimed)
+        else:
+            assert backend.load_pipeline(
+                str(tmp_path), family_override = "ideogram-4", local_files_only = True
+            )["loaded"]
+            assert calls == expected
+            assert backend.generate(prompt = "a sloth", steps = 2)["images"]
+    finally:
+        for thread in ejectors:
+            thread.join(5)
+            assert not thread.is_alive()
+        backend.unload()
+
+
+@pytest.mark.parametrize("phase", ["gpu", "validation", "precision"])
+def test_begin_load_remembers_an_eject_during_preflight(fake_runtime, tmp_path, monkeypatch, phase):
+    from core.inference import diffusion as diff_mod
+
+    backend = DiffusionBackend()
+    entered, release, dispatched = threading.Event(), threading.Event(), threading.Event()
+    errors = []
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    monkeypatch.setattr(backend, "_run_load", lambda **kwargs: dispatched.set())
+
+    def load():
+        return backend.begin_load(
+            str(tmp_path), gguf_filename = "model.gguf", family_override = "z-image", gpu_ids = [0]
+        )
+
+    def invoke():
+        try:
+            load()
+        except Exception as exc:
+            errors.append(str(exc))
+
+    with monkeypatch.context() as mp:
+        owner, name = {
+            "gpu": (diff_mod, "resolve_selected_cuda_ordinal"),
+            "validation": (backend, "validate_load_request"),
+            "precision": (backend, "assert_precision_available"),
+        }[phase]
+        original = getattr(owner, name)
+        if phase == "gpu":
+            mp.setattr(
+                diff_mod,
+                "resolve_diffusion_device_target",
+                lambda: types.SimpleNamespace(device = "cuda"),
+            )
+
+        def parked(*args, **kwargs):
+            entered.set()
+            assert release.wait(5)
+            return 0 if phase == "gpu" else original(*args, **kwargs)
+
+        mp.setattr(owner, name, parked)
+        worker = threading.Thread(target = invoke, daemon = True)
+        worker.start()
+        try:
+            assert entered.wait(5)
+            backend.unload()
+            assert backend._unload_waiters == 0
+        finally:
+            release.set()
+            worker.join(5)
+
+    assert not worker.is_alive()
+    assert errors and "cancelled" in errors[0], errors
+    assert not dispatched.is_set()
+    assert backend._loading is None
+    load()
+    assert dispatched.wait(5)
+    backend.unload()
+
+
+@pytest.mark.parametrize("load_method", ["begin_load", "load_pipeline"])
+def test_replacement_load_waits_for_every_unload(fake_runtime, tmp_path, monkeypatch, load_method):
+    backend = DiffusionBackend()
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    parked = [threading.Event(), threading.Event()]
+    release = [threading.Event(), threading.Event()]
+    real_lock = backend._lock
+    errors = []
+    dispatched = threading.Event()
+    monkeypatch.setattr(backend, "_run_load", lambda **kwargs: dispatched.set())
+
+    class GateLock:
+        def __init__(self):
+            self.waited = set()
+
+        def __enter__(self):
+            name = threading.current_thread().name
+            if name.startswith("eject-") and name not in self.waited:
+                self.waited.add(name)
+                index = int(name[-1])
+                parked[index].set()
+                assert release[index].wait(5)
+            real_lock.acquire()
+
+        def __exit__(self, *args):
+            real_lock.release()
+
+    monkeypatch.setattr(backend, "_lock", GateLock())
+
+    def eject():
+        try:
+            backend.unload()
+        except Exception as exc:
+            errors.append(str(exc))
+
+    def load():
+        return getattr(backend, load_method)(
+            str(tmp_path),
+            gguf_filename = "model.gguf",
+            base_repo = "base/repo",
+            family_override = "z-image",
+        )
+
+    # The replacement WAITS for every pending eject; it is not refused. A load arriving after an
+    # eject started was never cancelled -- the eject bumped the epoch before this request existed --
+    # so failing it reported a cancellation that never happened, and turned an ordinary model switch
+    # during a generation into a 409 for the whole length of the denoise. Queue, then run.
+    replacement = {}
+
+    def replacement_load():
+        try:
+            load()
+            replacement["ok"] = True
+        except BaseException as exc:  # noqa: BLE001
+            replacement["error"] = repr(exc)
+
+    ejectors = [threading.Thread(target = eject, name = f"eject-{i}", daemon = True) for i in range(2)]
+    for thread in ejectors:
+        thread.start()
+    waiter = None
+    try:
+        assert all(event.wait(5) for event in parked)
+        waiter = threading.Thread(target = replacement_load, name = "replacement", daemon = True)
+        waiter.start()
+        # Still queued behind BOTH ejects, including the one whose teardown has not been released.
+        waiter.join(0.5)
+        assert waiter.is_alive() and not replacement and not dispatched.is_set()
+        release[0].set()
+        ejectors[0].join(5)
+        assert not ejectors[0].is_alive()
+        waiter.join(0.5)
+        assert waiter.is_alive() and not replacement, "one eject left, the load must still wait"
+    finally:
+        for event in release:
+            event.set()
+        for thread in ejectors:
+            thread.join(5)
+
+    assert not errors and all(not thread.is_alive() for thread in ejectors)
+    # Once the last eject is done the queued replacement runs on its own, with no retry from the caller.
+    waiter.join(5)
+    assert not waiter.is_alive()
+    assert replacement.get("ok"), replacement
+    assert backend._teardown_waiters == 0
+    assert backend._unload_waiters == 0
+    if load_method == "begin_load":
+        assert dispatched.wait(5)
+        backend._loading = None  # the worker is stubbed out, so retire its marker by hand
+        _load_into(backend, tmp_path)
+    assert backend.generate(prompt = "after eject", steps = 2)["images"]
+    backend.unload()
+
+
 def test_prefetch_aborts_when_cancelled(tmp_path):
     # A prefetch interrupted by unload raises instead of pulling the whole base, so the load can be preempted.
     backend = DiffusionBackend()
@@ -2662,6 +3474,7 @@ def test_pipeline_kind_assembles_krea_and_ideogram_from_the_mirror(fake_runtime,
         repo_id,
         dtype,
         hf_token = None,
+        check_cancelled = None,
     ):
         seen["ideogram"] = repo_id
         return _FakePipe()
@@ -3288,6 +4101,125 @@ def _stub_dense_quant(monkeypatch, *, scheme = "fp8"):
 
     monkeypatch.setattr(dmod, "quantize_transformer", _quantize)
     return calls
+
+
+@pytest.mark.parametrize(
+    "stage",
+    [
+        "prequant",
+        "prequant_miss",
+        "transformer",
+        "encoder",
+        "pipeline",
+        "placement",
+        "lora_resolve",
+        "lora_first",
+        "lora_last",
+        "lora_set",
+        "quantize",
+    ],
+)
+@pytest.mark.parametrize("cancel", [False, True])
+def test_dense_build_cancellation_boundaries(fake_runtime, tmp_path, monkeypatch, stage, cancel):
+    import gc
+    import weakref
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    _stub_dense_quant(monkeypatch, scheme = "int8")
+    monkeypatch.setattr(backend, "_dense_transformer_resident_bytes", lambda *a, **k: 0)
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    entered, release = threading.Event(), threading.Event()
+    calls, outcome = [], {}
+    live = weakref.WeakSet()
+
+    def record(name, value = None):
+        calls.append(name)
+        if name == stage:
+            entered.set()
+            assert release.wait(5)
+        return value
+
+    def transformer(*args, **kwargs):
+        value = _FakePipe()
+        live.add(value)
+        return record("transformer", value)
+
+    class Pipe(_FakePipe):
+        def to(self, device):
+            return record("placement", super().to(device))
+
+        def load_lora_weights(self, path, adapter_name):
+            record("lora_first" if adapter_name == "first" else "lora_last")
+
+        def set_adapters(self, *args, **kwargs):
+            record("lora_set")
+
+    def pipeline(cls, base, **kwargs):
+        value = Pipe()
+        value.transformer = kwargs["transformer"]
+        live.add(value)
+        return record("pipeline", value)
+
+    monkeypatch.setattr(
+        _FakeTransformer, "from_pretrained", staticmethod(transformer), raising = False
+    )
+    monkeypatch.setattr(_FakePipeline, "from_pretrained", classmethod(pipeline))
+    monkeypatch.setattr(dmod, "te_prequant_pipe_kwargs", lambda *a, **k: record("encoder", {}))
+    monkeypatch.setattr(
+        backend,
+        "_resolve_lora_set",
+        lambda *a, **k: record("lora_resolve", (("first", "one", 1.0), ("last", "two", 0.5))),
+    )
+    monkeypatch.setattr(dmod, "quantize_transformer", lambda *a, **k: record("quantize", "int8"))
+    prequant = stage.startswith("prequant")
+    if prequant:
+        monkeypatch.setattr(dmod, "resolve_prequant_source", lambda *a, **k: object())
+        monkeypatch.setattr(
+            dmod,
+            "load_prequantized_transformer",
+            lambda *a, **k: record(stage, None if stage == "prequant_miss" else _FakePipe()),
+        )
+
+    def load():
+        try:
+            outcome["result"] = _load_into(
+                backend,
+                tmp_path,
+                transformer_quant = "int8",
+                local_files_only = True,
+                loras = None if prequant else [("one", 1.0), ("two", 0.5)],
+            )
+        except Exception as exc:
+            outcome["error"] = str(exc)
+
+    loader = threading.Thread(target = load, daemon = True)
+    ejector = threading.Thread(target = backend.unload, daemon = True)
+    loader.start()
+    try:
+        assert entered.wait(5), outcome
+        if cancel:
+            ejector.start()
+            assert backend._cancel_event.wait(2)
+    finally:
+        release.set()
+        loader.join(5)
+        if ejector.ident is not None:
+            ejector.join(5)
+    assert not loader.is_alive() and not ejector.is_alive()
+    assert backend._unload_waiters == backend._teardown_waiters == 0
+    if cancel:
+        assert "cancelled" in outcome.get("error", ""), outcome
+        assert calls[-1] == stage, calls
+        assert not backend.is_loaded
+        gc.collect()
+        assert not live
+    else:
+        assert "error" not in outcome, outcome
+        assert backend.is_loaded
+        assert backend.status()["transformer_quant"] == "int8"
+        assert calls.count("quantize") == (0 if stage == "prequant" else 1)
+        backend.unload()
 
 
 def test_default_load_autos_dense_gate_and_falls_back(fake_runtime, tmp_path, monkeypatch):
@@ -4464,7 +5396,9 @@ def test_assemble_pipe_routes_krea2_per_component(monkeypatch):
         # production signature, and this branch never sees the guarded pipe_kwargs, so the keyword
         # that keeps the no-download promise has to be one _assemble_pipe really passes.
         local_files_only = False,
+        check_cancelled = None,
     ):
+        assert callable(check_cancelled)
         calls["base"] = base
         calls["transformer"] = transformer
         calls["local_files_only"] = local_files_only
@@ -5401,6 +6335,7 @@ def test_diffusion_status_response_carries_resolved():
             "source": "auto",
             "status": "applied",
             "reason": "blackwell",
+            "artifact": None,
         }
     }
     # Absent by default (nothing resolved / native engine).
@@ -5422,7 +6357,27 @@ def test_diffusion_status_response_carries_requested_precision():
         }
     }
     resp = DiffusionStatusResponse(loaded = True, resolved = rec)
-    assert resp.model_dump()["resolved"] == rec
+    assert resp.model_dump()["resolved"] == {
+        "transformer_quant": {**rec["transformer_quant"], "artifact": None}
+    }
+
+
+def test_diffusion_status_response_carries_the_prequant_artifact():
+    # The loader records which hosted file the engaged precision came from; undeclared here, pydantic
+    # drops it and no API client sees the provenance.
+    from models.inference import DiffusionStatusResponse
+
+    rec = {
+        "transformer_quant": {
+            "value": "fp8",
+            "source": "auto",
+            "reason": "seeded",
+            "artifact": "prequant:unsloth/Z-Image-Turbo-FP8/Z-Image-Turbo-FP8.pt",
+        }
+    }
+    resp = DiffusionStatusResponse(loaded = True, resolved = rec)
+    dumped = resp.model_dump()["resolved"]["transformer_quant"]
+    assert dumped["artifact"] == "prequant:unsloth/Z-Image-Turbo-FP8/Z-Image-Turbo-FP8.pt"
 
 
 def test_diffusion_status_response_carries_gguf_variant():
@@ -5476,6 +6431,45 @@ def test_plan_memory_dense_replan_does_not_double_count_prefetched_transformer(m
         companion_override_mib = 8000,  # auto-policy text-encoder + VAE estimate
     )
     # 12000 + 8000 + 4000 + 2048 overhead = 26048 MiB, fits the ~36 GiB budget. A double-count would have exceeded it and offloaded.
+    assert plan.offload_policy == OFFLOAD_NONE
+
+
+def test_plan_memory_pipeline_replan_prices_the_quantised_transformer(monkeypatch):
+    """A pipeline re-plan reads the quant-size overrides instead of the whole-repo cache.
+
+    The pipeline branch sizes the repo as one download, the bf16 footprint the re-plan exists to
+    replace; ignoring the overrides returned the bf16 plan unchanged, so an offloaded pipeline
+    could never reach the fast path.
+    """
+    from core.inference import diffusion as dmod
+    from core.inference.diffusion_memory import OFFLOAD_NONE, DeviceMemory
+
+    backend = DiffusionBackend()
+    target = types.SimpleNamespace(device = "cuda", backend = "cuda", supports_model_cpu_offload = True)
+    # 40 GiB card: room for the int8 transformer + companions + headroom, not for the bf16 one.
+    monkeypatch.setattr(
+        dmod,
+        "settled_snapshot_device_memory",
+        lambda t: DeviceMemory("cuda", "cuda", "discrete_vram", 40000, 40960),
+    )
+    monkeypatch.setattr(dmod, "estimate_image_runtime_mib", lambda **kw: 4000)
+    # The cached repo holds the bf16 transformer; consulting it would offload.
+    monkeypatch.setattr(
+        DiffusionBackend, "_cache_bytes", staticmethod(lambda repo: (24000 + 8000) * 1024 * 1024)
+    )
+    plan = backend._plan_memory(
+        target,
+        None,
+        "org/base",
+        types.SimpleNamespace(name = "z-image", base_repo = "org/base"),
+        None,
+        False,
+        kind = "pipeline",
+        repo_id = "org/base",
+        transformer_resident_override_mib = 12000,
+        companion_override_mib = 8000,
+        text_encoder_override_mib = 6000,
+    )
     assert plan.offload_policy == OFFLOAD_NONE
 
 
@@ -7379,7 +8373,9 @@ def test_download_plan_stages_nothing_for_a_base_wholly_in_the_other_root(monkey
 def test_download_plan_declines_an_unrecognised_gguf_instead_of_raising(monkeypatch):
     # A neutral repo whose id AND filename match no family resolves no companions, and the family
     # fallback used to raise on None. The picker asks for a plan on every hub pick, so that 500s
-    # the route; planning no work is the honest answer and the load still handles its own fetch.
+    # the route; planning no work is the honest answer. /images/download-plan refuses this pick
+    # outright before the planner is reached (see test_diffusion_routes.py), so nothing downstream
+    # depends on the shape of this answer.
     _fake_hf_api(monkeypatch, {})
 
     plan = DiffusionBackend().download_plan(
@@ -10066,6 +11062,8 @@ def test_an_unsupported_host_is_not_told_its_shards_are_unstaged(
 
 
 def test_generation_in_flight_tracks_a_generation(fake_runtime, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
     import core.inference.diffusion as diffusion_mod
 
     backend = _loaded_backend(tmp_path)
@@ -10097,3 +11095,526 @@ def test_generation_in_flight_never_builds_a_backend(fake_runtime, monkeypatch):
         lambda *a, **k: pytest.fail("liveness constructed a diffusion backend"),
     )
     assert diffusion_mod.generation_in_flight() is False
+
+
+# Pipeline dense quantisation.
+
+
+class _FakeDenoiser:
+    """A denoiser whose parameters expose a dtype to the quantisation gate."""
+
+    def __init__(self, dtype = "torch.bfloat16") -> None:
+        self._params = [types.SimpleNamespace(dtype = dtype)]
+
+    def parameters(self, recurse = True):
+        return iter(self._params)
+
+
+def _init_with_denoiser(dtype):
+    """A ``_FakePipe.__init__`` whose transformer reports ``dtype``, for the gate's dtype walk."""
+    real_init = _FakePipe.__init__
+
+    def _init(self):
+        real_init(self)
+        self.transformer = _FakeDenoiser(dtype)
+
+    return _init
+
+
+def _stub_pipeline_dense_quant(
+    backend,
+    monkeypatch,
+    *,
+    engages = "fp8",
+    denoisers = ("transformer",),
+):
+    """Stub a capable CUDA host and record transformer quantisation calls."""
+    from core.inference import diffusion as dmod
+
+    calls: list = []
+    _force_cuda_target(backend, monkeypatch)
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+    )
+    real_init = _FakePipe.__init__
+
+    def _init(self):
+        real_init(self)
+        for attr in denoisers:
+            setattr(self, attr, _FakeDenoiser())
+
+    monkeypatch.setattr(_FakePipe, "__init__", _init)
+
+    def _quantize(pipe, target, **kwargs):
+        calls.append({"pipe": pipe, "transformer": pipe.transformer, **kwargs})
+        return engages
+
+    monkeypatch.setattr(dmod, "quantize_transformer", _quantize)
+    return calls
+
+
+def test_a_pipeline_pick_quantises_its_transformer_in_place(fake_runtime, tmp_path, monkeypatch):
+    backend = DiffusionBackend()
+    calls = _stub_pipeline_dense_quant(backend, monkeypatch)
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512", model_kind = "pipeline", _base_local_dir = str(tmp_path)
+    )
+    assert status["transformer_quant"] == "fp8"
+    assert len(calls) == 1
+    assert calls[0]["transformer"] is backend._state.pipe.transformer
+    resolved = status["resolved"]["transformer_quant"]
+    assert resolved["value"] == "fp8"
+    assert resolved["source"] == "auto" and resolved["status"] == "applied"
+    backend.unload()
+
+
+def test_a_pipeline_pick_keeps_bf16_when_the_scheme_declines(fake_runtime, tmp_path, monkeypatch):
+    backend = DiffusionBackend()
+    _stub_pipeline_dense_quant(backend, monkeypatch, engages = None)
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512", model_kind = "pipeline", _base_local_dir = str(tmp_path)
+    )
+    assert status["transformer_quant"] is None
+    resolved = status["resolved"]["transformer_quant"]
+    assert resolved["value"] == "off" and resolved["source"] == "auto"
+    assert resolved["status"] == "applied"
+    backend.unload()
+
+
+def test_a_pipeline_pick_refuses_an_explicit_scheme_that_did_not_engage(
+    fake_runtime, tmp_path, monkeypatch
+):
+    backend = DiffusionBackend()
+    _stub_pipeline_dense_quant(backend, monkeypatch, engages = None)
+    with pytest.raises(RuntimeError) as excinfo:
+        backend.load_pipeline(
+            "Qwen/Qwen-Image-2512",
+            model_kind = "pipeline",
+            transformer_quant = "fp8",
+            _base_local_dir = str(tmp_path),
+        )
+    assert "transformer_quant='fp8' could not be used" in str(excinfo.value)
+
+
+def test_a_pipeline_pick_does_not_quantise_under_offload(fake_runtime, tmp_path, monkeypatch):
+    """Offloaded pipelines stay dense because torchao tensors cannot move."""
+    backend = DiffusionBackend()
+    calls = _stub_pipeline_dense_quant(backend, monkeypatch)
+    real_plan = DiffusionBackend._plan_memory
+
+    def _offloading_plan(self, *args, **kwargs):
+        plan = real_plan(self, *args, **kwargs)
+        return dataclasses.replace(plan, offload_policy = "model")
+
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", _offloading_plan)
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512", model_kind = "pipeline", _base_local_dir = str(tmp_path)
+    )
+    assert calls == []
+    assert status["transformer_quant"] is None
+    assert "offload" in status["resolved"]["transformer_quant"]["reason"]
+    backend.unload()
+
+
+def test_an_offloaded_pipeline_replans_against_the_quantised_size(
+    fake_runtime, tmp_path, monkeypatch
+):
+    from core.inference.diffusion_memory import OFFLOAD_NONE
+
+    backend = DiffusionBackend()
+    calls = _stub_pipeline_dense_quant(backend, monkeypatch)
+    overrides: list = []
+    real_plan = DiffusionBackend._plan_memory
+
+    def _plan(self, *args, **kwargs):
+        plan = real_plan(self, *args, **kwargs)
+        override = kwargs.get("transformer_resident_override_mib")
+        overrides.append(override)
+        policy = OFFLOAD_NONE if override is not None else "model"
+        return dataclasses.replace(plan, offload_policy = policy)
+
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", _plan)
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512", model_kind = "pipeline", _base_local_dir = str(tmp_path)
+    )
+    # Re-planned against the quantised transformer, so the offload that would have blocked the
+    # conversion is gone and the pipeline is quantised.
+    assert any(override is not None for override in overrides)
+    assert len(calls) == 1
+    assert status["transformer_quant"] == "fp8"
+    assert status["offload_policy"] == OFFLOAD_NONE
+    backend.unload()
+
+
+def test_a_declined_quant_gives_back_the_bf16_placement(fake_runtime, tmp_path, monkeypatch):
+    from core.inference.diffusion_memory import OFFLOAD_NONE
+
+    backend = DiffusionBackend()
+    _stub_pipeline_dense_quant(backend, monkeypatch, engages = None)
+    real_plan = DiffusionBackend._plan_memory
+
+    def _plan(self, *args, **kwargs):
+        plan = real_plan(self, *args, **kwargs)
+        resident = kwargs.get("transformer_resident_override_mib") is not None
+        return dataclasses.replace(plan, offload_policy = OFFLOAD_NONE if resident else "model")
+
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", _plan)
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512", model_kind = "pipeline", _base_local_dir = str(tmp_path)
+    )
+    assert status["transformer_quant"] is None
+    # The bf16 build is what actually loaded, so it keeps the bf16 plan's offload.
+    assert status["offload_policy"] == "model"
+    backend.unload()
+
+
+def test_a_pipeline_pick_stays_dense_when_the_speed_mode_will_not_compile(
+    fake_runtime, tmp_path, monkeypatch
+):
+    """Eager torchao is far slower than the bf16 it replaces, so an uncompilable load keeps bf16."""
+    backend = DiffusionBackend()
+    calls = _stub_pipeline_dense_quant(backend, monkeypatch)
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512",
+        model_kind = "pipeline",
+        speed_mode = "eager",
+        _base_local_dir = str(tmp_path),
+    )
+    assert calls == []
+    assert status["transformer_quant"] is None
+    assert "eager" in status["resolved"]["transformer_quant"]["reason"]
+    backend.unload()
+
+
+def test_speed_off_keeps_the_bit_exact_bf16_pipeline(fake_runtime, tmp_path, monkeypatch):
+    """Speed=Off asks for bit-exact output, so an auto quant is rewritten to off before it runs."""
+    backend = DiffusionBackend()
+    calls = _stub_pipeline_dense_quant(backend, monkeypatch)
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512",
+        model_kind = "pipeline",
+        speed_mode = "off",
+        _base_local_dir = str(tmp_path),
+    )
+    assert calls == []
+    assert status["transformer_quant"] is None
+    # Not the compile guard: the rewrite happens well before it, so no decline reason is recorded.
+    assert status["resolved"]["transformer_quant"]["value"] == "off"
+    backend.unload()
+
+
+def test_a_pipeline_pick_stays_dense_when_this_process_cannot_compile(
+    fake_runtime, tmp_path, monkeypatch
+):
+    """A Windows install without Triton, or TORCHDYNAMO_DISABLE, must not quantise either."""
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    calls = _stub_pipeline_dense_quant(backend, monkeypatch)
+    monkeypatch.setattr(dmod, "compile_eligible", lambda target, **kw: False)
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512", model_kind = "pipeline", _base_local_dir = str(tmp_path)
+    )
+    assert calls == []
+    assert status["transformer_quant"] is None
+    assert "compile" in status["resolved"]["transformer_quant"]["reason"]
+    backend.unload()
+
+
+def test_an_uncompilable_pipeline_refuses_an_explicit_scheme(fake_runtime, tmp_path, monkeypatch):
+    """A pinned scheme fails closed rather than landing a slower-than-bf16 build."""
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    _stub_pipeline_dense_quant(backend, monkeypatch)
+    monkeypatch.setattr(dmod, "compile_eligible", lambda target, **kw: False)
+    with pytest.raises(RuntimeError) as excinfo:
+        backend.load_pipeline(
+            "Qwen/Qwen-Image-2512",
+            model_kind = "pipeline",
+            transformer_quant = "fp8",
+            _base_local_dir = str(tmp_path),
+        )
+    assert "transformer_quant='fp8' could not be used" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("speed_mode", [None, "default", "max"])
+def test_a_compiling_speed_mode_still_quantises(fake_runtime, tmp_path, monkeypatch, speed_mode):
+    """The guard must not cost the default path: speed unset is upgraded to a compile.
+
+    "off" is absent on purpose: not uncompilable, but the bit-exact request that rewrites an auto
+    quant to off well before this guard, which the test below pins.
+    """
+    backend = DiffusionBackend()
+    calls = _stub_pipeline_dense_quant(backend, monkeypatch)
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512",
+        model_kind = "pipeline",
+        speed_mode = speed_mode,
+        _base_local_dir = str(tmp_path),
+    )
+    assert status["transformer_quant"] == "fp8"
+    assert len(calls) == 1
+    backend.unload()
+
+
+def test_a_pipeline_pick_bakes_its_adapters_before_quantising(fake_runtime, tmp_path, monkeypatch):
+    """Adapters are baked before torchao replaces their dense base layers."""
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    order: list = []
+    _force_cuda_target(backend, monkeypatch)
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "int8"
+    )
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_resolve_lora_set",
+        lambda self, specs, **kw: [("a", "/loras/a.safetensors", 0.8)],
+    )
+    real_init = _FakePipe.__init__
+
+    def _init(self):
+        real_init(self)
+        self.transformer = _FakeDenoiser()
+
+    monkeypatch.setattr(_FakePipe, "__init__", _init)
+
+    def _quantize(pipe, target, **kwargs):
+        order.append("quantize")
+        return "int8"
+
+    monkeypatch.setattr(dmod, "quantize_transformer", _quantize)
+
+    def _load_lora(
+        self,
+        path,
+        adapter_name = None,
+    ):
+        order.append(f"bake:{adapter_name}")
+
+    monkeypatch.setattr(_FakePipe, "load_lora_weights", _load_lora, raising = False)
+    monkeypatch.setattr(
+        _FakePipe,
+        "set_adapters",
+        lambda self, names, adapter_weights = None: None,
+        raising = False,
+    )
+    backend.load_pipeline(
+        "Qwen/Qwen-Image-2512",
+        model_kind = "pipeline",
+        loras = [("a", 0.8)],
+        _base_local_dir = str(tmp_path),
+    )
+    assert order == ["bake:a", "quantize"]
+    assert backend._state.pipe._unsloth_loras_baked is True
+    backend.unload()
+
+
+def test_a_unet_pipeline_is_never_quantised(fake_runtime, tmp_path, monkeypatch):
+    backend = DiffusionBackend()
+    calls = _stub_pipeline_dense_quant(backend, monkeypatch, denoisers = ())
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512", model_kind = "pipeline", _base_local_dir = str(tmp_path)
+    )
+    assert calls == []
+    assert status["transformer_quant"] is None
+    assert "UNet" in status["resolved"]["transformer_quant"]["reason"]
+    backend.unload()
+
+
+@pytest.mark.parametrize(
+    ("dtype", "expected"),
+    [
+        ("torch.uint8", "uint8"),  # bitsandbytes packs NF4 into uint8 storage
+        ("torch.float8_e4m3fn", "float8_e4m3fn"),  # a published fp8 repo
+        ("torch.float16", "float16"),
+    ],
+)
+def test_an_already_quantised_pipeline_is_never_requantised(
+    fake_runtime, tmp_path, monkeypatch, dtype, expected
+):
+    backend = DiffusionBackend()
+    calls = _stub_pipeline_dense_quant(backend, monkeypatch)
+    monkeypatch.setattr(_FakePipe, "__init__", _init_with_denoiser(dtype))
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512", model_kind = "pipeline", _base_local_dir = str(tmp_path)
+    )
+    assert calls == []
+    assert status["transformer_quant"] is None
+    assert expected in status["resolved"]["transformer_quant"]["reason"]
+    backend.unload()
+
+
+def test_a_blocked_pipeline_still_refuses_an_explicit_scheme(fake_runtime, tmp_path, monkeypatch):
+    backend = DiffusionBackend()
+    _stub_pipeline_dense_quant(backend, monkeypatch, denoisers = ())
+    with pytest.raises(RuntimeError) as excinfo:
+        backend.load_pipeline(
+            "Qwen/Qwen-Image-2512",
+            model_kind = "pipeline",
+            transformer_quant = "fp8",
+            _base_local_dir = str(tmp_path),
+        )
+    assert "transformer_quant='fp8' could not be used" in str(excinfo.value)
+    assert "UNet" in str(excinfo.value)
+
+
+def test_every_denoiser_is_quantised_or_none_is(fake_runtime, tmp_path, monkeypatch):
+    backend = DiffusionBackend()
+    calls = _stub_pipeline_dense_quant(
+        backend, monkeypatch, denoisers = ("transformer", "unconditional_transformer")
+    )
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512", model_kind = "pipeline", _base_local_dir = str(tmp_path)
+    )
+    assert status["transformer_quant"] == "fp8"
+    pipe = backend._state.pipe
+    assert [call["transformer"] for call in calls] == [
+        pipe.transformer,
+        pipe.unconditional_transformer,
+    ]
+    backend.unload()
+
+
+def test_a_partially_converted_transformer_fails_the_load(fake_runtime, tmp_path, monkeypatch):
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    _stub_pipeline_dense_quant(backend, monkeypatch, engages = None)
+    monkeypatch.setattr(dmod, "transformer_is_quantised", lambda module: True)
+    with pytest.raises(RuntimeError) as excinfo:
+        backend.load_pipeline(
+            "Qwen/Qwen-Image-2512", model_kind = "pipeline", _base_local_dir = str(tmp_path)
+        )
+    assert "neither dense nor usable" in str(excinfo.value)
+
+
+def test_a_clean_decline_keeps_the_dense_transformer(fake_runtime, tmp_path, monkeypatch):
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    _stub_pipeline_dense_quant(backend, monkeypatch, engages = None)
+    monkeypatch.setattr(dmod, "transformer_is_quantised", lambda module: False)
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512", model_kind = "pipeline", _base_local_dir = str(tmp_path)
+    )
+    assert status["transformer_quant"] is None
+    assert status["resolved"]["transformer_quant"]["status"] == "applied"
+    backend.unload()
+
+
+def test_a_raw_fp8_pipeline_is_not_quantised_a_second_time(fake_runtime, tmp_path, monkeypatch):
+    """A local fp8 checkpoint is widened to bf16 on load; quantising it again compounds loss.
+
+    Non-GGUF loads are gated to unsloth/* or a LOCAL path, so the reachable shape is a user pointing
+    at their own fp8 conversion. test_diffusion_transformer_quant.py covers the header parse against
+    real safetensors; this is the loader wiring that stamps every denoiser for the blocker.
+    """
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    calls = _stub_pipeline_dense_quant(backend, monkeypatch)
+    seen: list = []
+
+    def _stored(local_dir):
+        seen.append(local_dir)
+        return "fp8"
+
+    monkeypatch.setattr(dmod, "stored_denoiser_precision", _stored)
+    status = backend.load_pipeline(
+        "unsloth/Qwen-Image-2512",
+        model_kind = "pipeline",
+        _base_local_dir = str(tmp_path),
+    )
+    assert seen == [str(tmp_path)]
+    assert calls == []
+    assert status["transformer_quant"] is None
+    reason = status["resolved"]["transformer_quant"]["reason"]
+    assert "fp8" in reason and "widened to bf16" in reason
+    backend.unload()
+
+
+def test_a_bf16_pipeline_is_unaffected_by_the_header_probe(fake_runtime, tmp_path, monkeypatch):
+    """The probe must not cost the ordinary official-pipeline case."""
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    calls = _stub_pipeline_dense_quant(backend, monkeypatch)
+    monkeypatch.setattr(dmod, "stored_denoiser_precision", lambda local_dir: None)
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512", model_kind = "pipeline", _base_local_dir = str(tmp_path)
+    )
+    assert len(calls) == 1
+    assert status["transformer_quant"] == "fp8"
+    backend.unload()
+
+
+def test_a_local_fp8_directory_is_scanned_through_the_load_base(
+    fake_runtime, tmp_path, monkeypatch
+):
+    """A local diffusers dir stages nothing, so the probe must read the base the load reads."""
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    calls = _stub_pipeline_dense_quant(backend, monkeypatch)
+    seen: list = []
+
+    def _stored(local_dir):
+        seen.append(local_dir)
+        return "fp8" if local_dir else None
+
+    monkeypatch.setattr(dmod, "stored_denoiser_precision", _stored)
+    status = backend.load_pipeline(
+        "unsloth/Qwen-Image-2512", model_kind = "pipeline", _base_local_dir = None
+    )
+    # Not None: the fallback handed the probe the base the pipeline was actually loaded from.
+    assert seen and seen[0]
+    assert calls == []
+    assert status["transformer_quant"] is None
+    assert "fp8" in status["resolved"]["transformer_quant"]["reason"]
+    backend.unload()
+
+
+def test_a_prequant_repo_missing_its_artifact_marks_the_plan_incomplete(monkeypatch):
+    """The repo answers and holds NEITHER the primary nor the fallback name. That is not "no
+    prequant is used": this pick is configured to use one and the dense shards are already excluded
+    for it, so the plan would name no transformer source at all while calling itself complete."""
+    from types import SimpleNamespace
+
+    import core.inference.diffusion as diffusion_mod
+
+    source = SimpleNamespace(
+        kind = "repo",
+        location = "unsloth/some-prequant",
+        filename = "transformer_fp8.safetensors",
+        fallback_filename = "transformer.fp8.safetensors",
+    )
+    monkeypatch.setattr(diffusion_mod, "usable_prequant_source", lambda *a, **k: source)
+    monkeypatch.setattr(diffusion_mod, "select_transformer_quant_scheme", lambda *a, **k: "fp8")
+    monkeypatch.setattr(
+        DiffusionBackend, "_target_for_ordinal", lambda self, fam, ordinal: SimpleNamespace()
+    )
+    # A repo that exists but carries something else entirely.
+    _fake_hf_api(
+        monkeypatch,
+        {"unsloth/some-prequant": [_FakeSibling("README.md", 10)]},
+    )
+
+    failures: list = []
+    got = DiffusionBackend()._dit_prequant_plan_source(
+        SimpleNamespace(name = "flux.2-klein"),
+        "gguf",
+        None,
+        {"transformer_quant": "fp8"},
+        failures,
+    )
+
+    assert got is None
+    assert (
+        failures
+    ), "a configured prequant that is not in its repo left the plan calling itself complete"
+    assert "prequant artifact missing" in str(failures[0])

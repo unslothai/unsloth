@@ -14,16 +14,77 @@ import re
 
 REDACTED = "<redacted>"
 
-# Terminal control sequences, stripped BEFORE anything is matched. Order matters: OSC comes before the single-character Fe class, which covers 0x5C-0x5F and would otherwise swallow the "]". ECMA-48 5.4 (CSI) and 5.6 (OSC / DCS / SOS / PM / APC). A colorized writer puts an escape between key and value, and the "m" ending a colour code is a word character, so every anchored rule below stops matching.
-_ANSI_RE = re.compile(
-    r"\x1b\][\s\S]*?(?:\x07|\x1b\\|\x9c)"
-    r"|\x1b[P^_X][\s\S]*?(?:\x1b\\|\x9c)"
-    r"|\x1b\[[0-?]*[ -/]*[@-~]"
-    r"|\x1b[@-Z\\-_]"
-    r"|\x9b[0-?]*[ -/]*[@-~]"
-    r"|[\x9d\x90\x98\x9e\x9f][\s\S]*?(?:\x07|\x9c)"
-)
+# Stripped BEFORE anything is matched: a colorized writer puts an escape between a key and its value, and the "m" ending a colour code is a word character, so every anchored rule below stops matching. ECMA-48 5.4 (CSI) and 5.6 (OSC / DCS / SOS / PM / APC).
+# _strip_ansi replaces one alternation of lazy `[\s\S]*?` bodies whose FAILURE was quadratic: an unterminated introducer scanned to end of record, failed, and the engine retried from the next position. Its output is identical to that pattern on every input, by differential fuzzing, and must stay so: a redactor is the wrong place to smuggle a behaviour change into a performance fix, and every attempt to also improve the truncated cases moved a leak rather than removing one (unslothai/unsloth#10721).
+_CSI_7BIT_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_CSI_8BIT_RE = re.compile(r"\x9b[0-?]*[ -/]*[@-~]")
+# Fe covers 0x40-0x5F, so it also claims a "]" or "P" whose control string never terminated. Hence tried last.
+_FE_RE = re.compile(r"\x1b[@-Z\\-_]")
 _ANSI_INTRODUCER_RE = re.compile(r"[\x1b\x90\x98\x9b\x9d-\x9f]")
+_C1_STRING_INTRODUCERS = "\x9d\x90\x98\x9e\x9f"
+
+
+def _strip_ansi(text: str) -> str:
+    """Remove terminal control sequences. Same output as the lazy alternation this replaces, in linear time."""
+    first = _ANSI_INTRODUCER_RE.search(text)
+    if first is None:
+        return text
+    out: list[str] = []
+    written = 0
+    index = first.start()
+    length = len(text)
+    # index only moves forward, so a cached hit at or after it is still the next one and a cached miss stays a miss. This is what makes the scan linear.
+    found: dict[str, int] = {}
+
+    def next_index(needle: str, start: int) -> int:
+        cached = found.get(needle, -2)
+        if cached == -1:
+            return -1
+        if cached == -2 or cached < start:
+            cached = text.find(needle, start)
+            found[needle] = cached
+        return cached
+
+    def string_end(terminators: tuple[str, ...], start: int) -> int:
+        """End of the shortest body, which is what a lazy quantifier picks."""
+        best, best_length = -1, 0
+        for terminator in terminators:
+            at = next_index(terminator, start)
+            if at >= 0 and (best < 0 or at < best):
+                best, best_length = at, len(terminator)
+        return best + best_length if best >= 0 else -1
+
+    while index < length:
+        char = text[index]
+        end = -1
+        if char == "\x1b" and index + 1 < length and text[index + 1] == "]":
+            end = string_end(("\x07", "\x1b\\", "\x9c"), index + 2)
+        elif char == "\x1b" and index + 1 < length and text[index + 1] in "P^_X":
+            end = string_end(("\x1b\\", "\x9c"), index + 2)
+        elif char in _C1_STRING_INTRODUCERS:
+            end = string_end(("\x07", "\x9c"), index + 1)
+        if end < 0:
+            if char == "\x1b":
+                match = _CSI_7BIT_RE.match(text, index) or _FE_RE.match(text, index)
+            elif char == "\x9b":
+                match = _CSI_8BIT_RE.match(text, index)
+            else:
+                match = None
+            end = match.end() if match else -1
+        if end < 0:
+            # Skip to the next introducer, not the next character, so ordinary text is never walked one character at a time.
+            following = _ANSI_INTRODUCER_RE.search(text, index + 1)
+            if following is None:
+                break
+            index = following.start()
+            continue
+        out.append(text[written:index])
+        written = end
+        following = _ANSI_INTRODUCER_RE.search(text, end)
+        index = following.start() if following else length
+    out.append(text[written:])
+    return "".join(out)
+
 
 # Key names whose VALUE is a secret. "token" alone is absent on purpose, so n_tokens = 4096 and token_id=128009 survive.
 _SECRET_KEYS = (
@@ -158,7 +219,7 @@ def redact_log_text(text: str) -> str:
         return text
     # Nothing anchored below survives an escape between a key and its value, so strip first, guarded by one introducer scan: ordinary content is untouched.
     if _ANSI_INTRODUCER_RE.search(text):
-        text = _ANSI_RE.sub("", text)
+        text = _strip_ansi(text)
     for pattern, replacement in _PATTERNS:
         text = pattern.sub(replacement, text)
     # Before the key/value rules: _KV_RE captures "Basic" from "Authorization: Basic dXNlcjpwdw==", masking the scheme and leaving the credential clear.

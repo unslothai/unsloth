@@ -311,8 +311,8 @@ def _preflight_disk_space(repo_type: str, repo_id: str, expected_files: list) ->
     if free < remaining:
         print(
             f"Not enough disk space to download {repo_id}: need about "
-            f"{remaining / (1024 ** 3):.1f} GB free in {root}, but only "
-            f"{free / (1024 ** 3):.1f} GB is available. Free up space and "
+            f"{remaining / 1e9:.1f} GB free in {root}, but only "
+            f"{free / 1e9:.1f} GB is available. Free up space and "
             "try again.",
             file = sys.stderr,
         )

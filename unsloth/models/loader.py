@@ -40,6 +40,7 @@ from .loader_utils import (
     _offline_quantize_to_fp8,
     _tag_model_with_fp8_torchao_config,
     get_model_name,
+    is_automatic_device_map,
     prepare_device_map,
     requested_device_map,
     _offline_aware_load,
@@ -144,6 +145,12 @@ def _strip_unsloth_bnb_4bit_suffix(model_name: str) -> str:
         if len(s) >= len(suffix) and s.lower().endswith(suffix.lower()):
             s = s[: -len(suffix)]
     return s
+
+
+def _precision_flags_conflict(load_in_4bit, load_in_8bit, load_in_16bit, load_in_fp8):
+    return (
+        int(load_in_4bit) + int(load_in_8bit) + int(load_in_16bit) + int(load_in_fp8 != False) >= 2
+    )
 
 
 def _revision_for_resolved_repo(
@@ -435,10 +442,9 @@ class FastLanguageModel(FastLlamaModel):
             if isinstance(bnb_compute_dtype, torch.dtype):
                 dtype = bnb_compute_dtype
 
-        # Distributed-safe placement for quantized models: under torchrun each rank must load on its own device, else Accelerate raises device relocation errors on quantized weights.
-        is_quantized = load_in_4bit or load_in_8bit or load_in_fp8
+        # Distributed-safe placement: under torchrun / accelerate launch each rank must load on its own device. Quantized weights make it mandatory, since Accelerate raises device relocation errors on them, but a 16-bit load needs it just as much: an unchosen placement ends up dispatching to cuda:0, so all the ranks land on card 0 and contend for it while the rest of the cards stay empty (#3459). A device the caller named is left alone.
         device_map = requested_device_map(device_map)
-        if is_quantized and isinstance(device_map, str):
+        if is_automatic_device_map(device_map):
             distributed_device_map, is_dist = prepare_device_map()
             if is_dist:
                 # One whole model per rank; sharding one across the ranks' GPUs too would have every rank fighting for the same cards.
@@ -598,9 +604,19 @@ class FastLanguageModel(FastLlamaModel):
             load_in_fp8 = False
             load_in_16bit = True
 
+        # Only check the flags when no non-bitsandbytes quantization_config sets the precision.
+        check_precision_flags = quantization_config is None or q_load_in_4bit or q_load_in_8bit
+        modelscope_pending_download = None
         if USE_MODELSCOPE and not os.path.exists(model_name):
             from modelscope import snapshot_download
-            model_name = snapshot_download(model_name)
+            if check_precision_flags and _precision_flags_conflict(
+                load_in_4bit, load_in_8bit, load_in_16bit, load_in_fp8
+            ):
+                # Resolve adapter/base precision before committing to a weight download.
+                modelscope_pending_download = model_name
+                model_name = snapshot_download(model_name, allow_file_pattern = ["*.json", "*.py"])
+            else:
+                model_name = snapshot_download(model_name)
 
         # Gate before the probe below, or a pinned 4bit load fails against the mirror.
         base_revision = _revision_for_resolved_repo(
@@ -783,6 +799,19 @@ class FastLanguageModel(FastLlamaModel):
 
         if not was_disabled:
             enable_progress_bars()
+
+        if check_precision_flags and _precision_flags_conflict(
+            load_in_4bit, load_in_8bit, load_in_16bit, load_in_fp8
+        ):
+            raise RuntimeError(
+                "Unsloth: Can only load in 4bit or 8bit or 16bit, not a combination!\n"
+                "Also, we by default set `load_in_4bit = True`.\n"
+                "If you want to load in 16bit or fp8, set `load_in_4bit = False` and only one of "
+                "`load_in_16bit = True` or `load_in_fp8 = True`."
+            )
+
+        if modelscope_pending_download is not None:
+            snapshot_download(modelscope_pending_download)
 
         if model_type == "llama":
             scaling_type = None
@@ -1254,10 +1283,7 @@ class FastModel(FastBaseModel):
             if _wants_bnb:
                 kwargs.pop("quantization_config", None)
 
-        if (
-            int(load_in_4bit) + int(load_in_8bit) + int(load_in_16bit) + int(load_in_fp8 != False)
-            >= 2
-        ):
+        if _precision_flags_conflict(load_in_4bit, load_in_8bit, load_in_16bit, load_in_fp8):
             raise RuntimeError(
                 "Unsloth: Can only load in 4bit or 8bit or 16bit, not a combination!\n"
                 "Also, we by default set `load_in_4bit = True`.\n"
@@ -1274,10 +1300,9 @@ class FastModel(FastBaseModel):
         if qat_scheme == "phone-deployment":
             qat_scheme = "int8-int4"
 
-        # Distributed-safe placement for quantized models: under torchrun each rank must load on its own device, else Accelerate raises device relocation errors.
-        is_quantized = load_in_4bit or load_in_8bit or load_in_fp8
+        # Distributed-safe placement: under torchrun / accelerate launch each rank must load on its own device. Quantized weights make it mandatory, since Accelerate raises device relocation errors on them, but a 16-bit load needs it just as much: an unchosen placement ends up dispatching to cuda:0, so all the ranks land on card 0 and contend for it while the rest of the cards stay empty (#3459). A device the caller named is left alone.
         device_map = requested_device_map(device_map)
-        if is_quantized and isinstance(device_map, str):
+        if is_automatic_device_map(device_map):
             distributed_device_map, is_dist = prepare_device_map()
             if is_dist:
                 # One whole model per rank; sharding one across the ranks' GPUs too would have every rank fighting for the same cards.

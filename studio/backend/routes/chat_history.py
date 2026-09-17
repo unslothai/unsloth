@@ -23,6 +23,8 @@ from pydantic import (
 )
 
 from auth.authentication import get_current_subject
+from auth import policy
+from routes.chat_generation_runs import cancel_account_run
 from core.inference.llama_server_args import (
     BATCH_MAX,
     BATCH_MIN,
@@ -32,6 +34,7 @@ from core.inference.llama_server_args import (
     PARALLEL_MIN,
 )
 from loggers import get_logger
+from utils.reasoning_budget import validate_reasoning_budget_message
 from utils.api_errors import safe_validation_errors
 from utils.utils import safe_curated_detail, log_and_http_error
 from storage.studio_db import (
@@ -150,6 +153,7 @@ class ChatThreadSettings(BaseModel):
     # -1 disables top-k, matching ChatCompletionRequest and the default.yaml fallback.
     topK: Optional[int] = Field(default = None, ge = -1, le = 100)
     minP: Optional[float] = Field(default = None, ge = 0, le = 1)
+    minPMode: Optional[Literal["server-default", "custom"]] = None
     repetitionPenalty: Optional[float] = Field(default = None, ge = 1, le = 2)
     presencePenalty: Optional[float] = Field(default = None, ge = 0, le = 2)
     seed: SamplingSeed = None
@@ -383,6 +387,7 @@ class ChatInferenceSettings(BaseModel):
     topP: Optional[float] = None
     topK: Optional[float] = None
     minP: Optional[float] = None
+    minPMode: Optional[Literal["server-default", "custom"]] = None
     repetitionPenalty: Optional[float] = None
     presencePenalty: Optional[float] = None
     maxSeqLength: Optional[float] = None
@@ -404,6 +409,8 @@ class ChatPresetLoadConfig(BaseModel):
     speculativeType: Optional[str] = None
     specDraftNMax: Optional[int] = Field(default = None, ge = 1, le = 16)
     nParallel: Optional[int] = Field(default = None, ge = PARALLEL_MIN, le = PARALLEL_MAX)
+    reasoningBudget: NotABoolean = Field(default = None, ge = -1, le = 2_147_483_647)
+    reasoningBudgetMessage: Optional[str] = None
     # The normalizer emits both keys on every preset (null included) and this model is
     # extra="forbid", so without them PUT /api/chat/settings 400s the whole save for any
     # preset carrying a loadConfig, including one that only pinned nParallel.
@@ -421,6 +428,11 @@ class ChatPresetLoadConfig(BaseModel):
     gpuMemoryMode: Optional[Literal["manual"]] = None
     gpuLayers: Optional[int] = None
     nCpuMoe: Optional[int] = Field(default = None, ge = 0)
+
+    @field_validator("reasoningBudgetMessage")
+    @classmethod
+    def _validate_reasoning_budget_message(cls, value: Optional[str]) -> Optional[str]:
+        return None if value is None else validate_reasoning_budget_message(value)
 
 
 class ChatPreset(BaseModel):
@@ -697,11 +709,11 @@ def patch_thread(
 def _cancel_deleted_research_runs(request: Request, run_ids: list[str]) -> None:
     """Signal workers for active runs captured by the deletion transaction."""
     supervisor = getattr(request.app.state, "research_supervisor", None)
-    if supervisor is None:
+    if supervisor is None and not policy.installation_has_managed_accounts():
         return
     for run_id in run_ids:
         try:
-            supervisor.cancel(run_id)
+            cancel_account_run(request, run_id, supervisor_name = "research_supervisor")
         except Exception:  # noqa: BLE001 - cancellation is best-effort after commit
             logger.warning(
                 "chat_history.cancel_deleted_research_failed run_id=%s",
@@ -727,8 +739,10 @@ def _cancel_active_research(request: Request, thread_ids: list[str]) -> None:
         for run in active:
             try:
                 status = research_runs_db.request_cancel(run["id"])
-                if supervisor is not None and status == "cancelling":
-                    supervisor.cancel(run["id"])
+                if status == "cancelling" and (
+                    supervisor is not None or policy.installation_has_managed_accounts()
+                ):
+                    cancel_account_run(request, run["id"], supervisor_name = "research_supervisor")
             except Exception:  # noqa: BLE001
                 logger.warning(
                     "chat_history.cancel_active_research_failed run_id=%s",
@@ -747,11 +761,12 @@ def _cancel_research_runs(request: Request, run_ids: list[str]) -> None:
         return
     supervisor = getattr(request.app.state, "research_supervisor", None)
     for run_id in run_ids:
-        # The row is usually already gone here, which makes request_cancel raise: the supervisor is what
-        # actually stops the worker, so it is told first and the status update is the best-effort half.
-        if supervisor is not None:
+        # The row is usually already gone here, which makes request_cancel raise:
+        # the supervisor is what actually stops the worker, so it is told first
+        # and the status update is the best-effort half.
+        if supervisor is not None or policy.installation_has_managed_accounts():
             try:
-                supervisor.cancel(run_id)
+                cancel_account_run(request, run_id, supervisor_name = "research_supervisor")
             except Exception:  # noqa: BLE001
                 logger.warning("Could not signal research run %s", run_id, exc_info = True)
         try:
@@ -782,17 +797,9 @@ def _cancel_chat_generation_runs(request: Request, run_ids: list[str]) -> None:
     """Cancel durable producers whose rows were captured before thread cascade."""
     if not run_ids:
         return
-    supervisor = getattr(request.app.state, "chat_generation_supervisor", None)
     for run_id in run_ids:
         try:
-            if supervisor is not None:
-                supervisor.cancel(run_id)
-            else:
-                from routes.inference import _cancel_by_cancel_id_or_stash
-                from state import active_generations
-
-                active_generations.cancel_run(run_id)
-                _cancel_by_cancel_id_or_stash(run_id)
+            cancel_account_run(request, run_id, supervisor_name = "chat_generation_supervisor")
         except Exception:  # noqa: BLE001 - deletion must still complete
             logger.warning("Could not signal chat generation run %s", run_id, exc_info = True)
 
@@ -1416,6 +1423,12 @@ def record_import_ledger(
     return ChatImportLedgerRecordResponse(accepted = accepted, inserted = inserted)
 
 
+def _snapshot_chat_images() -> Optional[set[str]]:
+    """Registry and thumbnail cache are account-scoped, so this bounds the reap to the caller."""
+    from core.inference.search_images import snapshot_and_fence_registrations
+    return snapshot_and_fence_registrations()
+
+
 @router.delete("")
 async def clear_history(
     request: Request,
@@ -1435,17 +1448,21 @@ async def clear_history(
     )
 
     def _clear_rows() -> tuple[list[str], list[str], list[str], bool, Optional[set]]:
-        """The clear, and the image snapshot the reap will be bounded to. Both in ONE threadpool call,
-        so there is no await between them. Split across two, the event loop can run another request
-        in the gap: a chat created there survives the transaction, but its images register before
-        the snapshot and the reap takes them. Narrowed, NOT closed: another worker thread can still
-        register between the commit and the read, and only holding ``_registry_lock`` across the
-        transaction would close that. Every image registration in the process takes that lock and
-        this transaction is a BEGIN IMMEDIATE that waits out contention for seconds, so paying for
-        it means stalling every search in every chat for the length of a clear, to buy back a window
-        a few instructions wide."""
-        from core.inference.search_images import snapshot_and_fence_registrations
+        """The clear, and the image snapshot the reap will be bounded to.
 
+        Both in ONE threadpool call, so there is no await between them. Split across two,
+        the event loop can run another request in the gap: a chat created there survives
+        the transaction, but its images register before the snapshot and the reap takes
+        them, leaving its cards 404ing out of thumbnail_bytes.
+
+        Narrowed, NOT closed, and the difference is worth stating. Another worker thread can
+        still register between the commit and the read a few instructions later, and only one
+        thing would truly close that: holding ``_registry_lock`` across the transaction. That
+        lock is what every image registration in the process takes, and this transaction is a
+        BEGIN IMMEDIATE that waits out contention for seconds, so paying for it means stalling
+        every search in every chat for the length of a clear. The window bought back is a few
+        instructions wide and its cost is one chat's thumbnails re-fetching. Not worth it.
+        """
         if payload is None:
             cleared, cleared_runs, cleared_chat_runs = clear_chat_history(
                 include_chat_generation_runs = True
@@ -1455,7 +1472,7 @@ async def clear_history(
                 cleared_runs,
                 cleared_chat_runs,
                 False,
-                snapshot_and_fence_registrations(),
+                _snapshot_chat_images(),
             )
         # Answered by the transaction itself: read beforehand it is a guess, and the one BEGIN IMMEDIATE
         # puts second replays while still believing it cleared. `replayed` is whichever the transaction did.
@@ -1474,7 +1491,7 @@ async def clear_history(
                 True,
                 unreaped_clear_operation_image_ids(payload.operationId),
             )
-        snapshot = snapshot_and_fence_registrations()
+        snapshot = _snapshot_chat_images()
         # Recorded before the reap runs.
         record_clear_operation_reap_scope(payload.operationId, snapshot)
         return cleared, cleared_runs, cleared_chat_runs, False, snapshot

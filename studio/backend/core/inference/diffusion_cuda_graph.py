@@ -10,9 +10,11 @@ Not a hook: hooks move ``nn.Module._call_impl`` off its fast path and offload ow
 
 from __future__ import annotations
 
+import contextlib
 import gc
 import inspect
 import os
+import threading
 import traceback
 import weakref
 from functools import update_wrapper
@@ -38,6 +40,70 @@ def _torch():
 def cuda_graph_disabled() -> bool:
     """Whether the env kill switch is set. Read before any torch or pipe inspection."""
     return os.environ.get(CUDA_GRAPH_DISABLE_ENV, "").strip().lower() in _TRUE_TOKENS
+
+
+# ``torch.cuda.graph`` begins its capture in CUDA's default global mode, which prohibits the
+# "potentially unsafe" calls -- cudaEventQuery among them -- from EVERY thread for as long as it
+# records. The denoise progress poller queries a CUDA event ten times a second and the denoiser
+# captures its graphs during the first steps of a render, so the two really do overlap.
+#
+# A flag read before the query would be a TOCTOU: the reader can see "no capture", the capture can
+# begin, and the query then lands inside it and invalidates it. So the lock has to span the CUDA
+# call itself, not just the depth. Capture raises the depth UNDER the lock before it enters
+# ``torch.cuda.graph``, and a querier holds the same lock ACROSS its query, which leaves only two
+# orderings and both are safe: either the querier holds the lock and capture entry waits the few
+# microseconds a query takes, or capture got there first and the querier sees a non-zero depth and
+# skips. The depth is not a flag because nothing says two pipelines cannot be capturing at once,
+# and neither holds the lock while it records, so captures do not serialise against each other.
+_CAPTURE_LOCK = threading.Lock()
+_CAPTURE_DEPTH = 0
+
+
+@contextlib.contextmanager
+def _capturing():
+    """Mark a capture as recording for the duration of the block.
+
+    The depth MUST be raised before ``torch.cuda.graph`` is entered, which is what makes the
+    ordering above hold; keep this the outermost of the two context managers.
+    """
+    global _CAPTURE_DEPTH
+    with _CAPTURE_LOCK:
+        _CAPTURE_DEPTH += 1
+    try:
+        yield
+    finally:
+        with _CAPTURE_LOCK:
+            _CAPTURE_DEPTH -= 1
+
+
+@contextlib.contextmanager
+def hold_off_capture():
+    """Yield True while it is safe to make a CUDA call a recording capture would prohibit.
+
+    While a True is held, no capture can ENTER ``torch.cuda.graph``: capture entry takes the same
+    lock. Yields False, having taken nothing, when a capture is already recording or is entering
+    right now -- the caller must then skip its CUDA call entirely.
+
+    The acquire is non-blocking on purpose. This is polled at 10 Hz for progress reporting, and a
+    render must never wait on a progress tick; a skipped poll costs a tenth of a second of bar.
+    """
+    if not _CAPTURE_LOCK.acquire(blocking = False):
+        yield False
+        return
+    try:
+        yield _CAPTURE_DEPTH == 0
+    finally:
+        _CAPTURE_LOCK.release()
+
+
+def capture_in_progress() -> bool:
+    """Whether a capture is recording, as a snapshot for reporting.
+
+    NOT safe to gate a CUDA call on: by the time the caller acts the answer can have changed.
+    Use ``hold_off_capture`` for that.
+    """
+    with _CAPTURE_LOCK:
+        return _CAPTURE_DEPTH > 0
 
 
 # Not ``torch.utils._pytree``: it makes an unregistered object a LEAF, which must stay visible.
@@ -391,7 +457,7 @@ class GraphedForward:
 
         graph = torch.cuda.CUDAGraph()
         # ``pool = None`` is identical to omitting the argument, so both captures take one path.
-        with torch.cuda.graph(graph, pool = _POOL_BOX[0]):
+        with _capturing(), torch.cuda.graph(graph, pool = _POOL_BOX[0]):
             out = self.orig(*static_args, **static_kwargs)
         if _POOL_BOX[0] is None:
             try:

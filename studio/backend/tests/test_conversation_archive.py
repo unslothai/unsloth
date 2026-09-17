@@ -635,6 +635,12 @@ def test_a_folded_retrieval_result_is_still_kept_out_of_the_archive():
     assert "ASKEDAFTERWARDS?" in rendered
     assert "ZQXVARA123" in rendered
 
+    recalled[2]["content"] = [{"type": "text", "text": "<chunk>RETRIEVEDPASSAGE</chunk>"}]
+    listed = _coalesce_consecutive_user_turns(fold_tool_results_into_user(recalled))
+    rendered = archive.render_turn(archive._archivable(listed))
+    assert "RETRIEVEDPASSAGE" not in rendered
+    assert "ASKEDAFTERWARDS?" in rendered
+
     # An image on the next question makes the coalesce produce a part list, not a string, and
     # reading only strings archived the passage on exactly the turns that carry an image.
     with_image = [

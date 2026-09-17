@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from typing import Any, Collection, Literal, Mapping, Sequence
 from urllib.parse import urlparse
 
+from core.inference.llama_tool_schema import unrelaxed
 from core.inference.tool_call_parser import TOOL_ERROR_NUDGE, TOOL_ERROR_PREFIXES
 
 
@@ -183,8 +184,12 @@ class CoercedArguments:
 
 
 def canonical_arguments_text(arguments: Any) -> str:
-    """The one JSON encoding of an argument mapping, so the card and the replay agree."""
-    return json.dumps(arguments, ensure_ascii = False, sort_keys = True, separators = (",", ":"))
+    """The one JSON encoding of an argument mapping, so the card and the replay agree.
+
+    Not sorted: the replay must match the token sequence already in the prompt cache (#10791).
+    `canonical_tool_call_key` keeps its own sorted key for dedup.
+    """
+    return json.dumps(arguments, ensure_ascii = False, sort_keys = False, separators = (",", ":"))
 
 
 @dataclass(frozen = True)
@@ -285,10 +290,13 @@ class ToolCallCompletion:
     executed: bool = False
 
     def tool_end_payload(self) -> dict[str, Any]:
+        # Not only in model_message(): the frontend PERSISTS this payload and serializes it back
+        # into a role="tool" message on the next turn, so an unmasked key is replayed then.
+        result = self.result
         return {
             "tool_name": self.decision.tool_name,
             "tool_call_id": self.decision.card_id,
-            "result": self.result,
+            "result": redact_studio_credentials(result) if isinstance(result, str) else result,
             "provenance": self.decision.provenance,
         }
 
@@ -474,6 +482,7 @@ def _read_schema(spec: Any) -> "tuple[Any, str | None, bool]":
     ``(None, ...)`` leaves it alone. A union collapses to its single non-null branch, so
     every branch must name one: reading the integer branch of ``anyOf: [{integer}, {$ref}]``
     would turn ``"001"`` into 1."""
+    spec = unrelaxed(spec)
     if not _readable(spec):
         return None, None, False
     union = _UNION_KEYWORDS & spec.keys()
@@ -491,6 +500,7 @@ def _read_schema(spec: Any) -> "tuple[Any, str | None, bool]":
             return None, None, False
         named = []
         for branch in branches:
+            branch = unrelaxed(branch)
             name = branch.get("type") if _readable(branch) else None
             if not isinstance(name, str) or _UNION_KEYWORDS & branch.keys():
                 return None, None, False
@@ -714,12 +724,14 @@ def mcp_display_parts(tool_name: str) -> "tuple[str, str] | None":
     if len(parts) < 3 or not parts[1] or not parts[2]:
         return None
     try:
+        from core.inference.tools import _mcp_raw_tool_name
         from storage import mcp_servers_db
+
         server = mcp_servers_db.get_server_for_tool(parts[1])
+        display = (server or {}).get("display_name")
+        return (str(display), _mcp_raw_tool_name(tool_name)) if display else None
     except Exception:  # noqa: BLE001
         return None
-    display = (server or {}).get("display_name")
-    return (str(display), parts[2]) if display else None
 
 
 def provisional_tool_provenance(tool_name: str) -> dict[str, object]:
@@ -729,6 +741,7 @@ def provisional_tool_provenance(tool_name: str) -> dict[str, object]:
     return tool_event_provenance(
         provisional = True,
         mcp_server = mcp[0] if mcp else None,
+        mcp_tool = mcp[1] if mcp else None,
     )
 
 
@@ -935,11 +948,45 @@ _SANDBOX_TOOLS = frozenset({"python", "terminal"})
 # than the card the user is looking at.
 _IMAGE_SENTINEL_TOOLS = _SANDBOX_TOOLS | {"code_execution"}
 _SOURCE_MAP_TOOLS = frozenset({"search_knowledge_base", "search_conversation"})
+_WORKSPACE_TOOLS = _SANDBOX_TOOLS | {"edit_file"}
 
 
-def strip_result_for_model(result: str, tool_name: "str | None" = None) -> str:
-    """Remove frontend-only sentinels (image paths, RAG source map) before
-    feeding the result back to the model."""
+# `sk-unsloth-` + 32 hex (auth/storage.py), cached in the clear so the CLI can reuse it. Masked on
+# the way to the model, which is where it would leave the machine. The mask carries neither prefix,
+# so re-running is a no-op.
+_STUDIO_API_KEY_RE = re.compile(
+    # 8, not 32: a result cut to fit the window ends mid-key, and half a key is still one. Bare
+    # `sk-unsloth-` (prose about the format) still reads through.
+    # Hex, not alphanumeric: the token is `token_hex`, and the wider alphabet rewrote this repo's
+    # own `sk-unsloth-internal-workflow` to `[redacted]-workflow`.
+    r"sk-unsloth-[0-9a-fA-F]{8,}"
+    # `desktop-` + token_urlsafe(48); the floor keeps "desktop-app" out of it.
+    r"|desktop-[A-Za-z0-9_-]{40,}"
+)
+_STUDIO_SECRET_MASK = "[redacted]"
+
+
+def redact_studio_credentials(text: str) -> str:
+    """Mask any Unsloth Studio credential in text bound for the model/provider."""
+    # Two substring scans first: the alternation has no literal to anchor on and costs ~20x per MB.
+    if "sk-unsloth-" not in text and "desktop-" not in text:
+        return text
+    return _STUDIO_API_KEY_RE.sub(_STUDIO_SECRET_MASK, text)
+
+
+def strip_result_for_model(
+    result: str,
+    tool_name: "str | None" = None,
+    *,
+    redact: bool = True,
+) -> str:
+    """Remove frontend-only sentinels (image paths, RAG source map) and mask Studio credentials
+    before feeding the result back to the model.
+
+    ``redact = False`` is for the one caller that needs the strip to stay suffix-only
+    (`tools._split_frontend_suffix` re-derives the removed envelope from `startswith`); masking
+    rewrites bytes inside the body, which that comparison cannot survive. That path feeds the model
+    through `model_message` afterwards, so the mask is applied either way."""
     if tool_name is None or tool_name == "web_search":
         from .search_images import strip_images_suffix
         result = strip_images_suffix(result)
@@ -950,7 +997,7 @@ def strip_result_for_model(result: str, tool_name: "str | None" = None) -> str:
         result = _strip_images_sentinel(result)
     if tool_name is None or tool_name in _SOURCE_MAP_TOOLS:
         result = _strip_rag_sources_sentinel(result)
-    return result
+    return redact_studio_credentials(result) if redact else result
 
 
 def deferred_nudge_text(msgs: Sequence[dict]) -> str:
@@ -1030,6 +1077,10 @@ class ToolLoopController:
         self._one_shot_tools = one_shot_tools
         self._completed_one_shot_tools: set[str] = set()
         self._successful_keys: set[str] = set()
+        # `_workspace_novel_at[key]` is the distinct-call count when `key` last ran.
+        self._workspace_ran: set[str] = set()
+        self._workspace_novel = 0
+        self._workspace_novel_at: dict[str, int] = {}
         self._duplicate_noop_counts: dict[str, int] = {}
         self._duplicate_noop_limit = max(1, duplicate_noop_limit)
         self._history: list[_ToolCallRecord] = []
@@ -1081,6 +1132,7 @@ class ToolLoopController:
             forced = forced,
             provisional = provisional,
             mcp_server = mcp[0] if mcp else None,
+            mcp_tool = mcp[1] if mcp else None,
         )
         action: ToolAction = "execute"
         noop = ""
@@ -1121,6 +1173,23 @@ class ToolLoopController:
                 action = decision.action,
             )
         )
+        # One rerun per piece of NEW work, not per call: `read, edit, read, edit` would
+        # otherwise apply the edit twice. Here as well as in the prefilters, which a
+        # structured batch skips. A failed command can still have written, so it counts too.
+        if decision.tool_name in _WORKSPACE_TOOLS:
+            if decision.key not in self._workspace_ran:
+                self._workspace_ran.add(decision.key)
+                self._workspace_novel += 1
+            stale = {
+                key
+                for key in self._successful_keys
+                if key.partition(":")[0] in _WORKSPACE_TOOLS
+                and self._workspace_novel_at.get(key, 0) < self._workspace_novel
+            }
+            self._successful_keys -= stale
+            for key in stale:
+                self._duplicate_noop_counts.pop(key, None)
+            self._workspace_novel_at[decision.key] = self._workspace_novel
         if not failed:
             self._successful_keys.add(decision.key)
             if decision.tool_name in self._one_shot_tools:

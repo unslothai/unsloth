@@ -53,6 +53,8 @@ _FAKE_ROCM_DIR=$(mktemp -d)
     echo ""
     sed -n '/^_trim_index_path_slashes()/,/^}/p' "$INSTALL_SH"
     echo ""
+    sed -n '/^_nvidia_library_inventory()/,/^}/p' "$INSTALL_SH"
+    echo ""
     sed -n '/^_nvidia_cu126_verdict()/,/^}/p' "$INSTALL_SH"
     echo ""
     sed -n '/^_cap_cuda_family_for_pre_turing()/,/^}/p' "$INSTALL_SH"
@@ -252,6 +254,72 @@ chmod +x "$_dir/nvidia-smi"
 _result=$(run_func "$_dir")
 assert_eq "unparseable -> cu126" "https://download.pytorch.org/whl/cu126" "$_result"
 rm -rf "$_dir"
+
+# Helper: a python3 stand-in for the driver-library probe, printing "<cuda> <caps>".
+make_mock_probe() {
+    printf '#!/bin/sh\ncat >/dev/null\necho "%s"\n' "$2" > "$1/python3"
+    chmod +x "$1/python3"
+}
+
+# 8b) Unparseable banner, but the driver library names the version -> its family
+_dir=$(mktemp -d)
+cat > "$_dir/nvidia-smi" <<'MOCK'
+#!/bin/sh
+case "$1" in
+    -L) echo "GPU 0: NVIDIA GeForce RTX 5090 (UUID: GPU-fake-uuid)" ;;
+    *)  echo "something completely unexpected" ;;
+esac
+MOCK
+chmod +x "$_dir/nvidia-smi"
+make_mock_probe "$_dir" "13.0 12.0"
+_result=$(run_func "$_dir")
+assert_eq "unparseable banner, library says 13.0 -> cu130" "https://download.pytorch.org/whl/cu130" "$_result"
+# 8c) The library's capabilities feed the pre-Turing cap
+make_mock_probe "$_dir" "12.8 6.1"
+_result=$(run_func "$_dir")
+assert_eq "library says 12.8 with sm_61 -> cu126" "https://download.pytorch.org/whl/cu126" "$_result"
+# 8d) The probe switched off -> the cu126 default again
+_result=$(PATH="$_dir:$_TOOLS_DIR" bash -c "unset CUDA_VISIBLE_DEVICES; _ARCH=x86_64; UNSLOTH_NVIDIA_LIBRARY_PROBE=0; . '$_FUNC_FILE'; get_torch_index_url" 2>/dev/null)
+assert_eq "probe off -> cu126 default" "https://download.pytorch.org/whl/cu126" "$_result"
+rm -rf "$_dir"
+
+# 8e) No nvidia-smi anywhere, the library lists a GPU -> its family, not cpu
+_dir=$(mktemp -d)
+make_mock_probe "$_dir" "12.9 8.9"
+_result=$(run_func "$_dir")
+assert_eq "no nvidia-smi, library says 12.9 -> cu128" "https://download.pytorch.org/whl/cu128" "$_result"
+rm -rf "$_dir"
+
+# 8f) The inventory is read once per run: the presence check's answer feeds the torch
+# index even when a second probe would fail, and the probe is not launched again.
+_dir=$(mktemp -d)
+printf '#!/bin/sh\ncat >/dev/null\nn=$(cat "%s/calls" 2>/dev/null || echo 0)\necho $((n + 1)) > "%s/calls"\n[ "$n" = 0 ] && echo "12.9 8.9"\n' "$_dir" "$_dir" > "$_dir/python3"
+chmod +x "$_dir/python3"
+_result=$(PATH="$_dir:$_TOOLS_DIR" bash -c "unset CUDA_VISIBLE_DEVICES; _ARCH=x86_64; . '$_FUNC_FILE'; _has_usable_nvidia_gpu && get_torch_index_url" 2>/dev/null)
+assert_eq "memoised inventory -> cu128 from the first answer" "https://download.pytorch.org/whl/cu128" "$_result"
+assert_eq "memoised inventory -> one probe launch" "1" "$(cat "$_dir/calls")"
+rm -rf "$_dir"
+
+# 8g) No system python3: the managed venv's interpreter reads the library, and a run that
+# has no interpreter yet does not remember "no inventory" once the venv exists.
+_dir=$(mktemp -d)
+mkdir -p "$_dir/venv/bin"
+make_mock_probe "$_dir/venv/bin" "12.9 8.9"
+mv "$_dir/venv/bin/python3" "$_dir/venv/bin/python"
+_result=$(PATH="$_TOOLS_DIR" bash -c "unset CUDA_VISIBLE_DEVICES; _ARCH=x86_64; VENV_DIR='$_dir/venv'; . '$_FUNC_FILE'; get_torch_index_url" 2>/dev/null)
+assert_eq "no python3, venv python reads 12.9 -> cu128" "https://download.pytorch.org/whl/cu128" "$_result"
+_result=$(PATH="$_TOOLS_DIR" bash -c "unset CUDA_VISIBLE_DEVICES; _ARCH=x86_64; VENV_DIR='$_dir/none'; . '$_FUNC_FILE'; _has_usable_nvidia_gpu; VENV_DIR='$_dir/venv'; get_torch_index_url" 2>/dev/null)
+assert_eq "no interpreter yet is not memoised -> cu128 once the venv exists" "https://download.pytorch.org/whl/cu128" "$_result"
+rm -rf "$_dir"
+
+# 8h) The memo lives in the parent shell: the presence check runs there before the
+# torch index is read in a command substitution, so the later checks do not probe again.
+_prime=$(grep -n '^    _has_usable_nvidia_gpu >/dev/null 2>&1 || true$' "$INSTALL_SH" | head -1 | cut -d: -f1)
+_guard=$(sed -n "$((_prime - 1))p" "$INSTALL_SH")
+_assign=$(grep -n -F 'TORCH_INDEX_URL=$(get_torch_index_url)' "$INSTALL_SH" | head -1 | cut -d: -f1)
+if [ -n "$_prime" ] && [ -n "$_assign" ] && [ "$_prime" -lt "$_assign" ]; then _result=ordered; else _result="prime=$_prime assign=$_assign"; fi
+assert_eq "presence check primes the inventory before the index substitution" "ordered" "$_result"
+assert_eq "the prime is skipped for a pinned index or no torch" 'if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ]; then' "$_guard"
 
 # 9) ROCm 6.3 (no nvidia-smi) -> rocm6.3
 _dir=$(make_mock_amd_smi "6.3")

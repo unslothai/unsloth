@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useIsMobile } from "@/hooks/use-mobile";
+import { useIsMobileShell } from "@/hooks/use-mobile";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { useSidebarWidth } from "@/hooks/use-sidebar-width";
 import { isTauri } from "@/lib/api-base";
@@ -200,7 +200,7 @@ export function WindowTitlebar({
   const [maximized, setMaximized] = useState(false);
   const { pinned, togglePinned } = useSidebarPin();
   // Outside SidebarProvider, so read the same media query the provider does.
-  const isMobile = useIsMobile();
+  const isMobile = useIsMobileShell();
 
   const maximizeRefreshSequence = useRef(0);
   const maximizeRefreshTimer = useRef<number | null>(null);

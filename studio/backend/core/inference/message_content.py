@@ -43,6 +43,13 @@ def content_to_text(content: Any) -> str:
     return str(content)
 
 
+def named_turn(turn: dict, source: Any) -> dict:
+    """Carry the participant ``name`` of the message a backend rebuilt *turn* from."""
+    if isinstance(source, dict) and source.get("name"):
+        turn["name"] = source["name"]
+    return turn
+
+
 def pasted_text_body(text: str) -> str:
     """Body of a wrapped paste, or "" for anything else."""
     if not text.startswith(_PASTED_TEXT_OPEN):

@@ -327,6 +327,7 @@ def test_auth_redirect_targets_are_idempotent_and_concurrent(tmp_path: Path):
         AUTH_API.read_text(encoding = "utf-8")
         .replace('from "@/lib/api-base"', 'from "./stubs.mjs"')
         .replace('from "./session"', 'from "./stubs.mjs"')
+        .replace('from "@/lib/account-transition"', 'from "./stubs.mjs"')
     )
     (tmp_path / "api.ts").write_text(source)
     (tmp_path / "stubs.mjs").write_text(
@@ -334,6 +335,7 @@ def test_auth_redirect_targets_are_idempotent_and_concurrent(tmp_path: Path):
             let access = null, refresh = null, passwordChange = false;
             export const apiUrl = (path) => path;
             export const isTauri = false;
+            export const accountTransitionPending = () => false;
             export const reset = (a = null, r = null) => { access = a; refresh = r; passwordChange = false; };
             export const clearAuthTokens = () => { access = null; refresh = null; };
             export const getAuthToken = () => access;

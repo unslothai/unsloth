@@ -457,6 +457,24 @@ def _warn_once(where, message):
     logger.warning(message)
 
 
+def _comment_tolerant_anchor(old):
+    """`old` as a regex that still matches once a line grows a trailing comment.
+
+    A literal anchor stops matching the moment the Zoo appends a comment to one of
+    its lines, and this repo edits comments in bulk: unsloth_zoo #1192 put a
+    `# noqa: F821` on the `pack_dataset(` call while building a lint gate, which
+    was enough to drop the whole patched SFT trainer. Nothing about the code
+    changed, so nothing about the match should have.
+
+    Every line is allowed an optional trailing comment, including lines that
+    already carry one, so a comment being added, reworded or removed upstream is
+    drift this survives.
+    """
+    return re.compile(
+        "\n".join(re.escape(line.rstrip()) + r"[ \t]*(?:\#[^\n]*)?" for line in old.split("\n"))
+    )
+
+
 def _require_replace(
     function,
     old,
@@ -466,20 +484,35 @@ def _require_replace(
     required = True,
     where = "",
 ):
-    """str.replace that never silently no-ops a load-bearing source edit. Plain str.replace returns the source unchanged when the anchor is absent, so a drifted anchor in a newer TRL / unsloth_zoo would skip the edit while later edits still reference helper variables it should have introduced (NameError at runtime). Fail loudly for a required edit, warn once and skip for an optional one."""
-    if old not in function:
-        detail = f" ({where})" if where else ""
-        if required:
-            raise RuntimeError(
-                f"Unsloth: source anchor not found{detail}; the patched function is out "
-                "of sync with this TRL / unsloth_zoo version. Please file a bug report."
-            )
-        _warn_once(
-            where,
-            f"Unsloth: skipped an optional source edit{detail} (anchor not found).",
-        )
+    """str.replace that never silently no-ops a load-bearing source edit. Plain str.replace returns the source unchanged when the anchor is absent, so a drifted anchor in a newer TRL / unsloth_zoo would skip the edit while later edits still reference helper variables it should have introduced (NameError at runtime). Fail loudly for a required edit, warn once and skip for an optional one.
+
+    The literal anchor is tried first and a comment-tolerant form of the same
+    anchor second, so the only drift that reaches the raise below is drift in the
+    code itself. `re.sub` would read backslashes in `new` as group references, so
+    the replacement is handed over as a function.
+    """
+    if old in function:
+        return function.replace(old, new, count)
+
+    function, applied = _comment_tolerant_anchor(old).subn(
+        lambda _match: new,
+        function,
+        count = count,
+    )
+    if applied:
         return function
-    return function.replace(old, new, count)
+
+    detail = f" ({where})" if where else ""
+    if required:
+        raise RuntimeError(
+            f"Unsloth: source anchor not found{detail}; the patched function is out "
+            "of sync with this TRL / unsloth_zoo version. Please file a bug report."
+        )
+    _warn_once(
+        where,
+        f"Unsloth: skipped an optional source edit{detail} (anchor not found).",
+    )
+    return function
 
 
 # The one line every unsloth_zoo sft_prepare_dataset ends its worker count on, as a regex so a renamed right-hand side still matches and the indentation carries over. Unchanged since Aug 2025 (#257) while the block around it was rewritten repeatedly, hence a fallback anchor.

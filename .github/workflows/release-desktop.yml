@@ -1517,6 +1517,17 @@ jobs:
 
       # Later steps carry an implicit success(), so on a detection the flagged
       # bundle would be discarded with the runner.
+      #
+      # 90 days, not 7. Clearance is per hash and a rebuild hashes differently, so these copies are
+      # the only submittable sample for this release -- and a vendor analyst round trip plus our own
+      # reaction routinely outlasts a week, at which point the evidence for the detection we are
+      # disputing is gone and the dispute has to start from a different build.
+      #
+      # The Microsoft submission packet that describes them is uploaded by its own step further
+      # down, NOT here. It cannot be added to this step's path: the packet is assembled ~60 lines
+      # below, and steps run top to bottom, so at this point the file does not exist yet. That was
+      # the first version of this change, and `if-no-files-found: ignore` would have hidden it
+      # forever -- an artefact silently missing the one document it exists to carry.
       - name: Preserve flagged Windows bundles
         if: failure() && matrix.platform == 'windows-latest'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
@@ -1525,7 +1536,7 @@ jobs:
           path: ${{ runner.temp }}/defender-scan/*
           if-no-files-found: ignore
           compression-level: 0
-          retention-days: 7
+          retention-days: 90
 
       # ── Windows: every executable in the bundle must be signed ──
       # NSIS runs its plugin DLLs from $PLUGINSDIR; signing the installer misses them.
@@ -1582,6 +1593,22 @@ jobs:
           $md -join "`n" | Out-File $out -Encoding utf8
           $md -join "`n" | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
           Write-Host ($md -join "`n")
+
+      # Here, and not on the bundle-preserving step above, because the packet is written by the step
+      # immediately before this one. A job summary is ephemeral: it goes with the run, so the one
+      # document written for the purpose of disputing a detection was being discarded along with the
+      # detection it disputes. 90 days for the same reason the bundles get 90 -- clearance is per
+      # hash, and a vendor round trip outlasts a week.
+      - name: Preserve the Microsoft submission packet
+        if: always() && matrix.platform == 'windows-latest'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: ms-submission-packet-${{ matrix.artifact }}
+          path: ${{ runner.temp }}/ms-submission-packet.md
+          # ignore, not warn: the packet is only assembled when there is something to submit, so its
+          # absence on a clean release is the normal case and must not add an annotation.
+          if-no-files-found: ignore
+          retention-days: 90
 
       - name: Stage release assets
         shell: bash
@@ -2218,3 +2245,21 @@ jobs:
             echo '' >> "$GITHUB_STEP_SUMMARY"
             echo 'The scan step produced no summary.' >> "$GITHUB_STEP_SUMMARY"
           fi
+
+      # The summary carries the false-positive submission packet that
+      # submission_packet_lines() builds: the flagged assets, their SHA-256s, the vendor routes and
+      # the note that clearance is per hash. A job summary is ephemeral, so the one document written
+      # for the purpose of disputing a detection was being thrown away along with the run, and the
+      # dispute then had to be reconstructed from a report nobody kept. Keeping it costs a few KB.
+      #
+      # No env and no secret here on purpose: test_post_publish_scan_job_holds_no_release_credentials
+      # asserts this job's complete secret set is VIRUS_TOTAL_API_TOKEN alone and that no step of it
+      # carries a token, so an upload step must add neither.
+      - name: Preserve the VirusTotal summary and submission packet
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: virustotal-summary
+          path: ${{ runner.temp }}/virustotal-summary.md
+          if-no-files-found: warn
+          retention-days: 90

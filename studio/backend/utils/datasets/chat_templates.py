@@ -5,6 +5,7 @@
 
 import warnings as python_warnings
 
+from .cells import cell_text
 from .format_detection import detect_dataset_format, detect_multimodal_dataset, detect_custom_format_heuristic
 from .iterable import is_streaming_dataset
 from .model_mappings import MODEL_TO_TEMPLATE_MAPPER
@@ -280,6 +281,7 @@ def apply_chat_template_to_dataset(
                     "input": examples.get("input", [""] * len(examples["instruction"]))[i],
                     "output": examples["output"][i]
                 }
+                fields = {key: cell_text(value) for key, value in fields.items()}
 
                 text = DEFAULT_ALPACA_TEMPLATE.format(
                     fields["instruction"], fields["input"], fields["output"]

@@ -62,10 +62,12 @@ import {
   useDownloadManagerStore,
   useHfTokenStore,
   useOnlineStatus,
+  pendingDrafterPresentation,
 } from "@/features/hub";
 import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
 import {
   useDebouncedValue,
+  useDenseQuantSchemes,
   useGpuInfo,
   useHostClass,
   useInferenceGpuInfo,
@@ -203,6 +205,7 @@ import {
   soleQuantFingerprint,
   soleQuantKey,
   takeDriftedRepos,
+  verifiedSoleHubVariant,
 } from "./sole-quant-cache";
 import type {
   DeletedModelRef,
@@ -889,8 +892,14 @@ function isRuntimeLoadedModel(
 function artifactBudget(gpu: {
   memoryTotalGb: number;
   systemRamAvailableGb: number;
+  denseQuantSchemes?: readonly string[];
 }): DeviceBudget {
-  return { gpuGb: gpu.memoryTotalGb, systemRamGb: gpu.systemRamAvailableGb };
+  return {
+    gpuGb: gpu.memoryTotalGb,
+    systemRamGb: gpu.systemRamAvailableGb,
+    // Judges a pre-quantised row by that checkpoint's size, not the bf16 shards it replaces.
+    denseQuantSchemes: gpu.denseQuantSchemes,
+  };
 }
 
 const META_COLUMN = {
@@ -1314,6 +1323,13 @@ function isValidGgufVariant(variant: unknown): variant is GgufVariantDetail {
         candidate.shard_count >= 0)) &&
     (candidate.downloaded === undefined ||
       typeof candidate.downloaded === "boolean") &&
+    (candidate.pending_drafter_filename === undefined ||
+      candidate.pending_drafter_filename === null ||
+      typeof candidate.pending_drafter_filename === "string") &&
+    (candidate.pending_drafter_size_bytes === undefined ||
+      (typeof candidate.pending_drafter_size_bytes === "number" &&
+        Number.isFinite(candidate.pending_drafter_size_bytes) &&
+        candidate.pending_drafter_size_bytes >= 0)) &&
     // Carried through so each row can look up its own dependency group's footprint. Absent on an
     // older backend, which groups the repo as one, so it must never reject the row.
     (candidate.dependency_key === undefined ||
@@ -1330,6 +1346,7 @@ function normalizeGgufVariantsResponse(
         has_vision?: unknown;
         context_length?: unknown;
         resolved_locally?: unknown;
+        dependencies_resolved?: unknown;
       }
     | null
     | undefined,
@@ -1339,6 +1356,7 @@ function normalizeGgufVariantsResponse(
   hasVision: boolean;
   contextLength: number | null;
   resolvedLocally: boolean;
+  dependenciesResolved: boolean;
 } {
   const contextLength = res?.context_length;
   return {
@@ -1359,6 +1377,9 @@ function normalizeGgufVariantsResponse(
     // The backend's own verdict, which resolves existence-first: a marker-less relative name that
     // exists on disk is a local model. A server predating the field leaves the prefix test.
     resolvedLocally: res?.resolved_locally === true,
+    // Missing/false means the server used local or offline fallback metadata. That cannot prove
+    // whether a cached main GGUF still needs a managed drafter companion.
+    dependenciesResolved: res?.dependencies_resolved === true,
   };
 }
 
@@ -1378,22 +1399,22 @@ interface SoleDownloadedQuant {
   hasVision: boolean;
 }
 
-/** The repo's one complete quant, or null when it holds none, holds several, or could not be
- *  read. Disk-only and client-cached. */
+/** The repo's one complete quant, or null when Hub metadata cannot verify its dependencies. */
 async function readSoleQuant(
   target: SoleQuantTarget,
   hfToken?: string,
 ): Promise<SoleDownloadedQuant | null> {
   try {
     const res = await listGgufVariantsCached(target.repoId, hfToken, {
-      preferLocalCache: true,
       localPath: target.localSource,
     });
     const normalized = normalizeGgufVariantsResponse(res);
-    const local = normalized.variants;
-    // One file on disk and nothing torn beside it; a partial quant keeps the expander, where it can be resumed.
-    if (local.length !== 1 || local[0].downloaded !== true) return null;
-    return { variant: local[0], hasVision: normalized.hasVision };
+    const variant = verifiedSoleHubVariant(
+      normalized.variants,
+      normalized.resolvedLocally,
+      normalized.dependenciesResolved,
+    );
+    return variant ? { variant, hasVision: normalized.hasVision } : null;
   } catch {
     return null;
   }
@@ -1650,6 +1671,7 @@ function GgufVariantExpander({
       filename: string,
       downloaded?: boolean,
       sizeBytes?: number,
+      downloadPresentation?: ModelSelectorChangeMeta["downloadPresentation"],
     ) => {
       const isAvailable = isLocalPath || downloaded === true;
       onSelect(repoId, {
@@ -1661,6 +1683,7 @@ function GgufVariantExpander({
         ggufFilename: filename,
         isDownloaded: isLocalPath ? true : downloaded,
         expectedBytes: sizeBytes,
+        downloadPresentation,
         contextLength: isAvailable ? nativeContext : undefined,
         isGguf: true,
         pipelineTag,
@@ -2025,6 +2048,7 @@ function GgufVariantExpander({
                 v.filename,
                 v.downloaded,
                 expectedBytes,
+                pendingDrafterPresentation(v),
               )
             }
             className={cn(
@@ -3121,6 +3145,7 @@ export function HubModelPicker({
   const deviceType = usePlatformStore((s) => s.deviceType);
   const isMac = deviceType === "mac";
   const hostClass = useHostClass();
+  const denseQuantSchemes = useDenseQuantSchemes();
 
   // Drop models Unsloth cannot run for chat. A task-scoped picker wants exactly the tasks the
   // chat classifier calls unsupported, so it gates on the task.
@@ -3253,11 +3278,11 @@ export function HubModelPicker({
   // A curated row's name and its chips; ids outside the catalog have neither and show the raw repo id.
   const curatedRow = useCallback(
     (id: string) =>
-      (catalog && curatedRowLabelFor(id, catalog, hostClass)) ?? {
+      (catalog && curatedRowLabelFor(id, catalog, hostClass, denseQuantSchemes)) ?? {
         name: id,
         tags: [] as string[],
       },
-    [catalog, hostClass],
+    [catalog, hostClass, denseQuantSchemes],
   );
 
   /** Whether this host can run a curated id at all, as opposed to whether it has room for it. Browse rows only. */
@@ -5182,16 +5207,17 @@ export function HubModelPicker({
     // Carried anyway: if that ever stops holding, the row states what is on disk instead of
     // handing a torn file to the loader.
     const isPartial = c.partial === true;
+    const isDownloaded = variant.downloaded === true && !isPartial;
     const selectMeta: ModelSelectorChangeMeta = {
       source: "hub",
       isLora: false,
       // Only for a complete snapshot, as the variant select already does. A loadId names a
       // revision on disk, and the Audio route carries no isDownloaded field, so a forwarded
       // one is read there as proof the weights are present.
-      loadId: isPartial ? undefined : c.load_id,
+      loadId: isDownloaded ? c.load_id : undefined,
       ggufVariant: variant.quant,
       ggufFilename: variant.filename,
-      isDownloaded: !isPartial,
+      isDownloaded,
       expectedBytes,
       isGguf: true,
       pipelineTag: c.task ?? null,

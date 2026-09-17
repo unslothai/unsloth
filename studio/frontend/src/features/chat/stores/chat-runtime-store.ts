@@ -60,6 +60,7 @@ import {
 } from "../types/runtime";
 import {
   loadChatSettingsWithLegacyImport,
+  normalizeSavedChatSettings,
   sanitizeChatSettings,
   savePersistedChatSettingsPatch,
   savePersistedChatSettingsPatchIfCurrent,
@@ -92,11 +93,13 @@ import {
   hasThreadScopedSettings,
   isThreadOwnedSettingKey,
   isThreadScopedParamKey,
+  normalizeSavedThreadScopedSettings,
   sanitizeThreadScopedSettings,
 } from "../utils/thread-scoped-settings";
 import {
   chatModelLifecycleGate,
   type ModelLifecycleLease,
+  type ModelLifecyclePhase,
 } from "../utils/model-lifecycle-gate";
 import { shouldAdvanceQueuedSettingsEpoch } from "../utils/queued-settings-epoch";
 import type { MmprojFallbackReason } from "../types/api";
@@ -2339,6 +2342,13 @@ type ChatRuntimeStore = {
   /** Slots the last successful load sent (null = default); a rollback re-sends them so a failed
    *  switch cannot lose the override. */
   loadedNParallel: number | null;
+  reasoningBudget: number;
+  loadedReasoningBudget: number | null;
+  /** Request baseline for rollback; effective values can include server environment defaults. */
+  loadedReasoningBudgetRequested: number | null;
+  reasoningBudgetMessage: string;
+  loadedReasoningBudgetMessage: string | null;
+  loadedReasoningBudgetMessageRequested: string | null;
   /** user --batch-size override for gguf loads (null = llama.cpp default 2048) */
   nBatch: number | null;
   loadedNBatch: number | null;
@@ -2434,7 +2444,7 @@ type ChatRuntimeStore = {
    *  conversation's, and a background run may not write it. */
   contextUsageByThreadId: Record<string, ContextUsageSnapshot>;
   modelLoading: boolean;
-  loadingModelPick: LoadingModelPick | null;
+  loadingModelPick: (LoadingModelPick & { selectionSuperseded: boolean }) | null;
   // What the resident model loaded from, when that is not its id: a reload rebuilds its target
   // from the checkpoint, so without this it goes back down the ref the pin avoided.
   activeLoadId: string | null;
@@ -2443,7 +2453,7 @@ type ChatRuntimeStore = {
   // so a reload prompts re-selection instead of reusing a dead token.
   activeNativePathExpiresAtMs: number | null;
   hydratePersistedSettings: () => Promise<void>;
-  beginModelLoading: () => ModelLifecycleLease | null;
+  beginModelLoading: (phase?: ModelLifecyclePhase) => ModelLifecycleLease | null;
   endModelLoading: (lease: ModelLifecycleLease) => void;
   setLoadingModelPick: (pick: LoadingModelPick | null) => void;
   clearLoadingModelPick: (expected: LoadingModelPick) => void;
@@ -2453,6 +2463,8 @@ type ChatRuntimeStore = {
     options?: {
       persist?: boolean;
       trackQueuedSettings?: boolean;
+      /** An explicit Min P action fences the pair even when the number did not move. */
+      minPChoiceEdited?: boolean;
       /** These params are the model's defaults, so its remembered settings are laid back over them
        *  even with no checkpoint change; being the model's, they move the installation defaults. */
       fromModelDefaults?: boolean;
@@ -2722,9 +2734,23 @@ const SCALAR_SETTING_KEYS = [
 // Ids this browser holds a local answer for. Hydration keeps these and merges the rest, so a
 // pre-hydration edit cannot drop other models.
 const locallyRememberedModels = new Set<string>();
-const inferenceParamMutationVersions = Object.fromEntries(
-  PERSISTED_INFERENCE_PARAM_KEYS.map((key) => [key, 0]),
-) as Record<PersistedInferenceParamKey, number>;
+/** Deferred, not module scope: per-model-params is in the @/features/chat import cycle, so
+ *  naming PERSISTED_INFERENCE_PARAM_KEYS here reads a const in its TDZ and throws at import
+ *  time (as watchedStorageKeys() avoids). Memoized, or the `+= 1` bumps stop accumulating. */
+let inferenceParamMutationVersionsCache: Record<
+  PersistedInferenceParamKey,
+  number
+> | null = null;
+
+function inferenceParamMutationVersions(): Record<
+  PersistedInferenceParamKey,
+  number
+> {
+  inferenceParamMutationVersionsCache ??= Object.fromEntries(
+    PERSISTED_INFERENCE_PARAM_KEYS.map((key) => [key, 0]),
+  ) as Record<PersistedInferenceParamKey, number>;
+  return inferenceParamMutationVersionsCache;
+}
 const scalarSettingMutationVersions = Object.fromEntries(
   SCALAR_SETTING_KEYS.map((key) => [key, 0]),
 ) as Record<ScalarSettingKey, number>;
@@ -2778,7 +2804,7 @@ function hasKeys(value: object): boolean {
 
 function getSettingsHydrationVersions(): SettingsHydrationVersions {
   return {
-    inferenceParams: { ...inferenceParamMutationVersions },
+    inferenceParams: { ...inferenceParamMutationVersions() },
     scalarSettings: { ...scalarSettingMutationVersions },
     presets: {
       customPresets: customPresetsMutationVersion,
@@ -2834,19 +2860,33 @@ function getChangedInferenceParams(
   nextParams: InferenceParams,
   currentParams: InferenceParams,
   bumpVersions = true,
+  minPChoiceEdited = false,
 ): PersistedInferenceParams {
   const changedParams: PersistedInferenceParams = {};
+  // Mode and number are one choice: fence the pair even if only the mode moved.
+  const minPChoiceChanged =
+    bumpVersions &&
+    (minPChoiceEdited ||
+      !Object.is(nextParams.minP, currentParams.minP) ||
+      !Object.is(nextParams.minPMode, currentParams.minPMode));
   for (const key of PERSISTED_INFERENCE_PARAM_KEYS) {
     const nextValue = nextParams[key];
-    if (Object.is(nextValue, currentParams[key])) {
+    if (
+      Object.is(nextValue, currentParams[key]) &&
+      !(minPChoiceChanged && (key === "minP" || key === "minPMode"))
+    ) {
       continue;
     }
     if (bumpVersions) {
-      inferenceParamMutationVersions[key] += 1;
+      inferenceParamMutationVersions()[key] += 1;
     }
     if (nextValue !== undefined) {
       setInferenceParam(changedParams as InferenceParams, key, nextValue);
     }
+  }
+  // A written number carries its mode, or the next read reads it as legacy intent.
+  if (changedParams.minP !== undefined && nextParams.minPMode !== undefined) {
+    changedParams.minPMode = nextParams.minPMode;
   }
   return changedParams;
 }
@@ -2982,6 +3022,7 @@ function getHydratedCustomPresets(
   settings: PersistedChatSettings,
   state: ChatRuntimeStore,
 ): Preset[] {
+  settings = normalizeSavedChatSettings(settings);
   return (
     settings.customPresets?.map((preset) => {
       const loadConfig = normalizePresetLoadConfig(preset.loadConfig);
@@ -3034,7 +3075,7 @@ function pickLocallyEditedParams(
 ): PersistedInferenceParams {
   const edited: PersistedInferenceParams = {};
   for (const key of REMEMBERED_INFERENCE_PARAM_KEYS) {
-    if (inferenceParamMutationVersions[key] !== versions.inferenceParams[key]) {
+    if (inferenceParamMutationVersions()[key] !== versions.inferenceParams[key]) {
       setInferenceParam(edited as InferenceParams, key, params[key]);
     }
   }
@@ -3130,6 +3171,8 @@ function getHydratedSettingsState(
   state: ChatRuntimeStore,
   versions: SettingsHydrationVersions,
 ): Partial<ChatRuntimeStore> {
+  // A migration's confirming read stays raw for CAS; normalize only on hydration.
+  settings = normalizeSavedChatSettings(settings);
   const nextState: Partial<ChatRuntimeStore> = {};
   const checkpoint = state.params.checkpoint;
   const loadedBeforeHydration = sameCheckpointIdentity(
@@ -3165,7 +3208,7 @@ function getHydratedSettingsState(
       // The context belongs to the load, not the previous model's global set, and no entry carries
       // one for the replay below.
       !(loadedBeforeHydration && key === "maxSeqLength") &&
-      inferenceParamMutationVersions[key] === versions.inferenceParams[key]
+      inferenceParamMutationVersions()[key] === versions.inferenceParams[key]
     ) {
       setInferenceParam(params, key, value);
     }
@@ -3314,7 +3357,7 @@ function getHydratedSettingsState(
       const value = remembered[key];
       if (
         value !== undefined &&
-        inferenceParamMutationVersions[key] === versions.inferenceParams[key]
+        inferenceParamMutationVersions()[key] === versions.inferenceParams[key]
       ) {
         setInferenceParam(replayed, key, value);
       }
@@ -3594,7 +3637,7 @@ function adoptMigratedFieldsAfterLocalEdit(
       const field = key as PersistedInferenceParamKey;
       if (
         versionsBefore[field] === undefined ||
-        inferenceParamMutationVersions[field] !== versionsBefore[field] ||
+        inferenceParamMutationVersions()[field] !== versionsBefore[field] ||
         nextParams[field] === value
       ) {
         continue;
@@ -3686,7 +3729,7 @@ async function retryLegacyQwenDefaultsAfterPresetChange(
     // Captured before the write: an edit landing mid-flight is the one case
     // where the server takes the migration and local refuses it.
     const presetSourceBeforeWrite = activePresetSourceMutationVersion;
-    const paramVersionsBeforeWrite = { ...inferenceParamMutationVersions };
+    const paramVersionsBeforeWrite = { ...inferenceParamMutationVersions() };
     const persisted = await savePersistedChatSettingsPatchIfCurrent(
       confirmed,
       migration.patch,
@@ -3979,6 +4022,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedSpecDraftNMax: null,
   nParallel: null,
   loadedNParallel: null,
+  reasoningBudget: -1,
+  loadedReasoningBudget: null,
+  loadedReasoningBudgetRequested: null,
+  reasoningBudgetMessage: "",
+  loadedReasoningBudgetMessage: null,
+  loadedReasoningBudgetMessageRequested: null,
   nBatch: null,
   loadedNBatch: null,
   loadedLlamaExtraArgs: null,
@@ -4224,8 +4273,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     })();
     return settingsHydrationPromise;
   },
-  beginModelLoading: () => {
-    const lease = chatModelLifecycleGate.tryAcquire();
+  beginModelLoading: (phase) => {
+    const lease = chatModelLifecycleGate.tryAcquire(phase);
     if (lease !== null) {
       set({ modelLoading: true });
     }
@@ -4236,7 +4285,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       set({ modelLoading: false });
     }
   },
-  setLoadingModelPick: (pick) => set({ loadingModelPick: pick }),
+  setLoadingModelPick: (pick) =>
+    set({
+      loadingModelPick: pick
+        ? { ...pick, selectionSuperseded: false }
+        : null,
+    }),
   clearLoadingModelPick: (expected) =>
     set((state) => {
       const current = state.loadingModelPick;
@@ -4266,10 +4320,14 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // setCheckpoint only later, so replay here or the switch never restores the model's own settings.
       noteLoadedContext(params.checkpoint, options?.maxTokensCap);
       const replayed = checkpointChanged || fromModelDefaults;
+      // A recommendation carries no mode, and the live one may belong to the thread.
+      const incomingParams = fromModelDefaults
+        ? { ...params, minPMode: withoutActiveThreadParams(state, params).minPMode }
+        : params;
       const nextParams = getReplayedParams(
         state.rememberParamsPerModel,
         outgoing ?? state.paramsByModel,
-        params,
+        incomingParams,
         params.checkpoint,
         replayed,
         options?.maxTokensCap,
@@ -4285,12 +4343,15 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         nextParams,
         state.params,
         !fromModelDefaults,
+        options?.minPChoiceEdited === true,
       );
-      const queuedSettingsChanged = shouldAdvanceQueuedSettingsEpoch(
-        state.params,
-        effective,
-        options?.trackQueuedSettings !== false,
-      );
+      const queuedSettingsChanged =
+        options?.minPChoiceEdited === true ||
+        shouldAdvanceQueuedSettingsEpoch(
+          state.params,
+          effective,
+          options?.trackQueuedSettings !== false,
+        );
       const persistingGlobally =
         options?.persist !== false && state.settingsHydrated;
       // A sampling key moved with a chat open belongs to that chat, so it reaches neither the defaults nor
@@ -4600,6 +4661,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         : nextParams;
       return {
         params: restoredParams,
+        loadingModelPick:
+          checkpointChanged && state.loadingModelPick
+            ? { ...state.loadingModelPick, selectionSuperseded: true }
+            : state.loadingModelPick,
         ...getReplayStatePatch(state, nextParams, outgoing, baseParams),
         activeGgufVariant: nextGgufVariant,
         ...(queuedSettingsChanged
@@ -4642,6 +4707,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     })),
   applyThreadScopedSettings: (threadId, settings) =>
     set((state) => {
+      settings = normalizeSavedThreadScopedSettings(settings);
       // The pending write belongs to the outgoing thread, so it goes out before the swap.
       flushThreadScopedSettingsWrite();
       // Edits made while this chat's snapshot was in flight: keep them and store them on the chat,
@@ -4868,6 +4934,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       loadedSpecDraftNMax: null,
       nParallel: null,
       loadedNParallel: null,
+      reasoningBudget: -1,
+      loadedReasoningBudget: null,
+      loadedReasoningBudgetRequested: null,
+      reasoningBudgetMessage: "",
+      loadedReasoningBudgetMessage: null,
+      loadedReasoningBudgetMessageRequested: null,
       nBatch: null,
       loadedNBatch: null,
       loadedLlamaExtraArgs: null,

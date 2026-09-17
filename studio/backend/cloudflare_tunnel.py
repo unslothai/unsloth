@@ -11,6 +11,7 @@ domain. Best-effort throughout: any failure collapses to "no URL" and Unsloth ke
 
 from __future__ import annotations
 
+import logging
 import os
 import platform
 import re
@@ -154,33 +155,105 @@ def find_cloudflared() -> Optional[str]:
     return None
 
 
-def _download(url: str, dest: Path) -> bool:
-    """Download url to dest via urllib (temp file + atomic rename). Best-effort -> bool."""
+_DOWNLOAD_ATTEMPTS = 3
+_COPY_CHUNK = 1 << 16
+
+
+def _download(
+    url: str,
+    dest: Path,
+    *,
+    attempts: int = _DOWNLOAD_ATTEMPTS,
+    timeout: float = _DOWNLOAD_TIMEOUT,
+) -> bool:
+    """Download url to dest via urllib (temp file + atomic rename), retried. Best-effort -> bool.
+
+    Attempts share one budget rather than each getting `timeout`, so a failing download
+    costs about what the single attempt before it did, and the terminal cases below skip the
+    pauses: run.py starts the launch tunnel inline, where one of them delays the banner.
+    """
+    import socket
+    import ssl
     import tempfile
+    import urllib.error
     import urllib.request
 
-    tmp_path: Optional[Path] = None
-    try:
-        dest.parent.mkdir(parents = True, exist_ok = True)
-        with tempfile.NamedTemporaryFile(
-            prefix = dest.name + ".tmp-", dir = dest.parent, delete = False
-        ) as handle:
-            tmp_path = Path(handle.name)
-            # GitHub's CDN 403s the default Python-urllib User-Agent.
-            req = urllib.request.Request(url, headers = {"User-Agent": "unsloth-studio"})
-            with urllib.request.urlopen(req, timeout = _DOWNLOAD_TIMEOUT) as response:
-                shutil.copyfileobj(response, handle)
-        if tmp_path.stat().st_size == 0:
-            raise RuntimeError("empty download")
-        os.replace(tmp_path, dest)
-        return True
-    except Exception:
-        if tmp_path is not None:
-            try:
-                tmp_path.unlink(missing_ok = True)
-            except Exception:
-                pass
-        return False
+    deadline = time.monotonic() + timeout
+    last_error: Optional[BaseException] = None
+    for attempt in range(1, attempts + 1):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        tmp_path: Optional[Path] = None
+        # Set where the failure is known to be the transfer, because nothing else separates
+        # it from the local filesystem: ENOSPC from a full disk and ENETUNREACH from a dropped
+        # link both arrive as a bare OSError. Identity, so a close mid-unwind stays local.
+        transfer_exc: Optional[BaseException] = None
+        try:
+            dest.parent.mkdir(parents = True, exist_ok = True)
+            with tempfile.NamedTemporaryFile(
+                prefix = dest.name + ".tmp-", dir = dest.parent, delete = False
+            ) as handle:
+                tmp_path = Path(handle.name)
+                # GitHub's CDN 403s the default Python-urllib User-Agent.
+                req = urllib.request.Request(url, headers = {"User-Agent": "unsloth-studio"})
+                try:
+                    response = urllib.request.urlopen(req, timeout = remaining)
+                except Exception as exc:
+                    transfer_exc = exc
+                    raise
+                with response:
+                    while True:
+                        try:
+                            chunk = response.read(_COPY_CHUNK)
+                        except Exception as exc:
+                            transfer_exc = exc
+                            raise
+                        if not chunk:
+                            break
+                        handle.write(chunk)
+            if tmp_path.stat().st_size == 0:
+                transfer_exc = RuntimeError("empty download")
+                raise transfer_exc
+            os.replace(tmp_path, dest)
+            return True
+        except Exception as exc:
+            last_error = exc
+            if tmp_path is not None:
+                try:
+                    tmp_path.unlink(missing_ok = True)
+                except Exception:
+                    pass
+            reason = getattr(exc, "reason", None)
+            resolver = exc if isinstance(exc, socket.gaierror) else reason
+            terminal = (
+                exc is not transfer_exc
+                or isinstance(exc, TimeoutError)
+                or isinstance(reason, TimeoutError)
+                # A verdict on the peer; its SSLError siblings are transfers that failed.
+                or isinstance(exc, ssl.SSLCertVerificationError)
+                or isinstance(reason, ssl.SSLCertVerificationError)
+                # EAI_AGAIN is the resolver asking to be tried again; the rest are answers.
+                or (isinstance(resolver, socket.gaierror) and resolver.errno != socket.EAI_AGAIN)
+                or (
+                    isinstance(exc, urllib.error.HTTPError)
+                    and 400 <= exc.code < 500
+                    and exc.code not in (408, 429)
+                )
+            )
+            if terminal or attempt >= attempts:
+                break
+            pause = 1.5 * attempt
+            if time.monotonic() + pause >= deadline:
+                break
+            time.sleep(pause)
+    logging.getLogger(__name__).warning(
+        "could not download cloudflared from %s (%s); install cloudflared on PATH "
+        "to use a public tunnel",
+        url,
+        last_error,
+    )
+    return False
 
 
 def _extract_tgz_member(tgz_path: Path, dest: Path) -> bool:
