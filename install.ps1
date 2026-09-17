@@ -2882,7 +2882,19 @@ exit 1
             # is the one function in the file that exists to run under exactly that policy.
             # Measured: it blocks. This rounds up and never to zero, and being a second generous
             # on a bound this coarse costs nothing.
-            $seconds = [int](($TimeoutMs + 999) / 1000)
+            # Ceiling, done with integer arithmetic rather than the +999 idiom.
+            #
+            # That idiom is a C integer-DIVISION trick and PowerShell's / is floating point, so
+            # [int] rounds to nearest instead of truncating and every exact multiple gains a
+            # second: measured, 10000 became 11 and 20000 became 21. Wait-Process then waited a
+            # second longer than the caller asked, so the two launchers did not share a deadline.
+            #
+            # [math]::Ceiling is the obvious spelling and Constrained Language Mode refuses it,
+            # which is the whole reason this launcher exists. % and / are operators and the [int]
+            # cast is permitted there, both measured on a constrained runspace.
+            $seconds = ($TimeoutMs - ($TimeoutMs % 1000)) / 1000
+            if (($TimeoutMs % 1000) -ne 0) { $seconds = $seconds + 1 }
+            $seconds = [int]$seconds
             if ($seconds -lt 1) { $seconds = 1 }
             $timedOut = $false
             Wait-Process -InputObject $proc -Timeout $seconds -ErrorAction SilentlyContinue -ErrorVariable waitError

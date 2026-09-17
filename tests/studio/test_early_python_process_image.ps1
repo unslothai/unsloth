@@ -158,6 +158,43 @@ $roundTripSrc = "import sys" + [char]10 + "sys.stdout.buffer.write(b'tab\ttab')"
 Check "control: a payload really did round-trip" (
     (Invoke-StudioEarlyPythonScript -Exe $exe -Script $roundTripSrc) -ceq "tab`ttab")
 
+# The cmdlet launcher's millisecond-to-second conversion must be a real ceiling.
+#
+# It used the +999 idiom, which is a C integer-DIVISION trick. PowerShell's / is floating point
+# and [int] rounds to nearest rather than truncating, so every exact multiple gained a second:
+# 10000 measured as 11 and 20000 as 21. Wait-Process then waited a second longer than the caller
+# asked and the two launchers no longer shared a deadline. Driven over the boundary values rather
+# than asserted, since the failure was entirely in values that look obviously right.
+$cmdletFn = @($ast.FindAll({ param($n)
+    $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+    $n.Name -eq "Invoke-StudioEarlyPythonScriptViaCmdlets"
+}, $true))[0].Extent.Text
+$convStart = $cmdletFn.IndexOf('$seconds = ($TimeoutMs')
+$convEnd = $cmdletFn.IndexOf('$timedOut = $false', [Math]::Max($convStart, 0))
+Check "the conversion is still computed in the launcher" ($convStart -ge 0 -and $convEnd -gt $convStart)
+$conversionSrc = ""
+if ($convStart -ge 0 -and $convEnd -gt $convStart) {
+    $conversionSrc = $cmdletFn.Substring($convStart, $convEnd - $convStart)
+}
+Check "the sliced conversion is not empty (bites)" (
+    $conversionSrc -match '\$seconds' -and $conversionSrc -match '%')
+foreach ($case in @(
+    @{ Ms = 10000; Want = 10 }, @{ Ms = 20000; Want = 20 }, @{ Ms = 1000; Want = 1 },
+    @{ Ms = 1500;  Want = 2 },  @{ Ms = 999;   Want = 1 },  @{ Ms = 1;    Want = 1 },
+    @{ Ms = 2500;  Want = 3 },  @{ Ms = 0;     Want = 1 }
+)) {
+    $TimeoutMs = $case.Ms
+    # The installer's OWN expression, sliced out and executed. Retyping the formula here would
+    # test this file's copy of it and pass even if the shipped one still had the +999 idiom.
+    Invoke-Expression $conversionSrc
+    Check "$($case.Ms) ms is $($case.Want) s" ($seconds -eq $case.Want)
+}
+# Bites control: the idiom this replaced really did get the round numbers wrong, so these rows
+# are not passing because any arithmetic would.
+Check "control: the old +999 idiom disagreed on an exact multiple" (
+    ([int]((10000 + 999) / 1000)) -eq 11)
+Check "and the shipped launcher no longer uses it" ($cmdletFn -notmatch '\+ 999')
+
 $cmdletUtf8 = Invoke-StudioEarlyPythonScriptViaCmdlets -Exe $exe `
     -Script "import sys;sys.stdout.buffer.write((chr(0xe9)+chr(0x4e2d)).encode('utf-8'))"
 Check "the cmdlet launcher keeps non-ASCII intact" (
