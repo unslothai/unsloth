@@ -104,6 +104,12 @@ $fns = @(
     "Resolve-StudioLinkTarget", "Get-StudioSubstTarget", "Get-StudioLexicalPath",
     "Resolve-StudioFinalPathInfo",
     "Initialize-StudioProcessImageNativeType", "Get-StudioNativeProcessImagePath",
+    # Get-StudioProcessImagePath calls this one between Get-Process and WMI. It is listed even
+    # though the checks below reach it only in the scenario added at the end of the harness,
+    # because an unlisted helper is a command-not-found waiting for the first scenario that does
+    # reach it, and this file's own history is the argument: a suite that stopped extracting what
+    # it needed took a SKIP branch and CI recorded a pass.
+    "Get-StudioPythonProcessImageTable",
     "Get-StudioProcessImagePath"
 )
 $src = @()
@@ -232,6 +238,18 @@ try { `$fallback = Get-StudioProcessImagePath -ProcessId `$PID } catch { `$fallb
 Write-Host "PROCIMG_FALLBACK_THREW: `$fallbackThrew"
 Write-Host "PROCIMG_FALLBACK_ANSWERED: `$(-not [string]::IsNullOrWhiteSpace(`$fallback))"
 Write-Host "PROCIMG_WARNED: `$script:StudioProcessImageWarned"
+
+# The rungs BELOW Get-Process. The check above never reaches them: this shell can read its own
+# .Path, so the ladder returns two rungs before the Python and WMI ones. That made the whole
+# lower half of the ladder untested here, and would have hidden a helper missing from the
+# extraction list above until some future scenario reached it. Force Get-Process to answer
+# nothing, which is what a process this shell cannot inspect looks like from in here.
+function Get-Process { param(`$Id, `$ErrorAction) return `$null }
+`$script:StudioPythonProcessImageProbed = `$false
+`$script:StudioPythonProcessImageTable = `$null
+`$deepThrew = `$false
+try { `$null = Get-StudioProcessImagePath -ProcessId `$PID } catch { `$deepThrew = `$true; Write-Host "DEEP_ERROR: `$(`$_.Exception.Message)" }
+Write-Host "PROCIMG_DEEP_THREW: `$deepThrew"
 "@
     $file = Join-Path ([System.IO.Path]::GetTempPath()) ("uns_native_" + [guid]::NewGuid().ToString("N") + ".ps1")
     Set-Content -LiteralPath $file -Value $harness -Encoding utf8
@@ -273,6 +291,9 @@ Write-Host "PROCIMG_WARNED: `$script:StudioProcessImageWarned"
     # And with the type forced away, the rungs below it still answer, which is what
     # keeps a host from finding no running processes and overwriting an open venv.
     Check "the fallback rung does not throw" ($out -match "PROCIMG_FALLBACK_THREW: False")
+    # And the rungs below Get-Process, which the check above never reaches on a shell that can
+    # read its own .Path. This is what catches a helper missing from the extraction list.
+    Check "the rungs below Get-Process do not throw either" ($out -match "PROCIMG_DEEP_THREW: False")
     Check "the fallback rung still names our own image" ($out -match "PROCIMG_FALLBACK_ANSWERED: True")
     Check "and says out loud that it is degraded" ($out -match "PROCIMG_WARNED: True")
 }
