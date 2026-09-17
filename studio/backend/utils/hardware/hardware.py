@@ -4874,11 +4874,10 @@ def _determine_attention_impl_for_gpu_estimate(config) -> str:
             continue
 
     impl = resolve_attention_implementation(model_class, config_copy)
-    # The resolver may answer with a per-sub-config mapping (a decoder at head_dim > 128 gets
-    # flex_attention while a VLM's vision tower stays on sdpa). The estimator wants ONE name and
-    # looks it up in a frozenset, which a dict cannot be, so take the decoder's: any explicitly
-    # named sub-config, else the "" default that covers everything unnamed. Collapsed here rather
-    # than via a helper import, because callers stub this module's unsloth import.
+    # The resolver may answer with a per-sub-config mapping (decoder on flex, a VLM's vision
+    # tower on sdpa), but the estimator wants ONE name to look up in a frozenset. Take the
+    # decoder's: any named sub-config, else the "" default. Inlined because callers stub the
+    # unsloth import.
     if isinstance(impl, dict):
         named = [value for key, value in impl.items() if key != "" and value is not None]
         impl = named[0] if named else impl.get("", "eager")

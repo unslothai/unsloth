@@ -436,29 +436,22 @@ def _flex_attention_gpu_is_supported():
 # ---------------------------------------------------------------------------------------------
 # head_dim > 128: no flash kernel exists, and torch SDPA silently degrades
 # ---------------------------------------------------------------------------------------------
-# torch's SDPA FLASH and CUDNN backends both refuse head_dim > 128 ("head_dim should be no more than
-# 128"), FlashAttention-3 ships no sm100 kernel, and FlashAttention-4's sm100 path asserts head_dim
-# in [8, 128]. Above 128 SDPA therefore lands on its memory-efficient backend, which on Blackwell
-# dispatches an *sm80* CUTLASS kernel (fmha_cutlassB_bf16_aligned_128x64_k65536_sm80) -- measured at
-# 21.2% of the CUDA step on Qwen3.5-2B and 12.9% on Qwen3.5-35B-A3B, and 2.2-4.8x slower than an
-# unconstrained kernel on the same shapes. FlexAttention has no head-dim ceiling, and Transformers'
-# flex mask builder (masking_utils.flex_attention_mask) produces a BlockMask carrying causality, the
-# 2D padding mask AND packed-sequence boundaries from position_ids, exactly like sdpa_mask does --
-# so nothing about packing / padding-free correctness is re-implemented here.
+# SDPA's FLASH and CUDNN backends refuse head_dim > 128, FA3 has no sm100 kernel and FA4's sm100
+# path asserts head_dim in [8, 128]. SDPA therefore falls to memory-efficient, which on Blackwell
+# dispatches an *sm80* CUTLASS kernel: 21.2% of the CUDA step on Qwen3.5-2B, 12.9% on 35B-A3B, and
+# 2.2-4.8x slower than an unconstrained kernel. Flex has no head-dim ceiling, and its BlockMask from
+# masking_utils.flex_attention_mask carries causality, the 2D padding mask and packed-sequence
+# boundaries exactly as sdpa_mask does, so no packing correctness is re-implemented here.
 #
-# Affects Qwen3.5 / Qwen3.6 / Qwen3-Next (head_dim 256). Models at head_dim <= 128 (Llama, Qwen2,
-# Qwen3, Mistral, ...) never enter this path and keep their existing backend.
+# Affects Qwen3.5 / 3.6 / Qwen3-Next (head_dim 256); head_dim <= 128 never enters this path.
 _SDPA_FLASH_MAX_HEAD_DIM = 128
 _FLEX_LARGE_HEAD_DIM_ENV_VAR = "UNSLOTH_FLEX_ATTENTION_FOR_LARGE_HEAD_DIM"
-# Architectures at head_dim > 128 that keep SDPA anyway. gemma2: measured SLOWER under flex
-# (14.35 ms vs 13.19 ms per fwd+bwd on a 4-layer probe) because its 4096-token sliding window
-# already keeps the quadratic term small, and its primary Unsloth route is the hand-written
-# models/gemma2.py fast path rather than this resolver. gemma3 never reaches here: it is in
-# _FLEX_PREFERRED_MODELS and picks flex further up the ladder.
+# head_dim > 128 but keeping SDPA. gemma2 measured SLOWER under flex (14.35 vs 13.19 ms fwd+bwd,
+# 4-layer probe): its 4096-token sliding window already bounds the quadratic term, and its real
+# route is models/gemma2.py. gemma3 never reaches here, it picks flex further up the ladder.
 _FLEX_LARGE_HEAD_DIM_EXCLUDED_MODELS = ("gemma2",)
-# Both markers must be present for flex to be safe to force on: the first routes the attention call
-# through the generic interface flex registers into, the second means the mask handed to it is built
-# by create_causal_mask, i.e. a real BlockMask rather than a hand-rolled dense 4D tensor.
+# Both markers are required: the first routes attention through the interface flex registers into,
+# the second means the mask is a real BlockMask from create_causal_mask, not a dense 4D tensor.
 _FLEX_INTERFACE_MARKERS = ("ALL_ATTENTION_FUNCTIONS", "create_causal_mask")
 _FLEX_SUPPORT_FORCED = set()
 _ATTN_IMPL_MAPPING_SUPPORTED = []
@@ -605,7 +598,7 @@ def _flex_support_anchor_class(model_class):
             break
         if not isinstance(klass, type) or not issubclass(klass, PreTrainedModel):
             continue
-        # MRO runs derived -> base, so the last same-module match is the arch's own base class.
+        # MRO is derived -> base, so the last same-module match is the arch's own base.
         if getattr(klass, "__module__", "") == module_name:
             anchor = klass
     return anchor
@@ -665,13 +658,10 @@ def _enable_flex_attention_support(model_class, model_type = ""):
     if not _modeling_module_is_interface_based(model_class):
         return False
     if _declares_flex_support(model_class) is False:
-        # The architecture opted out on purpose. Transformers' generic PreTrainedModel sets
-        # _supports_flex_attn = False for everyone, so "False" alone means nothing; what
-        # counts is whether one of the architecture's OWN classes restates it. qwen3_5 and
-        # qwen3_5_moe never do, they just inherit the base default, which is the unset case
-        # this function exists to fix. T5Gemma2 does restate it, because its custom masks
-        # cannot be merged safely under flex, and forcing it there would pick an attention
-        # backend its own authors ruled out.
+        # A deliberate opt-out. PreTrainedModel sets _supports_flex_attn = False for everyone,
+        # so False alone means nothing; what counts is the architecture restating it itself.
+        # qwen3_5 / qwen3_5_moe only inherit the default, which is the case this fixes.
+        # T5Gemma2 does restate it, because its custom masks cannot merge under flex.
         return False
     anchor = _flex_support_anchor_class(model_class)
     key = f"{getattr(anchor, '__module__', '')}.{getattr(anchor, '__name__', '')}"
@@ -905,17 +895,15 @@ def _disable_flash_attention_if_needed(
         fallback_attn_implementation = "flex_attention"
     else:
         fallback_attn_implementation = "eager"
-    # head_dim > 128 has no flash kernel at all and SDPA quietly degrades to its sm80 CUTLASS
-    # memory-efficient kernel, so flex outranks sdpa as the fallback for those models only. Scoped
-    # to the sdpa fallback: a model already falling back to flex or eager is not made worse here.
+    # With no flash kernel above head_dim 128, flex outranks sdpa as the fallback for those models
+    # only. Scoped to the sdpa fallback, so a model already on flex or eager is unaffected.
     if (
         fallback_attn_implementation == "sdpa"
         and supports_flex_attention
         and _prefers_flex_for_head_dim(config)
     ):
         _flex_fallback = _flex_attn_impl_for(config, "sdpa")
-        # None means flex is unofferable here (no mapping support + a sibling sub-config
-        # that must not be switched); keep the sdpa fallback unchanged.
+        # None: unofferable (no mapping support, and a sibling sub-config must not switch).
         if _flex_fallback is not None:
             fallback_attn_implementation = _flex_fallback
     if _is_flash_attention_requested(requested_attn_implementation) or would_use_flash_attention:

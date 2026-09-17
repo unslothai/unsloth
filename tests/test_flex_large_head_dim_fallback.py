@@ -64,13 +64,10 @@ def test_mapping_support_text_only_is_a_plain_string():
     assert u._flex_attn_impl_for(_text_only(), "sdpa") == "flex_attention"
 
 
-# --- explicit architecture opt-outs must survive the force-enable path -----------------
-#
-# Transformers' generic PreTrainedModel sets _supports_flex_attn = False for every model, so
-# getattr() cannot tell "never mentioned it" from "deliberately turned it off". qwen3_5 is the
-# first; T5Gemma2 is the second, and its own base class documents that flex is disabled because
-# its custom masks cannot be merged safely. Forcing it there would select a backend its authors
-# ruled out, so the read has to come off vars() with the MRO walk stopping at the generic base.
+# --- explicit opt-outs must survive the force-enable path ------------------------------
+# PreTrainedModel sets _supports_flex_attn = False for every model, so getattr() cannot tell
+# "never mentioned it" (qwen3_5) from "deliberately off" (T5Gemma2, whose custom masks cannot
+# merge under flex). Hence the vars() read with the MRO walk stopping at the generic base.
 
 
 def _real_model_class(module_path, class_name):
